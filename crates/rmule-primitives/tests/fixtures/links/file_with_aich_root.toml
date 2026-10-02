@@ -1,0 +1,15 @@
+name = "file_with_aich_root"
+provenance = "documentation"
+source_note = "Synthetic file link carrying AICH root metadata"
+accepted = true
+
+[input]
+link = "ed2k://|file|aich.bin|11|AA010FBC1D14C795D86EF98C95479D17|h=A2NWOTYURUU3P3GCUB6KCNW3FTYYELQB|/"
+
+[expected]
+kind = "file"
+canonical = "ed2k://|file|aich.bin|11|AA010FBC1D14C795D86EF98C95479D17|h=A2NWOTYURUU3P3GCUB6KCNW3FTYYELQB|/"
+name = "aich.bin"
+size = 11
+file_hash = "AA010FBC1D14C795D86EF98C95479D17"
+aich_root = "A2NWOTYURUU3P3GCUB6KCNW3FTYYELQB"

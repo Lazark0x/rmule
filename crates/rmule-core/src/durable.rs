@@ -1,0 +1,288 @@
+//! What a download leaves behind between sessions: its [`DownloadLifecycle`],
+//! the [`DownloadPaths`] its bytes live at, the [`DownloadMetadata`] a front end
+//! shows (and where that metadata came from), and the [`VerifiedPartRecord`]s
+//! that let a restart resume instead of re-fetching. The vocabulary only — the
+//! stores that persist it live in [`storage`](crate::storage) and `store`.
+
+use std::path::{Path, PathBuf};
+
+use rmule_primitives::{Ed2kFileLink, Ed2kText, FileHash, PartHash, ServerEndpoint};
+use serde::{Deserialize, Serialize};
+
+use crate::{DownloadFailure, DownloadId, VerificationAuthority};
+
+/// The state a download row is in. `Completed` and `Cancelled` are terminal —
+/// nothing leaves them — and every other state may go to `Cancelled` or
+/// `Failed`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DownloadLifecycle {
+    /// Accepted and stored, but no run has started yet.
+    Queued,
+    /// The operator wants it running: a run is on the wire, or core starts
+    /// one at attach. Quit and a crash leave it as it is (ADR-0094).
+    Active,
+    /// Stopped by the caller, with its verified parts kept for a resume.
+    Paused,
+    /// A run ended without the file. Resumable — a retry may find new sources.
+    Failed,
+    /// Every part verified and the file finalized. Terminal.
+    Completed,
+    /// Abandoned by the caller. Terminal.
+    Cancelled,
+}
+
+impl DownloadLifecycle {
+    #[must_use]
+    pub(crate) fn can_transition_to(self, next: Self) -> bool {
+        match (self, next) {
+            (Self::Cancelled | Self::Completed, _) => false,
+            (current, next) if current == next => true,
+            (current, Self::Cancelled | Self::Failed)
+                if !matches!(current, Self::Completed | Self::Cancelled) =>
+            {
+                true
+            }
+            (Self::Queued, Self::Active | Self::Paused) => true,
+            (Self::Active, Self::Paused | Self::Completed) => true,
+            (Self::Paused, Self::Active) => true,
+            (Self::Failed, Self::Active | Self::Paused) => true,
+            _ => false,
+        }
+    }
+}
+
+/// The two paths one download writes: the partial file it fills, and the
+/// destination it is renamed to once every part verifies. Held together so no
+/// caller can pair a `.part` with the wrong destination.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DownloadPaths {
+    final_path: PathBuf,
+    part_path: PathBuf,
+}
+
+impl DownloadPaths {
+    /// Derive the pair from the destination: the partial file is the same path
+    /// with `.part` appended, so the two always live in the same directory and
+    /// the finalize is a rename, never a copy across filesystems.
+    #[must_use]
+    pub fn from_final_path(final_path: PathBuf) -> Self {
+        let mut part_path = final_path.clone().into_os_string();
+        part_path.push(".part");
+
+        Self {
+            final_path,
+            part_path: PathBuf::from(part_path),
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn from_persisted_paths(final_path: PathBuf, part_path: PathBuf) -> Self {
+        Self {
+            final_path,
+            part_path,
+        }
+    }
+
+    /// Where the finished file lands. Nothing is written here until every part
+    /// has verified.
+    #[must_use]
+    pub fn final_path(&self) -> &Path {
+        &self.final_path
+    }
+
+    /// Where partial data accumulates while the download runs.
+    #[must_use]
+    pub fn part_path(&self) -> &Path {
+        &self.part_path
+    }
+}
+
+/// Where core learned a download's [`DownloadMetadata`] (ADR-0077).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DownloadMetadataOrigin {
+    /// Recorded at creation from the `Ed2kFileLink` the `StartDownload`
+    /// caller supplied. A pasted link and a search result the caller rendered
+    /// into a link arrive as the same value, so core reports the one fact it
+    /// can stand behind — the link — rather than a caller-claimed UI origin.
+    Link,
+    /// Re-parsed from the row's own canonical link rather than recorded at
+    /// creation: the same bytes the link was written from, recovered by a
+    /// reader that found no stored name.
+    RecoveredLink,
+    /// No name is known — a row whose canonical link did not parse, or a
+    /// record synthesized without one. `size` is still exact.
+    Unknown,
+}
+
+/// The file facts core holds for one download: the name to show a human and
+/// the exact byte size, plus where they came from (ADR-0077). Recorded at
+/// creation, persisted with the download row, and replayed on recovery — so a
+/// front-end never has to re-derive a name from the canonical link or
+/// approximate a size from the part count.
+///
+/// `name` keeps the wire's bytes (ADR-0019): real ED2K names are routinely
+/// Windows-1252 or mojibake, so the rendering side projects them with
+/// [`Ed2kText::to_display_string`] instead of core guessing an encoding. An
+/// empty name means core never learned one — see [`DownloadMetadataOrigin`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DownloadMetadata {
+    /// The file's name as the wire spelled it — raw bytes, not a `String`.
+    /// Empty when core never learned one.
+    pub name: Ed2kText,
+    /// Exact size in bytes, as the ED2K link declared it.
+    pub size: u64,
+    /// Where the two facts above came from, which is how much they can be
+    /// trusted.
+    pub origin: DownloadMetadataOrigin,
+}
+
+impl DownloadMetadata {
+    /// The creation-time reading: both facts straight off the caller's link.
+    #[must_use]
+    pub fn from_link(file: &Ed2kFileLink) -> Self {
+        Self {
+            name: file.name.clone(),
+            size: file.size,
+            origin: DownloadMetadataOrigin::Link,
+        }
+    }
+
+    /// An exact size with no name — for a record created without a link.
+    #[must_use]
+    pub fn unnamed(size: u64) -> Self {
+        Self {
+            name: Ed2kText::from_bytes(Vec::new()),
+            size,
+            origin: DownloadMetadataOrigin::Unknown,
+        }
+    }
+}
+
+/// One part that passed its hash check and is on disk. The store keeps these
+/// so a restart resumes instead of re-fetching, and re-checks the bytes against
+/// them before trusting the partial file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VerifiedPartRecord {
+    /// The zero-based part index within the file.
+    pub part_index: u32,
+    /// The part's first byte offset in the file.
+    pub offset: u64,
+    /// Its length in bytes — the standard part size except for the file's last
+    /// part, which is short.
+    pub len: u64,
+    /// The hash the bytes matched.
+    pub part_hash: PartHash,
+}
+
+/// One download as the store holds it. Every field is set at creation except
+/// the lifecycle and the verification authority, which the run updates; the
+/// getters are the only way in, so a caller cannot desynchronize the pair.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DurableDownloadRecord {
+    id: DownloadId,
+    file_hash: FileHash,
+    metadata: DownloadMetadata,
+    canonical_link: String,
+    source_hint: Option<ServerEndpoint>,
+    paths: DownloadPaths,
+    lifecycle: DownloadLifecycle,
+    verification_authority: Option<VerificationAuthority>,
+    failure: Option<DownloadFailure>,
+}
+
+impl DurableDownloadRecord {
+    pub(crate) fn new(input: DurableDownloadRecordInput) -> Self {
+        Self {
+            id: input.id,
+            file_hash: input.file_hash,
+            metadata: input.metadata,
+            canonical_link: input.canonical_link,
+            source_hint: input.source_hint,
+            paths: input.paths,
+            lifecycle: input.lifecycle,
+            verification_authority: input.verification_authority,
+            failure: input.failure,
+        }
+    }
+
+    /// The download's stable id, reused across restarts.
+    #[must_use]
+    pub const fn id(&self) -> DownloadId {
+        self.id
+    }
+
+    /// The file's ED2K content identity.
+    #[must_use]
+    pub const fn file_hash(&self) -> FileHash {
+        self.file_hash
+    }
+
+    /// The file's exact size in bytes, as its link declared it.
+    #[must_use]
+    pub const fn file_size(&self) -> u64 {
+        self.metadata.size
+    }
+
+    /// The stored name + exact size and their origin (ADR-0077).
+    #[must_use]
+    pub const fn metadata(&self) -> &DownloadMetadata {
+        &self.metadata
+    }
+
+    /// The `ed2k://` link the download was created from, stored verbatim. It is
+    /// what a resume re-parses to recover the file's part hashes and AICH root.
+    #[must_use]
+    pub fn canonical_link(&self) -> &str {
+        &self.canonical_link
+    }
+
+    /// The server the download's link was found on, kept as a source hint;
+    /// `None` for a download started with no server connected or
+    /// configured — a Kad-only start. Nothing dials it: a run's
+    /// sources come from the operator's session and Kad.
+    #[must_use]
+    pub const fn source_hint(&self) -> Option<&ServerEndpoint> {
+        self.source_hint.as_ref()
+    }
+
+    /// Where the partial and finished files live.
+    #[must_use]
+    pub const fn paths(&self) -> &DownloadPaths {
+        &self.paths
+    }
+
+    /// The row's current state, read straight from the store: what the
+    /// operator last wanted of the download, which a restart does not rewrite
+    /// (ADR-0094).
+    #[must_use]
+    pub const fn lifecycle(&self) -> DownloadLifecycle {
+        self.lifecycle
+    }
+
+    /// What the run's verified parts were checked against, or `None` before any
+    /// hash set was settled. It is recorded so a resume cannot silently verify
+    /// under a weaker authority than the parts already on disk.
+    #[must_use]
+    pub const fn verification_authority(&self) -> Option<VerificationAuthority> {
+        self.verification_authority
+    }
+
+    /// Why the last run failed, kept with the `Failed` lifecycle so a restart
+    /// still knows it (ADR-0094, "Failed"); `None` for any other lifecycle.
+    #[must_use]
+    pub const fn failure(&self) -> Option<&DownloadFailure> {
+        self.failure.as_ref()
+    }
+}
+
+pub(crate) struct DurableDownloadRecordInput {
+    pub id: DownloadId,
+    pub file_hash: FileHash,
+    pub metadata: DownloadMetadata,
+    pub canonical_link: String,
+    pub source_hint: Option<ServerEndpoint>,
+    pub paths: DownloadPaths,
+    pub lifecycle: DownloadLifecycle,
+    pub verification_authority: Option<VerificationAuthority>,
+    pub failure: Option<DownloadFailure>,
+}

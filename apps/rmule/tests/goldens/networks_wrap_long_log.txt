@@ -1,0 +1,21 @@
+┌ Servers (0) · not connected ──────────────────── a add · U update · m menu ┐
+│   Name ▲   Address        Port Desc   Ping Users Files Age Prio Fail Static│
+│no servers — press a to add one, or U to update the list from a URL         │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+┌ Log (2) ───────────────────────────┐┌ Kad ─────────────────────────────────┐
+│11:59:55 part 3 verified            ││● Kad: off                            │
+│11:59:55 download failed: the file  ││Joined    — (node not started)        │
+│         on disk no longer backs the││Contacts  —                           │
+│         parts already checked: its ││Firewall  — (never run)               │
+│         part file is missing       ││UDP       — (never run)               │
+│                                    ││Keywords  —                           │
+│                                    ││Node id   —                           │
+│                                    ││Received  —                           │
+│                                    ││Sent      —                           │
+└────────────────────────────────────┘└──────────────────────────────────────┘

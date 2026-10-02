@@ -1,0 +1,24 @@
+┌ Search ─────────────────────────────────────── / focus  ←→ method  o options ┐
+│❯ ubuntu                                                                      │
+│Method: eD2k server ▾  Kad ▾ (always on — every search also walks Kad)        │
+│Filters: none   o edit                                                        │
+└──────────────────────────────────────────────────────────────────────────────┘
+[ubuntu · 2]
+┌ Results · Completed · 2 ───────────── [ ] search  x close  s sort  S reverse ┐
+│  Name ▲                                          Size      Sources Type      │
+│▸ long-long-long-long-long-long-long-long-      1.0 GB     250 (12) CD-Images │
+│  long-long-long-long-long-long-long-long-                                    │
+│  long-long-long-long-long-long-long-long-                                    │
+│  long-long-long-long-long-long-long-long-                                    │
+│  long-long-long-long-long-END-OF-NAME.iso                                    │
+│  song_mid.mp3                                  4.0 MB       42 (7) Audio     │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘

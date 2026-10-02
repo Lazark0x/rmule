@@ -1,0 +1,32 @@
+# Forward-direction multipacket capture — genuine stock aMule 2.3.3 wire
+# bytes observed by rmule's *requester* side (the forward leg, unblocked by
+# the download runner's live wiring). rmule dialed the direct-peer aMule
+# (`AMULE_SCENARIO_MODE=direct-peer`, no eD2k server) and opened negotiation
+# with the live download runner's connect shape — one `OP_MULTIPACKET_EXT`
+# (`0xA4`) bundle `<hash16><size8=20971520>` + subs
+# `[Name(0x58), SetReqId(0x4F), Sources2{version:4, options:0}(0x83)]`
+# (`rmule-tools ed2k peer transfer capture --multipacket`). aMule answered
+# with this single composed `0x93`; no standalone `0x59`/`0x50` pair was
+# sent. Only counterparty bytes / observable reactions are evidence
+# (ADR-0045); nothing here is fabricated.
+
+[provenance]
+counterparty       = "aMule 2.3.3 (source pin 4e8f2b3c), stock interop image rmule/interop-amule:local"
+server             = "none — direct peer dial (amule-direct-sui bring-up shape)"
+scenario           = "rmule-tools ed2k peer transfer capture --multipacket (the forward leg)"
+run                = "w18-0x93"
+date               = "2026-07-28"
+file_hash          = "B4C026E3D70347E0424D1AFFA3FB8E6C"   # synthetic 20 MiB shared.bin (3 part hashes)
+amule_user_hash    = "1AE5AEA57C0EE80183F943792F2C6FD1"
+
+# aMule's answer frame, the only multipacket frame it sent.
+[frames.answer_multipacket_0x93]
+opcode  = "0x93 OP_MULTIPACKETANSWER (proto 0xC5)"
+walk    = "items = [Name(\"shared.bin\")(0x59), Status{part_count:0, empty bitmap}(0x50)]"
+note    = "aMule's Status sub for a COMPLETE source is the part_count=0 empty-bitmap shorthand — it does not enumerate parts it fully has. The bundle's Sources2 sub drew no 0x82/0x84 (aMule knew no other sources). The request rmule emitted (own bytes, not fixture-eligible): c51f000000a4 b4c026e3d70347e0424d1affa3fb8e6c 0000400100000000 58 4f 83040000."
+
+[corroboration.full_flow_b]
+scenario = "amule-serves-rmule-downloads shape, run manually same day: Lugdunum 17.15 eserver (IP-literal dial, --serve) + the same aMule image sharing the same 20 MiB file"
+high_id  = "LoginAccepted client_id=67113644 (0x040012AC = rmule's own 172.18.0.4 — High-ID, the High-ID port-check fix live)"
+exchange = "the LIVE download runner (not the capture dial) wrote the byte-identical 0xA4 at 23:50:42.719 and read this same 0x93 frame byte-for-byte at 23:50:42.726 (RMULE_LOG=trace driver frame-hex)"
+outcome  = "all 3 parts verified; output.bin byte-identical to the shared synthetic file"

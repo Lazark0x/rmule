@@ -1,0 +1,24 @@
+┌ 1 Networks │ 2 │ 3 │ 4 │ 5 │ 6 ─────────────────────────────────────── rmule ┐
+┌ Help ────────────────────────────────────────────────────────────────────────┐
+│ Tab / Shift-Tab cycle panes (accent border = focus)                          │
+│ m / Enter       row action menu                                              │
+│ /               Searches: focus query input                                  │
+│ ← / →           Searches: pick method (input focused)                        │
+│ o               Searches: type/size/sources/extension filters                │
+│ x / n           Searches: stop or close a search / server's next page        │
+│ s / S           sort the focused table by next column / reverse              │
+│ a               Shared: filter / Networks: add server                        │
+│ U               Networks: update server list from URL                        │
+│ 5 / 6           Statistics (display-only) / Settings                         │
+│ Enter  ← / →    Settings: edit a field / step a selector                     │
+│ x               Settings: stop sharing the selected directory                │
+│ c               Networks: connect to the selected server, or disconnect from │
+│                 the one you are on                                           │
+│ K               Networks: start or stop Kad                                  │
+│ p / C           pause/resume selected download / clear all completed         │
+│ L               Transfers: add a download from a pasted eD2k link            │
+│ ?               this help; j/k, PgUp/PgDn scroll it when it is long          │
+│ q / Esc         quit (top level) / dismiss (modal)                           │
+│ mouse           click tab/row selects, header sorts, wheel scrolls           │
+└──────────────────────────────────────────────────────────── 9–28 of 28 · j/k ┘
+└ — │ Users: — · Files: — │ ▼ 0.0 KB/s ▲ 0.0 KB/s │ ●eD2k off ●Kad off ────────┘

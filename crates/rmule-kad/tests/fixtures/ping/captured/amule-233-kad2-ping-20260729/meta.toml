@@ -1,0 +1,64 @@
+# Genuine stock aMule 2.3.3 **`0x60 KADEMLIA2_PING`** — the extern-port probe a
+# stock node fires at a freshly-helloed contact — captured on the fake-public
+# bench during interop flow H `http-bootstrap-cold-start` (run `1785277720`).
+# The ping is counterparty bytes off a tcpdump on the aMule's own network
+# namespace; rmule's `0x61` answer is kept beside it as stimulus, never
+# evidence (ADR-0045).
+#
+# ## What this fixture is evidence FOR
+#
+# kad-udp row `KADEMLIA2_PING 0x60`, whose in-scope bar (ADR-0043) is the
+# **responder half**: "answering ping is a named routing-responder duty". That
+# half was deterministic-only — rmule's handler was unit-proven but no run had
+# pinned a real aMule ping arriving. This is that datagram, and it arrived
+# **twice in one run at two independent rmule nodes** (the flow's `kad-join-node`
+# seed and the `bootstrap-fetch` runner), byte-identical both times.
+#
+# It also documents the flow-M extern-port finding **from the other side**: the
+# ping is `CKademliaUDPListener::Process2HelloRequest`'s
+# `FindExternKadPort(false) && contactVersion > 5` arm
+# (KademliaUDPListener.cpp:555) — aMule pinging a new contact to learn its own
+# external UDP port. In a two-node swarm that arm never terminates and becomes
+# the flood flow M recorded; here, at first contact, it is one clean datagram.
+
+[provenance]
+counterparty       = "aMule 2.3.3 (source pin 4e8f2b3c), stock interop image rmule/interop-amule:local, ed2k-server-kad mode"
+scenario           = "rmule-interop-harness http-bootstrap-cold-start --skip-build --kad-connect-deadline 300 --handoff-window 120 (flow H)"
+run                = "1785277720"
+date               = "2026-07-29"
+subnet             = "203.0.113.0/24 (RFC 5737 fake-public, Config A addressing)"
+amule_endpoint     = "203.0.113.3:4672 (Kad UDP)"
+rmule_seed         = "203.0.113.4:4679 (kad-join-node, KadID 5E*16)"
+rmule_runner       = "203.0.113.6:4680 (bootstrap-fetch runner, KadID 0F*16)"
+tap                = "tcpdump on the aMule container's netns, docker/cold-start-capture/cold-start.pcap"
+
+[preconditions]
+extern_port_arm = "KademliaUDPListener.cpp:555 — inside Process2HelloRequest, `else if (CKademlia::GetPrefs()->FindExternKadPort(false) && contactVersion > 5)` sends the null KADEMLIA2_PING. Both rmule nodes advertise contact version 8 (> 5) in their `0x11` hello, and aMule had not yet resolved its extern port, so the arm was open."
+not_a_keepalive = "this is the extern-port probe, not the periodic `CKademlia::Process` keepalive: it fired 1-2 ms after each node's HELLO_REQ, inside that packet's own handling."
+plain           = "AMULE_KAD_CRYPT is off in this scenario and the seeds are nodes.dat format v1, so aMule holds no UDP key for either node — the ping is plaintext, the exact wire form."
+
+# The capture target.
+[frames.kad2_ping_0x60]
+class     = "counterparty evidence"
+opcode    = "0x60 KADEMLIA2_PING (proto 0xE4), null payload"
+direction = "aMule (203.0.113.3:4672) -> rmule"
+wire      = "e4 60"
+observed  = "TWICE, byte-identical: 00:28:45.060924 toward the seed (203.0.113.4:4679) and 00:28:49.862374 toward the runner (203.0.113.6:4680), each 1.2 ms / 0.03 ms after that node's HELLO_REQ"
+layout    = "2 bytes = proto + opcode. `SendNullPacket(KADEMLIA2_PING, ...)` writes an empty CMemFile — the null body is the whole message."
+
+# rmule's answer — kept for the exchange to be readable, never evidence.
+[frames.kad2_pong_0x61]
+class     = "rmule stimulus — never evidence"
+opcode    = "0x61 KADEMLIA2_PONG (proto 0xE4)"
+direction = "rmule runner (203.0.113.6:4680) -> aMule (203.0.113.3:4672)"
+wire      = "e4 61 40 12"
+observed  = "00:28:49.862457, 83 us after the ping"
+body      = "0x1240 LE = 4672 — the OBSERVED SENDER UDP PORT, a fact readable only from the arriving datagram's source. The seed's independent answer carried the same 4672 from its own different local port (4679), so two rmule nodes read the same counterparty source correctly."
+why_not_evidence = "the frame is rmule's own. aMule's follow-up `0x53` at +9 us is NOT a reaction to it — `FirewalledCheck` is called from the same `Process2HelloRequest` body (KademliaUDPListener.cpp:567), sequential with the ping, not downstream of the pong. So the `0x61` row keeps its deterministic tier; promoting it needs a counterparty reaction this topology does not produce."
+
+[exchange]
+seq_1 = "00:28:49.861  runner -> aMule  0x11 KADEMLIA2_HELLO_REQ (contact version 8)"
+seq_2 = "00:28:49.862  aMule  -> runner 0x19 KADEMLIA2_HELLO_RES"
+seq_3 = "00:28:49.862  aMule  -> runner 0x60 KADEMLIA2_PING       (THIS FIXTURE)"
+seq_4 = "00:28:49.862  aMule  -> runner 0x53 KADEMLIA_FIREWALLED2_REQ (same handler, not pong-driven)"
+seq_5 = "00:28:49.862  runner -> aMule  0x61 KADEMLIA2_PONG (4672) + 0x58 KADEMLIA_FIREWALLED_RES"

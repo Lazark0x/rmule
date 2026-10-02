@@ -1,0 +1,19 @@
+name = "file_with_kadsources"
+provenance = "handwritten"
+source_note = """
+The link eMule writes for a firewalled node with a buddy (emule-qt 73fff71
+srchybrid/Emule.cpp:825: `…|/|kadsources,<user hash>:<kad id>|/`). No reference reads
+a source out of it (aMule skips it; eMule's scan finds no dialable entry), so it is
+accepted and nothing taken.
+"""
+accepted = true
+
+[input]
+link = "ed2k://|file|hello.txt|11|AA010FBC1D14C795D86EF98C95479D17|/|kadsources,31D6CFE0D16AE931B73C59D7E0C089C0:0F1E2D3C4B5A69788796A5B4C3D2E1F0|/"
+
+[expected]
+kind = "file"
+canonical = "ed2k://|file|hello.txt|11|AA010FBC1D14C795D86EF98C95479D17|/"
+name = "hello.txt"
+size = 11
+file_hash = "AA010FBC1D14C795D86EF98C95479D17"

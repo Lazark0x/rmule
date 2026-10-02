@@ -1,0 +1,79 @@
+# Genuine `OP_CALLBACK_FAIL 0x36` from the third-party eD2k index server
+# `andrey23127/ed2k-server`, pinned at `eacf7f1`, drawn by a High-ID rmule
+# session's `OP_CALLBACKREQUEST 0x1C` naming a LowID the server had never
+# allocated (ed2ksrv capture, 2026-08-02).
+#
+# ADR-0045's 2026-08-02 amendment governs: an independent third-party server
+# pinned at an upstream commit is an admissible counterparty, its fixtures take
+# the `ed2ksrv-*` prefix and name the pin, and the Lugdunum/aMule-observed form
+# stays the parity reference — divergences go in `[divergence]` below.
+#
+# ## What this fixture is evidence FOR
+#
+# server-tcp row `OP_CALLBACK_FAIL 0x36` (C, `full`), **deterministic** and in
+# the capture ceiling's bucket **(b)** — "probe knob: `0x1C` with a bench-known
+# bogus LowID id; Lugdunum's fail answer is the evidence". Nothing was ever
+# blocking it; it was bench work nobody had spent, because the topology it needs
+# is the callback topology, and that had no reason to exist while the relay row
+# was LIMIT-EXEMPT. It rides the relay sitting captured in
+# `ed2ksrv-callback-relay-20260802` at zero marginal cost.
+#
+# ## Why this id is reliably bogus
+#
+# LowIDs come off a monotonic counter starting at 1 (`state/mod.rs:658`) that
+# does **not** reuse: in this very server process an earlier session took
+# `client_id = 1`, disconnected, and the next LowID client still got `2`. An id
+# far above the registrant count is therefore bogus for the life of the process,
+# not merely "currently free". 99999 against a counter that had reached 2.
+#
+# ## The branch this proves, and the two it does not
+#
+# `callback.rs:34-53` has three refusal modes and only one of them answers:
+# "target not connected" emits `0x36`, while a **LowID requester** and a
+# **HighID target** are both dropped in silence. So this fixture pins the one
+# observable branch. It is also why the requester here had to be High-ID: a
+# LowID requester would have produced the same *visible* result (nothing) for a
+# completely different reason.
+
+[provenance]
+counterparty  = "andrey23127/ed2k-server @ eacf7f1eb7ea40f71ae869aef6a10801e7e262b8, unmodified upstream source, image rmule/interop-ed2ksrv:local (recipe tools/interop-harness/images/ed2ksrv/Dockerfile, bench config tools/interop-harness/images/ed2ksrv/config.toml)"
+date          = "2026-08-02"
+tool          = "rmule-tools ed2k server welcome live --callback-low-id, whose `report_callback_reply` walks the finished `s2c.bin` and lifts the last 0x36 frame out at its packet boundary — a stream walk, never a re-encode (ADR-0045 point 2)"
+emitter       = "rmule's `0x1C` is the session command `Ed2kCommand::RequestCallback` (`crates/rmule-ed2k/src/session.rs:238`) — the same command the production download path raises"
+
+[topology]
+network       = "docker bridge `rmule-ed2ksrv-c2`, `--subnet 203.0.113.0/24` — fake-public RFC 5737 documentation range per `tools/interop-harness/src/fake_public.rs`"
+server        = "203.0.113.20:4661 (container `ed2ksrv-c2`), `this_ip = 203.0.113.20`, `seed_servers = []`, `log.level = debug`"
+requester     = "host rmule-tools -> 127.0.0.1:14761, a socat relay at 203.0.113.30 whose second listener on 4662 accepts the server's High-ID back-connect probe. Server-observed peer 203.0.113.30, `client_id = 510722251` = High ID. See the relay fixture's meta.toml for the full standup."
+
+[commands]
+step_1 = "rmule-tools ed2k server welcome live 127.0.0.1:14761 --out <run>/callback-fail --max-seconds 15 --tcp-port 4662 --user-hash CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC --nickname rmule-cbfail-req --callback-low-id 99999"
+output = "`s2c callback_failed`, then `callback_reply: opcode=0x36 OP_CALLBACK_FAIL` / `callback_reply_bytes: e30100000036` / `callback_reply_file: callback_reply_0x36.bin (6 bytes)`"
+
+[observed]
+requester_client_id = 510722251
+bogus_low_id        = 99999
+allocated_high_water = 2
+
+# rmule's request — kept so the exchange is readable, never evidence.
+[frames.callback_request_0x1c]
+class     = "rmule stimulus — never evidence"
+opcode    = "0x1C OP_CALLBACKREQUEST (proto 0xE3), 4-byte payload"
+direction = "rmule(High-ID requester) -> ed2ksrv"
+wire      = "e3 05 00 00 00 1c 9f 86 01 00"
+layout    = "client_id u32 LE = 0x0001869F = 99999 — never allocated by this process"
+
+# The capture target.
+[frames.callback_fail_0x36]
+class     = "counterparty evidence"
+opcode    = "0x36 OP_CALLBACK_FAIL (proto 0xE3), 6-byte packet / EMPTY payload"
+direction = "ed2ksrv -> rmule(High-ID requester)"
+wire      = "e3 01 00 00 00 36"
+layout    = "length = 1 (the opcode alone); no body follows"
+observed  = "arrived on the requester's session after the welcome burst; rmule projected it as `Ed2kEvent::CallbackFailed`"
+
+[divergence]
+# Recorded, not asserted past the empty-body shape — the Lugdunum/aMule-observed
+# form stays the parity reference.
+empty_payload = "this server's `0x36` carries NO payload (`callback.rs:51`). rmule's decode is `tolerate_body` (`server-tcp.md:49`), so both the empty and a bodied form pass, and the aMule/Lugdunum-observed form remains the reference. The test asserts the empty shape because that is what these bytes are; it is not a claim about the reference form."
+partial_branch = "only the 'target not connected' branch answers. A LowID requester and a HighID target are both dropped in silence (`callback.rs:34-53`), so this fixture covers one of three refusal modes."

@@ -1,0 +1,139 @@
+name: Close unsolicited pull requests
+
+# Pull requests are taken by invitation: a change is welcome once an issue for it
+# carries the `accepted` label (see CONTRIBUTING.md). This workflow closes every
+# other pull request with a polite comment that points at the issue forms.
+#
+# SECURITY. `pull_request_target` runs in the context of the base repository,
+# with a token that can write, on a pull request an outsider controls. So this
+# workflow:
+#   - never checks out, builds or runs anything from the pull request;
+#   - reads the pull request only as data, through the event payload and the API,
+#     and never interpolates it into a shell command or into the script text;
+#   - holds only the two permissions it uses.
+# Keep it that way: no `actions/checkout`, and no expression that carries pull
+# request text inside `run:` or `script:`.
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions: {}
+
+jobs:
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: read
+      pull-requests: write
+    steps:
+      - name: Close the pull request unless it was invited
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const pr = context.payload.pull_request;
+
+            const TRUSTED_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+            const EXEMPT_LOGINS = new Set(['dependabot[bot]']);
+            const WRITE_PERMISSIONS = new Set(['admin', 'maintain', 'write']);
+            const ACCEPTED_LABEL = 'accepted';
+            const MAX_REFERENCES = 10;
+
+            // The repository's own people open pull requests freely.
+            if (TRUSTED_ASSOCIATIONS.has(pr.author_association) || EXEMPT_LOGINS.has(pr.user.login)) {
+              core.info(`Not gated: ${pr.user.login} is ${pr.author_association}.`);
+              return;
+            }
+
+            // A maintainer who reopens somebody else's pull request has decided
+            // to look at it; do not close it again behind their back.
+            if (context.payload.action === 'reopened') {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner,
+                repo,
+                username: context.payload.sender.login,
+              });
+              if (WRITE_PERMISSIONS.has(data.permission)) {
+                core.info(`Not gated: reopened by ${context.payload.sender.login} (${data.permission}).`);
+                return;
+              }
+            }
+
+            // The text the author typed. HTML comments are dropped because they
+            // hold the template's own instructions: an untouched template must
+            // never name an issue.
+            const body = (pr.body ?? '').replace(/<!--[\s\S]*?-->/g, '');
+
+            // Issues of this repository named in the body: a bare number with a
+            // leading hash sign, the full issue URL, or owner/repo followed by
+            // that same hash form. A number glued to a word or to another
+            // repository's path is not one.
+            const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const slug = `${escapeRegExp(owner)}/${escapeRegExp(repo)}`;
+            const patterns = [
+              /(?:^|[^\w/&])#(\d{1,9})\b/g,
+              new RegExp(`https://github\\.com/${slug}/issues/(\\d{1,9})\\b`, 'gi'),
+              new RegExp(`(?:^|[^\\w/])${slug}#(\\d{1,9})\\b`, 'gi'),
+            ];
+            const referenced = [];
+            for (const pattern of patterns) {
+              for (const match of body.matchAll(pattern)) {
+                const number = Number(match[1]);
+                if (!referenced.includes(number)) {
+                  referenced.push(number);
+                }
+              }
+            }
+
+            const carriesAcceptedLabel = (issue) =>
+              issue.labels.some((label) => (typeof label === 'string' ? label : label.name) === ACCEPTED_LABEL);
+
+            // Only the maintainers can apply the label, so reading it back is
+            // the whole invitation check. The issue must still be open, and
+            // must be an issue: a pull request cannot invite another.
+            let invitedBy = null;
+            for (const number of referenced.slice(0, MAX_REFERENCES)) {
+              let issue;
+              try {
+                ({ data: issue } = await github.rest.issues.get({ owner, repo, issue_number: number }));
+              } catch (error) {
+                if (error.status === 404) {
+                  continue;
+                }
+                throw error;
+              }
+              if (issue.pull_request || issue.state !== 'open') {
+                continue;
+              }
+              if (carriesAcceptedLabel(issue)) {
+                invitedBy = number;
+                break;
+              }
+            }
+
+            if (invitedBy !== null) {
+              core.info(`Invited: issue ${invitedBy} carries the ${ACCEPTED_LABEL} label.`);
+              return;
+            }
+
+            const home = `https://github.com/${owner}/${repo}`;
+            const comment = [
+              'Thanks for the pull request, and for caring about rmule.',
+              '',
+              `rmule takes pull requests by invitation: a change is welcome once an issue for it carries the \`${ACCEPTED_LABEL}\` label. This pull request does not link such an issue, so it has been closed automatically. Nothing is wrong with your work, and it has not been reviewed.`,
+              '',
+              'To go ahead:',
+              '',
+              `1. Look for an existing issue, or open one with one of the [issue forms](${home}/issues/new/choose). Say there that you would like to work on it.`,
+              `2. Wait for the maintainer to review it and add the \`${ACCEPTED_LABEL}\` label. That is the invitation.`,
+              '3. Open a new pull request and link the issue in its description.',
+              '',
+              `The reasons, and what to expect, are in [CONTRIBUTING.md](${home}/blob/HEAD/CONTRIBUTING.md). For questions that are not bugs or requests, [Discussions](${home}/discussions) is the place.`,
+            ].join('\n');
+
+            await github.rest.issues.createComment({ owner, repo, issue_number: pr.number, body: comment });
+            await github.rest.pulls.update({ owner, repo, pull_number: pr.number, state: 'closed' });
+            core.notice(`Closed pull request ${pr.number}: no linked issue carries the ${ACCEPTED_LABEL} label.`);

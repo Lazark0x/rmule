@@ -1,0 +1,21 @@
+┌ Search ─────────────────────── Tab field  ←→ type  Enter search  Esc close ┐
+│❯ big buck bunny                                                            │
+│Method: eD2k server ▾  Kad ▾ (always on — every search also walks Kad)      │
+│ Type         Videos                                                        │
+│ Min size     700 MB▮                                                       │
+│ Max size     any (e.g. 700 MB)                                             │
+│ Min sources  any (e.g. 10)                                                 │
+│ Extension    any (e.g. avi)                                                │
+└────────────────────────────────────────────────────────────────────────────┘
+┌ Results ───────────────────────────────────────────────────────────────────┐
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                          press / and type a query                          │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘

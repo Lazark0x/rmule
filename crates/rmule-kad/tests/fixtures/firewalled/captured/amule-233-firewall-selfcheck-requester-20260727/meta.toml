@@ -1,0 +1,51 @@
+# Kad firewall self-check — REQUESTER capture. Genuine stock aMule 2.3.3
+# datagrams captured while rmule (its own ADR-0058 firewall self-check armed)
+# checked its reachability against a NON-firewalled aMule Kad node. The mirror of
+# the responder fixture `amule-233-firewalled-kad-20260726` (aMule 0x53 -> rmule 0x58): here rmule emits the
+# 0x53 check and aMule answers 0x58. Interop flow `kad-firewalled-buddy
+# --requester-capture` on the fake-public /24 (Config A). Only counterparty
+# bytes / observable reactions are evidence (ADR-0045); nothing is fabricated —
+# rmule's own 0x53 is captured as the proof its requester leg is now driven live.
+
+[provenance]
+counterparty       = "aMule 2.3.3 (source pin 4e8f2b3c), stock interop image rmule/interop-amule:local"
+scenario           = "kad-firewalled-buddy --requester-capture (open aMule, rmule --firewall-self-check)"
+run                = "1785103574"
+date               = "2026-07-27"
+subnet             = "203.0.113.0/24 (RFC 5737 fake-public, Config A)"
+amule_ip           = "203.0.113.2:4674 (Kad UDP)"
+rmule_ip           = "203.0.113.3:4679 (Kad UDP), TCP port 4662"
+amule_kad_id       = "55555555555555555555555555555555"
+rmule_kad_id       = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+rmule_user_hash    = "77777777777777777777777777777777"
+verdict            = "PASS (checks_out=1, responses_in=1, self_check_armed=true)"
+
+# Full opcode sequence rmule's tap observed (dir:opcode):
+#   out:0x01 in:0x60 out:0x61 in:0x21 out:0x29 in:0x21 out:0x29 in:0x60 out:0x61
+#   out:0x01 in:0x09 out:0x11 in:0x19 out:0x53 in:0x60 in:0x53 out:0x58 out:0x58
+#   in:0x58 in:0x60(*n)
+# i.e. bootstrap (0x01/0x09), ping/pong (0x60/0x61), find-node (0x21/0x29), hello
+# (0x11/0x19), then the two-directional firewall self-check: rmule's out:0x53
+# (this fixture) answered by aMule's in:0x58 (this fixture), crossing aMule's own
+# out:0x53 -> rmule's out:0x58 (the responder direction, this fixture's mirror).
+
+[frames.firewall_check_0x53]
+opcode  = "0x53 KADEMLIA_FIREWALLED2_REQ (proto 0xE4, v7+ TCP firewall self-check)"
+layout  = "tcp_port=4662 (LE 36 12) + 16-byte user_hash 77..77 + connect_options 0x00"
+note    = "rmule's OWN firewall check, emitted live toward the v8 aMule contact on the hello exchange (KadNode::maybe_firewall_check, budget-capped). Byte-identical to the deterministic emit golden in node.rs / reachability.rs. This is the capture that moves the requester-emit row from undriven-live to driven+captured."
+
+[frames.firewalled_res_0x58]
+opcode  = "0x58 KADEMLIA_FIREWALLED_RES (proto 0xE4)"
+layout  = "body 03 71 00 cb = rmule's observed external IP 203.0.113.3 as a little-endian WriteUInt32 (reversed dotted octets)"
+note    = "aMule's genuine 0x58 answering rmule's 0x53: it echoes the requester's observed external IP. The body is the IP written LOW-OCTET-FIRST (aMule's WriteUInt32 / reversed dotted octets) — the SAME convention aMule uses for Kad contact IPs (rmule's messages.rs read_ipv4_low_octet_first / octets.reverse()). This capture proved rmule's 0x58 encode/decode used octets-in-order instead, a latent byte-order divergence fixed in the same change (reachability.rs)."
+
+[frames.hello_res_0x19]
+opcode  = "0x19 KADEMLIA2_HELLO_RES (proto 0xE4)"
+note    = "aMule's HELLO_RES answering rmule's 0x11 HELLO_REQ: KadID 55..55, TCP port 4662, Kad version 8. Version 8 (> 6) is what gates rmule's emission to the extended 0x53 rather than the legacy two-byte 0x50."
+
+# Disposition (ADR-0045): PASS.
+#   rmule's live Kad node, self-check armed, emitted its own 0x53 firewall check
+#   toward the open aMule (0x53 out) and the aMule answered 0x58 (0x58 in) — the
+#   requester mirror of the responder fixture, both directions now
+#   capture-proven. The 0x58 body additionally pinned the WriteUInt32 (reversed-
+#   octet) IP byte order, correcting rmule's 0x58 handler. Genuine wire bytes.

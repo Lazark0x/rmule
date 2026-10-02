@@ -1,0 +1,51 @@
+# rmule's buddy relaying a **stock aMule's own** `KADEMLIA_CALLBACK_REQ`
+# (`0x52`) as `OP_CALLBACK` (`0x99`) over the link a firewalled aMule held —
+# interop (flow M `kad-core-buddy --publish-source --amule-requester`).
+# Both frames are bytes off a tcpdump on the buddy's
+# own netns; nothing is fabricated (ADR-0045).
+#
+# ## What this fixture is evidence FOR
+#
+# `amule-233-callback-relay-20260923` captured rmule's relay of an rmule-authored `0x52`. Here the
+# downloader is a second stock aMule 2.3.3 handed only the ed2k link, so the
+# request the relay answers is aMule's (`BaseClient.cpp:2133-2141` at kno
+# `ab483654`; decoded in `rmule-kad/tests/kad/callback_req_capture.rs`, the
+# same 36 bytes promoted there as `amule-233-callback-req-20260923`):
+#
+# * `rmule_callback_0x99.bin` repeats the `0x52`'s `buddyID` and `fileID`
+#   byte for byte — aMule's own `ProcessCallbackRequest` is a
+#   `ReadUInt128`/`WriteUInt128` pass-through too — and names the requester
+#   `07 71 00 cb` (203.0.113.7, host-order, octets reversed: the host-order fix).
+# * The firewalled aMule consumed it: `Remote Client: OP_CALLBACK from
+#   203.0.113.3`, `Trying to connect to 203.0.113.7:4662`, its SYN 0.71 ms
+#   after the relay, and 4194304 bytes landed in the requester's incoming
+#   directory byte-equal to the synthetic file.
+
+[provenance]
+counterparty       = "aMule 2.3.3 x2 (firewalled publisher at .2, requester at .7), DEBUG build rmule/interop-amule-debug (sha256:43d47bc7f85f), AMULE_DEBUG_PEER_CATEGORIES=1; source readings at amule-kno ab483654"
+rmule_tools_image  = "rmule/interop-rmule-tools (sha256:ca7be77b361e), built from 95dd4eb6"
+buddy              = "rmule Core-pumped stimulus (ed2k serve start --kad), compiled from fbe65985"
+scenario           = "cargo test -p rmule-interop-harness --test harness -- --ignored kad_buddy_amule_requester (kad-core-buddy --publish-source --mesh-members 3 --amule-requester --file-size 4194304 --window 1800)"
+run                = "1790185890"
+date               = "2026-09-23"
+subnet             = "203.0.113.0/24 (RFC 5737 fake-public, Config A; docker --internal)"
+firewalled_amule   = "203.0.113.2 — Kad UDP 4674, eD2k TCP 4662 (iptables-DROPped), Kad ID 00112233445566778899aabbccddeeff"
+buddy_endpoint     = "203.0.113.3 — Kad UDP 4679, serve listener TCP 4663, Kad ID ffeeddccbbaa99887766554433221100"
+requester          = "203.0.113.7 — stock aMule, Kad UDP 4704, eD2k TCP 4662"
+file               = "shared.bin, 4194304 bytes, ED2K 009D91607B0D86D64FAFF631E02ED864"
+evidence_archive   = "bench run 1790185890"
+
+[frames.amule_callback_req_0x52]
+file   = "amule_callback_req_0x52.bin"
+author = "aMule 2.3.3 (the requester)"
+wire   = "Kad UDP 203.0.113.7:4704 -> 203.0.113.3:4679, 2026-09-23T18:01:05.193133Z, 36 bytes, plaintext 0xE4"
+
+[frames.rmule_callback_0x99]
+file   = "rmule_callback_0x99.bin"
+author = "rmule buddy ('kad buddy relay: OP_CALLBACK queued on the held buddy link injected=203.0.113.7:4662', 18:01:05.193805Z)"
+wire   = "peer TCP 203.0.113.3:4663 -> 203.0.113.2:50388 (the held link), 18:01:05.194340Z, 44 bytes"
+
+[consumed]
+amule_log  = "Remote Client Protocol: Remote Client: OP_CALLBACK from 203.0.113.3; ED2k Client: Trying to connect to 203.0.113.7:4662 (18:01:05)"
+syn        = "203.0.113.2:60738 -> 203.0.113.7:4662 at 18:01:05.195047Z"
+transfer   = "4194304 bytes, byte-equal to the synthetic file; 35 payload segments from 203.0.113.2"

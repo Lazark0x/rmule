@@ -1,0 +1,21 @@
+┌ Servers (4) · 10.0.0.1:4661 HighID ───────────────────────────── updating… ┐
+│   Name ▲   Address        Port Desc   Ping Users Files Age Prio Fail Static│
+│▸● eDonkey  10.0.0.1       4661 Main   42ms    1M   24M 12s Norm    0 no    │
+│   Prime                        hub,                                        │
+│                                no                                          │
+│                                fakes                                       │
+│Grants at login (14m ago): compression, new tags, unicode, related search,  │
+│large files, obfuscation · UDP (12s ago): get sources, get files, new tags, │
+│unicode, get sources 2, large files, UDP obfuscation, TCP obfuscation       │
+└────────────────────────────────────────────────────────────────────────────┘
+┌ Log (1) ───────────────────────────┐┌ Kad ──────────────────────── K start ┐
+│11:59:58 updating server list from  ││● Kad: off                            │
+│         http://upd.emule-security.o││Joined    — (node not started)        │
+│         rg/server.met              ││Contacts  —                           │
+│                                    ││Firewall  — (never run)               │
+│                                    ││UDP       — (never run)               │
+│                                    ││Keywords  —                           │
+│                                    ││Node id   —                           │
+│                                    ││Received  —                           │
+│                                    ││Sent      —                           │
+└────────────────────────────────────┘└──────────────────────────────────────┘

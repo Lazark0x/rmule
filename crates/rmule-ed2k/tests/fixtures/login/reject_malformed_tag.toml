@@ -1,0 +1,8 @@
+name = "reject_malformed_tag"
+provenance = "handwritten"
+source_note = "Synthetic malformed login request with an unsupported tag type"
+accepted = false
+reject_reason = "malformed tag"
+
+[expected]
+kind = "login_request"

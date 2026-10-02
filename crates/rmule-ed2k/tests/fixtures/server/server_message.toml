@@ -1,0 +1,9 @@
+name = "server_message"
+provenance = "handwritten"
+source_note = "Synthetic OP_SERVERMESSAGE (0x38) frame per docs/reference/notes/ed2k-welcome-packets.md OP_SERVERMESSAGE section. Payload = u16 LE text_length (0x0016) + 22 ASCII bytes 'Welcome to test server'. Cited: aMule src/ServerSocket.cpp:144-227, TCP.h:52, eMule spec section 6.2.2."
+accepted = true
+
+[expected]
+protocol = "edonkey"
+opcode = 56
+text = "Welcome to test server"

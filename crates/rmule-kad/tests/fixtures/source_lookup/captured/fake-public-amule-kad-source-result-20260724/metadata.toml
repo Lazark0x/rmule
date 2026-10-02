@@ -1,0 +1,140 @@
+name = "fake-public-amule-kad-source-result-20260724"
+status = "active"
+provenance = "captured"
+public_kad_used = false
+reason = """
+Genuine KADEMLIA2_PUBLISH_RES (0x4B) and KADEMLIA2_SEARCH_RES (0x3B) bytes from a
+real STOCK aMule 2.3.3 storer, captured on the Config-A fake-public swarm
+(RFC 5737 documentation range 203.0.113.0/24, Docker `internal` net — never
+public). This is the capture-sweep successor to the
+retired private-LAN-mesh capture `private-amule-kad-source-result-20260707`:
+that one relied on FilterLanIPs=0 / LAN mode (which falsifies aMule's firewall
+self-check and publish-tolerance zone — retired from evidence duty);
+this one is a STOCK aMule on its normal, non-LAN-mode admission paths, so every
+byte is genuine. rmule is the Kad Stimulus Node (publisher AND requester); the
+aMule is the storer. rmule published a synthetic file's source (0x44), stock
+aMule accepted and acked it (0x4B) after its own 0x53/0x58 firewall-UDP check,
+rmule searched (0x34), and aMule answered with the 0x3B whose payload is
+`result_0x3b_high_id.bin`. The 0x3B row is aMule-authored — aMule re-serialized
+the entry from PARSED tags (CEntry::WriteTagListInc, not a byte echo), which
+defeats the circularity trap. This capture proves the keyword
+publisher+requester+merge (recipes 1+3) against a stock counterparty.
+"""
+
+[stimulus_disclosure]
+# What rmule (the stimulus) sent; never evidence. The evidence is aMule's answer.
+kad_stimulus_node = "rmule (this workspace), the publisher AND requester"
+published_opcode = "0x44 KADEMLIA2_PUBLISH_SOURCE_REQ"
+searched_opcode = "0x34 KADEMLIA2_SEARCH_SOURCE_REQ"
+publisher_sent_no_source_ip = true # so any SOURCEIP in the answer is aMule-authored
+
+[node_roles]
+storer = "real STOCK aMule 2.3.3 (rmule/interop-amule:local, source pin 4e8f2b3c)"
+publisher_and_requester = "rmule Kad Stimulus Node"
+lan_mode = false # Config A: stock aMule, FilterLanIPs=1, non-LAN admission paths
+
+[capture]
+private_mesh = false
+public_kad_used = false
+topology = "Config A fake-public swarm, RFC 5737 203.0.113.0/24, Docker internal net"
+network_is_internal = true # isolated swarm never emits a Kad datagram to the internet
+captured_by = "rmule's own first-class datagram tap (rmule records what aMule sent it)"
+harness_scenario = "tools/interop-harness kad-fake-public-source (flow F)"
+run_id = "1784904708"
+run_date = "2026-07-24"
+amule_image = "rmule/interop-amule:local"
+amule_source_pin = "4e8f2b3c"
+harness_verdict = "PASS (frames_total=32, amule_acked_publish_0x4b=true, amule_answered_search_0x3b=true)"
+
+# The paired transcript. The request is rmule's stimulus (never evidence); the
+# result is aMule's genuine answer (the evidence). Both are committed so the
+# capture is reproducible end to end.
+[request]
+protocol = "0xE4"
+opcode = "0x34" # KADEMLIA2_SEARCH_SOURCE_REQ, sent by rmule (the requester)
+envelope_bytes_stripped = "0xE4 0x34"
+# request_0x34.bin payload: [target 16][start u16 = 0][size u64 LE = 65536].
+target_key = "B52D308E 5CA206B8 23FC8593 D26210F2"
+file_size = 65536
+authored_by = "rmule (stimulus, not evidence)"
+
+[result]
+protocol = "0xE4"
+opcode = "0x3B"
+# result_0x3b_high_id.bin is the payload AFTER the 0xE4 0x3B that KadEnvelope strips;
+# datagram_0x3b_with_envelope.bin holds the full on-wire datagram.
+envelope_bytes_stripped = "0xE4 0x3B"
+sender_kad_id = "B52D308E 5CA206B8 23FC8593 D26210F2" # the storer's own Kad ID
+target_key = "B52D308E 5CA206B8 23FC8593 D26210F2"    # = storer id (storer sits on the file key)
+result_count = 1
+payload_len_bytes = 84
+
+# The publish ack — aMule's genuine 0x4B accepting rmule's 0x44 publish. This is
+# the recipe-1 evidence (rmule publishes -> aMule stores).
+[publish_ack]
+protocol = "0xE4"
+opcode = "0x4B" # KADEMLIA2_PUBLISH_RES
+envelope_bytes_stripped = "0xE4 0x4B"
+file = "publish_res_0x4b.bin"
+payload_len_bytes = 15
+authored_by = "aMule (the storer accepting the publish)"
+
+# The mesh participants. rmule is BOTH publisher and requester (one Kad Stimulus
+# Node); the storer is the real STOCK aMule. The verifier requires the requester
+# and publisher roles and at least one recorded Kad ID.
+[[nodes]]
+role = "requester"
+kad_id = "5E5E5E5E 5E5E5E5E 5E5E5E5E 5E5E5E5E"
+impl = "rmule Kad Stimulus Node"
+ip = "203.0.113.3"
+
+[[nodes]]
+role = "publisher"
+kad_id = "5E5E5E5E 5E5E5E5E 5E5E5E5E 5E5E5E5E"
+user_hash = "0BADF00D DEADBEEF 0BADF00D DEADBEEF"
+impl = "rmule Kad Stimulus Node (same node as the requester)"
+ip = "203.0.113.3"
+
+[[nodes]]
+role = "storer"
+kad_id = "B52D308E 5CA206B8 23FC8593 D26210F2"
+impl = "real STOCK aMule 2.3.3 (rmule/interop-amule:local)"
+ip = "203.0.113.2"
+
+[[result.rows]]
+index = 0
+description = "the direct High ID source rmule published, as stock aMule re-serialized it"
+source_id = "0DF0AD0B EFBEADDE 0DF0AD0B EFBEADDE"
+source_id_meaning = "the publisher User Hash 0badf00ddeadbeef0badf00ddeadbeef word-swapped per 32-bit word (NOT the publisher Kad ID 0x5E..)"
+source_type = 1
+source_ip = "203.0.113.3"
+source_ip_decoded_from = "SOURCEIP(0xFE) u32 LE 3405803779 = 0xCB007103 -> 203.0.113.3"
+source_ip_authored_by = "aMule, from its observed publish sender (the publisher sent no SOURCEIP)"
+source_tcp_port = 4662  # SOURCEPORT 0xFD
+source_udp_port = 4679  # SOURCEUPORT 0xFC
+
+[[result.rows.tags]]
+# aMule's actual tag order in the row (CEntry::WriteTagListInc: size first, then
+# the stored m_taglist: SOURCEIP+SOURCETYPE, SOURCEPORT, SOURCEUPORT).
+order = ["FILESIZE(0x02)", "SOURCEIP(0xFE)", "SOURCETYPE(0xFF)", "SOURCEPORT(0xFD)", "SOURCEUPORT(0xFC)"]
+filesize_tag_present = true
+filesize_value = 65536 # the 64 KiB synthetic file, re-emitted from the entry's m_uSize
+capture_correction = """
+CEntry::WriteTagListInc (aMule Entry.cpp:153-155) re-emits FILESIZE from m_uSize
+as a VarInt when serializing a source result. Confirmed on the stock fake-public
+swarm exactly as the private-mesh 20260707 capture first found. rmule's decoder
+ignores the unrecognized tag name and still projects the source.
+"""
+
+[evidence]
+# What this capture proves for the stock fake-public (Config A) topology.
+source_ip_tag_byte_order = "CAPTURE-PROVEN (Config A): SOURCEIP value is the host-order u32 of a.b.c.d, little-endian; decoding reconstructs 203.0.113.3."
+source_id_meaning = "CAPTURE-PROVEN (Config A): the 16-byte per-row source ID equals the publisher User Hash word-swapped, not the Kad ID."
+ip_substitution = "CONFIRMED: the publisher sent no SOURCEIP; stock aMule authored one from its observed sender IP (203.0.113.3). aMule-authored bytes, not an echo."
+publish_ack_0x4b = "CAPTURE-PROVEN (Config A): stock aMule accepted and acked (0x4B) rmule's 0x44 publish on non-LAN paths (recipe 1)."
+public_kad_used = false
+
+[cross_reference]
+retired_private_capture = "private-amule-kad-source-result-20260707 stays committed (LAN-mode; retired from evidence duty); this fake-public capture is its stock-counterparty successor."
+node_message_fixtures = "bootstrap_res 0x09 and hello_res 0x19 for this swarm are already pinned in node/captured/private-amule-kad-node-messages-20260707; the same frame classes recur in this run's tap (run 1784904708)."
+full_tap = "the full 32-frame tap lives under .scratch/interop-runs/1784904708/kad/rmule/tap/ (never committed); only these minimal datagrams are checked in."

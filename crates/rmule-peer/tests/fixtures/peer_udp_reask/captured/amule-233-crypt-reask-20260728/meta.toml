@@ -1,0 +1,71 @@
+# Obfuscated peer-UDP source-reask — genuine stock aMule 2.3.3 wire bytes,
+# captured on rmule's own network namespace during interop flow L
+# (`peer-udp-reask`, the consume leg) with BOTH sides crypt-armed.
+# The plaintext run of this exact topology is the sibling fixture
+# `amule-233-peer-udp-reask-20260727`; this one differs only in the two crypt
+# knobs, so the pair isolates the obfuscation layer.
+#
+# rmule serves with one upload slot, a throttled slot-holder aMule occupies it,
+# and this reasker is QUEUED, drops its TCP, and on its ~21.4-min FILEREASKTIME
+# timer emits `OP_REASKFILEPING` (0x90) toward rmule's advertised client-UDP
+# port. Because rmule's hello now claims `SupportsCryptLayer`, aMule's
+# `ShouldReceiveCryptUDPPackets()` opened and the datagram went out
+# **obfuscated** — the first genuine counterparty peer-UDP crypt datagram.
+#
+# Only genuinely-on-the-wire bytes are here (ADR-0045): the `0x90` is aMule's
+# own datagram (counterparty); the `0x91` is rmule's egress reply on the same
+# tap, kept because it is the honest record of a gap the capture exposed (see
+# `[finding.rmule_egress_stayed_plaintext]`). Nothing is fabricated.
+
+[provenance]
+counterparty       = "aMule 2.3.3 (source pin 4e8f2b3), stock interop image rmule/interop-amule:local"
+server             = "Lugdunum eserver 17.15, stock interop image rmule/interop-eserver:local"
+scenario           = "rmule-interop-harness peer-udp-reask (flow L, consume leg) --peer-crypt supported --amule-env AMULE_CRYPT_SUPPORTED=1 --amule-env AMULE_CRYPT_REQUESTED=1"
+run                = "w4-crypt-reask (.scratch/interop-runs/1785247757)"
+date               = "2026-07-28"
+file_hash          = "C7C89690035A1EA32DC97C6CD53D68E5"   # synthetic 40 MiB shared.bin, 5 parts
+rmule_user_hash    = "42424242424242424242424242424242"   # rmule-tools default identity
+rmule_udp_endpoint = "172.18.0.3:57344"   # rmule's client-UDP port, advertised via CT_EMULE_UDPPORTS
+reasker_udp_endpoint = "172.18.0.5:4672"  # aMule's client-UDP port
+amule_client_id    = 83890860             # 0x050012AC = 172.18.0.5 — HighID, its own container IP
+
+# Every gate that had to be open for a counterparty to obfuscate at all, and the
+# wire evidence for each. Both crypt sides were verified before the window, so a
+# plaintext result would have been a real finding rather than a mis-staged run.
+[preconditions]
+rmule_hello_miscoptions2 = "0x000004A0 — bit 7 SupportsCryptLayer SET (plus bit 5 ext-multipacket, bit 10 SX2). Without bit 7 aMule's ShouldReceiveCryptUDPPackets() refuses to obfuscate no matter how correct the datagram code is; it is lit by `serve start --peer-crypt supported` (CoreConfig::peer_crypt) and by nothing else."
+rmule_hello_udpports     = "CT_EMULE_UDPPORTS 0x0000E000 — client-UDP port 57344, Kad port 0. aMule's UDPReaskForDownload gate needs a learned UDP port for the peer."
+amule_hello_miscoptions2 = "0x000005B8 — bit 7 SupportsCryptLayer + bit 8 RequestsCryptLayer set (also Kad version 8, large files, ext multipacket, SX2)"
+amule_prefs              = "IsClientCryptLayerSupported=1, IsCryptLayerRequested=1, IsClientCryptLayerRequired=0 (AMULE_CRYPT_SUPPORTED/_REQUESTED)"
+amule_public_ip          = "HighID client_id 83890860 == its own IP 172.18.0.5; `theApp->GetPublicIP() > 0` is the ed2k (non-Kad) leg of aMule's send gate"
+queue_state              = "rmule logged `peer_queued rank=1` then the reasker hung up (ADR-0057 disconnected standing); the holder later finished its ask and rmule promoted the reasker to a pending dial-back grant, so the reask arrived against a granted-but-undialed slot"
+
+# aMule's obfuscated reask heartbeat (counterparty bytes).
+[frames.reask_ping_0x90_obfuscated]
+opcode    = "0x90 OP_REASKFILEPING (proto 0xC5) under the ed2k client-UDP obfuscation layer"
+direction = "aMule (172.18.0.5:4672) -> rmule (172.18.0.3:57344)"
+observed  = "14:31:57.070934 UTC — 31 bytes on the wire"
+wire      = "e7 aa59 d741e5cb4088d20d1da1e2665cc9b366cdb9efddb88029523b7591ad"
+framing   = "[marker 0xE7][random_key 0x59AA LE] || RC4( sync 0x395F2EC1 LE || padlen 0x00 || payload )"
+key       = "RC4(MD5(rmule_user_hash 42*16 || sender_ip 172.18.0.5 || MAGICVALUE_UDP 0x5B || random_key LE)), no keystream discard"
+plaintext = "c590 c7c89690035a1ea32dc97c6cd53d68e5 0500 12 0100 — 23 bytes: OP_EMULEPROT/OP_REASKFILEPING, the shared file's hash, part status {count:5, bytes:[0x12]}, complete_sources=1 (the UDP v>3 form)"
+marker    = "0xE7 — `& 0x03 == 3`, the ed2k alias. aMule draws `GetRandomUint8() | 0x01` and leaves bit 1 random, so it emits `..01` OR `..11`; rmule's primitive forces `(x & 0xFC) | 1` and only ever emits `..01`. Both fold onto the same key family (aMule's own `bufIn[0] & 0x03` try-order treats 3 as 1), so this is a masked field, never an exact-byte comparison — an exact assertion against a live aMule flakes about half the time."
+padding   = "0 bytes — aMule disables padding for UDP (`EncryptSendClient`: \"padding disabled for UDP currently\"); rmule emits none either, so the two are byte-shaped alike."
+
+# rmule's egress answer on the same tap, 2.0 ms later — own bytes, kept because
+# they are the honest record of the gap this capture exposed.
+[frames.reask_ack_0x91_plaintext]
+opcode    = "0x91 OP_REASKACK (proto 0xC5) — PLAINTEXT"
+direction = "rmule (172.18.0.3:57344) -> aMule (172.18.0.5:4672)"
+observed  = "14:31:57.072956 UTC — c5 91 0500 1f 0100"
+walk      = "part_status={count:5, bytes:[0x1F]} (rmule holds all 5 parts); rank=1"
+good_news = "the ack carries the full v4 part status. The 2026-07-27 sibling capture recorded a rank-only ack that a v4 aMule cannot parse; that defect is fixed and this is the corrected form on a live wire, from the promoted dial-back-grant path that produced the earlier defect."
+
+# The one honest negative this run produced, with its root cause pinned on the
+# wire rather than guessed.
+[finding.rmule_egress_stayed_plaintext]
+what  = "aMule obfuscated; rmule answered in the clear, in the same 2 ms, on the same socket pair."
+why   = "rmule's send gate requires our own public IP (it is the key's `sender_ip`), and rmule learns it only from the OP_IDCHANGE public-IP extension (payload >= 20, ADR-0047). The interop Lugdunum's IDCHANGE is the 8-byte form — captured this run at 14:36:55 UTC: `e3 09000000 40 ac120003 f9170000` = client_id 172.18.0.3 (HighID) + tcp_flags 0x000017F9, nothing more — so `public_ip_known()` stayed false and the gate closed."
+counterparty_rule = "aMule reaches the same gate with a fallback chain rmule does not have: `CamuleApp::GetPublicIP(bool ignorelocal = false)` (amule.cpp @2.3.3) returns `m_dwPublicIP`, else Kad's own address, else **`m_localip`** — and `CMuleUDPSocket::SendControlData` calls it with the default argument. aMule's own `m_dwPublicIP` was 0 here for exactly the same reason (its `SetPublicIP` only fires on the >= 20-byte IDCHANGE), so it obfuscated off `m_localip`."
+proof = "the captured datagram decrypts only with `sender_ip = 172.18.0.5` — aMule's own local/container address — which is the localip fallback observed as bytes, not inferred."
+so_what = "a HighID client_id IS the public IP (that is what HighID means), and aMule additionally falls back to the local address. rmule treating the public IP as unknown after a HighID login is the gap; closing it is a rmule-side change (named for follow-up), not a bench-topology problem."

@@ -1,0 +1,9 @@
+name = "op_reject"
+provenance = "handwritten"
+source_note = "Synthetic OP_REJECT (0x05) frame per docs/reference/notes/ed2k-welcome-packets.md OP_REJECT section. Empty payload — header.size = 1, total frame = 6 bytes. Cited: aMule src/ServerSocket.cpp lines 518-522 (handler reads no payload), aMule TCP.h line 32, eMule spec section 6.2.16."
+accepted = true
+
+[expected]
+kind = "reject"
+protocol = "edonkey"
+opcode = 5

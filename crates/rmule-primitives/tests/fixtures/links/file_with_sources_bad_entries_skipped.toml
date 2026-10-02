@@ -1,0 +1,19 @@
+name = "file_with_sources_bad_entries_skipped"
+provenance = "handwritten"
+source_note = """
+A bad entry costs only itself (eMule ED2KLink.cpp:265-313 counts it in nInvalid and
+moves on; aMule would throw the whole link away, which rmule does not copy): no port,
+port 0, no host, crypt 0x80 with no user hash, the unspecified address. Hosts RFC 5737.
+"""
+accepted = true
+
+[input]
+link = "ed2k://|file|hello.txt|11|AA010FBC1D14C795D86EF98C95479D17|/|sources,192.0.2.1,192.0.2.2:0,:4662,192.0.2.3:4662:128,0.0.0.0:4662,192.0.2.4:4662|/"
+
+[expected]
+kind = "file"
+canonical = "ed2k://|file|hello.txt|11|AA010FBC1D14C795D86EF98C95479D17|/|sources,192.0.2.4:4662|/"
+name = "hello.txt"
+size = 11
+file_hash = "AA010FBC1D14C795D86EF98C95479D17"
+sources = ["192.0.2.4:4662"]

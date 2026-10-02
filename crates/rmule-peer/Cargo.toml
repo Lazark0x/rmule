@@ -1,0 +1,22 @@
+[package]
+name = "rmule-peer"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[dependencies]
+flate2.workspace = true
+rmule-primitives = { path = "../rmule-primitives" }
+thiserror.workspace = true
+
+# The session suites drive the state machine through the shared peer fixtures
+# (ADR-0040); a dev edge, so the production graph stays primitives-only.
+[dev-dependencies]
+rmule-testkit = { path = "../rmule-testkit" }
+
+[lints]
+workspace = true

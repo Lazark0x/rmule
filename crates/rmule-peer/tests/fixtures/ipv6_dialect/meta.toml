@@ -1,0 +1,33 @@
+# IPv6 dialect hello answers (ADR-0087 / ADR-0092, `ipv6-dialect
+# ipv6-hello-tags`): the OP_HELLOANSWER frames the dialect's two counterparty
+# bodies sent back to an IPv6 dial, plus one two-byte emule-qt reply.
+#
+# Written after the fact: the three files landed in
+# commit fba9abe6 with the run id only in a test comment. Everything below is
+# taken from that commit, from crates/rmule-peer/tests/peer/ipv6_dialect_capture.rs
+# and from the `ipv6-hello-tags` and `ipv6-udp-key` rows of tools/interop-harness/README.md, or read off
+# the bytes themselves. Nothing here was re-measured.
+
+[provenance]
+run        = "1789992543 (commit fba9abe6: \"Promoted with body prefixes from run 1789992543\"; ipv6_dialect_capture.rs:28)"
+date       = "2026-09-21"
+scenario   = "rmule-interop-harness ipv6-dialect ipv6-hello-tags"
+transform  = "\"promoted with body prefixes\" (commit fba9abe6). The two .bin hello answers are whole eD2k TCP frames as the bytes show: protocol byte, u32 LE length, opcode, body. No other transformation is recorded anywhere in the tree."
+
+[frames.emuleqt_op_helloanswer_ipv6]
+file         = "emuleqt_op_helloanswer_ipv6.bin (166 bytes)"
+counterparty = "ModderMule/emule-qt 73fff714"
+shape        = "e3 | a1000000 | 4c OP_HELLOANSWER | body"
+read_as      = "a whole tag block carrying CT_MOD_IP_V6; the reader must produce a peer with an IPv6 address (ipv6_dialect_capture.rs module doc)"
+
+[frames.amule_kno_op_helloanswer_ipv6_tagcount_overrun]
+file         = "amule_kno_op_helloanswer_ipv6_tagcount_overrun.bin (142 bytes)"
+counterparty = "kno's aMule ab483654"
+shape        = "e3 | 89000000 | 4c OP_HELLOANSWER | body"
+read_as      = "a tag block declaring one tag more than it carries (SendHelloTypePacket counts CT_MOD_IP_V6, CTag::WriteTagToFile's restrictive default refuses TAGTYPE_HASH16); the reader must refuse it (module doc)"
+
+[frames.emuleqt_op_filenotfound_0x92_ipv6_reply]
+file         = "emuleqt_op_filenotfound_0x92_ipv6_reply.bin (2 bytes)"
+counterparty = "ModderMule/emule-qt 73fff714"
+shape        = "c5 | 92 OP_FILENOTFOUND, no body"
+note         = "Landed in the same commit; the ipv6-udp-key flow records emule-qt's recovered reply to an obfuscated OP_REASKFILEPING over IPv6 as OP_FILENOTFOUND (0x92). No test reads this file."

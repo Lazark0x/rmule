@@ -1,0 +1,13 @@
+name = "reject_server_host_port_in_address"
+provenance = "handwritten"
+source_note = """
+ADR-0087 §6.4: an unbracketed address field containing a colon is refused
+unless the whole of it parses as an IPv6 literal. This is what rejects a
+`host:port` pasted into the address field, which would otherwise be stored as a
+hostname no resolver will ever answer for.
+"""
+accepted = false
+reject_reason = "unbracketed server host with a colon is not an IPv6 literal"
+
+[input]
+link = "ed2k://|server|server.example.com:4661|4661|/"

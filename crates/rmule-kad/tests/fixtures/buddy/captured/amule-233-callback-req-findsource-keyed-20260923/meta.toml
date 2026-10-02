@@ -1,0 +1,66 @@
+# Genuine stock aMule 2.3.3 **`KADEMLIA_CALLBACK_REQ` (`0x52`) from the
+# FINDSOURCE search, keyed under aMule's Kad crypt** — the envelope bytes as
+# they crossed the wire. Captured on the fake-public Kad bench (Config A)
+# during interop (flow M `kad-core-buddy --publish-source
+# --amule-requester --omit-buddy-endpoint --requester-kad-crypt`).
+# Bytes off a tcpdump on the bench; nothing is fabricated (ADR-0045).
+#
+# ## What this fixture is evidence FOR
+#
+# `amule-233-callback-req-findsource-20260923` captured aMule's FINDSOURCE
+# `0x52` plaintext only because the bench
+# runs aMule's crypt layer off. Here the requester alone runs it
+# (`AMULE_KAD_CRYPT=1`: IsClientCryptLayerSupported/IsCryptLayerRequested on).
+# The FINDSOURCE arm sends through `SendPacket(packetdata, KADEMLIA_CALLBACK_REQ,
+# ip, port, from->GetUDPKey(), &clientID)` for a contact of version >= 6
+# (`Search.cpp:1103-1110`, kno `ab483654`; the 2.3.3 build logs it as
+# `Search.cpp(813)`), and `CMuleUDPSocket::SendPacket` encrypts whenever a crypt
+# target ID is given and the layer is supported (`MuleUDPSocket.cpp:282-284`).
+# So the datagram is keyed on **the buddy's Kad ID** — the key source is
+# `from->GetClientID()`, the routing contact the walk answered from: the rmule
+# buddy, Kad ID `ffeeddccbbaa99887766554433221100`, version 8. No verify key
+# was needed: rmule's buddy runs without Kad crypt of its own, never handed the
+# requester a key, and the trailer's receiver verify key reads 0.
+#
+# Decrypted under that Kad ID it is **byte for byte** that fixture's plaintext
+# `callback_req_0x52.bin` (`cmp` silent): 36 bytes, the buddy ID, the file ID,
+# port 4662. rmule's buddy decoded it live and relayed it (below).
+#
+# Envelope layout (52 bytes = 16 header/trailer + 36 payload): marker `0x20`
+# (key family bits 00 = Kad ID), random key part `beaa`, then under RC4 the
+# 4-byte sync word, pad length 0, receiver verify key `0x00000000`, sender
+# verify key `0xb849ff6c`, payload.
+
+[provenance]
+counterparty       = "aMule 2.3.3, DEBUG build, image rmule/interop-amule-debug (sha256:43d47bc7f85f), AMULE_DEBUG_PEER_CATEGORIES=1; the requester alone with AMULE_KAD_CRYPT=1; source readings at amule-kno ab483654"
+rmule_tools_image  = "rmule/interop-rmule-tools (sha256:254408fbf286)"
+scenario           = "cargo test -p rmule-interop-harness --test harness -- --ignored kad_buddy_amule_requester_keyed_findsource (kad-core-buddy --publish-source --mesh-members 3 --amule-requester --omit-buddy-endpoint --requester-kad-crypt --file-size 4194304 --window 1800)"
+run                = "1790206695"
+date               = "2026-09-23"
+subnet             = "203.0.113.0/24 (RFC 5737 fake-public, Config A; docker --internal)"
+buddy              = "203.0.113.3 — rmule Core-pumped stimulus, Kad UDP 4679, Kad ID ffeeddccbbaa99887766554433221100, Kad crypt not armed (decrypt is always on)"
+firewalled_amule   = "203.0.113.2 — Kad UDP 4674, eD2k TCP 4662 (iptables-DROPped), crypt off; shares nothing, holds the buddy link"
+publisher          = "203.0.113.8 — rmule kad join-node, Kad ID 5c x16; --publish-buddy-id ffeeddccbbaa99887766554433221100"
+requester          = "203.0.113.7 — stock aMule (same image), Kad UDP 4704, eD2k TCP 4662, Kad ID 2e x16, AMULE_KAD_CRYPT=1"
+file               = "shared.bin, 4194304 bytes, ED2K 009D91607B0D86D64FAFF631E02ED864"
+evidence_archive   = "target/bench-runs/1790206695/ in the capturing checkout, archived on the bench host"
+
+[frames.callback_req_0x52_envelope]
+file      = "callback_req_0x52_envelope.bin"
+author    = "aMule 2.3.3 (the requester), FINDSOURCE search"
+wire      = "Kad UDP 203.0.113.7:4704 -> 203.0.113.3:4679, 2026-09-23T23:48:45.097921Z, 52 bytes, crypt marker 0x20"
+key       = "the receiver's Kad ID, ffeeddccbbaa99887766554433221100 (from->GetClientID(), Search.cpp:1104-1110 kno ab483654)"
+trailer   = "receiver verify key 0x00000000, sender verify key 0xb849ff6c"
+plaintext = "../amule-233-callback-req-findsource-20260923/callback_req_0x52.bin, cmp-identical"
+tap       = "the buddy's netns (kad/capture/requester-to-buddy.pcap); also on the requester's own tap"
+
+[chain]
+link_held     = "rmule buddy: 'buddy link attached' at 23:45:18.721195Z, before the publisher started"
+kad_open      = "requester: 'Connected to Kad (ok)' at 23:48:30 — its keyed 0x53 decoded by the buddy, which answered the TCP check ('OP_KAD_FWTCPCHECK_ACK delivered' 23:48:30.974605Z)"
+row_read      = "requester: 'Happily adding a source (203.0.113.8:4662) type 3' at 23:48:39"
+branch        = "requester: 'BaseClient.cpp(1578): Searching buddy for lowid connection' at 23:48:41; no 'KadCallbackReq (size=34)' anywhere"
+walk          = "requester: 'Search.cpp(1161): Kad2Req to 203.0.113.3:4679' 23:48:41; on the wire keyed, 51 bytes, 23:48:41.269616Z"
+callback_sent = "requester: 'Search.cpp(794): Search request type: FindSource', 'Search.cpp(813): KadCallbackReq to 203.0.113.3:4679' at 23:48:44; on the wire 23:48:45.097921Z"
+decoded       = "rmule buddy: 'kad buddy relay: OP_CALLBACK queued on the held buddy link injected=Ipv4Endpoint { ip: 203.0.113.7, port: 4662 }' at 23:48:45.098499Z; no UndecodableEnvelope in its log"
+relayed       = "0x99 (44 bytes) on the held link 23:48:45.098768Z, 0.85 ms after the 0x52"
+consumed      = "firewalled aMule: 'Remote Client: OP_CALLBACK from 203.0.113.3' at 23:48:45, then nothing (it shares no file)"

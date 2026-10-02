@@ -1,0 +1,42 @@
+[package]
+name = "rmule-interop-harness"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+# Developer tooling, not part of any release archive.
+[package.metadata.dist]
+dist = false
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+# The search-wire leg reads the server tap's packed eD2k frames.
+flate2.workspace = true
+# The inverted-role keyword scenario (flow J) pins rmule's storer
+# KadID to a keyword target using rmule's OWN derivation, so the pin is
+# byte-identical to what rmule serves and — if the fold matches aMule — to the
+# target aMule routes its publish/search toward.
+rmule-kad = { path = "../../crates/rmule-kad" }
+# The verify-key capture leg (flow K `--verify-keys`) decrypts the
+# counterparty's obfuscated `0x22` out of rmule's tap using rmule's own
+# datagram-crypt derivation — the same "judge with rmule's real primitive"
+# posture the KadID pin above takes.
+rmule-primitives = { path = "../../crates/rmule-primitives" }
+# `peer-hello-surface` names a counterparty's refused hello with rmule's own
+# hello reader, the same posture.
+rmule-peer = { path = "../../crates/rmule-peer" }
+serde.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

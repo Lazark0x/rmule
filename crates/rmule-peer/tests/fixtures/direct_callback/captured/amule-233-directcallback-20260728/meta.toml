@@ -1,0 +1,135 @@
+# Genuine stock aMule 2.3.3 answering a **direct UDP callback**: rmule sent an
+# `OP_DIRECTCALLBACKREQ` (`0x95`) to a TCP-firewalled / UDP-open aMule's Kad UDP
+# port, and aMule dialed rmule's advertised TCP port and spoke `OP_HELLO` on it.
+# Captured on the fake-public Kad bench (Config A) during interop flow N
+# `kad-direct-callback`. Both frames are off one
+# tcpdump on rmule's own network namespace. Nothing is fabricated (ADR-0045).
+#
+# ## What this fixture is evidence FOR
+#
+# ADR-0061 route 2 completing end to end against a real counterparty. rmule's
+# `0x95` is stimulus and proves nothing on its own; the **dial** is the evidence,
+# because aMule only opens it out of `CClientUDPSocket::ProcessPacket`'s
+# `OP_DIRECTCALLBACKREQ` arm (`ClientUDPSocket.cpp:277-314`), which builds a
+# `CUpDownClient` from the datagram's source IP and the body's TCP port and calls
+# `TryToConnect`. A SYN onto exactly the port our body named, 1.6 ms after the
+# datagram, is that arm running.
+#
+# It also settles a routing fact the chooser depends on: aMule handles `0x95` on
+# its **client UDP** socket, not in the Kad listener — but its Kad UDP port and
+# its client UDP port are ONE socket, demuxed on the leading protocol byte
+# (`CClientUDPSocket::OnPacketReceived`, `:92-104`). The counterparty's own hello
+# says so in the same run: `CT_EMULE_UDPPORTS` = `0x12421242`, both halves 4674.
+# That is why a `0xC5` peer-protocol frame addressed to the *Kad* port is
+# correct, and why `BaseClient.cpp:1520` sends aMule's own callback to
+# `GetKadPort()`.
+#
+# ## Tag ids, read the second time
+#
+# A first pass through these bytes mislabelled the tag block (0xFA/0xFB swapped),
+# which would have made `MiscOptions2` read `0x34133216` and its bit 12 look set.
+# `src/include/tags/ClientTags.h:45-50` settles it: 0xF9 UDPPORTS, 0xFA
+# MISCOPTIONS1, 0xFB VERSION, 0xFE MISCOPTIONS2 — which is exactly what
+# `rmule-peer`'s own constants already say. The values below are the corrected
+# read, and the corrected read is the one that changes the conclusion (see
+# `finding.advert_and_gate_are_asymmetric`). The sibling flow-M fixture
+# (`rmule-kad/tests/fixtures/buddy/captured/amule-233-findbuddy-req-20260728`)
+# carries the same mislabelling in its `tags` prose.
+
+[provenance]
+counterparty       = "aMule 2.3.3 (source pin 4e8f2b3c), stock interop image rmule/interop-amule:local"
+scenario           = "rmule-interop-harness kad-direct-callback --skip-build --window 210 --timeout 180 (flow N)"
+run                = "1785273054"
+date               = "2026-07-28"
+subnet             = "203.0.113.0/24 (RFC 5737 fake-public, Config A; docker --internal)"
+amule_endpoint     = "203.0.113.2 — Kad+client UDP 4674 (one socket), eD2k TCP 4662 (iptables-DROPped)"
+rmule_endpoint     = "203.0.113.3 — Kad UDP 4679, client UDP 54056 (ephemeral), serve listener TCP 4663"
+amule_kad_id       = "33333333333333333333333333333333"
+rmule_kad_id       = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+
+[rmule_run_state]
+runner         = "rmule-tools ed2k serve start --kad --kad-id-hex CC*16 --kad-udp-port 4679 --kad-bootstrap 203.0.113.2:4674 --kad-assume-open --direct-callback 203.0.113.2:4674 --direct-callback-every-secs 30"
+serve_listener = "0.0.0.0:4663 — the port the `0x95` body advertises, because `CoreCommand::ReachPeer`'s route-2 enactment reads `ServeActivity::listen_port` rather than a configured constant"
+user_hash      = "42424242424242424242424242424242 (rmule-tools default identity)"
+assume_open    = "the chooser's route 1 drops a LowID->LowID pair, so a stimulus whose own ADR-0058 TCP verdict has not converged never reaches route 2. `--kad-assume-open` declares rmule's OWN posture — stimulus configuration, never a counterparty byte."
+direct_callback_declared = "passing `--direct-callback` DECLARES the counterparty firewalled (LowID) and direct-callback capable, the two facts a source row or hello would otherwise carry. rmule's own stimulus configuration; the counterparty's answer is what is being tested."
+
+# Each precondition with the wire fact or source line that establishes it.
+[preconditions]
+amule_tcp_firewalled = "`AMULE_KAD_BLOCK_TCP=1` + `--cap-add NET_ADMIN`: the entrypoint logged `rmule-amule-kad-tcp-firewall-installed port=4662`. Corroborated on the wire — rmule's own ADR-0058 dial-back SYNed 203.0.113.2:4662 seven times from 23:12:27.598 to 23:12:34.796 with no answer."
+amule_firewalled_from_start = "unlike the buddy leg, NOTHING has to converge. `CPrefs::GetFirewalled` (Prefs.cpp:161) is `m_firewalled < 2`, and `m_firewalled` only rises on connect-back acks (`IncFirewalled`), so a node whose TCP port is DROPped reads firewalled from Kad start. The first callback was honoured 30 s into the run."
+amule_kad_running    = "the `0x95` gate is `CKademlia::IsRunning()` (ClientUDPSocket.cpp:286), NOT `IsConnected()` — `m_running` is set by `Start()`, which `Connect Kad` calls. aMule's readiness snapshot still printed `Kad: Not connected` (a lone seed cannot reach Connected on its own), and it honoured the callback regardless."
+amule_udp_open       = "`AMULE_KAD_BLOCK_UDP` unset — the image's own comment names this shape `TCP-firewalled/UDP-open (the direct-callback branch)`. A dropped UDP port would swallow the `0x95` itself."
+rmule_advertises_tcp = "the `0x95` body carries `0x1237` = 4663, and the counterparty's SYN landed on 4663. The two agreeing is the point."
+
+# The counterparty's ANSWER: the frame a `0x95` alone can never produce.
+[frames.callback_dial_hello_0x01]
+evidence_class = "counterparty"
+opcode    = "OP_HELLO (0x01) under OP_EDONKEYPROT (0xE3), on the peer-TCP connection aMule opened in answer to the callback"
+direction = "aMule (203.0.113.2:54232) -> rmule (203.0.113.3:4663)"
+observed  = "23:11:56.105790 — 812 ms after the SYN aMule sent 1.6 ms after our 0x95"
+wire      = "e3 6c 00 00 00 01 10 d2 c1 2a 63 c0 0e 07 f3 9b 65 25 c2 cd 81 6f e3 01 00 00 00 36 12 07 00 00 00 02 01 00 01 14 00 68 74 74 70 3a 2f 2f 77 77 77 2e 61 4d 75 6c 65 2e 6f 72 67 03 01 00 11 3c 00 00 00 03 01 00 f9 42 12 42 12 03 01 00 fb 80 0d 04 03 03 01 00 fa 16 32 13 34 03 01 00 fe 38 04 00 00 03 01 00 ef 01 00 00 00 00 00 00 00 00 00"
+layout    = "113 bytes = proto + size(0x6C LE = 108) + opcode + hashsize(0x10) + user hash(16) + client id(4) + TCP port(2 LE) + tagcount(7 LE32) + 7 tags + connected-server ip(4) + port(2), the trailing six zero because this node has no server"
+user_hash = "d2c12a63c00e07f39b6525c2cd816fe3 — aMule's runtime-generated hash (it ignores a preset amule.conf one)"
+tcp_port  = "0x1236 LE = 4662 — the port whose inbound is DROPped, which is exactly why it needs to be called back rather than dialed"
+client_id = "0x00000001"
+tags      = "seven, tag ids read against `src/include/tags/ClientTags.h`: 0x01 CT_NAME string \"http://www.aMule.org\"; 0x11 CT_VERSION 60; 0xF9 CT_EMULE_UDPPORTS 0x12421242; 0xFA CT_EMULE_MISCOPTIONS1 0x34133216; 0xFB CT_EMULE_VERSION 0x03040D80; 0xFE CT_EMULE_MISCOPTIONS2 0x00000438; 0xEF CT_EMULECOMPAT_OPTIONS 0x00000001"
+udp_ports = "0x12421242 — Kad UDP (high 16) 4674 and client UDP (low 16) 4674, the SAME port. The counterparty saying, in its own tag, that the socket a `0x95` must be addressed to is the one it runs Kad on."
+emule_version = "0x03040D80 — the aMule 2.3.3 word this bench pins, so the counterparty is the pinned stock build and not something else"
+misc_options2 = "0x00000438 — kad version nibble 8, bit 5 `SupportExtMultiPacket`, bit 10 `SupportsSourceEx2`, crypt bits 7/8/9 dark (no AMULE_CRYPT_* env this run). **Bit 12 `SupportsDirectUDPCallback` is CLEAR** — see the asymmetry finding below."
+
+# rmule's own request, kept for context only — stimulus, never evidence.
+[frames.directcallback_req_0x95]
+evidence_class = "rmule-stimulus"
+opcode    = "OP_DIRECTCALLBACKREQ (0x95) under OP_EMULEPROT (0xC5), plaintext"
+direction = "rmule (203.0.113.3:54056, the bound client-UDP socket) -> aMule (203.0.113.2:4674, its Kad UDP port)"
+observed  = "23:11:55.293398 — the first of seven; this exact byte string repeated verbatim each time"
+wire      = "c5 95 37 12 42 42 42 42 42 42 42 42 42 42 42 42 42 42 42 42 00"
+layout    = "21 bytes = proto + opcode + our TCP port(2 LE) + our user hash(16) + connect options(1). aMule reads exactly this order at ClientUDPSocket.cpp:289-291."
+tcp_port  = "0x1237 LE = 4663 — the serve listener, not a configured constant"
+connect_options = "0x00 — no `--peer-crypt` policy this run, so every crypt bit is dark. aMule passes `GetMyConnectOptions(true, false)` for its own callback, so bit 0x08 (direct callback) is clear on both sides' outbound `0x95`: the byte tells the target how to dial US back, and accepting a callback is not the same as issuing one."
+source_port = "54056 — the client-UDP socket binds ephemeral. aMule keys `AllowCallbackRequest` and the dial-back on the source IP alone, so the port does not matter to it."
+
+# The exchange as the tap recorded it.
+[exchange]
+seq_1  = "23:11:25.299  rmule routes the first cadence tick `Dropped { LowToLow }` — see the finding below"
+seq_2  = "23:11:25.299  rmule's Kad pump publishes the assume-open posture (0.8 ms later)"
+seq_3  = "23:11:55.293  rmule -> aMule:4674  0x95 OP_DIRECTCALLBACKREQ   (THIS FIXTURE, stimulus)"
+seq_4  = "23:11:55.295  aMule -> rmule:4663  TCP SYN, +1.628 ms — TryToConnect out of the 0x95 arm"
+seq_5  = "23:11:56.106  aMule -> rmule       OP_HELLO on that link      (THIS FIXTURE, evidence)"
+seq_6  = "23:11:56.106  rmule -> aMule       OP_HELLOANSWER, 89 bytes — accepted, not refused"
+seq_7  = "23:12:25 .. 23:14:25  five more 0x95 emissions, all IGNORED (see the rate-limit finding)"
+seq_8  = "23:12:37.229  aMule -> rmule       FIN after 41 s idle — it wanted nothing from us"
+seq_9  = "23:14:55.304  rmule -> aMule:4674  0x95 again, exactly 180.011 s after the first"
+seq_10 = "23:14:55.308  aMule -> rmule:4663  TCP SYN, +4.181 ms — honoured again"
+seq_11 = "23:14:55.868  aMule -> rmule       OP_HELLO, byte-identical to seq_5"
+
+# aMule's receive-side rate limit, measured rather than read.
+[finding.three_minute_window_proven_on_the_wire]
+what = "seven identical `0x95` datagrams went out at a 30 s cadence; exactly TWO were honoured, and the gap between them was 180.011 s."
+why  = "`CClientList::AllowCallbackRequest` (ClientList.cpp:1115) refuses a source IP seen inside `MIN2MS(3)`, and `AddTrackCallbackRequests` (:1101) stamps the honoured one. Three minutes, per IP, counted from the honoured request — the observed 180.011 s is that window, measured."
+note = "rmule's own consume-side limit (`firewalled.rs::DIRECT_CALLBACK_INTERVAL`) is documented against `SEC2MS(45)`, which is the SENDER-side `m_dwDirectCallbackTimeout` (BaseClient.cpp:1508), not this receive-side gate. The two are different clocks; the asymmetry is recorded here rather than silently changed."
+
+# rmule's own first tick, and why it was right to refuse.
+[finding.first_tick_raced_the_posture_and_refused]
+what = "the first cadence tick routed `Dropped { LowToLow }` at 23:11:25.299010, 0.8 ms before the Kad pump published the assume-open posture at 23:11:25.299833. No datagram went out for it."
+why  = "`KadRuntimeFactory::tcp_reachable` defaults to false and the pump publishes from a spawned task, so for those 0.8 ms rmule genuinely did not know its own ADR-0058 verdict. The chooser then read us as firewalled and dropped a LowID->LowID pair, which is aMule's `DS_LOWTOLOWIP`."
+verdict = "correct, not a bug: Honest Capability Advertisement applied to our own position. rmule refused to claim an openness no runtime had published. The next tick, with the verdict live, emitted."
+
+# The sharpest fact this capture carries.
+[finding.advert_and_gate_are_asymmetric]
+what = "the counterparty HONOURED a direct callback while its own hello advertised `SupportsDirectUDPCallback` (MiscOptions2 bit 12) CLEAR."
+why  = "stock aMule guards the two sides differently. The **advert** (BaseClient.cpp:1131) needs `IsRunning() && IsFirewalled() && !CUDPFirewallTester::IsFirewalledUDP(true) && CUDPFirewallTester::IsVerified()`, and `IsVerified()` is `m_isFWVerifiedUDP || IsRunningInLANMode()` (UDPFirewallTester.h:54) — a flag only a real helper-run UDP test sets, which a two-node swarm cannot produce. The **receive gate** (ClientUDPSocket.cpp:286) asks only `IsRunning() && IsFirewalled()`. So a peer may accept a callback it never claimed it would accept."
+consequence = "rmule gates route 2 on the advert (`CallbackTarget::supports_direct_udp_callback`), so against THIS counterparty rmule would not have chosen the route on the hello alone — which is aMule parity, since aMule would not have chosen it either (BaseClient.cpp:1500 reads the same `SupportsDirectUDPCallback()`). No rmule change is implied; the asymmetry is recorded so a future reader does not mistake the clear bit for a failed handshake."
+stimulus_note = "this run reached route 2 because `--direct-callback` DECLARED the capability, which is what a stimulus knob is for. Everything the counterparty did in response is genuine."
+
+# The reverse leg, recorded as an absence rather than deferred.
+[finding.reverse_leg_not_driven]
+what = "0 counterparty-authored `0x95`. The row is in the verdict file at zero."
+why  = "aMule emits one only from `CUpDownClient::TryToConnect` (BaseClient.cpp:1500) when the client it wants is `HasLowID() && SupportsDirectUDPCallback() && GetEffectiveUDPPort() != 0 && GetConnectIP() != 0`. rmule would have to present as a LowID peer whose hello or Kad source row lights MiscOptions2 bit 12, and aMule would have to want something from it. This topology gives aMule no reason to connect to anyone: it has no downloads, and the one link it opened it opened because we invited it."
+not_blocked = "no rmule gap is implicated. rmule's consume path exists and is gated (`firewalled.rs::consume_direct_callback`); what is missing is a stimulus that makes the counterparty want a callback, which is a topology, not a code, question."
+
+# The absence of the flood ban that closed flow M's link.
+[finding.no_flood_ban_in_this_window]
+what = "rmule accepted aMule's dial and answered its hello; flow M's run saw the same accept REFUSED as a flood-banned IP."
+why  = "the ban in flow M was earned over ~6 minutes of the two-node extern-port ping probe (`CPrefs::SetExternKadPort` never reaching EXTERNAL_PORT_ASKIPS = 3, so `CKademlia::Process` pings every 15 s forever — 4/min against a 2/min KADEMLIA2_PING budget). This leg needs no convergence at all, so its 210 s window ends before the count crosses the threshold. The short window is a deliberate consequence of the gate being open from the start, not luck."

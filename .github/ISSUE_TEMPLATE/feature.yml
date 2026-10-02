@@ -1,0 +1,75 @@
+name: Feature request
+description: Suggest something rmule should do, or do differently
+title: "feature: "
+labels: ["feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. A request starts with the problem, not the solution.
+
+        If the idea is still half-formed, the **Ideas** category in Discussions is a better first stop.
+
+        If you would like to build it yourself, say so below. Pull requests are welcome once the issue has been reviewed and carries the `accepted` label. Starting before that risks work that cannot be merged.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that rmule does not let you do, or makes hard?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like to happen
+      description: Describe the behaviour you have in mind. A sketch of the command, key or screen is plenty.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Other ways to solve it, including how you work around it today.
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where it would show up
+      options:
+        - rmule (terminal client)
+        - rmule-cli (headless client)
+        - Both front-ends
+        - The eD2k or Kad protocol behaviour
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: wire
+    attributes:
+      label: Does it change what rmule sends or accepts on the network?
+      description: Changes to wire behaviour need evidence from other clients, so they take more care.
+      options:
+        - "No"
+        - "Yes"
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: builder
+    attributes:
+      label: Would you want to build it?
+      options:
+        - "No, I am only asking"
+        - "Yes, I would like to implement it"
+        - "Maybe, I would like to talk it through first"
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched the existing issues and did not find this request.
+          required: true

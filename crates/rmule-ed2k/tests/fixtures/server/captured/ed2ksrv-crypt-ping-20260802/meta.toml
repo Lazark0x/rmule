@@ -1,0 +1,106 @@
+# Genuine **challenge-keyed crypt-pong** — an obfuscated `OP_GLOBSERVSTATRES
+# 0x97` — from the third-party eD2k index server `andrey23127/ed2k-server`,
+# pinned at `eacf7f1`, answering rmule's raw `[challenge u32 LE][padding]`
+# crypt-ping on the server's TCP+12 listener (ed2ksrv capture, 2026-08-02).
+#
+# ADR-0045's 2026-08-02 amendment governs: an independent third-party server
+# pinned at an upstream commit is an admissible counterparty, its fixtures take
+# the `ed2ksrv-*` prefix and name the pin, and the Lugdunum/aMule-observed form
+# stays the parity reference — divergences go in `[divergence]` below.
+#
+# ## What this fixture is evidence FOR
+#
+# Not a matrix row of its own: it ratifies an unratified **variant** inside
+# `server-udp.md`'s "UDP protocol obfuscation (server crypt layer)" row, which
+# is already capture-verified against eNode. The variant is
+# `rmule_core::server_udp::encode_crypt_ping` — aMule's `CryptPingReplyPending`
+# pre-key-learned form — still carrying a `[pending]` marker in its own doc
+# comment. The eNode verdict named the gap exactly: *"no independent server in
+# the bench implements a challenge-keyed server-UDP path"*. This server does
+# (`udp.rs:296-341` + `reply_to_obf_ping` `:865-941`), and these are its bytes.
+# **`[pending]` retires to ratified.** Headline-neutral for the row count — the
+# row it sits in was already capture-verified — and the single most valuable
+# *interop* result in the slice regardless.
+#
+# ## How this differs from `enode-server-udp-crypt-20260727`
+#
+# That fixture's crypt-pong is keyed on a **serverKey learned from a prior plain
+# advert**. This one is keyed on the **challenge rmule itself minted**, with no
+# prior knowledge of the server at all — which is the entire distinction the
+# `[pending]` marker was about. Both are RC4 with the same direction byte
+# discipline; only the base key's provenance differs.
+#
+# ## Determinism: goldens are taken post-decrypt on purpose
+#
+# The ciphertext's leading pad byte, its 2-byte salt and the inner padding are
+# wall-clock-nanos derived, so the *raw* datagram is not reproducible across
+# runs — a fresh capture would differ byte for byte while decrypting to the same
+# inner frame. `crypt_ping_0x97_raw.bin` is therefore kept as the proof that the
+# reply really was encrypted and really decrypts, not as a reproducible golden;
+# the stable content lives in `crypt_ping_0x97_plain.bin`. Same discipline as
+# `captured_enode_crypt.rs`.
+#
+# The challenge itself is deliberately **not** written down as a bare number
+# anywhere. The decode test reads it back out of the decrypted reply's own echo
+# field and feeds that value in as the RC4 key, so the two files cross-check
+# each other: corrupt either one and the decryption stops reproducing the other.
+
+[provenance]
+counterparty = "andrey23127/ed2k-server @ eacf7f1eb7ea40f71ae869aef6a10801e7e262b8, unmodified upstream source, image rmule/interop-ed2ksrv:local (recipe tools/interop-harness/images/ed2ksrv/Dockerfile, bench config tools/interop-harness/images/ed2ksrv/config.toml)"
+date         = "2026-08-02"
+tool         = "rmule-tools ed2k server probe 203.0.113.20:4661 --out <run> --timeout 3, run from INSIDE the bench network via tools/interop-harness/images/rmule-tools/Dockerfile"
+emitter      = "the ping is minted by the probe's `mint_crypt_ping`, byte-for-byte what rmule-core's `os_crypt_ping_nonce` emits in production — the point being that the reply ratifies *that* emitter, so the two must not drift"
+stimulus_only = "rmule's ping is stimulus and is not kept as a fixture: its padding is random per run, and only the server's reply is evidence (ADR-0045 point 2)"
+
+[topology]
+network   = "docker bridge `rmule-ed2ksrv-c2`, `--subnet 203.0.113.0/24` — fake-public RFC 5737 documentation range per `tools/interop-harness/src/fake_public.rs`"
+server    = "203.0.113.20:4661 (container `ed2ksrv-c2`), `this_ip = 203.0.113.20` — load-bearing, it seeds the obfuscation seckey as well as the advertised identity; `seed_servers = []`; `log.level = debug`"
+prober    = "container at 203.0.113.41 running the rmule-tools image. The crypt-ping goes to TCP+12 = 4673; the control plain ping to TCP+4 = 4665."
+why_in_net = "MANDATORY, not a convenience. On macOS + colima published ports reach the host through an SSH forward that carries TCP only, so a host-side `sendto` at a published UDP port succeeds and the container's listener never wakes — verified directly (a `socat -u UDP4-RECV` in this network received 0 bytes from a host `nc -u`). Every server-UDP capture in this wave was driven from inside the network for that reason."
+
+[commands]
+setup_network = "docker network create --subnet 203.0.113.0/24 rmule-ed2ksrv-c2"
+setup_server  = "docker run -d --name ed2ksrv-c2 --network rmule-ed2ksrv-c2 --ip 203.0.113.20 -v <repo>/tools/interop-harness/images/ed2ksrv/config.toml:/etc/ed2k-server/config.toml:ro rmule/interop-ed2ksrv:local"
+build_driver  = "docker build -f tools/interop-harness/images/rmule-tools/Dockerfile -t rmule/interop-rmule-tools:local ."
+capture       = "docker run --rm --network rmule-ed2ksrv-c2 --ip 203.0.113.41 -v c2out:/out --entrypoint sh rmule/interop-rmule-tools:local -c 'for i in $(seq 1 20); do /usr/bin/rmule-tools ed2k server probe 203.0.113.20:4661 --out /out/crypt/t$i --timeout 3; done'"
+promoted_from = "trial t1 of 20"
+
+[answer_rate]
+# The number the slice was asked to produce, measured rather than assumed.
+answered = 20
+sent     = 20
+ratio    = "20/20 = 100%"
+context  = """
+The rate against this server family before the padding clamp was 4/17. The
+clamp put the minted padding into the 10..=18 window both server families accept and stopped
+the challenge from opening with the 0xE3 plain-frame marker; the server's obf-ping
+arm accepts 4..=18 bytes (`udp.rs:320`) while rmule's `os_crypt_ping_nonce` had
+been drawing 4..=19 total, and a leading 0xE3 was taken for a plain frame
+(`udp.rs:179`). Both silent-drop paths are closed, and 20 consecutive trials
+answered. The rate is a property of the emitter's shaping, not of the server.
+"""
+
+[frames.crypt_ping_0x97_raw]
+class     = "counterparty evidence — the obfuscated datagram exactly as received"
+size      = 65
+direction = "ed2ksrv -> rmule, UDP from the TCP+12 listener"
+layout    = "pad0(1) ‖ salt(2) ‖ RC4_challenge(magic 0x13EF24D5 ‖ padlen(1) ‖ pad(11) ‖ the 46-byte inner 0x97)"
+note      = "first byte is 0x8F, not 0xE3 — a direct plaintext decode fails, which is what proves the bytes are genuinely encrypted. NOT byte-reproducible across runs (salt/padding are wall-clock derived)."
+
+[frames.crypt_ping_0x97_plain]
+class     = "counterparty evidence — the decrypted inner frame, the stable golden"
+size      = 46
+wire      = "e3 97 01 57 81 f1 01 00 00 00 01 00 00 00 e8 03 00 00 e8 03 00 00 a0 0f 00 00 fb 17 00 00 01 00 00 00 43 12 35 12 6b 85 0d 5e cb 00 71 14"
+layout    = "0xE3 0x97, challenge = 0xF1815701 (the echo of what rmule minted; low byte 0x01, never 0xE3 after the padding clamp), users=1, files=1, max_users=1000, soft_files=1000, hard_files=4000, udp_flags=0x17FB, low_id_users=1, obf_udp_port=4675, obf_tcp_port=4661, server_key=0x5E0D856B, server_ip=203.0.113.20"
+
+[frames.plain_ping_0x97]
+class     = "counterparty evidence — the control leg"
+size      = 46
+direction = "ed2ksrv -> rmule, UDP from the TCP+4 listener, unencrypted"
+purpose   = "captured in the same probe run against the plain status port. It shows the two listeners advertise identical capabilities, so the crypt leg cannot be a differently-configured surface answering; and its challenge differs from the crypt leg's, which is what makes the two files provably separate exchanges rather than a copy."
+
+[divergence]
+# Recorded, not asserted on — the aMule/eserver-observed form stays the reference.
+reply_length = "the reply's inner `0x97` is **46 bytes**, where `ed2ksrv-row-reopen.md` §1 predicted the 44-byte extended form. The extra 4 bytes are this server's own trailer layout; rmule's progressive decoder reads it without complaint. Recorded so a future reader does not treat 44 as the universal figure."
+udp_flags    = "`0x17FB` is hardcoded (`udp.rs:667`) with no config path. By rmule's own variant chooser that combination (EXT_GETFILES | LARGEFILES) selects `0x90` for global search — which this server mis-parses. See the glob-search fixture's meta for how that was handled."
+seckey       = "the server's obfuscation seckey is a `DefaultHasher` derivation from this_ip + tcp_port (`33f98a161e87ea552abc065018bdeea4` here) whose output is not stable across Rust releases, so the advertised `server_key` can move on a toolchain bump. The challenge-keyed reply captured here does NOT depend on the seckey, so this fixture is unaffected — noted only so the advertised key is not mistaken for a constant."

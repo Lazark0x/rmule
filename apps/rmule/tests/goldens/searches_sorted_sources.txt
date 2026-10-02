@@ -1,0 +1,21 @@
+┌ Search ───────────────────────────────────── / focus  ←→ method  o options ┐
+│❯ ubuntu                                                                    │
+│Method: eD2k server ▾  Kad ▾ (always on — every search also walks Kad)      │
+│Filters: none   o edit                                                      │
+└────────────────────────────────────────────────────────────────────────────┘
+[ubuntu · 3]
+┌ Results · Completed · 3 ─────────── [ ] search  x close  s sort  S reverse ┐
+│  Name                                          Size    Sources ▼ Type      │
+│▸ distro_hot.iso                              3.0 GB   1234 (900) CD-Images │
+│  song_mid.mp3                                4.0 MB       42 (7) Audio     │
+│  clip_low.avi                              700.0 MB            5 Videos    │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘

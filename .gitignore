@@ -1,0 +1,40 @@
+/target/
+
+# Generated at release time by `cargo about` (see about.toml); every release
+# archive carries it, the tree never does.
+/THIRD-PARTY-LICENSES.md
+/.idea/
+/.vscode/
+/.scratch/
+.DS_Store
+*.swp
+
+# Local protocol reference cache (see ADR-0013).
+# Sidecars (.meta.toml), LICENSE.md, and notes are committed; raw bytes are not.
+docs/reference/**/*.pdf
+docs/reference/**/*.html
+docs/reference/**/*.htm
+docs/reference/**/*.c
+docs/reference/**/*.h
+docs/reference/**/*.cpp
+docs/reference/**/*.hpp
+docs/reference/**/*.txt
+docs/reference/**/*.wikitext
+
+# Git-source checkouts (sidecars with kind = "git"); the whole clone is the cached
+# bytes, so it is ignored by path rather than by extension. See ADR-0082.
+docs/reference/emule-source/eMule/
+docs/reference/emule-qt/emule-qt/
+docs/reference/amule-kno/amule/
+docs/reference/emuleai/eMuleAI/
+
+tools/interop-harness/.scratch
+
+# The differ is its own workspace (root Cargo.toml `exclude`), so it builds into
+# its own target dir that the anchored `/target/` above does not cover.
+tools/ed2ksrv-differ/target/
+
+# Full Kad packet captures are retained Interop Run Artifacts, never committed.
+# Only manually promoted minimal datagrams (*.bin) plus metadata are checked in.
+*.pcap
+*.pcapng

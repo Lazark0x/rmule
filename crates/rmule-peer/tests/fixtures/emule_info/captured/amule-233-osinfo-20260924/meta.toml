@@ -1,0 +1,27 @@
+# Stock aMule 2.3.3's OP_EMULEINFO in its OS-info form (protocol byte 0xFF),
+# sent aMule-to-aMule on the Kad bench. Cut byte for byte out of the requester's
+# pcap; nothing re-encoded.
+#
+# Evidence FOR: the only OP_EMULEINFO any archive holds. Its first byte is
+# aMule's CURRENT_VERSION_SHORT (0x47, include/common/ClientVersion.h:39), its
+# second the OS-info protocol 0xFF, its one tag ET_OS_INFO (0x94) written in the
+# old length-prefixed-name format: 02 | 0100 94 | 0500 "Linux". aMule sends this
+# form only to a peer whose hello carries CT_EMULECOMPAT_OPTIONS with the OS-info
+# bit (ClientTCPSocket.cpp:357-361) — another aMule; rmule never sends that tag,
+# so no aMule sends rmule this frame. Read, it must leave identification alone.
+# No archive holds the legacy form (protocol 0x01): no bench client is older
+# than eMule 0.42.
+
+[provenance]
+archive      = "bench run 1790208592"
+offset       = "2853 (the frame's first byte in the pcap file), 23 bytes"
+run          = "1790208592 (2026-09-24 00:09 UTC)"
+scenario     = "rmule-interop-harness kad amule-requester"
+counterparty = "stock aMule 2.3.3, Ubuntu's amule-daemon rebuilt with AMULE_DEBUG (image rmule/interop-amule-debug), 203.0.113.7:4662 -> 203.0.113.2, the flow's other aMule"
+pcap_sha256  = "d183fc0ad3a7bb36ce64e61f41000ef169d6fd824a2e63de4bf41a59fe55b8d7"
+sha256       = "7cd2066e713ae6d1b8d2464f8d82282eb852791ee622068f3ea7c3b9110b6d4e"
+transform    = "dd skip=2853 count=23: the whole eD2k TCP frame out of one TCP segment's payload"
+
+[frames.amule_op_emuleinfo_osinfo]
+file  = "amule_op_emuleinfo_osinfo.bin (23 bytes)"
+shape = "c5 | 12000000 | 01 OP_EMULEINFO | 47 ff 01000000 | 02 0100 94 0500 4c696e7578"

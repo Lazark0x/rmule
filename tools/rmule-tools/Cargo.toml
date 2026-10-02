@@ -1,0 +1,44 @@
+[package]
+name = "rmule-tools"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+# Developer tooling, not part of any release archive.
+[package.metadata.dist]
+dist = false
+
+[dependencies]
+getrandom.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+rmule-ed2k = { path = "../../crates/rmule-ed2k" }
+rmule-bootstrap = { path = "../../crates/rmule-bootstrap" }
+rmule-core = { path = "../../crates/rmule-core" }
+rmule-peer = { path = "../../crates/rmule-peer" }
+rmule-kad = { path = "../../crates/rmule-kad" }
+rmule-net = { path = "../../crates/rmule-net" }
+rmule-primitives = { path = "../../crates/rmule-primitives" }
+# The throwaway directory a driver shares its files from.
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs", "signal"] }
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+rmule-testkit = { path = "../../crates/rmule-testkit" }
+ed2k.workspace = true
+predicates.workspace = true
+tempfile.workspace = true
+# The sentinel stimulus renders its journal as TOML by hand (rmule-tools carries
+# no serialiser); the round-trip assertion reads it back the way the harness does.
+toml.workspace = true
+
+[lints]
+workspace = true

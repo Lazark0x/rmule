@@ -1,0 +1,13 @@
+name = "server_dns"
+provenance = "handwritten"
+source_note = "DNS host is lowercased canonically"
+accepted = true
+
+[input]
+link = "ed2k://|server|Example.Invalid|04661|/"
+
+[expected]
+kind = "server"
+canonical = "ed2k://|server|example.invalid|4661|/"
+host = "example.invalid"
+port = 4661

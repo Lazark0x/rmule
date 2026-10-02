@@ -1,0 +1,12 @@
+┌ 1 Networks │ 2 │ 3 │ 4 │ 5 │ 6 ─── rmule ┐
+│                                          │
+│                                          │
+│                                          │
+│                                          │
+│                                          │
+│                                          │
+│                                          │
+│                                          │
+│✱ no session config — resume needs        │
+│credentials (rmule-cli identity)          │
+└ ●eD2k HighID ●Kad off ───────────────────┘

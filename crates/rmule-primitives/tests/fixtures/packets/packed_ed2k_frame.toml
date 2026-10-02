@@ -1,0 +1,11 @@
+name = "packed-ed2k-frame"
+provenance = "handwritten"
+source_note = "docs/reference/notes/packet-framing.md#compressed-packet-frames"
+accepted = true
+
+[expected]
+protocol = "packed-ed2k"
+protocol_byte = 212
+length = 3
+opcode = 56
+payload_hex = "0102"

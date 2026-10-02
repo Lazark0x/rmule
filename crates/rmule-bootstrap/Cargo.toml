@@ -1,0 +1,40 @@
+[package]
+name = "rmule-bootstrap"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The server.met decoder (ADR-0066): the pipeline parses fetched bytes
+# before any install through this.
+rmule-ed2k = { path = "../rmule-ed2k" }
+# The nodes.dat normal + v3 bootstrap-edition decoders and the
+# `BootstrapDialList` the nodes.dat pipeline dispatches into.
+rmule-kad = { path = "../rmule-kad" }
+rmule-primitives = { path = "../rmule-primitives" }
+thiserror.workspace = true
+tracing.workspace = true
+# The reqwest (rustls, no native-tls) fetch implementation is the crate's
+# only I/O corner, confined behind an optional feature so a consumer that
+# only needs the `Fetcher` seam + pipeline (e.g. rmule-core's Join Sequence,
+# `rmule_core::join`) never pulls an HTTP client or TLS stack into its tree.
+reqwest = { workspace = true, optional = true }
+
+[features]
+default = ["reqwest-fetcher"]
+# The production `ReqwestFetcher`. Off ⇒ the crate is the pure seam +
+# pipeline + first-run decision, nothing links reqwest/rustls.
+reqwest-fetcher = ["dep:reqwest"]
+
+[dev-dependencies]
+# The ADR-0040 Correctness-Tier `FakeEd2kServer` drives the cold-start E2E
+# (server.met fetch → parse/merge → connect → login), in-process.
+rmule-testkit = { path = "../rmule-testkit" }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "net", "io-util", "time"] }
+
+[lints]
+workspace = true

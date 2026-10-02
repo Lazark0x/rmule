@@ -1,0 +1,63 @@
+# Bench config for the third-party `ed2k-server` image — the audit's
+# "bench-fit" table, key for key.
+#
+# Bind-mounted over the image's baked upstream config:
+#   -v .../images/ed2ksrv/config.toml:/etc/ed2k-server/config.toml:ro
+
+[server]
+name = "rmule interop bench"
+desc = "ed2k-server @ eacf7f1 on the fake-public /24"
+# `validate()` refuses to start with `public = true` and an empty
+# `hash_blocklists`; false + empty list starts clean.
+public = false
+version_major = 17
+version_minor = 15
+# Drives OP_IDCHANGE[12..16], the SERVERIDENT IP, the 0x97 trailer AND the
+# obfuscation seckey. Must equal the container's static fake-public address.
+this_ip = "203.0.113.20"
+# Empty = hermetic. A non-empty list is the process's only source of egress.
+seed_servers = []
+
+[network]
+tcp_port = 4661
+listen_ip = "0.0.0.0"
+listen_backlog = 256
+max_frame_size = 1_000_000
+# Doubles as the High-ID back-connect probe timeout and the post-accept login
+# deadline. 4000 > the 2000 default: cheap insurance on a bridged docker net.
+login_timeout_ms = 4000
+support_crypt = true
+
+[limits]
+max_clients = 1000
+soft_limit_files = 1000
+hard_limit_files = 4000
+max_clients_per_ip = 10
+max_string_size = 250
+ping_delay_seconds = 300
+
+[content_filter]
+# L3 inert. L1/L4 stay inert by omitting jargon_terms_file / extra_terms_file
+# (both #[serde(default)] Option). L2 (age-pattern) is HARDCODED and always on —
+# bench fixtures must use boring ASCII filenames.
+hash_blocklists = []
+publisher_attempt_disconnect_threshold = 3
+publisher_blacklist_seconds = 86400
+
+[welcome]
+messages = ["rmule interop bench server"]
+
+[log]
+# debug is mandatory: at info the callback relay, both get-sources paths, the UDP
+# search and the High-ID probe verdict are all invisible.
+level = "debug"
+connection_trace = true
+worker_threads = 1
+
+[storage]
+ipfilter_path = ""
+country_db_path = ""
+
+[admin]
+enabled = true
+port = 8080

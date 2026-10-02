@@ -1,0 +1,73 @@
+# Genuine stock aMule 2.3.3 **`KADEMLIA_CALLBACK_REQ` (`0x52`) emit** — the
+# datagram a downloading aMule sends to a Low-ID Kad source's buddy, found
+# through a type-3 row. Captured on the fake-public Kad bench (Config A) during
+# interop (flow M `kad-core-buddy --publish-source --amule-requester`).
+# Every frame is bytes off a tcpdump on the bench;
+# nothing is fabricated (ADR-0045).
+#
+# ## What this fixture is evidence FOR
+#
+# Until this run every `0x52` rmule had pinned was rmule-authored (the downloader's and
+# walker's): aMule had consumed and relayed them, but
+# no aMule had ever *written* one. Here a second stock aMule (the requester),
+# handed only the ed2k link, read Kad-open, searched the file, took the
+# firewalled aMule's type-3 row from the rmule storer placed at the file key,
+# built the Low-ID client (`DownloadQueue.cpp:1760-1776`, kno `ab483654`) and,
+# with the source in `DS_WAITCALLBACK`, sent this datagram to the buddy the row
+# named (`BaseClient.cpp:2133-2141`: logged `KadCallbackReq (size=34) to
+# 203.0.113.3:4679`). The writer, field by field:
+#
+# * `buddyID` — `bio.WriteUInt128(CUInt128(GetBuddyID()))`. `GetBuddyID()` is
+#   `pbuddyID->ToByteArray()`, `pbuddyID` the row's `TAG_BUDDYHASH` hex loaded
+#   `SetValueBE` (`Search.cpp:1194-1202`), so the field is
+#   `kad_wire_id(TAG_BUDDYHASH bytes)`: `CCDDEEFF…` in the row, `FFEEDDCC…` on
+#   the wire — the buddy's own Kad ID in wire order. Never un-swapped by anyone.
+# * `fileID` — `bio.WriteUInt128(CUInt128(m_reqfile->GetFileHash().GetHash()))`:
+#   `kad_wire_id(file MD4)`, `009D9160…` → `60919D00…`.
+# * `tcpPort` — `bio.WriteUInt16(thePrefs::GetPort())`, little-endian: 4662.
+#
+# Byte for byte this is the `0x52` rmule's own `LowIdRoad::BuddyCallback`
+# wrote for the same file in run `1790161721` (`cmp` of the two lifted bodies is silent):
+# the two writers agree.
+#
+# `storer_search_res_0x3b.bin` is the context — the `0x3B` the rmule storer
+# answered the requester's `0x34` with (rmule-authored, aMule-consumed: aMule
+# logged `Trying to add a source type 3` / `Happily adding a source
+# (203.0.113.2:4662) type 3`). Its `TAG_BUDDYHASH` and `TAG_SERVERIP` /
+# `TAG_SERVERPORT` are what the `0x52` answers to. The row itself was published
+# by the firewalled aMule; the storer re-serialized it.
+
+[provenance]
+counterparty       = "aMule 2.3.3, DEBUG build, image rmule/interop-amule-debug (sha256:43d47bc7f85f), AMULE_DEBUG_PEER_CATEGORIES=1; source readings at amule-kno ab483654"
+rmule_tools_image  = "rmule/interop-rmule-tools (sha256:ca7be77b361e), built from 95dd4eb6"
+scenario           = "cargo test -p rmule-interop-harness --test harness -- --ignored kad_buddy_amule_requester (kad-core-buddy --publish-source --mesh-members 3 --amule-requester --file-size 4194304 --window 1800)"
+run                = "1790185890"
+first_attempt      = "1790184591 — the requester read Kad-open 6 min 42 s after connecting, past a 360 s gate; the row arrived while it was still firewalled (DS_LOWTOLOWIP), no 0x52"
+date               = "2026-09-23"
+subnet             = "203.0.113.0/24 (RFC 5737 fake-public, Config A; docker --internal)"
+firewalled_amule   = "203.0.113.2 — Kad UDP 4674, eD2k TCP 4662 (iptables-DROPped), Kad ID 00112233445566778899aabbccddeeff; publishes the type-3 row, holds the buddy link"
+buddy_endpoint     = "203.0.113.3 — rmule Core-pumped stimulus, Kad UDP 4679, serve listener TCP 4663, Kad ID ffeeddccbbaa99887766554433221100 (~aMuleKadID)"
+storer_endpoint    = "203.0.113.6 — rmule kad join-node, Kad UDP 4690, Kad ID 60919d00d6860d7b31f6af4f64d82ee0 (storer_kad_id_for_file_hash, distance 0)"
+requester          = "203.0.113.7 — stock aMule (same image), Kad UDP 4704, eD2k TCP 4662, Kad ID 2e x16, user hash pinned 5e x16 (stamped 5e5e5e5e5e0e5e5e5e5e5e5e5e5e6f5e)"
+file               = "shared.bin, 4194304 bytes, ED2K 009D91607B0D86D64FAFF631E02ED864"
+evidence_archive   = "bench run 1790185890"
+
+[frames.callback_req_0x52]
+file   = "callback_req_0x52.bin"
+author = "aMule 2.3.3 (the requester)"
+wire   = "Kad UDP 203.0.113.7:4704 -> 203.0.113.3:4679, 2026-09-23T18:01:05.193133Z, 36 bytes, plaintext 0xE4"
+tap    = "the buddy's netns (kad/capture/core-buddy.pcap); also 1x on the requester's own tap"
+
+[frames.storer_search_res_0x3b]
+file   = "storer_search_res_0x3b.bin"
+author = "rmule kad join-node (the placed storer)"
+wire   = "Kad UDP 203.0.113.6:4690 -> 203.0.113.7:4704, 135 bytes, one type-3 row"
+tap    = "the requester's netns (kad/amule-requester/amule-requester.pcap)"
+
+[chain]
+kad_open         = "requester: 'Connected to Kad (ok)' at 18:00:54, on the second OP_KAD_FWTCPCHECK_ACK — 203.0.113.2 at 17:58:56, 203.0.113.3 at 18:00:54"
+row_read         = "requester: 'Happily adding a source (203.0.113.2:4662) type 3' at 18:01:02"
+callback_sent    = "requester: 'KadCallbackReq (size=34) to 203.0.113.3:4679' at 18:01:04 (log second); on the wire 18:01:05.193133Z"
+relayed          = "rmule buddy: 'OP_CALLBACK queued on the held buddy link injected=203.0.113.7:4662' at 18:01:05.193805Z; 0x99 on the wire 18:01:05.194340Z"
+dialed_back      = "firewalled aMule: 'Remote Client: OP_CALLBACK from 203.0.113.3', 'Trying to connect to 203.0.113.7:4662'; SYN 18:01:05.195047Z"
+transfer         = "4194304 bytes landed in the requester's incoming dir, byte-equal to the synthetic file (35 payload segments from 203.0.113.2)"

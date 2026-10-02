@@ -1,0 +1,39 @@
+# Genuine stock aMule 2.3.3 KADEMLIA2_PING flood toward rmule's live Kad node,
+# and rmule's ADR-0064 flood-table + offender-report reaction. Interop flow K
+# `kad-firewalled-buddy` on the fake-public /24 (Config A), TCP+UDP-firewalled
+# variant: the firewalled aMule cannot conclude its firewall self-check, so it
+# re-pings rmule aggressively — a natural, un-provoked flood. Only counterparty
+# bytes / observable reactions are evidence (ADR-0045); nothing is fabricated.
+
+[provenance]
+counterparty       = "aMule 2.3.3 (source pin 4e8f2b3c), stock interop image rmule/interop-amule:local"
+scenario           = "kad-firewalled-buddy (flow K), TCP+UDP-firewalled variant, --window 360"
+run                = "1785063909"
+date               = "2026-07-26"
+subnet             = "203.0.113.0/24 (RFC 5737 fake-public, Config A)"
+amule_kad_id       = "55555555555555555555555555555555"
+rmule_kad_id       = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+[frames.ping_0x60]
+opcode  = "0x60 KADEMLIA2_PING (proto 0xE4)"
+layout  = "bare 2-byte datagram [0xE4 0x60], no body — aMule's liveness/extern-port probe"
+bytes   = "e4 60"
+
+# The capture-driven observation (the evidence, not the 2 bytes alone). Across
+# the 360 s window the firewalled aMule sent 25 KADEMLIA2_PING to rmule; rmule's
+# per-(IP,opcode) leaky flood table (ADR-0064) admits the aMule-exact PING
+# rate of 2/min and DROPPED 23, and once the bucket crossed the 5x report
+# threshold (count > 10) rmule raised the flood-offender report 8 times
+# (`FloodOffenderDetected { ip: 203.0.113.2, opcode: 96 }` in the run's
+# events.log) — ADR-0064's BanStore *trigger*, driven entirely by genuine
+# counterparty bytes.
+[observation]
+pings_received        = 25
+flood_dropped         = 23          # count > rate (2/min PING), ADR-0064
+offender_reports      = 8           # count > 5x rate (>10), ADR-0064 trigger
+rate_per_minute_ping  = 2           # aMule PacketTracking.cpp KADEMLIA2_PING
+# Deferred (not in this Kad-only run): the BanStore *enforcement* leg is
+# peer-TCP only (ADR-0064 — aMule's own ban likewise never gates Kad inbound,
+# as a capture confirmed), so proving the ban lands needs a follow-on eD2k TCP
+# dial from the same IP getting refused, and CLIENTBANTIME expiry needs the 2 h
+# wait. Both stay open, with this offender-trigger capture as the anchor.

@@ -1,0 +1,8 @@
+name = "reject_wrong_login_opcode"
+provenance = "handwritten"
+source_note = "Synthetic packet using ID change opcode where a login request is expected"
+accepted = false
+reject_reason = "wrong login opcode"
+
+[expected]
+kind = "login_request"

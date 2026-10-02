@@ -1,0 +1,11 @@
+name = "id_change_without_flags"
+provenance = "handwritten"
+source_note = "Synthetic ID change login response based on historical eMule protocol specification"
+accepted = true
+
+[expected]
+kind = "id_change"
+protocol = "edonkey"
+opcode = 64
+client_id = 305419896
+trailing_len = 0

@@ -1,0 +1,68 @@
+# ADR-0061 route 4 against a live aMule, end to end (a `PASS`):
+# a High-ID rmule downloader handed only the ed2k link found the
+# firewalled aMule's type-3 buddy row over Kad, sent the plaintext `0x52` to
+# the rmule buddy the row named, the buddy relayed `OP_CALLBACK` over the link
+# aMule held, and aMule dialed the downloader back and served the file
+# byte-equal. The same run's walk fold-in is here too: a Callback Walk's
+# obfuscated `0x52` delivered to aMule, and aMule's relay of it. Every frame
+# is off a tcpdump on the bench; nothing is fabricated (ADR-0045).
+#
+# ## What this fixture is evidence FOR
+#
+# * `dial_back_hello_0x01.bin` (aMule-authored) is the answer to
+#   `callback_0x99.bin` (rmule's relay): aMule logged `Remote Client:
+#   OP_CALLBACK from 203.0.113.3` then `Trying to connect to 203.0.113.7:4662`
+#   in the same second, and its SYN left 0.66 ms after the relay. Its User
+#   Hash is `publish_source_req_0x44.bin`'s source ID in Kad word order — the
+#   key the download's Dial-Back Claim matched it by.
+# * `callback_0x99.bin` names the downloader host-order (`07 71 00 cb`). Until
+#   `b6158049` rmule wrote the octets in order and aMule dialed the mirrored
+#   address (runs `1790151298`, `1790152605`: relay ACKed, no dial-back).
+# * `walk_relay_0x99.bin` (aMule-authored) is aMule's relay of a walk-sent
+#   `0x52` the walker obfuscated under aMule's Kad ID: aMule's tap held no
+#   plaintext `0x52` from the walker, aMule logged `KadCallbackReq from
+#   203.0.113.8:4672` and `Local Client: OP_CALLBACK to 203.0.113.8`.
+
+[provenance]
+counterparty       = "aMule 2.3.3 (source pin 4e8f2b3c), debug build rmule/interop-amule-debug (built with `--build-arg AMULE_DEBUG=1`, AMULE_DEBUG_PEER_CATEGORIES=1)"
+scenario           = "cargo test -p rmule-interop-harness --test harness -- --ignored kad_buddy_callback_against_amule (kad-core-buddy --publish-source --mesh-members 3 --callback-downloader --callback-walk --window 1800 --file-size 10485760)"
+run                = "1790155933"
+date               = "2026-09-23"
+subnet             = "203.0.113.0/24 (RFC 5737 fake-public, Config A; docker --internal)"
+amule_endpoint     = "203.0.113.2 — Kad UDP 4674, eD2k TCP 4662 (iptables-DROPped)"
+buddy_endpoint     = "203.0.113.3 — rmule Core-pumped stimulus, Kad UDP 4679, serve listener TCP 4663"
+storer_endpoint    = "203.0.113.6 — kad join-node placed at the file key"
+downloader         = "203.0.113.7 — rmule natt buddy-rendezvous --role requester --file <link> --assume-open, listener TCP 4662, UDP 4672"
+walker_endpoint    = "203.0.113.8 — kad join-node --callback-walk --kad-crypt, Kad UDP 4672"
+file               = "10485760 bytes, ED2K 08BD0273A7FCD18E91A537250D5617DC"
+
+[frames.publish_source_req_0x44]
+file   = "publish_source_req_0x44.bin"
+author = "aMule 2.3.3"
+wire   = "Kad UDP 203.0.113.2:4674 -> 203.0.113.6:4690, 111 bytes (type-3 row naming the buddy)"
+
+[frames.callback_req_0x52]
+file   = "callback_req_0x52.bin"
+author = "rmule downloader (LowIdRoad::BuddyCallback)"
+wire   = "Kad UDP 203.0.113.7:4672 -> 203.0.113.3:4679, 2026-09-23 11:38:53.677957, 36 bytes, plaintext"
+
+[frames.callback_0x99]
+file   = "callback_0x99.bin"
+author = "rmule buddy (relay_kad_callback)"
+wire   = "peer TCP 203.0.113.3:4663 -> 203.0.113.2:56922 (the held link), 11:38:53.678308, 44 bytes"
+
+[frames.dial_back_hello_0x01]
+file   = "dial_back_hello_0x01.bin"
+author = "aMule 2.3.3"
+wire   = "peer TCP 203.0.113.2:58996 -> 203.0.113.7:4662, SYN at 11:38:53.678967, hello 129 bytes"
+
+[frames.walk_relay_0x99]
+file   = "walk_relay_0x99.bin"
+author = "aMule 2.3.3"
+wire   = "peer TCP 203.0.113.2:56922 -> 203.0.113.3:4663 (the held link), 11:39:29.525918, 44 bytes"
+
+[transfer]
+bytes           = 10485760
+ed2k_hash       = "08BD0273A7FCD18E91A537250D5617DC"
+matches_link    = true
+amule_segments  = 63

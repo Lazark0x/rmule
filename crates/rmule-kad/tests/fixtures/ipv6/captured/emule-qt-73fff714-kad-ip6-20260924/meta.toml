@@ -1,0 +1,59 @@
+# Kad's `ip6` tag (ADR-0087) written by emule-qt `73fff714` in its own source
+# publish, captured on the IPv6 dialect bench during interop flow
+# `ipv6-dialect ipv6-kad-tags`. The `.bin` is one UDP
+# payload lifted byte for byte off a tcpdump on the **rmule storer's**
+# attachment (the storer at the file's key, which received it); nothing is
+# fabricated (ADR-0045).
+#
+# ## What this frame is evidence FOR
+#
+# ADR-0087's amendment names emule-qt as the second `ip6` writer and the
+# body the bench's IPv6 transfer is drawn from. This frame settles two sentences:
+#
+# 1. **emule-qt writes `ip6` in lower case.** `QByteArray::toHex`
+#    (`KadSearch.cpp:1386-1391`) spells its interface address
+#    `3fff0ed200010000000000000000000a`, where kno's fork writes upper case
+#    (`amule-kno-ab483654-kad-ip6-20260923/`). The reader is case-insensitive
+#    per the spec; this frame proves the lower-case spelling meets rmule's reader.
+# 2. **rmule reads it.** The datagram is **obfuscated** to the storer's Kad ID
+#    (emule-qt knows the ID from its `nodes.dat`), so the test decrypts it with
+#    that ID, the storer's own receive path, and then decodes the plaintext
+#    with the publish decoder: the `ip6` string becomes the row's IPv6.
+#
+# The same run's storer indexed this row, re-served it in its `0x3B`, and a
+# rmule `Core` handed only emule-qt's link fetched the file over
+# `[3fff:ed2:1::a]:4662`, byte-equal (ED2K E99CC2D540AF5C0E4C5E84A3E2C57BA8).
+
+[provenance]
+scenario          = "rmule-interop-harness ipv6-dialect ipv6-kad-tags --skip-build --timeout 180 (wrapper `ipv6_kad_tags`)"
+run               = "1790251066 — PASS, 17 of 17 claims held (wrapper `ipv6_kad_tags` scored it through RMULE_BENCH_VERDICT_DIR)"
+first_capture     = "1790249850 — the same 121-byte publish on the tap (a different obfuscation nonce, the same 105-byte plaintext shape); its verdict scored the publish claim absent only because the lift then filtered on the plain opcode byte"
+date              = "2026-09-24"
+evidence_archive  = "bench run 1790251066"
+wan               = "45.55.200.0/23 + 3fff:ed2:1::/64 (fake-public, docker --internal, dual-stack)"
+emuleqt_commit    = "73fff714 (ModderMule/emule-qt, the ADR-0082 cherry-pick)"
+emuleqt_image     = "rmule/interop-emuleqt sha256:e84a78c333c3e6394e334ad9db0abb19bd4b8dcaf1966826869a20cfda7d2893 (runtime stage, with the kad-node readiness marker fixed)"
+emuleqt_build     = "rmule/interop-emuleqt-build:local sha256:3af7177a0dfdc25f9d233892149f5827f9f1240ac544479783e8e0f0abe2410b"
+rmule_tools_image = "rmule/interop-rmule-tools sha256:72ab287b5ce6ea669dea8e4a5f35b40fd276ba8837e9d942f56fadb5466c862a"
+capture_image     = "rmule/interop-capture:local sha256:104262fb88b284d53b6e08caa96e03613bdb7c062a4629a3704c67c0b378b315"
+
+[bodies]
+emuleqt   = "45.55.200.10 / 3fff:ed2:1::a — EMULEQT_SCENARIO_MODE=kad-node; seeded nodes.dat: dial-back Core A, the storer, dial-back Core B; shares a 1.5 MiB Synthetic File"
+storer    = "45.55.200.6 — `rmule-tools kad join-node`, Kad ID pinned to the file's key (d5c29ce90e5caf40a3845e4ca87bc5e2), user hash 51×16"
+dial_back = "45.55.201.2 (A) and 45.55.201.3 (B) — `ed2k serve start --kad --kad-assume-open`, rmule's ADR-0058 responder; B's two dial-backs (+121 s, +178 s) opened emule-qt's Kad firewall state"
+file      = "Synthetic File, byte = offset % 251, 1572864 bytes, ED2K E99CC2D540AF5C0E4C5E84A3E2C57BA8"
+
+[frames.emuleqt_publish_source_req_0x44_obfuscated]
+opcode    = "0x44 KADEMLIA2_PUBLISH_SOURCE_REQ (proto 0xE4), Kad-ID-keyed datagram obfuscation"
+direction = "emule-qt 45.55.200.10:4672 -> rmule storer 45.55.200.6:4672"
+observed  = "12:11:13.224270 UTC, 200 s after emule-qt's `Kad: Started with ID` (12:07:53.006); its log: `PUBLISH_SOURCE_REQ pktLen=103 tags=6 srcType=1` at 12:11:13.223"
+length    = "121 bytes on the wire; 105 bytes decrypted with the storer's Kad ID"
+layout    = "plaintext: proto+opcode + fileKey(16) + sourceID(16) + tagCount(1)=6 + 6 tags"
+file_key  = "d5c29ce90e5caf40a3845e4ca87bc5e2 — the file's ED2K hash under the per-32-bit-word swap, = the storer's Kad ID"
+source_id = "09845737584b0e012056ece8e56f40a4 — emule-qt's user hash (generated per container), word-swapped"
+"0xFF SOURCETYPE"  = "UINT8 = 1 — High ID, not firewalled"
+"0xFD SOURCEPORT"  = "UINT16 = 4662"
+"0xFC SOURCEUPORT" = "UINT16 = 4672 — emule-qt writes its UDP port itself (kno's publish carries none)"
+"0x02 FILESIZE"    = "UINT32 = 1572864"
+"0xF3 ENCRYPTION"  = "UINT8 = 0x00"
+"ip6"              = "STRING, length 32, `3fff0ed200010000000000000000000a` — lower-case hex, MSB-first, last"

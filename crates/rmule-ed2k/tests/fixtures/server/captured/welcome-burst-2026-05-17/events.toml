@@ -1,0 +1,55 @@
+# Decoded event sequence for one captured eD2k welcome burst.
+# Source of truth: s2c.bin (server-to-client wire bytes).
+#
+# Captured: 2026-05-17 against public eD2k server 45.82.80.155:5687.
+# Captured by: rmule at commit 5656caf (plus state-machine and
+# capture-finalize fixes applied during the live run; both landed in
+# this same commit).
+#
+# Findings preserved as evidence (see docs/protocol/source-map.md):
+#
+#   1. Server pushes OP_SERVERMESSAGE BEFORE OP_IDCHANGE. The original
+#      login plan assumed any non-IdChange/Reject packet in AwaitingIdChange
+#      was a protocol violation. The capture proved that wrong; aMule's
+#      own dispatcher enforces no welcome-burst ordering. The state
+#      machine was relaxed and the corresponding ProtocolViolation
+#      variant removed before this fixture landed.
+#
+#   2. The login packet needs CT_SERVER_FLAGS (0x20) and CT_EMULE_VERSION
+#      (0xFB) capability tags on top of the original minimal set
+#      (CT_NAME / CT_VERSION / CT_PORT). Lugdunum servers reply with
+#      WARNING text and refuse to send OP_IDCHANGE without them.
+#      live_welcome.rs adds both via ClientIdentity.extra_tags; a later
+#      change can promote them into typed login fields.
+#
+#   3. Welcome burst includes a packed (`0xD4`) eD2k server frame
+#      (zlib-compressed; magic 78 DA). Before packed-frame support, rmule's
+#      Packet decoder rejected the unknown protocol byte and the session
+#      closed with ProtocolViolation. Packed-frame support added recognition
+#      (`PacketProtocol::PackedEd2k`) plus private flate2 inflation in `rmule-ed2k`, so the captured
+#      tail now decodes logically as a second OP_SERVERMESSAGE (875-byte
+#      text payload). The replay therefore ends mid-LoggedIn — the
+#      captured s2c.bin carried no terminating server packet, so the
+#      session has no terminal Disconnected.
+
+[[event]]
+type = "LoginRequested"
+endpoint = "45.82.80.155:5687"
+
+[[event]]
+type = "ServerMessageReceived"
+text_len = 83
+
+[[event]]
+type = "LoginAccepted"
+client_id = 10875602
+tcp_flags = 6137
+
+[[event]]
+type = "ServerStatusReceived"
+user_count = 48380
+file_count = 28422518
+
+[[event]]
+type = "ServerMessageReceived"
+text_len = 875

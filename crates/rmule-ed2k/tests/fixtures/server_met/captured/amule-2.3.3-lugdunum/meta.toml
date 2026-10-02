@@ -1,0 +1,29 @@
+# Captured server.met golden — aMule-authored bytes (flow H leg 2).
+#
+# These are NOT hand-crafted: a pinned aMule 2.3.3 (distro package
+# 1:2.3.3-3build5) connected to a Lugdunum eserver on the interop bench and
+# persisted its server list via CServerList::SaveServerMet on a clean
+# `amulecmd Shutdown`. The file is aMule's own writer output — 0xE0 magic, one
+# server, and the full 15-tag record SaveServerMet always emits (ADR-0066's
+# "SaveServerMet full ST_ tag set"), including the server's self-reported
+# Lugdunum version "17.15 (lugdunum)", the users/files counts, preference, and
+# the UDP/obfuscation flag tags.
+#
+# Provenance detail: aMule's `Add ed2k://|server|` (amulecmd) routes to the
+# download queue, not the server list, so the list is empty at shutdown and the
+# golden comes out empty (0 servers). This golden was harvested by the
+# AMULE_PERSIST_SERVERLIST=1 entrypoint variant, which seeds a minimal one-row
+# server.met (IP:port only, no tags) into $CONFIG_DIR before amuled starts;
+# CServerList::Init loads it, the live connection enriches it, and SaveServerMet
+# re-authors the full record on shutdown. The seed is a bootstrap INPUT; every
+# byte here is aMule's SaveServerMet writer output. The docker IP (172.18.0.2)
+# is whatever the bench network assigned — the value under test is aMule's tag
+# LAYOUT, not the address.
+
+name = "amule-2.3.3-lugdunum-server-met"
+provenance = "aMule 2.3.3 (distro 1:2.3.3-3build5) SaveServerMet output; harvested on the rmule interop Docker bench (tools/interop-harness http-bootstrap-goldens, AMULE_PERSIST_SERVERLIST=1); Lugdunum eserver 17.15 counterparty"
+source_note = "clean `amulecmd Shutdown` -> CServerList::~CServerList -> SaveServerMet -> docker cp; harness waits on `docker wait` so the write_safe rename completes before copy"
+server_count = 1
+# The magic byte aMule writes (0xE0 is aMule's own header, distinct from the
+# 0x0E MET_HEADER and the 0x0F known.met trap the decoder rejects).
+header_byte = 0xE0

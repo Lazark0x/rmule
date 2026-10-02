@@ -1,0 +1,97 @@
+name = "private-amule-kad-distance-20260707"
+status = "active"
+provenance = "captured"
+reason = """
+Genuine aMule 2.3.3 KADEMLIA2_RES (0x29) proving Kad XOR distance ordering
+(ADR-0043). A private, air-gapped mesh: one aMule responder seeded with
+four discrimination contacts, plus an rmule Kad Stimulus Node that sends a
+KADEMLIA2_REQ (0x21) for a fixed target. aMule ranks the four contacts by its own
+XOR distance to the target and returns them closest-first in the 0x29. The
+returned ORDER is aMule's genuine CUInt128 distance computation — that is the
+evidence. The rmule stimulus REQ (request_0x21.bin) is context only, never
+evidence (a Kad Stimulus Node, ADR-0043).
+
+The four contacts differ from the target in exactly one top bit, at wire-byte
+positions {0, 3, 12, 15}, chosen so the closest contact is a DIFFERENT position
+under each surviving byte-order hypothesis: big-endian -> 15, little-endian -> 0,
+word-le-msw-first -> 12. aMule returned position 12 closest, and the full order
+12,15,0,3 — confirming `word_le_msw_first`: four 32-bit words, most-significant
+word first, each word little-endian on the wire. This is the unique ordering
+consistent with the already-capture-proven Kad ID byte order (the 0x34 target =
+file hash with each word byte-swapped), now independently confirmed by a routing
+response.
+"""
+
+[provenance_disclosure]
+# Two harness accommodations were needed to elicit this from a tiny private mesh.
+# NEITHER changes aMule's distance computation, so the returned ORDER stays genuine.
+routing_zone_seed = """
+The responder is seeded with a routing-zone (version 1) nodes.dat so aMule loads
+the four contacts into its live routing tree via AddUnfiltered. A bootstrap-edition
+(v3/e1) nodes.dat would only feed the bootstrap list (CRoutingZone::ReadFile
+dispatches it to ReadBootstrapNodesDat and returns without adding to the tree).
+"""
+return_filter_patch = """
+The harness aMule image applies relax-kad-routing-return-filter.patch: in a tiny
+quiescent mesh the seeded contacts never age to a good type nor complete IP
+verification, so CRoutingBin::GetClosestTo's `GetType() <= maxType && IsIPVerified()`
+guard withholds every one and aMule answers with an empty (count=0) 0x29. The patch
+relaxes ONLY that return-filter. The ordering is computed separately — each returned
+contact's map key is `targetDistance = ClientID ^ target`, sorted by CUInt128's own
+comparison — and is unmodified. The SET of returned contacts grows to include the
+seeded ones; their ORDER is real aMule output. See the patch header and the existing
+disable-lan-kad-filter.patch precedent.
+"""
+capture_command = "cargo run -p rmule-interop-harness -- kad-distance-ordering-capture --skip-build"
+rmule_run = ".scratch/interop-runs/1783386951 (retained pcap, gitignored)"
+no_public_kad = "true — private docker network 172.30.0.0/24 only; no public bootstrap, no public nodes.dat, no external peers"
+
+[request]
+# Bytes: the full inner Kad datagram, starting at the 0xE4 0x21 envelope.
+file = "request_0x21.bin"
+protocol = "0xE4"
+opcode = "0x21"
+description = "KADEMLIA2_REQ stimulus: contact_type(1) target(16) check(16)"
+contact_type = "0x0B (KADEMLIA_FIND_NODE)"
+target = "00112233 44556677 8899aabb ccddeeff"
+check = "aaaaaaaa aaaaaaaa aaaaaaaa aaaaaaaa (responder's own Kad ID; anti-misroute guard)"
+
+[result]
+# Bytes: the full inner Kad datagram, starting at the 0xE4 0x29 envelope.
+file = "result_0x29.bin"
+protocol = "0xE4"
+opcode = "0x29"
+description = "KADEMLIA2_RES: target(16) count(1) then count x 25-byte contacts [id(16) ip(4) udp(2) tcp(2) version(1)]"
+target = "00112233 44556677 8899aabb ccddeeff"
+count = 4
+# Contacts in wire order = aMule's closest-first XOR-distance ranking.
+hypothesis_confirmed = "word_le_msw_first"
+
+[[result.contacts]]
+rank = 0
+flip_position = 12
+kad_id = "00112233445566778899aabb4cddeeff"
+endpoint = "172.30.0.7:4677"
+
+[[result.contacts]]
+rank = 1
+flip_position = 15
+kad_id = "00112233445566778899aabbccddee7f"
+endpoint = "172.30.0.8:4678"
+
+[[result.contacts]]
+rank = 2
+flip_position = 0
+kad_id = "80112233445566778899aabbccddeeff"
+endpoint = "172.30.0.5:4675"
+
+[[result.contacts]]
+rank = 3
+flip_position = 3
+kad_id = "001122b3445566778899aabbccddeeff"
+endpoint = "172.30.0.6:4676"
+
+[evidence]
+# Which KadEvidence variants this fixture resolves.
+resolves = ["DistanceOrdering", "ReproducibleLookupTarget"]
+already_proven = ["KadIdByteOrder (prior 0x34 capture; this 0x29 re-confirms it)"]

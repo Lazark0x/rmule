@@ -1,0 +1,26 @@
+# emule-qt's own `0xA4` bundle to rmule, carrying its part status in the
+# `0x58` sub — genuine counterparty wire bytes from `ipv6-extsx-emit`
+# Rmule serves a one-part 1 MiB synthetic file and claims
+# extended-requests 1 (hello `CT_EMULE_MISCOPTIONS1` bits 8-11);
+# emule-qt claims 2 (`0x34134213` in its hello, same run), so the session
+# speaks level 1 and emule-qt writes its status into the name sub:
+# `58 0100 00` — count 1 (aMule's `size/PARTSIZE + 1`), nothing held (a fresh
+# download). rmule's serve pool fed that status to its needed-part filter and
+# left a queued requester that holds no part out of its `0x84` answer
+# (`serve sources_served … count=2` with three requesters pooled; the answer
+# is byte-identical to run `1790214090`'s, taken before the third requester
+# existed). Only counterparty bytes are evidence (ADR-0045); nothing here is
+# fabricated.
+
+[provenance]
+counterparty = "ModderMule/emule-qt 73fff714 emulecored, image rmule/interop-emuleqt:local"
+scenario     = "rmule-interop-harness ipv6-dialect ipv6-extsx-emit (acceptance ipv6_extsx_emit)"
+run          = "1790220663"
+date         = "2026-09-24"
+rmule_image  = "rmule/interop-rmule-tools"
+tap          = "ipv6/ipv6-extsx-emit/tap-wan.pcap, 45.55.200.3:56456 -> 45.55.200.6:4662 at 05:34:22.252403 (plaintext link)"
+file_hash    = "879B7240FE00815F5431AE7086B8C939"   # synthetic 1 MiB shared.bin
+
+[frames.request_multipacket_ext_0xa4]
+opcode = "0xA4 OP_MULTIPACKET_EXT (proto 0xC5)"
+walk   = "<hash16><size8=1048576> + subs [Name{status 0100 00}(0x58), SetReqId(0x4F), Sources2{version:1, options:0}(0x83), AichRoot(0x9E)]"

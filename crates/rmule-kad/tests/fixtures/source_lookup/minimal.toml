@@ -1,0 +1,21 @@
+name = "minimal-kad-source-lookup"
+status = "blocked"
+reason = "packet envelope and opcodes are cited, but byte-exact source lookup fixtures are not yet safe to author"
+
+[known_evidence]
+plain_protocol_byte = "0xE4"
+packed_protocol_byte = "0xE5"
+source_lookup_request_opcode = "0x34"
+source_lookup_result_opcode = "0x3B"
+request_payload = "target Kad key, start position, file size"
+result_payload = "sender Kad ID, target key, result count, source ID plus tag list rows"
+
+[missing_evidence]
+kad_id_byte_order = true
+source_ip_tag_byte_order = true
+source_id_identity_meaning = true
+captured_high_id_source_result = true
+packed_kad_source_lookup = true
+
+[expected_action]
+next = "capture or independently handwrite request/result bytes only after missing evidence is resolved"

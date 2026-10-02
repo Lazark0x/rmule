@@ -1,0 +1,20 @@
+# One direction of one peer-TCP link, as the bench's tap recorded it: rmule's
+# segments to emule-qt in bench run `1790612092` (flow `ipv6-extsx-emit`).
+# A classic pcap (EN10MB, little-endian, microseconds), stored as `.bin`
+# because full captures are never committed; this is the minimal slice the
+# frame-walk test needs. Nothing was edited: tcpdump selected the segments by
+# header only.
+#
+# ## What this fixture is evidence FOR
+#
+# rmule's 111-byte OP_ANSWERSOURCES2 (0xC5/0x84) rode in one 204-byte segment
+# behind its signature packet (0x86) and 0x93, at stream offset 323. The run's
+# verdict read the two claims that wait for it as absent because its filter
+# only matched a frame at the head of a segment.
+
+[provenance]
+run          = "1790612092"
+archive      = "1790612092/ipv6/ipv6-extsx-emit/tap-wan.pcap"
+archive_sha256 = "bb961d51fd4bf1562eb6a171347203782b7d7b400f2b195dfa4d1cd9c609527d"
+selected_by  = "tcpdump -r tap-wan.pcap -w rmule-to-emuleqt.bin 'tcp and src host 45.55.200.6 and src port 4662 and dst host 45.55.200.3'"
+records      = 9

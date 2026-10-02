@@ -1,0 +1,40 @@
+# NOT a member of the rmule workspace (see the root `Cargo.toml`'s `exclude`).
+# Depending on `ed2k-server` drags ~180 crates in — axum, tower, chrono, clap,
+# and a jemalloc that compiles from C source. None of that belongs in the build
+# every other rmule crate pays for, so this crate is its own workspace and is
+# built and gated on its own: `cargo test --manifest-path tools/ed2ksrv-differ/Cargo.toml`.
+#
+# The exclusion's cost: `cargo test --workspace` skips this crate, so the `ed2ksrv-differ`
+# job in `.github/workflows/ci.yml` is what keeps it compiling:
+#   cargo check --manifest-path tools/ed2ksrv-differ/Cargo.toml --all-targets
+[package]
+name = "ed2ksrv-differ"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.0"
+license = "GPL-3.0-or-later"
+publish = false
+
+[workspace]
+
+[dependencies]
+# The oracle. Pinned at the exact upstream commit the bench image is built from
+# and the fixtures were captured against; ADR-0045's 2026-08-02 amendment makes
+# its verdicts admissible only while it is unpatched and pinned, so this is a
+# git rev and never a path or a fork.
+ed2k-server = { git = "https://github.com/andrey23127/ed2k-server", rev = "eacf7f1eb7ea40f71ae869aef6a10801e7e262b8" }
+
+rmule-ed2k = { path = "../../crates/rmule-ed2k" }
+rmule-primitives = { path = "../../crates/rmule-primitives" }
+
+# `bytes`/`tokio-util` are what `ed2k_server::proto::frame::Ed2kCodec` speaks;
+# the versions match the ones its own lockfile resolves so nothing is duplicated.
+bytes = "1"
+tokio-util = { version = "0.7", features = ["codec"] }
+# The live server-UDP oracle runs their real `UdpServer::run` on a background
+# task while the prober blocks on a std socket, so the runtime must be
+# multi-threaded.
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time"] }
+# Their `Config` is `Deserialize`-only; a TOML literal survives a re-pin that
+# adds a `#[serde(default)]` field, where struct literals would not.
+toml = "0.7"

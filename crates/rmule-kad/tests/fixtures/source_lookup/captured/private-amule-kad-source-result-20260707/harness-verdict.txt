@@ -1,0 +1,14 @@
+# kad-source-capture verdict (ADR-0043)
+
+storer = "172.30.0.4:4674"
+storer_kad_id = "b52d308e5ca206b823fc8593d26210f2"
+frames_total = 16
+rmule_sent_publish_0x44 = true
+amule_acked_publish_0x4b = true
+rmule_sent_search_0x34 = true
+amule_answered_search_0x3b = true
+captured_source_id = "0df0ad0befbeadde0df0ad0befbeadde"
+expected_source_id_wordswap = "0df0ad0befbeadde0df0ad0befbeadde"
+source_id_matches_user_hash_wordswap = true
+amule_authored_source_ip_tag = true
+verdict = "PASS"

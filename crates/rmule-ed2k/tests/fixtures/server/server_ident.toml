@@ -1,0 +1,14 @@
+name = "server_ident"
+provenance = "handwritten"
+source_note = "Synthetic OP_SERVERIDENT (0x41) frame per docs/reference/notes/ed2k-welcome-packets.md OP_SERVERIDENT section. Payload = 16-byte server hash + advertised IPv4 (192.168.1.10) LE + advertised TCP port (4661) LE + u32 LE tag_count (2) + 2 tags. Tag 1: ST_SERVERNAME (0x01) string 'Test Server'. Tag 2: ST_DESCRIPTION (0x0B) string 'description'. Note: opcode 0x41 confirmed against aMule TCP.h:58 (eMule spec wrongly lists advertised port as u32 — aMule uses u16). Cited: aMule src/ServerSocket.cpp:401-440, ServerTags.h:31-52."
+accepted = true
+
+[expected]
+protocol = "edonkey"
+opcode = 65
+server_hash = "00112233445566778899AABBCCDDEEFF"
+advertised_ip = "192.168.1.10"
+advertised_port = 4661
+name = "Test Server"
+description = "description"
+extra_tag_ids = []

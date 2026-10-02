@@ -1,0 +1,7 @@
+# Captured wire fixtures are raw counterparty bytes (some are ciphertext that
+# happens to pass git's text heuristic — e.g. crypt_ping_0x97_raw.bin). Without
+# this, an autocrlf checkout could eol-mangle one silently, corrupting evidence.
+*.bin binary
+# TUI goldens are byte-compared frames with LF line ends; an autocrlf checkout
+# (Windows' default) would turn every one into a drift.
+apps/rmule/tests/goldens/*.txt text eol=lf

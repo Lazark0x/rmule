@@ -1,0 +1,19 @@
+name = "file_with_expiring_sources"
+provenance = "handwritten"
+source_note = """
+eMule's expiring form (emule-qt 73fff71 srchybrid/ED2KLink.cpp:238-259):
+`sources@YYMMDD,` — past that day no source is taken. The date is kept on each
+entry and applied at the download's intake. Hosts RFC 5737.
+"""
+accepted = true
+
+[input]
+link = "ed2k://|file|hello.txt|11|AA010FBC1D14C795D86EF98C95479D17|/|sources@261231,203.0.113.9:4662,203.0.113.10:5662|/"
+
+[expected]
+kind = "file"
+canonical = "ed2k://|file|hello.txt|11|AA010FBC1D14C795D86EF98C95479D17|/|sources@261231,203.0.113.9:4662,203.0.113.10:5662|/"
+name = "hello.txt"
+size = 11
+file_hash = "AA010FBC1D14C795D86EF98C95479D17"
+sources = ["203.0.113.9:4662@2026-12-31", "203.0.113.10:5662@2026-12-31"]

@@ -1,0 +1,13 @@
+name = "server_ipv4"
+provenance = "handwritten"
+source_note = "Synthetic ED2K server link"
+accepted = true
+
+[input]
+link = "ed2k://|server|192.0.2.10|4661|/"
+
+[expected]
+kind = "server"
+canonical = "ed2k://|server|192.0.2.10|4661|/"
+host = "192.0.2.10"
+port = 4661

@@ -1,0 +1,38 @@
+# The Kad `0x22` three-way between emule-qt `73fff714` and an rmule body that
+# ran with verify keys but **without datagram obfuscation**, captured on the
+# IPv6 dialect bench during interop flow `ipv6-dialect ipv6-kad-tags`.
+# Each `.bin` is one UDP payload lifted byte for
+# byte off a tcpdump on the **rmule qt-storer's** attachment; nothing is
+# fabricated (ADR-0045).
+#
+# ## What these frames are evidence FOR (ADR-0064 amendment)
+#
+# 1. `rmule_hello_res_0x19_plain.bin` — rmule's plaintext `HELLO_RES` answering
+#    emule-qt's obfuscated `HELLO_REQ`, with `TAG_KADMISCOPTIONS = 0x04` (the
+#    ack-request) and no crypt trailer. emule-qt logged "HELLO_RES from
+#    45.55.200.6 demands an ACK but sent no sender key" (`emuleqt-kad.log:112`).
+#    The pre-fix divergence.
+# 2. `emuleqt_hello_res_0x19_crypt.bin` — emule-qt's own ack-requesting
+#    `HELLO_RES` to rmule's plaintext `HELLO_REQ`: NodeID-keyed to rmule's Kad
+#    ID, bit 2 set, and a non-zero sender key in the trailer. The reference
+#    shape: the ACK's receiver slot must echo this key.
+# 3. `rmule_hello_res_ack_0x22_plain.bin` — rmule's answer: a plaintext `0x22`
+#    (`<rmuleKadID16><tagcnt 0>`), no trailer, so emule-qt dropped it
+#    ("HELLO_RES_ACK from 45.55.200.6 has an invalid receiver key — dropped",
+#    `emuleqt-kad.log:119`).
+
+[provenance]
+scenario         = "rmule-interop-harness ipv6-dialect ipv6-kad-tags --skip-build --timeout 180 (wrapper `ipv6_kad_tags`)"
+run              = "1790251066 — PASS, 17 of 17 claims held; the ACK drop is not a scored claim"
+date             = "2026-09-24"
+evidence_archive = "bench run 1790251066"
+emuleqt_commit   = "73fff714 (ModderMule/emule-qt, the ADR-0082 cherry-pick)"
+emuleqt_image    = "rmule/interop-emuleqt sha256:e84a78c333c3e6394e334ad9db0abb19bd4b8dcaf1966826869a20cfda7d2893"
+wan              = "45.55.200.0/23 (fake-public, docker --internal)"
+rmule_endpoint   = "45.55.200.6:4672"
+emuleqt_endpoint = "45.55.200.10:4672"
+
+[frames]
+"rmule_hello_res_0x19_plain.bin"     = "pcap ts 1790251734.221914, 45.55.200.6 -> 45.55.200.10, 33 bytes"
+"emuleqt_hello_res_0x19_crypt.bin"   = "pcap ts 1790251789.147698, 45.55.200.10 -> 45.55.200.6, 49 bytes"
+"rmule_hello_res_ack_0x22_plain.bin" = "pcap ts 1790251789.147976, 45.55.200.6 -> 45.55.200.10, 19 bytes"

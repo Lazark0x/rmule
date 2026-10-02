@@ -1,0 +1,19 @@
+name = "file_with_reordered_metadata"
+provenance = "handwritten"
+source_note = "Canonical formatting orders p= before h="
+accepted = true
+
+[input]
+link = "ed2k://|file|zeros-aich.bin|9728000|FC21D9AF828F92A8DF64BEAC3357425D|h=A2NWOTYURUU3P3GCUB6KCNW3FTYYELQB|p=d7def262a127cd79096a108e7a9fc138:31d6cfe0d16ae931b73c59d7e0c089c0|/"
+
+[expected]
+kind = "file"
+canonical = "ed2k://|file|zeros-aich.bin|9728000|FC21D9AF828F92A8DF64BEAC3357425D|p=D7DEF262A127CD79096A108E7A9FC138:31D6CFE0D16AE931B73C59D7E0C089C0|h=A2NWOTYURUU3P3GCUB6KCNW3FTYYELQB|/"
+name = "zeros-aich.bin"
+size = 9728000
+file_hash = "FC21D9AF828F92A8DF64BEAC3357425D"
+part_hashes = [
+  "D7DEF262A127CD79096A108E7A9FC138",
+  "31D6CFE0D16AE931B73C59D7E0C089C0",
+]
+aich_root = "A2NWOTYURUU3P3GCUB6KCNW3FTYYELQB"

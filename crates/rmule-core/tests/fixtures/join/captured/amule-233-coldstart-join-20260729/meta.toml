@@ -1,0 +1,85 @@
+# Genuine counterparty bytes from the **unattended dual-network cold start**
+# driven by the production ADR-0067 Join Sequence caller (`rmule-tools ed2k
+# bootstrap-fetch` → `rmule_core::join::run_join_sequence` → a live `Core`).
+# Captured on the fake-public bench (Config A addressing, non-internal network)
+# during interop flow H `http-bootstrap-cold-start`. Frames are labelled by
+# evidence class; nothing is fabricated (ADR-0045).
+#
+# ## What this fixture is evidence FOR
+#
+# The last open row of rmule's amuled parity comparison: **bootstrap
+# "network-on-by-default / autoconnect"**. The *behaviour* (defaults-ON
+# parallel joins, ADR-0067's Join Sequence) was CI-proven all along; what the
+# row lacked was a production caller. This run is the shipped
+# `bootstrap-fetch` binary driving the real sequencer end to end on a cold
+# store: the first-run hook fetched `server.met` over live HTTP (busybox httpd
+# at 203.0.113.5), persisted the acquired list, and dispatched BOTH joins
+# unattended; the acquired eserver then accepted the login, and the Kad node
+# dialed the fetched `nodes.dat` contact off the Bootstrap Dial List and was
+# answered. Runner stdout markers, in order:
+#   bootstrap-fetch nodes_dat url=http://203.0.113.5:80/nodes.dat kind=contacts dialable=1
+#   bootstrap-fetch join_sequence first_run=installed added=1 servers=1
+#   bootstrap-fetch server_login server=203.0.113.2:4661 client_id=2
+#   bootstrap-fetch kad_contact_responded=false
+#   bootstrap-fetch kad_contact_responded=true       # the HasHadContact latch
+#   bootstrap-fetch result=joined joined=true
+
+[provenance]
+counterparty_kad   = "aMule 2.3.3 (source pin 4e8f2b3c), stock interop image rmule/interop-amule:local, server-connected AND Kad-running (`AMULE_SCENARIO_MODE=ed2k-server-kad`)"
+counterparty_ed2k  = "Lugdunum eserver 17.15 (closed emulated binary), image rmule/interop-eserver:local"
+scenario           = "rmule-interop-harness http-bootstrap-cold-start --skip-build --kad-connect-deadline 300 --handoff-window 120 (flow H)"
+run                = "1785277720"
+date               = "2026-07-29"
+verdict            = "PASS: join_sequence=true server_login=true kad_joined=true kad_bootstrap_res_answers=1"
+subnet             = "203.0.113.0/24 (RFC 5737 fake-public, Config A addressing; network NOT --internal — the busybox httpd fixture apk-installs at start)"
+eserver_endpoint   = "203.0.113.2:4661 (TCP)"
+amule_endpoint     = "203.0.113.3 — Kad UDP 4672, eD2k TCP 4662"
+seed_endpoint      = "203.0.113.4:4679 (rmule kad-join-node; brings the aMule to Kad: Connected first)"
+http_fixture       = "203.0.113.5:80 — serves the harness-authored one-row server.met (naming the eserver) and a v2-layout nodes.dat (naming the aMule)"
+runner_endpoint    = "203.0.113.6 — Kad UDP 4680, pinned so the aMule-netns pcap rows separate the runner's join from the seed's traffic"
+amule_kad_id       = "4ED635567EA6ED0070D093A3CCB17D22 (read from the 0x09 sender header; the image's persisted identity)"
+tap                = "tcpdump on the aMule container's netns (the flow-M evidence shape), docker/cold-start-capture/cold-start.pcap"
+
+[rmule_run_state]
+runner     = "rmule-tools ed2k bootstrap-fetch --server-met-url http://203.0.113.5:80/server.met --nodes-dat-url http://203.0.113.5:80/nodes.dat --kad-bind 0.0.0.0:4680 --max-seconds 120"
+sequencer  = "run_join_sequence on a fresh InMemoryAppConfigStore (cold start by construction) with the real ReqwestFetcher injected; JoinConfig::default() = both networks ON"
+kad_config = "KadEnableConfig { id 0F0F..0F, udp 4680, tcp_port 4662, bootstrap = [203.0.113.3:4672 (the fetched nodes.dat contact)], assume_open_reachability: false }"
+user_hash  = "42424242424242424242424242424242 (rmule-tools default identity)"
+low_id     = "the eserver assigned client_id=2 (LowID): the runner binds no eD2k back-connect listener, so the High-ID port probe cannot land. LoginAccepted — this row's bar — is unaffected; the High-ID leg is flow A's row."
+
+# The counterparty's Kad answer — the join evidence.
+[frames.kad_bootstrap_res_0x09]
+class     = "counterparty evidence"
+opcode    = "0x09 KADEMLIA2_BOOTSTRAP_RES (proto 0xE4), plain"
+direction = "aMule (203.0.113.3:4672) -> runner (203.0.113.6:4680)"
+observed  = "00:28:49.860785, 471 ms after the runner's 0x01 (below); the only 0x09 addressed to the runner in the pcap (kad_bootstrap_res_answers = 1)"
+wire      = "e4 09 4ed635567ea6ed0070d093a3ccb17d22 3612 08 0100 5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e 047100cb 4712 3612 08"
+layout    = "48 bytes = proto+opcode + sender KadID(16) + sender TCP(2 LE = 4662) + version(1 = 8) + count(2 LE = 1) + one 25-byte contact row: id(16) + ip(4 low-octet-first) + udp(2 LE) + tcp(2 LE) + version(1)"
+contact   = "the aMule's entire routing table at that moment: the SEED (id 5E*16, 203.0.113.4:4679 udp / 4662 tcp, v8) — the counterparty handed the runner a genuine routing row it learned live, not an echo of anything the runner sent"
+ip_order  = "047100cb reads little-endian as 203.0.113.4 — the same low-octet-first wire order the Kad firewall-check capture pinned for 0x58"
+
+# rmule's stimulus, kept beside the answer for the exchange to be readable.
+[frames.kad_bootstrap_req_0x01]
+class     = "rmule stimulus — never evidence"
+opcode    = "0x01 KADEMLIA2_BOOTSTRAP_REQ (proto 0xE4), plain, empty payload"
+direction = "runner (203.0.113.6:4680) -> aMule (203.0.113.3:4672)"
+observed  = "00:28:49.389310 — the ADR-0067 dial loop's first dial, fired promptly on seeding (the arm-to-now behaviour)"
+wire      = "e4 01"
+
+# The eD2k counterparty's login acceptance — the other network's join evidence.
+[frames.eserver_login_s2c]
+class     = "counterparty evidence (whole s2c stream of the verification login)"
+capture   = "rmule-ed2k-net stream capture (bootstrap-fetch/server/s2c.bin), finalized on clean shutdown; c2s stimulus retained in the run dir"
+direction = "eserver (203.0.113.2:4661) -> runner"
+packets   = "e3 0x38 ServerMessage (77-byte port warning: the runner binds no listener, hence LowID) | e3 0x40 OP_IDCHANGE client_id=2 tcp_flags=0x17F9 | e3 0x34 OP_SERVERSTATUS users=2 files=0 | e3 0x38 ServerMessage ('server version 17.15 (lugdunum)')"
+idchange  = "the acceptance: the server the Join Sequence fetched, persisted and installed answered the runner's OP_LOGINREQUEST with OP_IDCHANGE — decoded live as LoginAccepted client_id=2"
+
+[exchange]
+seq_1 = "00:28:49.38  runner  -> aMule    0x01 KADEMLIA2_BOOTSTRAP_REQ (first dial off the seeded list)"
+seq_2 = "00:28:49.86  aMule   -> runner   0x09 KADEMLIA2_BOOTSTRAP_RES (THIS FIXTURE) — flips HasHadContact"
+seq_3 = "same second  runner  -> eserver  OP_LOGINREQUEST (verification dial of the sequence-acquired server)"
+seq_4 = "same second  eserver -> runner   message + OP_IDCHANGE(2) + status + version (THIS FIXTURE)"
+
+[finding.join_signal_is_counterparty_gated]
+what = "the runner printed kad_contact_responded=false on its first diagnostics poll and true on the next — the latch could only flip between the two because the 0x09 arrived (the pump's ContactResponded write is the sole writer)."
+why  = "documents that the runner's success marker is downstream of counterparty bytes, not of any self-claim: the diagnostics fact is rmule's projection, the pcap row is the evidence."

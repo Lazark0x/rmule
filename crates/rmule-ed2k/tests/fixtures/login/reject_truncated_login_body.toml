@@ -1,0 +1,8 @@
+name = "reject_truncated_login_body"
+provenance = "handwritten"
+source_note = "Synthetic malformed login request with valid frame but truncated fixed login body"
+accepted = false
+reject_reason = "truncated login body"
+
+[expected]
+kind = "login_request"

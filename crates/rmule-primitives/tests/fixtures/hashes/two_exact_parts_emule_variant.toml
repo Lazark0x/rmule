@@ -1,0 +1,17 @@
+name = "two_exact_parts_emule_variant"
+provenance = "amule-generated"
+source_note = "aMule exact-boundary hashset behavior for two full zero parts"
+accepted = true
+
+[input]
+pattern = "repeat-byte"
+byte = "00"
+len = 19456000
+
+[expected]
+file_hash = "114B21C63A74B6CA922291A11177DD5C"
+part_hashes = [
+  "D7DEF262A127CD79096A108E7A9FC138",
+  "D7DEF262A127CD79096A108E7A9FC138",
+  "31D6CFE0D16AE931B73C59D7E0C089C0",
+]

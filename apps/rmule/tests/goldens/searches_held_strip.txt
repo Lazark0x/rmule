@@ -1,0 +1,12 @@
+┌ Search ───────────────────────────────────── / focus  ←→ method  o options ┐
+│❯ fedora workstation                                                        │
+│Method: eD2k server ▾  Kad ▾ (always on — every search also walks Kad)      │
+│Filters: none   o edit                                                      │
+└────────────────────────────────────────────────────────────────────────────┘
+‹  a much longer query … · 0…  arch · 0… [fedora workstation · 0…] ›
+┌ Results · Running… ──────────────────────────────────── [ ] search  x stop ┐
+│                                                                            │
+│                                 searching…                                 │
+│                                                                            │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘

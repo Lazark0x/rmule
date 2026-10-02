@@ -1,0 +1,133 @@
+name = "private-amule-kad-source-result-20260707"
+status = "active"
+provenance = "captured"
+public_kad_used = false
+reason = """
+Genuine KADEMLIA2_SEARCH_RES (0x3B) bytes from a real aMule storer, captured in
+a private Docker Kad mesh (RFC1918 only, never public). This is the capture
+ADR-0069 parked rmule-kad for and ADR-0043 slice 3b delivers: it breaks the 0x3B
+wall and upgrades KadEvidence::SourceIpTagByteOrder and KadEvidence::SourceIdMeaning
+from documentation-backed to capture-proven.
+
+The old wall sat on aMule's PUBLISHER role: aMule never emits a 0x44 in a small
+private mesh (it gates publishing on its NODECOMPLETE self-lookup), so no storer
+ever held a source. The wall-breaker (ADR-0043): rmule implements publish, so
+rmule is the publisher and a real aMule is the STORER — whose path has no such
+gate. rmule ran as a Kad Stimulus Node (harness scenario `kad-source-capture`):
+it published a synthetic file's source (0x44), aMule accepted and acked it (0x4B),
+rmule searched (0x34), and aMule answered with the 0x3B whose payload is committed
+in `result_0x3b.bin`. rmule's 0x44/0x34 are stimulus context; the 0x3B is
+aMule-authored — aMule re-serialized the entry from PARSED tags (CEntry::WriteTagListInc,
+not a byte echo), which defeats the circularity trap.
+"""
+
+[stimulus_disclosure]
+# What rmule (the stimulus) sent; never evidence. The evidence is aMule's answer.
+kad_stimulus_node = "rmule-kad-net (this workspace), the publisher AND requester"
+published_opcode = "0x44 KADEMLIA2_PUBLISH_SOURCE_REQ"
+searched_opcode = "0x34 KADEMLIA2_SEARCH_SOURCE_REQ"
+publisher_sent_no_source_ip = true # test-proven in publisher_storer; so any SOURCEIP is aMule-authored
+
+[node_roles]
+storer = "real aMule 2.3.x, patched amule-kad-patched image (LAN-routing patch only)"
+publisher_and_requester = "rmule Kad Stimulus Node"
+firewall_gate = """
+aMule's Process2PublishSourceRequest silently drops a publish while it self-reports
+UDP-firewalled (IsFirewalledUDP(true)). NO new patch was needed: the all-RFC1918
+mesh + FilterLanIPs=0 puts aMule in LAN mode (CKademlia::IsRunningInLANMode), where
+IsFirewalledUDP returns false unconditionally (aMule UDPFirewallTester.cpp:58). The
+existing disable-lan-kad-filter.patch already preserves IsLanIP precisely so LAN
+mode works. Verified against aMule 377ec8d9 sources.
+"""
+
+[capture]
+private_mesh = true
+public_kad_used = false
+network = "172.30.0.0/24 docker bridge (RFC1918)"
+captured_by = "rmule's own first-class datagram tap (rmule records what aMule sent it)"
+harness_scenario = "tools/interop-harness kad-source-capture"
+amule_source_pin = "377ec8d9d56618f1059d8705ae53a70fa4ffbe87"
+
+# The paired transcript. The request is rmule's stimulus (never evidence); the
+# result is aMule's genuine answer (the evidence). Both are committed so the
+# capture is reproducible end to end.
+[request]
+protocol = "0xE4"
+opcode = "0x34" # KADEMLIA2_SEARCH_SOURCE_REQ, sent by rmule (the requester)
+envelope_bytes_stripped = "0xE4 0x34"
+# request_0x34.bin payload: [target 16][start u16 = 0][size u64 LE = 65536].
+target_key = "B52D308E 5CA206B8 23FC8593 D26210F2"
+file_size = 65536
+authored_by = "rmule (stimulus, not evidence)"
+
+[result]
+protocol = "0xE4"
+opcode = "0x3B"
+# result_0x3b_high_id.bin is the payload AFTER the 0xE4 0x3B that KadEnvelope strips.
+envelope_bytes_stripped = "0xE4 0x3B"
+sender_kad_id = "B52D308E 5CA206B8 23FC8593 D26210F2" # the storer's own Kad ID
+target_key = "B52D308E 5CA206B8 23FC8593 D26210F2"    # = storer id (storer sits on the file key)
+result_count = 1
+payload_len_bytes = 84
+
+# The mesh participants. rmule is BOTH publisher and requester (one Kad Stimulus
+# Node); the storer is the real aMule. The verifier requires the requester and
+# publisher roles and at least one recorded Kad ID.
+[[nodes]]
+role = "requester"
+kad_id = "5E5E5E5E 5E5E5E5E 5E5E5E5E 5E5E5E5E"
+impl = "rmule-kad-net Kad Stimulus Node"
+ip = "172.30.0.9"
+
+[[nodes]]
+role = "publisher"
+kad_id = "5E5E5E5E 5E5E5E5E 5E5E5E5E 5E5E5E5E"
+user_hash = "0BADF00D DEADBEEF 0BADF00D DEADBEEF"
+impl = "rmule-kad-net Kad Stimulus Node (same node as the requester)"
+ip = "172.30.0.9"
+
+[[nodes]]
+role = "storer"
+kad_id = "B52D308E 5CA206B8 23FC8593 D26210F2"
+impl = "real aMule 2.3.x (amule-kad-patched image)"
+ip = "172.30.0.4"
+
+[[result.rows]]
+index = 0
+description = "the direct High ID source rmule published, as aMule re-serialized it"
+source_id = "0DF0AD0B EFBEADDE 0DF0AD0B EFBEADDE"
+source_id_meaning = "the publisher User Hash 0badf00ddeadbeef0badf00ddeadbeef word-swapped per 32-bit word (NOT the publisher Kad ID 0x5E..)"
+source_type = 1
+source_ip = "172.30.0.9"
+source_ip_wire_le = "09 00 1E AC" # host-order u32 (a<<24|b<<16|c<<8|d), little-endian => d c b a
+source_ip_authored_by = "aMule, from its observed publish sender (the publisher sent no SOURCEIP)"
+source_tcp_port = 4662  # SOURCEPORT 0xFD
+source_udp_port = 4679  # SOURCEUPORT 0xFC
+expected_projection = "PeerSource(ClientId 0x09001EAC, tcp 4662) -> endpoint 172.30.0.9:4662"
+
+[[result.rows.tags]]
+# aMule's actual tag order in the row (CEntry::WriteTagListInc: size first, then
+# the stored m_taglist: SOURCEIP+SOURCETYPE, SOURCEPORT, SOURCEUPORT).
+order = ["FILESIZE(0x02)", "SOURCEIP(0xFE)", "SOURCETYPE(0xFF)", "SOURCEPORT(0xFD)", "SOURCEUPORT(0xFC)"]
+filesize_tag_present = true
+filesize_value = 65536 # the 64 KiB synthetic file, re-emitted from the entry's m_uSize
+capture_correction = """
+The pre-capture notes predicted the captured row would carry NO FILESIZE tag
+(they believed aMule moves size to m_uSize and does not re-encode it). The capture
+corrects that: CEntry::WriteTagListInc (aMule Entry.cpp:153-155) DOES re-emit
+FILESIZE from m_uSize as a VarInt when serializing a source result. rmule's
+decoder ignores the unrecognized tag name and still projects the source.
+"""
+
+[evidence]
+# What this capture now proves (flipped out of SOURCE_RESULT_BLOCKED_BY).
+source_ip_tag_byte_order = "CAPTURE-PROVEN: SOURCEIP value is the host-order u32 of a.b.c.d, little-endian (wire d c b a). Decoding the captured bytes under this order reconstructs 172.30.0.9 (KadEvidence::SourceIpTagByteOrder)."
+source_id_meaning = "CAPTURE-PROVEN: the 16-byte per-row source ID equals the publisher User Hash word-swapped, not the Kad ID (KadEvidence::SourceIdMeaning)."
+ip_substitution = "CONFIRMED: the publisher sent no SOURCEIP; aMule authored one from its observed sender IP. aMule-authored bytes, not an echo."
+kad_id_byte_order = "already capture-proven by the prior 0x34/0x29 captures (KadEvidence::KadIdByteOrder)."
+public_kad_used = false
+
+[cross_reference]
+documentation_fixture = "source_lookup/documentation/0x3b-high-id-documented stays committed: it exercises the Low ID / buddy / firewalled / missing-port / deprecated diagnostic branches this single-row genuine capture does not."
+harness_verdict = "harness-verdict.txt (the scenario's PASS verdict, retained for provenance)"
+full_datagram = "datagram_0x3b_with_envelope.bin holds the on-wire datagram including the 0xE4 0x3B envelope; result_0x3b.bin is the stripped payload the decoder consumes."

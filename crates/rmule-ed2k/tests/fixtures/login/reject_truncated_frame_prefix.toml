@@ -1,0 +1,8 @@
+name = "reject_truncated_frame_prefix"
+provenance = "handwritten"
+source_note = "Synthetic malformed login packet with fewer than five frame prefix bytes"
+accepted = false
+reject_reason = "truncated frame prefix"
+
+[expected]
+kind = "login_request"

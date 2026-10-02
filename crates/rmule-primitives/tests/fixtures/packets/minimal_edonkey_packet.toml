@@ -1,0 +1,11 @@
+name = "minimal_edonkey_packet"
+provenance = "handwritten"
+source_note = "Minimal strict packet frame fixture"
+accepted = true
+
+[expected]
+protocol = "edonkey"
+protocol_byte = 227
+length = 3
+opcode = 1
+payload_hex = "AABB"

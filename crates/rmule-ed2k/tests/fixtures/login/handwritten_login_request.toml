@@ -1,0 +1,37 @@
+name = "handwritten_login_request"
+provenance = "handwritten"
+source_note = "Synthetic eD2k login request based on aMule ED2K protocol notes and historical eMule protocol specification"
+accepted = true
+
+[expected]
+kind = "login_request"
+protocol = "edonkey"
+opcode = 1
+user_hash = "00112233445566778899AABBCCDDEEFF"
+client_id = 0
+tcp_port = 4662
+tag_count = 4
+
+[[expected.tags]]
+name_id = 1
+name_encoding = "length-prefixed"
+value_kind = "string"
+value = "rmule-test"
+
+[[expected.tags]]
+name_id = 17
+name_encoding = "length-prefixed"
+value_kind = "u32"
+value = 60
+
+[[expected.tags]]
+name_id = 15
+name_encoding = "length-prefixed"
+value_kind = "u32"
+value = 4662
+
+[[expected.tags]]
+name_id = 32
+name_encoding = "length-prefixed"
+value_kind = "u32"
+value = 1

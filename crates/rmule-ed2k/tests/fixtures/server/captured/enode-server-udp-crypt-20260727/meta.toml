@@ -1,0 +1,42 @@
+# Genuine eNode server-UDP status replies — the plain advert AND the ENCRYPTED
+# crypt-pong — captured against an unmodified, independent Node.js eD2k server
+# (petermrg/eNode @59b81f7), on the crypt-ping leg of the server-UDP captures.
+#
+# ADR-0045: eNode is a real, independent, unmodified counterparty (built from its
+# own sources at a pinned commit; recipe tools/interop-harness/images/enode/), so
+# these are admissible evidence. Only eNode's own reply bytes are recorded here;
+# nothing is fabricated. The crypt-pong's random_key (and therefore its exact
+# ciphertext) is eNode's per-reply choice — decrypting the frozen bytes under the
+# advertised serverKey is deterministic.
+#
+# Provenance of the STIMULUS: rmule generated both requests with its own crypt
+# primitives (rmule_primitives::encrypt_datagram_server + rmule_ed2k::GlobServStatReq);
+# a thin container-side UDP relay only carried them onto the docker network,
+# because colima cannot NAT container->host UDP replies. eNode built the replies.
+
+[provenance]
+counterparty = "eNode (petermrg/eNode @59b81f7, unmodified; interop image rmule/interop-enode:local)"
+tool         = "rmule crypt primitives (encrypt/decrypt_datagram_server) via tools/rmule-tools examples/enode_crypt_stim + container UDP relay"
+date         = "2026-07-27"
+base_commit  = "07ac52b"
+
+[crypt]
+scheme       = "eMule EncryptedDatagramSocket (server family) — eNode ed2k/udpcrypt.js"
+base_key     = "0x12345678"   # eNode conf.udp.serverKey (hardcoded, advertised in 0x97)
+sync_server  = "0x13EF24D5 (MAGICVALUE_UDP_SYNC_SERVER, LE on the wire)"
+magic_to     = "0x6B (CLIENTSERVER, request key material)"
+magic_from   = "0xA5 (SERVERCLIENT, reply key material)"
+note         = "Both directions keyed on the server's own serverKey: RC4(MD5(serverKey_le || magic || random_key_le)). eNode has NO challenge-keyed path; rmule's raw challenge-keyed crypt-ping (encode_crypt_ping, [pending]) is therefore not what eNode speaks — see the verdict doc."
+
+[frames.status_res_0x97_crypt]
+opcode = "0x97 OP_GLOBSERVSTATRES — the ENCRYPTED crypt-pong (the leg's headline capture)"
+bytes  = "bc 56d7 <RC4(serverKey||0xA5||0xd756)( 13ef24d5 | 00 | e3 97 4200aa55 ... )>"
+layout = "randProtocol marker 0xBC | randomKey u16 LE 0xD756 | RC4 region = SYNC(0x13EF24D5 LE) + padlen(0) + inner 0x97"
+inner  = "e3974200aa55d00700000000000040420f0010270000204e00003b070000e80300004512411278563412"
+note   = "Obfuscated request → eNode's encrypted 0x97 that DECRYPTS: crypt_ping_answered=TRUE (the exact fact emulated Lugdunum fails). Decrypted inner echoes the request challenge 0x55AA0042, udp_flags=0x73B (UDP_OBFUSCATION 0x200 set), obf_udp_port=4677, obf_tcp_port=4673, server_udp_key=0x12345678. Decoded by decrypt_datagram_server + GlobServStatRes::decode_udp (test captured_enode_crypt.rs)."
+
+[frames.status_res_0x97_plain]
+opcode = "0x97 OP_GLOBSERVSTATRES — the PLAIN advert (control leg, plain UDP port 4665)"
+bytes  = "e3973412aa55d00700000000000040420f0010270000204e00003b070000e80300004512411278563412"
+layout = "proto 0xE3 | op 0x97 | challenge echo 0x55AA1234 LE | users u32=2000 | files u32=0 | max/soft/hard limits | udp_flags u32=0x73B | lowid u32 | obf_udp_port u16=4677 | obf_tcp_port u16=4673 | server_udp_key u32=0x12345678"
+note   = "The crypt advert: proves eNode announces UDP obfuscation + the serverKey the crypt-pong is keyed under. Independent of any login (login-gated flows crash the unmodified 2013 build — enode-spike-verdict.md)."

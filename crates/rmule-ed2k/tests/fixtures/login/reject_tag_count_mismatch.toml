@@ -1,0 +1,8 @@
+name = "reject_tag_count_mismatch"
+provenance = "handwritten"
+source_note = "Synthetic malformed login request with declared tag count larger than encoded tags"
+accepted = false
+reject_reason = "tag count mismatch"
+
+[expected]
+kind = "login_request"

@@ -1,0 +1,10 @@
+name = "server_status"
+provenance = "handwritten"
+source_note = "Synthetic OP_SERVERSTATUS (0x34) frame per docs/reference/notes/ed2k-welcome-packets.md OP_SERVERSTATUS section. Payload = u32 LE user_count (1000) + u32 LE file_count (50000). Note opcode is 0x34 per aMule TCP.h:49 — earlier rmule notes mistakenly used 0x41 which is actually OP_SERVERIDENT. Cited: aMule src/ServerSocket.cpp:384-399, eMule spec section 6.2.6."
+accepted = true
+
+[expected]
+protocol = "edonkey"
+opcode = 52
+user_count = 1000
+file_count = 50000

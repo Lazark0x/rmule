@@ -1,0 +1,21 @@
+name = "file_with_sources_amule_crypt_and_name"
+provenance = "handwritten"
+source_note = """
+aMule 2.3.3's entry grammar (ED2KLink.cpp:191-233): `sources,` anywhere in the link,
+matched after lower-casing the field, each entry `<host>:<port>[:<crypt>[:<hash>]]`
+with the user hash present when the crypt byte sets 0x80, and a host that may be a
+name (resolved by DownloadQueue.cpp:1315-1343). Crypt 129 = 0x81. Hosts RFC 5737 /
+example.org.
+"""
+accepted = true
+
+[input]
+link = "ed2k://|file|hello.txt|11|AA010FBC1D14C795D86EF98C95479D17|SOURCES,198.51.100.7:4662:129:31D6CFE0D16AE931B73C59D7E0C089C0,Peer.Example.org:5662|/"
+
+[expected]
+kind = "file"
+canonical = "ed2k://|file|hello.txt|11|AA010FBC1D14C795D86EF98C95479D17|/|sources,198.51.100.7:4662:129:31D6CFE0D16AE931B73C59D7E0C089C0,peer.example.org:5662|/"
+name = "hello.txt"
+size = 11
+file_hash = "AA010FBC1D14C795D86EF98C95479D17"
+sources = ["198.51.100.7:4662:129:31D6CFE0D16AE931B73C59D7E0C089C0", "peer.example.org:5662"]

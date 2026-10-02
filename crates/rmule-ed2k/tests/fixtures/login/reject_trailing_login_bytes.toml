@@ -1,0 +1,8 @@
+name = "reject_trailing_login_bytes"
+provenance = "handwritten"
+source_note = "Synthetic malformed login request with unused bytes after declared tags"
+accepted = false
+reject_reason = "trailing login bytes"
+
+[expected]
+kind = "login_request"

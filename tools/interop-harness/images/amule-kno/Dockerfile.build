@@ -1,0 +1,98 @@
+# kno's aMule at a **Fork Pin** (ADR-0092): the only counterparty body that
+# carries IPv6 dual-stack activation, the Kad `0x0a` tags, the uTP transport and
+# the eMuleAI NAT-T rendezvous at once.
+#
+#   Fork owner    kno
+#   Branch        integration/network-parity
+#   Commit        ab483654f3c975face368184912138513184e3f0  (2026-09-10)
+#   Upstream base amule-org/amule @ 1cbc7c50f39e1e940d4dc0257169633f00a71435
+#                 (ahead 117, behind 70, measured 2026-09-16)
+#
+# COMPILE STAGE. Build context is the PINNED SOURCE TREE, not this directory —
+# the fork's CMake build compiles from the context and needs the vendored
+# `src/extern/libutp`. The runtime image (`Dockerfile` beside this file) lifts
+# the binaries out of here and adds the harness entrypoint; two Dockerfiles
+# because the entrypoint lives in the harness tree and the source does not, and a
+# plain `docker build` sees exactly one context.
+#
+# Use `build.sh`, which verifies the pin first and runs both stages:
+#
+#   tools/interop-harness/images/amule-kno/build.sh
+#   tools/interop-harness/images/amule-kno/build.sh --quic
+#
+# ## Derived from the fork's own recipe, with two deliberate differences
+#
+# This is `packaging/linux/docker/Dockerfile` at the pin, minus two things:
+#
+# 1. **ffprobe is stripped.** The fork's image compiles a minimal ffprobe from an
+#    FFmpeg checkout so aMule can read length/bitrate/codec off shared media. The
+#    bench shares one deterministic **Synthetic File** of counting bytes; there is
+#    no media metadata to read, and the stage costs more wall clock than the whole
+#    aMule build. Removing it changes no protocol behaviour — it removes an
+#    optional helper aMule shells out to for local file inspection.
+#
+# 2. **The ngosang s6 operational layer is replaced** by the harness entrypoint
+#    beside this file, the same swap the stock `amule` image makes. The s6 layer
+#    supervises amuled, amuleweb and cron under an env-var contract designed for
+#    a long-lived home deployment; a flow wants one foreground daemon whose log is
+#    on stdout, and a **Readiness Gate** it can poll.
+#
+# Everything the *build* does is the fork's: the same base, the same dependency
+# set, the same CMake flags, the same `ENABLE_QUIC` arg. A recipe that quietly
+# changed a build flag would make every row captured from this body a row about
+# some other binary.
+#
+# `ENABLE_QUIC=YES` is the NAT-traversal variant. Its transport has never completed a
+# connection with another implementation — the fork's own README says so — which
+# is exactly why `natt-quic-handshake` is written as the gate for a separate
+# bit-4 flip and not as an assumption.
+
+FROM debian:trixie-slim AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# The fork's build dependency set, verbatim. libatomic1 is there for the 32-bit
+# targets the fork's multi-arch build covers; harmless here and kept so the
+# dependency list stays diff-able against upstream's.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake make git binutils-dev ca-certificates pkg-config libatomic1 \
+        libboost-dev libcrypto++-dev libmaxminddb-dev libglib2.0-dev libreadline-dev \
+        libwxgtk3.2-dev zlib1g-dev libpng-dev libupnp-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# QUIC build dependencies, only for the QUIC variant, so the default image keeps
+# exactly the dependency set the fork's default image has. ngtcp2 rides its
+# GnuTLS binding because Debian trixie packages that one and not the OpenSSL one.
+ARG ENABLE_QUIC=NO
+RUN if [ "$ENABLE_QUIC" = "YES" ]; then \
+        apt-get update && apt-get install -y --no-install-recommends \
+            libngtcp2-dev libngtcp2-crypto-gnutls-dev libgnutls28-dev \
+        && rm -rf /var/lib/apt/lists/* ; \
+    fi
+
+COPY . /tmp/amule-src
+RUN \
+    # libatomic1 ships only libatomic.so.1; find_library(atomic) needs the
+    # unversioned symlink. The fork's own recipe does this too.
+    so="$(find /usr/lib -name 'libatomic.so.1' -print -quit)" && [ -n "$so" ] \
+        && ln -sf "$(basename "$so")" "${so%.1}" ; \
+    quic_flag="" ; [ "$ENABLE_QUIC" = "YES" ] && quic_flag="-DENABLE_QUIC=YES" ; \
+    cmake -B /tmp/amule-build /tmp/amule-src \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_TESTING=NO \
+        -DBUILD_MONOLITHIC=NO \
+        -DBUILD_DAEMON=YES \
+        -DBUILD_AMULECMD=YES \
+        -DBUILD_WEBSERVER=NO \
+        -DBUILD_AMULEAPI=NO \
+        -DBUILD_ALCC=NO \
+        -DENABLE_UTP=YES \
+        -DUSE_SYSTEM_LIBUTP=NO \
+        ${quic_flag} \
+        -DENABLE_IP2COUNTRY=NO \
+        -DENABLE_UPNP=YES \
+        -DENABLE_NLS=NO && \
+    cmake --build /tmp/amule-build -j"$(nproc)" && \
+    cmake --install /tmp/amule-build && \
+    rm -rf /tmp/amule-build

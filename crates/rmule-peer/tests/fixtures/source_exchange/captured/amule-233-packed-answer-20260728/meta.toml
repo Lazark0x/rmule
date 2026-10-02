@@ -1,0 +1,45 @@
+# Packed peer frame — genuine stock aMule 2.3.3 wire bytes observed by rmule's
+# *requester* side (`0xD4`, which also covers the inbound inflate and the
+# `0x84` v4 consume: aMule has exactly two peer-TCP `PackPacket()` call
+# sites and both are `CreateSrcInfoPacket`, so a packed peer frame is only ever
+# an over-threshold source answer).
+#
+# 15 fabricated High-ID rmule identities, each in its own container on its own
+# static IP, registered the same hash on a live Lugdunum 17.15 eserver; a
+# downloading aMule learned all 15 through get-sources and established them;
+# rmule then dialed that aMule and asked it for sources. aMule's plain answer
+# would have been 454 bytes — over its 354-byte `PEER_PACK_THRESHOLD` — so it
+# zlib-packed the body and re-framed it as `0xD4`. Only counterparty bytes /
+# observable reactions are evidence (ADR-0045); nothing here is fabricated.
+
+[provenance]
+counterparty       = "aMule 2.3.3 (source pin 4e8f2b3), stock interop image rmule/interop-amule:local"
+server             = "Lugdunum eserver 17.15, stock interop image rmule/interop-eserver:local"
+scenario           = "rmule-interop-harness packed-source-exchange (flow I) --file-size 209715200 --amule-env AMULE_DOWNLOAD_SETTLE=25"
+run                = "w6-0xD4 (.scratch/interop-runs/1785243152)"
+date               = "2026-07-28"
+file_hash          = "C731E10A25F8694950D4F3DDAF810940"   # synthetic 200 MiB shared.bin, 22 parts
+file_size          = 209715200
+amule_user_hash    = "9B155D3AB60EB4A481F185AF7A4E6F6E"
+amule_client_id    = 50339756                             # 0x03001FAC = 172.31.0.3, High-ID
+
+# What made the run reach an answer at all — the two preconditions the earlier
+# attempts never satisfied simultaneously.
+[preconditions]
+registrant_client_ids = "15/15 High-ID, client_id == own container IP: 184557484..419438508 = 0x0B001FAC..0x19001FAC = 172.31.0.11..172.31.0.25"
+high_id_fix           = "the High-ID port-check fix — before it, every `rmule serve` registrant answered the eserver's OP_HELLO back-connect port-check too late and earned Low-ID (client_id=2), and Lugdunum never surfaces a Low-ID source in OP_FOUNDSOURCES, so aMule learned ~0 sources"
+amule_state           = "partfile at 0%, all 15 sources established and transferring (aMule's MaxDownload throttle converged to ~13 kB/s, so a 200 MiB file cannot complete inside the window; at 20 MiB it completed in ~10 s and dropped every source)"
+source_filter         = "CPartFile::CreateSrcInfoPacket @4e8f2b3 only exchanges sources that are !HasLowID() and DS_DOWNLOADING or DS_ONQUEUE-with-space, and whose part status is known and holds a needed part"
+
+# The frame rmule emitted to draw it (own bytes, not fixture-eligible).
+[request]
+wire   = "c51f000000a4 c731e10a25f8694950d4f3ddaf810940 0000800c00000000 58 4f 83040000"
+shape  = "one OP_MULTIPACKET_EXT (0xA4) bundle <hash16><size8=209715200> + subs [Name(0x58), SetReqId(0x4F), Sources2{version:4, options:0}(0x83)]"
+why    = "the bundle is the ONLY shape aMule 2.3.3 can answer. Its standalone OP_REQUESTSOURCES2 handler (src/ClientTCPSocket.cpp:1448) reads the 3 SX2 prefix bytes and then tests `size != 16` against the whole 19-byte payload, so every standalone SX2 request throws and drops the connection; the bundled sub-item handler (src/ClientTCPSocket.cpp:1143) has no such test. aMule's own emitter (src/DownloadClient.cpp:249) prefers the bundle against any MultiPacket peer, so this is also what a real aMule sends."
+
+[frames.answer_sources2_packed_0xD4]
+opcode  = "0x84 OP_ANSWERSOURCES2, proto 0xD4 (PackedEd2k)"
+framing = "d4 82000000 84 78da… — 135 bytes on the wire; the opcode byte survives the pack uncompressed right after the length word, the body is a 129-byte zlib stream"
+body    = "inflates to 454 bytes = 1 version(4) + 16 hash + 2 count(15) + 15 * 29 (v4 stride: id4 port2 srvIP4 srvPort2 userhash16 cryptopts1)"
+rows    = "the 15 registrants, 172.31.0.11..172.31.0.25 : 14662, each with a distinct User Hash"
+note    = "aMule answered at OP_ANSWERSOURCES2 (not 0x82) because the request carried an SX2 version byte — CPartFile::CreateSrcInfoPacket sets bIsSX2Packet from `SupportsSourceExchange2() && byRequestedVersion > 0`. rmule's advert (MiscOptions1 SX1 nibble 3 + MiscOptions2 bit 10 SX2) is what selects the v4 geometry."

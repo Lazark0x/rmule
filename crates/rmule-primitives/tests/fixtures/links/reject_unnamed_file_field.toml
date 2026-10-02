@@ -1,0 +1,8 @@
+name = "reject_unnamed_file_field"
+provenance = "handwritten"
+source_note = "A field with nothing before its `=` cannot be told apart from its value: malformed, refused, where an unknown named field is skipped (ADR-0089)"
+accepted = false
+reject_reason = "file link field with no name"
+
+[input]
+link = "ed2k://|file|hello.txt|11|AA010FBC1D14C795D86EF98C95479D17|=1|/"

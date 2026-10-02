@@ -1,0 +1,20 @@
+name = "server_ipv6"
+provenance = "handwritten"
+source_note = """
+ADR-0087 §6.4: an IPv6 literal is always bracketed on emission, and ingest
+accepts either spelling while storing the bracket-stripped form — the brackets
+are link syntax, not part of the address. The bracket is what makes a legacy
+client's `inet_addr()` fail and degrade the entry to an unresolvable dynIP
+hostname rather than deciding it understood something. Deterministic tier; the
+link grammar has no counterparty capture behind it.
+"""
+accepted = true
+
+[input]
+link = "ed2k://|server|2001:db8::1|4661|/"
+
+[expected]
+kind = "server"
+canonical = "ed2k://|server|[2001:db8::1]|4661|/"
+host = "2001:db8::1"
+port = 4661

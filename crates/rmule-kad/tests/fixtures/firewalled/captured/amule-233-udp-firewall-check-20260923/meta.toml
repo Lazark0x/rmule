@@ -1,0 +1,70 @@
+# ADR-0058's UDP self-check with **stock aMule 2.3.3 as the requester**: a
+# firewalled aMule behind a NAT gateway that forwards its Kad UDP port dialed a
+# fresh rmule UDP Firewall Helper, sent `OP_FWCHECKUDPREQ` (0xA7) over peer
+# TCP, and read its UDP verdict open off the helper's `KADEMLIA2_FIREWALLUDP`
+# (0x62). Captured on the gateway's WAN side by a tcpdump Capture Sidecar in
+# the gateway's netns during interop flow `natt-udp-selfcheck-amule`
+# Nothing is fabricated (ADR-0045): the `.bin` files
+# are the TCP / UDP payloads of the first matching packet in each run's pcap.
+#
+# ## What this fixture is evidence FOR
+#
+# - The 0xA7 frames are **aMule-authored**: the body `SendFirewallCheckUDPRequest`
+#   writes (`BaseClient.cpp:2937-2939`, aMule 2.3.3) — intern port, the extern
+#   port its extern-port round adopted, and its verify key for the helper's IP,
+#   nonzero with crypt off as well as on.
+# - The 0x62 datagrams are **rmule-authored and aMule-accepted**: each is the
+#   one datagram aMule's own debug log answers with `Received UDP FirewallCheck
+#   packet from <helper> with incoming port 4672` then `New Kad Firewallstate
+#   (UDP): Open, using intern port` in the same second. The crypt run's is the
+#   KadVerifyKey family keyed on the verify key the 0xA7 carried
+#   documentation-derived KAT, now met on the wire.
+
+[provenance]
+counterparty = "aMule 2.3.3, DEBUG build of the pinned Debian source package, image rmule/interop-amule-debug:local"
+scenario     = "cargo test -p rmule-interop-harness --test harness -- --ignored natt_udp_selfcheck_amule[_crypt] (natt natt-udp-selfcheck-amule [--kad-crypt] --skip-build)"
+run_plain    = "1790147257 — AMULE_KAD_CRYPT off; helpers unarmed"
+run_crypt    = "1790148195 — AMULE_KAD_CRYPT=1 on aMule; both helpers --peer-crypt requested"
+date         = "2026-09-23"
+subnet       = "45.55.200.0/24 fake-public WAN (docker --internal); aMule on LAN 10.78.0.3 behind a full-cone-pinned natgw"
+amule        = "45.55.200.4 (the gateway's WAN address) — Kad UDP 4672 forwarded 1:1, eD2k TCP 4662 not forwarded; Kad ID 0x11 x16, user hash NOT the pinned 0x42 x16: `AMULE_USER_HASH`'s `set_config UserHash` wrote a key aMule never reads back (its identity lives in `preferences.dat`, `Preferences.cpp` kno `ab483654`), so these two runs carried whatever hash aMule minted at its own bootstrap, uncaptured here — the 0xA7/0x62 frames this fixture is evidence for carry no user-hash field, so the miss does not touch them. Confirmed ineffective by run `1790155945` (observed `OP_HELLO` hash `605c3f3bf30ecdeb3b97b423c6726f70`, unrelated to the intended pin) and since fixed (`preferences.dat` write, `tools/interop-harness/images/amule/entrypoint.sh`)"
+helpers      = "45.55.200.7 / 45.55.200.8 — rmule UDP Firewall Helpers, Kad IDs 0x66 x16 / 0x99 x16, known only to the root"
+root         = "45.55.200.2 — rmule, Kad ID 0xEE x16; aMule's nodes.dat names it and the storer, nobody else"
+storer       = "45.55.200.9 — rmule, placed at the Synthetic File's Kad key 9c80bf71ef23818818825e2bdb0f5ae6"
+
+# How aMule found helpers it had never spoken to: its helper lookup's rows go to
+# the tester only (`KademliaUDPListener.cpp:739-740`), and the tester admits a
+# row only when its IP is absent from the routing zone
+# (`UDPFirewallTester.cpp:250`). On a one-/24 bench `CRoutingBin::AddContact`
+# admits two contacts per /24 per bin (`RoutingBin.cpp:89`), so the seeded root
+# and storer fill that quota and the helpers stay fresh.
+[preconditions]
+extern_port = "`QueryNextClient` waits for the extern-port round (`UDPFirewallTester.cpp:218`): two pongs naming 4672 (`Set external Kad port to 4672`, `Prefs.cpp:294`) opened it — 14 s after Kad start in the plain run, 61 s in the crypt run"
+tcp_verdict = "firewalled throughout: nothing forwards TCP 4662 (`Connected to Kad (firewalled)`, `amulecmd status` `Kad: Connected (firewalled)`)"
+
+[frames.fwcheckudpreq_0xa7_plain]
+file      = "fwcheckudpreq_0xa7_plain.bin"
+direction = "aMule 45.55.200.4:54756 -> helper 45.55.200.7:4662 (peer TCP)"
+bytes     = "c5 09000000 a7 | 4012 4012 299dcfa9 — intern 4672, extern 4672, verify key 0xa9cf9d29"
+
+[frames.firewalludp_0x62_plain]
+file      = "firewalludp_0x62_plain.bin"
+direction = "helper 45.55.200.7:4672 -> aMule 45.55.200.4:4672, 145 us after the 0xA7"
+bytes     = "e4 62 | 00 4012 — error code 0 (unbiased), tested port 4672"
+accepted  = "aMule: `Received UDP FirewallCheck packet from 45.55.200.7 with incoming port 4672`; `New Kad Firewallstate (UDP): Open, using intern port` (07:10:39)"
+
+[frames.fwcheckudpreq_0xa7_crypt]
+file      = "fwcheckudpreq_0xa7_crypt.bin"
+direction = "aMule 45.55.200.4:60306 -> helper 45.55.200.8:4662 (peer TCP, unobfuscated)"
+bytes     = "c5 09000000 a7 | 4012 4012 98033c8e — verify key 0x8e3c0398"
+
+[frames.firewalludp_0x62_keyed]
+file      = "firewalludp_0x62_keyed.bin"
+direction = "helper 45.55.200.8:4672 -> aMule 45.55.200.4:4672"
+layout    = "marker 0x52 (family bits 10 = KadVerifyKey) + random key a778 + RC4(sync, padlen 0, receiver key, sender key, e4 62 00 40 12) — 21 bytes; the harness lifted the same bytes into its run dir as helper-answer-0x62.bin"
+accepted  = "aMule: `Received UDP FirewallCheck packet from 45.55.200.8 with incoming port 4672`; `New Kad Firewallstate (UDP): Open, using intern port` (07:26:55)"
+
+# The row this flow was built for and did NOT reach, recorded rather than forced.
+[finding.no_amule_authored_type_6_row]
+what = "UDP open + TCP firewalled, and aMule published nothing at all — no 0x44 at the storer, `Starting BuddySearch` x0, `Search request type: StoreFile` x0 over five minutes past its NODECOMPLETE self-lookup, in both runs."
+why  = "stock 2.3.3's `CSharedFileList::Publish` runs only when `!IsFirewalled || GetBuddyStatus() == Connected` (`SharedFileList.cpp:773`; `KnownFile.cpp:1308-1318` likewise returns false for a firewalled node with no buddy); the buddy search runs only while BOTH verdicts read firewalled (`ClientList.cpp:686-687`), and a High-ID buddy is dropped the moment they do not (`ClientList.cpp:706-712`). eMule's `bDirectCallback` clause, which lets a UDP-open firewalled node publish buddyless, is absent. kno `ab483654` carries the same gate (`SharedFileList.cpp:1735-1737`)."

@@ -1,0 +1,40 @@
+# ExtSX source answer — emule-qt's own OP_ANSWERSOURCES2 carrying an IPv6
+# source in the CT_MOD_IP_V6 tag (ADR-0087), drawn over IPv6 on the IPv6
+# dual-stack bench by `ipv6-extsx`.
+#
+# The bytes are emule-qt's. The source it describes is an rmule body the flow
+# queued on emule-qt's shared file — its hello named 3fff:ed2:1::7 — so the
+# record is emule-qt's statement about a peer it was told of, the Stimulus
+# that told it recorded beside. Only counterparty bytes are evidence
+# (ADR-0045); ADR-0087's evidence table names emule-qt `73fff714` as one of
+# the two ExtSX oracles. The same 68 bytes sit whole in packet 63 of the
+# run's tap (`ipv6/ipv6-extsx/tap-wan.pcap`, emule-qt's own attachment,
+# 3fff:ed2:1::3.4662 > 3fff:ed2:1::6.59550).
+
+[provenance]
+counterparty   = "ModderMule/emule-qt 73fff714 emulecored, direct-peer mode, image rmule/interop-emuleqt:local (sha256:a2b85252111e6f82eba23304562c919e1f074f52c6e96dff33f38741cae27232)"
+driver         = "rmule-tools ipv6 hold-slot + ipv6 sx-ask, image rmule/interop-rmule-tools"
+scenario       = "rmule-interop-harness ipv6-dialect ipv6-extsx (acceptance ipv6_extsx)"
+run            = "1790195410"
+verdict        = "PASS, 5 of 5 claims held"
+reproduced     = "run 1790196047 (same image pair, after the admission fix): byte-identical 68-byte answer, PASS 6 of 6"
+date           = "2026-09-23"
+wan            = "45.55.200.0/24 + 3fff:ed2:1::/64, fake-public dual-stack"
+file_hash      = "879B7240FE00815F5431AE7086B8C939"   # synthetic 1 MiB shared.bin, one part
+file_size      = 1048576
+
+[bodies]
+emuleqt        = "3fff:ed2:1::3 — shares shared.bin (\"Hashed OK: /incoming/shared.bin (1048576 bytes)\")"
+queued         = "3fff:ed2:1::7 — rmule, user hash 5151…51, client id 0, hello CT_MOD_IP_V6 = 3fff:ed2:1::7; emule-qt granted its OP_STARTUPLOADREQ (slot_granted, 10240 bytes served) and held it for the ask"
+asker          = "3fff:ed2:1::6 — rmule, user hash 4242…42, hello 0xAA claims EXTXS + EXTXS_SKIPTAGS, MiscOptions2 SX2"
+
+# The frame rmule emitted to draw it (own bytes, not fixture-eligible).
+[request]
+wire  = "c51e000000 a4 879b7240fe00815f5431ae7086b8c939 0000100000000000 58 83040000"
+shape = "one OP_MULTIPACKET_EXT (0xA4) bundle <hash16><size8=1048576> + subs [Name(0x58), Sources2{version:4, options:0}(0x83)] — one part, so no 0x4F"
+
+[frames.emuleqt_op_answersources2_extsx_ipv6]
+opcode  = "0x84 OP_ANSWERSOURCES2, proto 0xC5, 68 bytes, unpacked (under emule-qt's 354-byte pack threshold)"
+layout  = "01 version (ExtSX pins 1) | hash16 | 0100 count=1 | record: 00000000 clientID | 3612 port 4662 | 02 tagCount | 81 ae <16> CT_MOD_IP_V6 = 3fff:ed2:1::7 | 81 bc <16> CT_EMULE_USERHASH = 5151…51"
+why     = "KnownFile::createSrcInfoPacket answers a complete shared file out of m_uploadingClients (Uploading/OnUploadQueue); the ExtSX path keeps a Low-ID client whose hello latched a public IPv6 (KnownFile.cpp:849, UpDownClient.cpp:1007) and writes it as CT_MOD_IP_V6 (KnownFile.cpp:937); USERHASH rides because the asker claimed SKIPTAGS; no CONOPTS (the queued body advertised no crypt, so the byte is zero and omitted); no SERVERIP/SERVERTCP (no server session)"
+client_id = "zero: htonl(userIDHybrid) of a client whose hello carried id 0 — not the Low-ID placeholder 1 rmule writes for an IPv6-only source"

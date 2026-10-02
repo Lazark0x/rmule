@@ -1,0 +1,110 @@
+name: Interop mismatch
+description: rmule and another eD2k or Kad client or server disagree about the protocol
+title: "interop: "
+labels: ["interop"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        rmule aims to behave like a stock aMule or eMule on the wire. When it does not, that is a bug even if both sides keep running. These reports are the most valuable ones we get.
+
+        The more precisely you can say who did what, the faster this gets fixed. Captures and logs can contain IP addresses and user hashes; trim or redact what you do not want public.
+  - type: dropdown
+    id: counterparty
+    attributes:
+      label: Counterparty client or server
+      description: The program rmule was talking to. Pick the closest match.
+      options:
+        - aMule
+        - eMule
+        - An eMule-based client (eMule Plus, eMuleAI, and similar)
+        - A server (eserver, Lugdunum, or another)
+        - Another eD2k or Kad client
+    validations:
+      required: true
+  - type: input
+    id: counterparty_version
+    attributes:
+      label: Counterparty name and exact version
+      description: Name and full version, including whether it is a stock build, a fork or a patched build.
+      placeholder: "aMule 2.3.3, eMule 0.50a, eMuleAI 1.4, ..."
+    validations:
+      required: true
+  - type: input
+    id: counterparty_platform
+    attributes:
+      label: Counterparty operating system
+      placeholder: "Windows 11, Debian 13, macOS 15, ..."
+    validations:
+      required: false
+  - type: dropdown
+    id: network
+    attributes:
+      label: Network and channel
+      options:
+        - eD2k server connection (TCP)
+        - eD2k server UDP (status, search, sources)
+        - "eD2k peer to peer (TCP: hello, transfers, secure identification)"
+        - "eD2k peer to peer (UDP: queue ranking, reasks)"
+        - "Kad (UDP: bootstrap, search, publish, firewall check)"
+        - Obfuscation or encryption of any of the above
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: rmule_did
+    attributes:
+      label: What rmule did
+      description: What rmule sent, accepted, answered or ignored. Opcodes and packet bytes are ideal; log lines are fine.
+    validations:
+      required: true
+  - type: textarea
+    id: counterparty_did
+    attributes:
+      label: What the counterparty did
+      description: What it sent, accepted, answered or ignored in the same situation, and how you know.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: Which behaviour is the reference? For example, how the counterparty behaves with another stock client, or what its documentation or source says.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Capture, log or reproduction
+      description: Paste a hex dump or log excerpt here. Larger captures can be attached to a comment once the issue exists. Steps that reproduce it on your setup are worth a lot.
+      render: text
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: rmule version
+      description: The release you installed, or the commit you built (`git rev-parse --short HEAD`).
+      placeholder: "0.1.0, or a commit hash"
+    validations:
+      required: true
+  - type: dropdown
+    id: reachability
+    attributes:
+      label: How rmule was reachable
+      description: Whether other peers could connect to you affects what is exchanged.
+      options:
+        - Directly reachable (open port, High ID)
+        - Behind NAT or a firewall (Low ID)
+        - Not sure
+    validations:
+      required: false
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Before you submit
+      options:
+        - label: The counterparty is the build I named above, not a different one.
+          required: true
+        - label: I searched the existing issues and did not find this mismatch.
+          required: true

@@ -1,0 +1,80 @@
+# Genuine search frames from the **search-wire** bench leg (`tools/interop-harness` subcommand
+# `search-wire`), 2026-09-28: aMule's own
+# `OP_SEARCHREQUEST`s, and the answers Lugdunum and ed2k-server gave to aMule
+# and to rmule. A passive tcpdump sidecar on the server container's namespace
+# wrote every frame; each `.bin` below is one whole TCP frame (`0xE3`, u32
+# length, opcode, payload) sliced out of that pcap, never edited. rmule's own
+# request bytes are not evidence and are not kept here — only the counterparty's.
+#
+# ## What this fixture is evidence FOR
+#
+# - **The multi-word form** (`docs/protocol/search-request.md`, ruling 1):
+#   aMule joins `ubuntu desktop` into one `0x01` term (captured, not derived);
+#   Lugdunum answers that term and rmule's AND-ed words with byte-identical
+#   `OP_SEARCHRESULT`s.
+# - **`OR` / `NOT`** as aMule's parser writes them, and Lugdunum's answers.
+# - **Related-Files Search** replies from Lugdunum: a five-source file answers
+#   with itself and the file its other sources hold; a one-source file answers
+#   empty. Both end in a `0x00` more-results byte.
+# - **ed2k-server's `FT_FILETYPE` as an integer**, which rmule's row decoder
+#   used to refuse, dropping the whole answer.
+
+[provenance]
+date        = "2026-09-28"
+tool        = "rmule-interop-harness search-wire (tools/interop-harness/src/flow/ed2k_server/search_wire.rs), probe rmule-tools ed2k server search-wire"
+lugdunum    = "run 1790603580, image rmule/interop-eserver:local (eserver 17.15, 'server version 17.15 (lugdunum)'), pcap search-wire/lugdunum/server.pcap in the run's output directory"
+ed2k_server = "run 1790604060, image rmule/interop-ed2ksrv:local (andrey23127/ed2k-server, bench pin per tools/interop-harness/images/ed2ksrv/pin.env), pcap search-wire/ed2k-server/server.pcap in the run's output directory"
+amule       = "image rmule/interop-amule:local, sharer 1 at 203.0.113.21 (Lugdunum leg), its searches driven by `amulecmd -c 'Search local <text>'`; crypt layer off so the frames are plain"
+rmule       = "the search-wire probe at 203.0.113.28 (Lugdunum High-ID) and 203.0.113.48 (ed2k-server High-ID)"
+
+[frames.amule_search_req_joined_0x16]
+direction = "aMule -> Lugdunum"
+typed     = "ubuntu desktop"
+wire      = "01 0e 00 'ubuntu desktop' — one term, the words joined"
+
+[frames.amule_search_req_joined3_0x16]
+direction = "aMule -> Lugdunum"
+typed     = "ubuntu desktop wire"
+wire      = "01 13 00 'ubuntu desktop wire' — one term"
+
+[frames.amule_search_req_or_0x16]
+direction = "aMule -> Lugdunum"
+typed     = "desktop OR server"
+wire      = "00 01 | 01 'desktop' | 01 'server'"
+
+[frames.amule_search_req_not_0x16]
+direction = "aMule -> Lugdunum"
+typed     = "ubuntu NOT server"
+wire      = "00 02 | 01 'ubuntu' | 01 'server'"
+
+[frames.lugdunum_search_res_joined_0x33]
+direction = "Lugdunum -> aMule, the answer to amule_search_req_joined_0x16"
+rows      = ["ubuntu-desktop-wire.bin"]
+
+[frames.lugdunum_search_res_split_0x33]
+direction = "Lugdunum -> rmule, the answer to rmule's AND('ubuntu','desktop')"
+rows      = ["ubuntu-desktop-wire.bin"]
+note      = "byte-identical to lugdunum_search_res_joined_0x33 (the same server row, the same sharer)"
+
+[frames.lugdunum_search_res_or_0x33]
+direction = "Lugdunum -> aMule, the answer to the OR tree"
+rows      = ["ubuntu-desktop-wire.bin", "ubuntu-server-wire.bin"]
+
+[frames.lugdunum_search_res_not_0x33]
+direction = "Lugdunum -> aMule, the answer to the NOT tree"
+rows      = ["ubuntu-desktop-wire.bin"]
+
+[frames.lugdunum_related_res_0x33]
+direction = "Lugdunum -> rmule, the answer to related::CC89B84BA373B4A4741F225B9D478958 (relatedpopular-wire.bin, 5 sources)"
+rows      = ["relatedpopular-wire.bin", "relatedcompanion-1-wire.bin (held by sharers 1-4 under four names, one hash)"]
+more      = "trailing 0x00"
+
+[frames.lugdunum_related_res_rare_0x33]
+direction = "Lugdunum -> rmule, the answer to related::FD056A5C097735177A7246BE7E7C80A4 (relatedrare-wire.bin, 1 source)"
+rows      = []
+more      = "trailing 0x00"
+
+[frames.ed2ksrv_search_res_typetag_0x33]
+direction = "ed2k-server -> rmule, the answer to rmule's AND('ubuntu','desktop')"
+rows      = ["ubuntu-desktop-wire.bin"]
+note      = "the row carries `83 03 04 00 00 00` — FT_FILETYPE as the u32 4; Lugdunum sends no FT_FILETYPE for this file"

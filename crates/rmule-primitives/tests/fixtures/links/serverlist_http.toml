@@ -1,0 +1,12 @@
+name = "serverlist_http"
+provenance = "handwritten"
+source_note = "Server-list payload is preserved without aggressive URL normalization"
+accepted = true
+
+[input]
+link = "ed2k://|serverlist|http://example.invalid/server.met|/"
+
+[expected]
+kind = "serverlist"
+canonical = "ed2k://|serverlist|http://example.invalid/server.met|/"
+address = "http://example.invalid/server.met"

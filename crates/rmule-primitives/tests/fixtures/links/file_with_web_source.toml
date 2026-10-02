@@ -1,0 +1,19 @@
+name = "file_with_web_source"
+provenance = "handwritten"
+source_note = """
+eMule's `s=<url>` parameter (emule-qt 73fff71 srchybrid/ED2KLink.cpp:140-173): a URL
+with a host becomes a web source. aMule skips the field. rmule reads and keeps it; it
+downloads nothing over HTTP.
+"""
+accepted = true
+
+[input]
+link = "ed2k://|file|hello.txt|11|AA010FBC1D14C795D86EF98C95479D17|s=http://example.invalid/hello.txt|/"
+
+[expected]
+kind = "file"
+canonical = "ed2k://|file|hello.txt|11|AA010FBC1D14C795D86EF98C95479D17|s=http://example.invalid/hello.txt|/"
+name = "hello.txt"
+size = 11
+file_hash = "AA010FBC1D14C795D86EF98C95479D17"
+web_sources = ["http://example.invalid/hello.txt"]

@@ -1,0 +1,21 @@
+┌ Downloads (3) ─────────── s sort  S reverse  C clear completed  L add link ┐
+│  File ▲      Size       Done Progress   Speed      ETA    Src   Status     │
+│▸ bunny.mp4   87.7 MB    42%  ██░█▓░█▓░░ —          —      8 (1) Paused     │
+│  ABABABABAB… ≈ 27.8 MB  —    ░░░░░░░░░░ —          —      0     Paused     │
+│  5C5C5C5C5C… 42.9 MB    100% ██████████ —          —      1     Completed  │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+┌ Sources · bunny.mp4 ──────────────────────────────────── s sort  S reverse ┐
+│  Source ▲                   Software            Phase            Speed     │
+│▸ 10.0.0.1:4662              aMule v2.3.3        recv p4          98.7 KB/s │
+│  10.0.0.2:4662 · remembered —                   queued           —         │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘

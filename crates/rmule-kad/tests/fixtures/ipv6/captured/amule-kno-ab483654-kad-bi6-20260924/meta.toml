@@ -1,0 +1,62 @@
+# Kad's `bi6` tag (ADR-0087) re-served by kno's aMule at its **Fork Pin**
+# `ab483654`, captured on the IPv6 dialect bench during interop flow
+# `ipv6-dialect ipv6-kad-tags`. Every `.bin` is
+# one UDP payload lifted byte for byte off a tcpdump on **kno's own**
+# attachment; nothing is fabricated (ADR-0045).
+#
+# ## What these frames are evidence FOR
+#
+# kno's fork writes no `bi6` (`Search.cpp:901` appends only `ip6`; the
+# neighbouring `amule-kno-ab483654-kad-ip6-20260923/` has its own publish as the
+# measured zero) and only reads it (`Search.cpp:1205-1224`). rmule now
+# writes one: a firewalled publisher closes its type-3 buddy row with `bi6` =
+# its buddy's IPv6, upper-case hex like `ip6`. These frames settle two
+# sentences:
+#
+# 1. **kno stores and re-serves our `bi6`.** A storer indexes every tag it does
+#    not recognise verbatim (`KademliaUDPListener.cpp:1402`), so the `0x3B` it
+#    answered the firewalled publisher's search with carries rmule's `bi6` byte
+#    for byte, case included, among the tags kno authored itself.
+# 2. **aMule packs it.** The answer holds two rows (the firewalled row and the
+#    direct publisher's row for the same file) and passes aMule's 200-byte line,
+#    so it goes out as a packed `0xE5` datagram (zlib, 155 bytes on the wire,
+#    268 inflated) — the first packed aMule-authored `0x3B` this tree keeps.
+#    rmule's envelope decoder inflates it and the source-row projection reads
+#    the `bi6` into the row's buddy contact, never into a direct IPv6 source.
+#
+# The first run of this flow (1790214948) lifted nothing here: its filter
+# matched `0xE4` alone. Its fw publisher's own log had already decoded kno's
+# packed answer, `bi6` included.
+
+[provenance]
+scenario          = "rmule-interop-harness ipv6-dialect ipv6-kad-tags --skip-build --timeout 180 (the harness CLI run directly: the flow's ~10 min wall exceeds the wrapper's budget; verdict then checked against `ipv6_kad_tags`'s claim list)"
+run               = "1790216063 — PASS, 10 of 10 claims held"
+date              = "2026-09-24"
+evidence_archive  = "bench run 1790216063"
+wan               = "45.55.200.0/24 + 3fff:ed2:1::/64 (fake-public, docker --internal, dual-stack)"
+kno_commit        = "ab483654f3c975face368184912138513184e3f0 (kno/amule integration/network-parity; upstream base 1cbc7c50f39e1e940d4dc0257169633f00a71435)"
+kno_image         = "rmule/interop-amule-kno sha256:67036ffa0fc78125a6ae70b9eb661a06c393e21877d011cc935e3cc2d506cd4f (runtime stage, built from this tree's recipe; `:local` predated the Seeded Bootstrap scenario entrypoint and could not run the flow)"
+kno_build_image   = "rmule/interop-amule-kno-build:local sha256:4b43c5a1574a6f674f3ad049faf5268c2cbc42a5765a6d59e8f2351e6bcf123a (the compile stage the runtime lifts amuled from)"
+rmule_tools_image = "rmule/interop-rmule-tools sha256:e482832916e3e9beef7c4d579a276f2c34f0ad8eac2fdb2bf00c06a59ea8d9a3"
+ed2ksrv_image     = "rmule/interop-ed2ksrv:local sha256:14d2e250c69cfd11b65eb3a0acb01ece832b36a626f333e9254101d15f4a860e (ed2k-server 4da4774, v0.9.75)"
+capture_image     = "rmule/interop-capture:local sha256:104262fb88b284d53b6e08caa96e03613bdb7c062a4629a3704c67c0b378b315"
+
+[bodies]
+kno          = "45.55.200.2 / 3fff:ed2:1::2 — Kad+client UDP 4672, crypt off (ed2k-server-kad scenario mode); Kad ID e58b243f615b6eacb0a6f7be3dd054ae, pinned to the key of the 2 MiB file both rmule publishers publish"
+publisher    = "45.55.200.8 / 3fff:ed2:1::8 — `rmule-tools kad join-node --advertised-ipv6 3fff:ed2:1::8`, user hash 50×16; its direct row is the answer's second row"
+fw_publisher = "45.55.200.7 — `rmule-tools kad join-node --publish-buddy-id 89abcdef0123456776543210fedcba98 --publish-buddy-udp 45.55.200.8:4672 --publish-buddy-ipv6 3fff:ed2:1::8`, user hash 46×16: the row a real Core's slot publishes once its held buddy link knows the buddy's IPv6, stated as Stimulus"
+files        = "Synthetic File, byte = offset % 251, 2 MiB (ED2K 3F248BE5AC6E5B61BEF7A6B0AE54D03D)"
+
+[frames.amule_kno_search_res_bi6_0x3b]
+opcode    = "0x3B KADEMLIA2_SEARCH_RES, PACKED (proto 0xE5, zlib payload)"
+direction = "kno 45.55.200.2:4672 -> rmule fw publisher 45.55.200.7:4672"
+observed  = "02:18:04.219240 UTC, answering the fw publisher's search 16 s after its 0x44"
+length    = "155 bytes on the wire; 268 inflated (proto+opcode + 266)"
+layout    = "inflated: kno's own Kad ID(16) + target(16), identical + count(u16)=2 + two rows"
+row_1     = "sourceID 46×16, 9 tags: FILESIZE u32 2097152, SOURCEIP u32 45.55.200.7 (kno-authored), SOURCETYPE 3, SERVERIP (buddy IP) 45.55.200.8, SERVERPORT (buddy UDP) 4672, BUDDYHASH `89ABCDEF0123456776543210FEDCBA98`, SOURCEPORT 4662, bi6 `3FFF0ED2000100000000000000000008` (rmule's string, re-served verbatim), SOURCEUPORT u16 4672 (kno-authored)"
+row_2     = "sourceID 50×16, 6 tags: FILESIZE u32 2097152, SOURCEIP 45.55.200.8, SOURCETYPE 1, SOURCEPORT 4662, ip6 `3FFF0ED2000100000000000000000008` (rmule's upper-case string, re-served verbatim), SOURCEUPORT u16 4672"
+
+[frames.rmule_firewalled_publish_source_req_0x44]
+role      = "STIMULUS — rmule's own bytes, kept so the verbatim re-serve in the 0x3B is checkable; never evidence about kno"
+direction = "rmule fw publisher 45.55.200.7:4672 -> kno 45.55.200.2:4672, 02:17:48.211683 UTC"
+length    = "146 bytes, plain 0xE4; a type-3 buddy row closed with bi6 `3FFF0ED2000100000000000000000008`"

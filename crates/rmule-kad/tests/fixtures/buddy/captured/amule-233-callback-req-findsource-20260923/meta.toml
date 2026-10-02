@@ -1,0 +1,93 @@
+# Genuine stock aMule 2.3.3 **`KADEMLIA_CALLBACK_REQ` (`0x52`) from the
+# FINDSOURCE search** — aMule's second `0x52` writer, taken when a type-3 row
+# names its buddy by `TAG_BUDDYHASH` but carries no `TAG_SERVERIP`/
+# `TAG_SERVERPORT`. Captured on the fake-public Kad bench (Config A) during
+# interop (flow M `kad-core-buddy --publish-source --amule-requester --omit-buddy-endpoint`).
+# Every frame is bytes off a
+# tcpdump on the bench; nothing is fabricated (ADR-0045).
+#
+# ## What this fixture is evidence FOR
+#
+# `amule-233-callback-req-20260923` captured the `0x52` aMule writes
+# with the buddy endpoint known (`BaseClient.cpp:2133-2141`, kno `ab483654`).
+# With the endpoint absent `TryToConnect` takes the other branch
+# (`BaseClient.cpp:2159-2175`): it logs `Searching buddy for lowid
+# connection`, starts a `FINDSOURCE` search targeted at the row's buddy ID
+# with the file hash as its one file ID, and the search sends the `0x52` to
+# each responded contact within `SEARCHTOLERANCE` of that ID
+# (`Search.cpp:1081-1122`). Nobody had captured aMule doing that.
+#
+# Here the stock requester read the ID-only row, logged the branch, sent a
+# `KADEMLIA2_REQ` (`0x21`, `count=2` = `KADEMLIA_FIND_VALUE`) targeted at the
+# buddy ID to the rmule buddy — the contact at distance 0 — took its `0x29`,
+# and on the search's next jump-start (3 s of quiet) logged `Search request
+# type: FindSource` / `KadCallbackReq to 203.0.113.3:4679` and wrote this
+# datagram. Field by field it is the FINDSOURCE body (`Search.cpp:1092-1100`):
+# `WriteUInt128(m_target)` (the buddy ID, `CUInt128(GetBuddyID())`),
+# `WriteUInt128(m_fileIDs.front())` (the file hash), `WriteUInt16(GetPort())`.
+#
+# **Byte for byte it is that fixture's `0x52`** (`cmp` silent): same buddy ID in wire
+# order `FFEEDDCC…`, same file ID `60919D00…`, same port 4662. The two aMule
+# writers agree on every field spelling. It left plaintext `0xE4`: the Kad
+# listener sends under the contact's key only with aMule's crypt layer
+# supported, and this bench's aMule runs it off (flow M's plain-`0xE4` posture).
+#
+# ## Admissibility of the ID-only row (ADR-0045)
+#
+# No stock aMule writes a type-3 row without the buddy endpoint — its publisher
+# always has it (`Search.cpp:840-855`) — and a patched aMule is not admissible.
+# So the row's publisher is **rmule**: a `kad join-node` whose source publish
+# names the rmule buddy by ID alone (`--publish-buddy-id`, rmule-kad's
+# `SetBuddyPublish` writer with `buddy_udp: None`). The firewalled aMule shares
+# nothing in this variant, so its own endpoint-carrying row never exists. The
+# evidence — the `0x21` walk and the `0x52` — is the stock requester's.
+#
+# `storer_search_res_0x3b.bin` is the context: the rmule storer's `0x3B` with
+# the one row (rmule-authored, aMule-consumed: `Trying to add a source type 3,
+# ip 203.0.113.8:4672` / `Happily adding a source (203.0.113.8:4662) type 3`).
+# Its tags: SOURCEIP, SOURCETYPE 3, SOURCEPORT 4662, SOURCEUPORT 4672,
+# BUDDYHASH `CCDDEEFF8899AABB4455667700112233` — no SERVERIP, no SERVERPORT.
+# `findsource_walk_req_0x21.bin` is the walk's request (aMule-authored).
+
+[provenance]
+counterparty       = "aMule 2.3.3, DEBUG build, image rmule/interop-amule-debug (sha256:43d47bc7f85f), AMULE_DEBUG_PEER_CATEGORIES=1; source readings at amule-kno ab483654"
+rmule_tools_image  = "rmule/interop-rmule-tools (sha256:8b9db0e31ed2), built from 30e25770"
+scenario           = "cargo test -p rmule-interop-harness --test harness -- --ignored kad_buddy_amule_requester_id_only_row (kad-core-buddy --publish-source --mesh-members 3 --amule-requester --omit-buddy-endpoint --file-size 4194304 --window 1800)"
+run                = "1790190646"
+date               = "2026-09-23"
+subnet             = "203.0.113.0/24 (RFC 5737 fake-public, Config A; docker --internal)"
+firewalled_amule   = "203.0.113.2 — Kad UDP 4674, eD2k TCP 4662 (iptables-DROPped), Kad ID 00112233445566778899aabbccddeeff; shares nothing, holds the buddy link"
+buddy_endpoint     = "203.0.113.3 — rmule Core-pumped stimulus, Kad UDP 4679, serve listener TCP 4663, Kad ID ffeeddccbbaa99887766554433221100 (~aMuleKadID)"
+storer_endpoint    = "203.0.113.6 — rmule kad join-node, Kad UDP 4690, Kad ID 60919d00d6860d7b31f6af4f64d82ee0 (storer_kad_id_for_file_hash, distance 0)"
+publisher          = "203.0.113.8 — rmule kad join-node, Kad UDP 4672, Kad ID 5c x16, user hash 77 x16; --publish-buddy-id ffeeddccbbaa99887766554433221100"
+requester          = "203.0.113.7 — stock aMule (same image), Kad UDP 4704, eD2k TCP 4662, Kad ID 2e x16"
+file               = "shared.bin, 4194304 bytes, ED2K 009D91607B0D86D64FAFF631E02ED864"
+evidence_archive   = "bench run 1790190646"
+
+[frames.callback_req_0x52]
+file   = "callback_req_0x52.bin"
+author = "aMule 2.3.3 (the requester), FINDSOURCE search"
+wire   = "Kad UDP 203.0.113.7:4704 -> 203.0.113.3:4679, 2026-09-23T19:22:34.913755Z, 36 bytes, plaintext 0xE4"
+tap    = "the buddy's netns (kad/capture/core-buddy.pcap), lifted there; also 1x on the requester's own tap"
+
+[frames.findsource_walk_req_0x21]
+file   = "findsource_walk_req_0x21.bin"
+author = "aMule 2.3.3 (the requester), FINDSOURCE search"
+wire   = "Kad UDP 203.0.113.7:4704 -> 203.0.113.3:4679, 2026-09-23T19:22:30.302704Z, 35 bytes: count 2, target ffeedd...00, receiver ffeedd...00"
+tap    = "the requester's netns (kad/amule-requester/amule-requester.pcap); the buddy's 0x29 back 0.33 ms later"
+
+[frames.storer_search_res_0x3b]
+file   = "storer_search_res_0x3b.bin"
+author = "rmule kad join-node (the placed storer), serving the rmule publisher's ID-only row"
+wire   = "Kad UDP 203.0.113.6:4690 -> 203.0.113.7:4704, 2026-09-23T19:22:28.689477Z, 116 bytes, one type-3 row"
+tap    = "the requester's netns (kad/amule-requester/amule-requester.pcap)"
+
+[chain]
+link_held       = "rmule buddy: 'buddy link attached ... peer=203.0.113.2:47844' at 19:19:10.715930Z, before the publisher started"
+kad_open        = "requester: 'Connected to Kad (ok)' at 19:22:22"
+row_read        = "requester: 'Happily adding a source (203.0.113.8:4662) type 3' at 19:22:28"
+branch          = "requester: 'BaseClient.cpp(1578): Searching buddy for lowid connection' at 19:22:29; no 'KadCallbackReq (size=34)' (the endpoint branch) anywhere in its log"
+walk            = "requester: 'Kad2Req to 203.0.113.3:4679' 19:22:29 (wire 19:22:30.302704Z), 'Kad2Res from 203.0.113.3:4679' 19:22:30"
+callback_sent   = "requester: 'Search.cpp(794): Search request type: FindSource', 'Search.cpp(813): KadCallbackReq to 203.0.113.3:4679' at 19:22:33 (log second); on the wire 19:22:34.913755Z"
+relayed         = "rmule buddy: 'OP_CALLBACK queued on the held buddy link injected=203.0.113.7:4662' at 19:22:34.914192Z; 0x99 (44 bytes, same shape as amule-233-callback-req-20260923's) on the wire 19:22:34.914440Z"
+consumed        = "firewalled aMule: 'Remote Client: OP_CALLBACK from 203.0.113.3' at 19:22:34, then nothing — it shares no file, so ClientTCPSocket.cpp's OP_CALLBACK arm stops at GetFileByID"

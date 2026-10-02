@@ -1,0 +1,62 @@
+# Genuine Lugdunum eserver 17.15 **`OP_SERVERIDENT 0x41`**, drawn by rmule's
+# `OP_GETSERVERLIST 0x14` over a logged-in TCP session (capture-ceiling effort,
+# 2026-07-29). The counterparty frame is Lugdunum's own serialization of its
+# identity; rmule's `0x14` is kept beside it as stimulus, never evidence
+# (ADR-0045).
+#
+# ## What this fixture is evidence FOR
+#
+# 1. server-tcp row `OP_SERVERIDENT 0x41` (graceful): the genuine tagged
+#    identity frame — hash + advertised endpoint + ST_SERVERNAME /
+#    ST_DESCRIPTION string tags — decoded by rmule's `ServerIdent`.
+# 2. server-tcp row `OP_GETSERVERLIST 0x14` (emit): the `0x41` is the server's
+#    *reaction* to rmule's request. The control runs pin the causality: the
+#    same Lugdunum's unprompted welcome burst carries NO `0x41` (flow-H
+#    bootstrap-fetch session, run 1785277720, `s2c.bin` = message/IDCHANGE/
+#    status/message only), and neither does the 2026-05-17 public-server
+#    welcome burst (`welcome-burst-2026-05-17`). With the request sent, the
+#    `0x41` arrived; replicated in a second session (run2) same-shape.
+#
+# ## What it is NOT evidence for
+#
+# `OP_SERVERLIST 0x32` did NOT arrive: this Lugdunum's known-servers table is
+# empty, and 17.15 answers an empty table with the ident alone. Seeding was
+# attempted and failed honestly — a `serverList.met` (server.met format, 2
+# entries) placed in the working directory was not loaded at startup, with
+# `autoservlist=true`, after console `reload`, and via `netrange load servers`
+# ("netrange error"); the binary carries a "serverList.met has %d servers"
+# read path, but no benched configuration triggered it. The `0x32` capture
+# therefore needs a Lugdunum whose table fills some other way (live
+# server-to-server exchange), and stays deterministic-tier.
+
+[provenance]
+counterparty   = "Lugdunum eserver 17.15 (stock interop image rmule/interop-eserver:local, harness donkey.ini)"
+tool           = "rmule-tools ed2k server welcome live 127.0.0.1:14661 --request-server-list --max-seconds 10 (the --request-server-list knob landed with this fixture)"
+scenario       = "single eserver container, host-published 14661->4661/tcp; session capture seam wrote c2s.bin/s2c.bin"
+date           = "2026-07-29"
+identity       = "nickname=rmule-tools user_hash=42*16 tcp_port=4662 (tool defaults)"
+control_no_req = "same-image Lugdunum welcome burst without the request carries no 0x41: flow-H run 1785277720 bootstrap-fetch/server/s2c.bin and the in-tree welcome-burst-2026-05-17 fixture"
+
+# rmule's request — kept for the exchange to be readable, never evidence.
+[frames.get_server_list_0x14]
+class     = "rmule stimulus — never evidence"
+opcode    = "0x14 OP_GETSERVERLIST (proto 0xE3), null payload"
+direction = "rmule -> Lugdunum"
+wire      = "e3 01 00 00 00 14"
+observed  = "sent immediately after LoginAccepted (client_id=2), via the session's RequestServerList command"
+
+# The capture target.
+[frames.server_ident_0x41]
+class     = "counterparty evidence"
+opcode    = "0x41 OP_SERVERIDENT (proto 0xE3), 65-byte packet"
+direction = "Lugdunum -> rmule"
+observed  = "arrived after the request, following the welcome burst's status + version-message frames; absent from every no-request control session"
+layout    = "hash16 = 0675be3c2badbb6cf478b302d35e509e, ip4 = 0.0.0.0 (thisIP unset in donkey.ini), port2 = 4661 LE, tagcount u32 = 2, ST_SERVERNAME 0x01 string 'rmule-interop', ST_DESCRIPTION 0x0B string 'eserver 17.15'"
+
+[exchange]
+seq_1 = "s2c 0x38 OP_SERVERMESSAGE (77-byte port-unreachable warning)"
+seq_2 = "s2c 0x40 OP_IDCHANGE (client_id=2, SRV_TCPFLG 0x17F9)"
+seq_3 = "c2s 0x14 OP_GETSERVERLIST (stimulus, on LoginAccepted)"
+seq_4 = "s2c 0x34 OP_SERVERSTATUS (users=1 files=0)"
+seq_5 = "s2c 0x38 OP_SERVERMESSAGE ('server version 17.15 (lugdunum)')"
+seq_6 = "s2c 0x41 OP_SERVERIDENT (THIS FIXTURE)"

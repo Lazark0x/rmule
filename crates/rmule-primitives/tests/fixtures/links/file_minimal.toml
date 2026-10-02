@@ -1,0 +1,14 @@
+name = "file_minimal"
+provenance = "handwritten"
+source_note = "Minimal synthetic ED2K file link"
+accepted = true
+
+[input]
+link = "ed2k://|file|hello%20world.txt|11|AA010FBC1D14C795D86EF98C95479D17|/"
+
+[expected]
+kind = "file"
+canonical = "ed2k://|file|hello%20world.txt|11|AA010FBC1D14C795D86EF98C95479D17|/"
+name = "hello world.txt"
+size = 11
+file_hash = "AA010FBC1D14C795D86EF98C95479D17"

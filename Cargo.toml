@@ -1,0 +1,182 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/rmule-ed2k",
+    "crates/rmule-kad",
+    "crates/rmule-core",
+    "crates/rmule-bootstrap",
+    "crates/rmule-peer",
+    "crates/rmule-net",
+    "crates/rmule-primitives",
+    "crates/rmule-store",
+    "crates/rmule-testkit",
+    "crates/rmule-winsock",
+    "tools/interop-harness",
+    "tools/rmule-tools",
+    "apps/rmule-cli",
+    "apps/rmule",
+]
+# `tools/ed2ksrv-differ` depends on the pinned third-party `ed2k-server` crate to
+# use its parsers as a decode oracle. That pulls ~180 crates (axum, tower, clap,
+# a C-compiled jemalloc) which nothing else here needs, so the differ is its own
+# workspace and is built and gated separately — see its manifest.
+exclude = ["tools/ed2ksrv-differ"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.94.0"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/lazark0x/rmule"
+homepage = "https://github.com/lazark0x/rmule"
+readme = "README.md"
+# rmule ships as binaries, never as crates. Marking every member unpublished is
+# also how `cargo about` (about.toml, `private.ignore`) tells the program's own
+# crates from third-party ones, so they stay out of THIRD-PARTY-LICENSES.md.
+publish = false
+
+[workspace.dependencies]
+anyhow = "1"
+assert_cmd = "2"
+clap = { version = "4", features = ["derive"] }
+# Confined to rmule-net: the PCP (RFC 6887) and NAT-PMP (RFC 6886) codecs and
+# UDP transport behind two of the three Mapping Backends (ADR-0086). MIT, zero
+# `unsafe`, dependency-light, and it round-trips the suggested/granted external
+# port both protocols carry — which is the one fact the whole subsystem grades
+# on. Hand-rolling the pair is ~350 lines of codec plus ~530 of transport by
+# emule-qt's measure, and the transport is where the firmware quirks live.
+crab-nat = { package = "crab_nat", version = "0.8", default-features = false }
+crypto-bigint = "0.5"
+# Confined to rmule-core's `directory_scan/fs.rs`: `statfs` names the filesystem a
+# file lies on, so the Download Directory Scan carries a hash across a rename only
+# where file identities are stable (ADR-0104, "What the scan remembers").
+# Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT, already in the graph
+# through `tempfile`, `fs` only: no crate added.
+rustix = { version = "1", default-features = false, features = ["fs", "std"] }
+# Windows only, confined to rmule-core's `file_key.rs`: the volume serial number
+# and file index `GetFileInformationByHandle` reports, which stable std does not
+# expose, behind a safe call the `unsafe` ban allows. Unlicense OR MIT, already
+# in the Windows graph through `notify` -> `walkdir` -> `same-file`: no crate
+# added.
+winapi-util = "0.1.11"
+# Windows only, confined to `rmule-winsock`: `WSAIoctl` with
+# `SIO_UDP_CONNRESET` / `SIO_UDP_NETRESET`, which neither std nor socket2
+# exposes. MIT OR Apache-2.0, already in the Windows graph through socket2 and
+# mio with both features on: no crate added.
+windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock", "Win32_System_IO"] }
+data-encoding = "2"
+ed2k = "1"
+flate2 = "1"
+getrandom = "0.4"
+# Confined to rmule (the app) and rmule-primitives: the accent fold in a Table Sort's
+# name comparison (ADR-0070) and in a search's whole-word match (ADR-0034)
+# decomposes to NFD and drops the combining marks.
+# Unicode-3.0, already in the graph through `url`'s IDNA, so it adds no crate.
+icu_normalizer = { version = "2.2", default-features = false, features = ["compiled_data"] }
+# Confined to rmule-net: the UPnP-IGD Mapping Backend (ADR-0086). MIT itself,
+# but it depends **unconditionally** on `attohttpc` (MPL-2.0) — the first non
+# MIT/Apache/BSD licence in the tree. MPL-2.0 carries no Exhibit B here, so it is
+# a Secondary-License-compatible file-level copyleft and rmule's GPL-3.0-or-later
+# distribution is fine; ADR-0004 asks dependency review to check, and this is the
+# check. Its `aio_tokio` feature does **not** replace attohttpc — it only adds
+# hyper 1 + hyper-util + http + http-body-util + bytes on top — so the default
+# blocking client is used instead, on `spawn_blocking`, which is also emule-qt's
+# own shape (blocking SOAP isolated on a worker thread).
+igd-next = "0.17"
+# Confined to rmule-net: the uTP (BEP-29) engine behind ADR-0091's NAT-T
+# Tunnel. **Apache-2.0** (read from the crate manifest's `license` field, not
+# assumed — it is Apache-2.0-*only*, no MIT half), which GPL-3.0-or-later
+# absorbs fine (ADR-0004); aMule's GPLv2-or-later constraint does not transfer.
+# Zero `unsafe` in its shipped `src/`, and its `Transport` trait is the
+# inject/emit seam rmule needs — the library never binds a socket, so the uTP
+# stream rides the already-punched client-UDP pinhole. Chosen over `utp-rs`
+# (dormant 18 months, "under construction" banner) and `libutp-sys` (raw FFI,
+# `unsafe` at every call site, which the workspace lint forbids). It is the
+# only candidate with bidirectional wire-interop tests against the real C
+# `libutp` eMuleAI vendors.
+librqbit-utp = { version = "0.7", default-features = false }
+# Confined to rmule-net, and **not optional**: `librqbit-utp`'s `Transport`
+# trait has `PollSendToVectored` as a supertrait and re-exports only
+# `BindDevice` from this crate, so implementing the seam ADR-0091 names requires
+# naming this crate directly. **Apache-2.0** (manifest). ADR-0091's dependency
+# list omits it — the third wrong dependency claim on this map, after `netdev`
+# and `igd-next`.
+librqbit-dualstack-sockets = { version = "0.7", default-features = false }
+md-5 = { version = "0.10", features = ["oid"] }
+md4 = "0.10"
+# Confined to rmule-core's adapters: the Download Directory Scan's watch
+# (ADR-0103, "The watch"). **CC0-1.0** (manifest). FSEvents on macOS (the
+# default `macos_fsevent` feature: one recursive stream, no per-directory
+# limit), inotify on Linux (one watch per directory; the per-user limit is the
+# degrade ADR-0103 names). Plain `notify`, not a debouncer crate: the scan owns
+# stillness on its own explicit clock.
+notify = { version = "8.2", default-features = false, features = ["macos_fsevent"] }
+# Confined to rmule-net: the Interface Source enumeration (ADR-0084) and the
+# Gateway Source (ADR-0086). MIT. Default features off except `gateway` — the
+# route lookup the Gateway Source needs — so the per-platform metadata extras (Apple
+# SystemConfiguration, Android JNI) stay out of the tree.
+netdev = { version = "0.46", default-features = false, features = ["gateway"] }
+# Confined to rmule-net: ADR-0091's QUIC NAT-T engine. **MIT OR Apache-2.0**
+# for both (read from each crate's manifest `license` field). `quinn-proto` is
+# the sans-I/O state machine the ADR names; `quinn` is that plus the tokio
+# driver and the `AsyncUdpSocket` seam — the same inject/emit shape
+# `librqbit-utp`'s `Transport` gives, so rmule never binds a QUIC socket.
+# Taking the driver rather than hand-rolling it is deliberate: a bespoke
+# quinn-proto loop is ~600 lines of timer and event plumbing that no
+# counterparty can validate (no QUIC NAT-T handshake has ever completed between
+# two implementations), and `quinn`'s loop is the one that is tested.
+# `rustls-ring` rather than the default `aws-lc-rs`: ring is already the
+# provider `rcgen` uses here, one C toolchain dependency instead of two.
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+quinn-proto = { version = "0.11", default-features = false, features = ["rustls-ring"] }
+# Confined to rmule-net: the self-signed X.509 the QUIC NAT-T handshake
+# presents (ADR-0091 pins RSA-2048, CN-only, no verification either side).
+# **MIT OR Apache-2.0** (manifest). The 2048-bit key itself comes from the `rsa`
+# crate already in the tree — ring cannot generate RSA keys, only sign with one
+# — so rcgen adds a certificate writer and not a second crypto stack.
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+# Confined to rmule-net: the QUIC handshake's TLS 1.3 parameters and the
+# accept-anything verifier ADR-0091 pins. **Apache-2.0 OR ISC OR MIT**
+# (manifest). Reached through `quinn`, but named directly because rmule writes
+# its own `ServerCertVerifier` and cipher/group order.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+percent-encoding = "2"
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+predicates = "3"
+rand = "0.8"
+# Confined to rmule, the app (ADR-0069): umbrella crate only, crossterm reached via
+# the `ratatui::crossterm` re-export — never a direct crossterm dependency.
+ratatui = "0.30"
+# Confined to rmule-bootstrap (ADR-0065): rustls only, no native-tls, minimal
+# features — the fetch impl behind the `Fetcher` seam.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+# Confined to rmule-store (ADR-0083): the one durable engine; domain crates
+# reach it through the typed layer, never directly.
+redb = "4"
+rsa = "0.9"
+sha1 = { version = "0.10", features = ["oid"] }
+# Confined to rmule-net for production code; the one socket knob std does not
+# expose, `IPV6_V6ONLY` on each Family Pair's `::` socket (ADR-0085). Also a
+# `[dev-dependencies]` entry of rmule-core (test-only, its own local comment justifies it there: the
+# Half-Bound Pair legs' port reservation).
+# Already in the tree as tokio's own transitive dependency, so it adds no new
+# crate.
+socket2 = "0.6"
+serde = { version = "1", features = ["derive"] }
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", default-features = false, features = ["rt", "net", "io-util", "sync", "time", "macros", "fs"] }
+toml = "1"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "json", "smallvec", "std", "tracing-log"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+# Profile of the release archives built by `dist` (see dist-workspace.toml).
+[profile.dist]
+inherits = "release"
+lto = "thin"

@@ -1,0 +1,315 @@
+//! Scenario wiring for the requester side, the mirror of [`crate::serve`]: the
+//! scripted `PeerWorker`s and source-lookup fakes a download test drives a core
+//! with, the link/peer/source builders those scenarios need, and a one-shot
+//! driver that runs one download to its terminal event. Every counterparty here
+//! is in-process — no socket, no timer beyond the driver's own event deadline —
+//! so the scheduling, verification and lifecycle behaviours read as plain event
+//! sequences. Socket-level loopback scenarios use [`crate::FakePeer`] instead.
+
+use ed2k::digest::Digest;
+use rmule_core::{
+    Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent, DownloadFailure,
+    DownloadedPart, PeerDownloadOutcome, PeerTransferService, PeerWorker, PeerWorkerCommand,
+    PeerWorkerEvent, SourceLookupOutcome, SourceLookupService,
+};
+use rmule_peer::PeerHandshakeContext;
+use rmule_primitives::{
+    ClientId, Ed2kFileLink, Ed2kText, ExchangedSource, FileHash, FileHashSummary, Ipv4Endpoint,
+    PeerEndpoint, PeerSource, ServerEndpoint, SourceLookupTarget,
+};
+use tokio::time::{Duration, timeout};
+
+/// The link a publisher of `bytes` would compute: file hash plus the **ED2K
+/// Part Hash Set** when the content spans more than one part (a sub-part file
+/// has none to carry).
+pub fn file_link(name: &str, bytes: &[u8]) -> Ed2kFileLink {
+    let summary = FileHashSummary::digest_bytes(bytes);
+    Ed2kFileLink {
+        name: Ed2kText::from_utf8(name),
+        size: summary.file_size(),
+        file_hash: summary.file_hash(),
+        part_hash_set: summary.part_hash_set().cloned(),
+        aich_root: None,
+        ipv6_sources: Vec::new(),
+        sources: Default::default(),
+    }
+}
+
+/// A link that carries no `p=` hash set at all, so the first peer to answer
+/// with one becomes the download's **verification authority**.
+pub fn file_link_without_part_hash_set(name: &str, bytes: &[u8]) -> Ed2kFileLink {
+    Ed2kFileLink {
+        name: Ed2kText::from_utf8(name),
+        size: bytes.len() as u64,
+        file_hash: FileHash::from_bytes(ed2k::Ed2kRed::digest(bytes).into()),
+        part_hash_set: None,
+        aich_root: None,
+        ipv6_sources: Vec::new(),
+        sources: Default::default(),
+    }
+}
+
+/// The endpoint a fake source with `last_octet` resolves to, matching the
+/// addresses [`source_with_high_id`] and [`two_high_id_sources`] hand out.
+pub fn loopback_peer(last_octet: u8) -> PeerEndpoint {
+    PeerEndpoint::V4(Ipv4Endpoint::new(
+        format!("127.0.0.{last_octet}").parse().unwrap(),
+        4663 + u16::from(last_octet) - 1,
+    ))
+}
+
+/// Wrap plain server-lookup sources as candidates: a `0x42` reply carries no
+/// crypt provenance, so every source is `ExchangedSource::plain` (ADR-0046).
+pub fn plain_sources(sources: Vec<PeerSource>) -> Vec<ExchangedSource> {
+    sources.into_iter().map(ExchangedSource::plain).collect()
+}
+
+/// A `SourceLookupService` that answers every lookup with the same outcome.
+#[derive(Clone)]
+pub struct StaticSourceLookup {
+    /// The snapshot every lookup returns.
+    pub outcome: SourceLookupOutcome,
+}
+
+impl SourceLookupService for StaticSourceLookup {
+    async fn lookup_sources(
+        &mut self,
+        _target: SourceLookupTarget,
+    ) -> Result<SourceLookupOutcome, DownloadFailure> {
+        Ok(self.outcome.clone())
+    }
+}
+
+/// One Low-ID source (unusable) and one High-ID source, so exactly one peer is
+/// dialable.
+pub fn source_with_high_id() -> StaticSourceLookup {
+    StaticSourceLookup {
+        outcome: SourceLookupOutcome {
+            client_id: ClientId::from_u32(0x0100_007F),
+            sources: plain_sources(vec![
+                PeerSource::new(ClientId::from_u32(42), 4662),
+                PeerSource::new(ClientId::from_u32(0x0100_007F), 4663),
+            ]),
+        },
+    }
+}
+
+/// Two High-ID sources, the pair [`loopback_peer`] 1 and 2 resolve to — enough
+/// for a race, a backfill, or a cross-peer handover.
+pub fn two_high_id_sources() -> StaticSourceLookup {
+    StaticSourceLookup {
+        outcome: SourceLookupOutcome {
+            client_id: ClientId::from_u32(0x0100_007F),
+            sources: plain_sources(vec![
+                PeerSource::new(ClientId::from_u32(0x0100_007F), 4663),
+                PeerSource::new(ClientId::from_u32(0x0200_007F), 4664),
+            ]),
+        },
+    }
+}
+
+/// A `PeerTransferService` whose every worker serves `outcome` and asserts, at
+/// shutdown, that it was asked for exactly `expected_plan_count` parts.
+pub struct StaticPeerTransfer {
+    /// How many `RequestPart` commands the worker must have received.
+    pub expected_plan_count: usize,
+    /// The hash set and parts every worker answers with.
+    pub outcome: PeerDownloadOutcome,
+}
+
+impl PeerTransferService for StaticPeerTransfer {
+    async fn start_peer_worker(
+        &mut self,
+        peer: PeerEndpoint,
+        _ctx: PeerHandshakeContext,
+        _file: Ed2kFileLink,
+    ) -> Result<PeerWorker, DownloadFailure> {
+        Ok(scripted_worker(
+            peer,
+            self.outcome.clone(),
+            PlanExpectation::Count(self.expected_plan_count),
+        ))
+    }
+}
+
+/// The stricter twin of [`StaticPeerTransfer`]: asserts *which* part indexes
+/// were requested, in order — the proof a resumed download skips what it
+/// already verified.
+pub struct PlanAssertingPeerTransfer {
+    /// The exact part indexes, in order, the worker must have been asked for.
+    pub expected_plan_indexes: Vec<u32>,
+    /// The hash set and parts every worker answers with.
+    pub outcome: PeerDownloadOutcome,
+}
+
+impl PeerTransferService for PlanAssertingPeerTransfer {
+    async fn start_peer_worker(
+        &mut self,
+        peer: PeerEndpoint,
+        _ctx: PeerHandshakeContext,
+        _file: Ed2kFileLink,
+    ) -> Result<PeerWorker, DownloadFailure> {
+        Ok(scripted_worker(
+            peer,
+            self.outcome.clone(),
+            PlanExpectation::Indexes(self.expected_plan_indexes.clone()),
+        ))
+    }
+}
+
+/// A `PeerTransferService` whose workers connect and then do nothing: the
+/// download reaches `PeerSelected` and stays there until a command moves it.
+pub struct PendingPeerTransfer;
+
+impl PeerTransferService for PendingPeerTransfer {
+    async fn start_peer_worker(
+        &mut self,
+        peer: PeerEndpoint,
+        _ctx: PeerHandshakeContext,
+        _file: Ed2kFileLink,
+    ) -> Result<PeerWorker, DownloadFailure> {
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(8);
+        tokio::spawn(async move {
+            let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            while let Some(command) = command_rx.recv().await {
+                if matches!(command, PeerWorkerCommand::Shutdown { .. }) {
+                    break;
+                }
+            }
+        });
+        Ok(PeerWorker::new(peer, command_tx, event_rx))
+    }
+}
+
+/// Stream a part's bytes from `resume_offset` to the end as one block, then
+/// report the assigned range delivered (ADR-0029 worker protocol). A fresh
+/// assignment has `resume_offset == part.offset` and serves the whole part.
+pub async fn emit_streamed_part(
+    event_tx: &tokio::sync::mpsc::Sender<PeerWorkerEvent>,
+    part: &DownloadedPart,
+    resume_offset: u64,
+) {
+    let start = (resume_offset.saturating_sub(part.offset) as usize).min(part.bytes.len());
+    let _ = event_tx
+        .send(PeerWorkerEvent::BlockReceived {
+            part_index: part.part_index,
+            offset: resume_offset,
+            bytes: part.bytes[start..].to_vec(),
+        })
+        .await;
+    let _ = event_tx
+        .send(PeerWorkerEvent::PartStreamed {
+            part_index: part.part_index,
+        })
+        .await;
+}
+
+/// What a [`scripted_worker`] asserts about the parts it was asked for.
+enum PlanExpectation {
+    Count(usize),
+    Indexes(Vec<u32>),
+}
+
+/// A `PeerWorker` that connects, answers the first `RequestPart` with the
+/// outcome's hash set (when it has one), streams whichever assigned part it
+/// holds, and asserts `expectation` once the runner shuts it down.
+fn scripted_worker(
+    peer: PeerEndpoint,
+    outcome: PeerDownloadOutcome,
+    expectation: PlanExpectation,
+) -> PeerWorker {
+    let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
+    tokio::spawn(async move {
+        let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+        let mut requested = Vec::new();
+        let mut sent_hashes = false;
+        while let Some(command) = command_rx.recv().await {
+            match command {
+                PeerWorkerCommand::RequestPart {
+                    plan,
+                    resume_offset,
+                } => {
+                    requested.push(plan.part_index);
+                    if !sent_hashes && !outcome.peer_hashes.is_empty() {
+                        sent_hashes = true;
+                        let _ = event_tx
+                            .send(PeerWorkerEvent::HashSetReceived {
+                                part_hashes: outcome.peer_hashes.clone(),
+                            })
+                            .await;
+                    }
+                    if let Some(part) = outcome
+                        .parts
+                        .iter()
+                        .find(|part| part.part_index == plan.part_index)
+                    {
+                        emit_streamed_part(&event_tx, part, resume_offset).await;
+                    }
+                }
+                PeerWorkerCommand::RequestAich { .. } => {}
+                PeerWorkerCommand::RequestAichFileHash => {}
+                PeerWorkerCommand::Shutdown { .. } => break,
+            }
+        }
+        match expectation {
+            PlanExpectation::Count(expected) => assert_eq!(requested.len(), expected),
+            PlanExpectation::Indexes(expected) => assert_eq!(requested, expected),
+        }
+    });
+    PeerWorker::new(peer, command_tx, event_rx)
+}
+
+/// Start `file` on a default core wired to `source` and `peer`, and collect
+/// every event up to and including the terminal one (completed, failed or
+/// cancelled). The rows live in a private in-memory Durable Store and the
+/// bytes in a temp dir that dies with the call, so repeated runs never see
+/// each other's output file.
+pub async fn run_download<S, P>(file: Ed2kFileLink, source: S, peer: P) -> Vec<CoreEvent>
+where
+    S: SourceLookupService,
+    P: PeerTransferService,
+{
+    let dir = tempfile::tempdir().unwrap();
+    let identity = crate::test_identity(0x42, "rmule-core-test", 4662);
+    let mut core = Core::builder(CoreConfig::default(), crate::memory_store())
+        .user_hash(identity.user_hash())
+        .source_lookup(source)
+        .peer_transfer(peer)
+        .build();
+    core.send(CoreCommand::Download(DownloadCommand::StartDownload {
+        file,
+        source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
+        credentials: identity.into(),
+        output_path: dir.path().join("download-workflow.bin"),
+    }))
+    .await
+    .unwrap();
+
+    let mut events = Vec::new();
+    loop {
+        let event = next_event(&mut core).await;
+        let terminal = matches!(
+            event,
+            CoreEvent::Download(
+                DownloadEvent::DownloadCompleted { .. }
+                    | DownloadEvent::DownloadFailed { .. }
+                    | DownloadEvent::DownloadCancelled { .. }
+            )
+        );
+        events.push(event);
+        if terminal {
+            return events;
+        }
+    }
+}
+
+/// The core's next event, or a panic if none arrives within two seconds — the
+/// deadline that turns a stalled scheduler into a failure instead of a hang.
+pub async fn next_event(core: &mut Core) -> CoreEvent {
+    timeout(Duration::from_secs(2), core.next_event())
+        .await
+        .expect("core emitted next event")
+        .expect("core event stream stayed open")
+}

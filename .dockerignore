@@ -1,0 +1,19 @@
+# Docker build context hygiene: the rmule-node image builds from the repo
+# root, so keep multi-gigabyte and irrelevant trees out of the context upload.
+#
+# `target` is a bare pattern without `**/`, so it matches only a directory
+# named that at the repo root by dockerignore's own rules
+# (https://docs.docker.com/build/building/context/#dockerignore-files) — a
+# leading slash is implied when there is no other slash in the pattern.
+# `.scratch` is written `**/.scratch` instead, so it matches at any depth: the
+# harness writes `.scratch/` and `target/bench-runs/` under the repo root
+# today (`tools/interop-harness/src/cli/bench.rs`'s `DEFAULT_RUN_ROOT`,
+# `rmule.rs`'s cargo caches), but a harness invocation from a different cwd
+# (once, `tools/interop-harness/.scratch/interop-runs/*` rode into the
+# context, breaking the `COPY` cache and forcing a full in-container compile
+# every run) must not reopen this.
+.git
+**/.scratch
+target
+docs
+**/*.pcap

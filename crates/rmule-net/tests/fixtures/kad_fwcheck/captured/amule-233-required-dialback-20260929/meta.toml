@@ -1,0 +1,44 @@
+# A stock aMule 2.3.3 Kad helper's TCP firewall-check dial-back to rmule under
+# `--peer-crypt required`: the whole helper -> rmule byte stream of
+# the helper's first connect-back, reassembled from the tap on the helper's own
+# network namespace. Bench flow R `kad-required-check` on the fake-public /24
+# (Config A). Counterparty bytes only; nothing is fabricated or hand-edited
+# (ADR-0045). Reassembled in sequence order from `kad/capture-helper-0/helper.pcap`
+# (source 203.0.113.3, destination port 4663, first SYN's connection).
+#
+# rmule asked with KADEMLIA_FIREWALLED2_REQ carrying connect options 0x07 and
+# its user hash 00112233445566778899AABBCCDDEEFF. The helper (aMule's own
+# obfuscation defaults: supported + requested, AMULE_KAD_CRYPT=1) read that hash
+# with ReadUInt128 and keyed its obfuscated dial-back on it
+# (ClientList.cpp RequestTCP -> SetUserHash; EncryptedStreamSocket client
+# negotiation keyed on the target's user hash).
+
+[provenance]
+counterparty = "aMule 2.3.3, Kad helper, obfuscation supported+requested (aMule defaults)"
+flow         = "kad-required-check (flow R), --peer-crypt required --helpers 2"
+subnet       = "203.0.113.0/24 (RFC 5737 fake-public, Config A)"
+helper       = "helper-0, 203.0.113.3, TCP 4662, Kad UDP 4675"
+rmule        = "203.0.113.2, serve TCP 4663, Kad UDP 4679, user hash 00112233445566778899AABBCCDDEEFF"
+date         = "2026-09-29"
+
+[frames.dialback_keyed_on_write_uint128_hash]
+file     = "dialback_keyed_on_write_uint128_hash.bin"
+run      = "1790703278 (bench run archive)"
+image    = "rmule/interop-amule:local (stock release build)"
+rmule    = "commit 56ecf5ce: the 0x53 hash written in WriteUInt128 word order"
+bytes    = 527
+sha256   = "9cf37280501ebb748234ea380c9441a05f9aecfad1eefcc444494e688d074944"
+pcap_sha256 = "fbf2d92928e2f6dda2979d23953aadd928df97d92dcee4d885f79ae4ad945016"
+shape    = "first byte 0x20 (an obfuscation marker, not 0xE3/0xC5/0xD4), then the random key, the RC4 opener, and under it OP_HELLO, the Secure User Identification frames and OP_KAD_FWTCPCHECK_ACK"
+observed = "rmule's responder authenticated it; OP_KAD_FWTCPCHECK_ACK counted; with the second helper's, Kad TCP read Open 3.1 s after the first check was asked"
+
+[frames.dialback_keyed_on_raw_order_hash]
+file     = "dialback_keyed_on_raw_order_hash.bin"
+run      = "1790700780 (bench run archive)"
+image    = "rmule/interop-amule-debug:local (the same 2.3.3 pin, debug build)"
+rmule    = "commit 1a3087e7 (flow R edits uncommitted, landed as 86060750): the 0x53 hash still written in raw MD4 order"
+bytes    = 88
+sha256   = "61aaa2abbc9165f212bf74d1f5750ec4c9107ee348bb9374a3ca85e2fc831a9c"
+pcap_sha256 = "07c40c14adcdc5c081c40b6c9a8010d0964b587b930362fd96ec4ae8ba82300d"
+shape    = "first byte 0x31, random key, RC4 opener (and whatever the helper queued behind it) keyed on the word-swapped hash 33221100 77665544 BBAA9988 FFEEDDCC, which is all it sent before rmule dropped the link"
+observed = "rmule's responder found no MAGICVALUE_SYNC and closed the link Io(InvalidData) — the operator's live symptom; Kad TCP stayed Firewalled"

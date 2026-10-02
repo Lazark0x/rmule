@@ -1,0 +1,7 @@
+# Link the C runtime statically on Windows MSVC targets. A dynamically linked
+# rmule.exe needs vcruntime140.dll, which a clean Windows install does not
+# ship: the binary then fails to start with STATUS_DLL_NOT_FOUND (0xC0000135).
+# A RUSTFLAGS environment variable replaces this table, so no build of a
+# shipped binary may set one.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

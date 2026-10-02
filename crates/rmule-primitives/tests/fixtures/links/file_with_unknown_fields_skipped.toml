@@ -1,0 +1,22 @@
+name = "file_with_unknown_fields_skipped"
+provenance = "handwritten"
+source_note = """
+Fields no client reads are skipped and the rest of the link read, as both references
+do: emule-qt srchybrid/ED2KLink.cpp:216-217 (`default: ASSERT(0)`, compiled out of a
+release build) and aMule 2.3.3 src/ED2KLink.cpp:188-270 (an if/else-if chain with no
+else). The skipped fields are named, in link order (ADR-0089).
+"""
+accepted = true
+
+[input]
+link = "ed2k://|file|hello.txt|11|AA010FBC1D14C795D86EF98C95479D17|x=1|h=A2NWOTYURUU3P3GCUB6KCNW3FTYYELQB|comment|/|sources,192.0.2.44:4662|/"
+
+[expected]
+kind = "file"
+canonical = "ed2k://|file|hello.txt|11|AA010FBC1D14C795D86EF98C95479D17|h=A2NWOTYURUU3P3GCUB6KCNW3FTYYELQB|/|sources,192.0.2.44:4662|/"
+name = "hello.txt"
+size = 11
+file_hash = "AA010FBC1D14C795D86EF98C95479D17"
+aich_root = "A2NWOTYURUU3P3GCUB6KCNW3FTYYELQB"
+sources = ["192.0.2.44:4662"]
+skipped_fields = ["x", "comment"]

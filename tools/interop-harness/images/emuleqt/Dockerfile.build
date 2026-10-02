@@ -1,0 +1,105 @@
+# Compile stage for the Stimulus Counterparty (ADR-0082): `emulecored`, the
+# headless daemon of `ModderMule/emule-qt`, pinned at
+# `73fff7146d2eec3e8426251ec4959238bae3479a`.
+#
+# Build context is the PINNED SOURCE TREE, not this directory (the tree is a
+# gitignored reference cache, never vendored — ADR-0013). Clone it at the
+# commit in `docs/reference/emule-qt/emule-qt.meta.toml` (steps in
+# `docs/reference/README.md`, Filling the cache), then:
+#
+#   docker build -t rmule/interop-emuleqt-build:local \
+#     -f tools/interop-harness/images/emuleqt/Dockerfile.build \
+#     docs/reference/emule-qt/emule-qt
+#
+# The runtime image (`Dockerfile` beside this file) lifts the binary out of
+# here and adds the harness entrypoint. Two Dockerfiles rather than one because
+# the entrypoint lives in the harness tree and the source does not, and a plain
+# `docker build` (legacy builder, no BuildKit heredocs or per-Dockerfile
+# ignore files) cannot see two contexts at once.
+#
+# WHY NOT upstream's `docker/daemon.Dockerfile`: it pins `--platform=linux/amd64`
+# and installs Qt 6.10.2 through `aqtinstall`, whose `linux_gcc_64` archive is
+# x86_64-only. On an arm64 dev machine that forces the whole C++23 compile
+# through qemu. The project's own floor is `find_package(Qt6 6.5 REQUIRED)`, and
+# Debian trixie ships Qt 6.8.2 for every release architecture — so apt Qt builds
+# natively, needs no download of a 1.5 GB Qt tarball, and stays inside the
+# distro's reproducibility story. Same base distro as upstream, same compiler
+# (gcc 14), different Qt provenance.
+
+FROM debian:trixie AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Qt 6.8.2 (base = Core/Gui/Widgets/Network/Test) plus the two extra modules the
+# core library links: Multimedia and HttpServer. qt6-websockets-dev is
+# QtHttpServer's optional companion and is what its CMake config looks for.
+# qt6-tools-dev + qt6-l10n-tools are there only because `src/CMakeLists.txt`
+# adds the GUI subdirectory unconditionally and the GUI needs LinguistTools at
+# CONFIGURE time — the GUI target itself is never built here.
+#
+# The rest are the third-party dependencies the top-level CMakeLists resolves
+# with find_package BEFORE falling back to FetchContent: zlib, OpenSSL,
+# yaml-cpp (preferences.yml), libarchive. Installing them from apt keeps the
+# build hermetic-ish and off the network for those three. miniupnpc is the
+# exception — see the FetchContent note on the configure step.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        cmake \
+        git \
+        ninja-build \
+        pkg-config \
+        qt6-base-dev \
+        qt6-base-dev-tools \
+        qt6-httpserver-dev \
+        qt6-l10n-tools \
+        qt6-multimedia-dev \
+        qt6-tools-dev \
+        qt6-websockets-dev \
+        libarchive-dev \
+        libminiupnpc-dev \
+        libssl-dev \
+        libyaml-cpp-dev \
+        zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . .
+
+# Pin provenance. The SHA cannot be checked in here: the upstream tree carries
+# its own `.dockerignore`, and it excludes `.git/`, so the build context is a
+# checkout with no repository attached. `build.sh` verifies the pin against the
+# reference clone BEFORE invoking docker and passes the verified SHA in; this
+# label is what `docker inspect` reports afterwards, so an image can always name
+# the source it was cut from.
+ARG EMULEQT_COMMIT=73fff7146d2eec3e8426251ec4959238bae3479a
+LABEL org.rmule.emuleqt.commit="${EMULEQT_COMMIT}"
+
+# Configure. Notes on the flags:
+#   EMULE_BUILD_TESTS=OFF       — only `emulecored` is wanted; the Qt Test targets
+#                                 are dead weight in a counterparty image.
+#   EMULE_RELEASE_DEBUG_INFO=OFF — upstream defaults this ON, which costs ~10x the
+#                                 binary size for stack traces this harness does
+#                                 not read.
+#   CMAKE_BUILD_TYPE=Release    — NOT Debug: Debug defines EMULE_DEV_BUILD, which
+#                                 makes AppConfig::seedBundledData() copy the
+#                                 bundled data/config into the config dir —
+#                                 including a server.met full of PUBLIC eD2k
+#                                 servers. A bench counterparty must never carry
+#                                 those. On a Release Linux build the bundle
+#                                 candidate list is empty and nothing is seeded.
+#
+# The one FetchContent that still fires is miniupnpc: Debian's libminiupnpc-dev
+# ships pkg-config metadata but no CMake package config, so
+# `find_package(miniupnpc CONFIG QUIET)` misses and CMake clones
+# miniupnp at tag `miniupnpc_2_3_0`. That is a pinned tag and a small clone, but
+# it does mean the configure step needs network access.
+RUN cmake -S /src -B /src/build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DEMULE_BUILD_TESTS=OFF \
+        -DEMULE_RELEASE_DEBUG_INFO=OFF
+
+RUN cmake --build /src/build --target emulecored --parallel "$(nproc)" \
+    && strip /src/build/src/daemon/emulecored \
+    && /src/build/src/daemon/emulecored --version

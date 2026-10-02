@@ -1,0 +1,27 @@
+[package]
+name = "rmule-testkit"
+version = "0.1.0"
+publish.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+ed2k.workspace = true
+# The compressed-part fixtures deflate their own payloads.
+flate2.workspace = true
+rmule-core = { path = "../rmule-core", features = ["test-support"] }
+rmule-ed2k = { path = "../rmule-ed2k" }
+rmule-kad = { path = "../rmule-kad" }
+rmule-net = { path = "../rmule-net" }
+rmule-peer = { path = "../rmule-peer" }
+rmule-primitives = { path = "../rmule-primitives" }
+tempfile.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

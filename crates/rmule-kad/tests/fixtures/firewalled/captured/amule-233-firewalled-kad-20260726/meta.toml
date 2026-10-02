@@ -1,0 +1,41 @@
+# Firewalled-counterparty Kad capture — genuine stock aMule 2.3.3 datagrams sent
+# toward rmule while the aMule ran TCP+UDP-firewalled (its Kad ports iptables-
+# DROPped by the harness entrypoint). Interop flow K `kad-firewalled-buddy` on
+# the fake-public /24 (Config A). Only counterparty bytes / observable reactions
+# are evidence (ADR-0045); nothing here is fabricated.
+
+[provenance]
+counterparty       = "aMule 2.3.3 (source pin 4e8f2b3c), stock interop image rmule/interop-amule:local"
+scenario           = "kad-firewalled-buddy (flow K), TCP+UDP-firewalled variant"
+run                = "1785031705"
+date               = "2026-07-26"
+subnet             = "203.0.113.0/24 (RFC 5737 fake-public, Config A)"
+amule_kad_id       = "55555555555555555555555555555555"
+rmule_kad_id       = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"  # ~aMuleKadID (FindBuddy target)
+
+# Full opcode sequence rmule's tap observed (dir:opcode), TCP+UDP-firewalled run:
+#   out:0x01 in:0x60 out:0x61 in:0x21 out:0x29 in:0x21 out:0x29 in:0x60 out:0x61
+#   out:0x01 in:0x09 out:0x11 in:0x19 in:0x60 in:0x53 out:0x58 in:0x60(*10)
+#   out:0x21 in:0x29 in:0x21 out:0x29 in:0x60(*4)
+# i.e. bootstrap (0x01/0x09), ping/pong (0x60/0x61), find-node (0x21/0x29),
+# hello (0x11/0x19), and the firewall self-check 0x53 -> rmule 0x58.
+
+[frames.firewalled2_req_0x53]
+opcode  = "0x53 KADEMLIA_FIREWALLED2_REQ (proto 0xE4, v7+ TCP firewall self-check)"
+layout  = "tcp_port=4662 (LE) + 16-byte check_id 8f288488d4620e978051daa3b96ffbf8 + 0x00"
+note    = "The firewalled aMule asks a contact (rmule) to TCP-connect back to its port 4662 to prove reachability. rmule's live Kad node answers 0x58 KADEMLIA_FIREWALLED_RES (the ADR-0058 responder). This is the precursor to buddy recruitment: only after the self-check concludes firewalled does aMule run its FindBuddy walk (0x51)."
+
+[frames.hello_res_0x19]
+opcode  = "0x19 KADEMLIA2_HELLO_RES (proto 0xE4)"
+note    = "The firewalled aMule's HELLO_RES answering rmule's 0x11 HELLO_REQ: KadID 55..55, TCP port 4662, Kad version 8. Byte-identical in the TCP-only (UDP-open) variant — the direct-callback capability is not carried in the plain hello (it rides source-publish tags a source-lookup would surface), so the direct-callback advertisement is not observable from the hello alone."
+
+# Disposition (ADR-0045): OBSERVED, not PASS.
+#   The firewall plumbing installs (TCP and TCP+UDP variants), and the firewalled
+#   aMule reaches rmule and runs its firewall self-check toward it (0x53) — a
+#   genuine firewalled-counterparty capture. The buddy/callback opcodes the recipe
+#   targets (0x51 FINDBUDDY_REQ, 0x52 CALLBACK_REQ, 0x95 DIRECTCALLBACKREQ) did
+#   NOT land inside the bounded window, gated by (a) aMule's 20-min
+#   FIND_BUDDY_INTERVAL, (b) the firewalled node needing its self-check to
+#   *conclude* firewalled before recruiting, and (c) rmule's live Kad node wiring
+#   only the ADR-0058 responder (0x58) — not the ADR-0061 buddy service / direct-
+#   callback emit — so a full exchange cannot complete. Documented, not fabricated.

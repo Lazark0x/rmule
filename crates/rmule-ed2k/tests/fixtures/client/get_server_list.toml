@@ -1,0 +1,8 @@
+name = "get_server_list"
+provenance = "handwritten"
+source_note = "Synthetic OP_GETSERVERLIST (0x14) frame per docs/reference/notes/ed2k-welcome-packets.md OP_GETSERVERLIST section. Empty payload — header.size = 1, total frame = 6 bytes. Cited: aMule TCP.h:33, eMule spec section 6.2.5."
+accepted = true
+
+[expected]
+protocol = "edonkey"
+opcode = 20

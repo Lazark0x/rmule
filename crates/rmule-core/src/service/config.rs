@@ -1,0 +1,383 @@
+//! What the operator hands the core at build time: the tunables a session
+//! runs against ([`CoreConfig`]) and the verification stance a download's
+//! hash authority grants it. Every default here is aMule's, so a stock
+//! session behaves like a stock aMule.
+
+use std::time::Duration;
+
+use rmule_net::family::FamilySelection;
+
+use crate::address_learning::ExternalAddressOverride;
+use crate::port_mapping::PortMappingConfig;
+use rmule_net::peer::ObfuscationPolicy;
+use serde::{Deserialize, Serialize};
+
+/// Where a download's part hashes came from, which is what verifying a part
+/// against them is worth. Ordered strongest first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VerificationAuthority {
+    /// The part hash set rode in on the ed2k link itself: it is as trusted as
+    /// the link, so a matching part is final.
+    LinkPartHashSet,
+    /// A peer supplied the set (`OP_HASHSETANSWER`). Parts verify against it
+    /// provisionally; the whole-file hash at finalize is what confirms it.
+    PeerHashSet,
+    /// No part hashes at all — only the file hash. Parts cannot be checked
+    /// individually, so verification is deferred to the finished file and a bad
+    /// source is only discovered at the end.
+    FileHashOnly,
+}
+
+/// Generous default budget for waiting on a busy peer's upload slot.
+/// eMule queue waits are open-ended in reality, so this is a patience cap
+/// to keep a download from hanging forever on one stuck peer, not a tight
+/// deadline.
+pub const DEFAULT_SLOT_WAIT_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// The tunables one session runs against, fixed for the life of the [`Core`]
+/// it is built with. Every default matches stock aMule, so a `CoreConfig`
+/// straight from `Default` behaves the way aMule would.
+///
+/// [`Core`]: crate::Core
+#[derive(Clone, Debug)]
+pub struct CoreConfig {
+    /// How many peer workers one download runs at once — active plus
+    /// connecting plus outstanding callbacks. `0` is read as `1`; see
+    /// [`CoreConfig::effective_peer_concurrency_per_download`].
+    pub peer_concurrency_per_download: usize,
+    /// How long a peer worker keeps waiting for `OP_ACCEPTUPLOADREQ` after
+    /// requesting a part before it gives up the slot and is retired.
+    pub slot_wait_timeout: Duration,
+    /// Concurrent upload slots the serve side grants across all connections
+    /// (ADR-0031: the cross-connection slot budget). FIFO admission fills
+    /// these before queuing.
+    pub upload_slot_budget: usize,
+    /// Maximum waiting requesters before the serve side refuses new ones —
+    /// in silence, as both references do.
+    pub max_upload_queue_len: usize,
+    /// How often the serve activity re-ranks its idle waiters so a queued
+    /// peer's reported `OP_QUEUERANKING` tracks elapsed wait and any credit it
+    /// gained while waiting.
+    pub queue_rerank_interval: Duration,
+    /// The **Search Quiet Timeout**: how long a search stays open after the
+    /// last accepted result batch — counted only once every leg (server, global
+    /// sweep, Kad walk) has settled — before core reports
+    /// completion.
+    pub search_quiet_timeout: Duration,
+    /// How long a search awaits the connected server's first answer before
+    /// its TCP leg settles unanswered (amule-kno `SERVER_ANSWER_TIMEOUT_MS`,
+    /// 12 s).
+    pub search_server_answer_timeout: Duration,
+    /// The Kad keyword leg's ceiling should its walk's end never be reported
+    /// (aMule `SEARCHKEYWORD_LIFETIME`, 45 s).
+    pub search_kad_lifetime: Duration,
+    /// The global UDP search sweep's pacing (ADR-0051): one server per tick
+    /// (aMule's 750 ms `m_searchTimer`).
+    pub global_search_tick: Duration,
+    /// How long a download's initial source lookup (`OP_GETSOURCES` →
+    /// `OP_FOUNDSOURCES`) waits on the connected server before giving up, so
+    /// a sourceless file's `download start` terminates by default instead of
+    /// hanging forever: the
+    /// server can go quiet for a hash it has no sources for — a connected,
+    /// silent server, not a disconnect — and the plain per-request wait had
+    /// no bound of its own. aMule has no directly analogous per-request
+    /// timer (it sweeps overall connection liveness on `CONSERVTIMEOUT` /
+    /// `CONNECTION_TIMEOUT`, 25 s / 40 s — see
+    /// `docs/reference/notes/ed2k-runtime.md`); this reuses the same
+    /// magnitude as `callback_timeout`'s established external-wait cap. The
+    /// CLI's `--max-seconds` bounds the *whole run*; this bounds just this
+    /// one RPC.
+    pub source_lookup_timeout: Duration,
+    /// How far apart attach starts the downloads the last process left
+    /// running (ADR-0094): one per pace, in store order, so a store of forty
+    /// downloads does not start forty runs in one tick.
+    pub download_restore_pace: Duration,
+    /// How long a dialed eD2k server may leave the login unanswered before the
+    /// session gives up with
+    /// [`ServerConnectFailure::LoginTimedOut`](crate::ServerConnectFailure::LoginTimedOut)
+    /// Not a second timer: it is the value the eD2k session's own
+    /// login deadline (`CloseReason::LoginTimeout`) is armed with, lifted to
+    /// config so the bound is a core decision rather than a `-net` default. The
+    /// default matches that default (15 s).
+    pub server_login_timeout: Duration,
+    /// The delay before the first re-make of a lost session the operator's
+    /// intent keeps (ADR-0096): aMule's `CS_RETRYCONNECTTIME`, 30 s. Each
+    /// later attempt doubles it, up to [`Self::server_reconnect_ceiling`].
+    pub server_reconnect_first: Duration,
+    /// Where the reconnect delay stops growing: 10 minutes.
+    pub server_reconnect_ceiling: Duration,
+    /// How long a re-made session must hold before the reconnect count starts
+    /// over (ADR-0096, "A lost session is re-made"): 10 minutes, the ceiling.
+    /// One that ends sooner continues the count it came up on, so a server
+    /// that accepts the login and then drops is dialed ever less often.
+    pub server_session_holds: Duration,
+    /// How many re-makes a lost session gets before rmule stops and waits for
+    /// the operator; `None` never stops while the intent stands (ADR-0096,
+    /// "How many attempts"). The default is
+    /// [`RECONNECT_ATTEMPTS`](crate::RECONNECT_ATTEMPTS).
+    pub server_reconnect_attempts: Option<u32>,
+    /// How long a requested Low-ID callback (ADR-0039) holds its worker slot
+    /// waiting for the peer to dial in before the slot is released and the next
+    /// candidate tried. A callback round-trips server-relay → peer-dial, a
+    /// distinct latency regime from a slot wait, so it is its own knob.
+    pub callback_timeout: Duration,
+    /// How often the server-UDP global source discovery task (ADR-0051) sweeps
+    /// the managed server list for active downloads' sources.
+    pub global_source_interval: Duration,
+    /// The status-ping sweep's first-contact pace (ADR-0052): a
+    /// server never probed this run — a fresh import, or every row at start —
+    /// is probed at one per tick, 250 ms (eMuleAI's `UDPSEARCHSPEED`, the
+    /// family's fastest shipped server-UDP fan-out).
+    pub status_ping_first_contact_tick: Duration,
+    /// The status-ping sweep's refresh pace and start delay (ADR-0052): at most
+    /// one refresh `0x96` per tick across the list (aMule `UDPSERVERSTATTIME`,
+    /// 5 s).
+    pub status_ping_tick: Duration,
+    /// The per-server status re-ask window (ADR-0052): 20 min,
+    /// aMule's `UDPSERVSTATMINREASKTIME` floor — the shortest interval the
+    /// family itself ever re-pings one server at. A server pinged within it is
+    /// walked past, not re-asked.
+    pub status_ping_reask: Duration,
+    /// The crypt-ping reply grace before a plain fallback (aMule's 20 s
+    /// `CryptPingReplyPending` window, ADR-0046).
+    pub crypt_ping_grace: Duration,
+    /// rmule's **peer** protocol-obfuscation policy (ADR-0042/0046), or `None`
+    /// (the default) for no obfuscation at all. ADR-0046 keeps one policy value
+    /// across the stream and datagram forms, interpreted per transport, so this
+    /// single knob:
+    ///
+    /// - lights the peer hello's `MiscOptions2` crypt bits — honestly, because
+    ///   it simultaneously
+    /// - makes every accepted peer-TCP connection dual-path (`rmule_net::peer`'s
+    ///   obfuscation-aware accept), and
+    /// - arms the peer-UDP per-datagram layer on the shared client-UDP socket:
+    ///   dual-path receive always, send-encrypt under the ADR-0046 gate, and
+    /// - arms the Kad node's datagram crypt and UDP verify keys, keyed on
+    ///   [`KadEnableConfig::kad_udp_key`](crate::KadEnableConfig::kad_udp_key)
+    ///   — aMule gates Kad obfuscation on the same
+    ///   `IsClientCryptLayerSupported()`, and
+    /// - arms the server-UDP crypt-ping arm ([`CoreConfig::server_udp_crypt`]):
+    ///   the status sweep probes each due server with an obfuscated crypt-ping
+    ///   first and the engine dual-path decrypts replies — aMule ties this to
+    ///   the same `IsServerCryptLayerUDPEnabled() == IsClientCryptLayerSupported()`
+    ///   preference (`Preferences.h:883`); rmule keeps no separate
+    ///   bool, matching ADR-0046's own rejection of "a separate datagram policy
+    ///   enum".
+    ///
+    /// `Supported` accepts obfuscation without initiating it (rmule's dials and
+    /// datagrams stay plaintext unless the peer asks for obfuscation);
+    /// `Requested`/`Required` also initiate. Off by default: the datagram byte
+    /// facts are `[pending]` until an ADR-0046 peer-UDP capture ratifies them,
+    /// and rmule advertises no capability it has not proven it can answer.
+    pub peer_crypt: Option<ObfuscationPolicy>,
+    /// How often the Kad source discovery task (ADR-0043) scans the active
+    /// downloads and shared files for due work. Bounds first-ask and
+    /// first-publish latency; the protocol cadences below gate actual sends.
+    pub kad_sweep_interval: Duration,
+    /// eMule's per-file Kad source re-ask spacing (`KADEMLIAREASKTIME`,
+    /// aMule `Constants.h`: 1 hour). A download is re-asked no more often.
+    pub kad_reask_interval: Duration,
+    /// How often the serve task purges waiters that stopped reasking or whose
+    /// file was unshared (aMule `CUploadQueue::Process`) — the
+    /// disconnected-standing reap cadence (ADR-0057).
+    pub upload_purge_interval: Duration,
+    /// A waiting peer's reask-silence deadline before purge (aMule
+    /// `MAX_PURGEQUEUETIME`, 1 h): disconnected standing survives only while
+    /// the reask heartbeat keeps beating (ADR-0057).
+    pub upload_reask_purge_after: Duration,
+    /// Whether the peer-TCP surfaces consult the IP filter (aMule
+    /// `IpFilterClients`, default **true** — aMule filters out of the box,
+    /// with an empty table until a dat file exists). Gates the accept, dial,
+    /// and source-ingest checks; with no [`CoreBuilder::ip_filter_dir`](crate::CoreBuilder::ip_filter_dir) the
+    /// table is empty and nothing is ever filtered regardless.
+    pub ip_filter_clients: bool,
+    /// Whether the server surfaces consult the IP filter (aMule
+    /// `IpFilterServers`, default **true**): the server dial and the
+    /// global-source server-list install.
+    pub ip_filter_servers: bool,
+    /// The IP filter access-level threshold (aMule `FilterLevel`, default
+    /// 127): only ranges whose level is **strictly below** this block, and
+    /// the cut is applied when the table is built from the dat files.
+    pub ip_filter_level: u8,
+    /// The UDP port rmule's **one client-UDP socket** binds (ADR-0057's
+    /// socket unification): the peer-UDP reask surface, the NAT-T transport
+    /// frames and the Kad node all ride it, so there is one port to configure,
+    /// one router mapping to hold open, and one **External Endpoint** every
+    /// observer is talking about.
+    ///
+    /// `0` — the default — takes an OS-assigned ephemeral port, which is what
+    /// a test wants and what a session with no persisted preference falls back
+    /// to. A front-end passes the operator's stored port here (the eMule/aMule
+    /// default is [`DEFAULT_UDP_PORT`](crate::app_config::DEFAULT_UDP_PORT),
+    /// 4672); core reads no config store of its own (ADR-0069), so it cannot
+    /// default to the stored value itself — and a fixed default would have
+    /// every test core fight for one port.
+    pub udp_port: u16,
+    /// The UDP port the **server-UDP** socket binds (the global source
+    /// sweep, status pings and the server description ask). Unlike
+    /// [`udp_port`](Self::udp_port) this is never advertised — no server or
+    /// peer is ever told this number, a reply simply returns to whichever
+    /// port sent the ask — so `0`, the default, is right for every real
+    /// deployment as well as a test. The field exists at all so a test can
+    /// pin it and hold it, the way [`udp_port`](Self::udp_port) already lets
+    /// one prove a **Half-Bound Pair**.
+    pub server_udp_port: u16,
+    /// Which **Address Families** every socket role binds (ADR-0085): the
+    /// peer TCP listener, client UDP and server UDP each bind a **Family
+    /// Pair** at one port. Both families by default; a family whose bind is
+    /// refused is reported and simply absent, so turning one off is a
+    /// deployment choice, never a correctness one. A listener pinned to a
+    /// literal address binds that address's family alone — the address is the
+    /// point there, and there is no second family to pair with.
+    pub address_families: FamilySelection,
+    /// The operator's **External Endpoint** override, per **Address Family**
+    /// (ADR-0084). `None` in a family — the default — leaves **Address
+    /// Learning** to work the address out from what the wire reports. A value
+    /// outranks every observation, including the server's own assignment: an
+    /// operator who states an address has information rmule does not, and is
+    /// the only source exempt from the local-interface corroboration filter.
+    pub external_address: ExternalAddressOverride,
+    /// The **Port Mapping** knobs (ADR-0086): whether to map at all, which of
+    /// PCP / NAT-PMP / UPnP may be raced, the lifetime to ask a gateway for,
+    /// and whether mappings are withdrawn on a clean exit.
+    ///
+    /// **On by default**, against aMule's off-by-default: a firewalled home
+    /// node is the common rmule deployment, and forfeiting High-ID for every
+    /// operator who never opens a settings screen is the larger harm. The
+    /// field lives here rather than on a session type because core has no
+    /// `SessionConfig` — that name belongs to the `rmule` app — and this is where
+    /// ADR-0084's `external_address` override landed for the same reason.
+    pub port_mapping: PortMappingConfig,
+    /// The **NAT-T** knobs (ADR-0091). Today one: `natt.port_prediction`,
+    /// the one-symmetric birthday policy of ADR-0091's port-prediction
+    /// amendment, **on by default** since its bench rows passed
+    /// (`natt-server-punch-one-symmetric`, `natt-server-punch-symmetric
+    /// --port-prediction` and `natt-server-punch-cone` green).
+    pub natt: NattConfig,
+    /// Response-body cap for the server.met download an on-demand
+    /// [`ServerListCommand::UpdateServerList`](crate::ServerListCommand::UpdateServerList) runs (ADR-0080). The URL rides
+    /// the command — a front-end owns which mirror it trusts (ADR-0069) — but
+    /// the hardening cap is core's, so no caller can raise it.
+    pub max_server_met_bytes: usize,
+    /// The operator's `Remember peers` at start (ADR-0109, "Source Seeds"):
+    /// how many peers each running download writes as its seeds. A front end
+    /// changes it live with
+    /// [`CoreCommand::SetRememberPeers`](crate::CoreCommand::SetRememberPeers).
+    pub remember_peers: crate::RememberPeers,
+}
+
+/// The NAT-T knobs [`CoreConfig::natt`] carries (ADR-0091).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NattConfig {
+    /// `natt.port_prediction` (ADR-0091's amendment). `Off` is eMuleAI's
+    /// six on target plus the ±16 sweep, byte-identical to the behaviour before
+    /// the knob existed. `Birthday` lets a node whose Kad observers disagree on
+    /// its UDP port open a 256-socket Fan, and one whose observers agree send
+    /// 256 random-port probes, per introduction.
+    pub port_prediction: rmule_peer::natt::PortPrediction,
+}
+
+impl Default for CoreConfig {
+    fn default() -> Self {
+        Self {
+            peer_concurrency_per_download: 2,
+            slot_wait_timeout: DEFAULT_SLOT_WAIT_TIMEOUT,
+            upload_slot_budget: 4,
+            max_upload_queue_len: 64,
+            queue_rerank_interval: Duration::from_secs(20),
+            search_quiet_timeout: Duration::from_secs(3),
+            search_server_answer_timeout: Duration::from_secs(12),
+            search_kad_lifetime: Duration::from_secs(45),
+            global_search_tick: Duration::from_millis(750),
+            source_lookup_timeout: Duration::from_secs(30),
+            download_restore_pace: Duration::from_secs(1),
+            server_login_timeout: Duration::from_secs(15),
+            server_reconnect_first: Duration::from_secs(30),
+            server_reconnect_ceiling: Duration::from_secs(600),
+            server_session_holds: Duration::from_secs(600),
+            server_reconnect_attempts: crate::RECONNECT_ATTEMPTS,
+            callback_timeout: Duration::from_secs(30),
+            global_source_interval: Duration::from_secs(60),
+            status_ping_first_contact_tick: Duration::from_millis(250),
+            status_ping_tick: Duration::from_secs(5),
+            status_ping_reask: Duration::from_secs(20 * 60),
+            crypt_ping_grace: Duration::from_secs(20),
+            peer_crypt: None,
+            udp_port: 0,
+            server_udp_port: 0,
+            address_families: FamilySelection::default(),
+            external_address: ExternalAddressOverride::default(),
+            port_mapping: PortMappingConfig::default(),
+            natt: NattConfig::default(),
+            kad_sweep_interval: Duration::from_secs(10),
+            kad_reask_interval: Duration::from_secs(3600),
+            upload_purge_interval: Duration::from_secs(60),
+            upload_reask_purge_after: Duration::from_secs(3600),
+            ip_filter_clients: true,
+            ip_filter_servers: true,
+            ip_filter_level: 127,
+            max_server_met_bytes: rmule_bootstrap::DEFAULT_MAX_SERVER_MET_BYTES,
+            remember_peers: crate::RememberPeers::DEFAULT,
+        }
+    }
+}
+
+impl CoreConfig {
+    /// [`CoreConfig::peer_concurrency_per_download`] clamped to at least one,
+    /// so a zero in config starves nothing: the download runs single-peer
+    /// instead of never spawning a worker.
+    #[must_use]
+    pub const fn effective_peer_concurrency_per_download(&self) -> usize {
+        if self.peer_concurrency_per_download == 0 {
+            1
+        } else {
+            self.peer_concurrency_per_download
+        }
+    }
+
+    /// Whether the server-UDP crypt layer is armed: derived from
+    /// [`CoreConfig::peer_crypt`] rather than a bool of its own (ADR-0046)
+    /// — aMule's `IsServerCryptLayerUDPEnabled()` reads the same
+    /// preference as every other crypt surface (`Preferences.h:883`). Any set
+    /// policy arms the status sweep's obfuscated crypt-ping and the engine's
+    /// dual-path decrypt; unset leaves the server-UDP surface plaintext.
+    #[must_use]
+    pub const fn server_udp_crypt(&self) -> bool {
+        self.peer_crypt.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two workers per download is aMule's shape; a configured zero would
+    /// otherwise spawn no worker at all and stall the download forever.
+    #[test]
+    fn peer_concurrency_defaults_to_two_and_normalizes_zero_to_one() {
+        assert_eq!(
+            CoreConfig::default().effective_peer_concurrency_per_download(),
+            2
+        );
+        let none_configured = CoreConfig {
+            peer_concurrency_per_download: 0,
+            ..CoreConfig::default()
+        };
+        assert_eq!(none_configured.effective_peer_concurrency_per_download(), 1);
+    }
+
+    /// ADR-0046: rmule keeps no bool of its own for the
+    /// server-UDP crypt layer — it follows whichever `peer_crypt` policy is
+    /// set, matching aMule's one `IsServerCryptLayerUDPEnabled() ==
+    /// IsClientCryptLayerSupported()` preference.
+    #[test]
+    fn server_udp_crypt_follows_the_peer_crypt_policy() {
+        assert!(!CoreConfig::default().server_udp_crypt());
+
+        let armed = CoreConfig {
+            peer_crypt: Some(ObfuscationPolicy::Supported),
+            ..CoreConfig::default()
+        };
+        assert!(armed.server_udp_crypt());
+    }
+}

@@ -1,0 +1,119 @@
+name: DCO
+
+# Every commit in a pull request must carry a Signed-off-by trailer that matches
+# the commit's author (see "Sign your commits" in CONTRIBUTING.md). This check
+# lists the pull request's commits through the API and fails, naming each commit
+# that does not.
+#
+# SECURITY. This runs on `pull_request`, not `pull_request_target`: for a pull
+# request from a fork the token is read-only and no secret is exposed. It never
+# checks out or runs anything from the pull request. Commit messages are read as
+# data through the API and are never interpolated into a shell command or into
+# the script text.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  dco:
+    name: dco
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check that every commit is signed off
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const pr = context.payload.pull_request;
+
+            // GitHub lists at most 250 commits of a pull request.
+            const API_COMMIT_LIMIT = 250;
+            // Bot accounts cannot certify anything; the maintainer reviews their changes.
+            const EXEMPT_LOGINS = new Set(['dependabot[bot]']);
+            const guide = `https://github.com/${owner}/${repo}/blob/HEAD/CONTRIBUTING.md#sign-your-commits`;
+
+            if (pr.commits > API_COMMIT_LIMIT) {
+              core.setFailed(
+                `This pull request has ${pr.commits} commits and the sign-off check reads at most ${API_COMMIT_LIMIT}. Squash it down and push again.`,
+              );
+              return;
+            }
+
+            const commits = await github.paginate(github.rest.pulls.listCommits, {
+              owner,
+              repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
+
+            const same = (a, b) => a.normalize('NFC').trim().toLowerCase() === b.normalize('NFC').trim().toLowerCase();
+
+            // "Signed-off-by: Name <email>" lines in the commit's trailer block:
+            // the last paragraph, which must come after the subject's own paragraph.
+            const TRAILER = /^signed-off-by:[ \t]*(.*?)[ \t]*<([^<>\s]+)>[ \t]*$/i;
+            const signOffs = (message) => {
+              const paragraphs = message.replace(/\r\n?/g, '\n').trimEnd().split(/\n[ \t]*\n/);
+              if (paragraphs.length < 2) {
+                return [];
+              }
+              return paragraphs[paragraphs.length - 1]
+                .split('\n')
+                .flatMap((line) => {
+                  const match = TRAILER.exec(line);
+                  return match ? [{ name: match[1], email: match[2] }] : [];
+                });
+            };
+
+            const problems = [];
+            let checked = 0;
+            for (const entry of commits) {
+              if (entry.parents.length > 1) {
+                core.info(`Skipped ${entry.sha.slice(0, 7)}: a merge commit.`);
+                continue;
+              }
+              if (EXEMPT_LOGINS.has(entry.author?.login)) {
+                core.info(`Skipped ${entry.sha.slice(0, 7)}: authored by ${entry.author.login}.`);
+                continue;
+              }
+              checked += 1;
+              const author = entry.commit.author;
+              const found = signOffs(entry.commit.message);
+              if (found.some((s) => same(s.name, author.name) && same(s.email, author.email))) {
+                continue;
+              }
+              const subject = entry.commit.message.split(/\r?\n/)[0];
+              const why = found.length === 0
+                ? 'no Signed-off-by line'
+                : `Signed-off-by names ${Array.from(found, (s) => `${s.name} <${s.email}>`).join(', ')}, which is not the author`;
+              problems.push({ sha: entry.sha.slice(0, 7), subject, author: `${author.name} <${author.email}>`, why });
+            }
+
+            if (problems.length === 0) {
+              core.info(`All ${checked} commits carry a matching Signed-off-by line.`);
+              return;
+            }
+
+            for (const p of problems) {
+              core.error(`${p.sha} ${p.subject}: ${p.why} (author ${p.author}).`);
+            }
+            const list = Array.from(
+              problems,
+              (p) => `  ${p.sha}  ${p.subject}\n           author: ${p.author}\n           ${p.why}`,
+            ).join('\n');
+            core.setFailed(
+              [
+                `${problems.length} of ${checked} commits need a Signed-off-by line that matches the commit's author:`,
+                '',
+                list,
+                '',
+                'To fix: sign off the last commit with "git commit --amend -s", or every commit on your branch with',
+                `"git rebase --signoff origin/${pr.base.ref}", then update the pull request with "git push --force-with-lease".`,
+                `Details: ${guide}`,
+              ].join('\n'),
+            );

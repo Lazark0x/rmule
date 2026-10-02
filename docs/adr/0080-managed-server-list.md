@@ -1,0 +1,251 @@
+# The managed server list is a core-owned model, changed only by command and published whole as a level
+
+## Context
+
+A server.met row carries a server's name, description and priority (ADR-0066), and the
+acquisition pipeline of ADR-0065 reconciles a downloaded list with aMule's
+add-new/update-known posture. A list kept as bare `(host, port)` pairs throws all of that
+away: a cold start acquires a thousand servers and cannot name one. An operator also
+needs what aMule's Servers tab gives: add, remove, prioritise and pin servers, refresh
+the list from a URL, see each server's ping, load, health and grants, and connect to the
+one they pick.
+
+A server's facts have different writers and lifetimes. The row's identity and the
+operator's choices are configuration. Ping, users, files and limits are what the server
+last reported. Which server is connected is a fact about the session, not about any row.
+
+aMule citations are to aMule 2.3.3. Evidence: the aMule-written `server.met` goldens
+under `crates/rmule-ed2k/tests/fixtures/server_met/captured/` carry the figure tags,
+including `ST_LASTPING` 0 beside a user count reported over TCP.
+
+## Decision
+
+### The model
+
+```rust
+pub struct ManagedServer {
+    pub endpoint: ServerEndpoint,          // the list key
+    pub name: Ed2kText,                    // ST_SERVERNAME
+    pub description: Ed2kText,             // ST_DESCRIPTION
+    pub priority: ServerPriority,          // ST_PREFERENCE: Normal | High | Low
+    pub is_static: bool,                   // the operator's pin
+    pub fail_count: u32,                   // aMule's m_failedcount
+    pub figures: Option<ServerFigures>,    // what the server last reported, with when
+    pub grants: Option<ServerGrantsReport>,// its last login's SRV_TCPFLG_* word, with when
+}
+```
+
+- The strings are `Ed2kText`: server banners are routinely Windows-1252 or mojibake
+  (ADR-0019), and a list that renders "?" beats one that refuses the row.
+- `ServerPriority` is `rmule_ed2k::ServerPriority`, re-exported. Its wire mapping
+  (`Normal = 0`, `High = 1`, `Low = 2`, out of range → `Normal`) is also the persisted
+  mapping, so the file format and the store cannot drift.
+- **Server Figures** (`ServerFigures`): ping, users, files, soft and hard file limits,
+  version, the UDP flags word of the last challenge-matched `0x97`, and `answered_at`,
+  the wall-clock time the server last answered. aMule keeps the same figures in
+  server.met (`SaveServerMet`, `ServerList.cpp:776-789`; read back by
+  `CServer::AddTagFromFile`, `Server.cpp:182-270`), so they survive a restart.
+- **Grants** (`ServerGrantsReport`): the raw `SRV_TCPFLG_*` word of the server's last
+  `OP_IDCHANGE`, with when. The raw word is stored so unknown bits survive; a front end
+  words each bit it knows.
+
+### One merge rule
+
+`ManagedServer::fold` is the whole reconciliation policy, aMule's `LoadServerMet`
+duplicate branch and its `AddServer` for a known server: **the name always takes the
+fresh value, the description only when the fresh one is non-empty, and priority, the
+static pin, the failure tally and the grants stay ours.** Figures keep whichever side
+answered later. An imported server.met fills figures only when it carries a last-ping
+time that is non-zero and not in the future (aMule rejects a future `ST_LASTPING`,
+`Server.cpp:196-200`), because a figure with no time behind it cannot say how old it is.
+Both the list update and an operator re-add go through `merge_server` and the one
+`fold`. A downloaded list may rename a server; it may not re-prioritise, unpin or absolve
+it. `SetServerPriority` and `SetServerStatic` are how those change.
+
+### The core owns the list
+
+The store is a seam: `ServerListStore` (`servers`, `merge_server`, `remove_server` and
+the `set_*` mutators, which report `false` when no row holds the endpoint), held as
+`Arc<dyn ServerListStore>` over the store of ADR-0083. `AppConfigStore` is a supertrait
+of it, so a front end opens one store, but the actor is handed only the narrower trait:
+reaching a server row does not come with the identity and the SUI keypair.
+`CoreBuilder::server_list` hands the store over, and from then on **the core is the
+list's only writer**; a front end reads the level.
+
+### Commands
+
+`CoreCommand::ServerList(ServerListCommand)`:
+
+| Command | Answer |
+|---|---|
+| `AddServer { server }` | `ServerAdded` \| `ServerUpdated` (a fold) |
+| `RemoveServer { server }` | `ServerRemoved` \| `UnknownServer` |
+| `SetServerPriority { server, priority }` | `ServerPriorityChanged` \| `UnknownServer` |
+| `SetServerStatic { server, is_static }` | `ServerStaticChanged` \| `UnknownServer` |
+| `UpdateServerList { url }` | `ServerListUpdateStarted`, then `ServerListUpdated` \| `ServerListUpdateFailed` |
+
+The events are edges; the list is a level, so no consumer folds them into a list of its
+own. Rejections: `UnknownServer`, `ServerListStoreFailed` (the store's reason is traced),
+`ServerListFetchUnavailable`, `ServerListUpdateInFlight`.
+
+**Removing the connected server removes the row and keeps the session**, as aMule's
+`RemoveServer` does. The list is configuration and the connection is a session fact; a
+core that hung up because a row was deleted would invent a coupling.
+
+**The update runs in two steps so the fetch never holds the list.**
+`acquire_server_met` projects the installed rows onto server.met rows and runs the
+pipeline of ADR-0065 (bounded GET, parse before install, add-new/update-known, a plan)
+without touching the store; `install_server_met_plan` folds the plan in. The actor never
+holds the store across the fetch, which runs on a spawned task behind a one-at-a-time
+guard, so a command landing in the gap is neither blocked nor lost. The fetch capability
+is injected as `ServerListFetcher`, the object-safe form of the `Fetcher` seam, with a
+blanket impl over every `Fetcher`; without one, `UpdateServerList` is refused with
+`ServerListFetchUnavailable`, as ADR-0047's Honest Capability Advertisement requires of
+our own machinery. DNS-named rows have no `(ip, port)` key, so the reconciliation neither
+projects nor touches them. The Join Sequence's first-run fetch (ADR-0067) uses the same
+two calls.
+
+### Connecting is a separate command
+
+`CoreCommand::ConnectToServer { server, credentials }` connects to a **listed** server
+(`UnknownServer` otherwise), one at a time (`ServerConnectInFlight`). It is not a
+`ServerListCommand`, because no list command reaches the session. It is the only login
+(ADR-0095): activities ride the session the operator made and dial nothing themselves.
+`DisconnectFromServer` ends the operator's intent to stay connected; while the intent
+stands, a lost session is re-made (ADR-0096).
+
+The dial runs off the actor and answers with the `ServerConnectionEvent` trail:
+
+```
+Disconnected(old) → Connecting(new) → Connected(new) | ConnectFailed(new)
+```
+
+The switch holds the session slot, ends the old session and waits for it to report
+itself gone before dialing, so the order holds by construction. The trail and the
+`connected_server` level are written by the session layer (`ServerFacts`), not the
+actor arm, so the two cannot disagree. Its event sender is weak, because long-lived
+holders such as the server-UDP engine would otherwise keep the event channel open and
+hang shutdown.
+
+**What survives a switch.** Peer transfers run on their own connections and lose
+nothing; the upload queue and credit ring are untouched. A running search dies with
+`SearchFailed { ServerDisconnected }`, because its results arrive down the one session.
+A download keeps its sources; a lookup parked at the switch fails the same way. The serve
+activity follows the session: each session the operator makes gets the share set
+announced (`OP_OFFERFILES`) as aMule re-sends it on every connect, unless the Announce
+Policy of ADR-0099 withholds it, and peer hellos read the live session, so a new client
+id is named at once.
+
+### The level
+
+```rust
+pub struct ServerDiagnostics {
+    pub server: ManagedServer,
+    pub ping: Option<Duration>,
+    pub users: Option<u32>,
+    pub files: Option<u32>,
+    pub age: Option<Duration>,          // since the server last answered
+    pub health: ServerHealth,           // ADR-0052
+    pub grants_age: Option<Duration>,
+    pub resolved_address: Option<ResolvedAddress>,
+    pub dead_since: Option<DeadSince>,
+}
+```
+
+`DiagnosticsSnapshot::servers: Vec<ServerDiagnostics>` rides the shared
+`DiagnosticsState`, so the sync `Core::diagnostics_snapshot()` reports it without an
+actor round trip. It is republished whole, never patched, and always read back from the
+store under the same lock as the mutation that changed it; the actor publishes once
+before taking its first command. `None` means never measured, never zero.
+
+**The connected server is one fact, not a flag on N rows:**
+`DiagnosticsSnapshot::connected_server: Option<ServerEndpoint>`, raised by an accepted
+login and cleared by the session task on the way out, whichever side ended it. It is not
+pruned by a list republish, because a removed server can still be connected.
+`DiagnosticsSnapshot::share_announcement` says what the connected session was told of
+the share set.
+
+### Writers of the figures and the tally
+
+`ServerFacts` is the one write seam, so the durable tally and the figures change
+together for the same round trip:
+
+| Surface | Writes | aMule |
+|---|---|---|
+| Status-ping sweep, at send | `fail_count += 1` | `ServerStats` → `AddFailedCount` |
+| `0x97` challenge gate, on a match | ping, users, files, limits, UDP flags, dated now; `fail_count = 0` | `ProcessPacket` → `SetPing` / `SetUserCount` / `SetFileCount` / `ResetFailedCount`, `SetLastPingedTime` |
+| Connected session's `OP_SERVERSTATUS` | users, files; date unchanged (figures with none are dated now) | `CServerSocket::ProcessPacket` |
+| Connected session's `OP_SERVERIDENT` | name, description | `SetListName` / `SetDescription` |
+| Tagged `0xA3` | version; date unchanged | ADR-0068 |
+| Failed TCP connect | `fail_count += 1` | `ConnectionFailed` |
+| Accepted login, `OP_IDCHANGE` | grants, dated; `fail_count = 0` | `ResetFailedCount` |
+
+- **A ping is counted as a failure the moment it leaves, and the answer clears the whole
+  tally.** A UDP ping has no failure event, so this needs no timer and leaves no window
+  in which a ping is outstanding but uncounted. A crypt ping and its plain fallback
+  (ADR-0046) are two probes and count two. `fail_count` reads *consecutive failures to
+  reach this server, by any means, since it was last reached*, on aMule's single
+  `m_failedcount`.
+- A connect refused by the IP filter reports its edge and leaves the tally alone: the
+  dial never happened.
+- **The challenge gate is the measurement gate.** The RTT is stamped where the challenge
+  is registered and read where the reply passes the gate, so the check that keeps forged
+  capabilities out (ADR-0052) keeps forged measurements out too. A failed gate moves
+  nothing. Challenge entropy stays injected, so a swept round trip is byte-deterministic
+  under test.
+- A store write that fails is logged and dropped: none of these writes is load-bearing for
+  the wire, and a sweep that cannot record a tally must still ping.
+- A reply from an unlisted server is inert, because the store edits only rows it holds;
+  removing a server drops its figures, so a re-added endpoint starts unknown.
+- **The status sweep walks the managed list**, re-read from the store each tick, at
+  ADR-0052's cadence (one server per 5 s tick, each at most once per 4.5 h, the first
+  probe one tick after start). The global source sweep walks a projection of the same
+  list (ADR-0051).
+- A login measures no UDP round trip, so a connected server with no `0x97` yet shows
+  counts and no ping.
+- Health follows the tally under the Server Policy of ADR-0052: dead servers are marked,
+  never removed, and `is_static` is the operator's pin against any future cleanup.
+
+### Presentation of a row
+
+The TUI's Servers table has an **Age** column (`59s`, `59m`, `47h`, `99d`, then weeks)
+sorted as a quantity, with a never-answered server last in both directions; it is the
+last figure to give way, so no figure shows without its age. Under the table, a detail
+pane says for the selected row, one sentence each: **Grants** (the last login's TCP
+grants and their age, or never logged in), **UDP** (the last status answer's flags, none
+named, or no answer yet), **Health** (answered with age; not reached; failing, with the
+tally out of the Dead Server Limit; or dead since when — a row already dead when the list
+was read says it was dead before this run), and **Shares** (for the connected server,
+what it was told; for any other, what its next login would do under the Announce Policy).
+Flag words are listed in bit order, never sorted by spelling. Every bit aMule 2.3.3
+(`Client2Server/TCP.h:65-71`, `UDP.h:50-57`), eMule (`Server.h:40-53`) and emule-qt's
+IPv6 bit define is named; any other set bit is said by position ("bits 6, 7 and 12, which
+no client names", bit 0 being `0x1`), and the lean Run Log writes the raw TCP and UDP
+words in hex as a `server.grants` record when either changes. The pane takes the height
+its sentences wrap to, at least four lines; where it would take more than half the
+table's body it collapses to one wrapped line.
+
+## Consequences
+
+- One list, one writer, one level: front ends, the status sweep and the source sweep all
+  read the same rows, and nothing re-derives a server's name or health.
+- An operator can judge a server before connecting to it: its figures, age, health and
+  last grants survive a restart.
+- Activity commands still carry a server argument they never dial; a download records the
+  server its link was found on only as a source hint.
+- The list is never pruned automatically; a dead server stays listed and marked.
+
+## Considered options
+
+- **Measurements beside the list, in a per-endpoint runtime map.** Rejected: a restart
+  forgot every ping and count, which aMule keeps in server.met. Keeping them on the row
+  preserves what the separate map bought — a republish cannot clobber a figure, an
+  unlisted reply is inert, a removed row takes its figures with it.
+- **A per-row connected flag.** Rejected: a second copy of one session fact, kept in step
+  only by care.
+- **A lazy re-target on connect** (record the choice, connect at the next activity).
+  Rejected: the operator presses connect and nothing happens.
+- **A timer per outstanding ping.** Rejected: counting at send and absolving on the answer
+  is aMule's posture and needs no timer state.
+- **A detail column per grant.** Rejected: the 80-column budget has no room, and a column
+  narrower than its words wraps every row.

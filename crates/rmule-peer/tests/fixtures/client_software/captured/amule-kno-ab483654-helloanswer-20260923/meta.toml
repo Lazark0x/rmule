@@ -1,0 +1,22 @@
+# kno's aMule answering rmule's hello over IPv4: the OP_HELLOANSWER frame the
+# interop harness retained beside its verdict. Copied byte for byte from the
+# archive; nothing re-encoded.
+#
+# Evidence FOR: the Client Software a live aMule fork writes into its hello —
+# CT_EMULE_VERSION 0x03060080 (compatible code 3 = aMule, version 3.0.1, build 0)
+# and CT_MOD_VERSION (0x55) as the string "aMule GIT". Beside it the stock
+# aMule 2.3.3 hellos under direct_callback/, buddy_callback/ and reverse_serve/
+# carry 0x03040D80 and no mod tag, and emule-qt's answer under ipv6_dialect/
+# carries 0x00011880 (code 0, v0.70b) with the mod "eMule Qt 0.4.2".
+
+[provenance]
+archive      = "bench run 1790202940"
+run          = "1790202940 (2026-09-23 22:35 UTC)"
+scenario     = "rmule-interop-harness ipv6-extsx-kno"
+counterparty = "kno's aMule ab483654 (image rmule/interop-amule-kno)"
+sha256       = "b19b605f23106d243c65d9c2947484477db4ee646bc472dbcaa682c153fee428"
+transform    = "none: the whole eD2k TCP frame as the harness wrote it"
+
+[frames.amule_kno_op_helloanswer]
+file  = "amule_kno_op_helloanswer.bin (142 bytes)"
+shape = "e3 | 89000000 | 4c OP_HELLOANSWER | body"

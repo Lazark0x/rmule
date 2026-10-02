@@ -1,0 +1,54 @@
+# Genuine stock aMule 2.3.3 **reask error answers** — the `0x92
+# OP_FILENOTFOUND` and `0x93 OP_QUEUEFULL` datagrams its `CClientUDPSocket`
+# sent back to bare `OP_REASKFILEPING 0x90` probes, captured with the
+# `rmule-tools ed2k peer reask-capture` hand-run tool (the `ed2k server
+# udp-capture` shape, applied to the peer-UDP surface). Every
+# reply is counterparty bytes recorded off the probe's own socket; the probe's
+# `0x90` datagrams are rmule stimulus, never evidence (ADR-0045).
+#
+# ## What this fixture is evidence FOR
+#
+# The two peer-UDP reply-matrix rows that had sat deterministic-only: the
+# `0x92` and `0x93` rows. rmule's own
+# emit/consume of both was CI-proven (the `reask.rs` codec + the core reply
+# matrix); what no run had drawn was a REAL aMule producing them. Both
+# branches are now pinned, and both captured frames are **byte-identical to
+# rmule's own emitters** (`file_not_found_datagram()` /
+# `queue_full_datagram()`) — two independent producers, one wire form.
+
+[provenance]
+counterparty       = "aMule 2.3.3 (source pin 4e8f2b3c), stock interop image rmule/interop-amule:local (Ubuntu 24.04 amule-daemon package)"
+scenario           = "by hand: docker net + rmule/interop-eserver:local + aMule (ed2k-server mode, sharing one file) + `rmule-tools ed2k peer reask-capture 172.18.0.3:4672 --shared-hash A05034A39AF670423743051C74CF9E7F`"
+date               = "2026-07-29"
+amule_endpoint     = "172.18.0.3:4672 (client-UDP; the muxed client/Kad socket)"
+shared_file        = "shared.bin, 65536 bytes, ed2k hash A05034A39AF670423743051C74CF9E7F (deterministic seed 20260729; hashed by aMule on start — its own log echoed the same hash)"
+probe              = "an unknown sender: a bare UDP socket, never queued, never helloed — exactly the sender class both branches answer"
+
+# Each precondition with the aMule source line that establishes it.
+[preconditions]
+unshared_answer_unconditional = "ClientUDPSocket.cpp:181 — `if (!reqfile)` answers OP_FILENOTFOUND before any sender lookup; the unknown-sender arm (:187) sends it plaintext (`SendPacket(response, host, port, false, NULL, ...)`)."
+queuefull_gate                = "ClientUDPSocket.cpp:232 — an unknown sender asking a SHARED file reaches `if ((theStats::GetWaitingUserCount() + 50) > thePrefs::GetQueueSize())`. GetQueueSize() = QueueSizePref*100 (Preferences.h:324, default 50 -> 5000), so the counterparty ran `QueueSizePref=0` — a legal user preference set via amule.conf (the bench's AMULE_QUEUE_SIZE_PREF knob), making the near-full branch (0+50) > 0 unconditional on a quiet bench. Not a patch; stock binary, stock timers."
+plaintext_replies             = "both branches send with `false, NULL` crypt args — aMule cannot encrypt toward a sender it does not know — so the captured bytes are the exact wire form."
+
+# The capture targets: aMule's own error-branch emissions.
+[frames.filenotfound_0x92]
+class     = "counterparty evidence"
+opcode    = "0x92 OP_FILENOTFOUND (proto 0xC5 OP_EMULEPROT), empty body"
+direction = "aMule (172.18.0.3:4672) -> probe"
+stimulus  = "0x90 with hash EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE (not shared)"
+wire      = "c5 92"
+parity    = "byte-identical to rmule's `file_not_found_datagram()`"
+
+[frames.queuefull_0x93]
+class     = "counterparty evidence"
+opcode    = "0x93 OP_QUEUEFULL (proto 0xC5 OP_EMULEPROT), empty body"
+direction = "aMule (172.18.0.3:4672) -> probe"
+stimulus  = "0x90 with hash A05034A39AF670423743051C74CF9E7F (shared) from an unknown sender, QueueSizePref=0"
+wire      = "c5 93"
+parity    = "byte-identical to rmule's `queue_full_datagram()`"
+
+[finding.empty_body_is_load_bearing]
+what = "both answers are exactly two bytes — aMule appends NOTHING after the opcode. rmule's codec assumes the empty body on both emit and consume; this capture is the first counterparty proof of that assumption."
+
+[finding.replies_answer_the_probe_port]
+what = "both replies came back to the probe's ephemeral source port, not to any advertised port — the reply matrix routes on the datagram source alone, matching rmule's own `resolve_reask` routing (the promoted-grant fix)."

@@ -1,0 +1,105 @@
+//! The Run Log's record of each serve event.
+
+use rmule_core::ServeEvent;
+
+use crate::run_log::codes;
+use crate::run_log::record::Record;
+
+/// The label a peer's announced software is written under.
+fn software(record: Record, software: Option<&rmule_core::diagnostics::ClientSoftware>) -> Record {
+    match software {
+        Some(software) => record.peer_software("software", &crate::views::software_label(software)),
+        None => record,
+    }
+}
+
+pub(super) fn record(event: &ServeEvent) -> Record {
+    use ServeEvent as S;
+    match event {
+        S::FileShared { file_hash } => {
+            Record::new("serve.file_shared").file_hash("file_hash", file_hash)
+        }
+        S::FileUnshared { file_hash } => {
+            Record::new("serve.file_unshared").file_hash("file_hash", file_hash)
+        }
+        S::FileWithheld {
+            file_hash, reason, ..
+        } => codes::withheld(
+            Record::new("serve.file_withheld").file_hash("file_hash", file_hash),
+            *reason,
+        ),
+        S::FileOffered { file_hash } => {
+            Record::new("serve.file_offered").file_hash("file_hash", file_hash)
+        }
+        S::SharesUnwatched => Record::new("serve.shares_unwatched"),
+        S::ShareRejected { reason } => {
+            Record::new("serve.share_rejected").code("reason", codes::share_rejected(*reason))
+        }
+        S::ServingStarted { listen_addr } => {
+            Record::new("serve.serving_started").own_address("listen_addr", listen_addr)
+        }
+        S::ServingFailed { reason } => {
+            codes::serve_start_failure(Record::new("serve.serving_failed"), *reason)
+        }
+        S::FilesAnnounced { file_count } => {
+            Record::new("serve.files_announced").count("file_count", *file_count)
+        }
+        S::FilesWithheld { file_count, reason } => Record::new("serve.files_withheld")
+            .count("file_count", *file_count)
+            .code("reason", codes::shares_withheld(*reason)),
+        S::UploadSlotGranted {
+            peer,
+            file_hash,
+            software: announced,
+        } => software(
+            Record::new("serve.upload_slot_granted")
+                .peer_address("peer", peer)
+                .file_hash("file_hash", file_hash),
+            announced.as_ref(),
+        ),
+        S::PeerQueued {
+            peer,
+            rank,
+            file_hash,
+            software: announced,
+        } => software(
+            Record::new("serve.peer_queued")
+                .peer_address("peer", peer)
+                .count("rank", *rank)
+                .file_hash("file_hash", file_hash),
+            announced.as_ref(),
+        ),
+        S::UploadQueueFull { peer } => {
+            Record::new("serve.upload_queue_full").peer_address("peer", peer)
+        }
+        S::UploadLowIdAbuseRefused { peer } => {
+            Record::new("serve.upload_low_id_abuse_refused").peer_address("peer", peer)
+        }
+        S::ReaskPingMalformed { peer } => {
+            Record::new("serve.reask_ping_malformed").peer_address("peer", peer)
+        }
+        S::NameAskMalformed { peer } => {
+            Record::new("serve.name_ask_malformed").peer_address("peer", peer)
+        }
+        S::UploadAddressCapReached { peer } => {
+            Record::new("serve.upload_address_cap_reached").peer_address("peer", peer)
+        }
+        S::UploadSlotReleased { peer } => {
+            Record::new("serve.upload_slot_released").peer_address("peer", peer)
+        }
+        S::WaiterLeft { peer, cause } => Record::new("serve.waiter_left")
+            .peer_address("peer", peer)
+            .code("cause", codes::waiter_left(*cause)),
+        S::SourcesServed {
+            peer,
+            file_hash,
+            count,
+        } => Record::new("serve.sources_served")
+            .peer_address("peer", peer)
+            .file_hash("file_hash", file_hash)
+            .count("count", *count),
+        S::ServingStopped { reason } => {
+            Record::new("serve.serving_stopped").code("reason", codes::serve_stop(*reason))
+        }
+    }
+}

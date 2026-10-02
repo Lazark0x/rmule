@@ -1,0 +1,104 @@
+# Genuine stock aMule 2.3.3 **buddy source publish** — the `0x44
+# KADEMLIA2_PUBLISH_SOURCE_REQ` a firewalled Kad node emitted for the file it
+# shares, while holding rmule as its recruited buddy. Captured on the
+# fake-public Kad bench (Config A) during interop flow M `kad-core-buddy
+# --publish-source`. The frame is counterparty
+# bytes off a tcpdump on the **counterparty's own** network namespace; nothing
+# is fabricated (ADR-0045).
+#
+# ## What this fixture is evidence FOR
+#
+# ADR-0061's "Kad buddy source row" section was written from three reference
+# trees — aMule Fork Pin `ab483654`, eMule 0.70b, eMuleAI — that agree on
+# *which* tags a firewalled publisher writes and disagree on *how* one of them
+# is encoded. `TAG_BUDDYHASH` comes from `CUInt128::ToByteArray` in aMule (true
+# big-endian) and from `CUInt128::GetData()` in the other two (the raw
+# word-ordered bytes); on a little-endian host those differ by a per-32-bit-word
+# byte swap, so the two families cannot address each other's buddies. rmule
+# spoke aMule's form on a source reading. This frame is what turns that reading
+# into a measurement.
+#
+# Everything else the row carries is pinned by the same 111 bytes: the tag
+# order, each integer's width, the hex case, that `TAG_ENCRYPTION` rides last,
+# and that `TAG_SOURCEUPORT` is **absent** — `CPrefs::m_useExternKadPort`
+# starts `true`, so a stock publisher never writes it and leaves the storer to
+# index the port it observed.
+#
+# ## Why it took a second pinned identity
+#
+# Flow M pinned the counterparty to Kad ID `0x33` repeated, which makes the
+# buddy relationship ID `~ownID` = `0xCC` repeated — a palindrome under the
+# very byte swap in question. Run `1790095682` captured a byte-identical `0x44`
+# (same file key, same tag list, `TAG_BUDDYHASH` = 32 × `'C'`) and settled
+# every field but that one. The pin was then made asymmetric per word and the
+# flow re-run; this is that run.
+
+[provenance]
+counterparty       = "aMule 2.3.3, DEBUG build of the pinned Debian source package, image rmule/interop-amule-debug:local"
+scenario           = "rmule-interop-harness kad-core-buddy --publish-source --mesh-members 3 --window 1500 --amule-image rmule/interop-amule-debug:local --skip-build (flow M)"
+run                = "1790097388"
+first_capture      = "1790095682 — the same row with a palindromic buddy ID; identical in every other byte"
+date               = "2026-09-22"
+subnet             = "203.0.113.0/24 (RFC 5737 fake-public, Config A; docker --internal)"
+amule_endpoint     = "203.0.113.2 — Kad UDP 4674, eD2k TCP 4662 (iptables-DROPped)"
+rmule_endpoint     = "203.0.113.3 — Kad UDP 4679, serve listener TCP 4663; the recruited buddy"
+storer_endpoint    = "203.0.113.6 — Kad UDP 4690; a placed `rmule-tools kad join-node` member, pinned to the file's own Kad key"
+amule_kad_id       = "00112233445566778899aabbccddeeff  # asymmetric per 32-bit word, so TAG_BUDDYHASH's order is observable"
+rmule_kad_id       = "ffeeddccbbaa99887766554433221100  # ~aMuleKadID: distance 0 from the FindBuddy target"
+
+# Five gates stand between a firewalled aMule and a source publish. Four are
+# `CSharedFileList::Publish`'s own; the fifth is one level deeper and silent,
+# and it is the one that kept this frame uncaptured through five earlier runs.
+[preconditions]
+kad_connected  = "`CKademlia::IsConnected()` — the node bootstrapped into the seeded swarm and logged `rmule-kad-routing-ready`."
+shared_count   = "`GetCount()` — `--publish-source` mounts the run's Synthetic File as the counterparty's shared directory instead of an empty one."
+publish_flag   = "`CKademlia::GetPublish()` — set when a `NODECOMPLETE` self-lookup ends. Only visible at all because the image is a debug build (a release aMule compiles every Kad log category to a literal `false`)."
+buddy_connected = "`theApp->clientlist->GetBuddyStatus() == Connected` — aMule's `0x51` reached rmule, rmule's `0x5A` went back, aMule dialed the serve listener and the link was held through an `OP_BUDDYPING`/`OP_BUDDYPONG` pair. The link only attaches at all since the `0x51` hash-word fix."
+search_tolerance = "`CSearch::StorePacket` (`Search.cpp:456`) returns with NO debug line when `fromDistance.Get32BitChunk(0) > SEARCHTOLERANCE` (`0x01000000`) and the candidate is not a LAN IP. Flow M places every Kad ID for *buddy*-target proximity, so before this capture's fix no node was ever within tolerance of the file's own location and the publish was refused in silence. The fix is topological: the last placed member is pinned to `storer_kad_id_for_file_hash(<file hash>)`, distance 0."
+
+# The capture target.
+[frames.publish_source_req_0x44]
+opcode    = "0x44 KADEMLIA2_PUBLISH_SOURCE_REQ (proto 0xE4), plain — AMULE_KAD_CRYPT off"
+direction = "aMule (203.0.113.2:4674) -> the placed near-file member (203.0.113.6:4690)"
+observed  = "17:22:50, immediately after the log's own `Search request type: StoreFile` (Search.cpp:567) — the line that appears only once the tolerance gate is passed"
+length    = "111 bytes"
+layout    = "proto+opcode + fileKey(16) + sourceID(16) + tagCount(1) + 7 tags"
+file_key  = "b52d308e5ca206b823fc8593d26210f2 — the Synthetic File's ED2K hash under the per-32-bit-word swap Kad targets use (`CUInt128::SetValueBE` written by `WriteUInt128`), i.e. the same transform `kad_seed::storer_kad_id_for_file_hash` applies to place the member"
+source_id = "0fb76ae319510e34471e3a824b6f0f34 — the publisher's own User Hash, word-swapped, the relation ADR-0043's capture already proved"
+
+# Every tag, in the order the publisher wrote it.
+[frames.publish_source_req_0x44.tags]
+"0xFF SOURCETYPE" = "UINT8 (type byte 0x09) = 3 — firewalled, buddy-served; 5 would mean the same above the u32 size range"
+"0xFB SERVERIP"   = "UINT32 (0x03), value bytes `cb 00 71 03` = 203.0.113.3 read octet-first — the BUDDY's IPv4, not the publisher's, and swapped by neither side (contrast TAG_SOURCEIP, which a storer synthesises in host order)"
+"0xFA SERVERPORT" = "UINT16 (0x08) = 0x1247 = 4679 — the buddy's **UDP** port, not its TCP one"
+"0xF8 BUDDYHASH"  = "STRING (0x02), length 32, `CCDDEEFF8899AABB4455667700112233` — UPPER-CASE hex of `~publisherKadID` in `ToByteArray` big-endian order. The wire-order spelling of the same ID is `FFEEDDCCBBAA99887766554433221100`; aMule wrote the other one, so aMule's family encoding is confirmed and eMule 0.70b's / eMuleAI's `GetData()` form is confirmed to be a different string."
+"0xFD SOURCEPORT" = "UINT16 (0x08) = 0x1236 = 4662 — the publisher's own eD2k TCP port, the port whose inbound is DROPped, which is exactly why it needs a buddy"
+"0x02 FILESIZE"   = "UINT32 (0x03) = 65536 — the Synthetic File's size, emitted for a v>=2 storer"
+"0xF3 ENCRYPTION" = "UINT8 (0x09) = 0x00 — `CPrefs::GetMyConnectOptions(true, true)`, appended AFTER the firewalled/direct branch, so it rides last. Zero here because the image runs crypt-off and neither NAT-T nor a direct UDP callback is available to it."
+
+# aMule builds SERVERIP, SERVERPORT, SOURCEPORT and FILESIZE with `CTagVarInt`,
+# which picks the narrowest type that holds the value. The widths above are
+# therefore these values' widths, not the tags' only legal ones — which is why
+# rmule's reader accepts every narrowing of an integer tag.
+[frames.publish_source_req_0x44.widths]
+note = "a publisher whose TCP port were below 256 would write TAG_SOURCEPORT as UINT8"
+
+# What the row does NOT carry, and why each absence is the publisher's own.
+[absences]
+source_ip    = "no `TAG_SOURCEIP` (0xFE): the storer substitutes the address it observed the datagram arrive from (`KademliaUDPListener.cpp:1373-1376`) and re-serves every other tag verbatim. A publisher naming its own address would be naming one it cannot verify."
+source_uport = "no `TAG_SOURCEUPORT` (0xFC): `CPrefs::m_useExternKadPort` starts `true` and `CSearch::StorePacket` writes the tag only under `!GetUseExternKadPort()`. The storer indexes the observed source port instead — the only one a NAT in the path leaves correct. rmule's publisher now matches."
+ipv6         = "no `ip6`/`bi6` (ADR-0087): aMule 2.3.3 has no IPv6 Kad surface at all."
+
+# The answer, kept for context only — rmule's bytes, never evidence.
+[exchange]
+seq_1 = "17:22:50  aMule -> 203.0.113.6:4690  0x44 KADEMLIA2_PUBLISH_SOURCE_REQ   (THIS FIXTURE)"
+seq_2 = "17:22:51  203.0.113.6 -> aMule        0x4B KADEMLIA2_PUBLISH_RES — rmule's storer accepted it; aMule logged `Kad2PublishRes from 203.0.113.6:4690`"
+
+# The half this capture did NOT reach, recorded rather than forced.
+[finding.no_amule_authored_0x3b_buddy_row]
+what = "the `0x3B KADEMLIA2_SEARCH_RES` a real **aMule** storer re-serves for a buddy row is still uncaptured; the node that indexed this publish is rmule."
+why  = "placing an aMule at the file key means a second stock node on the swarm, and `--helpers` (the only knob that stands one up) obliges `--block-udp` on the firewalled node, which would swallow the `0x51` the buddy recruitment rides on. The re-serve path is separately covered by rmule's own storer tests; what is missing is only the counterparty's spelling of a row it has never been observed emitting."
+
+[finding.buddy_hash_family_split_unobserved_from_the_other_side]
+what = "this frame confirms aMule's `ToByteArray` encoding. It says nothing about what an eMule 0.70b or eMuleAI publisher actually writes — only what their sources say."
+why  = "neither client is on the bench. The split stays a source reading about those families, and an upstream-worthy one: two eMule-family clients cannot address each other's buddies."

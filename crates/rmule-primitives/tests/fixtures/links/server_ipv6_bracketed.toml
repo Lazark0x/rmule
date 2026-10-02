@@ -1,0 +1,16 @@
+name = "server_ipv6_bracketed"
+provenance = "handwritten"
+source_note = """
+ADR-0087 §6.4's emitted spelling, read back: the brackets are stripped on
+ingest and re-emitted on print, so the canonical form is a fixed point.
+"""
+accepted = true
+
+[input]
+link = "ed2k://|server|[2001:db8::1]|4661|/"
+
+[expected]
+kind = "server"
+canonical = "ed2k://|server|[2001:db8::1]|4661|/"
+host = "2001:db8::1"
+port = 4661

@@ -1,0 +1,27 @@
+# Stock aMule 2.3.3's own `0xA4` bundle to rmule, now that rmule claims
+# extended-requests 1 (hello `CT_EMULE_MISCOPTIONS1` `0x24103102`, bits 8-11)
+# — genuine counterparty wire bytes, cut from the tap on rmule's
+# own netns while aMule downloaded from it. aMule claims 2, so the
+# session speaks level 1 and aMule's `SendFileRequest` (`DownloadClient.cpp`
+# 225-231 at kno `ab483654`, stock 2.3.3 alike) writes `WritePartStatus` into
+# the name sub: `58 0200 02` — count `GetED2KPartCount()` = `size / PARTSIZE
+# + 1` = 2 for a file of exactly 9 728 000 bytes (`KnownFile.cpp:580`), and
+# bit 1 set although the fresh partfile holds nothing: the phantom part has no
+# gap, so `IsComplete` reads it held. No `OP_SETREQFILEID` (`GetPartCount()`
+# is 1). Both aMules of the run (the slot-holder and the queued reasker) wrote
+# this frame byte for byte. Only counterparty bytes are evidence (ADR-0045);
+# nothing here is fabricated.
+
+[provenance]
+counterparty = "aMule 2.3.3 (Ubuntu 24.04 package), image rmule/interop-amule:local"
+scenario     = "rmule-interop-harness peer-udp-reask --file-size 9728000 --reask-window-secs 20 (flow L topology; the reask window cut short — only the connect-time bundle is wanted)"
+run          = "1790228582"
+date         = "2026-09-24"
+rmule_image  = "rust:1.94.0-bookworm running `cargo run -p rmule-tools -- ed2k serve start` at commit ba89dacf; the working tree also held uncommitted tracing-level edits, which touch no peer wire"
+tap          = "reask-capture/reask.pcap, 172.18.0.4:37666 -> 172.18.0.3:4663 at 05:44:39.678719Z (the slot-holder; the reasker 172.18.0.5:60454 sent the same 39 bytes at 05:45:06.392692Z), plaintext link, frame at TCP payload offset 0"
+file_hash    = "22155255A2ED92712CCD01AD0EB9E8CB"   # synthetic 9 728 000-byte shared.bin, p= two part hashes (the second the empty MD4)
+
+[frames.request_multipacket_ext_0xa4]
+opcode = "0xA4 OP_MULTIPACKET_EXT (proto 0xC5)"
+walk   = "<hash16><size8=9728000> + subs [Name{status 0200 02}(0x58), Sources2{version:4, options:0}(0x83), AichRoot(0x9E)]"
+note   = "rmule's hello answer on the same link, 0.67 ms earlier, carried 83 fa 02311024 (MiscOptions1 0x24103102, extended-requests 1)."

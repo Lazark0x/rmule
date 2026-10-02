@@ -1,0 +1,18 @@
+name = "file_with_part_hash_set"
+provenance = "handwritten"
+source_note = "Exact-part-size file link with aMule hashset count"
+accepted = true
+
+[input]
+link = "ed2k://|file|zeros.bin|9728000|FC21D9AF828F92A8DF64BEAC3357425D|p=D7DEF262A127CD79096A108E7A9FC138:31D6CFE0D16AE931B73C59D7E0C089C0|/"
+
+[expected]
+kind = "file"
+canonical = "ed2k://|file|zeros.bin|9728000|FC21D9AF828F92A8DF64BEAC3357425D|p=D7DEF262A127CD79096A108E7A9FC138:31D6CFE0D16AE931B73C59D7E0C089C0|/"
+name = "zeros.bin"
+size = 9728000
+file_hash = "FC21D9AF828F92A8DF64BEAC3357425D"
+part_hashes = [
+  "D7DEF262A127CD79096A108E7A9FC138",
+  "31D6CFE0D16AE931B73C59D7E0C089C0",
+]

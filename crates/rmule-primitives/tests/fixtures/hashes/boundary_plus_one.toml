@@ -1,0 +1,16 @@
+name = "boundary_plus_one"
+provenance = "handwritten"
+source_note = "Synthetic one full zero part plus one zero byte"
+accepted = true
+
+[input]
+pattern = "repeat-byte"
+byte = "00"
+len = 9728001
+
+[expected]
+file_hash = "06329E9DBA1373512C06386FE29E3C65"
+part_hashes = [
+  "D7DEF262A127CD79096A108E7A9FC138",
+  "47C61A0FA8738BA77308A8A600F88E4B",
+]

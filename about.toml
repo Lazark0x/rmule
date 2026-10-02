@@ -1,0 +1,44 @@
+# cargo-about configuration: the third-party licence notices that travel with
+# rmule binaries. Generate the file at release time with
+#
+#   cargo about generate about.md.hbs > THIRD-PARTY-LICENSES.md
+#
+# The generated file is not committed.
+
+# Same set as the allow list in deny.toml, plus the webpki-roots data licence.
+accepted = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+    "CC0-1.0",
+    "0BSD",
+    "OpenSSL",
+    "BSL-1.0",
+    "LGPL-2.1-or-later",
+    "LGPL-3.0-or-later",
+    "LGPL-3.0-only",
+    "GPL-2.0-or-later",
+    "GPL-3.0-or-later",
+    "GPL-3.0-only",
+    "CDLA-Permissive-2.0",
+]
+
+# Test-only crates never reach a shipped binary.
+ignore-dev-dependencies = true
+
+# rmule's own crates are the program, not third-party code. cargo-about has no
+# setting that names workspace members; `private.ignore` skips exactly the
+# crates marked `publish = false`, which is why `[workspace.package]` in the
+# root Cargo.toml sets it and every member inherits it. A new member must
+# inherit it too (`publish.workspace = true`), or it is listed under the GPL.
+private = { ignore = true }
+
+# Every platform the release may target gets its notices, so no target filter.

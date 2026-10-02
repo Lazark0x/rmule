@@ -1,0 +1,13 @@
+name = "empty"
+provenance = "documentation"
+source_note = "MD4 empty input and ED2K empty-file behavior"
+accepted = true
+
+[input]
+pattern = "repeat-byte"
+byte = "00"
+len = 0
+
+[expected]
+file_hash = "31D6CFE0D16AE931B73C59D7E0C089C0"
+part_hashes = []

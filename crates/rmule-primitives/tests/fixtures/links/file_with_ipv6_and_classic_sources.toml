@@ -1,0 +1,21 @@
+name = "file_with_ipv6_and_classic_sources"
+provenance = "handwritten"
+source_note = """
+Both source tokens on one link. The canonical form puts `s6=` before `sources,`
+(ADR-0089 §6.2): eMule's source scan reads from the substring "sources" to the end
+of the section, so anything after it would be read as an IPv4 entry. Hosts RFC 5737 /
+RFC 3849.
+"""
+accepted = true
+
+[input]
+link = "ed2k://|file|hello.txt|11|AA010FBC1D14C795D86EF98C95479D17|/|sources,192.0.2.1:4662|s6=[2001:db8::7]:4662|/"
+
+[expected]
+kind = "file"
+canonical = "ed2k://|file|hello.txt|11|AA010FBC1D14C795D86EF98C95479D17|/|s6=[2001:db8::7]:4662|sources,192.0.2.1:4662|/"
+name = "hello.txt"
+size = 11
+file_hash = "AA010FBC1D14C795D86EF98C95479D17"
+ipv6_sources = ["[2001:db8::7]:4662"]
+sources = ["192.0.2.1:4662"]

@@ -1,0 +1,7 @@
+# Ratchet debt. Adding an entry requires justification in the PR:
+# an exemption is a decision about what this repo tolerates, not a workaround
+# for a file that happens to be over the line today.
+#
+# Format: <check>:<path>, one per line. A violation whose exact line appears
+# here is suppressed. Checks: size modrs layername moddoc itemdoc glossary
+# adr adrcite doctree uidebug unsafe trackerref vocab.

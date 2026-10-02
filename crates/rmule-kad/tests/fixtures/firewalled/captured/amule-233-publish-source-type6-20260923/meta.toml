@@ -1,0 +1,96 @@
+# Genuine stock aMule 2.3.3 **type-6 source publish** — the `0x44
+# KADEMLIA2_PUBLISH_SOURCE_REQ` a TCP-firewalled, UDP-open aMule emitted for a
+# file it had just shared, while holding a Low-ID rmule as its buddy. Captured
+# by a tcpdump Capture Sidecar in the **storer's** netns during interop flow
+# `natt-udp-selfcheck-amule --low-id-buddy`. The
+# `.bin` is the UDP payload of the first matching packet; nothing is
+# fabricated (ADR-0045).
+#
+# ## What this fixture is evidence FOR
+#
+# ADR-0061's type-6 row ("the row that needs no buddy") was pinned from source
+# and captured from rmule's own publisher; this is the aMule-authored
+# tier. The 65 bytes pin, from the counterparty:
+#
+# - the five tags `CSearch::StorePacket`'s direct-callback branch writes, in
+#   its order at its widths (`Search.cpp:595-605`, aMule 2.3.3):
+#   `SOURCETYPE` UINT8 6, `SOURCEPORT` UINT16 4662, `SOURCEUPORT` UINT16 4672,
+#   `FILESIZE` UINT32, then `ENCRYPTION` UINT8 last;
+# - `TAG_SOURCEUPORT` **present** — the UDP verdict was read on the intern port
+#   (`New Kad Firewallstate (UDP): Open, using intern port`), which clears
+#   `m_useExternKadPort` (`UDPFirewallTester.cpp:146-148`), and the branch
+#   writes the tag whenever `!GetUseExternKadPort()`;
+# - `TAG_ENCRYPTION` = `0x08`: bit 3 (direct UDP callback) and nothing else
+#   from a crypt-less 2.3.3 (`Prefs.cpp:214-233`);
+# - no buddy trio and no address of its own, although a buddy was held: the
+#   direct-callback test runs before the buddy slot is read.
+#
+# ## Why it took a recipe
+#
+# Stock 2.3.3 has no eMule `bDirectCallback` clause in its publish gate: a
+# firewalled node publishes only while it holds a buddy (`SharedFileList.cpp:773`,
+# `KnownFile.cpp:1308-1318`), searches for one only while TCP and UDP both read
+# firewalled (`ClientList.cpp:686-687`), and releases a buddy whose hello did
+# not read Low-ID once they do not (`:706-712`). An earlier run reached UDP open and saw
+# nothing published. The Low-ID Buddy Recipe orders the three facts:
+#
+# 1. aMule's plaintext `0x60` is dropped at its gateway, so its UDP tester never
+#    learns its extern port, never asks a helper, and times out firewalled;
+# 2. the rmule root holds a real eD2k Low ID — an `ed2ksrv` on the WAN whose
+#    High-ID back-connect is dropped in its own netns assigned it `1`, and the
+#    root's `OP_HELLOANSWER` stamps it;
+# 3. aMule's `BuddySearch` recruits the root and the link holds;
+# 4. the drop is released: two pongs set the extern port, a helper's `0x62`
+#    reads the verdict open, and the Low-ID buddy is kept;
+# 5. the file is moved into aMule's shared directory and `amulecmd Reload
+#    shared` hashes it — a new file's `PublishSrc` fires on its first buddy IP.
+
+[provenance]
+counterparty = "aMule 2.3.3, DEBUG build of the pinned Debian source package, image rmule/interop-amule-debug:local"
+scenario     = "cargo test -p rmule-interop-harness --test harness -- --ignored natt_udp_selfcheck_amule_low_id_buddy (natt natt-udp-selfcheck-amule --low-id-buddy --skip-build)"
+run          = "1790155945 — verdict PASS, 8 of 8 claims held"
+date         = "2026-09-23"
+subnet       = "45.55.200.0/24 fake-public WAN (docker --internal); aMule on LAN 10.78.0.3 behind a full-cone-pinned natgw"
+amule        = "45.55.200.4 (the gateway's WAN address) — Kad UDP 4672 forwarded 1:1, eD2k TCP 4662 not forwarded; Kad ID 0x11 x16; user hash 605c3f3b f30ecdeb 3b97b423 c6726f70 (its OP_HELLO), which the row's source ID carries word-swapped"
+root         = "45.55.200.2 — rmule, Kad ID 0xEE x16, logged in to the ed2ksrv with client_id 1 (Low ID)"
+server       = "45.55.200.3:4661 — ed2ksrv (andrey23127/ed2k-server); an nft output drop in its netns refused its High-ID back-connect to 45.55.200.2:4662 (4 packets)"
+helpers      = "45.55.200.7 / 45.55.200.8 — rmule UDP Firewall Helpers, known only to the root"
+storer       = "45.55.200.9 — rmule, placed at the Synthetic File's Kad key 9c80bf71ef23818818825e2bdb0f5ae6"
+
+# aMule's own debug logfile, in order (run 1790155945).
+[sequence]
+held        = "the gateway dropped 30 aMule 0x60s; `Requesting our external port from ...` every 15 s, never answered"
+timed_out   = "09:41:45 UDPFirewallTester.cpp(65): Timeout: Setting UDP status to firewalled after being unable to get results for 6 minutes"
+recruit     = "09:41:46 ClientList.cpp(694): Starting BuddySearch; 09:41:50 KadFindBuddyReq to 45.55.200.2 and its KadFindBuddyRes; 09:41:51 aMule's OP_HELLO to root:4662, the root's OP_HELLOANSWER with user ID 01000000"
+released    = "09:42:20 Prefs.cpp(294): Set external Kad port to 4672"
+opened      = "09:42:21 UDPFirewallTester.cpp(148): New Kad Firewallstate (UDP): Open, using intern port"
+shared      = "09:42:22 SharedFileList.cpp(377): Found 0 known shared files, 1 unknown (amulecmd Reload shared)"
+published   = "09:42:27 Search.cpp(567): Search request type: StoreFile; Kad2PublishSrcReq to 45.55.200.9:4672; 09:42:28 Kad2PublishRes from 45.55.200.9"
+buddy_kept  = "the buddy TCP link carried no FIN from 09:41:51 until 09:42:59 — 38 s past the open verdict and past the publish — when aMule closed it and its helper socket in the same 55 us, during the flow's harvest"
+
+[frames.publish_source_req_0x44]
+file      = "publish_source_req_0x44.bin"
+direction = "aMule 45.55.200.4:4672 -> storer 45.55.200.9:4672 (Kad UDP, plain)"
+bytes     = "e4 44 | 9c80bf71ef23818818825e2bdb0f5ae6 | 3b3f5c60ebcd0ef323b4973b706f72c6 | 05 | 09 0100 ff 06 | 08 0100 fd 3612 | 08 0100 fc 4012 | 03 0100 02 00f02801 | 09 0100 f3 08"
+
+# rmule's publisher told the same facts writes the same datagram less one tag.
+[difference.tag_sourceuport]
+what = "rmule omits TAG_SOURCEUPORT (6 bytes) and writes 4 tags; everything else is byte-identical (KAT in direct_callback_publish_capture.rs)"
+why  = "ADR-0061: the storer substitutes the port it observed (KademliaUDPListener.cpp:1171-1173), the only Kad UDP port a NAT in the path leaves correct; a self-declared intern port would overwrite it"
+
+# `AMULE_USER_HASH` is fixed (it pinned nothing — `set_config
+# UserHash` wrote a key aMule never reads; the entrypoint now writes
+# `preferences.dat`, the file `Preferences.cpp` kno `ab483654` actually loads
+# it from). Re-running this same recipe on the fix proves the pin end to end
+# and gives this row a deterministic, reproducible hash for the first time —
+# the bytes above stay the promoted evidence (nothing about the type-6 wire
+# format depends on the specific hash value); this is a second, corroborating
+# data point, not a replacement.
+[provenance_pinned_hash]
+run           = "1790166190 — verdict PASS, 9 of 9 claims held (adds amules-hello-carried-the-pinned-user-hash)"
+date          = "2026-09-23"
+amule_image   = "rmule/interop-amule-debug"
+tools_image   = "rmule/interop-rmule-tools"
+pinned        = "AMULE_USER_HASH 42424242424242424242424242424242 (HASH_TARGET), written to preferences.dat"
+hello_hash    = "42424242420E42424242424242426F42 — the root's buddy-attach line (`hello_user_hash=`), aMule's own stamp applied: byte 5 -> 0x0E, byte 14 -> 0x6F (Preferences.cpp:1081-1082)"
+source_id_0x44 = "4242424242420e4242424242426f4242 — the hello hash word-swapped (each 4-byte word byte-reversed), the same relationship first observed on the unpinned, random hash"

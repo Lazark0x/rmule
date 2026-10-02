@@ -1,0 +1,21 @@
+┌ Servers (0) · not connected ──────────────────── a add · U update · m menu ┐
+│   Name ▲   Address        Port Desc   Ping Users Files Age Prio Fail Static│
+│no servers — press a to add one, or U to update the list from a URL         │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+┌ Log (3) ───────────────────────────┐┌ Kad ─────────────────────────────────┐
+│11:59:20 part 5 verified            ││● Kad: off                            │
+│11:59:45 part 12 verified           ││Joined    — (node not started)        │
+│11:59:58 part 17 verified           ││Contacts  —                           │
+│                                    ││Firewall  — (never run)               │
+│                                    ││UDP       — (never run)               │
+│                                    ││Keywords  —                           │
+│                                    ││Node id   —                           │
+│                                    ││Received  —                           │
+│                                    ││Sent      —                           │
+└────────────────────────────────────┘└──────────────────────────────────────┘

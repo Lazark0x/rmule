@@ -1,0 +1,13 @@
+name = "one_part"
+provenance = "handwritten"
+source_note = "Synthetic sub-part zero input"
+accepted = true
+
+[input]
+pattern = "repeat-byte"
+byte = "00"
+len = 412
+
+[expected]
+file_hash = "A89605D61BB80C73EAD447285C05F588"
+part_hashes = []

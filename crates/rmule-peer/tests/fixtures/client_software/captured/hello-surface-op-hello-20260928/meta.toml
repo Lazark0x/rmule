@@ -1,0 +1,33 @@
+# The OP_HELLO each bench client sends rmule when it dials it: stock aMule
+# 2.3.3, kno's aMule and emule-qt, each downloading a file a serving rmule
+# shared, each frame the first OP_HELLO on the client's own tap toward that
+# rmule. Cut by the flow from the client's pcap and copied byte for byte from
+# the run dir; nothing re-encoded.
+#
+# Evidence FOR: the dialing-side hello of all three clients, beside the
+# OP_HELLOANSWER each wrote earlier (client_software/, ipv6_dialect/). The same
+# run records their reaction to rmule's hello ending in CT_MOD_VERSION
+# "rmule 0.1.0": Secure User Identification both ways, a part each way, no
+# OP_EMULEINFO (peer-hello-surface-verdict.toml, OBSERVED, 32 of 35 held).
+
+[provenance]
+archive      = "ipv6/peer-hello-surface/op-hello-<client>.bin in the run's output directory"
+run          = "1790611695 (2026-09-28 16:08 UTC)"
+scenario     = "rmule-interop-harness ipv6-dialect peer-hello-surface"
+driver       = "rmule/interop-rmule-tools, built from commit 8400eba0"
+transform    = "none: the whole eD2k TCP frame, as the flow cut it from the client's TCP stream"
+
+[frames.op_hello_amule_233]
+file         = "op_hello_amule_233.bin (113 bytes)"
+counterparty = "stock aMule 2.3.3, Ubuntu 24.04 package (rmule/interop-amule:local), 45.55.200.4"
+sha256       = "5fc1c738e45f6bebba07064518a9aa558d268a736f80a8cfa162234c98bc6bcf"
+
+[frames.op_hello_amule_kno]
+file         = "op_hello_amule_kno.bin (143 bytes)"
+counterparty = "kno's aMule ab483654 (rmule/interop-amule-kno:local), 45.55.200.2"
+sha256       = "752da2d57fe7b2190561b33edf015f992bce22af07050330b3d63b96f017cbd4"
+
+[frames.op_hello_emuleqt]
+file         = "op_hello_emuleqt.bin (147 bytes)"
+counterparty = "ModderMule/emule-qt 73fff714 (rmule/interop-emuleqt:local), 45.55.200.3"
+sha256       = "d67148814bdd510e0e9df5ee958b0ab188eab781e4ecf527fe09ee2e44f0f0d0"

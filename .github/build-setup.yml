@@ -1,0 +1,18 @@
+# Steps that `dist generate` inserts into every release build job, ahead of the
+# build itself. Not a workflow: it is a list of steps.
+#
+# Every archive carries THIRD-PARTY-LICENSES.md. The file is generated here, at
+# release time, from Cargo.lock and about.toml, and never committed.
+- name: Install cargo-about
+  uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+  with:
+    tool: cargo-about@0.9.2
+# cargo-about ships no prebuilt binary for every runner (Intel macOS has none).
+# The action then falls back to a source build without the `cli` feature, which
+# installs no binary at all; build it with the feature in that case.
+- name: Build cargo-about where no prebuilt binary exists
+  shell: bash
+  run: cargo about --version || cargo install --locked --features cli cargo-about@0.9.2
+- name: Generate the third-party licence notices
+  shell: bash
+  run: cargo about generate --locked --output-file THIRD-PARTY-LICENSES.md about.md.hbs

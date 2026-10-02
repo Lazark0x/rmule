@@ -1,0 +1,93 @@
+# Genuine stock aMule 2.3.3 **`0x22 KADEMLIA2_HELLO_RES_ACK`** — the third leg of
+# the Kad IP-verification three-way, captured on the fake-public Kad bench
+# (Config A) during interop flow K `kad-firewalled-buddy --verify-keys`.
+# The sibling frame is the aMule `HELLO_REQ` that
+# opened the exchange; both are counterparty bytes off rmule's own datagram tap.
+# Nothing here is fabricated (ADR-0045).
+#
+# The emit condition is narrow and all four parts had to hold at once
+# (`KademliaUDPListener.cpp` `Process2HelloResponse` ~L603):
+#
+#   1. aMule must send the `HELLO_REQ` — rmule is the RESPONDER, never the
+#      initiator, because only a `HELLO_RES` reaches `Process2HelloResponse`.
+#   2. rmule's `HELLO_RES` must set misc-options bit 2 (`0x04`), the ACK request.
+#   3. rmule must supply a valid **sender key** in the crypt trailer; with an
+#      empty one aMule logs "Remote client demands ACK, but didn't send any
+#      sender key!" and stays silent.
+#   4. Kad datagram crypt on both sides (`AMULE_KAD_CRYPT=1` + rmule
+#      `--kad-crypt --public-ip`) — the trailer only exists inside the crypt
+#      header, so keys without obfuscation are derived and never sent.
+
+[provenance]
+counterparty       = "aMule 2.3.3 (source pin 4e8f2b3c), stock interop image rmule/interop-amule:local"
+scenario           = "rmule-interop-harness kad-firewalled-buddy --verify-keys --window 330 (flow K, verify-key leg)"
+run                = "1785253158"
+date               = "2026-07-28"
+subnet             = "203.0.113.0/24 (RFC 5737 fake-public, Config A; docker --internal)"
+amule_endpoint     = "203.0.113.2:4674"
+rmule_endpoint     = "203.0.113.3:4679"
+amule_kad_id       = "55555555555555555555555555555555"
+rmule_kad_id       = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+# rmule's own private derivation seed for this run, minted from OS entropy by
+# `kad-join-node` and reported on its stdout. It never went on the wire — only
+# its per-IP derivations did — but it is recorded because the counterparty's ACK
+# is encrypted under `udp_verify_key(secret, amule_ip)`, so without it the
+# captured datagram could never be opened again.
+[rmule_run_state]
+verify_key_secret        = 2971274909
+public_ip_argument       = "203.0.113.3"   # passed explicitly, never derived
+key_handed_to_amule      = 1367586967      # udp_verify_key(secret, 203.0.113.2)
+bootstrap_delay_secs     = 200
+
+# What had to be true on the counterparty side, and how each was reached.
+[preconditions]
+amule_initiates      = "aMule's `CRoutingZone::OnSmallTimer` (once a minute) hellos the OLDEST contact still due for a check. rmule was loaded from the harness routing-zone nodes.dat seed, so it was that contact — but only while nothing refreshed it: any datagram rmule sends makes aMule's `CContact::UpdateType` push the expiry an hour out. rmule therefore holds its bootstrap dial 200 s (`--bootstrap-delay-secs`), and the hello landed at t+62 s, on aMule's SECOND small-timer pass (the first only stamps the expiry)."
+amule_holds_no_key   = "the routing-zone nodes.dat seed is format version 1 — no per-contact UDP key — so aMule's `HELLO_REQ` carries receiver_verify_key = 0. That is the `!validReceiverKey` half of rmule's own ACK-request gate; had aMule already held a key, rmule would have had nothing to ask for."
+amule_public_ip      = "`CKadUDPKey(senderVerifyKey, theApp->GetPublicIP(false))` — with `ignorelocal = false` aMule falls back to `m_localip` (203.0.113.2), so `senderKey.IsEmpty()` was false on the IP side. A Kad-only container has `m_dwPublicIP == 0`; the fallback is what keeps the ACK reachable at all."
+amule_crypt          = "IsClientCryptLayerSupported=1, IsCryptLayerRequested=1 (AMULE_KAD_CRYPT=1)"
+kad_version          = "8 — `KADEMLIA_VERSION 0x08` (include/protocol/kad2/Constants.h). rmule's ACK-request gate and aMule's `AddContact2` parse gate both floor at v>=8."
+
+# The capture target: aMule's own ACK. 35 wire bytes = 3 header + 4 sync + 1
+# padlen + 8 trailer + 19 payload.
+[frames.hello_res_ack_0x22_crypt]
+opcode    = "0x22 KADEMLIA2_HELLO_RES_ACK (proto 0xE4) under the Kad datagram-crypt layer (ADR-0046)"
+direction = "aMule (203.0.113.2:4674) -> rmule (203.0.113.3:4679)"
+observed  = "tap seq 13, t+62244 ms — 6 ms after rmule's HELLO_RES"
+wire      = "72 31 82 2a eb 8b 95 e6 25 c9 a5 a3 f7 ec 7f b5 a0 89 25 06 3c 61 a4 b5 75 7c 2d 1b cf b0 ca b5 2c ee 62"
+framing   = "[marker 0x72][random_key 0x3182 LE] || RC4( sync 0x395F2EC1 LE || padlen 0x00 || receiver_verify_key LE || sender_verify_key LE || payload )"
+key       = "RC4(MD5(receiver_verify_key LE || random_key LE)), no keystream discard — the KadVerifyKey family. aMule reaches it via `SendPacket(..., senderKey, NULL)`: no crypt target ID, so `EncryptSendClient` takes the `kadRecvKeyUsed` branch and keys the datagram on the key WE handed IT."
+marker    = "0x72 — `& 0x03 == 2`, the KadVerifyKey family index. MASKED, never an exact byte: aMule draws `GetRandomUint8()` and only forces the low bits (`(x & 0xFE) | 0x02`), so the literal differs every run. Assert the family; the literal is a fixture fact only."
+padding   = "0 bytes — aMule disables padding for UDP (`EncryptSendClient`: \"padding disabled for UDP currently\")."
+trailer   = "receiver_verify_key = 1367586967 (an EXACT echo of the key rmule handed aMule — this echo IS the IP proof, aMule's `validReceiverKey`), sender_verify_key = 355433427 (aMule's own key for rmule's address, handed over in the same trailer)."
+plaintext = "e4 22 55*16 00 — 19 bytes: OP_KADEMLIAHEADER/KADEMLIA2_HELLO_RES_ACK, aMule's own 128-bit Kad ID, then the tag-count byte `WriteUInt8(0)` (\"no tags at this time\")."
+
+# The counterparty datagram that opened the exchange, kept because the first two
+# parts of the emit condition are read straight off it.
+[frames.hello_req_0x11_crypt]
+opcode    = "0x11 KADEMLIA2_HELLO_REQ (proto 0xE4), obfuscated"
+direction = "aMule (203.0.113.2:4674) -> rmule (203.0.113.3:4679)"
+observed  = "tap seq 11, t+62238 ms"
+wire      = "e0 6b 85 5d 30 77 c0 76 88 48 0d be 51 36 06 60 cb ca ad d5 44 c6 9a 5d 47 45 9b 6e 32 c9 7b 11 a2 5f 0b 4b 4d 25 a5 62 09 7b 22"
+marker    = "0xE0 — `& 0x03 == 0`, the KadNodeId family: aMule knew the contact and keyed the hello on RMULE's Kad ID, while still carrying the verify-key trailer. (The same NodeID-family-with-a-live-trailer shape as the Kad-crypt fixture (`amule-233-kad-crypt-20260726`) — the reason `validReceiverKey` is judged from the trailer, not from the deciding key family.)"
+trailer   = "receiver_verify_key = 0 (aMule held no key for rmule), sender_verify_key = 355433427"
+misc_opts = "the ACK-request bit is CLEAR — aMule's own timer hello passes `requestAckPacket = false` (`CRoutingZone::OnSmallTimer`), so the ACK request in this exchange is entirely rmule's."
+
+# The exchange as it stood on the wire, from rmule's tap.
+[exchange]
+seq_11 = "aMule -> rmule  0x11 HELLO_REQ   (t+62238 ms)"
+seq_12 = "rmule -> aMule  0x19 HELLO_RES   (t+62238 ms) — misc-options bit 2 set, sender_verify_key 1367586967 in the trailer"
+seq_13 = "aMule -> rmule  0x22 HELLO_RES_ACK (t+62244 ms) — THIS FIXTURE"
+result = "rmule's node emitted `ContactVerified { id: 55.. }`: the counterparty's own ACK is what verified it."
+
+# The half this run did NOT reach, recorded rather than forced.
+[finding.rmule_own_0x22_undriven]
+what = "rmule emitted no `0x22` of its own, so aMule's `Process2HelloResponseAck` (and its `\"Verified contact (<ip>) by HELLO_RES_ACK\"` line) stayed unexercised."
+why  = "the mirror leg needs aMule to ask: `Process2HelloRequest` sets `requestAckPacket = addedOrUpdated && !validReceiverKey`, so aMule only asks while rmule's HELLO_REQ does NOT already echo aMule's key. But rmule learns that key from the first aMule trailer it sees — and in this topology aMule is talking (pings, `0x21`s) long before rmule probes. rmule then echoes it, aMule verifies rmule on the key path instead (`AddContact2` -> `Add(..., ipVerified = true)`), and asks for no ACK. That is ADR-0064 verification route 1 winning the race against route 2, not a defect."
+also = "a prior run of this same scenario WITHOUT the bootstrap delay confirmed the other side of it: rmule dialed first, aMule's HELLO_RES came back with the ACK bit clear, and rmule's node emitted `ContactVerified` off the echoed receiver key alone."
+
+[finding.amule_debug_log_lines_are_compiled_out]
+what  = "the ADR-0064 log lines (`\"Verified contact (<ip>) by HELLO_RES_ACK\"`, `\"Remote client demands ACK, but didn't send any sender key!\"`) can never appear in this bench."
+why   = "they are `AddDebugLogLineN`, which the non-`__DEBUG__` build compiles to `do {} while (false)` (Logger.h:429). The Ubuntu 24.04 `amule-daemon 1:2.3.3-3build5` binary the interop image installs is such a build."
+proof = "`grep -a` over /usr/bin/amuled finds `Kademlia` and `nodes.dat` but neither log string — they are absent from the binary, not merely disabled."
+so_what = "for this surface the wire IS the only counterparty evidence, which is what this fixture is. A debug-build image would be a non-stock counterparty and is not worth the divergence."

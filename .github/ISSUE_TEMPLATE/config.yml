@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a question or get help
+    url: https://github.com/Lazark0x/rmule/discussions/categories/q-a
+    about: Using rmule, setting it up, or understanding what it does. Questions belong in Discussions, not in issues.
+  - name: Discuss an idea that is not ready for an issue yet
+    url: https://github.com/Lazark0x/rmule/discussions/categories/ideas
+    about: Half-formed thoughts are welcome here. Once there is a concrete request, open a feature request.
+  - name: Report a security vulnerability
+    url: https://github.com/Lazark0x/rmule/security/advisories/new
+    about: Report privately. Please do not open a public issue for a vulnerability.

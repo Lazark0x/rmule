@@ -1,0 +1,20 @@
+name = "file_with_sources_emule_writer"
+provenance = "handwritten"
+source_note = """
+The shape eMule's own writer emits for a link with its source
+(emule-qt 73fff71 srchybrid/AbstractFile.cpp:439-443: `…|/|sources,<ip>:<port>|/`),
+read by eMule (ED2KLink.cpp:228-321) and aMule 2.3.3 (ED2KLink.cpp:191-233). Host is
+an RFC 5737 address.
+"""
+accepted = true
+
+[input]
+link = "ed2k://|file|hello.txt|11|AA010FBC1D14C795D86EF98C95479D17|/|sources,192.0.2.1:4662|/"
+
+[expected]
+kind = "file"
+canonical = "ed2k://|file|hello.txt|11|AA010FBC1D14C795D86EF98C95479D17|/|sources,192.0.2.1:4662|/"
+name = "hello.txt"
+size = 11
+file_hash = "AA010FBC1D14C795D86EF98C95479D17"
+sources = ["192.0.2.1:4662"]

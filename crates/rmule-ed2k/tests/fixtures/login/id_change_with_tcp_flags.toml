@@ -1,0 +1,12 @@
+name = "id_change_with_tcp_flags"
+provenance = "handwritten"
+source_note = "Synthetic ID change login response with optional TCP flags based on historical eMule protocol specification"
+accepted = true
+
+[expected]
+kind = "id_change"
+protocol = "edonkey"
+opcode = 64
+client_id = 305419896
+tcp_flags = 1
+trailing_len = 0

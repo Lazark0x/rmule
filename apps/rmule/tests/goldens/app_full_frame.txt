@@ -1,0 +1,24 @@
+┌ 1 Networks │ 2 │ 3 │ 4 │ 5 │ 6 ─────────────────────────────────────── rmule ┐
+│┌ Servers (0) · not connected ──────────────────── a add · U update · m menu ┐│
+││   Name ▲   Address        Port Desc   Ping Users Files Age Prio Fail Static││
+││no servers — press a to add one, or U to update the list from a URL         ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
+││                                                                            ││
+│└────────────────────────────────────────────────────────────────────────────┘│
+│┌ Log (0) ───────────────────────────┐┌ Kad ─────────────────────────────────┐│
+││no core events yet                  ││● Kad: off                            ││
+││                                    ││Joined    — (node not started)        ││
+││                                    ││Contacts  —                           ││
+││                                    ││Firewall  — (never run)               ││
+││                                    ││UDP       — (never run)               ││
+││                                    ││Keywords  —                           ││
+││                                    ││Node id   —                           ││
+││                                    ││Received  —                           ││
+││                                    ││Sent      —                           ││
+│└────────────────────────────────────┘└──────────────────────────────────────┘│
+└ — │ Users: — · Files: — │ ▼ 0.0 KB/s ▲ 0.0 KB/s │ ●eD2k off ●Kad off ────────┘

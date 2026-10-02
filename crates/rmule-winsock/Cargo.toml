@@ -1,0 +1,22 @@
+[package]
+name = "rmule-winsock"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+# `[workspace.lints]` repeated, but for one entry: this crate alone relaxes
+# `unsafe_code` from `forbid` to `deny`, for its single `WSAIoctl`.
+# `scripts/guards.sh` (check `unsafe`) keeps every other line in step with the
+# workspace table and holds the crate to one `unsafe` block.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

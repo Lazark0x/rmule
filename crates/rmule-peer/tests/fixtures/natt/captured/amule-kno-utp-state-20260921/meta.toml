@@ -1,0 +1,98 @@
+# kno's aMule answering an rmule uTP `ST_SYN` **inside the eMuleAI NAT-T
+# envelope** — the one datagram that proves the `0xB2 0x00` transport is real at
+# this Fork Pin. rmule dialled the counterparty's client-UDP port through the
+# production `UtpEngine`; librqbit-utp's handshake completed, and this is the
+# packet that completed it.
+#
+# Captured on the NAT bench during interop flow `natt-caps-utp` (ADR-0092).
+# The datagram is byte-for-byte what the driver's own
+# socket received, retained before the demux consumed it. Nothing is fabricated
+# (ADR-0045).
+#
+# ## What this fixture is evidence FOR
+#
+# That the `0xB2` envelope's uTP arm interoperates. rmule's `ST_SYN` is stimulus
+# and proves nothing alone; the evidence is that a second implementation read a
+# `0xB2 0x00` datagram, handed the payload to its own libutp
+# (`RouteInboundDatagram` → `CUtpContext::ProcessDatagram`,
+# `ClientUDPSocket.cpp`), and its libutp answered the SYN — which it does only
+# when the `UTP_ON_ACCEPT` callback is registered, and kno registers it exactly
+# when `HasInboundAcceptor()` holds (`UtpLibraryAdapter.cpp:344-355`).
+#
+# It also settles a routing fact: the answer left **4672**, the same client-UDP
+# bind the counterparty's `CT_EMULE_UDPPORTS` names and the same socket its Kad
+# and reask surfaces use. A NAT-T transport that rode any other port would not
+# ride the pinhole a punch opens.
+#
+# ## What it is NOT evidence for
+#
+# The CAPS negotiation. kno's `0xB2` demux takes `OP_NATT_FRAME_CAPS`,
+# `OP_NATT_FRAME_CAPS_ACK` and `OP_NATT_FRAME_KEY` to drop branches by design
+# ("nothing to negotiate", "no NAT traversal in this build",
+# `ClientUDPSocket.cpp`), so this pin has no CAPS or KEY bytes to capture at
+# all. Those halves are **Documented Absences** in the flow's verdict, measured
+# against a probe the WAN tap shows arriving.
+#
+# **Single-oracle** (ADR-0045, 2026-09-16 amendment): kno's fork is the only
+# pinned body carrying uTP under `0xB2`. Captured and flagged, never proven at
+# parity; it upgrades on its own when a second pinned body answers the same SYN.
+
+[provenance]
+counterparty       = "kno's aMule, Fork Pin owner `kno` branch `integration/network-parity` commit `ab483654f3c975face368184912138513184e3f0`, upstream base `amule-org/amule` `1cbc7c50`; image `rmule/interop-amule-kno:local`, built `-DCMAKE_BUILD_TYPE=Release` with `ENABLE_QUIC=NO`"
+scenario           = "rmule-interop-harness natt natt-caps-utp --skip-build --timeout 180"
+run                = "1790026955"
+date               = "2026-09-21"
+subnet             = "45.55.200.0/24 (fake-public, docker --internal) — the one prefix both aMule and emule-qt admit"
+amule_kno_endpoint = "45.55.200.2 — client UDP 4672 (Kad + reask + NAT-T, one socket), eD2k TCP 4662"
+rmule_endpoint     = "45.55.200.6 — client UDP 4672 (the driver pins the bind; a NAT-T exchange must leave the advertised one)"
+
+[rmule_run_state]
+runner    = "rmule-tools natt caps-utp --peer 45.55.200.2:4672 --peer-user-hash E0FA4A02CF0E8BB8BF6B218A48AE6FB6 --observed-address 45.55.200.6 --bind-port 4672"
+user_hash = "42424242424242424242424242424242 (rmule-tools default identity)"
+engine    = "the production `rmule_net::natt::NattDemux` over the production `ClientUdpSocket`; the driver assembles them rather than hand-rolling a handshake, so what interoperated is the shipped transport"
+crypt     = "armed (`--observed-address`), which is what makes the send path emit a KEY frame on the opening packet — counted on the WAN tap at 1, ignored by this counterparty"
+
+# Each precondition with the wire fact or source line that establishes it.
+[preconditions]
+peer_hash_is_measured = "the CAPS probe and the dial were addressed with the hash off the counterparty's OWN `OP_HELLOANSWER` in the same run (`E0FA4A02CF0E8BB8BF6B218A48AE6FB6`, 142 bytes, 9 tags declared and 9 read). A fabricated recipient is refused by every conforming reader, so a fabricated one would measure the fabrication."
+peer_claims_natt      = "the same hello carried `CT_MOD_MISCOPTIONS = 0x0002` — bit 1 `MODMISC_NAT_TRAVERSAL` set, bit 4 `MODMISC_NAT_TRAVERSAL_QUIC` clear. The claim word and the transport agree."
+inbound_acceptor      = "kno registers `UTP_ON_ACCEPT` only when its context has an acceptor, and sets the advertised bit from the same predicate (`UtpLibraryAdapter.cpp:344-355`) so the claim and the behaviour cannot disagree. `CClientUDPSocket` installs `m_utpAcceptor` unconditionally (`ClientUDPSocket.cpp:80`)."
+body_settled          = "the flow waits 12 s past the `rmule-amule-kno-ready` marker before the first frame: the marker says the entrypoint launched the daemon, not that its uTP context exists."
+
+# The counterparty's ANSWER: the frame an `ST_SYN` alone can never produce.
+[frames.utp_state_answer_0xb2_0x00]
+evidence_class = "counterparty"
+evidence_row   = "single-oracle"
+opcode    = "`OP_UDPRESERVEDPROT2` (`0xB2`) frame type `0x00` (uTP), carrying a BEP-29 `ST_STATE`"
+direction = "amule-kno (45.55.200.2:4672) -> rmule (45.55.200.6:4672)"
+wire      = "b2 00 21 00 74 30 8a 53 e7 a8 00 00 00 00 00 10 00 00 7d ba c7 93"
+layout    = "22 bytes = `0xB2` envelope + `0x00` frame type + a 20-byte BEP-29 header: type/version `0x21` (`ST_STATE`, version 1), extension `0x00`, connection id `0x7430`, timestamp `0x8A53E7A8`, timestamp difference `0x00000000`, window `0x00100000` (1 MiB), seq_nr `0x7DBA`, ack_nr `0xC793`"
+frame_type = "the version nibble is read by `librqbit_utp::raw::UtpHeader::deserialize`, never by a hand-rolled `(byte0 >> 4) == 4` — a nibble test would be right today and silently wrong the day the header gains a version"
+meaning   = "the SYN-ACK of the uTP handshake. `UtpEngine::connect` returned a `Tunnel` on it, which is the only way that call returns at all."
+
+# rmule's own frames, kept for context only — stimulus, never evidence.
+[frames.caps_probe_0xb2_0x02]
+evidence_class = "rmule-stimulus"
+wire      = "b20245415143018042424242424242424242424242424242e0fa4a02cf0e8bb8bf6b218a48ae6fb600000000000000000000000000000000"
+layout    = "56 bytes = envelope + `EAQC` magic + version `0x01` + connect options `0x80`… (see `rmule_peer::natt::CapsFrame`), our hash, the counterparty's hash, an all-zero file hash"
+answered  = "no. One `0xB2 0x02` on the counterparty's own attachment, zero `0xB2 0x03` back."
+
+# The exchange as the WAN tap recorded it, off the counterparty's namespace.
+[exchange]
+seq_1 = "`ipv6 hello` dials 45.55.200.2:4662 and reads the OP_HELLOANSWER — where the hash and the `0xAA` word come from"
+seq_2 = "rmule -> kno  1 x `0xB2 0x02` CAPS probe       (stimulus; measured arriving)"
+seq_3 = "kno  -> rmule 0 x `0xB2 0x03` CAPS-ACK          (documented absence)"
+seq_4 = "rmule -> kno  1 x `0xB2 0xFF` KEY frame         (stimulus, armed by the opening packet)"
+seq_5 = "rmule -> kno  4 x `0xB2 0x00` uTP               (the SYN and the stream that followed)"
+seq_6 = "kno  -> rmule 1 x `0xB2 0x00` uTP `ST_STATE`    (THIS FIXTURE, evidence)"
+
+# What the pin cannot serve, written down rather than retried.
+[finding.no_caps_and_no_key_at_this_pin]
+what = "the counterparty answered neither the CAPS probe nor the KEY frame, and its own log says nothing about either."
+why  = "its `0xB2` demux routes `OP_NATT_FRAME_CAPS` / `_CAPS_ACK` to one drop branch and `OP_NATT_FRAME_KEY` to another, by design (`ClientUDPSocket.cpp`). The narration on both is `AddDebugLogLineN`, which expands to nothing outside a `__DEBUG__` build (`Logger.h:462`), and the image builds `Release` — so the absence of the log line is a property of the build, not a measurement, and the flow quotes the **wire** instead."
+consequence = "ADR-0092's `natt-caps-utp` row names three claims and this pin can serve one. The CAPS and KEY halves are Documented Absences with a probe the tap shows arriving; see the ADR's 2026-09-21 NAT-traversal amendment."
+
+[finding.the_negotiation_verdict_reads_unsupported]
+what = "rmule's own `CapsNegotiation` verdict for the endpoint read `unsupported` at the end of the run, while the tunnel was up."
+why  = "the verdict is seeded from what the *hello* claimed, and the driver seeds it with `HelloNattClaim::default()` — it dials on the operator's instruction rather than on a negotiated preference. A node that reached this endpoint through the route tree would seed the claim from the peer's own `0xAA` word, which is `utp = true` here."
+not_a_defect = "no rmule change is implied. The row this fixture supports is the transport's, and the transport ran."

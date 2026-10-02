@@ -1,0 +1,25 @@
+# aMule 2.3.3's answer to rmule's one-part bundle — genuine counterparty wire
+# bytes, cut from the downloader's own tap in run `1790161721`.
+# rmule's downloader (203.0.113.7) held aMule's dial-back after the
+# buddy callback and asked for a 4 MiB file (one part) with aMule's own
+# one-part shape: one `OP_MULTIPACKET_EXT` (`0xA4`) `<hash16><size8=4194304>`
+# + subs `[Name(0x58), Sources2{version:4, options:0}(0x83)]` — no
+# `OP_SETREQFILEID`, as aMule's `SendFileRequest` omits it for one part.
+# aMule answered with this `0x93` carrying the name alone: for a one-part
+# file no part status is asked or sent, and a name answer means a complete
+# source (`ProcessFileInfo`). Only counterparty bytes / observable reactions
+# are evidence (ADR-0045); nothing here is fabricated.
+
+[provenance]
+counterparty = "aMule 2.3.3 debug image rmule/interop-amule-debug, firewalled behind its rmule buddy"
+scenario     = "kad-core-buddy --publish-source --mesh-members 3 --callback-downloader --callback-walk --file-size 4194304"
+run          = "1790161721"
+date         = "2026-09-23"
+rmule_image  = "rmule/interop-rmule-tools"
+tap          = "kad/downloader/downloader.pcap, 203.0.113.2:45560 -> 203.0.113.7:4662 at 13:20:20.474239 (the dial-back link)"
+file_hash    = "009D91607B0D86D64FAFF631E02ED864"   # synthetic 4 MiB shared.bin
+
+[frames.answer_multipacket_0x93]
+opcode = "0x93 OP_MULTIPACKETANSWER (proto 0xC5)"
+walk   = "items = [Name(\"shared.bin\")(0x59)] — no Status sub"
+note   = "The request it answers (rmule's own bytes, not fixture-eligible), 6.0 ms earlier: c51e000000a4 009d91607b0d86d64faff631e02ed864 0000400000000000 58 83040000. aMule's log: 'OP_MULTIPACKET_EXT from 203.0.113.7', 'OP_MULTIPACKET has OP_REQUESTFILENAME', 'OP_MULTIPACKET has OP_REQUESTSOURCES(2)', 'OP_MULTIPACKETANSWER to 203.0.113.7'. rmule's OP_STARTUPLOADREQ followed 0.18 ms after this frame; the file completed 4194304 bytes, ED2K 009D91607B0D86D64FAFF631E02ED864."

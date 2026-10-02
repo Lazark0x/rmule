@@ -1,0 +1,16 @@
+name = "exact_part_size_emule_variant"
+provenance = "amule-generated"
+source_note = "aMule exact-boundary hashset behavior: data part plus special empty part hash"
+accepted = true
+
+[input]
+pattern = "repeat-byte"
+byte = "00"
+len = 9728000
+
+[expected]
+file_hash = "FC21D9AF828F92A8DF64BEAC3357425D"
+part_hashes = [
+  "D7DEF262A127CD79096A108E7A9FC138",
+  "31D6CFE0D16AE931B73C59D7E0C089C0",
+]

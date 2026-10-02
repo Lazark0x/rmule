@@ -1,0 +1,33 @@
+# Genuine stock aMule 2.3.3 **obfuscated** Kad-UDP datagram sent toward rmule.
+# The first real aMule Kad crypt bytes captured — interop flow K
+# `kad-firewalled-buddy --kad-crypt` (aMule Kad obfuscation armed via the new
+# AMULE_KAD_CRYPT=1 entrypoint knob) on the fake-public /24 (Config A). Only
+# counterparty bytes are evidence (ADR-0045); nothing fabricated.
+
+[provenance]
+counterparty       = "aMule 2.3.3 (source pin 4e8f2b3c), stock interop image rmule/interop-amule:local"
+scenario           = "kad-firewalled-buddy (flow K), --kad-crypt --udp-open"
+run                = "1785065651"
+date               = "2026-07-26"
+subnet             = "203.0.113.0/24 (RFC 5737 fake-public, Config A)"
+amule_kad_id       = "55555555555555555555555555555555"
+rmule_kad_id       = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"  # the receiver key aMule obfuscated to
+
+[frame.hello_req_0x60_crypt]
+opcode  = "0x60 KADEMLIA2_PING, obfuscated (RC4 datagram layer, ADR-0046)"
+bytes   = "3c 02 95 35 00 94 98 7e 86 c9 cc 7d b9 15 a1 5a a2 a1"
+layout  = "[marker 0x3c (&0x03=0 → KadID key)][random_key 0x0295 LE][RC4( sync 0x395F2EC1 LE ‖ padlen 0x00 ‖ verify-key trailer 8B ‖ payload 0xE4 0x60 )]"
+# aMule's key (EncryptedDatagramSocket.cpp DecryptReceivedClient, currentTry 0):
+#   MD5( GetKadID().StoreCryptValue()[16]  ‖  bufIn[1..3] ) → RC4, SetKey skip-discard.
+# For rmule's all-0xAA Kad ID, StoreCryptValue is a no-op, so the key is
+# MD5(0xAA×16 ‖ 0x02 0x95) — rmule's exact `datagram_key_kad_node` derivation.
+# The RC4-decrypted sync word lands as LE bytes c1 2e 5f 39 = 0x395F2EC1.
+
+[finding]
+# This capture ratified the datagram-crypt [pending] byte facts and caught a real interop
+# defect: rmule framed/validated the crypt sync word BIG-endian (self-consistent,
+# so every deterministic KAT passed), but aMule writes it LITTLE-endian. rmule
+# rejected all 26 encrypted inbound datagrams as UndecodableEnvelope until the
+# sync endianness was corrected (this frame is the regression vector). Affects
+# every datagram-crypt surface (client peer, Kad, server) since they share
+# `frame_datagram`/`unframe_region`.

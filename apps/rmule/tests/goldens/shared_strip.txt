@@ -1,0 +1,21 @@
+┌ Shared Files · 1 file · 700.0 MB ─────────────────────── s sort  S reverse ┐
+│  all shared files · 2 files                                                │
+│  /home/u/Downloads (download dir) · watched · 1 file, 40.0 MB              │
+│▸ /srv/media · not watched: the system's limit on watched files is reached  │
+│  (on Linux, raise fs.inotify.max_user_watches) · 1 file, 700.0 MB          │
+│  /srv/books (being added) · hashing 37/100, 36 % · no files shared yet     │
+│  [ ] filter by directory · add or remove in Settings                       │
+│  File ▲     State        Size Uploading   Requests   Accepted   Transferred│
+│▸ film.mkv   shared      700.0         0      0 (0)      0 (0)        0.0 KB│
+│                            MB                                              │
+│Off-screen: Transferred 0.0 KB (0.0 KB)                                     │
+└────────────────────────────────────────────────────────────────────────────┘
+┌ Uploads · active only ────────────────────────────────── s sort  S reverse ┐
+│  Peer ▲                Software     State             Speed File           │
+│▸ 10.0.0.1:4662         aMule v2.3.3 Uploading             — album.flac     │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│  2 hidden queued                                                           │
+└────────────────────────────────────────────────────────────────────────────┘

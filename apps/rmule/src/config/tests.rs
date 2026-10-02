@@ -1,0 +1,132 @@
+//! Unit tests for the front-end-owned configuration: the app-config seam, the preference snapshot and the edit vocabulary.
+
+use rmule_core::DurableAppConfig;
+
+use super::*;
+
+fn store() -> SharedConfig {
+    SharedConfig::new(DurableAppConfig::new(rmule_testkit::memory_store()))
+}
+
+#[test]
+fn a_loaded_snapshot_defaults_to_the_mirrors_and_the_kad_opt_in() {
+    let config = store();
+    let prefs = config.load(None).expect("load");
+    assert_eq!(
+        prefs.server_met_url,
+        rmule_bootstrap::DEFAULT_SERVER_MET_URL
+    );
+    assert_eq!(prefs.nodes_dat_url, rmule_bootstrap::DEFAULT_NODES_DAT_URL);
+    assert!(prefs.auto_fetch_nodes_dat, "the TUI's ADR-0067 opt-in");
+    assert!(prefs.auto_fetch_server_met, "ADR-0065's first-run fetch");
+    assert!(prefs.port_mapping, "ADR-0086's Auto");
+    assert_eq!(prefs.theme, ThemeChoice::Auto);
+    assert_eq!(
+        prefs.obfuscation.policy(),
+        rmule_core::CoreConfig::default().peer_crypt,
+        "unset obfuscation starts core on the library's ADR-0046 default"
+    );
+    assert!(!prefs.run_log_full, "the Run Log is lean until asked");
+    assert_eq!(prefs.download_dir, None);
+    assert_eq!(prefs.nickname, rmule_core::DEFAULT_NICKNAME);
+}
+
+/// Every edit round-trips through the store *and* folds into the snapshot,
+/// so what the tab shows after a commit is what a reload would find.
+#[test]
+fn every_edit_persists_and_reloads_as_itself() {
+    let config = store();
+    let edits = [
+        PrefEdit::DownloadDir(PathBuf::from("/tmp/dl")),
+        PrefEdit::Nickname("bunny".to_string()),
+        PrefEdit::TcpPort(4711),
+        PrefEdit::UdpPort(4722),
+        PrefEdit::ServerMetUrl("https://example.invalid/server.met".to_string()),
+        PrefEdit::AutoFetchServerMet(false),
+        PrefEdit::NodesDatUrl("https://example.invalid/nodes.dat".to_string()),
+        PrefEdit::AutoFetchNodesDat(false),
+        PrefEdit::Theme(ThemeChoice::Light),
+        PrefEdit::Obfuscation(ObfuscationChoice::Required),
+        PrefEdit::PortMapping(false),
+        PrefEdit::RunLogFull(true),
+        PrefEdit::TableSort {
+            table: "search",
+            column: "size",
+            direction: Direction::Descending,
+        },
+        PrefEdit::TableSort {
+            table: "servers",
+            column: "ping",
+            direction: Direction::Ascending,
+        },
+    ];
+    let mut folded = config.load(None).expect("load");
+    for edit in &edits {
+        config.commit(edit).expect("commit");
+        folded.apply(edit);
+    }
+
+    // A reload sees every edit — including the two that live in the
+    // identity rows rather than the preference table.
+    let reloaded = config.load(None).expect("reload");
+    assert_eq!(reloaded, folded);
+    assert_eq!(reloaded.nickname, "bunny");
+    assert_eq!(reloaded.tcp_port, 4711);
+    assert_eq!(reloaded.udp_port, 4722);
+    assert!(!reloaded.auto_fetch_nodes_dat);
+    assert!(!reloaded.auto_fetch_server_met);
+    assert!(!reloaded.port_mapping);
+    assert!(reloaded.run_log_full);
+    // Two tables' sorts share one stored value without clobbering.
+    assert_eq!(
+        reloaded.table_sorts.get("search"),
+        Some(("size", Direction::Descending))
+    );
+    assert_eq!(
+        reloaded.table_sorts.get("servers"),
+        Some(("ping", Direction::Ascending))
+    );
+}
+
+#[test]
+fn a_restart_shaped_edit_says_so_and_a_live_one_does_not() {
+    let receipt = crate::words::app::receipt;
+    assert!(
+        receipt(&PrefEdit::Theme(ThemeChoice::Dark))
+            .as_str()
+            .ends_with("dark")
+    );
+    assert_eq!(
+        receipt(&PrefEdit::RunLogFull(true)).as_str(),
+        "saved: full run log → on",
+        "the level is read at every line written, so it needs no restart"
+    );
+    assert!(
+        receipt(&PrefEdit::TcpPort(4662))
+            .as_str()
+            .ends_with("(takes effect on restart)")
+    );
+}
+
+#[test]
+fn a_download_directory_must_be_absolute_and_not_an_existing_file() {
+    assert!(validate_download_dir("  ").is_err());
+    assert!(validate_download_dir("downloads").is_err(), "relative");
+    let absolute = crate::fixture::rooted("tmp/rmule-dl");
+    assert_eq!(
+        validate_download_dir(&format!(" {} ", absolute.display())),
+        Ok(absolute)
+    );
+    let file = tempfile::NamedTempFile::new().expect("temp file");
+    assert!(
+        validate_download_dir(file.path().to_str().expect("utf-8")).is_err(),
+        "an existing file is a typo, not a directory"
+    );
+}
+
+#[test]
+fn a_nickname_must_be_something_a_hello_can_carry() {
+    assert!(validate_nickname("   ").is_err());
+    assert!(validate_nickname("bad\u{7}name").is_err());
+    assert_eq!(validate_nickname("  rmule  "), Ok("rmule".to_string()));
+}

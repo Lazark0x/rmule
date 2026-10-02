@@ -1,0 +1,91 @@
+name = "0x3b-high-id-documented"
+status = "active"
+provenance = "documentation"
+reason = """
+Handwritten KADEMLIA2_SEARCH_RES (0x3B) payload built strictly from the
+DOCUMENTED eMule Kad2 layout. This is ADR-0043's explicit fallback to the
+controlled-identity real-capture path: it unblocks decode_source_result for the
+proven plain-0xE4 direct-High-ID row shape without claiming capture proof. The
+bytes are authored by rmule from public protocol documentation, not emitted by a
+real client, so they are tagged `documentation`, never `captured`.
+"""
+
+[references]
+wireshark = "epan/dissectors/packet-edonkey.c (eDonkey/eMule Kad2 dissector: KADEMLIA2_SEARCH_RES framing, source tag names, IP byte order)"
+eth_thesis = "ETH Mysicka, reverse-engineering of the eMule Kademlia protocol"
+jed2k = "a-pavlov/jed2k (clean-room Kad reimplementation: result framing + eD2k tag encoding)"
+amule_search_cpp = "aMule 377ec8d9 src/kademlia/kademlia/Search.cpp ProcessResultFile/StorePacket (source-type switch: 1/4 direct, 3/5 buddy, 6 firewalled-UDP, 2 deprecated)"
+
+[result]
+protocol = "0xE4"
+opcode = "0x3B"
+# Bytes in this file are the payload AFTER the 0xE4 0x3B that KadEnvelope strips.
+envelope_bytes_stripped = "0xE4 0x3B"
+sender_kad_id = "11223344 55667788 99aabbcc ddeeff00"
+target_file_hash = "8E302DB5 B806A25C 9385FC23 F21062D2"
+result_count = 5
+payload_len_bytes = 194
+
+# All multi-byte scalars are little-endian. Source tags use the explicit
+# length-prefixed single-byte-name form `[type][01 00][nameByte][value]`.
+# Tag types: UINT32 0x03, UINT16 0x08, UINT8 0x09.
+# Source tag names: SOURCETYPE 0xFF, SOURCEIP 0xFE, SOURCEPORT 0xFD, SOURCEUPORT 0xFC.
+# SOURCEIP wire bytes for IP a.b.c.d are `d c b a` (the dissector's host-order
+# u32 (a<<24)|(b<<16)|(c<<8)|d encoded little-endian).
+
+[[result.rows]]
+index = 0
+source_type = 1
+description = "direct High ID source"
+source_ip = "198.51.100.10"
+source_ip_wire_le = "0A 64 33 C6"
+source_tcp_port = 4662
+expected_projection = "PeerSource(ClientId 0x0A6433C6, tcp 4662) -> endpoint 198.51.100.10:4662"
+
+[[result.rows]]
+index = 1
+source_type = 1
+description = "direct-type source whose IP resolves below the Low ID threshold"
+source_ip_wire_le = "00 01 02 03"
+resolved_client_id = "0x00010203 (66051, < 16_777_216)"
+source_tcp_port = 4662
+expected_projection = "KadSourceDiagnostic::LowId { client_id 0x00010203, tcp_port 4662 }"
+
+[[result.rows]]
+index = 2
+source_type = 3
+description = "firewalled source needing buddy callback; carries SERVERIP/SERVERPORT tags (ignored)"
+expected_projection = "KadSourceDiagnostic::BuddyCallback"
+
+[[result.rows]]
+index = 3
+source_type = 1
+description = "direct-type source with SOURCEIP but no SOURCEPORT"
+source_ip = "198.51.100.10"
+expected_projection = "KadSourceDiagnostic::MissingEndpoint"
+
+[[result.rows]]
+index = 4
+source_type = 2
+description = "deprecated source type (aMule rejects type 2)"
+expected_projection = "KadSourceDiagnostic::UnsupportedSourceType(2)"
+
+[evidence]
+# What this fixture proves vs. what still awaits a private capture.
+kad_id_byte_order = "capture-proven by the prior 0x34 request capture (KadEvidence::KadIdByteOrder)"
+source_ip_tag_byte_order = "capture-proven 2026-07-07 by the controlled-identity 0x3B capture (KadEvidence::SourceIpTagByteOrder; SOURCE_RESULT_BLOCKED_BY now empty). This documentation fixture still authored these bytes from public docs; see the captured fixture private-amule-kad-source-result-20260707 for the genuine aMule proof."
+source_id_meaning = "capture-proven 2026-07-07: the per-row source ID is the publisher User Hash word-swapped (KadEvidence::SourceIdMeaning; SOURCE_RESULT_BLOCKED_BY now empty). This handwritten fixture remains for its diagnostic-branch coverage."
+high_id_source_result_fixture = "satisfied by this handwritten documentation fixture (KadEvidence::HighIdSourceResultFixture)"
+distance_ordering = "separate evidence, now capture-proven by the 2026-07-07 0x29 routing capture (ADR-0043); KadId::DISTANCE_ORDER_BLOCKED_BY is empty. Independent of this source-result fixture."
+public_kad_used = false
+
+[dev_cross_check]
+# Not committed: a-pavlov/jed2k kad2_search_res_0.dat (public KEYWORD result)
+# was fetched locally, prefixed with 0xE4 0x3B, and run through rmule's parser to
+# confirm the envelope/sender/target/count + per-row [16B id][tagcount][tag-LIST]
+# framing reads genuine aMule output. Sender 1a6d37f5 4edb759d 9d89fec0 27524541,
+# target ae4c36f5 090d15e8 4d0ba773 5864e3e7, count = 2. The first 5 keyword tags
+# decode via the shared eD2k tag-prefix codec; the 6th uses UINT64 (0x0A), which is
+# outside the source-tag subset (keyword results, not source rows). Framing: OK.
+jed2k_framing_parsed = true
+note = "Public bytes were used only as a local framing oracle and are NOT committed (private-only rule)."

@@ -1,0 +1,26 @@
+# kno's aMule answering an rmule hello over native IPv6, once its own IPv6 was
+# verified: an OP_HELLOANSWER that declares ten tags and carries nine. Cut
+# from the run's WAN tap by reassembling the TCP stream
+# 3fff:ed2:1::2:4662 -> 3fff:ed2:1::6 in sequence order. The bytes are
+# copied as they are; nothing re-encoded.
+#
+# Evidence FOR: the frame counts CT_MOD_IP_V6 (0xAE) and never writes it (kno
+# BaseClient.cpp:1447-1449 counts it, :1597-1598 hands a HASH16 tag to
+# the restrictive CTag::WriteTagToFile, and Tag.cpp:398/405 drops it). The nine
+# tags present are 0x01 0x11 0xF9 0xFB 0xFA 0xFE 0xEF 0xAA 0x55
+# ("aMule GIT"). They end exactly at the connected server 45.55.200.5:4661
+# (2d37c805 3512), whose first bytes a count-trusting reader takes for a tenth
+# tag with a 51255-byte name. The same shape recurs in 33 answers across
+# the ipv6-kad-tags run archives from 2026-09-23 to 2026-09-24: 22 over IPv6, 11 over IPv4.
+
+[provenance]
+archive      = "bench run 1790287658"
+run          = "1790287658 (2026-09-24 22:07 UTC)"
+scenario     = "rmule-interop-harness ipv6-kad-tags"
+counterparty = "kno's aMule ab483654 (image rmule/interop-amule-kno)"
+sha256       = "b2a1621de3446e84d67a7de1f1892156bb61e443688e584e3cdd9503b1ea68b5"
+transform    = "TCP reassembly of one direction; the first 0x4C frame, whole"
+
+[frames.amule_kno_op_helloanswer_short_count]
+file  = "amule_kno_op_helloanswer_short_count.bin (142 bytes)"
+shape = "e3 | 89000000 | 4c OP_HELLOANSWER | hash | id | port | 0a000000 | 9 tags | 2d37c805 3512"

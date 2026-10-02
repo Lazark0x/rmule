@@ -1,0 +1,47 @@
+[package]
+name = "rmule-net"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[dependencies]
+rmule-ed2k = { path = "../rmule-ed2k" }
+rmule-kad = { path = "../rmule-kad" }
+rmule-peer = { path = "../rmule-peer" }
+rmule-primitives = { path = "../rmule-primitives" }
+# The Windows ICMP-reset switch `family::bind_udp` sets on every unconnected
+# UDP socket; a no-op elsewhere.
+rmule-winsock = { path = "../rmule-winsock" }
+crab-nat.workspace = true
+getrandom.workspace = true
+igd-next.workspace = true
+librqbit-dualstack-sockets.workspace = true
+librqbit-utp.workspace = true
+netdev.workspace = true
+quinn.workspace = true
+quinn-proto.workspace = true
+rand.workspace = true
+rcgen.workspace = true
+rsa.workspace = true
+rustls.workspace = true
+socket2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+rmule-testkit = { path = "../rmule-testkit" }
+tempfile.workspace = true
+# `test-util` is the dev-only feature that gives `tokio::time::pause()`
+# / `tokio::time::advance()` plus `#[tokio::test(start_paused = true)]`.
+# Kept out of the production tokio feature set so the runtime image
+# stays minimal.
+tokio = { workspace = true, features = ["test-util"] }
+toml.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,35 @@
+# Peer-UDP source-reask capture, downloader side — rmule is the waiter. A stock
+# aMule 2.3.3 sharer queued rmule at rank 1 for a 40 MiB file; rmule hung up and
+# kept its standing in the Remote-Queued Pool; on its reask clock rmule sent
+# `OP_REASKFILEPING` (0x90) to the sharer's client-UDP port and the sharer
+# answered `OP_REASKACK` (0x91). A tcpdump on the bench bridge recorded both.
+#
+# Only on-the-wire bytes are here (ADR-0045), cut whole from the run's pcap
+# (`emit-reask-capture/emit-reask.pcap`), never retyped. Addresses below are
+# RFC 5737-ised; the bench's own were 172.18.0.7 (rmule) and 172.18.0.6 (the
+# sharer).
+
+[provenance]
+counterparty         = "aMule 2.3.3 (source pin 4e8f2b3c), stock interop image rmule/interop-amule:local"
+server               = "bench ed2k server (interop flow peer_udp_reask_emit, --known-sources)"
+scenario             = "peer_udp_reask_emit — rmule downloads, the sharer queues it, rmule UDP-reasks"
+run                  = "1790849799"
+date                 = "2026-10-01"
+file_hash            = "06818ECFAFD5EC4400D28A53D7F866D5"   # synthetic 40 MiB shared.bin, 5 parts
+rmule_udp_endpoint   = "192.0.2.7:46515"   # rmule's OS-chosen client-UDP port, advertised in its hello
+sharer_udp_endpoint  = "192.0.2.6:4672"    # aMule's client-UDP port
+
+# rmule's own egress ping (the waiter's bytes).
+[frames.reask_ping_0x90]
+opcode    = "0x90 OP_REASKFILEPING (proto 0xC5)"
+direction = "rmule (192.0.2.7:46515) -> aMule (192.0.2.6:4672)"
+walk      = "file_hash=06818ECFAFD5EC4400D28A53D7F866D5; part_status={count:5, bytes:[0x00]}; complete_sources=0  (UDP v>3 form)"
+observed  = "1790851499.210499"
+
+# The sharer's answer (counterparty bytes).
+[frames.reask_ack_0x91]
+opcode    = "0x91 OP_REASKACK (proto 0xC5)"
+direction = "aMule (192.0.2.6:4672) -> rmule (192.0.2.7:46515)"
+walk      = "part_status={count:0} (complete-source sentinel); rank=1  (written because rmule's hello advertised UDP v4, stock 2.3.3 ClientUDPSocket.cpp:213-221)"
+observed  = "1790851499.318749 — 108 ms after the ping, from the endpoint the ping went to."
+finding   = "rmule dropped this reply: its Remote-Queued Pool decoded 0x91 by min(our UDP version, theirs) with our version read from a MiscOptions1 that never carries the UDP nibble (0), so it expected a rank-only body and refused the 4-byte one as trailing bytes. The download fell to its TCP full ask 20 s later."

@@ -1,0 +1,162 @@
+# The MIRROR of `amule-233-crypt-reask-20260728`: the same interop flow L
+# (`peer-udp-reask`, consume leg) with both sides crypt-armed, re-run after
+# `875b1d3` taught rmule that a High-ID `client_id` IS its own public IP
+# In the sibling run rmule decrypted aMule's
+# obfuscated `0x90` correctly and then answered **in the clear**, because its
+# send gate needs our own public IP and the interop Lugdunum sends the short
+# 8-byte `OP_IDCHANGE`. Here that gate opens: rmule's `0x91` goes out
+# obfuscated, keyed on our own address taken from that very same short IDCHANGE.
+#
+# READ THE EVIDENCE LABELS. Under ADR-0045 rmule-authored bytes are STIMULUS,
+# never evidence. rmule's own obfuscated `0x91` proves only that rmule emitted
+# it, and that it is well-formed under the key its recipient would derive. The
+# counterparty signal that aMule *decoded* it is
+# `[finding.no_tcp_full_ask_fallback]` — and that signal is NEGATIVE evidence
+# with stated bounds, not a positive counterparty action. The positive action
+# this run set out to record did not become available; see
+# `[finding.second_reask_not_observed]`, which says plainly why.
+#
+# Nothing here is fabricated. Every byte is off one passive tcpdump on rmule's
+# own network namespace.
+
+[provenance]
+counterparty       = "aMule 2.3.3 (source pin 4e8f2b3c3f90cda23765730546b04c684a92e4f5), stock interop image rmule/interop-amule:local"
+server             = "Lugdunum eserver 17.15, stock interop image rmule/interop-eserver:local"
+scenario           = "interop flow L peer-udp-reask (consume leg), rmule serving --upload-slots 1 --peer-crypt supported, both aMules AMULE_CRYPT_SUPPORTED=1 AMULE_CRYPT_REQUESTED=1"
+run                = "w22-crypt-reask-mirror (.scratch/interop-runs/1785267600)"
+date               = "2026-07-28"
+file_hash          = "C7C89690035A1EA32DC97C6CD53D68E5"   # the same synthetic 40 MiB shared.bin, 5 parts
+rmule_user_hash    = "42424242424242424242424242424242"   # rmule-tools default identity
+amule_user_hash    = "995D51F43A0E54C93766D0C6BEDA6F23"   # the reasker's runtime hash, off its own hello
+rmule_udp_endpoint = "172.18.0.3:47110"  # rmule's client-UDP port, advertised via CT_EMULE_UDPPORTS
+reasker_udp_endpoint = "172.18.0.5:4672" # aMule's client-UDP port
+rmule_client_id    = 50336428            # 0x030012AC — HighID, equal to rmule's own container IP 172.18.0.3
+amule_client_id_ip = "172.18.0.5"        # the reasker's own HighID address (its key's sender_ip)
+
+# The precondition this whole run is about, and the bytes that establish it.
+[preconditions]
+rmule_idchange = "`e3 09000000 40 ac120003 f9170000` — the SHORT 8-byte OP_IDCHANGE, captured 19:34:50 UTC. client_id `ac120003` = 172.18.0.3 (HighID, == rmule's own container IP) + tcp_flags 0x000017F9, and NOTHING MORE: no public-IP extension (payload >= 20, ADR-0047). This is the identical form that left the sibling run's send gate shut; the fix reads our address off the HighID id itself, which is what a HighID id means (aMule ServerConnect.cpp:556 `if (!::IsLowID(newid)) theApp->SetPublicIP(newid)`)."
+rmule_hello_miscoptions2 = "0x000004A0 — bit 7 SupportsCryptLayer SET, bit 8 RequestsCryptLayer CLEAR (also bit 5 ext-multipacket, bit 10 SX2). aMule's ShouldReceiveCryptUDPPackets() reads bit 7 before it will obfuscate toward us; lit by `serve start --peer-crypt supported`."
+rmule_hello_udpports = "CT_EMULE_UDPPORTS 0x0000B806 — client-UDP port 47110, Kad port 0. aMule's UDPReaskForDownload needs a learned UDP port for the peer (`m_nUDPPort != 0`)."
+amule_hello_miscoptions2 = "0x000005B8 — bit 7 SupportsCryptLayer + bit 8 RequestsCryptLayer both SET. Bit 8 is what satisfies rmule's own send predicate: rmule does not *request* crypt (bit 8 clear above), so `self.requests() || target.requests()` is carried entirely by the counterparty's request bit."
+amule_prefs = "IsClientCryptLayerSupported=1, IsCryptLayerRequested=1, IsClientCryptLayerRequired=0 — read back out of the live container's amule.conf (AMULE_CRYPT_SUPPORTED/_REQUESTED)."
+queue_state = "rmule logged `serve peer_queued peer=172.18.0.5:57340 rank=1` at 19:36:02 UTC; the reasker then hung up (FIN at 19:36:44, ADR-0057 disconnected standing), which is aMule's `!IsConnected()` reask precondition. rmule later promoted it to a granted-but-undialed slot, exactly as in the sibling run."
+
+# aMule's obfuscated reask heartbeat — the counterparty's own bytes, and the
+# stimulus rmule answers. This direction was already proven in the sibling run;
+# it is reproduced here so this fixture holds the whole exchange, and because
+# its marker literal differs from the sibling's while staying in the same family.
+[frames.reask_ping_0x90]
+evidence_class = "COUNTERPARTY EVIDENCE (aMule's own bytes)"
+opcode    = "0x90 OP_REASKFILEPING (proto 0xC5) under the ed2k client-UDP obfuscation layer"
+direction = "aMule (172.18.0.5:4672) -> rmule (172.18.0.3:47110)"
+observed  = "19:57:23.499441 UTC — 31 bytes on the wire"
+wire      = "0b 8705 c785d5e5490888a9c54b36da902b1a600152ee80f5f8fe3a1a010c0e"
+framing   = "[marker 0x0B][random_key 0x0587 LE] || RC4( sync 0x395F2EC1 LE || padlen 0x00 || payload )"
+key       = "RC4(MD5(rmule_user_hash 42*16 || sender_ip 172.18.0.5 || MAGICVALUE_UDP 0x5B || random_key LE))"
+plaintext = "c590 c7c89690035a1ea32dc97c6cd53d68e5 0500 11 0100 — OP_EMULEPROT/OP_REASKFILEPING, the shared file's hash, part status {count:5, bytes:[0x11]}, complete_sources=1"
+marker    = "0x0B — `& 0x03 == 3`, the ed2k alias rmule itself never emits (aMule draws `GetRandomUint8() | 0x01`, leaving bit 1 random). Asserted as a FAMILY via `marker_family`; the literal is a fixture fact only. The sibling run drew 0xE7 for the same field — two different literals, one family, which is exactly why an exact-byte assertion flakes."
+
+# rmule's OWN answer, obfuscated. THE POINT of this run — and, on its own, only
+# proof that rmule emitted it.
+[frames.reask_ack_0x91]
+evidence_class = "RMULE STIMULUS (our own bytes — NOT evidence of aMule's behaviour)"
+opcode    = "0x91 OP_REASKACK (proto 0xC5) under the ed2k client-UDP obfuscation layer"
+direction = "rmule (172.18.0.3:47110) -> aMule (172.18.0.5:4672)"
+observed  = "19:57:23.505460 UTC — 15 bytes on the wire, 6.0 ms after the inbound ping"
+wire      = "3d 81a4 811a4d7b451652bcfb16a927"
+framing   = "[marker 0x3D][random_key 0xA481 LE] || RC4( sync 0x395F2EC1 LE || padlen 0x00 || payload )"
+key       = "RC4(MD5(amule_user_hash 995D51F4... || sender_ip 172.18.0.3 || MAGICVALUE_UDP 0x5B || random_key LE)) — keyed on the RECIPIENT's user hash and OUR OWN public IP, aMule's `EncryptSendClient` rule. That `sender_ip` is the whole point: 172.18.0.3 is rmule's address, and the ONLY place rmule could have learned it this run is the HighID client_id in the short IDCHANGE above."
+plaintext = "c591 0500 1f 0100 — part status {count:5, bytes:[0x1F]} (rmule holds all 5 parts), rank=1. Byte-for-byte the payload the sibling run put on the wire IN THE CLEAR (`c5 91 05 00 1f 01 00`); the layer changed, the packet did not."
+marker    = "0x3D — `& 0x03 == 1`. rmule's primitive forces `(x & 0xFC) | 1`, so it only ever emits the `1` alias; aMule's own `bufIn[0] & 0x03` try-order folds 1 and 3 onto the same family, which is why the asymmetry is not an interop bug."
+padding   = "0 bytes — aMule disables padding for UDP (`EncryptSendClient`: \"padding disabled for UDP currently\"), and rmule emits none either, so the two are byte-shaped alike."
+
+# ---------------------------------------------------------------------------
+# What the counterparty did about it — stated with its limits.
+# ---------------------------------------------------------------------------
+
+[finding.no_tcp_full_ask_fallback]
+evidence_class = "COUNTERPARTY SIGNAL, NEGATIVE (an aMule action that did NOT happen, on a deadline aMule sets for itself)"
+what = "aMule never fell back to a TCP full ask. Across the entire run the ONLY TCP between the reasker and rmule is its original ask at 19:36:02 and the FIN pair at 19:36:44 — no SYN to rmule's listen port 172.18.0.3:4663 afterwards, in a window the tap covered continuously."
+why_it_is_a_signal = """
+`CPartFile::Process` (PartFile.cpp:1461-1481) runs a DS_ONQUEUE source through
+the UDP reask at `FILEREASKTIME-20000`, then FALLS THROUGH (there is no
+`break`) into the DS_CONNECTING/DS_NONE case, which calls `AskForDownload()` —
+a TCP dial — once `dwCurTick - GetLastAskedTime() > FILEREASKTIME`. The two
+deadlines are 20 s apart (FILEREASKTIME = 1300000 ms, Constants.h:35).
+
+`m_dwLastAskedTime` has exactly two assignments to `::GetTickCount()` at this
+pin: `AskForDownload()` (DownloadClient.cpp:156 — the TCP dial itself) and
+`UDPReaskACK()` (DownloadClient.cpp:1225 — the OP_REASKACK handler, reachable
+only by DECRYPTING our datagram). So an ack that aMule dropped or could not
+decrypt would have left the clock at the original 19:36:02 ask and produced a
+TCP full ask at ~19:57:42. None appeared.
+"""
+window = """
+The window is bounded and was live throughout. The source was provably
+DS_ONQUEUE at 19:57:23 (only that case calls `UDPReaskForDownload`), and it
+left the download queue when the file completed at 19:58:54 (from the OTHER
+aMule — the throttled slot-holder — never from rmule, which never opened a
+second TCP). That leaves 19:57:42 -> 19:58:54, i.e. 72 s. `amuled` defines
+CORE_TIMER_PERIOD = 300 ms (amule.h:104, the AMULE_DAEMON branch) and the
+all-sources loop runs on every 10th tick (DownloadQueue.cpp:432/524), so the
+`AskForDownload()` condition was evaluated roughly 24 times in that window and
+never fired. aMule stayed connected to the eserver throughout (the other gate
+on both branches), verified live.
+"""
+honest_limit = """
+This is NEGATIVE evidence. It says aMule behaved as a client that had accepted
+the ack, and the inference to 'therefore it decrypted it' runs through the
+source reading above rather than through an observed counterparty action. It
+is strong enough to distinguish 'decrypted' from 'ignored and carried on' —
+because 'ignored' has a specific, observable, scheduled consequence here that
+did not occur — but it is not the same class of proof as counterparty bytes.
+"""
+
+[finding.second_reask_not_observed]
+what = """
+The intended POSITIVE evidence was aMule's next `OP_REASKFILEPING`, which is
+unreachable except through the decode: `UDPReaskForDownload` returns early
+while `m_bUDPPending` is true, and at this pin that flag is cleared only by the
+constructor (needs a new TCP handshake — none occurred), `AskForDownload()`
+(the TCP dial — none occurred), `UDPReaskFNF()` (needs an OP_FILENOTFOUND —
+rmule sent an ack), and `UDPReaskACK()` (the decode path). A second ping would
+therefore have been proof by elimination.
+
+It never came due. The reasker COMPLETED the file at 19:58:54 — 91 s after the
+ack — from the slot-holder aMule, which by then had the whole 40 MiB and
+served it over a link the tap on rmule's namespace cannot see. A completed
+CPartFile leaves the download queue, so the next reask (which the ack itself
+had rescheduled to ~20:18:43) was never scheduled at all. No further peer-UDP
+datagram appears on the tap in either direction, and that absence is explained
+by the completion, NOT by anything aMule decided about the ack.
+"""
+for_the_next_run = """
+This is a topology defect worth fixing before the next attempt rather than a
+protocol finding. The slot-holder is throttled with AMULE_MAX_DOWNLOAD=2, but
+it still obtained the entire file well inside the window and then became a
+full-speed source for the reasker — so the reasker's download ends about a
+minute after the first reask, every time, and the cycle can never reach its
+second beat. To capture the second ping: share a file large enough that the
+holder cannot complete it inside ~45 min, or cap the holder's UPLOAD
+(AMULE_MAX_UPLOAD) so it cannot serve the reasker, or run the reasker against
+an rmule that is the file's only source.
+"""
+
+[finding.what_this_fixture_does_not_prove]
+note = """
+rmule's obfuscated `0x91` alone proves nothing about interoperability — it is
+our own output; what it does establish is that the send gate opened and that
+the datagram is well-formed under the key its recipient derives (the test
+decrypts it from aMule's point of view, and the vacuity guards show our own
+address is load-bearing key material).
+
+Nor does anything here prove aMule ACTED ON THE CONTENTS of the ack (rank=1,
+the 5-part status). `UDPReaskACK` feeds those to `SetRemoteQueueRank` and
+`ProcessFileStatus`, but neither surfaces on the wire or in a stock aMule's log
+(every relevant log call is `AddDebugLogLineN`, which compiles to
+`do {} while (false)` outside a `__DEBUG__` build — Logger.h:441). The claim
+this fixture supports is narrower: rmule emitted a correctly-keyed obfuscated
+ack, and aMule's subsequent scheduling behaviour is that of a client that
+consumed it.
+"""

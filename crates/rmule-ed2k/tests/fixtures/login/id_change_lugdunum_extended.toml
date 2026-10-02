@@ -1,0 +1,23 @@
+name = "id_change_lugdunum_extended"
+provenance = "captured"
+source_note = """
+Captured from `upd.emule-security.org` (the first server.met entry, 171.25.158.106:4661)
+on 2026-05-19 during the test-command audit. A real Lugdunum-era extended
+OP_IDCHANGE payload: 20 bytes total — the full aMule `ServerSocket.cpp`
+progressive layout (ADR-0047): client_id 936 (LowID), tcp_flags 0x05DD,
+standard/advertised TCP port 936, server-reported public IP 171.25.158.106,
+obfuscation TCP port 4661. This is the ADR-0047 capture-tier golden vector for
+the extension projection.
+"""
+accepted = true
+
+[expected]
+kind = "id_change"
+protocol = "edonkey"
+opcode = 64
+client_id = 936
+tcp_flags = 1501
+standard_tcp_port = 936
+public_ip = "171.25.158.106"
+obfuscation_tcp_port = 4661
+trailing_len = 0

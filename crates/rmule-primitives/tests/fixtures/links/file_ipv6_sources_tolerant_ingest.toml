@@ -1,0 +1,24 @@
+name = "file_ipv6_sources_tolerant_ingest"
+provenance = "handwritten"
+source_note = """
+ADR-0089 §6.2's asymmetry: emission always brackets and always names the port,
+while ingest accepts `[v6]` at the default 4662 and a bare unbracketed literal.
+A bare token with two or more colons parses as a *whole* address and is never
+split at its last colon — `2001:db8::1:4662` is itself a valid address, so
+splitting would invent a different host on a different port. An IPv4 literal
+and a DNS name are malformed inside `s6=` and are skipped without costing the
+rest of the list. Deterministic tier; no counterparty bytes exist for the link
+grammar.
+"""
+accepted = true
+
+[input]
+link = "ed2k://|file|test.mp3|12345|0123456789ABCDEF0123456789ABCDEF|/|s6=[2001:db8::1],2001:db8::1:4662,[2001:db8::3]:5000,198.51.100.7:4662,host.example.com,[2001:db8::4]:99999|/"
+
+[expected]
+kind = "file"
+canonical = "ed2k://|file|test.mp3|12345|0123456789ABCDEF0123456789ABCDEF|/|s6=[2001:db8::1]:4662,[2001:db8::1:4662]:4662,[2001:db8::3]:5000|/"
+name = "test.mp3"
+size = 12345
+file_hash = "0123456789ABCDEF0123456789ABCDEF"
+ipv6_sources = ["[2001:db8::1]:4662", "[2001:db8::1:4662]:4662", "[2001:db8::3]:5000"]

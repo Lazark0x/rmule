@@ -1,0 +1,90 @@
+# Genuine **non-empty** `OP_SERVERLIST 0x32` from the third-party eD2k index
+# server `andrey23127/ed2k-server`, pinned at `eacf7f1`, drawn by rmule's
+# `OP_GETSERVERLIST 0x14` over a logged-in TCP session (ed2ksrv capture,
+# 2026-08-02). The counterparty
+# frame is the server's own serialization of its verified known-servers table;
+# rmule's `0x14` is kept beside it as stimulus, never evidence (ADR-0045).
+#
+# ADR-0045's 2026-08-02 amendment governs: an independent third-party server
+# pinned at an upstream commit is an admissible counterparty, its fixtures take
+# the `ed2ksrv-*` prefix and name the pin, and the Lugdunum/aMule-observed form
+# stays the parity reference — divergences go in `[divergence]` below rather
+# than overwriting the row.
+#
+# ## What this fixture is evidence FOR
+#
+# server-tcp row `OP_SERVERLIST 0x32` (C, `full`), previously **deterministic /
+# bucket (b)** with the wall stated in the row itself: a live `0x14` drew no
+# `0x32` because Lugdunum 17.15 answers an *empty* known-servers table with the
+# ident alone, and seeding that table failed honestly
+# (`lugdunum-server-ident-20260729/meta.toml`). The wall was never "no server
+# implements `0x32`" — it was "we cannot make a table non-empty". Two instances
+# of this server supply the live server-to-server exchange the row asks for, so
+# the entry list here is **populated**: `count = 1`, one real gossip peer.
+#
+# ## Why `count = 1` is the whole table, not a truncation
+#
+# The bench ran exactly two servers, and `build_tcp_server_list` (`gossip.rs`)
+# deliberately never hands a client the server's **own** entry — a client that
+# just logged in already has it, and aMule (unlike eMule) accumulates a fresh
+# duplicate on every connect. So one peer is the complete, expected shape.
+#
+# ## Gossip readiness is load-bearing
+#
+# The same filter gates every entry on `verified_sockets` / `seed_server_keys`:
+# before the gossip round trip completes, the table is empty and the `0x32`
+# would have come back with `count = 0` — the very shape this capture exists to
+# get past. The `/api/peers` admin read below is the readiness gate that was
+# waited on, not an afterthought.
+
+[provenance]
+counterparty  = "andrey23127/ed2k-server @ eacf7f1eb7ea40f71ae869aef6a10801e7e262b8, unmodified upstream source, image rmule/interop-ed2ksrv:local (recipe tools/interop-harness/images/ed2ksrv/Dockerfile)"
+tool          = "rmule-tools ed2k server welcome live 127.0.0.1:14661 --out <run> --request-server-list --max-seconds 20, then `ed2k server welcome slice <run>`"
+date          = "2026-08-02"
+identity      = "nickname=rmule-tools user_hash=42*16 tcp_port=4662 protocol_version=60 (tool defaults); the server refused the High-ID back-connect probe (nothing listening on 4662) and assigned client_id=1 LowID — a client-side fact, and the server-list answer is not ID-conditioned"
+replication   = "two sessions (client_id=1 and client_id=2) produced byte-identical 0x32 frames"
+
+[topology]
+network       = "docker `--internal --subnet 203.0.113.0/24` (rmule-ed2ksrv-c3) — fake-public RFC 5737 documentation range, per the harness address plan (`fake_public.rs`); `--internal` means the pair has NO route off the bench at all"
+server_a      = "203.0.113.20:4661, config tools/interop-harness/images/ed2ksrv/config.toml (seed_servers = [] — no egress whatsoever)"
+server_b      = "203.0.113.21:4661, config tools/interop-harness/images/ed2ksrv/config-peer.toml (seed_servers = [\"203.0.113.20:4661\"] — its single seed is the sibling, so the pair's only egress target is in-bench)"
+captured_from = "server_b (203.0.113.21) — the seeder, whose `verified_sockets` is the side the gossip round trip fills"
+client_path   = "an `--internal` network cannot publish ports, so a socat byte relay (nicolaka/netshoot, bridge + `docker network connect`) forwarded host 127.0.0.1:14661 to 203.0.113.21:4661; a transparent TCP pipe that alters no frame. The server therefore logged the client as the relay's in-network address 203.0.113.2"
+hermeticity   = "`seed_servers` is the server's only source of egress (audit §6) AND the network is `--internal`: no public-internet peer could enter either table, so no captured entry can be a public address (ADR-0045 point 3)"
+
+[readiness]
+gate      = "docker exec ed2ksrv-c3-b curl -s 127.0.0.1:8080/api/peers  (admin API binds 127.0.0.1 only)"
+observed  = "[{\"ip\":\"203.0.113.20\",\"port\":4661,\"has_server_key\":true,\"verified\":true}]"
+server_log = "gossip cycle complete — full handshake succeeded seed=203.0.113.20:4661 (preceded by phase 1 plain bootstrap 0xA0+0x96, the seed's 0x97, and phase 2 portUDPobf OBF ping)"
+timing    = "the handshake completed ~0.76 s after startup; the capture ran well after it"
+
+# rmule's request — kept for the exchange to be readable, never evidence.
+[frames.get_server_list_0x14]
+class     = "rmule stimulus — never evidence"
+opcode    = "0x14 OP_GETSERVERLIST (proto 0xE3), null payload"
+direction = "rmule -> ed2ksrv"
+wire      = "e3 01 00 00 00 14"
+observed  = "sent immediately after LoginAccepted, via the session's RequestServerList command; the server logged `frame in opcode=\"0x14\" op_name=\"GETSERVERLIST\" len=0`"
+
+# The capture target.
+[frames.server_list_0x32]
+class     = "counterparty evidence"
+opcode    = "0x32 OP_SERVERLIST (proto 0xE3), 13-byte packet"
+direction = "ed2ksrv -> rmule"
+wire      = "e3 08 00 00 00 32 01 cb 00 71 14 35 12"
+layout    = "count u8 = 1, then one entry: ip4 = cb 00 71 14 = 203.0.113.20 (network order), port2 = 35 12 = 4661 LE"
+entries   = "203.0.113.20:4661 — the sibling instance, and the only verified peer in the emitting server's table"
+observed  = "arrived after the request, following the welcome burst's status + version-message frames and the 0x41 ident"
+
+[exchange]
+seq_1 = "s2c 0x40 OP_IDCHANGE (client_id=1, SRV_TCPFLG 0x05DD, public_ip 203.0.113.21 = the emitting server's own this_ip)"
+seq_2 = "c2s 0x14 OP_GETSERVERLIST (stimulus, on LoginAccepted)"
+seq_3 = "s2c 0x34 OP_SERVERSTATUS (users=1 files=0)"
+seq_4 = "s2c 0x38 OP_SERVERMESSAGE ('rmule interop bench gossip peer')"
+seq_5 = "s2c 0x41 OP_SERVERIDENT (advertised 203.0.113.21:4661, name 'rmule interop bench peer')"
+seq_6 = "s2c 0x32 OP_SERVERLIST (THIS FIXTURE)"
+
+[divergence]
+# Recorded, not asserted on — the Lugdunum/aMule-observed form stays the reference.
+server_hash = "this server ships a FIXED identity hash (DEADBEEFCAFEBABE123456789ABCDEF0, `login.rs:174`), so two instances are indistinguishable by identity. They are distinguished here by IP/port only. `0x32` carries no hash, so nothing in this fixture depends on it — but a future two-instance fixture must not assert on one."
+self_exclusion = "the emitting server excludes its own entry from the CLIENT-facing list. Lugdunum does the same (which is why connecting to one never accumulates duplicates), so this is convergent behaviour, not a divergence — noted so `count = 1` in a two-server bench is not read as a missing entry."

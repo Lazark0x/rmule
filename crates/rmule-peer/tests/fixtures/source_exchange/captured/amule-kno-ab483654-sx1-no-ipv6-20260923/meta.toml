@@ -1,0 +1,48 @@
+# kno's aMule source answer — the second ExtSX oracle ADR-0087 names, asked
+# the question emule-qt answered with an ExtSX record, on the IPv6
+# dual-stack bench by `ipv6-extsx-kno`.
+#
+# The bytes are kno's. They are the Documented Absence, not an ExtSX capture:
+# kno writes no ExtSX record at this pin. It claims no EXTXS
+# (AdvertisedModMiscOptions, PeerCapabilities.h:283-294 and :336), nothing in
+# it reads a peer's EXTXS claim (SupportsExtendedSourceExchange has no
+# caller), and its one complete-file writer, CKnownFile::CreateSrcInfoPacket
+# (KnownFile.cpp:1139-1330), writes classic fixed-stride records with no tag
+# block. The source it describes is an rmule body queued on kno's shared file
+# over IPv4 whose hello named 3fff:ed2:1::8 (CT_MOD_IP_V6, read at
+# BaseClient.cpp:687-699 and used by kno's own dialler only,
+# BaseClient.cpp:2322-2325); the record carries its IPv4 hybrid id and
+# nothing of the IPv6. Only counterparty bytes are evidence (ADR-0045). The
+# same 52 bytes sit whole in the one kno-authored segment of the run's tap
+# whose payload opens c5 .. 82 (`ipv6/ipv6-extsx-kno/tap-wan.pcap`, kno's own
+# attachment, 22:32:49.717929 UTC, 45.55.200.2.4662 > 45.55.200.6.34760).
+
+[provenance]
+counterparty   = "kno/amule integration/network-parity ab483654 amuled, stock direct-peer scenario via AMULE_SCENARIO_MODE, image rmule/interop-amule-kno (sha256:265fe99e7f424a7c6e62ab35afce088f4ccfb7e3aebfc8ab25ce2cfad1c9e3b4)"
+driver         = "rmule-tools ipv6 hold-slot + ipv6 sx-ask --standalone, image rmule/interop-rmule-tools (sha256:fdb6fc30818c4143904a5bcebca3e1c7d9952cffc40cef91c2b0a6a1f0fa58b1)"
+scenario       = "rmule-interop-harness ipv6-dialect ipv6-extsx-kno (acceptance ipv6_extsx_kno)"
+run            = "1790202601 (target/bench-runs/1790202601 in the capturing checkout, archived on the bench host)"
+verdict        = "PASS, 5 of 5 claims held (two of them Documented Absences)"
+reproduced     = "run 1790202940 (acceptance ipv6_extsx_kno, same image pair): byte-identical 52-byte answer, PASS 5 of 5"
+date           = "2026-09-23"
+wan            = "45.55.200.0/24 + 3fff:ed2:1::/64, fake-public dual-stack; every rmule body reached kno over IPv4"
+file_hash      = "879B7240FE00815F5431AE7086B8C939"   # synthetic 1 MiB shared.bin, one part
+file_size      = 1048576
+sha256         = "dfd970879fd0341f281232e0ecfa17b3b9b216e1b76144d2ee2c573955737e9f"
+
+[bodies]
+amule_kno      = "45.55.200.2 / 3fff:ed2:1::2 — shares shared.bin (\"Hashing file: /incoming/shared.bin\"); hello answer 142 bytes, CT_MOD_MISCOPTIONS word 0x0002 (NAT-T only: no EXTXS, and no IPv6 bit — nothing verified its IPv6)"
+queued         = "45.55.200.8 — rmule, user hash 5151…51, client id 0 (kno derives the hybrid id from the IPv4, BaseClient.cpp:830-838), hello CT_MOD_IP_V6 = 3fff:ed2:1::8; kno granted its OP_STARTUPLOADREQ (10240 bytes served) and held it for the ask"
+asker          = "45.55.200.6 — rmule, user hash 4242…42, hello 0xAA claims EXTXS + EXTXS_SKIPTAGS, MiscOptions1 SX1 nibble 3"
+
+# The frame rmule emitted to draw it (own bytes, not fixture-eligible).
+[request]
+wire  = "c5 11000000 81 879b7240fe00815f5431ae7086b8c939"
+shape = "standalone OP_REQUESTSOURCES (0x81) <hash16>. The 0xA4 bundle ipv6-extsx sends draws nothing from kno: its 0x58 sub runs ProcessExtendedInfo, which clears an extended-requests-v0 asker's part status (UploadClient.cpp:199-205), and CreateSrcInfoPacket refuses a status whose size is not the part count (KnownFile.cpp:1169). The standalone ask sizes it through SetUploadFileID (UploadClient.cpp:293)."
+
+[frames.amule_kno_op_answersources_dualstack_no_ipv6]
+opcode    = "0x82 OP_ANSWERSOURCES, proto 0xC5, 52 bytes, unpacked; SX1 because the ask named no version (ClientTCPSocket.cpp:1512-1570)"
+layout    = "hash16 | 0100 count=1 | record (v3 stride 28): 08c8372d hybrid id = 45.55.200.8 | 3612 port 4662 | 00000000 0000 server | 5151…51 user hash"
+version   = "3 — the asker's own SX1 nibble (KnownFile.cpp:1196), read back at kno's own claimed nibble 3 the way aMule reads one"
+why       = "the queued requester is a High-ID source with an IPv4 wire form, uploading (KnownFile.cpp:1219-1223); its unknown part status passes the needed-chunk gate (cDbgNoSrc); a v3 record has no field and no tag block for an IPv6"
+absent    = "an IPv6-connected requester is not on the bench: kno's first inbound native-IPv6 connection verifies its address, after which its hello answer counts a CT_MOD_IP_V6 it never writes (seen in the ipv6-hello-tags flow) and every rmule session is refused. By source it would be skipped anyway (KnownFile.cpp:1219, PeerAddressing.h:107)."

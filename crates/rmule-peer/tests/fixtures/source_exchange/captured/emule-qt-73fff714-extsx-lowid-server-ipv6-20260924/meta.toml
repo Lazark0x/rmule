@@ -1,0 +1,30 @@
+# ExtSX source answer — emule-qt's own OP_ANSWERSOURCES2 describing a Low-ID
+# requester that named its IPv6 and its server (ADR-0087 / ADR-0061 rung 0),
+# drawn by `ipv6-download-rung0`.
+#
+# The bytes are emule-qt's. The source it describes is an rmule body
+# (`ipv6 hold-slot`) queued on emule-qt's shared file over IPv6 from
+# 3fff:ed2:1::7 with Low ID 0x00AAAA00 and `--connected-server` naming
+# ed2ksrv (45.55.200.5:4661). emule-qt writes the id as `htonl(userIDHybrid)`
+# (`KnownFile.cpp:870`) — 0x00AAAA00 is its own byte reverse, so it reads back
+# as the same Low ID — and puts the server beside it as CT_EMULE_SERVERIP /
+# CT_EMULE_SERVERTCP, the IPv6 as CT_MOD_IP_V6. That is the one record shape
+# that reaches rmule's download as a Low-ID candidate *with* its IPv6 half.
+# Only counterparty bytes are evidence (ADR-0045). The same 78 bytes sit
+# whole on emule-qt's tap (`ipv6/ipv6-download-rung0/tap-wan.pcap`,
+# 45.55.200.3:4662 -> the downloader) in runs 1790223453, 1790223875 and the
+# earlier-image control 1790224289 — byte-identical in all three.
+
+[provenance]
+counterparty = "ModderMule/emule-qt 73fff714 emulecored, image rmule/interop-emuleqt:local"
+driver       = "rmule-tools ipv6 hold-slot --connected-server + ed2k download start --serve, image rmule/interop-rmule-tools"
+scenario     = "rmule-interop-harness ipv6-dialect ipv6-download-rung0 (acceptance ipv6_download_rung0)"
+run          = "1790223875"
+verdict      = "PASS, 2 of 2 claims held"
+reproduced   = "run 1790223453 (PASS 2/2) and control run 1790224289 (earlier image, FAIL 1/2): byte-identical answer"
+date         = "2026-09-24"
+file_hash    = "879B7240FE00815F5431AE7086B8C939"   # synthetic 1 MiB shared.bin
+
+[frames.emuleqt_op_answersources2_extsx_lowid_server_ipv6]
+opcode = "0x84 OP_ANSWERSOURCES2 (proto 0xC5), ExtSX version 1"
+walk   = "one record: id 00aaaa00, port 4662, 4 tags [0xBA SERVERIP 45.55.200.5, 0xBB SERVERTCP 4661, CT_MOD_IP_V6 3fff:ed2:1::7, CT_EMULE_USERHASH 4c x16]"

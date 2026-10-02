@@ -1,0 +1,7 @@
+# Session-level metadata for the capture in this directory.
+
+endpoint = "45.82.80.155:5687"
+started_unix_secs = 1779029902
+duration_ms = 11326
+identity_summary = "nickname=rmule-live tcp_port=4662 protocol_version=60"
+close_reason = "ProtocolViolation"

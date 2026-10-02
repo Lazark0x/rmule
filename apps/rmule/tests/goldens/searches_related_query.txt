@@ -1,0 +1,12 @@
+┌ Search ───────────────────────────────────── / focus  ←→ method  o options ┐
+│❯ related to: debian-12.5.0-amd64-netinst.iso                               │
+│Method: the connected server only                                           │
+│Filters: none   o edit                                                      │
+└────────────────────────────────────────────────────────────────────────────┘
+ ubuntu · 0… [~debian-12.5.0-amd64-… · 0]
+┌ Results · Completed · 0 ────────────────────────────── [ ] search  x close ┐
+│                                                                            │
+│  no related files — the server found none, or the file has too few sources │
+│                              for it to answer                              │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘

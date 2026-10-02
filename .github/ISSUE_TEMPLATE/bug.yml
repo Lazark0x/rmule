@@ -1,0 +1,102 @@
+name: Bug report
+description: rmule crashed, hung, lost data or did something it should not have
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        Before you file:
+
+        - Search the existing issues; someone may have hit it already.
+        - If rmule behaves differently from aMule, eMule or a server, use the **Interop mismatch** form instead.
+        - If this is a security problem, do not file it here. Use the private route in the security policy.
+        - Logs can contain IP addresses, user hashes and file names. Trim or redact what you do not want public.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened
+      description: One or two sentences. What did you see?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The shortest sequence that triggers it, starting from a fresh start of rmule if you can.
+      placeholder: |
+        1. Start rmule
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+  - type: dropdown
+    id: frontend
+    attributes:
+      label: Front-end
+      options:
+        - rmule (terminal client)
+        - rmule-cli (headless client)
+        - A library crate or a developer tool
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The release you installed, or the commit you built (`git rev-parse --short HEAD`).
+      placeholder: "0.1.0, or a commit hash"
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and architecture
+      placeholder: "macOS 15 on Apple silicon, Debian 13 on x86-64, ..."
+    validations:
+      required: true
+  - type: dropdown
+    id: network
+    attributes:
+      label: Network involved
+      description: Which network was rmule talking to when this happened?
+      options:
+        - eD2k (servers, transfers)
+        - Kad
+        - Both
+        - Neither, or not sure
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, output or a screenshot
+      description: Paste terminal output or the relevant part of the Run Log. Trim or redact anything private.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: Settings you changed, whether you are behind a router or a firewall, whether it happens every time.
+    validations:
+      required: false
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched the existing issues and did not find this one.
+          required: true
+        - label: This is not a security vulnerability (those go through the private route in the security policy).
+          required: true

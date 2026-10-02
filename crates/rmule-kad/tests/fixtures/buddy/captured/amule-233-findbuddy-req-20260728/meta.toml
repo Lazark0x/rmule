@@ -1,0 +1,108 @@
+# Genuine stock aMule 2.3.3 **buddy recruitment** — the `0x51
+# KADEMLIA_FINDBUDDY_REQ` a firewalled Kad node sent rmule, and the peer-TCP
+# dial + `OP_HELLO` it followed that recruitment with. Captured on the
+# fake-public Kad bench (Config A) during interop flow M `kad-core-buddy`.
+# Every frame here is counterparty bytes off a
+# tcpdump on rmule's own network namespace; rmule's `0x5A` is kept beside them
+# as the stimulus that provoked the dial. Nothing is fabricated (ADR-0045).
+#
+# ## What this fixture is evidence FOR
+#
+# A buddy exchange has two legs on two surfaces, and only the first is Kad-UDP.
+# After the `0x5A`, `CClientList::RequestBuddy` (ClientList.cpp:876) queues the
+# answerer as `KS_QUEUED_BUDDY`, and `CClientList::Process` (:617) calls
+# `TryToConnect` on **the TCP port the `0x5A` body advertised** — then holds that
+# socket as `m_pBuddy`'s link for every later relay and ping. The prior stimulus
+# (flow K's `kad-join-node`) drives `rmule-kad-net` directly and binds nothing on
+# TCP, so that dial had nowhere to land and the entire held-buddy-link cluster
+# (`0x52`->`0x99`, `0x94`->`0x9A`, `0x9F`->`0xA0`) stayed uncapturable however
+# correct the code was.
+#
+# `buddy_link_hello_0x01.bin` is that second leg arriving. It is the frame that
+# proves the **Core-Pumped Stimulus Node** does what it exists to do: the Kad
+# node advertised the serve listener's own port (4663), and the counterparty
+# dialed exactly that port and spoke eD2k on it.
+
+[provenance]
+counterparty       = "aMule 2.3.3 (source pin 4e8f2b3c), stock interop image rmule/interop-amule:local"
+scenario           = "rmule-interop-harness kad-core-buddy --skip-build --window 780 --timeout 180 (flow M)"
+run                = "1785262206"
+date               = "2026-07-28"
+subnet             = "203.0.113.0/24 (RFC 5737 fake-public, Config A; docker --internal)"
+amule_endpoint     = "203.0.113.2 — Kad UDP 4674, eD2k TCP 4662 (iptables-DROPped)"
+rmule_endpoint     = "203.0.113.3 — Kad UDP 4679, serve listener TCP 4663"
+amule_kad_id       = "33333333333333333333333333333333"
+rmule_kad_id       = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC  # ~aMuleKadID: distance 0 from the FindBuddy target"
+
+# rmule's side was the Core-pumped runner, not the Kad-UDP-only join node.
+[rmule_run_state]
+runner            = "rmule-tools ed2k serve start --kad --kad-id-hex CC*16 --kad-udp-port 4679 --kad-bootstrap 203.0.113.2:4674 --kad-assume-open"
+serve_listener    = "0.0.0.0:4663 — the port `serve.rs::kad_enable_config` hands Kad as `tcp_port`, so the 0x5A advertises the listener that is actually bound"
+user_hash         = "42424242424242424242424242424242 (rmule-tools default identity)"
+assume_open       = "the ADR-0061 recruit gate reads both ADR-0058 self-check verdicts, and neither converges in a stimulus swarm (the TCP verdict wants 2 acks from distinct requesters; the UDP verdict wants 2 helpers over an OP_FWCHECKUDPREQ seam that is not live-wired). `--kad-assume-open` declares rmule's OWN posture so the gate can accept — stimulus configuration, never a counterparty byte."
+
+# Each precondition with the wire fact or source line that establishes it.
+[preconditions]
+amule_tcp_firewalled = "`AMULE_KAD_BLOCK_TCP=1` + `--cap-add NET_ADMIN`: the entrypoint logged `rmule-amule-kad-tcp-firewall-installed port=4662`. Corroborated on the wire — rmule's own ADR-0058 dial-back SYNed 203.0.113.2:4662 seven times from 20:11:13 to 20:11:20 with no answer, and rmule logged `kad firewall dial-back connect refused; silent (ADR-0058) error=connect timed out`. With fewer than 2 acks `CPrefs::GetFirewalled` reads firewalled."
+amule_udp_firewalled = "reached by TIMEOUT, no helper needed. `CUDPFirewallTester::IsFirewalledUDP` (UDPFirewallTester.cpp:60) flips `m_timedOut` once `!m_firewalledUDP && CKademlia::IsFirewalled() && GetTickCount() - m_testStart > MIN2MS(6) && !m_isFWVerifiedUDP`. `m_testStart` is stamped by `CUDPFirewallTester::Connected()`, called from the packet entry gate (KademliaUDPListener.cpp:224) on the FIRST inbound datagram — rmule's pong at t+2 s. Note the flip returns the old state once and reads firewalled from the NEXT call on."
+findbuddy_flag       = "`Kademlia.cpp:109` arms `m_nextFindBuddy = now + MIN2S(5)` at Kad start; `:205` sets the flag and re-arms +20 min. `Prefs.h:107` makes `GetFindBuddy()` consume-once, and `ClientList.cpp:693` only reads it inside the `IsFirewalled() && IsFirewalledUDP(true)` branch — so the flag armed at +5 min simply waited for the UDP verdict at +6 min. Observed: Kad start 20:08:xx, `0x51` at 20:16:18."
+no_recheck_collision = "`CKademlia::RecheckFirewalled` (:316) would call `SetFindBuddy(false)` and push the search >=5 min out, but `m_nextFirewallCheck` starts an HOUR ahead (:106), so the window was clean. `RequestBuddy`'s other abort — `IsKadFirewallCheckIP` (ClientList.cpp:889), a 180 s window opened by each `FirewalledCheck` — was also clear: aMule sent exactly ONE `0x53` in the run, at t+~90 s, long expired by 20:16:19."
+rmule_is_the_target  = "aMule's FindBuddy search targets `CUInt128(true) ^ GetKadID()` (ClientList.cpp:697) = ~0x33.. = 0xCC.., which is rmule's pinned ID exactly. `CSearch::StorePacket` only emits toward a contact inside `SEARCHTOLERANCE` (2^24); at distance 0 that is unconditional."
+rmule_advertises_tcp = "`serve.rs::kad_enable_config` sets `tcp_port: args.listen.port()`, so the `0x5A` body carries 4663 — the listener `RuntimeServeRuntimeService::start` actually bound. The dial landing on 4663 is the proof the two agree."
+
+# The capture target: aMule's own recruitment request.
+[frames.findbuddy_req_0x51]
+opcode    = "0x51 KADEMLIA_FINDBUDDY_REQ (proto 0xE4), plain — AMULE_KAD_CRYPT off, and the routing-zone seed is nodes.dat format version 1 so aMule holds no UDP key for rmule"
+direction = "aMule (203.0.113.2:4674) -> rmule (203.0.113.3:4679)"
+observed  = "20:16:18.303390, t+~490 s after the aMule's Kad start"
+wire      = "e4 51 cc cc cc cc cc cc cc cc cc cc cc cc cc cc cc cc d5 1d bc 63 b5 10 0e db 31 76 cf 4f f4 6f d6 f3 36 12"
+layout    = "36 bytes = proto+opcode + buddyID(16) + requester client hash(16) + requester TCP port(2 LE). Written by `CSearch::ProcessResponse` case FINDBUDDY (Search.cpp:763): WriteUInt128(m_target), WriteUInt128(GetClientHash()), WriteUInt16(thePrefs::GetPort())."
+buddy_id  = "cc*16 — the search target `~aMuleKadID`, NOT rmule's identity by coincidence: rmule is pinned to it. aMule re-checks the echo with `check ^= CUInt128(true); GetKadID() == check` (KademliaUDPListener.cpp:1474)."
+requester = "client hash d51dbc63b5100edb3176cf4ff46fd6f3; TCP port 0x1236 LE = 4662 — the port whose inbound is DROPped, which is exactly why it needs a buddy."
+count     = "aMule sent this twice, 51 s apart (20:16:18 and 20:17:09). The second is the search's next jumpstart pass; rmule refused it `SlotTaken`, which is aMule's own one-`m_pBuddy` semantics mirrored."
+
+# The counterparty's SECOND-leg bytes — the frames a Kad-UDP-only stimulus can
+# never draw, and the reason this capture exists.
+[frames.buddy_link_hello_0x01]
+opcode    = "OP_HELLO (0x01) under OP_EDONKEYPROT (0xE3), on the peer-TCP connection aMule opened to the serve listener"
+direction = "aMule (203.0.113.2:46004) -> rmule (203.0.113.3:4663)"
+observed  = "20:16:20.125062 — 1.8 s after the 0x5A, on the socket aMule dialed at 20:16:19.346947"
+wire      = "e3 6c 00 00 00 01 10 63 bc 1d d5 db 0e 10 b5 4f cf 76 31 f3 d6 6f f4 01 00 00 00 36 12 07 00 00 00 02 01 00 01 14 00 68 74 74 70 3a 2f 2f 77 77 77 2e 61 4d 75 6c 65 2e 6f 72 67 03 01 00 11 3c 00 00 00 03 01 00 f9 42 12 42 12 03 01 00 fb 80 0d 04 03 03 01 00 fa 16 32 13 34 03 01 00 fe 38 04 00 00 03 01 00 ef 01 00 00 00 00 00 00 00 00 00"
+layout    = "113 bytes = proto + size(0x6C LE) + opcode + hashsize(0x10) + user hash(16) + client id(4) + TCP port(2 LE) + tagcount(7 LE32) + tags"
+user_hash = "63bc1dd5db0e10b54fcf7631f3d66ff4 — the eD2k user hash, WORD-SWAPPED against the `0x51`'s client hash d51dbc63 b5100edb 3176cf4f f46fd6f3, the documented Kad-ID/eD2k-hash relation. It is also the identity the held-buddy-link accept path matches to attach the held buddy link."
+tcp_port  = "0x1236 LE = 4662"
+# Tag ids corrected against `src/include/tags/ClientTags.h:45-50` while reading
+# the byte-identical hello in the flow-N capture: the first pass
+# swapped 0xFA/0xFB, which made MiscOptions2 read 0x34133216 and its bit 12 look
+# set. It is not — 0xFE carries 0x00000438, whose bit 12 is clear.
+tags      = "0x01 CT_NAME string \"http://www.aMule.org\"; 0x11 CT_VERSION 0x3C=60; 0xF9 CT_EMULE_UDPPORTS 0x12421242 (Kad 4674 / client 4674); 0xFA CT_EMULE_MISCOPTIONS1 0x34133216; 0xFB CT_EMULE_VERSION 0x03040D80; 0xFE CT_EMULE_MISCOPTIONS2 0x00000438; 0xEF CT_EMULECOMPAT_OPTIONS 0x00000001"
+
+# rmule's own answer, kept for context only — stimulus, never evidence.
+[frames.findbuddy_res_0x5a]
+opcode    = "0x5A KADEMLIA_FINDBUDDY_RES (proto 0xE4)"
+direction = "rmule (203.0.113.3:4679) -> aMule (203.0.113.2:4674)"
+observed  = "20:16:18.305989 — 2.6 ms after the request"
+wire      = "e4 5a cc cc cc cc cc cc cc cc cc cc cc cc cc cc cc cc 42 42 42 42 42 42 42 42 42 42 42 42 42 42 42 42 37 12"
+layout    = "buddyID echoed verbatim + our user hash(16) + OUR TCP port(2 LE) = 0x1237 = 4663, the serve listener. aMule's own responder appends a connect-options byte when a sender key is present (KademliaUDPListener.cpp:1454); rmule's pump sends the plain 34+2 form, which aMule tolerates (`if (lenPacket > 34)`)."
+
+# The exchange as the tap recorded it.
+[exchange]
+t_minus  = "20:11:13-20:11:20  rmule -> aMule:4662  TCP SYN x7, unanswered — rmule's ADR-0058 dial-back into the DROPped port; the firewall proving itself"
+seq_1    = "20:16:18.303  aMule -> rmule  0x51 KADEMLIA_FINDBUDDY_REQ   (THIS FIXTURE)"
+seq_2    = "20:16:18.305  rmule -> aMule  0x5A KADEMLIA_FINDBUDDY_RES   — rmule logged `kad buddy service: accepted recruit, answering 0x5A (ADR-0061)`"
+seq_3    = "20:16:19.346  aMule -> rmule:4663  TCP SYN, handshake completed — RequestBuddy -> KS_QUEUED_BUDDY -> TryToConnect"
+seq_4    = "20:16:19.352  rmule -> aMule  FIN (see the finding below)"
+seq_5    = "20:16:20.125  aMule -> rmule  OP_HELLO on that link         (THIS FIXTURE)"
+seq_6    = "20:16:20.125  rmule -> aMule  RST"
+seq_7    = "20:17:09.388  aMule -> rmule  0x51 again — refused `SlotTaken`"
+
+# The half this run did NOT reach, recorded rather than forced.
+[finding.held_link_did_not_attach]
+what  = "aMule's dial was accepted and then refused 5 ms later, before its OP_HELLO could identify it — so the held-buddy slot never attached the link, aMule never reached KS_CONNECTED_BUDDY, and no OP_BUDDYPING (0x9F) was ever sent. rmule logged `refusing an accepted connection from a banned IP peer=203.0.113.2:46004`."
+why   = "rmule had banned the IP for a Kad packet flood — 9 `flood offender banned at the peer-TCP surface` log entries for opcode=96 between 20:14:12 and 20:16:12, opcode 96 = 0x60 KADEMLIA2_PING. The flood was genuine and the ban was earned by aMule's own cadence: `CKademlia::Process` (Kademlia.cpp:209) pings a random contact every 15 s while `IsFWCheckUDPRunning() && FindExternKadPort(false)`, and `CPrefs::SetExternKadPort` (Prefs.cpp:279) records the REPORTING IP and returns early for one it already heard from, while `FindExternKadPort` needs EXTERNAL_PORT_ASKIPS = 3 DISTINCT reporters. A two-node swarm can never grow that count past one, so the probe never terminates: 4/min against the 2/min KADEMLIA2_PING budget, past the 5x ban threshold."
+parity = "neither half is an rmule divergence. rmule's per-opcode rate table matches aMule's `PacketTracking.cpp` L162-183 exactly (KADEMLIA2_PING 2/min, ban above 5x), and the ban's REACH matches too — aMule's `CClientTCPSocket::OnHostnameResolved` (ClientTCPSocket.cpp:186) refuses an inbound connection from a Kad-flood-banned IP just as rmule's accept path does. Two aMules in this topology would ban each other identically."
+fix    = "topological, landed as flow M's `--helpers N` (default 2): two open stock aMule nodes give the firewalled node three distinct reporters, which both ends the probe and spreads `GetRandomContact`'s pick so each contact sees ~1.3/min. See the sibling run's verdict for the outcome."
+
+[finding.relay_rows_undriven]
+what = "`0x52`->`0x99` and `0x94`->`0x9A` are 0 in this run, as they are in every flow-M run of this shape."
+why  = "both relays need a THIRD party — a peer that wants to reach the firewalled node and asks its buddy to pass the callback along. A two-node (or node+helpers) topology drives no such request. This is a documented absence of a stimulus, not a silence from rmule."

@@ -1,0 +1,21 @@
+┌ Search ───────────────────────────────────── / focus  ←→ method  o options ┐
+│❯ ubuntu                                                                    │
+│Method: eD2k server ▾  Kad ▾ (always on — every search also walks Kad)      │
+│Filters: none   o edit                                                      │
+└────────────────────────────────────────────────────────────────────────────┘
+[ubuntu · 3]
+┌ Results · Completed · 3 ─────────── [ ] search  x close  s sort  S reverse ┐
+│  Name ▲                                        Size      Sources Type      │
+│▸ clip_low.avi┌ Result actions ──────────────────────────────┐  5 Videos    │
+│  distro_hot.i│▸ Download                                    │00) CD-Images │
+│  song_mid.mp3│  Copy eD2k link                              │(7) Audio     │
+│              │  Search related (not connected)              │              │
+│              └──────────────────────────────────────────────┘              │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘

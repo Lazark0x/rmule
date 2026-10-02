@@ -1,0 +1,16 @@
+name = "server_list"
+provenance = "handwritten"
+source_note = "Synthetic OP_SERVERLIST (0x32) frame per docs/reference/notes/ed2k-welcome-packets.md OP_SERVERLIST section. Payload = u8 count (2) + 2 x Ipv4Endpoint (127.0.0.1:4661, 192.168.0.1:4242). Cited: aMule src/ServerSocket.cpp:442-472, TCP.h:47, eMule spec section 6.2.7."
+accepted = true
+
+[expected]
+protocol = "edonkey"
+opcode = 50
+
+[[expected.servers]]
+ip = "127.0.0.1"
+port = 4661
+
+[[expected.servers]]
+ip = "192.168.0.1"
+port = 4242

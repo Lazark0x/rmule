@@ -1,0 +1,19 @@
+# Genuine Lugdunum eserver 17.15 server-UDP replies, captured by the new
+# `rmule-tools ed2k server udp-capture` driver against the live interop eserver
+# (image rmule/interop-eserver:local) over the fake docker network. Only the
+# server's own reply bytes are evidence (ADR-0045); nothing is fabricated.
+
+[provenance]
+counterparty = "Lugdunum eserver 17.15 (interop image rmule/interop-eserver:local)"
+tool         = "rmule-tools ed2k server udp-capture"
+date         = "2026-07-26"
+
+[frames.status_res_0x97]
+opcode = "0x97 OP_GLOBSERVSTATRES (server-UDP status reply, control leg)"
+note   = "The 0x96 challenge echo + progressive status fields — the ADR-0052 status control alongside the desc golden."
+
+[frames.desc_res_0xA3]
+opcode = "0xA3 OP_SERVER_DESC_RES — the tagged form (eserver 16.45+)"
+bytes  = "e3 a3 ff f0 a3 ca 03 00 00 00 02 01 00 01 0d 00 <rmule-interop> 02 01 00 0b 0d 00 <eserver 17.15> 03 01 00 91 0f 00 11 00"
+layout = "proto 0xE3 | op 0xA3 | challenge u32 LE (0xCAA3F0FF, low word = INV_SERV_DESC_LEN 0xF0FF → tagged form) | tagcount u32=3 | ST_SERVERNAME(0x01)='rmule-interop' | ST_DESCRIPTION(0x0B)='eserver 17.15' | ST_VERSION(0x91)=int"
+note   = "The graceful `0xA3` desc reply (ADR-0068): challenge-echo-gated, string tags land as ServerCapabilities display fields. The server name/description are the harness eserver's own config, but the WIRE STRUCTURE (tagged form + challenge echo + ST_* tag ids) is the counterparty's — that is the golden. Decoded by ServerDescRes::decode_udp (test `captured_server_udp.rs`)."

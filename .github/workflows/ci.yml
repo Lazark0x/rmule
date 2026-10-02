@@ -1,0 +1,147 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Read-only token for every job; none of them writes to the repository.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+# A newer push to a pull request supersedes the run still going. A push to main
+# has a group of its own per commit, so no merged commit loses its result.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Every action is pinned to a commit; the comment names the release it is.
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      # Reads the channel and components from rust-toolchain.toml.
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          cache: false
+      - run: cargo fmt --check
+
+  # The platform-specific branches (APFS and FSEvents on macOS, the Windows
+  # file and socket code) compile on their own runner only, so lint and test
+  # run on all three. A private copy of the repository pays for macOS and
+  # Windows minutes, so there only the Linux leg runs; the public repository
+  # runs the full matrix.
+  clippy:
+    name: clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ github.event.repository.private && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ github.event.repository.private && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # Slow and live-network tests are env-gated off by default.
+      - run: cargo test --workspace --no-fail-fast
+
+  doc:
+    name: doc
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # A broken intra-doc link is a broken doc.
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo doc --workspace --no-deps --document-private-items
+
+  # Shell script: it runs where a POSIX shell does, and macOS has the BSD
+  # versions of the tools it calls.
+  guards:
+    name: guards (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ github.event.repository.private && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-latest"]') }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      # No toolchain needed.
+      - run: bash scripts/guards.sh
+
+  # Licence, advisory, ban and source policy from deny.toml, for the root
+  # workspace and for tools/ed2ksrv-differ, which is a workspace of its own and
+  # has its own Cargo.lock. Both read the same deny.toml. The action bundles
+  # cargo-deny, so no toolchain is needed.
+  deny:
+    name: deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        if: ${{ !cancelled() }}
+        with:
+          manifest-path: ./tools/ed2ksrv-differ/Cargo.toml
+
+  # Outside the workspace on purpose (its oracle dependency drags ~180 crates),
+  # so no other job compiles it.
+  ed2ksrv-differ:
+    name: ed2ksrv-differ
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          cache: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: tools/ed2ksrv-differ
+      - run: cargo check --manifest-path tools/ed2ksrv-differ/Cargo.toml --all-targets

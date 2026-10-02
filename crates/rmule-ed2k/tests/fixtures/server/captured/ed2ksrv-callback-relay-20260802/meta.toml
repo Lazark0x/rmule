@@ -1,0 +1,133 @@
+# The server-relayed **LowID callback**: a genuine `OP_CALLBACKREQUESTED 0x35`
+# delivered by the third-party eD2k index server `andrey23127/ed2k-server`
+# (pin `eacf7f1`) **to the LowID target**, drawn by a High-ID rmule session's
+# `OP_CALLBACKREQUEST 0x1C` (ed2ksrv capture, 2026-08-02).
+#
+# ADR-0045's 2026-08-02 amendment governs: an independent third-party server
+# pinned at an upstream commit is an admissible counterparty, its fixtures take
+# the `ed2ksrv-*` prefix and name the pin, and the Lugdunum/aMule-observed form
+# stays the parity reference — divergences go in `[divergence]` below rather
+# than overwriting the row.
+#
+# ## What this fixture is evidence FOR
+#
+# server-tcp row `OP_CALLBACKREQUEST 0x1C` (E, `full`), counted
+# **ADR-0045-EXEMPT** as LIMIT-EXEMPT: correctness was proven in-process
+# (`callback_loopback`) and the live server-relay leg was written off because
+# **Lugdunum never surfaces a LowID source**, so nothing could ever be called
+# back. That is a *counterparty-defect* exemption whose counterparty was
+# Lugdunum alone. This server relays the callback end to end
+# (`connection.rs:460-471` → `callback.rs:27-69` → the target's push channel),
+# and the frame below is the relay arriving at the target.
+#
+# It is equally the missing leg of the `LowID / HighID handling` row
+# (`server-tcp.md:29`, B, `full`), which the capture ceiling placed in **bucket
+# (c)(iii)** — "structurally uncapturable" — while explicitly pre-authorising
+# this re-litigation ("one untested variant … is recorded here so a future
+# effort can probe it before treating the wall as final"). Both ID *assignments*
+# are pinned here as counterparty bytes too: `target_id_change_0x40.bin`
+# (LowID 2) and `requester_id_change_0x40.bin` (High-ID = the requester's own
+# IP), from the same sitting as the relay they gate.
+#
+# ## The direction is the whole point
+#
+# A `0x35` arriving at the **requester** would be wrong. The relay goes to the
+# **target**: `callback.rs` pushes the requester's endpoint down the *target's*
+# already-open session, and the requester is told nothing at all. So the
+# requester's own capture is silent — `report_callback_reply` printed
+# `callback_reply: none (no OP_CALLBACK_FAIL 0x36 in the capture)`, which for a
+# *successful* relay is the expected shape, not a miss. The bytes below were
+# therefore lifted from the **LowID target's** `s2c.bin`.
+#
+# ## Why the requester had to be High-ID, and how it got there
+#
+# `callback.rs:34-40` drops a LowID requester's `0x1C` in silence — no relay and
+# no `0x36` — so a bench that cannot earn High-ID cannot tell "relayed" from
+# "refused". The server's High-ID test is a bare `TcpStream::connect` to
+# `(peer_ip, advertised tcp_port)` that connects and immediately drops
+# (`highid_probe.rs:38-53`; the audit records that its "sends OP_HELLO" doc
+# comment is wrong — code wins), so *any* accepting socket at that address
+# passes. Both ID classes were staged off that one knob, with no patch to
+# either side and no injected state:
+#
+#   * **LowID target** — reached the server through its published TCP port, so
+#     the server saw the bridge gateway `203.0.113.1` as the peer. Nothing
+#     listens there on the advertised `--tcp-port 4665`, the probe was refused,
+#     and the monotonic LowID counter assigned it **`client_id = 2`**.
+#   * **High-ID requester** — reached the server through a socat relay whose own
+#     in-network address is `203.0.113.30`, and advertised `--tcp-port 4662`,
+#     where a second socat in that same container accepts and drops. The probe
+#     succeeded and the server assigned **`client_id = 510722251`** = `0x1E7100CB`
+#     = its own address `203.0.113.30`.
+
+[provenance]
+counterparty  = "andrey23127/ed2k-server @ eacf7f1eb7ea40f71ae869aef6a10801e7e262b8, unmodified upstream source, image rmule/interop-ed2ksrv:local (recipe tools/interop-harness/images/ed2ksrv/Dockerfile, bench config tools/interop-harness/images/ed2ksrv/config.toml)"
+date          = "2026-08-02"
+emitter       = "rmule's `0x1C` is the session command `Ed2kCommand::RequestCallback` (`crates/rmule-ed2k/src/session.rs:238`) — the same command the production download path raises as `Decision::RequestCallback { low_id }` (`crates/rmule-core/src/download/state.rs`) once a `0x42` surfaces a LowID source. `ed2k server welcome live --callback-low-id` fires that one command directly, so the emitted frame is the production frame; only the trigger is driven by hand."
+stimulus_only = "the `0x1C` and both login requests are rmule's own bytes and are never evidence (ADR-0045 point 2). The counterparty artefacts are the two `0x40` IDCHANGEs and the `0x35`."
+
+[topology]
+network       = "docker bridge `rmule-ed2ksrv-c2`, `--subnet 203.0.113.0/24` — fake-public RFC 5737 documentation range per the harness address plan (`tools/interop-harness/src/fake_public.rs`). Never RFC1918/RFC2544 on the wire the server reads."
+server        = "203.0.113.20:4661 (container `ed2ksrv-c2`), `server.this_ip = 203.0.113.20`, `seed_servers = []` (no egress at all), `log.level = debug`"
+relay         = "203.0.113.30 (container `ed2ksrv-c2-relay`, nicolaka/netshoot): `socat TCP-LISTEN:14761,fork,reuseaddr TCP:203.0.113.20:4661` is the High-ID client's entry hop, and `socat TCP-LISTEN:4662,fork,reuseaddr OPEN:/dev/null` is the accepting socket the server's back-connect probe finds. A transparent TCP pipe that alters no frame; its only role is to give the client a routable in-network source address."
+lowid_target  = "host rmule-tools -> 127.0.0.1:14661 (the server's published TCP port), advertising `--tcp-port 4665`. Server-observed peer `203.0.113.1` (the bridge gateway — routable, so it IS probed), probe refused, LowID."
+highid_req    = "host rmule-tools -> 127.0.0.1:14761 (the relay), advertising `--tcp-port 4662`. Server-observed peer `203.0.113.30`, probe accepted, High-ID."
+why_no_udp    = "this row is TCP-only, so the host binary sufficed. Server-UDP rows in the same wave needed `tools/interop-harness/images/rmule-tools/Dockerfile` instead — colima forwards published ports over SSH, which carries no UDP."
+
+[commands]
+setup_network = "docker network create --subnet 203.0.113.0/24 rmule-ed2ksrv-c2"
+setup_server  = "docker run -d --name ed2ksrv-c2 --network rmule-ed2ksrv-c2 --ip 203.0.113.20 -v <repo>/tools/interop-harness/images/ed2ksrv/config.toml:/etc/ed2k-server/config.toml:ro -p 127.0.0.1:14661:4661 rmule/interop-ed2ksrv:local"
+setup_relay   = "docker run -d --name ed2ksrv-c2-relay --network rmule-ed2ksrv-c2 --ip 203.0.113.30 -p 127.0.0.1:14761:14761 --entrypoint sh nicolaka/netshoot -c \"socat TCP-LISTEN:14761,fork,reuseaddr TCP:203.0.113.20:4661 & socat TCP-LISTEN:4662,fork,reuseaddr OPEN:/dev/null & socat TCP-LISTEN:4663,fork,reuseaddr OPEN:/dev/null & wait\""
+step_1_target = "rmule-tools ed2k server welcome live 127.0.0.1:14661 --out <run>/lowid-target --max-seconds 75 --tcp-port 4665 --user-hash AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA --nickname rmule-lowid-target   # prints `login_accepted client_id=2`; leave running"
+step_2_req    = "rmule-tools ed2k server welcome live 127.0.0.1:14761 --out <run>/highid-req --max-seconds 20 --tcp-port 4662 --user-hash BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB --nickname rmule-highid-req --callback-low-id 2"
+step_3_slice  = "rmule-tools ed2k server welcome slice <run>/lowid-target   # 05_peer_callback.bin is the 0x35"
+
+[observed]
+target_client_id    = 2
+requester_client_id = 510722251
+id_counter          = "the LowID counter is monotonic from 1 and does NOT reuse: an earlier throwaway session in the same server process took `client_id = 1`, disconnected, and the target still got `2`. A bogus id for the `0x36` row must therefore be chosen well above the registrant count, not merely 'freed'."
+server_log          = "callback forwarded requester_ip=203.0.113.30 target_id=2 target_ip=203.0.113.1 (preceded by `frame in ip=203.0.113.30 opcode=\"0x1c\" op_name=\"CALLBACKREQUEST\" len=4`)"
+target_event        = "rmule's own projection of the received frame: `s2c peer_callback_requested peer=203.0.113.30:4662 crypt=false`"
+requester_event     = "none — `callback_reply: none (no OP_CALLBACK_FAIL 0x36 in the capture)`, the success shape"
+
+# rmule's request — kept so the exchange is readable, never evidence.
+[frames.callback_request_0x1c]
+class     = "rmule stimulus — never evidence"
+opcode    = "0x1C OP_CALLBACKREQUEST (proto 0xE3), 4-byte payload"
+direction = "rmule(High-ID requester) -> ed2ksrv"
+wire      = "e3 05 00 00 00 1c 02 00 00 00"
+layout    = "client_id u32 LE = 2 — the target's assigned LowID"
+
+# The capture target.
+[frames.peer_callback_0x35]
+class     = "counterparty evidence — THE row"
+opcode    = "0x35 OP_CALLBACKREQUESTED (proto 0xE3), 12-byte packet / 6-byte payload"
+direction = "ed2ksrv -> rmule(LowID target)"
+wire      = "e3 07 00 00 00 35 cb 00 71 1e 36 12"
+layout    = "ip4 = cb 00 71 1e = 203.0.113.30 (network order), port2 = 36 12 = 4662 LE"
+content   = "the requester's endpoint — its server-observed source IP and the tcp_port its login ADVERTISED (4662), not the ephemeral port the TCP session came from. That is what makes the frame actionable: it is a dial-back address."
+observed  = "arrived on the target's already-open session, after the welcome burst, ~0.1 ms after the server logged the forward"
+
+# Counterparty bytes for the LowID/HighID handling row that rides this one.
+[frames.target_id_change_0x40]
+class     = "counterparty evidence — the LowID assignment this relay was addressed to"
+opcode    = "0x40 OP_IDCHANGE (proto 0xE3), 26-byte packet"
+direction = "ed2ksrv -> rmule(LowID target)"
+wire      = "e3 15 00 00 00 40 02 00 00 00 dd 05 00 00 35 12 00 00 cb 00 71 14 35 12 00 00"
+layout    = "client_id u32 LE = 2 (LowID: below 0x00FFFFFF), SRV_TCPFLG = 0x000005DD, then the server's own advertised port/ip/port trailer (4661 / 203.0.113.20 / 4661)"
+
+[frames.requester_id_change_0x40]
+class     = "counterparty evidence — the High-ID precondition, on the wire"
+opcode    = "0x40 OP_IDCHANGE (proto 0xE3), 26-byte packet"
+direction = "ed2ksrv -> rmule(High-ID requester)"
+wire      = "e3 15 00 00 00 40 cb 00 71 1e dd 05 00 00 35 12 00 00 cb 00 71 14 35 12 00 00"
+layout    = "client_id = cb 00 71 1e = 510722251 = the requester's own address 203.0.113.30 — the definition of a High ID, and exactly the endpoint the 0x35 above carries"
+
+[divergence]
+# Recorded, not asserted on — the Lugdunum/aMule-observed form stays the reference.
+bare_relay_only = "this server emits ONLY the bare 6-byte `0x35` (`callback.rs:71-89`). The aMule form has a >=23-byte crypt extension (`crypt_options` + `user_hash`, `ServerSocket.cpp#L576`) which `server-tcp.md:48` records as 'tolerated but discarded'. Per `ed2ksrv-row-reopen.md` §7 this capture is evidence-only for that extension row and does NOT move it: the extension is still emitted by no server in the bench."
+tcp_flags       = "SRV_TCPFLG here is the hardcoded 0x05DD (`login.rs`); Lugdunum advertises 0x17F9. Recorded, never asserted on."
+udp_divergence  = "the server's UDP `0x9B` source path advertises a LowID source by its REAL IP (`udp.rs:619-622`), contradicting the TCP `0x42` behaviour that re-encodes it as the assigned low id (audit §4.4). This fixture is the TCP leg only; a `0x9B` carrying a real IP must not be read as LowID-source surfacing."
+
+[not_captured]
+found_sources_0x42 = "`ed2ksrv-row-reopen.md` §3 names a second counterparty artefact — a `0x42 OP_FOUNDSOURCES` whose id field holds the source's assigned low id (`get_sources.rs:114-117`) — as what makes rmule's *production* path emit the `0x1C` unattended. It is NOT in this fixture. No rmule-tools command both issues a live `OP_GETSOURCES` and writes a capture directory: `download start --serve` walks the production route but has no `--out`, and `welcome live --out` captures but cannot ask for sources. The relay leg above is complete and self-standing evidence for the `0x1C`/`0x35` row (ADR-0045 point 2 defines an emit row's evidence as the counterparty's reaction, which is the `0x35`); the `0x42` remains a documented, cheap follow-up — it needs a capture flag on the download path, not a new counterparty."

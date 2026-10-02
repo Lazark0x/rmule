@@ -1,0 +1,93 @@
+name = "private-amule-kad-node-messages-20260707"
+status = "active"
+provenance = "captured"
+reason = """
+Genuine aMule 2.3.3 Kad2 node-maintenance datagrams (bootstrap, hello, ping/pong)
+proving the responder-role message layouts for the sans-I/O KadNode
+(ADR-0043). Every datagram here was emitted by a real aMule/amuled process talking
+to another aMule node inside a private, air-gapped docker mesh (172.30.0.0/24, no
+public bootstrap, no external peers). Extracted from the retained gitignored pcaps
+of two prior capture sessions; no new mesh run was needed — these opcodes ride
+along in any Kad mesh as routine node maintenance.
+
+Some node IDENTITIES in these runs were harness-seeded (a routing-zone nodes.dat
+authors a node's Kad ID and its stored contacts, e.g. the repeated-byte IDs
+a1..b0, c1..d0, aa x16, and the storer ID b52d...10f2). Seeding an identity does
+not author a packet: aMule itself parses, stores, and re-serializes contacts and
+emits its own hello/bootstrap/pong bytes, so the LAYOUTS these fixtures prove are
+genuine aMule serialization throughout.
+"""
+
+[provenance_disclosure]
+runs = """
+June datagrams: .scratch/interop-runs/1781859190, 1781859666, 1781861460
+(2026-06-19 controlled-identity source-lookup session; unpatched aMule image,
+disable-lan-kad-filter.patch only). July datagrams: .scratch/interop-runs/
+1783384172 (2026-07-07 routing-distance session; image additionally carries
+relax-kad-routing-return-filter.patch, which touches only the 0x21->0x29
+return filter — none of the opcodes captured here).
+"""
+extraction = "UDP payloads copied verbatim from the retained pcaps; each .bin is one full inner Kad datagram starting at the 0xE4 protocol byte."
+no_public_kad = "true — private docker network 172.30.0.0/24 only"
+
+[[datagram]]
+file = "bootstrap_req_0x01.bin"
+opcode = "0x01 KADEMLIA2_BOOTSTRAP_REQ"
+flow = "172.30.0.3:4673 -> 172.30.0.4:4674 (run 1781859666)"
+layout = "empty payload"
+
+[[datagram]]
+file = "bootstrap_res_0x09.bin"
+opcode = "0x09 KADEMLIA2_BOOTSTRAP_RES"
+flow = "172.30.0.4:4674 -> 172.30.0.3:4673 (run 1781861460)"
+layout = "sender_id(16) tcp_port(2 LE)=4662 version(1)=8 count(2 LE)=2 then 2 x 25-byte contact rows [id(16) ip(4, low-octet-first) udp(2 LE) tcp(2 LE) version(1)]"
+contacts = [
+    "a1a2a3a4a5a6a7a8a9aaabacadaeafb0 @ 172.30.0.2 udp 4672 tcp 4662 v8",
+    "c1c2c3c4c5c6c7c8c9cacbcccdcecfd0 @ 172.30.0.3 udp 4673 tcp 4662 v8",
+]
+
+[[datagram]]
+file = "bootstrap_res_empty_0x09.bin"
+opcode = "0x09 KADEMLIA2_BOOTSTRAP_RES"
+flow = "172.30.0.2:4672 -> 172.30.0.3:4673 (run 1781859666)"
+layout = "same header, count(2 LE)=0, no rows"
+
+[[datagram]]
+file = "hello_req_0x11.bin"
+opcode = "0x11 KADEMLIA2_HELLO_REQ"
+flow = "172.30.0.3:4673 -> 172.30.0.2:4672 (run 1781859666)"
+layout = "sender_id(16) tcp_port(2 LE)=4662 version(1)=8 tag_count(1)=2 then eD2k tags: [0x08 u16 name 0xFC value 4673 (sender UDP port)] [0x09 u8 name 0xF2 value 0x02 (misc options)]"
+
+[[datagram]]
+file = "hello_res_0x19.bin"
+opcode = "0x19 KADEMLIA2_HELLO_RES"
+flow = "172.30.0.4:4674 -> 172.30.0.3:4673 (run 1781859190)"
+layout = "responder_id(16) tcp_port(2 LE)=4662 version(1)=8 tag_count(1)=2 then tags [0xFC u16 4674] [0xF2 u8 0x04]"
+
+[[datagram]]
+file = "hello_res_min_0x19.bin"
+opcode = "0x19 KADEMLIA2_HELLO_RES"
+flow = "172.30.0.4:4674 -> 172.30.0.5:4675 (run 1783384172)"
+layout = "responder_id(16)=aa x16 tcp_port(2 LE)=4662 version(1)=8 tag_count(1)=1 then tag [0xF2 u8 0x06] — no UDP-port tag; receiver falls back to the datagram source port"
+
+[[datagram]]
+file = "ping_0x60.bin"
+opcode = "0x60 KADEMLIA2_PING"
+flow = "172.30.0.4:4674 -> 172.30.0.5:4675 (run 1783384172)"
+layout = "empty payload"
+
+[[datagram]]
+file = "pong_0x61.bin"
+opcode = "0x61 KADEMLIA2_PONG"
+flow = "172.30.0.5:4675 -> 172.30.0.4:4674 (run 1783384172)"
+layout = "udp_port(2 LE)=4674 — the responder echoes the UDP source port it OBSERVED the ping arrive from (external-port discovery)"
+
+[evidence]
+proves = [
+    "KADEMLIA2_BOOTSTRAP_REQ is an empty-payload datagram",
+    "KADEMLIA2_BOOTSTRAP_RES layout: sender id + tcp + version + u16 count + 25-byte contact rows",
+    "KADEMLIA2_HELLO_REQ/RES layout: id + tcp + version + eD2k tag list (0xFC UDP-port u16, 0xF2 misc-options u8 observed)",
+    "KADEMLIA2_PING empty; KADEMLIA2_PONG carries observed sender UDP port u16 LE",
+    "contact-row IP serialization low-octet-first (matches the 0x29 rows in private-amule-kad-distance-20260707)",
+    "aMule 2.3.3 emits Kad version byte 8 for itself and its stored contacts",
+]

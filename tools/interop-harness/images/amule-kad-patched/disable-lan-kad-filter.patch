@@ -1,0 +1,30 @@
+Description: Allow LAN peers in Kad so a fully private aMule Kad mesh can route.
+ aMule's IsGoodIPPort() hardcodes IsGoodIP(ip, true), which rejects every
+ RFC1918 / LAN address for Kad regardless of the FilterLanIPs preference. That
+ makes a private, air-gapped Kad mesh impossible: nodes never add each other to
+ their routing tables. Passing filterLAN=false lets LAN peers be added.
+ .
+ IsLanIP() itself is deliberately left intact: aMule's LAN mode
+ (CKademlia::IsRunningInLANMode + CRoutingZone::HasOnlyLANNodes) relies on it to
+ detect an all-LAN routing table and switch to the non-firewalled "home LAN"
+ behaviour, which is exactly what an isolated interop mesh needs. Patching
+ IsLanIP instead would defeat LAN mode and leave every node firewalled.
+ .
+ This relaxes a deployment guard only; no Kad protocol/wire logic is changed, so
+ captured datagrams remain genuine aMule output. For private interop evidence
+ capture exclusively.
+Author: rmule interop harness
+Forwarded: not-needed
+--- a/src/NetworkFunctions.h
++++ b/src/NetworkFunctions.h
+@@ -116,7 +116,9 @@ bool IsGoodIP( uint32 IP, bool filterLAN ) throw();
+
+ inline bool IsGoodIPPort(uint32 nIP, uint16 nPort) throw()
+ {
+-	return IsGoodIP(nIP, true) && nPort!=0;
++	// rmule interop patch: allow LAN peers so a private aMule Kad mesh can route
++	// and enter LAN mode (IsLanIP stays intact for LAN-mode detection).
++	return IsGoodIP(nIP, false) && nPort!=0;
+ }
+
+ #define HIGHEST_LOWID_ED2K_KAD		16777216

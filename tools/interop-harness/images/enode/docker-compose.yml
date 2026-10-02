@@ -1,0 +1,35 @@
+# eNode feasibility-spike standup: an independent Node.js eD2k
+# server + its required MySQL backend, on a Config-A fake-public /24 (so a
+# listener-bound rmule can earn HighID). See README.md. Both images are amd64 (emulated on arm64).
+services:
+  enode-mysql:
+    image: mysql:5.7
+    platform: linux/amd64
+    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: enode
+      MYSQL_USER: enode
+      MYSQL_PASSWORD: password
+    networks:
+      enode-spike-net:
+        ipv4_address: 203.0.113.5
+
+  enode:
+    build: .
+    platform: linux/amd64
+    environment:
+      ENODE_MYSQL_HOST: 203.0.113.5
+      # ENODE_REQUIRE_CRYPT: "true"   # flip for a crypt-required posture
+    depends_on:
+      - enode-mysql
+    networks:
+      enode-spike-net:
+        ipv4_address: 203.0.113.10
+
+networks:
+  enode-spike-net:
+    name: enode-spike-net
+    ipam:
+      config:
+        - subnet: 203.0.113.0/24

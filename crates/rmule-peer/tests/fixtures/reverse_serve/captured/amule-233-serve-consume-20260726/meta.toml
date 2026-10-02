@@ -1,0 +1,47 @@
+# Reverse-harness serve-consume capture — genuine stock aMule 2.3.3 wire bytes
+# observed by rmule's *serve* side while a live aMule downloaded a 64 KiB file
+# from rmule (interop flow C `rmule-serves-amule-downloads`). aMule release
+# builds emit no debug logs, so these are rmule's read-side frame-hex trace of
+# the counterparty (RMULE_SERVE_LOG=trace, rmule-peer-net driver "peer driver
+# read"). Only counterparty bytes / observable reactions are evidence
+# (ADR-0045); nothing here is fabricated.
+
+[provenance]
+counterparty       = "aMule 2.3.3 (source pin 4e8f2b3c), stock interop image rmule/interop-amule:local"
+server             = "Lugdunum 17.15 (rmule/interop-eserver:local)"
+scenario           = "rmule-serves-amule-downloads (flow C)"
+run                = "1785029762"
+date               = "2026-07-26"
+file_hash          = "8E302DB5B806A25C9385FC23F21062D2"   # synthetic 64 KiB shared.bin
+amule_user_hash    = "ACDF0726DD0E8434EBFB655158516FAA"
+gap_unblocked_by   = "the OP_AICHFILEHASHANS file_hash prefix fix — made flow C green"
+
+# aMule's inbound frames, in wire order over the one peer-TCP connection.
+[frames.request_multipacket_ext_0xa4]
+opcode  = "0xA4 OP_EMULEMULTIPACKET_EXT (proto 0xC5)"
+walk    = "file_size=65536; items = [Name(0x58), Sources2{version:4, options:0}(0x83), AichRoot(0x9E)]"
+note    = "aMule picks the EXT (0xA4) form toward an ext peer — base 0x92 is never sent (ADR-0054, documented). The Sources2 v4 item is also the inbound SX ask (see below)."
+
+[frames.request_parts_0x47]
+opcode  = "0x47 OP_REQUESTPARTS (proto 0xE3)"
+ranges  = "[(0, 65536), (0, 0), (0, 0)]  # 3-slot u32 request, one live range"
+note    = "aMule proceeds into upload-start after the 0x93 answer — the reaction proving the multipacket answer was accepted."
+
+[frames.cancel_transfer_0x56]
+opcode  = "0x56 OP_CANCELTRANSFER (proto 0xE3)"
+note    = "Payload-less; the transfer is identified by connection context. aMule emits it after receiving the full compressed part — rmule consumes it as TransferCancelled and releases the upload slot with no stale-timeout firing (ADR-0056 consume: release + no re-queue)."
+
+[frames.hello_0x10]
+issue   = "identity provenance (not a recipe vector)"
+opcode  = "0x10 OP_HELLO (proto 0xE3)"
+note    = "aMule's hello: nickname 'http://www.aMule.org', proto 0x3C, kad_version 8, CT_EMULE_VERSION word 0x03040D80 (tag 0xFB), MiscOptions2 (tag 0xFE), UDPPorts (tag 0xF9=4672). Pins the counterparty as genuine aMule 2.3.3."
+
+# Rows this capture touches (one aMule session, several recipe vectors):
+#   multipacket reverse leg — CAPTURED/MATCHED (0xA4 + 0x47 + byte-complete reaction).
+#   SX serve         — PARTIAL: aMule's inbound OP_REQUESTSOURCES2 v4 (the Sources2
+#                      item) is captured, but rmule's serve pool holds only itself,
+#                      so it correctly emits no 0x84 (empty-pool). The serve-back +
+#                      third-identity dial stays unstaged (needs a 3rd source in
+#                      rmule's pool). SCHED 40/160-min repeat-serve unchanged.
+#   cancel consume   — CAPTURED/MATCHED (0x56). Emit direction (rmule cancels a
+#                      download it runs) is still unbranched in the live runner.

@@ -1,0 +1,21 @@
+name = "file_with_ipv6_sources"
+provenance = "handwritten"
+source_note = """
+ADR-0089 §6.2/§6.3 `s6=` token, transcribed from the dialect spec's own worked
+example (`docs/protocol/ipv6-spec.md:948-958`). Deterministic tier: the link
+grammar has no counterparty capture behind it, and the `s6=` placement rules
+(after the `/` that closes the parameter section, before any `|sources,`) exist
+to protect stock eMule's tokenizer rather than to satisfy a second emitter.
+"""
+accepted = true
+
+[input]
+link = "ed2k://|file|test.mp3|12345|0123456789ABCDEF0123456789ABCDEF|/|s6=[2a01:4f8::1]:4662,[2a01:4f8::2]:5662|/"
+
+[expected]
+kind = "file"
+canonical = "ed2k://|file|test.mp3|12345|0123456789ABCDEF0123456789ABCDEF|/|s6=[2a01:4f8::1]:4662,[2a01:4f8::2]:5662|/"
+name = "test.mp3"
+size = 12345
+file_hash = "0123456789ABCDEF0123456789ABCDEF"
+ipv6_sources = ["[2a01:4f8::1]:4662", "[2a01:4f8::2]:5662"]

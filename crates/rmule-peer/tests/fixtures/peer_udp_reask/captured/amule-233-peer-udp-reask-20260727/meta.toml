@@ -1,0 +1,48 @@
+# Peer-UDP source-reask capture — genuine stock aMule 2.3.3 wire bytes observed
+# on rmule's own network namespace during interop flow L (`peer-udp-reask`, the consume leg).
+# A stock aMule downloads a 40 MiB file
+# rmule serves with a single upload slot; a slot-holder aMule occupies that slot,
+# so this reasker is QUEUED. The reasker drops its TCP (ADR-0057 disconnected
+# standing) and, on its ~21.4-min FILEREASKTIME timer, emits `OP_REASKFILEPING`
+# (0x90) toward rmule's advertised client-UDP port. A passive tcpdump on rmule's
+# netns recorded both directions.
+#
+# Only genuinely-on-the-wire bytes are here (ADR-0045): the `0x90` is aMule's own
+# datagram (counterparty); the `0x91` is rmule's egress reply, captured on the
+# same tap — the reply-matrix proof, not a fabricated or hand-crafted vector.
+
+[provenance]
+counterparty       = "aMule 2.3.3 (source pin 4e8f2b3c), stock interop image rmule/interop-amule:local"
+server             = "Lugdunum 17.15 (rmule/interop-eserver:local)"
+scenario           = "peer-udp-reask (flow L, consume leg — rmule uploads, aMule reasks)"
+run                = "1785122114"
+date               = "2026-07-27"
+file_hash          = "C7C89690035A1EA32DC97C6CD53D68E5"   # synthetic 40 MiB shared.bin
+rmule_udp_endpoint = "172.18.0.3:52712"   # rmule's OS-chosen client-UDP port (advertised via CT_EMULE_UDPPORTS)
+reasker_udp_endpoint = "172.18.0.5:4672"  # aMule's client-UDP port
+
+# aMule's inbound reask heartbeat (counterparty bytes).
+[frames.reask_ping_0x90]
+opcode    = "0x90 OP_REASKFILEPING (proto 0xC5)"
+direction = "aMule (172.18.0.5:4672) -> rmule (172.18.0.3:52712)"
+walk      = "file_hash=C7C89690035A1EA32DC97C6CD53D68E5; part_status={count:5, bytes:[0x12]}; complete_sources=1  (UDP v>3 form)"
+observed  = "03:38:09.112844 — a genuine on-file reask: the hash equals rmule's shared file, proving a correct rank-1 reask from a queued waiter."
+
+# rmule's egress answer, captured on the same tap (rmule's own bytes — the
+# reply-matrix proof, observed 2.4 ms after the inbound ping).
+[frames.reask_ack_0x91]
+opcode    = "0x91 OP_REASKACK (proto 0xC5)"
+direction = "rmule (172.18.0.3:52712) -> aMule (172.18.0.5:4672)"
+walk      = "part_status=absent (rank-only); rank=1"
+observed  = "03:38:09.115276 — rmule confirms the reasker's rank over UDP. This run reproduced the promotion churn (holder drops -> the disconnected reasker is promoted to a pending dial-back grant); the rank-only form is the dial-back-grant reask path, which at capture time retained no advertised UDP version."
+capture_correction = "The rank-only form was a defect, not aMule parity: the 0x91 part-status is keyed on the responder's advertised UDP version, and rmule advertised v4 to this peer — the v4 aMule parses the leading u16 as a WritePartStatus count, underruns, and drops the datagram, so this ack never updated the reasker's rank. Fixed post-capture: the granted slot carries the waiter's promoted udp_version, and a v4 grantee's ack now carries the full part status (pinned by rmule-core serve::state's promoted-grant test). These bytes remain the provenance-true pre-correction egress; the capture proves emission, not counterparty acceptance."
+
+# Root-cause note (the missing-reply anomaly): a prior run captured the 0x90 but NO
+# 0x91 egress. The async reply-matrix wiring is sound (proven by the
+# deterministic `serve::runner` integration test). The live absence was the
+# reasker being promoted out of the waiting list into a pending dial-back grant
+# (ADR-0057; the serve-dial enactment is deferred), so `resolve_reask` — which
+# scanned only the waiting list — silent-dropped the reask (aMule-faithful for a
+# non-waiter). The fix teaches `resolve_reask` to also answer a peer holding a
+# pending dial-back grant at the head of the queue; this run captured the
+# resulting 0x91 egress.

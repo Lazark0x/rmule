@@ -1,0 +1,82 @@
+# The server-coordinated punch introduction: genuine `OP_LOWID_HOLEPUNCH_INFO
+# 0x61` frames the third-party eD2k index server `andrey23127/ed2k-server`
+# (pin `4da4774`, v0.9.75) sent to **both** Low-ID rmule peers in answer to one
+# `OP_LOWID_HOLEPUNCH_REQUEST 0x60` — ADR-0091's second Rendezvous coordinator,
+# captured on one consolidated run of the NAT bench (ADR-0092).
+#
+# Lifted from the server's own **Per-Attachment Tap** (`tap-server.pcap`, the
+# server's WAN attachment) by TCP payload, whole `0xE3` frames, never retyped.
+# Each segment carried exactly one frame (31 bytes = 5-byte header + opcode +
+# 25-byte body; the `0x60` 12 bytes). Nothing is fabricated (ADR-0045).
+#
+# ## What this fixture is evidence FOR
+#
+# The `0x61` decoder against a second implementation's bytes: the body layout
+# `<ip 4><tcp 2 LE><udp 2 LE><userhash 16><role 1>`, that each peer is told
+# about the *other*, that the lower Low-ID is named initiator, and — the
+# symmetric pair — that the UDP port is the one the server **observed** the
+# peer's `0x9F` keepalive arrive from, not the one the `0x60` announced. The
+# cone pair alone could not show that: behind `full-cone-pinned` gateways the
+# observed and the bound port are both 4672.
+#
+# Tier: **`single-oracle`** (ADR-0045 point 6). No other pinned body speaks the
+# `0x60`/`0x61`/`0x62` coordinator dialect; the row upgrades when one does. The
+# punch and the Tunnel that follow the introduction stay `rmule-only` — both
+# ends are rmule — and nothing here speaks for them.
+#
+# ## Re-sends
+#
+# The server sends the same introduction three times per peer, best-effort:
+# cone at +0 / +1.207 s / +3.013 s, symmetric at +0 / +1.206 s / +3.008 s.
+# All three were byte-identical in both sittings, so one file per peer per
+# sitting is the whole record.
+
+[provenance]
+counterparty  = "andrey23127/ed2k-server @ 4da4774 (v0.9.75), unmodified upstream source, image rmule/interop-ed2ksrv:local (recipe tools/interop-harness/images/ed2ksrv/Dockerfile, bench config tools/interop-harness/images/ed2ksrv/config.toml) — the pin ADR-0092's body table names for the punch coordinator"
+date          = "2026-09-22"
+runs          = "cone: interop run 1790111798 (`natt natt-server-punch-cone`); symmetric: interop run 1790112165 (`natt natt-server-punch-symmetric`); both at commit c3fbf639, driver image rebuilt from that commit"
+emitter       = "rmule's `0x60` is the production session command `Ed2kCommand::RequestHolepunch`, raised by the core's route chooser from `ReachPeer` (`rmule-tools natt server-punch`, a whole `Core`)"
+stimulus_only = "`holepunch_request_0x60.bin` is rmule's own frame and is never evidence (ADR-0045 point 2); it is kept so the announced-vs-observed contrast is readable from the fixture alone. The two sittings' `0x60` frames were byte-identical."
+
+[topology]
+wan        = "fake-public 45.55.200.0/24 (ADR-0092's NAT-traversal rows); server 45.55.200.2 (TCP 4661, UDP 4665)"
+requester  = "rmule behind its own natgw, gateway WAN 45.55.200.3, LAN client 10.77.0.3, client-UDP bound 4672, login advertised TCP 4662, user hash 0x41 x16, Low ID 1"
+target     = "rmule behind its own natgw, gateway WAN 45.55.200.4, client-UDP bound 4672, login advertised TCP 4662, user hash 0x42 x16, Low ID 2"
+nat_proof  = "every gateway's NAT Type Proof `agrees = true` and `pinned_port_reachable = true` in the same run: cone endpoint-independent/endpoint-independent, symmetric address-and-port-dependent/address-and-port-dependent"
+
+[observed]
+cone_keepalives      = "server tap: 3 x `0x9F` from 45.55.200.3:4672 and 3 from 45.55.200.4:4672 to 45.55.200.2:4665"
+symmetric_keepalives = "server tap: 3 x `0x9F` from 45.55.200.3:49350 and 3 from 45.55.200.4:25024 to 45.55.200.2:4665 — the symmetric gateways' fresh external ports toward the server"
+
+[frames.holepunch_request_0x60]
+class     = "rmule stimulus — never evidence"
+direction = "rmule(requester, 45.55.200.3) -> ed2ksrv"
+wire      = "e3 07 00 00 00 60 02 00 00 00 40 12"
+layout    = "target Low ID u32 LE = 2; our_udp_port u16 LE = 0x1240 = 4672 (as bound)"
+
+[frames.cone_initiator_info_0x61]
+class     = "counterparty evidence"
+direction = "ed2ksrv -> rmule(requester, 45.55.200.3)"
+wire      = "e3 1a 00 00 00 61 2d 37 c8 04 36 12 40 12 42 42 42 42 42 42 42 42 42 42 42 42 42 42 42 42 00"
+layout    = "ip 45.55.200.4 (the target's gateway); tcp 0x1236 = 4662; udp 0x1240 = 4672; hash 0x42 x16; role 0 = initiator"
+
+[frames.cone_responder_info_0x61]
+class     = "counterparty evidence"
+direction = "ed2ksrv -> rmule(target, 45.55.200.4)"
+wire      = "e3 1a 00 00 00 61 2d 37 c8 03 36 12 40 12 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 01"
+layout    = "ip 45.55.200.3 (the requester's gateway); tcp 4662; udp 4672; hash 0x41 x16; role 1 = responder"
+
+[frames.symmetric_initiator_info_0x61]
+class     = "counterparty evidence"
+direction = "ed2ksrv -> rmule(requester, 45.55.200.3)"
+wire      = "e3 1a 00 00 00 61 2d 37 c8 04 36 12 c0 61 42 42 42 42 42 42 42 42 42 42 42 42 42 42 42 42 00"
+layout    = "ip 45.55.200.4; tcp 4662; udp 0x61c0 = 25024 — the target's keepalive source port, not 4672; hash 0x42 x16; role 0"
+
+[frames.symmetric_responder_info_0x61]
+class     = "counterparty evidence"
+direction = "ed2ksrv -> rmule(target, 45.55.200.4)"
+wire      = "e3 1a 00 00 00 61 2d 37 c8 03 36 12 c6 c0 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 41 01"
+layout    = "ip 45.55.200.3; tcp 4662; udp 0xc0c6 = 49350 — the requester's keepalive source port, where its own `0x60` announced 4672; hash 0x41 x16; role 1"
+
+[not_captured]
+holepunch_fail_0x62 = "no `0x62` was drawn in either sitting (the NAT-traversal rows count 0 by design: both targets were connected Low-ID NAT-T clients). A refusal capture needs a request naming an unallocated or High-ID target."

@@ -1,0 +1,65 @@
+name = "amule-2.3.3-routing-zone-v2"
+status = "active"
+provenance = "captured"
+server_count = 0
+contact_count = 30
+nodes_dat_version = 2
+
+reason = """
+Genuine aMule 2.3.3 CRoutingZone::WriteFile output — a v2 nodes.dat with 30
+contacts (flow H leg 3). The bytes are aMule's own writer's: header
+[u32 0][u32 2][u32 count], then count x 34-byte contacts
+[id(16) ip(4) udp(2) tcp(2) version(1) UDPKey(8) verified(1)]. This is the
+ADR-0065/ADR-0066 shared-asset "v2 nodes.dat" capture that the earlier eD2k-only
+harvest could never produce (an eD2k-only aMule runs no Kad, so WriteFile never
+fires).
+
+aMule refuses to write nodes.dat below 25 contacts (CRoutingZone::WriteFile:
+`if (numContacts < 25) ... return;`), and its RoutingBin caps non-LAN contacts at
+MAX_CONTACTS_SUBNET=10 per /24 globally and 2 per /24 per bin, so a real >=25
+table must span many /24s AND fill the root bin (K=10) enough to split the tree
+by Kad-ID XOR distance. This harvest cleared all three gates and aMule logged
+`Wrote 30 Kad contacts`.
+"""
+
+[provenance_disclosure]
+# Seeded-then-persisted. The routing table was seeded from a harness-built
+# routing-zone (version-1) nodes.dat so aMule loads the contacts into its live
+# tree via CRoutingZone::ReadFile -> AddUnfiltered (a v3/edition-1 file would only
+# feed the bootstrap dial list, never the tree). aMule then re-authored the table
+# as a v2 nodes.dat via WriteFile on a clean `amulecmd Shutdown`. Every byte here
+# is aMule's WriteFile output; the seed is a bootstrap INPUT, never hand-crafted
+# golden bytes. Same technique + disclosure standard as the sibling
+# routing/captured/private-amule-kad-distance-20260707 fixture.
+seed_design = """
+The seed offers 45 contacts, each on a DISTINCT non-reserved /24 (45.55.N.2,
+N=1..45), one contact per /24, so neither the 10-per-/24 global cap nor the
+2-per-/24-per-bin cap binds and the root bin fills to K=10 and splits. IPs are
+written in reversed-octet order (aMule byte-swaps on read via
+wxUINT32_SWAP_ALWAYS, so reversed octets are the correct file order AND make
+IsGoodIP see the true address + group the true /24). Kad IDs use a bit-reversed
+index in the top byte so the XOR-distance top nibbles scatter contacts across the
+depth-<=4 routing bins. aMule admitted 30 of the 45 (its fresh-table occupancy)
+and wrote all 30.
+"""
+reserved_range_finding = """
+NOTE: aMule 2.3.3's IsGoodIP reserved_ranges (NetworkFunctions.cpp) REJECTS
+192.0.2.0/24 (TEST-NET-1) and 198.18.0.0/15 — two of the three ranges the
+harness fake_public.rs FAKE_PUBLIC_PREFIXES suggest. Only 198.51.100.0/24
+and 203.0.113.0/24 of that trio pass. The seed therefore uses 45.55.x.0/24
+public space (not reserved, not LAN) for its /24 spread.
+"""
+capture_recipe = """
+Build the seed (45 contacts / 45 distinct non-reserved /24s, reversed octets,
+bit-reversed Kad IDs, per-contact version 8), boot one aMule in kad-node mode with
+AMULE_KAD_NODES_DAT pointing at it, wait for Kad start, then `amulecmd Shutdown`
+and `docker wait` before docker cp (so WriteFile's write_safe rename completes).
+Loaded contacts survive to shutdown (no expiry in the boot->shutdown window).
+"""
+no_public_kad = "true — dead seed IPs on an internal docker network; no public bootstrap, no public nodes.dat, no external peers"
+
+[file]
+file = "nodes.dat.bin"
+bytes = 1032
+header = "u32 0x00000000 (old-client guard) | u32 0x00000002 (version 2) | u32 contact count"
+row = "34 bytes: id(16) ip(4) udp(2) tcp(2) version(1) UDPKey(8) verified(1)"

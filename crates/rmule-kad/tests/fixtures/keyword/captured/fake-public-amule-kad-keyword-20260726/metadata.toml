@@ -1,0 +1,115 @@
+name = "fake-public-amule-kad-keyword-20260726"
+status = "active"
+provenance = "captured"
+public_kad_used = false
+reason = """
+Genuine KADEMLIA2_SEARCH_KEY_REQ (0x33) and KADEMLIA2_PUBLISH_KEY_REQ (0x43)
+request bytes from a real STOCK aMule 2.3.3, captured on the Config-A fake-public
+swarm (RFC 5737 documentation range 203.0.113.0/24, Docker `internal` net — never
+public). This is the ROLE INVERSION of the flow-F source capture: here aMule is
+the Kad PUBLISHER and REQUESTER and rmule is the STORER. rmule's KadID was pinned
+to the keyword target (rmule's own keyword derivation, `keyword_target_kad_id`),
+so it is the XOR-closest node and clears aMule's publish tolerance zone
+(SEARCHTOLERANCE = 2^24) — drawing both the publish and the search onto it. These
+are counterparty bytes (aMule-authored); rmule's bytes are never evidence.
+
+This capture is the missing recipe-2 + recipe-4 evidence ADR-0062 names for the
+keyword derivation fold + search-tree grammar codec row and the keyword_store
++ storer row. rmule consumed every datagram — its keyword store emitted
+KeywordSearchServed twice (plain + restrictive) and KeywordPublishServed once
+(indexed = 1) — so the storer's decode + serve path faced real aMule bytes and
+answered.
+
+The single most load-bearing fact: the keyword ID aMule put on the wire in BOTH
+its 0x33 and its 0x43 equals rmule's own keyword_id("rmulekadkeyword") EXACTLY
+(e7b64ea7de34bca052ce0690991bc53b). aMule's GetKeywordHash and rmule's fold
+(MD4 over the lowercased UTF-8 token, per-32-bit-word wire swap) are therefore
+byte-identical — the ADR-0062 recipe-2 "keyword-ID derivation fold (byte parity)"
+claim, now CAPTURE-PROVEN rather than only asserted. (A divergent fold would have
+routed aMule's publish/search away from rmule and this capture would be empty.)
+"""
+
+[stimulus_disclosure]
+# What rmule (the storer) arranged; never evidence. The evidence is aMule's
+# publish/search REQUEST bytes.
+kad_storer_node = "rmule (this workspace), pinned to the keyword target"
+storer_kad_id = "e7b64ea7 de34bca0 52ce0690 991bc53b"
+storer_kad_id_meaning = "= keyword_id(\"rmulekadkeyword\") in Kad wire form"
+amule_shared_filename = "rmulekadkeyword.dat"
+amule_search_queries = ["rmulekadkeyword", "rmulekadkeyword parityprobe"]
+
+[node_roles]
+publisher_and_requester = "real STOCK aMule 2.3.3 (rmule/interop-amule:local, source pin 4e8f2b3c)"
+storer = "rmule Kad node (kad-join-node binary, serve mode)"
+helpers = "2 stock aMule nodes so the publisher earned TCP-open and ran its autonomous keyword publisher"
+lan_mode = false # Config A: stock aMule, FilterLanIPs=1, non-LAN admission paths
+
+[capture]
+private_mesh = false
+public_kad_used = false
+topology = "Config A fake-public swarm, RFC 5737 203.0.113.0/24, Docker internal net"
+network_is_internal = true # isolated swarm never emits a Kad datagram to the internet
+captured_by = "rmule's own first-class datagram tap (rmule records what aMule sent it)"
+harness_scenario = "tools/interop-harness kad-inverted-keyword (flow J)"
+run_id = "1785026780"
+run_date = "2026-07-26"
+amule_image = "rmule/interop-amule:local"
+amule_source_pin = "4e8f2b3c"
+harness_verdict = "PASS (frames_total=67, search_captured=true, publish_captured=true)"
+
+# Each .bin is the FULL on-wire datagram (the 0xE4 protocol byte + opcode + the
+# payload KadEnvelope strips), so a decoder can `decode_exact` it directly.
+
+# Recipe 4 — aMule searches (plain), rmule serves. Baseline 0x33: no tree.
+[search_plain]
+file = "search_key_req_0x33.bin"
+protocol = "0xE4"
+opcode = "0x33" # KADEMLIA2_SEARCH_KEY_REQ
+datagram_len_bytes = 20
+keyword_target = "e7b64ea7 de34bca0 52ce0690 991bc53b" # = keyword_id("rmulekadkeyword")
+start_position = 0
+restrictive_tree = false # startpos top bit clear
+authored_by = "aMule (the requester)"
+
+# Recipe 4 — aMule searches (two-word), rmule serves. Restrictive-tree 0x33: the
+# tree-decode vector ADR-0062 recipe 4 names. Query "rmulekadkeyword parityprobe":
+# target is the first token; the tree carries the residual term "parityprobe".
+[search_tree]
+file = "search_key_req_tree_0x33.bin"
+protocol = "0xE4"
+opcode = "0x33"
+datagram_len_bytes = 34
+keyword_target = "e7b64ea7 de34bca0 52ce0690 991bc53b"
+start_position_raw = "0x8000" # top bit = restrictive-tree flag SET, low 15 bits = 0
+restrictive_tree = true
+tree_bytes = "01 0b00 70617269747970726f6265" # a single string term: len 11 = "parityprobe"
+authored_by = "aMule (the requester, with a two-word Kad search)"
+
+# Recipe 2 — aMule publishes, rmule stores. The 0x43 batch: 1 file, 3 tags.
+[publish]
+file = "publish_key_req_0x43.bin"
+protocol = "0xE4"
+opcode = "0x43" # KADEMLIA2_PUBLISH_KEY_REQ
+datagram_len_bytes = 75
+keyword_target = "e7b64ea7 de34bca0 52ce0690 991bc53b"
+file_count = 1
+file_id = "b52d308e 5ca206b8 23fc8593 d26210f2" # the shared file's Kad target
+tag_count = 3
+tags = [
+  "FILENAME (type 0x02 string, name 0x01) = \"rmulekadkeyword.dat\"",
+  "FILESIZE (type 0x03 u32, name 0x02) = 65536",
+  "SOURCES (type 0x09 u8, name 0x15) = 0",
+]
+authored_by = "aMule (the publisher's autonomous keyword publish, after earning TCP-open)"
+
+[evidence]
+# What this capture proves for the inverted-role keyword topology.
+keyword_fold_byte_parity = "CAPTURE-PROVEN: aMule's GetKeywordHash == rmule's keyword_id (MD4 over the lowercased token, per-32-bit-word wire swap). Both 0x33 and 0x43 carry e7b64ea7de34bca052ce0690991bc53b = keyword_id(\"rmulekadkeyword\")."
+search_tree_codec = "CAPTURE-PROVEN: rmule's search_tree codec decodes aMule's genuine restrictive tree (a string term) and re-encodes it byte-for-byte."
+storer_accept = "CAPTURE-PROVEN: rmule's keyword_store decodes aMule's real 0x43 batch (1 file, FILENAME/FILESIZE/SOURCES tags) and indexes it (KeywordPublishServed indexed=1)."
+storer_serve = "CAPTURE-PROVEN: rmule answered both 0x33 searches (KeywordSearchServed); rows were 0 only because the searches raced ahead of the autonomous publish in this run — the serve path itself parsed and answered."
+public_kad_used = false
+
+[cross_reference]
+flow_f_source_capture = "source_lookup/captured/fake-public-amule-kad-source-result-20260724 is the same swarm's SOURCE capture with rmule as the stimulus (publisher/requester); this keyword capture inverts the roles (aMule publishes/searches, rmule stores)."
+full_tap = "the full 67-frame tap lives under .scratch/interop-runs/1785026780/kad/rmule/tap/ (never committed); only these minimal datagrams are checked in."

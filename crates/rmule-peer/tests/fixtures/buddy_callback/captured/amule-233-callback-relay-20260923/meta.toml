@@ -1,0 +1,67 @@
+# Genuine stock aMule 2.3.3 **relaying a Kad callback**: a Callback Walk's
+# `KADEMLIA_CALLBACK_REQ` (`0x52`) reached aMule, and aMule forwarded it as
+# `OP_CALLBACK` (`0x99`) over the buddy link it held. Captured on the
+# fake-public Kad bench (Config A) during interop
+# `kad-core-buddy --publish-source --mesh-members 3 --callback-downloader
+# --callback-walk`. The `0x52` is off a tcpdump in aMule's own
+# network namespace, the `0x99` off one in the stimulus's. Nothing is
+# fabricated (ADR-0045).
+#
+# ## What this fixture is evidence FOR
+#
+# `amule_callback_0x99.bin` is aMule-authored: it only exists because
+# `CKademliaUDPListener::ProcessCallbackRequest`
+# (`KademliaUDPListener.cpp:1489-1518`) took our datagram and wrote
+# `WriteUInt128(check); WriteUInt128(file); WriteUInt32(ip); WriteUInt16(tcp)`
+# onto `GetBuddy()->GetSocket()`. Three facts are pinned by it:
+#
+# * the relay rewrites neither 128-bit field — bytes 6..38 of the segment are
+#   bytes 2..34 of the walk's `0x52` (the codec's reading, now captured);
+# * the injected requester address is the Kad listener's **host-order** IP
+#   through `WriteUInt32`, so its octets ride reversed: 203.0.113.8 is
+#   `08 71 00 cb`. rmule wrote them in order until this capture, and aMule's
+#   reader (`ClientTCPSocket.cpp:1650-1660`, `new CUpDownClient(tcp, ip, …,
+#   ed2kID = false)`, which swaps a Kad-order ID back, `BaseClient.cpp:125-129`)
+#   then dialed the mirrored address — run `1790152605`'s downloader leg: the
+#   rmule buddy's `0x99` named `cb 00 71 07`, aMule ACKed it, and no SYN ever
+#   reached 203.0.113.7;
+# * the `0x9A` relay is the other way round (its address is the client UDP
+#   socket's, eD2k order, `ClientUDPSocket.cpp:161`), so the two codecs differ.
+#
+# ## Which aMule, in which role
+#
+# The flow's firewalled aMule (debug image). Its buddy link runs to rmule's
+# Core-pumped stimulus, which it recruited — aMule is the firewalled side.
+# `ProcessCallbackRequest` reads no firewall state and filters no buddy ID
+# (its own `JOHNTODO`), so the relay code a walk reaches is the same either way;
+# aMule's FindBuddy would not accept rmule in this swarm, because the open-side
+# service answers a `0x51` only with both of its verdicts verified open
+# (`KademliaUDPListener.cpp:1427`). The walker's operands (buddy ID = aMule's
+# own ID, the file, the port) are Stimulus; the walk, its `SEARCHTOLERANCE`
+# filter and its `0x52` are `rmule_kad`'s shipped path.
+
+[provenance]
+counterparty       = "aMule 2.3.3 (source pin 4e8f2b3c), debug build rmule/interop-amule-debug:local"
+scenario           = "rmule-interop-harness kad-core-buddy --skip-build --publish-source --mesh-members 3 --callback-downloader --callback-walk --window 1800"
+run                = "1790152605"
+date               = "2026-09-23"
+subnet             = "203.0.113.0/24 (RFC 5737 fake-public, Config A; docker --internal)"
+amule_endpoint     = "203.0.113.2 — Kad UDP 4674, eD2k TCP 4662 (iptables-DROPped)"
+rmule_endpoint     = "203.0.113.3 — Kad UDP 4679, serve listener TCP 4663 (the buddy aMule holds)"
+walker_endpoint    = "203.0.113.8 — Kad UDP 4672 (kad join-node --callback-walk)"
+amule_kad_id       = "00112233445566778899aabbccddeeff"
+walk_buddy_id      = "00112233445566778899aabbccddeeff  # ~rmuleKadID: aMule itself, distance 0"
+file               = "ed2k://|file|shared.bin|65536|8E302DB5B806A25C9385FC23F21062D2|/"
+
+[frames.walk_callback_req_0x52]
+file      = "walk_callback_req_0x52.bin"
+author    = "rmule (stimulus)"
+wire      = "Kad UDP 203.0.113.8:4672 -> 203.0.113.2:4674, 2026-09-23 10:48:18.514497, 36 bytes, plaintext"
+layout    = "e4 52 + buddyID(16, wire order) + fileID(16, WriteUInt128 order) + tcpPort(2 LE)"
+note      = "plaintext because the walker's crypt layer was disarmed, as the bench default leaves it — the walk rides the node's obfuscation matrix, which aMule's own SendPacket mirrors with its crypt layer unsupported"
+
+[frames.amule_callback_0x99]
+file      = "amule_callback_0x99.bin"
+author    = "aMule 2.3.3"
+wire      = "peer TCP 203.0.113.2:56374 -> 203.0.113.3:4663 (the held buddy link), 2026-09-23 10:48:18.515601, 44 bytes, 3.6 ms after the 0x52"
+layout    = "c5 + size(4 LE) + 99 + check(16) + file(16) + ip(4, host order LE) + tcp(2 LE)"

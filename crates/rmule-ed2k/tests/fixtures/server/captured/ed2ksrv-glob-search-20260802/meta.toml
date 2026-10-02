@@ -1,0 +1,88 @@
+# Genuine **global UDP search answer** — `OP_GLOBSEARCHRES 0x99` — from the
+# third-party eD2k index server `andrey23127/ed2k-server`, pinned at `eacf7f1`,
+# drawn by rmule's `OP_GLOBSEARCHREQ 0x98` (ed2ksrv capture, 2026-08-02).
+#
+# ADR-0045's 2026-08-02 amendment governs: an independent third-party server
+# pinned at an upstream commit is an admissible counterparty, its fixtures take
+# the `ed2ksrv-*` prefix and name the pin, and the Lugdunum/aMule-observed form
+# stays the parity reference — divergences go in `[divergence]` below.
+#
+# ## What this fixture is evidence FOR
+#
+# **Two** server-udp rows, both previously **ADR-0045-EXEMPT**:
+# `OP_GLOBSEARCHREQ 0x98` (E) and `OP_GLOBSEARCHRES 0x99` (C). The parity
+# verdict's basis was "no admissible counterparty" — Lugdunum won't answer a
+# `0x98`, and eNode implements a `0x99` handler but crashes on the login its
+# precondition needs. This server serves the leg end to end (`udp.rs:517`,
+# `:1263-1348`) and its precondition is reachable here: no login cap, no crash,
+# `OP_OFFERFILES` works. Per ADR-0045 point 2 the same datagram is the evidence
+# for both rows — for the emit row the `0x99` **is** the observable reaction.
+#
+# ## The precondition is load-bearing
+#
+# `udp.rs:1299-1301` **skips files with zero live sources**, so an index entry
+# alone draws nothing. A logged-in client had to be holding the file open at the
+# moment the `0x98` went out. The `status_res_0x97.bin` control leg beside the
+# answer is what pins that: it was captured seconds earlier in the same run and
+# shows `files = 1`, `users = 1` — so an empty answer would have been a real
+# negative rather than an unstaged bench.
+#
+# ## Boring filename, deliberately
+#
+# The server's L2 age/context content filter (`filter/age_pattern.rs`) is
+# hardcoded and always active, drops a matching offer **silently**, and bans the
+# `user_hash` after 3 distinct blocked hashes. `alpha.bin` is boring ASCII for
+# that reason. `/api/block_stats` read `[]` for this run, so nothing was
+# filtered.
+
+[provenance]
+counterparty = "andrey23127/ed2k-server @ eacf7f1eb7ea40f71ae869aef6a10801e7e262b8, unmodified upstream source, image rmule/interop-ed2ksrv:local (recipe tools/interop-harness/images/ed2ksrv/Dockerfile, bench config tools/interop-harness/images/ed2ksrv/config.toml)"
+date         = "2026-08-02"
+tool         = "rmule-tools ed2k server udp-capture, run from INSIDE the bench network via tools/interop-harness/images/rmule-tools/Dockerfile"
+sharer       = "rmule-tools ed2k serve start sharing alpha.bin (256000 bytes, hash 07AACB7384C3C321683145613EABD4A9) — a real OP_OFFERFILES announcement over a live logged-in session, not an injected index entry"
+
+[topology]
+network    = "docker bridge `rmule-ed2ksrv-c2`, `--subnet 203.0.113.0/24` — fake-public RFC 5737 documentation range per `tools/interop-harness/src/fake_public.rs`"
+server     = "203.0.113.20:4661 (container `ed2ksrv-c2`), `this_ip = 203.0.113.20`, `seed_servers = []` (no egress at all), `log.level = debug` — the UDP search only logs at DEBUG"
+searcher   = "container at 203.0.113.40 running the rmule-tools image; the 0x98 goes to TCP+4 = 4665"
+sharer_net = "host rmule-tools -> 127.0.0.1:14661 (the server's published TCP port). Server-observed peer 203.0.113.1 (the bridge gateway), High-ID probe refused (nothing listens on its advertised 4665), so the sharer held a LowID."
+why_in_net = "MANDATORY. On macOS + colima published ports reach the host over an SSH forward that carries TCP only, so host-side UDP is silently swallowed — verified directly (a `socat -u UDP4-RECV` in this network received 0 bytes from a host `nc -u`). Bridging UDP over the TCP forward with socat was rejected on purpose: a TCP hop does not preserve datagram boundaries, and two coalesced `0x99` replies would put bytes in a fixture that no counterparty ever sent as one datagram."
+
+[commands]
+setup_network = "docker network create --subnet 203.0.113.0/24 rmule-ed2ksrv-c2"
+setup_server  = "docker run -d --name ed2ksrv-c2 --network rmule-ed2ksrv-c2 --ip 203.0.113.20 -v <repo>/tools/interop-harness/images/ed2ksrv/config.toml:/etc/ed2k-server/config.toml:ro -p 127.0.0.1:14661:4661 rmule/interop-ed2ksrv:local"
+build_driver  = "docker build -f tools/interop-harness/images/rmule-tools/Dockerfile -t rmule/interop-rmule-tools:local ."
+step_1_share  = "rmule-tools ed2k serve start --file <run>/share/alpha.bin --server 127.0.0.1:14661 --listen 0.0.0.0:14662 --tcp-port 4665 --max-seconds 780 --user-hash DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD --nickname rmule-sharer   # leave running"
+step_2_gate   = "docker exec ed2ksrv-c2 curl -s 127.0.0.1:8080/api/status   # must read file_count=1, keyword_count=2; and /api/block_stats must read []"
+step_3_search = "docker run --rm --network rmule-ed2ksrv-c2 --ip 203.0.113.40 -v c2out:/out rmule/interop-rmule-tools:local ed2k server udp-capture 203.0.113.20:4661 --out /out/globsearch --query alpha --timeout 8"
+output        = "status_0x97 answered=true challenge_ok=true / desc_0xA3 answered=true len=96 / search_0x99[0] len=57 first_op=0x99 / search_0x99 datagrams=1"
+
+[frames.search_res_0x99_0]
+class     = "counterparty evidence — the row both surfaces were exempt on"
+size      = 57
+direction = "ed2ksrv -> rmule, UDP"
+wire      = "e3 99 07 aa cb 73 84 c3 c3 21 68 31 45 61 3e ab d4 a9 cb 00 71 01 46 39 04 00 00 00 99 01 61 6c 70 68 61 2e 62 69 6e 83 02 00 e8 03 00 83 15 01 00 00 00 83 30 01 00 00 00"
+layout    = """
+0xE3 0x99, then one result row:
+  file_hash(16) = 07AACB7384C3C321683145613EABD4A9
+  id(4)         = cb 00 71 01 = 203.0.113.1  (see [divergence].lowid_real_ip)
+  port(2)       = 46 39 = 14662 LE, the sharer's serve listener
+  tag_count(4)  = 4
+  0x99 0x01 "alpha.bin"     -> FT_FILENAME, compact STR9 form (0x80|0x19)
+  0x83 0x02 00 e8 03 00     -> FT_FILESIZE  = 256000
+  0x83 0x15 01 00 00 00     -> FT_SOURCES   = 1
+  0x83 0x30 01 00 00 00     -> FT_COMPLETE_SOURCES = 1
+"""
+absent    = "no FT_FILESIZE_HI (the file is under 4 GB, so the conditional tag is correctly omitted) and no FILETYPE (the server omits it for an unclassifiable file — consistent with aMule, which a capture showed omits it too)"
+
+[frames.status_res_0x97]
+class     = "counterparty evidence — the control leg"
+size      = 46
+direction = "ed2ksrv -> rmule, UDP, unencrypted"
+purpose   = "captured seconds before the search in the same run. Reads users=1, files=1, low_id_users=1 — so the index really did hold the offered file, the sharer really was its one live source, and that source really was LowID."
+
+[divergence]
+# Recorded, not treated as the reference — the aMule/eserver-observed form stands.
+lowid_real_ip = "the answer advertises the source by its **real address** (203.0.113.1) even though the sharer held a LowID. That contradicts the TCP `OP_FOUNDSOURCES 0x42` path, which re-encodes a LowID source as its assigned low id (`get_sources.rs:114-117` vs `udp.rs:619-622`, audit deviation §4.4). The decode test asserts this explicitly so the divergence stays visible if a future re-pin converges the two paths. A `0x99`/`0x9B` carrying a real IP must NOT be read as LowID-source surfacing."
+one_per_datagram = "this server emits **one result per datagram**, cap 10 (`udp.rs:36`, `:1263-1348`). The `0x99` row's Notes want a golden where a single datagram packs several results AND several packets span the answer; that intra-datagram packing stays **open** — this capture proves the decode and the single-row walk only. rmule's decoder handles the packed form (its own unit tests cover it); no counterparty in the bench has yet produced one."
+variant_chooser = "the capture uses the tool's **baseline `0x98` override**. The server advertises `udp_flags = 0x17FB` (hardcoded, `udp.rs:667`), and by rmule's own chooser that combination selects `0x90` — which this server mis-parses to zero hits, because the `[tagcount][CT_SERVER_UDPSEARCH_FLAGS]` prefix is never stripped before `parse_search` (`udp.rs:518`), and `0x92` has no handler at all (`udp.rs:536`). ADR-0045 lets rmule shape its own emit freely and the row is defined as one wire behaviour across three opcodes, so the baseline capture is legal — but the **flag-gated `0x90`/`0x92` selection stays deterministic-only against this counterparty**. Do not claim otherwise. Both are upstream-fix candidates, not capture routes."

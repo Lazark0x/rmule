@@ -1,0 +1,75 @@
+[package]
+name = "rmule-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[dependencies]
+ed2k.workspace = true
+getrandom.workspace = true
+# The Download Directory Scan's watch, confined to `adapters/directory_watch.rs`
+# (ADR-0103, "The watch").
+notify.workspace = true
+rmule-ed2k = { path = "../rmule-ed2k" }
+# The URL-acquisition machinery (ADR-0065): the first-run hook in the
+# Join Sequence (ADR-0067) consumes `should_auto_fetch_server_met` +
+# `fetch_server_met` through the pure `Fetcher` seam. `default-features = false`
+# drops the `reqwest-fetcher` feature, so no HTTP client or TLS stack enters
+# core's tree — the caller injects the `Fetcher`.
+rmule-bootstrap = { path = "../rmule-bootstrap", default-features = false }
+rmule-kad = { path = "../rmule-kad" }
+rmule-net = { path = "../rmule-net" }
+rmule-peer = { path = "../rmule-peer" }
+rmule-primitives = { path = "../rmule-primitives", features = ["serde"] }
+rmule-store = { path = "../rmule-store" }
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# The filesystem type behind a File Identity (ADR-0100, "What the scan
+# remembers"), confined to `directory_scan/fs.rs`.
+rustix.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# Which file a path or a handle names on Windows (volume serial number and file
+# index), confined to `file_key.rs`.
+winapi-util.workspace = true
+
+[dev-dependencies]
+# The frozen row shapes' encodings are pinned byte for byte.
+postcard.workspace = true
+rmule-store = { path = "../rmule-store" }
+rmule-testkit = { path = "../rmule-testkit" }
+# The extended cold-start E2E (ADR-0067) drives the real `ReqwestFetcher`
+# against a local HTTP fixture. Only core's OWN test build pulls reqwest (this
+# dev edge enables the feature); the resolver keeps it off the normal dep edge
+# above, so a downstream consumer's production build stays reqwest-free.
+rmule-bootstrap = { path = "../rmule-bootstrap", features = ["reqwest-fetcher"] }
+# The Half-Bound Pair legs' port reservation probes the `::`
+# wildcard with `IPV6_V6ONLY` set — a plain std `[::]` bind is dual-stack and
+# would collide with the IPv4 half the leg itself holds.
+socket2.workspace = true
+tempfile.workspace = true
+# `start_paused` + `time::advance` for the status-ping sweep's re-ask tests.
+# `rt-multi-thread` is the shutdown tests': a task that fails to
+# leave its loop must be *observable* on a second worker — on a single-threaded
+# runtime it would wedge the whole test, which is a hang rather than a verdict.
+# Dev-only: core's own runtime requirement stays `rt`.
+tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
+
+[features]
+# Exports the serve translator pair (`serve_command_to_peer` /
+# `serve_event_from_peer`) for rmule-testkit's loopback bridge, so
+# serve-vocabulary changes land once. Off by default: a default build's
+# public surface is unchanged. Only rmule-testkit (dev-only everywhere)
+# may enable it.
+test-support = []
+
+[lints]
+workspace = true

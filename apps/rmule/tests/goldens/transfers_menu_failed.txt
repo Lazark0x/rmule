@@ -1,0 +1,21 @@
+┌ Downloads (4) ─────────── s sort  S reverse  C clear completed  L add link ┐
+│  File ▲      Size       Done Progress   Speed      ETA    Src   Status     │
+│  bunny.mp4   87.7 MB    42%  ██░█▓░█▓░░ 123.4 KB/s 7m00s  8 (1) Downloading│
+│  ABABABABAB… ≈ 27.8 MB  —    ░░░░░░░░░░ —          —      0     Paused     │
+│  5C5C5C5C5C… 42.9 MB    100% ██████████ —          —      1     Completed  │
+│▸ 3C3C3C3C3C… ≈ 37.1 MB  —    ░░░░░░░░░░ —          —      —     Failed     │
+│            ┌ Actions — 3C3C3C3C3C… ───────────────────────────┐            │
+│            │▸ Restart                                         │            │
+│            │  Cancel…                                         │            │
+│            │  Show file details                               │            │
+│            │  Copy eD2k link  no metadata yet                 │            │
+│            │  Search related  not connected                   │            │
+└────────────│  Priority ▸  needs core priority model           │────────────┘
+┌ Sources · 3│  Category ▸  needs core categories               │────────────┐
+│            └──────────────────────────────────────────────────┘            │
+│                                                                            │
+│                              no active sources                             │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
