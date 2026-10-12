@@ -30,7 +30,7 @@ fn request_parts_auto_issues_probe_and_hashset_before_startuploadreq() {
 
     // Peer answers probe + status + hashset; only THEN does session send STARTUPLOADREQ.
     session.handle_bytes(&reqfilename_answer(h, "c.bin"));
-    session.handle_bytes(&file_status(h, 1, &[0x01]));
+    session.handle_bytes(&file_status(h, 2, &[0x01]));
     let after_probe = drain(|| session.poll_output());
     assert!(
         writes(&after_probe).is_empty(),
@@ -125,7 +125,7 @@ fn queueranking_dedups_identical_ranks_and_emits_progress_on_improvement() {
     // Walk through the probe + hashset so STARTUPLOADREQ goes out and
     // active_slot is set.
     session.handle_bytes(&reqfilename_answer(h, "f.bin"));
-    session.handle_bytes(&file_status(h, 1, &[0x01]));
+    session.handle_bytes(&file_status(h, 2, &[0x01]));
     session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     let _ = drain(|| session.poll_output());
 
@@ -172,7 +172,7 @@ fn outofpartreqs_emits_queue_rejected_and_clears_active_slot() {
         ranges,
     }));
     session.handle_bytes(&reqfilename_answer(f, "f"));
-    session.handle_bytes(&file_status(f, 1, &[0x01]));
+    session.handle_bytes(&file_status(f, 2, &[0x01]));
     session.handle_bytes(&hashset_answer(f, &[PartHash::from_bytes([0; 16])]));
     let _ = drain(|| session.poll_output());
 
@@ -315,7 +315,7 @@ fn cancel_transfer_writes_op_canceltransfer_and_releases_the_active_slot() {
         ranges,
     }));
     session.handle_bytes(&reqfilename_answer(h, "c"));
-    session.handle_bytes(&file_status(h, 1, &[0x01]));
+    session.handle_bytes(&file_status(h, 2, &[0x01]));
     session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     let _ = drain(|| session.poll_output());
     // Slot granted (active and holding): a worker torn down now for a local

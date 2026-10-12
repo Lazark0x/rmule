@@ -158,12 +158,17 @@ pub fn filename_answer_bytes(file_hash: FileHash, name: &str) -> Vec<u8> {
     Packet::new(PacketProtocol::Edonkey, 0x59, payload).encode()
 }
 
-/// A framed file-status answer (opcode 0x50): a one-part bitmap present.
-pub fn file_status_bytes(file_hash: FileHash) -> Vec<u8> {
-    let mut payload = file_hash.as_bytes().to_vec();
-    payload.extend_from_slice(&1u16.to_le_bytes());
-    payload.push(0x01);
-    Packet::new(PacketProtocol::Edonkey, 0x50, payload).encode()
+/// A framed file-status answer (opcode 0x50) for a `file_size`-byte file the
+/// peer holds every part of, spelled out at the count aMule's reader demands.
+pub fn file_status_bytes(file_hash: FileHash, file_size: u64) -> Vec<u8> {
+    rmule_peer::FileStatus {
+        file_hash,
+        bitmap: rmule_peer::PartBitmap::all_present(rmule_primitives::ed2k_status_part_count(
+            file_size,
+        )),
+    }
+    .encode_packet()
+    .encode()
 }
 
 /// A framed hash-set answer (opcode 0x52): `part_hashes` as the per-part hash

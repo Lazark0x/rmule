@@ -295,7 +295,9 @@ fn multipacket_answer(script: &PeerScript, req: &MultiPacketRequest) -> MultiPac
                     script.file_name.clone(),
                 )));
             }
-            RequestItem::SetReqId => items.push(AnswerItem::Status(uploader_part_status())),
+            RequestItem::SetReqId => items.push(AnswerItem::Status(uploader_part_status(
+                script.bytes.len() as u64,
+            ))),
             RequestItem::Sources | RequestItem::Sources2 { .. } | RequestItem::AichRoot => {}
         }
     }
@@ -306,12 +308,11 @@ fn multipacket_answer(script: &PeerScript, req: &MultiPacketRequest) -> MultiPac
     }
 }
 
-/// The uploader's advertised availability inside a bundled answer: one present
-/// part. The downloader's probe records the bitmap verbatim (it does not
-/// cross-check part count against the requested size), so a single present
-/// part is enough to drive `FileProbed { Available }`.
-fn uploader_part_status() -> PartBitmap {
-    PartBitmap::decode(1, &[0b1]).expect("one present part")
+/// The uploader's advertised availability inside a bundled answer: every part
+/// of the `file_size`-byte file it serves, at the count the downloader's
+/// reader demands — any other count closes the session.
+fn uploader_part_status(file_size: u64) -> PartBitmap {
+    PartBitmap::all_present(rmule_primitives::ed2k_status_part_count(file_size))
 }
 
 /// The wire sub-opcode a decoded [`RequestItem`] arrived as, for the
@@ -382,7 +383,12 @@ async fn run_script(sock: tokio::net::TcpStream, script: PeerScript) -> PeerStat
             }
             0x4F => {
                 stats.standalone_probe_asks += 1;
-                let _ = wtx.send(wire::file_status_bytes(script.file_hash)).await;
+                let _ = wtx
+                    .send(wire::file_status_bytes(
+                        script.file_hash,
+                        script.bytes.len() as u64,
+                    ))
+                    .await;
             }
             0x51 => {
                 let hashes: &[PartHash] = match &script.hash_set {

@@ -35,7 +35,7 @@ fn unsolicited_probe_answers_do_not_seed_state_or_emit_probed() {
     let out = drain(|| session.poll_output());
     assert!(writes(&out).iter().any(|p| p.opcode() == 0x58));
     session.handle_bytes(&reqfilename_answer(h, "real"));
-    session.handle_bytes(&file_status(h, 1, &[0x01]));
+    session.handle_bytes(&file_status(h, 3, &[0x01]));
     let out = drain(|| session.poll_output());
     assert!(events(&out).iter().any(|e| matches!(
         e,

@@ -118,6 +118,10 @@ impl PeerSession {
     pub(super) fn on_multipacket_answer(&mut self, ans: MultiPacketAnswer) {
         let file_hash = ans.file_hash;
         for item in ans.items {
+            // A refused status closed the session: nothing after it is read.
+            if self.core.is_closed() {
+                return;
+            }
             match item {
                 AnswerItem::Name(file_name) => self.on_req_filename_answer(ReqFileNameAnswer {
                     file_hash,

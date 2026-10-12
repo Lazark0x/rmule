@@ -24,7 +24,7 @@ fn sendingpart_i64_decodes_offset_above_4gb() {
         ranges,
     }));
     session.handle_bytes(&reqfilename_answer(h, "big"));
-    session.handle_bytes(&file_status(h, 1029, &[0xFF; 129]));
+    session.handle_bytes(&file_status(h, 1028, &[0xFF; 129]));
     session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     session.handle_bytes(&acceptuploadreq());
     let _ = drain(|| session.poll_output());

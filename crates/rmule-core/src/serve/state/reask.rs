@@ -9,7 +9,7 @@ use rmule_peer::peer_udp::responder::{
     self, KnownWaiter, Pinger, QueueRoom, ReaskReply, Silence, Standing,
 };
 use rmule_peer::{PartBitmap, PeerIdentity};
-use rmule_primitives::{ED2K_PART_SIZE, PeerEndpoint};
+use rmule_primitives::{PeerEndpoint, ed2k_status_part_count};
 
 use super::{ServeDecision, ServeState};
 use crate::service::ServeEvent;
@@ -93,28 +93,8 @@ impl ServeState {
     }
 }
 
-/// The ED2K part count a peer expects in an `OP_FILESTATUS` for a `file_size`-byte
-/// file: `file_size / ED2K_PART_SIZE + 1` (aMule `CKnownFile::SetFileSize`,
-/// `m_iED2KPartCount`, KnownFile.cpp). A file whose size is an exact multiple of
-/// `ED2K_PART_SIZE` carries a trailing zero-length part, so this is one more than
-/// the count of non-empty parts that a plain `ceil` (`rmule_primitives::part_count`)
-/// yields. aMule's `CUpDownClient::ProcessFileStatus` (DownloadClient.cpp) throws
-/// "wrong part number" and drops the source when the received count differs, so the
-/// serve status must use this value. It matches the count
-/// `PartHashSet::expected_hash_count` uses for a multi-part hash set, keeping
-/// `OP_FILESTATUS` and `OP_HASHSETANSWER` mutually consistent.
-pub(super) fn ed2k_status_part_count(file_size: u64) -> u32 {
-    if file_size == 0 {
-        return 0;
-    }
-    u32::try_from(file_size / ED2K_PART_SIZE + 1).unwrap_or(u32::MAX)
-}
-
-/// A bitmap with every part present, for a complete shared file. `PartBitmap`
-/// has no all-present constructor; decode tolerates the all-ones byte and
-/// zeroes the unused trailing bits, giving a canonical full bitmap.
+/// A bitmap with every part present, for a complete shared file, at the count
+/// a status states for it, phantom part included.
 pub(super) fn full_bitmap(file_size: u64) -> PartBitmap {
-    let parts = ed2k_status_part_count(file_size);
-    let bytes = vec![0xFF_u8; (parts as usize).div_ceil(8)];
-    PartBitmap::decode(parts, &bytes).expect("all-ones bitmap of the exact length always decodes")
+    PartBitmap::all_present(ed2k_status_part_count(file_size))
 }

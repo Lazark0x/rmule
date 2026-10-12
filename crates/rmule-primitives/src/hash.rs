@@ -35,6 +35,28 @@ pub const fn part_count(file_size: u64) -> u32 {
     }
 }
 
+/// The part count an `OP_FILESTATUS` states for a `file_size`-byte file:
+/// `file_size / ED2K_PART_SIZE + 1`, and `0` for an empty file (aMule
+/// `m_iED2KPartCount`, stock 2.3.3 `KnownFile.cpp:422`). An exact multiple of
+/// the part size counts one phantom part past its last real one, so this is
+/// one more than [`part_count`] there and equal to it everywhere else. aMule
+/// refuses a status of any other non-zero count (`DownloadClient.cpp:417-425`)
+/// and its uploader drops one (`UploadClient.cpp` `ProcessExtendedInfo`).
+///
+/// Saturates at `u32::MAX` like [`part_count`].
+#[must_use]
+pub const fn ed2k_status_part_count(file_size: u64) -> u32 {
+    if file_size == 0 {
+        return 0;
+    }
+    let parts = file_size / ED2K_PART_SIZE + 1;
+    if parts > u32::MAX as u64 {
+        u32::MAX
+    } else {
+        parts as u32
+    }
+}
+
 /// The self-inverse per-32-bit-word byte swap between a 128-bit eD2k hash's
 /// raw bytes and the order a Kad payload carries it in.
 ///

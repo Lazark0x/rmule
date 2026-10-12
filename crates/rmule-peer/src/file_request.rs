@@ -144,7 +144,7 @@ pub(crate) fn read_file_sized_status(tail: &[u8], file_size: u64) -> FileSizedSt
     }
     // Compared arithmetically: `file_size` may be the peer's own claim, and
     // building a bitmap to count its parts allocates by that claim.
-    if u64::from(count) != file_size / rmule_primitives::ED2K_PART_SIZE + 1 {
+    if count != rmule_primitives::ed2k_status_part_count(file_size) {
         return FileSizedStatus::Cleared;
     }
     let needed = (rmule_primitives::part_count(file_size) as usize).div_ceil(8);

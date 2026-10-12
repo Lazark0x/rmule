@@ -598,12 +598,26 @@ impl PeerSession {
         let Some(flow) = self.per_file.get_mut(&file_hash) else {
             return;
         };
+        // Only a flow that named the file's size can read a status for it: a
+        // bare `RequestSources` opened none, and asked for no status.
+        let Some(file_size) = flow.file_size else {
+            return;
+        };
         // aMule and eMule count a peer complete on the sentinel alone; a
         // spelled-out bitmap with every part is a part file, not complete
         // (stock 2.3.3 `DownloadClient.cpp:405-409`, `:428`; eMule
         // `DownloadClient.cpp:516`).
         let sentinel = status.bitmap.part_count() == 0;
-        let bitmap = expand_complete_source_sentinel(status.bitmap, flow.file_size);
+        // A count that is not the file's is aMule's "wrong part number"
+        // throw, and the connection drops (`DownloadClient.cpp:417-425`,
+        // `ClientTCPSocket.cpp:2018-2047`).
+        let Some(bitmap) = status.bitmap.advertised_parts(file_size) else {
+            self.reject(PeerError::PeerProtocolViolation {
+                reason: "file status counts other parts than the file has",
+            });
+            self.close_protocol_violation();
+            return;
+        };
         match &mut flow.probe {
             ProbeState::Pending {
                 bitmap: pending_bitmap,
@@ -619,19 +633,15 @@ impl PeerSession {
             // never resets the file to unknown). A late or unsolicited
             // `OP_FILESTATUS` for a probe we already resolved to
             // `Available` folds its bits in (a no-op when identical, as
-            // aMule's own late answer to a one-part probe is); a status
-            // describing a different part count than the one this probe
-            // already settled on cannot describe the same file and is
-            // dropped, same as any other unsolicited data.
+            // aMule's own late answer to a one-part probe is) and is not
+            // raised again: rmule asks once per connection.
             ProbeState::Available {
                 bitmap: settled_bitmap,
                 complete,
                 ..
             } => {
-                if settled_bitmap.part_count() == bitmap.part_count() {
-                    settled_bitmap.merge_from(&bitmap);
-                    *complete = sentinel;
-                }
+                settled_bitmap.merge_from(&bitmap);
+                *complete = sentinel;
                 return;
             }
             ProbeState::NotIssued | ProbeState::NotAvailable => {
@@ -850,24 +860,5 @@ impl PeerSession {
         if probe_done && hashset_done && slot_idle {
             self.try_send_start_upload(file_hash);
         }
-    }
-}
-
-/// The reader-side half of aMule's part-count-0 "complete source" sentinel
-/// (`ProcessFileStatus`, `DownloadClient.cpp:388-458`, kno `ab483654`): a
-/// literal zero part count means every part, not none, expanded to a full
-/// bitmap of the file's own part count. `decode_packet` cannot do this
-/// itself — it never sees the file's size — so the fold does it once the
-/// bitmap reaches per-file state, which does. `file_size` is `None` only
-/// for a flow a bare `RequestSources` opened with no probe or part request
-/// alongside it (that command carries no size); the sentinel rides through
-/// undecoded there rather than being guessed.
-fn expand_complete_source_sentinel(bitmap: PartBitmap, file_size: Option<u64>) -> PartBitmap {
-    if bitmap.part_count() != 0 {
-        return bitmap;
-    }
-    match file_size {
-        Some(size) => PartBitmap::all_present(part_count(size)),
-        None => bitmap,
     }
 }
