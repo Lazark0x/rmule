@@ -1,8 +1,8 @@
 # rmule-cli
 
 The headless **Application Front-End**: a thin command router over the **Core
-Orchestrator**. It owns argument parsing, the diagnostic subscriber install,
-and human-readable output — and nothing else. Every durable fact (the persisted
+Orchestrator**. It owns argument parsing, the **Run Log**'s install, and
+human-readable output — and nothing else. Every durable fact (the persisted
 **Client Identity**, the managed server list, preferences, download state) lives
 in `rmule-core`, reached through its stores and its command/event surface.
 
@@ -22,6 +22,15 @@ The directory holding rmule's Durable Store (`rmule.redb`) and its data files
 Every command resolves it first, so two invocations against different
 directories are two independent clients.
 _Avoid_: workspace, home, profile dir
+
+**Run Log**:
+Core's `rmule.log` in the **Data Directory** (ADR-0075), opened by a command
+that runs a core (`add`) at the level the *Full run log* preference
+(`run_log_full`, shared with `rmule`) sets: the records of the events the
+command receives, and the reachability trail core writes itself. With the
+global `--verbose` flag every record is also written to stderr as the file
+holds it; stderr otherwise carries only the command's own lines.
+_Avoid_: debug output, trace, verbose log
 
 **Kad Join**:
 The one long-lived command: it drives `rmule_net::kad::spawn` directly rather

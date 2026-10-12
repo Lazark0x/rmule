@@ -161,9 +161,11 @@ impl JoinCommandSink for Core {
 /// fetches through — reqwest stays out of core. `bootstrap` carries the
 /// server.met URL, size cap, and auto-fetch switch. `join` is the per-network
 /// defaults-ON posture. `kad_enable` is the front-end-assembled Kad start
-/// config (identity, ports, the persisted-file path, any operator seeds); step
-/// 3 resolves its seeds and it is dispatched iff `join.connect_kad`, and
-/// dropped otherwise. `sink` receives the join commands.
+/// config (the persisted-file path, any operator seeds); step 3 resolves its
+/// seeds about `own_id`, the node's Kad ID
+/// ([`Core::kad_id`](crate::Core::kad_id)), and it is dispatched iff
+/// `join.connect_kad`, and dropped otherwise. `sink` receives the join
+/// commands.
 ///
 /// The order is load-bearing (see the module docs); the two joins are
 /// independent (each gated only on its own switch). Returns the resolved
@@ -174,6 +176,7 @@ pub async fn run_join_sequence<S, F, K>(
     bootstrap: &BootstrapConfig,
     join: &JoinConfig,
     mut kad_enable: KadEnableConfig,
+    own_id: rmule_kad::KadId,
     sink: &K,
 ) -> Result<JoinOutcome, CoreError>
 where
@@ -230,7 +233,7 @@ where
     //    networks stay independent — and never fatal: a stranded Kad still
     //    joins below.
     let kad_seed = if join.connect_kad {
-        acquire_kad_seeds(&mut kad_enable, bootstrap, fetcher).await
+        acquire_kad_seeds(&mut kad_enable, own_id, bootstrap, fetcher).await
     } else {
         KadSeedOutcome::Skipped
     };

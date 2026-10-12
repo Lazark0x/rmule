@@ -14,7 +14,7 @@
 use crate::fixture::load;
 use rmule_peer::{
     BundledAsk, Hello, HelloAnswer, MiscOptions1, PartBitmap, PartRanges, PeerCommand, PeerEvent,
-    PeerHelloBody, PeerSession,
+    PeerHelloBody, PeerSession, RequesterCommand, ServerEvent,
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{ED2K_PART_SIZE, FileHash, Packet, PacketProtocol, Tag, TagValue};
@@ -94,13 +94,13 @@ fn amule_hello_claiming_no_extended_requests() -> PeerHelloBody {
 }
 
 fn one_part_ask() -> PeerCommand {
-    PeerCommand::RequestFile {
+    PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: FILE_SIZE,
         want_sources: true,
         want_aich_root: true,
         own_status: PartBitmap::downloader_empty(FILE_SIZE),
-    }
+    })
 }
 
 /// KAT: aMule wrote the captured bundle to an rmule that claimed
@@ -180,13 +180,13 @@ fn a_one_part_ask_to_amule_carries_rmules_part_status_in_the_name_sub() {
 fn a_partfile_ask_to_amule_carries_the_parts_rmule_holds() {
     let size = ED2K_PART_SIZE * 5 / 2;
     let mut session = identified_against(amule_hello());
-    session.handle_command(PeerCommand::RequestFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: size,
         want_sources: true,
         want_aich_root: false,
         own_status: PartBitmap::downloader(size, |part| part.value() == 1),
-    });
+    }));
     let sent = writes(&drain(|| session.poll_output()));
     let mut payload = hash().as_bytes().to_vec();
     payload.extend_from_slice(&size.to_le_bytes());
@@ -221,11 +221,11 @@ fn a_standalone_name_ask_to_amule_is_never_the_bare_hash() {
 #[test]
 fn a_requestparts_fallback_ask_for_a_one_part_file_is_the_name_request_alone() {
     let mut session = identified_against(amule_hello());
-    session.handle_command(PeerCommand::RequestParts {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: hash(),
         file_size: FILE_SIZE,
         ranges: PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap(),
-    });
+    }));
     let sent = writes(&drain(|| session.poll_output()));
     let opcodes: Vec<u8> = sent.iter().map(Packet::opcode).collect();
     assert_eq!(
@@ -240,11 +240,11 @@ fn a_requestparts_fallback_ask_for_a_one_part_file_is_the_name_request_alone() {
 #[test]
 fn a_requestparts_fallback_ask_for_a_multi_part_file_still_bundles_setreqfileid() {
     let mut session = identified_against(amule_hello());
-    session.handle_command(PeerCommand::RequestParts {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: hash(),
         file_size: 2 * ED2K_PART_SIZE,
         ranges: PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap(),
-    });
+    }));
     let sent = writes(&drain(|| session.poll_output()));
     let opcodes: Vec<u8> = sent.iter().map(Packet::opcode).collect();
     assert_eq!(
@@ -262,21 +262,21 @@ fn a_requestparts_fallback_ask_for_a_multi_part_file_still_bundles_setreqfileid(
 #[test]
 fn no_source_ask_to_an_amule_hello_is_the_standalone_19_byte_0x83() {
     let commands = [
-        PeerCommand::RequestSources { file_hash: hash() },
-        PeerCommand::RequestFile {
+        PeerCommand::Requester(RequesterCommand::RequestSources { file_hash: hash() }),
+        PeerCommand::Requester(RequesterCommand::RequestFile {
             file_hash: hash(),
             file_size: FILE_SIZE,
             own_status: PartBitmap::downloader_empty(FILE_SIZE),
             want_sources: true,
             want_aich_root: false,
-        },
-        PeerCommand::RequestFile {
+        }),
+        PeerCommand::Requester(RequesterCommand::RequestFile {
             file_hash: hash(),
             file_size: 2 * ED2K_PART_SIZE,
             own_status: PartBitmap::downloader_empty(2 * ED2K_PART_SIZE),
             want_sources: true,
             want_aich_root: false,
-        },
+        }),
     ];
     for (label, hello) in [
         ("captured", amule_hello as fn() -> PeerHelloBody),
@@ -325,19 +325,19 @@ const ONE_PART_SIZE: u64 = 4_194_304;
 fn amules_name_only_answer_to_a_one_part_bundle_opens_the_slot() {
     let file_hash = FileHash::from_bytes(ONE_PART_HASH);
     let mut session = identified_against(amule_hello());
-    session.handle_command(PeerCommand::RequestFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash,
         file_size: ONE_PART_SIZE,
         own_status: PartBitmap::downloader_empty(ONE_PART_SIZE),
         want_sources: true,
         want_aich_root: false,
-    });
+    }));
     let _ = drain(|| session.poll_output());
-    session.handle_command(PeerCommand::RequestParts {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash,
         file_size: ONE_PART_SIZE,
         ranges: PartRanges::new([(0, 184_320), (0, 0), (0, 0)]).unwrap(),
-    });
+    }));
     let sent = writes(&drain(|| session.poll_output()));
     assert!(sent.is_empty(), "the bundle already asked: {sent:?}");
 
@@ -368,11 +368,11 @@ fn an_amule_bundle_with_its_part_status_still_routes_the_source_ask() {
     assert!(
         seen.iter().any(|e| matches!(
             e,
-            PeerEvent::FileBundleRequested { file_hash, asks, .. }
+            PeerEvent::Server(ServerEvent::FileBundleRequested { file_hash, asks, .. })
                 if *file_hash == hash()
                     && matches!(
                         asks.as_slice(),
-                        [BundledAsk::Name { part_status: Some(status) }, BundledAsk::Sources(_)]
+                        [BundledAsk::Name { part_status: Some(status) }, BundledAsk::Sources]
                             if *status == PartBitmap::decode(1, &[0]).unwrap()
                     )
         )),

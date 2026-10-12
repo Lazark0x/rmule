@@ -3,6 +3,7 @@
 //! leg, AICH trust and recovery, and what a stop does to the fleet.
 
 mod aich;
+mod ask_cadence;
 mod buddy_callback;
 mod buddy_hash_fallback;
 mod callback_walk;
@@ -10,30 +11,93 @@ mod callbacks;
 mod capability;
 mod direct_ipv6;
 mod dual_stack;
+mod intake;
 mod ownership;
+mod reask;
 mod scheduling;
 mod seeds;
 mod sources;
 
 use std::net::Ipv4Addr;
 
-use rmule_primitives::{AichHashSet, EMBLOCKSIZE, Ipv4Endpoint};
+use rmule_primitives::{AichHashSet, EMBLOCKSIZE, Ipv4Endpoint, SourceSighting};
+
+use rmule_peer::natt::CALLBACK_SILENCE_FALLBACK;
 
 use crate::adapters::PeerWorkerEvent;
+use crate::download::source_book::{CLIENT_LIST_CLEANUP, FILE_REASK_TIME};
+use crate::download::state::candidates::TRAVERSAL_SLOT_BOUND;
+use crate::hello_facts::HelloFacts;
 use crate::service::{PeerRetirementReason, VerificationAuthority};
 
 use super::*;
+use crate::download::source_book::Gate;
 
-/// The identification a hello naming no user yields: the brain only carries
-/// it to the worker's row.
-fn hello_software() -> rmule_peer::ClientSoftware {
-    rmule_peer::ClientSoftware::from_hello_body(&rmule_peer::PeerHelloBody {
-        user_hash: UserHash::from_bytes([0; UserHash::BYTE_LEN]),
-        client_id: rmule_primitives::ClientId::from_u32(0),
-        tcp_port: 0,
-        tags: Vec::new(),
-        connected_server: Ipv4Endpoint::new(Ipv4Addr::UNSPECIFIED, 0),
-    })
+/// What a worker reports when its peer's hello names `user_hash` and little
+/// else ([`HelloFacts::of`]).
+fn identified(user_hash: UserHash) -> PeerWorkerEvent {
+    PeerWorkerEvent::Identity(HelloFacts::of(user_hash).identity())
+}
+
+/// [`identified`] with the hello's crypt stance spelled out.
+fn identified_with(user_hash: UserHash, crypt: rmule_primitives::CryptStance) -> PeerWorkerEvent {
+    PeerWorkerEvent::Identity(
+        HelloFacts {
+            crypt,
+            ..HelloFacts::of(user_hash)
+        }
+        .identity(),
+    )
+}
+
+/// One decoded type-3/5 Kad row: a firewalled publisher behind its buddy,
+/// observed at `198.51.100.77:4672`, with its User Hash, buddy and
+/// connect-options byte left to the caller.
+fn kad_buddy_sighting(
+    user_hash: Option<UserHash>,
+    buddy_id: rmule_kad::KadId,
+    buddy_udp: Option<Ipv4Endpoint>,
+    connect_options: u8,
+) -> SourceSighting {
+    SourceSighting::by_road(
+        rmule_primitives::SourceRoad::Buddy {
+            buddy: rmule_primitives::SightedBuddy {
+                buddy_id: *buddy_id.as_bytes(),
+                buddy_udp,
+            },
+            kad_udp: Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 77), 4672),
+            tcp_port: 4662,
+        },
+        user_hash,
+        Some(rmule_primitives::SourceCryptOptions::from_byte(
+            connect_options,
+        )),
+    )
+}
+
+/// The instant every test's run starts at; a test hands later ones in as
+/// offsets from it.
+fn t0() -> Instant {
+    static T0: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    *T0.get_or_init(Instant::now)
+}
+
+/// Run the brain's clock wake by wake, as the runner does, until `key`'s road
+/// ends: the decisions of every tick, in order.
+fn until_road_ends(state: &mut DownloadState, key: CallbackKey) -> Vec<Decision> {
+    let mut out = Vec::new();
+    for _ in 0..16 {
+        let at = state.next_wake().expect("a pending road has a deadline");
+        let ticked = state.on_tick(at);
+        let ended = ticked
+            .iter()
+            .any(|d| matches!(d, Decision::EndCallback { key: held } if *held == key));
+        out.extend(ticked);
+        if ended {
+            return out;
+        }
+    }
+    panic!("{key:?}'s road never ended: {out:?}");
 }
 
 fn peer(n: u8) -> PeerEndpoint {
@@ -58,8 +122,8 @@ fn slot(n: usize) -> WorkerSlot {
 /// A file small enough to be exactly one part.
 const ONE_PART: u64 = 1_000;
 
-/// The injected per-callback slot-hold span (`CoreConfig::callback_timeout`);
-/// surfaces as [`Decision::ArmCallbackTimeout`]'s `after`.
+/// The injected per-callback slot-hold span (`CoreConfig::callback_timeout`):
+/// a road opened at an instant lapses this long after it.
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// File-hash-only content of `file_size` bytes: no link hash set, no AICH
@@ -78,15 +142,108 @@ fn file_hash_only_content(file_size: u64) -> ContentFacts {
     }
 }
 
-/// `high` dialable candidates, none obfuscated, and no Low-ID ones.
-fn high_id_candidates(high: Vec<PeerEndpoint>) -> StartingCandidates {
-    StartingCandidates {
-        high_id: high,
-        peer_crypts: HashMap::new(),
-        low_id: Vec::new(),
-        distrusted: HashSet::new(),
-        remembered: RememberedSeeds::default(),
+/// The sightings of `pool`'s endpoints, none obfuscated.
+fn plain_sightings(pool: &[PeerEndpoint]) -> Vec<SourceSighting> {
+    pool.iter()
+        .map(|&endpoint| match endpoint {
+            PeerEndpoint::V4(v4) => SourceSighting::plain(rmule_primitives::PeerSource::HighId(v4)),
+            PeerEndpoint::V6(v6) => SourceSighting::plain(rmule_primitives::PeerSource::Ipv6(v6)),
+        })
+        .collect()
+}
+
+/// Take `sightings` of `channel` behind an open gate at the state's own Dial
+/// Position.
+fn take(
+    state: &mut DownloadState,
+    channel: Channel,
+    sightings: impl IntoIterator<Item = SourceSighting>,
+) -> Taken {
+    let filter = crate::ip_filter::IpFilter::default();
+    let gate = Gate {
+        filter: &filter,
+        dial: state.dial,
+    };
+    state.on_sightings(t0(), channel, sightings, &gate)
+}
+
+fn via_kad(state: &mut DownloadState, rows: Vec<SourceSighting>) -> Vec<Decision> {
+    take(state, Channel::Kad, rows).decisions
+}
+
+fn via_global(
+    state: &mut DownloadState,
+    server: Ipv4Endpoint,
+    rows: Vec<rmule_primitives::PeerSource>,
+) -> Vec<Decision> {
+    let rows = rows.into_iter().map(SourceSighting::plain);
+    take(state, Channel::Global(server), rows).decisions
+}
+
+fn via_exchange(
+    state: &mut DownloadState,
+    from: PeerEndpoint,
+    rows: Vec<SourceSighting>,
+) -> Vec<Decision> {
+    take(state, Channel::Exchanged(from), rows).decisions
+}
+
+/// A state whose run has sighted `batches` before its first fill, then the
+/// `lows` a decoder names no facts for — a buddy, the NAT-T bit — pooled
+/// through the book's candidate entry. Sightings after it fill as a started
+/// run's do.
+fn state_from(
+    content: ContentFacts,
+    posture: SourcingPosture,
+    peer_concurrency: usize,
+    facts: StartingFacts,
+    batches: Vec<(Channel, Vec<SourceSighting>)>,
+    lows: Vec<SourceSighting>,
+) -> DownloadState {
+    let mut state = DownloadState::new(
+        DownloadId::from_u64(1),
+        content,
+        facts,
+        posture,
+        CALLBACK_TIMEOUT,
+        peer_concurrency,
+    );
+    for (channel, sightings) in batches {
+        take(&mut state, channel, sightings);
     }
+    // A Low-ID record arrives as a server names it; a Kad callback row as Kad
+    // does.
+    let (kad, server): (Vec<_>, Vec<_>) = lows
+        .into_iter()
+        .partition(|sighting| !matches!(sighting.road(), rmule_primitives::SourceRoad::Record(_)));
+    take(&mut state, Channel::Server, server);
+    take(&mut state, Channel::Kad, kad);
+    state.started = true;
+    state
+}
+
+fn no_facts() -> StartingFacts {
+    StartingFacts {
+        distrusted: HashSet::new(),
+        seeds_written: 0,
+    }
+}
+
+/// `pool` dialable, none obfuscated, sighted as a server answer.
+fn pooled_state(
+    content: ContentFacts,
+    pool: &[PeerEndpoint],
+    posture: SourcingPosture,
+    peer_concurrency: usize,
+) -> DownloadState {
+    state_from(
+        content,
+        posture,
+        peer_concurrency,
+        no_facts(),
+        vec![(Channel::Server, plain_sightings(pool))],
+        Vec::new(),
+    )
 }
 
 /// A posture with nothing armed: not callback-capable, Low-ID, no discovery.
@@ -94,6 +251,7 @@ const QUIET_POSTURE: SourcingPosture = SourcingPosture {
     callback_capability: CallbackCapability::UNCALLABLE,
     dial: DialPosition { known_ipv6: None },
     discovery_active: false,
+    client_udp: false,
 };
 
 /// A Low-ID source id (`< ClientId::LOW_ID_THRESHOLD`), routable for callback
@@ -104,11 +262,9 @@ fn low(n: u32) -> ClientId {
 
 /// A connected-server Low-ID candidate as a plain `0x42` answer names it: an id
 /// and a port, and nothing rung 1 could use beyond the server namespace.
-fn low_candidate(n: u32) -> ConnectedServerCandidate {
-    LowIdCandidate::from_connected_server(rmule_primitives::ExchangedSource::plain(
-        rmule_primitives::PeerSource::new(low(n), 4662),
-    ))
-    .expect("a Low-ID source is a candidate")
+/// A connected-server Low-ID source, as a server answer names it.
+fn low_candidate(n: u32) -> SourceSighting {
+    SourceSighting::plain(rmule_primitives::PeerSource::new(low(n), 4662))
 }
 
 /// The connected-server (`server: None`) callback key for `low_id` — the form
@@ -124,20 +280,12 @@ fn connected_key(low_id: ClientId) -> CallbackKey {
 /// callback-capability flag (ADR-0039).
 fn callback_state(
     high: Vec<PeerEndpoint>,
-    low_ids: Vec<ConnectedServerCandidate>,
+    low_ids: Vec<SourceSighting>,
     callback_capability: bool,
     peer_concurrency: usize,
 ) -> DownloadState {
-    DownloadState::new(
-        DownloadId::from_u64(1),
+    state_from(
         file_hash_only_content(ONE_PART),
-        StartingCandidates {
-            high_id: high,
-            peer_crypts: HashMap::new(),
-            low_id: low_ids,
-            distrusted: HashSet::new(),
-            remembered: RememberedSeeds::default(),
-        },
         SourcingPosture {
             callback_capability: if callback_capability {
                 CallbackCapability::server_high_id()
@@ -146,18 +294,18 @@ fn callback_state(
             },
             ..QUIET_POSTURE
         },
-        CALLBACK_TIMEOUT,
         peer_concurrency,
+        no_facts(),
+        vec![(Channel::Server, plain_sightings(&high))],
+        low_ids,
     )
 }
 
 fn file_hash_only_state(pool: Vec<PeerEndpoint>, peer_concurrency: usize) -> DownloadState {
-    DownloadState::new(
-        DownloadId::from_u64(1),
+    pooled_state(
         file_hash_only_content(ONE_PART),
-        high_id_candidates(pool),
+        &pool,
         QUIET_POSTURE,
-        CALLBACK_TIMEOUT,
         peer_concurrency,
     )
 }
@@ -172,15 +320,13 @@ fn our_part_status_reports_the_verified_parts_as_the_reask_ping_bitfield() {
     // aMule's uploader drops the status. Completion is by absence in the
     // scheduler, so the three pre-verified parts read back present and parts
     // 1, 3 read absent.
-    let state = DownloadState::new(
-        DownloadId::from_u64(1),
+    let state = pooled_state(
         ContentFacts {
             verified_parts: vec![0, 2, 4],
             ..file_hash_only_content(5 * rmule_primitives::ED2K_PART_SIZE)
         },
-        high_id_candidates(Vec::new()),
+        &[],
         QUIET_POSTURE,
-        CALLBACK_TIMEOUT,
         1,
     );
     assert_eq!(
@@ -192,15 +338,13 @@ fn our_part_status_reports_the_verified_parts_as_the_reask_ping_bitfield() {
 /// A one-part download with server-UDP global discovery armed (ADR-0051): an
 /// exhausted pool waits for a future UDP sweep instead of failing.
 fn discovery_armed_state(pool: Vec<PeerEndpoint>, peer_concurrency: usize) -> DownloadState {
-    DownloadState::new(
-        DownloadId::from_u64(1),
+    pooled_state(
         file_hash_only_content(ONE_PART),
-        high_id_candidates(pool),
+        &pool,
         SourcingPosture {
             discovery_active: true,
             ..QUIET_POSTURE
         },
-        CALLBACK_TIMEOUT,
         peer_concurrency,
     )
 }
@@ -213,15 +357,13 @@ fn aich_state(
     pool: Vec<PeerEndpoint>,
     peer_concurrency: usize,
 ) -> DownloadState {
-    DownloadState::new(
-        DownloadId::from_u64(1),
+    pooled_state(
         ContentFacts {
             trusted_aich_root: Some(root),
             ..file_hash_only_content(file_size)
         },
-        high_id_candidates(pool),
+        &pool,
         QUIET_POSTURE,
-        CALLBACK_TIMEOUT,
         peer_concurrency,
     )
 }
@@ -230,7 +372,7 @@ fn aich_state(
 /// the initial fill registered `peer(1)` in slot 0 and `peer(2)` in slot 1.
 fn two_peer_state() -> DownloadState {
     let mut state = file_hash_only_state(vec![peer(1), peer(2)], 2);
-    let _ = state.start();
+    let _ = state.start(t0());
     state
 }
 

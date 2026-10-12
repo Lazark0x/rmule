@@ -278,6 +278,7 @@ mod tests {
             &mut state,
             download_event(DownloadEvent::DownloadCompleted {
                 download_id: download_id(7),
+                final_path: "/downloads/file.bin".into(),
             }),
         );
         assert_eq!(

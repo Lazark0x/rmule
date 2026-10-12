@@ -27,10 +27,9 @@ use std::sync::Arc;
 use rmule_bootstrap::{
     BootstrapConfig, FetchError, Fetcher, ReqwestFetcher, should_auto_fetch_server_met,
 };
-use rmule_core::port_mapping::{PortMappingConfig, PortMappingMode};
 use rmule_core::{
-    AppConfigStore, ClientCredentials, Core, CoreCommand, CoreConfig, DurableAppConfig,
-    KadEnableConfig, MappingBackend, ServerListCommand, ServerListStore, open_durable_store,
+    AppConfigStore, Core, CoreCommand, CoreConfig, DurableAppConfig, KadEnableConfig,
+    MappingBackend, ServerListCommand, ServerListStore, open_durable_store,
 };
 
 use crate::args::DataDir;
@@ -38,11 +37,12 @@ use crate::config::{Preferences, SharedConfig};
 use crate::connect::AtStart;
 use crate::state::{AttachFailure, SessionConfig};
 
-/// The two capabilities attaching hands core that reach past this host: the
-/// HTTP fetch the server-list update and the Kad seed acquisition share, and
-/// the backends port mapping talks to the router through. Given rather than
-/// built inside, because talking to a mirror or a router is a deployment
-/// decision: the app takes [`Live`], a test a canned fetch and no backends.
+/// What attaching hands core from past this process: the HTTP fetch the
+/// server-list update and the Kad seed acquisition share, the backends port
+/// mapping talks to the router through, and the operator's home directory the
+/// share guards refuse. Given rather than built inside, because talking to a
+/// mirror or a router, and whose machine this is, are deployment facts: the
+/// app takes [`Live`], a test a canned fetch, no backends and a scratch home.
 pub trait Deployment {
     /// The fetch this deployment makes.
     type Fetcher: Fetcher + Clone + Send + Sync + 'static;
@@ -57,6 +57,10 @@ pub trait Deployment {
     /// The Mapping Backends (ADR-0086), keyed by the install's PCP nonce
     /// secret. Empty maps nothing.
     fn mapping_backends(&self, port_map_secret: u32) -> Vec<Arc<dyn MappingBackend>>;
+
+    /// The operator's home directory, which no shared directory may be
+    /// (ADR-0101), or `None` when it cannot be named.
+    fn home(&self) -> Option<std::path::PathBuf>;
 }
 
 /// The shipped app's deployment: `reqwest` for the mirrors, and PCP, NAT-PMP
@@ -73,6 +77,10 @@ impl Deployment for Live {
 
     fn mapping_backends(&self, port_map_secret: u32) -> Vec<Arc<dyn MappingBackend>> {
         rmule_core::live_mapping_backends(port_map_secret)
+    }
+
+    fn home(&self) -> Option<std::path::PathBuf> {
+        rmule_core::home_dir(|name| std::env::var_os(name))
     }
 }
 
@@ -103,6 +111,8 @@ pub struct Attachment<F> {
 pub struct KadJoin<F> {
     /// The Kad start config, seeds still unresolved.
     pub config: KadEnableConfig,
+    /// The node's Kad ID, which the seeds are resolved about.
+    pub own_id: rmule_core::KadId,
     /// The mirror config the seed acquisition reads.
     pub bootstrap: BootstrapConfig,
     /// The fetch the seed acquisition runs through.
@@ -142,19 +152,6 @@ pub async fn attach<D: Deployment>(
         .map_err(|error| attach_failed(AttachFailure::OpenStore, &error))?;
     let store = DurableAppConfig::new(Arc::clone(&durable));
 
-    let identity = store
-        .ensure_identity()
-        .map_err(|error| attach_failed(AttachFailure::Identity, &error))?;
-    // The durable Kad node identity (ADR-0043): generate-once, so a restarted
-    // node keeps its keyspace position and its advertised UDP port.
-    let kad_identity = store
-        .ensure_kad_identity()
-        .map_err(|error| attach_failed(AttachFailure::KadIdentity, &error))?;
-    // The per-install Kad UDP Key: generate-once, so the verify
-    // keys the network learned for this node survive a restart.
-    let kad_udp_key = store
-        .ensure_kad_udp_key()
-        .map_err(|error| attach_failed(AttachFailure::KadUdpKey, &error))?;
     // The per-install PCP nonce secret (ADR-0086): generate-once, so a restart
     // can renew and delete the mappings this install already holds.
     let port_map_secret = store
@@ -170,12 +167,10 @@ pub async fn attach<D: Deployment>(
         .map(|listed| listed.endpoint)
         .collect();
     let server = listed.first().cloned();
-    // Everything the Settings tab edits, read once. From here the store
-    // is *shared*: the builder gets a clone of the seam as the narrow
-    // `ServerListStore` (ADR-0080) and the front-end keeps the whole
-    // `AppConfigStore` — same handle, no lock (ADR-0083).
-    let config = SharedConfig::new(store.clone());
-    let preferences = config
+    // Everything the Settings tab shows, read once, before a core runs. From
+    // here the store is *shared*: the builder opens its own seams on it and
+    // the front end keeps a view — same handle, no lock (ADR-0083).
+    let preferences = SharedConfig::open(Arc::clone(&durable))
         .load(Some(resolved))
         .map_err(|error| attach_failed(AttachFailure::Preferences, &error))?;
 
@@ -206,56 +201,41 @@ pub async fn attach<D: Deployment>(
     // repository, shared-file registry and managed server list are all seams
     // on that one handle, so the Servers tab and the core actor read one list
     // (ADR-0080: `AppConfigStore` is a `ServerListStore` supertrait; ADR-0083:
-    // every seam method is `&self`, so nothing locks).
-    // The one UDP port the operator configured (ADR-0057): the reask surface,
-    // the NAT-T frames and the Kad node all bind it, so it is core config and
-    // no longer something `EnableKad` carries.
-    let core = Core::builder(
-        CoreConfig {
-            udp_port: preferences.udp_port,
-            // The one obfuscation policy (ADR-0046): peer TCP, peer UDP and
-            // the Kad node's datagram crypt.
-            peer_crypt: preferences.obfuscation.policy(),
-            // The peers each download keeps for a restart (ADR-0109).
-            remember_peers: preferences.remember_peers,
-            // Whether the mapping runtime starts at all (ADR-0086). Core
-            // starts it once, at build, so the switch holds until a restart.
-            port_mapping: PortMappingConfig {
-                mode: if preferences.port_mapping {
-                    PortMappingMode::Auto
-                } else {
-                    PortMappingMode::Off
-                },
-                ..PortMappingConfig::default()
-            },
-            ..CoreConfig::default()
-        },
-        durable,
-    )
-    .server_list_fetcher(fetcher.clone())
-    // Credit-ring continuity: seed from and flush to clients.met beside
-    // the other data files (ADR-0066).
-    .persist_credit_in(data_dir.clone())
-    // IP filtering, as `rmule-cli` loads it: `ipfilter.dat`, then
-    // `ipfilter_static.dat` on top, from the data directory, at the
-    // `CoreConfig` level and gates. Absent files are an empty filter —
-    // aMule's out-of-box posture.
-    .ip_filter_dir(data_dir.clone())
-    // Port mapping (ADR-0086): the backends are the deployment's, because
-    // talking to the operator's router is a deployment decision — a test
-    // holds scripted ones or none. With the operator's switch off, core
-    // starts no runtime and these are never spoken to.
-    .mapping_backends(deployment.mapping_backends(port_map_secret))
-    // The downloads Quit left running start again at attach (ADR-0094): core
-    // decides which, and presents the same credentials a Resume would.
-    .restore_credentials(ClientCredentials::from(identity.clone()))
-    // The Shared Directory List's guards (ADR-0101): core never reads the
-    // environment, so the home and the data directory are named here.
-    .share_guards(rmule_core::ShareGuards {
-        home: rmule_core::home_dir(|name| std::env::var_os(name)),
-        data_dir: Some(data_dir.clone()),
-    })
-    .build();
+    // every seam method is `&self`, so nothing locks). The operator's Core
+    // Settings — the UDP port, the obfuscation policy, `Remember peers`, the
+    // port-mapping switch — come off that handle too (ADR-0069).
+    let core = Core::builder(CoreConfig::default(), durable)
+        .server_list_fetcher(fetcher.clone())
+        // Credit-ring continuity: seed from and flush to clients.met beside
+        // the other data files (ADR-0066).
+        .persist_credit_in(data_dir.clone())
+        // IP filtering, as `rmule-cli` loads it: `ipfilter.dat`, then
+        // `ipfilter_static.dat` on top, from the data directory, at the
+        // `CoreConfig` level and gates. Absent files are an empty filter —
+        // aMule's out-of-box posture.
+        .ip_filter_dir(data_dir.clone())
+        // Port mapping (ADR-0086): the backends are the deployment's, because
+        // talking to the operator's router is a deployment decision — a test
+        // holds scripted ones or none. With the operator's switch off, core
+        // starts no runtime and these are never spoken to.
+        .mapping_backends(deployment.mapping_backends(port_map_secret))
+        // The downloads Quit left running start again at attach (ADR-0094): core
+        // decides which. Every login, hello and Kad dial presents the Core
+        // Settings' nickname and port, and the Kad identity is the store's,
+        // read by core itself (ADR-0069).
+        .restore_at_attach()
+        // The Shared Directory List's guards (ADR-0101), the download
+        // directory's among them: core never reads the environment, so the
+        // home and the data directory are named here.
+        .share_guards(rmule_core::ShareGuards {
+            home: deployment.home(),
+            data_dir: Some(data_dir.clone()),
+        })
+        .build();
+
+    // The Settings tab's door from here on is the running core's own, so a
+    // live key is taken up at once (ADR-0069).
+    let config = SharedConfig::new(core.settings(), store.clone());
 
     // ADR-0065's first-run fetch, through the actor (see the module docs).
     if should_auto_fetch_server_met(true, listed.is_empty(), bootstrap.auto_fetch_server_met) {
@@ -270,14 +250,11 @@ pub async fn attach<D: Deployment>(
 
     let session = SessionConfig {
         server,
-        // No SUI key: the Core loaded it from `durable` at build.
-        credentials: ClientCredentials::from(identity),
         download_dir: preferences.download_dir.clone(),
     };
-    let kad_config =
-        crate::kad::enable_config(&data_dir, kad_identity, kad_udp_key, &session.credentials);
     let kad = KadJoin {
-        config: kad_config,
+        config: crate::kad::enable_config(&data_dir),
+        own_id: core.kad_id(),
         bootstrap,
         fetcher,
     };

@@ -152,6 +152,19 @@ impl App {
                 Some(flash) => self.reduce(Action::Flash(flash), now),
                 None => Flow::Continue,
             },
+            Action::ConfirmDownloadDir(dir) => {
+                let edit = crate::config::PrefEdit::DownloadDir(dir.clone());
+                if let Some(Err(refusal)) = self.config.as_ref().map(|config| config.check(&edit)) {
+                    rmule_core::run_log::write(&refusal.record(), self.run_log.get());
+                    return self.reduce(
+                        Action::Flash(crate::words::store::setting_refused(&refusal)),
+                        now,
+                    );
+                }
+                self.views.settings.warn_share(dir);
+                self.dirty = true;
+                Flow::Continue
+            }
             Action::Core(_)
             | Action::Snapshot(_)
             | Action::CoreClosed
@@ -263,76 +276,55 @@ impl App {
         self.state.preferences.apply(&edit);
     }
 
-    /// Persist one Settings edit and apply the half of it that is live,
-    /// returning the status-bar receipt — or nothing for a table's
-    /// sort, whose receipt is the header arrow already drawn.
+    /// Persist one Settings edit, apply what this app keeps itself, and
+    /// return the status-bar receipt — or nothing for a table's sort, whose
+    /// receipt is the header arrow already drawn.
     ///
-    /// The write is synchronous on purpose: it is one small store transaction
-    /// (a device flush, single-digit milliseconds — ADR-0083) on the same
-    /// store core's server-list writes go to, so there is nothing to queue and
-    /// nothing to await. A failure is reported where the operator is looking
-    /// — the store's own reason, not a swallowed one.
+    /// A core key goes through Core Settings, which takes it up in the running
+    /// core when it is live and says when it takes effect; the receipt reads
+    /// that answer. The write is synchronous on purpose: it is one small store
+    /// transaction (a device flush, single-digit milliseconds — ADR-0083), so
+    /// there is nothing to queue and nothing to await. A failure is reported
+    /// where the operator is looking: why Core Settings refused the value, or
+    /// that the store refused the write, never a swallowed one.
     fn write_preference(&mut self, edit: crate::config::PrefEdit) -> Option<Sentence> {
         let sort = matches!(edit, crate::config::PrefEdit::TableSort { .. });
-        match &self.config {
+        let effect = match &self.config {
             // A UI-only run keeps nothing across runs; the sort is still the
             // view's for this one, so it is not worth a flash per keypress.
-            None if sort => {}
+            None if sort => rmule_core::TakesEffect::Now,
             None => return Some(crate::words::store::NO_CONFIG_STORE),
-            Some(config) => {
-                if let Err(error) = config.commit(&edit) {
+            Some(config) => match config.commit(&edit) {
+                Ok(effect) => effect,
+                Err(rmule_core::SettingError::Refused(refusal)) => {
+                    rmule_core::run_log::write(&refusal.record(), self.run_log.get());
+                    return Some(crate::words::store::setting_refused(&refusal));
+                }
+                Err(error) => {
                     tracing::warn!(%error, "a setting could not be saved");
                     return Some(crate::words::store::NOT_SAVED);
                 }
-            }
-        }
+            },
+        };
         self.state.preferences.apply(&edit);
-        // The live half. Everything not named here is restart-shaped, and the
-        // receipt says so rather than this function pretending otherwise.
+        // What this app keeps itself: the palette, the Run Log's level, and
+        // the directory its next download is written to.
         match &edit {
             crate::config::PrefEdit::Theme(choice) => {
                 self.theme = choice.resolve(self.auto_theme);
             }
             crate::config::PrefEdit::RunLogFull(on) => {
-                self.run_log.set(crate::run_log::Level::from_full(*on));
-            }
-            crate::config::PrefEdit::RememberPeers(peers) => {
-                if self.client.is_some() {
-                    self.pending_commands
-                        .push(rmule_core::CoreCommand::SetRememberPeers(*peers));
-                }
-            }
-            crate::config::PrefEdit::DeadServerRetries(_)
-            | crate::config::PrefEdit::WithholdShares(_) => {
-                if self.client.is_some() {
-                    self.pending_commands
-                        .push(rmule_core::CoreCommand::SetServerPolicy(
-                            self.state.preferences.server_policy(),
-                        ));
-                }
+                self.run_log.set(rmule_core::run_log::Level::from_full(*on));
             }
             crate::config::PrefEdit::DownloadDir(dir) => {
                 if let Some(session) = &mut self.state.session {
                     session.download_dir = Some(dir.clone());
                 }
-                // The Settings commit already carried the warning that
-                // everything under the new directory is offered (ADR-0101),
-                // so the answer goes with it and the scan asks nothing more.
-                if self.client.is_some() {
-                    use rmule_core::{CoreCommand, ScanCommand};
-                    self.pending_commands.extend([
-                        CoreCommand::Scan(ScanCommand::Answer {
-                            dir: dir.clone(),
-                            share: true,
-                        }),
-                        CoreCommand::Scan(ScanCommand::Start { dir: dir.clone() }),
-                    ]);
-                }
             }
             _ => {}
         }
         self.dirty = true;
-        (!sort).then(|| app_words::receipt(&edit))
+        (!sort).then(|| app_words::receipt(&edit, effect))
     }
 }
 

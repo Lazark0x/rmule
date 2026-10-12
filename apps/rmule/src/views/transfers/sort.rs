@@ -13,7 +13,9 @@ use rmule_core::DownloadId;
 use rmule_primitives::ED2K_PART_SIZE;
 
 use super::TransfersView;
-use super::downloads::{diag_counts, display_name, done_fraction, row_eta, source_counts};
+use super::downloads::{
+    Eta, diag_counts, display_name, done_fraction, row_eta, source_counts, status_text,
+};
 use crate::state::{DownloadStatus, UiState};
 use crate::table_sort::{ColumnKind, ColumnSpec, SortValue, SortedTable};
 use crate::views::ViewOutcome;
@@ -34,38 +36,49 @@ pub(super) enum DownloadColumn {
     Status,
 }
 
-/// One download's sortable facts, projected once per order.
+/// One download's facts, joined once per frame from its row, its
+/// diagnostics and its meters: the sort orders by them, the cells and the
+/// `Off-screen:` line word them. Nothing is derived twice, so a cell cannot
+/// say what its order does not.
 pub(super) struct DownloadLine {
-    id: DownloadId,
-    /// The real name; the short-hash stand-in is not one.
-    name: Option<String>,
+    pub(super) id: DownloadId,
+    /// The real name, or the short-hash stand-in when there is none.
+    pub(super) name: String,
+    /// Whether [`Self::name`] is a real fact; the stand-in is not one.
+    pub(super) name_real: bool,
     /// Exact, or the part-count estimate the cell shows with `≈`.
-    size: Option<u64>,
-    done: Option<(u64, u64)>,
+    pub(super) size: Option<u64>,
+    pub(super) size_exact: bool,
+    pub(super) done: Option<(u64, u64)>,
     /// Parts the chunk bar lights — held or being fetched — over all parts.
     progress: Option<(u64, u64)>,
-    speed: Option<u64>,
-    eta: Option<u64>,
+    /// Bytes per second as metered; `0` when nothing moves.
+    pub(super) bps: f64,
+    pub(super) eta: Eta,
     /// Known, then sending; `None` for a download that is not running.
-    sources: Option<(u32, u32)>,
-    status: DownloadStatus,
+    pub(super) sources: Option<(u32, u32)>,
+    pub(super) status: DownloadStatus,
+    /// The status as the cell words it; the same rank as [`Self::status`].
+    pub(super) status_text: &'static str,
 }
 
 impl DownloadLine {
-    fn new(id: DownloadId, state: &UiState) -> Self {
+    pub(super) fn new(id: DownloadId, state: &UiState) -> Self {
         let row = state.downloads.get(&id);
         let diag = state.diagnostics.downloads.get(&id);
         let metadata = row.and_then(|row| row.metadata.as_ref());
         let counts = diag_counts(diag);
-        let bps = state.download_speed(id);
-        let (name, real) = display_name(metadata, row.and_then(|row| row.file_hash));
+        let (name, name_real) = display_name(metadata, row.and_then(|row| row.file_hash));
         let estimate = row
             .and_then(|row| row.part_count)
             .map(|parts| (parts as u64).saturating_mul(ED2K_PART_SIZE));
+        let status = row.map_or(DownloadStatus::Waiting, |row| row.status);
         Self {
             id,
-            name: real.then_some(name),
+            name,
+            name_real,
             size: metadata.map(|metadata| metadata.size).or(estimate),
+            size_exact: metadata.is_some(),
             done: done_fraction(row, diag),
             progress: (counts.total() > 0).then(|| {
                 (
@@ -73,12 +86,17 @@ impl DownloadLine {
                     u64::from(counts.total()),
                 )
             }),
-            // Whole bytes per second: finer than the cell's one decimal of KB/s.
-            speed: (bps > 0.0).then_some(bps as u64),
-            eta: row_eta(row, diag, state.download_eta_speed(id)).seconds(),
+            bps: state.download_speed(id),
+            eta: row_eta(row, diag, state.download_eta_speed(id)),
             sources: source_counts(diag),
-            status: row.map_or(DownloadStatus::Waiting, |row| row.status),
+            status,
+            status_text: status_text(status, row.and_then(|row| row.source_wait), state),
         }
+    }
+
+    /// Whole bytes per second: finer than the cell's one decimal of KB/s.
+    fn speed(&self) -> Option<u64> {
+        (self.bps > 0.0).then_some(self.bps as u64)
     }
 }
 
@@ -151,14 +169,13 @@ impl SortedTable for DownloadsTable {
         let fraction = |(part, whole)| SortValue::Fraction { part, whole };
         match column {
             DownloadColumn::File => row
-                .name
-                .as_deref()
-                .map(|name| SortValue::Text(Cow::Borrowed(name))),
+                .name_real
+                .then_some(SortValue::Text(Cow::Borrowed(row.name.as_str()))),
             DownloadColumn::Size => row.size.map(SortValue::Quantity),
             DownloadColumn::Done => row.done.map(fraction),
             DownloadColumn::Progress => row.progress.map(fraction),
-            DownloadColumn::Speed => row.speed.map(SortValue::Quantity),
-            DownloadColumn::Eta => row.eta.map(SortValue::Quantity),
+            DownloadColumn::Speed => row.speed().map(SortValue::Quantity),
+            DownloadColumn::Eta => row.eta.seconds().map(SortValue::Quantity),
             // `known (sending)` orders by known, then sending, as aMule sorts
             // by source count.
             DownloadColumn::Sources => row.sources.map(|(known, sending)| SortValue::Pair {
@@ -182,17 +199,26 @@ impl SortedTable for DownloadsTable {
 }
 
 impl TransfersView {
-    /// Every download's id, in display order.
-    pub(super) fn download_ids(&self, state: &UiState) -> Vec<DownloadId> {
+    /// Every download's line, in display order.
+    pub(super) fn sorted_lines(&self, state: &UiState) -> Vec<DownloadLine> {
         let lines: Vec<DownloadLine> = state
             .downloads
             .keys()
             .map(|id| DownloadLine::new(*id, state))
             .collect();
-        self.sort
-            .order(&lines)
+        let order = self.sort.order(&lines);
+        let mut slots: Vec<Option<DownloadLine>> = lines.into_iter().map(Some).collect();
+        order
             .into_iter()
-            .map(|at| lines[at].id)
+            .filter_map(|at| slots[at].take())
+            .collect()
+    }
+
+    /// Every download's id, in display order.
+    pub(super) fn download_ids(&self, state: &UiState) -> Vec<DownloadId> {
+        self.sorted_lines(state)
+            .into_iter()
+            .map(|line| line.id)
             .collect()
     }
 

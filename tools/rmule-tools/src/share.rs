@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use rmule_core::run_log::Level;
 use rmule_core::{Core, CoreCommand, CoreEvent, ScanCommand, ScanEvent, ServeEvent};
 
 /// The longest a directory's first pass may take: it hashes every byte of
@@ -67,7 +68,7 @@ pub(crate) async fn share_files(
         let Some(event) = event else {
             bail!("the event stream ended before the shared directory's pass did");
         };
-        println!("{event}");
+        println!("{}", event.record().render(Level::Full));
         observe(&event);
         match event {
             // The confirm a front end would put to the operator: this driver
@@ -126,10 +127,12 @@ mod tests {
         let two = b.path().join("two.bin");
         std::fs::write(&one, b"first file, its own bytes").unwrap();
         std::fs::write(&two, b"second file, other bytes!").unwrap();
-        let mut core = Core::new(
+        let mut core = Core::builder(
             CoreConfig::default(),
             open_durable_store_in_memory().unwrap(),
-        );
+        )
+        .settings(rmule_core::CoreSettings::default())
+        .build();
 
         let mut seen = 0;
         let share = share_files(&mut core, &[one, two], |_| seen += 1)
@@ -149,10 +152,12 @@ mod tests {
         let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         std::fs::write(a.path().join("same.bin"), b"left").unwrap();
         std::fs::write(b.path().join("same.bin"), b"right").unwrap();
-        let mut core = Core::new(
+        let mut core = Core::builder(
             CoreConfig::default(),
             open_durable_store_in_memory().unwrap(),
-        );
+        )
+        .settings(rmule_core::CoreSettings::default())
+        .build();
 
         let refused = share_files(
             &mut core,

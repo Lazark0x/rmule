@@ -25,7 +25,7 @@ use rmule_net::peer::{ConnectOptions, Connection, PeerStreamRole};
 use rmule_peer::natt::{
     CapsFrame, HelloNattClaim, NattConnectOptions, NattFrame, NattTransport, TransportVerdict,
 };
-use rmule_peer::{PeerEvent, PeerHandshakeContext};
+use rmule_peer::{ConnectionEvent, PeerEvent, PeerHandshakeContext};
 use rmule_primitives::{
     AddressFamily, ClientDecryptKeys, ClientId, ClientIdentity, DatagramNonce,
     DatagramSenderAddress, Ed2kText, FileHash, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, UserHash,
@@ -82,6 +82,14 @@ struct ArmedCrypt {
 }
 
 impl NattCrypt for ArmedCrypt {
+    fn armed(&self) -> bool {
+        true
+    }
+
+    fn crypt_options(&self) -> u8 {
+        0x01
+    }
+
     fn own_user_hash(&self) -> UserHash {
         self.hash
     }
@@ -211,10 +219,7 @@ impl FakeNetwork {
             ));
             Arc::new(
                 NattDemux::start(
-                    NattIdentity {
-                        local,
-                        crypt_options: 0x01,
-                    },
+                    NattIdentity { local },
                     Arc::new(SettableHash::known(own)) as Arc<dyn NattOwnHash>,
                     sender,
                     Arc::clone(registry),
@@ -277,6 +282,8 @@ fn ctx(user_hash: UserHash, nickname: &str) -> PeerHandshakeContext {
     PeerHandshakeContext {
         identity: ClientIdentity::new(user_hash, Ed2kText::from_utf8(nickname), 4662, 0x3C),
         client_id: ClientId::from_u32(0x1000_0001),
+        ed2k_client_id: ClientId::from_u32(0x1000_0001),
+        public_ip: None,
         connected_server: None,
     }
 }
@@ -284,8 +291,12 @@ fn ctx(user_hash: UserHash, nickname: &str) -> PeerHandshakeContext {
 async fn identify(conn: &mut Connection) -> UserHash {
     loop {
         match conn.next_event().await {
-            Some(PeerEvent::PeerIdentified { identity }) => return identity.user_hash(),
-            Some(PeerEvent::Disconnected { reason }) => panic!("tunnel session closed: {reason:?}"),
+            Some(PeerEvent::Connection(ConnectionEvent::Identified { identity })) => {
+                return identity.user_hash();
+            }
+            Some(PeerEvent::Connection(ConnectionEvent::Disconnected { reason })) => {
+                panic!("tunnel session closed: {reason:?}")
+            }
             Some(_) => continue,
             None => panic!("the driver ended before the peer identified"),
         }
@@ -590,10 +601,7 @@ async fn a_caps_probe_is_silent_before_identity_and_answered_once_it_arrives() {
     ));
     let own_hash = SettableHash::default();
     let demux = NattDemux::start(
-        NattIdentity {
-            local: UTP_ONLY,
-            crypt_options: 0x01,
-        },
+        NattIdentity { local: UTP_ONLY },
         Arc::new(own_hash.clone()) as Arc<dyn NattOwnHash>,
         sender,
         Arc::new(Mutex::new(TunnelRegistry::new())),

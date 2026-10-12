@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use ratatui::crossterm::event::KeyCode;
-use rmule_core::{CoreCommand, DownloadCommand};
+use rmule_core::{CoreCommand, DownloadCommand, NameTaken};
 
 use super::super::TransfersView;
 use crate::action::Action;
@@ -49,7 +49,8 @@ fn a_pasted_link_starts_its_download_and_names_the_fields_it_skipped() {
             [
                 Action::Command(CoreCommand::Download(DownloadCommand::StartDownload {
                     file,
-                    output_path,
+                    name,
+                    if_taken,
                     ..
                 })),
                 Action::Note(note),
@@ -63,7 +64,11 @@ fn a_pasted_link_starts_its_download_and_names_the_fields_it_skipped() {
                     1,
                     "the link's source rides along"
                 );
-                assert_eq!(output_path, &PathBuf::from("/srv/downloads/hello.txt"));
+                assert_eq!(
+                    (name.as_str(), if_taken),
+                    ("hello.txt", &NameTaken::Refuse),
+                    "a fresh add never lands on a file it did not make"
+                );
                 assert_eq!(
                     note.as_str(),
                     "ignored the fields `x`, `comment` the link carried, which no client reads"

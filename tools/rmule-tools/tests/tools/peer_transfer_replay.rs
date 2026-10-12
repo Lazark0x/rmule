@@ -7,7 +7,10 @@
 use std::time::Duration;
 
 use rmule_net::peer::{ConnectOptions, Connection};
-use rmule_peer::{PartRanges, PeerCommand, PeerEvent, SlotReleaseReason};
+use rmule_peer::{
+    ConnectionEvent, PartRanges, PeerCommand, PeerEvent, RequesterCommand, RequesterEvent,
+    SlotReleaseReason,
+};
 use rmule_primitives::{FileHash, Ipv4Endpoint, PeerEndpoint};
 use rmule_testkit::peer_session::loopback_ctx;
 use rmule_testkit::{FakePeer, PeerScript, SlotPolicy};
@@ -53,32 +56,34 @@ async fn full_transfer_flow_replays_against_real_connection() {
             Err(_) => continue,
         };
         match &evt {
-            PeerEvent::PeerIdentified { .. } => {
+            PeerEvent::Connection(ConnectionEvent::Identified { .. }) => {
                 // Sub-part RequestParts auto-pipelines probe + startupload.
-                conn.send(PeerCommand::RequestParts {
+                conn.send(PeerCommand::Requester(RequesterCommand::RequestParts {
                     file_hash,
                     file_size,
                     ranges,
-                })
+                }))
                 .await
                 .unwrap();
             }
-            PeerEvent::FileProbed { .. } => {
+            PeerEvent::Requester(RequesterEvent::FileProbed { .. }) => {
                 // Auto-pipelined via RequestParts; no extra work here.
             }
-            PeerEvent::PartReceived { bytes, .. } => {
+            PeerEvent::Requester(RequesterEvent::PartReceived { bytes, .. }) => {
                 accumulated.extend_from_slice(bytes);
                 // Held slot (ADR-0025, amended): the consumer is the
                 // completion authority and releases the slot once it has
                 // the whole requested range, rather than relying on a
                 // per-request auto-release.
                 if accumulated.len() as u64 >= file_size {
-                    conn.send(PeerCommand::ReleaseSlot { file_hash })
-                        .await
-                        .unwrap();
+                    conn.send(PeerCommand::Requester(RequesterCommand::ReleaseSlot {
+                        file_hash,
+                    }))
+                    .await
+                    .unwrap();
                 }
             }
-            PeerEvent::SlotReleased { reason, .. } => {
+            PeerEvent::Requester(RequesterEvent::SlotReleased { reason, .. }) => {
                 assert_eq!(*reason, SlotReleaseReason::DownloadComplete);
                 released = true;
             }
@@ -97,23 +102,23 @@ async fn full_transfer_flow_replays_against_real_connection() {
     let progressed = events.iter().any(|e| {
         matches!(
             e,
-            PeerEvent::QueueProgress {
+            PeerEvent::Requester(RequesterEvent::QueueProgress {
                 previous_rank: 5,
                 new_rank: 3,
                 ..
-            }
+            })
         )
     });
     assert!(progressed, "QueueProgress(5→3) observed");
 
-    // PeerIdentified strictly precedes the first FileProbed.
+    // Identified strictly precedes the first FileProbed.
     let identified_idx = events
         .iter()
-        .position(|e| matches!(e, PeerEvent::PeerIdentified { .. }))
+        .position(|e| matches!(e, PeerEvent::Connection(ConnectionEvent::Identified { .. })))
         .unwrap();
     let probed_idx = events
         .iter()
-        .position(|e| matches!(e, PeerEvent::FileProbed { .. }))
+        .position(|e| matches!(e, PeerEvent::Requester(RequesterEvent::FileProbed { .. })))
         .unwrap();
     assert!(identified_idx < probed_idx);
 }

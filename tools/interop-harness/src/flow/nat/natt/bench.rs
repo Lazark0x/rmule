@@ -78,6 +78,10 @@ pub struct NattOptions<'a> {
     /// root a Low ID, aMule's UDP verdict is held firewalled until it holds
     /// that root as its buddy, then released, then the file is shared.
     pub low_id_buddy: bool,
+    /// `natt-buddy-recruit-amule` with no `ed2ksrv` on the WAN: the target is
+    /// serverless and firewalled on Kad alone, so the hello aMule keeps it as
+    /// a buddy for must name the Kad-firewalled id `1`.
+    pub no_server: bool,
     /// The tcpdump sidecar image.
     pub capture_image: &'a str,
     /// Its build context.
@@ -137,6 +141,11 @@ impl Stage {
 /// # Errors
 /// If the bench cannot be built or a driver never produced a row.
 pub(crate) fn run(options: NattOptions<'_>) -> Result<()> {
+    anyhow::ensure!(
+        !options.no_server || options.flow == NattFlow::BuddyRecruitAmule,
+        "--no-server is a knob of natt-buddy-recruit-amule alone; {} ignores it",
+        options.flow.name()
+    );
     let mut bench = Bench::new(
         options.container_runtime,
         options.layout,
@@ -185,6 +194,8 @@ fn drive(bench: &mut Bench, options: &NattOptions<'_>) -> Result<()> {
         }
         let (driven, wire, taps) = if flow == NattFlow::UdpSelfCheckAmule {
             super::buddy::selfcheck::amule::drive(bench, options, nat_type, &suffix, &leg_dir)?
+        } else if flow == NattFlow::BuddyRecruitAmule {
+            super::buddy::recruit_amule::drive(bench, options, nat_type, &suffix, &leg_dir)?
         } else if matches!(
             flow,
             NattFlow::UdpSelfCheckCone | NattFlow::UdpSelfCheckRemapped

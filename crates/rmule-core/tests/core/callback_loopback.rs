@@ -15,10 +15,10 @@
 //! The same B also witnesses the other side of **Callback Capability**: a
 //! Low-ID, Kad-open rmule is callable, but never through its own server.
 
+use rmule_testkit::HANG_GUARD;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Duration;
 
-use crate::fixture::identity_with_port;
 use crate::fixture::{dead_port, free_port, serving_started};
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent, ServeCommand,
@@ -44,9 +44,9 @@ async fn read_packet(stream: &mut TcpStream, buf: &mut Vec<u8>) -> Packet {
             return packet;
         }
         let mut tmp = [0u8; 4096];
-        let n = timeout(Duration::from_secs(5), stream.read(&mut tmp))
+        let n = timeout(HANG_GUARD, stream.read(&mut tmp))
             .await
-            .expect("server frame within 5s")
+            .expect("server frame")
             .expect("read ok");
         assert!(n > 0, "server closed unexpectedly");
         buf.extend_from_slice(&tmp[..n]);
@@ -125,6 +125,8 @@ async fn b_low_id_peer(
     let ctx = PeerHandshakeContext {
         identity: b_identity,
         client_id: low_id,
+        ed2k_client_id: low_id,
+        public_ip: None,
         connected_server: Some(Ipv4Endpoint::new(*server_addr.ip(), server_addr.port())),
     };
     let mut b = Connection::connect(PeerEndpoint::V4(a_endpoint), ctx, ConnectOptions::default())
@@ -137,6 +139,7 @@ async fn b_low_id_peer(
 
 #[tokio::test]
 async fn callback_adopts_low_id_peer_and_downloads_a_part() {
+    let out = tempfile::tempdir().unwrap();
     // A small sub-part file: one block, no part hash set (verified at finalize).
     let bytes = vec![0x5A_u8; 4096];
     let file = file_link("callback.bin", &bytes);
@@ -149,21 +152,25 @@ async fn callback_adopts_low_id_peer_and_downloads_a_part() {
     let (ready_tx, ready_rx) = oneshot::channel();
     let b_task = tokio::spawn(b_low_id_peer(server_addr, bytes.clone(), ready_tx));
 
-    // A serves on a KNOWN port P with identity.tcp_port == P, so its login
+    // A serves on a KNOWN port P its Core Settings name, so its login
     // advertises exactly the port it bound: the serve start answers the
     // server's port-check hello during the login → High-ID → Callback
     // Capability. (Production binds a fixed configured port; the alignment
     // here mirrors that — see ADR-0040.)
     let p = free_port().await;
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            crate::fixture::settings_on(p),
+            out.path(),
+        ))
+        .build();
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, p),
-        credentials: identity_with_port(p).into(),
     }))
     .await
     .unwrap();
     let a_listen = serving_started(&mut core).await;
-    rmule_testkit::connect_to(&core, &server_ep, identity_with_port(p).into()).await;
+    rmule_testkit::connect_to(&core, &server_ep).await;
     assert_eq!(
         a_listen.port(),
         p,
@@ -171,17 +178,16 @@ async fn callback_adopts_low_id_peer_and_downloads_a_part() {
     );
 
     // Wait until B is a registered source, then start the download.
-    timeout(Duration::from_secs(5), ready_rx)
+    timeout(HANG_GUARD, ready_rx)
         .await
-        .expect("B registered within 5s")
+        .expect("B registered")
         .expect("B ready signal");
 
-    let out = tempfile::tempdir().unwrap();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(server_ep),
-        credentials: identity_with_port(p).into(),
-        output_path: out.path().join("callback.bin"),
+        name: rmule_testkit::file_name("callback.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -190,7 +196,7 @@ async fn callback_adopts_low_id_peer_and_downloads_a_part() {
     // completes the download from it.
     let mut saw_peer = false;
     loop {
-        let event = timeout(Duration::from_secs(15), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted event")
             .expect("core event stream stayed open");
@@ -217,6 +223,7 @@ async fn callback_adopts_low_id_peer_and_downloads_a_part() {
 /// same server coordinates.
 #[tokio::test]
 async fn a_low_id_kad_open_downloader_never_asks_its_own_server_to_relay_a_callback() {
+    let out = tempfile::tempdir().unwrap();
     let bytes = vec![0x5A_u8; 4096];
     let server = FakeEd2kServer::start().await;
     let server_addr = server.local_addr();
@@ -229,17 +236,21 @@ async fn a_low_id_kad_open_downloader_never_asks_its_own_server_to_relay_a_callb
     let p = free_port().await;
     let advertised = dead_port().await;
     let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
-        .kad(crate::fixture::VerdictOnlyKad { open: true })
+        .settings(rmule_testkit::in_download_dir(
+            crate::fixture::settings_on(advertised),
+            out.path(),
+        ))
+        .kad(crate::fixture::VerdictOnlyKad)
+        .kad_reach(rmule_core::KadReachLevel::fixed(true))
         .build();
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, p),
-        credentials: identity_with_port(advertised).into(),
     }))
     .await
     .unwrap();
     serving_started(&mut core).await;
-    rmule_testkit::connect_to(&core, &server_ep, identity_with_port(advertised).into()).await;
-    let ids = timeout(Duration::from_secs(10), server.assigned_ids_after(2))
+    rmule_testkit::connect_to(&core, &server_ep).await;
+    let ids = timeout(HANG_GUARD, server.assigned_ids_after(2))
         .await
         .expect("A's login reaches the server");
     assert!(
@@ -250,12 +261,11 @@ async fn a_low_id_kad_open_downloader_never_asks_its_own_server_to_relay_a_callb
         .await
         .expect("kad enabled");
 
-    let out = tempfile::tempdir().unwrap();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: file_link("carve-out.bin", &bytes),
         source_hint: Some(server_ep),
-        credentials: identity_with_port(advertised).into(),
-        output_path: out.path().join("carve-out.bin"),
+        name: rmule_testkit::file_name("carve-out.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();

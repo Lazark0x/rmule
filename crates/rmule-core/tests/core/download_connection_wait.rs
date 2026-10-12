@@ -14,7 +14,7 @@ use rmule_core::{
 use rmule_primitives::{ClientId, ED2K_PART_SIZE, PeerSource, ServerEndpoint};
 use rmule_testkit::{FakeEd2kServer, PendingPeerTransfer, file_link};
 
-use crate::fixture::{connect_credentials, dead_port, next_expected};
+use crate::fixture::{dead_port, next_expected};
 
 #[tokio::test]
 async fn a_restored_download_with_no_connection_waits_then_starts_when_one_comes_up() {
@@ -42,8 +42,9 @@ async fn a_restored_download_with_no_connection_waits_then_starts_when_one_comes
         },
         Arc::clone(&store),
     )
+    .settings(crate::fixture::attach_settings().await)
     .peer_transfer(PendingPeerTransfer)
-    .restore_credentials(crate::fixture::connect_credentials().await)
+    .restore_at_attach()
     .build();
 
     let waiting = next_expected(&mut core, "the download waiting, not failed", |event| {
@@ -77,7 +78,6 @@ async fn a_restored_download_with_no_connection_waits_then_starts_when_one_comes
     .unwrap();
     core.send(CoreCommand::ConnectToServer {
         server: server.endpoint(),
-        credentials: connect_credentials().await,
     })
     .await
     .unwrap();
@@ -146,8 +146,9 @@ async fn a_late_finish_notice_never_retires_the_run_a_resume_started() {
         },
         Arc::clone(&store),
     )
+    .settings(crate::fixture::attach_settings().await)
     .peer_transfer(PendingPeerTransfer)
-    .restore_credentials(connect_credentials().await)
+    .restore_at_attach()
     .build();
     next_expected(&mut core, "the restored run waiting", |event| {
         matches!(
@@ -165,7 +166,6 @@ async fn a_late_finish_notice_never_retires_the_run_a_resume_started() {
         .unwrap();
         core.send(CoreCommand::Download(DownloadCommand::ResumeDownload {
             download_id: id,
-            credentials: connect_credentials().await,
         }))
         .await
         .unwrap();
@@ -202,7 +202,6 @@ async fn a_late_finish_notice_never_retires_the_run_a_resume_started() {
         );
         core.send(CoreCommand::Download(DownloadCommand::ResumeDownload {
             download_id: id,
-            credentials: connect_credentials().await,
         }))
         .await
         .unwrap();
@@ -222,8 +221,13 @@ async fn a_late_finish_notice_never_retires_the_run_a_resume_started() {
 /// a session — or on Kad, once Kad starts.
 #[tokio::test]
 async fn a_waiting_downloads_reason_follows_the_session_and_kad() {
+    let dir = tempfile::tempdir().unwrap();
     let server = FakeEd2kServer::start_scripted().await;
     let mut core = rmule_core::Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .peer_transfer(PendingPeerTransfer)
         .kad(crate::fixture::StubKad::new())
         .build();
@@ -231,13 +235,12 @@ async fn a_waiting_downloads_reason_follows_the_session_and_kad() {
     // connected one.
     let swept = ServerEndpoint::new("127.0.0.1", dead_port().await).unwrap();
     crate::fixture::list_server(&core, &swept).await;
-    rmule_testkit::connect_to(&core, &server.endpoint(), connect_credentials().await).await;
-    let dir = tempfile::tempdir().unwrap();
+    rmule_testkit::connect_to(&core, &server.endpoint()).await;
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: crate::fixture::stub_link("reason.bin", 1024, 0x5B),
         source_hint: Some(server.endpoint()),
-        credentials: crate::fixture::identity().into(),
-        output_path: dir.path().join("reason.bin"),
+        name: rmule_testkit::file_name("reason.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();

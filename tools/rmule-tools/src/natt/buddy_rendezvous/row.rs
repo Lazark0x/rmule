@@ -23,10 +23,10 @@ pub(super) struct BuddyRow {
     /// The serve listener came up — the bind the buddy link is accepted on and
     /// the port the hello advertises.
     pub(super) serving: bool,
-    /// An eD2k session was established. **Expected `false` in this flow**: no
-    /// coordinator server stands on this WAN, so the login named by
-    /// `--server` cannot complete. The bind is what the body needs, and the
-    /// bind is its own fact (the bind-is-not-login contract).
+    /// An eD2k session was established. Only `--login` asks for one (the
+    /// `natt-buddy-recruit-amule` server variant); every other row stands no
+    /// server, the bind is what the body needs, and the bind is its own fact
+    /// (the bind-is-not-login contract).
     pub(super) connected: bool,
     /// The server-assigned id, when there was a session at all.
     pub(super) client_id: u32,
@@ -51,6 +51,16 @@ pub(super) struct BuddyRow {
     pub(super) buddy_last_recruit_refusal: String,
     /// Seconds from start to the moment the slot first read `Held`.
     pub(super) buddy_held_after_secs: i64,
+    /// Buddy dials that did not hold a link.
+    pub(super) buddy_dials_failed: u64,
+    /// `OP_CALLBACK`s relayed over the held link that the front dialed back,
+    /// dropped, and dropped for want of a held buddy.
+    pub(super) relayed_callbacks_dialed: u64,
+    pub(super) relayed_callbacks_dropped: u64,
+    pub(super) relayed_callbacks_no_buddy: u64,
+    /// Of the dialed ones, those whose check ID matched our Kad ID only under
+    /// the other `TAG_BUDDYHASH` spelling.
+    pub(super) relayed_callbacks_swapped_spelling: u64,
     /// Relayed rendezvous this body acted on — the acting path's burst.
     pub(super) acting_punches: u64,
     /// Relayed rendezvous refused, and the last reason.
@@ -62,6 +72,9 @@ pub(super) struct BuddyRow {
     pub(super) relays_refused: u64,
     /// Rendezvous emitted toward a target's serving buddy.
     pub(super) rendezvous_emitted: u64,
+    /// Server `0x60` hole-punch requests put on the session — counted apart
+    /// from the buddy rendezvous above.
+    pub(super) server_requests_emitted: u64,
     /// **Traversal Attempt**s opened with a buddy as the coordinator.
     pub(super) attempts_buddy: u64,
     /// Attempts opened with a server coordinator — expected zero here.
@@ -102,6 +115,9 @@ pub(super) struct BuddyRow {
     /// open (`-1` when it never did) — `natt-udp-selfcheck-cone`.
     pub(super) udp_verdict: String,
     pub(super) udp_open_after_secs: i64,
+    /// The ADR-0058 TCP verdict as the last snapshot read it (`open`,
+    /// `checking`, `firewalled`) — the recruit gate's other half.
+    pub(super) tcp_verdict: String,
     /// Whether a full counters snapshot ([`snapshot`]) ever arrived. Every
     /// counter only it fills is written `-1` when none did: a zero there is a
     /// count nobody took, not a role's honest zero.
@@ -124,8 +140,16 @@ pub(super) async fn snapshot(core: &mut Core, row: &mut BuddyRow) -> Result<()> 
     row.snapshot_read = true;
     if let Some(kad) = snapshot.kad.as_ref() {
         row.udp_verdict = udp_verdict_name(kad.udp).to_owned();
+        row.tcp_verdict = tcp_verdict_name(kad.firewall).to_owned();
     }
     let session = &snapshot.session;
+    row.buddy_dials_failed = session.buddy_dials_failed_total;
+    row.relayed_callbacks_dialed = session.relayed_callbacks_dialed_total;
+    row.relayed_callbacks_dropped = session.relayed_callbacks_dropped_total;
+    row.relayed_callbacks_no_buddy = session.relayed_callbacks_no_buddy_total;
+    row.relayed_callbacks_swapped_spelling = session
+        .buddy_hash_spelling
+        .relayed_callbacks_swapped_spelling_total;
     row.buddy_state = format!("{:?}", session.buddy_state);
     row.buddy_links_held = session.buddy_links_held_total;
     row.buddy_links_lost = session.buddy_links_lost_total;
@@ -142,6 +166,7 @@ pub(super) async fn snapshot(core: &mut Core, row: &mut BuddyRow) -> Result<()> 
     row.relays_forwarded = session.natt_relays_forwarded_total;
     row.relays_refused = session.natt_relays_refused_total;
     row.rendezvous_emitted = session.natt_rendezvous_emitted_total;
+    row.server_requests_emitted = session.natt_server_requests_emitted_total;
     row.attempts_buddy = session.natt_attempts_buddy_total;
     row.attempts_server = session.natt_attempts_server_total;
     row.dials = session.natt_dials_total;
@@ -216,10 +241,11 @@ fn render(row: &BuddyRow) -> Row {
         "rmule-tools natt buddy-rendezvous — ADR-0091 rung 1 through its SECOND\n\
          coordinator: a firewalled target recruits a serving buddy over a live Kad\n\
          FINDBUDDY walk, and a second firewalled node reaches it by embedding an\n\
-         OP_RENDEZVOUS in an OP_REASKCALLBACKUDP addressed to that buddy. No eD2k\n\
-         server stands on this WAN, so `connected` is expected false and the serve\n\
-         listener is what every body needs from `StartServing`. Every value here is\n\
-         rmule's own account and is scored `rmule-only`: all three bodies are rmule.",
+         OP_RENDEZVOUS in an OP_REASKCALLBACKUDP addressed to that buddy. Only\n\
+         `--login` asks for an eD2k session, so `connected` is false without it and\n\
+         the serve listener is what every body needs from `StartServing`. Every value\n\
+         here is rmule's own account of its own surfaces, and is never a\n\
+         counterparty's.",
     );
     // A counter only the counters snapshot fills, or `-1` when none arrived.
     let counted = |value: u64| if row.snapshot_read { as_i64(value) } else { -1 };
@@ -240,12 +266,33 @@ fn render(row: &BuddyRow) -> Row {
             &row.buddy_last_recruit_refusal,
         )
         .int("buddy_held_after_secs", row.buddy_held_after_secs)
+        .int("buddy_dials_failed", counted(row.buddy_dials_failed))
+        .int(
+            "relayed_callbacks_dialed",
+            counted(row.relayed_callbacks_dialed),
+        )
+        .int(
+            "relayed_callbacks_dropped",
+            counted(row.relayed_callbacks_dropped),
+        )
+        .int(
+            "relayed_callbacks_no_buddy",
+            counted(row.relayed_callbacks_no_buddy),
+        )
+        .int(
+            "relayed_callbacks_swapped_spelling",
+            counted(row.relayed_callbacks_swapped_spelling),
+        )
         .int("acting_punches", counted(row.acting_punches))
         .int("acting_refusals", counted(row.acting_refusals))
         .str("acting_last_refusal", &row.acting_last_refusal)
         .int("relays_forwarded", counted(row.relays_forwarded))
         .int("relays_refused", counted(row.relays_refused))
         .int("rendezvous_emitted", counted(row.rendezvous_emitted))
+        .int(
+            "server_requests_emitted",
+            counted(row.server_requests_emitted),
+        )
         .int("attempts_buddy", counted(row.attempts_buddy))
         .int("attempts_server", counted(row.attempts_server))
         .str("routed", &row.routed)
@@ -273,7 +320,8 @@ fn render(row: &BuddyRow) -> Row {
         )
         .int("download_adoptions", counted(row.download_adoptions))
         .str("udp_verdict", &row.udp_verdict)
-        .int("udp_open_after_secs", row.udp_open_after_secs);
+        .int("udp_open_after_secs", row.udp_open_after_secs)
+        .str("tcp_verdict", &row.tcp_verdict);
     out
 }
 
@@ -283,6 +331,17 @@ pub(super) fn udp_verdict_name(verdict: rmule_core::diagnostics::KadUdpVerdict) 
         rmule_core::diagnostics::KadUdpVerdict::Open { .. } => "open",
         rmule_core::diagnostics::KadUdpVerdict::Firewalled => "firewalled",
         rmule_core::diagnostics::KadUdpVerdict::Unverified => "unverified",
+    }
+}
+
+/// The row's name for an ADR-0058 TCP verdict.
+pub(super) fn tcp_verdict_name(
+    verdict: rmule_core::diagnostics::KadFirewallVerdict,
+) -> &'static str {
+    match verdict {
+        rmule_core::diagnostics::KadFirewallVerdict::Open => "open",
+        rmule_core::diagnostics::KadFirewallVerdict::Checking => "checking",
+        rmule_core::diagnostics::KadFirewallVerdict::Firewalled => "firewalled",
     }
 }
 
@@ -305,7 +364,9 @@ pub(super) fn observe(event: &CoreEvent, row: &mut BuddyRow) {
                 row.login_failure = format!("{reason:?}");
             }
         }
-        CoreEvent::PeerReachRouted { route, .. } => row.routed = format!("{route:?}"),
+        CoreEvent::PeerReachRouted { route, .. } => {
+            row.routed = crate::natt::route_code(route).to_owned()
+        }
         CoreEvent::Download(rmule_core::DownloadEvent::DownloadCompleted { .. }) => {
             row.download_completed = true;
         }

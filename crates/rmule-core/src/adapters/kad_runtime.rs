@@ -2,20 +2,15 @@
 //! through, the enable-time configuration, the ed2k→Kad bootstrap handoff
 //! sink, and the projection of Kad keyword rows onto core search vocabulary.
 
-mod buddy_publish;
 mod callback_walk;
+mod cells;
 pub(crate) use callback_walk::{CallbackWalkAsk, CallbackWalkReply, request_kad_callback_walk};
-mod connect_options;
-mod extern_port_feed;
+pub use cells::KadCells;
 mod handoff;
-mod keyword_subscribers;
 mod node;
 mod presence;
 pub(crate) use presence::{KadPresenceChanges, KadPresenceLease, KadPresenceView};
-mod public_ip_feed;
-mod pump_command;
-mod self_check;
-mod tcp_verdict;
+mod pump_state;
 mod udp_firewall_check;
 
 pub use node::RuntimeKadFactory;
@@ -46,7 +41,7 @@ use rmule_ed2k::SearchResultSkipReason;
 /// throttle* legs. Mirrors [`SharedDialedServeSink`](super::dialed_serve::SharedDialedServeSink)'s "empty while not
 /// serving" ownership pattern (`Core::builder` creates it, clones it into every
 /// adapter that pushes, and the Kad factory installs the sender on start).
-pub(crate) type SharedKadBootstrap = Arc<Mutex<Option<mpsc::Sender<Ipv4Endpoint>>>>;
+pub(crate) type SharedKadBootstrap = crate::mailbox::Mailbox<Ipv4Endpoint>;
 
 /// The one core-owned way to reach a running Kad node from **outside its own
 /// pump** — the two ADR-0058 requester signals that originate on other surfaces.
@@ -60,10 +55,10 @@ pub(crate) type SharedKadBootstrap = Arc<Mutex<Option<mpsc::Sender<Ipv4Endpoint>
 /// runtime, the accept path and the actor (which drain it), the same shape as
 /// [`SharedKadBootstrap`] above.
 ///
-/// A `std::sync::Mutex` rather than tokio's: every use is a `try_send` that
-/// never crosses an `.await`, and neither the port mapper's enactment path nor
-/// the peer accept path must be able to block on a Kad lock.
-pub(crate) type SharedKadPump = Arc<std::sync::Mutex<Option<mpsc::Sender<KadPumpCommand>>>>;
+/// Every use is a `try_send` that never crosses an `.await`, and neither the
+/// port mapper's enactment path nor the peer accept path must be able to block
+/// on a Kad lock.
+pub(crate) type SharedKadPump = crate::mailbox::Mailbox<KadPumpCommand>;
 
 /// Ask the running Kad node to recheck our reachability now (ADR-0086).
 ///
@@ -143,10 +138,8 @@ pub(crate) fn report_kad_udp_firewall_request(
 /// Best-effort push onto a running node's pump: no node is a no-op, and a full
 /// inbox drops rather than blocking a caller that is holding a socket open.
 fn push_kad_pump(sink: &SharedKadPump, command: KadPumpCommand) {
-    if let Ok(slot) = sink.lock()
-        && let Some(tx) = slot.as_ref()
-    {
-        let _ = tx.try_send(command);
+    if let Err(reason) = sink.send(command) {
+        tracing::trace!(?reason, "Kad pump signal dropped");
     }
 }
 
@@ -170,8 +163,8 @@ pub(crate) async fn broker_peer_kad_handoff(
     let Some(peer) = peer.as_v4() else {
         return;
     };
-    if let Some(tx) = sink.lock().await.as_ref() {
-        let _ = tx.try_send(Ipv4Endpoint::new(peer.ip, kad_port));
+    if let Err(reason) = sink.send(Ipv4Endpoint::new(peer.ip, kad_port)) {
+        tracing::trace!(?reason, "ed2k->Kad handoff hint dropped");
     }
 }
 
@@ -264,37 +257,56 @@ impl<C: KadSourceChannel> KadSourceChannel for Arc<C> {
     }
 }
 
-/// Everything `CoreCommand::EnableKad` carries to start the Kad node
-/// (ADR-0043). The front-end owns config (ADR-0069): it reads the persisted
-/// [`KadIdentity`](crate::KadIdentity) from `AppConfigStore` and pushes it
-/// here; Core never reads config storage itself.
+/// This node as its Kad node presents itself (ADR-0043, ADR-0048): core's
+/// own, never a front end's to carry. The actor hands it to
+/// [`KadRuntimeFactory::start`] beside the command's [`KadEnableConfig`].
 #[derive(Clone, Debug)]
-pub struct KadEnableConfig {
-    /// The durable node ID: this node's 128-bit place in the Kad keyspace
-    /// (`AppConfigStore::ensure_kad_identity`), stable across restarts and
-    /// across a port change.
+pub struct KadNodeIdentity {
+    /// The durable node ID: this node's 128-bit place in the Kad keyspace,
+    /// read from core's own store at build
+    /// (`AppConfigStore::ensure_kad_identity`) unless a tool named one with
+    /// [`CoreBuilder::kad_id`](crate::CoreBuilder::kad_id) — stable across
+    /// restarts and across a port change.
     ///
-    /// No UDP port rides with it any more: the node shares the core's one
-    /// client-UDP bind (ADR-0057), which was taken before this command could
-    /// arrive, so a port here could only be a second truth to disagree with
-    /// it. [`CoreConfig::udp_port`](crate::CoreConfig::udp_port) is where the
-    /// operator's port is configured.
+    /// No UDP port rides with it: the node shares the core's one client-UDP
+    /// bind (ADR-0057), so a port here could only be a second truth to
+    /// disagree with it. [`CoreSettings::udp_port`](crate::CoreSettings::udp_port)
+    /// is where the operator's port is configured.
     pub kad_id: rmule_kad::KadId,
     /// The **credentials** rmule presents when it dials a peer on Kad's
     /// behalf — the ADR-0058 firewall-check dial-back's connect-back and the
-    /// UDP-check helper dial. Its TCP port is also the one advertised in Kad
-    /// hellos and carried as the publish `SOURCEPORT` — peers dial it, so it
-    /// must equal the bound inbound listener; one port, not a second field
-    /// that could disagree with the hello. The User Hash they
-    /// present — also the Kad Publisher's source ID and our buddy identity's
-    /// hash — is the node's, fixed at build. Front-end-owned
-    /// (ADR-0069), carried rather than derived so it stays the one the serve
-    /// and download starts present; a firewalled requester only needs a
-    /// well-formed hello plus the ack to count our connect-back, so it never
-    /// correlates on these fields. The SUI keypair that proves it is the
-    /// Core's, loaded at build, so a Kad-only node that never serves still
-    /// proves itself on every hello.
+    /// UDP-check helper dial: the Core Settings' (ADR-0069), as the node's
+    /// other starts present them. Their TCP port is also the one advertised
+    /// in Kad hellos and carried as the publish `SOURCEPORT` — peers dial it.
+    /// The User Hash they present — also the Kad Publisher's source ID and
+    /// our buddy identity's hash — is the node's, fixed at build; a
+    /// firewalled requester only needs a well-formed hello plus the ack to
+    /// count our connect-back, so it never correlates on these fields. The
+    /// SUI keypair that proves it is the Core's, loaded at build, so a
+    /// Kad-only node that never serves still proves itself on every hello.
     pub peer_credentials: crate::ClientCredentials,
+    /// The **Kad UDP Key**: the private per-installation seed every Kad UDP
+    /// verify key this node hands out is derived from — aMule's
+    /// `thePrefs::GetKadUDPKey()`, persisted as `/Obfuscation/CryptoKadUDPKey`
+    /// and minted once from `GetRandomUint32()` (`Preferences.cpp:1541`), fed
+    /// per target IP through `CPrefs::GetUDPVerifyKey`
+    /// (`kademlia/kademlia/Prefs.cpp:235-243`). Never transmitted, only its
+    /// per-IP derivations are.
+    ///
+    /// Read from core's own store at build
+    /// (`AppConfigStore::ensure_kad_udp_key`), because it must survive a
+    /// restart: a fresh seed silently invalidates every key a counterparty
+    /// learned for us, pushing each back through the three-way. Read only
+    /// while the core's obfuscation policy arms the Kad crypt
+    /// ([`CoreSettings::obfuscation`](crate::CoreSettings::obfuscation)).
+    pub kad_udp_key: u32,
+}
+
+/// Everything `CoreCommand::EnableKad` carries to start the Kad node
+/// (ADR-0043): how to start it — seeds, the persisted routing table, the
+/// bench knobs. Who it is, [`KadNodeIdentity`], is core's own.
+#[derive(Clone, Debug)]
+pub struct KadEnableConfig {
     /// Known node endpoints (IP, UDP port) to bootstrap the routing table
     /// from.
     pub bootstrap: Vec<SocketAddrV4>,
@@ -331,21 +343,6 @@ pub struct KadEnableConfig {
     /// verdicts, and neither can settle open in a two-node swarm — the counterparty
     /// would be refused before it ever revealed the behaviour under capture.
     pub assume_open_reachability: bool,
-    /// The **Kad UDP Key**: the private per-installation seed every Kad UDP
-    /// verify key this node hands out is derived from — aMule's
-    /// `thePrefs::GetKadUDPKey()`, persisted as `/Obfuscation/CryptoKadUDPKey`
-    /// and minted once from `GetRandomUint32()` (`Preferences.cpp:1541`), fed
-    /// per target IP through `CPrefs::GetUDPVerifyKey`
-    /// (`kademlia/kademlia/Prefs.cpp:235-243`). Never transmitted, only its
-    /// per-IP derivations are.
-    ///
-    /// Front-end-owned like [`kad_id`](Self::kad_id) (ADR-0069:
-    /// `AppConfigStore::ensure_kad_udp_key`), because it must survive a
-    /// restart: a fresh seed silently invalidates every key a counterparty
-    /// learned for us, pushing each back through the three-way. Read only
-    /// while the core's obfuscation policy arms the Kad crypt
-    /// ([`CoreConfig::peer_crypt`](crate::CoreConfig::peer_crypt)).
-    pub kad_udp_key: u32,
     /// Where to write the node's per-datagram tap (ADR-0022), the same
     /// format `kad join-node --capture-dir` writes and
     /// `assert_kad_verify_keys`-style verdicts read. `None` (every caller but
@@ -400,11 +397,11 @@ impl KadShutdownSlot {
         )
     }
 
-    /// Take the pump task's half, once. A slot the node never started
-    /// (`start` never called, or a second `EnableKad` over the same slot —
-    /// never happens today, `KadRuntimeFactory::start` is consumed-once)
-    /// finds it already empty and runs with no external lever, same as
-    /// `None`.
+    /// Take the pump task's half, once. Every start gets a slot of its own
+    /// (a restart calls `KadRuntimeFactory::start` again over the same
+    /// factory, with a fresh slot), so a slot the node never started —
+    /// `start` never called, or one a node already took — finds it empty and
+    /// runs with no external lever, same as `None`.
     pub(crate) fn take(&self) -> Option<KadShutdownParts> {
         self.0.lock().ok()?.take()
     }
@@ -445,35 +442,38 @@ impl KadShutdownHandle {
     }
 }
 
-impl KadEnableConfig {
-    /// The node's verify-key arming — `(seed, own public IP)` — under the
-    /// core's obfuscation policy, or `None` for a plaintext node.
+impl KadNodeIdentity {
+    /// The node's Kad-UDP crypt under the core's obfuscation policy: the
+    /// verify keys `(seed, own public IP)` always, and datagram obfuscation
+    /// while a policy is set.
     ///
     /// One policy, not a Kad knob (ADR-0046 "Policy surface": a separate
     /// datagram policy was rejected because aMule exposes one crypt setting):
     /// aMule obfuscates a Kad datagram only while
-    /// `IsClientCryptLayerSupported()` (`MuleUDPSocket.cpp:282-284`), the same
-    /// preference every other crypt surface reads, and derives its keys the
-    /// whole time. Any set policy therefore arms both the keys and the
-    /// datagram obfuscation they ride inside — which is also what makes the
-    /// crypt ladder the node's source publishes state (`TAG_ENCRYPTION`,
-    /// ADR-0091) a ladder it actually speaks.
+    /// `IsClientCryptLayerSupported()` (`MuleUDPSocket.cpp:282-284`), which is
+    /// what a set policy arms for the send side, and the crypt ladder the
+    /// node's source publishes (`TAG_ENCRYPTION`, ADR-0091) is one it
+    /// actually speaks. The receive side is not policy-gated: aMule derives
+    /// the verify key whatever its setting and tries it on every client
+    /// datagram (`EncryptedDatagramSocket.cpp:187-195`), so the keys are held
+    /// under `off` too.
     ///
     /// The public IP binds the keys counterparties hand us (aMule
     /// `CKadUDPKey(key, GetPublicIP())`); unknown at start, it is
     /// `0.0.0.0` — aMule's `GetPublicIP() == 0` — under which learned keys
     /// still echo, since both sides of the binding read the same value.
-    pub(crate) fn verify_keys(
+    pub(crate) fn kad_crypt(
         &self,
         policy: Option<rmule_net::peer::ObfuscationPolicy>,
         public_ip: Option<std::net::Ipv4Addr>,
-    ) -> Option<(u32, std::net::Ipv4Addr)> {
-        policy.map(|_| {
-            (
-                self.kad_udp_key,
-                public_ip.unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
-            )
-        })
+    ) -> rmule_kad::KadObfuscation {
+        let public_ip = public_ip.unwrap_or(std::net::Ipv4Addr::UNSPECIFIED);
+        if policy.is_some() {
+            rmule_kad::KadObfuscation::new(rmule_net::kad::os_datagram_nonce)
+                .with_verify_keys(self.kad_udp_key, public_ip)
+        } else {
+            rmule_kad::KadObfuscation::receive_only(self.kad_udp_key, public_ip)
+        }
     }
 }
 
@@ -520,102 +520,46 @@ impl std::fmt::Debug for ClientUdpBind {
     }
 }
 
-/// Consumed-once factory for the Kad channel (the `serve_runtime` adapter
-/// precedent): held by the Core actor until `CoreCommand::EnableKad` starts
-/// the node. Tests inject a fake whose channel is socket-free; production
+/// The Kad node's moving facts as the pump keeps them (they ride the core's
+/// [`KadCells`]): shared cells, cheap to clone, read at the instant a snapshot
+/// asks.
+#[derive(Clone, Debug, Default)]
+pub struct KadFactsView {
+    /// Live routing-table size (adds minus evictions).
+    pub(crate) contact_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// The `(keyword, file)` rows the node's keyword index stores for others.
+    pub(crate) keywords_stored: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Kad datagrams and wire bytes across the shared client-UDP bind.
+    pub(crate) traffic: rmule_net::kad::KadTraffic,
+}
+
+/// Factory for the Kad channel (the `serve_runtime` adapter precedent): held
+/// by the Core actor for its whole life, and started by each
+/// `CoreCommand::EnableKad` — once per node, again after every stop. Tests inject a fake whose channel is socket-free; production
 /// wiring injects [`RuntimeKadFactory`]. Kad disabled = the command never
 /// arrives = nothing starts.
 pub trait KadRuntimeFactory: Send + 'static {
     /// The channel a started node hands back — core's only handle on Kad.
     type Channel: KadSourceChannel;
 
-    /// Start the node over the core's client-UDP `bind` and yield its channel.
-    /// Consumed once: a second `EnableKad` is ignored rather than starting a
-    /// second node. An error here leaves the session running without Kad — and
-    /// with the sockets unified, a client-UDP bind that failed at core start
-    /// is one such error: there is no second socket for Kad to fall back to.
+    /// Start the node as `node` over the core's client-UDP `bind` and yield
+    /// its channel, publishing into and counting through `cells`: the one set
+    /// core built before any start and lends to every start. Called once per
+    /// node and again on each restart; the actor ignores an `EnableKad` while a
+    /// node runs rather than starting a second one, so a started node's cells
+    /// are only ever refilled after it is retired (or while a predecessor that
+    /// outlived its stop is still tearing down — each node clears only the
+    /// cells it filled). An error here leaves the session running without Kad —
+    /// and with the sockets unified, a client-UDP bind that failed at core
+    /// start is one such error: there is no second socket for Kad to fall back
+    /// to.
     fn start(
         &mut self,
         config: &KadEnableConfig,
+        node: &KadNodeIdentity,
         bind: ClientUdpBind,
+        cells: &KadCells,
     ) -> impl Future<Output = Result<Self::Channel, CoreError>> + Send;
-
-    /// Our own **Kad reachability** verdicts (ADR-0058) as this runtime
-    /// publishes them — the Kad family of **Self Reach**, as a
-    /// level read live wherever it is carried. The Kad self-check settles
-    /// them, so the Kad runtime is where they live; the core weaves this
-    /// level into the one owner every reader asks.
-    ///
-    /// The default is the honest fresh-node posture, never reachable: a runtime
-    /// that runs no self-check never claims an openness it has not proven.
-    fn kad_reach(&self) -> crate::KadReachLevel {
-        crate::KadReachLevel::fixed(false)
-    }
-
-    /// aMule's `HasHadContact` (ADR-0067): a counterparty Kad datagram has been
-    /// received since the node started — the cold-start "joined" observable the
-    /// diagnostics snapshot reports. Default `false`: a runtime that never
-    /// started (and the socket-free test fakes) has heard from no one.
-    fn has_had_contact(&self) -> bool {
-        false
-    }
-
-    /// Live routing-table size — event-derived (adds minus evictions,
-    /// exact because the node pairs every eviction with its event). Default 0:
-    /// a runtime that never started holds no contacts.
-    fn contact_count(&self) -> usize {
-        0
-    }
-
-    /// The node's keyword index size — the `(keyword, file)` rows it stores
-    /// for other publishers (ADR-0062), as its last index change reported.
-    /// Default 0: a runtime that never started indexes nothing.
-    fn keywords_stored(&self) -> usize {
-        0
-    }
-
-    /// Kad datagrams and wire bytes across the shared client-UDP bind, each
-    /// way, this session. Default zero: a runtime that never started
-    /// exchanged nothing.
-    fn kad_traffic(&self) -> crate::diagnostics::KadTraffic {
-        crate::diagnostics::KadTraffic::default()
-    }
-
-    /// Hand the factory the live diagnostics state (the `SharedTunnelClaims`
-    /// install pattern), once, before `start` — the ADR-0058 dial-back
-    /// broker's pump is the single writer of the crypt-incompatible refusal
-    /// counter it decides internally, so it counts that outcome
-    /// itself rather than surfacing it for the actor to re-derive.
-    ///
-    /// Default no-op: the socket-free test fakes count nothing and need not
-    /// hold a diagnostics handle at all.
-    fn install_diagnostics(&mut self, _diagnostics: crate::diagnostics::DiagnosticsState) {}
-
-    /// Take back the ed2k→Kad handoff forwarder's task handle, if `start`
-    /// spawned one: `DisableKad` joins it alongside the
-    /// publisher once the lever has stopped the pump. Default `None` — every
-    /// test fake models no such task, only [`RuntimeKadFactory`] does.
-    fn take_handoff_handle(&mut self) -> Option<tokio::task::JoinHandle<()>> {
-        None
-    }
-
-    /// A reader of this factory's own **Kad Presence**: "is Kad
-    /// running, as whom" — the served-link `0x99` and the firewalled front's
-    /// `0x99`/`0x95` gates' whole input. A trait method
-    /// rather than inherent so `CoreBuilder::kad` can re-read it from
-    /// whichever factory it just installed, generically. Default: a view
-    /// attached to no writer, always "no node" — honest for a test fake that
-    /// spawns no pump.
-    fn kad_presence(&self) -> KadPresenceView {
-        KadPresenceView::default()
-    }
-
-    /// Adopt the builder's one set of `AdapterCells`
-    /// `CoreBuilder::kad` calls this on the factory it
-    /// installs, so an injected runtime factory folds bans into, brokers
-    /// hints through and gates its helper on the node's own cells — never a
-    /// private copy. Default no-op: a socket-free fake holds no cell.
-    fn adopt_cells(&mut self, _cells: &super::AdapterCells) {}
 }
 
 pub(crate) enum KadPumpCommand {
@@ -692,16 +636,12 @@ pub(crate) struct BuddyCallbackAsk {
 /// there to take it. `false` — Kad is off, or its inbox is full — means no
 /// `0x52` will leave, which the caller reports rather than assumes.
 pub(crate) fn request_kad_buddy_callback(sink: &SharedKadPump, ask: BuddyCallbackAsk) -> bool {
-    sink.lock().is_ok_and(|slot| {
-        slot.as_ref()
-            .is_some_and(|tx| tx.try_send(KadPumpCommand::BuddyCallback(ask)).is_ok())
-    })
+    sink.send(KadPumpCommand::BuddyCallback(ask)).is_ok()
 }
 
 /// Production [`KadSourceChannel`] over a live `rmule_net::kad` node. A pump
-/// task owns the node handle and the walked-target → file-hash table (the
-/// node speaks Kad keys — file hashes word-swapped — so answers map back to
-/// the hash the walk was issued for; an unrequested target is dropped).
+/// task owns the node handle; each source answer carries the lookup target
+/// the node echoes, so it maps back to the file hash the walk was issued for.
 /// Everything below the seam stays in Kad vocabulary; everything above sees
 /// only projected Peer Sources.
 pub struct RuntimeKadChannel {

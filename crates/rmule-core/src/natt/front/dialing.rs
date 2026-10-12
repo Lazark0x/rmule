@@ -243,6 +243,7 @@ impl DialSchedule {
     }
 
     /// How many targets are being dialed.
+    #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.dials.len()
     }

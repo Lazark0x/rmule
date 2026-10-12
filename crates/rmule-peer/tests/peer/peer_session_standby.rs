@@ -4,7 +4,8 @@
 //! emitting twice.
 
 use rmule_peer::{
-    PartRanges, PeerCloseReason, PeerCommand, PeerError, PeerEvent, PeerOutput, SlotReleaseReason,
+    ConnectionEvent, NoticeEvent, PartRanges, PeerCloseReason, PeerCommand, PeerError, PeerEvent,
+    PeerOutput, RequesterCommand, RequesterEvent, SlotReleaseReason,
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{ED2K_PART_SIZE, Packet, PartHash};
@@ -15,33 +16,33 @@ fn signal_slot_stale_releases_active_slot() {
     let h = file_hash(0xAB);
     let mut session = identified_session();
     let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
-    session.handle_command(PeerCommand::RequestParts {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 1_000_000,
         ranges,
-    });
+    }));
     let _ = drain(|| session.poll_output());
 
     session.signal_slot_stale();
     let out = drain(|| session.poll_output());
     assert!(events(&out).iter().any(|e| matches!(
         e,
-        PeerEvent::SlotReleased { file_hash, reason: SlotReleaseReason::Stale } if *file_hash == h
+        PeerEvent::Requester(RequesterEvent::SlotReleased { file_hash, reason: SlotReleaseReason::Stale }) if *file_hash == h
     )));
 
     // Stale clears active_slot — new RequestParts proceeds without SlotBusy.
     let h2 = file_hash(0xAC);
-    session.handle_command(PeerCommand::RequestParts {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h2,
         file_size: 1_000_000,
         ranges,
-    });
+    }));
     let out2 = drain(|| session.poll_output());
     assert!(!events(&out2).iter().any(|e| matches!(
         e,
-        PeerEvent::CommandRejected {
+        PeerEvent::Notice(NoticeEvent::CommandRejected {
             reason: PeerError::SlotBusy
-        }
+        })
     )));
 }
 
@@ -52,9 +53,9 @@ fn signal_idle_close_disconnects_when_no_active_work() {
     let out = drain(|| session.poll_output());
     assert!(out.iter().any(|o| matches!(
         o,
-        PeerOutput::Event(PeerEvent::Disconnected {
+        PeerOutput::Event(PeerEvent::Connection(ConnectionEvent::Disconnected {
             reason: PeerCloseReason::Local
-        })
+        }))
     )));
     assert!(matches!(
         out.last(),
@@ -69,11 +70,11 @@ fn slotless_standby_transition_on_cancel_transfer() {
     let h = file_hash(0xA8);
     let mut session = identified_session();
     let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
-    session.handle_command(PeerCommand::RequestParts {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: ED2K_PART_SIZE + 1,
         ranges,
-    });
+    }));
     session.handle_bytes(&reqfilename_answer(h, "file"));
     session.handle_bytes(&file_status(h, 1, &[0x01]));
     session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
@@ -81,7 +82,9 @@ fn slotless_standby_transition_on_cancel_transfer() {
     let _ = drain(|| session.poll_output());
 
     // Worker realizes no needed parts: emit cancel, go slotless-standby.
-    session.handle_command(PeerCommand::CancelTransfer { file_hash: h });
+    session.handle_command(PeerCommand::Requester(RequesterCommand::CancelTransfer {
+        file_hash: h,
+    }));
     let out = drain(|| session.poll_output());
     let sent = writes(&out);
     assert_eq!(sent.len(), 1, "exactly one frame: 0x56 cancel");
@@ -91,19 +94,19 @@ fn slotless_standby_transition_on_cancel_transfer() {
     // SlotReleased event confirms the slot is dropped (slotless).
     assert!(events(&out).iter().any(|e| matches!(
         e,
-        PeerEvent::SlotReleased {
+        PeerEvent::Requester(RequesterEvent::SlotReleased {
             file_hash,
             reason: SlotReleaseReason::Cancelled
-        } if *file_hash == h
+        }) if *file_hash == h
     )));
 
     // Connection is still open: we can send another command (no error).
     // If the session were closed, it would reject commands silently.
-    session.handle_command(PeerCommand::ProbeFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: h,
         file_size: 20_000_000,
         own_status: rmule_peer::PartBitmap::downloader_empty(20_000_000),
-    });
+    }));
     // No panic or rejection means connection stayed open.
 }
 
@@ -117,11 +120,11 @@ fn standby_re_ask_skips_probe_and_hashset() {
     let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
 
     // First ask-cycle: RequestParts → probe → hashset → start-upload → slot granted.
-    session.handle_command(PeerCommand::RequestParts {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: ED2K_PART_SIZE + 1,
         ranges,
-    });
+    }));
     session.handle_bytes(&reqfilename_answer(h, "file"));
     session.handle_bytes(&file_status(h, 1, &[0x01]));
     session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
@@ -129,15 +132,17 @@ fn standby_re_ask_skips_probe_and_hashset() {
     let _ = drain(|| session.poll_output());
 
     // Standby: cancel sends 0x56 and enters standby.
-    session.handle_command(PeerCommand::CancelTransfer { file_hash: h });
+    session.handle_command(PeerCommand::Requester(RequesterCommand::CancelTransfer {
+        file_hash: h,
+    }));
     let _ = drain(|| session.poll_output());
 
     // Second ask-cycle: RequestParts with new/same ranges.
-    session.handle_command(PeerCommand::RequestParts {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: ED2K_PART_SIZE + 1,
         ranges: PartRanges::new([(4, 8), (0, 0), (0, 0)]).unwrap(),
-    });
+    }));
     let out = drain(|| session.poll_output());
     let sent = writes(&out);
 
@@ -160,11 +165,11 @@ fn cancel_latch_prevents_double_emit_in_same_cycle() {
     let h = file_hash(0xAA);
     let mut session = identified_session();
     let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
-    session.handle_command(PeerCommand::RequestParts {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: ED2K_PART_SIZE + 1,
         ranges,
-    });
+    }));
     session.handle_bytes(&reqfilename_answer(h, "file"));
     session.handle_bytes(&file_status(h, 1, &[0x01]));
     session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
@@ -172,14 +177,18 @@ fn cancel_latch_prevents_double_emit_in_same_cycle() {
     let _ = drain(|| session.poll_output());
 
     // First cancel in this cycle: emits 0x56.
-    session.handle_command(PeerCommand::CancelTransfer { file_hash: h });
+    session.handle_command(PeerCommand::Requester(RequesterCommand::CancelTransfer {
+        file_hash: h,
+    }));
     let out1 = drain(|| session.poll_output());
     let sent1 = writes(&out1);
     assert_eq!(sent1.len(), 1, "first cancel emits 0x56: {sent1:?}");
     assert_eq!(sent1[0].opcode(), 0x56);
 
     // Second cancel in same cycle: no-op (latch prevents re-emit).
-    session.handle_command(PeerCommand::CancelTransfer { file_hash: h });
+    session.handle_command(PeerCommand::Requester(RequesterCommand::CancelTransfer {
+        file_hash: h,
+    }));
     let out2 = drain(|| session.poll_output());
     let sent2 = writes(&out2);
     assert_eq!(
@@ -189,11 +198,11 @@ fn cancel_latch_prevents_double_emit_in_same_cycle() {
     );
 
     // New ask-cycle resets latch: third cancel (after RequestParts) would emit again.
-    session.handle_command(PeerCommand::RequestParts {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: ED2K_PART_SIZE + 1,
         ranges: PartRanges::new([(4, 8), (0, 0), (0, 0)]).unwrap(),
-    });
+    }));
     let _ = drain(|| session.poll_output());
 
     // Another cancel in the new cycle would emit 0x56 if we had a slot.

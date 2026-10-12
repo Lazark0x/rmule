@@ -248,9 +248,11 @@ pub fn run_kad_required_check(options: KadRequiredCheckOptions<'_>) -> Result<()
                     assume_open: false,
                     direct_callback: None,
                     direct_callback_every_secs: 0,
+                    kad_udp_key_seed: None,
                     peer_crypt: Some(options.peer_crypt),
                     kad_capture_dir: None,
                     user_hash_hex: Some(KAD_REQUIRED_RMULE_USER_HASH),
+                    peer_crypt_flip: &[],
                     report_kad_verdicts_every_secs: VERDICT_REPORT_SECS,
                 },
             )?,
@@ -266,7 +268,7 @@ pub fn run_kad_required_check(options: KadRequiredCheckOptions<'_>) -> Result<()
             base.layout,
             "rmule",
             &names.rmule,
-            "serve serving_started",
+            "serve.serving_started",
             timeout,
         )?;
 
@@ -389,7 +391,7 @@ fn assert_kad_required_check(
     rows: &[HelperRows],
 ) -> Result<()> {
     let rmule_log = read_verdict_log(&layout.kad_node_stdout_log("rmule"))?;
-    let serving = rmule_log.contains("serve serving_started");
+    let serving = rmule_log.contains("serve.serving_started");
     let last_verdicts = rmule_log
         .lines()
         .rfind(|line| line.starts_with("rmule-kad-verdicts "))

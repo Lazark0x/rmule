@@ -16,7 +16,7 @@ use rmule_net::peer::{
     ConnectOptions, Connection, ObfuscationConfig, ObfuscationPolicy, PeerListener, PeerNetError,
     PeerStreamRole,
 };
-use rmule_peer::{PeerCommand, PeerEvent};
+use rmule_peer::{ConnectionEvent, PeerCommand, PeerEvent, SideCommand};
 use rmule_primitives::{UserHash, is_plaintext_marker};
 use rmule_testkit::peer_session::serverless_ctx;
 use rmule_testkit::{FakePeer, PeerScript};
@@ -44,7 +44,7 @@ async fn dial_back_delivers_the_firewall_ack_once_the_requester_identifies() {
         "the dial surface hands back the requester's proven identity",
     );
 
-    conn.send(PeerCommand::SendKadFirewallAck)
+    conn.send(PeerCommand::Side(SideCommand::SendKadFirewallAck))
         .await
         .expect("queue the connect-back ack");
     conn.shutdown().await.expect("close after the ack flushes");
@@ -99,8 +99,10 @@ fn callback_ctx() -> rmule_peer::PeerHandshakeContext {
 async fn identified_hash(conn: &mut Connection) -> Option<UserHash> {
     while let Some(event) = conn.next_event().await {
         match event {
-            PeerEvent::PeerIdentified { identity } => return Some(identity.user_hash()),
-            PeerEvent::Disconnected { .. } => return None,
+            PeerEvent::Connection(ConnectionEvent::Identified { identity }) => {
+                return Some(identity.user_hash());
+            }
+            PeerEvent::Connection(ConnectionEvent::Disconnected { .. }) => return None,
             _ => {}
         }
     }

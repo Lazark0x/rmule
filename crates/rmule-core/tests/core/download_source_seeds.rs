@@ -3,6 +3,7 @@
 //! any lookup answers; a stale set is dropped unread; a finished download
 //! keeps none; and the operator's count bounds the write.
 
+use rmule_testkit::HANG_GUARD;
 use std::net::Ipv4Addr;
 use std::num::NonZeroU8;
 use std::sync::{Arc, Mutex};
@@ -17,12 +18,12 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, ExchangedSource, Ipv4Endpoint, PeerEndpoint, PeerSource,
-    ServerEndpoint, SourceLookupTarget,
+    ClientId, Ed2kFileLink, Ipv4Endpoint, PeerEndpoint, PeerSource, ServerEndpoint,
+    SourceLookupTarget, SourceSighting,
 };
 use rmule_testkit::{StaticPeerTransfer, StaticSourceLookup, file_link};
 
-use crate::fixture::{connect_credentials, identity, next_expected};
+use crate::fixture::next_expected;
 
 /// Two dialable sources at RFC 5737 addresses.
 fn first_seed() -> PeerEndpoint {
@@ -41,7 +42,7 @@ fn answering(sources: &[PeerEndpoint]) -> StaticSourceLookup {
                 .iter()
                 .map(|peer| {
                     let v4 = peer.as_v4().expect("IPv4 test source");
-                    ExchangedSource::plain(PeerSource::HighId(v4))
+                    SourceSighting::plain(PeerSource::HighId(v4))
                 })
                 .collect(),
         },
@@ -106,13 +107,12 @@ fn link(name: &str) -> Ed2kFileLink {
     file_link(name, name.repeat(40).as_bytes())
 }
 
-async fn start(core: &mut Core, file: Ed2kFileLink, dir: &std::path::Path) -> DownloadId {
-    let output_path = dir.join(file.name.to_display_string());
+async fn start(core: &mut Core, file: Ed2kFileLink) -> DownloadId {
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
+        name: rmule_primitives::SafeFileName::of_link(&file),
         file,
         source_hint: Some(ServerEndpoint::new("203.0.113.9", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path,
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -143,16 +143,17 @@ async fn part_assigned(core: &mut Core, id: DownloadId) {
 /// then quits; returns the download's id.
 async fn run_then_quit(
     dir: &std::path::Path,
-    config: CoreConfig,
+    settings: rmule_core::CoreSettings,
     file: Ed2kFileLink,
     sources: &[PeerEndpoint],
 ) -> DownloadId {
     let store = open_durable_store(dir).unwrap();
-    let mut core = Core::builder(config, store)
+    let mut core = Core::builder(CoreConfig::default(), store)
+        .settings(rmule_testkit::in_download_dir(settings, dir))
         .source_lookup(answering(sources))
         .peer_transfer(DialLog::default())
         .build();
-    let id = start(&mut core, file, dir).await;
+    let id = start(&mut core, file).await;
     part_assigned(&mut core, id).await;
     core.shutdown().await;
     id
@@ -169,9 +170,10 @@ fn attach(dir: &std::path::Path, dials: DialLog) -> impl std::future::Future<Out
             },
             open_durable_store(&dir).expect("the last process released the store"),
         )
+        .settings(crate::fixture::attach_settings().await)
         .source_lookup(NeverAnswers)
         .peer_transfer(dials)
-        .restore_credentials(connect_credentials().await)
+        .restore_at_attach()
         .build()
     }
 }
@@ -184,7 +186,7 @@ async fn a_restart_dials_the_remembered_peers_before_any_lookup_answers() {
     let dir = tempfile::tempdir().unwrap();
     let id = run_then_quit(
         dir.path(),
-        CoreConfig::default(),
+        rmule_core::CoreSettings::default(),
         link("kept"),
         &[first_seed(), second_seed()],
     )
@@ -335,7 +337,6 @@ async fn a_paused_download_resumed_by_hand_dials_its_seeds() {
     let mut core = attach(dir.path(), dials.clone()).await;
     core.send(CoreCommand::Download(DownloadCommand::ResumeDownload {
         download_id: id,
-        credentials: identity().into(),
     }))
     .await
     .unwrap();
@@ -368,6 +369,10 @@ async fn a_completed_download_keeps_no_seeds() {
     let bytes = b"seeds go with the download".to_vec();
     let file = file_link("done.bin", &bytes);
     let mut core = Core::builder(CoreConfig::default(), store)
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .source_lookup(answering(&[first_seed()]))
         .peer_transfer(StaticPeerTransfer {
             expected_plan_count: 1,
@@ -381,7 +386,7 @@ async fn a_completed_download_keeps_no_seeds() {
             },
         })
         .build();
-    let id = start(&mut core, file, dir.path()).await;
+    let id = start(&mut core, file).await;
     let seed = SourceSeed {
         endpoint: first_seed(),
         user_hash: None,
@@ -408,9 +413,9 @@ async fn the_remember_peers_count_bounds_the_write() {
     let dir = tempfile::tempdir().unwrap();
     let id = run_then_quit(
         dir.path(),
-        CoreConfig {
+        rmule_core::CoreSettings {
             remember_peers: RememberPeers::new(NonZeroU8::MIN),
-            ..CoreConfig::default()
+            ..rmule_core::CoreSettings::default()
         },
         link("one"),
         &[first_seed(), second_seed()],
@@ -420,6 +425,36 @@ async fn the_remember_peers_count_bounds_the_write() {
     let seeds = repo.source_seeds(id).unwrap();
     assert_eq!(seeds.len(), 1, "{seeds:?}");
     assert_eq!(seeds[0].rank, SeedRank::Known);
+}
+
+/// `Remember peers` changed on the running core bounds the next write: core
+/// takes it up at once (ADR-0069), with no restart between.
+#[tokio::test]
+async fn a_remember_peers_change_on_the_running_core_bounds_the_next_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = Core::builder(
+        CoreConfig::default(),
+        open_durable_store(dir.path()).unwrap(),
+    )
+    .settings(rmule_testkit::in_download_dir(
+        rmule_core::CoreSettings::default(),
+        dir.path(),
+    ))
+    .source_lookup(answering(&[first_seed(), second_seed()]))
+    .peer_transfer(DialLog::default())
+    .build();
+    let id = start(&mut core, link("live")).await;
+    part_assigned(&mut core, id).await;
+    assert_eq!(
+        core.settings()
+            .set(rmule_core::Setting::RememberPeers(RememberPeers::new(
+                NonZeroU8::MIN
+            ))),
+        Ok(rmule_core::TakesEffect::Now)
+    );
+    core.shutdown().await;
+    let repo = DurableDownloadRepository::new(open_durable_store(dir.path()).unwrap());
+    assert_eq!(repo.source_seeds(id).unwrap().len(), 1);
 }
 
 /// The real fleet and the real dial, no server session and Kad off: attach
@@ -463,10 +498,11 @@ async fn a_remembered_peer_serves_the_file_with_no_server_and_no_kad() {
         },
         open_durable_store(dir.path()).unwrap(),
     )
-    .restore_credentials(connect_credentials().await)
+    .settings(crate::fixture::attach_settings().await)
+    .restore_at_attach()
     .build();
     loop {
-        let event = tokio::time::timeout(Duration::from_secs(10), core.next_event())
+        let event = tokio::time::timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted an event")
             .expect("core event stream stayed open");
@@ -513,17 +549,10 @@ fn hello_hash(peer: PeerEndpoint) -> rmule_primitives::UserHash {
 
 /// The peer's hello: its hash and a crypt-capable stance.
 fn hello_of(peer: PeerEndpoint) -> PeerWorkerEvent {
-    PeerWorkerEvent::Identified {
-        user_hash: hello_hash(peer),
-        crypt: Some(rmule_primitives::CryptStance::new(true, true, false)),
-        software: rmule_peer::ClientSoftware::from_hello_body(&rmule_peer::PeerHelloBody {
-            user_hash: hello_hash(peer),
-            client_id: ClientId::from_u32(0),
-            tcp_port: 0,
-            tags: Vec::new(),
-            connected_server: Ipv4Endpoint::new(Ipv4Addr::UNSPECIFIED, 0),
-        }),
-    }
+    PeerWorkerEvent::Identity(crate::fixture::peer_identity(
+        hello_hash(peer),
+        rmule_primitives::CryptStance::new(true, true, false),
+    ))
 }
 
 /// Workers whose hello names the peer's hash and a crypt-capable stance.
@@ -589,10 +618,14 @@ async fn a_required_policy_dials_a_remembered_peer_with_the_stance_it_stated() {
             CoreConfig::default(),
             open_durable_store(dir.path()).unwrap(),
         )
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .source_lookup(answering(&[first_seed(), second_seed()]))
         .peer_transfer(HelloStating)
         .build();
-        let id = start(&mut core, link("stated"), dir.path()).await;
+        let id = start(&mut core, link("stated")).await;
         part_assigned(&mut core, id).await;
         core.shutdown().await;
         id
@@ -602,14 +635,17 @@ async fn a_required_policy_dials_a_remembered_peer_with_the_stance_it_stated() {
     let mut core = Core::builder(
         CoreConfig {
             download_restore_pace: Duration::from_millis(10),
-            peer_crypt: Some(rmule_core::ObfuscationPolicy::Required),
             ..CoreConfig::default()
         },
         open_durable_store(dir.path()).unwrap(),
     )
+    .settings(rmule_core::CoreSettings {
+        obfuscation: Some(rmule_core::ObfuscationPolicy::Required),
+        ..crate::fixture::attach_settings().await
+    })
     .source_lookup(NeverAnswers)
     .peer_transfer(briefs.clone())
-    .restore_credentials(connect_credentials().await)
+    .restore_at_attach()
     .build();
     part_assigned(&mut core, id).await;
     let briefs = briefs.0.lock().unwrap().clone();

@@ -18,8 +18,8 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use crate::flow::pcap::{self, Record};
+use crate::flow::wire_filter::OP_EDONKEYPROT;
 
-const OP_EDONKEYPROT: u8 = 0xe3;
 const OP_PACKEDPROT: u8 = 0xd4;
 const OP_OFFERFILES: u8 = 0x15;
 const OP_SEARCHREQUEST: u8 = 0x16;
@@ -27,7 +27,8 @@ const OP_QUERY_MORE_RESULT: u8 = 0x21;
 const OP_SEARCHRESULT: u8 = 0x33;
 const OP_SERVERMESSAGE: u8 = 0x38;
 const OP_GLOBSEARCHREQ: u8 = 0x98;
-const OP_IDCHANGE: u8 = 0x40;
+/// `OP_IDCHANGE`: the server's id for the client, first.
+pub(crate) const OP_IDCHANGE: u8 = 0x40;
 /// `OP_GLOBSEARCHREQ`, `OP_GLOBSEARCHREQ2`, `OP_GLOBSEARCHREQ3`.
 const GLOBAL_SEARCHES: [u8; 3] = [OP_GLOBSEARCHREQ, 0x92, 0x90];
 const ETHERTYPE_IPV4: u16 = 0x0800;
@@ -98,6 +99,35 @@ pub(crate) fn offers(pcap: &Path, sharer: Ipv4Addr) -> Result<Vec<(f64, u64)>> {
             Body::Tcp { opcode, payload } if *opcode == OP_OFFERFILES => payload
                 .get(..4)
                 .map(|count| (frame.at, u64::from(le_u32(count)))),
+            _ => None,
+        })
+        .collect())
+}
+
+/// The client ID and port an offer entry carries.
+pub(crate) type Origin = (u32, u16);
+
+/// The ID and port each file of every `OP_OFFERFILES` `sharer` sent the
+/// server carried, in order: the marker a compression-flag server reads
+/// completeness off (`0xFBFBFBFB:0xFBFB` complete, `0xFCFCFCFC:0xFCFC`
+/// incomplete), or the client's own ID and port, or `0:0`.
+///
+/// # Errors
+/// If the pcap cannot be read.
+pub(crate) fn offered_origins(pcap: &Path, sharer: Ipv4Addr) -> Result<Vec<(f64, Vec<Origin>)>> {
+    let records = pcap::records(pcap)?;
+    Ok(frames(&records)?
+        .iter()
+        .filter(|frame| *frame.source.ip() == sharer)
+        .filter_map(|frame| match &frame.body {
+            Body::Tcp { opcode, payload } if *opcode == OP_OFFERFILES => {
+                let mut rows = Vec::new();
+                walk_rows(payload, &mut rows).ok()?;
+                Some((
+                    frame.at,
+                    rows.iter().map(|row| (row.client_id, row.port)).collect(),
+                ))
+            }
             _ => None,
         })
         .collect())
@@ -421,18 +451,28 @@ fn tree(bytes: &[u8], at: usize) -> Result<(String, usize), &'static str> {
 /// The file name of each row of an `OP_SEARCHRESULT`, and what follows the
 /// rows (`trailing=<hex>`, or why the walk stopped).
 fn result_names(payload: &[u8]) -> (Vec<Option<String>>, String) {
-    let mut names = Vec::new();
-    match walk_rows(payload, &mut names) {
-        Ok(tail) => (names, tail),
+    let mut rows = Vec::new();
+    match walk_rows(payload, &mut rows) {
+        Ok(tail) => (rows.into_iter().map(|row| row.name).collect(), tail),
         Err(why) => (Vec::new(), format!("err {why}")),
     }
 }
 
-fn walk_rows(payload: &[u8], names: &mut Vec<Option<String>>) -> Result<String, &'static str> {
+/// One file entry of an `OP_OFFERFILES` or `OP_SEARCHRESULT`: both lay a
+/// hash, a client ID, a port and a tag list out the same way.
+struct Row {
+    name: Option<String>,
+    client_id: u32,
+    port: u16,
+}
+
+fn walk_rows(payload: &[u8], rows: &mut Vec<Row>) -> Result<String, &'static str> {
     let count = le_u32(payload.get(..4).ok_or("truncated count")?);
     let mut at = 4;
     for _ in 0..count {
         // Hash, client id, port.
+        let client_id = le_u32(payload.get(at + 16..at + 20).ok_or("truncated id")?);
+        let port = u16_at(payload, at + 20)?;
         at += 22;
         let tags = le_u32(payload.get(at..at + 4).ok_or("truncated tag count")?);
         at += 4;
@@ -481,7 +521,11 @@ fn walk_rows(payload: &[u8], names: &mut Vec<Option<String>>) -> Result<String, 
                 name = Some(lossy(value));
             }
         }
-        names.push(name);
+        rows.push(Row {
+            name,
+            client_id,
+            port,
+        });
     }
     Ok(format!(
         "trailing={}",

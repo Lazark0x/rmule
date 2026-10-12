@@ -30,7 +30,7 @@ and anti-flood [ADR-0064](../../adr/0064-kad-liveness-and-verified-contacts.md),
 the firewall self-check [ADR-0058](../../adr/0058-kad-firewall-self-check.md),
 buddies and callbacks [ADR-0061](../../adr/0061-low-id-callback-route-tree-and-buddies.md),
 and the crypt layer [ADR-0046](../../adr/0046-per-datagram-udp-obfuscation-layer.md).
-Send-side crypt is off unless `CoreConfig::peer_crypt` is set; receive is always
+Send-side crypt is off unless `CoreSettings::obfuscation` is set; receive is always
 dual-path.
 
 `OP_DIRECTCALLBACKREQ 0x95` is defined in `kad2/Client2Client/UDP.h` but travels

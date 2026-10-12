@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use crate::fixture::{
     OWN_ID, SECOND, TWENTY_MIN, bootstrap_req_bytes, bootstrap_res_bytes, dial_destinations, ep,
-    join_node,
+    join_node, joining_node,
 };
 use rmule_kad::{
     Kad2Message, KadBootstrapNode, KadCommand, KadContact, KadContactState, KadEvent, KadId,
@@ -276,9 +276,8 @@ fn self_lookups(events: &[KadEvent]) -> usize {
 /// own-ID neighborhood — the join proper.
 #[test]
 fn self_lookup_fires_at_three_minutes_then_every_four_hours() {
-    let mut node = join_node();
+    let mut node = joining_node();
     let t0 = KadInstant::EPOCH;
-    node.arm_self_lookup(t0);
     // A servable seed so the self-lookup has a contact to query.
     node.handle_command(
         t0,
@@ -338,9 +337,8 @@ fn self_lookup_fires_at_three_minutes_then_every_four_hours() {
 /// regardless of whether the table can seed a walk yet.
 #[test]
 fn self_lookup_schedule_fires_even_with_an_empty_table() {
-    let mut node = join_node();
+    let mut node = joining_node();
     let t0 = KadInstant::EPOCH;
-    node.arm_self_lookup(t0);
 
     node.tick(t0 + THREE_MIN);
     let (datagrams, events) = drain_split(&mut node);

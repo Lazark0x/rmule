@@ -50,7 +50,7 @@ fn narrowest_width_for_ranges(req: &RequestParts) -> PartOffsetWidth {
 /// `narrowest_width_for_ranges`'s spirit — the umbrella-wide `encode()` picks
 /// a sufficient variant from the data rather than assuming a fixed one; a
 /// caller wanting a specific wire version (v3's hybrid id order in
-/// particular, which this can never pick since nothing in `ExchangedSource`
+/// particular, which this can never pick since nothing in `SourceSighting`
 /// distinguishes "v2" from "v3") should call
 /// `AnswerSources::encode_packet(version)` directly.
 fn narrowest_version_for_sources(sources: &[SourceExchangeEntry]) -> SourceExchangeVersion {
@@ -256,7 +256,7 @@ pub enum PeerPacket {
 /// Result of decoding one inbound peer packet frame. Plain frames decode to
 /// a [`PeerPacket`]; inbound packed `0xD4` frames whose payload fails to
 /// inflate (bad zlib or oversize) surface as a non-terminal skip the session
-/// reports as [`crate::PeerEvent::CompressedFrameSkipped`] rather than
+/// reports as [`crate::NoticeEvent::CompressedFrameSkipped`] rather than
 /// closing (ADR-0053). Mirrors
 /// `rmule_ed2k::server_packet::DecodedServerFrame` (plain reference, not an
 /// intra-doc link — `rmule-peer` does not depend on `rmule-ed2k`).

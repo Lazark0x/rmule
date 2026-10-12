@@ -23,14 +23,15 @@
 //! valid payloads (the server.met tag primitives), not an aMule capture.
 
 use rmule_core::DurableAppConfig;
+use rmule_testkit::HANG_GUARD;
 use std::net::Ipv4Addr;
 
 use crate::fixture::identity_with_port;
 use crate::fixture::login_and_read_id;
 use rmule_bootstrap::{BootstrapConfig, ReqwestFetcher};
 use rmule_core::{
-    AppConfigStore, Core, CoreCommand, CoreCommandRejectReason, CoreConfig, CoreEvent,
-    FirstRunFetch, JoinConfig, KadEnableConfig, ServerListStore, run_join_sequence,
+    Core, CoreCommand, CoreCommandRejectReason, CoreConfig, CoreEvent, FirstRunFetch, JoinConfig,
+    KadEnableConfig, ServerListStore, run_join_sequence,
 };
 use rmule_primitives::{Ed2kText, Ipv4Endpoint, ServerEndpoint, Tag, TagName, TagValue, UserHash};
 use rmule_testkit::FakeEd2kServer;
@@ -88,9 +89,9 @@ fn server_met_one(ip: Ipv4Addr, port: u16, name: &str) -> Vec<u8> {
 async fn assert_no_join_rejection(core: &mut Core) {
     core.send(CoreCommand::DumpDiagnostics).await.unwrap();
     loop {
-        let event = timeout(Duration::from_secs(5), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
-            .expect("core answered the diagnostics barrier within 5s")
+            .expect("core answered the diagnostics barrier")
             .expect("core event stream stayed open");
         match event {
             CoreEvent::CommandRejected { reason } => {
@@ -138,8 +139,7 @@ async fn cold_start_join_sequence_fetches_persists_logs_in_and_joins_kad() {
             capture_dir: None,
             nodes_dat_path: None,
             firewall_self_check: false,
-            datagram_obfuscation: false,
-            verify_keys: None,
+            obfuscation: None,
             contact_admission: None,
         },
         (Ipv4Addr::LOCALHOST, 0).into(),
@@ -153,28 +153,27 @@ async fn cold_start_join_sequence_fetches_persists_logs_in_and_joins_kad() {
     // Keep the counterparty's event stream drained so its driver never stalls.
     tokio::spawn(async move { while counterparty.next_event().await.is_some() {} });
 
-    // The Kad join carries the store's durable identity + the counterparty as
-    // its one bootstrap seed (the front-end-supplied half of ADR-0067's
-    // deliberate no-auto-fetch asymmetry).
+    // The Kad join carries the counterparty as its one bootstrap seed (the
+    // front-end-supplied half of ADR-0067's deliberate no-auto-fetch
+    // asymmetry); the node's identity is core's own.
     // The core's one UDP socket takes the *configured* port, which the default
     // `CoreConfig` leaves ephemeral — the stored `DEFAULT_UDP_PORT` (4672)
     // is the well-known port any eD2k client on the developer's machine already
     // holds. The port under test is the *join*, not the number.
     let kad_enable = KadEnableConfig {
-        kad_id: store.ensure_kad_identity().unwrap().id,
-        peer_credentials: store.ensure_identity().unwrap().into(),
         bootstrap: vec![counterparty_addr],
         contacts: Vec::new(),
         nodes_dat_path: None,
         assume_open_reachability: false,
-        kad_udp_key: 0,
         kad_capture_dir: None,
         kad_shutdown: None,
     };
 
     // A live Core is the join sink: the eD2k join sets its managed list, the Kad
     // join really binds a UDP socket and spawns the node.
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
 
     // The production first-run path: the real ReqwestFetcher, injected — reqwest
     // never entered core, the caller supplied it.
@@ -190,6 +189,7 @@ async fn cold_start_join_sequence_fetches_persists_logs_in_and_joins_kad() {
         &bootstrap,
         &JoinConfig::default(),
         kad_enable,
+        core.kad_id(),
         &core,
     )
     .await
@@ -239,9 +239,9 @@ async fn cold_start_join_sequence_fetches_persists_logs_in_and_joins_kad() {
     loop {
         core.send(CoreCommand::DumpDiagnostics).await.unwrap();
         let contact = loop {
-            let event = timeout(Duration::from_secs(5), core.next_event())
+            let event = timeout(HANG_GUARD, core.next_event())
                 .await
-                .expect("core answered the diagnostics barrier within 5s")
+                .expect("core answered the diagnostics barrier")
                 .expect("core event stream stayed open");
             if let CoreEvent::DiagnosticsSnapshot { snapshot } = event {
                 let kad = snapshot
@@ -255,7 +255,7 @@ async fn cold_start_join_sequence_fetches_persists_logs_in_and_joins_kad() {
         }
         assert!(
             tokio::time::Instant::now() < deadline,
-            "the seeded counterparty never flipped HasHadContact within 15s"
+            "the seeded counterparty never flipped HasHadContact"
         );
         tokio::time::sleep(Duration::from_millis(250)).await;
     }

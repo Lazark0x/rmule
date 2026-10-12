@@ -5,9 +5,10 @@
 //! their hellos — the answer's framing follows the asker's version, never
 //! ours.
 
-use rmule_primitives::{ExchangedSource, FileHash, PeerSource};
+use rmule_primitives::{FileHash, PeerSource, SourceSighting};
 
-use super::{PeerEvent, PeerSession};
+use super::{PeerError, PeerEvent, PeerSession, ServerEvent};
+use crate::RequesterEvent;
 use crate::capability::{MiscOptions1, MiscOptions2};
 use crate::multipacket::RequestItem;
 use crate::source_exchange::ServedSourcesVersion;
@@ -127,7 +128,7 @@ impl PeerSession {
 
     /// Wire-event handler for an inbound `OP_ANSWERSOURCES` (`0x82`,
     /// ADR-0055) — a peer's answer to our SX1 ask. Its entries already carry
-    /// each declaring server alongside the `ExchangedSource` provenance, so
+    /// each declaring server alongside the `SourceSighting` provenance, so
     /// they route straight through the shared consume core.
     pub(super) fn on_answer_sources(&mut self, a: crate::source_exchange::AnswerSources) {
         self.route_answer_sources(a.file_hash, a.sources);
@@ -166,91 +167,119 @@ impl PeerSession {
         );
         flow.sources_forwarded += sources.len();
         self.core
-            .push_event(PeerEvent::SourcesReceived { file_hash, sources });
+            .push_event(PeerEvent::Requester(RequesterEvent::SourcesReceived {
+                file_hash,
+                sources,
+            }));
     }
 
     /// Server Capability — surface a peer's source-exchange request to core
-    /// (ADR-0055). The session picks the aMule-exact serve wire form
-    /// here, since it holds the requester's advertised SX capability
+    /// (ADR-0055). The session picks the aMule-exact serve wire form here,
+    /// since it holds the requester's advertised SX capability
     /// (`peer_misc_options`'s SX1 nibble, `peer_misc_options2`'s
-    /// `SupportsSourceEx2`) plus the request's `requested` version byte; core
-    /// then applies its pools / filters / per-peer throttle to decide the
-    /// actual list. `requested` is `0` for a plain `OP_REQUESTSOURCES` /
-    /// `Sources` sub, or the SX2 `<ver>` byte of an `OP_REQUESTSOURCES2` /
-    /// `Sources2` sub.
+    /// `SupportsSourceEx2`) plus the request's `requested` version byte, and
+    /// keeps it for the answer; core applies its pools, filters and per-peer
+    /// throttle to decide the list. `requested` is `0` for a plain
+    /// `OP_REQUESTSOURCES` / `Sources` sub, or the SX2 `<ver>` byte of an
+    /// `OP_REQUESTSOURCES2` / `Sources2` sub.
     pub(super) fn on_sources_requested(&mut self, file_hash: FileHash, requested: u8) {
-        let version = self.served_sources_version(requested);
+        self.note_source_ask(file_hash, requested);
         self.core
-            .push_event(PeerEvent::SourcesRequested { file_hash, version });
+            .push_event(PeerEvent::Server(ServerEvent::SourcesRequested {
+                file_hash,
+            }));
+    }
+
+    /// Keep the wire form `file_hash`'s answer goes out in.
+    pub(super) fn note_source_ask(&mut self, file_hash: FileHash, requested: u8) {
+        let version = self.served_sources_version(requested);
+        self.served_sources.insert(file_hash, version);
     }
 
     /// The wire form a source ask carrying `requested` is answered in, picked
     /// from the asker's advertised source-exchange capability.
-    pub(super) fn served_sources_version(&self, requested: u8) -> ServedSourcesVersion {
+    fn served_sources_version(&self, requested: u8) -> ServedSourcesVersion {
         let nibble = self
             .peer_misc_options
             .map_or(0, MiscOptions1::source_exchange_version);
         let supports_sx2 = self
             .peer_misc_options2
             .is_some_and(MiscOptions2::supports_source_exchange2);
-        ServedSourcesVersion::negotiate(nibble, supports_sx2, requested, self.peer_mod_misc)
+        ServedSourcesVersion::negotiate(nibble, supports_sx2, requested, self.peer_mod_misc())
     }
 
-    /// Frame core's chosen source list as the negotiated answer opcode and put
-    /// it on the wire (ADR-0055). `Sx1` → `OP_ANSWERSOURCES` (`0x82`),
-    /// `Sx2` → `OP_ANSWERSOURCES2` (`0x84`), both at the negotiated entry
-    /// version's stride (the hybrid-id `>= v3` "uniform id rule" rides the
-    /// codec). The framed answer is pack-attempted above `PEER_PACK_THRESHOLD`
-    /// (354 bytes, ADR-0053): a popular file's long list ships as a `0xD4`
-    /// packed frame; a short one stays plain.
-    pub(super) fn answer_sources(
-        &mut self,
-        file_hash: FileHash,
-        sources: Vec<ExchangedSource>,
-        version: ServedSourcesVersion,
-    ) {
+    /// Frame core's chosen source list as the answer opcode negotiated when
+    /// the ask arrived and put it on the wire (ADR-0055). `Sx1` →
+    /// `OP_ANSWERSOURCES` (`0x82`), `Sx2` → `OP_ANSWERSOURCES2` (`0x84`), both
+    /// at the negotiated entry version's stride (the hybrid-id `>= v3`
+    /// "uniform id rule" rides the codec). The framed answer is
+    /// pack-attempted above `PEER_PACK_THRESHOLD` (354 bytes, ADR-0053): a
+    /// popular file's long list ships as a `0xD4` packed frame; a short one
+    /// stays plain. A list the entry form leaves empty sends nothing, aMule's
+    /// `NULL` reply, and an answer to a file the peer never asked about is
+    /// rejected.
+    pub(super) fn answer_sources(&mut self, file_hash: FileHash, sources: Vec<SourceSighting>) {
+        let Some(version) = self.served_sources.remove(&file_hash) else {
+            self.reject(PeerError::SourcesNotAsked);
+            return;
+        };
+        // `HasEd2kWireForm` (ADR-0087): a classic entry has one 32-bit id
+        // field and no address block, so a native-IPv6 source is **omitted**
+        // rather than written as its sentinel or a zero — either would name a
+        // source the reader cannot resolve, and a zero would send it down a
+        // callback nobody can broker. ExtSX records are the only shape that
+        // can carry one.
+        let entries = match version {
+            ServedSourcesVersion::Sx1(_) | ServedSourcesVersion::Sx2(_) => classic_entries(sources),
+            ServedSourcesVersion::Ext { .. } => sources
+                .into_iter()
+                .map(crate::source_exchange::SourceExchangeEntry::plain)
+                .collect(),
+        };
+        if entries.is_empty() {
+            return;
+        }
+        let count = entries.len();
         let entry_version = version.entry_version();
         let packet = match version {
-            // `HasEd2kWireForm` (ADR-0087): a classic entry has one 32-bit id
-            // field and no address block, so a native-IPv6 source is **omitted**
-            // rather than written as its sentinel or a zero — either would name
-            // a source the reader cannot resolve, and a zero would send it down
-            // a callback nobody can broker. The ExtSX arm below is the only
-            // shape that can carry one.
             ServedSourcesVersion::Sx1(_) => crate::source_exchange::AnswerSources {
                 file_hash,
-                sources: classic_entries(sources),
+                sources: entries,
             }
             .encode_packet(entry_version),
             ServedSourcesVersion::Sx2(_) => crate::source_exchange::AnswerSources2 {
                 version: entry_version,
                 file_hash,
-                sources: classic_entries(sources),
+                sources: entries,
             }
             .encode_packet(),
             // ExtSX (ADR-0087): the same two opcodes, the record form instead
-            // of a stride — the only entry shape that can carry an IPv6
-            // source, so an IPv6-only source survives the serve path only here.
-            ServedSourcesVersion::Ext { sx2, emission } => {
-                let sources: Vec<_> = sources
-                    .into_iter()
-                    .map(crate::source_exchange::SourceExchangeEntry::plain)
-                    .collect();
-                if sx2 {
-                    crate::source_exchange::AnswerSources2 {
-                        version: entry_version,
-                        file_hash,
-                        sources,
-                    }
-                    .encode_ext_packet(emission)
-                } else {
-                    crate::source_exchange::AnswerSources { file_hash, sources }
-                        .encode_ext_packet(emission)
-                }
+            // of a stride.
+            ServedSourcesVersion::Ext {
+                sx2: true,
+                emission,
+            } => crate::source_exchange::AnswerSources2 {
+                version: entry_version,
+                file_hash,
+                sources: entries,
             }
+            .encode_ext_packet(emission),
+            ServedSourcesVersion::Ext {
+                sx2: false,
+                emission,
+            } => crate::source_exchange::AnswerSources {
+                file_hash,
+                sources: entries,
+            }
+            .encode_ext_packet(emission),
         };
         let packet = crate::compressed_frame::pack_peer_frame_if_over_threshold(packet);
         self.write_packet(packet);
+        self.core
+            .push_event(PeerEvent::Server(ServerEvent::SourcesAnswered {
+                file_hash,
+                count,
+            }));
     }
 }
 
@@ -258,7 +287,7 @@ impl PeerSession {
 /// form (ADR-0087's `HasEd2kWireForm`). A native-IPv6 source has none, so it is
 /// left out of the list rather than written as a value no reader can resolve.
 fn classic_entries(
-    sources: Vec<ExchangedSource>,
+    sources: Vec<SourceSighting>,
 ) -> Vec<crate::source_exchange::SourceExchangeEntry> {
     sources
         .into_iter()

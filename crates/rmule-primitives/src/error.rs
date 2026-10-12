@@ -214,3 +214,12 @@ pub enum PrimitiveError {
     #[error("invalid secure-identification private key")]
     InvalidPrivateKey,
 }
+
+impl From<crate::WireTruncated> for PrimitiveError {
+    fn from(truncated: crate::WireTruncated) -> Self {
+        Self::TruncatedTag {
+            needed: truncated.needed,
+            actual: truncated.available,
+        }
+    }
+}

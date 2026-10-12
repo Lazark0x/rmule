@@ -87,7 +87,7 @@ const BUDDY_ATTACHED_LINE: &str = "buddy link attached";
 /// What the recipe's run did, read back for its claims.
 #[derive(Default)]
 pub(super) struct Recipe {
-    /// The id the `ed2ksrv` assigned the root, off its `server connected`
+    /// The id the `ed2ksrv` assigned the root, off its `server.connected`
     /// line.
     pub(super) root_client_id: Option<u32>,
     /// High-ID back-connect packets the server's netns dropped.
@@ -134,12 +134,12 @@ pub(super) fn start_low_id_server(
     Ok(server)
 }
 
-/// The id the server assigned the root, off the root's own `server connected`
+/// The id the server assigned the root, off the root's own `server.connected`
 /// line; `None` when no login landed in the budget.
 pub(super) fn await_root_login(bench: &Bench, root: &str, timeout: Duration) -> Option<u32> {
-    let logs = wait_for_container_log(&bench.docker, root, "server connected", timeout).ok()?;
+    let logs = wait_for_container_log(&bench.docker, root, "server.connected", timeout).ok()?;
     logs.lines()
-        .find(|line| line.contains("server connected"))?
+        .find(|line| line.contains("server.connected"))?
         .split("client_id=")
         .nth(1)?
         .split_whitespace()
@@ -306,7 +306,7 @@ pub(super) fn claims(recipe: &Recipe, log: &str) -> Vec<Claim> {
         Claim::about(
             "the-root-logged-in-with-a-server-assigned-low-id",
             low_id,
-            // Read off the rmule root's own `server connected` line; no
+            // Read off the rmule root's own `server.connected` line; no
             // capture of the server's id assignment backs it.
             Evidence::RmuleOnly,
             format!(

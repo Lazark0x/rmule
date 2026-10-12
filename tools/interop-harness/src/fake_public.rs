@@ -89,6 +89,31 @@ pub fn fake_public_address(index: usize) -> Result<FakePublicAddress> {
     })
 }
 
+/// The `host`-th static address on fake-public `/24` number `subnet_index`,
+/// counted from `.2` as [`fake_public_address`] counts — without its spill.
+///
+/// [`MAX_NODES_PER_SUBNET`] bounds the **Kad nodes** one `/24` holds, which is
+/// what [`fake_public_address`] allocates. A NAT topology's WAN also carries
+/// bodies that never enter a routing table — a gateway's WAN side, the
+/// reflector's two addresses, an eD2k server — so its plan may name hosts past
+/// that bound, as long as the Kad nodes on it stay inside it.
+///
+/// # Errors
+/// If `subnet_index` names no prefix we carry, or `host` falls off the `/24`.
+pub fn subnet_host_address(subnet_index: usize, host: usize) -> Result<String> {
+    let Some(prefix) = FAKE_PUBLIC_PREFIXES.get(subnet_index) else {
+        bail!(
+            "fake-public subnet index {subnet_index} exceeds the {} documentation ranges available",
+            FAKE_PUBLIC_PREFIXES.len()
+        );
+    };
+    let octet = usize::from(FIRST_HOST_OCTET) + host;
+    if octet > 254 {
+        bail!("fake-public host {host} falls off {prefix}.0/24");
+    }
+    Ok(format!("{prefix}.{octet}"))
+}
+
 /// The distinct `/24` CIDRs a swarm of `node_count` nodes spans, in order — one
 /// `network create --internal --subnet <cidr>` per entry. A single-subnet swarm
 /// (the common bench case) returns exactly one CIDR.

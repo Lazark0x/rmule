@@ -3,11 +3,12 @@
 //! row is corrected at that moment. The worker looks at every registry row
 //! at start, before anything is offered. It watches the folder of each row
 //! outside a live scan's directory, looks at a row whose serve read failed,
-//! and every minute looks again at each **Withheld Row**. It reports rulings
-//! and never writes: the actor owns the registry, the withheld set and the
-//! triggers a change fires. The filesystem, the change notices and the clock
-//! come through seams, so the worker runs against a scripted directory
-//! without sleeping.
+//! and every minute looks again at each **Withheld Row** — but one withheld
+//! under a refused folder, which no look touches until the actor says the
+//! refusal lifted. It reports rulings and never writes: the actor owns the
+//! registry, the withheld set and the triggers a change fires. The
+//! filesystem, the change notices and the clock come through seams, so the
+//! worker runs against a scripted directory without sleeping.
 
 mod look;
 mod withheld;
@@ -70,6 +71,9 @@ pub(crate) enum CheckInput {
     RecheckWithheld,
     /// A serve read of this file failed.
     ReadFailed(FileHash),
+    /// This row, withheld as refused, lies under no refused folder now: it
+    /// is looked at at once, as every look skips it while it is refused.
+    RefusalLifted(FileHash),
 }
 
 /// A ruling the worker asks the actor to make.
@@ -144,7 +148,12 @@ pub(crate) fn run_check(seams: CheckSeams<'_>, withheld: &WithheldRows, stop: &A
         asked: BTreeSet::new(),
         deferred: HashSet::new(),
     };
-    let mut start: Vec<SharedFileEntry> = check.rows.values().cloned().collect();
+    let mut start: Vec<SharedFileEntry> = check
+        .rows
+        .values()
+        .filter(|row| !check.refused(row.file_hash))
+        .cloned()
+        .collect();
     start.sort_by(|a, b| a.path.cmp(&b.path));
     for row in &start {
         check.rule(row, look(source, row), Why::Start);
@@ -162,6 +171,7 @@ pub(crate) fn run_check(seams: CheckSeams<'_>, withheld: &WithheldRows, stop: &A
         let now = batch.now;
         let recheck_due = *next_recheck.get_or_insert(now + RECHECK);
         let mut failed = Vec::new();
+        let mut lifted = Vec::new();
         while let Ok(input) = inputs.try_recv() {
             match input {
                 CheckInput::RowsChanged => {
@@ -173,6 +183,7 @@ pub(crate) fn run_check(seams: CheckSeams<'_>, withheld: &WithheldRows, stop: &A
                 }
                 CheckInput::RecheckWithheld => next_recheck = Some(now),
                 CheckInput::ReadFailed(file_hash) => failed.push(file_hash),
+                CheckInput::RefusalLifted(file_hash) => lifted.push(file_hash),
             }
         }
         for signal in batch.signals {
@@ -189,7 +200,10 @@ pub(crate) fn run_check(seams: CheckSeams<'_>, withheld: &WithheldRows, stop: &A
         if stop.load(Ordering::Relaxed) {
             return;
         }
-        let unknown = failed.iter().any(|hash| !check.rows.contains_key(hash));
+        let unknown = failed
+            .iter()
+            .chain(&lifted)
+            .any(|hash| !check.rows.contains_key(hash));
         if unknown || stale_since.is_some_and(|since| now.duration_since(since) >= QUIET) {
             let Some(rows) = rows_now() else {
                 return;
@@ -213,6 +227,11 @@ pub(crate) fn run_check(seams: CheckSeams<'_>, withheld: &WithheldRows, stop: &A
                 check.rule(&row, look_after_failure(source, &row), Why::Ruling);
             }
         }
+        for file_hash in lifted {
+            if let Some(row) = check.rows.get(&file_hash).cloned() {
+                check.rule(&row, look_and_open(source, &row), Why::Ruling);
+            }
+        }
         if let Some(scopes) = changed.due(now) {
             for row in check.under(&scopes) {
                 let look = check.look(source, &row);
@@ -223,6 +242,9 @@ pub(crate) fn run_check(seams: CheckSeams<'_>, withheld: &WithheldRows, stop: &A
             next_recheck = Some(now + RECHECK);
             check.deferred.clear();
             for file_hash in withheld.hashes() {
+                if check.refused(file_hash) {
+                    continue;
+                }
                 if let Some(row) = check.rows.get(&file_hash).cloned() {
                     check.rule(&row, look_and_open(source, &row), Why::Ruling);
                 }
@@ -260,6 +282,15 @@ impl Check<'_> {
         } else {
             look(source, row)
         }
+    }
+
+    /// Whether `file_hash` is withheld under a refused folder. Such a row
+    /// stays as it is until the refusal lifts or the operator removes the
+    /// entry, however its file looks, so no look is spent on it until then.
+    fn refused(&self, file_hash: FileHash) -> bool {
+        self.withheld
+            .get(file_hash)
+            .is_some_and(|held| held.reason == WithheldReason::Refused)
     }
 
     fn scan_owns(&self, path: &Path) -> bool {
@@ -312,7 +343,7 @@ impl Check<'_> {
         let mut rows: Vec<SharedFileEntry> = self
             .rows
             .values()
-            .filter(|row| !self.scan_owns(&row.path))
+            .filter(|row| !self.scan_owns(&row.path) && !self.refused(row.file_hash))
             .filter(|row| match scopes {
                 Scopes::All => true,
                 Scopes::Paths(paths) => {

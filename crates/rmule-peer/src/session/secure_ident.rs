@@ -8,10 +8,8 @@
 
 use rmule_primitives::SecureIdentPublicKey;
 
-use super::{PeerEvent, PeerSession, SecureIdentFailure, State};
-use crate::capability::{MiscOptions1, MiscOptions2, ModMiscOptions};
-use crate::hello::PeerHelloBody;
-use crate::identity::PeerIdentity;
+use super::{PeerEvent, PeerSession, SecureIdentFailure};
+use crate::ConnectionEvent;
 use crate::secure_ident::{
     CRYPT_CIP_LOCALCLIENT, CRYPT_CIP_NONECLIENT, CRYPT_CIP_REMOTECLIENT, PublicKeyPacket,
     SecIdentState, SecIdentStatePacket, SignaturePacket,
@@ -42,35 +40,11 @@ pub(super) struct SuiState {
     peer_wants_signature: bool,
     /// We have already sent our signature (send exactly once).
     our_signature_sent: bool,
-    /// We have already verified the peer and emitted `PeerIdentityVerified`.
+    /// We have already verified the peer and emitted `IdentityVerified`.
     verified: bool,
 }
 
 impl PeerSession {
-    /// Role-neutral identify step shared by the inbound `OP_HELLO` and
-    /// outbound `OP_HELLOANSWER` paths: project the peer's hello body to a
-    /// `PeerIdentity`, enter the session, and emit `PeerIdentified`. The
-    /// caller has already folded the hello into `peer_software`, on top of
-    /// what an `OP_EMULEINFO` said before it — which only a dialed peer can
-    /// send before its answer; the capabilities a legacy block named stand
-    /// when the hello names none.
-    pub(super) fn identify_peer(&mut self, body: &PeerHelloBody) {
-        let mut identity =
-            PeerIdentity::from_hello_body(body).with_software(self.peer_software.software());
-        self.peer_hello_named_reask = identity.client_udp_reask().is_some();
-        if let Some((udp_port, udp_version)) = self.peer_legacy_reask {
-            identity = identity.with_reask_contact_if_unnamed(udp_port, udp_version);
-        }
-        self.peer_user_hash = Some(body.user_hash);
-        self.peer_misc_options = MiscOptions1::from_tags(&body.tags).or(self.peer_misc_options);
-        self.peer_misc_options2 = MiscOptions2::from_tags(&body.tags);
-        self.peer_mod_misc = ModMiscOptions::from_tags(&body.tags);
-        let identity = identity.with_source_exchange(self.source_exchange_support());
-        self.state = State::Identified;
-        self.core.push_event(PeerEvent::PeerIdentified { identity });
-        self.maybe_start_secure_ident();
-    }
-
     /// After the hello exchange, kick off Secure User Identification when both
     /// we (`ctx.secure_ident`) and the peer advertised it (ADR-0041). We always
     /// send `KeyAndSignNeeded`: the sans-I/O session is per-connection and does
@@ -162,12 +136,13 @@ impl PeerSession {
     }
 
     /// The V2 address material *we* sign (pinned from aMule
-    /// `SendSignaturePacket`): High-ID → our own Client ID with
-    /// `CRYPT_CIP_LOCALCLIENT`; Low-ID (no usable public address) → the remote
-    /// peer's IP with `CRYPT_CIP_REMOTECLIENT` — never a bogus own address.
+    /// `SendSignaturePacket`, `BaseClient.cpp:2096-2104`): keyed on the **eD2k
+    /// ID**, never the Presented Client ID the hello names. A High eD2k ID →
+    /// that id with `CRYPT_CIP_LOCALCLIENT`; a Low ID, or no server at all →
+    /// the remote peer's IP with `CRYPT_CIP_REMOTECLIENT`.
     fn v2_challenge_ip_and_kind(&self) -> (u32, u8) {
-        if self.ctx.client_id.is_high_id() {
-            (self.ctx.client_id.as_u32(), CRYPT_CIP_LOCALCLIENT)
+        if self.ctx.ed2k_client_id.is_high_id() {
+            (self.ctx.ed2k_client_id.as_u32(), CRYPT_CIP_LOCALCLIENT)
         } else {
             match self.peer.as_v4() {
                 Some(peer) => (u32::from_le_bytes(peer.ip.octets()), CRYPT_CIP_REMOTECLIENT),
@@ -181,21 +156,23 @@ impl PeerSession {
 
     /// The address to fold into V2 *verification*, per the kind byte the
     /// signer sent: kind 20 = the signer signed its own address (use the IP we
-    /// observe for it); kind 10 = the signer signed *ours* (our High-ID Client
-    /// ID is our public address; a Low-ID verifier knows none and uses 0,
-    /// which correctly fails); kind 30 = the placeholder 0. An unknown kind
-    /// has no defined input — `None` fails the verification non-terminally;
-    /// so does kind 20 from an IPv6 peer, whose 32-bit address we never observe.
+    /// observe for it); kind 10 = the signer signed *ours*, which aMule reads
+    /// as our public IP first, then a High eD2k ID
+    /// (`ClientCreditsList.cpp:405-413`) — and, with neither, its local
+    /// address, which rmule has no notion of, so 0, which correctly fails;
+    /// kind 30 = the placeholder 0. An unknown kind has no defined input —
+    /// `None` fails the verification non-terminally; so does kind 20 from an
+    /// IPv6 peer, whose 32-bit address we never observe.
     fn v2_verify_ip(&self, ip_kind: u8) -> Option<u32> {
         match ip_kind {
             CRYPT_CIP_LOCALCLIENT => self
                 .peer
                 .as_v4()
                 .map(|peer| u32::from_le_bytes(peer.ip.octets())),
-            CRYPT_CIP_REMOTECLIENT => Some(if self.ctx.client_id.is_high_id() {
-                self.ctx.client_id.as_u32()
-            } else {
-                0
+            CRYPT_CIP_REMOTECLIENT => Some(match self.ctx.public_ip {
+                Some(ip) => u32::from_le_bytes(ip.octets()),
+                None if self.ctx.ed2k_client_id.is_high_id() => self.ctx.ed2k_client_id.as_u32(),
+                None => 0,
             }),
             CRYPT_CIP_NONECLIENT => Some(0),
             _ => None,
@@ -288,12 +265,15 @@ impl PeerSession {
                 .clone()
                 .expect("peer public key present in the verified branch");
             let user_hash = self
-                .peer_user_hash
-                .expect("peer identified before a signature can be verified");
-            self.core.push_event(PeerEvent::PeerIdentityVerified {
-                user_hash,
-                public_key,
-            });
+                .peer_identity
+                .as_ref()
+                .expect("peer identified before a signature can be verified")
+                .user_hash();
+            self.core
+                .push_event(PeerEvent::Connection(ConnectionEvent::IdentityVerified {
+                    user_hash,
+                    public_key,
+                }));
         } else {
             self.emit_sui_failed(SecureIdentFailure::BadSignature);
         }
@@ -301,6 +281,8 @@ impl PeerSession {
 
     fn emit_sui_failed(&mut self, reason: SecureIdentFailure) {
         self.core
-            .push_event(PeerEvent::PeerSecureIdentFailed { reason });
+            .push_event(PeerEvent::Connection(ConnectionEvent::SecureIdentFailed {
+                reason,
+            }));
     }
 }

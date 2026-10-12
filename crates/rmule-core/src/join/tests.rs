@@ -9,7 +9,7 @@ use std::net::Ipv4Addr;
 use std::sync::Mutex;
 
 use rmule_bootstrap::FetchError;
-use rmule_primitives::{ClientIdentity, Ed2kText, Ipv4Endpoint, Tag, TagName, TagValue, UserHash};
+use rmule_primitives::{Ed2kText, Ipv4Endpoint, Tag, TagName, TagValue};
 
 use crate::server_list::ManagedServer;
 use crate::store::app_config::DurableAppConfig;
@@ -91,21 +91,17 @@ impl JoinCommandSink for RecordingSink {
     }
 }
 
+/// The node's Kad ID the seeds are resolved about.
+fn own_id() -> KadId {
+    KadId::from_bytes([0x11; KadId::BYTE_LEN])
+}
+
 fn kad_config() -> KadEnableConfig {
     KadEnableConfig {
-        kad_id: KadId::from_bytes([0x11; KadId::BYTE_LEN]),
-        peer_credentials: ClientIdentity::new(
-            UserHash::from_bytes([0x22; UserHash::BYTE_LEN]),
-            Ed2kText::from_utf8("rmule"),
-            4662,
-            0x3C,
-        )
-        .into(),
         bootstrap: Vec::new(),
         contacts: Vec::new(),
         nodes_dat_path: None,
         assume_open_reachability: false,
-        kad_udp_key: 0,
         kad_capture_dir: None,
         kad_shutdown: None,
     }
@@ -162,6 +158,7 @@ async fn cold_start_fetches_persists_and_joins_both_networks() {
         &BootstrapConfig::default(),
         &JoinConfig::default(),
         kad_config(),
+        own_id(),
         &sink,
     )
     .await
@@ -205,6 +202,7 @@ async fn returning_user_skips_fetch_and_joins_persisted_list() {
         &BootstrapConfig::default(),
         &JoinConfig::default(),
         kad_config(),
+        own_id(),
         &sink,
     )
     .await
@@ -241,6 +239,7 @@ async fn per_network_overrides_are_independent() {
                 connect_kad: false,
             },
             kad_config(),
+            own_id(),
             &sink,
         )
         .await
@@ -268,6 +267,7 @@ async fn per_network_overrides_are_independent() {
                 connect_kad: true,
             },
             kad_config(),
+            own_id(),
             &sink,
         )
         .await
@@ -305,6 +305,7 @@ async fn auto_fetch_switch_off_suppresses_the_cold_start_fetch() {
         &bootstrap,
         &JoinConfig::default(),
         kad_config(),
+        own_id(),
         &sink,
     )
     .await
@@ -334,6 +335,7 @@ async fn failed_fetch_does_not_abort_the_joins() {
         &BootstrapConfig::default(),
         &JoinConfig::default(),
         kad_config(),
+        own_id(),
         &sink,
     )
     .await
@@ -371,6 +373,7 @@ async fn both_networks_disabled_is_an_inert_no_op() {
             connect_kad: false,
         },
         kad_config(),
+        own_id(),
         &sink,
     )
     .await

@@ -5,7 +5,6 @@
 //! more-results byte the loopback server writes is derived (ed2k-server
 //! `search.rs:186-187`), not captured.
 
-use crate::fixture::identity_with_port;
 use std::time::Duration;
 
 use rmule_core::{
@@ -49,15 +48,17 @@ async fn more(core: &Core, search_id: SearchId) {
 #[tokio::test]
 async fn the_next_page_joins_the_same_result_set() {
     let mut server = LoopbackSearchServer::start().await;
-    let mut core = Core::new(
+    let mut core = Core::builder(
         CoreConfig {
             search_quiet_timeout: Duration::from_millis(150),
             ..CoreConfig::default()
         },
         rmule_testkit::memory_store(),
-    );
+    )
+    .settings(rmule_core::CoreSettings::default())
+    .build();
     let search_id = SearchId::mint();
-    rmule_testkit::connect_to(&core, &server.endpoint, identity_with_port(0).into()).await;
+    rmule_testkit::connect_to(&core, &server.endpoint).await;
     core.send(CoreCommand::Search(SearchCommand::StartSearch {
         search_id,
         query: search_query("linux").into(),

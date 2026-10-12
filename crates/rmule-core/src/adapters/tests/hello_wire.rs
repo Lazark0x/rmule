@@ -12,7 +12,7 @@ use tokio::io::AsyncReadExt;
 
 use crate::adapters::{HelloAdverts, SharedIpv6Advert};
 use crate::address_learning::{SharedAddressLearning, SocketRole};
-use crate::firewalled::link::SharedFirewalledSlot;
+use crate::firewalled::front::BuddyView;
 use crate::reachability::SharedIpv6Probe;
 
 /// Our served reask port and our running Kad node's port — distinct, so a
@@ -26,8 +26,8 @@ fn our_ipv6() -> Ipv6Addr {
 }
 
 /// A node with every advert live — a reask port served, a Kad node running, a
-/// Known IPv6, crypt supported — over `slot`, which states the buddy.
-pub(crate) fn live_adverts(slot: SharedFirewalledSlot) -> HelloAdverts {
+/// Known IPv6, crypt supported — over `buddy`, which states the buddy.
+pub(crate) fn live_adverts(buddy: BuddyView) -> HelloAdverts {
     // The Known IPv6 is learned by the owner, Address Learning, exactly as a
     // live core learns it: a dual-stack listener and the address on an
     // interface (no advert holds a copy to set).
@@ -43,8 +43,10 @@ pub(crate) fn live_adverts(slot: SharedFirewalledSlot) -> HelloAdverts {
     addresses.refresh_interfaces(&[IpAddr::V6(our_ipv6())]);
     let adverts = HelloAdverts {
         ipv6: SharedIpv6Advert::over(addresses, SharedIpv6Probe::default()),
-        firewalled_slot: slot,
-        crypt_policy: Some(ObfuscationPolicy::Supported),
+        buddy,
+        obfuscation: crate::obfuscation_policy::SharedObfuscationPolicy::new(Some(
+            ObfuscationPolicy::Supported,
+        )),
         ..HelloAdverts::default()
     };
     adverts.udp_ports.set_serving(OUR_CLIENT_UDP);

@@ -2,9 +2,10 @@
 //! acts on (ADR-0052, "dead servers are marked, never removed"), and how a
 //! row's health follows from its failure tally under them.
 //!
-//! The policy is read from the store at the actor's start, so nothing core
-//! does before its first command runs under a default the operator changed,
-//! and `CoreCommand::SetServerPolicy` changes it live.
+//! The policy is part of **Core Settings** (ADR-0069): the actor starts
+//! under it, so nothing core does before its first command runs under a
+//! default the operator changed, and a change through the settings handle is
+//! taken up live.
 
 use super::ManagedServer;
 

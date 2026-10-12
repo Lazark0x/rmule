@@ -4,7 +4,7 @@
 //! searches it answers. Commands and a scripted server in; per-search result
 //! sets out.
 
-use crate::fixture::identity_with_port;
+use rmule_testkit::HANG_GUARD;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
@@ -27,7 +27,7 @@ fn row(hash: u8, name: &str) -> SearchResult {
 }
 
 fn core(answer_wait: Duration) -> Core {
-    Core::new(
+    Core::builder(
         CoreConfig {
             search_quiet_timeout: Duration::from_millis(150),
             search_server_answer_timeout: answer_wait,
@@ -35,6 +35,8 @@ fn core(answer_wait: Duration) -> Core {
         },
         rmule_testkit::memory_store(),
     )
+    .settings(rmule_core::CoreSettings::default())
+    .build()
 }
 
 async fn start(core: &mut Core, phrase: &str) -> SearchId {
@@ -74,7 +76,7 @@ impl Outcome {
 /// Fold events until every search in `ids` has ended.
 async fn run_until_ended(core: &mut Core, ids: &[SearchId]) -> Outcome {
     let mut outcome = Outcome::default();
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(HANG_GUARD, async {
         while ids.iter().any(|id| !outcome.ended.contains(id)) {
             let Some(CoreEvent::Search(event)) = core.next_event().await else {
                 continue;
@@ -106,7 +108,7 @@ async fn run_until_ended(core: &mut Core, ids: &[SearchId]) -> Outcome {
         }
     })
     .await
-    .expect("every search ended within 10s");
+    .expect("every search ended");
     outcome
 }
 
@@ -117,7 +119,7 @@ async fn run_until_ended(core: &mut Core, ids: &[SearchId]) -> Outcome {
 async fn three_searches_started_together_each_hold_exactly_what_answers_them() {
     let mut server = LoopbackSearchServer::start().await;
     let mut core = core(Duration::from_secs(12));
-    rmule_testkit::connect_to(&core, &server.endpoint, identity_with_port(0).into()).await;
+    rmule_testkit::connect_to(&core, &server.endpoint).await;
     let ubuntu = start(&mut core, "ubuntu").await;
     let debian = start(&mut core, "debian").await;
     let desktop = start(&mut core, "ubuntu desktop").await;
@@ -164,7 +166,7 @@ async fn three_searches_started_together_each_hold_exactly_what_answers_them() {
 async fn an_answer_after_its_search_was_closed_is_shown_nowhere_and_counted() {
     let mut server = LoopbackSearchServer::start().await;
     let mut core = core(Duration::from_secs(12));
-    rmule_testkit::connect_to(&core, &server.endpoint, identity_with_port(0).into()).await;
+    rmule_testkit::connect_to(&core, &server.endpoint).await;
     let closed = start(&mut core, "alpha").await;
     let open = start(&mut core, "beta").await;
     server.wait_for_search_request().await;
@@ -212,7 +214,7 @@ async fn an_answer_after_its_search_was_closed_is_shown_nowhere_and_counted() {
 async fn an_answer_never_arriving_leaves_the_other_searches_on_time() {
     let mut server = LoopbackSearchServer::start().await;
     let mut core = core(Duration::from_secs(4));
-    rmule_testkit::connect_to(&core, &server.endpoint, identity_with_port(0).into()).await;
+    rmule_testkit::connect_to(&core, &server.endpoint).await;
     let answered = start(&mut core, "alpha").await;
     let silent = start(&mut core, "beta").await;
     server.wait_for_search_request().await;
@@ -231,7 +233,7 @@ async fn an_answer_never_arriving_leaves_the_other_searches_on_time() {
 async fn identical_queries_both_show_both_answers() {
     let mut server = LoopbackSearchServer::start().await;
     let mut core = core(Duration::from_secs(12));
-    rmule_testkit::connect_to(&core, &server.endpoint, identity_with_port(0).into()).await;
+    rmule_testkit::connect_to(&core, &server.endpoint).await;
     let first = start(&mut core, "ubuntu").await;
     let second = start(&mut core, "ubuntu").await;
     server.wait_for_search_request().await;
@@ -250,7 +252,7 @@ async fn identical_queries_both_show_both_answers() {
 async fn a_start_under_a_running_searchs_id_is_rejected() {
     let mut server = LoopbackSearchServer::start().await;
     let mut core = core(Duration::from_secs(12));
-    rmule_testkit::connect_to(&core, &server.endpoint, identity_with_port(0).into()).await;
+    rmule_testkit::connect_to(&core, &server.endpoint).await;
     let running = start(&mut core, "alpha").await;
     server.wait_for_search_request().await;
     core.send(CoreCommand::Search(SearchCommand::StartSearch {
@@ -282,7 +284,7 @@ async fn a_start_under_a_running_searchs_id_is_rejected() {
 async fn a_multi_word_query_reaches_the_server_as_one_term_per_word() {
     let mut server = LoopbackSearchServer::start().await;
     let mut core = core(Duration::from_secs(12));
-    rmule_testkit::connect_to(&core, &server.endpoint, identity_with_port(0).into()).await;
+    rmule_testkit::connect_to(&core, &server.endpoint).await;
     let both = start(&mut core, "rock AND roll").await;
     let roll = start(&mut core, "roll").await;
     let expected: Vec<u8> = [

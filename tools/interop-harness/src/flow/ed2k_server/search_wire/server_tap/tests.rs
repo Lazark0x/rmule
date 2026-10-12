@@ -3,7 +3,7 @@
 
 use std::net::Ipv4Addr;
 
-use super::{links, write_timeline};
+use super::{links, offered_origins, write_timeline};
 
 const CLIENT: [u8; 4] = [203, 0, 113, 30];
 const SERVER: [u8; 4] = [203, 0, 113, 2];
@@ -121,4 +121,34 @@ fn a_reused_client_port_is_a_second_link() {
             (client, vec![1_790_000_004.0], Some(true)),
         ]
     );
+}
+
+/// The `OP_OFFERFILES` a stock aMule 2.3.3 sent Lugdunum (flags `0x17F9`,
+/// compression granted) for a complete file, verbatim from a retained `search-wire` run's
+/// Lugdunum server tap: the entry's ID
+/// and port are the complete-file marker, not the client's own.
+#[test]
+fn a_complete_file_offer_reads_as_the_fb_marker() {
+    let mut payload = vec![0x01, 0, 0, 0];
+    payload.extend_from_slice(&[
+        0xcc, 0x89, 0xb8, 0x4b, 0xa3, 0x73, 0xb4, 0xa4, 0x74, 0x1f, 0x22, 0x5b, 0x9d, 0x47, 0x89,
+        0x58, // file hash
+        0xfb, 0xfb, 0xfb, 0xfb, 0xfb, 0xfb, // id and port
+        0x03, 0, 0, 0, // three tags
+        0x82, 0x01, 0x17, 0x00,
+    ]);
+    payload.extend_from_slice(b"relatedpopular-wire.bin");
+    payload.extend_from_slice(&[0x88, 0x02, 0x06, 0x10, 0x89, 0x03, 0x04]);
+    let mut frame = vec![0xe3];
+    frame.extend_from_slice(&u32::try_from(payload.len() + 1).unwrap().to_le_bytes());
+    frame.push(0x15);
+    frame.extend_from_slice(&payload);
+    let dir = write(&[
+        segment(true, 100, SYN, &[]),
+        segment(true, 101, PSH_ACK, &frame),
+    ]);
+
+    let origins = offered_origins(&dir.path().join("server.pcap"), Ipv4Addr::from(CLIENT)).unwrap();
+
+    assert_eq!(origins, [(1_790_000_001.0, vec![(0xFBFB_FBFB, 0xFBFB)])]);
 }

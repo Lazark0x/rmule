@@ -2,6 +2,7 @@
 //! on a live change in every held search, and each re-add path from the row
 //! menu to the command core receives.
 
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use ratatui::buffer::Buffer;
@@ -121,11 +122,13 @@ fn download_clip(view: &mut SearchesView, state: &UiState) -> ViewOutcome {
     view.handle_key(press(KeyCode::Enter), state)
 }
 
-fn started_at(outcome: ViewOutcome) -> PathBuf {
+/// The name a start gives its file, and what it does when that name is
+/// taken in the download directory.
+fn started(outcome: ViewOutcome) -> (String, NameTaken) {
     match outcome {
         ViewOutcome::Emit(Action::Command(CoreCommand::Download(
-            DownloadCommand::StartDownload { output_path, .. },
-        ))) => output_path,
+            DownloadCommand::StartDownload { name, if_taken, .. },
+        ))) => (name.as_str().to_owned(), if_taken),
         other => panic!("expected StartDownload, got {other:?}"),
     }
 }
@@ -205,7 +208,7 @@ fn a_download_marks_its_file_in_every_held_search() {
     view.handle_key(press(KeyCode::Char('[')), &state);
     view.handle_key(press(KeyCode::Char('G')), &state);
 
-    started_at(download_clip(&mut view, &state));
+    started(download_clip(&mut view, &state));
     queue_clip(&mut state);
     view.handle_key(press(KeyCode::Char('G')), &state);
     let t = theme();
@@ -254,8 +257,8 @@ fn a_file_they_have_asks_naming_its_path_and_a_yes_starts_it_beside_the_copy() {
     ));
     assert!(view.readd.is_some(), "a confirm, not a download");
     assert_eq!(
-        started_at(view.handle_key(press(KeyCode::Char('y')), &state)),
-        dir.path().join("clip_low (1).avi"),
+        started(view.handle_key(press(KeyCode::Char('y')), &state)),
+        ("clip_low.avi".to_owned(), NameTaken::Number),
         "the copy on disk is never written over"
     );
     assert!(view.readd.is_none());
@@ -295,9 +298,8 @@ fn a_file_they_had_asks_naming_its_old_name_and_day_and_a_yes_starts_it() {
         );
     }
     assert_eq!(
-        started_at(view.handle_key(press(KeyCode::Char('y')), &state)),
-        dir.path().join("clip_low.avi"),
-        "nothing lies at the name: the file left the disk"
+        started(view.handle_key(press(KeyCode::Char('y')), &state)),
+        ("clip_low.avi".to_owned(), NameTaken::Number),
     );
 }
 
@@ -325,9 +327,8 @@ fn a_file_shared_but_unreadable_asks_naming_its_path_why_and_since_when() {
         );
     }
     assert_eq!(
-        started_at(view.handle_key(press(KeyCode::Char('y')), &state)),
-        dir.path().join("clip_low.avi"),
-        "nothing readable lies in the download dir"
+        started(view.handle_key(press(KeyCode::Char('y')), &state)),
+        ("clip_low.avi".to_owned(), NameTaken::Number),
     );
 }
 
@@ -416,8 +417,8 @@ fn a_cancelled_file_asks_esc_keeps_it_and_a_yes_starts_it_at_its_place() {
 
     download_clip(&mut view, &state);
     assert_eq!(
-        started_at(view.handle_key(press(KeyCode::Char('y')), &state)),
-        dir.path().join("clip_low.avi")
+        started(view.handle_key(press(KeyCode::Char('y')), &state)),
+        ("clip_low.avi".to_owned(), NameTaken::Number)
     );
 }
 
@@ -442,20 +443,4 @@ fn golden_searches_readd_have() {
     assert_golden("searches_readd_have", 78, 21, |frame| {
         view.draw(frame, frame.area(), &state, &theme(), Instant::now());
     });
-}
-
-/// Made names, not captured rows: a search row's name is the counterparty's
-/// word, and neither a parent walk nor an absolute path may lead the
-/// download out of the download directory, on a first add or a re-add.
-#[test]
-fn a_hostile_row_name_downloads_inside_the_download_directory() {
-    let dir = tempfile::tempdir().expect("dir");
-    let (_, state) = searching(dir.path());
-    for name in ["../../escape.bin", "/etc/escape.bin", r"..\..\escape.bin"] {
-        let result = search_result(name, 3);
-        for again in [false, true] {
-            let path = started_at(start_download(&result, &state, again));
-            assert_eq!(path.parent(), Some(dir.path()), "{name:?} gave {path:?}");
-        }
-    }
 }

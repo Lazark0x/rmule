@@ -28,6 +28,10 @@ pub enum WithheldReason {
     /// Its file is there but cannot be opened or read, for this kind of
     /// error.
     Unreadable(std::io::ErrorKind),
+    /// It lies under a shared directory the guards refuse (ADR-0101), and
+    /// under no listed entry nearer to it that they pass. It stays until the
+    /// entry passes them again or the operator removes it.
+    Refused,
 }
 
 /// One withheld row's state.
@@ -101,6 +105,16 @@ impl WithheldRows {
     /// was withheld.
     pub(crate) fn lift(&self, file_hash: FileHash) -> bool {
         self.lock().rows.remove(&file_hash).is_some()
+    }
+
+    /// Put `file_hash`'s mark back as `was` held it: a withhold made ahead
+    /// of a registry write that then failed.
+    pub(crate) fn restore(&self, file_hash: FileHash, was: Option<Withheld>) {
+        let mut state = self.lock();
+        match was {
+            Some(held) => state.rows.insert(file_hash, held),
+            None => state.rows.remove(&file_hash),
+        };
     }
 
     /// Why `file_hash` is withheld, if it is.

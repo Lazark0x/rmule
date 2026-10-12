@@ -76,6 +76,8 @@ pub fn ctx_with_server(connected_server: Option<Ipv4Endpoint>) -> PeerHandshakeC
             0x3C,
         ),
         client_id: ClientId::from_u32(0x10000001),
+        ed2k_client_id: ClientId::from_u32(0x10000001),
+        public_ip: None,
         connected_server,
     }
 }

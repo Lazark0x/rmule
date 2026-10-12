@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use assert_cmd::Command;
 use rmule_net::peer::{ConnectOptions, PeerListener};
-use rmule_peer::{PeerEvent, PeerHandshakeContext, SecureIdentConfig};
+use rmule_peer::{ConnectionEvent, PeerEvent, PeerHandshakeContext, SecureIdentConfig};
 use rmule_primitives::{ClientId, ClientIdentity, Ed2kText, SecureIdentKey, UserHash};
 
 const FILE_LINK: &str = "ed2k://|file|sui.bin|40|55555555555555555555555555555555|/";
@@ -26,6 +26,8 @@ async fn accept_and_hold(listener: PeerListener, secure_ident: Option<SecureIden
             60,
         ),
         client_id: ClientId::from_u32(0x0100_007F),
+        ed2k_client_id: ClientId::from_u32(0x0100_007F),
+        public_ip: None,
         connected_server: None,
     };
     let options = ConnectOptions {
@@ -36,7 +38,10 @@ async fn accept_and_hold(listener: PeerListener, secure_ident: Option<SecureIden
         return;
     };
     while let Some(event) = conn.next_event().await {
-        if matches!(event, PeerEvent::Disconnected { .. }) {
+        if matches!(
+            event,
+            PeerEvent::Connection(ConnectionEvent::Disconnected { .. })
+        ) {
             break;
         }
     }

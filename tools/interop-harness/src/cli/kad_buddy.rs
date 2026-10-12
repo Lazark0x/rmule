@@ -223,11 +223,20 @@ pub(crate) struct KadCoreBuddyArgs {
     /// ADR-0046's one setting arms Kad-UDP crypt and verify keys together) and
     /// `AMULE_KAD_CRYPT=1` on the firewalled aMule. Acceptance is the same
     /// verify-key shape flow K's `--verify-keys` judges: rmule must print
-    /// `rmule-kad-crypt-armed verify_key_secret=…` and its log must carry no
-    /// `UndecodableEnvelope`. Default OFF, matching every other Kad flow's
+    /// `rmule-kad-crypt-armed`, its log must carry no `UndecodableEnvelope`,
+    /// and its tap decodes under the Kad UDP Key the harness passed it
+    /// (`--kad-udp-key-seed`). Default OFF, matching every other Kad flow's
     /// plain-`0xE4` evidence.
     #[arg(long)]
     pub(crate) kad_crypt: bool,
+    /// Change the stimulus's obfuscation policy mid-run, as
+    /// `<secs>:<off|supported|requested|required>`; repeat for several (`ed2k
+    /// serve start --peer-crypt-flip`). With `--kad-crypt` the run starts
+    /// `requested` against a crypt-armed aMule, so `--peer-crypt-flip 120:off
+    /// --peer-crypt-flip 240:requested` shows the running node disarmed and
+    /// re-armed. The verdict lists the flips the stimulus marked.
+    #[arg(long, value_parser = rmule_interop_harness::rmule::crypt_flip_arg)]
+    pub(crate) peer_crypt_flip: Vec<String>,
     /// Add a High-ID rmule downloader handed only the synthetic file's ed2k
     /// link (`kad-core-buddy --callback-downloader`): its download finds aMule's buddy row, sends
     /// the `0x52` to the buddy, and must be dialed back by aMule over the
@@ -390,6 +399,7 @@ pub(crate) fn kad_core_buddy(args: KadCoreBuddyArgs) -> Result<()> {
         mesh_members: args.mesh_members,
         rmule_tools_image: &args.rmule_tools_image,
         kad_crypt: args.kad_crypt,
+        peer_crypt_flip: &args.peer_crypt_flip,
         callback_downloader: args.callback_downloader,
         callback_walk: args.callback_walk,
         amule_requester: args.amule_requester,

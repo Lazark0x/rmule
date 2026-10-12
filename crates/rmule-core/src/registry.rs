@@ -9,6 +9,7 @@ use std::time::SystemTime;
 use rmule_primitives::{FileHash, PartHash};
 use tokio::sync::mpsc;
 
+use crate::registry_check::{WithheldReason, WithheldRows};
 use crate::service::{CoreEvent, DownloadId, ServeEvent};
 use crate::storage::{DownloadRepository, ResolvedAuthority};
 use crate::{CoreError, DownloadLifecycle, DurableDownloadRecord};
@@ -93,6 +94,18 @@ pub(crate) fn modified_time(path: &std::path::Path) -> Option<SystemTime> {
         .ok()
 }
 
+/// What became of a completed download's file: its registry row is written,
+/// and either offered or withheld.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AutoShared {
+    /// The row is offered.
+    Offered(FileHash),
+    /// The row lies under a shared directory the guards refuse (ADR-0101),
+    /// the download directory among them: it is withheld as refused and
+    /// never offered while the refusal stands.
+    Refused(FileHash),
+}
+
 /// Auto-share a completed download into the **Shared File Registry** (ADR-0031),
 /// the join point where the download and serve halves meet. A
 /// download that reached [`DownloadLifecycle::Completed`] registers the file it
@@ -100,20 +113,26 @@ pub(crate) fn modified_time(path: &std::path::Path) -> Option<SystemTime> {
 /// non-`Completed` lifecycle is a no-op returning `None` (the caller reaches
 /// here for every finished download, completed or not).
 ///
+/// A file whose path `refuses` names lies under a refused entry: its row is
+/// withheld as refused in `withheld` before the row is written, so no offer
+/// read between the two ever holds it, and `FileWithheld` is said in place of
+/// `FileShared`.
+///
 /// The per-part hash authority the auto-shared file answers hash-set probes
 /// with is resolved behind the repository seam by
 /// [`DownloadRepository::hash_authority`] — link > provisional >
-/// none — so no storage-model knowledge leaks into the actor. Returns the
-/// hash that was registered, so the caller fires the serve-activity and
-/// Kad-publisher share-set triggers — and mirrors the new row into the
-/// file-known predicate — exactly once per successful
-/// auto-share.
+/// none — so no storage-model knowledge leaks into the actor. Returns what
+/// became of the row, so the caller fires the serve-activity and
+/// Kad-publisher share-set triggers — and mirrors an offered row into the
+/// file-known predicate — exactly once per successful auto-share.
 pub(crate) async fn auto_share_completed_download<R, G>(
     download_id: DownloadId,
     store: &R,
     registry: &G,
+    refuses: impl FnOnce(&Path) -> bool,
+    withheld: &WithheldRows,
     evt_tx: &mpsc::Sender<CoreEvent>,
-) -> Option<FileHash>
+) -> Option<AutoShared>
 where
     R: DownloadRepository,
     G: SharedFileRegistry,
@@ -141,22 +160,49 @@ where
     };
     let entry = SharedFileEntry::from_completed_download(&record, part_hashes);
     let file_hash = entry.file_hash;
+    let refused = refuses(&entry.path).then(|| {
+        let (was, since) = (withheld.get(file_hash), SystemTime::now());
+        withheld.withhold(file_hash, WithheldReason::Refused, since);
+        (was, since)
+    });
     match registry.share(entry) {
         Ok(()) => {
-            tracing::info!(
-                download_id = download_id.as_u64(),
-                file_hash = %file_hash.to_hex_upper(),
-                "completed download auto-shared",
-            );
-            let _ = evt_tx
-                .send(ServeEvent::FileShared { file_hash }.into())
-                .await;
-            Some(file_hash)
+            let (event, shared) = match refused {
+                None => {
+                    tracing::info!(
+                        download_id = download_id.as_u64(),
+                        file_hash = %file_hash.to_hex_upper(),
+                        "completed download auto-shared",
+                    );
+                    (
+                        ServeEvent::FileShared { file_hash },
+                        AutoShared::Offered(file_hash),
+                    )
+                }
+                Some((_, since)) => {
+                    tracing::info!(
+                        download_id = download_id.as_u64(),
+                        file_hash = %file_hash.to_hex_upper(),
+                        "completed download withheld: its folder is refused",
+                    );
+                    let event = ServeEvent::FileWithheld {
+                        file_hash,
+                        reason: WithheldReason::Refused,
+                        since,
+                    };
+                    (event, AutoShared::Refused(file_hash))
+                }
+            };
+            let _ = evt_tx.send(event.into()).await;
+            Some(shared)
         }
         // No command issuer to reject to on auto-share, but a durable registry
         // can fail mid-write; surface it in diagnostics rather than dropping it
-        // silently.
+        // silently. No row was written, so the mark goes back to what it was.
         Err(error) => {
+            if let Some((was, _)) = refused {
+                withheld.restore(file_hash, was);
+            }
             tracing::warn!(
                 download_id = download_id.as_u64(),
                 file_hash = %file_hash.to_hex_upper(),
@@ -209,6 +255,7 @@ pub trait SharedFileRegistry: Send + Sync + 'static {
 #[cfg(test)]
 mod tests {
     use super::{SharedFileRegistry, auto_share_completed_download};
+    use crate::registry_check::WithheldRows;
     use crate::storage::DownloadRepository;
     use crate::store::download::DurableDownloadRepository;
     use crate::store::registry::DurableSharedFileRegistry;
@@ -276,9 +323,16 @@ mod tests {
         let (evt_tx, _evt_rx) = mpsc::channel(4);
 
         assert!(
-            auto_share_completed_download(id, &*store, &*registry, &evt_tx)
-                .await
-                .is_some()
+            auto_share_completed_download(
+                id,
+                &*store,
+                &*registry,
+                |_| false,
+                &WithheldRows::default(),
+                &evt_tx
+            )
+            .await
+            .is_some()
         );
         // The link's `p=` set — not an empty provisional set — is what the
         // auto-shared file answers hash-set probes with.
@@ -328,9 +382,16 @@ mod tests {
         let (evt_tx, _evt_rx) = mpsc::channel(4);
 
         assert!(
-            auto_share_completed_download(id, &*store, &*registry, &evt_tx)
-                .await
-                .is_some()
+            auto_share_completed_download(
+                id,
+                &*store,
+                &*registry,
+                |_| false,
+                &WithheldRows::default(),
+                &evt_tx
+            )
+            .await
+            .is_some()
         );
         assert_eq!(
             observed.hash_set(link.file_hash).unwrap(),

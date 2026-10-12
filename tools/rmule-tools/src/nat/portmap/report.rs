@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 
 use rmule_core::diagnostics::{DiagnosticsSnapshot, KadFirewallVerdict};
 use rmule_core::port_mapping::{DesiredMapping, MappingStatus};
+use rmule_core::run_log::Level;
 use rmule_core::{ConfidenceTier, CoreEvent, EndpointVerdict, SocketRole};
 use rmule_net::portmap::{Gateway, MappingProtocol};
 use rmule_primitives::AddressFamily;
@@ -156,7 +157,11 @@ impl Observations {
     /// container log holds the full stream and the row holds a readable slice.
     pub(crate) fn note_event(&mut self, event: &CoreEvent, at: Duration) {
         self.events_seen += 1;
-        let line = format!("{:.1}s {event}", at.as_secs_f64());
+        let line = format!(
+            "{:.1}s {}",
+            at.as_secs_f64(),
+            event.record().render(Level::Full)
+        );
         println!("rmule-portmap-event {line}");
         if self.events.len() < KEPT_EVENTS {
             self.events.push(line);

@@ -19,7 +19,7 @@
 //! — all starts first, then all ends — per the TCP.h schema and
 //! confirmed by aMule's two separate for-loops in the sender.
 
-use rmule_primitives::{FileHash, Packet};
+use rmule_primitives::{FileHash, Packet, WireReader, WireTruncated};
 use thiserror::Error;
 
 use crate::opcode::PeerOpcode;
@@ -133,17 +133,15 @@ impl RequestParts {
                 actual: payload.len(),
             });
         }
-        let file_hash = read_file_hash(&payload[..FileHash::BYTE_LEN]);
-        let mut cursor = FileHash::BYTE_LEN;
+        let mut reader = WireReader::new(payload);
+        let file_hash = reader.read_file_hash("file hash")?;
         let mut starts = [0u64; RANGE_COUNT];
         for slot in starts.iter_mut() {
-            *slot = read_offset(payload, cursor, width);
-            cursor += offset_size;
+            *slot = read_offset(&mut reader, width, "range start")?;
         }
         let mut ranges = [(0u64, 0u64); RANGE_COUNT];
         for i in 0..RANGE_COUNT {
-            let end = read_offset(payload, cursor, width);
-            cursor += offset_size;
+            let end = read_offset(&mut reader, width, "range end")?;
             ranges[i] = (starts[i], end);
         }
         Ok(Self {
@@ -209,9 +207,10 @@ impl SendingPart {
                 actual: payload.len(),
             });
         }
-        let file_hash = read_file_hash(&payload[..FileHash::BYTE_LEN]);
-        let start = read_offset(payload, FileHash::BYTE_LEN, width);
-        let end = read_offset(payload, FileHash::BYTE_LEN + offset_size, width);
+        let mut reader = WireReader::new(payload);
+        let file_hash = reader.read_file_hash("file hash")?;
+        let start = read_offset(&mut reader, width, "block start")?;
+        let end = read_offset(&mut reader, width, "block end")?;
         if end < start {
             return Err(PartsDecodeError::EndBeforeStart { start, end });
         }
@@ -227,7 +226,7 @@ impl SendingPart {
             file_hash,
             start,
             end,
-            data: payload[header..].to_vec(),
+            data: reader.remaining_bytes().to_vec(),
         })
     }
 
@@ -310,19 +309,15 @@ impl CompressedPart {
                 actual: payload.len(),
             });
         }
-        let file_hash = read_file_hash(&payload[..FileHash::BYTE_LEN]);
-        let start = read_offset(payload, FileHash::BYTE_LEN, width);
-        let block_len_at = FileHash::BYTE_LEN + offset_size;
-        let compressed_block_len = u32::from_le_bytes(
-            payload[block_len_at..block_len_at + 4]
-                .try_into()
-                .expect("validated length"),
-        );
+        let mut reader = WireReader::new(payload);
+        let file_hash = reader.read_file_hash("file hash")?;
+        let start = read_offset(&mut reader, width, "block start")?;
+        let compressed_block_len = reader.read_u32_le("compressed block length")?;
         Ok(Self {
             file_hash,
             start,
             compressed_block_len,
-            compressed_chunk: payload[header..].to_vec(),
+            compressed_chunk: reader.remaining_bytes().to_vec(),
         })
     }
 
@@ -357,25 +352,15 @@ impl CompressedPart {
     }
 }
 
-fn read_file_hash(bytes: &[u8]) -> FileHash {
-    let mut buf = [0u8; FileHash::BYTE_LEN];
-    buf.copy_from_slice(&bytes[..FileHash::BYTE_LEN]);
-    FileHash::from_bytes(buf)
-}
-
-fn read_offset(payload: &[u8], cursor: usize, width: PartOffsetWidth) -> u64 {
-    match width {
-        PartOffsetWidth::U32 => u32::from_le_bytes(
-            payload[cursor..cursor + 4]
-                .try_into()
-                .expect("validated length"),
-        ) as u64,
-        PartOffsetWidth::U64 => u64::from_le_bytes(
-            payload[cursor..cursor + 8]
-                .try_into()
-                .expect("validated length"),
-        ),
-    }
+fn read_offset(
+    reader: &mut WireReader<'_>,
+    width: PartOffsetWidth,
+    field: &'static str,
+) -> Result<u64, PartsDecodeError> {
+    Ok(match width {
+        PartOffsetWidth::U32 => u64::from(reader.read_u32_le(field)?),
+        PartOffsetWidth::U64 => reader.read_u64_le(field)?,
+    })
 }
 
 fn write_offset(payload: &mut Vec<u8>, value: u64, width: PartOffsetWidth) {
@@ -440,6 +425,15 @@ pub enum PartsDecodeError {
     /// A request's three ranges did not hold up.
     #[error("part packet ranges invalid: {0}")]
     Ranges(#[from] PartRangesError),
+}
+
+impl From<WireTruncated> for PartsDecodeError {
+    fn from(truncated: WireTruncated) -> Self {
+        Self::Truncated {
+            needed: truncated.needed,
+            actual: truncated.available,
+        }
+    }
 }
 
 /// Why a part-transfer frame could not be written.

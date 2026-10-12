@@ -14,17 +14,7 @@ use crate::adapters::{
     WorkerBrief,
 };
 use crate::download::runner::RunnerContext;
-use crate::own_identity::SharedOwnIdentity;
 use crate::service::DownloadId;
-
-/// The hello context for one spawn, read from the session's live self-facts:
-/// `ctx` is built once at fleet start, but a worker spawned after a
-/// mid-session `OP_IDCHANGE` must stamp the id the server holds *now*, and one spawned after the
-/// operator connected, reconnected or moved must name the server of that session, or none without
-/// one — aMule reads both at send time. Only the identity is the fleet's own.
-fn live_client_id(ctx: &PeerHandshakeContext, own: &SharedOwnIdentity) -> PeerHandshakeContext {
-    crate::server_session::live_peer_handshake_context(&ctx.identity, own)
-}
 
 /// One spawned worker's incarnation: no two workers ever put on the wire by
 /// one run share one, even at the same endpoint. The facts a worker reports
@@ -148,11 +138,17 @@ where
         command_channels: &mut WorkerChannels,
     ) -> Result<(), ()> {
         let started = {
-            let mut peer_transfer = self.runner.peer_transfer.lock().await;
+            let mut peer_transfer = self.runner.rt.peer_transfer.lock().await;
             peer_transfer
                 .start_download_worker(
                     peer,
-                    live_client_id(&self.ctx, self.runner.server_session.own_identity()),
+                    // `ctx` is built once at fleet start; the id and the
+                    // server are read at each spawn, as aMule reads both at
+                    // send time — only the identity is the fleet's own.
+                    crate::server_session::live_peer_handshake_context(
+                        &self.ctx.identity,
+                        &self.runner.rt.reach,
+                    ),
                     self.file.clone(),
                     brief,
                 )
@@ -160,6 +156,7 @@ where
         };
         let mut worker = started.map_err(|_| ())?;
         self.runner
+            .rt
             .diagnostics
             .attach_worker(download_id, slot, peer);
         let id = command_channels.register(peer, slot, worker.command_sender());
@@ -200,6 +197,7 @@ where
         command_channels: &mut WorkerChannels,
     ) {
         self.runner
+            .rt
             .diagnostics
             .attach_worker(download_id, slot, peer);
         let id = command_channels.register(peer, slot, worker.command_sender());
@@ -224,108 +222,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use rmule_peer::{Hello, HelloAdvert, PeerHelloBody};
-    use std::net::Ipv4Addr;
-
-    use rmule_primitives::{ClientId, ClientIdentity, Ed2kText, Ipv4Endpoint, UserHash};
-
     use super::*;
-    use crate::own_identity::ConnectedSession;
-
-    fn identity() -> ClientIdentity {
-        ClientIdentity::new(
-            UserHash::from_bytes([0x11; UserHash::BYTE_LEN]),
-            Ed2kText::from_utf8("worker-pool-test"),
-            4662,
-            60,
-        )
-    }
-
-    /// A fleet's `ctx` is built once at download start; a worker spawned
-    /// after a mid-session `OP_IDCHANGE` must still stamp the id the session
-    /// holds *now*, not the one the fleet started with — proven
-    /// at the wire frame, not just the struct.
-    #[test]
-    fn a_spawn_after_a_mid_session_reassignment_stamps_the_new_id_in_the_hello() {
-        let own = SharedOwnIdentity::default();
-        own.set_connected_session(Some(ConnectedSession {
-            server: None,
-            client_id: ClientId::from_u32(0x0000_2A57),
-        }));
-        let ctx = PeerHandshakeContext {
-            identity: identity(),
-            client_id: ClientId::from_u32(0x0000_2A57),
-            connected_server: None,
-        };
-        assert_eq!(
-            live_client_id(&ctx, &own).client_id,
-            ClientId::from_u32(0x0000_2A57),
-            "still logged in with the fleet's own id"
-        );
-
-        // The mid-session OP_IDCHANGE (`reassign_client_id`): `ctx`
-        // itself never changes, only the session self-facts it is read
-        // against at each spawn.
-        own.reassign_client_id(ClientId::from_u32(0x0100_007F));
-        let refreshed = live_client_id(&ctx, &own);
-        assert_eq!(
-            refreshed.client_id,
-            ClientId::from_u32(0x0100_007F),
-            "the fleet's ctx is stale; the live read is not"
-        );
-
-        // Decode the hello bytes: the wire round trip a peer worker actually
-        // sends carries the new id, not the fleet-start one.
-        let hello = Hello::new(PeerHelloBody::from_handshake_context(
-            &refreshed,
-            &HelloAdvert::default(),
-        ));
-        let decoded = Hello::decode_packet(&hello.encode_packet())
-            .expect("a hello we just built decodes")
-            .into_body();
-        assert_eq!(decoded.client_id, ClientId::from_u32(0x0100_007F));
-    }
-
-    /// A hello names the server of the session it rides — whatever
-    /// server the download was started on — and none without a session,
-    /// as aMule's `SendHelloTypePacket` writes the connected server or zeros
-    /// (`BaseClient.cpp:1621-1628`). Read at the wire frame.
-    #[test]
-    fn a_spawn_names_the_live_sessions_server_and_none_without_one() {
-        let own = SharedOwnIdentity::default();
-        let stored = Ipv4Endpoint::new(Ipv4Addr::new(192, 0, 2, 1), 4661);
-        let live = Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 7), 4242);
-        // The fleet was started naming its stored server.
-        let ctx = PeerHandshakeContext {
-            identity: identity(),
-            client_id: ClientId::from_u32(0x0100_007F),
-            connected_server: Some(stored),
-        };
-        let wire = |ctx: &PeerHandshakeContext| {
-            let hello = Hello::new(PeerHelloBody::from_handshake_context(
-                ctx,
-                &HelloAdvert::default(),
-            ));
-            Hello::decode_packet(&hello.encode_packet())
-                .expect("a hello we just built decodes")
-                .into_body()
-        };
-
-        let unconnected = wire(&live_client_id(&ctx, &own));
-        assert_eq!(
-            unconnected.connected_server,
-            Ipv4Endpoint::new(Ipv4Addr::UNSPECIFIED, 0),
-            "no session: zeros"
-        );
-        assert_eq!(unconnected.client_id, ClientId::from_u32(0));
-
-        own.set_connected_session(Some(ConnectedSession {
-            server: Some(live),
-            client_id: ClientId::from_u32(0x0100_007F),
-        }));
-        let connected = wire(&live_client_id(&ctx, &own));
-        assert_eq!(connected.connected_server, live);
-    }
 
     /// A worker ended at release and a fresh one re-spawned at the same
     /// endpoint: a command for that endpoint reaches the live worker,

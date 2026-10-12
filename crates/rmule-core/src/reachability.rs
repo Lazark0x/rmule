@@ -13,7 +13,8 @@
 //! - **TCP** ([`TcpReachability`]) reads open only on ≥2 independent connect-back
 //!   acks, and a recheck serves the pre-recheck snapshot so a proven-open node
 //!   never flaps mid-check. [`TcpReachability::is_reachable`] is the "Kad-open"
-//!   half of the ADR-0057 reask gate (`download::remote_queue`).
+//!   half of the ADR-0057 reask gate, which the download brain reads off its
+//!   Callback Capability sample.
 //! - **UDP** ([`UdpReachability`]) reads `Open{port}` / `Firewalled` /
 //!   `Unverified`; its test only runs once the TCP verdict here allows it.
 //!
@@ -43,12 +44,14 @@
 
 use std::time::Instant;
 
+mod client_udp_bound;
 mod dial_back;
 mod kad_level;
 mod self_reach;
 
+pub(crate) use client_udp_bound::ClientUdpBound;
 pub use kad_level::KadReachLevel;
-pub(crate) use kad_level::{KadVerdicts, KadVerdictsLease, SharedKadVerdicts};
+pub(crate) use kad_level::{KadVerdicts, KadVerdictsLease, KadVerdictsWriter, SharedKadVerdicts};
 pub(crate) use self_reach::{KadRunLease, ReachGeneration, SharedSelfReach};
 
 pub(crate) use dial_back::{

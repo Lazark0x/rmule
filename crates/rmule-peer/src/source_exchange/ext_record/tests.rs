@@ -5,7 +5,7 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rmule_primitives::{
-    ClientId, ExchangedSource, Ipv4Endpoint, Ipv6Endpoint, PeerSource, SourceCryptOptions, Tag,
+    ClientId, Ipv4Endpoint, Ipv6Endpoint, PeerSource, SourceCryptOptions, SourceSighting, Tag,
     TagName, TagValue, UserHash,
 };
 
@@ -40,7 +40,10 @@ fn the_specs_worked_record_decodes_to_the_source_it_describes() {
 
     assert_eq!(
         record.source().peer_source(),
-        PeerSource::HighId(Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, 1), 4662))
+        Some(PeerSource::HighId(Ipv4Endpoint::new(
+            Ipv4Addr::new(10, 0, 0, 1),
+            4662
+        )))
     );
     assert_eq!(
         record.server(),
@@ -116,7 +119,10 @@ fn an_unknown_tag_is_skipped_by_type_and_the_rest_of_the_packet_survives() {
     );
     assert_eq!(
         records[1].source().peer_source(),
-        PeerSource::HighId(Ipv4Endpoint::new(Ipv4Addr::new(11, 0, 0, 2), 4662))
+        Some(PeerSource::HighId(Ipv4Endpoint::new(
+            Ipv4Addr::new(11, 0, 0, 2),
+            4662
+        )))
     );
 }
 
@@ -153,7 +159,10 @@ fn every_defined_tag_type_is_skipped_by_its_width() {
         );
         assert_eq!(
             records[1].source().peer_source(),
-            PeerSource::HighId(Ipv4Endpoint::new(Ipv4Addr::new(11, 0, 0, 2), 4662))
+            Some(PeerSource::HighId(Ipv4Endpoint::new(
+                Ipv4Addr::new(11, 0, 0, 2),
+                4662
+            )))
         );
     }
 
@@ -191,10 +200,10 @@ fn a_low_id_source_keeps_a_usable_ipv6_and_loses_an_unusable_one() {
     let records = decode_ext_records(&with_v6, 1).unwrap();
     assert_eq!(
         records[0].source().peer_source(),
-        PeerSource::LowId {
+        Some(PeerSource::LowId {
             id: ClientId::from_u32(42),
             port: 4662
-        },
+        }),
         "the Low ID stands; the classic callback rule applies to it alone"
     );
     assert_eq!(
@@ -214,7 +223,7 @@ fn a_low_id_source_keeps_a_usable_ipv6_and_loses_an_unusable_one() {
 #[test]
 fn an_ipv6_only_source_round_trips_through_the_placeholder_low_id() {
     let endpoint = Ipv6Endpoint::new("2a01:4f8::9".parse().unwrap(), 4662);
-    let entry = SourceExchangeEntry::plain(ExchangedSource::plain(PeerSource::Ipv6(endpoint)));
+    let entry = SourceExchangeEntry::plain(SourceSighting::plain(PeerSource::Ipv6(endpoint)));
 
     let mut out = Vec::new();
     encode_ext_record(&mut out, entry, ExtSxEmission::default());
@@ -227,7 +236,7 @@ fn an_ipv6_only_source_round_trips_through_the_placeholder_low_id() {
     let records = decode_ext_records(&out, 1).unwrap();
     assert_eq!(
         records[0].source().peer_source(),
-        PeerSource::Ipv6(endpoint)
+        Some(PeerSource::Ipv6(endpoint))
     );
     assert_eq!(records[0].ipv6(), Some(endpoint));
 }
@@ -237,7 +246,7 @@ fn an_ipv6_only_source_round_trips_through_the_placeholder_low_id() {
 /// tags it did not ask for.
 #[test]
 fn the_optional_identity_tags_are_gated_on_emit_and_accepted_on_read() {
-    let source = ExchangedSource::new(
+    let source = SourceSighting::new(
         PeerSource::HighId(Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, 1), 4662)),
         Some(UserHash::from_bytes([0x3C; UserHash::BYTE_LEN])),
         Some(SourceCryptOptions::from_byte(0x05)),

@@ -202,6 +202,7 @@ impl SharedPeerPin {
 /// produce, and it keeps the actor from holding a handle that can only no-op.
 #[allow(clippy::too_many_arguments)] // one seam per family the runtime reads
 pub(crate) fn spawn_port_mapping(
+    mode: PortMappingMode,
     config: PortMappingConfig,
     addresses: SharedAddressLearning,
     gateways: Arc<dyn GatewaySource>,
@@ -211,7 +212,7 @@ pub(crate) fn spawn_port_mapping(
     preferences: Arc<dyn PortMappingPreferences>,
     reach: SharedSelfReach,
 ) -> Option<PortMappingHandle> {
-    if config.mode == PortMappingMode::Off || backends.is_empty() {
+    if mode == PortMappingMode::Off || backends.is_empty() {
         return None;
     }
     let (control_tx, control_rx) = mpsc::channel(8);
@@ -681,7 +682,7 @@ impl PortMappingPreferences for DurablePortMappingPreferences {
     }
 
     fn set_learned_method(&self, method: MappingProtocol) {
-        use crate::app_config::{AppConfigStore, Preference};
+        use crate::app_config::Preference;
         if let Err(error) = self
             .0
             .set_preference(Preference::PortMapMethod, method.persisted_name())

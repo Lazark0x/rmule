@@ -285,7 +285,7 @@ fn run_round(
             &leg_dir.join(format!("round-{round}-sharer.log")),
             logs.as_bytes(),
         );
-        wait_for_offers(&pcap, sharer_ip.parse()?, share, timeout)?;
+        wait_for_offers("search-wire", &pcap, sharer_ip.parse()?, share, timeout)?;
 
         let mut sweeps = Vec::new();
         let mut octet = FIRST_SWEEP_OCTET;

@@ -14,21 +14,17 @@
 //! states those bounds, and states why the positive signal (a second `0x90`)
 //! never came due. Nothing here is fabricated.
 
-use crate::fixture::{AMULE_SENDER_IP, FILE_HASH, RMULE_USER_HASH, load};
+use crate::fixture::{AMULE_SENDER_IP, AMULE_USER_HASH, FILE_HASH, RMULE_USER_HASH, load};
+use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
 use rmule_peer::{ReaskAck, ReaskFilePing};
 use rmule_primitives::{
-    ClientDecryptKeys, DatagramKeyFamily, DatagramSenderAddress, FileHash, UserHash,
-    decrypt_datagram_client, is_udp_plaintext_marker, marker_family,
+    ClientDecryptKeys, ClientEncryptKey, CryptStance, DatagramKeyFamily, DatagramNonce,
+    DatagramSenderAddress, FileHash, Ipv4Endpoint, PeerEndpoint, UserHash, decrypt_datagram_client,
+    encrypt_datagram_client, is_udp_plaintext_marker, marker_family,
 };
+use std::net::Ipv4Addr;
 
 const FIXTURE_DIR: &str = "fixtures/peer_udp_reask/captured/amule-233-crypt-reask-mirror-20260728/";
-
-/// The reasker aMule's runtime user hash, read off its own hello. aMule keys a
-/// send on the *recipient's* hash, so this is half the key rmule encrypted its
-/// ack under — and half the key that opens it again here.
-const AMULE_USER_HASH: [u8; 16] = [
-    0x99, 0x5D, 0x51, 0xF4, 0x3A, 0x0E, 0x54, 0xC9, 0x37, 0x66, 0xD0, 0xC6, 0xBE, 0xDA, 0x6F, 0x23,
-];
 
 /// **rmule's own** address, and the whole point of the mirror run. rmule learned it from
 /// the High-ID `client_id` of a short `OP_IDCHANGE` that carried no public-IP
@@ -163,4 +159,56 @@ fn the_inbound_reask_this_run_answered_is_the_same_v4_shape_with_a_new_marker() 
         5,
     );
     assert_eq!(ping.complete_sources, Some(1));
+}
+
+/// The send gate's verdict on each crypt run's facts is the layer rmule's ack
+/// actually rode. Both runs had the same two stances — rmule supporting the
+/// layer, aMule supporting and requesting it — and differed only in whether
+/// rmule knew its own public address. Without it (the sibling run) the ack left
+/// plaintext; with it (this run) the gate keys on that address, and sealing the
+/// plaintext ack under that key with the run's own nonce (the marker and seed
+/// travel in the clear, padding is off) rebuilds the captured datagram byte for
+/// byte.
+#[test]
+fn the_send_gate_reads_each_runs_facts_as_the_ack_rode() {
+    let amule = PeerUdpCryptTarget::new(
+        UserHash::from_bytes(AMULE_USER_HASH),
+        CryptStance::new(true, true, false),
+    );
+    let rmule_supported = CryptStance::new(true, false, false);
+    let to_amule = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::from(AMULE_SENDER_IP), 4672));
+
+    let sibling_ack = load(
+        "fixtures/peer_udp_reask/captured/amule-233-crypt-reask-20260728/",
+        "reask_ack_0x91_plaintext.bin",
+    );
+    assert_eq!(
+        amule.obfuscation_sender(rmule_supported, to_amule, None, None),
+        None
+    );
+    assert!(is_udp_plaintext_marker(sibling_ack[0]));
+
+    let sender = amule
+        .obfuscation_sender(
+            rmule_supported,
+            to_amule,
+            Some(Ipv4Addr::from(RMULE_SENDER_IP)),
+            None,
+        )
+        .expect("this run's facts open the gate");
+    assert_eq!(sender, DatagramSenderAddress::V4(RMULE_SENDER_IP));
+    let captured = load(FIXTURE_DIR, "reask_ack_0x91_obfuscated.bin");
+    let nonce = DatagramNonce {
+        marker_byte: captured[0],
+        random_key: u16::from_le_bytes([captured[1], captured[2]]),
+        padding: Vec::new(),
+    };
+    let key = ClientEncryptKey::Ed2k {
+        user_hash: &amule.user_hash,
+        sender,
+    };
+    assert_eq!(
+        encrypt_datagram_client(&sibling_ack, &key, &nonce),
+        captured
+    );
 }

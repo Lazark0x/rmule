@@ -10,7 +10,7 @@
 │ Nickname     rmule  (on restart)                                           │
 │ eD2k port    4662  (on restart)                                            │
 │ UDP port     4672  (on restart)                                            │
-│ Obfuscation  requested  peer TCP/UDP + Kad + server UDP  (on restart)      │
+│ Obfuscation  requested  peer TCP/UDP + Kad + server UDP                    │
 │ Port mapping on  opens router ports: UPnP, PCP, NAT-PMP  (on restart)      │
 │ Autoconnect  off  at start, to the last server — none yet  (on restart)    │
 │ server.met   http://upd.emule-security.org/server.met  (Networks: U)       │

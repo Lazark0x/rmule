@@ -258,6 +258,11 @@ pub(crate) fn fake_docker_with_mode(dir: &Path, log: &Path, mode: &str) -> PathB
     writeln!(script, "            exit 0 ;;").unwrap();
     writeln!(script, "        esac").unwrap();
     writeln!(script, "        original_args=\"$*\"").unwrap();
+    writeln!(
+        script,
+        "        case \" $original_args \" in *' cargo build '*) exit 0 ;; esac"
+    )
+    .unwrap();
     writeln!(script, "        run_root=''").unwrap();
     writeln!(script, "        while [ \"$#\" -gt 0 ]; do").unwrap();
     writeln!(script, "          if [ \"$1\" = -v ]; then").unwrap();
@@ -294,20 +299,20 @@ pub(crate) fn fake_docker_with_mode(dir: &Path, log: &Path, mode: &str) -> PathB
     writeln!(script, "        esac").unwrap();
     writeln!(
         script,
-        "        printf '%s\\n' 'download sources_found id=1 total=1 usable_high_id=1'"
+        "        printf '%s\\n' 'download.sources_found id=1 total=1 usable_high_id=1'"
     )
     .unwrap();
     writeln!(
         script,
-        "        printf '%s\\n' 'download peer_selected id=1 peer=rmule-interop-amule:4662'"
+        "        printf '%s\\n' 'download.peer_selected id=1 peer=rmule-interop-amule:4662'"
     )
     .unwrap();
     writeln!(
         script,
-        "        printf '%s\\n' 'download part_verified id=1 part_index=0'"
+        "        printf '%s\\n' 'download.part_verified id=1 part_index=0'"
     )
     .unwrap();
-    writeln!(script, "        printf '%s\\n' 'download completed id=1'").unwrap();
+    writeln!(script, "        printf '%s\\n' 'download.completed id=1'").unwrap();
     writeln!(
         script,
         "        printf '%s\\n' 'download finalized id=1 path=/interop-run/rmule/output.bin'"
@@ -340,7 +345,7 @@ pub(crate) fn fake_docker_with_mode(dir: &Path, log: &Path, mode: &str) -> PathB
     writeln!(script, "    esac").unwrap();
     writeln!(script, "    printf '%s\\n' \"container:$container_name\"").unwrap();
     writeln!(script, "    exit 0 ;;").unwrap();
-    writeln!(script, "  logs) if [ \"$mode\" = logs-fail ]; then printf '%s\\n' 'logs failed' >&2; exit 43; fi; if [ \"$mode\" = amule-ready ] && printf '%s' \"$2\" | grep -q 'amule'; then printf '%s\\n' 'custom-amule-ready'; exit 0; fi; if [ \"$mode\" = reverse-ready ] && printf '%s' \"$2\" | grep -q 'amule'; then printf '%s\\n' 'rmule-amule-download-complete'; exit 0; fi; if [ \"$mode\" = reverse-ready ] && printf '%s' \"$2\" | grep -q 'rmule-interop-rmule'; then printf '%s\\n' 'serve files_announced file_count=1'; exit 0; fi; printf '%s\\n' \"logs:$2\"; exit 0 ;;").unwrap();
+    writeln!(script, "  logs) if [ \"$mode\" = logs-fail ]; then printf '%s\\n' 'logs failed' >&2; exit 43; fi; if [ \"$mode\" = amule-ready ] && printf '%s' \"$2\" | grep -q 'amule'; then printf '%s\\n' 'custom-amule-ready'; exit 0; fi; if [ \"$mode\" = reverse-ready ] && printf '%s' \"$2\" | grep -q 'amule'; then printf '%s\\n' 'rmule-amule-download-complete'; exit 0; fi; if [ \"$mode\" = reverse-ready ] && printf '%s' \"$2\" | grep -q 'rmule-interop-rmule'; then printf '%s\\n' 'serve.files_announced file_count=1'; exit 0; fi; printf '%s\\n' \"logs:$2\"; exit 0 ;;").unwrap();
     writeln!(script, "  inspect) printf '%s\\n' '172.18.0.3'; exit 0 ;;").unwrap();
     writeln!(script, "  rm) exit 0 ;;").unwrap();
     writeln!(script, "esac").unwrap();
@@ -391,20 +396,20 @@ pub(crate) fn fake_rmule_tools(dir: &Path) -> PathBuf {
     .unwrap();
     writeln!(
         script,
-        "printf '%s\\n' 'download sources_found id=1 total=1 usable_high_id=1'"
+        "printf '%s\\n' 'download.sources_found id=1 total=1 usable_high_id=1'"
     )
     .unwrap();
     writeln!(
         script,
-        "printf '%s\\n' 'download peer_selected id=1 peer=127.0.0.1:4662'"
+        "printf '%s\\n' 'download.peer_selected id=1 peer=127.0.0.1:4662'"
     )
     .unwrap();
     writeln!(
         script,
-        "printf '%s\\n' 'download part_verified id=1 part_index=0'"
+        "printf '%s\\n' 'download.part_verified id=1 part_index=0'"
     )
     .unwrap();
-    writeln!(script, "printf '%s\\n' 'download completed id=1'").unwrap();
+    writeln!(script, "printf '%s\\n' 'download.completed id=1'").unwrap();
     writeln!(
         script,
         "printf '%s\\n' \"download finalized id=1 path=$out\""

@@ -42,11 +42,12 @@
 //! sender keys it earned, and the binding IP keeps them honest — a key learned
 //! under a different public address reads back as no key at all.
 
-use std::net::Ipv4Addr;
+use rmule_primitives::WireReader;
 
 use crate::net::is_good_ip_port;
 use crate::udp_key::KadUdpKey;
-use crate::{KadContact, KadId, KadNodeEndpoint};
+use crate::wire_fields::KadWireFields;
+use crate::{KadContact, KadNodeEndpoint};
 
 /// The DNS port aMule's port-53 filter singles out (a stray "kad node" that
 /// is actually a DNS resolver, or a spoofed low-numbered-port contact).
@@ -117,9 +118,9 @@ impl NodesDat {
     /// the v2 extension bytes); this streams row by row instead, for the
     /// same observable partial-load-on-truncation outcome.
     pub fn decode(bytes: &[u8]) -> Result<Self, NodesDatError> {
-        let mut cursor = Cursor::new(bytes);
+        let mut reader = WireReader::new(bytes);
 
-        let Some(leading) = cursor.read_u32() else {
+        let Ok(leading) = reader.read_u32_le("leading word") else {
             return Ok(Self::empty());
         };
         if leading != 0 {
@@ -127,12 +128,12 @@ impl NodesDat {
         }
 
         // `leading == 0` is the new-format sentinel: a version word follows.
-        let Some(file_version) = cursor.read_u32() else {
+        let Ok(file_version) = reader.read_u32_le("file version") else {
             return Ok(Self::empty());
         };
 
         if file_version == 3 {
-            let Some(bootstrap_edition) = cursor.read_u32() else {
+            let Ok(bootstrap_edition) = reader.read_u32_le("bootstrap edition") else {
                 return Ok(Self::empty());
             };
             if bootstrap_edition == 1 {
@@ -148,7 +149,7 @@ impl NodesDat {
             return Ok(Self::empty());
         }
 
-        Ok(Self::decode_rows(file_version, &mut cursor))
+        Ok(Self::decode_rows(file_version, &mut reader))
     }
 
     const fn empty() -> Self {
@@ -158,8 +159,8 @@ impl NodesDat {
         }
     }
 
-    fn decode_rows(file_version: u32, cursor: &mut Cursor<'_>) -> Self {
-        let Some(declared_count) = cursor.read_u32() else {
+    fn decode_rows(file_version: u32, reader: &mut WireReader<'_>) -> Self {
+        let Ok(declared_count) = reader.read_u32_le("contact count") else {
             return Self::empty();
         };
 
@@ -172,7 +173,7 @@ impl NodesDat {
         let mut rows = Vec::new();
         let mut any_verified_bit = false;
         for _ in 0..declared_count {
-            let Some(row) = decode_row(cursor, file_version) else {
+            let Some(row) = decode_row(reader, file_version) else {
                 break;
             };
             if row.verified_bit == Some(true) {
@@ -316,12 +317,12 @@ struct RawRow {
     verified_bit: Option<bool>,
 }
 
-fn decode_row(cursor: &mut Cursor<'_>, file_version: u32) -> Option<RawRow> {
-    let id = cursor.read_kad_id()?;
-    let ip = cursor.read_ipv4_low_octet_first()?;
-    let udp_port = cursor.read_u16()?;
-    let tcp_port = cursor.read_u16()?;
-    let version = cursor.read_u8()?;
+fn decode_row(reader: &mut WireReader<'_>, file_version: u32) -> Option<RawRow> {
+    let id = reader.read_kad_id("contact ID").ok()?;
+    let ip = reader.read_ipv4_low_octet_first("contact IP").ok()?;
+    let udp_port = reader.read_u16_le("contact UDP port").ok()?;
+    let tcp_port = reader.read_u16_le("contact TCP port").ok()?;
+    let version = reader.read_u8("contact version").ok()?;
 
     let (udp_key, verified_bit) = if file_version >= 2 {
         // `CKadUDPKey::ReadFromFile`: `key` then `ip`, each `u32` LE. The IP is
@@ -332,9 +333,12 @@ fn decode_row(cursor: &mut Cursor<'_>, file_version: u32) -> Option<RawRow> {
         // octet-flip every binding on an aMule-authored file, so
         // `key_value(own_ip)` misses and every earned key silently retires on
         // migration — the exact failure persisting the key exists to prevent.
-        let key = cursor.read_u32()?;
-        let key_ip = cursor.read_ipv4_natural_order()?;
-        (KadUdpKey::new(key, key_ip), Some(cursor.read_u8()? != 0))
+        let key = reader.read_u32_le("UDP key").ok()?;
+        let key_ip = reader.read_ipv4_natural_order("UDP key IP").ok()?;
+        (
+            KadUdpKey::new(key, key_ip),
+            Some(reader.read_u8("verified flag").ok()? != 0),
+        )
     } else {
         (KadUdpKey::EMPTY, None)
     };
@@ -345,77 +349,4 @@ fn decode_row(cursor: &mut Cursor<'_>, file_version: u32) -> Option<RawRow> {
         contact,
         verified_bit,
     })
-}
-
-/// A forward-only byte reader that answers `None` on truncation rather than
-/// surfacing a per-field error — a truncated row simply ends the walk here
-/// (see [`NodesDat::decode`]'s truncation posture).
-///
-/// `pub(crate)`: shared with the v3 bootstrap-edition reader
-/// (`nodes_dat_bootstrap.rs`), whose row shape is byte-identical to
-/// this reader's v1 rows.
-pub(crate) struct Cursor<'a> {
-    bytes: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Cursor<'a> {
-    pub(crate) const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, pos: 0 }
-    }
-
-    fn take(&mut self, len: usize) -> Option<&'a [u8]> {
-        let end = self
-            .pos
-            .checked_add(len)
-            .filter(|&end| end <= self.bytes.len())?;
-        let slice = &self.bytes[self.pos..end];
-        self.pos = end;
-        Some(slice)
-    }
-
-    pub(crate) fn read_u8(&mut self) -> Option<u8> {
-        Some(self.take(1)?[0])
-    }
-
-    pub(crate) fn read_u16(&mut self) -> Option<u16> {
-        let bytes = self.take(2)?;
-        Some(u16::from_le_bytes([bytes[0], bytes[1]]))
-    }
-
-    pub(crate) fn read_u32(&mut self) -> Option<u32> {
-        let bytes = self.take(4)?;
-        Some(u32::from_le_bytes(bytes.try_into().expect("4-byte slice")))
-    }
-
-    pub(crate) fn read_kad_id(&mut self) -> Option<KadId> {
-        let bytes = self.take(KadId::BYTE_LEN)?;
-        Some(KadId::from_bytes(bytes.try_into().expect("16-byte slice")))
-    }
-
-    /// The contact-row IPv4 serialization: `a.b.c.d` on the wire as `[d, c,
-    /// b, a]` — the same "low octet first" order the wire contact row and
-    /// hello messages use
-    /// (`docs/reference/notes/kad-packet-framing.md`).
-    pub(crate) fn read_ipv4_low_octet_first(&mut self) -> Option<Ipv4Addr> {
-        let bytes = self.take(4)?;
-        Some(Ipv4Addr::new(bytes[3], bytes[2], bytes[1], bytes[0]))
-    }
-
-    /// The `CKadUDPKey` binding-IP serialization: `a.b.c.d` on disk as `[a, b,
-    /// c, d]` — natural order, NOT the low-octet-first order of the contact IP
-    /// in the same row. aMule's `m_ip` is a network-order u32
-    /// (`theApp->GetPublicIP(false)`, `amule.cpp#L1455`), so its LE
-    /// `WriteUInt32` emits the octets as-is.
-    fn read_ipv4_natural_order(&mut self) -> Option<Ipv4Addr> {
-        let bytes = self.take(4)?;
-        Some(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]))
-    }
-
-    /// Bytes not yet consumed -- the v3 bootstrap-edition reader's exact
-    /// `count * 25 == remaining` check needs this; the normal reader (this
-    /// module) never does, since it streams and keeps partial rows.
-    pub(crate) fn remaining(&self) -> usize {
-        self.bytes.len() - self.pos
-    }
 }

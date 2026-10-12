@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, ClientIdentity, Ed2kText, ExchangedSource, FileHash, FileHashSummary, PeerEndpoint,
-    PeerSource, ServerEndpoint, UserHash,
+    ClientId, Ed2kText, FileHash, FileHashSummary, PeerEndpoint, PeerSource, ServerEndpoint,
+    SourceSighting,
 };
 use tokio::sync::Notify;
 use tokio::time::{Duration, timeout};
@@ -21,19 +21,6 @@ use crate::{
 use super::*;
 
 mod dial_ends;
-
-fn ctx(hash: u8, nick: &str) -> PeerHandshakeContext {
-    PeerHandshakeContext {
-        identity: ClientIdentity::new(
-            UserHash::from_bytes([hash; UserHash::BYTE_LEN]),
-            Ed2kText::from_utf8(nick),
-            4662,
-            0x3C,
-        ),
-        client_id: ClientId::from_u32(0),
-        connected_server: None,
-    }
-}
 
 /// A `SourceLookupService` that answers every lookup with the same single
 /// High-ID source — `PEER_CLIENT_ID` decodes to 127.0.0.1 (a High ID *is* the
@@ -50,7 +37,7 @@ impl SourceLookupService for FixedSourceLookup {
     ) -> Result<SourceLookupOutcome, DownloadFailure> {
         Ok(SourceLookupOutcome {
             client_id: ClientId::from_u32(PEER_CLIENT_ID),
-            sources: vec![ExchangedSource::plain(PeerSource::new(
+            sources: vec![SourceSighting::plain(PeerSource::new(
                 ClientId::from_u32(PEER_CLIENT_ID),
                 4663,
             ))],
@@ -131,20 +118,27 @@ async fn next_core_event(core: &mut Core) -> CoreEvent {
 
 #[tokio::test]
 async fn cancelling_a_download_forgets_a_still_connected_workers_roster_ip() {
+    let out_dir = tempfile::tempdir().unwrap();
     let peer_ip = std::net::Ipv4Addr::new(127, 0, 0, 1);
     let store = crate::open_durable_store_in_memory().expect("in-memory store opens");
     let builder = Core::builder(CoreConfig::default(), store)
+        .settings(crate::CoreSettings {
+            download_dir: Some(out_dir.path().to_path_buf()),
+            ..crate::CoreSettings::default()
+        })
         .source_lookup(FixedSourceLookup)
         .peer_transfer(StuckPeerTransfer);
     let roster = builder.shared_peer_roster();
     let mut core = builder.build();
 
-    let out_dir = tempfile::tempdir().unwrap();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: example_file(),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: ctx(0x42, "rmule-core").identity.into(),
-        output_path: out_dir.path().join("roster-stop-leak.bin"),
+        name: rmule_primitives::SafeFileName::clean(
+            "roster-stop-leak.bin",
+            &rmule_primitives::FileHash::from_bytes([0; 16]),
+        ),
+        if_taken: crate::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -199,10 +193,15 @@ async fn cancelling_a_download_forgets_a_still_connected_workers_roster_ip() {
 
 #[tokio::test]
 async fn a_disconnect_already_racing_into_fact_rx_at_stop_is_not_lost() {
+    let out_dir = tempfile::tempdir().unwrap();
     let peer_ip = std::net::Ipv4Addr::new(127, 0, 0, 1);
     let store = crate::open_durable_store_in_memory().expect("in-memory store opens");
     let disconnect = Arc::new(Notify::new());
     let builder = Core::builder(CoreConfig::default(), store)
+        .settings(crate::CoreSettings {
+            download_dir: Some(out_dir.path().to_path_buf()),
+            ..crate::CoreSettings::default()
+        })
         .source_lookup(FixedSourceLookup)
         .peer_transfer(DisconnectOnCuePeerTransfer {
             disconnect: disconnect.clone(),
@@ -210,12 +209,14 @@ async fn a_disconnect_already_racing_into_fact_rx_at_stop_is_not_lost() {
     let roster = builder.shared_peer_roster();
     let mut core = builder.build();
 
-    let out_dir = tempfile::tempdir().unwrap();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: example_file(),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: ctx(0x42, "rmule-core").identity.into(),
-        output_path: out_dir.path().join("roster-stop-race.bin"),
+        name: rmule_primitives::SafeFileName::clean(
+            "roster-stop-race.bin",
+            &rmule_primitives::FileHash::from_bytes([0; 16]),
+        ),
+        if_taken: crate::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -322,10 +323,15 @@ impl PeerTransferService for CompletingPeerTransfer {
 /// relation's terminal, whether or not the worker ever sends `Disconnected`.
 #[tokio::test]
 async fn a_completed_download_forgets_its_still_connected_workers_roster_ip() {
+    let out_dir = tempfile::tempdir().unwrap();
     let peer_ip = std::net::Ipv4Addr::new(127, 0, 0, 1);
     let store = crate::open_durable_store_in_memory().expect("in-memory store opens");
     let deliver = Arc::new(Notify::new());
     let builder = Core::builder(CoreConfig::default(), store)
+        .settings(crate::CoreSettings {
+            download_dir: Some(out_dir.path().to_path_buf()),
+            ..crate::CoreSettings::default()
+        })
         .source_lookup(FixedSourceLookup)
         .peer_transfer(CompletingPeerTransfer {
             deliver: Arc::clone(&deliver),
@@ -334,7 +340,6 @@ async fn a_completed_download_forgets_its_still_connected_workers_roster_ip() {
     let mut core = builder.build();
 
     let summary = FileHashSummary::digest_bytes(SERVED);
-    let out_dir = tempfile::tempdir().unwrap();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: Ed2kFileLink {
             size: summary.file_size(),
@@ -342,8 +347,11 @@ async fn a_completed_download_forgets_its_still_connected_workers_roster_ip() {
             ..example_file()
         },
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: ctx(0x42, "rmule-core").identity.into(),
-        output_path: out_dir.path().join("roster-complete.bin"),
+        name: rmule_primitives::SafeFileName::clean(
+            "roster-complete.bin",
+            &rmule_primitives::FileHash::from_bytes([0; 16]),
+        ),
+        if_taken: crate::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -399,20 +407,27 @@ impl PeerTransferService for QueuedThenHangUpPeerTransfer {
 /// Download relation ended at retirement and nothing held the pooled peer.
 #[tokio::test]
 async fn a_remote_queued_peer_stays_known_after_its_worker_retires() {
+    let out_dir = tempfile::tempdir().unwrap();
     let peer_ip = std::net::Ipv4Addr::new(127, 0, 0, 1);
     let store = crate::open_durable_store_in_memory().expect("in-memory store opens");
     let builder = Core::builder(CoreConfig::default(), store)
+        .settings(crate::CoreSettings {
+            download_dir: Some(out_dir.path().to_path_buf()),
+            ..crate::CoreSettings::default()
+        })
         .source_lookup(FixedSourceLookup)
         .peer_transfer(QueuedThenHangUpPeerTransfer);
     let roster = builder.shared_peer_roster();
     let mut core = builder.build();
 
-    let out_dir = tempfile::tempdir().unwrap();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: example_file(),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: ctx(0x42, "rmule-core").identity.into(),
-        output_path: out_dir.path().join("roster-queued.bin"),
+        name: rmule_primitives::SafeFileName::clean(
+            "roster-queued.bin",
+            &rmule_primitives::FileHash::from_bytes([0; 16]),
+        ),
+        if_taken: crate::NameTaken::Refuse,
     }))
     .await
     .unwrap();

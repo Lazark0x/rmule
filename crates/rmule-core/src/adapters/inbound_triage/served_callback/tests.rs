@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use rmule_kad::KadId;
 use rmule_net::peer::{ConnectOptions as PeerConnectOptions, PeerListener};
-use rmule_peer::Callback;
+use rmule_peer::{Callback, ConnectionEvent};
 use rmule_primitives::{FileHash, Ipv4Endpoint, PeerEndpoint, UserHash};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
@@ -16,13 +16,10 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 use crate::adapters::dialed_serve::SharedDialedServeSink;
-use crate::adapters::inbound_triage::{
-    InboundPeerDeps, SharedCallbackTable, triage_inbound_connection,
-};
+use crate::adapters::inbound_triage::{InboundPeerDeps, triage_inbound_connection};
 use crate::adapters::kad_runtime::{KadPresenceView, SharedKadBootstrap};
-use crate::adapters::serve_runtime::{AdmittedPeer, ServeConnCommand, ServeConnEvent};
-use crate::adapters::tunnel_claims::SharedTunnelClaims;
-use crate::adapters::{SharedKadPump, SharedTunnelAdmit};
+use crate::adapters::serve_runtime::{AdmittedPeer, ServeInput, ServeOutput};
+use crate::adapters::{AwaitedInbound, SharedKadPump, SharedTunnelAdmit};
 use crate::buddy_link::SharedBuddySlot;
 use crate::diagnostics::DiagnosticsState;
 use crate::known_files::SharedFileKnown;
@@ -41,8 +38,8 @@ fn addressed_to(id: [u8; KadId::BYTE_LEN]) -> [u8; KadId::BYTE_LEN] {
 /// serve channels the bridge needs alive, and the counters it reads.
 struct ServedLink {
     peer: TcpStream,
-    _commands: mpsc::Sender<ServeConnCommand>,
-    _events: mpsc::Receiver<ServeConnEvent>,
+    _commands: mpsc::Sender<ServeOutput>,
+    _events: mpsc::Receiver<ServeInput>,
     diagnostics: DiagnosticsState,
 }
 
@@ -88,8 +85,7 @@ async fn served_link(deps: InboundPeerDeps, diagnostics: DiagnosticsState) -> Se
         None,
         command_rx,
         event_tx,
-        SharedCallbackTable::default(),
-        SharedTunnelClaims::default(),
+        AwaitedInbound::default(),
         deps,
     ));
     loop {
@@ -97,7 +93,7 @@ async fn served_link(deps: InboundPeerDeps, diagnostics: DiagnosticsState) -> Se
             .await
             .expect("the dialer identifies within 2s")
         {
-            Some(ServeConnEvent::Identified { .. }) => break,
+            Some(ServeInput::Connection(ConnectionEvent::Identified { .. })) => break,
             Some(_) => continue,
             None => panic!("the accept router ended before the dialer identified"),
         }

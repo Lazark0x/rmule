@@ -11,7 +11,7 @@ use std::process::Command;
 /// no binary, so it neither reruns this script nor marks the build dirty.
 const NOT_LINKED: &[&str] = &["rmule-testkit"];
 
-fn main() {
+pub fn main() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let dir = Path::new(&manifest_dir);
 

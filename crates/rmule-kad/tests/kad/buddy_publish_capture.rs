@@ -12,6 +12,7 @@
 
 const FIXTURE_DIR: &str = "fixtures/buddy/captured/amule-233-publish-source-req-20260922/";
 
+use rmule_kad::KadNodeStart;
 use rmule_kad::{Kad2Message, KadId, KadPublishedSource};
 use rmule_primitives::{Ipv4Endpoint, kad_wire_id};
 
@@ -262,12 +263,15 @@ fn rmules_publisher_reproduces_the_captured_datagram() {
     // key from the file hash: the swap is self-inverse, so undoing it is
     // applying it again.
     let now = KadInstant::EPOCH;
-    let mut node = KadNode::new(KadNodeConfig {
-        id: KadId::from_bytes(AMULE_KAD_ID),
-        tcp_port: AMULE_TCP_PORT,
-        udp_port: 4672,
-        user_hash: rmule_primitives::UserHash::from_bytes(kad_wire_id(source_id)),
-    });
+    let mut node = KadNode::new(KadNodeStart::new(
+        KadNodeConfig {
+            id: KadId::from_bytes(AMULE_KAD_ID),
+            tcp_port: AMULE_TCP_PORT,
+            udp_port: 4672,
+            user_hash: rmule_primitives::UserHash::from_bytes(kad_wire_id(source_id)),
+        },
+        KadInstant::EPOCH,
+    ));
     node.handle_command(
         now,
         KadCommand::SetPublishPosture {

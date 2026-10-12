@@ -83,6 +83,63 @@ async fn download_start_completes_hermetically_from_a_real_serving_core() {
     drop(serving);
 }
 
+/// A `--peer-crypt-flip` puts its policy in force on the running download's
+/// core and marks the moment on stdout, and the transfer still completes.
+#[tokio::test(flavor = "current_thread")]
+async fn download_start_flips_the_obfuscation_policy_mid_run() {
+    let bytes = vec![0x4B_u8; 4096];
+    let link = file_link_arg("hermetic-flip.bin", &bytes);
+
+    let server = FakeEd2kServer::start_scripted().await;
+    let serving = ServingCore::spawn(0x67, "hermetic-flip.bin", &bytes).await;
+    server.set_sources(vec![serving.source()]).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("hermetic-flip.bin");
+    let server_arg = server.local_addr().to_string();
+    let data_dir_arg = dir.path().to_str().unwrap().to_owned();
+    let out_arg = out.to_str().unwrap().to_owned();
+    let cmd_out = tokio::task::spawn_blocking(move || {
+        Command::cargo_bin("rmule-tools")
+            .unwrap()
+            .args([
+                "ed2k",
+                "download",
+                "start",
+                "--data-dir",
+                &data_dir_arg,
+                "--server",
+                &server_arg,
+                "--file",
+                &link,
+                "--out",
+                &out_arg,
+                "--peer-crypt",
+                "supported",
+                "--peer-crypt-flip",
+                "0:off",
+            ])
+            .timeout(Duration::from_secs(120))
+            .output()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    let stdout = String::from_utf8_lossy(&cmd_out.stdout);
+    let stderr = String::from_utf8_lossy(&cmd_out.stderr);
+    assert!(
+        cmd_out.status.success(),
+        "stderr: {stderr}\nstdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("rmule-obfuscation-flip after_secs=0 policy=off"),
+        "stdout missing the flip marker:\n{stdout}"
+    );
+    assert_eq!(std::fs::read(&out).unwrap(), bytes);
+    drop(serving);
+}
+
 /// Two `--file` links run as two downloads in one core, each written to its
 /// own `--out`, and the run ends once both are whole.
 #[tokio::test(flavor = "current_thread")]

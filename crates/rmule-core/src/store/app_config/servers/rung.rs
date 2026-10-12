@@ -1,15 +1,16 @@
 //! **How an older store's server rows climb** (ADR-0083's ladder): the row
 //! shapes older store versions wrote, the server list's half of the 8 → 9
 //! rung, which gives every row an empty set of figures, the 9 → 10 rung,
-//! which gives every row no grants report and its figures no UDP flags, and
-//! the 11 → 12 rung, which gives every row no UDP crypt facts.
+//! which gives every row no grants report and its figures no UDP flags, the
+//! 11 → 12 rung, which gives every row no UDP crypt facts, and the 13 → 14
+//! rung, which gives every row no aux-ports list.
 
 use rmule_primitives::{Ed2kText, ServerEndpoint};
 use rmule_store::redb::TableDefinition;
 use rmule_store::{Indexed, Packed, Record, StoreError, WriteTransaction};
 use serde::{Deserialize, Serialize};
 
-use super::{FiguresRecord, GrantsRecord, SERVERS, ServerRecord};
+use super::{FiguresRecord, GrantsRecord, SERVERS, ServerRecord, UdpCryptRecord};
 
 /// The row as record version 1 wrote it, before the figures were kept.
 #[derive(Debug, Serialize, Deserialize)]
@@ -196,10 +197,79 @@ pub(crate) fn grow_from_v9(txn: &WriteTransaction) -> Result<(), StoreError> {
 /// Store version 11 → 12 (ADR-0052, "a server's UDP crypt facts are
 /// durable"): every row keeps what it had and gains no UDP crypt facts — a
 /// server reads as not having said how to key UDP to it until its next
-/// status answer.
+/// status answer. Written in version 12's shape, so the 13 → 14 rung finds
+/// what it reads.
 pub(crate) fn grow_from_v11(txn: &WriteTransaction) -> Result<(), StoreError> {
     let old = SERVERS_V3.iter(txn)?;
     txn.delete_table(TableDefinition::<u64, Packed<ServerRecordV3>>::new(
+        "app_config.server",
+    ))?;
+    SERVERS_V4.create(txn)?;
+    for (key, row) in old {
+        let grown = ServerRecordV4 {
+            endpoint: row.endpoint,
+            name: row.name,
+            description: row.description,
+            priority: row.priority,
+            is_static: row.is_static,
+            fail_count: row.fail_count,
+            figures: row.figures,
+            grants: row.grants,
+            udp_crypt: None,
+        };
+        SERVERS_V4.set(txn, &key, &grown)?;
+    }
+    Ok(())
+}
+
+/// The row as record version 4 (store versions 12 and 13) wrote it, before
+/// it kept the server's aux-ports list.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct ServerRecordV4 {
+    pub(super) endpoint: ServerEndpoint,
+    pub(super) name: Ed2kText,
+    pub(super) description: Ed2kText,
+    pub(super) priority: u32,
+    pub(super) is_static: bool,
+    pub(super) fail_count: u32,
+    pub(super) figures: Option<FiguresRecord>,
+    pub(super) grants: Option<GrantsRecord>,
+    pub(super) udp_crypt: Option<UdpCryptRecord>,
+}
+
+impl Record for ServerRecordV4 {
+    const NAME: &'static str = "app_config.server";
+    const VERSION: u32 = 4;
+}
+
+/// An index-free view of the version-12 and -13 table, for the same reason as
+/// [`SERVERS_V1`].
+pub(super) static SERVERS_V4: Indexed<u64, ServerRecordV4> = Indexed::new("app_config.server", &[]);
+
+/// The endpoint index as store versions 12 and 13 declared it on the old shape.
+#[cfg(test)]
+static ENDPOINT_V4: rmule_store::UniqueIndex<(&'static str, u16), u64, ServerRecordV4> =
+    rmule_store::UniqueIndex::new("app_config.server.endpoint", |record| {
+        (record.endpoint.host(), record.endpoint.port())
+    });
+
+#[cfg(test)]
+static SERVERS_V4_DECLARED: Indexed<u64, ServerRecordV4> =
+    Indexed::new("app_config.server", &[&ENDPOINT_V4]);
+
+/// The server list's table as store versions 12 and 13 declared it, with its
+/// endpoint index, for a test that builds an older store.
+#[cfg(test)]
+pub(in crate::store::app_config) fn schema_v13() -> rmule_store::Schema {
+    rmule_store::Schema::new().indexed(&SERVERS_V4_DECLARED)
+}
+
+/// Store version 13 → 14 (ADR-0080, "Aux ports"): every row keeps what it
+/// had and gains no aux-ports list — a row reads as dialed on its standard
+/// port until a login or a downloaded list says otherwise.
+pub(crate) fn grow_from_v13(txn: &WriteTransaction) -> Result<(), StoreError> {
+    let old = SERVERS_V4.iter(txn)?;
+    txn.delete_table(TableDefinition::<u64, Packed<ServerRecordV4>>::new(
         "app_config.server",
     ))?;
     SERVERS.create(txn)?;
@@ -213,7 +283,9 @@ pub(crate) fn grow_from_v11(txn: &WriteTransaction) -> Result<(), StoreError> {
             fail_count: row.fail_count,
             figures: row.figures,
             grants: row.grants,
-            udp_crypt: None,
+            udp_crypt: row.udp_crypt,
+            aux_ports: None,
+            listed_udp_flags: None,
         };
         SERVERS.set(txn, &key, &grown)?;
     }
@@ -417,5 +489,61 @@ mod tests {
         drop(list);
         let reopened = DurableAppConfig::new(crate::store::open_durable_store(dir.path()).unwrap());
         assert_eq!(reopened.servers().unwrap()[0].udp_crypt, Some(crypt));
+    }
+
+    /// A version-13 store's server rows climb to version 14 keeping everything
+    /// they held, with no aux-ports list; a standard port learned after the
+    /// rung survives a reopen.
+    #[test]
+    fn a_version_thirteen_server_row_climbs_to_no_aux_ports_and_a_later_one_is_kept() {
+        let endpoint = ServerEndpoint::new("203.0.113.73", 4232).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(crate::store::DURABLE_STORE_FILE);
+        let crypt = UdpCryptRecord {
+            obfuscation_udp_port: 4673,
+            obfuscation_tcp_port: 4674,
+            udp_key: 0xABCD_1234,
+            key_ip: Some(std::net::Ipv4Addr::new(198, 51, 100, 7)),
+        };
+        {
+            let v13 = DurableStore::open(
+                &file,
+                &Schema::new().indexed(&SERVERS_V4),
+                &Ladder::new(13, &[]),
+            )
+            .unwrap();
+            v13.write(|txn| {
+                SERVERS_V4.insert(
+                    txn,
+                    &1,
+                    &ServerRecordV4 {
+                        endpoint: endpoint.clone(),
+                        name: Ed2kText::from_utf8("thirteen"),
+                        description: Ed2kText::from_utf8(""),
+                        priority: 1,
+                        is_static: true,
+                        fail_count: 2,
+                        figures: None,
+                        grants: None,
+                        udp_crypt: Some(crypt),
+                    },
+                )
+            })
+            .unwrap();
+        }
+        let list = DurableAppConfig::new(crate::store::open_durable_store(dir.path()).unwrap());
+        let row = list.servers().unwrap().remove(0);
+        assert_eq!(
+            (row.endpoint.clone(), row.is_static, row.fail_count),
+            (endpoint.clone(), true, 2)
+        );
+        assert_eq!(row.udp_crypt, Some(crypt.into()));
+        assert_eq!(row.aux_ports, None, "no list was kept before the rung");
+
+        list.set_server_standard_port(&endpoint, 4661).unwrap();
+        drop(list);
+        let reopened = DurableAppConfig::new(crate::store::open_durable_store(dir.path()).unwrap());
+        let aux = reopened.servers().unwrap()[0].aux_ports.clone().unwrap();
+        assert_eq!((aux.standard_port, aux.ports), (4661, vec![4232]));
     }
 }

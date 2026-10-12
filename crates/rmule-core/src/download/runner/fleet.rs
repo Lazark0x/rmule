@@ -4,29 +4,24 @@
 //! callback enactment state (ADR-0039) that loop sleeps on. Policy stays in the
 //! sans-I/O brain — this module only keeps the live fleet in step with it.
 
-use crate::download::source_ask_clock::{AskName, SourceAskClock};
-use std::cmp::Reverse;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashSet, VecDeque};
 
 use rmule_peer::PeerHandshakeContext;
-use rmule_primitives::Ed2kFileLink;
+use rmule_primitives::{Ed2kFileLink, SourceSighting, UserHash};
 use tokio::sync::mpsc;
 
 use crate::adapters::{
     CallbackKey, PeerTransferService, PeerWorker, PeerWorkerEvent, SourceLookupService,
 };
 use crate::client_udp::ClientUdpDatagram;
-use crate::dialable::{admit_exchanged_halves, admit_kad_halves, admits_family};
-use crate::download::remote_queue::{FILE_REASK_TIME, RemoteQueuedPool};
 use crate::download::state::{
-    ContentFacts, Decision, DownloadState, SourcingPosture, StartingCandidates,
+    Channel, ContentFacts, Decision, DownloadState, SourcingPosture, StartingFacts, Tally,
 };
 use crate::download::worker_pool::{WorkerChannels, WorkerPool};
 use crate::error::DownloadFailure;
 use crate::hashing::{
     ResolvedHashSet, hash_set_proves_file, proven_link_hash_set, resolve_hash_set_authority,
 };
-use crate::ip_filter::admits_source;
 use crate::peer_roster::{PeerRelation, RelationLease};
 use crate::service::{
     DownloadEvent, DownloadId, SourceWait, VerificationAuthority, send_download_event,
@@ -34,13 +29,18 @@ use crate::service::{
 use crate::source_discovery::register;
 use crate::storage::DownloadRepository;
 
-use super::callbacks::{CallbackContext, CallbackDeadline, sleep_until_optional};
+use super::adopt::adopt;
+use super::callbacks::CallbackContext;
 use super::enact::{LoopCtx, enact_drain};
-use super::reask::{
-    REASK_SWEEP_INTERVAL, ReaskSinkLease, ReaskWiring, consume_reask_reply, drive_reask_sweep,
-    observe_worker_event_for_reask,
-};
-use super::{CallbackFacts, RunnerContext, stop_reason, wait_until_stop};
+use super::intake;
+use super::reply_sink::ReaskSinkLease;
+use super::{CallbackFacts, RunnerContext, now, stop_reason, wait_until_stop};
+
+/// How often the runner re-reads the facts the brain holds samples of and no
+/// change notice reaches: the Callback Capability (besides its Reach
+/// Generation), our Known IPv6 and the discovery channels' liveness. aMule's
+/// download queue `Process` runs about once a second.
+const SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Atomic update to a single worker's diagnostics row plus a DEBUG trace
 /// event mirroring the new phase. Single helper keeps the trace and the
@@ -87,8 +87,8 @@ pub(super) struct FleetStart<'a> {
     pub(super) peer_concurrency: usize,
     /// Parts an earlier run already verified on disk; they are never re-fetched.
     pub(super) verified_part_indexes: Vec<u32>,
-    /// The server-lookup snapshot, split by what the runner can do with each source.
-    pub(super) candidates: StartingCandidates,
+    /// The run's first sightings, by channel.
+    pub(super) sources: StartSources,
     /// Where the **Callback Capability** is re-read from for the rest of the run.
     pub(super) callback_facts: CallbackFacts,
     /// The gates that turn on rmule's own network position, not on any source.
@@ -105,6 +105,22 @@ pub(super) struct FleetStart<'a> {
     pub(super) lookup_owed: bool,
 }
 
+/// What a run's book starts from: each channel's first sightings, taken in the
+/// order a pool is built — seeds, then the link's, then the server's — and the
+/// distrust the download's record holds.
+pub(super) struct StartSources {
+    /// The sightings of the download's **Source Seeds** (ADR-0109).
+    pub(super) seeds: Vec<SourceSighting>,
+    /// How many seeds the last run wrote that were under a day old.
+    pub(super) seeds_written: usize,
+    /// The link's own sources.
+    pub(super) link: Vec<SourceSighting>,
+    /// The server lookup's answer, empty when the run started without one.
+    pub(super) server: Vec<SourceSighting>,
+    /// The peers the download's record distrusts.
+    pub(super) distrusted: HashSet<UserHash>,
+}
+
 pub(super) async fn apply_peer_workers_download<'a, S, P>(
     start: FleetStart<'a>,
     runner: &'a RunnerContext<S, P>,
@@ -119,7 +135,7 @@ where
         ctx,
         peer_concurrency,
         verified_part_indexes,
-        candidates,
+        sources,
         callback_facts,
         posture,
         discovery,
@@ -127,9 +143,9 @@ where
         mut lookup_owed,
     } = start;
     let file = &file;
-    let evt_tx = &runner.evt_tx;
+    let evt_tx = &runner.rt.evt_tx;
     let persisted_provisional_hashes = {
-        let store = &runner.store;
+        let store = &runner.rt.store;
         store
             .provisional_part_hashes(download_id)
             .map_err(|_| DownloadFailure::PartVerificationFailed)?
@@ -150,15 +166,11 @@ where
     } else {
         resolve_hash_set_authority(link_hash_set.as_ref(), None)?
     };
-    send_download_event(
-        evt_tx,
-        DownloadEvent::HashSetReceived {
-            download_id,
-            part_count: resolved.hashes.len(),
-            authority: resolved.authority,
-        },
-    )
-    .await;
+    let hash_set_received = DownloadEvent::HashSetReceived {
+        download_id,
+        part_count: resolved.hashes.len(),
+        authority: resolved.authority,
+    };
 
     let (fact_tx, fact_rx) = mpsc::channel(32);
     let command_channels = WorkerChannels::default();
@@ -166,11 +178,9 @@ where
     // authority, verified together at finalize. It drives no scheduling
     // decision, so it stays runner-side rather than in `DownloadState`.
     let file_hash_only_parts: Vec<u32> = Vec::new();
-    // Low-ID callback plumbing (ADR-0039): `server_key` (rmule's connected
-    // server) namespaces the shared pending-callback table; `adopt_rx` receives
-    // the worker the accept-router builds from a called-back inbound peer; the
-    // deadline heap releases a held slot if the peer never dials in. Read the
-    // server key before `ctx` moves into the worker pool.
+    // Low-ID callback plumbing (ADR-0039): `adopt_rx` receives the worker the
+    // accept-router builds from a called-back inbound peer; the brain's road
+    // deadlines release a held slot if the peer never dials in.
     let (adopt_tx, mut adopt_rx) = mpsc::channel::<(CallbackKey, PeerWorker)>(8);
     // The punch road's other end (ADR-0091): where the NAT-T front
     // reports a retired **Traversal Attempt**. Bounded and never awaited by the
@@ -179,20 +189,21 @@ where
     let (retire_tx, mut retire_rx) =
         mpsc::channel::<(CallbackKey, crate::diagnostics::NattRetirement)>(8);
     let callbacks = CallbackContext::new(
-        ctx.connected_server,
         callback_facts,
         adopt_tx,
         retire_tx,
-        runner.pending_callbacks.clone(),
-        runner.tunnel_claims.clone(),
+        runner.rt.awaited_inbound.clone(),
     );
-    // This download's Download relations end with the run on every road
-    // (ADR-0093 invariant 1), a quit's abort included, which no
-    // whole-fleet terminal runs for. Its Queued relations end with
-    // `ReaskWiring`'s drop.
+    // This download's Download and Queued relations end with the run on every
+    // road (ADR-0093 invariant 1), a quit's abort included, which no
+    // whole-fleet terminal runs for.
     let _download_relations = RelationLease::new(
-        runner.peer_roster.clone(),
+        runner.rt.peer_roster.clone(),
         PeerRelation::Download(download_id),
+    );
+    let _queued_relations = RelationLease::new(
+        runner.rt.peer_roster.clone(),
+        PeerRelation::Queued(download_id),
     );
     // Source discovery (ADR-0051 / ADR-0043): register this download on each
     // channel's engine so found sources route to `*_sources_rx`; the one RAII
@@ -200,14 +211,14 @@ where
     // global channel ignores the size; the Kad channel carries it on the wire.
     let (global_sources_tx, mut global_sources_rx) = mpsc::channel(16);
     let _global_source_guard = register(
-        &runner.global_source_registry,
+        &runner.rt.global_source_registry,
         file.file_hash,
         file.size,
         global_sources_tx,
     );
     let (kad_sources_tx, mut kad_sources_rx) = mpsc::channel(16);
     let _kad_source_guard = register(
-        &runner.kad_source_registry,
+        &runner.rt.kad_source_registry,
         file.file_hash,
         file.size,
         kad_sources_tx,
@@ -230,7 +241,7 @@ where
     // cross-peer assembly, and turns each worker event into an ordered
     // `Vec<Decision>` the runner enacts. Parts are assigned on the `Connected`
     // event, not up front, so a failed handshake never strands a part.
-    let state = DownloadState::new(
+    let mut state = DownloadState::new(
         download_id,
         ContentFacts {
             file_hash: file.file_hash,
@@ -240,11 +251,37 @@ where
             trusted_aich_root: file.aich_root,
             verified_parts: verified_part_indexes,
         },
-        candidates,
+        StartingFacts {
+            distrusted: sources.distrusted,
+            seeds_written: sources.seeds_written,
+        },
         posture,
-        runner.callback_timeout,
+        runner.rt.callback_timeout,
         peer_concurrency,
     );
+    // The snapshot is sighted in the order a pool is built; nothing fills a
+    // slot until `start`.
+    let found = [
+        (Channel::Seed, sources.seeds),
+        (Channel::Link, sources.link),
+        (Channel::Server, sources.server),
+    ]
+    .into_iter()
+    .map(|(channel, sightings)| intake::sight(runner, &mut state, channel, sightings).tally)
+    .fold(Tally::default(), |all, tally| all + tally);
+    send_download_event(
+        evt_tx,
+        DownloadEvent::SourcesFound {
+            download_id,
+            total: found.distinct(),
+            usable_high_id: found.distinct_dialable(),
+        },
+    )
+    .await;
+    if state.no_usable_candidate() {
+        return Err(DownloadFailure::NoUsableSources);
+    }
+    send_download_event(evt_tx, hash_set_received).await;
 
     // The `PeerHandshakeContext` binding `ctx` was consumed into `worker_pool`
     // above, so the name is free for the loop-carried state here.
@@ -259,17 +296,17 @@ where
         file_hash_only_parts,
         fact_rx,
         callbacks,
-        source_ask_clock: SourceAskClock::default(),
+        queued_relations: std::collections::HashSet::new(),
     };
 
     // Enact the initial fill: one `Spawn` per candidate up to concurrency.
     // The wait this run last told, while it still waits on it.
     let mut told_wait: Option<SourceWait> = None;
-    let mut queue: VecDeque<Decision> = ctx.state.start().into();
+    let mut queue: VecDeque<Decision> = ctx.state.start(now()).into();
     enact_drain(&mut queue, &mut ctx).await?;
     publish_seeds(&ctx);
     if ctx.command_channels.is_empty()
-        && ctx.callbacks.deadlines.is_empty()
+        && !ctx.state.has_pending_callbacks()
         && !ctx.state.is_complete()
     {
         // No candidate could even start a worker and none is callback-pending:
@@ -293,48 +330,32 @@ where
         told_wait = Some(reason);
     }
 
-    // ADR-0057 live wiring: a source that queues us and then hangs up moves
-    // to the **Remote-Queued Pool**, whose reask sweep keeps its earned standing
-    // alive over the shared client-UDP socket (`0x90` out, `0x91`/`0x92`/`0x93`
-    // in) instead of forfeiting it. Install this download's reply sink — leased
-    // for its lifetime — so the socket's forwarder routes the reply quartet here.
+    // ADR-0057 live wiring: a source that queues us and then hangs up keeps
+    // its standing on its Source Book record, and the brain's tick keeps it
+    // alive over the shared client-UDP socket (`0x90` out, `0x91`/`0x92`/
+    // `0x93` in). Install this download's reply sink — leased for its
+    // lifetime — so the socket's forwarder routes the reply quartet here.
     let (reask_reply_tx, mut reask_reply_rx) = mpsc::channel::<ClientUdpDatagram>(16);
-    let mut reask = ReaskWiring {
-        // No reachability here: the reask gate reads Self Reach at every
-        // sweep, so the pool holds no copy of it.
-        pool: RemoteQueuedPool::new(runner.client_udp_tx.is_some()),
-        observed: HashMap::new(),
-        client_udp_tx: runner.client_udp_tx.clone(),
-        _sink_lease: ReaskSinkLease::install(
-            runner.reask_reply_sink.clone(),
-            download_id,
-            reask_reply_tx,
-        ),
-        peer_roster: runner.peer_roster.clone(),
+    let _reply_sink = ReaskSinkLease::install(
+        runner.rt.reask_reply_sink.clone(),
         download_id,
-    };
-    let mut reask_sweep = tokio::time::interval(REASK_SWEEP_INTERVAL);
-    reask_sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    reask_sweep.tick().await; // consume the immediate first tick
-    // The spent-endpoint generations turn once a `FILEREASKTIME` (ADR-0090):
-    // the brain is clock-free, so the runner's clock paces it.
-    let mut reask_period = tokio::time::interval(FILE_REASK_TIME);
-    reask_period.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    reask_period.tick().await; // consume the immediate first tick
+        reask_reply_tx,
+    );
+    // The facts the brain holds samples of and no change notice reaches —
+    // the Known IPv6, the discovery channels' liveness — are re-read on
+    // this tick, beside the part file and the seeds.
+    let mut sample = tokio::time::interval(SAMPLE_INTERVAL);
+    sample.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    sample.tick().await; // consume the immediate first tick
 
     // The **Reach Generation**: the brain's Callback Capability
     // is a cache of Self Reach, re-derived on every move of it.
     let mut reach_generation = ctx.callbacks.facts.reach.changes();
     let mut stop_rx = runner.stop_rx.clone();
     while !ctx.state.is_complete() {
-        // The earliest pending-callback deadline, read as a value so the select!
-        // future holds no borrow of `ctx.callbacks` (the arms mutate it). `None`
-        // when no callback is outstanding — the timer then never fires (ADR-0039).
-        let next_deadline = ctx
-            .callbacks
-            .deadlines
-            .peek()
-            .map(|Reverse((deadline, ..))| *deadline);
+        // When the brain next has something due (ADR-0026): it names the
+        // instant, the runner only sleeps until it.
+        let next_wake = ctx.state.next_wake().map(tokio::time::Instant::from_std);
         let (worker, peer, event) = tokio::select! {
             biased;
             _ = wait_until_stop(&mut stop_rx) => {
@@ -352,60 +373,18 @@ where
                 let mut q: VecDeque<Decision> = ctx.state.on_stop(failure).into();
                 return enact_drain(&mut q, &mut ctx).await;
             }
-            () = sleep_until_optional(next_deadline) => {
-                // A pending callback's deadline came due. Pop each expired one and
-                // drive the brain with its key: a `SlotRelease` means the callback
-                // lapsed without the peer dialing in (ADR-0039 / ADR-0051), so the
-                // brain releases its slot, retracts its routing-index entry (a
-                // `CancelCallbackTimeout`) and refills; a `SilenceFallback` means
-                // twelve seconds of nothing (ADR-0091), so the brain raises the
-                // candidate's facts toward the one selector and leaves the callback
-                // alone. Popping here — not the decision — is what guarantees
-                // progress; the heap is a dumb enactor holding the brain's key
-                // verbatim, so no runner-side policy or table poke is involved.
-                let now = tokio::time::Instant::now();
-                while ctx
-                    .callbacks
-                    .deadlines
-                    .peek()
-                    .is_some_and(|Reverse((deadline, ..))| *deadline <= now)
-                {
-                    let Reverse((_, key, kind)) = ctx.callbacks.deadlines.pop().expect("peeked");
-                    let decisions = match kind {
-                        CallbackDeadline::SlotRelease => ctx.state.on_callback_timeout(key),
-                        CallbackDeadline::SilenceFallback => ctx.state.on_callback_silence(key),
-                        CallbackDeadline::TraversalBound => ctx.state.on_traversal_bound(key),
-                    };
-                    let mut q: VecDeque<Decision> = decisions.into();
-                    enact_drain(&mut q, &mut ctx).await?;
-                }
+            () = sleep_until_optional(next_wake) => {
+                // Something the brain holds fell due: a callback road's
+                // deadline (ADR-0039, ADR-0091), a standing's reask
+                // (ADR-0057), the spent endpoints' period (ADR-0090).
+                let mut q: VecDeque<Decision> = ctx.state.on_tick(now()).into();
+                enact_drain(&mut q, &mut ctx).await?;
                 continue;
             }
             Some((reported, worker)) = adopt_rx.recv() => {
-                // The accept-router adopted a called-back Low-ID peer (ADR-0039 / ADR-0051):
-                // it reports the concrete server it dialed from. The brain matches that
-                // to the pending callback — a per-server global one keyed by that
-                // server, else the connected-server form (key `None`) — and hands back
-                // the brain key + held slot. Register the worker's channel on the slot,
-                // then bind it (bind-without-assign): its own `Connected` event flows
-                // the normal assignment path, so it is forwarded, not dropped. A miss
-                // means the callback already lapsed — drop the late worker.
-                let peer = worker.peer();
-                if let Some((key, slot)) = ctx.state.match_inbound_callback(reported) {
-                    // The connection is the Low-ID peer the callback named:
-                    // its endpoint takes on the callback's Ask Name (ADR-0108).
-                    ctx.source_ask_clock
-                        .bind(peer, AskName::LowId(ctx.callbacks.routing_key(key)));
-                    ctx.worker_pool.register_adopted(
-                        download_id,
-                        peer,
-                        slot,
-                        worker,
-                        &mut ctx.command_channels,
-                    );
-                    let mut q: VecDeque<Decision> = ctx.state.on_callback_connected(key, peer).into();
-                    enact_drain(&mut q, &mut ctx).await?;
-                }
+                // The accept-router adopted a called-back Low-ID peer (ADR-0039 /
+                // ADR-0051): it lands in the slot the brain names, or not at all.
+                adopt(&mut ctx, reported, worker).await?;
                 continue;
             }
             Some((key, reason)) = retire_rx.recv() => {
@@ -420,115 +399,62 @@ where
                     ?reason,
                     "a NAT traversal attempt retired; the source is temporarily unreachable"
                 );
-                let mut q: VecDeque<Decision> = ctx.state.on_traversal_retired(key, reason).into();
+                let mut q: VecDeque<Decision> = ctx.state.on_traversal_retired(now(), key, reason).into();
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
             }
-            Some((source_server, mut sources)) = global_sources_rx.recv() => {
-                // Server-UDP global sources (ADR-0051): the brain pools the High-ID
-                // ones and (ADR-0051) holds Low-ID globals for a per-server callback to
-                // `source_server`, then fills free slots. Filtered High-ID rows are
-                // dropped first (aMule `CPartFile::AddSources`).
-                {
-                    let ip_filter = ctx.runner.ip_filter.read().expect("ip filter lock");
-                    sources.retain(|source| {
-                        admits_family(
-                            &ctx.runner.diagnostics,
-                            source.as_peer_endpoint(),
-                            ctx.runner.dial_position(),
-                        )
-                            && admits_source(&ip_filter, source.as_peer_endpoint())
-                    });
-                }
-                let mut q: VecDeque<Decision> = ctx.state.on_global_sources(source_server, sources).into();
+            Some((source_server, sources)) = global_sources_rx.recv() => {
+                // Server-UDP global sources (ADR-0051): a Low-ID row is held
+                // for a per-server callback to `source_server`.
+                let taken = intake::sight(ctx.runner, &mut ctx.state, Channel::Global(source_server), sources.into_iter().map(SourceSighting::plain));
+                let mut q: VecDeque<Decision> = taken.decisions.into();
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
             }
-            Some(mut sources) = later_links.recv() => {
+            Some(sources) = later_links.recv() => {
                 // A second link for this file named sources: they join the
                 // pool as a mid-run server answer does, through the same
-                // gates (ADR-0089).
-                let named = sources.len();
-                super::admit_sources(ctx.runner, &mut sources);
-                let admitted = sources.len();
-                // A source the run already knows — the first link's, a
-                // server's, one it dialed — is not new, nor is one the link
-                // names twice: only the rest join, once each.
-                let mut seen = Vec::with_capacity(sources.len());
-                sources.retain(|&source| {
-                    let fresh = !ctx.state.knows_source(source) && !seen.contains(&source);
-                    seen.push(source);
-                    fresh
-                });
+                // gate (ADR-0089). A source the run already knows merges.
+                let taken = intake::sight(ctx.runner, &mut ctx.state, Channel::Link, sources);
                 send_download_event(
                     evt_tx,
                     DownloadEvent::LinkSourcesAdded {
                         download_id,
-                        named,
-                        admitted,
-                        new: sources.len(),
+                        named: taken.tally.received,
+                        admitted: taken.tally.admitted,
+                        new: taken.tally.fresh,
                     },
                 )
                 .await;
-                let mut q: VecDeque<Decision> = ctx.state.on_server_sources(sources).into();
+                let mut q: VecDeque<Decision> = taken.decisions.into();
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
             }
-            mut sources = server_leg.next_answer(runner) => {
+            sources = server_leg.next_answer(runner) => {
                 // A server session came up mid-run and answered: its
-                // sources join as the run's first answer would have, filtered
-                // the same way (ADR-0085/0087). A seed-fed run's owed lookup
+                // sources join as the run's first answer would have, through
+                // the same gate (ADR-0085/0087). A seed-fed run's owed lookup
                 // is paid by it.
                 lookup_owed = false;
-                {
-                    let ip_filter = ctx.runner.ip_filter.read().expect("ip filter lock");
-                    sources.retain(|source| {
-                        admits_family(
-                            &ctx.runner.diagnostics,
-                            source.as_peer_endpoint(),
-                            ctx.runner.dial_position(),
-                        ) && admits_source(&ip_filter, source.as_peer_endpoint())
-                    });
-                }
+                let taken = intake::sight(ctx.runner, &mut ctx.state, Channel::Server, sources);
                 send_download_event(
                     evt_tx,
                     DownloadEvent::SourcesFound {
                         download_id,
-                        total: sources.len(),
-                        usable_high_id: sources
-                            .iter()
-                            .filter(|source| source.as_peer_endpoint().is_some())
-                            .count(),
+                        total: taken.tally.admitted,
+                        usable_high_id: taken.tally.dialable,
                     },
                 )
                 .await;
-                let mut q: VecDeque<Decision> = ctx.state.on_server_sources(sources).into();
+                let mut q: VecDeque<Decision> = taken.decisions.into();
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
             }
-            Some(mut sources) = kad_sources_rx.recv() => {
-                // Kad sources (ADR-0043): projected direct High-ID rows pool
-                // and fill free slots; buddy and type-6 rows become callback
-                // candidates. A High-ID row whose `ip6` rode beside it keeps
-                // both addresses, each judged by the IP filter, since either
-                // may be dialed (ADR-0087); the brain picks the
-                // family. A callback row's rung-0 `ip6` is judged too.
-                // Filtered rows are dropped (aMule `CDownloadQueue::KademliaSearchFile`).
-                {
-                    let ip_filter = ctx.runner.ip_filter.read().expect("ip filter lock");
-                    let position = ctx.runner.dial_position();
-                    sources = sources
-                        .into_iter()
-                        .filter_map(|source| {
-                            admit_kad_halves(source, |half| admits_source(&ip_filter, Some(half)))
-                        })
-                        .filter(|source| {
-                            admits_family(&ctx.runner.diagnostics, source.filter_endpoint(), position)
-                                && admits_source(&ip_filter, source.filter_endpoint())
-                        })
-                        .collect();
-                }
-                let mut q: VecDeque<Decision> = ctx.state.on_kad_sources(sources).into();
+            Some(sources) = kad_sources_rx.recv() => {
+                // Kad sources (ADR-0043): a dialable row pools, a buddy or
+                // type-6 row becomes a callback candidate.
+                let taken = intake::sight(ctx.runner, &mut ctx.state, Channel::Kad, sources);
+                let mut q: VecDeque<Decision> = taken.decisions.into();
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
             }
@@ -544,16 +470,16 @@ where
                 // bind or clear included: the brain's capability
                 // re-derives now, not at the next tick.
                 let sample = ctx.callbacks.facts.sample();
-                let mut q: VecDeque<Decision> = ctx.state.on_callback_capability(sample).into();
+                let mut q: VecDeque<Decision> = ctx.state.on_callback_capability(now(), sample).into();
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
             }
-            _ = reask_sweep.tick() => {
+            _ = sample.tick() => {
                 // A run waiting for sources — no worker, no callback out —
                 // writes nothing, so its part file is looked at on this tick
                 // instead: gone or cut short is said now, not when a
                 // part next arrives.
-                if ctx.command_channels.is_empty() && ctx.callbacks.deadlines.is_empty() {
+                if ctx.command_channels.is_empty() && !ctx.state.has_pending_callbacks() {
                     crate::download::persist::check_held_part_file(ctx.runner, download_id)
                         .await?;
                 }
@@ -563,32 +489,24 @@ where
                 // re-asks `CanDoCallback` of its waiting sources on its own
                 // tick. A no-op when nothing moved.
                 let sample = ctx.callbacks.facts.sample();
-                let mut q: VecDeque<Decision> = ctx.state.on_callback_capability(sample).into();
+                let mut q: VecDeque<Decision> = ctx.state.on_callback_capability(now(), sample).into();
                 // Our Known IPv6, re-read on the same tick (ADR-0087): a prefix
                 // that arrives or renumbers reaches rung 0 of the Low-ID route.
-                q.extend(ctx.state.on_dial_position(ctx.runner.dial_position()));
+                q.extend(ctx.state.on_dial_position(now(), ctx.runner.dial_position()));
                 // The discovery channels' liveness, re-read on the same tick
                 // (ADR-0093): a Kad node that died or started since spawn.
-                q.extend(ctx.state.on_discovery_active(discovery.any_active() || lookup_owed));
+                q.extend(ctx.state.on_discovery_active(now(), discovery.any_active() || lookup_owed));
                 enact_drain(&mut q, &mut ctx).await?;
                 told_wait = retell_wait(&ctx, &discovery, lookup_owed, told_wait).await;
                 publish_seeds(&ctx);
-                // The ADR-0057 reask sweep: for each pooled source, fire its UDP
-                // ping (`0x90`) at `FILEREASKTIME − 20 s` or its TCP full ask at
-                // `FILEREASKTIME`. Lowest priority — worker facts come first.
-                drive_reask_sweep(&mut reask, &mut ctx).await?;
-                continue;
-            }
-            _ = reask_period.tick() => {
-                // A re-ask period passed: endpoints spent two periods ago may
-                // be dialed again when next sighted. Nothing to enact.
-                ctx.state.on_reask_period();
                 continue;
             }
             Some((udp_src, datagram)) = reask_reply_rx.recv() => {
                 // A pooled source's reask reply (`0x91`/`0x92`/`0x93`) fanned from
-                // the shared client-UDP front: consume it into its standing.
-                consume_reask_reply(&mut reask, &mut ctx, udp_src, &datagram).await;
+                // the shared client-UDP front: the brain reads it into its standing.
+                let mut q: VecDeque<Decision> =
+                    ctx.state.on_reask_reply(now(), udp_src, &datagram).into();
+                enact_drain(&mut q, &mut ctx).await?;
                 continue;
             }
         };
@@ -599,6 +517,7 @@ where
         // socket, so it is still a received byte.
         if let PeerWorkerEvent::BlockReceived { bytes, .. } = &event {
             ctx.runner
+                .rt
                 .diagnostics
                 .add_received_bytes(ctx.download_id, bytes.len() as u64);
         }
@@ -612,16 +531,12 @@ where
         // on the slot that held it, for the Sources pane.
         if let PeerWorkerEvent::DialEnded { cause } = &event {
             ctx.runner
+                .rt
                 .diagnostics
                 .dial_ended(ctx.download_id, peer, *cause);
         }
-        // Observe the worker event for reask standing (ADR-0057) *before* the
-        // brain acts on it: a retire-while-queued must pool the source and enter
-        // it in the brain's remote-queued set before the release runs its terminal
-        // `NoUsableSources` check, so earned standing keeps the download alive.
-        observe_worker_event_for_reask(&mut reask, &mut ctx, peer, &event).await;
         // The Peer Roster's download leg (ADR-0059): the hello
-        // completing (`Connected`, right after `Identified`) is the one mark
+        // completing (`Connected`, right after `Identity`) is the one mark
         // site; the brain releasing the worker (`EndWorker`, every retirement)
         // is the one forget site. A peer this download also uploads to
         // over the same dialed connection (ADR-0031) keeps its own `Upload`
@@ -631,66 +546,25 @@ where
             && let Some(v4) = peer.as_v4()
         {
             ctx.runner
+                .rt
                 .peer_roster
                 .mark_known(PeerRelation::Download(ctx.download_id), v4);
         }
-        // Source-exchange ingest gate (aMule `CPartFile::AddClientSources`):
-        // filtered High-ID exchanged rows are
-        // dropped before the brain pools them — a dual-stack row keeps both
-        // addresses, each judged, since either may be dialed (ADR-0087);
-        // the brain picks the family. Low-ID rows pass to the callback path,
-        // their rung-0 IPv6 half judged the same way.
-        let mut event = event;
-        // The ask went out on this connection (ADR-0108): stamp it now, not
-        // when the download decided it wanted sources — aMule stamps inside
-        // `SendFileRequest` (stock 2.3.3 `DownloadClient.cpp:260-261`).
-        match &event {
-            // The hello names the peer: its hash joins the Ask Names this
-            // connection is known by (ADR-0108).
-            PeerWorkerEvent::Identified { user_hash, .. } => {
-                ctx.source_ask_clock.bind(peer, AskName::User(*user_hash))
-            }
-            PeerWorkerEvent::SourcesAsked => {
-                ctx.source_ask_clock.asked(peer, std::time::Instant::now())
-            }
-            PeerWorkerEvent::PartsAdvertised { complete } => {
-                ctx.source_ask_clock
-                    .advertised(peer, *complete, std::time::Instant::now())
-            }
-            _ => {}
-        }
-        if let PeerWorkerEvent::SourcesReceived { sources } = &mut event {
-            // aMule stamps both clocks on any answer, empty or not
-            // (stock 2.3.3 `ClientTCPSocket.cpp:1513-1515`).
-            ctx.source_ask_clock
-                .answered(peer, std::time::Instant::now());
-            let received = sources.len();
-            {
-                let ip_filter = ctx.runner.ip_filter.read().expect("ip filter lock");
-                let position = ctx.runner.dial_position();
-                *sources = sources
-                    .iter()
-                    .filter_map(|&source| {
-                        admit_exchanged_halves(source, |half| admits_source(&ip_filter, Some(half)))
-                    })
-                    .filter(|source| {
-                        admits_family(&ctx.runner.diagnostics, source.as_peer_endpoint(), position)
-                            && admits_source(&ip_filter, source.as_peer_endpoint())
-                    })
-                    .collect();
-            }
-            send_download_event(
-                ctx.evt_tx,
-                DownloadEvent::SourcesExchanged {
-                    download_id: ctx.download_id,
-                    peer,
-                    received,
-                    admitted: sources.len(),
-                },
+        let mut q: VecDeque<Decision> = if let PeerWorkerEvent::SourcesReceived { sources } = event
+        {
+            // The answer's sources pass the gate like any channel's (aMule
+            // `CPartFile::AddClientSources`); the brain stamps the answer.
+            intake::sight(
+                ctx.runner,
+                &mut ctx.state,
+                Channel::Exchanged(peer),
+                sources,
             )
-            .await;
-        }
-        let mut q: VecDeque<Decision> = ctx.state.on_worker_event(peer, event).into();
+            .decisions
+            .into()
+        } else {
+            ctx.state.on_worker_event(now(), peer, event).into()
+        };
         enact_drain(&mut q, &mut ctx).await?;
         // A hello, a rank or the first bytes change what the seeds would
         // say: published now, so a quit a moment later writes them.
@@ -718,7 +592,7 @@ async fn retell_wait<S, P>(
     told: Option<SourceWait>,
 ) -> Option<SourceWait> {
     let told = told?;
-    if !ctx.command_channels.is_empty() || !ctx.callbacks.deadlines.is_empty() {
+    if !ctx.command_channels.is_empty() || ctx.state.has_pending_callbacks() {
         return None;
     }
     let reason = source_wait(discovery, lookup_owed)?;
@@ -745,7 +619,7 @@ fn source_wait(discovery: &super::DiscoveryLiveness, lookup_owed: bool) -> Optio
 }
 
 /// Publish the run's **Source Seeds** ranking for the actor's next write
-/// (ADR-0109): after the first fill, then each reask sweep, so it is one
+/// (ADR-0109): after the first fill, then each sample tick, so it is one
 /// sweep old at most.
 fn publish_seeds<S, P>(ctx: &LoopCtx<'_, S, P>) {
     let ranking = ctx.state.source_seeds();
@@ -756,4 +630,12 @@ fn publish_seeds<S, P>(ctx: &LoopCtx<'_, S, P>) {
         }
         moved
     });
+}
+
+/// Sleep until `deadline`, or never while the brain names none (ADR-0026).
+async fn sleep_until_optional(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending::<()>().await,
+    }
 }

@@ -8,22 +8,6 @@
 //! are dropped when the bus is full (the next tick supersedes them), and a
 //! missed data tick is skipped, never replayed.
 //!
-//! # Kad facts ride the levels lane
-//!
-//! [`DiagnosticsSnapshot::kad`] is actor-only: the Kad factory lives with the
-//! actor (ADR-0067), so the sync `diagnostics_snapshot()` accessor reads the
-//! download store and leaves `kad` `None`. Only the actor's answer to
-//! [`CoreCommand::DumpDiagnostics`] carries it. So the bridge polls that
-//! command on its own slow cadence, keeps the `kad` field off the echoed
-//! [`CoreEvent::DiagnosticsSnapshot`], and patches it into every data tick —
-//! the whole levels story stays on one lane.
-//!
-//! The echo is *consumed here*, never forwarded: it is this bridge's own poll
-//! answer — a level, not a lifecycle edge — and forwarding it would fill the
-//! Networks log pane with the bridge polling itself. Exactly one poll is ever
-//! outstanding (ADR-0069 §Dataflow: "snapshot polls skip if one is still in
-//! flight"), so no queue-growth path exists.
-//!
 //! # The graceful-shutdown door
 //!
 //! [`BridgeHandle::graceful_shutdown`] is the bridge's one way to hand its
@@ -41,7 +25,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rmule_core::diagnostics::{DiagnosticsSnapshot, KadRuntimeDiagnostics};
+use rmule_core::diagnostics::DiagnosticsSnapshot;
 use rmule_core::{Core, CoreCommand, CoreError, CoreEvent};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::MissedTickBehavior;
@@ -98,15 +82,8 @@ pub struct BridgeConfig {
     pub ema_tau: Duration,
     /// UI→core command queue depth (mirrors the core's own bound).
     pub command_queue: usize,
-    /// `DumpDiagnostics` cadence for the actor-only Kad facts. Slower
-    /// than the data tick on purpose: the one fact core reports — has any
-    /// counterparty datagram arrived — flips once per node start, and the
-    /// ADR-0067 join sequence it belongs to takes seconds, so a five-second
-    /// worst-case latency costs nothing while one command + one event per
-    /// five seconds is noise beside the 1 Hz level tick.
-    pub kad_poll_interval: Duration,
     /// The Run Log's level, read at every line the bridge writes.
-    pub run_log: crate::run_log::LevelHandle,
+    pub run_log: rmule_core::run_log::LevelHandle,
 }
 
 impl Default for BridgeConfig {
@@ -115,8 +92,7 @@ impl Default for BridgeConfig {
             snapshot_interval: Duration::from_secs(1),
             ema_tau: Duration::from_secs(4),
             command_queue: 32,
-            kad_poll_interval: Duration::from_secs(5),
-            run_log: crate::run_log::LevelHandle::default(),
+            run_log: rmule_core::run_log::LevelHandle::default(),
         }
     }
 }
@@ -232,31 +208,13 @@ async fn run<H: CoreHandle>(
     let mut ticker = tokio::time::interval(config.snapshot_interval);
     // Latest-state-wins: a stalled tick is skipped, never burst-replayed.
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut kad_poll = tokio::time::interval(config.kad_poll_interval);
-    kad_poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut rates = RateSynthesizer::new(config.ema_tau);
-    // Latest Kad facts the actor echoed, patched into every data tick. The
-    // first poll goes out with the interval's immediate first tick, so a
-    // lasting `None` is the actor's answer ("no node started"), not "the
-    // bridge has not asked yet".
-    let mut kad: Option<KadRuntimeDiagnostics> = None;
-    let mut kad_poll_outstanding = false;
-    let mut reach_trail = crate::run_log::ReachTrail::default();
-    let mut health_trail = crate::run_log::ServerHealthTrail::default();
 
     loop {
         tokio::select! {
             event = core.next_event() => match event {
-                // Our own poll's answer: keep the Kad facts for the next data
-                // tick and swallow the event. It is a level, not an edge —
-                // and forwarding it would fill the log pane with our polling.
-                Some(CoreEvent::DiagnosticsSnapshot { snapshot }) => {
-                    kad = snapshot.kad;
-                    rates.observe_kad(kad.as_ref(), Instant::now());
-                    kad_poll_outstanding = false;
-                }
                 Some(event) => {
-                    crate::run_log::write(&crate::run_log::event::record(&event), run_log.get());
+                    rmule_core::run_log::write(&event.record(), run_log.get());
                     // Edges must not be lost: await capacity instead of
                     // dropping. Err means the UI is gone — stop bridging.
                     if actions.send(Action::Core(event)).await.is_err() {
@@ -273,17 +231,7 @@ async fn run<H: CoreHandle>(
             },
             _ = ticker.tick() => {
                 let taken_at = Instant::now();
-                let mut diagnostics = core.diagnostics_snapshot();
-                // The sync accessor reads only the download store; the Kad
-                // facts come from the actor's echo (ADR-0067).
-                diagnostics.kad = kad;
-                let records = reach_trail
-                    .observe(&diagnostics)
-                    .into_iter()
-                    .chain(health_trail.observe(&diagnostics));
-                for record in records {
-                    crate::run_log::write(&record, run_log.get());
-                }
+                let diagnostics = core.diagnostics_snapshot();
                 let synthesized = rates.observe(&diagnostics, taken_at);
                 // Levels are droppable: the next tick supersedes this one.
                 let _ = actions.try_send(Action::Snapshot(BridgeSnapshot {
@@ -291,17 +239,6 @@ async fn run<H: CoreHandle>(
                     rates: synthesized,
                     taken_at,
                 }));
-            }
-            _ = kad_poll.tick() => {
-                // ADR-0069 §Dataflow: a poll whose answer is still outstanding
-                // is skipped, never queued behind itself.
-                if !kad_poll_outstanding {
-                    if core.send(CoreCommand::DumpDiagnostics).await.is_ok() {
-                        kad_poll_outstanding = true;
-                    } else {
-                        tracing::debug!("kad poll refused: core command channel closed");
-                    }
-                }
             }
             command = cmd_rx.recv() => match command {
                 Some(command) => {
@@ -321,7 +258,7 @@ async fn run<H: CoreHandle>(
                 if let Ok(ack) = ack {
                     let drained = tokio::time::timeout(
                         CORE_SHUTDOWN_GRACE,
-                        forward_quit(core.quit(), &actions),
+                        forward_quit(core.quit(), &actions, &run_log),
                     )
                     .await;
                     if drained.is_err() {
@@ -345,14 +282,19 @@ async fn run<H: CoreHandle>(
     }
 }
 
-/// Drain quit's event stream to its end — the flush — forwarding every fact
-/// but our own poll's answers onto the bus, so the UI names
-/// each quit step as the core runs it. A UI already gone stops the
-/// forwarding, never the drain.
-async fn forward_quit(mut events: mpsc::Receiver<CoreEvent>, actions: &mpsc::Sender<Action>) {
+/// Drain quit's event stream to its end — the flush — writing every fact to
+/// the Run Log and forwarding it onto the bus, so the UI names each quit step
+/// as the core runs it. A UI already gone stops the forwarding, never the
+/// drain or the log.
+async fn forward_quit(
+    mut events: mpsc::Receiver<CoreEvent>,
+    actions: &mpsc::Sender<Action>,
+    run_log: &rmule_core::run_log::LevelHandle,
+) {
     let mut forwarding = true;
     while let Some(event) = events.recv().await {
-        if forwarding && !matches!(event, CoreEvent::DiagnosticsSnapshot { .. }) {
+        rmule_core::run_log::write(&event.record(), run_log.get());
+        if forwarding {
             forwarding = actions.send(Action::Core(event)).await.is_ok();
         }
     }

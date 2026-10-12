@@ -2,6 +2,7 @@
 //! it acks, the caps and tolerance gates that refuse one, and the search serve
 //! that hands the stored rows back.
 
+use rmule_kad::KadNodeStart;
 use std::net::Ipv4Addr;
 
 use rmule_kad::{
@@ -21,7 +22,10 @@ use rmule_testkit::kad_source::{
 fn near_storer() -> KadNode {
     let mut id = FILE_KEY;
     id[12] ^= 0x5A;
-    KadNode::new(storer_config(KadId::from_bytes(id)))
+    KadNode::new(KadNodeStart::new(
+        storer_config(KadId::from_bytes(id)),
+        KadInstant::EPOCH,
+    ))
 }
 
 /// A distinct LAN publisher endpoint for flood tests (u16-indexed). The last

@@ -126,11 +126,13 @@ struct Awaited {
 impl Awaited {
     /// Move every helper window closed by `now` — `closing_at` for one still
     /// open, its lapse for one already lapsed — into the memory, and forget
-    /// what the memory has held long enough.
-    fn close_kad_windows(&mut self, now: Instant, all: bool) {
+    /// what the memory has held long enough. A window still open closes only
+    /// when `dropping` names it exactly (the helper and its lapse): a window
+    /// some other Kad node asked is left to that node.
+    fn close_kad_windows(&mut self, now: Instant, dropping: &[(Ipv4Addr, Instant)]) {
         let mut open = Vec::with_capacity(self.kad.len());
         for (helper, until) in self.kad.drain(..) {
-            if now < until && !all {
+            if now < until && !dropping.contains(&(helper, until)) {
                 open.push((helper, until));
             } else {
                 tracing::debug!(%helper, "awaited testers: Kad helper left — its window closed");
@@ -279,7 +281,7 @@ impl SharedAwaitedTesters {
     pub(crate) fn kad_check_asked(&self, helper: Ipv4Addr, lapses: Instant) {
         let mut awaited = self.lock();
         let now = Instant::now();
-        awaited.close_kad_windows(now, false);
+        awaited.close_kad_windows(now, &[]);
         awaited.kad.push((helper, lapses));
         tracing::debug!(
             %helper,
@@ -289,23 +291,25 @@ impl SharedAwaitedTesters {
         );
     }
 
-    /// Every asked helper's window is gone: a recheck started, or the Kad
-    /// node stopped — `why` says which, for the Run Log. Each is remembered
-    /// as closed now, so a connect-back after it is known late.
-    pub(crate) fn kad_checks_dropped(&self, why: &'static str) {
-        self.kad_checks_dropped_at(why, Instant::now());
+    /// The windows `asked` (each helper with the lapse it was asked at) are
+    /// gone: the node that asked them rechecked or stopped. Each is
+    /// remembered as closed now, so a connect-back after it is known late.
+    /// Only the windows named go: the cell is shared across Kad restarts, and
+    /// a node that outlived its retire must not close the ones its successor
+    /// has asked.
+    pub(crate) fn kad_checks_dropped(&self, asked: &[(Ipv4Addr, Instant)]) {
+        self.kad_checks_dropped_at(asked, Instant::now());
     }
 
-    fn kad_checks_dropped_at(&self, why: &'static str, now: Instant) {
+    fn kad_checks_dropped_at(&self, asked: &[(Ipv4Addr, Instant)], now: Instant) {
         let mut awaited = self.lock();
         if !awaited.kad.is_empty() {
             tracing::debug!(
-                dropped = awaited.kad.len(),
-                why,
-                "awaited testers: every Kad helper left"
+                dropped = asked.len(),
+                "awaited testers: the asking node's Kad helpers left"
             );
         }
-        awaited.close_kad_windows(now, true);
+        awaited.close_kad_windows(now, asked);
     }
 
     /// Whether a plain dial from `ip` at `now` is a test we await — strict
@@ -430,12 +434,20 @@ mod tests {
     }
 
     #[test]
-    fn a_recheck_or_a_stop_drops_every_helpers_window() {
+    fn a_recheck_or_a_stop_drops_the_asking_nodes_windows_only() {
         let cell = SharedAwaitedTesters::default();
         let now = Instant::now();
-        cell.kad_check_asked(HELPER, now + Duration::from_secs(180));
-        cell.kad_checks_dropped("a recheck started");
+        let other = Ipv4Addr::new(203, 0, 113, 77);
+        let ours = (HELPER, now + Duration::from_secs(180));
+        let successors = (other, now + Duration::from_secs(180));
+        cell.kad_check_asked(ours.0, ours.1);
+        cell.kad_check_asked(successors.0, successors.1);
+        cell.kad_checks_dropped(&[ours]);
         assert!(!cell.awaits_at(IpAddr::V4(HELPER), now));
+        assert!(
+            cell.awaits_at(IpAddr::V4(other), now),
+            "a window another node asked stays open"
+        );
     }
 
     #[test]
@@ -471,9 +483,10 @@ mod tests {
     fn a_dropped_helper_is_late_from_the_drop_until_it_is_asked_again() {
         let cell = SharedAwaitedTesters::default();
         let asked = Instant::now();
-        cell.kad_check_asked(HELPER, asked + Duration::from_secs(180));
+        let window = (HELPER, asked + Duration::from_secs(180));
+        cell.kad_check_asked(window.0, window.1);
         let dropped = asked + Duration::from_secs(10);
-        cell.kad_checks_dropped_at("a recheck started", dropped);
+        cell.kad_checks_dropped_at(&[window], dropped);
         let late = cell
             .late_kad_test(IpAddr::V4(HELPER), dropped + Duration::from_secs(4))
             .expect("the helper whose window was dropped");

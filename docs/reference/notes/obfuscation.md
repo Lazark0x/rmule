@@ -26,6 +26,8 @@ Each fact is tagged by source confidence, matching `secure-ident.md`:
 - **[pending]** — byte layout is source-read but **not yet confirmed byte-for-byte**
   against a capture. The peer decrypt-vector and the server live-interop are the gates
   (see Evidence ladder). Treat every magic value / offset / prime below as `[pending]`.
+- **[live-proven]** — confirmed by a live interop run with rmule as one side: the gate
+  for the server form, whose DH secret no capture can recompute.
 
 ## The two forms
 
@@ -52,7 +54,10 @@ key basis**:
 The **peer** values are `[captured]`: a live rmule↔aMule 2.3.3 obfuscated handshake
 completed under `--obfuscation required` (both directions), and aMule's real reply
 decrypts to `MAGICVALUE_SYNC` under `MD5(user_hash ‖ 203 ‖ random_key)` — see
-"Capture confirmations" below. The server (DH) form stays `[pending]`.
+"Capture confirmations" below. The server (DH) form is `[live-proven]`: rmule's
+obfuscated login was answered High ID by stock Lugdunum 17.15 and by ed2k-server
+(interop-harness `server-login-crypt`); its DH secret cannot be recomputed from a capture,
+so no fixture holds it.
 
 ## Byte-0 discrimination [aMule `EncryptedStreamSocket.cpp`, `ClientTCPSocket.cpp`] [captured — peer, 2026-07-07]
 
@@ -105,7 +110,7 @@ The initiator needs `UserHashB` **before dialing** → outbound obfuscation is g
 source provenance (see below). The responder uses its own User Hash → inbound accept
 needs no external data.
 
-## Server handshake (client↔server) [aMule `EncryptedStreamSocket.cpp`, `ServerConnect.cpp`] [pending]
+## Server handshake (client↔server) [aMule `EncryptedStreamSocket.cpp`, `ServerConnect.cpp`] [live-proven]
 
 768-bit Diffie–Hellman, `g = 2`, hardcoded prime `dh768_p`, `PRIMESIZE_BYTES = 96`. `A =
 g^a mod p`, `B = g^b mod p`, shared secret `S = B^a mod p = g^(ab) mod p` (96 bytes).
@@ -115,8 +120,14 @@ Client → server:
 ```
 [SemiRandomMarker      1   plain]
 [G^A                  96   plain]
-[RandomBytes        0-15   plain]
+[PaddingLen            1   plain]   rand % 16
+[Padding      PaddingLen   plain]
 ```
+
+eMule's protocol comment draws this as `RandomBytes 0-15` without a length, but aMule's
+client writes the length byte, even for no padding (`EncryptedStreamSocket.cpp:541-546`,
+kno pin). Lugdunum answers an opening without it; ed2k-server waits for it and times
+the handshake out, so rmule writes it.
 
 Server → client:
 
@@ -164,7 +175,13 @@ eMule exposes three cumulative flags — `IsClientCryptLayerSupported` /
 | `Required` | yes | yes, no fallback | **no** |
 
 Server-connection fallback is source-confirmed: on a failed obfuscated connect when the
-policy is not `Required`, eMule retries the same server with `bNoCrypt = true`.
+policy is not `Required`, eMule retries the same server with `bNoCrypt = true`
+(aMule `ServerConnect.cpp:465-470`). Which servers are dialed obfuscated is aMule's gate
+(`ServerSocket.cpp:786-795`): a policy that requests or requires obfuscation, toward a
+server whose obfuscation TCP port is known and whose UDP or TCP flags carry
+`TCPOBFUSCATION`; any other server, under `Required` too, is dialed plain. The login's
+`CT_SERVER_FLAGS` states the policy whatever the link (ADR-0042). Both bench servers
+name their main port, 4661, as the obfuscation TCP port.
 
 ## Source-provenance gate (outbound peer)
 
@@ -342,7 +359,7 @@ put server-UDP crypt in the protocol engine, not the socket loop). Receive is du
 `handle_datagram`, always on like aMule's `DecryptReceivedClient`: a datagram is
 trial-decrypted keyed on this node's **own Kad ID** (the KadNodeId family, marker bits `0`),
 a plaintext `0xE4`/`0xE5` first byte bypasses, a miss falls through to plaintext decode.
-Send-encrypt (`enable_datagram_obfuscation`) keys on the **recipient contact's Kad ID** —
+Send-encrypt (`KadObfuscation`, part of the node's start-up value) keys on the **recipient contact's Kad ID** —
 aMule's `SendPacket` keys on the target's client ID and the recipient decrypts with its own
 — and is **capture-gated off by default** (the crypt-ping posture): production stays plaintext until
 the byte facts are ratified and per-contact crypt-support tracking (ADR-0058 verify-key
@@ -436,7 +453,7 @@ rmule↔aMule 2.3.3 interop passed. What ships:
 - **Outbound peer initiate + source crypt plumbing**: `AnswerSources` decodes
   the per-source User Hash (v≥2) + crypt-options byte (v4) via a version-parameterized
   entry codec, aMule-exact-validated against the cross-check version rather than inferred
-  from geometry alone (ADR-0055); `ExchangedSource`/`SourceCryptOptions` carry them;
+  from geometry alone (ADR-0055); `SourceSighting`/`SourceCryptOptions` carry them;
   `DownloadState` remembers the dial target; `Connection::connect` obfuscate-dials via the
   initiator (its plaintext fallback retired, ADR-0049). Still `[pending]`: aMule's v3+ `dwID` hybrid byte-swap
   is now implemented (source-read) but not exercised by the peer-handshake capture; the

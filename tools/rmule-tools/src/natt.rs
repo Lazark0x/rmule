@@ -40,6 +40,33 @@ use rmule_primitives::{
     AddressFamily, DatagramNonce, DatagramSenderAddress, PeerEndpoint, UserHash,
 };
 
+/// The stable code a driver row's `routed` field carries for a Peer Reach
+/// route: the route code of the `peer_reach.routed` record, with the one fact
+/// the flows score on a buddy route (whether the `0x52` went anywhere) beside
+/// it. Exhaustive on purpose, so a new route compiles only with a code.
+pub(crate) fn route_code(route: &rmule_core::PeerReachRoute) -> &'static str {
+    use rmule_core::PeerReachRoute as R;
+    match route {
+        R::Direct { .. } => "direct",
+        R::DirectUdp { .. } => "direct_udp",
+        R::DirectUdpUnavailable { .. } => "direct_udp_unavailable",
+        R::Server { .. } => "server",
+        R::Buddy {
+            emitted_to: Some(_),
+            ..
+        } => "buddy emitted_to=peer",
+        R::Buddy {
+            emitted_to: None, ..
+        } => "buddy emitted_to=none",
+        R::CallbackWalk { .. } => "callback_walk",
+        R::NatTraversal { .. } => "nat_traversal",
+        R::ServerPunch { .. } => "server_punch",
+        R::ServerPunchUnavailable { .. } => "server_punch_unavailable",
+        R::NatTraversalUnavailable { .. } => "nat_traversal_unavailable",
+        R::Dropped { .. } => "dropped",
+    }
+}
+
 /// rmule's own identity as a driver holds it: fixed for the run, because a
 /// one-shot driver has exactly one identity and acquires it from its operands
 /// rather than from a credentialed activity.
@@ -59,6 +86,21 @@ impl NattOwnHash for DriverIdentity {
 }
 
 impl NattCrypt for DriverIdentity {
+    /// A driver obfuscates whenever it can key a frame.
+    fn armed(&self) -> bool {
+        true
+    }
+
+    /// The crypt bits of what the driver does: it obfuscates every frame it
+    /// can key and reads plain and obfuscated frames alike, so it supports the
+    /// layer and asks for it, never requires it — the ladder a core states
+    /// under `Requested`.
+    fn crypt_options(&self) -> u8 {
+        rmule_peer::peer_udp::crypt::connect_options_from_stance(
+            rmule_net::peer::ObfuscationPolicy::Requested.crypt_stance(),
+        )
+    }
+
     fn own_user_hash(&self) -> UserHash {
         self.user_hash
     }

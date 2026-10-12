@@ -3,7 +3,6 @@
 //! assembled from several contributors that fails its MD4 hash retires every
 //! contributor and refetches the part from a cleared buffer.
 
-use crate::fixture::identity;
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent, DownloadFailure,
     PeerRetirementReason, PeerTransferService, PeerWorker, PeerWorkerCommand, PeerWorkerEvent,
@@ -23,6 +22,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 #[tokio::test]
 async fn core_resumes_a_part_from_another_peer_after_a_mid_part_drop() {
+    let out_dir = tempfile::tempdir().unwrap();
     // ADR-0029: peer A delivers [0, k) of the only part then drops; core
     // preserves the shared prefix and hands peer B a resume offset of k, so B
     // finishes [k, len) instead of restarting at block 0. peer_concurrency = 1
@@ -40,6 +40,10 @@ async fn core_resumes_a_part_from_another_peer_after_a_mid_part_drop() {
         },
         rmule_testkit::memory_store(),
     )
+    .settings(rmule_testkit::in_download_dir(
+        rmule_core::CoreSettings::default(),
+        out_dir.path(),
+    ))
     .source_lookup(two_high_id_sources())
     .peer_transfer(ResumeAfterDropTransfer {
         dropping_peer,
@@ -48,12 +52,11 @@ async fn core_resumes_a_part_from_another_peer_after_a_mid_part_drop() {
         resume_offsets: Arc::clone(&resume_offsets),
     })
     .build();
-    let out_dir = tempfile::tempdir().unwrap();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: file_link_without_part_hash_set("example.bin", &bytes),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: out_dir.path().join("resume-after-drop.bin"),
+        name: rmule_testkit::file_name("resume-after-drop.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -84,6 +87,7 @@ async fn core_resumes_a_part_from_another_peer_after_a_mid_part_drop() {
 
 #[tokio::test]
 async fn core_retires_all_contributors_when_assembled_part_fails_verification() {
+    let out_dir = tempfile::tempdir().unwrap();
     // ADR-0029: when a part assembled from blocks contributed by several peers
     // fails its MD4 part hash, core cannot attribute the bad block (no AICH),
     // so it retires every contributor and refetches the part from offset 0.
@@ -113,6 +117,10 @@ async fn core_retires_all_contributors_when_assembled_part_fails_verification() 
     let resume_offsets = Arc::new(StdMutex::new(HashMap::new()));
 
     let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            out_dir.path(),
+        ))
         .source_lookup(StaticSourceLookup {
             outcome: SourceLookupOutcome {
                 client_id: ClientId::from_u32(0x0100_007F),
@@ -134,12 +142,11 @@ async fn core_retires_all_contributors_when_assembled_part_fails_verification() 
             resume_offsets: Arc::clone(&resume_offsets),
         })
         .build();
-    let out_dir = tempfile::tempdir().unwrap();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: file_link_without_part_hash_set("example.bin", &correct),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: out_dir.path().join("retire-all-contributors.bin"),
+        name: rmule_testkit::file_name("retire-all-contributors.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();

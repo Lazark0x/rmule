@@ -56,7 +56,7 @@ async fn one_bound_port_carries_the_reask_surface_natt_and_a_live_kad_node() {
     let (reply_tx, mut reply_rx) = mpsc::channel::<ClientUdpSend>(16);
     let (engine, mut inboxes) = ClientUdpEngine::new(
         RuntimeClientUdpTransport::new(Arc::clone(&socket)),
-        None,
+        crate::client_udp::PeerUdpCrypt::disarmed(),
         SharedBuddySlot::default(),
         crate::firewalled::front::SharedFirewalledFront::default(),
         DiagnosticsState::default(),
@@ -84,8 +84,7 @@ async fn one_bound_port_carries_the_reask_surface_natt_and_a_live_kad_node() {
             capture_dir: None,
             nodes_dat_path: None,
             firewall_self_check: false,
-            datagram_obfuscation: false,
-            verify_keys: None,
+            obfuscation: None,
             contact_admission: None,
         },
         rmule_net::kad::KadInlet {
@@ -96,7 +95,7 @@ async fn one_bound_port_carries_the_reask_surface_natt_and_a_live_kad_node() {
     )
     .await
     .expect("the Kad node starts over the shared bind");
-    *kad_inlet.lock().expect("kad inlet mutex") = Some(inlet_tx);
+    kad_inlet.install_for_good(inlet_tx);
 
     // --- The counterparties. ------------------------------------------------
 
@@ -113,8 +112,7 @@ async fn one_bound_port_carries_the_reask_surface_natt_and_a_live_kad_node() {
             capture_dir: None,
             nodes_dat_path: None,
             firewall_self_check: false,
-            datagram_obfuscation: false,
-            verify_keys: None,
+            obfuscation: None,
             contact_admission: None,
         },
         (Ipv4Addr::LOCALHOST, 0).into(),

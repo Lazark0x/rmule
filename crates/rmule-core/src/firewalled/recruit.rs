@@ -13,14 +13,22 @@
 //! [`AlreadyHaveBuddy`](RecruitRefusal::AlreadyHaveBuddy); crypt required →
 //! [`CryptRequired`](RecruitRefusal::CryptRequired) (callback requests are not
 //! obfuscatable, aMule's own limitation); and the pacing not yet due →
-//! [`PacingNotDue`](RecruitRefusal::PacingNotDue). Only both surfaces
-//! firewalled recruits, and the walk targets `~ourKadID`.
+//! [`PacingNotDue`](RecruitRefusal::PacingNotDue), which a walk already in
+//! flight also reads. Only both surfaces firewalled recruits, and the walk
+//! targets `~ourKadID`.
+//!
+//! The rule is a [`Recruiter`] the Kad pump's brain holds beside the recheck
+//! clock it reads (ADR-0061): it never touches the slot, only the
+//! [`BuddySnapshot`] the Firewalled Front publishes of it, and its own walk
+//! and refusal leave as the [`RecruitStatus`] it publishes in turn. The
+//! `0x5A` that answers a walk is the front's to adopt.
 
 use std::time::{Duration, Instant};
 
 use rmule_kad::KadId;
 use rmule_primitives::Ipv4Endpoint;
 
+use super::link::BuddySnapshot;
 use super::{FirewalledNode, inverted};
 use crate::buddy::BuddyUdpPosture;
 use crate::reachability::TcpReachability;
@@ -56,7 +64,7 @@ pub(crate) struct RecruitContext {
     pub(crate) crypt_required: bool,
 }
 
-/// What [`consider_recruitment`](FirewalledNode::consider_recruitment) decided.
+/// What [`Recruiter::consider`] decided.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RecruitDecision {
     /// Recruit: kick off the FINDBUDDY walk toward `walk_target` (`~ourKadID`).
@@ -120,21 +128,94 @@ pub(crate) enum AdoptOutcome {
     CryptIncompatible,
 }
 
-impl FirewalledNode {
-    /// Consider recruiting a buddy against our position and the FindBuddy pacing.
-    /// Recruits **only when both TCP and UDP are firewalled** (with Kad up, no
-    /// buddy, crypt not required, and pacing due), stamping the pacing clock; a
-    /// precise refusal otherwise.
-    pub(crate) fn consider_recruitment(
+/// What the Kad pump publishes of its recruit rule — the **Recruit Status**:
+/// whether a FINDBUDDY walk is in flight, and why the most recent recruit
+/// tick refused to walk. The Kad Pump State is its one writer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RecruitStatus {
+    /// A FINDBUDDY walk is in flight — the diagnostics' `walking`, and the
+    /// guard that keeps one recruit tick from starting a second walk.
+    pub(crate) walking: bool,
+    /// Why the most recent recruit tick refused, or `None` on the one tick
+    /// that launched a walk — a level, refreshed on every tick. Most
+    /// informative beside `BuddyState::None`: `CryptRequired` there means
+    /// this node will never hold a buddy, not merely that the last tick found
+    /// nothing due (`PacingNotDue`).
+    pub(crate) refusal: Option<RecruitRefusal>,
+}
+
+/// The ADR-0061 recruit rule as the Kad pump holds it: the FindBuddy pacing
+/// stamp, the walk in flight, and the status it publishes. It reads the slot
+/// only through the [`BuddySnapshot`] its owner publishes — whether a buddy is
+/// held, and when the last one was lost — and decides with an explicit
+/// `Instant`.
+pub(crate) struct Recruiter {
+    /// Our own Kad ID: the walk targets its inverse.
+    our_kad_id: KadId,
+    /// When the last FINDBUDDY walk started; `None` before the first.
+    last_walk: Option<Instant>,
+    status: RecruitStatus,
+}
+
+impl Recruiter {
+    /// The rule of a node that has just started: no walk yet, so the first
+    /// tick that finds the node eligible walks at once.
+    pub(crate) fn new(our_kad_id: KadId) -> Self {
+        Self {
+            our_kad_id,
+            last_walk: None,
+            status: RecruitStatus::default(),
+        }
+    }
+
+    /// Consider recruiting a buddy against our position, the slot as its
+    /// owner last published it, and the FindBuddy pacing. Recruits **only
+    /// when both TCP and UDP are firewalled** (with Kad up, no buddy, crypt
+    /// not required, no walk in flight and pacing due), stamping the pacing
+    /// clock; a precise refusal otherwise.
+    pub(crate) fn consider(
         &mut self,
         ctx: &RecruitContext,
+        slot: &BuddySnapshot,
         now: Instant,
     ) -> RecruitDecision {
-        // aMule's guard order: Kad up, then our own surface must be firewalled on
-        // *both* halves (an open TCP node needs no buddy; a UDP-open node takes
-        // the direct-callback path), then the slot free, crypt not required, and
-        // the pacing due — else recruit toward `~ourKadID`.
+        let decision = self.decide(ctx, slot, now);
+        match decision {
+            RecruitDecision::Recruit { .. } => {
+                self.last_walk = Some(now);
+                self.status = RecruitStatus {
+                    walking: true,
+                    refusal: None,
+                };
+            }
+            RecruitDecision::Refuse { reason } => self.status.refusal = Some(reason),
+        }
+        decision
+    }
+
+    /// The FINDBUDDY walk is over, or never started. Only the walk moves:
+    /// whether to try again sooner than the 20-minute tick is the pacing's to
+    /// decide, and re-arming on an empty walk would start one per tick on a
+    /// node whose routing table is simply cold.
+    pub(crate) fn walk_ended(&mut self) {
+        self.status.walking = false;
+    }
+
+    /// What this rule publishes now.
+    pub(crate) fn status(&self) -> RecruitStatus {
+        self.status
+    }
+
+    /// aMule's guard order: a walk already in flight (the pacing clock was
+    /// stamped when it started), Kad up, then our own surface firewalled on
+    /// *both* halves (an open TCP node needs no buddy; a UDP-open node takes
+    /// the direct-callback path), then the slot free, crypt not required, and
+    /// the pacing due — else recruit toward `~ourKadID`.
+    fn decide(&self, ctx: &RecruitContext, slot: &BuddySnapshot, now: Instant) -> RecruitDecision {
         let refuse = |reason| RecruitDecision::Refuse { reason };
+        if self.status.walking {
+            return refuse(RecruitRefusal::PacingNotDue);
+        }
         if !ctx.kad_connected {
             return refuse(RecruitRefusal::KadNotConnected);
         }
@@ -146,33 +227,41 @@ impl FirewalledNode {
             BuddyUdpPosture::Open => return refuse(RecruitRefusal::UdpOpen),
             BuddyUdpPosture::Unverified => return refuse(RecruitRefusal::UdpUnverified),
         }
-        if self.buddy.is_some() {
+        if slot.holds_buddy() {
             return refuse(RecruitRefusal::AlreadyHaveBuddy);
         }
         if ctx.crypt_required {
             return refuse(RecruitRefusal::CryptRequired);
         }
-        if !self.pacing_due(now, ctx.last_recheck) {
+        if !self.pacing_due(now, ctx.last_recheck, slot.lost_at) {
             return refuse(RecruitRefusal::PacingNotDue);
         }
-        // Kick off the walk: stamp the pacing clock so a retry waits the interval.
-        self.last_find_buddy = Some(now);
         RecruitDecision::Recruit {
             walk_target: inverted(&self.our_kad_id),
         }
     }
 
-    /// The FindBuddy pacing: the 20-minute tick (satisfied at once when armed by a
-    /// buddy loss) *and* the ≥5-minute clearance from the last firewall recheck.
-    fn pacing_due(&self, now: Instant, last_recheck: Option<Instant>) -> bool {
-        let interval_due = self
-            .last_find_buddy
-            .is_none_or(|last| now.saturating_duration_since(last) >= FIND_BUDDY_INTERVAL);
+    /// The FindBuddy pacing: the 20-minute tick *and* the ≥5-minute clearance
+    /// from the last firewall recheck. A buddy lost after the last walk began
+    /// satisfies the tick at once — aMule resets its FindBuddy tick on buddy
+    /// loss — and the recheck guard still applies.
+    fn pacing_due(
+        &self,
+        now: Instant,
+        last_recheck: Option<Instant>,
+        lost_at: Option<Instant>,
+    ) -> bool {
+        let interval_due = self.last_walk.is_none_or(|last| {
+            now.saturating_duration_since(last) >= FIND_BUDDY_INTERVAL
+                || lost_at.is_some_and(|lost| lost > last)
+        });
         let recheck_clear = last_recheck
             .is_none_or(|last| now.saturating_duration_since(last) >= POST_RECHECK_GUARD);
         interval_due && recheck_clear
     }
+}
 
+impl FirewalledNode {
     /// The `0x5A` verify (aMule `check.XOR(true); check == GetKADID()`,
     /// `KademliaUDPListener.cpp:1751-1753`): the echoed buddy-ID must invert to
     /// our own KadID — otherwise it is a stray or spoofed answer to a walk we
@@ -191,12 +280,10 @@ impl FirewalledNode {
         AdoptOutcome::Adopted
     }
 
-    /// Free the slot on buddy loss (the buddy's link closed) and **arm an instant
-    /// recruit** — aMule resets its FindBuddy tick so the next
-    /// [`consider_recruitment`](Self::consider_recruitment) does not wait out the
-    /// 20-minute interval (the recheck guard still applies).
+    /// Free the slot on buddy loss. The instant recruit aMule arms on a loss
+    /// is the enacted slot's to publish (the Buddy Snapshot's `lost_at`),
+    /// because the rule that reads it runs on the Kad pump.
     pub(crate) fn on_buddy_lost(&mut self) {
         self.buddy = None;
-        self.last_find_buddy = None;
     }
 }

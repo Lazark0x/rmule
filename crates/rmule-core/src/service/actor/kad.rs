@@ -13,8 +13,8 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::AbortHandle;
 
 use crate::adapters::{
-    KadEnableConfig, KadRuntimeFactory, KadShutdownHandle, KadShutdownSlot, PeerTransferService,
-    ServeRuntimeService, SourceLookupService,
+    KadEnableConfig, KadNodeIdentity, KadRuntimeFactory, KadShutdownHandle, KadShutdownSlot,
+    PeerTransferService, ServeRuntimeService, SourceLookupService,
 };
 use crate::kad_sources::{KadDiscoveryChannel, KadPublisher};
 use crate::reachability::KadRunLease;
@@ -27,7 +27,7 @@ use super::{CoreActor, send_event};
 /// as one ledger value so "Kad is running" is its presence and its retire
 /// returns the whole set — the discovery pump and its watchdog, the
 /// publisher and its share-changed trigger, the ed2k→Kad handoff forwarder,
-/// the keyword-search channel, the node id the diagnostics row names, the
+/// the keyword-search channel, the
 /// handle to its one stop lever (and, when a caller supplied a lever of its
 /// own, the bridge that turns that lever into a call of this activity's stop),
 /// and the one lease on the Kad half of Self Reach
@@ -36,7 +36,6 @@ pub(super) struct KadActivity<C> {
     /// Which start this is: the value the pump's end bumps `kad_ended` to,
     /// so a bump for an activity already retired never retires its successor.
     generation: u64,
-    node_id: crate::KadId,
     search_channel: Arc<C>,
     publish_changed_tx: mpsc::Sender<()>,
     pump: tokio::task::JoinHandle<()>,
@@ -63,11 +62,6 @@ struct ExternalLever {
 }
 
 impl<C> KadActivity<C> {
-    /// The running node's own Kad ID, for the diagnostics row.
-    pub(super) fn node_id(&self) -> crate::KadId {
-        self.node_id
-    }
-
     /// The node's channel, for a `StartSearch`'s keyword requester (ADR-0062).
     pub(super) fn search_channel(&self) -> &Arc<C> {
         &self.search_channel
@@ -76,14 +70,6 @@ impl<C> KadActivity<C> {
     /// Nudge the **Kad Publisher** to re-sweep the share set.
     pub(super) fn share_changed(&self) {
         let _ = self.publish_changed_tx.try_send(());
-    }
-
-    /// How many of this activity's long-lived tasks it holds,
-    /// reported as `kad_tasks_live`: the pump, the publisher and, when the
-    /// factory spawned one, the handoff forwarder. `0` is the retired state —
-    /// no activity at all.
-    pub(super) fn tasks_live(&self) -> usize {
-        2 + usize::from(self.handoff.is_some())
     }
 }
 
@@ -185,6 +171,29 @@ where
         // handle, but that lever becomes a caller of this activity's stop —
         // its request asks the ledger to stop the activity, and its
         // confirmation is fired by the retire once the pump ended clean.
+        // The node presents its TCP port in every firewall check and every
+        // source it publishes, fixed for its life. An injected `0` is the
+        // listener's bound port, and a listener restart rebinds that same port,
+        // so the node's never goes stale. The listener comes up first, as
+        // before a login and for the same reason: the firewall check dials the
+        // port presented. One that cannot bind leaves no port to give.
+        if self.credentials().tcp_port() == 0 {
+            self.listen_before_login().await;
+        }
+        let peer_credentials = self.credentials();
+        if peer_credentials.tcp_port() == 0 {
+            tracing::warn!("kad cannot start: the TCP port is 0 and the listener did not bind");
+            send_event(
+                &self.evt_tx,
+                CoreEvent::CommandRejected {
+                    reason: CoreCommandRejectReason::KadUnavailable(
+                        KadUnavailableReason::TcpPortUnbound,
+                    ),
+                },
+            )
+            .await;
+            return;
+        }
         let external = kad_config.kad_shutdown.take().and_then(|slot| slot.take());
         let (slot, shutdown) = KadShutdownSlot::new();
         kad_config.kad_shutdown = Some(slot);
@@ -192,8 +201,21 @@ where
         // The one lease on the Kad half of Self Reach: taken
         // before the node starts so the verdicts it publishes land on a fresh
         // cell, and handed to the ledger value — a failed start drops it.
-        let lease = self.self_reach.lease_kad(kad_config.kad_id);
-        match self.wiring.kad_factory.start(&kad_config, bind).await {
+        // Who the node is, core's own (ADR-0048, ADR-0069): the Kad ID and
+        // Kad UDP Key read at build, and the credentials every start
+        // presents, as they stand now.
+        let node = KadNodeIdentity {
+            kad_id: self.wiring.kad_id,
+            peer_credentials,
+            kad_udp_key: self.wiring.kad_udp_key,
+        };
+        let lease = self.self_reach.lease_kad(node.kad_id);
+        match self
+            .wiring
+            .kad_factory
+            .start(&kad_config, &node, bind, &self.wiring.kad_cells)
+            .await
+        {
             Ok(channel) => {
                 // One node, two drivers: the discovery engine
                 // (search + receive) and the **Kad Publisher**
@@ -213,10 +235,10 @@ where
                     .run(),
                 );
                 // Whatever handoff forwarder this factory spawned
-                // alongside the node (only `RuntimeKadFactory` does; every
-                // test fake's default answers `None`) — tracked so
+                // alongside the node (only `RuntimeKadFactory` does; a test
+                // fake leaves the slot empty) — tracked so
                 // `DisableKad`'s reaper can join it back too.
-                let handoff = self.wiring.kad_factory.take_handoff_handle();
+                let handoff = self.wiring.kad_cells.handoff.take();
                 // Retain a clone for the ADR-0062 keyword
                 // requester before the discovery engine takes the
                 // last one.
@@ -269,9 +291,9 @@ where
                 });
                 self.diagnostics
                     .set_kad_state(crate::diagnostics::KadState::Running);
+                let tasks_live = 2 + usize::from(handoff.is_some());
                 self.kad = Some(KadActivity {
                     generation,
-                    node_id: kad_config.kad_id,
                     search_channel,
                     publish_changed_tx: share_changed_tx,
                     pump: pump_handle,
@@ -282,6 +304,30 @@ where
                     external,
                     lease,
                 });
+                // The Kad Activity's join facts, read live through the shared
+                // diagnostics state: the sync snapshot and the dump echo
+                // return the same value (ADR-0028).
+                let facts = self.wiring.kad_cells.facts.clone();
+                let self_reach = self.self_reach.clone();
+                let node_id = node.kad_id;
+                self.diagnostics
+                    .install_kad(crate::diagnostics::KadFactsSource::new(
+                        tasks_live,
+                        move || crate::diagnostics::KadRuntimeDiagnostics {
+                            contact_responded: self_reach.kad_connected(),
+                            contacts: facts
+                                .contact_count
+                                .load(std::sync::atomic::Ordering::Relaxed),
+                            keywords_stored: facts
+                                .keywords_stored
+                                .load(std::sync::atomic::Ordering::Relaxed),
+                            node_id,
+                            firewall: self_reach.kad_firewall_verdict(),
+                            firewall_check: self_reach.kad_firewall_check(),
+                            udp: self_reach.kad_udp_verdict(),
+                            traffic: facts.traffic.totals(),
+                        },
+                    ));
                 // Honest Capability Advertisement (ADR-0047/0057): a Kad node is
                 // running now, so every hello may say which port it is on —
                 // aMule's `Kademlia::IsRunning() ? kadPort : 0`. That port is
@@ -387,6 +433,7 @@ where
             ..
         } = kad;
         drop(lease);
+        self.diagnostics.clear_kad();
         self.wiring.udp_ports_advert.clear_kad();
         drop(publish_changed_tx);
         drop(search_channel);

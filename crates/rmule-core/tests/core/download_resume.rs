@@ -7,7 +7,6 @@ use rmule_core::DownloadRepository;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
-use crate::fixture::identity;
 use crate::fixture::next_matching;
 use rmule_core::{
     ContentFileStore, Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent,
@@ -16,7 +15,7 @@ use rmule_core::{
     open_durable_store,
 };
 use rmule_primitives::{
-    ClientId, ED2K_PART_SIZE, ExchangedSource, PeerSource, ServerEndpoint, SourceLookupTarget,
+    ClientId, ED2K_PART_SIZE, PeerSource, ServerEndpoint, SourceLookupTarget, SourceSighting,
 };
 use rmule_testkit::{
     PendingPeerTransfer, PlanAssertingPeerTransfer, StaticPeerTransfer, file_link,
@@ -60,6 +59,7 @@ async fn resume_skips_verified_parts() {
         .unwrap();
 
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_core::CoreSettings::default())
         .source_lookup(source_with_high_id())
         .peer_transfer(PlanAssertingPeerTransfer {
             expected_plan_indexes: vec![1],
@@ -75,7 +75,6 @@ async fn resume_skips_verified_parts() {
         .build();
     core.send(CoreCommand::Download(DownloadCommand::ResumeDownload {
         download_id: record.id(),
-        credentials: identity().into(),
     }))
     .await
     .unwrap();
@@ -120,6 +119,10 @@ async fn completes_to_final_path() {
     let output_path = dir.path().join("download.bin");
     let paths = DownloadPaths::from_final_path(output_path.clone());
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .source_lookup(source_with_high_id())
         .peer_transfer(StaticPeerTransfer {
             expected_plan_count: 1,
@@ -137,8 +140,8 @@ async fn completes_to_final_path() {
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: link,
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: output_path.clone(),
+        name: rmule_testkit::file_name("download.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -184,6 +187,10 @@ async fn restart_resume_completes_from_verified_parts() {
     let lookup_calls = Arc::new(StdMutex::new(Vec::new()));
 
     let mut first_core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .source_lookup(RecordingSourceLookup::new(Arc::clone(&lookup_calls)))
         .peer_transfer(PendingPeerTransfer)
         .build();
@@ -191,8 +198,8 @@ async fn restart_resume_completes_from_verified_parts() {
         .send(CoreCommand::Download(DownloadCommand::StartDownload {
             file: file.clone(),
             source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-            credentials: identity().into(),
-            output_path: output_path.clone(),
+            name: rmule_testkit::file_name("restart.bin"),
+            if_taken: rmule_core::NameTaken::Refuse,
         }))
         .await
         .unwrap();
@@ -228,6 +235,7 @@ async fn restart_resume_completes_from_verified_parts() {
         DownloadLifecycle::Active
     );
     let mut restarted = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_core::CoreSettings::default())
         .source_lookup(RecordingSourceLookup::new(Arc::clone(&lookup_calls)))
         .peer_transfer(PlanAssertingPeerTransfer {
             expected_plan_indexes: vec![1],
@@ -285,7 +293,6 @@ async fn restart_resume_completes_from_verified_parts() {
     restarted
         .send(CoreCommand::Download(DownloadCommand::ResumeDownload {
             download_id,
-            credentials: identity().into(),
         }))
         .await
         .unwrap();
@@ -325,7 +332,7 @@ impl SourceLookupService for RecordingSourceLookup {
         self.calls.lock().unwrap().push(target);
         Ok(SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![ExchangedSource::plain(PeerSource::new(
+            sources: vec![SourceSighting::plain(PeerSource::new(
                 ClientId::from_u32(0x0100_007F),
                 4663,
             ))],

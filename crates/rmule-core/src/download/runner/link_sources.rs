@@ -10,7 +10,7 @@
 //! gates (the IP filter, the dial family) judge them the same way.
 
 use rmule_primitives::{
-    Ed2kFileLink, ExchangedSource, Ipv4Endpoint, LinkPeer, LinkPeerHost, PeerSource,
+    Ed2kFileLink, Ipv4Endpoint, LinkPeer, LinkPeerHost, PeerSource, SourceSighting,
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -22,10 +22,10 @@ use crate::name_resolver::SharedNameResolver;
 /// second `StartDownload` for the file sends its standing sources here
 /// instead of minting a row. The run takes them as it takes a server answer
 /// that arrives mid-run.
-pub(crate) type LaterLinkSources = mpsc::UnboundedSender<Vec<ExchangedSource>>;
+pub(crate) type LaterLinkSources = mpsc::UnboundedSender<Vec<SourceSighting>>;
 
 /// The run's half of [`LaterLinkSources`].
-pub(crate) type LaterLinkInbox = mpsc::UnboundedReceiver<Vec<ExchangedSource>>;
+pub(crate) type LaterLinkInbox = mpsc::UnboundedReceiver<Vec<SourceSighting>>;
 
 /// Whether a link carries any source at all — a classic peer or an `s6=`
 /// hint — before any expiry or resolution is applied.
@@ -40,7 +40,7 @@ pub(crate) async fn link_sources(
     file: &Ed2kFileLink,
     resolver: &SharedNameResolver,
     unix_seconds: u64,
-) -> Vec<ExchangedSource> {
+) -> Vec<SourceSighting> {
     let standing = file
         .sources
         .peers()
@@ -53,7 +53,7 @@ pub(crate) async fn link_sources(
             LinkPeerHost::Ipv4(ip) => *ip,
             LinkPeerHost::Name(name) => *resolved.get(name)?,
         };
-        Some(ExchangedSource::new(
+        Some(SourceSighting::new(
             PeerSource::HighId(Ipv4Endpoint::new(ip, peer.port)),
             peer.user_hash,
             peer.crypt,
@@ -62,7 +62,7 @@ pub(crate) async fn link_sources(
     let ipv6 = file
         .ipv6_sources
         .iter()
-        .map(|endpoint| ExchangedSource::plain(PeerSource::Ipv6(*endpoint)));
+        .map(|endpoint| SourceSighting::plain(PeerSource::Ipv6(*endpoint)));
     classic.chain(ipv6).collect()
 }
 
@@ -92,30 +92,6 @@ async fn resolve_names(
         }
     }
     resolved
-}
-
-/// `link` ahead of `server`, each endpoint once: a source both name keeps
-/// the link's place and the server's record, the fresher word on its crypt.
-pub(super) fn ahead_of(
-    link: Vec<ExchangedSource>,
-    mut server: Vec<ExchangedSource>,
-) -> Vec<ExchangedSource> {
-    let mut merged: Vec<ExchangedSource> = Vec::with_capacity(link.len() + server.len());
-    for source in link {
-        let endpoint = source.as_peer_endpoint();
-        if merged
-            .iter()
-            .any(|kept| endpoint.is_some() && kept.as_peer_endpoint() == endpoint)
-        {
-            continue;
-        }
-        let same = server
-            .iter()
-            .position(|answer| endpoint.is_some() && answer.as_peer_endpoint() == endpoint);
-        merged.push(same.map_or(source, |at| server.remove(at)));
-    }
-    merged.extend(server);
-    merged
 }
 
 #[cfg(test)]

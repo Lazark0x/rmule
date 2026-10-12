@@ -6,15 +6,15 @@
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-use rmule_kad::KadId;
 use rmule_primitives::{Ipv4Endpoint, PeerEndpoint};
 
 use super::build_accept_options;
-use crate::adapters::tests::held_buddy::{BuddyTags, a_buddy, adopt, hold, link};
+use crate::adapters::HelloAdverts;
+use crate::adapters::tests::held_buddy::{BuddyTags, a_buddy, adopt, firewalled, hold, link, slot};
 use crate::adapters::tests::hello_wire::{
     assert_states_live_adverts, live_adverts, read_hello_body,
 };
-use crate::firewalled::link::{FirewalledSlot, SharedFirewalledSlot};
+use crate::firewalled::front::BuddyView;
 use rmule_net::peer::{Connection as PeerConnection, PeerStreamRole};
 use rmule_peer::PeerHelloBody;
 
@@ -35,16 +35,18 @@ async fn first_hello(options: rmule_net::peer::ConnectOptions) -> PeerHelloBody 
 
 /// The buddy tags of the hello this node's accept options write — every other
 /// advert live beside them, and stated on every accept.
-async fn hello_buddy_tags(slot: &SharedFirewalledSlot) -> BuddyTags {
-    let hello = first_hello(build_accept_options(&live_adverts(slot.clone()))).await;
+async fn hello_buddy_tags(adverts: &HelloAdverts) -> BuddyTags {
+    let hello = first_hello(build_accept_options(adverts)).await;
     assert_states_live_adverts(&hello);
     BuddyTags::of(&hello)
 }
 
 /// The Kad half of the same fact: the `bi6` a source publish would carry
 /// under the verdict the pump states.
-fn kad_bi6(slot: &FirewalledSlot, firewalled: bool) -> Option<Ipv6Addr> {
-    slot.publish_buddy_info(firewalled)
+fn kad_bi6(buddy: &BuddyView, firewalled: bool) -> Option<Ipv6Addr> {
+    firewalled
+        .then(|| buddy.snapshot().publish)
+        .flatten()
         .and_then(|publish| publish.buddy_ipv6)
 }
 
@@ -57,38 +59,33 @@ fn kad_bi6(slot: &FirewalledSlot, firewalled: bool) -> Option<Ipv6Addr> {
 #[tokio::test]
 async fn the_hello_names_the_serving_buddy_exactly_while_the_link_is_held() {
     let buddy_v6: Ipv6Addr = "3fff:ed2:1::8".parse().unwrap();
-    let slot: SharedFirewalledSlot = std::sync::Arc::new(FirewalledSlot::new(KadId::from_bytes(
-        [0xAA; KadId::BYTE_LEN],
-    )));
+    let (mut slot, buddy) = slot();
+    let adverts = live_adverts(buddy.clone());
     // Self Reach, installed as the actor does: no High ID and
     // Kad unproven — firewalled.
     let own = crate::own_identity::SharedOwnIdentity::default();
-    slot.install_reach(crate::reachability::SharedSelfReach::new(
-        crate::KadReachLevel::fixed(false),
-        own.clone(),
-        crate::natt::front::SharedNattFront::default(),
-    ));
+    adverts.install_reach(firewalled(own.clone()));
     assert_eq!(
-        hello_buddy_tags(&slot).await,
+        hello_buddy_tags(&adverts).await,
         BuddyTags::default(),
         "no buddy, no tag"
     );
 
     // Adopted on the `0x5A`, the dial still in flight: no link, no tags.
-    adopt(&slot);
+    adopt(&mut slot);
     assert_eq!(
-        hello_buddy_tags(&slot).await,
+        hello_buddy_tags(&adverts).await,
         BuddyTags::default(),
         "dialing"
     );
 
-    let _link = link(&slot, Some(buddy_v6));
+    let _link = link(&mut slot, Some(buddy_v6));
     assert_eq!(
-        hello_buddy_tags(&slot).await,
+        hello_buddy_tags(&adverts).await,
         BuddyTags::naming_a_buddy(Some(buddy_v6))
     );
     assert_eq!(
-        kad_bi6(&slot, true),
+        kad_bi6(&buddy, true),
         Some(buddy_v6),
         "one fact, both halves"
     );
@@ -100,30 +97,30 @@ async fn the_hello_names_the_serving_buddy_exactly_while_the_link_is_held() {
         server: None,
         client_id: rmule_primitives::ClientId::from_u32(0x0A00_0001),
     }));
-    assert_eq!(hello_buddy_tags(&slot).await, BuddyTags::default());
-    assert_eq!(kad_bi6(&slot, false), None);
+    assert_eq!(hello_buddy_tags(&adverts).await, BuddyTags::default());
+    assert_eq!(kad_bi6(&buddy, false), None);
     own.set_connected_session(None);
     assert_eq!(
-        hello_buddy_tags(&slot).await,
+        hello_buddy_tags(&adverts).await,
         BuddyTags::naming_a_buddy(Some(buddy_v6))
     );
 
     // The link is lost on the front's task: the very next hello drops all
     // three, with no pump tick in between.
-    assert!(slot.on_link_closed(PeerEndpoint::V4(a_buddy().tcp)));
+    assert!(slot.on_link_closed(PeerEndpoint::V4(a_buddy().tcp), std::time::Instant::now()));
     assert_eq!(
-        hello_buddy_tags(&slot).await,
+        hello_buddy_tags(&adverts).await,
         BuddyTags::default(),
         "link lost"
     );
 
     // An IPv4-only buddy: the IPv4 pair rides, the IPv6 tag does not.
-    let _link = hold(&slot, None);
+    let _link = hold(&mut slot, None);
     assert_eq!(
-        hello_buddy_tags(&slot).await,
+        hello_buddy_tags(&adverts).await,
         BuddyTags::naming_a_buddy(None)
     );
-    assert_eq!(kad_bi6(&slot, true), None);
+    assert_eq!(kad_bi6(&buddy, true), None);
 }
 
 /// The hello an inbound dial is answered with names the id the session holds
@@ -218,4 +215,42 @@ async fn a_callback_dial_backs_hello_names_the_live_session() {
     .expect("the dial-back's hello arrives");
     assert_eq!(hello.connected_server, server);
     assert_eq!(hello.client_id, held);
+}
+
+/// A callback dial-back's hello is the accept pump's: the admit seam builds
+/// its options from the same Hello Adverts read, so the dial-back the
+/// firewalled front asks for (a `0x95`'s or a `0x99`'s) states our ports, Kad
+/// version, IPv6 and crypt support exactly as every other hello does. A
+/// dial-back with no key is plaintext, so the hello is the first thing on the
+/// wire.
+#[tokio::test]
+async fn a_callback_dial_backs_hello_states_every_advert() {
+    let requester = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let requester_addr = PeerEndpoint::V4(Ipv4Endpoint::new(
+        Ipv4Addr::LOCALHOST,
+        requester.local_addr().unwrap().port(),
+    ));
+    let admit = super::SharedTunnelAdmit::default();
+    // The admit cell keeps only a weak sender, and the admitted connection
+    // lives in the receiver's buffer: both are held for the leg.
+    let (accept_tx, _accept_rx) = tokio::sync::mpsc::channel(4);
+    admit.install_for_test(
+        &accept_tx,
+        rmule_testkit::peer_session::serverless_ctx(),
+        live_adverts(BuddyView::default()),
+    );
+
+    admit.spawn_callback_dial_back(requester_addr, None);
+    let (mut socket, _) =
+        tokio::time::timeout(std::time::Duration::from_secs(2), requester.accept())
+            .await
+            .expect("the dial-back arrives")
+            .unwrap();
+    let hello = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        read_hello_body(&mut socket),
+    )
+    .await
+    .expect("the dial-back's hello arrives");
+    assert_states_live_adverts(&hello);
 }

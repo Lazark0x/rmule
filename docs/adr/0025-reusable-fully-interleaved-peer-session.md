@@ -19,7 +19,7 @@ peer that must re-grant a slot per block drops us before a part finishes.
 `PeerSession` in `rmule-peer` is a reusable, fully interleaved state machine with
 one active slot context per connection.
 
-- After `PeerIdentified` the session accepts commands for any file. Probes and
+- After `ConnectionEvent::Identified` the session accepts commands for any file. Probes and
   hash-set requests for different files run concurrently, tracked in a per-file map
   keyed by file hash; their answers (`OP_REQFILENAMEANSWER`, `OP_FILEREQANSNOFIL`,
   `OP_FILESTATUS`, `OP_HASHSETANSWER`) carry the file hash and demultiplex
@@ -33,7 +33,7 @@ one active slot context per connection.
 - `RequestParts` for a different file while a slot is held is rejected at once with
   `PeerError::SlotBusy`. Probes and hash-set requests keep interleaving freely.
 - The session never infers completion from byte counts. The slot ends on
-  `PeerCommand::ReleaseSlot` (the runtime worker decides the file is done),
+  `RequesterCommand::ReleaseSlot` (the runtime worker decides the file is done),
   `CancelTransfer` (ADR-0056), or a terminal path: peer close, `OP_OUTOFPARTREQS`,
   a mid-slot `OP_FILEREQANSNOFIL`, or the driver-owned stale timeout. Each emits
   `SlotReleased` with a `SlotReleaseReason`, after which the next file may take

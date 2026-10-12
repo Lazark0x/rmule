@@ -6,6 +6,8 @@
 
 use thiserror::Error;
 
+use crate::search_request::MAX_EXPRESSION_DEPTH;
+
 /// `Result` with [`Ed2kError`] already filled in.
 pub type Result<T> = std::result::Result<T, Ed2kError>;
 
@@ -35,6 +37,11 @@ pub enum Ed2kError {
         /// Which layout expectation the body broke.
         reason: &'static str,
     },
+
+    /// A search expression nests deeper than
+    /// [`MAX_EXPRESSION_DEPTH`].
+    #[error("OP_SEARCHREQUEST expression nests deeper than {MAX_EXPRESSION_DEPTH} levels")]
+    SearchExpressionTooDeep,
 
     /// A shared primitive — a hash, a tag, a frame — failed to decode.
     #[error("primitive decode error: {source}")]

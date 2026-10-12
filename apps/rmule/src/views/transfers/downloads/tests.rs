@@ -2,9 +2,27 @@
 
 use crate::golden::assert_golden;
 
+use super::super::sort::{DownloadColumn, DownloadLine};
 use super::*;
 use crate::fixture::*;
 use rmule_core::DownloadEvent;
+
+/// The line a row reads with the diagnostics beside it, as a table would
+/// draw it.
+fn line_of(row: Option<&DownloadRow>, diag: Option<&DownloadDiagnostics>) -> DownloadLine {
+    let mut state = UiState::default();
+    let id = download_id(1);
+    state.downloads.extend(row.map(|row| (id, row.clone())));
+    state
+        .diagnostics
+        .downloads
+        .extend(diag.map(|diag| (id, diag.clone())));
+    DownloadLine::new(id, &state)
+}
+
+fn done_cell(row: Option<&DownloadRow>, diag: Option<&DownloadDiagnostics>) -> String {
+    line_of(row, diag).done_cell()
+}
 
 /// Both Speed columns are real: the download's from its own
 /// monotonic total, a source's from the level its slot carries. A worker
@@ -110,7 +128,7 @@ fn done_and_eta_read_exact_bytes_with_or_without_a_live_part_map() {
         done_fraction(Some(&running), Some(&map)),
         Some((ED2K_PART_SIZE + half, size))
     );
-    assert_eq!(done_percent(Some(&running), Some(&map)), "60%");
+    assert_eq!(done_cell(Some(&running), Some(&map)), "60%");
     // One part left at one part a second.
     assert_eq!(
         row_eta(Some(&running), Some(&map), Some(ED2K_PART_SIZE as f64)),
@@ -141,14 +159,14 @@ fn done_and_eta_read_exact_bytes_with_or_without_a_live_part_map() {
     }
     let paused = state.downloads.get(&id);
     assert_eq!(
-        done_percent(paused, None),
+        done_cell(paused, None),
         "60%",
         "restored + the short last part"
     );
 
     let mut completed = download_row(DownloadStatus::Completed, 0x09, 3);
     completed.metadata = Some(metadata("done.iso", size, Link));
-    assert_eq!(done_percent(Some(&completed), None), "100%");
+    assert_eq!(done_cell(Some(&completed), None), "100%");
     assert_eq!(
         row_eta(Some(&completed), None, Some(1_000_000.0)),
         Eta::Unknown
@@ -158,10 +176,10 @@ fn done_and_eta_read_exact_bytes_with_or_without_a_live_part_map() {
         metadata: None,
         ..download_row(DownloadStatus::Waiting, 0x0A, 3)
     };
-    assert_eq!(done_percent(Some(&bare), None), "—");
+    assert_eq!(done_cell(Some(&bare), None), "—");
     let ratio = diag(download_id(3), 0x0A, "VMM", 0, vec![]);
     assert_eq!(
-        done_percent(Some(&bare), Some(&ratio)),
+        done_cell(Some(&bare), Some(&ratio)),
         "33%",
         "the part ratio without a size"
     );
@@ -188,10 +206,10 @@ fn the_sources_cell_counts_what_the_run_knows_and_who_is_sending() {
         ],
     );
     running.known_sources = 12;
-    assert_eq!(sources_cell(Some(&running)), "12 (1)");
+    assert_eq!(line_of(None, Some(&running)).sources_cell(), "12 (1)");
     running.workers.clear();
-    assert_eq!(sources_cell(Some(&running)), "12");
-    assert_eq!(sources_cell(None), "—");
+    assert_eq!(line_of(None, Some(&running)).sources_cell(), "12");
+    assert_eq!(line_of(None, None).sources_cell(), "—");
 }
 
 /// A paused download draws the parts it holds and the ones it
@@ -290,7 +308,7 @@ fn a_download_paused_this_tick_reads_no_speed_and_no_eta() {
     );
     assert_eq!(state.download_speed(active), 0.0);
     assert_eq!(state.download_eta_speed(active), None);
-    let values = download_values(active, &state, &Theme::default_dark());
+    let values = DownloadLine::new(active, &state).values(&Theme::default_dark());
     assert_eq!(values[5], "—", "ETA: {values:?}");
     assert!(!values[4].contains("KB/s"), "Speed: {values:?}");
 
@@ -457,4 +475,133 @@ fn golden_transfers_waiting_with_no_session() {
             view.draw(frame, area, &state, &Theme::default_dark(), now());
         },
     );
+}
+
+/// A `DownloadLine`'s sort values and its cell text say the same thing
+/// about a row, edge case by edge case: an unknown size,
+/// the part-count estimate, a nameless exact size, a share the row cannot
+/// exceed, and every status the cell can word.
+#[test]
+fn sort_values_and_cell_text_agree_for_every_edge_case() {
+    use crate::table_sort::SortValue;
+    use rmule_core::DownloadMetadataOrigin::{Link, Unknown};
+    use rmule_core::SourceWait;
+
+    let size = 2 * ED2K_PART_SIZE + 1_000;
+    let mut state = UiState::default();
+    let mut add = |n: u64, row: DownloadRow| state.downloads.insert(download_id(n), row);
+    add(
+        1,
+        DownloadRow {
+            part_count: None,
+            ..download_row(DownloadStatus::Waiting, 1, 0)
+        },
+    );
+    add(2, download_row(DownloadStatus::Waiting, 2, 3));
+    add(
+        3,
+        DownloadRow {
+            metadata: Some(metadata("", size, Unknown)),
+            ..download_row(DownloadStatus::Paused, 3, 3)
+        },
+    );
+    add(
+        4,
+        DownloadRow {
+            metadata: Some(metadata("over.bin", size, Link)),
+            verified_bytes: size * 10,
+            ..download_row(DownloadStatus::Paused, 4, 3)
+        },
+    );
+    add(
+        5,
+        DownloadRow {
+            metadata: Some(metadata("done.bin", size, Link)),
+            ..download_row(DownloadStatus::Completed, 5, 3)
+        },
+    );
+    add(
+        6,
+        DownloadRow {
+            metadata: Some(metadata("empty.bin", 0, Link)),
+            ..download_row(DownloadStatus::Waiting, 6, 3)
+        },
+    );
+    add(7, download_row(DownloadStatus::NoConnection, 7, 3));
+    add(
+        8,
+        DownloadRow {
+            source_wait: Some(SourceWait::KadAlone),
+            ..download_row(DownloadStatus::Waiting, 8, 3)
+        },
+    );
+    add(9, download_row(DownloadStatus::Failed, 9, 3));
+    add(
+        10,
+        DownloadRow {
+            metadata: Some(metadata("live.bin", size, Link)),
+            ..download_row(DownloadStatus::Downloading, 10, 3)
+        },
+    );
+    state
+        .diagnostics
+        .downloads
+        .insert(download_id(10), diag(download_id(10), 10, "VMM", 0, vec![]));
+
+    let check = |state: &UiState, want: &[(u64, &str, u64)]| {
+        for n in 1..=10 {
+            let id = download_id(n);
+            let line = DownloadLine::new(id, state);
+            let cells = line.values(&Theme::default_dark());
+            let value = |column| DownloadsTable::value(column, &line);
+
+            match value(DownloadColumn::Done) {
+                Some(SortValue::Fraction { part, whole }) => {
+                    assert!(part <= whole, "row {n}: a share past the whole");
+                    assert_eq!(cells[2], format!("{}%", part * 100 / whole), "row {n} Done");
+                }
+                None => assert_eq!(cells[2], "—", "row {n} Done"),
+                other => panic!("row {n}: Done sorts as {other:?}"),
+            }
+            match value(DownloadColumn::Size) {
+                Some(SortValue::Quantity(bytes)) => assert!(
+                    [human_size(bytes), format!("≈ {}", human_size(bytes))].contains(&cells[1]),
+                    "row {n} Size {} vs {bytes}",
+                    cells[1]
+                ),
+                None => assert_eq!(cells[1], "—", "row {n} Size"),
+                other => panic!("row {n}: Size sorts as {other:?}"),
+            }
+            if let Some(&(_, text, rank)) = want.iter().find(|(at, ..)| *at == n) {
+                assert_eq!(cells[7], text, "row {n} Status");
+                assert!(
+                    matches!(value(DownloadColumn::Status), Some(SortValue::Quantity(r)) if r == rank),
+                    "row {n}: {text} sorts at the wrong rank"
+                );
+            }
+        }
+    };
+    let statuses = [
+        (2, "Waiting", 1),
+        (4, "Paused", 2),
+        (5, "Completed", 3),
+        (7, "No network", 1),
+        (8, "Asking Kad", 1),
+        (9, "Failed", 4),
+        (10, "Downloading", 0),
+    ];
+    check(&state, &statuses);
+
+    state.reconnect = Some(crate::state::Reconnect {
+        server: crate::fixture::server_endpoint(),
+        step: crate::words::server::ReconnectStep {
+            attempt: 1,
+            bound: None,
+            delay: std::time::Duration::from_secs(5),
+            steady: false,
+        },
+        at: std::time::Instant::now(),
+        said: crate::words::server::NO_SERVER_LISTED,
+    });
+    check(&state, &[(7, "Reconnecting", 1)]);
 }

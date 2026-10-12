@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use rmule_peer::PartBitmap;
-use rmule_primitives::{ExchangedSource, PeerEndpoint};
+use rmule_primitives::{PeerEndpoint, SourceSighting};
 
 /// aMule's `SOURCEEXCHANGE_MAX_ENTRIES` — the serve answer is capped at 500
 /// sources (`CKnownFile::CreateSrcInfoPacket` @4e8f2b3c breaks the loop there).
@@ -60,7 +60,7 @@ pub(crate) enum ServedFileKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SxCandidate {
     /// The source as it goes on the wire (client id + port + any provenance).
-    pub(crate) source: ExchangedSource,
+    pub(crate) source: SourceSighting,
     /// The parts the candidate holds — for an upload-engaged client, the
     /// status its own last name ask or UDP reask wrote, through [`held_parts`]
     /// — or `None` when we do not know them: the unknown-status branch of the
@@ -71,7 +71,7 @@ pub(crate) struct SxCandidate {
 #[cfg(test)]
 impl SxCandidate {
     /// A candidate whose part status we do not know.
-    pub(crate) fn unknown_status(source: ExchangedSource) -> Self {
+    pub(crate) fn unknown_status(source: SourceSighting) -> Self {
         Self {
             source,
             part_status: None,
@@ -144,7 +144,7 @@ pub(crate) fn select_sources(
     kind: ServedFileKind,
     requester: &SxRequester,
     candidates: &[SxCandidate],
-) -> Vec<ExchangedSource> {
+) -> Vec<SourceSighting> {
     candidates
         .iter()
         // Skip LowID sources: a firewalled peer's server-assigned id is not a

@@ -56,10 +56,12 @@ async fn files_shared_in_an_earlier_run_are_rows_after_a_restart() {
         }
     }
 
-    let mut core = Core::new(
+    let mut core = Core::builder(
         CoreConfig::default(),
         open_durable_store(dir.path()).expect("store, second run"),
-    );
+    )
+    .settings(rmule_core::CoreSettings::default())
+    .build();
     core.send(CoreCommand::DumpFileHistory).await.expect("ask");
     let mut state = UiState::default();
     loop {

@@ -4,11 +4,9 @@
 
 use std::fmt::Write as _;
 
-use crate::args::{ArgsError, Build, DataDir, DataDirSource, MissingTerminal, ValueOption};
-use crate::run_log::{CAP_BYTES, FILE_NAME, PREDECESSOR_NAME};
+use rmule_core::run_log::{CAP_BYTES, FILE_NAME, PREDECESSOR_NAME};
 
-/// The word for a build fact the build script could not capture.
-const UNKNOWN: &str = "unknown";
+use crate::args::{ArgsError, Build, DataDir, DataDirSource, MissingTerminal, ValueOption};
 
 /// `rmule <version> (<commit>, committed <date>)`, the commit marked
 /// `-dirty` when the binary is not the commit — the one version line, shown
@@ -26,13 +24,6 @@ pub fn version_line(build: Build) -> String {
         format!("committed {}", build.committed)
     };
     format!("rmule {} ({commit}, {committed})", build.version)
-}
-
-/// A build fact as it is written in a Run Log field: the value, or the word
-/// for a fact the build could not capture.
-#[must_use]
-pub const fn build_fact(value: &'static str) -> &'static str {
-    if value.is_empty() { UNKNOWN } else { value }
 }
 
 /// The two shapes of an invocation.

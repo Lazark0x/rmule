@@ -17,27 +17,13 @@ use crate::reachability::{
     FirewallUdpResult, FwCheckUdpRequest, PongOutcome, UdpFirewallTester, UdpHelperResult,
     UdpResultOutcome, UdpVerdict,
 };
-use crate::{
-    Kad2Message, KadContact, KadContactState, KadEnvelope, KadId, KadInstant, KadNodeEndpoint,
-};
+use crate::{Kad2Message, KadContact, KadContactState, KadEnvelope, KadInstant, KadNodeEndpoint};
 
 impl KadNode {
     /// Contacts the helper lookup asks for per query: `KADEMLIA_FIND_NODE`
     /// (`0x0B`), the count aMule's `NODEFWCHECKUDP` search requests
     /// (`Search.cpp:1817-1821`), where a value lookup asks for two.
     pub const UDP_HELPER_LOOKUP_CONTACT_COUNT: u8 = 0x0B;
-
-    /// Arm the UDP tester's **helper lookup** with the driver's source of
-    /// random targets (aMule `CSearchManager::FindNodeFWCheckUDP`,
-    /// `SearchManager.cpp:594-603`, walks toward `GetRandomUint128()`). From
-    /// here the first Kad datagram after the self-check is armed — aMule's
-    /// `CUDPFirewallTester::Connected()`, called for every received packet
-    /// (`KademliaUDPListener.cpp:254`) — and every recheck launch one lookup,
-    /// whose answer rows become the tester's candidates. Unarmed, the node
-    /// never looks for helpers itself.
-    pub fn arm_udp_firewall_helper_lookup(&mut self, target: fn() -> KadId) {
-        self.udp_helper_target = Some(target);
-    }
 
     /// Launch the helper lookup if this test still wants one (aMule
     /// `Connected()`'s `!m_nodeSearchStarted && IsFWCheckUDPRunning()`,
@@ -364,8 +350,8 @@ impl KadNode {
     /// "stands until this round settles a new one" rule `ExternPortRound::restart`
     /// documents): an early answer mid-round may still be settled by a later
     /// one, so it must not blank a value the previous round already proved.
-    /// Once no round is collecting — the common case, since the pump's
-    /// `ExternPortFeed` also answers on its own recruit tick —
+    /// Once no round is collecting — the common case, since core's Kad pump
+    /// also restates the store's port on its own recruit tick —
     /// a zero answer is the store's own verdict (nothing fresh, or the
     /// round's own unreliable outcome) and writes through: the store's
     /// 30-minute window aging out with no fresh observer reconciles here

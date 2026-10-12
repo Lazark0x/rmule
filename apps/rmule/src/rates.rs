@@ -14,7 +14,7 @@
 //! | [`TransferRates::download_avg_bps`] | `DownloadDiagnostics::received_bytes` | the same total over a plain [`ETA_WINDOW`] window rather than an EMA (ADR-0071, "Download ETA"): an estimate of hours must not swing on one slow second, which a meter tuned to answer within seconds does. |
 //! | [`TransferRates::upload_bps`] | `UploadDiagnostics::bytes_sent` | one monotonic total per peer holding an upload slot; the row retires with the slot, and so does its meter. |
 //! | [`TransferRates::source_bps`] | `WorkerPhase::ReceivingPart::bytes_received` | the only per-peer *download* signal core has. It restarts at every part, so its meter treats a rollover as "the bytes now in the new part" rather than a negative swing. |
-//! | [`TransferRates::kad`] | `KadRuntimeDiagnostics::traffic` | the Kad node's wire bytes and datagrams, each way. Both arrive on the Kad echo's slower cadence, not every data tick, so their meters difference echo to echo ([`RateSynthesizer::observe_kad`]) — differencing a level that moves once per echo at every tick would read as silence then a spike. |
+//! | [`TransferRates::kad`] | `KadRuntimeDiagnostics::traffic` | the Kad node's wire bytes and datagrams, each way. Both ride the snapshot like every other level, so their meters difference tick to tick; a node that stops takes its meters with it. |
 //!
 //! # Session totals are not copied here
 //!
@@ -257,12 +257,10 @@ pub struct RateSynthesizer {
     /// a bridge attached to a core that has already moved bytes must meter
     /// what happens *next*, not report the backlog as one tick's worth.
     session: Option<SessionMeters>,
-    /// The Kad byte meters, `None` while no node runs; their rates, last
-    /// folded at an echo, ride every tick until the next one.
+    /// The Kad byte meters, `None` while no node runs.
     kad: Option<SessionMeters>,
-    /// The Kad datagram-count meters, folded at the same echo.
+    /// The Kad datagram-count meters.
     kad_dgrams: Option<SessionMeters>,
-    kad_rates: Option<KadRates>,
 }
 
 impl RateSynthesizer {
@@ -278,19 +276,21 @@ impl RateSynthesizer {
             session: None,
             kad: None,
             kad_dgrams: None,
-            kad_rates: None,
         }
     }
 
-    /// Fold one Kad echo's traffic totals, observed at `echoed_at`. A node
+    /// Fold the snapshot's Kad traffic totals, observed at `echoed_at`. A node
     /// that is gone drops its meters, so a restarted one starts fresh; a
     /// first sighting reports zero, as every meter does.
-    pub fn observe_kad(&mut self, kad: Option<&KadRuntimeDiagnostics>, echoed_at: Instant) {
+    fn observe_kad(
+        &mut self,
+        kad: Option<&KadRuntimeDiagnostics>,
+        echoed_at: Instant,
+    ) -> Option<KadRates> {
         let Some(traffic) = kad.map(|kad| kad.traffic) else {
             self.kad = None;
             self.kad_dgrams = None;
-            self.kad_rates = None;
-            return;
+            return None;
         };
         let tau = self.tau;
         let bytes = self.kad.get_or_insert_with(|| SessionMeters {
@@ -301,12 +301,12 @@ impl RateSynthesizer {
             down: Meter::started(traffic.datagrams_in, echoed_at),
             up: Meter::started(traffic.datagrams_out, echoed_at),
         });
-        self.kad_rates = Some(KadRates {
+        Some(KadRates {
             in_bps: bytes.down.observe(traffic.bytes_in, echoed_at, tau),
             out_bps: bytes.up.observe(traffic.bytes_out, echoed_at, tau),
             dgrams_in_bps: dgrams.down.observe(traffic.datagrams_in, echoed_at, tau),
             dgrams_out_bps: dgrams.up.observe(traffic.datagrams_out, echoed_at, tau),
-        });
+        })
     }
 
     /// Fold one snapshot observed at `now` into the meters and return the
@@ -386,7 +386,7 @@ impl RateSynthesizer {
         rates.up_total_bps = session
             .up
             .observe(snapshot.session.up_bytes_total, now, tau);
-        rates.kad = self.kad_rates;
+        rates.kad = self.observe_kad(snapshot.kad.as_ref(), now);
 
         rates
     }

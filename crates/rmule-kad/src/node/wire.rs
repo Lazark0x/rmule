@@ -7,11 +7,10 @@
 use std::net::Ipv4Addr;
 
 use rmule_primitives::{
-    ClientDecryptKeys, ClientEncryptKey, DatagramNonce, decrypt_datagram_client,
-    encrypt_datagram_client,
+    ClientDecryptKeys, ClientEncryptKey, decrypt_datagram_client, encrypt_datagram_client,
 };
 
-use super::{KadEvent, KadNode, KadNodeDiagnostic, KadOutput, ReceivedKey, VerifyKeyState};
+use super::{KadEvent, KadNode, KadNodeDiagnostic, KadOutput, ReceivedKey};
 use crate::buddy::is_buddy_opcode;
 use crate::flood::{DNS_CONFUSION_PORT, FloodVerdict};
 use crate::messages::Kad2Message;
@@ -50,51 +49,6 @@ impl KadNode {
     /// would hand it a datagram it can never decrypt.
     const MIN_CRYPT_CONTACT_VERSION: u8 = 6;
 
-    /// Enable per-datagram UDP send-obfuscation (ADR-0046). Once enabled,
-    /// outbound datagrams are RC4-encrypted per aMule's key-choice matrix
-    /// (`obfuscate_outbound`): NodeID-keyed toward a stored v≥6 contact,
-    /// receiver-key-keyed for handler replies. Receive stays dual-path
-    /// regardless (a crypt datagram keyed on this node's own Kad ID always
-    /// decrypts, plaintext always dispatches).
-    ///
-    /// `nonce` injects the per-packet entropy (marker byte, 2-byte key seed,
-    /// padding) the sans-I/O node cannot draw itself; production supplies an
-    /// OS-entropy source from the driver, a test a fixed one — the seam the
-    /// status-ping sweep uses. Default-off: the node is plaintext until its
-    /// owner arms it — `rmule-core` does whenever its one obfuscation policy
-    /// (`CoreConfig::peer_crypt`) is set.
-    pub fn enable_datagram_obfuscation(&mut self, nonce: fn() -> DatagramNonce) {
-        self.outbound_obfuscation = Some(nonce);
-    }
-
-    /// Arm the Kad UDP verify-key state (ADR-0046 keys; ADR-0064's
-    /// verification cluster activates on it): `secret` is the private
-    /// per-installation derivation seed, `public_ip` this node's current
-    /// public address. The secret is **caller-supplied**: `rmule-core` passes
-    /// its persisted **Kad UDP Key**, the way aMule persists
-    /// `s_dwKadUDPKey` across restarts (`/Obfuscation/CryptoKadUDPKey`,
-    /// defaulted to one `GetRandomUint32()`), while the single-run
-    /// `kad-join-node` mints one per run — a fresh secret each run invalidates
-    /// every key peers learned for us, forcing the network back through the
-    /// three-way.
-    ///
-    /// From here the node derives per-IP [`udp_verify_key`](crate::udp_verify_key)s: it offers the
-    /// receiver-key decrypt family, judges every inbound trailer for
-    /// `validReceiverKey`, stores counterparties' sender keys on their
-    /// contacts (bound to `public_ip`), trails
-    /// `<receiverVerifyKey><senderVerifyKey>` on obfuscated sends, and answers
-    /// `0x22` ack-requests. Re-arm on an IP change: keys learned under the old
-    /// address silently retire ([`KadUdpKey::key_value`](crate::KadUdpKey::key_value) collapses to `0`),
-    /// exactly aMule's posture.
-    ///
-    /// Unarmed (the default), the node is plaintext-faithful to a keyless
-    /// aMule: no verification fires and no `0x22` is answered.
-    pub fn enable_verify_keys(&mut self, secret: u32, public_ip: Ipv4Addr) {
-        self.own_public_ip = Some(public_ip);
-        self.verify_keys = Some(VerifyKeyState { secret, public_ip });
-        self.routing.set_own_public_ip(public_ip);
-    }
-
     /// Move the public IP the verify-key state is bound to:
     /// aMule re-reads `theApp->GetPublicIP()` on every send
     /// (`CPrefs::GetUDPVerifyKey`, `Prefs.cpp:235-243` takes only the
@@ -103,7 +57,7 @@ impl KadNode {
     /// this call). What our own IP binds is the other half: a
     /// counterparty's *learned* key, stored as `(key, our IP at learn time)`
     /// (aMule's `CKadUDPKey`, `KadUDPKey.h`). Moving it here is
-    /// `enable_verify_keys`'s own "re-arm on an IP change" documented for —
+    /// the "re-arm on an IP change" the verify-key start-up documents —
     /// every stored [`KadUdpKey::key_value`](crate::KadUdpKey::key_value)
     /// evaluated at the old address now reads `0`, exactly aMule's
     /// `GetKeyValue(myIP)` collapsing the moment `myIP` moves, and the next
@@ -111,7 +65,7 @@ impl KadNode {
     /// re-learns it.
     ///
     /// The verify-key half is a no-op while crypt is unarmed:
-    /// [`enable_verify_keys`](Self::enable_verify_keys) never ran, so there is
+    /// the start-up value carried no verify keys, so there is
     /// no verify-key state to move and no stored key reads `own_public_ip`
     /// yet. The address itself is kept either way, for the UDP check's "not
     /// ourselves" rule (`UDPFirewallTester.cpp:272-276`).
@@ -366,7 +320,7 @@ impl KadNode {
     /// plaintext, matching `CMuleUDPSocket::SendPacket`'s
     /// `bKad && nReceiverVerifyKey != 0` encrypt gate
     /// (`MuleUDPSocket.cpp:271-274`); so does an unarmed
-    /// [`outbound_obfuscation`](Self::enable_datagram_obfuscation) regardless
+    /// [`outbound_obfuscation`](crate::KadObfuscation) regardless
     /// of `verify_key`, exactly as every other send stays plaintext until a
     /// driver arms it.
     ///

@@ -20,13 +20,15 @@ use std::io::Read;
 use flate2::read::GzDecoder;
 use rmule_primitives::{
     Ed2kText, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, ST_IPV6, Tag, TagName, TagValue,
-    ipv6_address_tag_compact, read_ipv6_address_tag,
+    WireReader, ipv6_address_tag_compact, read_ipv6_address_tag,
 };
 use thiserror::Error;
 
 mod figures;
+mod obfuscation;
 
 pub use figures::ServerMetFigures;
+pub use obfuscation::ServerMetObfuscation;
 
 /// aMule's own server.met writer marks the file `0xE0`.
 const HEADER_AMULE: u8 = 0xE0;
@@ -41,6 +43,8 @@ const HEADER_MET: u8 = 0x0E;
 const TAG_SERVERNAME: u8 = 0x01;
 const TAG_DESCRIPTION: u8 = 0x0B;
 const TAG_PREFERENCE: u8 = 0x0E;
+/// `ST_AUXPORTSLIST` — a string of comma-separated aux TCP ports.
+const TAG_AUXPORTSLIST: u8 = 0x93;
 
 const GZIP_MAGIC: [u8; 2] = [0x1F, 0x8B];
 const ZIP_MAGIC: [u8; 2] = [0x50, 0x4B];
@@ -153,6 +157,8 @@ pub struct ServerMetEntry {
     description: Ed2kText,
     priority: ServerPriority,
     figures: ServerMetFigures,
+    obfuscation: ServerMetObfuscation,
+    aux_ports: Vec<u16>,
 }
 
 impl ServerMetEntry {
@@ -175,7 +181,25 @@ impl ServerMetEntry {
             description,
             priority,
             figures: ServerMetFigures::NONE,
+            obfuscation: ServerMetObfuscation::NONE,
+            aux_ports: Vec::new(),
         }
+    }
+
+    /// This row with the aux-ports list a file recorded for the server.
+    #[must_use]
+    pub fn with_aux_ports(mut self, aux_ports: Vec<u16>) -> Self {
+        self.aux_ports = aux_ports;
+        self
+    }
+
+    /// The ports `ST_AUXPORTSLIST` named, in order, the one to dial first.
+    /// Empty when the row carried none, or an empty tag, which some server.mets
+    /// do (`Server.cpp:226`). The header port ([`Self::endpoint`]) is then, and
+    /// when a list is present still is, the server's standard port.
+    #[must_use]
+    pub fn aux_ports(&self) -> &[u16] {
+        &self.aux_ports
     }
 
     /// This row with its figures attached — what a file that recorded a
@@ -184,6 +208,20 @@ impl ServerMetEntry {
     pub fn with_figures(mut self, figures: ServerMetFigures) -> Self {
         self.figures = figures;
         self
+    }
+
+    /// This row with the obfuscation facts a file recorded for the server.
+    #[must_use]
+    pub const fn with_obfuscation(mut self, obfuscation: ServerMetObfuscation) -> Self {
+        self.obfuscation = obfuscation;
+        self
+    }
+
+    /// What the row said about obfuscated TCP: the UDP flags word and the
+    /// obfuscation TCP port, each `None` when its tag was absent.
+    #[must_use]
+    pub const fn obfuscation(&self) -> ServerMetObfuscation {
+        self.obfuscation
     }
 
     /// The figures the row carried: ping, counts, limits, version and the
@@ -331,6 +369,14 @@ impl ServerMetEntry {
         if fresh.figures.last_ping.unwrap_or(0) > self.figures.last_ping.unwrap_or(0) {
             self.figures = fresh.figures;
         }
+        // Obfuscation facts follow `description`'s rule: a fresh row silent
+        // about a fact does not unlearn it.
+        self.obfuscation = self.obfuscation.overlaid_by(fresh.obfuscation);
+        // The ports we hold to dial a server on are not a mirror's to change;
+        // a row with none takes the fresh row's.
+        if self.aux_ports.is_empty() {
+            self.aux_ports = fresh.aux_ports;
+        }
         self
     }
 }
@@ -343,6 +389,8 @@ impl ServerMetEntry {
 pub struct ServerMet {
     entries: Vec<ServerMetEntry>,
     declared_count: u32,
+    /// The file ended inside the 4-byte count, so no count was declared at all.
+    count_truncated: bool,
 }
 
 impl ServerMet {
@@ -363,7 +411,8 @@ impl ServerMet {
         let (entries, declared_count) = parse_entries(&body)?;
         Ok(Self {
             entries,
-            declared_count,
+            declared_count: declared_count.unwrap_or(0),
+            count_truncated: declared_count.is_none(),
         })
     }
 
@@ -393,7 +442,7 @@ impl ServerMet {
     /// read instead of treating a corrupt file as a merely-small server list.
     #[must_use]
     pub fn is_truncated(&self) -> bool {
-        self.declared_count as usize > self.entries.len()
+        self.count_truncated || self.declared_count as usize > self.entries.len()
     }
 
     /// Wrap a learned-server list for [`encode`](Self::encode); the declared
@@ -404,6 +453,7 @@ impl ServerMet {
         Self {
             entries,
             declared_count,
+            count_truncated: false,
         }
     }
 
@@ -471,6 +521,13 @@ impl ServerMet {
             // The figures the row holds, each only when present, in
             // the tags aMule reads them from.
             tags.extend(entry.figures.tags());
+            tags.extend(entry.obfuscation.tags());
+            if !entry.aux_ports.is_empty() {
+                tags.push(Tag::new(
+                    TagName::compact_id(TAG_AUXPORTSLIST),
+                    TagValue::String(Ed2kText::from_utf8(aux_ports_text(&entry.aux_ports))),
+                ));
+            }
 
             let tag_count = u32::try_from(tags.len()).expect("a row's tags fit u32");
             out.extend_from_slice(&tag_count.to_le_bytes());
@@ -480,6 +537,23 @@ impl ServerMet {
         }
         out
     }
+}
+
+/// The ports of an `ST_AUXPORTSLIST` string. A part that is not a non-zero
+/// port is left out; aMule reads only the first with `StrToULong`.
+fn parse_aux_ports(list: &str) -> Vec<u16> {
+    list.split(',')
+        .filter_map(|part| part.trim().parse::<u16>().ok())
+        .filter(|port| *port != 0)
+        .collect()
+}
+
+fn aux_ports_text(ports: &[u16]) -> String {
+    ports
+        .iter()
+        .map(u16::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn unwrap_container(raw: &[u8]) -> Result<Vec<u8>, ServerMetError> {
@@ -510,45 +584,51 @@ fn inflate_gzip_capped(raw: &[u8], cap: usize) -> Result<Vec<u8>, ServerMetError
 }
 
 /// Parse the version byte and the row stream, returning the rows recovered and
-/// the header's declared server count (`0` when the count field itself was
+/// the header's declared server count (`None` when the count field itself was
 /// truncated). The caller compares the two to detect a short read.
-fn parse_entries(body: &[u8]) -> Result<(Vec<ServerMetEntry>, u32), ServerMetError> {
+fn parse_entries(body: &[u8]) -> Result<(Vec<ServerMetEntry>, Option<u32>), ServerMetError> {
     let (&header, rest) = body.split_first().ok_or(ServerMetError::MissingHeader)?;
     if header != HEADER_AMULE && header != HEADER_MET {
         return Err(ServerMetError::InvalidHeader { byte: header });
     }
 
-    let mut cursor = Cursor::new(rest);
+    let mut reader = WireReader::new(rest);
     // A count too short to read is the same "whole-file catch, keep
-    // what's already loaded" posture as any other truncation — here
-    // nothing had loaded yet, so the honest answer is an empty list.
-    let Some(count) = cursor.read_u32() else {
-        return Ok((Vec::new(), 0));
+    // what's already loaded" posture as any other truncation — nothing had
+    // loaded yet, so the list is empty, but `is_truncated` still reports it.
+    let Some(count) = reader.read_u32_le("server count").ok() else {
+        return Ok((Vec::new(), None));
     };
 
     let mut entries = Vec::new();
     for _ in 0..count {
-        match decode_entry(&mut cursor) {
+        match decode_entry(&mut reader) {
             Some(entry) => entries.push(entry),
             None => break,
         }
     }
-    Ok((entries, count))
+    Ok((entries, Some(count)))
 }
 
-fn decode_entry(cursor: &mut Cursor<'_>) -> Option<ServerMetEntry> {
-    let endpoint = cursor.read_endpoint()?;
-    let tag_count = cursor.read_u32()?;
+fn decode_entry(reader: &mut WireReader<'_>) -> Option<ServerMetEntry> {
+    let endpoint = Ipv4Endpoint::decode(
+        &reader
+            .read_array::<{ Ipv4Endpoint::WIRE_LEN }>("server endpoint")
+            .ok()?,
+    );
+    let tag_count = reader.read_u32_le("server tag count").ok()?;
 
     let mut name = Ed2kText::from_bytes(Vec::new());
     let mut description = Ed2kText::from_bytes(Vec::new());
     let mut priority = ServerPriority::Normal;
     let mut ipv6 = None;
     let mut figures = ServerMetFigures::default();
+    let mut obfuscation = ServerMetObfuscation::NONE;
+    let mut aux_ports = Vec::new();
 
     for _ in 0..tag_count {
-        let (tag, consumed) = Tag::decode_prefix(cursor.remaining_bytes()).ok()?;
-        cursor.advance(consumed)?;
+        let (tag, consumed) = Tag::decode_prefix(reader.remaining_bytes()).ok()?;
+        reader.skip(consumed, "server tag").ok()?;
         match (tag.name().id(), tag.value()) {
             // First tag wins within one row — aMule's own
             // `if (listname.IsEmpty())` / `if (description.IsEmpty())`
@@ -572,9 +652,20 @@ fn decode_entry(cursor: &mut Cursor<'_>) -> Option<ServerMetEntry> {
             (Some(ST_IPV6), _) if ipv6.is_none() => {
                 ipv6 = read_ipv6_address_tag(&tag, ST_IPV6);
             }
+            // `ST_AUXPORTSLIST`: a non-empty list replaces an earlier one, an
+            // empty tag says nothing (`Server.cpp:222-231`).
+            (Some(TAG_AUXPORTSLIST), TagValue::String(text)) => {
+                let ports = parse_aux_ports(&text.to_display_string());
+                if !ports.is_empty() {
+                    aux_ports = ports;
+                }
+            }
             // The figures, and every other tag tolerantly skipped —
             // see `ServerMetEntry`'s doc comment.
-            _ => figures.read(&tag),
+            _ => {
+                figures.read(&tag);
+                obfuscation.read(&tag);
+            }
         }
     }
 
@@ -589,6 +680,8 @@ fn decode_entry(cursor: &mut Cursor<'_>) -> Option<ServerMetEntry> {
         description,
         priority,
         figures,
+        obfuscation,
+        aux_ports,
     })
 }
 
@@ -601,48 +694,6 @@ fn synthesize_name(endpoint: Ipv4Endpoint, ipv6: Option<std::net::Ipv6Addr>) -> 
             Ed2kText::from_utf8(format!("Server {}", Ipv6Endpoint::new(ip, endpoint.port)))
         }
         _ => Ed2kText::from_utf8(format!("Server {}:{}", endpoint.ip, endpoint.port)),
-    }
-}
-
-struct Cursor<'a> {
-    bytes: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Cursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, pos: 0 }
-    }
-
-    fn remaining_bytes(&self) -> &'a [u8] {
-        &self.bytes[self.pos..]
-    }
-
-    fn advance(&mut self, len: usize) -> Option<()> {
-        let end = self.pos.checked_add(len)?;
-        if end > self.bytes.len() {
-            return None;
-        }
-        self.pos = end;
-        Some(())
-    }
-
-    fn take(&mut self, len: usize) -> Option<&'a [u8]> {
-        let start = self.pos;
-        self.advance(len)?;
-        Some(&self.bytes[start..self.pos])
-    }
-
-    fn read_u32(&mut self) -> Option<u32> {
-        let bytes = self.take(4)?;
-        Some(u32::from_le_bytes(bytes.try_into().expect("4-byte slice")))
-    }
-
-    fn read_endpoint(&mut self) -> Option<Ipv4Endpoint> {
-        let bytes = self.take(Ipv4Endpoint::WIRE_LEN)?;
-        Some(Ipv4Endpoint::decode(
-            bytes.try_into().expect("`take` guarantees exact length"),
-        ))
     }
 }
 

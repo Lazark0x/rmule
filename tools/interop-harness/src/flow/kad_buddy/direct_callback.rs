@@ -266,9 +266,11 @@ pub fn run_kad_direct_callback(options: KadDirectCallbackOptions<'_>) -> Result<
                     assume_open: options.assume_open,
                     direct_callback: Some(&format!("{}:{hub_udp_port}", ipv4_string(amule_ip))),
                     direct_callback_every_secs: options.emit_every_secs,
+                    kad_udp_key_seed: None,
                     peer_crypt: None,
                     kad_capture_dir: None,
                     user_hash_hex: None,
+                    peer_crypt_flip: &[],
                     report_kad_verdicts_every_secs: 0,
                 },
             )?,
@@ -284,7 +286,7 @@ pub fn run_kad_direct_callback(options: KadDirectCallbackOptions<'_>) -> Result<
             base.layout,
             "rmule",
             &names.rmule,
-            "serve serving_started",
+            "serve.serving_started",
             timeout,
         )?;
         println!("kad-direct-callback: stimulus serve listener bound on {subnet}");
@@ -372,11 +374,11 @@ fn assert_kad_direct_callback(
     let rmule_log = read_verdict_log(&layout.kad_node_stdout_log("rmule"))?;
     let rmule_err = read_verdict_log(&layout.kad_node_stderr_log("rmule"))?;
     let rmule_trail = format!("{rmule_log}{rmule_err}");
-    let serving = rmule_trail.contains("serve serving_started");
+    let serving = rmule_trail.contains("serve.serving_started");
     // rmule's own disposition trail: which branch of the ADR-0061 chooser ran.
     let route_chosen = rmule_trail.contains("direct UDP callback emitted");
     let route_unenactable = rmule_trail.contains("chosen but not enactable");
-    let routed_low_to_low = rmule_trail.contains("LowToLow");
+    let routed_low_to_low = rmule_trail.contains("route=dropped reason=low_to_low");
 
     let callback_out = count("rmule_directcallbackreq_0x95_rmule_tap");
     let dial_in = count("amule_callback_tcp_syn_rmule_tap");

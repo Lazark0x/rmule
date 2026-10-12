@@ -8,7 +8,8 @@
 //! reader's source.
 
 use rmule_peer::{
-    HelloAnswer, MiscOptions1, PeerCommand, PeerEvent, PeerIdentity, PeerOutput, PeerSession,
+    ConnectionEvent, HelloAnswer, MiscOptions1, PeerCommand, PeerEvent, PeerIdentity, PeerOutput,
+    PeerSession, RequesterCommand, ServerCommand,
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{FileHash, Packet, PacketProtocol, UserHash};
@@ -47,15 +48,19 @@ fn clear_the_flag(session: &mut PeerSession) {
 /// rank put on the wire.
 fn asks(session: &mut PeerSession) -> Vec<u8> {
     let file_hash = FileHash::from_bytes([0x3A; FileHash::BYTE_LEN]);
-    session.handle_command(PeerCommand::RequestFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash,
         file_size: 700_001,
         own_status: rmule_peer::PartBitmap::downloader_empty(700_001),
         want_sources: true,
         want_aich_root: false,
-    });
-    session.handle_command(PeerCommand::RequestSources { file_hash });
-    session.handle_command(PeerCommand::SetQueueRank { rank: 17 });
+    }));
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestSources {
+        file_hash,
+    }));
+    session.handle_command(PeerCommand::Server(ServerCommand::SetQueueRank {
+        rank: 17,
+    }));
     let out = drain(|| session.poll_output());
     writes(&out).iter().map(Packet::opcode).collect()
 }
@@ -101,7 +106,9 @@ fn identity_of_mule_with_sx1(sx1: u32) -> PeerIdentity {
     drain(|| session.poll_output())
         .into_iter()
         .find_map(|output| match output {
-            PeerOutput::Event(PeerEvent::PeerIdentified { identity }) => Some(identity),
+            PeerOutput::Event(PeerEvent::Connection(ConnectionEvent::Identified { identity })) => {
+                Some(identity)
+            }
             _ => None,
         })
         .expect("the hello identifies the peer")

@@ -89,6 +89,7 @@ pub(crate) async fn welcome_live(args: LiveCaptureArgs) -> Result<()> {
         connect_timeout: Duration::from_secs(args.connect_timeout),
         login_timeout: Duration::from_secs(args.login_timeout),
         obfuscation: None,
+        obfuscated_port: None,
         advertised_ipv6: None,
         udp_ports: None,
     };

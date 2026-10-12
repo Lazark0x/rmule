@@ -1,13 +1,15 @@
 //! Sources for a file: the target a lookup asks about, a source as a server
 //! hands it over (High ID, Low ID, or a sentinel-carried IPv6 endpoint), the
-//! crypt options a source advertises, and the richer source-exchange form
-//! peers trade among themselves.
+//! crypt options a source advertises, and the **Source Sighting** every
+//! channel delivers a source as.
 
 mod sentinel;
+mod sighting;
 
 pub use sentinel::SourceListTail;
+pub use sighting::{SightedBuddy, SourceRoad, SourceSighting};
 
-use crate::{ClientId, CryptStance, FileHash, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, UserHash};
+use crate::{ClientId, CryptStance, FileHash, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint};
 
 /// What a source lookup asks about: a file hash and the size that goes with
 /// it.
@@ -270,126 +272,6 @@ impl SourceCryptOptions {
     #[must_use]
     pub const fn supports_natt_quic(self) -> bool {
         self.0 & 0x40 != 0
-    }
-}
-
-/// A source learned from `OP_ANSWERSOURCES` (source exchange), carrying the
-/// optional crypt material that higher exchange versions add (ADR-0042). A v1
-/// source (or a server-lookup source) carries neither; exchange version ≥ 2 adds
-/// the target's [`UserHash`], and version 4 adds a [`SourceCryptOptions`] byte.
-/// rmule needs the target's User Hash **before dialing** to derive the peer
-/// obfuscation key, so it can only obfuscate-dial a source that carried one.
-///
-/// A channel that can name both families — an ExtSX record, a serve client
-/// whose hello named its IPv6 — gives a classic source its **IPv6 Half**
-/// (ADR-0087): one source with two addresses, never two sources, because both
-/// are the same peer and which one gets dialed is the Dial Chooser's call.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ExchangedSource {
-    source: PeerSource,
-    user_hash: Option<UserHash>,
-    crypt_options: Option<SourceCryptOptions>,
-    ipv6_half: Option<Ipv6Endpoint>,
-}
-
-impl ExchangedSource {
-    /// A source with whatever crypt material its exchange version carried.
-    #[must_use]
-    pub const fn new(
-        source: PeerSource,
-        user_hash: Option<UserHash>,
-        crypt_options: Option<SourceCryptOptions>,
-    ) -> Self {
-        Self {
-            source,
-            user_hash,
-            crypt_options,
-            ipv6_half: None,
-        }
-    }
-
-    /// The same source with its **IPv6 Half**: the IPv6 endpoint it is also
-    /// reachable at beside its client id. Only a High or Low ID has a half to
-    /// carry — an IPv6-only source *is* its IPv6, so for one this is a no-op
-    /// and [`Self::ipv6`] keeps reading one address, not two.
-    #[must_use]
-    pub const fn with_ipv6_half(mut self, ipv6: Option<Ipv6Endpoint>) -> Self {
-        if !matches!(self.source, PeerSource::Ipv6(_)) {
-            self.ipv6_half = ipv6;
-        }
-        self
-    }
-
-    /// A source with no crypt material — a v1 source-exchange entry or a
-    /// server-lookup source, which can only ever be dialed plaintext.
-    #[must_use]
-    pub const fn plain(source: PeerSource) -> Self {
-        Self::new(source, None, None)
-    }
-
-    /// The plain source underneath, without the exchange extras.
-    #[must_use]
-    pub const fn peer_source(self) -> PeerSource {
-        self.source
-    }
-
-    /// The target's user hash, when the exchange version carried one.
-    #[must_use]
-    pub const fn user_hash(self) -> Option<UserHash> {
-        self.user_hash
-    }
-
-    /// The advertised crypt stance, when the exchange version carried one.
-    #[must_use]
-    pub const fn crypt_options(self) -> Option<SourceCryptOptions> {
-        self.crypt_options
-    }
-
-    /// The source's IPv6 endpoint, wherever it is held: the **IPv6 Half**
-    /// beside a client id, or the address of an IPv6-only source. One
-    /// accessor, so no reader has to know which shape the source arrived in.
-    #[must_use]
-    pub const fn ipv6(self) -> Option<Ipv6Endpoint> {
-        match (self.ipv6_half, self.source) {
-            (Some(endpoint), _) | (None, PeerSource::Ipv6(endpoint)) => Some(endpoint),
-            (None, PeerSource::HighId(_) | PeerSource::LowId { .. }) => None,
-        }
-    }
-
-    // Delegators so a candidate reads like the `PeerSource` it wraps.
-    /// The client id an IPv4-network party knows the source by, or `None` for
-    /// an IPv6 source.
-    #[must_use]
-    pub const fn client_id(self) -> Option<ClientId> {
-        self.source.client_id()
-    }
-
-    /// The Low ID a callback must name, or `None` for a source that carries an
-    /// address of its own (see [`PeerSource::low_id`]).
-    #[must_use]
-    pub const fn low_id(self) -> Option<ClientId> {
-        self.source.low_id()
-    }
-
-    /// The port the source listens on.
-    #[must_use]
-    pub const fn tcp_port(self) -> u16 {
-        self.source.tcp_port()
-    }
-
-    /// The address to dial, or `None` for a Low ID source (see
-    /// [`PeerSource::as_peer_endpoint`]).
-    #[must_use]
-    pub const fn as_peer_endpoint(self) -> Option<PeerEndpoint> {
-        self.source.as_peer_endpoint()
-    }
-
-    /// The crypt side this record states — its crypt byte's stance and its
-    /// User Hash — which a dial meets with ours by aMule's outbound rule
-    /// ([`PeerCrypt::outbound`](crate::PeerCrypt::outbound), ADR-0049).
-    #[must_use]
-    pub const fn peer_crypt(self) -> crate::PeerCrypt {
-        crate::PeerCrypt::from_record(self.crypt_options, self.user_hash)
     }
 }
 

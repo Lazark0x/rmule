@@ -298,13 +298,13 @@ impl KadNode {
     ///    of its `TAG_ENCRYPTION` (`CPrefs::GetMyConnectOptions`,
     ///    `Prefs.cpp:224-226`), so rmule reads it *from that bit* of the byte
     ///    [`crate::KadCommand::SetPublishConnectOptions`] stated: the row type
-    ///    and the byte cannot disagree, and core's `ConnectOptionsFeed` stays
+    ///    and the byte cannot disagree, and core's Kad pump reconciler stays
     ///    the one owner of both;
     /// 2. otherwise a firewalled posture with a held buddy makes type 3 (5
     ///    above the u32 size range) carrying `TAG_SERVERIP`/`TAG_SERVERPORT`/
     ///    `TAG_BUDDYHASH` — and `bi6` when the buddy's IPv6 is known — read
     ///    from [`crate::KadCommand::SetPublishPosture`] alone — core's
-    ///    `FirewalledSlot::publish_buddy_info`;
+    ///    Buddy Snapshot;
     /// 3. a firewalled posture with no buddy publishes **nothing** (`None`):
     ///    aMule's `PrepareToStop` (`Search.cpp:626-628`, `4e8f2b3c`) — a
     ///    direct row for a node nobody can dial costs the storer a slot and

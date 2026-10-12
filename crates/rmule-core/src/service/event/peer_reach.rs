@@ -55,15 +55,21 @@ pub struct PeerBuddy {
     pub buddy_udp: Option<rmule_primitives::Ipv4Endpoint>,
 }
 
-/// Which of the ADR-0061 routes the chooser picked for a
-/// [`CoreCommand::ReachPeer`](crate::CoreCommand::ReachPeer), reported as [`CoreEvent::PeerReachRouted`](super::CoreEvent::PeerReachRouted). The
-/// public projection of the chooser's verdict — callers watch it to know what
-/// core actually did, and the capture bench reads it as rmule's own disposition
-/// trail beside the counterparty's bytes.
+/// Which of the ADR-0061 routes reaches a peer: the route tree's verdict, and —
+/// once **Peer Reach** carried it out — the road taken, reported as
+/// [`CoreEvent::PeerReachRouted`](super::CoreEvent::PeerReachRouted). A road
+/// one of our own facts kept from leaving reads as its `…Unavailable` twin.
+/// Callers watch it to know what core actually did, and the capture bench
+/// reads it as rmule's own disposition trail beside the counterparty's bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PeerReachRoute {
-    /// HighID: dialed straight, no callback.
-    Direct,
+    /// Dialed straight, no callback: a HighID peer, or — rung 0 — a peer that
+    /// named a usable IPv6 while we hold a Known one of our own.
+    Direct {
+        /// Where the dial goes: the IPv6 endpoint when rung 0 chose it, else
+        /// the HighID peer's own IPv4 endpoint.
+        endpoint: rmule_primitives::PeerEndpoint,
+    },
     /// Route 2: an `OP_DIRECTCALLBACKREQ` (`0x95`) went out to the peer's Kad
     /// UDP endpoint.
     DirectUdp {
@@ -100,24 +106,25 @@ pub enum PeerReachRoute {
         /// The buddy's Kad ID — the walk's target.
         buddy_id: crate::KadId,
     },
-    /// Rung 1 (ADR-0091): an `OP_RENDEZVOUS`, embedded in an
-    /// `OP_REASKCALLBACKUDP`, went out to the peer's Kad serving buddy.
+    /// Rung 1 (ADR-0091) through the peer's Kad serving buddy: the NAT-T
+    /// Front took the traversal and puts an `OP_RENDEZVOUS`, embedded in an
+    /// `OP_REASKCALLBACKUDP`, on the wire toward the buddy.
     NatTraversal {
         /// The buddy's Kad ID — the rendezvous' routing key.
         buddy_id: crate::KadId,
         /// Where the rendezvous was sent.
         buddy_udp: rmule_primitives::Ipv4Endpoint,
     },
-    /// Rung 1 through the **server coordinator** (ADR-0091): an
-    /// `OP_LOWID_HOLEPUNCH_REQUEST` naming this Low-ID went to our connected
-    /// server. The introduction, a refusal, or silence follows on the
-    /// session — this event says only that we asked.
+    /// Rung 1 through the **server coordinator** (ADR-0091): the NAT-T Front
+    /// took the traversal and puts an `OP_LOWID_HOLEPUNCH_REQUEST` naming this
+    /// Low-ID on our session. The introduction, a refusal, or silence follows
+    /// on the session — this event says only that we asked.
     ServerPunch {
         /// The peer's server-assigned Low-ID.
         low_id: rmule_primitives::ClientId,
     },
-    /// The server coordinator was chosen and the session was gone, or no
-    /// client-UDP port was bound, by the time the request was framed.
+    /// The server coordinator was chosen and no NAT-T Front took the
+    /// traversal, so no request was put on the session.
     ServerPunchUnavailable {
         /// The Low-ID the request would have named.
         low_id: rmule_primitives::ClientId,
@@ -142,8 +149,9 @@ pub enum PeerReachRoute {
 /// emitted nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NatTraversalUnavailableReason {
-    /// The buddy's UDP endpoint is unknown and must be found by a Kad walk
-    /// toward its ID first — the walk's emit is the Kad surface's.
+    /// The buddy's UDP endpoint is unknown. No Kad walk follows: `0x94` has
+    /// no dialect-sanctioned walk toward an ID alone, so a download's
+    /// candidate is retired at once and an operator's reach begins nothing.
     BuddyEndpointUnknown,
     /// No client-UDP send half is bound, our user hash is not yet known, or no
     /// NAT-T front is running to own the attempt.
@@ -170,4 +178,8 @@ pub enum PeerReachDropReason {
     /// this is the brain's invariant failing to cross the channel, not a
     /// route aMule itself drops.
     NoKadUdpEndpoint,
+    /// A download's Low-ID candidate had no NAT-T coordinator to introduce it:
+    /// no live server session for a target on our server, and no usable Kad
+    /// buddy. The candidate is retired at once.
+    NoCoordinator,
 }

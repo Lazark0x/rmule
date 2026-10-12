@@ -71,11 +71,10 @@ pub enum PortMappingMode {
     Auto,
 }
 
-/// The operator's port-mapping knobs (ADR-0086).
+/// The port-mapping engineering knobs (ADR-0086). Whether to map at all is
+/// the operator's [`CoreSettings::port_mapping`](crate::CoreSettings::port_mapping).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PortMappingConfig {
-    /// Whether to map at all.
-    pub mode: PortMappingMode,
     /// Which protocols may be raced — emule-qt's `portMapProtocols` bitmask
     /// (1 = PCP, 2 = NAT-PMP, 4 = UPnP), so a mask means the same thing in
     /// both clients. All three by default.
@@ -94,7 +93,6 @@ pub struct PortMappingConfig {
 impl Default for PortMappingConfig {
     fn default() -> Self {
         Self {
-            mode: PortMappingMode::Auto,
             protocols: MappingProtocol::Pcp.mask_bit()
                 | MappingProtocol::NatPmp.mask_bit()
                 | MappingProtocol::Upnp.mask_bit(),

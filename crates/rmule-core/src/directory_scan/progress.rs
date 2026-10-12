@@ -49,6 +49,11 @@ pub enum DirectoryState {
     /// It could not be listed for a reason other than being missing; nothing
     /// under it is scanned until the next start.
     Unlistable,
+    /// The guards refuse it (ADR-0101): the download directory the Core
+    /// Settings name, or where an added directory's path leads now, is the
+    /// home, a filesystem root, or rmule's data directory, inside it or
+    /// holding it. It is not scanned, and it covers no other entry.
+    Refused(crate::DirectoryRefusal),
 }
 
 /// A scan's progress: which directory, and where the pass stands. One per

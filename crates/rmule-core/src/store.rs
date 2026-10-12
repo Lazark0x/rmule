@@ -34,7 +34,7 @@ pub const DURABLE_STORE_FILE: &str = "rmule.redb";
 /// (ADR-0102 "Building the scan"), and so does a new table whose absence an
 /// older build would write past (ADR-0105 "The Had Set").
 pub(crate) const LADDER: Ladder = Ladder::new(
-    13,
+    14,
     &[
         registry::UPGRADE_FROM_V1,
         had_set::UPGRADE_FROM_V2,
@@ -48,6 +48,7 @@ pub(crate) const LADDER: Ladder = Ladder::new(
         registry::UPGRADE_FROM_V10,
         UPGRADE_FROM_V11,
         download::UPGRADE_FROM_V12,
+        UPGRADE_FROM_V13,
     ],
 );
 
@@ -80,6 +81,14 @@ pub(crate) const UPGRADE_FROM_V11: UpgradeStep = UpgradeStep {
     run: app_config::grow_from_v11,
 };
 
+/// Store version 13 → 14 (ADR-0080, "Aux ports"): every managed server row
+/// gains no aux-ports list. A version-13 build refuses the store: it could
+/// not read the row.
+pub(crate) const UPGRADE_FROM_V13: UpgradeStep = UpgradeStep {
+    from: 13,
+    run: app_config::grow_from_v13,
+};
+
 /// Every table the durable seams own, merged for the one `Store::open`.
 /// A seam whose tables are missing here would fail its first read, so this is
 /// the list a test opens against too.
@@ -94,7 +103,8 @@ pub(crate) fn durable_schema() -> Schema {
         .merge(app_config::schema())
 }
 
-/// Every table store version 12 held: today's less the download seeds.
+/// Every table store version 12 held: today's less the download seeds, with
+/// the server list as it was before the aux-ports list.
 #[cfg(test)]
 pub(crate) fn durable_schema_v12() -> Schema {
     credit::schema()
@@ -103,7 +113,7 @@ pub(crate) fn durable_schema_v12() -> Schema {
         .merge(had_set::schema())
         .merge(share_totals::schema())
         .merge(spare_copy::schema())
-        .merge(app_config::schema())
+        .merge(app_config::schema_v13())
 }
 
 /// Open the Durable Store at `data_dir/rmule.redb`, creating the directory

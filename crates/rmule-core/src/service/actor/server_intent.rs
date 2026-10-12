@@ -16,9 +16,10 @@ use tokio::time::Instant;
 use crate::adapters::{
     KadRuntimeFactory, PeerTransferService, ServeRuntimeService, SourceLookupService,
 };
+use crate::run_log::Level;
 use crate::search::LostServerLeg;
 use crate::server_session::ServerSessionHandle;
-use crate::service::{ClientCredentials, CoreEvent, ReconnectEnd, ServerConnectionEvent};
+use crate::service::{CoreEvent, ReconnectEnd, ServerConnectionEvent};
 
 use super::{CoreActor, send_event};
 
@@ -39,11 +40,10 @@ pub(crate) fn reconnect_delay(attempt: u32, first: Duration, ceiling: Duration) 
     first.saturating_mul(1 << doublings).min(ceiling)
 }
 
-/// One standing intent: the server, the identity its logins present, and
-/// where its retries stand.
+/// One standing intent: the server, and where its retries stand. Its logins
+/// present the Core Settings' credentials.
 pub(super) struct ServerIntent {
     server: ServerEndpoint,
-    credentials: ClientCredentials,
     /// Which intent this is, so news about an earlier one's session is told
     /// apart.
     epoch: u64,
@@ -151,11 +151,7 @@ where
 {
     /// The operator connects to `server`: a new intent replaces whatever
     /// stood, a retry to another server included, which is said.
-    pub(super) async fn begin_intent(
-        &mut self,
-        server: ServerEndpoint,
-        credentials: ClientCredentials,
-    ) {
+    pub(super) async fn begin_intent(&mut self, server: ServerEndpoint) {
         if let Some(old) = self.intent.current.take()
             && old.attempt > 0
             && old.server != server
@@ -165,7 +161,6 @@ where
         self.intent.epoch += 1;
         self.intent.current = Some(ServerIntent {
             server,
-            credentials,
             epoch: self.intent.epoch,
             attempt: 0,
             standing: None,
@@ -250,7 +245,7 @@ where
             return;
         };
         intent.retry_at = None;
-        let (server, credentials) = (intent.server.clone(), intent.credentials.clone());
+        let server = intent.server.clone();
         let listed = self
             .wiring
             .server_list
@@ -269,7 +264,7 @@ where
             // A dial is already running; its news decides what follows.
             return;
         }
-        self.establish(server, credentials).await;
+        self.establish(server).await;
     }
 
     fn current_epoch(&self) -> Option<u64> {
@@ -307,13 +302,19 @@ where
             at: at.into_std(),
             steady: next_in >= ceiling,
         };
-        tracing::info!(%event, "the operator's session was lost; reconnecting");
+        tracing::info!(
+            record = %event.record().render(Level::Full),
+            "the operator's session was lost; reconnecting"
+        );
         send_event(&self.evt_tx, CoreEvent::ServerConnection(event)).await;
     }
 
     async fn end_reconnect(&mut self, server: ServerEndpoint, reason: ReconnectEnd) {
         let event = ServerConnectionEvent::ReconnectEnded { server, reason };
-        tracing::info!(%event, "no more reconnects");
+        tracing::info!(
+            record = %event.record().render(Level::Full),
+            "no more reconnects"
+        );
         send_event(&self.evt_tx, CoreEvent::ServerConnection(event)).await;
     }
 }

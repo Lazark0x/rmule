@@ -18,6 +18,8 @@ pub(crate) fn dialed_serve_ctx() -> PeerHandshakeContext {
             60,
         ),
         client_id: ClientId::from_u32(0x0100_007F),
+        ed2k_client_id: ClientId::from_u32(0x0100_007F),
+        public_ip: None,
         connected_server: None,
     }
 }

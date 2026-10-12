@@ -12,6 +12,9 @@
 //! inside the 20 s grace, and the `0xA2` description request that follows an
 //! answered status. The bench network is a documentation range rmule counts as
 //! public (`198.51.100.0/24`), so the login's High ID names the address.
+//! With `--sealed` the leg also reads what follows: the server datagrams rmule
+//! seals under the key the answer carried, and Lugdunum's sealed answers
+//! (`sealed`).
 
 use std::fs;
 use std::time::Duration;
@@ -23,7 +26,9 @@ use crate::docker::RunContainer;
 use crate::flow::bench::{
     Bench, CaptureSidecar, DEFAULT_TAP_INTERFACE, ED2K_SERVER_PORT, run_checked,
 };
-use crate::flow::pcap::{records, udp_payloads, udp4_ports};
+use crate::flow::pcap::{records, udp_payloads, udp4_datagrams, udp4_ports};
+
+mod sealed;
 
 const SUBNET: &str = "198.51.100.0/24";
 /// Past the first-contact ping (5 s after start) and its 20 s grace.
@@ -49,6 +54,9 @@ pub struct CryptPingPortOptions<'a> {
     pub rmule_tools_image: &'a str,
     /// The tcpdump capture-sidecar image.
     pub capture_image: &'a str,
+    /// Also read the sealed exchange that follows the answered crypt-ping
+    /// (`sealed`).
+    pub sealed: bool,
 }
 
 /// Run the leg and write `crypt-ping-port/verdict.txt`.
@@ -134,10 +142,16 @@ pub fn run_crypt_ping_port(options: CryptPingPortOptions<'_>) -> Result<()> {
         fs::write(root.join("rmule.log"), format!("{logs}\n")).context("write rmule.log")?;
         bench.stop_extra(&rmule);
         bench.stop_extra(&tap);
-        if !logs.contains("server connected") {
+        if !logs.contains("server.connected") {
             bail!("rmule never logged in to Lugdunum");
         }
-        verdict(&root.join(PCAP))
+        let mut verdict = verdict(&root.join(PCAP))?;
+        if options.sealed {
+            let datagrams = udp4_datagrams(&root.join(PCAP))?;
+            verdict.push(' ');
+            verdict.push_str(&sealed::read_sealed(&datagrams, ED2K_SERVER_PORT + 12));
+        }
+        Ok(verdict)
     })();
 
     if result.is_err() {

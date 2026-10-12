@@ -26,7 +26,9 @@ use ed2k_server::server::login::LoginRequest as TheirLogin;
 use ed2k_server::server::offerfiles::parse_offerfiles;
 use tokio_util::codec::Decoder;
 
-use rmule_ed2k::{GetSourcesRequest, LoginRequest, OfferFiles, OfferedFile, SearchRequest};
+use rmule_ed2k::{
+    GetSourcesRequest, LoginRequest, OfferFiles, OfferedFile, SearchRequest, ServerGrants,
+};
 use rmule_primitives::{
     Capabilities, ClientId, ClientIdentity, CryptStance, Ed2kText, FileHash, Packet,
     PacketProtocol, KeywordQuery, SourceLookupTarget, Tag, TagValue, UserHash,
@@ -239,7 +241,7 @@ fn offer_files(report: &mut Report) {
             Ed2kText::from_utf8("Linux Mint 22.iso"),
         ),
     ];
-    let offer = OfferFiles::announce(ClientId::from_u32(0), 4662, &files);
+    let offer = OfferFiles::announce(ServerGrants::default(), ClientId::from_u32(0), ClientId::from_u32(0), 4662, &files);
     let packet = offer.encode_packet();
     let payload = packet.payload().to_vec();
 

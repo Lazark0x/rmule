@@ -220,6 +220,7 @@ fn completion_keeps_the_row_and_cancellation_removes_it() {
         &mut state,
         download_event(DownloadEvent::DownloadCompleted {
             download_id: download_id(1),
+            final_path: "/downloads/file.bin".into(),
         }),
     );
     fold(

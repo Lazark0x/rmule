@@ -273,6 +273,8 @@ mod tests {
                 figures: None,
                 grants: None,
                 udp_crypt: None,
+                aux_ports: None,
+                listed_udp_flags: None,
             })
             .unwrap();
         store

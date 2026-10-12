@@ -10,25 +10,18 @@
 //! So where `BuddySlot` *attaches* an accepted connection, this slot holds the
 //! command half of one we opened, and its loss is ours to notice.
 //!
-//! One shared instance (`Core::builder`, the [`SharedBuddySlot`] ownership
-//! pattern) meets three surfaces:
-//!
-//! - the **Kad pump**: the recruit trigger over the live ADR-0058 verdicts, and
-//!   the verified `0x5A` that fills the slot;
-//! - the **firewalled front** (`super::front`): the dial, the keepalive, and
-//!   everything that arrives on the held link;
-//! - the **client-UDP front**: a standalone `0xC5 0xA0` and an inbound `0x95`,
-//!   both routed to the front rather than decided here.
+//! It is a plain struct with **one owner**, the firewalled front
+//! (`super::front`), whose task adopts the verified `0x5A` the Kad pump hands
+//! it, dials, holds, pings and releases the link, and rules on everything
+//! that arrives on that link or on the client-UDP socket (ADR-0061). No other
+//! task reads it: every change it makes leaves as the [`BuddySnapshot`] it
+//! publishes, which the hello, the Kad pump and the Run Log trail read.
 //!
 //! Everything below is a decision with an explicit `Instant`; nothing here
-//! awaits, opens a socket or sends a datagram. A `std::sync::Mutex` guards it
-//! for `BuddySlot`'s reason: every section is a map update that never crosses
-//! an `.await`.
-//!
-//! [`SharedBuddySlot`]: crate::buddy_link::SharedBuddySlot
+//! awaits, opens a socket or sends a datagram.
 
 use std::net::IpAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rmule_kad::KadId;
@@ -37,19 +30,15 @@ use rmule_peer::natt::RendezvousBody;
 use rmule_primitives::{
     CryptStance, Ipv4Endpoint, OutboundCrypt, PeerCrypt, PeerEndpoint, UserHash,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use super::FirewalledNode;
 use super::direct_callback::{DirectCallbackConsume, DirectCallbackContext, DirectCallbackVerdict};
-use super::recruit::{AdoptOutcome, FindBuddyRes, RecruitContext, RecruitDecision, RecruitRefusal};
+use super::recruit::{AdoptOutcome, FindBuddyRes};
 use super::relayed_callback::{CallbackConsume, CallbackVerdict};
 use crate::natt::acting::{
     ActingContext, ActingPath, ActingRefusal, ActingVerdict, RendezvousCarrier,
 };
-
-/// The one core-owned enacted firewalled slot, created by `Core::builder` and
-/// cloned into the Kad pump, the firewalled front and the client-UDP front.
-pub(crate) type SharedFirewalledSlot = Arc<FirewalledSlot>;
 
 /// How often the firewalled node pings the buddy link it dialed
 /// (`OP_BUDDYPING`, [`BaseClient.cpp#L2544`](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/BaseClient.cpp#L2544)).
@@ -66,7 +55,11 @@ pub(crate) type SharedFirewalledSlot = Arc<FirewalledSlot>;
 /// `AllowIncomeingBuddyPingPong()` ignores any ping inside **thirteen** minutes
 /// of its last pong, so every ping rmule sent before the tenth minute was
 /// dropped unanswered by an aMule buddy — five pings per answer, teaching the
-/// link nothing. The link's own timeout is generous enough for the slower
+/// link nothing. aMule's `Init` stamps the same ten-minutes-ahead time when it
+/// creates the client
+/// ([BaseClient.cpp#L278](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/BaseClient.cpp#L278)),
+/// so the first ping, ten minutes into the link, goes unanswered too — as it
+/// does between two aMules — and the second is the first an aMule buddy pongs. The link's own timeout is generous enough for the slower
 /// period: `KS_CONNECTED_BUDDY` adds `MIN2MS(15)` to `CheckTimeOut`, and any
 /// packet on the link resets it.
 pub(crate) const BUDDY_PING_INTERVAL: Duration = Duration::from_secs(10 * 60);
@@ -182,26 +175,70 @@ struct Inner {
     link: Option<HeldLink>,
     /// The buddy a dial is in flight for, from [`begin_dial`] until that
     /// dial lands on [`hold_link`] or [`on_dial_failed`] — the
-    /// guard that keeps a second `BuddyAdopted` from dialing the same buddy
-    /// twice.
+    /// guard that keeps a second adopt from dialing the same buddy twice.
     ///
     /// [`begin_dial`]: FirewalledSlot::begin_dial
     /// [`hold_link`]: FirewalledSlot::hold_link
     /// [`on_dial_failed`]: FirewalledSlot::on_dial_failed
     dialing: Option<RecruitedBuddy>,
-    /// A FINDBUDDY walk is in flight — the diagnostics' `walking`, and the
-    /// guard that keeps one recruit tick from starting a second walk.
-    walking: bool,
-    /// Why the most recent recruit tick refused to walk, or
-    /// `None` on the one tick that launched a walk — a level, refreshed on
-    /// every tick, mirroring `buddy_state`'s own single-writer discipline.
-    /// Most informative alongside `BuddyState::None`: `CryptRequired` there
-    /// means this node will never hold a buddy, not merely that the last tick
-    /// found nothing due (`PacingNotDue`).
-    last_recruit_refusal: Option<RecruitRefusal>,
+    /// When the slot last let a buddy go — its link lost, its dial failed,
+    /// or released — or `None` since the node started. Published, not
+    /// acted on here: a loss newer than the recruit rule's last walk is what
+    /// arms the instant recruit aMule's tick reset is.
+    lost_at: Option<Instant>,
 }
 
 impl Inner {
+    /// What the slot publishes: its own state, never `Walking` (the walk is
+    /// the Kad pump's), and the reads every other reader takes from it.
+    fn snapshot(&self) -> BuddySnapshot {
+        let publish = self.publish_buddy_info(true);
+        let (state, held_since) = match (&self.link, self.buddy) {
+            (Some(link), _) => (BuddyState::Held, Some(link.since)),
+            (None, Some(_)) => (BuddyState::Recruited, None),
+            (None, None) => (BuddyState::None, None),
+        };
+        BuddySnapshot {
+            state,
+            held_since,
+            lost_at: self.lost_at,
+            publish,
+            serving: self.serving_buddy(publish),
+        }
+    }
+
+    /// The buddy our hello names while the link is held (ADR-0061/0087):
+    /// `CT_EMULE_BUDDYIP` + `CT_EMULE_BUDDYUDP` from the held link's IPv4 and
+    /// the `0x5A`'s UDP port, `CT_EMULE_SERVINGBUDDYIPV6` from the same fact
+    /// the source publish carries as `bi6` — one read, one verdict, so the
+    /// three tags and the Kad row never disagree about the buddy.
+    ///
+    /// "A buddy" is the **held link**: aMule and emule-qt link `m_pBuddy`
+    /// only once the buddy's handshake completes (`KS_CONNECTED_BUDDY`, aMule
+    /// `ClientList.cpp:807-816`, emule-qt `ClientList.cpp:567-571`), not on
+    /// the `0x5A` adopt. The firewalled half of emule-qt's gate
+    /// (`sendBuddyTags`, `UpDownClient.cpp:1197-1210`) is the reader's, per
+    /// hello.
+    fn serving_buddy(
+        &self,
+        publish: Option<super::BuddyPublish>,
+    ) -> Option<rmule_peer::ServingBuddyAdvert> {
+        let (Some(link), Some(buddy), Some(publish)) = (&self.link, self.buddy, publish) else {
+            return None;
+        };
+        // The address the link runs to — today always the `0x5A`'s IPv4, the
+        // endpoint the front dials; an IPv6 link would still have been
+        // recruited at that IPv4.
+        let ip = match link.remote {
+            PeerEndpoint::V4(endpoint) => endpoint.ip,
+            PeerEndpoint::V6(_) => buddy.tcp.ip,
+        };
+        Some(rmule_peer::ServingBuddyAdvert {
+            buddy_udp: Ipv4Endpoint::new(ip, publish.buddy_udp.port),
+            ipv6: publish.buddy_ipv6,
+        })
+    }
+
     /// A dial to `dialed` landed: its claim on [`dialing`](Self::dialing)
     /// ends, whatever the landing then decides. Another buddy's claim is left
     /// alone — a dial for a buddy since let go lands while its successor's is
@@ -228,12 +265,86 @@ impl Inner {
 /// aMule's `m_pBuddy` seen from the firewalled side: the [`FirewalledNode`]
 /// decision slot paired with the buddy link we dialed. See the module doc.
 pub(crate) struct FirewalledSlot {
-    inner: Mutex<Inner>,
-    /// **Self Reach** (ADR-0060), installed once by the core
-    /// actor that weaves it: the hello's buddy tags ask its
-    /// `IsFirewalled()` union at every hello. Empty — no tags — until then,
-    /// as an unstarted core claims no buddy.
-    reach: std::sync::OnceLock<crate::reachability::SharedSelfReach>,
+    inner: Inner,
+    /// Where the **Buddy Snapshot** goes, moved by the section that moved
+    /// it. The slot is its one writer.
+    published: Arc<watch::Sender<BuddySnapshot>>,
+}
+
+/// One section of the slot: a write, and at its end the snapshot it leaves
+/// published if the section moved it, so no mutator can forget to.
+struct Section<'a> {
+    inner: &'a mut Inner,
+    published: &'a watch::Sender<BuddySnapshot>,
+}
+
+impl std::ops::Deref for Section<'_> {
+    type Target = Inner;
+
+    fn deref(&self) -> &Inner {
+        self.inner
+    }
+}
+
+impl std::ops::DerefMut for Section<'_> {
+    fn deref_mut(&mut self) -> &mut Inner {
+        self.inner
+    }
+}
+
+impl Drop for Section<'_> {
+    fn drop(&mut self) {
+        let now = self.inner.snapshot();
+        self.published.send_if_modified(|published| {
+            let moved = *published != now;
+            *published = now;
+            moved
+        });
+    }
+}
+
+/// The **Buddy Snapshot** (ADR-0061): what the slot publishes after every
+/// change, for every reader that is not the slot's owner — the hello's buddy
+/// tags, the Kad pump's publish posture and recruit rule, and the Run Log
+/// trail.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BuddySnapshot {
+    /// [`BuddyState::None`], [`Recruited`](BuddyState::Recruited) or
+    /// [`Held`](BuddyState::Held) — never `Walking`: the walk is the Kad
+    /// pump's, published as its Recruit Status
+    /// ([`state_while`](Self::state_while) composes the two).
+    pub(crate) state: BuddyState,
+    /// While the link is held, since when.
+    pub(crate) held_since: Option<Instant>,
+    /// When the slot last let a buddy go — its link lost, its dial failed,
+    /// or released — `None` since the node started. A loss newer than the
+    /// recruit rule's last walk arms an instant recruit.
+    pub(crate) lost_at: Option<Instant>,
+    /// The buddy row our Kad source publishes name (ADR-0061 → ADR-0043):
+    /// the adopted buddy and the relationship ID, with the held link's `bi6`.
+    /// Ungated: whether a publish is firewalled at all is Self Reach's word,
+    /// read by the publisher.
+    pub(crate) publish: Option<super::BuddyPublish>,
+    /// What the hello's buddy tags name while the link is held; the hello
+    /// gates it on Self Reach's `IsFirewalled()` union per hello.
+    pub(crate) serving: Option<rmule_peer::ServingBuddyAdvert>,
+}
+
+impl BuddySnapshot {
+    /// Whether the slot holds a buddy — adopted or linked: the recruit rule's
+    /// `AlreadyHaveBuddy`.
+    pub(crate) fn holds_buddy(&self) -> bool {
+        self.state != BuddyState::None
+    }
+
+    /// The operator's [`BuddyState`]: the slot's own, or `Walking` while the
+    /// slot is empty and the Kad pump's walk is in flight.
+    pub(crate) fn state_while(&self, walking: bool) -> BuddyState {
+        match self.state {
+            BuddyState::None if walking => BuddyState::Walking,
+            state => state,
+        }
+    }
 }
 
 /// What the diagnostics snapshot says about our buddy.
@@ -252,92 +363,51 @@ pub enum BuddyState {
     Held,
 }
 
-impl Default for FirewalledSlot {
-    /// The slot a core is woven with, before any Kad node has named this
-    /// node's place in the keyspace: the all-zero Kad ID. Nothing can be
-    /// adopted against it — a `0x5A` verifies by inverting the echoed ID and
-    /// no answer inverts to zero unless it echoed all-ones, which no walk of
-    /// ours ever asked for — so an unstarted core holds no buddy by
-    /// construction rather than by a flag. [`reset`](Self::reset) seats the
-    /// real ID when a node starts.
-    fn default() -> Self {
-        Self::new(KadId::from_bytes([0; KadId::BYTE_LEN]))
-    }
-}
-
 impl FirewalledSlot {
-    /// A fresh slot for a node whose Kad ID is `our_kad_id`.
-    pub(crate) fn new(our_kad_id: KadId) -> Self {
-        Self {
-            inner: Mutex::new(Inner {
+    /// A fresh slot for a node whose Kad ID is `our_kad_id`, publishing its
+    /// snapshot to `published`.
+    pub(crate) fn new(our_kad_id: KadId, published: Arc<watch::Sender<BuddySnapshot>>) -> Self {
+        let slot = Self {
+            inner: Inner {
                 node: FirewalledNode::new(our_kad_id),
                 acting: ActingPath::default(),
                 buddy: None,
                 link: None,
                 dialing: None,
-                walking: false,
-                last_recruit_refusal: None,
-            }),
-            reach: std::sync::OnceLock::new(),
+                lost_at: None,
+            },
+            published,
+        };
+        slot.published.send_replace(slot.inner.snapshot());
+        slot
+    }
+
+    fn section(&mut self) -> Section<'_> {
+        Section {
+            inner: &mut self.inner,
+            published: &self.published,
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner.lock().expect("firewalled slot mutex")
+    /// The Buddy Snapshot of the slot as it stands.
+    pub(crate) fn snapshot(&self) -> BuddySnapshot {
+        self.inner.snapshot()
     }
 
     /// Re-seat the slot on a Kad (re)start: a new node ID, no buddy, no link,
-    /// no pacing history — the [`BuddySlot::reset`] discipline, and for the
+    /// no loss on record — the [`BuddySlot::reset`] discipline, and for the
     /// same reason (a restarted node must not inherit a slot it can no longer
     /// verify a `0x5A` against).
     ///
     /// [`BuddySlot::reset`]: crate::buddy_link::BuddySlot::reset
-    pub(crate) fn reset(&self, our_kad_id: KadId) {
-        let mut inner = self.lock();
+    pub(crate) fn reseat(&mut self, our_kad_id: KadId) {
+        let mut inner = self.section();
         inner.node = FirewalledNode::new(our_kad_id);
         inner.acting = ActingPath::default();
         inner.buddy = None;
         inner.link = None;
         inner.dialing = None;
-        inner.walking = false;
-        inner.last_recruit_refusal = None;
-    }
-
-    /// The recruit trigger (ADR-0061): the sans-I/O refusal matrix, plus the
-    /// one enactment fact it cannot see — a walk already in flight. A walk is
-    /// refused as [`PacingNotDue`](super::recruit::RecruitRefusal::PacingNotDue)
-    /// while one runs, because the trigger's own clock was already stamped when
-    /// that walk started.
-    pub(crate) fn consider_recruitment(
-        &self,
-        ctx: &RecruitContext,
-        now: Instant,
-    ) -> RecruitDecision {
-        let mut inner = self.lock();
-        if inner.walking {
-            let decision = RecruitDecision::Refuse {
-                reason: RecruitRefusal::PacingNotDue,
-            };
-            inner.last_recruit_refusal = Some(RecruitRefusal::PacingNotDue);
-            return decision;
-        }
-        let decision = inner.node.consider_recruitment(ctx, now);
-        match decision {
-            RecruitDecision::Recruit { .. } => {
-                inner.walking = true;
-                inner.last_recruit_refusal = None;
-            }
-            RecruitDecision::Refuse { reason } => inner.last_recruit_refusal = Some(reason),
-        }
-        decision
-    }
-
-    /// The FINDBUDDY walk ended. Only the walking flag moves: whether to try
-    /// again sooner than the 20-minute tick is the trigger's pacing to decide,
-    /// and re-arming on an empty walk would start one per tick on a node whose
-    /// routing table is simply cold.
-    pub(crate) fn on_walk_ended(&self) {
-        self.lock().walking = false;
+        inner.lost_at = None;
     }
 
     /// Verify a `0x5A` and, on success, fill the slot with the buddy it named
@@ -346,13 +416,12 @@ impl FirewalledSlot {
     /// ([`AdoptOutcome::CryptIncompatible`]). The walk that
     /// produced it is over either way.
     pub(crate) fn adopt_buddy(
-        &self,
+        &mut self,
         res: &FindBuddyRes,
         buddy: RecruitedBuddy,
         ours: CryptStance,
     ) -> AdoptOutcome {
-        let mut inner = self.lock();
-        inner.walking = false;
+        let mut inner = self.section();
         if inner.node.answers_our_walk(res)
             && buddy.peer_crypt().outbound(ours) == OutboundCrypt::Incompatible
         {
@@ -368,18 +437,18 @@ impl FirewalledSlot {
     /// The buddy the slot holds, if any — what the front dials, and what the
     /// diagnostics name.
     pub(crate) fn buddy(&self) -> Option<RecruitedBuddy> {
-        self.lock().buddy
+        self.inner.buddy
     }
 
     /// Claim the dial to `buddy`: `true` when the front may start it, `false`
     /// when a dial to that very buddy is already in flight. A
-    /// second `BuddyAdopted` — a re-adopt after a recruit tick, a duplicate
+    /// second adopt — a re-adopt after a recruit tick, a duplicate
     /// `0x5A` — must not open a second connection to the buddy the first is
     /// still dialing: both would land `Held`, and one of them could only be
     /// shut. The claim ends when that dial lands, held or failed, refused or
     /// not.
-    pub(crate) fn begin_dial(&self, buddy: RecruitedBuddy) -> bool {
-        let mut inner = self.lock();
+    pub(crate) fn begin_dial(&mut self, buddy: RecruitedBuddy) -> bool {
+        let mut inner = self.section();
         if inner.dialing == Some(buddy) {
             return false;
         }
@@ -404,14 +473,14 @@ impl FirewalledSlot {
     /// the diagnostics already name — and the caller shuts the second, as it
     /// does a stale one.
     pub(crate) fn hold_link(
-        &self,
+        &mut self,
         dialed: RecruitedBuddy,
         remote: PeerEndpoint,
         commands: mpsc::Sender<PeerCommand>,
         claimed_ipv6: Option<std::net::Ipv6Addr>,
         now: Instant,
     ) -> bool {
-        let mut inner = self.lock();
+        let mut inner = self.section();
         inner.end_dial(dialed);
         if inner.buddy != Some(dialed) || inner.link.is_some() {
             return false;
@@ -426,57 +495,61 @@ impl FirewalledSlot {
         true
     }
 
-    /// The held link closed (the buddy hung up, or we let it go): free the
-    /// slot **and** arm an instant recruit, exactly as aMule resets its
-    /// FindBuddy tick on buddy loss. Reports whether a link was actually held,
-    /// so a stale close says nothing.
-    pub(crate) fn on_link_closed(&self, remote: PeerEndpoint) -> bool {
-        let mut inner = self.lock();
+    /// The held link closed at `now` (the buddy hung up, or we let it go):
+    /// free the slot **and** publish the loss, which arms an instant recruit
+    /// exactly as aMule resets its FindBuddy tick on buddy loss. Reports
+    /// whether a link was actually held, so a stale close says nothing.
+    pub(crate) fn on_link_closed(&mut self, remote: PeerEndpoint, now: Instant) -> bool {
+        let mut inner = self.section();
         if !matches!(&inner.link, Some(link) if link.remote == remote) {
             return false;
         }
         inner.link = None;
         inner.buddy = None;
         inner.node.on_buddy_lost();
+        inner.lost_at = Some(now);
         true
     }
 
-    /// A dial for `dialed` failed before any link was held: the buddy is one
-    /// we cannot reach, so free the slot and arm an instant recruit, as a lost
-    /// link does. Reports whether it did.
+    /// A dial for `dialed` failed at `now`, before any link was held: the
+    /// buddy is one we cannot reach, so free the slot and publish the loss,
+    /// as a lost link does. Reports whether it did.
     ///
     /// Refused — `false`, nothing touched — unless the slot still holds
     /// `dialed` with no link up, [`hold_link`](Self::hold_link)'s rule for the
     /// other outcome: the dial ran on its own task, and while it was in flight
     /// its buddy may have been released and **another adopted**. Releasing
     /// then would let buddy A's late failure throw away buddy B.
-    pub(crate) fn on_dial_failed(&self, dialed: RecruitedBuddy) -> bool {
-        let mut inner = self.lock();
+    pub(crate) fn on_dial_failed(&mut self, dialed: RecruitedBuddy, now: Instant) -> bool {
+        let mut inner = self.section();
         inner.end_dial(dialed);
         if inner.buddy != Some(dialed) || inner.link.is_some() {
             return false;
         }
         inner.buddy = None;
         inner.node.on_buddy_lost();
+        inner.lost_at = Some(now);
         true
     }
 
     /// Release the buddy because we no longer need one — we became reachable,
     /// or Kad stopped. Hands back the held link's command half so the front can
-    /// shut that connection down; the slot is empty either way.
-    pub(crate) fn release(&self) -> Option<mpsc::Sender<PeerCommand>> {
-        let mut inner = self.lock();
+    /// shut that connection down; the slot is empty either way, and the loss
+    /// is published either way, so the walk is due at once should the node
+    /// need a buddy again.
+    pub(crate) fn release(&mut self, now: Instant) -> Option<mpsc::Sender<PeerCommand>> {
+        let mut inner = self.section();
         inner.buddy = None;
-        inner.walking = false;
         inner.node.on_buddy_lost();
+        inner.lost_at = Some(now);
         inner.link.take().map(|link| link.commands)
     }
 
     /// The keepalive due on the held link, or `None` — no link, or the last
     /// ping is younger than [`BUDDY_PING_INTERVAL`]. Stamps the clock, so one
     /// due tick yields one ping.
-    pub(crate) fn due_keepalive(&self, now: Instant) -> Option<mpsc::Sender<PeerCommand>> {
-        let mut inner = self.lock();
+    pub(crate) fn due_keepalive(&mut self, now: Instant) -> Option<mpsc::Sender<PeerCommand>> {
+        let inner = &mut self.inner;
         let link = inner.link.as_mut()?;
         if now.saturating_duration_since(link.last_ping) < BUDDY_PING_INTERVAL {
             return None;
@@ -497,7 +570,7 @@ impl FirewalledSlot {
         req: &CallbackConsume,
         kad_running: bool,
     ) -> CallbackVerdict {
-        let inner = self.lock();
+        let inner = &self.inner;
         if inner.link.is_none() {
             return CallbackVerdict::Drop {
                 reason: super::relayed_callback::CallbackDrop::NoBuddyHeld,
@@ -514,13 +587,13 @@ impl FirewalledSlot {
     /// that does not is an ordinary reask whose answer leaves by the
     /// client-UDP socket.
     pub(crate) fn consume_reask_relay(
-        &self,
+        &mut self,
         relay: rmule_peer::ReaskCallbackTcp,
         serves_quic: bool,
         is_own_interface: impl FnOnce(IpAddr) -> bool,
         now: Instant,
     ) -> ReaskRelayConsume {
-        let mut inner = self.lock();
+        let inner = &mut self.inner;
         let Some(link) = inner.link.as_ref().map(|link| link.remote) else {
             return ReaskRelayConsume::NoHeldLink;
         };
@@ -574,14 +647,14 @@ impl FirewalledSlot {
     /// carrier, the buddy relation must be live — the link held — before
     /// anything from it is acted on.
     pub(crate) fn consume_standalone_rendezvous(
-        &self,
+        &mut self,
         body: &RendezvousBody,
         from: PeerEndpoint,
         serves_quic: bool,
         is_own_interface: impl FnOnce(IpAddr) -> bool,
         now: Instant,
     ) -> ActingVerdict {
-        let mut inner = self.lock();
+        let inner = &mut self.inner;
         if inner.link.is_none() {
             return ActingVerdict::Refuse(ActingRefusal::NotFromOurBuddy);
         }
@@ -602,99 +675,12 @@ impl FirewalledSlot {
     /// Consume an `OP_DIRECTCALLBACKREQ` (`0x95`) (ADR-0061 route 2): the
     /// per-source-IP rate limit and the still-firewalled / Kad-running gates.
     pub(crate) fn consume_direct_callback(
-        &self,
+        &mut self,
         req: &DirectCallbackConsume,
         ctx: &DirectCallbackContext,
         now: Instant,
     ) -> DirectCallbackVerdict {
-        self.lock().node.consume_direct_callback(req, ctx, now)
-    }
-
-    /// The buddy info our Kad source publishes carry while firewalled
-    /// (ADR-0061 → ADR-0043): the buddy's UDP endpoint and the relationship ID
-    /// the pure tier decides, and the buddy's IPv6 (`bi6`) from
-    /// the link this slot holds — `None` until the link is held, and gone
-    /// with it. `firewalled` is Self Reach's `IsFirewalled()` union
-    /// ([`SharedSelfReach::firewalled`](crate::reachability::SharedSelfReach::firewalled)),
-    /// not the Kad TCP verdict alone.
-    pub(crate) fn publish_buddy_info(&self, firewalled: bool) -> Option<super::BuddyPublish> {
-        self.lock().publish_buddy_info(firewalled)
-    }
-
-    /// Install **Self Reach**, once: the owner the hello's
-    /// buddy tags ask. A second install is ignored — one owner per core.
-    pub(crate) fn install_reach(&self, reach: crate::reachability::SharedSelfReach) {
-        let _ = self.reach.set(reach);
-    }
-
-    /// The hello's `MiscOptions2` direct-callback bit: Self
-    /// Reach's answer, read per hello through the owner installed here —
-    /// dark until one is.
-    pub(crate) fn hello_direct_udp_callback(&self) -> bool {
-        self.reach
-            .get()
-            .is_some_and(crate::reachability::SharedSelfReach::hello_direct_udp_callback)
-    }
-
-    /// The buddy our hello names (ADR-0061/0087): `CT_EMULE_BUDDYIP` +
-    /// `CT_EMULE_BUDDYUDP` from the held link's IPv4 and the `0x5A`'s UDP port
-    /// `CT_EMULE_SERVINGBUDDYIPV6` from the same fact the source
-    /// publish carries as `bi6` — one read, one verdict, so the
-    /// three tags and the Kad row never disagree about the buddy.
-    ///
-    /// Gated like emule-qt's hello (`sendBuddyTags`: firewalled **and** a
-    /// buddy, `UpDownClient.cpp:1197-1210`), where "a buddy" is the **held
-    /// link**: aMule and emule-qt link `m_pBuddy` only once the buddy's
-    /// handshake completes (`KS_CONNECTED_BUDDY`, aMule `ClientList.cpp:807-816`,
-    /// emule-qt `ClientList.cpp:567-571`), not on the `0x5A` adopt.
-    ///
-    /// Read under the one lock that holds the link, per hello: a link held or
-    /// lost on the front's task shows in the very next hello, where the Kad
-    /// row trails it by at most one recruit tick.
-    pub(crate) fn serving_buddy(&self) -> Option<rmule_peer::ServingBuddyAdvert> {
-        let inner = self.lock();
-        let (Some(link), Some(buddy)) = (&inner.link, inner.buddy) else {
-            return None;
-        };
-        // aMule's `GetBuddy() && IsFirewalled()` (`BaseClient.cpp:1031`,
-        // `4e8f2b3c`): the owner's union, read per hello.
-        let firewalled = self
-            .reach
-            .get()
-            .is_some_and(crate::reachability::SharedSelfReach::firewalled);
-        let publish = inner.publish_buddy_info(firewalled)?;
-        // The address the link runs to — today always the `0x5A`'s IPv4, the
-        // endpoint `front::dial_buddy` dials; an IPv6 link would still have
-        // been recruited at that IPv4.
-        let ip = match link.remote {
-            PeerEndpoint::V4(endpoint) => endpoint.ip,
-            PeerEndpoint::V6(_) => buddy.tcp.ip,
-        };
-        Some(rmule_peer::ServingBuddyAdvert {
-            buddy_udp: Ipv4Endpoint::new(ip, publish.buddy_udp.port),
-            ipv6: publish.buddy_ipv6,
-        })
-    }
-
-    /// What the diagnostics snapshot reports: the slot's state and, while a
-    /// link is held, since when.
-    pub(crate) fn state(&self) -> (BuddyState, Option<Instant>) {
-        let inner = self.lock();
-        match (&inner.link, inner.buddy, inner.walking) {
-            (Some(link), _, _) => (BuddyState::Held, Some(link.since)),
-            (None, Some(_), _) => (BuddyState::Recruited, None),
-            (None, None, true) => (BuddyState::Walking, None),
-            (None, None, false) => (BuddyState::None, None),
-        }
-    }
-
-    /// Why the most recent recruit tick refused to walk. Read
-    /// beside [`state`](Self::state): most informative while it reports
-    /// `BuddyState::None`, where `CryptRequired` means this node will never
-    /// recruit and `PacingNotDue` means only that the next tick is not yet
-    /// due.
-    pub(crate) fn recruit_refusal(&self) -> Option<RecruitRefusal> {
-        self.lock().last_recruit_refusal
+        self.inner.node.consume_direct_callback(req, ctx, now)
     }
 }
 

@@ -40,8 +40,10 @@ pair (ADR-0068), the last two running in-engine. The socket is a core-owned port
 deterministic tier. The codecs are sans-I/O in `rmule-ed2k` (`server_udp`), framed with
 `Packet::encode_udp` and a structure-driven `decode_udp` that returns the consumed length
 so a multi-packet datagram is walked body by body. The `+4` offset lives in one place on
-each side (`ipv4_server_addr` on send, the router on receive), and the callback table
-keys on the server's TCP endpoint.
+each side: the Server-UDP Seal on send, which every sender goes through and which also
+decides whether a datagram is sealed (ADR-0046), and the engine on receive, which hands each
+consumer its datagrams tagged with the server's standard endpoint. The **Awaited Inbound**
+registry keys a Pending Callback on that endpoint.
 
 **The swept list is a projection of the Managed Server List** (ADR-0080), never a second
 list: every listed server, in list order, minus the dead (ADR-0052), minus those the IP
@@ -58,14 +60,14 @@ snapshots it when it starts; a server added mid-sweep joins the next one.
   answer to its download.
 - It asks nobody while no server session is up. The sweep still runs and answers in
   flight are still routed; the first sweep after a login asks.
-- Sources enter through `DownloadState::on_global_sources`, not the peer-exchange path.
+- Sources enter through `DownloadState::on_sightings` (`Channel::Global`), not the peer-exchange path.
   High-ID sources go straight into the candidate pool (ADR-0030). While rmule can be
-  called back, Low-ID sources go into `low_id_global_pool` as Low-ID Candidate records
+  called back, Low-ID sources go into the Source Book's global Low-ID lane as Low-ID Candidate records
   tagged with their source server (`source_server: Some(..)`), apart from the connected
   server's pool, so a callback is never asked of the wrong server; otherwise they are
   dropped.
 - `fill()` emits `Decision::RequestGlobalCallback { low_id, source_server }`; the runner
-  registers the callback table entry, sends `OP_GLOBCALLBACKREQUEST` with rmule's own
+  registers a Pending Callback in the **Awaited Inbound** registry, sends `OP_GLOBCALLBACKREQUEST` with rmule's own
   public IP and advertised TCP port, and arms a per-server deadline. The peer that dials
   in is driven as an Adopted Inbound Worker (ADR-0039). Such a record is bare (no User
   Hash, buddy or NAT-T bit), so it arms no other route and waits out its slot deadline.

@@ -112,20 +112,39 @@ fn run(
     until: Duration,
     refuse: Option<WatchFault>,
 ) -> Run {
-    run_joining(world, rows, Vec::new(), first, script, until, refuse)
+    let registry = Registry {
+        rows,
+        ..Registry::default()
+    };
+    run_on(world, registry, first, script, until, refuse)
 }
 
-/// [`run`], with rows that join the registry at their instant, as a share
-/// the actor makes while the check runs.
-fn run_joining(
-    world: &World,
+/// What the stand-in actor holds when the check starts.
+#[derive(Default)]
+struct Registry {
+    /// The registry's rows.
     rows: Vec<SharedFileEntry>,
+    /// Rows that join the registry at their instant, as a share the actor
+    /// makes while the check runs.
     joining: Vec<(Duration, SharedFileEntry)>,
+    /// Rows the actor withheld before the check's first look, and why.
+    held: Vec<(FileHash, WithheldReason)>,
+}
+
+/// [`run`], from the stand-in actor's `registry`.
+fn run_on(
+    world: &World,
+    registry: Registry,
     first: Vec<CheckInput>,
     script: Vec<(Duration, Step)>,
     until: Duration,
     refuse: Option<WatchFault>,
 ) -> Run {
+    let Registry {
+        rows,
+        joining,
+        held,
+    } = registry;
     let stop = Arc::new(AtomicBool::new(false));
     let elapsed = Arc::new(AtomicU64::new(0));
     let covered = Arc::new(Mutex::new(Vec::new()));
@@ -146,9 +165,13 @@ fn run_joining(
         covered: Arc::clone(&covered),
         refuse,
     };
+    let withheld = WithheldRows::before_start_look();
+    for (file_hash, reason) in held {
+        withheld.withhold(file_hash, reason, SystemTime::UNIX_EPOCH);
+    }
     let actor = Mutex::new(Actor {
         rows,
-        withheld: WithheldRows::before_start_look(),
+        withheld,
         log: Vec::new(),
     });
     let withheld = actor.lock().unwrap().withheld.clone();
@@ -531,10 +554,13 @@ fn a_file_shared_into_a_new_folder_is_looked_at_once_its_folder_is_watched() {
     let song = shared(&world, "/music/song.mp3", b"song", 1);
     world.with(|dir| dir.dir("/films"));
     let film = shared(&world, "/films/film.mkv", b"film", 2);
-    let outcome = run_joining(
+    let outcome = run_on(
         &world,
-        vec![song],
-        vec![(secs(3), film)],
+        Registry {
+            rows: vec![song],
+            joining: vec![(secs(3), film)],
+            ..Registry::default()
+        },
         Vec::new(),
         vec![step(secs(3), |dir| {
             // Shared, then gone before its folder's watch began: no notice
@@ -558,4 +584,5 @@ fn a_file_shared_into_a_new_folder_is_looked_at_once_its_folder_is_watched() {
 }
 
 mod linked;
+mod refused;
 mod withheld;

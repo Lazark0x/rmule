@@ -12,7 +12,7 @@
 //! asker's own part status after the hash whenever the session's
 //! [`ExtendedRequests`] level is at least 1.
 
-use rmule_primitives::{Ed2kText, FileHash, Packet};
+use rmule_primitives::{Ed2kText, FileHash, Packet, WireReader, WireTruncated};
 use thiserror::Error;
 
 use crate::file::{PartBitmap, PartBitmapDecodeError};
@@ -131,10 +131,11 @@ pub enum FileSizedStatus {
 /// the wire's count.
 #[must_use]
 pub(crate) fn read_file_sized_status(tail: &[u8], file_size: u64) -> FileSizedStatus {
-    let Some((count, bitmap)) = tail.split_first_chunk::<2>() else {
+    let mut reader = WireReader::new(tail);
+    let Ok(count) = reader.read_u16_le("part count") else {
         return FileSizedStatus::Cut(None);
     };
-    let count = u32::from(u16::from_le_bytes(*count));
+    let count = u32::from(count);
     if count == 0 {
         return FileSizedStatus::Read {
             status: PartBitmap::decode(0, &[]).expect("an empty bitmap always decodes"),
@@ -147,7 +148,9 @@ pub(crate) fn read_file_sized_status(tail: &[u8], file_size: u64) -> FileSizedSt
         return FileSizedStatus::Cleared;
     }
     let needed = (rmule_primitives::part_count(file_size) as usize).div_ceil(8);
-    let read = &bitmap[..needed.min(bitmap.len())];
+    // A short bitmap is a cut, not an error: take what arrived.
+    let read = reader.remaining_bytes();
+    let read = &read[..needed.min(read.len())];
     let mut bytes = vec![0; (count as usize).div_ceil(8)];
     bytes[..read.len()].copy_from_slice(read);
     let status = PartBitmap::decode(count, &bytes).expect("sized by its own count");
@@ -214,9 +217,10 @@ impl RequestFileName {
                 actual: payload.len(),
             });
         }
+        let mut reader = WireReader::new(payload);
         Ok(Self {
-            file_hash: read_file_hash(payload),
-            status: PartStatusTail(payload[FileHash::BYTE_LEN..].to_vec()),
+            file_hash: reader.read_file_hash("file hash")?,
+            status: PartStatusTail(reader.remaining_bytes().to_vec()),
         })
     }
 
@@ -288,30 +292,15 @@ impl ReqFileNameAnswer {
                 actual: payload.len(),
             });
         }
-        let file_hash = read_file_hash(&payload[..FileHash::BYTE_LEN]);
-        let name_len =
-            u16::from_le_bytes([payload[FileHash::BYTE_LEN], payload[FileHash::BYTE_LEN + 1]])
-                as usize;
-        let name_start = FileHash::BYTE_LEN + 2;
-        let name_end =
-            name_start
-                .checked_add(name_len)
-                .ok_or(FileRequestDecodeError::Truncated {
-                    needed: usize::MAX,
-                    actual: payload.len(),
-                })?;
-        if payload.len() < name_end {
-            return Err(FileRequestDecodeError::Truncated {
-                needed: name_end,
-                actual: payload.len(),
-            });
-        }
-        if payload.len() != name_end {
+        let mut reader = WireReader::new(payload);
+        let file_hash = reader.read_file_hash("file hash")?;
+        let file_name = Ed2kText::from_bytes(reader.read_len16_bytes("file name")?.to_vec());
+        if !reader.is_exhausted() {
             return Err(FileRequestDecodeError::TrailingBytes);
         }
         Ok(Self {
             file_hash,
-            file_name: Ed2kText::from_bytes(payload[name_start..name_end].to_vec()),
+            file_name,
         })
     }
 
@@ -342,11 +331,10 @@ impl FileStatus {
                 actual: payload.len(),
             });
         }
-        let file_hash = read_file_hash(&payload[..FileHash::BYTE_LEN]);
-        let part_count =
-            u16::from_le_bytes([payload[FileHash::BYTE_LEN], payload[FileHash::BYTE_LEN + 1]])
-                as u32;
-        let bitmap = PartBitmap::decode(part_count, &payload[FileHash::BYTE_LEN + 2..])
+        let mut reader = WireReader::new(payload);
+        let file_hash = reader.read_file_hash("file hash")?;
+        let part_count = u32::from(reader.read_u16_le("part count")?);
+        let bitmap = PartBitmap::decode(part_count, reader.remaining_bytes())
             .map_err(FileRequestDecodeError::Bitmap)?;
         Ok(Self { file_hash, bitmap })
     }
@@ -377,13 +365,16 @@ fn decode_only_file_hash(packet: &Packet) -> Result<FileHash, FileRequestDecodeE
             actual: payload.len(),
         });
     }
-    Ok(read_file_hash(payload))
+    Ok(WireReader::new(payload).read_file_hash("file hash")?)
 }
 
-fn read_file_hash(bytes: &[u8]) -> FileHash {
-    let mut buf = [0u8; FileHash::BYTE_LEN];
-    buf.copy_from_slice(&bytes[..FileHash::BYTE_LEN]);
-    FileHash::from_bytes(buf)
+impl From<WireTruncated> for FileRequestDecodeError {
+    fn from(truncated: WireTruncated) -> Self {
+        Self::Truncated {
+            needed: truncated.needed,
+            actual: truncated.available,
+        }
+    }
 }
 
 /// Why a file-probe packet could not be read.

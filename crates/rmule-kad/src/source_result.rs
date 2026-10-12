@@ -26,6 +26,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rmule_primitives::{
     ClientId, Ipv4Endpoint, PeerSource, SourceCryptOptions, Tag, TagName, TagValue, UserHash,
+    WireReader, WireTruncated,
 };
 
 use crate::opcode::Kad2Opcode;
@@ -138,25 +139,25 @@ pub fn decode_source_result(
         });
     }
 
-    let mut cursor = Cursor::new(envelope.payload());
+    let mut reader = WireReader::new(envelope.payload());
     // `[16B sender][16B target]` precede the rows; the sender/target identities
     // are not needed for projection, but skipping them validates the framing.
-    cursor.skip(KAD_ID_LEN, "sender Kad ID")?;
-    cursor.skip(KAD_ID_LEN, "target Kad ID")?;
-    let count = cursor.read_u16_le("result count")?;
+    reader.skip(KAD_ID_LEN, "sender Kad ID")?;
+    reader.skip(KAD_ID_LEN, "target Kad ID")?;
+    let count = reader.read_u16_le("result count")?;
 
     // Bound the pre-allocation against the untrusted count: a row is at least
     // `[16B source ID][1B tag count]` = 17 bytes, so the payload can hold no
     // more than `remaining / 17` rows however large `count` claims to be — a
     // tiny malformed `0x3B` cannot force a 64K-entry reservation.
     const MIN_ROW_BYTES: usize = KAD_ID_LEN + 1;
-    let capacity = (count as usize).min(cursor.remaining().len() / MIN_ROW_BYTES);
+    let capacity = (count as usize).min(reader.remaining() / MIN_ROW_BYTES);
     let mut candidates = Vec::with_capacity(capacity);
     for _ in 0..count {
-        candidates.push(decode_row(&mut cursor)?);
+        candidates.push(decode_row(&mut reader)?);
     }
 
-    if !cursor.is_exhausted() {
+    if !reader.is_exhausted() {
         return Err(KadSourceResultDecodeError::MalformedPayload {
             reason: "trailing bytes after the declared result count",
         });
@@ -394,27 +395,29 @@ struct RowTags {
     buddy_ipv6: Option<std::net::Ipv6Addr>,
 }
 
-fn decode_row(cursor: &mut Cursor<'_>) -> Result<KadSourceCandidate, KadSourceResultDecodeError> {
+fn decode_row(
+    reader: &mut WireReader<'_>,
+) -> Result<KadSourceCandidate, KadSourceResultDecodeError> {
     // Each row is `[16B source ID][1B tag count][tags...]`. The source ID is
     // the publisher's User Hash word-swapped (ADR-0043's controlled-identity
     // `0x3B` capture); the swap is self-inverse, so reading it back is the
     // same transform.
-    let id_bytes = cursor.take(KAD_ID_LEN, "source row ID")?;
+    let id_bytes = reader.take(KAD_ID_LEN, "source row ID")?;
     let mut source_id = [0u8; KAD_ID_LEN];
     source_id.copy_from_slice(id_bytes);
-    let tag_count = cursor.read_u8("row tag count")?;
+    let tag_count = reader.read_u8("row tag count")?;
 
     let mut tags = RowTags {
         user_hash: Some(UserHash::from_bytes(crate::lookup::kad_wire_id(source_id))),
         ..RowTags::default()
     };
     for _ in 0..tag_count {
-        let (tag, consumed) = Tag::decode_prefix(cursor.remaining()).map_err(|_| {
+        let (tag, consumed) = Tag::decode_prefix(reader.remaining_bytes()).map_err(|_| {
             KadSourceResultDecodeError::MalformedPayload {
                 reason: "source row tag is truncated or malformed",
             }
         })?;
-        cursor.advance(consumed);
+        reader.advance_clamped(consumed);
         apply_tag(&mut tags, &tag);
     }
 
@@ -647,54 +650,10 @@ const fn as_u32(value: &TagValue) -> Option<u32> {
     }
 }
 
-/// A forward-only byte reader over a Kad source-result payload.
-struct Cursor<'a> {
-    bytes: &'a [u8],
-    position: usize,
-}
-
-impl<'a> Cursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, position: 0 }
-    }
-
-    fn take(
-        &mut self,
-        len: usize,
-        field: &'static str,
-    ) -> Result<&'a [u8], KadSourceResultDecodeError> {
-        let end = self
-            .position
-            .checked_add(len)
-            .filter(|&end| end <= self.bytes.len())
-            .ok_or(KadSourceResultDecodeError::MalformedPayload { reason: field })?;
-        let slice = &self.bytes[self.position..end];
-        self.position = end;
-        Ok(slice)
-    }
-
-    fn skip(&mut self, len: usize, field: &'static str) -> Result<(), KadSourceResultDecodeError> {
-        self.take(len, field).map(|_| ())
-    }
-
-    fn read_u8(&mut self, field: &'static str) -> Result<u8, KadSourceResultDecodeError> {
-        Ok(self.take(1, field)?[0])
-    }
-
-    fn read_u16_le(&mut self, field: &'static str) -> Result<u16, KadSourceResultDecodeError> {
-        let bytes = self.take(2, field)?;
-        Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
-    }
-
-    fn remaining(&self) -> &'a [u8] {
-        &self.bytes[self.position..]
-    }
-
-    fn advance(&mut self, len: usize) {
-        self.position = (self.position + len).min(self.bytes.len());
-    }
-
-    const fn is_exhausted(&self) -> bool {
-        self.position >= self.bytes.len()
+impl From<WireTruncated> for KadSourceResultDecodeError {
+    fn from(truncated: WireTruncated) -> Self {
+        KadSourceResultDecodeError::MalformedPayload {
+            reason: truncated.field,
+        }
     }
 }

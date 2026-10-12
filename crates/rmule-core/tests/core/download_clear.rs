@@ -16,14 +16,14 @@ use rmule_testkit::{
     PendingPeerTransfer, StaticPeerTransfer, file_link_without_part_hash_set, source_with_high_id,
 };
 
-use crate::fixture::{identity, next_expected};
+use crate::fixture::next_expected;
 
-async fn start(core: &mut Core, file: Ed2kFileLink, output: std::path::PathBuf) -> DownloadId {
+async fn start(core: &mut Core, file: Ed2kFileLink, name: &str) -> DownloadId {
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: output,
+        name: rmule_testkit::file_name(name),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -60,6 +60,10 @@ async fn a_cleared_download_leaves_its_file_on_disk_and_in_the_registry() {
     let store = open_durable_store(dir.path()).unwrap();
     let output = dir.path().join("kept.bin");
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .source_lookup(source_with_high_id())
         .peer_transfer(StaticPeerTransfer {
             expected_plan_count: 1,
@@ -73,7 +77,7 @@ async fn a_cleared_download_leaves_its_file_on_disk_and_in_the_registry() {
             },
         })
         .build();
-    let id = start(&mut core, link.clone(), output.clone()).await;
+    let id = start(&mut core, link.clone(), "kept.bin").await;
     next_expected(&mut core, "the completed download shared", |event| {
         matches!(event, CoreEvent::Serve(ServeEvent::FileShared { .. }))
     })
@@ -127,11 +131,15 @@ async fn a_download_not_completed_is_never_cleared() {
     let dir = tempfile::tempdir().unwrap();
     let store = open_durable_store(dir.path()).unwrap();
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .source_lookup(source_with_high_id())
         .peer_transfer(PendingPeerTransfer)
         .build();
     let link = file_link_without_part_hash_set("running.bin", b"still running");
-    let id = start(&mut core, link, dir.path().join("running.bin")).await;
+    let id = start(&mut core, link, "running.bin").await;
 
     let answer = clear(
         &mut core,
@@ -190,6 +198,10 @@ async fn a_download_completed_in_an_earlier_run_is_listed_at_attach_until_cleare
     let dir = tempfile::tempdir().unwrap();
     let store = open_durable_store(dir.path()).unwrap();
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .source_lookup(source_with_high_id())
         .peer_transfer(StaticPeerTransfer {
             expected_plan_count: 1,
@@ -203,7 +215,7 @@ async fn a_download_completed_in_an_earlier_run_is_listed_at_attach_until_cleare
             },
         })
         .build();
-    let id = start(&mut core, link, dir.path().join("earlier.bin")).await;
+    let id = start(&mut core, link, "earlier.bin").await;
     next_expected(&mut core, "the completed download shared", |event| {
         matches!(event, CoreEvent::Serve(ServeEvent::FileShared { .. }))
     })
@@ -213,6 +225,7 @@ async fn a_download_completed_in_an_earlier_run_is_listed_at_attach_until_cleare
 
     let store = open_durable_store(dir.path()).expect("shutdown released the store");
     let mut core = Core::builder(CoreConfig::default(), store)
+        .settings(rmule_core::CoreSettings::default())
         .source_lookup(source_with_high_id())
         .peer_transfer(PendingPeerTransfer)
         .build();

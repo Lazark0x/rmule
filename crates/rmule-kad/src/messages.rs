@@ -27,13 +27,12 @@
 //! fixed-layout messages, and strictness is the safer posture for the
 //! adversarial datagrams the mesh tier scripts.
 
-use std::net::Ipv4Addr;
-
-use rmule_primitives::{Tag, TagName, TagValue};
+use rmule_primitives::{Tag, TagName, TagValue, WireReader, WireTruncated};
 
 use crate::KadBuddyContact;
 
 use crate::opcode::Kad2Opcode;
+use crate::wire_fields::KadWireFields;
 use crate::{KadContact, KadEnvelope, KadId, KadNodeEndpoint};
 
 /// A node's self-description as carried in hello and bootstrap-response
@@ -249,73 +248,74 @@ impl Kad2Message {
     pub fn decode(envelope: &KadEnvelope) -> Result<Self, Kad2MessageDecodeError> {
         let opcode = envelope.opcode();
         let malformed = |reason| Kad2MessageDecodeError::Malformed { opcode, reason };
-        let mut cursor = Cursor::new(envelope.payload());
+        let truncated = |error: WireTruncated| malformed(error.field);
+        let mut reader = WireReader::new(envelope.payload());
 
         let message = match Kad2Opcode::try_from_u8(opcode) {
             Some(Kad2Opcode::BootstrapReq) => Self::BootstrapReq,
             Some(Kad2Opcode::BootstrapRes) => {
-                let sender = decode_node_header(&mut cursor).map_err(malformed)?;
-                let count = cursor.read_u16_le("contact count").map_err(malformed)?;
+                let sender = decode_node_header(&mut reader).map_err(malformed)?;
+                let count = reader.read_u16_le("contact count").map_err(truncated)?;
                 let contacts =
-                    decode_contact_rows(&mut cursor, usize::from(count)).map_err(malformed)?;
+                    decode_contact_rows(&mut reader, usize::from(count)).map_err(malformed)?;
                 Self::BootstrapRes { sender, contacts }
             }
             Some(Kad2Opcode::HelloReq) => {
-                Self::HelloReq(decode_hello(&mut cursor).map_err(malformed)?)
+                Self::HelloReq(decode_hello(&mut reader).map_err(malformed)?)
             }
             Some(Kad2Opcode::HelloRes) => {
-                Self::HelloRes(decode_hello(&mut cursor).map_err(malformed)?)
+                Self::HelloRes(decode_hello(&mut reader).map_err(malformed)?)
             }
             Some(Kad2Opcode::HelloResAck) => {
-                let id = cursor.read_kad_id("ack sender ID").map_err(malformed)?;
-                skip_tag_list(&mut cursor, "hello-res-ack").map_err(malformed)?;
+                let id = reader.read_kad_id("ack sender ID").map_err(truncated)?;
+                skip_tag_list(&mut reader, "hello-res-ack").map_err(malformed)?;
                 Self::HelloResAck { id }
             }
             Some(Kad2Opcode::Ping) => Self::Ping,
             Some(Kad2Opcode::Pong) => Self::Pong {
-                udp_port: cursor.read_u16_le("pong udp port").map_err(malformed)?,
+                udp_port: reader.read_u16_le("pong udp port").map_err(truncated)?,
             },
             Some(Kad2Opcode::LookupReq) => {
                 // aMule masks the requested contact count to the low five bits
                 // and drops a request whose masked count is zero
                 // (documentation-backed; see the module provenance note).
-                let count = cursor
+                let count = reader
                     .read_u8("requested contact count")
-                    .map_err(malformed)?
+                    .map_err(truncated)?
                     & 0x1F;
                 if count == 0 {
                     return Err(malformed("requested contact count is zero after masking"));
                 }
                 Self::LookupReq {
                     count,
-                    target: cursor.read_kad_id("lookup target").map_err(malformed)?,
-                    check: cursor.read_kad_id("receiver check ID").map_err(malformed)?,
+                    target: reader.read_kad_id("lookup target").map_err(truncated)?,
+                    check: reader.read_kad_id("receiver check ID").map_err(truncated)?,
                 }
             }
             Some(Kad2Opcode::LookupRes) => {
-                let target = cursor.read_kad_id("echoed target").map_err(malformed)?;
-                let count = cursor.read_u8("contact count").map_err(malformed)?;
+                let target = reader.read_kad_id("echoed target").map_err(truncated)?;
+                let count = reader.read_u8("contact count").map_err(truncated)?;
                 let contacts =
-                    decode_contact_rows(&mut cursor, usize::from(count)).map_err(malformed)?;
+                    decode_contact_rows(&mut reader, usize::from(count)).map_err(malformed)?;
                 Self::LookupRes { target, contacts }
             }
             Some(Kad2Opcode::SearchSourceReq) => Self::SearchSourceReq {
-                target: cursor.read_kad_id("search target").map_err(malformed)?,
+                target: reader.read_kad_id("search target").map_err(truncated)?,
                 // The receiver masks the top bit away (documentation-backed,
                 // aMule listener): the offset is 15-bit on the wire.
-                start_position: cursor.read_u16_le("start position").map_err(malformed)? & 0x7FFF,
-                file_size: cursor
+                start_position: reader.read_u16_le("start position").map_err(truncated)? & 0x7FFF,
+                file_size: reader
                     .read_u64_le("searched file size")
-                    .map_err(malformed)?,
+                    .map_err(truncated)?,
             },
             Some(Kad2Opcode::PublishSourceReq) => {
-                let file = cursor
+                let file = reader
                     .read_kad_id("published file key")
-                    .map_err(malformed)?;
-                let source_id = cursor
-                    .read_bytes_16("published source ID")
-                    .map_err(malformed)?;
-                let source = decode_published_source(&mut cursor).map_err(malformed)?;
+                    .map_err(truncated)?;
+                let source_id = reader
+                    .read_array::<16>("published source ID")
+                    .map_err(truncated)?;
+                let source = decode_published_source(&mut reader).map_err(malformed)?;
                 Self::PublishSourceReq {
                     file,
                     source_id,
@@ -323,17 +323,17 @@ impl Kad2Message {
                 }
             }
             Some(Kad2Opcode::PublishRes) => {
-                let file = cursor
+                let file = reader
                     .read_kad_id("published file key")
-                    .map_err(malformed)?;
-                let load = cursor.read_u8("publish load").map_err(malformed)?;
+                    .map_err(truncated)?;
+                let load = reader.read_u8("publish load").map_err(truncated)?;
                 // The optional future-use options byte (bit 0 requests the
                 // dormant 0x4C ACK); absent ⇒ 0. Anything past it is not the
                 // documented layout and trips the trailing-bytes check below.
-                let options = if cursor.is_exhausted() {
+                let options = if reader.is_exhausted() {
                     0
                 } else {
-                    cursor.read_u8("publish options").map_err(malformed)?
+                    reader.read_u8("publish options").map_err(truncated)?
                 };
                 Self::PublishRes {
                     file,
@@ -348,7 +348,7 @@ impl Kad2Message {
             }
         };
 
-        if !cursor.is_exhausted() {
+        if !reader.is_exhausted() {
             return Err(malformed("trailing bytes after the message"));
         }
         Ok(message)
@@ -461,14 +461,20 @@ const TAG_BUDDYHASH: u8 = 0xF8;
 /// Decode the `0x44` tag list into the recognized publish fields. First
 /// occurrence of a recognized tag wins (aMule's dedupe posture); unknown tags
 /// and unexpected value widths are skipped without failing the message.
-fn decode_published_source(cursor: &mut Cursor<'_>) -> Result<KadPublishedSource, &'static str> {
-    let tag_count = cursor.read_u8("publish tag count")?;
+fn field(error: WireTruncated) -> &'static str {
+    error.field
+}
+
+fn decode_published_source(
+    reader: &mut WireReader<'_>,
+) -> Result<KadPublishedSource, &'static str> {
+    let tag_count = reader.read_u8("publish tag count").map_err(field)?;
     let mut source = KadPublishedSource::default();
     let (mut buddy_ip, mut buddy_port, mut buddy_id, mut buddy_ipv6) = (None, None, None, None);
     for _ in 0..tag_count {
-        let (tag, consumed) = Tag::decode_prefix(cursor.remaining())
+        let (tag, consumed) = Tag::decode_prefix(reader.remaining_bytes())
             .map_err(|_| "publish tag is truncated or malformed")?;
-        cursor.advance(consumed);
+        reader.advance_clamped(consumed);
         let Some(name) = tag.name().id() else {
             // The IPv6 tags are string-named (ADR-0087), so they never reach
             // the numeric-id match below. Both claims are gated exactly as
@@ -681,11 +687,11 @@ const fn tag_u64(value: &TagValue) -> Option<u64> {
 /// `[16B Kad ID][4B IPv4 low-octet-first][2B UDP LE][2B TCP LE][1B version]`.
 const CONTACT_ROW_LEN: usize = 25;
 
-fn decode_node_header(cursor: &mut Cursor<'_>) -> Result<Kad2NodeInfo, &'static str> {
+fn decode_node_header(reader: &mut WireReader<'_>) -> Result<Kad2NodeInfo, &'static str> {
     Ok(Kad2NodeInfo {
-        id: cursor.read_kad_id("node ID")?,
-        tcp_port: cursor.read_u16_le("node TCP port")?,
-        version: cursor.read_u8("node Kad version")?,
+        id: reader.read_kad_id("node ID").map_err(field)?,
+        tcp_port: reader.read_u16_le("node TCP port").map_err(field)?,
+        version: reader.read_u8("node Kad version").map_err(field)?,
         udp_port_tag: None,
         misc_options: 0,
     })
@@ -694,12 +700,12 @@ fn decode_node_header(cursor: &mut Cursor<'_>) -> Result<Kad2NodeInfo, &'static 
 /// Consume a `[count][count × tag]` list, dropping every tag (the tolerant
 /// skip the `0x22` ack shares with hello — it carries an empty list, but a
 /// future-proof reader must not choke on tags it does not model).
-fn skip_tag_list(cursor: &mut Cursor<'_>, what: &'static str) -> Result<(), &'static str> {
-    let count = cursor.read_u8(what)?;
+fn skip_tag_list(reader: &mut WireReader<'_>, what: &'static str) -> Result<(), &'static str> {
+    let count = reader.read_u8(what).map_err(field)?;
     for _ in 0..count {
-        let (_, consumed) =
-            Tag::decode_prefix(cursor.remaining()).map_err(|_| "tag is truncated or malformed")?;
-        cursor.advance(consumed);
+        let (_, consumed) = Tag::decode_prefix(reader.remaining_bytes())
+            .map_err(|_| "tag is truncated or malformed")?;
+        reader.advance_clamped(consumed);
     }
     Ok(())
 }
@@ -713,13 +719,13 @@ fn encode_node_header(payload: &mut Vec<u8>, info: &Kad2NodeInfo) {
 /// Hello payloads append an eD2k tag list to the node header. The `0xFC`
 /// UDP-port and `0xF2` misc-options tags are projected; unrecognized tags are
 /// skipped without failing the message, matching aMule's tolerant tag loop.
-fn decode_hello(cursor: &mut Cursor<'_>) -> Result<Kad2NodeInfo, &'static str> {
-    let mut info = decode_node_header(cursor)?;
-    let tag_count = cursor.read_u8("hello tag count")?;
+fn decode_hello(reader: &mut WireReader<'_>) -> Result<Kad2NodeInfo, &'static str> {
+    let mut info = decode_node_header(reader)?;
+    let tag_count = reader.read_u8("hello tag count").map_err(field)?;
     for _ in 0..tag_count {
-        let (tag, consumed) = Tag::decode_prefix(cursor.remaining())
+        let (tag, consumed) = Tag::decode_prefix(reader.remaining_bytes())
             .map_err(|_| "hello tag is truncated or malformed")?;
-        cursor.advance(consumed);
+        reader.advance_clamped(consumed);
         match tag.name().id() {
             Some(TAG_SOURCEUPORT) => {
                 info.udp_port_tag = match tag.value() {
@@ -761,21 +767,23 @@ fn encode_hello(info: &Kad2NodeInfo) -> Vec<u8> {
 }
 
 fn decode_contact_rows(
-    cursor: &mut Cursor<'_>,
+    reader: &mut WireReader<'_>,
     count: usize,
 ) -> Result<Vec<KadContact>, &'static str> {
     // Validate the declared count against the bytes actually present BEFORE
     // allocating, so an absurd count cannot reserve unbounded memory.
-    if cursor.remaining().len() != count * CONTACT_ROW_LEN {
+    if reader.remaining() != count * CONTACT_ROW_LEN {
         return Err("contact count disagrees with the bytes present");
     }
     let mut contacts = Vec::with_capacity(count);
     for _ in 0..count {
-        let id = cursor.read_kad_id("contact ID")?;
-        let ip = cursor.read_ipv4_low_octet_first("contact IP")?;
-        let udp_port = cursor.read_u16_le("contact UDP port")?;
-        let tcp_port = cursor.read_u16_le("contact TCP port")?;
-        let version = cursor.read_u8("contact version")?;
+        let id = reader.read_kad_id("contact ID").map_err(field)?;
+        let ip = reader
+            .read_ipv4_low_octet_first("contact IP")
+            .map_err(field)?;
+        let udp_port = reader.read_u16_le("contact UDP port").map_err(field)?;
+        let tcp_port = reader.read_u16_le("contact TCP port").map_err(field)?;
+        let version = reader.read_u8("contact version").map_err(field)?;
         contacts.push(KadContact::new(
             id,
             KadNodeEndpoint::new(ip, udp_port),
@@ -795,77 +803,5 @@ fn encode_contact_rows(payload: &mut Vec<u8>, contacts: &[KadContact]) {
         payload.extend_from_slice(&contact.endpoint().udp_port().to_le_bytes());
         payload.extend_from_slice(&contact.tcp_port().to_le_bytes());
         payload.push(contact.version());
-    }
-}
-
-/// A forward-only byte reader whose errors are static field names.
-struct Cursor<'a> {
-    bytes: &'a [u8],
-    position: usize,
-}
-
-impl<'a> Cursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, position: 0 }
-    }
-
-    fn take(&mut self, len: usize, field: &'static str) -> Result<&'a [u8], &'static str> {
-        let end = self
-            .position
-            .checked_add(len)
-            .filter(|&end| end <= self.bytes.len())
-            .ok_or(field)?;
-        let slice = &self.bytes[self.position..end];
-        self.position = end;
-        Ok(slice)
-    }
-
-    fn read_u8(&mut self, field: &'static str) -> Result<u8, &'static str> {
-        Ok(self.take(1, field)?[0])
-    }
-
-    fn read_u16_le(&mut self, field: &'static str) -> Result<u16, &'static str> {
-        let bytes = self.take(2, field)?;
-        Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
-    }
-
-    fn read_u64_le(&mut self, field: &'static str) -> Result<u64, &'static str> {
-        let bytes = self.take(8, field)?;
-        let mut word = [0u8; 8];
-        word.copy_from_slice(bytes);
-        Ok(u64::from_le_bytes(word))
-    }
-
-    fn read_bytes_16(&mut self, field: &'static str) -> Result<[u8; 16], &'static str> {
-        let bytes = self.take(16, field)?;
-        let mut out = [0u8; 16];
-        out.copy_from_slice(bytes);
-        Ok(out)
-    }
-
-    fn read_kad_id(&mut self, field: &'static str) -> Result<KadId, &'static str> {
-        let bytes = self.take(KadId::BYTE_LEN, field)?;
-        let mut id = [0u8; KadId::BYTE_LEN];
-        id.copy_from_slice(bytes);
-        Ok(KadId::from_bytes(id))
-    }
-
-    /// The contact-row IPv4 serialization: `a.b.c.d` on the wire as
-    /// `[d, c, b, a]` (capture-proven in both routing and node fixtures).
-    fn read_ipv4_low_octet_first(&mut self, field: &'static str) -> Result<Ipv4Addr, &'static str> {
-        let bytes = self.take(4, field)?;
-        Ok(Ipv4Addr::new(bytes[3], bytes[2], bytes[1], bytes[0]))
-    }
-
-    fn remaining(&self) -> &'a [u8] {
-        &self.bytes[self.position..]
-    }
-
-    fn advance(&mut self, len: usize) {
-        self.position = (self.position + len).min(self.bytes.len());
-    }
-
-    const fn is_exhausted(&self) -> bool {
-        self.position >= self.bytes.len()
     }
 }

@@ -21,16 +21,18 @@ pub(crate) use searches::*;
 pub(crate) use shared_files::*;
 pub(crate) use statistics::*;
 pub(crate) use transfers::*;
+// The captured clients, shared with the words' own tests.
+pub(crate) use rmule_testkit::{amule_233, emule_qt};
 
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
-use rmule_core::diagnostics::{ClientSoftware, DiagnosticsSnapshot, PartState, SessionCounters};
+use rmule_core::diagnostics::{DiagnosticsSnapshot, PartState, SessionCounters};
 use rmule_core::{
-    AppConfigStore, ClientCredentials, CoreEvent, DownloadEvent, DownloadId, DownloadMetadata,
-    SearchEvent, SearchId, ServeEvent, ServerConnectionEvent,
+    CoreEvent, DownloadEvent, DownloadId, DownloadMetadata, SearchEvent, SearchId, ServeEvent,
+    ServerConnectionEvent,
 };
 use rmule_primitives::{
     ClientId, Ed2kText, FileHash, Ipv4Endpoint, PeerEndpoint, SearchResult, ServerEndpoint,
@@ -145,46 +147,6 @@ pub(crate) fn peer_endpoint(last_octet: u8) -> PeerEndpoint {
     PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, last_octet), 4662))
 }
 
-/// The client a mule hello names: its `CT_EMULE_VERSION` word and, when it
-/// sent one, its mod — read by the peer codec, as core reads a live hello.
-pub(crate) fn client_software(word: u32, client_mod: Option<&str>) -> ClientSoftware {
-    use rmule_primitives::{Tag, TagName, TagValue, UserHash};
-    let mut hash = [0x42; UserHash::BYTE_LEN];
-    // eMule's user-hash mark, as every mule writes it.
-    hash[5] = 14;
-    hash[14] = 111;
-    let mut tags = vec![
-        Tag::new(
-            TagName::compact_id(0x01),
-            TagValue::String(Ed2kText::from_utf8("peer")),
-        ),
-        Tag::new(TagName::compact_id(0xFB), TagValue::U32(word)),
-    ];
-    if let Some(text) = client_mod {
-        tags.push(Tag::new(
-            TagName::compact_id(0x55),
-            TagValue::String(Ed2kText::from_utf8(text)),
-        ));
-    }
-    ClientSoftware::from_hello_body(&rmule_peer::PeerHelloBody {
-        user_hash: UserHash::from_bytes(hash),
-        client_id: ClientId::from_u32(0),
-        tcp_port: 4662,
-        tags,
-        connected_server: Ipv4Endpoint::new(Ipv4Addr::UNSPECIFIED, 0),
-    })
-}
-
-/// aMule 2.3.3, as its captured hellos name it.
-pub(crate) fn amule_233() -> ClientSoftware {
-    client_software(0x0304_0D80, None)
-}
-
-/// emule-qt, as its captured hello names it.
-pub(crate) fn emule_qt() -> ClientSoftware {
-    client_software(0x0001_1880, Some("eMule Qt 0.4.2"))
-}
-
 /// A peer at a full address, for log lines that print one.
 pub(crate) fn peer_at(a: u8, b: u8, c: u8, d: u8, port: u16) -> PeerEndpoint {
     PeerEndpoint::V4(Ipv4Endpoint::new(std::net::Ipv4Addr::new(a, b, c, d), port))
@@ -275,13 +237,11 @@ pub(crate) fn long_name() -> String {
 
 // --- Session and chrome ---------------------------------------------------
 
-/// The startup session config a real command needs: the one server, a fresh
-/// identity's credentials, and no download directory.
+/// The startup session config a real command needs: the one server and no
+/// download directory.
 pub(crate) fn session() -> SessionConfig {
-    let store = rmule_core::DurableAppConfig::new(rmule_testkit::memory_store());
     SessionConfig {
         server: Some(endpoint("10.0.0.1", 4661)),
-        credentials: ClientCredentials::from(store.ensure_identity().expect("identity")),
         download_dir: None,
     }
 }
@@ -302,7 +262,7 @@ pub(crate) fn connected_state() -> UiState {
     }
 }
 
-/// The flash the resume path emits — the longest string the status bar has
-/// to carry, and so the one that proves it wraps instead of clipping.
-pub(crate) const LONG_FLASH: &str =
-    "no session config — resume needs credentials (rmule-cli identity)";
+/// A flash the app really emits, long enough that the status bar must wrap
+/// it rather than clip it: the one a download asked for with no download
+/// directory set gets. The words' own constant, so it cannot drift from them.
+pub(crate) const LONG_FLASH: crate::words::Sentence = crate::words::download::NO_DOWNLOAD_DIR;

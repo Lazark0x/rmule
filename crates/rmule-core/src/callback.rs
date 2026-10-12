@@ -8,7 +8,8 @@
 //!
 //! **Rung 1 is no longer a drop** (ADR-0091): a LowID↔LowID pair whose target
 //! speaks NAT-T and can be introduced by a **Rendezvous coordinator** takes
-//! the [`NatTraversal`](CallbackRoute::NatTraversal) route instead, and a
+//! a punch through it ([`ServerPunch`](PeerReachRoute::ServerPunch) or
+//! [`NatTraversal`](PeerReachRoute::NatTraversal)) instead, and a
 //! HighID↔LowID pair falls to it after
 //! [`CALLBACK_SILENCE_FALLBACK`] of callback silence
 //! ([`select_natt_fallback`]). There is no NAT-type gate: rmule holds no
@@ -34,16 +35,21 @@
 //! one selector, so a LowID waiter never gets a dead TCP dial-back.
 //!
 //! Both live callers reach it through [`callback_target`], which is the only
-//! place a [`PeerReach`] becomes a [`CallbackTarget`]: the core actor's reach
-//! arm for a `ReachPeer`, and the same arm again for a download's Low-ID
+//! place a [`PeerReach`] becomes a [`CallbackTarget`], and through **Peer
+//! Reach** ([`crate::peer_reach`]): a `ReachPeer`, and a download's Low-ID
 //! candidate (a [`DownloadReach`], which the download brain raises and the
-//! runner forwards). One target builder, one selector.
+//! runner forwards). One target builder, one selector, one enactor.
 //!
-//! Enactment is deferred, the reachability pattern: the `0x95` datagram rides the
-//! client-UDP send half ([`direct_callback_datagram`](crate::client_udp)), the
-//! server callback is the built [`CallbackRequest`](rmule_ed2k::CallbackRequest)
-//! (`0x1C`, ADR-0039), and the buddy `0x52` + Kad walk are the Kad-surface emit
-//! (ADR-0061). This module is the route decision, proven deterministically.
+//! The verdict is the public [`PeerReachRoute`] itself, the route *chosen*;
+//! Peer Reach carries it out and reports the route *taken* — the same value,
+//! or its `…Unavailable` twin when one of our own facts was missing at the
+//! emit. The `0x95` datagram
+//! ([`direct_callback`](rmule_peer::peer_udp::crypt::direct_callback)) rides
+//! the client-UDP send half, the server callback is the built
+//! [`CallbackRequest`](rmule_ed2k::CallbackRequest) (`0x1C`, ADR-0039), the
+//! buddy `0x52` + Kad walk are the Kad-surface emit (ADR-0061), and rung 1 is
+//! the NAT-T Front's (ADR-0091). This module is the route decision, proven
+//! deterministically.
 
 use std::time::Duration;
 
@@ -53,7 +59,9 @@ use tokio::sync::mpsc;
 
 use crate::adapters::CallbackKey;
 use crate::dialable::{DialPosition, choose_dial};
-use crate::service::PeerReach;
+use crate::service::{
+    NatTraversalUnavailableReason, PeerReach, PeerReachDropReason, PeerReachRoute,
+};
 
 use rmule_kad::KadId;
 
@@ -65,7 +73,7 @@ pub(crate) struct CallbackTarget {
     /// (when LowID) the id a server callback names.
     pub(crate) id: ClientId,
     /// The candidate's dialable TCP endpoint — used only for the HighID
-    /// [`Direct`](CallbackRoute::Direct) route; a LowID candidate has no plain
+    /// [`Direct`](PeerReachRoute::Direct) route; a LowID candidate has no plain
     /// dial, so callers may pass its last-seen endpoint (never read).
     pub(crate) tcp: PeerEndpoint,
     /// The candidate advertised `SupportsDirectUDPCallback` (ADR-0047): it can
@@ -170,9 +178,12 @@ impl BuddyContact {
     }
 }
 
-/// Our own network position the chooser gates on (ADR-0058 `Reachability`).
+/// Our own half of the route tree — the **Route Position** **Self Reach**
+/// answers in one read
+/// ([`SharedSelfReach::route_position`](crate::reachability::SharedSelfReach::route_position)),
+/// or the position a route-tree test states directly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct SelfReach {
+pub(crate) struct RoutePosition {
     /// We are reachable — HighID / TCP-open. A firewalled node cannot be dialed
     /// back, so it can reach a LowID peer only through the server relay when
     /// both share that server.
@@ -191,31 +202,6 @@ pub(crate) struct SelfReach {
     /// advance: one that does not ignores the `0x60`, and the attempt's own
     /// timeout moves on to the next coordinator.
     pub(crate) server_punch: bool,
-}
-
-/// How to reach a candidate — the chooser's verdict.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CallbackRoute {
-    /// A HighID peer: dial its TCP endpoint straight, no callback.
-    Direct { tcp: PeerEndpoint },
-    /// Direct UDP callback (route 2): emit `OP_DIRECTCALLBACKREQ` (`0x95`) to
-    /// the target's Kad UDP endpoint.
-    DirectUdp { target_kad_udp: Ipv4Endpoint },
-    /// Server callback (route 3): emit `OP_CALLBACKREQUEST` (`0x1C`) naming
-    /// `low_id` to our connected server (ADR-0039).
-    Server { low_id: ClientId },
-    /// Kad buddy callback (route 4): reach the target through its buddy.
-    Buddy {
-        buddy_id: KadId,
-        /// The buddy's UDP endpoint for a straight `0x52`, or `None` — a
-        /// FINDSOURCE walk toward `buddy_id`, emitting `0x52` at convergence.
-        buddy_udp: Option<Ipv4Endpoint>,
-    },
-    /// NAT traversal (ADR-0091, rung 1): be introduced by `coordinator`,
-    /// punch, and raise a Tunnel the ordinary peer session runs inside.
-    NatTraversal { coordinator: NattCoordinator },
-    /// Unreachable — drop the candidate.
-    Drop { reason: CallbackDrop },
 }
 
 /// Who introduces the two sides of a punch — ADR-0091's *two Rendezvous
@@ -250,23 +236,14 @@ pub(crate) enum NattCoordinator {
     },
 }
 
-/// Why a LowID candidate is unreachable (aMule's `DS_LOWTOLOWIP` and the
-/// no-buddy fall-through).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CallbackDrop {
-    /// LowID→LowID, not on our server, **and no NAT traversal possible**: the
-    /// target does not speak it, our client-UDP surface is down, or no
-    /// coordinator can introduce us.
-    LowToLow,
-    /// No usable buddy route: Kad is down, or the candidate advertised no buddy
-    /// (no valid buddy-ID to walk toward).
-    NoBuddy,
-}
-
 /// Choose the route to reach `target` given our own position `ours` (ADR-0061
 /// route tree, aMule `TryToConnect` order). Pure and clock-free — the emit /
-/// dial is the enactment.
-pub(crate) fn select_callback_route(target: &CallbackTarget, ours: &SelfReach) -> CallbackRoute {
+/// dial is the enactment, and a route that sends something reads as sent
+/// until Peer Reach finds it could not leave.
+pub(crate) fn select_callback_route(
+    target: &CallbackTarget,
+    ours: &RoutePosition,
+) -> PeerReachRoute {
     // Rung 0 (ADR-0087): the peer named a usable IPv6 *and* we hold a Known
     // one, so it is dialed directly in that family — ahead of everything,
     // Low ID included. The classic "Low ID ⇒ callback" rule governs the peer's
@@ -274,12 +251,18 @@ pub(crate) fn select_callback_route(target: &CallbackTarget, ours: &SelfReach) -
     // peer that has one needs no broker at all. The AND is what makes it safe:
     // dialing from an address we cannot corroborate would break reply
     // attribution and dial-back.
-    if let Some(tcp) = choose_dial(None, target.ipv6, ours.dial) {
-        return CallbackRoute::Direct { tcp };
+    if let Some(rmule_primitives::PeerEndpoint::V6(dial)) =
+        choose_dial(None, target.ipv6, ours.dial)
+    {
+        return PeerReachRoute::Direct {
+            endpoint: rmule_primitives::PeerEndpoint::V6(dial),
+        };
     }
     // A HighID peer is reachable by a plain dial — never the callback tree.
     if target.id.is_high_id() {
-        return CallbackRoute::Direct { tcp: target.tcp };
+        return PeerReachRoute::Direct {
+            endpoint: target.tcp,
+        };
     }
     // The candidate is LowID from here — the four-route callback tree.
     //
@@ -295,11 +278,11 @@ pub(crate) fn select_callback_route(target: &CallbackTarget, ours: &SelfReach) -
     //    the two that can succeed between two firewalled peers.
     if !ours.reachable {
         if let Some(coordinator) = natt_coordinator(target, ours) {
-            return CallbackRoute::NatTraversal { coordinator };
+            return punch_through(coordinator);
         }
         if !target.on_our_server {
-            return CallbackRoute::Drop {
-                reason: CallbackDrop::LowToLow,
+            return PeerReachRoute::Dropped {
+                reason: PeerReachDropReason::LowToLow,
             };
         }
     }
@@ -310,39 +293,64 @@ pub(crate) fn select_callback_route(target: &CallbackTarget, ours: &SelfReach) -
         && ours.udp_on
         && let Some(target_kad_udp) = target.kad_udp
     {
-        return CallbackRoute::DirectUdp { target_kad_udp };
+        return PeerReachRoute::DirectUdp { target_kad_udp };
     }
     // 3. Server callback: the target is on our connected server, which relays
     //    the invitation (`0x1C`, ADR-0039).
     if target.on_our_server {
-        return CallbackRoute::Server { low_id: target.id };
+        return PeerReachRoute::Server { low_id: target.id };
     }
     // 4. Kad buddy callback: with Kad up and a buddy contact, `0x52` to the
     //    buddy's UDP (or a walk toward its ID); otherwise the candidate is
-    //    unreachable.
+    //    unreachable. The route names where a `0x52` *went*, so this one names
+    //    none: only a caller that brings a file for it to name can send it.
     if ours.kad_running
         && let Some(buddy) = target.buddy
     {
-        return CallbackRoute::Buddy {
+        return PeerReachRoute::Buddy {
             buddy_id: buddy.buddy_id,
-            buddy_udp: buddy.buddy_udp,
+            emitted_to: None,
         };
     }
-    CallbackRoute::Drop {
-        reason: CallbackDrop::NoBuddy,
+    PeerReachRoute::Dropped {
+        reason: PeerReachDropReason::NoBuddy,
+    }
+}
+
+/// Rung 1 through `coordinator`, as the route a punch takes: our server's
+/// introduction, a rendezvous through the target's buddy, or — for a buddy
+/// named by ID alone — no punch at all, since `OP_REASKCALLBACKUDP` has no
+/// walk to find it (the enactment retires the candidate with that reason).
+fn punch_through(coordinator: NattCoordinator) -> PeerReachRoute {
+    match coordinator {
+        NattCoordinator::Server { low_id } => PeerReachRoute::ServerPunch { low_id },
+        NattCoordinator::Buddy {
+            buddy_id,
+            buddy_udp: Some(buddy_udp),
+        } => PeerReachRoute::NatTraversal {
+            buddy_id,
+            buddy_udp,
+        },
+        NattCoordinator::Buddy {
+            buddy_id,
+            buddy_udp: None,
+        } => PeerReachRoute::NatTraversalUnavailable {
+            buddy_id,
+            reason: NatTraversalUnavailableReason::BuddyEndpointUnknown,
+        },
     }
 }
 
 /// The first coordinator that can introduce us to `target`, if a punch is
 /// possible at all. Nothing is possible without our client-UDP surface: the
 /// punch and the Tunnel both ride it.
-fn natt_coordinator(target: &CallbackTarget, ours: &SelfReach) -> Option<NattCoordinator> {
+fn natt_coordinator(target: &CallbackTarget, ours: &RoutePosition) -> Option<NattCoordinator> {
     server_coordinator(target, ours).or_else(|| buddy_coordinator(&target.natt_facts(), ours))
 }
 
 /// Our server can introduce us: the target is on it, and our session
 /// advertised and keeps alive the UDP port a punch would land on.
-fn server_coordinator(target: &CallbackTarget, ours: &SelfReach) -> Option<NattCoordinator> {
+fn server_coordinator(target: &CallbackTarget, ours: &RoutePosition) -> Option<NattCoordinator> {
     (ours.udp_on && ours.server_punch && target.natt_facts().on_our_server)
         .then_some(NattCoordinator::Server { low_id: target.id })
 }
@@ -362,7 +370,7 @@ fn server_coordinator(target: &CallbackTarget, ours: &SelfReach) -> Option<NattC
 /// the **Traversal Attempt** falling through from the server coordinator — is
 /// a punch in flight, not a reach candidate: it holds the facts and no
 /// address.
-fn buddy_coordinator(facts: &NattFacts, ours: &SelfReach) -> Option<NattCoordinator> {
+fn buddy_coordinator(facts: &NattFacts, ours: &RoutePosition) -> Option<NattCoordinator> {
     if !facts.supports_natt || !ours.udp_on {
         return None;
     }
@@ -401,7 +409,8 @@ pub(crate) fn callback_target(peer: &PeerReach) -> CallbackTarget {
 /// of the selector (ADR-0091 rung 1).
 ///
 /// The download brain raises it and the runner forwards it to the core actor,
-/// the only holder of our own half of the decision.
+/// whose arm hands it to **Peer Reach**, which reads our own half of the
+/// decision from Self Reach.
 ///
 /// **It carries its own answer channel**, because the ask can fail on *our*
 /// facts — no live server punch, no buddy — and the caller that has to hear
@@ -416,21 +425,31 @@ pub(crate) fn callback_target(peer: &PeerReach) -> CallbackTarget {
 pub(crate) struct DownloadReach {
     /// The candidate's facts, exactly as the channel that named it gave them.
     pub(crate) peer: PeerReach,
-    /// Which road the brain opened: the buddy callback, or rung 1 with what
-    /// was measured before asking.
-    pub(crate) ask: DownloadAsk,
-    /// The pending callback this candidate is held under — the key the brain,
-    /// the deadline heap and the routing index all share, and the only key a
-    /// candidate with no **User Hash** has at all (the claim table is keyed by
-    /// the hash, so it cannot carry this news).
-    pub(crate) callback: CallbackKey,
-    /// Where a **Traversal Attempt** that was never opened is reported, exactly
-    /// as one that retired is.
+    /// The pending callback the candidate is held under, and the road the
+    /// brain opened for it.
+    pub(crate) pending: PendingCallback,
+}
+
+/// A download candidate's **Pending Callback** as **Peer Reach** serves it:
+/// which road the brain opened, and where that road's end is reported when it
+/// never opens.
+#[derive(Clone, Debug)]
+pub(crate) struct PendingCallback {
+    /// Which road the brain opened: the buddy callback, the direct `0x95`, or
+    /// rung 1 with what was measured before asking.
+    pub(crate) road: DownloadAsk,
+    /// The key the brain's record of the road and the **Awaited Inbound**
+    /// registration share, and the only key a candidate with no **User
+    /// Hash** has at all (a claim is filed under the hash, so it cannot carry
+    /// this news).
+    pub(crate) key: CallbackKey,
+    /// Where a road that never opened is reported, exactly as one that
+    /// retired is.
     pub(crate) retire_tx: mpsc::Sender<(CallbackKey, crate::diagnostics::NattRetirement)>,
 }
 
-/// Which road a [`DownloadReach`] asks the core actor to enact. The brain has
-/// already decided it; the actor holds only our half of the facts.
+/// Which road a [`DownloadReach`] asks Peer Reach to enact. The brain has
+/// already decided it; Peer Reach holds only our half of the facts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DownloadAsk {
     /// ADR-0061 route 2: the `0x95` to the candidate's own Kad
@@ -465,7 +484,7 @@ pub(crate) enum CallbackSilence {
     /// [`select_natt_fallback`] refuses to fall back from when it was never a
     /// callback in the first place.
     After {
-        taken: CallbackRoute,
+        taken: PeerReachRoute,
         elapsed: Duration,
     },
     /// No callback was possible for this candidate at all: we are Low-ID, or no
@@ -489,7 +508,7 @@ pub(crate) enum CallbackSilence {
 /// asks this function who is next.
 pub(crate) fn next_natt_coordinator(
     facts: &NattFacts,
-    ours: &SelfReach,
+    ours: &RoutePosition,
     failed: &NattCoordinator,
 ) -> Option<NattCoordinator> {
     match failed {
@@ -517,20 +536,21 @@ pub(crate) fn next_natt_coordinator(
 /// so a legacy target costs nothing.
 pub(crate) fn select_natt_fallback(
     target: &CallbackTarget,
-    ours: &SelfReach,
-    taken: &CallbackRoute,
+    ours: &RoutePosition,
+    taken: &PeerReachRoute,
     silence: Duration,
-) -> Option<CallbackRoute> {
+) -> Option<PeerReachRoute> {
     let was_callback = matches!(
         taken,
-        CallbackRoute::DirectUdp { .. }
-            | CallbackRoute::Server { .. }
-            | CallbackRoute::Buddy { .. }
+        PeerReachRoute::DirectUdp { .. }
+            | PeerReachRoute::Server { .. }
+            | PeerReachRoute::Buddy { .. }
+            | PeerReachRoute::CallbackWalk { .. }
     );
     if !was_callback || silence < CALLBACK_SILENCE_FALLBACK {
         return None;
     }
-    natt_coordinator(target, ours).map(|coordinator| CallbackRoute::NatTraversal { coordinator })
+    natt_coordinator(target, ours).map(punch_through)
 }
 
 /// Rung 1 for a download's Low-ID candidate, whichever road the pair took to
@@ -548,15 +568,14 @@ pub(crate) fn select_natt_fallback(
 /// dial a node it cannot reach.
 pub(crate) fn select_natt_for_download(
     target: &CallbackTarget,
-    ours: &SelfReach,
+    ours: &RoutePosition,
     silence: &CallbackSilence,
-) -> Option<CallbackRoute> {
+) -> Option<PeerReachRoute> {
     match silence {
         CallbackSilence::After { taken, elapsed } => {
             select_natt_fallback(target, ours, taken, *elapsed)
         }
-        CallbackSilence::NoCallbackPossible => natt_coordinator(target, ours)
-            .map(|coordinator| CallbackRoute::NatTraversal { coordinator }),
+        CallbackSilence::NoCallbackPossible => natt_coordinator(target, ours).map(punch_through),
     }
 }
 

@@ -9,6 +9,7 @@
 //! capture-tier follow-ups — the deterministic tier is green here, the live
 //! capture deferred.
 
+use rmule_kad::KadNodeStart;
 use std::time::Duration;
 
 use rmule_kad::keyword::keyword_id;
@@ -47,7 +48,10 @@ fn config(id: KadId) -> KadNodeConfig {
 /// A storer whose own ID is far from the keyword: LAN senders bypass the
 /// tolerance gate, WAN senders sit outside it.
 fn far_storer() -> KadNode {
-    KadNode::new(config(KadId::from_bytes([0x0F; 16])))
+    KadNode::new(KadNodeStart::new(
+        config(KadId::from_bytes([0x0F; 16])),
+        KadInstant::EPOCH,
+    ))
 }
 
 /// A stored keyword row as a storer serves it: FILENAME, FILESIZE, and the
@@ -299,7 +303,10 @@ fn keyword_publish_res(keyword: KadId, load: u8) -> Vec<u8> {
 /// A node with three validated contacts near the keyword, driven through a
 /// keyword search until it fans the `0x33` to exactly those three.
 fn fanned_keyword_searcher(now: KadInstant, query: &str) -> (KadNode, [KadNodeEndpoint; 3]) {
-    let mut node = KadNode::new(config(KadId::from_bytes([0x0F; 16])));
+    let mut node = KadNode::new(KadNodeStart::new(
+        config(KadId::from_bytes([0x0F; 16])),
+        KadInstant::EPOCH,
+    ));
     for d in [10, 20, 30] {
         node.handle_datagram(
             now,
@@ -414,7 +421,10 @@ fn keyword_results_merge_deduped_and_residual_filtered_into_one_stream() {
 #[test]
 fn an_unsearchable_query_is_diagnosed() {
     let now = KadInstant::EPOCH;
-    let mut node = KadNode::new(config(KadId::from_bytes([0x0F; 16])));
+    let mut node = KadNode::new(KadNodeStart::new(
+        config(KadId::from_bytes([0x0F; 16])),
+        KadInstant::EPOCH,
+    ));
     node.handle_command(
         now,
         KadCommand::SearchKeywords {
@@ -460,7 +470,10 @@ fn fanned_keyword_publisher_of(
     now: KadInstant,
     file: rmule_kad::KadSharedFile,
 ) -> (KadNode, [KadNodeEndpoint; 3]) {
-    let mut node = KadNode::new(config(KadId::from_bytes([0x0F; 16])));
+    let mut node = KadNode::new(KadNodeStart::new(
+        config(KadId::from_bytes([0x0F; 16])),
+        KadInstant::EPOCH,
+    ));
     for d in [10, 20, 30] {
         node.handle_datagram(
             now,
@@ -592,7 +605,10 @@ fn all_keyword_acks_complete_the_publish_and_a_heavy_load_embargoes_it() {
 /// launched a publish walk (a `0x21` lookup went out).
 fn publisher_fans_under(reachability: KadReachability) -> bool {
     let now = KadInstant::EPOCH;
-    let mut node = KadNode::new(config(KadId::from_bytes([0x0F; 16])));
+    let mut node = KadNode::new(KadNodeStart::new(
+        config(KadId::from_bytes([0x0F; 16])),
+        KadInstant::EPOCH,
+    ));
     for d in [10, 20, 30] {
         node.handle_datagram(
             now,
@@ -639,7 +655,10 @@ fn the_publish_gate_is_tcp_open_or_buddy_connected() {
 #[test]
 fn an_unjoined_node_does_not_publish_and_does_not_livelock() {
     let now = KadInstant::EPOCH;
-    let mut node = KadNode::new(config(KadId::from_bytes([0x0F; 16])));
+    let mut node = KadNode::new(KadNodeStart::new(
+        config(KadId::from_bytes([0x0F; 16])),
+        KadInstant::EPOCH,
+    ));
     // No contacts ⇒ not joined.
     node.handle_command(
         now,

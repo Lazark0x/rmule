@@ -21,10 +21,16 @@ use super::*;
 use crate::address_learning::{AddressObservation, SharedAddressLearning};
 
 /// A front whose knob is on, over a real loopback client-UDP socket, with
-/// `ports` as this round's Kad reports from distinct observers.
+/// `ports` as this round's Kad reports from distinct observers, and the node
+/// around it that a leg keeps alive.
 async fn predicting(
     ports: &[u16],
-) -> (NattFront<NullSink>, DiagnosticsState, Arc<ClientUdpSocket>) {
+) -> (
+    NattFront<NullSink>,
+    DiagnosticsState,
+    Arc<ClientUdpSocket>,
+    Surroundings,
+) {
     let addresses = SharedAddressLearning::default();
     for (index, port) in ports.iter().enumerate() {
         let observer = Ipv4Addr::new(45, 55, 200, 50 + u8::try_from(index).unwrap());
@@ -39,19 +45,21 @@ async fn predicting(
     let diagnostics = DiagnosticsState::default();
     let own_identity = crate::own_identity::SharedOwnIdentity::default();
     own_identity.set_user_hash(hash(0xAA));
+    let around = Surroundings::over(addresses.clone());
     let assembled = assemble(
         NullSink,
         NattIdentity {
             local: RMULE_NATT_CLAIM,
-            crypt_options: 0,
         },
         Arc::new(own_identity) as Arc<dyn NattOwnHash>,
         None,
         NattWiring {
             client_udp,
+            server: around.server.clone(),
+            reach: around.reach.clone(),
             addresses,
             admit: crate::adapters::SharedTunnelAdmit::default(),
-            claims: crate::adapters::SharedTunnelClaims::default(),
+            claims: crate::adapters::AwaitedInbound::default(),
             peer_pin: crate::adapters::SharedPeerPin::default(),
             diagnostics: diagnostics.clone(),
             events: None,
@@ -62,7 +70,7 @@ async fn predicting(
         },
     )
     .expect("the uTP engine starts");
-    (assembled.front, diagnostics, socket)
+    (assembled.front, diagnostics, socket, around)
 }
 
 /// An introduction at `target`, as the side that did not ask: no dial.
@@ -87,23 +95,24 @@ async fn begun(
 ) {
     front
         .on_command(
-            NattCommand::Begin {
-                target,
+            NattCommand::Traverse {
                 coordinator: AttemptCoordinator::Server {
                     low_id: ClientId::from_u32(low_id),
                 },
-                facts: crate::callback::NattFacts {
-                    advertised_udp,
-                    ..buddy_facts()
-                },
-                ours: firewalled_here(),
-                offer: RendezvousOffer {
-                    our_user_hash: hash(0xAA),
-                    options: NattConnectOptions::advertise(0, true, false),
-                    file_hash: None,
-                    claimed_endpoint: None,
-                    transport: NattTransport::Utp,
-                },
+                owner: Some(AttemptOwner {
+                    target,
+                    facts: crate::callback::NattFacts {
+                        advertised_udp,
+                        ..buddy_facts()
+                    },
+                    offer: RendezvousOffer {
+                        our_user_hash: hash(0xAA),
+                        options: NattConnectOptions::advertise(0, true, false),
+                        file_hash: None,
+                        claimed_endpoint: None,
+                        transport: NattTransport::Utp,
+                    },
+                }),
             },
             Instant::now(),
         )
@@ -149,7 +158,7 @@ fn refusals(diagnostics: &DiagnosticsState) -> (u64, Option<PredictionRefusal>) 
 /// real NAT.
 #[tokio::test]
 async fn an_endpoint_dependent_node_fans_256_sockets_at_the_punch_target() {
-    let (mut front, diagnostics, _) = predicting(&[31_004, 50_219, 7_781]).await;
+    let (mut front, diagnostics, _, _around) = predicting(&[31_004, 50_219, 7_781]).await;
     let (peer_socket, target) = peer_socket().await;
     begun(&mut front, hash(0x42), 7, None).await;
 
@@ -191,7 +200,7 @@ async fn an_endpoint_dependent_node_fans_256_sockets_at_the_punch_target() {
 /// once; any other port is neither.
 #[tokio::test]
 async fn an_endpoint_independent_node_probes_after_the_fan_it_is_meant_to_meet() {
-    let (mut front, diagnostics, _) = predicting(&[4672, 4672]).await;
+    let (mut front, diagnostics, _, _around) = predicting(&[4672, 4672]).await;
     let target = nowhere(38_211);
     let t0 = Instant::now();
     begun(&mut front, hash(0x42), 7, None).await;
@@ -246,7 +255,7 @@ async fn an_endpoint_independent_node_probes_after_the_fan_it_is_meant_to_meet()
 #[tokio::test]
 async fn a_peer_whose_observed_port_is_not_its_advert_vetoes_our_fan() {
     for (introduced_port, plans) in [(50_000, false), (4672, true)] {
-        let (mut front, _, _) = predicting(&[31_004, 50_219]).await;
+        let (mut front, _, _, _around) = predicting(&[31_004, 50_219]).await;
         let target_hash = hash(0x42);
         begun(&mut front, target_hash, 7, Some(4672)).await;
         front
@@ -269,7 +278,7 @@ async fn a_peer_whose_observed_port_is_not_its_advert_vetoes_our_fan() {
 /// (finding 1, finding 1).
 #[tokio::test]
 async fn a_strangers_introduction_plans_nothing_and_is_counted() {
-    let (mut front, diagnostics, socket) = predicting(&[31_004, 50_219, 7_781]).await;
+    let (mut front, diagnostics, socket, _around) = predicting(&[31_004, 50_219, 7_781]).await;
     let (_peer_socket, target) = peer_socket().await;
     for fill in [0x01, 0x02, 0x03] {
         front
@@ -290,7 +299,7 @@ async fn a_strangers_introduction_plans_nothing_and_is_counted() {
 /// stay inside the budget (finding 1).
 #[tokio::test]
 async fn fan_plans_are_capped_node_wide() {
-    let (mut front, diagnostics, socket) = predicting(&[31_004, 50_219, 7_781]).await;
+    let (mut front, diagnostics, socket, _around) = predicting(&[31_004, 50_219, 7_781]).await;
     let (_peer_socket, target) = peer_socket().await;
     for (fill, low_id) in [(0x01, 1), (0x02, 2), (0x03, 3)] {
         begun(&mut front, hash(fill), low_id, None).await;
@@ -312,7 +321,7 @@ async fn fan_plans_are_capped_node_wide() {
 /// or not: the burst and the dial go there, 256 sockets do not.
 #[tokio::test]
 async fn a_claimed_target_starts_no_plan() {
-    let (mut front, diagnostics, _) = predicting(&[31_004, 50_219, 7_781]).await;
+    let (mut front, diagnostics, _, _around) = predicting(&[31_004, 50_219, 7_781]).await;
     begun(&mut front, hash(0x42), 7, None).await;
     front
         .on_command(
@@ -338,7 +347,7 @@ async fn a_claimed_target_starts_no_plan() {
 /// — another peer behind that NAT — keeps nothing (finding 3).
 #[tokio::test]
 async fn ending_a_plan_keeps_no_socket_for_another_peer_behind_the_address() {
-    let (mut front, diagnostics, socket) = predicting(&[31_004, 50_219, 7_781]).await;
+    let (mut front, diagnostics, socket, _around) = predicting(&[31_004, 50_219, 7_781]).await;
     let (peer_socket, target) = peer_socket().await;
     begun(&mut front, hash(0x42), 7, None).await;
     front
@@ -378,7 +387,7 @@ async fn ending_a_plan_keeps_no_socket_for_another_peer_behind_the_address() {
 /// the paced burst (finding 4).
 #[tokio::test(start_paused = true)]
 async fn ending_a_plan_stops_its_burst() {
-    let (mut front, _, socket) = predicting(&[31_004, 50_219, 7_781]).await;
+    let (mut front, _, socket, _around) = predicting(&[31_004, 50_219, 7_781]).await;
     let (peer_socket, target) = peer_socket().await;
     begun(&mut front, hash(0x42), 7, None).await;
     front

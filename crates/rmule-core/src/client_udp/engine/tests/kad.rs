@@ -6,6 +6,8 @@
 //! the reasks queued behind them — nor a full reask inbox the Kad datagram
 //! queued behind it.
 
+use rmule_kad::KadInstant;
+use rmule_kad::KadNodeStart;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rmule_primitives::{FileHash, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, UserHash};
@@ -21,20 +23,27 @@ use tokio::sync::mpsc;
 /// never hand-framed, because the whole point of the leg below is that the
 /// front cannot tell this from noise and must not try.
 fn an_obfuscated_kad_datagram() -> Vec<u8> {
-    let mut node = rmule_kad::KadNode::new(rmule_kad::KadNodeConfig {
-        id: rmule_kad::KadId::from_bytes([0x77; rmule_kad::KadId::BYTE_LEN]),
-        tcp_port: 4662,
-        udp_port: 4672,
-        user_hash: UserHash::from_bytes([0x77; UserHash::BYTE_LEN]),
-    });
     // A fixed nonce keeps the bytes deterministic; the node still overwrites
     // the marker's low bits with the key-family index, so the leading byte is
     // the node's, not the test's.
-    node.enable_datagram_obfuscation(|| rmule_primitives::DatagramNonce {
-        marker_byte: 0x40,
-        random_key: 0xBEEF,
-        padding: Vec::new(),
-    });
+    let mut node = rmule_kad::KadNode::new(
+        KadNodeStart::new(
+            rmule_kad::KadNodeConfig {
+                id: rmule_kad::KadId::from_bytes([0x77; rmule_kad::KadId::BYTE_LEN]),
+                tcp_port: 4662,
+                udp_port: 4672,
+                user_hash: UserHash::from_bytes([0x77; UserHash::BYTE_LEN]),
+            },
+            KadInstant::EPOCH,
+        )
+        .obfuscation(rmule_kad::KadObfuscation::new(|| {
+            rmule_primitives::DatagramNonce {
+                marker_byte: 0x40,
+                random_key: 0xBEEF,
+                padding: Vec::new(),
+            }
+        })),
+    );
     // The NodeID key family needs a *stored* contact of a crypt-era version:
     // that ID is the key. A bootstrap dial to a stranger has none and goes out
     // in the clear, which is not the case this leg is about.

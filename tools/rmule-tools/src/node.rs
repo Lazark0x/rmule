@@ -14,19 +14,22 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use rmule_core::{
-    AppConfigStore, ClientCredentials, Core, CoreBuilder, CoreCommand, CoreConfig,
-    DurableAppConfig, DurableStore, ManagedServer, RuntimeKadFactory, RuntimePeerTransferService,
+    AppConfigStore, Core, CoreBuilder, CoreCommand, CoreConfig, CoreSettings, DurableAppConfig,
+    DurableStore, ManagedServer, RuntimeKadFactory, RuntimePeerTransferService,
     RuntimeServeRuntimeService, RuntimeSourceLookupService, ServerListCommand, open_durable_store,
 };
 use rmule_primitives::{SecureIdentKey, ServerEndpoint, UserHash};
 
 /// The default production builder over `store`, as the node whose hash is
-/// `user_hash`. With an `identity_dir`, the SUI key is the one stored in
+/// `user_hash`, under the `settings` the tool's own operands state — a tool
+/// never runs under preferences its store happens to hold. With an
+/// `identity_dir`, the SUI key is the one stored in
 /// `<identity_dir>/<HASH>` — created on first use, reused on every later run
 /// with the same hash; without one, the key is `store`'s own (persistent for a
 /// `--data-dir` store, fresh per run for an in-memory one).
 pub(crate) fn core_builder(
     config: CoreConfig,
+    settings: CoreSettings,
     store: Arc<DurableStore>,
     user_hash: UserHash,
     identity_dir: Option<&Path>,
@@ -38,7 +41,9 @@ pub(crate) fn core_builder(
         RuntimeKadFactory,
     >,
 > {
-    let builder = Core::builder(config, store).user_hash(user_hash);
+    let builder = Core::builder(config, store)
+        .settings(settings)
+        .user_hash(user_hash);
     Ok(match identity_dir {
         Some(dir) => builder.secure_ident_key(stored_key(dir, user_hash)?),
         None => builder,
@@ -49,15 +54,12 @@ pub(crate) fn core_builder(
 /// `server`, then connect to it. Nothing in core dials a server but this
 /// command (ADR-0095, "Connecting is the operator's act"); it binds the
 /// listener if none is up, waits for its mapping, then logs in, and every
-/// download or search already waiting rides the session it makes.
+/// download or search already waiting rides the session it makes. The login
+/// presents the Core Settings' credentials the tool built its core under.
 ///
 /// # Errors
 /// Core refused a command (it has stopped).
-pub(crate) async fn connect(
-    core: &Core,
-    server: &ServerEndpoint,
-    credentials: ClientCredentials,
-) -> Result<()> {
+pub(crate) async fn connect(core: &Core, server: &ServerEndpoint) -> Result<()> {
     core.send(CoreCommand::ServerList(ServerListCommand::AddServer {
         server: ManagedServer::listed(server.clone()),
     }))
@@ -65,7 +67,6 @@ pub(crate) async fn connect(
     .context("list the server")?;
     core.send(CoreCommand::ConnectToServer {
         server: server.clone(),
-        credentials,
     })
     .await
     .context("connect to the server")

@@ -25,19 +25,17 @@ mod connection;
 mod follower;
 mod test_connection;
 
-pub use connection::{ServeConnCommand, ServeConnEvent, ServeConnection};
+pub use connection::{ServeConnection, ServeInput, ServeOutput};
 
 use accept::spawn_accept_pump;
 pub(crate) use accept::{AdmittedPeer, SharedTunnelAdmit};
 use follower::SessionFollower;
 
 use super::HelloAdverts;
+use super::awaited_inbound::AwaitedInbound;
 use super::dialed_serve::SharedDialedServeSink;
-use super::inbound_triage::{
-    InboundEnd, InboundPeerDeps, SharedCallbackTable, triage_inbound_connection,
-};
+use super::inbound_triage::{InboundEnd, InboundPeerDeps, triage_inbound_connection};
 use super::kad_runtime::{KadPresenceView, SharedKadBootstrap, SharedKadPump};
-use super::tunnel_claims::SharedTunnelClaims;
 
 /// The serve-side runtime adapter (ADR-0031): the socket concern behind one
 /// seam, so core owns policy and stays socket-free. The sibling of
@@ -51,8 +49,9 @@ pub trait ServeRuntimeService: Send + 'static {
     /// Bind the inbound listener on `listen_addr` (port 0 = OS-chosen) and
     /// return the bound address — **the bind is the whole contract**. It dials no server: the
     /// listener follows whatever session the operator makes (ADR-0095), and is accepting whether
-    /// or not one ever exists. `identity` is the node's wire identity — the command's
-    /// credentials as the build-time hash. When the Hello
+    /// or not one ever exists. `identity` is the node's wire identity — the Core
+    /// Settings' credentials as the build-time hash; one naming port `0`
+    /// names the port bound. When the Hello
     /// Adverts carry a SUI keypair (ADR-0041), accepted
     /// connections run Secure User Identification.
     ///
@@ -127,8 +126,9 @@ pub trait ServeRuntimeService: Send + 'static {
     /// `Core::builder` weaves its own runtime through this, and
     /// `CoreBuilder::serve_runtime` calls it on the runtime it installs, so an
     /// injected runtime's accepts meet the node's session, ban store, IP
-    /// filter, Peer Roster, callback table and Hello Adverts — never a private
-    /// copy of any. Default no-op: a fake that accepts nothing holds no cell.
+    /// filter, Peer Roster, Awaited Inbound registry and Hello Adverts — never
+    /// a private copy of any. Default no-op: a fake that accepts nothing holds
+    /// no cell.
     fn adopt_cells(&mut self, _cells: &super::AdapterCells) {}
 }
 
@@ -179,12 +179,12 @@ pub struct RuntimeServeRuntimeService {
     /// The **Session Follower** the last `start` spawned; `None` before the
     /// first start and after a release, where an announce is refused.
     follower: Option<SessionFollower>,
-    /// Low-ID callback routing (ADR-0039): the shared table the accept-router
-    /// matches inbound hellos against, plus what it needs to build an adopted
-    /// download worker over a matched connection. Default/empty on the
-    /// non-`Core::new` constructors, whose adapters never adopt (the table stays
-    /// empty, so every inbound peer is served as before).
-    callbacks: SharedCallbackTable,
+    /// The **Awaited Inbound** registry (ADR-0039, ADR-0091) the accept-router
+    /// asks who gets an identified connection, plus what it needs to build an
+    /// adopted download worker over it. Default/empty on the non-`Core::new`
+    /// constructors, whose adapters never adopt: nothing is filed there, so
+    /// every inbound peer and every admitted tunnel is served as before.
+    awaited_inbound: AwaitedInbound,
     slot_wait_timeout: Duration,
     dialed_serve_sink: SharedDialedServeSink,
     /// The core-owned `BanStore` (ADR-0064). Default/empty on the
@@ -244,12 +244,6 @@ pub struct RuntimeServeRuntimeService {
     tunnel_admit: SharedTunnelAdmit,
     /// Where an accepted peer's refused hello is reported (ADR-0050).
     hello_refusals: crate::hello_refusals::SharedHelloRefusals,
-    /// The core-owned **Pending Tunnel Claim** table (ADR-0091): a download
-    /// whose callback went silent registers its target's User Hash here, and
-    /// this adapter's triage hands it the Dialer Tunnel the punch raised.
-    /// Default/empty on the non-`Core::new` constructors — nothing claims
-    /// there, so every admitted tunnel takes the serve road.
-    tunnel_claims: SharedTunnelClaims,
     /// **Kad Presence**: a served link's `0x99` is read against
     /// the running node's own Kad ID. Default on the non-`Core::builder`
     /// constructors — a view of no node, so every `0x99` drops `KadDown`;
@@ -320,15 +314,15 @@ impl RuntimeServeRuntimeService {
         self
     }
 
-    /// Share the **Pending Tunnel Claim** table (ADR-0091): a Dialer Tunnel
-    /// raised toward a hash some download claimed becomes that download's
-    /// worker instead of a serve connection. `Core::builder` wires the one
-    /// production instance in; the default (empty) table claims nothing, so
-    /// every tunnel takes the serve road exactly as it did before.
+    /// Share the **Awaited Inbound** registry: a connection some download
+    /// waits for becomes that download's worker instead of a serve
+    /// connection. `Core::builder` wires the one production instance in; the
+    /// default (empty) registry awaits nothing, so every connection takes the
+    /// serve road exactly as it did before.
     #[cfg(test)]
     #[must_use]
-    pub(crate) fn with_tunnel_claims(mut self, tunnel_claims: SharedTunnelClaims) -> Self {
-        self.tunnel_claims = tunnel_claims;
+    pub(crate) fn with_awaited_inbound(mut self, awaited_inbound: AwaitedInbound) -> Self {
+        self.awaited_inbound = awaited_inbound;
         self
     }
 }
@@ -407,19 +401,42 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
         // `OP_HELLOANSWER` comes back within its check window. A bound-but-mute
         // listener fails the check ("WARNING : No answer from your <port>
         // port") and the login lands Low-ID. The accepting itself lives in the
-        // pump from bind: with `peer_crypt` armed an accept holds
+        // pump from bind: with an obfuscation policy armed an accept holds
         // its accepted stream across the byte-0 peek await, so it must never
         // run inside a future a caller's `select!` can cancel. Each connection
         // the pump accepts is answered by its driver
         // (`PeerSession::new_inbound`) the moment its hello arrives — read
-        // live: client id 0 and no server until a session exists, as an aMule
-        // mid-login answer carries, then the session's server and its current
-        // id — and the serve loop serves it from the channel.
+        // live: the Presented Client ID as Self Reach answers it then (`0`
+        // and no server before any session or Kad join, as an aMule
+        // mid-login answer carries) and the session's server — and the serve
+        // loop serves it from the channel.
         //
         // Rebuilt at every start, never carried over: a restart's
-        // hellos are answered under the identity *this* start named.
-        let hello =
-            crate::server_session::HelloSource::live(identity, self.session.own_identity().clone());
+        // hellos are answered under the identity *this* start named. One
+        // naming port `0` (the OS's choice) names the port bound, which a
+        // start learns only here (ADR-0040).
+        let identity = if identity.tcp_port() == 0 {
+            rmule_primitives::ClientIdentity::new(
+                identity.user_hash(),
+                identity.nickname().clone(),
+                bound.port(),
+                identity.protocol_version(),
+            )
+            .with_extra_tags(identity.extra_tags().to_vec())
+        } else {
+            identity
+        };
+        // Self Reach as the core installed it in the Hello Adverts before any
+        // start. A runtime started outside a core has no Kad node and no
+        // NAT-T front, so the owner it reads is the session facts alone.
+        let reach = self.adverts.reach.get().cloned().unwrap_or_else(|| {
+            crate::reachability::SharedSelfReach::new(
+                crate::KadReachLevel::fixed(false),
+                self.session.own_identity().clone(),
+                crate::natt::front::SharedNattFront::default(),
+            )
+        });
+        let hello = crate::server_session::HelloSource::live(identity, reach);
         let pump = spawn_accept_pump(
             listener,
             hello,
@@ -518,8 +535,7 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
                 dialed_toward,
                 command_rx,
                 event_tx,
-                self.callbacks.clone(),
-                self.tunnel_claims.clone(),
+                self.awaited_inbound.clone(),
                 InboundPeerDeps {
                     slot_wait_timeout: self.slot_wait_timeout,
                     dialed_serve_sink: self.dialed_serve_sink.clone(),
@@ -593,7 +609,7 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
 
     fn adopt_cells(&mut self, cells: &super::AdapterCells) {
         self.session = cells.session.clone();
-        self.callbacks = cells.callbacks.clone();
+        self.awaited_inbound = cells.awaited_inbound.clone();
         self.slot_wait_timeout = cells.slot_wait_timeout;
         self.dialed_serve_sink = cells.dialed_serve_sink.clone();
         self.ban_store = cells.ban_store.clone();
@@ -606,7 +622,6 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
         self.address_families = cells.address_families;
         self.tunnel_admit = cells.tunnel_admit.clone();
         self.hello_refusals = cells.hello_refusals.clone();
-        self.tunnel_claims = cells.tunnel_claims.clone();
         self.file_known = cells.file_known.clone();
     }
 }

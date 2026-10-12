@@ -16,9 +16,10 @@
 //! This file owns the struct, the constructors and the driver-facing
 //! lifecycle — `start`, the signal entry points, `poll_output` and the close
 //! discipline. Each protocol leg implements its own half in a private
-//! submodule: `wire` (the byte boundary and opcode routing), `download` and
+//! submodule: `wire` (the byte boundary and opcode routing), `identity` (the
+//! peer's identity, read at the hello and kept current), `download` and
 //! `serve` (the two capabilities), `source_exchange`, `aich`, `multipacket`,
-//! `human_layer` and `secure_ident`; each leg also owns the bookkeeping it
+//! `mule_info`, `human_layer` and `secure_ident`; each leg also owns the bookkeeping it
 //! carries between packets (the per-file flow in `download`, the pending
 //! bundle in `multipacket`, the SUI exchange in `secure_ident`). The
 //! vocabulary a driver speaks lives in `command`, `event` and `error`,
@@ -30,6 +31,7 @@ mod download;
 mod error;
 mod event;
 mod human_layer;
+mod identity;
 mod mule_info;
 mod multipacket;
 mod secure_ident;
@@ -37,19 +39,25 @@ mod serve;
 mod source_exchange;
 mod wire;
 
-pub use self::command::{PeerCommand, PeerOutput};
+pub use self::command::{
+    ConnectionCommand, PeerCommand, PeerOutput, RequesterCommand, ServerCommand, SideCommand,
+};
 pub use self::error::{PeerCloseReason, PeerError, SecureIdentFailure};
-pub use self::event::{FileProbeStatus, PeerEvent, SlotReleaseReason};
+pub use self::event::{
+    ConnectionEvent, FileProbeStatus, IdentityChange, NoticeEvent, PeerEvent, RequesterEvent,
+    ServerEvent, SideEvent, SlotReleaseReason,
+};
 pub use self::source_exchange::SourceExchangeSupport;
 
 use std::collections::HashMap;
 
-use rmule_primitives::{FileHash, Packet, PeerEndpoint, SessionCore, UserHash};
+use rmule_primitives::{FileHash, Packet, PeerEndpoint, SessionCore};
 
 use crate::capability::{MiscOptions1, MiscOptions2, UdpPortsAdvert};
 use crate::handshake::{PeerHandshakeContext, SecureIdentConfig};
 use crate::hello::{Hello, PeerHelloBody};
 use crate::software::SoftwareEvidence;
+use crate::source_exchange::ServedSourcesVersion;
 
 use self::download::{CompressedBlocksInFlight, FileFlow};
 use self::multipacket::PendingMultipacketAnswer;
@@ -88,8 +96,8 @@ pub struct PeerSession {
     compressed_blocks_in_flight: CompressedBlocksInFlight,
     active_slot: Option<FileHash>,
     /// `Some` once the Server Capability has granted this connection an
-    /// upload slot for a file (set by `GrantSlot`, cleared by
-    /// `RefuseSlot`). The serve-side mirror of `active_slot`; the
+    /// upload slot for a file (set by `GrantSlot`, cleared when the peer
+    /// cancels it). The serve-side mirror of `active_slot`; the
     /// cross-connection queue/rank/budget lives in core (ADR-0031).
     served_slot: Option<FileHash>,
     /// Bundled-request answers awaiting composition into one `OP_MULTIPACKETANSWER`
@@ -104,6 +112,12 @@ pub struct PeerSession {
     /// only way to route the eventual answer back to a pending bundle. Sessions
     /// don't yet track more than one outstanding AICH-root request at a time.
     served_aich_request: Option<FileHash>,
+    /// The wire form each file's latest source ask is answered in (ADR-0055),
+    /// picked from the asker's advert when the ask arrived and kept here so
+    /// core answers with sources alone. Overwritten by the next ask for the
+    /// same file and taken by the answer, so it holds only asks still owed
+    /// one: a second answer to one ask is refused like an unasked one.
+    served_sources: HashMap<FileHash, ServedSourcesVersion>,
     /// The remote peer's advertised `MiscOptions1`, read from its hello
     /// (`None` for a non-eMule / pre-extended peer). Gates whether we may
     /// send it compressed parts, and whether we bundle our own file requests
@@ -114,14 +128,13 @@ pub struct PeerSession {
     /// (bit 5) alone decides whether a bundled request frames as the `0xA4`
     /// (with `size8`) or base `0x92` form (ADR-0054 emit).
     peer_misc_options2: Option<MiscOptions2>,
-    /// The peer's **Static Capability Claim** (`CT_MOD_MISCOPTIONS`,
-    /// ADR-0087), read at identify time. Gates what rmule may *write* this
+    /// The peer's identity as its hello named it, every later revision
+    /// applied (`identity`): the one copy every `Identified` and
+    /// `IdentityRevised` carries whole. Its User Hash names whom Secure User
+    /// Identification proved (ADR-0041); its **Static Capability Claim**
+    /// (`CT_MOD_MISCOPTIONS`, ADR-0087) gates what rmule may *write* this
     /// peer: the ExtSX record form and its two optional identity tags.
-    peer_mod_misc: Option<crate::capability::ModMiscOptions>,
-    /// The peer's **User Hash** from its hello, retained so a later
-    /// `PeerIdentityVerified` names whom Secure User Identification proved
-    /// (ADR-0041).
-    peer_user_hash: Option<UserHash>,
+    peer_identity: Option<crate::identity::PeerIdentity>,
     /// What the peer has said about its software on this connection: its
     /// hello and any legacy `OP_EMULEINFO`, folded in arrival order.
     peer_software: SoftwareEvidence,
@@ -189,10 +202,10 @@ impl PeerSession {
             served_slot: None,
             served_multipacket: HashMap::new(),
             served_aich_request: None,
+            served_sources: HashMap::new(),
             peer_misc_options: None,
             peer_misc_options2: None,
-            peer_mod_misc: None,
-            peer_user_hash: None,
+            peer_identity: None,
             peer_software: SoftwareEvidence::default(),
             peer_legacy_reask: None,
             peer_hello_named_reask: false,
@@ -226,7 +239,7 @@ impl PeerSession {
     /// Enable Secure User Identification for this connection (ADR-0041): the
     /// hello advertises the capability and, against a SUI-capable peer, the
     /// session runs the challenge/response exchange and emits
-    /// `PeerIdentityVerified`. Chainable on `new_outbound` / `new_inbound`; the
+    /// `IdentityVerified`. Chainable on `new_outbound` / `new_inbound`; the
     /// application supplies the keypair and a fresh per-connection challenge.
     #[must_use]
     pub fn with_secure_ident(mut self, config: SecureIdentConfig) -> Self {
@@ -356,7 +369,7 @@ impl PeerSession {
         self.peer
     }
 
-    /// Open the conversation: emit `PeerHelloSent` and an `OP_HELLO`
+    /// Open the conversation: emit `HelloSent` and an `OP_HELLO`
     /// write. Idempotent — no-op outside `BeforeStart`.
     pub fn start(&mut self) {
         if !matches!(self.state, State::BeforeStart) {
@@ -365,7 +378,8 @@ impl PeerSession {
         let bytes = Hello::new(self.advertised_hello_body())
             .encode_packet()
             .encode();
-        self.core.push_event(PeerEvent::PeerHelloSent);
+        self.core
+            .push_event(PeerEvent::Connection(ConnectionEvent::HelloSent));
         self.core.push_write(bytes.into());
         self.state = State::AwaitingHelloAnswer;
     }
@@ -433,7 +447,8 @@ impl PeerSession {
     /// Queue a `CommandRejected` event carrying `reason` — the single home
     /// for the command-guard rejections the handlers raise.
     fn reject(&mut self, reason: PeerError) {
-        self.core.push_event(PeerEvent::CommandRejected { reason });
+        self.core
+            .push_event(PeerEvent::Notice(NoticeEvent::CommandRejected { reason }));
     }
 
     fn close_protocol_violation(&mut self) {
@@ -446,6 +461,9 @@ impl PeerSession {
     /// so the reason rides on both outputs cheaply.
     fn close(&mut self, reason: PeerCloseReason) {
         self.state = State::Closed;
-        self.core.close(PeerEvent::Disconnected { reason }, reason);
+        self.core.close(
+            PeerEvent::Connection(ConnectionEvent::Disconnected { reason }),
+            reason,
+        );
     }
 }

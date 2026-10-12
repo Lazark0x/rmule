@@ -17,12 +17,14 @@ relation holds it.
 | Relation | Added | Removed | aMule |
 | --- | --- | --- | --- |
 | `Download(DownloadId)` | a live worker's hello completes | the worker's retirement, or every still-live worker at the download's end, however it ends | `SetDownloadState`; `Disconnected` → `RemoveSource` |
-| `Queued(DownloadId)` | a source enters the Remote-Queued Pool (ADR-0057) | it leaves the pool, or the download ends | `DS_ONQUEUE`, socket closed |
+| `Queued(DownloadId)` | a source enters the Remote-Queued Pool (ADR-0057) | it leaves the pool — a TCP full ask, a `0x92`, a merge or an orphaned endpoint — or the download ends | `DS_ONQUEUE`, socket closed |
 | Waiter (held as `Upload`) | the serve state queues the peer | purged, cancelled while waiting, or the serve activity ends; a promotion is a transition, not a removal | `US_ONUPLOADQUEUE`, kept across a disconnect |
 | `Upload` | a slot is granted | the slot is released, or the serve activity ends | `US_UPLOADING` |
 
 A relation is added and removed by the same owner's paired events, never by a sweep that
-guesses, unlike aMule's `CleanUpClientList`. The gate widens no further than these
+guesses, unlike aMule's `CleanUpClientList`. `Queued` has no event for every way out of the
+pool, so its owner, the download runner, holds it to the Source Book's RemoteQueued stage after
+each brain step: the owner's own state, not a guess. The gate widens no further than these
 relations: testing a stranger is what the check is for.
 
 ## Consequences

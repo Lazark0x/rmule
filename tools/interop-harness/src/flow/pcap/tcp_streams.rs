@@ -34,6 +34,8 @@ pub(crate) const ED2K_PROTOCOLS: [u8; 3] = [0xE3, 0xC5, 0xD4];
 const TCP_SYN: u8 = 0x02;
 /// The TCP FIN and RST flag bits: either ends the sender's side.
 const TCP_FIN_OR_RST: u8 = 0x05;
+/// The TCP ACK flag bit: a SYN without it is the dialing side's.
+const TCP_ACK: u8 = 0x10;
 
 /// One direction of one TCP connection, as far as it was delivered without a
 /// hole.
@@ -83,12 +85,25 @@ pub(crate) struct TcpClose {
     pub(crate) destination: SocketAddr,
 }
 
-/// Every TCP direction of a capture, and every FIN or RST in it.
+/// A SYN without ACK: one side dialed the other.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TcpOpen {
+    /// Capture time of the segment.
+    pub(crate) at: f64,
+    /// The side that dialed.
+    pub(crate) source: SocketAddr,
+    /// The side it dialed.
+    pub(crate) destination: SocketAddr,
+}
+
+/// Every TCP direction of a capture, every FIN or RST and every dial in it.
 pub(crate) struct TcpCapture {
     /// The reassembled directions, as [`tcp_streams`] returns them.
     pub(crate) streams: Vec<TcpStream>,
     /// Every FIN or RST segment, in capture order, retransmissions included.
     pub(crate) closes: Vec<TcpClose>,
+    /// Every SYN without ACK, in capture order, retransmissions included.
+    pub(crate) opens: Vec<TcpOpen>,
 }
 
 impl Ed2kFrame {
@@ -247,11 +262,19 @@ fn reassemble(records: &[Record]) -> Result<TcpCapture> {
     let mut pending: HashMap<(SocketAddr, SocketAddr), Pending> = HashMap::new();
     let mut streams = Vec::new();
     let mut closes = Vec::new();
+    let mut opens = Vec::new();
     for record in records {
         let Some(segment) = tcp_segment(&record.frame)? else {
             continue;
         };
         let key = (segment.source, segment.destination);
+        if segment.flags & TCP_SYN != 0 && segment.flags & TCP_ACK == 0 {
+            opens.push(TcpOpen {
+                at: record.at,
+                source: segment.source,
+                destination: segment.destination,
+            });
+        }
         if segment.flags & TCP_FIN_OR_RST != 0 {
             closes.push(TcpClose {
                 at: record.at,
@@ -285,7 +308,11 @@ fn reassemble(records: &[Record]) -> Result<TcpCapture> {
             streams.push(finish(key, direction));
         }
     }
-    Ok(TcpCapture { streams, closes })
+    Ok(TcpCapture {
+        streams,
+        closes,
+        opens,
+    })
 }
 
 /// Order one direction's segments by sequence number and lay them end to end.

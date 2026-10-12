@@ -19,7 +19,8 @@ use rmule_interop_harness::artifacts::Ed2kHashCommand;
 use rmule_interop_harness::flow::{
     DEFAULT_REASK_WINDOW_SECS, DirectSuiOptions, PeerUdpReaskEmitOptions, PeerUdpReaskOptions,
     Sx1GateOptions, TwoHellosOptions, run_amule_direct_sui, run_peer_udp_reask,
-    run_peer_udp_reask_emit, run_sx1_gate, run_two_hellos, stage_reask_emit_files,
+    run_peer_udp_reask_emit, run_sx1_gate, run_two_hellos, score_peer_udp_reask,
+    score_peer_udp_reask_emit, stage_reask_emit_files,
 };
 use rmule_interop_harness::rmule::{RmuleClientContainer, RmuleServeContainer, RmuleToolsCommand};
 use serde::Serialize;
@@ -114,9 +115,53 @@ pub(crate) struct PeerUdpReaskArgs {
     /// `OP_REASKFILEPING`.
     #[arg(long, value_parser = ["supported", "requested", "required"])]
     pub(crate) peer_crypt: Option<String>,
+    /// Change the serving rmule's obfuscation policy mid-run, as
+    /// `<secs>:<off|supported|requested|required>`; repeat for several (`ed2k
+    /// serve start --peer-crypt-flip`). A reask before a flip and the one
+    /// after meet different policies; the flips rmule marked are printed as
+    /// `obfuscation_flips`.
+    #[arg(long, value_parser = rmule_interop_harness::rmule::crypt_flip_arg)]
+    pub(crate) peer_crypt_flip: Vec<String>,
     /// Test hook for the ED2K hash command.
     #[arg(long, hide = true)]
     pub(crate) ed2k_hash_command: Option<PathBuf>,
+}
+
+/// `peer-udp-reask-score`: the consume verdict, re-taken from a retained run.
+#[derive(Debug, Args)]
+pub(crate) struct PeerUdpReaskScoreArgs {
+    /// The run dir to score (the one holding `reask-capture/reask.pcap`).
+    #[arg(long)]
+    pub(crate) run_dir: PathBuf,
+    /// The serving rmule's address on the tap.
+    #[arg(long)]
+    pub(crate) rmule_ip: std::net::Ipv4Addr,
+    /// The queued aMule's address on the tap.
+    #[arg(long)]
+    pub(crate) reasker_ip: std::net::Ipv4Addr,
+    /// The run armed peer obfuscation on both ends (`--peer-crypt`).
+    #[arg(long)]
+    pub(crate) crypt: bool,
+}
+
+/// `peer-udp-reask-emit-score`: the emit verdict, re-taken from a retained
+/// run.
+#[derive(Debug, Args)]
+pub(crate) struct PeerUdpReaskEmitScoreArgs {
+    /// The run dir to score (the one holding
+    /// `emit-reask-capture/emit-reask.pcap`).
+    #[arg(long)]
+    pub(crate) run_dir: PathBuf,
+    /// The downloading rmule's address on the tap.
+    #[arg(long)]
+    pub(crate) rmule_ip: std::net::Ipv4Addr,
+    /// The sharer aMule's address on the tap.
+    #[arg(long)]
+    pub(crate) sharer_ip: std::net::Ipv4Addr,
+    /// The downloading rmule started with its peer obfuscation armed
+    /// (`--peer-crypt`).
+    #[arg(long)]
+    pub(crate) crypt: bool,
 }
 
 /// `peer-udp-reask-emit`: the emit leg — a stock aMule serves one slot, a
@@ -139,9 +184,9 @@ pub(crate) struct PeerUdpReaskEmitArgs {
     /// sole upload slot stays occupied (rmule stays queued).
     #[arg(long, default_value_t = DEFAULT_REASK_FILE_SIZE)]
     pub(crate) file_size: u64,
-    /// Per-container bring-up timeout in seconds. Must outlast a cold rmule-tools
-    /// build in the download container (~5 min) plus the login/dial/queue before
-    /// `download peer_queued` — pass ≥600.
+    /// Per-step bring-up timeout in seconds. Must outlast the login, dial and
+    /// queue before `download.peer_queued`, and with `--known-sources` each
+    /// slot-holder's first part from the seeder (about four minutes).
     #[arg(long, default_value_t = 900)]
     pub(crate) timeout: u64,
     /// Seconds to sit past the queue, covering FILEREASKTIME (~1300 s) + margin.
@@ -156,6 +201,16 @@ pub(crate) struct PeerUdpReaskEmitArgs {
     /// that then stops. Needs the debug aMule image.
     #[arg(long, default_value_t = false)]
     pub(crate) known_sources: bool,
+    /// Arm the downloading rmule's peer obfuscation policy (`ed2k download
+    /// start --peer-crypt`). Unset, the run is the plaintext one.
+    #[arg(long, value_parser = ["supported", "requested", "required"])]
+    pub(crate) peer_crypt: Option<String>,
+    /// Change the downloading rmule's obfuscation policy mid-download, as
+    /// `<secs>:<off|supported|requested|required>` from its login; repeat for
+    /// several (`ed2k download start --peer-crypt-flip`). The flips rmule
+    /// marked are printed as `obfuscation_flips`.
+    #[arg(long, value_parser = rmule_interop_harness::rmule::crypt_flip_arg)]
+    pub(crate) peer_crypt_flip: Vec<String>,
     /// Test hook for the ED2K hash command.
     #[arg(long, hide = true)]
     pub(crate) ed2k_hash_command: Option<PathBuf>,
@@ -222,7 +277,14 @@ pub(crate) fn peer_udp_reask(args: PeerUdpReaskArgs) -> Result<()> {
         args.capture.build_context(),
     ])?;
     let (run_dir, layout) = args.bench.create_run()?;
-    stage_synthetic(&layout, args.file_size, args.ed2k_hash_command.as_deref())?;
+    // rmule sends a part compressed when that saves bytes, so a compressible
+    // file would cross the slot-holder's cap in minutes and free the slot the
+    // reasker queues behind.
+    let hash_command = args
+        .ed2k_hash_command
+        .as_deref()
+        .map_or_else(Ed2kHashCommand::cargo_rmule_tools, Ed2kHashCommand::new);
+    stage_reask_emit_files(&layout, args.file_size, &hash_command, false)?;
     let rmule_serve_container = RmuleServeContainer::cargo_rmule_tools(&args.rmule_client_image)?;
     println!("run_dir={}", run_dir.display());
 
@@ -242,8 +304,24 @@ pub(crate) fn peer_udp_reask(args: PeerUdpReaskArgs) -> Result<()> {
         rmule_serve_container: &rmule_serve_container,
         reask_window_secs: args.reask_window_secs,
         peer_crypt: args.peer_crypt.as_deref(),
+        peer_crypt_flip: &args.peer_crypt_flip,
         amule_env: &args.amule.amule_env,
     })
+}
+
+pub(crate) fn peer_udp_reask_score(args: PeerUdpReaskScoreArgs) -> Result<()> {
+    let verdict = score_peer_udp_reask(&args.run_dir, args.rmule_ip, args.reasker_ip, args.crypt)?;
+    println!("run_dir={}", args.run_dir.display());
+    println!("verdict={verdict}");
+    Ok(())
+}
+
+pub(crate) fn peer_udp_reask_emit_score(args: PeerUdpReaskEmitScoreArgs) -> Result<()> {
+    let verdict =
+        score_peer_udp_reask_emit(&args.run_dir, args.rmule_ip, args.sharer_ip, args.crypt)?;
+    println!("run_dir={}", args.run_dir.display());
+    println!("verdict={verdict}");
+    Ok(())
 }
 
 pub(crate) fn peer_udp_reask_emit(args: PeerUdpReaskEmitArgs) -> Result<()> {
@@ -280,6 +358,8 @@ pub(crate) fn peer_udp_reask_emit(args: PeerUdpReaskEmitArgs) -> Result<()> {
         amule_env: &args.amule.amule_env,
         two_downloads: args.two_downloads,
         known_sources: args.known_sources,
+        peer_crypt: args.peer_crypt.as_deref(),
+        peer_crypt_flip: &args.peer_crypt_flip,
     })
 }
 

@@ -14,7 +14,7 @@
 //! the hello it advertises, so the two can never claim different capabilities
 //! (ADR-0047).
 
-use rmule_primitives::{Ed2kText, Packet, PacketProtocol, Tag, TagName, TagValue};
+use rmule_primitives::{Ed2kText, Packet, PacketProtocol, Tag, TagName, TagValue, WireReader};
 
 use crate::capability::{CT_EMULE_UDPPORTS, MiscOptions1};
 use crate::error::EmuleInfoDecodeError;
@@ -28,7 +28,6 @@ pub(crate) const OP_EMULEINFO: u8 = 0x01;
 pub(crate) const OP_EMULEINFOANSWER: u8 = 0x02;
 const EMULE_PROTOCOL: u8 = 0x01;
 const OS_INFO_PROTOCOL: u8 = 0xFF;
-const HEADER_LEN: usize = 1 + 1 + 4;
 
 const ET_COMPRESSION: u8 = 0x20;
 const ET_UDPPORT: u8 = 0x21;
@@ -96,26 +95,23 @@ impl EmuleInfo {
                 opcode: packet.opcode(),
             });
         }
-        let payload = packet.payload();
-        if payload.len() < HEADER_LEN {
-            return Err(EmuleInfoDecodeError::Truncated {
-                needed: HEADER_LEN,
-                actual: payload.len(),
-            });
-        }
-        let count = u32::from_le_bytes(payload[2..HEADER_LEN].try_into().expect("four bytes"));
+        let mut reader = WireReader::new(packet.payload());
+        let version = reader.read_u8("version")?;
+        let protocol = reader.read_u8("protocol")?;
+        let count = reader.read_u32_le("tag count")?;
         let count = usize::try_from(count).unwrap_or(usize::MAX);
+        let tag_bytes = reader.remaining_bytes();
         // The protocol byte decides before any tag is read: under any other
         // byte aMule returns with the count read and the tags unread.
-        let tags = || decode_tags(&payload[HEADER_LEN..], count).map(|(tags, _)| tags);
-        Ok(match payload[1] {
-            EMULE_PROTOCOL => Self::Legacy(LegacyMuleInfo::read(payload[0], &tags()?)),
+        let tags = || decode_tags(tag_bytes, count).map(|(tags, _)| tags);
+        Ok(match protocol {
+            EMULE_PROTOCOL => Self::Legacy(LegacyMuleInfo::read(version, &tags()?)),
             OS_INFO_PROTOCOL => Self::OsInfo {
                 os: hello_text(&tags()?, ET_OS_INFO).cloned(),
             },
             protocol => Self::Other {
                 protocol,
-                mule_version: read_mule_version(payload[0]),
+                mule_version: read_mule_version(version),
             },
         })
     }

@@ -9,7 +9,7 @@
 //! the handshake completes at once and the test's `OP_HELLO` lands late —
 //! stretches the test past that answer without touching either program (the
 //! same knob class as `AMULE_FORCE_LOW_ID`'s inbound DROP). rmule's own
-//! `server login … step=PortTestLate { … admission: Refused }` line, written
+//! `server.login … step=port_test_late … admission=refused` record, written
 //! when the plaintext opener arrives after the window closed, is the verdict;
 //! Lugdunum's Low-ID answer before it is the counterparty's part.
 
@@ -28,7 +28,7 @@ pub const DEFAULT_HELLO_DELAY_MS: u64 = 14_000;
 /// The shared file's size (any file; the login announces it).
 const SHARE_BYTES: usize = 400_003;
 /// The line rmule writes for a test that arrives after the window.
-const LATE_STEP: &str = "step=PortTestLate";
+const LATE_STEP: &str = "step=port_test_late";
 
 /// Options for the late-port-test leg.
 pub struct LatePortTestOptions<'a> {
@@ -157,11 +157,11 @@ pub fn run_late_port_test(options: LatePortTestOptions<'_>) -> Result<()> {
 fn verdict(log: &str) -> Result<String> {
     let answered_without = log
         .lines()
-        .any(|line| line.contains("step=PortTestWindowClosed { arrived: false }"));
+        .any(|line| line.contains("step=port_test_window_closed arrived=no"));
     let Some(late) = log.lines().find(|line| line.contains(LATE_STEP)) else {
         bail!("rmule wrote no {LATE_STEP} line");
     };
-    let refused = late.contains("admission: Refused");
+    let refused = late.contains("admission=refused");
     let outcome = if answered_without && refused {
         "PASS"
     } else {

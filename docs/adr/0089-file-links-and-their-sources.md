@@ -37,7 +37,7 @@ refuses only what is malformed. References: aMule 2.3.3 `src/ED2KLink.cpp` and e
   (`AbstractFile.cpp:439-443`), so a resumed run starts from them again.
 - **A link's sources are the run's first candidates.** As both references hand them to the
   download at once (aMule `DownloadQueue.cpp:1497-1500`; eMule `DownloadQueue.cpp:262-295`),
-  the runner turns each peer into an `ExchangedSource` (a High ID with the link's crypt byte
+  the runner turns each peer into a `SourceSighting` (a High ID with the link's crypt byte
   and user hash; an `s6=` hint as an IPv6 source), resolves names off the actor (5 s per name,
   IPv4 answers only), drops the lot past the `@` date, and puts them at the front of the
   candidate pool (ADR-0030) through the same ingest gates as a server's answer. A run whose link

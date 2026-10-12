@@ -3,10 +3,10 @@
 //! connected server's shares withheld or told before withholding (ADR-0099).
 //!
 //! Health is a level core republishes every tick, so the edges are read off
-//! two snapshots rather than sent — here once, for the Networks log and the
-//! Run Log alike: a row whose health moved says so once, and
+//! two snapshots rather than sent: a row whose health moved says so once, and
 //! a row that was not in the previous snapshot — the first one after attach,
-//! a fresh import — says nothing, because nothing happened to it here.
+//! a fresh import — says nothing, because nothing happened to it here. The Run
+//! Log's record of the same edges is core's own reachability trail.
 
 use std::time::Instant;
 
@@ -17,8 +17,8 @@ use rmule_primitives::ServerEndpoint;
 use super::UiState;
 use crate::words::server as words;
 
-/// What moved on the server list between two levels, as a code: the Networks
-/// log words it, the Run Log records it.
+/// What moved on the server list between two levels, as a code the Networks
+/// log words.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum HealthEdge {
     /// A server's failure tally reached the dead-server limit.

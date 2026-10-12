@@ -19,6 +19,7 @@ use super::*;
 use crate::adapters::ServerUdpTransport;
 use crate::server_capabilities::SharedServerCapabilities;
 use crate::server_udp::ServerUdpDatagram;
+use crate::server_udp::tests::{plain_seal, seal_over, udp};
 
 mod kad_leg;
 mod lifecycle;
@@ -58,7 +59,7 @@ fn variant_selection_follows_the_advertised_flags() {
 /// A transport that records every send's `(server, opcode)`; `recv`
 /// pends forever (the sweep never reads).
 struct RecordingTransport {
-    sends: Mutex<Vec<(ServerEndpoint, u8)>>,
+    sends: Mutex<Vec<(Ipv4Endpoint, u8)>>,
     datagrams: Mutex<Vec<Vec<u8>>>,
 }
 
@@ -72,13 +73,9 @@ impl RecordingTransport {
 }
 
 impl ServerUdpTransport for &'static RecordingTransport {
-    async fn send_to(&self, server: ServerEndpoint, datagram: Vec<u8>) {
-        self.sends.lock().unwrap().push((server, datagram[1]));
+    async fn send_to(&self, to: Ipv4Endpoint, datagram: Vec<u8>) {
+        self.sends.lock().unwrap().push((to, datagram[1]));
         self.datagrams.lock().unwrap().push(datagram);
-    }
-
-    async fn send_crypt_ping(&self, server: ServerEndpoint, datagram: Vec<u8>) {
-        self.sends.lock().unwrap().push((server, datagram[1]));
     }
 
     async fn recv(&self) -> Option<ServerUdpDatagram> {
@@ -116,7 +113,7 @@ async fn sweep_paces_one_variant_datagram_per_server_and_skips_the_connected_one
     );
 
     let asked = GlobalSearchSweep {
-        transport,
+        seal: plain_seal(transport),
         servers: vec![
             server("10.0.0.1", 4661), // the connected server — skipped
             server("10.0.0.2", 4661), // ExtGetFiles + LargeFiles → 0x90
@@ -136,9 +133,9 @@ async fn sweep_paces_one_variant_datagram_per_server_and_skips_the_connected_one
     assert_eq!(
         sends,
         vec![
-            (server("10.0.0.2", 4661), 0x90),
-            (server("10.0.0.3", 4661), 0x98),
-            (server("10.0.0.4", 4661), 0x92),
+            (udp(&server("10.0.0.2", 4661), 4), 0x90),
+            (udp(&server("10.0.0.3", 4661), 4), 0x98),
+            (udp(&server("10.0.0.4", 4661), 4), 0x92),
         ],
         "one datagram per non-connected server, variant per its flags"
     );
@@ -158,7 +155,7 @@ async fn a_sweep_widens_a_large_bound_only_where_the_server_takes_it() {
     );
 
     GlobalSearchSweep {
-        transport,
+        seal: plain_seal(transport),
         servers: vec![server("10.0.0.2", 4661), server("10.0.0.3", 4661)],
         capabilities,
         connected: server("10.0.0.9", 4661),
@@ -188,7 +185,7 @@ async fn sweeps_started_together_reach_one_server_spaced() {
     let transport: &'static RecordingTransport = Box::leak(Box::new(RecordingTransport::new()));
     let pacer = UdpSearchPacer::default();
     let sweep = || GlobalSearchSweep {
-        transport,
+        seal: plain_seal(transport),
         servers: vec![server("10.0.0.2", 4661)],
         capabilities: SharedServerCapabilities::default(),
         connected: server("10.0.0.9", 4661),
@@ -200,6 +197,74 @@ async fn sweeps_started_together_reach_one_server_spaced() {
     tokio::join!(sweep().run(), sweep().run(), sweep().run());
     assert_eq!(transport.sends.lock().unwrap().len(), 3);
     assert_eq!(start.elapsed(), 2 * UDP_SEARCH_SPACING);
+}
+
+/// A server whose UDP key we hold gets its search datagram sealed at its
+/// obfuscation port; a server without one gets it plain at standard port + 4.
+#[tokio::test]
+async fn a_sweep_seals_its_datagram_toward_a_keyed_server() {
+    const KEY: u32 = 0x05A6_8835;
+    let ours = Ipv4Addr::new(203, 0, 113, 3);
+    let transport: &'static RecordingTransport = Box::leak(Box::new(RecordingTransport::new()));
+    let capabilities = SharedServerCapabilities::default();
+    let mut keyed = caps_with_flags(ServerUdpFlags::UDPOBFUSCATION);
+    keyed.udp_crypt = Some(crate::server_list::ServerUdpCrypt {
+        obfuscation_udp_port: 4675,
+        obfuscation_tcp_port: 4661,
+        udp_key: KEY,
+        key_ip: Some(ours),
+    });
+    capabilities
+        .lock()
+        .unwrap()
+        .insert(Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, 2), 4661), keyed);
+    let own = crate::own_identity::SharedOwnIdentity::default();
+    own.addresses()
+        .observe(crate::address_learning::AddressObservation::server_high_id(
+            ours,
+        ));
+
+    GlobalSearchSweep {
+        seal: seal_over(
+            transport,
+            crate::obfuscation_policy::SharedObfuscationPolicy::new(Some(
+                rmule_net::peer::ObfuscationPolicy::Requested,
+            )),
+            own,
+            capabilities.clone(),
+            crate::server_list::ServerFacts::default(),
+        ),
+        servers: vec![server("10.0.0.2", 4661), server("10.0.0.3", 4661)],
+        capabilities,
+        connected: server("10.0.0.9", 4661),
+        query: abba(),
+        pacer: UdpSearchPacer::default(),
+        tick: Duration::from_millis(1),
+    }
+    .run()
+    .await;
+
+    let baseline = GlobSearchReq::new(SearchRequest::from_query(abba()))
+        .encode_packet(GlobSearchVariant::Baseline)
+        .encode_udp();
+    let sends = transport.sends.lock().unwrap().clone();
+    let datagrams = transport.datagrams.lock().unwrap().clone();
+    assert_eq!(
+        sends[0].0,
+        Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, 2), 4675)
+    );
+    assert_eq!(
+        rmule_primitives::decrypt_datagram_server(
+            &datagrams[0],
+            KEY,
+            rmule_primitives::ServerCryptDirection::ToServer
+        ),
+        Some(baseline.clone())
+    );
+    assert_eq!(
+        (sends[1].0, &datagrams[1]),
+        (udp(&server("10.0.0.3", 4661), 4), &baseline)
+    );
 }
 
 fn result(hash: u8, name: &str) -> SearchResult {
@@ -344,7 +409,6 @@ async fn merges_attributed_and_kad_batches_into_one_result_set() {
     let (kad_tx, kad_rx) = crate::search::kad_keyword_leg();
     let (evt_tx, mut evt_rx) = mpsc::channel(16);
     let (_cancel_tx, cancel_rx) = watch::channel(false);
-    let (finished_tx, mut finished_rx) = mpsc::channel(4);
 
     let task = tokio::spawn(
         SearchTask {
@@ -356,7 +420,6 @@ async fn merges_attributed_and_kad_batches_into_one_result_set() {
             windows: windows(Duration::from_millis(200)),
             evt_tx,
             cancel_rx,
-            finished_tx,
             paging: crate::search::Paging::inert(
                 rmule_primitives::KeywordQuery::new(rmule_primitives::Ed2kText::from_utf8("a"))
                     .expect("a query")
@@ -435,14 +498,11 @@ async fn merges_attributed_and_kad_batches_into_one_result_set() {
     };
     assert_eq!(total_results, 3);
 
-    let finished = tokio::time::timeout(Duration::from_secs(2), finished_rx.recv())
-        .await
-        .expect("finish signal within 2s");
+    // Completed, and no server holds more for it: it ended on its own.
     assert_eq!(
-        finished,
-        Some(FinishedActivity::Search(SearchId::from_u64(7)))
+        task.await.expect("task ended cleanly"),
+        crate::search::SearchEnd::Ended
     );
-    task.await.expect("task ended cleanly");
 
     // The search is over: it is no longer live, so its rows are not its.
     live.deliver(vec![result(0xEE, "a-late.bin")], None);
@@ -456,7 +516,6 @@ async fn an_unattributable_related_answer_fails_the_search() {
     let live = LiveSearches::default();
     let (evt_tx, mut evt_rx) = mpsc::channel(16);
     let (_cancel_tx, cancel_rx) = watch::channel(false);
-    let (finished_tx, _finished_rx) = mpsc::channel(4);
     let task = tokio::spawn(
         SearchTask {
             search_id: SearchId::from_u64(8),
@@ -467,7 +526,6 @@ async fn an_unattributable_related_answer_fails_the_search() {
             windows: windows(Duration::from_secs(3600)),
             evt_tx,
             cancel_rx,
-            finished_tx,
             paging: crate::search::Paging::inert(
                 rmule_primitives::KeywordQuery::new(rmule_primitives::Ed2kText::from_utf8("a"))
                     .expect("a query")
@@ -500,14 +558,14 @@ async fn an_unattributable_related_answer_fails_the_search() {
     task.await.expect("task ended cleanly");
 }
 
-/// The closed-channel rule's twin, on the search side: a **dropped** cancel sender ends the
-/// search task, exactly as a cancel does.
+/// The closed-channel rule's twin, on the search side: a **dropped** cancel
+/// sender ends the search task, exactly as a stop does.
 ///
-/// The actor drops its whole `ActiveSearch` on the way out rather than
-/// cancelling first, and a dropped `watch::Sender` makes `changed()` answer
-/// `Err` immediately and forever — so the arm that only acted on a `true` left
-/// the loop spinning at full speed, holding the `CoreEvent` sender
-/// `Core::shutdown` waits to see dropped.
+/// A dropped `watch::Sender` makes `changed()` answer `Err` immediately and
+/// forever, so an arm that only acted on a `true` would leave the loop
+/// spinning at full speed, holding the `CoreEvent` sender `Core::shutdown`
+/// waits to see dropped. Like a stop it says nothing: the word is its
+/// retire's, and a ledger dropped whole has no one to tell.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_dropped_cancel_sender_ends_the_search_task() {
     let (_tcp_tx, tcp_rx) = mpsc::channel(8);
@@ -515,7 +573,6 @@ async fn a_dropped_cancel_sender_ends_the_search_task() {
     let (_kad_tx, kad_rx) = crate::search::kad_keyword_leg();
     let (evt_tx, mut evt_rx) = mpsc::channel(16);
     let (cancel_tx, cancel_rx) = watch::channel(false);
-    let (finished_tx, _finished_rx) = mpsc::channel(4);
 
     let task = tokio::spawn(
         SearchTask {
@@ -529,7 +586,6 @@ async fn a_dropped_cancel_sender_ends_the_search_task() {
             windows: windows(Duration::from_secs(3600)),
             evt_tx,
             cancel_rx,
-            finished_tx,
             paging: crate::search::Paging::inert(
                 rmule_primitives::KeywordQuery::new(rmule_primitives::Ed2kText::from_utf8("a"))
                     .expect("a query")
@@ -544,19 +600,13 @@ async fn a_dropped_cancel_sender_ends_the_search_task() {
 
     drop(cancel_tx);
 
-    let event = tokio::time::timeout(Duration::from_secs(5), next_past_legs(&mut evt_rx))
-        .await
-        .expect("the dropped owner ends the search within 5s")
-        .expect("events open");
-    assert!(
-        matches!(
-            event,
-            CoreEvent::Search(SearchEvent::SearchCancelled { .. })
-        ),
-        "the owner going away reads as a cancellation, got {event:?}",
-    );
-    tokio::time::timeout(Duration::from_secs(5), task)
+    let end = tokio::time::timeout(Duration::from_secs(5), task)
         .await
         .expect("the search task ends when its owner drops")
         .expect("the search task did not panic");
+    assert_eq!(end, SearchEnd::Stopped);
+    let said = tokio::time::timeout(Duration::from_secs(5), next_past_legs(&mut evt_rx))
+        .await
+        .expect("the event stream closes with the task");
+    assert!(said.is_none(), "a stopped task says nothing, got {said:?}");
 }

@@ -6,11 +6,11 @@
 use std::net::Ipv4Addr;
 
 use rmule_kad::{
-    Kad2Message, KadEvent, KadId, KadNode, KadNodeEndpoint, MISC_OPTIONS_ACK_REQUEST, decode_exact,
-    udp_verify_key,
+    Kad2Message, KadEvent, KadId, KadNode, KadNodeEndpoint, KadObfuscation,
+    MISC_OPTIONS_ACK_REQUEST, decode_exact, udp_verify_key,
 };
 use rmule_primitives::{ClientDecryptKeys, DatagramSenderAddress, decrypt_datagram_client};
-use rmule_testkit::kad_node::{NODE_ID, T0, datagrams, drain_outputs, events, fixed_nonce, node};
+use rmule_testkit::kad_node::{NODE_ID, T0, datagrams, drain_outputs, events, fixed_nonce, start};
 
 /// The captured run's own facts (interop run `1785253158`, 2026-07-28). The
 /// secret is rmule's private derivation seed for that run; it is what makes the
@@ -35,10 +35,9 @@ fn capture_frame(name: &str) -> Vec<u8> {
 /// and send-obfuscation armed. Inbound decrypt is always on, so the captured
 /// frames open against this node exactly as they did live.
 fn capture_node() -> KadNode {
-    let mut node = node();
-    node.enable_datagram_obfuscation(fixed_nonce);
-    node.enable_verify_keys(CAPTURE_SECRET, CAPTURE_RMULE_IP);
-    node
+    KadNode::new(start().obfuscation(
+        KadObfuscation::new(fixed_nonce).with_verify_keys(CAPTURE_SECRET, CAPTURE_RMULE_IP),
+    ))
 }
 
 fn capture_peer() -> KadNodeEndpoint {

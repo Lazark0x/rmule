@@ -9,9 +9,9 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use super::{ReadPurpose, ServeDecision, ServeState, rank_updates};
-use crate::adapters::ServeConnCommand;
 use crate::service::ServeEvent;
 use crate::upload_queue::WaiterLeaveCause;
+use rmule_peer::ServerCommand;
 
 impl ServeState {
     /// Resume a [`ServeDecision::ReadRange`] round trip that read its bytes —
@@ -40,15 +40,15 @@ impl ServeState {
                     return Vec::new();
                 }
                 let mut decisions = Vec::new();
-                if let Some(user_hash) = self.identified.get(&peer) {
+                if let Some(identity) = self.identities.get(&peer) {
                     decisions.push(ServeDecision::RecordCredit {
-                        user_hash: *user_hash,
+                        user_hash: identity.user_hash(),
                         bytes: bytes.len() as u64,
                     });
                 }
                 decisions.push(ServeDecision::Send {
                     peer,
-                    command: ServeConnCommand::SendBlock {
+                    command: ServerCommand::SendBlock {
                         file_hash,
                         start,
                         end,
@@ -72,7 +72,7 @@ impl ServeState {
                     .master_root();
                 vec![ServeDecision::Send {
                     peer,
-                    command: ServeConnCommand::AnswerAichFileHash { root },
+                    command: ServerCommand::AnswerAichFileHash { root },
                 }]
             }
         }
@@ -148,7 +148,7 @@ impl ServeState {
             decisions.extend(self.promotion_decisions(promotion));
         }
         moved.retain(|(waiter, _)| self.queue.waiting_file(*waiter).is_some());
-        decisions.extend(rank_updates(&self.queue, &self.software, moved));
+        decisions.extend(rank_updates(&self.queue, &self.identities, moved));
         decisions
     }
 }
@@ -156,7 +156,7 @@ impl ServeState {
 fn not_found(peer: PeerEndpoint, file_hash: FileHash) -> ServeDecision {
     ServeDecision::Send {
         peer,
-        command: ServeConnCommand::AnswerFileNotFound { file_hash },
+        command: ServerCommand::AnswerFileNotFound { file_hash },
     }
 }
 
@@ -174,7 +174,7 @@ pub(super) fn answer_aich_recovery(
         .map(|recovery_data| {
             vec![ServeDecision::Send {
                 peer,
-                command: ServeConnCommand::AnswerAich {
+                command: ServerCommand::AnswerAich {
                     file_hash,
                     part,
                     root: tree.master_root(),

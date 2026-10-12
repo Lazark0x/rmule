@@ -1,11 +1,12 @@
 //! The `0x43`/`0x33`/`0x3B` keyword codecs: decoding a publish or search
 //! request off the wire, encoding a result set back, and the bounds-checked
-//! [`Cursor`] every decode reads through. Tag layouts are aMule's, cited in
+//! [`WireReader`] every decode reads through. Tag layouts are aMule's, cited in
 //! the parent's provenance section.
 
-use rmule_primitives::{Ed2kText, Tag, TagName, TagValue};
+use rmule_primitives::{Ed2kText, Tag, TagName, TagValue, WireReader, WireTruncated};
 
 use crate::search_tree::SearchTree;
+use crate::wire_fields::KadWireFields;
 use crate::{KadEnvelope, KadId};
 
 use super::entry::KeywordPublishFile;
@@ -67,17 +68,17 @@ pub fn decode_publish_key_req(
             opcode: envelope.opcode(),
         });
     }
-    let mut cursor = Cursor::new(envelope.payload());
-    let keyword = cursor.read_kad_id("published keyword ID")?;
-    let declared = cursor.read_u16_le("published file count")?;
+    let mut reader = WireReader::new(envelope.payload());
+    let keyword = reader.read_kad_id("published keyword ID")?;
+    let declared = reader.read_u16_le("published file count")?;
     if usize::from(declared) > KEYWORD_PUBLISH_BATCH_CAP {
         return Err(KeywordDecodeError::TooManyFiles { declared });
     }
     let mut files = Vec::with_capacity(usize::from(declared));
     for _ in 0..declared {
-        files.push(decode_publish_file(&mut cursor)?);
+        files.push(decode_publish_file(&mut reader)?);
     }
-    if !cursor.is_exhausted() {
+    if !reader.is_exhausted() {
         return Err(KeywordDecodeError::Malformed {
             reason: "trailing bytes after the declared file count",
         });
@@ -85,18 +86,21 @@ pub fn decode_publish_key_req(
     Ok((keyword, files))
 }
 
-fn decode_publish_file(cursor: &mut Cursor<'_>) -> Result<KeywordPublishFile, KeywordDecodeError> {
-    let file_id = cursor.read_kad_id("published file ID")?;
-    let tag_count = cursor.read_u8("publish tag count")?;
+fn decode_publish_file(
+    reader: &mut WireReader<'_>,
+) -> Result<KeywordPublishFile, KeywordDecodeError> {
+    let file_id = reader.read_kad_id("published file ID")?;
+    let tag_count = reader.read_u8("publish tag count")?;
     let mut filename = None;
     let mut size = None;
     let mut tags = Vec::new();
     for _ in 0..tag_count {
-        let (tag, consumed) =
-            Tag::decode_prefix(cursor.remaining()).map_err(|_| KeywordDecodeError::Malformed {
+        let (tag, consumed) = Tag::decode_prefix(reader.remaining_bytes()).map_err(|_| {
+            KeywordDecodeError::Malformed {
                 reason: "publish tag is truncated or malformed",
-            })?;
-        cursor.advance(consumed);
+            }
+        })?;
+        reader.advance_clamped(consumed);
         // FILENAME/FILESIZE are dropped from the verbatim list on every
         // occurrence; only the first populates the typed field (aMule:
         // `if (entry->GetCommonFileName().IsEmpty()) { SetFileName(...); }
@@ -178,14 +182,14 @@ pub fn decode_search_key_req(
             opcode: envelope.opcode(),
         });
     }
-    let mut cursor = Cursor::new(envelope.payload());
-    let keyword = cursor.read_kad_id("search keyword ID")?;
-    let raw_start = cursor.read_u16_le("start position")?;
+    let mut reader = WireReader::new(envelope.payload());
+    let keyword = reader.read_kad_id("search keyword ID")?;
+    let raw_start = reader.read_u16_le("start position")?;
     let restrictive = raw_start & 0x8000 != 0;
     let start_position = raw_start & 0x7FFF;
 
     if !restrictive {
-        if !cursor.is_exhausted() {
+        if !reader.is_exhausted() {
             return Err(KeywordDecodeError::Malformed {
                 reason: "trailing bytes after a non-restrictive search",
             });
@@ -195,10 +199,11 @@ pub fn decode_search_key_req(
 
     // `SearchTree::decode` itself requires exact exhaustion of the bytes it
     // is given (rejects trailing bytes), so no separate check is needed here.
-    let tree =
-        SearchTree::decode(cursor.remaining()).map_err(|_| KeywordDecodeError::Malformed {
+    let tree = SearchTree::decode(reader.remaining_bytes()).map_err(|_| {
+        KeywordDecodeError::Malformed {
             reason: "restrictive search expression",
-        })?;
+        }
+    })?;
     validate_operators(&tree).map_err(KeywordDecodeError::InvalidSearchExpression)?;
     Ok((keyword, start_position, Some(tree)))
 }
@@ -334,34 +339,34 @@ pub fn decode_search_key_res(
             opcode: envelope.opcode(),
         });
     }
-    let mut cursor = Cursor::new(envelope.payload());
-    cursor.take(KadId::BYTE_LEN, "keyword result sender ID")?;
-    cursor.take(KadId::BYTE_LEN, "keyword result keyword ID")?;
-    let count = cursor.read_u16_le("keyword result count")?;
+    let mut reader = WireReader::new(envelope.payload());
+    reader.take(KadId::BYTE_LEN, "keyword result sender ID")?;
+    reader.take(KadId::BYTE_LEN, "keyword result keyword ID")?;
+    let count = reader.read_u16_le("keyword result count")?;
     // Bound the row pre-allocation to what the remaining bytes could actually
     // hold: the smallest possible row is a 16-byte file ID plus a one-byte
     // (zero) tag count, so a tiny malformed datagram declaring a huge count
     // cannot force a multi-megabyte reservation. Loop correctness is unchanged
     // — a genuine short count still fails the per-row reads below.
     const MIN_ROW_BYTES: usize = KadId::BYTE_LEN + 1;
-    let capacity = usize::from(count).min(cursor.remaining().len() / MIN_ROW_BYTES);
+    let capacity = usize::from(count).min(reader.remaining() / MIN_ROW_BYTES);
     let mut rows = Vec::with_capacity(capacity);
     for _ in 0..count {
-        let file_id = cursor.read_kad_id("keyword result file ID")?;
-        let tag_count = cursor.read_u8("keyword result tag count")?;
+        let file_id = reader.read_kad_id("keyword result file ID")?;
+        let tag_count = reader.read_u8("keyword result tag count")?;
         let mut tags = Vec::with_capacity(usize::from(tag_count));
         for _ in 0..tag_count {
-            let (tag, consumed) = Tag::decode_prefix(cursor.remaining()).map_err(|_| {
+            let (tag, consumed) = Tag::decode_prefix(reader.remaining_bytes()).map_err(|_| {
                 KeywordDecodeError::Malformed {
                     reason: "keyword result tag is truncated or malformed",
                 }
             })?;
-            cursor.advance(consumed);
+            reader.advance_clamped(consumed);
             tags.push(tag);
         }
         rows.push(KeywordResultRow { file_id, tags });
     }
-    if !cursor.is_exhausted() {
+    if !reader.is_exhausted() {
         return Err(KeywordDecodeError::Malformed {
             reason: "trailing bytes after the declared keyword result count",
         });
@@ -369,54 +374,10 @@ pub fn decode_search_key_res(
     Ok(rows)
 }
 
-/// A forward-only byte reader whose errors carry the static field name — the
-/// per-module idiom (`messages`, `source_result`, `search_tree`).
-pub(super) struct Cursor<'a> {
-    bytes: &'a [u8],
-    position: usize,
-}
-
-impl<'a> Cursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, position: 0 }
-    }
-
-    fn take(&mut self, len: usize, field: &'static str) -> Result<&'a [u8], KeywordDecodeError> {
-        let end = self
-            .position
-            .checked_add(len)
-            .filter(|&end| end <= self.bytes.len())
-            .ok_or(KeywordDecodeError::Malformed { reason: field })?;
-        let slice = &self.bytes[self.position..end];
-        self.position = end;
-        Ok(slice)
-    }
-
-    fn read_u8(&mut self, field: &'static str) -> Result<u8, KeywordDecodeError> {
-        Ok(self.take(1, field)?[0])
-    }
-
-    fn read_u16_le(&mut self, field: &'static str) -> Result<u16, KeywordDecodeError> {
-        let bytes = self.take(2, field)?;
-        Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
-    }
-
-    fn read_kad_id(&mut self, field: &'static str) -> Result<KadId, KeywordDecodeError> {
-        let bytes = self.take(KadId::BYTE_LEN, field)?;
-        let mut id = [0u8; KadId::BYTE_LEN];
-        id.copy_from_slice(bytes);
-        Ok(KadId::from_bytes(id))
-    }
-
-    fn remaining(&self) -> &'a [u8] {
-        &self.bytes[self.position..]
-    }
-
-    fn advance(&mut self, len: usize) {
-        self.position = (self.position + len).min(self.bytes.len());
-    }
-
-    const fn is_exhausted(&self) -> bool {
-        self.position >= self.bytes.len()
+impl From<WireTruncated> for KeywordDecodeError {
+    fn from(truncated: WireTruncated) -> Self {
+        KeywordDecodeError::Malformed {
+            reason: truncated.field,
+        }
     }
 }

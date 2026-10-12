@@ -73,7 +73,7 @@ pub struct App {
     last_server_unsaved_told: bool,
     /// The Run Log's level, shared with its writers: the Settings row turns
     /// it, and the next line written follows.
-    run_log: crate::run_log::LevelHandle,
+    run_log: rmule_core::run_log::LevelHandle,
     /// The File History's ask, kept to one out at a time.
     history: history::HistoryPoll,
 }
@@ -105,7 +105,7 @@ impl App {
             kad_first_login_owed: false,
             kad_join_ended_told: false,
             last_server_unsaved_told: false,
-            run_log: crate::run_log::LevelHandle::default(),
+            run_log: rmule_core::run_log::LevelHandle::default(),
             history: history::HistoryPoll::default(),
         }
     }
@@ -138,8 +138,9 @@ impl App {
         preferences: crate::config::Preferences,
     ) -> Self {
         self.theme = preferences.theme.resolve(self.auto_theme);
-        self.run_log
-            .set(crate::run_log::Level::from_full(preferences.run_log_full));
+        self.run_log.set(rmule_core::run_log::Level::from_full(
+            preferences.run_log_full,
+        ));
         self.views.searches.restore_sort(&preferences.table_sorts);
         self.views.transfers.restore_sort(&preferences.table_sorts);
         self.views.networks.restore_sort(&preferences.table_sorts);
@@ -152,7 +153,7 @@ impl App {
     /// Share the Run Log's level handle, so the Settings row turns the level
     /// its writers read.
     #[must_use]
-    pub fn with_run_log(mut self, level: crate::run_log::LevelHandle) -> Self {
+    pub fn with_run_log(mut self, level: rmule_core::run_log::LevelHandle) -> Self {
         self.run_log = level;
         self
     }
@@ -476,6 +477,7 @@ mod tests {
             rmule_core::CoreConfig::default(),
             rmule_testkit::memory_store(),
         )
+        .settings(rmule_core::CoreSettings::default())
         .persist_credit_in(dir.path().to_path_buf())
         .build();
         let (actions_tx, mut actions_rx) = mpsc::channel(64);

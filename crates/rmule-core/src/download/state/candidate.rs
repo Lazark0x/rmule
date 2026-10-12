@@ -13,55 +13,22 @@
 //! answer names an id and a port; an obfuscation-aware `0x44` or a v≥2
 //! source-exchange answer adds a User Hash; a **Kad source row** of type 3/5
 //! adds the buddy, the Kad UDP endpoint and the connect-options byte
-//! ([`LowIdCandidate::from_kad_row`]) — it is the only channel that
+//! ([`LowIdCandidate::from_sighting`]) — it is the only channel that
 //! names a buddy at all, and the only one that can name a NAT-T bit, which it
 //! does only when the publisher was eMuleAI. Those fields are `None`/`false`
 //! until a channel names them — never guessed from the others.
 
 use std::net::Ipv4Addr;
 
+use rmule_kad::KadId;
 use rmule_primitives::{
-    ClientId, ExchangedSource, Ipv4Endpoint, Ipv6Endpoint, PeerCrypt, PeerEndpoint,
-    SourceCryptOptions, UserHash,
+    ClientId, Ipv4Endpoint, Ipv6Endpoint, PeerCrypt, PeerEndpoint, SourceCryptOptions, SourceRoad,
+    SourceSighting, UserHash,
 };
 
 use crate::adapters::CallbackKey;
 use crate::callback::{BuddyContact, NattFacts};
 use crate::service::{PeerBuddy, PeerReach};
-
-/// A Low-ID candidate that is provably in the **connected server's** namespace
-/// — `source_server: None`, the form ADR-0039 reads against the server rmule
-/// is logged into.
-///
-/// It exists because `StartingCandidates.low_id` and the brain's
-/// `low_id_pool` both mean that and only that, and a `Vec<LowIdCandidate>`
-/// cannot say so: a per-server global record dropped into either would ask the
-/// wrong server to relay a callback and be keyed under a namespace it does not
-/// belong to. The invariant is held by construction —
-/// [`LowIdCandidate::from_connected_server`] is the only way to make one, and
-/// it never takes a `source_server` to get wrong.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ConnectedServerCandidate(LowIdCandidate);
-
-impl ConnectedServerCandidate {
-    /// The record itself, for the pool that already knows what namespace it is.
-    pub(crate) const fn into_inner(self) -> LowIdCandidate {
-        self.0
-    }
-
-    /// Wrap a record a test enriched with facts no decoder names for a Low-ID
-    /// source today — a buddy, the NAT-T bit — so rung 1's other shapes can be
-    /// driven through the brain. The invariant still holds: a record in
-    /// another server's namespace is refused here rather than pooled as ours.
-    #[cfg(test)]
-    pub(crate) fn from_record(record: LowIdCandidate) -> Self {
-        assert!(
-            record.source_server.is_none(),
-            "a connected-server candidate is in no other server's namespace"
-        );
-        Self(record)
-    }
-}
 
 /// One Low-ID candidate with the facts the channel that named it carried.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,10 +36,17 @@ pub(crate) struct LowIdCandidate {
     /// The server-assigned Low ID a callback names. Unique only per server,
     /// which is why `source_server` travels with it.
     pub(crate) low_id: ClientId,
-    /// Which server's namespace the id belongs to: `None` is the connected
-    /// server (ADR-0039 — the runner resolves it), `Some` a per-server global
-    /// source (ADR-0051) whose own server must relay the callback. It is also
-    /// the `on_our_server` fact rung 1's server coordinator turns on.
+    /// The server that assigned the id, whose namespace it belongs to: the
+    /// server we were logged into when a server answer or a source exchange
+    /// named it, or the server that answered a per-server global lookup
+    /// (ADR-0051). A low id means something only beside it, as aMule keeps
+    /// `m_dwServerIP`/`m_nServerPort` on every source (stock 2.3.3
+    /// `ClientList.cpp:283-297`). `None` when no IPv4-literal server was known
+    /// at the sighting: then the id is read against whichever server we are on
+    /// when its callback is asked (ADR-0039 — the runner resolves it), and it
+    /// is never a name its facts outlive the record under. Whether it is on
+    /// *our* server ([`Self::on_server`]) is asked at each decision, because
+    /// our server can change while the record waits.
     pub(crate) source_server: Option<Ipv4Endpoint>,
     /// The port the record carried. Meaningless for a callback (the peer dials
     /// *us*), kept because the reach record wants a port beside the id.
@@ -88,7 +62,7 @@ pub(crate) struct LowIdCandidate {
     /// The candidate advertised `SupportsDirectUDPCallback` (ADR-0047, bit 3
     /// of a connect-options byte). Kept for what it still states — the advert
     /// itself, read by [`Self::reach`]'s projection and by aMule's own type-6
-    /// gate upstream in [`crate::kad_sources::KadSource::direct_udp_callback`]
+    /// gate upstream in the Kad row's [`SourceRoad::DirectUdpCallback`]
     /// — but **not** the admission rule's fact: a type-3/5 buddy row can carry
     /// this bit too, and aMule still relays through the buddy for one
     /// [`Self::direct_udp_callback`] is the fact
@@ -96,7 +70,7 @@ pub(crate) struct LowIdCandidate {
     pub(crate) supports_direct_udp_callback: bool,
     /// The row was a Kad **type-6** row — firewalled, bit 3 stated, and a
     /// `0x95` endpoint observed by the storer
-    /// ([`crate::kad_sources::KadSource::direct_udp_callback`]).
+    /// ([`SourceRoad::DirectUdpCallback`]).
     /// This is the fact the admission rule gates `DirectUdp` on: aMule keeps
     /// the observed IP for the `0x95` only on a type-6 row
     /// (`DownloadQueue.cpp:1797`), so a type-3/5 buddy row with bit 3 set
@@ -132,120 +106,114 @@ pub(crate) struct LowIdCandidate {
 }
 
 impl LowIdCandidate {
-    /// The candidate a source record names, or `None` when the record is not a
-    /// callback-able Low-ID source: a dialable source has no callback, and an
-    /// id of `0` is unassigned and names nobody.
+    /// The candidate a sighting names, or `None` when its road is not a callback
+    /// at all: a dialable record has no callback, and an id of `0` is
+    /// unassigned and names nobody.
     ///
-    /// `source_server` is the namespace the id was learned in — `None` for the
-    /// connected server (a server-lookup answer or a peer source exchange,
-    /// which ADR-0039 reads against the server we are logged into), `Some` for
-    /// an ADR-0051 global source. A global answer carries no crypt material, so
-    /// its caller wraps the plain record with [`ExchangedSource::plain`] and
-    /// the User Hash below is honestly `None`.
-    pub(crate) fn from_source(
-        source: ExchangedSource,
-        source_server: Option<Ipv4Endpoint>,
-    ) -> Option<Self> {
-        let low_id = source.low_id().filter(|id| id.as_u32() != 0)?;
-        Some(Self {
-            low_id,
-            source_server,
-            tcp_port: source.tcp_port(),
-            user_hash: source.user_hash(),
-            // No exchanged record ever carries a buddy: neither the server's
-            // `0x42`/`0x44` nor source exchange has a field for one.
-            buddy: None,
-            supports_direct_udp_callback: source
-                .crypt_options()
-                .is_some_and(rmule_primitives::SourceCryptOptions::supports_direct_udp_callback),
-            // A source-exchange record names no row type at all — only a Kad
-            // row can be type 6.
-            direct_udp_callback: false,
-            kad_udp: None,
-            // An ExtSX record's IPv6 half (ADR-0087): rung 0 dials it.
-            ipv6: source.ipv6(),
-            crypt_options: source.crypt_options(),
-            // Bit 7 of an exchanged crypt byte means "a User Hash follows"
-            // (aMule `CPartFile::AddSources`), not eMuleAI's NAT-T bit, which
-            // only a Kad `TAG_ENCRYPTION` states.
-            supports_natt: false,
-            from_kad: false,
-        })
-    }
-
-    /// The candidate a **Kad source row** names, or `None` when the row is
-    /// reachable some other way (a direct row dials; a refusal names nobody).
+    /// **An eD2k Low-ID record** is read in the namespace it was learned in:
+    /// `source_server` is the server that assigned it — the one we are logged
+    /// into for a server-lookup answer or a peer source exchange (ADR-0039),
+    /// the answering server for an ADR-0051 global source — or `None` when
+    /// no server was known by address. A
+    /// global answer carries no crypt material, so its caller wraps the plain
+    /// record with [`SourceSighting::plain`] and the User Hash below is
+    /// honestly `None`.
     ///
-    /// Two row shapes name one: a buddy row (type 3/5), the one channel that
-    /// can give a download a *buddy* — the relay of ADR-0061's buddy callback
-    /// and rung 1's second coordinator (ADR-0091) — and a type-6 **Direct UDP
-    /// Callback** row, which needs no buddy because its own `0x95` endpoint is
-    /// on the row. Every field is what the row's bytes said
-    /// — the User Hash from its source ID, the Kad UDP endpoint from
-    /// `SOURCEIP`+`SOURCEUPORT`, the crypt and direct-callback bits from
+    /// **A Kad callback row** is in no server's namespace, whatever
+    /// `source_server` says. Two row shapes name one: a buddy row (type 3/5),
+    /// the one channel that can give a download a *buddy* — the relay of
+    /// ADR-0061's buddy callback and rung 1's second coordinator (ADR-0091) —
+    /// and a type-6 **Direct UDP Callback** row, which needs no buddy because
+    /// its own `0x95` endpoint is on the row. Every field is what the row's
+    /// bytes said — the User Hash from its source ID, the Kad UDP endpoint
+    /// from `SOURCEIP`+`SOURCEUPORT`, the crypt and direct-callback bits from
     /// `TAG_ENCRYPTION`, and `supports_natt` from that byte's bit 7, which only
     /// an eMuleAI publisher ever sets (see
     /// [`SourceCryptOptions::supports_natt_utp`](rmule_primitives::SourceCryptOptions::supports_natt_utp)).
     /// No bit is invented: an aMule or eMule publisher's row leaves
     /// `supports_natt` false, and such a candidate is reached by its buddy's
-    /// callback alone.
-    ///
-    /// [`Self::direct_udp_callback`] is threaded straight from the row's own
-    /// type-6 verdict rather than re-read from bit 3: a type-3/5
-    /// buddy row can state bit 3 too, and aMule only keeps the observed IP for
-    /// the `0x95` on a type-6 row (`DownloadQueue.cpp:1797`), so such a row
-    /// still names a candidate whose road is its buddy's callback, never the
-    /// direct one.
-    ///
-    /// The id is the publisher's own observed address read as a [`ClientId`].
-    /// It is **not** a server-assigned Low ID — [`Self::from_kad`] says so, and
-    /// is what keeps a server from being asked to relay for it — but it is the
-    /// one value on the row that tells two firewalled publishers apart, which
-    /// is what [`Self::key`] needs. A row with no address at all names nobody.
-    pub(crate) fn from_kad_row(row: &crate::kad_sources::KadSource) -> Option<Self> {
-        if row.buddy.is_none() && !row.direct_udp_callback {
-            return None;
-        }
-        let kad_udp = row.kad_udp?;
+    /// callback alone. [`Self::direct_udp_callback`] is the road itself rather
+    /// than bit 3: a type-3/5 buddy row can state bit 3 too, and aMule only
+    /// keeps the observed IP for the `0x95` on a type-6 row
+    /// (`DownloadQueue.cpp:1797`). The id is the publisher's own observed
+    /// address read as a [`ClientId`]. It is **not** a server-assigned Low ID —
+    /// [`Self::from_kad`] says so, and is what keeps a server from being asked
+    /// to relay for it — but it is the one value on the row that tells two
+    /// firewalled publishers apart, which is what [`Self::key`] needs.
+    pub(crate) fn from_sighting(
+        sighting: SourceSighting,
+        source_server: Option<Ipv4Endpoint>,
+    ) -> Option<Self> {
+        let crypt_options = sighting.crypt_options();
+        let advertised = |bit: fn(SourceCryptOptions) -> bool| crypt_options.is_some_and(bit);
+        let (kad_udp, buddy, direct_udp_callback) = match sighting.road() {
+            SourceRoad::Record(record) => {
+                let low_id = record.low_id().filter(|id| id.as_u32() != 0)?;
+                return Some(Self {
+                    low_id,
+                    source_server,
+                    tcp_port: sighting.tcp_port(),
+                    user_hash: sighting.user_hash(),
+                    // No eD2k record ever carries a buddy: neither the
+                    // server's `0x42`/`0x44` nor source exchange has a field
+                    // for one.
+                    buddy: None,
+                    supports_direct_udp_callback: advertised(
+                        SourceCryptOptions::supports_direct_udp_callback,
+                    ),
+                    // A source-exchange record names no row type at all —
+                    // only a Kad row can be type 6.
+                    direct_udp_callback: false,
+                    kad_udp: None,
+                    // An ExtSX record's IPv6 half (ADR-0087): rung 0 dials it.
+                    ipv6: sighting.ipv6(),
+                    crypt_options,
+                    // Bit 7 of an exchanged crypt byte means "a User Hash
+                    // follows" (aMule `CPartFile::AddSources`), not eMuleAI's
+                    // NAT-T bit, which only a Kad `TAG_ENCRYPTION` states.
+                    supports_natt: false,
+                    from_kad: false,
+                });
+            }
+            SourceRoad::Buddy { buddy, kad_udp, .. } => (kad_udp, Some(buddy), false),
+            SourceRoad::DirectUdpCallback { kad_udp, .. } => (kad_udp, None, true),
+        };
         Some(Self {
             low_id: ClientId::from_u32(u32::from_le_bytes(kad_udp.ip.octets())),
             source_server: None,
-            tcp_port: row.tcp_port,
-            user_hash: row.user_hash,
-            buddy: row.buddy.map(|buddy| BuddyContact {
-                buddy_id: buddy.buddy_id,
+            tcp_port: sighting.tcp_port(),
+            user_hash: sighting.user_hash(),
+            buddy: buddy.map(|buddy| BuddyContact {
+                buddy_id: KadId::from_bytes(buddy.buddy_id),
                 buddy_udp: buddy.buddy_udp,
             }),
-            supports_direct_udp_callback: row
-                .connect_options
-                .is_some_and(rmule_primitives::SourceCryptOptions::supports_direct_udp_callback),
-            direct_udp_callback: row.direct_udp_callback,
+            supports_direct_udp_callback: advertised(
+                SourceCryptOptions::supports_direct_udp_callback,
+            ),
+            direct_udp_callback,
             kad_udp: Some(kad_udp),
             // The row's `ip6` beside its callback road (ADR-0087): rung 0
             // dials it, exactly as it does an ExtSX Low ID's half.
-            ipv6: row.ipv6,
-            supports_natt: row
-                .connect_options
-                .is_some_and(rmule_primitives::SourceCryptOptions::supports_natt_utp),
+            ipv6: sighting.ipv6(),
+            supports_natt: advertised(SourceCryptOptions::supports_natt_utp),
             // `TAG_ENCRYPTION` keys the rung-0 dial as an ExtSX crypt byte
             // does.
-            crypt_options: row.connect_options,
+            crypt_options,
             from_kad: true,
         })
     }
 
-    /// The candidate a *connected-server* source record names — the one
-    /// namespace a server-lookup answer and a peer source exchange are read
-    /// in (ADR-0039).
-    ///
-    /// The sole way to build a [`ConnectedServerCandidate`], which is how the
-    /// `source_server: None` invariant stops being a comment: the field is
-    /// never passed in, so no caller can hand a per-server global record to a
-    /// queue that means "our server".
-    pub(crate) fn from_connected_server(
-        source: ExchangedSource,
-    ) -> Option<ConnectedServerCandidate> {
-        Self::from_source(source, None).map(ConnectedServerCandidate)
+    /// Whether the id is in the namespace of `ours`, the server we are logged
+    /// into: aMule's `IsLocalServer(m_dwServerIP, m_nServerPort)`, which
+    /// picks the server callback over every other road (stock 2.3.3
+    /// `BaseClient.cpp:1530`). An id minted with no known server is read
+    /// against ours; a Kad row is on no server.
+    pub(crate) fn on_server(&self, ours: Option<Ipv4Endpoint>) -> bool {
+        !self.from_kad
+            && match self.source_server {
+                None => true,
+                Some(assigned) => ours == Some(assigned),
+            }
     }
 
     /// The pending-callback / deadline key this candidate is held under.
@@ -324,19 +292,17 @@ impl LowIdCandidate {
 
     /// The target's half of rung 1's condition (ADR-0091), read by the brain to
     /// decide whether this candidate's callback deserves the 12 s fallback
-    /// deadline at all. Our own position is the selector's to judge.
-    pub(crate) const fn natt_facts(&self) -> NattFacts {
+    /// deadline at all, with `ours` the server we are logged into. Our own
+    /// position is the selector's to judge.
+    pub(crate) fn natt_facts(&self, ours: Option<Ipv4Endpoint>) -> NattFacts {
         NattFacts {
-            // A candidate in the connected server's namespace is on the server
-            // that can introduce us; a global one is on somebody else's; a Kad
-            // row is in no server's, so nobody's server can.
-            on_our_server: !self.from_kad && self.source_server.is_none(),
+            // A candidate in our server's namespace is on the server that can
+            // introduce us; one another server assigned is on somebody else's;
+            // a Kad row is in no server's, so nobody's server can.
+            on_our_server: self.on_server(ours),
             supports_natt: self.supports_natt,
             buddy: self.buddy,
-            advertised_udp: match self.kad_udp {
-                Some(kad_udp) => Some(kad_udp.port),
-                None => None,
-            },
+            advertised_udp: self.kad_udp.map(|kad_udp| kad_udp.port),
         }
     }
 
@@ -348,14 +314,14 @@ impl LowIdCandidate {
     /// carries the port and nothing more. The selector never reads it for a
     /// Low-ID candidate (its only reader is the High-ID direct dial), and
     /// naming a fabricated address here would put a lie where a diagnostic
-    /// reads a peer.
-    pub(crate) fn reach(&self) -> PeerReach {
+    /// reads a peer. `ours` is the server we are logged into.
+    pub(crate) fn reach(&self, ours: Option<Ipv4Endpoint>) -> PeerReach {
         PeerReach {
             id: self.low_id,
             tcp: PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::UNSPECIFIED, self.tcp_port)),
             supports_direct_udp_callback: self.supports_direct_udp_callback,
             kad_udp: self.kad_udp,
-            on_our_server: self.natt_facts().on_our_server,
+            on_our_server: self.on_server(ours),
             buddy: self.buddy.map(|buddy| PeerBuddy {
                 buddy_id: buddy.buddy_id,
                 buddy_udp: buddy.buddy_udp,
@@ -399,8 +365,8 @@ mod tests {
     /// NAT-T bit — so its callback can never fall to a buddy punch.
     #[test]
     fn a_record_built_from_a_plain_server_answer_is_honestly_empty() {
-        let candidate = LowIdCandidate::from_source(
-            ExchangedSource::plain(PeerSource::new(low(7), 4662)),
+        let candidate = LowIdCandidate::from_sighting(
+            SourceSighting::plain(PeerSource::new(low(7), 4662)),
             None,
         )
         .expect("a Low-ID source is a candidate");
@@ -412,8 +378,8 @@ mod tests {
 
         // A dialable source is nobody's callback, and id 0 names nobody.
         assert!(
-            LowIdCandidate::from_source(
-                ExchangedSource::plain(PeerSource::new(
+            LowIdCandidate::from_sighting(
+                SourceSighting::plain(PeerSource::new(
                     ClientId::from_u32(u32::from_le_bytes([45, 55, 200, 3])),
                     4662,
                 )),
@@ -422,8 +388,8 @@ mod tests {
             .is_none()
         );
         assert!(
-            LowIdCandidate::from_source(
-                ExchangedSource::plain(PeerSource::new(low(0), 4662)),
+            LowIdCandidate::from_sighting(
+                SourceSighting::plain(PeerSource::new(low(0), 4662)),
                 None
             )
             .is_none()
@@ -435,8 +401,8 @@ mod tests {
     /// fact a source channel really names today.
     #[test]
     fn a_source_that_carried_a_user_hash_keeps_it() {
-        let candidate = LowIdCandidate::from_source(
-            ExchangedSource::new(
+        let candidate = LowIdCandidate::from_sighting(
+            SourceSighting::new(
                 PeerSource::new(low(7), 4662),
                 Some(hash(0xAB)),
                 Some(SourceCryptOptions::from_byte(0x01)),
@@ -445,7 +411,7 @@ mod tests {
         )
         .expect("a Low-ID source is a candidate");
         assert_eq!(candidate.user_hash, Some(hash(0xAB)));
-        assert_eq!(candidate.reach().user_hash, Some(hash(0xAB)));
+        assert_eq!(candidate.reach(None).user_hash, Some(hash(0xAB)));
     }
 
     /// A source-exchange crypt byte states the direct UDP callback (bit 3) and
@@ -454,8 +420,8 @@ mod tests {
     /// record carries a buddy.
     #[test]
     fn an_exchanged_crypt_byte_states_the_direct_callback_and_never_nat_t() {
-        let candidate = LowIdCandidate::from_source(
-            ExchangedSource::new(
+        let candidate = LowIdCandidate::from_sighting(
+            SourceSighting::new(
                 PeerSource::new(low(7), 4662),
                 Some(hash(0xAB)),
                 Some(SourceCryptOptions::from_byte(0x89)),
@@ -473,8 +439,8 @@ mod tests {
     #[test]
     fn a_later_sighting_naming_another_hash_carries_no_older_stance() {
         let sighting = |h: u8, options: Option<u8>| {
-            LowIdCandidate::from_source(
-                ExchangedSource::new(
+            LowIdCandidate::from_sighting(
+                SourceSighting::new(
                     PeerSource::new(low(7), 4662),
                     Some(hash(h)),
                     options.map(SourceCryptOptions::from_byte),
@@ -496,8 +462,8 @@ mod tests {
     /// the reverse order must not lose it.
     #[test]
     fn a_source_learned_twice_keeps_every_fact_either_sighting_stated() {
-        let bare = LowIdCandidate::from_source(
-            ExchangedSource::plain(PeerSource::new(low(7), 4662)),
+        let bare = LowIdCandidate::from_sighting(
+            SourceSighting::plain(PeerSource::new(low(7), 4662)),
             None,
         )
         .expect("candidate");
@@ -542,35 +508,39 @@ mod tests {
     /// still falls to the buddy rather than the direct road.
     #[test]
     fn a_kad_buddy_row_admits_its_buddy_as_the_coordinator_and_no_server() {
-        use rmule_primitives::Ipv4Endpoint;
-        let row = crate::KadSource {
-            direct: None,
-            user_hash: Some(hash(0xAB)),
-            kad_udp: Some(Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 77), 4672)),
-            // eMuleAI's byte: uTP NAT-T + direct UDP callback + crypt.
-            connect_options: Some(SourceCryptOptions::from_byte(0x89)),
-            buddy: Some(rmule_kad::KadBuddyContact {
-                buddy_id: KadId::from_bytes([0x7A; KadId::BYTE_LEN]),
-                buddy_udp: Some(Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 9), 9000)),
-                buddy_ipv6: None,
-                buddy_udp_ipv6: None,
-            }),
-            direct_udp_callback: false,
-            tcp_port: 4662,
-            ipv6: None,
+        use rmule_primitives::{Ipv4Endpoint, SightedBuddy};
+        let kad_udp = Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 77), 4672);
+        let row = |connect_options: u8| {
+            SourceSighting::by_road(
+                SourceRoad::Buddy {
+                    buddy: SightedBuddy {
+                        buddy_id: [0x7A; KadId::BYTE_LEN],
+                        buddy_udp: Some(Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 9), 9000)),
+                    },
+                    kad_udp,
+                    tcp_port: 4662,
+                },
+                Some(hash(0xAB)),
+                Some(SourceCryptOptions::from_byte(connect_options)),
+            )
         };
 
-        let candidate = LowIdCandidate::from_kad_row(&row).expect("a buddy row names a candidate");
+        // eMuleAI's byte: uTP NAT-T + direct UDP callback + crypt.
+        let candidate =
+            LowIdCandidate::from_sighting(row(0x89), None).expect("a buddy row names a candidate");
 
         assert!(candidate.from_kad);
-        assert!(!candidate.natt_facts().on_our_server, "Kad has no server");
+        assert!(
+            !candidate.natt_facts(None).on_our_server,
+            "Kad has no server"
+        );
         assert_eq!(candidate.buddy, Some(buddy_contact()));
         assert_eq!(candidate.user_hash, Some(hash(0xAB)));
-        assert_eq!(candidate.kad_udp, row.kad_udp);
+        assert_eq!(candidate.kad_udp, Some(kad_udp));
         assert!(candidate.supports_direct_udp_callback);
         assert!(candidate.supports_natt);
         assert!(
-            candidate.natt_facts().admits_coordinator(),
+            candidate.natt_facts(None).admits_coordinator(),
             "the buddy is the coordinator"
         );
         // The admission rule: never a server callback — there is no server to
@@ -593,25 +563,14 @@ mod tests {
         // A publisher that never claimed NAT-T (aMule, eMule: their Kad
         // TAG_ENCRYPTION stops at 0x08) cannot be punched — the bit is read,
         // never invented — but its buddy still relays a callback.
-        let plain = LowIdCandidate::from_kad_row(&crate::KadSource {
-            connect_options: Some(SourceCryptOptions::from_byte(0x01)),
-            ..row
-        })
-        .expect("still a candidate");
+        let plain = LowIdCandidate::from_sighting(row(0x01), None).expect("still a candidate");
         assert!(!plain.supports_natt);
-        assert!(!plain.natt_facts().admits_coordinator());
+        assert!(!plain.natt_facts(None).admits_coordinator());
         assert_eq!(
             LowIdRoad::of(&callable(), &plain),
             Some(LowIdRoad::BuddyCallback)
         );
         assert_eq!(LowIdRoad::of(&CallbackCapability::UNCALLABLE, &plain), None);
-
-        // A row whose buddy tags were unusable names nobody at all — bit 3
-        // alone is not a type-6 verdict.
-        assert!(
-            LowIdCandidate::from_kad_row(&crate::KadSource { buddy: None, ..row }).is_none(),
-            "no buddy, no candidate"
-        );
     }
 
     /// A buddy row carrying `ip6` keeps its buddy road — the IPv6 is
@@ -622,9 +581,9 @@ mod tests {
     #[test]
     fn a_kad_buddy_row_with_ip6_keeps_its_buddy_road_and_carries_the_half_to_rung_0() {
         use rmule_kad::{KadBuddyContact, KadSourceRow, decode_source_result};
-        use rmule_primitives::{Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint};
+        use rmule_primitives::{Ipv4Endpoint, Ipv6Endpoint};
 
-        use crate::callback::{CallbackRoute, SelfReach, callback_target, select_callback_route};
+        use crate::callback::{RoutePosition, callback_target, select_callback_route};
         use crate::dialable::DialPosition;
         use crate::download::state::LowIdRoad;
 
@@ -650,17 +609,18 @@ mod tests {
             }],
         );
         let rows = decode_source_result(&served[0]).expect("rmule reads its own storer's row");
-        let row = crate::KadSource::from_candidate(&rows[0]);
-        assert_eq!(row.direct, None, "a row with a road is not rescued");
+        let row = rows[0].sighting().expect("a buddy row is a sighting");
+        assert_eq!(row.peer_source(), None, "a row with a road is not rescued");
 
-        let candidate = LowIdCandidate::from_kad_row(&row).expect("a buddy row names a candidate");
+        let candidate =
+            LowIdCandidate::from_sighting(row, None).expect("a buddy row names a candidate");
         assert_eq!(
             LowIdRoad::of(&callable(), &candidate),
             Some(LowIdRoad::BuddyCallback)
         );
         let half = Ipv6Endpoint::new(ipv6, 4662);
-        assert_eq!(candidate.reach().ipv6, Some(half));
-        let holding_ipv6 = SelfReach {
+        assert_eq!(candidate.reach(None).ipv6, Some(half));
+        let holding_ipv6 = RoutePosition {
             reachable: true,
             udp_on: true,
             kad_running: true,
@@ -670,10 +630,11 @@ mod tests {
             server_punch: false,
         };
         assert_eq!(
-            select_callback_route(&callback_target(&candidate.reach()), &holding_ipv6),
-            CallbackRoute::Direct {
-                tcp: PeerEndpoint::V6(half)
-            }
+            select_callback_route(&callback_target(&candidate.reach(None)), &holding_ipv6),
+            crate::service::PeerReachRoute::Direct {
+                endpoint: rmule_primitives::PeerEndpoint::V6(half)
+            },
+            "rung 0 dials the half the row carried, ahead of the buddy road"
         );
     }
 
@@ -684,16 +645,17 @@ mod tests {
     #[test]
     fn a_type_6_row_names_a_buddyless_candidate_only_a_callable_downloader_reaches() {
         use rmule_primitives::Ipv4Endpoint;
-        let candidate = LowIdCandidate::from_kad_row(&crate::KadSource {
-            direct: None,
-            user_hash: Some(hash(0xAB)),
-            kad_udp: Some(Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 77), 4672)),
-            connect_options: Some(SourceCryptOptions::from_byte(0x08)),
-            buddy: None,
-            direct_udp_callback: true,
-            tcp_port: 4662,
-            ipv6: None,
-        })
+        let candidate = LowIdCandidate::from_sighting(
+            SourceSighting::by_road(
+                SourceRoad::DirectUdpCallback {
+                    kad_udp: Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 77), 4672),
+                    tcp_port: 4662,
+                },
+                Some(hash(0xAB)),
+                Some(SourceCryptOptions::from_byte(0x08)),
+            ),
+            None,
+        )
         .expect("a type-6 row names a candidate");
 
         use crate::download::state::LowIdRoad;
@@ -708,24 +670,28 @@ mod tests {
         );
     }
 
-    /// The namespace is the `on_our_server` fact: a connected-server candidate
-    /// can be introduced by the server we are logged into, a global one cannot.
+    /// The namespace is the `on_our_server` fact: a candidate our server
+    /// assigned can be introduced by it, one another server assigned cannot —
+    /// and one our former server assigned stops being ours when we move.
     #[test]
     fn the_server_namespace_decides_whether_our_server_can_introduce_us() {
-        let connected = LowIdCandidate::from_source(
-            ExchangedSource::plain(PeerSource::new(low(7), 4662)),
-            None,
+        let ours = Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 1), 4661);
+        let next = Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 2), 4661);
+        let connected = LowIdCandidate::from_sighting(
+            SourceSighting::plain(PeerSource::new(low(7), 4662)),
+            Some(ours),
         )
         .expect("candidate");
-        assert!(connected.natt_facts().admits_coordinator());
+        assert!(connected.natt_facts(Some(ours)).admits_coordinator());
+        assert!(!connected.natt_facts(Some(next)).admits_coordinator());
 
-        let global = LowIdCandidate::from_source(
-            ExchangedSource::plain(PeerSource::new(low(7), 4662)),
-            Some(Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 1), 4661)),
+        let global = LowIdCandidate::from_sighting(
+            SourceSighting::plain(PeerSource::new(low(7), 4662)),
+            Some(next),
         )
         .expect("candidate");
-        assert!(!global.natt_facts().admits_coordinator());
-        assert!(!global.reach().on_our_server);
+        assert!(!global.natt_facts(Some(ours)).admits_coordinator());
+        assert!(!global.reach(Some(ours)).on_our_server);
 
         // …until it names a buddy and the NAT-T bit, which is the other half of
         // the rung.
@@ -734,6 +700,6 @@ mod tests {
             supports_natt: true,
             ..global
         };
-        assert!(punchable.natt_facts().admits_coordinator());
+        assert!(punchable.natt_facts(Some(ours)).admits_coordinator());
     }
 }

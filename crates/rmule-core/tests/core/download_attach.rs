@@ -16,7 +16,7 @@ use rmule_core::{
 use rmule_primitives::{ED2K_PART_SIZE, Ed2kFileLink, ServerEndpoint};
 use rmule_testkit::{PendingPeerTransfer, file_link, two_high_id_sources};
 
-use crate::fixture::{identity, next_expected};
+use crate::fixture::next_expected;
 
 /// A two-part file: one full part and a one-byte tail.
 fn two_part_link(name: &str, fill: u8) -> Ed2kFileLink {
@@ -25,13 +25,12 @@ fn two_part_link(name: &str, fill: u8) -> Ed2kFileLink {
     file_link(name, &bytes)
 }
 
-async fn start(core: &mut Core, file: Ed2kFileLink, dir: &std::path::Path) -> DownloadId {
-    let output_path = dir.join(file.name.to_display_string());
+async fn start(core: &mut Core, file: Ed2kFileLink) -> DownloadId {
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
+        name: rmule_primitives::SafeFileName::of_link(&file),
         file,
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path,
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -81,12 +80,16 @@ async fn attach_runs_what_quit_left_running_and_leaves_paused_paused() {
     let dir = tempfile::tempdir().unwrap();
     let store = open_durable_store(dir.path()).unwrap();
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .source_lookup(two_high_id_sources())
         .peer_transfer(PendingPeerTransfer)
         .build();
-    let running = start(&mut core, two_part_link("running.bin", 0xA1), dir.path()).await;
+    let running = start(&mut core, two_part_link("running.bin", 0xA1)).await;
     part_assigned(&mut core, running).await;
-    let paused = start(&mut core, two_part_link("paused.bin", 0xB2), dir.path()).await;
+    let paused = start(&mut core, two_part_link("paused.bin", 0xB2)).await;
     part_assigned(&mut core, paused).await;
     pause(&mut core, paused).await;
     core.shutdown().await;
@@ -102,9 +105,10 @@ async fn attach_runs_what_quit_left_running_and_leaves_paused_paused() {
         },
         Arc::clone(&store),
     )
+    .settings(crate::fixture::attach_settings().await)
     .source_lookup(two_high_id_sources())
     .peer_transfer(PendingPeerTransfer)
-    .restore_credentials(crate::fixture::connect_credentials().await)
+    .restore_at_attach()
     .build();
 
     let mut recovered = Vec::new();
@@ -174,10 +178,14 @@ async fn a_paused_download_keeps_its_part_picture_with_nothing_in_flight() {
     let dir = tempfile::tempdir().unwrap();
     let store = open_durable_store(dir.path()).unwrap();
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .source_lookup(two_high_id_sources())
         .peer_transfer(PendingPeerTransfer)
         .build();
-    let id = start(&mut core, two_part_link("paused.bin", 0xC3), dir.path()).await;
+    let id = start(&mut core, two_part_link("paused.bin", 0xC3)).await;
     part_assigned(&mut core, id).await;
     pause(&mut core, id).await;
 
@@ -220,9 +228,10 @@ async fn attach_restores_a_paused_downloads_part_picture() {
     .unwrap();
 
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(crate::fixture::attach_settings().await)
         .source_lookup(two_high_id_sources())
         .peer_transfer(PendingPeerTransfer)
-        .restore_credentials(crate::fixture::connect_credentials().await)
+        .restore_at_attach()
         .build();
     next_expected(&mut core, "the download recovered", |event| {
         matches!(
@@ -260,16 +269,20 @@ async fn a_failed_download_holds_its_place_and_restarts_in_place() {
     repo.set_lifecycle(record.id(), DownloadLifecycle::Failed)
         .unwrap();
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_testkit::in_download_dir(
+            crate::fixture::attach_settings().await,
+            dir.path(),
+        ))
         .source_lookup(two_high_id_sources())
         .peer_transfer(PendingPeerTransfer)
-        .restore_credentials(crate::fixture::connect_credentials().await)
+        .restore_at_attach()
         .build();
 
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: link,
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: dir.path().join("failed (1).bin"),
+        name: rmule_testkit::file_name("failed (1).bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -285,7 +298,6 @@ async fn a_failed_download_holds_its_place_and_restarts_in_place() {
 
     core.send(CoreCommand::Download(DownloadCommand::ResumeDownload {
         download_id: record.id(),
-        credentials: identity().into(),
     }))
     .await
     .unwrap();
@@ -310,10 +322,14 @@ async fn a_failed_downloads_reason_survives_the_restart() {
         },
     };
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .source_lookup(sourceless())
         .peer_transfer(PendingPeerTransfer)
         .build();
-    let id = start(&mut core, two_part_link("lonely.bin", 0xC3), dir.path()).await;
+    let id = start(&mut core, two_part_link("lonely.bin", 0xC3)).await;
     next_expected(&mut core, "the run failed", |event| {
         matches!(
             event,
@@ -327,6 +343,7 @@ async fn a_failed_downloads_reason_survives_the_restart() {
     core.shutdown().await;
 
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_core::CoreSettings::default())
         .source_lookup(sourceless())
         .peer_transfer(PendingPeerTransfer)
         .build();
@@ -381,8 +398,9 @@ async fn a_download_attach_cannot_start_is_told_as_failed() {
         },
         Arc::clone(&store),
     )
+    .settings(crate::fixture::attach_settings().await)
     .peer_transfer(PendingPeerTransfer)
-    .restore_credentials(crate::fixture::connect_credentials().await)
+    .restore_at_attach()
     .build();
     next_expected(&mut core, "the download recovered as running", |event| {
         matches!(

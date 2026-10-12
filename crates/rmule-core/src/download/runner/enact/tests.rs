@@ -46,29 +46,29 @@ async fn a_worker_that_never_disconnects_still_hits_the_shutdown_cap() {
 /// `RequestFallbackBuddyCallback` arm) — a primary buddy callback that drew
 /// no dial-back in its whole wait earns exactly one more, under the other
 /// `TAG_BUDDYHASH` spelling. Driven through the real sans-I/O brain
-/// (`DownloadState::on_kad_sources`/`on_callback_timeout`) and the real
+/// (`DownloadState::on_sightings`/`on_tick`) and the real
 /// `enact_drain`, reading the counter off a live `DiagnosticsSnapshot` —
 /// the decision-level rule itself is proven in
 /// `download::state::tests::buddy_hash_fallback`.
 mod buddy_hash_spelling {
-    use std::collections::HashMap;
     use std::net::Ipv4Addr;
 
-    use rmule_kad::{KadBuddyContact, KadId};
-    use rmule_peer::PeerHandshakeContext;
+    use rmule_kad::KadId;
     use rmule_primitives::{
-        ClientId, ClientIdentity, Ed2kText, FileHash, Ipv4Endpoint, PeerEndpoint,
-        SourceCryptOptions, SourceLookupTarget, UserHash,
+        ClientId, Ed2kText, FileHash, Ipv4Endpoint, PeerEndpoint, SightedBuddy, SourceCryptOptions,
+        SourceRoad, SourceSighting, UserHash,
     };
 
     use super::*;
-    use crate::download::runner::CallbackFacts;
+    use crate::VerificationAuthority;
+    use crate::download::runner::test_context::{NeverLooksUp, NeverTransfers, loop_ctx};
+    use crate::download::source_book::Gate;
     use crate::download::state::{
-        CallbackCapability, ContentFacts, Decision, DownloadState, SourcingPosture,
-        StartingCandidates,
+        CallbackCapability, Channel, ContentFacts, Decision, DownloadState, SourcingPosture,
+        StartingFacts,
     };
     use crate::hashing::ResolvedHashSet;
-    use crate::{PeerWorker, SourceLookupOutcome, VerificationAuthority};
+    use crate::ip_filter::IpFilter;
 
     /// Asymmetric per four-byte word (ADR-0061), so the primary
     /// spelling and its fallback name different IDs — a palindromic ID would
@@ -80,22 +80,19 @@ mod buddy_hash_spelling {
 
     /// A Kad source row naming `PRIMARY` as the publisher's serving buddy —
     /// the one channel that names a buddy at all.
-    fn buddy_source() -> crate::KadSource {
-        crate::KadSource {
-            direct: None,
-            user_hash: Some(UserHash::from_bytes([0xAB; UserHash::BYTE_LEN])),
-            kad_udp: Some(Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 77), 4672)),
-            connect_options: Some(SourceCryptOptions::from_byte(0x00)),
-            buddy: Some(KadBuddyContact {
-                buddy_id: PRIMARY,
-                buddy_udp: Some(Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 9), 9000)),
-                buddy_ipv6: None,
-                buddy_udp_ipv6: None,
-            }),
-            direct_udp_callback: false,
-            tcp_port: 4662,
-            ipv6: None,
-        }
+    fn buddy_source() -> SourceSighting {
+        SourceSighting::by_road(
+            SourceRoad::Buddy {
+                buddy: SightedBuddy {
+                    buddy_id: *PRIMARY.as_bytes(),
+                    buddy_udp: Some(Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 9), 9000)),
+                },
+                kad_udp: Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 77), 4672),
+                tcp_port: 4662,
+            },
+            Some(UserHash::from_bytes([0xAB; UserHash::BYTE_LEN])),
+            Some(SourceCryptOptions::from_byte(0x00)),
+        )
     }
 
     fn file() -> Ed2kFileLink {
@@ -113,7 +110,7 @@ mod buddy_hash_spelling {
     /// A one-part, callback-capable download state — the brain half of the
     /// harness, matching `download::state::tests::callback_state`.
     fn download_state() -> DownloadState {
-        DownloadState::new(
+        let mut state = DownloadState::new(
             DownloadId::from_u64(1),
             ContentFacts {
                 file_hash: FileHash::from_bytes([0; 16]),
@@ -126,51 +123,41 @@ mod buddy_hash_spelling {
                 trusted_aich_root: None,
                 verified_parts: Vec::new(),
             },
-            StartingCandidates {
-                high_id: Vec::new(),
-                peer_crypts: HashMap::new(),
-                low_id: Vec::new(),
+            StartingFacts {
                 distrusted: std::collections::HashSet::new(),
-                remembered: crate::download::state::RememberedSeeds::default(),
+                seeds_written: 0,
             },
             SourcingPosture {
                 callback_capability: CallbackCapability::server_high_id(),
                 dial: crate::dialable::DialPosition::default(),
                 discovery_active: false,
+                client_udp: false,
             },
             Duration::from_secs(30),
             1,
-        )
+        );
+        let _ = state.start(std::time::Instant::now());
+        state
     }
 
-    /// Never asked: the decisions this module drives touch no source lookup.
-    #[derive(Clone)]
-    struct NeverLooksUp;
-    impl SourceLookupService for NeverLooksUp {
-        async fn lookup_sources(
-            &mut self,
-            _target: SourceLookupTarget,
-        ) -> Result<SourceLookupOutcome, DownloadFailure> {
-            unreachable!("a buddy-callback decision never looks up sources")
-        }
-    }
-
-    /// Never asked: the decisions this module drives spawn no worker.
-    struct NeverTransfers;
-    impl PeerTransferService for NeverTransfers {
-        async fn start_peer_worker(
-            &mut self,
-            _peer: PeerEndpoint,
-            _ctx: PeerHandshakeContext,
-            _file: Ed2kFileLink,
-        ) -> Result<PeerWorker, DownloadFailure> {
-            unreachable!("a buddy-callback decision never spawns a peer worker")
-        }
+    /// Kad rows taken behind an open gate at `at`, as the fleet's Kad arm
+    /// hands them.
+    fn via_kad(
+        state: &mut DownloadState,
+        at: std::time::Instant,
+        rows: Vec<SourceSighting>,
+    ) -> Vec<Decision> {
+        let filter = IpFilter::default();
+        let gate = Gate {
+            filter: &filter,
+            dial: crate::dialable::DialPosition::default(),
+        };
+        state.on_sightings(at, Channel::Kad, rows, &gate).decisions
     }
 
     /// A `RunnerContext` wired just enough for
     /// `RequestBuddyCallback`/`RequestFallbackBuddyCallback`/
-    /// `ArmCallbackTimeout` to enact: no real store, network or worker fleet.
+    /// the brain's ticks to enact: no real store, network or worker fleet.
     fn runner_context(
         diagnostics: crate::diagnostics::DiagnosticsState,
     ) -> (
@@ -186,87 +173,36 @@ mod buddy_hash_spelling {
         (runner, held.download_reach_rx)
     }
 
-    fn callback_context(runner: &RunnerContext<NeverLooksUp, NeverTransfers>) -> CallbackContext {
-        let (adopt_tx, _adopt_rx) = mpsc::channel(4);
-        let (retire_tx, _retire_rx) = mpsc::channel(4);
-        CallbackContext::new(
-            None,
-            CallbackFacts {
-                reach: crate::reachability::SharedSelfReach::new(
-                    crate::KadReachLevel::fixed(false),
-                    crate::own_identity::SharedOwnIdentity::default(),
-                    crate::natt::front::SharedNattFront::default(),
-                ),
-                our_tcp_port: 4662,
-            },
-            adopt_tx,
-            retire_tx,
-            runner.pending_callbacks.clone(),
-            runner.tunnel_claims.clone(),
-        )
-    }
-
-    fn worker_pool<'a>(
-        runner: &'a RunnerContext<NeverLooksUp, NeverTransfers>,
-        file: &'a Ed2kFileLink,
-        fact_tx: mpsc::Sender<WorkerFact>,
-    ) -> WorkerPool<'a, NeverLooksUp, NeverTransfers> {
-        WorkerPool {
-            runner,
-            file,
-            ctx: PeerHandshakeContext {
-                identity: ClientIdentity::new(
-                    UserHash::from_bytes([0x11; UserHash::BYTE_LEN]),
-                    Ed2kText::from_utf8("issue-433"),
-                    4662,
-                    0x3C,
-                ),
-                client_id: ClientId::from_u32(0),
-                connected_server: None,
-            },
-            fact_tx,
-        }
-    }
-
-    /// `opened`'s freshly armed slot-release deadline — the key every later
+    /// The key of the buddy callback `opened` asks for — the key every later
     /// call in the leg addresses.
-    fn armed_key(opened: &[Decision]) -> CallbackKey {
+    fn asked_key(opened: &[Decision]) -> CallbackKey {
         opened
             .iter()
             .find_map(|d| match d {
-                Decision::ArmCallbackTimeout { key, .. } => Some(*key),
+                Decision::RequestBuddyCallback { candidate, .. } => Some(candidate.key()),
                 _ => None,
             })
-            .expect("the primary ask arms its slot-release deadline")
+            .expect("the primary ask goes out")
     }
 
     /// A cancelled download ends every callback it still has
     /// pending. A buddy callback (its Dial-Back Claim) and a connected-server
-    /// callback (its routing entry) are both registered for real, the brain's
-    /// own stop is enacted, and once the run's context is gone neither
-    /// core-wide table holds anything of it — no dead `adopt_tx` is left for
-    /// a later dial-back to be `Readopted` into and lost.
+    /// callback (its server-relayed road) are both filed for real, the brain's
+    /// own stop is enacted, and once the run's context is gone the core-wide
+    /// registry holds nothing of it — no dead `adopt_tx` is left for a later
+    /// dial-back to be `Readopted` into and lost.
     #[tokio::test]
     async fn a_cancelled_download_leaves_no_callback_or_claim_behind() {
         let diagnostics = crate::diagnostics::DiagnosticsState::default();
         let (runner, _download_reach_rx) = runner_context(diagnostics);
         let file = file();
-        let (fact_tx, fact_rx) = mpsc::channel(8);
-        let mut ctx = LoopCtx {
-            state: download_state(),
-            runner: &runner,
-            download_id: DownloadId::from_u64(1),
-            file: &file,
-            evt_tx: &runner.evt_tx,
-            worker_pool: worker_pool(&runner, &file, fact_tx),
-            command_channels: WorkerChannels::default(),
-            file_hash_only_parts: Vec::new(),
-            fact_rx,
-            callbacks: callback_context(&runner),
-            source_ask_clock: crate::download::source_ask_clock::SourceAskClock::default(),
-        };
+        let mut ctx = loop_ctx(&runner, &file, download_state());
 
-        let opened = ctx.state.on_kad_sources(vec![buddy_source()]);
+        let opened = via_kad(
+            &mut ctx.state,
+            std::time::Instant::now(),
+            vec![buddy_source()],
+        );
         assert!(
             opened
                 .iter()
@@ -275,15 +211,17 @@ mod buddy_hash_spelling {
         );
         let mut queue = VecDeque::from(opened);
         queue.push_back(Decision::RequestCallback {
+            server: None,
             low_id: ClientId::from_u32(4242),
+            want_sources: true,
         });
         enact_drain(&mut queue, &mut ctx)
             .await
             .expect("both asks enact cleanly");
-        let target = buddy_source()
-            .user_hash
-            .expect("the row names its publisher");
-        assert_eq!(runner.pending_callbacks.lock().await.len(), 1);
+        assert!(
+            !runner.rt.awaited_inbound.is_empty(),
+            "both callbacks are filed"
+        );
 
         let mut queue = VecDeque::from(ctx.state.on_stop(DownloadFailure::Cancelled));
         assert_eq!(
@@ -293,15 +231,8 @@ mod buddy_hash_spelling {
         drop(ctx);
 
         assert!(
-            runner.pending_callbacks.lock().await.is_empty(),
-            "the connected-server callback's routing entry ended with the run"
-        );
-        assert!(
-            matches!(
-                runner.tunnel_claims.rule(target, target).await,
-                crate::adapters::TunnelClaimVerdict::Unclaimed
-            ),
-            "the buddy callback's claim ended with the run"
+            runner.rt.awaited_inbound.is_empty(),
+            "both callbacks' roads ended with the run"
         );
     }
 
@@ -314,20 +245,7 @@ mod buddy_hash_spelling {
         let diagnostics = crate::diagnostics::DiagnosticsState::default();
         let (runner, _download_reach_rx) = runner_context(diagnostics);
         let file = file();
-        let (fact_tx, fact_rx) = mpsc::channel(8);
-        let mut ctx = LoopCtx {
-            state: download_state(),
-            runner: &runner,
-            download_id: DownloadId::from_u64(1),
-            file: &file,
-            evt_tx: &runner.evt_tx,
-            worker_pool: worker_pool(&runner, &file, fact_tx),
-            command_channels: WorkerChannels::default(),
-            file_hash_only_parts: Vec::new(),
-            fact_rx,
-            callbacks: callback_context(&runner),
-            source_ask_clock: crate::download::source_ask_clock::SourceAskClock::default(),
-        };
+        let mut ctx = loop_ctx(&runner, &file, download_state());
         let peer = Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 30), 4662);
         let (worker_tx, mut worker_rx) = mpsc::channel(4);
         ctx.command_channels.register(
@@ -336,6 +254,7 @@ mod buddy_hash_spelling {
             worker_tx,
         );
         runner
+            .rt
             .peer_roster
             .mark_known(PeerRelation::Download(ctx.download_id), peer);
 
@@ -355,7 +274,7 @@ mod buddy_hash_spelling {
             "the live worker is told to shut down"
         );
         assert!(
-            !runner.peer_roster.knows(peer.ip),
+            !runner.rt.peer_roster.knows(peer.ip),
             "its Download relation ended with the run"
         );
     }
@@ -365,24 +284,12 @@ mod buddy_hash_spelling {
         let diagnostics = crate::diagnostics::DiagnosticsState::default();
         let (runner, _download_reach_rx) = runner_context(diagnostics.clone());
         let file = file();
-        let (fact_tx, fact_rx) = mpsc::channel(8);
-        let mut ctx = LoopCtx {
-            state: download_state(),
-            runner: &runner,
-            download_id: DownloadId::from_u64(1),
-            file: &file,
-            evt_tx: &runner.evt_tx,
-            worker_pool: worker_pool(&runner, &file, fact_tx),
-            command_channels: WorkerChannels::default(),
-            file_hash_only_parts: Vec::new(),
-            fact_rx,
-            callbacks: callback_context(&runner),
-            source_ask_clock: crate::download::source_ask_clock::SourceAskClock::default(),
-        };
+        let mut ctx = loop_ctx(&runner, &file, download_state());
 
         // The primary `0x52`, enacted for real.
-        let opened = ctx.state.on_kad_sources(vec![buddy_source()]);
-        let key = armed_key(&opened);
+        let at = std::time::Instant::now();
+        let opened = via_kad(&mut ctx.state, at, vec![buddy_source()]);
+        let _ = asked_key(&opened);
         let mut queue = VecDeque::from(opened);
         enact_drain(&mut queue, &mut ctx)
             .await
@@ -390,7 +297,7 @@ mod buddy_hash_spelling {
 
         // Thirty silent seconds: the brain earns the fallback, enacted for
         // real through the same `enact_drain` this counts inside.
-        let lapsed = ctx.state.on_callback_timeout(key);
+        let lapsed = ctx.state.on_tick(at + Duration::from_secs(30));
         assert!(
             lapsed
                 .iter()
@@ -417,23 +324,11 @@ mod buddy_hash_spelling {
         let diagnostics = crate::diagnostics::DiagnosticsState::default();
         let (runner, _download_reach_rx) = runner_context(diagnostics.clone());
         let file = file();
-        let (fact_tx, fact_rx) = mpsc::channel(8);
-        let mut ctx = LoopCtx {
-            state: download_state(),
-            runner: &runner,
-            download_id: DownloadId::from_u64(1),
-            file: &file,
-            evt_tx: &runner.evt_tx,
-            worker_pool: worker_pool(&runner, &file, fact_tx),
-            command_channels: WorkerChannels::default(),
-            file_hash_only_parts: Vec::new(),
-            fact_rx,
-            callbacks: callback_context(&runner),
-            source_ask_clock: crate::download::source_ask_clock::SourceAskClock::default(),
-        };
+        let mut ctx = loop_ctx(&runner, &file, download_state());
 
-        let opened = ctx.state.on_kad_sources(vec![buddy_source()]);
-        let key = armed_key(&opened);
+        let at = std::time::Instant::now();
+        let opened = via_kad(&mut ctx.state, at, vec![buddy_source()]);
+        let key = asked_key(&opened);
         let mut queue = VecDeque::from(opened);
         enact_drain(&mut queue, &mut ctx)
             .await
@@ -442,10 +337,11 @@ mod buddy_hash_spelling {
         // The primary drew its dial-back: the wait never lapses, so no
         // fallback decision is ever produced to enact.
         let _ = ctx.state.on_callback_connected(
+            at,
             key,
             PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 9), 4662)),
         );
-        let lapsed = ctx.state.on_callback_timeout(key);
+        let lapsed = ctx.state.on_tick(at + Duration::from_secs(30));
         assert!(
             lapsed.is_empty(),
             "a connected callback never lapses: {lapsed:?}"
@@ -466,37 +362,60 @@ mod buddy_hash_spelling {
     }
 }
 
-/// The source ask at the seam where the brain's counts meet the download's
-/// clock (ADR-0108): the first connection to a peer of a very rare file asks,
-/// a re-dial of that peer right after its answer does not, and a peer never
-/// asked still does.
-mod source_ask {
-    use std::collections::{HashMap, HashSet};
-    use std::net::Ipv4Addr;
+/// The Peer Roster's `Queued` leg (ADR-0059 "Roster relations") follows the
+/// Source Book's RemoteQueued stage, however a record leaves it — here by a
+/// merge, where the wire proves a queued source the same peer as a live
+/// worker and its record gives way, which no reask event reports.
+mod queued_roster {
+    use std::net::{Ipv4Addr, Ipv6Addr};
 
-    use rmule_primitives::{FileHash, Ipv4Endpoint, PeerEndpoint};
+    use rmule_primitives::{
+        Ed2kText, FileHash, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, PeerSource, SourceSighting,
+    };
 
-    use super::super::{high_id_names, wants_sources};
+    use super::*;
     use crate::VerificationAuthority;
-    use crate::download::source_ask_clock::SourceAskClock;
+    use crate::dialable::DialPosition;
+    use crate::download::runner::test_context::{NeverLooksUp, NeverTransfers, loop_ctx};
+    use crate::download::source_book::Gate;
     use crate::download::state::{
-        CallbackCapability, ContentFacts, DownloadState, SourcingPosture, StartingCandidates,
+        CallbackCapability, Channel, ContentFacts, DownloadState, SourcingPosture, StartingFacts,
     };
     use crate::hashing::ResolvedHashSet;
-    use crate::service::DownloadId;
+    use crate::ip_filter::IpFilter;
 
-    fn peer(last: u8) -> PeerEndpoint {
-        PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, last), 4662))
+    const QUEUED: Ipv4Endpoint = Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 1), 4662);
+
+    fn live_half() -> Ipv6Endpoint {
+        Ipv6Endpoint::new(Ipv6Addr::new(0x2a01, 0x4f8, 0, 0, 0, 0, 0, 1), 4662)
     }
 
-    fn state_with(sources: &[PeerEndpoint]) -> DownloadState {
-        DownloadState::new(
-            DownloadId::from_u64(7),
+    /// Where this node dials from: it holds a Known IPv6, so an IPv6 half is
+    /// dialable.
+    fn dual_stack() -> DialPosition {
+        DialPosition {
+            known_ipv6: Some("2001:db8::1".parse().unwrap()),
+        }
+    }
+
+    fn file() -> Ed2kFileLink {
+        Ed2kFileLink {
+            name: Ed2kText::from_utf8("queued-roster"),
+            size: 1_000,
+            file_hash: FileHash::from_bytes([0xCE; FileHash::BYTE_LEN]),
+            part_hash_set: None,
+            aich_root: None,
+            ipv6_sources: Vec::new(),
+            sources: Default::default(),
+        }
+    }
+
+    /// A one-part, one-slot download dialing from [`dual_stack`].
+    fn download_state() -> DownloadState {
+        let mut state = DownloadState::new(
+            DownloadId::from_u64(1),
             ContentFacts {
-                file_hash: FileHash::from_bytes([
-                    0x0A, 0x1B, 0x2C, 0x3D, 0x4E, 0x5F, 0x60, 0x71, 0x82, 0x93, 0xA4, 0xB5, 0xC6,
-                    0xD7, 0xE8, 0xF9,
-                ]),
+                file_hash: FileHash::from_bytes([0; 16]),
                 file_size: 1_000,
                 link_part_hash_set: None,
                 resolved: ResolvedHashSet {
@@ -506,53 +425,94 @@ mod source_ask {
                 trusted_aich_root: None,
                 verified_parts: Vec::new(),
             },
-            StartingCandidates {
-                high_id: sources.to_vec(),
-                peer_crypts: HashMap::new(),
-                low_id: Vec::new(),
-                distrusted: HashSet::new(),
-                remembered: crate::download::state::RememberedSeeds::default(),
+            StartingFacts {
+                distrusted: std::collections::HashSet::new(),
+                seeds_written: 0,
             },
             SourcingPosture {
                 callback_capability: CallbackCapability::server_high_id(),
-                dial: crate::dialable::DialPosition::default(),
+                dial: dual_stack(),
                 discovery_active: false,
+                client_udp: false,
             },
-            std::time::Duration::from_secs(30),
+            Duration::from_secs(30),
             1,
-        )
+        );
+        let _ = state.start(std::time::Instant::now());
+        state
     }
 
-    /// Deciding to want sources stamps nothing: a peer whose hello refused
-    /// the ask, or whose connection never came, is still never asked. Only
-    /// the worker's report that the ask went out stamps it, and an answer then
-    /// holds the peer off for its next connection.
-    #[test]
-    fn only_an_ask_that_went_out_holds_the_peer_off() {
-        let state = state_with(&[peer(1), peer(2), peer(3)]);
-        let mut clock = SourceAskClock::default();
-        let now = std::time::Instant::now();
-        assert!(wants_sources(
-            &clock,
-            &state,
-            &high_id_names(&state, peer(1))
-        ));
-        clock.answered(peer(1), now);
-        assert!(
-            wants_sources(&clock, &state, &high_id_names(&state, peer(1))),
-            "never asked: an answer alone does not hold it off"
+    /// `rows` taken from a link behind an open gate.
+    fn sighted(state: &mut DownloadState, rows: Vec<SourceSighting>) {
+        let filter = IpFilter::default();
+        let gate = Gate {
+            filter: &filter,
+            dial: dual_stack(),
+        };
+        let _ = state.on_sightings(std::time::Instant::now(), Channel::Link, rows, &gate);
+    }
+
+    /// The worker at `peer` completes its handshake.
+    fn connected(state: &mut DownloadState, peer: PeerEndpoint) {
+        let _ = state.on_worker_event(std::time::Instant::now(), peer, PeerWorkerEvent::Connected);
+    }
+
+    #[tokio::test]
+    async fn a_merged_standing_leaves_the_queued_relation() {
+        let diagnostics = crate::diagnostics::DiagnosticsState::default();
+        let (runner, _held) = crate::download::runner::test_context::runner_context(
+            NeverLooksUp,
+            NeverTransfers,
+            diagnostics,
         );
-        clock.asked(peer(1), now);
-        clock.answered(peer(1), now);
-        assert!(!wants_sources(
-            &clock,
-            &state,
-            &high_id_names(&state, peer(1))
-        ));
-        assert!(wants_sources(
-            &clock,
-            &state,
-            &high_id_names(&state, peer(2))
-        ));
+        let file = file();
+        let mut ctx = loop_ctx(&runner, &file, download_state());
+        let queued = PeerEndpoint::V4(QUEUED);
+        let live = PeerEndpoint::V6(live_half());
+
+        // The source at `QUEUED` queues us and hangs up: its record stands in
+        // the RemoteQueued stage, and the relation is held.
+        sighted(
+            &mut ctx.state,
+            vec![SourceSighting::plain(PeerSource::HighId(QUEUED))],
+        );
+        connected(&mut ctx.state, queued);
+        let now = std::time::Instant::now();
+        let _ = ctx
+            .state
+            .on_worker_event(now, queued, PeerWorkerEvent::Queued { rank: 3 });
+        let _ = ctx
+            .state
+            .on_worker_event(now, queued, PeerWorkerEvent::Disconnected);
+        enact_drain(&mut VecDeque::new(), &mut ctx)
+            .await
+            .expect("nothing to enact");
+        assert!(
+            runner.rt.peer_roster.knows(QUEUED.ip),
+            "queued, then hung up"
+        );
+
+        // A worker dials the same peer's IPv6, and an exchange names both
+        // halves: the queued record gives way to the live one.
+        sighted(
+            &mut ctx.state,
+            vec![SourceSighting::plain(PeerSource::Ipv6(live_half()))],
+        );
+        connected(&mut ctx.state, live);
+        sighted(
+            &mut ctx.state,
+            vec![
+                SourceSighting::plain(PeerSource::HighId(QUEUED)).with_ipv6_half(Some(live_half())),
+            ],
+        );
+        enact_drain(&mut VecDeque::new(), &mut ctx)
+            .await
+            .expect("nothing to enact");
+
+        assert_eq!(ctx.state.remote_queued().collect::<Vec<_>>(), Vec::new());
+        assert!(
+            !runner.rt.peer_roster.knows(QUEUED.ip),
+            "the merged standing's endpoint is no longer queued"
+        );
     }
 }

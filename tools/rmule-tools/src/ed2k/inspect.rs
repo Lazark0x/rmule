@@ -146,13 +146,17 @@ pub(crate) fn inspect_server_packet(path: &Path) -> Result<()> {
             println!("file_hash: {}", found.file_hash().to_hex_upper());
             println!("source_count: {}", found.sources().len());
             for (index, source) in found.sources().iter().enumerate() {
+                // A server answer decodes to eD2k records only.
+                let Some(record) = source.peer_source() else {
+                    continue;
+                };
                 let crypt = source.crypt_options().map_or(0, |c| c.as_byte());
                 let stance = source.peer_crypt().stance();
                 println!(
                     "{index}: client_id={} tcp_port={} id_kind={} crypt_options=0x{crypt:02X} crypt_stance=supports:{}/requests:{}/requires:{}",
-                    source.peer_source().wire_id(),
+                    record.wire_id(),
                     source.tcp_port(),
-                    id_kind(source.peer_source()),
+                    id_kind(record),
                     stance.supports(),
                     stance.requests(),
                     stance.requires(),

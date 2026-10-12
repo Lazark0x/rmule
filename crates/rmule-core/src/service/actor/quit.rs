@@ -3,19 +3,13 @@
 //! session's work, so no front end has to remember which activities to stop
 //! first and no task outlives the core that spawned it.
 
-use std::time::Duration;
-
 use crate::adapters::{
     KadRuntimeFactory, PeerTransferService, ServeRuntimeService, SourceLookupService,
 };
 
 use super::{CoreActor, send_event};
+use crate::service::activity::{JOIN_GRACE, join_or_abort};
 use crate::service::{CoreEvent, QuitStep};
-
-/// How long quit waits for a search or a download task it has signalled
-/// before aborting it, or for the Registry Check's thread before leaving it: both hold nothing that must reach the disk at quit,
-/// so the bound only keeps a wedged task from holding the exit.
-const QUIT_JOIN_GRACE: Duration = Duration::from_secs(2);
 
 impl<S, P, L, K> CoreActor<S, P, L, K>
 where
@@ -35,32 +29,31 @@ where
     /// [`CoreEvent::Quitting`], so a front end names quit's progress from the
     /// quit itself.
     pub(super) async fn retire_all(&mut self) {
+        // The trail first: what Quit takes down is told by Quit's own steps,
+        // not written as reachability moving.
+        self.trail.abort();
         // The scan feeds the share set every later activity reads, so it
         // stops first.
-        if !self.activities.scans.is_empty() {
+        if self.activities.scans().next().is_some() {
             announce(&self.evt_tx, QuitStep::DirectoryScan).await;
             self.stop_scans().await;
         }
         // The Registry Check rules on the same share set; it has no quit step
         // of its own, since it ends within one wait of its flag.
-        self.registry_check.retire(QUIT_JOIN_GRACE).await;
+        self.registry_check.retire(JOIN_GRACE).await;
         if !self.activities.searches.is_empty() {
             announce(&self.evt_tx, QuitStep::Search).await;
-            for (_, mut search) in self.activities.searches.drain() {
-                search.stop_global();
-                let _ = search.cancel_tx.send(true);
-                join_or_abort(search.handle).await;
-            }
+            self.activities.searches.stop_all(&self.evt_tx).await;
         }
         // Aborted rather than stopped: a stop writes the lifecycle
         // (`Paused`/`Cancelled`), and a quit must leave the store saying
         // `Active` so the next start recovers the download as it was.
-        if !self.activities.downloads.is_empty() {
+        if !self.activities.downloads_idle() {
             announce(&self.evt_tx, QuitStep::Download).await;
             // Each run's last ranking, written before the runs are aborted
             // (ADR-0109, "Source Seeds").
             self.write_source_seeds();
-            let ids: Vec<_> = self.activities.downloads.keys().copied().collect();
+            let ids: Vec<_> = self.activities.downloads().map(|(id, _)| id).collect();
             for download_id in ids {
                 if let Some(download) = self.retire_download(download_id) {
                     download.handle.abort();
@@ -68,7 +61,7 @@ where
                 }
             }
         }
-        if self.activities.serve.is_some() {
+        if self.activities.serving().is_some() {
             announce(&self.evt_tx, QuitStep::Serve).await;
             self.stop_serve().await;
         }
@@ -86,6 +79,9 @@ where
             announce(&self.evt_tx, QuitStep::PortMapping).await;
             port_mapping.retire().await;
         }
+        // Nothing is offered a route over the client-UDP send half once the
+        // session quits; the socket itself closes with the core.
+        self.client_udp_bound.clear();
         announce(&self.evt_tx, QuitStep::CreditCheckpoint).await;
     }
 }
@@ -93,12 +89,4 @@ where
 /// Report that quit's `step` begins.
 async fn announce(evt_tx: &tokio::sync::mpsc::Sender<CoreEvent>, step: QuitStep) {
     send_event(evt_tx, CoreEvent::Quitting { step }).await;
-}
-
-/// Join `handle` within [`QUIT_JOIN_GRACE`], aborting it past that.
-async fn join_or_abort<T>(handle: tokio::task::JoinHandle<T>) {
-    let abort = handle.abort_handle();
-    if tokio::time::timeout(QUIT_JOIN_GRACE, handle).await.is_err() {
-        abort.abort();
-    }
 }

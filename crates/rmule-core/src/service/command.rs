@@ -6,12 +6,12 @@ use std::net::SocketAddrV4;
 use std::path::PathBuf;
 
 use rmule_ed2k::ServerPriority;
-use rmule_primitives::{Ed2kFileLink, FileHash, SearchQuery, ServerEndpoint};
+use rmule_primitives::{Ed2kFileLink, FileHash, SafeFileName, SearchQuery, ServerEndpoint};
 
 use crate::adapters::KadEnableConfig;
 use crate::server_list::ManagedServer;
 
-use super::{ClientCredentials, DownloadId, PeerReach, SearchId};
+use super::{DownloadId, PeerReach, SearchId};
 
 /// The download activity's command vocabulary. Wrapped by
 /// [`CoreCommand::Download`]; `ServeCommand` is its serve-side sibling.
@@ -29,12 +29,13 @@ pub enum DownloadCommand {
         /// configured — a Kad-only start. Nothing dials it or asks it:
         /// the run's sources come from the operator's session and Kad.
         source_hint: Option<ServerEndpoint>,
-        /// The identity the run's hellos present — core is storage-agnostic
-        /// (ADR-0069), so the caller holds it.
-        credentials: ClientCredentials,
-        /// Where the finished file lands. Partial data is written beside it
-        /// until every part verifies.
-        output_path: PathBuf,
+        /// The name the finished file takes. Core places it in the download
+        /// directory its Core Settings name, once the share guards pass that
+        /// directory; partial data is written beside it until every part
+        /// verifies. No command names a folder.
+        name: SafeFileName,
+        /// What the start does when `name` is taken there.
+        if_taken: NameTaken,
     },
     /// Stop the run but keep the verified parts and the store row, so a resume
     /// picks up where it left off.
@@ -53,8 +54,6 @@ pub enum DownloadCommand {
     ResumeDownload {
         /// The download to restart.
         download_id: DownloadId,
-        /// The identity the new run's hellos present.
-        credentials: ClientCredentials,
     },
     /// Stop the run and drop the store row. Terminal — the partial data is no
     /// longer tracked.
@@ -74,6 +73,19 @@ pub enum DownloadCommand {
     ClearCompletedDownloads,
 }
 
+/// What a [`DownloadCommand::StartDownload`] does when the name it gives is
+/// taken in the download directory: a file or a `.part` already there
+/// (ADR-0100, "Adding a marked file").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NameTaken {
+    /// Refuse the start as [`CoreCommandRejectReason::DownloadPathConflict`]:
+    /// a fresh add never lands on a file it did not make.
+    Refuse,
+    /// Take the first `stem (n).ext` free beside it: the confirmed re-add of
+    /// a file the operator has, had or cancelled.
+    Number,
+}
+
 /// The serve activity's command vocabulary. Wrapped by
 /// [`CoreCommand::Serve`]: the share-set verbs and the upload-queue / grant
 /// verbs share this one enum.
@@ -88,14 +100,15 @@ pub enum ServeCommand {
     /// and accept peer connections into the **Upload Slot Queue** (ADR-0031).
     /// It dials no server: the share set is announced to the live session and
     /// to each one the operator's connect makes after it (ADR-0095). At most
-    /// one serve activity is live; a core built with credentials starts it at
-    /// attach.
+    /// one serve activity is live; a core built to
+    /// [`restore_at_attach`](crate::CoreBuilder::restore_at_attach) starts it
+    /// at attach. Its hellos present the Core Settings' credentials.
     StartServing {
-        /// Where to bind the inbound listener. This is the port rmule then
-        /// advertises, so it must be the one peers can actually reach.
+        /// Where to bind the inbound listener; port `0` takes one the OS
+        /// assigns. rmule advertises the Core Settings' TCP port, so the two
+        /// must agree for peers to reach it — or the settings' be `0`,
+        /// which advertises the port bound.
         listen_addr: SocketAddrV4,
-        /// The identity the listener's hellos present.
-        credentials: ClientCredentials,
     },
     /// Stop the serve activity: close the listener, drop queued/granted
     /// peers, and end announcing. Shares stay in the registry.
@@ -148,26 +161,18 @@ pub enum SearchCommand {
 }
 
 /// The **Shared Directory List**'s command vocabulary (ADR-0101): the
-/// download directory, the disclosure guard's answer, and the directories the
-/// operator adds and removes. Wrapped by [`CoreCommand::Scan`]; one scan runs
-/// per scanned directory.
+/// disclosure guard's answer, and the directories the operator adds and
+/// removes. Wrapped by [`CoreCommand::Scan`]; one scan runs per scanned
+/// directory. No command scans a directory of its own choosing: core scans
+/// the download directory the Core Settings name, at attach and when
+/// [`Setting::DownloadDir`](crate::Setting::DownloadDir) moves it, and every
+/// other directory only once an add is guarded and confirmed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScanCommand {
-    /// Scan `dir`, the download directory, and share what lies under it. A
-    /// start for the directory already being scanned is a no-op; one for
-    /// another directory stops the running scan first. A directory never
-    /// asked about that already holds files raises
-    /// [`ScanEvent::ConsentRequested`](crate::ScanEvent::ConsentRequested)
-    /// and waits for [`Answer`](Self::Answer); one declined before is not
-    /// scanned.
-    Start {
-        /// The directory to scan, as the download-directory preference
-        /// holds it.
-        dir: PathBuf,
-    },
     /// The operator's answer to the disclosure guard for `dir`, recorded
-    /// durably. Releases a scan waiting on it; sent before a `Start` (the
-    /// Settings warning), it spares the operator a second question.
+    /// durably. Releases a scan waiting on it; recorded before the download
+    /// directory moves to `dir` (the Settings warning), it spares the operator
+    /// a second question.
     Answer {
         /// The directory the answer is for.
         dir: PathBuf,
@@ -226,10 +231,9 @@ pub enum CoreCommand {
     ///
     /// Deliberately *not* a [`ServerListCommand`]: the list is a config fact
     /// and the connection a session fact, and no list command reaches the
-    /// session slot. It carries credentials for the same reason every other
-    /// session-establishing command does (`StartSearch`, `StartDownload`,
-    /// `StartServing`) — core is storage-agnostic (ADR-0069) and the identity
-    /// is the front-end's to hold.
+    /// session slot. The login presents the Core Settings' credentials
+    /// (ADR-0069), as every other wire-touching command does; no command
+    /// carries them.
     ///
     /// Answered off the actor: the reply is the
     /// [`ServerConnectionEvent`](crate::ServerConnectionEvent) trail (`Connecting` → `Connected` /
@@ -242,8 +246,6 @@ pub enum CoreCommand {
     ConnectToServer {
         /// The listed server to make the session's server.
         server: ServerEndpoint,
-        /// The identity to log in with.
-        credentials: ClientCredentials,
     },
     /// End the operator's intent to stay connected (ADR-0093, "A lost
     /// session is re-made"): the live session is hung up, a pending
@@ -251,18 +253,13 @@ pub enum CoreCommand {
     /// nothing is dialed until the operator connects again. A no-op with
     /// neither.
     DisconnectFromServer,
-    /// Take up the operator's **Server Policy** live (ADR-0052): the rows'
-    /// health and the swept list follow it at once. The front end keeps the
-    /// preferences it came from; core read them at its start.
-    SetServerPolicy(crate::ServerPolicy),
-    /// Take up the operator's `Remember peers` live (ADR-0107, "Source
-    /// Seeds"): the next seed write keeps that many peers per download.
-    SetRememberPeers(crate::RememberPeers),
-    /// Start the Kad node and its source-discovery task (ADR-0043). The
-    /// front-end owns config (ADR-0069): it reads the persisted Kad identity
-    /// from `AppConfigStore` and pushes it here. Never sent ⇒ no Kad task
-    /// spawns and nothing else changes; a duplicate is ignored; a failed
-    /// start rejects with [`CoreCommandRejectReason::KadUnavailable`].
+    /// Start the Kad node and its source-discovery task (ADR-0043). The node
+    /// is core's own: its Kad ID and Kad UDP Key come from core's store, and
+    /// its dials present the Core Settings' credentials (ADR-0069); the
+    /// command carries only how to start it — seeds, the persisted routing
+    /// table, the bench knobs. Never sent ⇒ no Kad task spawns and nothing
+    /// else changes; a duplicate is ignored; a failed start rejects with
+    /// [`CoreCommandRejectReason::KadUnavailable`].
     EnableKad(KadEnableConfig),
     /// Reach a peer that a plain TCP dial may not reach (ADR-0061): ask the one
     /// **callback route chooser** which of the four routes gets to it, and enact
@@ -322,6 +319,11 @@ pub enum CoreCommand {
 /// row is not there or the capability is missing, a
 /// [`CoreEvent::CommandRejected`](crate::CoreEvent::CommandRejected).
 #[derive(Clone, Debug, PartialEq, Eq)]
+// One message per operator action over a low-frequency channel: the whole
+// `ManagedServer` row in `AddServer` outweighs the endpoint-only variants, and
+// boxing it would put an indirection in every front end's construction for no
+// measurable gain.
+#[allow(clippy::large_enum_variant)]
 pub enum ServerListCommand {
     /// List a server, or fold onto the row already holding its endpoint. The
     /// caller supplies the whole row, so a front-end's add form can carry a
@@ -373,7 +375,7 @@ pub enum ServerListCommand {
 /// Why the actor refused a [`CoreCommand`] outright, reported as
 /// [`CoreEvent::CommandRejected`](crate::CoreEvent::CommandRejected)(crate::CoreEvent::CommandRejected). A refusal
 /// means nothing was started and no state moved — it is not a failed run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum CoreCommandRejectReason {
     /// A resume named a download that already has a live run in the
     /// **Download Set**.
@@ -383,9 +385,16 @@ pub enum CoreCommandRejectReason {
     /// `.part` are keyed by the file, so a second copy is refused rather
     /// than raced.
     DuplicateDownload,
-    /// A start named an output path that already exists on disk, or whose
-    /// `.part` another download already writes.
+    /// A start named a file that already exists in the download directory,
+    /// or whose `.part` another download already writes there.
     DownloadPathConflict,
+    /// A start found no download directory in the Core Settings: there is
+    /// nowhere to put the file.
+    NoDownloadDir,
+    /// A start found a download directory the share guards refuse, for this
+    /// reason: a file finished there would be shared from a place the
+    /// operator never chose to share (ADR-0101).
+    DownloadDirRefused(crate::DirectoryRefusal),
     /// The download store refused to mint, or to forget, the row for a
     /// reason of its own — a storage fault, traced at `warn` where it happened.
     DownloadStoreFailed,
@@ -462,4 +471,11 @@ pub enum KadUnavailableReason {
     /// The socket bound, but the Kad factory itself refused to start — a
     /// reason of its own, already logged at `warn` where it happened.
     StartFailed,
+    /// The Core Settings' TCP port is `0` — the OS's choice — and the eD2k
+    /// listener the start brought up first did not bind, so the node would
+    /// present port `0` in every firewall check it asks for and every source
+    /// it publishes, for its whole life. The listener's own failure was said
+    /// as `ServingFailed`. An operator's store never holds `0`, so only a
+    /// test's or a tool's injected settings meet this.
+    TcpPortUnbound,
 }

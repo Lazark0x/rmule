@@ -162,6 +162,11 @@ pub(crate) struct KadJoinNodeArgs {
     /// `--kad-crypt`; in the fake-public bench this is the container's address.
     #[arg(long)]
     public_ip: Option<Ipv4Addr>,
+    /// The **Kad UDP Key** `--kad-crypt` derives verify keys from. A caller
+    /// that must open what a counterparty keys on it chooses the seed here;
+    /// the tool never prints it. Omitted, the run mints its own.
+    #[arg(long, requires = "kad_crypt")]
+    kad_udp_key_seed: Option<u32>,
     /// Our Known IPv6, as the **Advertised Endpoints** chooser would settle it
     /// (ADR-0084). Carried into the node with `KadCommand::SetAdvertisedIpv6`,
     /// which is the only way the tag is ever set — a Kad node never reads an
@@ -335,11 +340,12 @@ impl Stimulus {
 pub(crate) async fn run(args: KadJoinNodeArgs) -> Result<()> {
     let resolved = resolve(&args)?;
 
-    // Minted once, before the node starts, so the run's own derivation secret can
-    // be reported alongside the node's ready marker. A capture of a counterparty
-    // datagram encrypted under a key *we* handed out is only decodable — now or
-    // in a fixture years later — if this value is on the record.
-    let verify_key_secret = args.kad_crypt.then(kad_udp_key_secret);
+    // A capture of a counterparty datagram encrypted under a key *we* handed
+    // out is only decodable — now or in a fixture years later — if this seed
+    // is on the record: the caller's, when it names one.
+    let verify_key_secret = args
+        .kad_crypt
+        .then(|| args.kad_udp_key_seed.unwrap_or_else(kad_udp_key_secret));
 
     let mut node = spawn(
         KadNetConfig {
@@ -352,8 +358,10 @@ pub(crate) async fn run(args: KadJoinNodeArgs) -> Result<()> {
             capture_dir: Some(args.capture_dir.clone()),
             nodes_dat_path: None,
             firewall_self_check: args.firewall_self_check,
-            datagram_obfuscation: args.kad_crypt,
-            verify_keys: verify_key_secret.map(|secret| (secret, resolved.public_ip)),
+            obfuscation: verify_key_secret.map(|secret| {
+                rmule_kad::KadObfuscation::new(rmule_net::kad::os_datagram_nonce)
+                    .with_verify_keys(secret, resolved.public_ip)
+            }),
             contact_admission: None,
         },
         args.bind,
@@ -404,16 +412,12 @@ pub(crate) async fn run(args: KadJoinNodeArgs) -> Result<()> {
     if resolved.callback_walk.is_some() {
         println!("rmule-kad-callback-walk-armed");
     }
-    if let Some(secret) = verify_key_secret {
-        // The verify-key capture leg. A counterparty's `0x22` comes
-        // back encrypted under the sender key *we* handed it, i.e. under
-        // `udp_verify_key(secret, its_ip)`; publishing the secret is what makes
-        // the tapped datagram decodable by the harness verdict and by any later
-        // fixture. It is our own private derivation seed, never a wire value.
-        println!(
-            "rmule-kad-crypt-armed public_ip={} verify_key_secret={secret}",
-            resolved.public_ip
-        );
+    if verify_key_secret.is_some() {
+        // The verify-key capture leg. A counterparty's `0x22` comes back
+        // encrypted under the sender key *we* handed it, i.e. under
+        // `udp_verify_key(seed, its_ip)`; the verdict opens it with the seed it
+        // passed in. The seed is our private derivation secret: never printed.
+        println!("rmule-kad-crypt-armed public_ip={}", resolved.public_ip);
     }
     if args.bootstrap_delay_secs > 0 {
         println!(

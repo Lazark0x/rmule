@@ -64,12 +64,17 @@ impl ResolvedAddresses {
         }
     }
 
-    /// The named row that resolved to `endpoint`, if any.
-    pub(crate) fn row_at(&self, endpoint: Ipv4Endpoint) -> Option<ServerEndpoint> {
-        self.answers.iter().find_map(|(row, (address, _))| {
-            (*address == ResolvedAddress::Resolved(endpoint.ip) && row.port() == endpoint.port)
-                .then(|| row.clone())
-        })
+    /// The endpoint `row`'s server-UDP datagrams are keyed on and aimed
+    /// from: the address it is reached at, on its **standard** port. aMule
+    /// derives every server-UDP port from `GetPort()`, the standard one an
+    /// aux-port login rewrites, never the port the session dialed
+    /// (`ServerUDPSocket.cpp:363`).
+    pub(crate) fn udp_endpoint_of(&self, row: &super::ManagedServer) -> Option<Ipv4Endpoint> {
+        let reached = self.endpoint_of(&row.endpoint)?;
+        Some(Ipv4Endpoint::new(
+            reached.ip,
+            row.standard_endpoint().port(),
+        ))
     }
 
     /// Forget every row not in `listed`: a removed row's answer goes with it.

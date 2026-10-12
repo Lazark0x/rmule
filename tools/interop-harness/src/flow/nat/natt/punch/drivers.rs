@@ -138,7 +138,7 @@ pub(super) fn driver_args(peer: &Peer, plan: &TransferPlan<'_>, server_v4: &str)
                     "--file".to_owned(),
                     link.to_owned(),
                     "--download-out".to_owned(),
-                    "/out/downloaded.bin".to_owned(),
+                    "/out/dl/downloaded.bin".to_owned(),
                     "--source-file".to_owned(),
                     "/out/source.toml".to_owned(),
                     "--source-timeout".to_owned(),

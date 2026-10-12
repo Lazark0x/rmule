@@ -24,6 +24,10 @@ pub enum SearchFailure {
     /// which: none of it is shown here (ADR-0034, Search Attribution). Asking
     /// again is the remedy.
     RelatedAnswerUnattributable,
+    /// The search's task panicked, so it can neither finish nor be asked for
+    /// more. The results already accepted stay in the set; asking again is the
+    /// remedy.
+    TaskPanicked,
 }
 
 /// Where one leg of a keyword search stands (ADR-0034, "The legs are

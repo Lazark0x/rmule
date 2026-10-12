@@ -16,6 +16,7 @@
 //! point is exercising the real I/O corner.
 #![cfg(feature = "reqwest-fetcher")]
 
+use rmule_testkit::HANG_GUARD;
 use std::net::{Ipv4Addr, SocketAddrV4};
 
 use rmule_bootstrap::{BootstrapConfig, FetchError, Fetcher, ReqwestFetcher, fetch_server_met};
@@ -27,7 +28,7 @@ use rmule_primitives::{
 use rmule_testkit::FakeEd2kServer;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::time::{Duration, timeout};
+use tokio::time::timeout;
 
 // --- local HTTP/1.1 fixture ------------------------------------------------
 
@@ -110,9 +111,9 @@ async fn login_and_read_id(server: SocketAddrV4, advertised_port: u16) -> Client
                 .client_id;
         }
         let mut tmp = [0u8; 4096];
-        let n = timeout(Duration::from_secs(2), sock.read(&mut tmp))
+        let n = timeout(HANG_GUARD, sock.read(&mut tmp))
             .await
-            .expect("IdChange within 2s")
+            .expect("IdChange")
             .expect("read ok");
         assert!(n > 0, "server closed before sending IdChange");
         buf.extend_from_slice(&tmp[..n]);

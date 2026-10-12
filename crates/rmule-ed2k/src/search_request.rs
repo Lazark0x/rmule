@@ -39,7 +39,9 @@
 //! (`SearchList.cpp:728-737`), i.e. `AND "a" AND min=1 max=2`, not
 //! `AND AND "a" min=1 max=2`.
 
-use rmule_primitives::{Ed2kFileClass, Ed2kText, KeywordQuery, Packet, PacketProtocol};
+use rmule_primitives::{
+    Ed2kFileClass, Ed2kText, KeywordQuery, Packet, PacketProtocol, WireReader, WireTruncated,
+};
 
 use crate::{Ed2kError, Opcode, Result};
 
@@ -178,9 +180,9 @@ impl SearchRequest {
             });
         }
 
-        let mut cursor = Cursor::new(packet.payload());
-        let terms = parse_expression(&mut cursor)?;
-        if cursor.remaining() != 0 {
+        let mut reader = WireReader::new(packet.payload());
+        let terms = parse_expression(&mut reader, 0)?;
+        if !reader.is_exhausted() {
             return Err(Ed2kError::InvalidPayload {
                 opcode,
                 reason: "trailing OP_SEARCHREQUEST bytes",
@@ -316,36 +318,57 @@ fn write_len_prefixed_text(payload: &mut Vec<u8>, value: &Ed2kText) {
     payload.extend_from_slice(value.as_bytes());
 }
 
-fn parse_expression(cursor: &mut Cursor<'_>) -> Result<Vec<SearchTerm>> {
-    let kind = cursor.read_u8()?;
+/// Maximum search-expression nesting depth a decode accepts. Matches the
+/// limit aMule applies to the Kad search tree (`KademliaUDPListener.cpp:938-941`,
+/// `iLevel >= 24`) and states it must equal the limit used when it builds the
+/// expression (`SearchList.cpp:96-98`); mirrors `rmule_kad::MAX_TREE_DEPTH`.
+/// aMule has no OP_SEARCHREQUEST parser (it only builds the packet), and the
+/// ed2k-server source is not in the reference set, so this is the only
+/// published bound. An expression nested at or past it is refused rather than
+/// recursed into.
+pub const MAX_EXPRESSION_DEPTH: usize = 24;
+
+fn parse_expression(reader: &mut WireReader<'_>, depth: usize) -> Result<Vec<SearchTerm>> {
+    if depth >= MAX_EXPRESSION_DEPTH {
+        return Err(Ed2kError::SearchExpressionTooDeep);
+    }
+    let kind = reader.read_u8("expression kind").map_err(truncated)?;
     match kind {
         EXPR_BOOL => {
-            let op = cursor.read_u8()?;
+            let op = reader.read_u8("boolean operator").map_err(truncated)?;
             if op != BOOL_AND {
                 return Err(Ed2kError::InvalidPayload {
                     opcode: Opcode::SearchRequest.as_u8(),
                     reason: "unsupported OP_SEARCHREQUEST boolean operator",
                 });
             }
-            let mut left = parse_expression(cursor)?;
-            left.extend(parse_expression(cursor)?);
+            let mut left = parse_expression(reader, depth + 1)?;
+            left.extend(parse_expression(reader, depth + 1)?);
             Ok(left)
         }
-        EXPR_PHRASE => Ok(vec![SearchTerm::Word(cursor.read_text()?)]),
+        EXPR_PHRASE => Ok(vec![SearchTerm::Word(read_text(reader)?)]),
         EXPR_STRING_FILTER => {
-            let value = cursor.read_text()?;
-            let tag_id = cursor.read_one_byte_tag_id()?;
+            let value = read_text(reader)?;
+            let tag_id = read_one_byte_tag_id(reader)?;
             Ok(vec![SearchTerm::StringFilter { tag_id, value }])
         }
         EXPR_INTEGER_FILTER | EXPR_INTEGER64_FILTER => {
             let wide = kind == EXPR_INTEGER64_FILTER;
             let value = if wide {
-                cursor.read_u64()?
+                reader
+                    .read_u64_le("integer filter value")
+                    .map_err(truncated)?
             } else {
-                u64::from(cursor.read_u32()?)
+                u64::from(
+                    reader
+                        .read_u32_le("integer filter value")
+                        .map_err(truncated)?,
+                )
             };
-            let operator = cursor.read_u8()?;
-            let tag_id = cursor.read_one_byte_tag_id()?;
+            let operator = reader
+                .read_u8("integer filter operator")
+                .map_err(truncated)?;
+            let tag_id = read_one_byte_tag_id(reader)?;
             Ok(vec![SearchTerm::IntegerFilter {
                 tag_id,
                 operator,
@@ -358,6 +381,35 @@ fn parse_expression(cursor: &mut Cursor<'_>) -> Result<Vec<SearchTerm>> {
             reason: "unsupported OP_SEARCHREQUEST expression kind",
         }),
     }
+}
+
+fn truncated(error: WireTruncated) -> Ed2kError {
+    Ed2kError::InvalidPayload {
+        opcode: Opcode::SearchRequest.as_u8(),
+        reason: error.field,
+    }
+}
+
+fn read_text(reader: &mut WireReader<'_>) -> Result<Ed2kText> {
+    let bytes = reader
+        .read_len16_bytes("OP_SEARCHREQUEST text")
+        .map_err(truncated)?;
+    Ok(Ed2kText::from_bytes(bytes.to_vec()))
+}
+
+fn read_one_byte_tag_id(reader: &mut WireReader<'_>) -> Result<u8> {
+    let len = reader
+        .read_u16_le("OP_SEARCHREQUEST metadata tag id length")
+        .map_err(truncated)?;
+    if len != 1 {
+        return Err(Ed2kError::InvalidPayload {
+            opcode: Opcode::SearchRequest.as_u8(),
+            reason: "OP_SEARCHREQUEST metadata tag id must be one byte",
+        });
+    }
+    reader
+        .read_u8("OP_SEARCHREQUEST metadata tag id")
+        .map_err(truncated)
 }
 
 fn query_from_terms(terms: Vec<SearchTerm>) -> Result<SearchRequest> {
@@ -454,68 +506,56 @@ fn query_from_terms(terms: Vec<SearchTerm>) -> Result<SearchRequest> {
     Ok(SearchRequest { query, large_files })
 }
 
-struct Cursor<'a> {
-    payload: &'a [u8],
-    pos: usize,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl<'a> Cursor<'a> {
-    const fn new(payload: &'a [u8]) -> Self {
-        Self { payload, pos: 0 }
-    }
-
-    const fn remaining(&self) -> usize {
-        self.payload.len() - self.pos
-    }
-
-    fn read_u8(&mut self) -> Result<u8> {
-        Ok(self.take(1)?[0])
-    }
-
-    fn read_u16(&mut self) -> Result<u16> {
-        let bytes = self.take(2)?;
-        Ok(u16::from_le_bytes(bytes.try_into().expect("2-byte slice")))
-    }
-
-    fn read_u32(&mut self) -> Result<u32> {
-        let bytes = self.take(4)?;
-        Ok(u32::from_le_bytes(bytes.try_into().expect("4-byte slice")))
-    }
-
-    fn read_u64(&mut self) -> Result<u64> {
-        let bytes = self.take(8)?;
-        Ok(u64::from_le_bytes(bytes.try_into().expect("8-byte slice")))
-    }
-
-    fn read_text(&mut self) -> Result<Ed2kText> {
-        let len = usize::from(self.read_u16()?);
-        Ok(Ed2kText::from_bytes(self.take(len)?.to_vec()))
-    }
-
-    fn read_one_byte_tag_id(&mut self) -> Result<u8> {
-        let len = self.read_u16()?;
-        if len != 1 {
-            return Err(Ed2kError::InvalidPayload {
-                opcode: Opcode::SearchRequest.as_u8(),
-                reason: "OP_SEARCHREQUEST metadata tag id must be one byte",
-            });
+    /// `levels` nested AND nodes over a left-leaning chain, ending in a phrase.
+    fn and_chain(levels: usize) -> Packet {
+        let mut payload = Vec::new();
+        for _ in 0..levels {
+            payload.extend_from_slice(&[EXPR_BOOL, BOOL_AND]);
         }
-        self.read_u8()
+        // Every AND needs a right operand; the chain hangs off the left side.
+        let mut tail = vec![EXPR_PHRASE, 1, 0, b'a'];
+        for _ in 0..levels {
+            tail.extend_from_slice(&[EXPR_PHRASE, 1, 0, b'b']);
+        }
+        payload.extend_from_slice(&tail);
+        Packet::new(
+            PacketProtocol::Edonkey,
+            Opcode::SearchRequest.as_u8(),
+            payload,
+        )
     }
 
-    fn take(&mut self, len: usize) -> Result<&'a [u8]> {
-        let end = self.pos.checked_add(len).ok_or(Ed2kError::InvalidPayload {
-            opcode: Opcode::SearchRequest.as_u8(),
-            reason: "OP_SEARCHREQUEST length overflow",
-        })?;
-        if end > self.payload.len() {
-            return Err(Ed2kError::InvalidPayload {
-                opcode: Opcode::SearchRequest.as_u8(),
-                reason: "truncated OP_SEARCHREQUEST payload",
-            });
-        }
-        let slice = &self.payload[self.pos..end];
-        self.pos = end;
-        Ok(slice)
+    #[test]
+    fn expression_nested_to_the_cap_decodes() {
+        // The query layer refuses this many words, so assert at the parser:
+        // the depth cap alone must accept the chain.
+        let packet = and_chain(MAX_EXPRESSION_DEPTH - 1);
+        let mut reader = WireReader::new(packet.payload());
+        let terms = parse_expression(&mut reader, 0).expect("at the cap");
+        assert_eq!(terms.len(), MAX_EXPRESSION_DEPTH);
+    }
+
+    #[test]
+    fn expression_one_past_the_cap_is_rejected_without_recursing_further() {
+        let packet = and_chain(MAX_EXPRESSION_DEPTH);
+        assert_eq!(
+            SearchRequest::decode_packet(&packet),
+            Err(Ed2kError::SearchExpressionTooDeep)
+        );
+    }
+
+    #[test]
+    fn a_huge_chain_of_boolean_markers_is_rejected_cleanly() {
+        let payload = [EXPR_BOOL, BOOL_AND].repeat(200_000);
+        let packet = Packet::new(
+            PacketProtocol::Edonkey,
+            Opcode::SearchRequest.as_u8(),
+            payload,
+        );
+        assert!(SearchRequest::decode_packet(&packet).is_err());
     }
 }

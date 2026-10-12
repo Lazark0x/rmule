@@ -16,7 +16,7 @@
 //! [`NodesDatError::BootstrapEdition`], it hands the *identical, unmodified*
 //! bytes to [`BootstrapDialList::load_v3_bootstrap_edition`] — the dedicated
 //! v3 reader re-parses from the leading marker rather than resuming a shared
-//! cursor, so no offset bookkeeping crosses the two readers.
+//! position, so no offset bookkeeping crosses the two readers.
 //!
 //! The outcome is a [`NodesDatInstall`] *plan*, mirroring the server.met
 //! pipeline's plan-not-effect posture: "v1/v2-merge" contacts
@@ -416,12 +416,15 @@ mod tests {
             panic!("expected a Contacts plan");
         };
 
-        let mut node = rmule_kad::KadNode::new(rmule_kad::KadNodeConfig {
-            id: OWN_ID(),
-            tcp_port: 4662,
-            udp_port: 4672,
-            user_hash: rmule_kad::UserHash::from_bytes([0xEE; 16]),
-        });
+        let mut node = rmule_kad::KadNode::new(rmule_kad::KadNodeStart::new(
+            rmule_kad::KadNodeConfig {
+                id: OWN_ID(),
+                tcp_port: 4662,
+                udp_port: 4672,
+                user_hash: rmule_kad::UserHash::from_bytes([0xEE; 16]),
+            },
+            rmule_kad::KadInstant::EPOCH,
+        ));
         node.handle_command(
             rmule_kad::KadInstant::EPOCH,
             rmule_kad::KadCommand::MergeContacts { contacts },

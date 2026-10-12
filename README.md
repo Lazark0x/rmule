@@ -16,7 +16,7 @@ proven against bytes captured from pinned counterparties. The
   to write first.
 - **`rmule-cli`** is the headless client: one command per run, for scripts.
 
-**Status: 0.1.0, the first public release.** The wire protocol is the most
+**Status: 0.2.0.** The wire protocol is the most
 tested part of rmule; the terminal client is new. There is no daemon and no
 remote control yet, and quitting `rmule` stops all transfers (see
 [Known limitations](#known-limitations)). Everything may change during 0.x:
@@ -72,8 +72,8 @@ rmule needs Rust 1.94 or newer (edition 2024) and a C compiler for the `ring`
 crate. No other system libraries are needed: HTTPS uses rustls.
 
 ```sh
-cargo install --locked --git https://github.com/Lazark0x/rmule --tag v0.1.0 rmule
-cargo install --locked --git https://github.com/Lazark0x/rmule --tag v0.1.0 rmule-cli
+cargo install --locked --git https://github.com/Lazark0x/rmule --tag v0.2.0 rmule
+cargo install --locked --git https://github.com/Lazark0x/rmule --tag v0.2.0 rmule-cli
 ```
 
 `cargo install` builds with your default toolchain. Inside a clone,

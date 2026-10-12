@@ -15,7 +15,7 @@
 //! download dials the IPv4 half next.
 //!
 //! The evidence is the downloader's own trail (`RmuleOnly`): its two
-//! `download peer_selected` lines for the source, the half first and the IPv4
+//! `download.peer_selected` lines for the source, the half first and the IPv4
 //! after it, with the fall trace between them. Before the other-family fallback the pool
 //! held one address per source, and the second line never came.
 
@@ -50,10 +50,10 @@ const DOWNLOADER_ROLE: &str = "v6fallback";
 const DOWNLOAD_SECS: u64 = 60;
 
 /// The downloader's line once a source answer is ingested.
-const SOURCES_MARKER: &str = "download sources_exchanged";
+const SOURCES_MARKER: &str = "download.sources_exchanged";
 
 /// The downloader's event line for a worker put on a peer.
-const PEER_SELECTED: &str = "download peer_selected";
+const PEER_SELECTED: &str = "download.peer_selected";
 
 /// The download's trace when a dual-stack source's first dial ends
 /// unconnected and its other family is dialed (`download/state/dual_stack.rs`).
@@ -90,7 +90,7 @@ pub(super) fn fallback_claims(
         "--file",
         &shared.link,
         "--out",
-        &out("fallback-download.bin"),
+        &out("dl/fallback-download.bin"),
         "--serve",
         "--max-seconds",
         &DOWNLOAD_SECS.to_string(),
@@ -245,14 +245,14 @@ mod tests {
     /// on the source before the half's is no fall.
     #[test]
     fn the_fall_is_the_halfs_worker_then_the_ipv4s() {
-        let half_line = "download peer_selected id=1 peer=[3fff:ed2:2::2]:4662";
-        let v4_line = "download peer_selected id=1 peer=45.55.200.2:4662";
+        let half_line = "download.peer_selected id=1 peer=[3fff:ed2:2::2]:4662";
+        let v4_line = "download.peer_selected id=1 peer=45.55.200.2:4662";
         let held = |log: &str| fell_to_ipv4_claim(log, HALF, V4).outcome == "held";
 
         assert!(held(&format!("{half_line}\n{v4_line}\n")));
         assert!(!held(&format!("{v4_line}\n{half_line}\n")));
         assert!(!held(&format!(
-            "{half_line}\ndownload peer_selected id=1 peer=45.55.200.20:4662\n"
+            "{half_line}\ndownload.peer_selected id=1 peer=45.55.200.20:4662\n"
         )));
     }
 }

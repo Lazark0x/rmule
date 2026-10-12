@@ -89,6 +89,11 @@ pub struct ServerSkeletonOptions<'a> {
     pub rmule_serve: bool,
     /// The serving rmule's `--peer-crypt` policy, for the flows that start one.
     pub rmule_peer_crypt: Option<&'a str>,
+    /// `--peer-crypt-flip <secs>:<policy>` for the serving rmule, one per
+    /// entry: its policy changes mid-run, live (ADR-0046) — the next accept,
+    /// datagram and server crypt-ping after each change meet the new one.
+    /// Read only by `rmule-serves-amule-downloads`.
+    pub rmule_peer_crypt_flip: &'a [String],
 }
 
 /// Run the skeleton: eserver + aMule sharer, then the one

@@ -9,7 +9,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use rmule_primitives::{ExchangedSource, SourceLookupTarget};
+use rmule_primitives::{SourceLookupTarget, SourceSighting};
 use tokio::sync::watch;
 
 use super::RunnerContext;
@@ -18,7 +18,7 @@ use crate::adapters::SourceLookupService;
 /// One ask in flight, kept across the fleet loop's turns so another arm
 /// firing never drops it half-way.
 /// Its output carries the generation of the session the ask rode.
-type Asking<'a> = Pin<Box<dyn Future<Output = (u64, Vec<ExchangedSource>)> + Send + 'a>>;
+type Asking<'a> = Pin<Box<dyn Future<Output = (u64, Vec<SourceSighting>)> + Send + 'a>>;
 
 /// The run's subscription to new sessions and the ask each one gets.
 pub(in crate::download) struct ServerLeg<'a> {
@@ -62,7 +62,7 @@ impl<'a> ServerLeg<'a> {
         S: SourceLookupService,
         P: Send,
     {
-        if runner.reach.session().is_some() {
+        if runner.rt.reach.session().is_some() {
             tracing::info!("the run starts from its seeds: asking the live session for sources");
             self.asking = Some(Box::pin(ask(runner, self.target)));
         }
@@ -74,7 +74,7 @@ impl<'a> ServerLeg<'a> {
     pub(in crate::download) async fn next_answer<S, P>(
         &mut self,
         runner: &'a RunnerContext<S, P>,
-    ) -> Vec<ExchangedSource>
+    ) -> Vec<SourceSighting>
     where
         S: SourceLookupService,
         P: Send,
@@ -101,7 +101,7 @@ impl<'a> ServerLeg<'a> {
 async fn ask<S, P>(
     runner: &RunnerContext<S, P>,
     target: SourceLookupTarget,
-) -> (u64, Vec<ExchangedSource>)
+) -> (u64, Vec<SourceSighting>)
 where
     S: SourceLookupService,
     P: Send,
@@ -109,20 +109,22 @@ where
     // Side by side with every other run's lookups (ADR-0107): the budget is
     // the only wait, and the bound starts once the ask is admitted.
     let generation = super::lookup::budget_admits(runner).await;
-    let mut lookup = runner.source_lookup.lock().await.clone();
-    let sources =
-        match tokio::time::timeout(runner.source_lookup_timeout, lookup.lookup_sources(target))
-            .await
-        {
-            Ok(Ok(outcome)) => outcome.sources,
-            Ok(Err(error)) => {
-                tracing::info!(%error, "the new session answered no sources");
-                Vec::new()
-            }
-            Err(_) => {
-                tracing::info!("the new session stayed silent on the source lookup");
-                Vec::new()
-            }
-        };
+    let mut lookup = runner.rt.source_lookup.lock().await.clone();
+    let sources = match tokio::time::timeout(
+        runner.rt.source_lookup_timeout,
+        lookup.lookup_sources(target),
+    )
+    .await
+    {
+        Ok(Ok(outcome)) => outcome.sources,
+        Ok(Err(error)) => {
+            tracing::info!(%error, "the new session answered no sources");
+            Vec::new()
+        }
+        Err(_) => {
+            tracing::info!("the new session stayed silent on the source lookup");
+            Vec::new()
+        }
+    };
     (generation, sources)
 }

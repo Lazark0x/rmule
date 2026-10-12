@@ -14,8 +14,10 @@
 //! reverse leg) live alongside in `meta.toml`.
 
 use crate::fixture::load;
+use rmule_peer::peer_udp::crypt;
 use rmule_peer::{DirectCallbackReq, Hello, MiscOptions2, PeerIdentity};
-use rmule_primitives::{Packet, UserHash};
+use rmule_primitives::{CryptStance, Ipv4Endpoint, Packet, PeerEndpoint, UserHash};
+use std::net::Ipv4Addr;
 
 const FIXTURE_DIR: &str = "fixtures/direct_callback/captured/amule-233-directcallback-20260728/";
 
@@ -102,5 +104,29 @@ fn rmules_emitted_0x95_names_the_listener_it_actually_bound() {
             connect_options: 0x00,
         }),
         "the body carries the serve listener's real port, not a configured constant"
+    );
+}
+
+/// The direct-callback framing rule rebuilds this run's `0x95` byte for byte:
+/// addressed to the target's Kad UDP port, our serve port and user hash in the
+/// body, and the connect-options byte of a run with no crypt policy. The byte
+/// reads back as that same stance.
+#[test]
+fn the_direct_callback_is_framed_as_the_captured_0x95() {
+    let captured = load(FIXTURE_DIR, "directcallback_req_0x95.bin");
+    let amule_kad_udp = Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 2), 4674);
+    let no_policy = CryptStance::disabled();
+    assert_eq!(
+        crypt::direct_callback(
+            amule_kad_udp,
+            RMULE_SERVE_PORT,
+            UserHash::from_bytes([0x42; 16]),
+            crypt::connect_options_from_stance(no_policy),
+        ),
+        (PeerEndpoint::V4(amule_kad_udp), captured.clone())
+    );
+    assert_eq!(
+        crypt::stance_from_connect_options(captured[captured.len() - 1]),
+        no_policy
     );
 }

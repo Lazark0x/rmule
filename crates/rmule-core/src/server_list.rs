@@ -23,6 +23,7 @@
 //! surface that *reaches* a server reports its round trip to.
 
 mod acquisition;
+mod aux_ports;
 mod facts;
 mod figures;
 mod grants;
@@ -33,7 +34,7 @@ mod udp_crypt;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
-use rmule_ed2k::{ServerMetEntry, ServerPriority};
+use rmule_ed2k::{ServerMetEntry, ServerPriority, ServerUdpFlags};
 use rmule_primitives::{Ed2kText, Ipv4Endpoint, ServerEndpoint};
 
 use crate::CoreError;
@@ -42,9 +43,10 @@ pub(crate) use acquisition::{ErasedFetcher, acquire_server_met, install_server_m
 pub use acquisition::{
     ServerListFetcher, ServerListUpdate, ServerListUpdateError, ServerListUpdateFailure,
 };
-#[cfg(test)]
-pub(crate) use facts::test_facts;
+pub use aux_ports::ServerAuxPorts;
 pub(crate) use facts::{ServerFacts, mutate_and_publish};
+#[cfg(test)]
+pub(crate) use facts::{test_facts, test_facts_rows};
 pub use figures::{ServerFigures, unix_seconds};
 pub use grants::ServerGrantsReport;
 pub use policy::{DEFAULT_DEAD_AFTER, DeadSince, ServerHealth, ServerPolicy};
@@ -92,7 +94,21 @@ pub struct ManagedServer {
     pub grants: Option<ServerGrantsReport>,
     /// How to key UDP to it, as its last status answer said; `None` until an
     /// answer carried it (ADR-0052). rmule's own bookkeeping, like the grants.
+    /// The obfuscation TCP port in it may instead have been learned from the
+    /// server's login answer or its server.met tag (aMule's one
+    /// `m_nObfuscationPortTCP`), in which case the UDP half is zero.
     pub udp_crypt: Option<ServerUdpCrypt>,
+    /// The standard port, when this row is dialed on another one, and the
+    /// ports it takes aux-port logins on (aMule's `realport` and
+    /// `ST_AUXPORTSLIST`); `None` while the dialed port is the standard one.
+    /// Learned from an aux-port login's ID answer or a server.met row; a
+    /// downloaded row's own list never replaces what a login taught.
+    pub aux_ports: Option<ServerAuxPorts>,
+    /// The UDP flags word a server.met row named (`ST_UDPFLAGS`), for a row
+    /// whose figures carry none: an imported row never pinged has no dated
+    /// figures to hold them. [`udp_flags`](Self::udp_flags) reads whichever is
+    /// there.
+    pub listed_udp_flags: Option<ServerUdpFlags>,
 }
 
 impl ManagedServer {
@@ -111,6 +127,8 @@ impl ManagedServer {
             figures: None,
             grants: None,
             udp_crypt: None,
+            aux_ports: None,
+            listed_udp_flags: None,
         }
     }
 
@@ -122,12 +140,16 @@ impl ManagedServer {
     /// [`ServerMetInstall::endpoints`](rmule_bootstrap::ServerMetInstall::endpoints).
     #[must_use]
     pub fn from_met(entry: &ServerMetEntry, now: std::time::SystemTime) -> Option<Self> {
+        // The header port is the standard one; with an aux-ports list the row
+        // is dialed on the list's first port (`Server.cpp:222-231`).
         let port = entry.endpoint().port;
-        let endpoint = match entry
-            .dialable_address()
-            .ok_or(())
-            .and_then(|ip| ServerEndpoint::new(ip.to_string(), port).map_err(|_| ()))
-        {
+        let aux_ports = ServerAuxPorts::from_met(port, entry.aux_ports());
+        let dialed = aux_ports.as_ref().map_or(port, |aux| aux.ports[0]);
+        let endpoint = match entry.dialable_address().ok_or(()).and_then(|ip| {
+            // A zero standard port drops the row whatever the list says.
+            ServerEndpoint::new(ip.to_string(), port).map_err(|_| ())?;
+            ServerEndpoint::new(ip.to_string(), dialed).map_err(|_| ())
+        }) {
             Ok(endpoint) => endpoint,
             Err(()) => {
                 tracing::warn!(
@@ -139,6 +161,16 @@ impl ManagedServer {
                 return None;
             }
         };
+        let obfuscation = entry.obfuscation();
+        // `ST_UDPFLAGS` rides with the figures it was written beside, so a
+        // row with no dated answer keeps neither there (`ServerFigures::from_met`)
+        // — the word is kept on the row itself instead, as aMule keeps it per
+        // server whether or not it was ever pinged.
+        let udp_flags = obfuscation.udp_flags.map(ServerUdpFlags::from_bits);
+        let figures = ServerFigures::from_met(entry.figures(), now).map(|mut figures| {
+            figures.udp_flags = udp_flags;
+            figures
+        });
         Some(Self {
             endpoint,
             name: entry.name().clone(),
@@ -146,10 +178,43 @@ impl ManagedServer {
             priority: entry.priority(),
             is_static: false,
             fail_count: 0,
-            figures: ServerFigures::from_met(entry.figures(), now),
+            figures,
             grants: None,
-            udp_crypt: None,
+            udp_crypt: ServerUdpCrypt::from_met(&obfuscation),
+            aux_ports,
+            listed_udp_flags: udp_flags,
         })
+    }
+
+    /// The server's UDP flags: its last status answer's word, else the one a
+    /// server.met row named for it.
+    #[must_use]
+    pub fn udp_flags(&self) -> Option<ServerUdpFlags> {
+        self.figures
+            .as_ref()
+            .and_then(|figures| figures.udp_flags)
+            .or(self.listed_udp_flags)
+    }
+
+    /// The port this server takes obfuscated TCP on, when it has said it
+    /// does — aMule's `SupportsObfuscationTCP()` (`Server.h:163-168`): a
+    /// non-zero obfuscation TCP port, and `TCPOBFUSCATION` in its UDP flags
+    /// or in the TCP flags its last login granted. The port is the latest one
+    /// its status answer (ADR-0052), its login answer or its server.met tag
+    /// carried — aMule keeps one `m_nObfuscationPortTCP` for all three.
+    #[must_use]
+    pub fn obfuscation_tcp_port(&self) -> Option<u16> {
+        let port = self
+            .udp_crypt
+            .map(|crypt| crypt.obfuscation_tcp_port)
+            .filter(|port| *port != 0)?;
+        let by_udp = self
+            .udp_flags()
+            .is_some_and(ServerUdpFlags::supports_tcp_obfuscation);
+        let by_tcp = self
+            .grants
+            .is_some_and(|grants| grants.tcp_flags.supports_tcp_obfuscation());
+        (by_udp || by_tcp).then_some(port)
     }
 
     /// Project back onto a server.met row so the downloaded list can be
@@ -159,16 +224,27 @@ impl ManagedServer {
     /// downloaded row and simply stays out of the reconciliation.
     #[must_use]
     fn to_met(&self) -> Option<ServerMetEntry> {
-        let ip: Ipv4Addr = self.endpoint.host().parse().ok()?;
+        let standard = self.standard_endpoint();
+        let ip: Ipv4Addr = standard.host().parse().ok()?;
         Some(ServerMetEntry::new(
-            Ipv4Endpoint::new(ip, self.endpoint.port()),
+            Ipv4Endpoint::new(ip, standard.port()),
             self.name.clone(),
             self.description.clone(),
             self.priority,
         ))
     }
 
-    /// Fold a freshly learned row for the same endpoint into this one —
+    /// The endpoint a downloaded server.met names this server by: the dialed
+    /// host at its standard port. aMule keys its list and dedups additions on
+    /// this port, not on the one it connects to (`GetPort()` against
+    /// `GetConnPort()`, `ServerList.cpp:223-237`), which is why a downloaded
+    /// row for a server rmule dials on an aux port finds its row.
+    #[must_use]
+    pub fn standard_endpoint(&self) -> ServerEndpoint {
+        aux_ports::standard_endpoint(&self.endpoint, self.aux_ports.as_ref())
+    }
+
+    /// Fold a freshly learned row for the same server into this one —
     /// aMule's `LoadServerMet` duplicate branch, which is also what its
     /// `ServerList::AddServer` does for a known server: the **name always**
     /// takes the fresh value, the **description only when the fresh one is
@@ -177,9 +253,16 @@ impl ManagedServer {
     /// re-prioritise, unpin, or absolve it.
     pub(crate) fn fold(&mut self, fresh: Self) {
         debug_assert_eq!(
-            self.endpoint, fresh.endpoint,
-            "ManagedServer::fold expects both rows to share an endpoint key"
+            self.standard_endpoint(),
+            fresh.standard_endpoint(),
+            "ManagedServer::fold expects both rows to name one server"
         );
+        // A row's own aux-ports list is kept; a downloaded one is taken only
+        // for a row dialed on the very port it lists, so the dialed port and
+        // the list can never disagree.
+        if self.aux_ports.is_none() && self.endpoint == fresh.endpoint {
+            self.aux_ports = fresh.aux_ports;
+        }
         self.name = fresh.name;
         if !fresh.description.as_bytes().is_empty() {
             self.description = fresh.description;
@@ -190,6 +273,54 @@ impl ManagedServer {
         if answered(&fresh.figures) > answered(&self.figures) {
             self.figures = fresh.figures;
         }
+        // The obfuscation TCP port a downloaded row states is the server's
+        // own word (`Server.cpp:256`); what a status answer taught us about
+        // its UDP keying — port, key — outranks a list's, which only fills
+        // what we lack.
+        if let Some(listed) = fresh.udp_crypt {
+            let mut crypt = self.udp_crypt.unwrap_or(ServerUdpCrypt::from_tcp_port(0));
+            if listed.obfuscation_tcp_port != 0 {
+                crypt.obfuscation_tcp_port = listed.obfuscation_tcp_port;
+            }
+            if crypt.obfuscation_udp_port == 0 {
+                crypt.obfuscation_udp_port = listed.obfuscation_udp_port;
+            }
+            if crypt.udp_key == 0 {
+                crypt.udp_key = listed.udp_key;
+                crypt.key_ip = listed.key_ip;
+            }
+            self.udp_crypt = Some(crypt);
+        }
+        self.listed_udp_flags = fresh.listed_udp_flags.or(self.listed_udp_flags);
+    }
+}
+
+impl ManagedServer {
+    /// Take in the row a login just showed to be this same server: the one
+    /// listed under its standard endpoint, which an aux-port login dialed
+    /// past. The dialed row keeps the key (the session is running on it) and
+    /// its own facts; it gains what only the listed row held — a name,
+    /// description and priority the operator or a mirror set, the pin, and
+    /// whatever of figures, grants and UDP crypt it lacks. aMule's
+    /// `AddServer` refuses a second row for one `(address, port)`
+    /// (`ServerList.cpp:223-237`); this is that rule applied after the fact.
+    pub(crate) fn absorb(&mut self, listed: Self) {
+        if self.name.as_bytes().is_empty() {
+            self.name = listed.name;
+        }
+        if self.description.as_bytes().is_empty() {
+            self.description = listed.description;
+        }
+        if self.priority == ServerPriority::Normal {
+            self.priority = listed.priority;
+        }
+        self.is_static |= listed.is_static;
+        let answered = |figures: &Option<ServerFigures>| figures.as_ref().map(|f| f.answered_at);
+        if answered(&listed.figures) > answered(&self.figures) {
+            self.figures = listed.figures;
+        }
+        self.grants = self.grants.or(listed.grants);
+        self.udp_crypt = self.udp_crypt.or(listed.udp_crypt);
     }
 }
 
@@ -273,6 +404,27 @@ pub trait ServerListStore: Send + Sync {
         report: ServerGrantsReport,
     ) -> Result<bool, CoreError>;
 
+    /// Record the obfuscation TCP port `endpoint` named in its login answer
+    /// (`ServerSocket.cpp:333-341`), keeping every other crypt fact the row
+    /// holds. Reports `false` for an endpoint no row holds.
+    fn set_server_obfuscation_tcp_port(
+        &self,
+        endpoint: &ServerEndpoint,
+        port: u16,
+    ) -> Result<bool, CoreError>;
+
+    /// Record the standard port `endpoint`'s ID answer named after an aux-port
+    /// login (`ServerSocket.cpp:333-355`): the row keeps the dialed port in
+    /// its aux-ports list. When another row already lists that standard
+    /// endpoint, it is absorbed into this one (`ManagedServer::absorb`), so
+    /// one server never holds two rows. A port of zero, or the dialed port
+    /// itself, changes nothing. Reports `false` for an endpoint no row holds.
+    fn set_server_standard_port(
+        &self,
+        endpoint: &ServerEndpoint,
+        standard_port: u16,
+    ) -> Result<bool, CoreError>;
+
     /// Record how to key UDP to `endpoint`, as its latest status answer said
     /// (ADR-0052, "a server's UDP crypt facts are durable"); `None` clears
     /// what an earlier answer said.
@@ -281,11 +433,6 @@ pub trait ServerListStore: Send + Sync {
         endpoint: &ServerEndpoint,
         crypt: Option<ServerUdpCrypt>,
     ) -> Result<bool, CoreError>;
-
-    /// The **Server Policy** the operator's preferences hold, defaults
-    /// filling what is unset — read by the actor at its start, so its first
-    /// act already runs under it.
-    fn server_policy(&self) -> Result<ServerPolicy, CoreError>;
 }
 
 /// The actor's handle on the managed server list — the same type-erased
@@ -324,6 +471,8 @@ mod tests {
             figures: None,
             grants: None,
             udp_crypt: Some(crypt),
+            aux_ports: None,
+            listed_udp_flags: None,
         };
         assert_eq!(store.merge_server(known).unwrap(), ServerMerge::Added);
 
@@ -337,6 +486,8 @@ mod tests {
             figures: None,
             grants: None,
             udp_crypt: None,
+            aux_ports: None,
+            listed_udp_flags: None,
         };
         assert_eq!(store.merge_server(fresh).unwrap(), ServerMerge::Updated);
 
@@ -349,21 +500,173 @@ mod tests {
         assert_eq!(row.udp_crypt, Some(crypt));
     }
 
-    /// The limit the operator stored is the one core judges by; an unset
-    /// or unreadable one is aMule's default.
+    /// aMule's `SupportsObfuscationTCP()`: a known obfuscation TCP port is
+    /// not enough, the server must also have flagged TCP obfuscation, in its
+    /// UDP flags or in the TCP flags its login granted.
     #[test]
-    fn the_server_policy_reads_the_stored_limit() {
-        use crate::{AppConfigStore, Preference};
+    fn a_server_takes_obfuscated_tcp_only_where_a_flag_says_so() {
+        let mut row = ManagedServer::listed(endpoint("1.2.3.4", 4661));
+        row.udp_crypt = Some(ServerUdpCrypt {
+            obfuscation_udp_port: 4673,
+            obfuscation_tcp_port: 4674,
+            udp_key: 1,
+            key_ip: None,
+        });
+        assert_eq!(row.obfuscation_tcp_port(), None, "a port and no flag");
+
+        row.grants = Some(ServerGrantsReport {
+            tcp_flags: rmule_ed2k::ServerTcpFlags::from_bits(
+                rmule_ed2k::ServerTcpFlags::TCPOBFUSCATION,
+            ),
+            reported_at: 0,
+        });
+        assert_eq!(
+            row.obfuscation_tcp_port(),
+            Some(4674),
+            "the login's TCP flag"
+        );
+
+        row.udp_crypt = None;
+        assert_eq!(row.obfuscation_tcp_port(), None, "a flag and no port");
+    }
+
+    /// A server.met row's `ST_UDPFLAGS` and `ST_TCPPORTOBFUSCATION` make the
+    /// imported row dial obfuscated (`Server.cpp:256`); folding such a row
+    /// into a known one takes the port and leaves the UDP key alone.
+    #[test]
+    fn an_imported_rows_obfuscation_tags_feed_the_dial() {
+        use rmule_ed2k::{ServerMetFigures, ServerMetObfuscation};
+        let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(10_000);
+        let entry = ServerMetEntry::new(
+            Ipv4Endpoint::new(Ipv4Addr::new(1, 2, 3, 4), 4661),
+            Ed2kText::from_utf8("S"),
+            Ed2kText::from_utf8(""),
+            ServerPriority::Normal,
+        )
+        .with_figures(ServerMetFigures {
+            last_ping: Some(9_000),
+            ..ServerMetFigures::NONE
+        })
+        .with_obfuscation(ServerMetObfuscation {
+            udp_flags: Some(rmule_ed2k::ServerUdpFlags::TCPOBFUSCATION),
+            tcp_port: Some(4674),
+            ..ServerMetObfuscation::NONE
+        });
+        let imported = ManagedServer::from_met(&entry, now).expect("a dialable row");
+        assert_eq!(imported.obfuscation_tcp_port(), Some(4674));
+
+        let mut known = ManagedServer::listed(imported.endpoint.clone());
+        known.udp_crypt = Some(ServerUdpCrypt {
+            obfuscation_udp_port: 4673,
+            obfuscation_tcp_port: 5000,
+            udp_key: 0xABCD_1234,
+            key_ip: None,
+        });
+        known.fold(imported);
+        let crypt = known.udp_crypt.expect("crypt facts kept");
+        assert_eq!(
+            (crypt.obfuscation_tcp_port, crypt.udp_key),
+            (4674, 0xABCD_1234)
+        );
+    }
+
+    /// A server.met row with an `ST_AUXPORTSLIST` is listed under its header
+    /// port (the standard one) and dialed on the list's first port; its UDP
+    /// crypt tags and the UDP flags word land on the row even when the file
+    /// recorded no answer for it, and all of it survives the store.
+    #[test]
+    fn an_imported_row_with_aux_ports_and_crypt_tags_keeps_them_though_never_pinged() {
+        use rmule_ed2k::ServerMetObfuscation;
+        let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(10_000);
+        let entry = ServerMetEntry::new(
+            Ipv4Endpoint::new(Ipv4Addr::new(1, 2, 3, 4), 4661),
+            Ed2kText::from_utf8("S"),
+            Ed2kText::from_utf8(""),
+            ServerPriority::Normal,
+        )
+        .with_aux_ports(vec![4232, 4242])
+        .with_obfuscation(ServerMetObfuscation {
+            udp_flags: Some(rmule_ed2k::ServerUdpFlags::TCPOBFUSCATION),
+            tcp_port: Some(4674),
+            udp_port: Some(4673),
+            udp_key: Some(0xABCD_1234),
+            udp_key_ip: Some(Ipv4Addr::new(198, 51, 100, 7)),
+        });
+        let imported = ManagedServer::from_met(&entry, now).expect("a dialable row");
+
+        assert_eq!(imported.endpoint, endpoint("1.2.3.4", 4232));
+        assert_eq!(imported.standard_endpoint(), endpoint("1.2.3.4", 4661));
+        assert_eq!(imported.figures, None, "the file named no answer");
+        assert_eq!(
+            imported.udp_flags(),
+            Some(rmule_ed2k::ServerUdpFlags::from_bits(
+                rmule_ed2k::ServerUdpFlags::TCPOBFUSCATION
+            ))
+        );
+        assert_eq!(imported.obfuscation_tcp_port(), Some(4674));
+        assert_eq!(
+            imported.udp_crypt,
+            Some(ServerUdpCrypt {
+                obfuscation_udp_port: 4673,
+                obfuscation_tcp_port: 4674,
+                udp_key: 0xABCD_1234,
+                key_ip: Some(Ipv4Addr::new(198, 51, 100, 7)),
+            })
+        );
+
         let store = crate::store::app_config::DurableAppConfig::new(rmule_testkit::memory_store());
-        assert_eq!(store.server_policy().unwrap(), ServerPolicy::default());
-        store
-            .set_preference(Preference::DeadServerRetries, "6")
-            .unwrap();
-        assert_eq!(store.server_policy().unwrap().dead_after, 6);
-        store
-            .set_preference(Preference::WithholdSharesFromRelatedSearch, "true")
-            .unwrap();
-        assert!(store.server_policy().unwrap().withhold_from_related_search);
+        store.merge_server(imported.clone()).unwrap();
+        assert_eq!(store.servers().unwrap(), vec![imported]);
+    }
+
+    /// A downloaded row only fills the UDP facts a row lacks: what a status
+    /// answer taught (the key) outranks the list's, a stated TCP port is the
+    /// server's own word, and the flags word it names is kept.
+    #[test]
+    fn a_downloaded_rows_udp_crypt_fills_gaps_and_never_replaces_a_learned_key() {
+        use rmule_ed2k::ServerMetObfuscation;
+        let now = std::time::UNIX_EPOCH + std::time::Duration::from_secs(10_000);
+        let row = |tcp, udp, key| {
+            ServerMetEntry::new(
+                Ipv4Endpoint::new(Ipv4Addr::new(1, 2, 3, 4), 4661),
+                Ed2kText::from_utf8(""),
+                Ed2kText::from_utf8(""),
+                ServerPriority::Normal,
+            )
+            .with_obfuscation(ServerMetObfuscation {
+                udp_flags: Some(0x400),
+                tcp_port: Some(tcp),
+                udp_port: Some(udp),
+                udp_key: Some(key),
+                udp_key_ip: Some(Ipv4Addr::new(203, 0, 113, 1)),
+            })
+        };
+        let mut known = ManagedServer::from_met(&row(4674, 0, 0), now).unwrap();
+        known.udp_crypt = Some(ServerUdpCrypt {
+            obfuscation_udp_port: 0,
+            obfuscation_tcp_port: 4674,
+            udp_key: 0,
+            key_ip: None,
+        });
+        known.fold(ManagedServer::from_met(&row(4675, 4673, 7), now).unwrap());
+        let crypt = known.udp_crypt.expect("crypt facts");
+        assert_eq!(
+            (
+                crypt.obfuscation_tcp_port,
+                crypt.obfuscation_udp_port,
+                crypt.udp_key
+            ),
+            (4675, 4673, 7),
+            "the gaps are filled"
+        );
+
+        known.fold(ManagedServer::from_met(&row(4675, 9999, 8), now).unwrap());
+        let crypt = known.udp_crypt.expect("crypt facts");
+        assert_eq!(
+            (crypt.obfuscation_udp_port, crypt.udp_key),
+            (4673, 7),
+            "a learned port and key stay"
+        );
     }
 
     #[test]

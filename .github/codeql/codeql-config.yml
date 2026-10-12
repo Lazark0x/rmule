@@ -1,0 +1,22 @@
+# CodeQL configuration for .github/workflows/codeql.yml.
+#
+# Two Rust queries are filtered out because the protocol or the domain makes
+# every result on this codebase a non-finding:
+#
+# - rust/weak-cryptographic-algorithm: the eD2k and Kad wire protocols mandate
+#   MD4 (file and part hashes), MD5 (obfuscation key derivation) and RC4 (the
+#   stream and datagram obfuscation layer). They are interoperability
+#   requirements, never a choice rmule could make differently; none of them
+#   protects a secret.
+# - rust/hard-coded-cryptographic-value: Kad node IDs, user hashes and file
+#   hashes are 128-bit public identifiers that the query mistakes for key
+#   material, so fixed IDs in routing code and tests read as hard-coded keys.
+#
+# Every other query in the default suite stays on.
+name: rmule CodeQL
+
+query-filters:
+  - exclude:
+      id: rust/weak-cryptographic-algorithm
+  - exclude:
+      id: rust/hard-coded-cryptographic-value

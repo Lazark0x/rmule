@@ -22,8 +22,8 @@ use rmule_net::driver::CryptStream;
 use rmule_net::ed2k::ServerObfuscationTransport;
 use rmule_peer::HelloAnswer;
 use rmule_primitives::{
-    ClientId, FileHash, Ipv4Endpoint, KeywordQuery, Packet, PeerSource, PrimitiveError,
-    SearchResult, ServerEndpoint, UserHash, is_plaintext_marker,
+    ClientId, FileHash, Ipv4Endpoint, KeywordQuery, Packet, PacketProtocol, PeerSource,
+    PrimitiveError, SearchResult, ServerEndpoint, UserHash, is_plaintext_marker,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -73,6 +73,16 @@ struct Shared {
     /// The `SRV_TCPFLG_*` word every subsequent login's `OP_IDCHANGE` grants;
     /// `None` (the default) sends the bare id, which grants nothing.
     tcp_flags: Option<ServerTcpFlags>,
+    /// The obfuscation TCP port every subsequent login's `OP_IDCHANGE` offers
+    /// (the size-20 extension); `None` (the default) sends none.
+    obfuscation_offer: Option<u16>,
+    /// A recorded `OP_IDCHANGE` payload sent verbatim to every subsequent
+    /// login instead of the composed one; `None` (the default) composes it.
+    raw_id_change: Option<Vec<u8>>,
+    /// The standard TCP port every login's `OP_IDCHANGE` names beside an
+    /// obfuscation offer: the port the server listens on, unless a test
+    /// models an aux-port login with [`FakeEd2kServer::set_aux_port_login`].
+    standard_port: u16,
     /// Queries decoded from received `OP_SEARCHREQUEST` frames — the whole
     /// expression tree read back, not just the phrase — for test assertions on
     /// what rmule actually asked.
@@ -95,6 +105,9 @@ struct Shared {
     /// recorded and never answered — a server still thinking when its session
     /// ends.
     search_silent: bool,
+    /// How many connections completed the server-form Obfuscated Handshake
+    /// before they were served.
+    obfuscated_sessions: usize,
 }
 
 /// A running fake server. Drop aborts the accept loop.
@@ -162,6 +175,8 @@ impl FakeEd2kServer {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let local_addr =
             SocketAddrV4::new(Ipv4Addr::LOCALHOST, listener.local_addr().unwrap().port());
+        let mut shared = shared;
+        shared.standard_port = local_addr.port();
         let shared = Arc::new(Mutex::new(shared));
         let accept_shared = shared.clone();
         let accept = tokio::spawn(async move {
@@ -204,6 +219,12 @@ impl FakeEd2kServer {
             .send_modify(|count| *count += 1);
     }
 
+    /// How many connections this server served over the Obfuscated
+    /// Handshake — zero on a fake without obfuscated accept.
+    pub async fn obfuscated_sessions(&self) -> usize {
+        self.shared.lock().await.obfuscated_sessions
+    }
+
     /// Refuse (`true`) or serve (`false`) every later login: a refused one is
     /// closed before any id is granted.
     pub async fn set_refusing(&self, refusing: bool) {
@@ -242,6 +263,29 @@ impl FakeEd2kServer {
     /// Grant `flags` in every subsequent login's `OP_IDCHANGE` (ADR-0047).
     pub async fn set_tcp_flags(&self, flags: Option<ServerTcpFlags>) {
         self.shared.lock().await.tcp_flags = flags;
+    }
+
+    /// Offer `port` as the obfuscation TCP port in every subsequent login's
+    /// `OP_IDCHANGE`, the way a server that takes obfuscated TCP says so in its
+    /// login answer (`None` stops offering). The extension carries a public
+    /// IPv4 beside it, which the fake fills with a documentation address.
+    pub async fn set_obfuscation_offer(&self, port: Option<u16>) {
+        self.shared.lock().await.obfuscation_offer = port;
+    }
+
+    /// Answer every subsequent login with `payload` as the `OP_IDCHANGE`
+    /// body, byte for byte — a payload recorded from a live server. It
+    /// replaces the composed answer, flags and offers included.
+    pub async fn set_raw_id_change(&self, payload: Vec<u8>) {
+        self.shared.lock().await.raw_id_change = Some(payload);
+    }
+
+    /// Model an aux-port login: every subsequent `OP_IDCHANGE` names `port`
+    /// as the server's standard TCP port while clients dial the listening
+    /// port, so the client re-ports its row (`ServerSocket.cpp:338`). Without
+    /// this the slot names the listening port and no row is re-ported.
+    pub async fn set_aux_port_login(&self, port: u16) {
+        self.shared.lock().await.standard_port = port;
     }
 
     /// Every `OP_SEARCHREQUEST` received so far, decoded back to the query it
@@ -308,6 +352,8 @@ pub async fn spawn_check_answering_listener(
     let ctx = rmule_peer::PeerHandshakeContext {
         identity,
         client_id: ClientId::from_u32(0),
+        ed2k_client_id: ClientId::from_u32(0),
+        public_ip: None,
         connected_server: None,
     };
     let task = tokio::spawn(async move {
@@ -425,6 +471,7 @@ async fn handle_client(
             if crypt.complete_handshake().await.is_err() {
                 return;
             }
+            shared.lock().await.obfuscated_sessions += 1;
             serve_client(crypt, peer_ip, shared).await;
             return;
         }
@@ -491,12 +538,15 @@ where
     // your <port> port" and assigns Low-ID — so the client must be accepting
     // AND answering *during* its login. Scripted mode skips the probe: every
     // client is High-ID by construction.
-    let (scripted, login_delay, tcp_flags) = {
+    let (scripted, login_delay, tcp_flags, obfuscation_offer, standard_port, raw_id_change) = {
         let state = shared.lock().await;
         (
             state.scripted_sources.is_some(),
             state.login_delay,
             state.tcp_flags,
+            state.obfuscation_offer,
+            state.standard_port,
+            state.raw_id_change.clone(),
         )
     };
     // The scripted probe window: a real Lugdunum answers
@@ -531,12 +581,16 @@ where
     let id_change = IdChange {
         client_id: assigned,
         tcp_flags,
-        standard_tcp_port: None,
-        public_ip: None,
-        obfuscation_tcp_port: None,
+        standard_tcp_port: obfuscation_offer.map(|_| u32::from(standard_port)),
+        public_ip: obfuscation_offer.map(|_| u32::from_le_bytes([198, 51, 100, 1])),
+        obfuscation_tcp_port: obfuscation_offer.map(u32::from),
         trailing: Vec::new(),
     };
-    let _ = wtx.send(id_change.encode_packet().encode()).await;
+    let answer = match raw_id_change {
+        Some(payload) => Packet::new(PacketProtocol::Edonkey, Opcode::IdChange.as_u8(), payload),
+        None => id_change.encode_packet(),
+    };
+    let _ = wtx.send(answer.encode()).await;
 
     // The requester endpoint a called-back peer dials: this client's source ip +
     // advertised port (what `OP_CALLBACKREQUESTED` carries to the source).

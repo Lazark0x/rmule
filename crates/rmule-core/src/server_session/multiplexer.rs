@@ -17,7 +17,7 @@ use rmule_ed2k::{
 };
 use rmule_net::ed2k::Connection as Ed2kConnection;
 use rmule_primitives::{
-    ClientId, ExchangedSource, FileHash, SearchQuery, ServerEndpoint, SourceLookupTarget,
+    ClientId, FileHash, SearchQuery, ServerEndpoint, SourceLookupTarget, SourceSighting,
 };
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -36,7 +36,7 @@ mod tests;
 use answer_order::{AnswerOrder, Ask};
 
 /// Where one source lookup's answer goes.
-type LookupReply = oneshot::Sender<Result<Vec<ExchangedSource>, DownloadFailure>>;
+type LookupReply = oneshot::Sender<Result<Vec<SourceSighting>, DownloadFailure>>;
 
 /// One request the session task fulfils over the shared server link.
 enum ServerRequest {
@@ -145,6 +145,53 @@ impl ServerLink for Ed2kConnection {
     }
 }
 
+/// A session's request half, held **weakly** by the **Server Coordinator**
+/// (ADR-0091): what a server introduction is asked through, and whether the
+/// session it asks still runs. Weak because the coordinator outlives every
+/// session it served — a strong half would keep a session alive that every
+/// handle had let go of — and so a session whose task ended without its own
+/// exit reads dark here too.
+#[derive(Clone, Debug)]
+pub(crate) struct SessionLink {
+    requests: mpsc::WeakSender<ServerRequest>,
+    /// Which session this is. A late exit may clear the cell only while the
+    /// cell still holds *its* session, never a newer login's.
+    id: u64,
+}
+
+impl SessionLink {
+    /// Whether `other` is the same session's link.
+    pub(crate) const fn is_session(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+
+    /// Whether the session's task still runs and a handle still holds it.
+    pub(crate) fn is_alive(&self) -> bool {
+        self.requests
+            .upgrade()
+            .is_some_and(|requests| !requests.is_closed())
+    }
+
+    /// Ask the server to introduce us to the Low-ID `target`
+    /// (`OP_LOWID_HOLEPUNCH_REQUEST`, `0x60`), naming `our_udp_port`,
+    /// reporting whether the request was queued. `try_send`, never `send`:
+    /// the caller is the NAT-T front's loop, which may not wait on a consumer
+    /// it does not drain — a full session inbox costs this introduction. The
+    /// answer is an event on the session, or — from a server that does not
+    /// speak the punch — nothing at all, which the ledger's timeout turns
+    /// into a fallback.
+    pub(crate) fn request_holepunch(&self, target: ClientId, our_udp_port: u16) -> bool {
+        self.requests.upgrade().is_some_and(|requests| {
+            requests
+                .try_send(ServerRequest::Holepunch {
+                    target,
+                    our_udp_port,
+                })
+                .is_ok()
+        })
+    }
+}
+
 /// A cheap-`Clone` handle to a running session. `client_id` is captured at
 /// login, so the High-ID id is a field read, not a round-trip.
 #[derive(Clone)]
@@ -155,6 +202,15 @@ pub(crate) struct ServerSessionHandle {
     server: ServerEndpoint,
     /// What the server grants this session, moved by each `OP_IDCHANGE`.
     grants: watch::Receiver<ServerGrants>,
+    /// This session's identity among the sessions of one run.
+    id: u64,
+}
+
+/// The next session identity: one counter for the process, so two sessions
+/// never share one.
+fn next_session_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl ServerSessionHandle {
@@ -170,6 +226,7 @@ impl ServerSessionHandle {
             client_id: ClientId::from_u32(0x0100_007F),
             server,
             grants: watch::channel(ServerGrants::default()).1,
+            id: next_session_id(),
         }
     }
 
@@ -201,6 +258,15 @@ impl ServerSessionHandle {
     /// Resolves when the session task ends.
     pub(crate) async fn closed(&self) {
         self.request_tx.closed().await;
+    }
+
+    /// This session's request half as the **Server Coordinator** holds it
+    /// (ADR-0091).
+    pub(crate) fn coordinator_link(&self) -> SessionLink {
+        SessionLink {
+            requests: self.request_tx.downgrade(),
+            id: self.id,
+        }
     }
 
     pub(crate) async fn lookup_sources(
@@ -300,21 +366,6 @@ impl ServerSessionHandle {
             .await;
     }
 
-    /// Ask the connected server to introduce us to the LowID client `target`
-    /// for a punch (ADR-0091). Fire-and-forget like the callback: the answer
-    /// is an event on the session, or — from a server that does not speak
-    /// the punch — nothing at all, which the ledger's timeout turns into a
-    /// fallback.
-    pub(crate) async fn request_holepunch(&self, target: ClientId, our_udp_port: u16) {
-        let _ = self
-            .request_tx
-            .send(ServerRequest::Holepunch {
-                target,
-                our_udp_port,
-            })
-            .await;
-    }
-
     /// End the session and wait until it has reported itself gone.
     /// Returns immediately when the task has already ended: a closed
     /// request channel means the loop returned, and the loop clears the
@@ -371,6 +422,9 @@ pub(crate) struct SessionSinks {
     /// copy, moved by each later one: a related search goes on the link only
     /// under a grant it holds (ADR-0037).
     pub(crate) grants: ServerGrants,
+    /// Self Reach, where an offer reads the Presented Client ID it carries at
+    /// the moment it is sent. `None` presents the session's own id.
+    pub(crate) reach: Option<crate::reachability::SharedSelfReach>,
 }
 
 /// Namespace for the session spawner. The session itself is the spawned task.
@@ -390,12 +444,18 @@ impl ServerSession {
         let (request_tx, request_rx) = mpsc::channel(32);
         let server = sinks.server.clone();
         let (grants_tx, grants) = watch::channel(sinks.grants);
-        tokio::spawn(run_session(link, request_rx, sinks, grants_tx));
+        let id = next_session_id();
+        let own_link = SessionLink {
+            requests: request_tx.downgrade(),
+            id,
+        };
+        tokio::spawn(run_session(link, request_rx, sinks, grants_tx, own_link));
         ServerSessionHandle {
             request_tx,
             client_id,
             server,
             grants,
+            id,
         }
     }
 }
@@ -409,6 +469,7 @@ async fn run_session<L: ServerLink>(
     mut request_rx: mpsc::Receiver<ServerRequest>,
     sinks: SessionSinks,
     grants_tx: watch::Sender<ServerGrants>,
+    own_link: SessionLink,
 ) {
     let SessionSinks {
         own,
@@ -419,6 +480,7 @@ async fn run_session<L: ServerLink>(
         over_ipv6,
         punch,
         grants,
+        reach,
     } = sinks;
     // Every waiter on one file's ask, keyed by the hash `OP_FOUNDSOURCES`
     // carries back (ADR-0107): lookups for different files ride the link side
@@ -477,7 +539,12 @@ async fn run_session<L: ServerLink>(
                     }
                     ServerRequest::Announce { files, reply } => {
                         let result = link
-                            .send(Ed2kCommand::OfferFiles { files })
+                            .send(Ed2kCommand::OfferFiles {
+                                files,
+                                presented_id: reach
+                                    .as_ref()
+                                    .map(crate::reachability::SharedSelfReach::presented_client_id),
+                            })
                             .await
                             .map_err(|()| CoreError::Repository("announce send failed".into()));
                         let dead = result.is_err();
@@ -631,7 +698,7 @@ async fn run_session<L: ServerLink>(
                     // the Kad pump watches reads the live id.
                     Some(Ed2kEvent::LoginAccepted { client_id, tcp_flags, facts: assigned }) => {
                         let grants = tcp_flags.map(ServerGrants::from).unwrap_or_default();
-                        facts.regranted(&server, tcp_flags);
+                        facts.regranted(&server, client_id, tcp_flags, &assigned);
                         grants_tx.send_replace(grants);
                         searches.regranted(grants.related_search).await;
                         let address = own.addresses().observe_server_assigned(
@@ -751,7 +818,7 @@ async fn run_session<L: ServerLink>(
     // And so does its willingness to introduce us (ADR-0091): the keepalive
     // stops with the session, every outstanding `0x60` died with the link,
     // and the route chooser must stop offering a coordinator that is gone.
-    punch.set_live(false);
+    punch.go_dark(&own_link);
     // The id it assigned and the server itself are facts *about this session*
     // and nothing else. Unlike the address above they do not survive as a
     // stale last-known: a node with no session is Low-ID and shares its server

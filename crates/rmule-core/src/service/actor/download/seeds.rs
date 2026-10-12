@@ -22,13 +22,13 @@ where
     pub(in crate::service::actor) fn write_source_seeds(&self) {
         let now = SystemTime::now();
         let keep = usize::from(self.remember_peers.get().get());
-        for (download_id, active) in &self.activities.downloads {
+        for (download_id, active) in self.activities.downloads() {
             let ranking = active.seeds.borrow();
             let seeds = &ranking[..ranking.len().min(keep)];
             if let Err(error) = self
                 .wiring
                 .store
-                .write_source_seeds(*download_id, seeds, now)
+                .write_source_seeds(download_id, seeds, now)
             {
                 tracing::warn!(
                     download_id = download_id.as_u64(),

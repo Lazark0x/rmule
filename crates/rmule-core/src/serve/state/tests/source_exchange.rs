@@ -37,33 +37,25 @@ fn identify_source_naming(
     let decisions = state.on_conn_event(
         t,
         p,
-        ServeConnEvent::Identified {
-            user_hash,
+        HelloFacts {
             client_id,
-            connected_server: None,
             tcp_port: listen_port,
-            udp_port: 0,
-            udp_version: 0,
-            extended_requests_version: 2,
-            crypt: crypt_advert(),
             ipv6,
-            software: nameless_software(),
-        },
+            ..HelloFacts::of(user_hash)
+        }
+        .identified(),
         &no_modifiers(),
     );
     assert_eq!(decisions, Vec::new());
 }
 
-fn sx_request(file_hash: FileHash) -> ServeConnEvent {
-    ServeConnEvent::SourcesRequested {
-        file_hash,
-        version: ServedSourcesVersion::Sx1(rmule_peer::SourceExchangeVersion::V1),
-    }
+fn sx_request(file_hash: FileHash) -> ServeInput {
+    ServeInput::Server(ServerEvent::SourcesRequested { file_hash })
 }
 
 #[test]
 fn a_source_exchange_request_answers_from_the_engaged_high_id_upload_clients() {
-    use rmule_primitives::ExchangedSource;
+    use rmule_primitives::SourceSighting;
 
     let file = hash(0x11);
     // Budget 3 so all three engaged peers are granted (the upload-engaged
@@ -120,33 +112,25 @@ fn a_source_exchange_request_answers_from_the_engaged_high_id_upload_clients() {
 
     let out = state.on_conn_event(t, requester, sx_request(file), &no_modifiers());
 
-    let expected_a = ExchangedSource::new(
+    let expected_a = SourceSighting::new(
         PeerSource::new(high_id_client([1, 2, 3, 4]), 4662),
         Some(user(0xA1)),
         None,
     );
-    let expected_b = ExchangedSource::new(
+    let expected_b = SourceSighting::new(
         PeerSource::new(high_id_client([5, 6, 7, 8]), 5000),
         Some(user(0xB2)),
         None,
     );
     assert_eq!(
         out,
-        vec![
-            ServeDecision::Send {
-                peer: requester,
-                command: ServeConnCommand::AnswerSources {
-                    file_hash: file,
-                    sources: vec![expected_a, expected_b],
-                    version: ServedSourcesVersion::Sx1(rmule_peer::SourceExchangeVersion::V1),
-                },
-            },
-            ServeDecision::Emit(ServeEvent::SourcesServed {
-                peer: requester,
+        vec![ServeDecision::Send {
+            peer: requester,
+            command: ServerCommand::AnswerSources {
                 file_hash: file,
-                count: 2,
-            }),
-        ],
+                sources: vec![expected_a, expected_b],
+            },
+        },],
         "the two engaged HighID clients are served (at their listen ports, \
          with user hashes); the LowID and the requester itself are dropped",
     );
@@ -238,9 +222,8 @@ fn a_source_exchange_request_for_an_unshared_file_or_empty_pool_answers_nothing(
 }
 
 #[test]
-fn a_low_id_client_that_named_an_ipv6_is_served_over_it_to_an_extsx_asker_only() {
-    use rmule_peer::ExtSxEmission;
-    use rmule_primitives::{ExchangedSource, Ipv6Endpoint};
+fn a_low_id_client_that_named_an_ipv6_is_served_over_it() {
+    use rmule_primitives::{Ipv6Endpoint, SourceSighting};
 
     let file = hash(0x44);
     let mut state = serving_state(2, vec![entry(file, 4096, "served.bin")]);
@@ -260,59 +243,32 @@ fn a_low_id_client_that_named_an_ipv6_is_served_over_it_to_an_extsx_asker_only()
     );
     let _ = slot_request(&mut state, queued, file, t);
 
-    let ext = ServedSourcesVersion::Ext {
-        sx2: true,
-        emission: ExtSxEmission { skip_tags: true },
-    };
-    let classic_asker = peer_at([8, 8, 8, 8], 4000);
-    let ext_asker = peer_at([9, 9, 9, 9], 4000);
-    for asker in [classic_asker, ext_asker] {
-        identify_source(
-            &mut state,
-            asker,
-            user(0xD4),
-            ClientId::from_u32(0),
-            4662,
-            t,
-        );
-    }
-
-    assert_eq!(
-        state.on_conn_event(t, classic_asker, sx_request(file), &no_modifiers()),
-        Vec::new(),
-        "a classic entry cannot carry an IPv6-only source, and nothing else is in the pool",
+    // Whether the asker's wire form can carry it is the session's call: a
+    // classic answer leaves it out and so sends nothing (ADR-0087).
+    let asker = peer_at([9, 9, 9, 9], 4000);
+    identify_source(
+        &mut state,
+        asker,
+        user(0xD4),
+        ClientId::from_u32(0),
+        4662,
+        t,
     );
-    let expected = ExchangedSource::new(
+    let expected = SourceSighting::new(
         PeerSource::Ipv6(Ipv6Endpoint::new(v6, 4662)),
         Some(user(0x51)),
         None,
     );
     assert_eq!(
-        state.on_conn_event(
-            t,
-            ext_asker,
-            ServeConnEvent::SourcesRequested {
+        state.on_conn_event(t, asker, sx_request(file), &no_modifiers()),
+        vec![ServeDecision::Send {
+            peer: asker,
+            command: ServerCommand::AnswerSources {
                 file_hash: file,
-                version: ext,
+                sources: vec![expected],
             },
-            &no_modifiers(),
-        ),
-        vec![
-            ServeDecision::Send {
-                peer: ext_asker,
-                command: ServeConnCommand::AnswerSources {
-                    file_hash: file,
-                    sources: vec![expected],
-                    version: ext,
-                },
-            },
-            ServeDecision::Emit(ServeEvent::SourcesServed {
-                peer: ext_asker,
-                file_hash: file,
-                count: 1,
-            }),
-        ],
-        "the ExtSX asker is handed the IPv6 the hello named, at the listen port",
+        },],
+        "the asker is handed the IPv6 the hello named, at the listen port",
     );
 }
 
@@ -322,8 +278,7 @@ fn a_low_id_client_that_named_an_ipv6_is_served_over_it_to_an_extsx_asker_only()
 /// writes the id alone (both pinned at the session's wire).
 #[test]
 fn a_high_id_client_that_named_an_ipv6_is_served_with_both_addresses() {
-    use rmule_peer::ExtSxEmission;
-    use rmule_primitives::{ExchangedSource, Ipv6Endpoint};
+    use rmule_primitives::{Ipv6Endpoint, SourceSighting};
 
     let file = hash(0x45);
     let mut state = serving_state(2, vec![entry(file, 4096, "served.bin")]);
@@ -343,29 +298,123 @@ fn a_high_id_client_that_named_an_ipv6_is_served_with_both_addresses() {
         4662,
         t,
     );
-    let ext = ServedSourcesVersion::Ext {
-        sx2: true,
-        emission: ExtSxEmission { skip_tags: true },
-    };
-    let decisions = state.on_conn_event(
-        t,
-        asker,
-        ServeConnEvent::SourcesRequested {
-            file_hash: file,
-            version: ext,
-        },
-        &no_modifiers(),
-    );
-    let expected = ExchangedSource::new(PeerSource::new(id, 4662), Some(user(0x51)), None)
+    let decisions = state.on_conn_event(t, asker, sx_request(file), &no_modifiers());
+    let expected = SourceSighting::new(PeerSource::new(id, 4662), Some(user(0x51)), None)
         .with_ipv6_half(Some(Ipv6Endpoint::new(v6, 4662)));
     assert_eq!(
         decisions.first(),
         Some(&ServeDecision::Send {
             peer: asker,
-            command: ServeConnCommand::AnswerSources {
+            command: ServerCommand::AnswerSources {
                 file_hash: file,
                 sources: vec![expected],
-                version: ext,
+            },
+        }),
+    );
+}
+
+/// A source's identity revision reaches what the serve side offers of it:
+/// after its `OP_CHANGE_CLIENT_IP`, an engaged High-ID client is offered at
+/// the IPv6 it now holds, not the one its hello named.
+#[test]
+fn a_revised_ipv6_is_the_one_an_answer_offers() {
+    use rmule_primitives::{Ipv6Endpoint, SourceSighting};
+
+    let file = hash(0x46);
+    let mut state = serving_state(2, vec![entry(file, 4096, "served.bin")]);
+    let t = Instant::now();
+    let queued = peer_at([198, 51, 100, 8], 40_000);
+    let id = high_id_client([198, 51, 100, 8]);
+    identify_source(&mut state, queued, user(0x52), id, 4662, t);
+    let _ = slot_request(&mut state, queued, file, t);
+    let moved: std::net::Ipv6Addr = "3fff:ed2:1::8".parse().unwrap();
+    let revised = HelloFacts {
+        client_id: id,
+        ipv6: Some(moved),
+        ..HelloFacts::of(user(0x52))
+    }
+    .identity();
+    let _ = state.on_conn_event(
+        t,
+        queued,
+        ServeInput::Connection(ConnectionEvent::IdentityRevised {
+            identity: revised,
+            what: IdentityChange::Ipv6,
+        }),
+        &no_modifiers(),
+    );
+
+    let asker = peer_at([9, 9, 9, 8], 4000);
+    identify_source(
+        &mut state,
+        asker,
+        user(0xD5),
+        ClientId::from_u32(0),
+        4662,
+        t,
+    );
+    let decisions = state.on_conn_event(t, asker, sx_request(file), &no_modifiers());
+    let expected = SourceSighting::new(PeerSource::new(id, 4662), Some(user(0x52)), None)
+        .with_ipv6_half(Some(Ipv6Endpoint::new(moved, 4662)));
+    assert_eq!(
+        decisions.first(),
+        Some(&ServeDecision::Send {
+            peer: asker,
+            command: ServerCommand::AnswerSources {
+                file_hash: file,
+                sources: vec![expected],
+            },
+        }),
+    );
+}
+
+/// After an `OP_CHANGE_CLIENT_ID` the answer offers the ID the peer now
+/// answers to, not the one its hello named.
+#[test]
+fn a_revised_client_id_is_the_one_an_answer_offers() {
+    use rmule_primitives::SourceSighting;
+
+    let file = hash(0x47);
+    let mut state = serving_state(2, vec![entry(file, 4096, "served.bin")]);
+    let t = Instant::now();
+    let queued = peer_at([198, 51, 100, 9], 40_000);
+    let id = high_id_client([198, 51, 100, 9]);
+    identify_source(&mut state, queued, user(0x53), id, 4662, t);
+    let _ = slot_request(&mut state, queued, file, t);
+    let moved = high_id_client([198, 51, 100, 10]);
+    let revised = HelloFacts {
+        client_id: moved,
+        ..HelloFacts::of(user(0x53))
+    }
+    .identity();
+    let _ = state.on_conn_event(
+        t,
+        queued,
+        ServeInput::Connection(ConnectionEvent::IdentityRevised {
+            identity: revised,
+            what: IdentityChange::ClientId,
+        }),
+        &no_modifiers(),
+    );
+
+    let asker = peer_at([9, 9, 9, 9], 4000);
+    identify_source(
+        &mut state,
+        asker,
+        user(0xD6),
+        ClientId::from_u32(0),
+        4662,
+        t,
+    );
+    let decisions = state.on_conn_event(t, asker, sx_request(file), &no_modifiers());
+    let expected = SourceSighting::new(PeerSource::new(moved, 4662), Some(user(0x53)), None);
+    assert_eq!(
+        decisions.first(),
+        Some(&ServeDecision::Send {
+            peer: asker,
+            command: ServerCommand::AnswerSources {
+                file_hash: file,
+                sources: vec![expected],
             },
         }),
     );
@@ -383,13 +432,13 @@ fn name_ask(
     let _ = state.on_conn_event(
         t,
         p,
-        ServeConnEvent::FileRequested {
+        ServeInput::Server(ServerEvent::FileRequested {
             file_hash: file,
             status: part_status
                 .as_ref()
                 .map(PartStatusTail::of)
                 .unwrap_or_default(),
-        },
+        }),
         &no_modifiers(),
     );
 }
@@ -401,8 +450,8 @@ fn pool_with_known_unknown_and_empty_status(
     file: FileHash,
     size: u64,
     t: Instant,
-) -> (ServeState, [rmule_primitives::ExchangedSource; 4]) {
-    use rmule_primitives::ExchangedSource;
+) -> (ServeState, [rmule_primitives::SourceSighting; 4]) {
+    use rmule_primitives::SourceSighting;
 
     let mut state = serving_state(4, vec![entry(file, size, "served.bin")]);
     let pool: [(_, _, Option<&[u32]>); 4] = [
@@ -426,7 +475,7 @@ fn pool_with_known_unknown_and_empty_status(
             name_ask(&mut state, p, file, Some(status), t);
         }
         let _ = slot_request(&mut state, p, file, t);
-        ExchangedSource::new(
+        SourceSighting::new(
             PeerSource::new(high_id_client(octets), 4662),
             Some(user(hash_byte)),
             None,
@@ -439,21 +488,12 @@ fn answered(
     state: &mut ServeState,
     asker: PeerEndpoint,
     file: FileHash,
-    version: ServedSourcesVersion,
     t: Instant,
-) -> Vec<rmule_primitives::ExchangedSource> {
-    let out = state.on_conn_event(
-        t,
-        asker,
-        ServeConnEvent::SourcesRequested {
-            file_hash: file,
-            version,
-        },
-        &no_modifiers(),
-    );
+) -> Vec<rmule_primitives::SourceSighting> {
+    let out = state.on_conn_event(t, asker, sx_request(file), &no_modifiers());
     match out.first() {
         Some(ServeDecision::Send {
-            command: ServeConnCommand::AnswerSources { sources, .. },
+            command: ServerCommand::AnswerSources { sources, .. },
             ..
         }) => sources.clone(),
         other => panic!("expected a source answer, got {other:?}"),

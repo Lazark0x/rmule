@@ -46,6 +46,7 @@ mod keyword;
 mod notes;
 mod small_timer;
 mod source;
+mod start;
 mod udp_firewall;
 mod walk;
 mod wire;
@@ -56,6 +57,7 @@ pub use self::diagnostic::KadNodeDiagnostic;
 pub use self::event::{
     KadCallbackWalkEnd, KadEvent, KadOutput, KadPublishRejection, RoutingCensus,
 };
+pub use self::start::{KadNodeStart, KadObfuscation, KadSelfCheck};
 
 use std::collections::VecDeque;
 use std::net::Ipv4Addr;
@@ -211,8 +213,8 @@ pub struct KadNode {
     config: KadNodeConfig,
     /// The contact-admission verdict: consulted at every contact
     /// intake — `store`, the bootstrap dial-list seed, and lookup-response
-    /// rows. Default admits everything; the driver arms the production
-    /// IP-filter closure via [`arm_contact_admission`](Self::arm_contact_admission).
+    /// rows. Default admits everything; the driver starts the node with the production
+    /// IP-filter closure ([`KadNodeStart::admission`]).
     contact_admission: KadContactAdmission,
     routing: KadRoutingTable,
     outputs: VecDeque<KadOutput>,
@@ -247,7 +249,7 @@ pub struct KadNode {
     /// surface until the datagram byte facts are ratified and
     /// per-contact crypt-support tracking (ADR-0058) lands.
     outbound_obfuscation: Option<fn() -> DatagramNonce>,
-    /// The armed verify-key state ([`enable_verify_keys`](Self::enable_verify_keys));
+    /// The armed verify-key state ([`KadObfuscation::with_verify_keys`]);
     /// `None` keeps the whole ADR-0064 verification cluster plaintext-dormant.
     verify_keys: Option<VerifyKeyState>,
     /// Our public IPv4 as core last stated it (`SetOwnPublicIp`, or the
@@ -269,20 +271,16 @@ pub struct KadNode {
     /// Our own firewall self-check requester (ADR-0058 requester cycle). `None`
     /// (the default) leaves it dormant — no emission, no timers, no response
     /// consume — so routing-only nodes (the mesh sim) carry no firewall cadence;
-    /// a driver arms it with [`enable_firewall_self_check`]. Capture-gated off
+    /// a driver starts the node with [`KadNodeStart::self_check`]. Capture-gated off
     /// like the obfuscation seam above: the live dial-back + ack legs it drives
     /// are the ADR-0058 capture tier, so production arms it once those ratify.
-    ///
-    /// [`enable_firewall_self_check`]: Self::enable_firewall_self_check
     firewall: Option<FirewallSelfCheck>,
     /// Our own UDP firewall self-check (ADR-0058 requester, breakdown 3), armed
-    /// alongside the TCP check by [`enable_firewall_self_check`]. `None` leaves it
+    /// alongside the TCP check by [`KadNodeStart::self_check`]. `None` leaves it
     /// dormant (routing-only nodes run no UDP test). Explicit-time; the
     /// peer-TCP `OP_FWCHECKUDPREQ` dial to each fresh helper is core-brokered,
     /// the `0x60`/`0x61` Extern Port Round is the node's own, and the port it
     /// learns is core's verdict.
-    ///
-    /// [`enable_firewall_self_check`]: Self::enable_firewall_self_check
     udp_firewall: Option<UdpFirewallTester>,
     /// Where the UDP tester's helper lookup walks (aMule `FindNodeFWCheckUDP`'s
     /// random target), drawn from the driver's entropy — the node draws none.
@@ -310,7 +308,7 @@ pub struct KadNode {
     advertised_ipv6: Option<std::net::Ipv6Addr>,
     /// The publish posture — **core's verdict, injected** through
     /// [`crate::KadCommand::SetPublishPosture`] from Self Reach's
-    /// `firewalled` and `FirewalledSlot::publish_buddy_info`, never this
+    /// `firewalled` and the buddy row of its Buddy Snapshot, never this
     /// node's own reading. See [`crate::KadPublishPosture`] for the rows it
     /// selects.
     publish_posture: crate::KadPublishPosture,
@@ -347,12 +345,12 @@ pub struct KadNode {
     /// first dial fires promptly, then paced by the 15 s / 2 s cadence.
     next_bootstrap_dial: Option<KadInstant>,
     /// When the forced self-lookup next fires (ADR-0067), or `None` until a
-    /// driver [`arms`](Self::arm_self_lookup) it at join start. Set to
+    /// driver starts the node with [`KadNodeStart::self_lookup`]. Set to
     /// `start + 3 min`, then re-armed `+ 4 h` on each fire. Left `None` by
     /// routing-only nodes (the mesh sim), which run no join cadence.
     next_self_lookup: Option<KadInstant>,
     /// When the next **small-timer hello pass** fires, or `None`
-    /// until a driver [`arms`](Self::arm_small_timer) it at join start —
+    /// until a driver starts the node with [`KadNodeStart::small_timer`] —
     /// aMule's per-zone `OnSmallTimer` minute, which greets each bucket's oldest
     /// due contact joined or not. It is what reaches a table-seeded start (a
     /// v1/v2 nodes.dat merge feeds the routing table, not the Bootstrap Dial
@@ -375,14 +373,9 @@ impl KadNode {
     /// fixtures).
     pub const KAD_VERSION: u8 = 8;
 
-    /// A fresh node: empty routing table, no outstanding exchanges, verify
-    /// keys unarmed, and nothing scheduled until the first command or
-    /// datagram.
-    ///
-    /// The node reads no clock and opens no socket — a driver feeds it
-    /// instants, datagrams and commands, and drains its outputs.
-    #[must_use]
-    pub fn new(config: KadNodeConfig) -> Self {
+    /// The node before its start-up value is applied: empty routing table, no
+    /// outstanding exchanges, nothing scheduled, plaintext.
+    fn unstarted(config: KadNodeConfig) -> Self {
         Self {
             config,
             contact_admission: KadContactAdmission::default(),
@@ -492,6 +485,7 @@ impl KadNode {
             }
             KadCommand::SetExternalUdpPort { port } => self.set_extern_udp_port(port),
             KadCommand::SetOwnPublicIp { public_ip } => self.set_own_public_ip(public_ip),
+            KadCommand::SetObfuscation { obfuscation } => self.install_obfuscation(obfuscation),
             // The readers refuse an `ip6` that fails `IsUsableTagIdentity`, so
             // the writer never states one, whatever the driver passed.
             KadCommand::SetAdvertisedIpv6 { address } => {

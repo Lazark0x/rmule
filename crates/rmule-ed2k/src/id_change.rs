@@ -145,3 +145,36 @@ impl IdChange {
         Packet::new(PacketProtocol::Edonkey, Opcode::IdChange.as_u8(), payload)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A live stock ed2k-server (`4da4774`) `OP_IDCHANGE` payload, recorded
+    /// 2026-10-12 by the harness probe: run `1791815836`, file
+    /// `sweep-792/markers/1791815836/announce-switch/ed2k-server-markers/publisher.jsonl`,
+    /// field `idchange_hex`.
+    const LIVE_PAYLOAD: [u8; 20] = [
+        0xcb, 0x00, 0x71, 0x03, 0xdd, 0x05, 0x00, 0x00, 0x35, 0x12, 0x00, 0x00, 0xcb, 0x00, 0x71,
+        0xc8, 0x35, 0x12, 0x00, 0x00,
+    ];
+
+    #[test]
+    fn a_live_server_login_answer_decodes_every_field() {
+        let packet = Packet::new(
+            PacketProtocol::Edonkey,
+            Opcode::IdChange.as_u8(),
+            LIVE_PAYLOAD.to_vec(),
+        );
+        let decoded = IdChange::decode_packet(&packet).expect("the live answer decodes");
+        assert_eq!(decoded.client_id, ClientId::from_u32(0x0371_00cb));
+        assert_eq!(decoded.tcp_flags, Some(ServerTcpFlags::from_bits(0x5dd)));
+        assert_eq!(decoded.standard_tcp_port, Some(4661));
+        assert_eq!(
+            decoded.public_ip.map(u32::to_le_bytes),
+            Some([203, 0, 113, 200])
+        );
+        assert_eq!(decoded.obfuscation_tcp_port, Some(4661));
+        assert!(decoded.trailing.is_empty());
+    }
+}

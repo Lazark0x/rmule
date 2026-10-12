@@ -9,7 +9,7 @@ use rmule_primitives::{
 };
 use rmule_testkit::kad_node::{
     T0, crypt_node, crypt_to_node, diagnostics, drain_outputs, endpoint, events, fixed_nonce,
-    hello, id, keyed_node, node, opened_messages, our_key_for, sent_messages,
+    hello, id, node, opened_messages, our_key_for,
 };
 
 /// Genuine stock aMule 2.3.3 obfuscated Kad datagram (interop flow K
@@ -169,7 +169,7 @@ fn a_plaintext_datagram_never_reads_as_a_valid_receiver_key() {
     // all, and "no trailer" must never compare equal to our derived key. If it
     // did, every legacy peer would be trusted as IP-proven for free — the exact
     // spoofing the flag exists to stop.
-    let mut node = keyed_node();
+    let mut node = crypt_node();
     let peer = endpoint(7, 5000);
     node.handle_datagram(
         T0,
@@ -196,7 +196,7 @@ fn a_peer_holding_only_our_handed_out_key_can_reach_us() {
     // `currentTry == 2` receiver-key branch
     // (`EncryptedDatagramSocket.cpp#L191`). Without the family armed on the
     // receive side, such a datagram is undecodable garbage.
-    let mut armed = keyed_node();
+    let mut armed = crypt_node();
     let peer = endpoint(7, 5000);
     let ping = Kad2Message::Ping.encode().encode();
     let wire = encrypt_datagram_client(
@@ -213,7 +213,7 @@ fn a_peer_holding_only_our_handed_out_key_can_reach_us() {
     let outputs = drain_outputs(&mut armed);
 
     assert_eq!(
-        sent_messages(&outputs),
+        opened_messages(&outputs, id(7), Some(0xFEED_1111)),
         vec![(peer, Kad2Message::Pong { udp_port: 5000 })],
         "a receiver-key-keyed datagram decrypts and dispatches"
     );
@@ -227,5 +227,61 @@ fn a_peer_holding_only_our_handed_out_key_can_reach_us() {
             .iter()
             .any(|d| matches!(d, KadNodeDiagnostic::UndecodableEnvelope { .. })),
         "without the key state the receiver-key family is not offered"
+    );
+}
+
+/// aMule tries the receiver-verify-key family on every client datagram
+/// whatever its own crypt setting (`EncryptedDatagramSocket.cpp:187-195`), so
+/// a node that went plaintext keeps opening datagrams a peer keyed on the
+/// verify key it was handed earlier. A receive-only node (policy `off`) opens
+/// a hello keyed on that family, verifies the sender from the echoed key, and
+/// answers in plaintext.
+#[test]
+fn a_receive_only_node_opens_a_datagram_keyed_on_the_verify_key_it_handed_out() {
+    use rmule_kad::KadObfuscation;
+    use rmule_primitives::DatagramNonce;
+    use rmule_testkit::kad_node::{OWN_IP, SECRET, start};
+
+    let peer = endpoint(7, 5000);
+    let hello_req = Kad2Message::HelloReq(hello(id(0xC1), peer, 8, 0))
+        .encode()
+        .encode();
+    let handed = our_key_for(peer);
+    let keyed = encrypt_datagram_client(
+        &hello_req,
+        &ClientEncryptKey::KadVerify {
+            verify_key: handed,
+            receiver_verify_key: handed,
+            sender_verify_key: 0,
+        },
+        &DatagramNonce {
+            marker_byte: 0x42,
+            random_key: 0x1357,
+            padding: vec![],
+        },
+    );
+
+    let mut off =
+        rmule_kad::KadNode::new(start().obfuscation(KadObfuscation::receive_only(SECRET, OWN_IP)));
+    off.handle_datagram(T0, peer, &keyed);
+    let outputs = drain_outputs(&mut off);
+
+    assert!(
+        off.routing_table()
+            .get(id(0xC1))
+            .is_some_and(|c| c.verified()),
+        "the hello was opened and its echoed key verified the sender"
+    );
+    let sent = opened_messages(&outputs, id(0xC1), None);
+    assert!(
+        matches!(sent.as_slice(), [(_, Kad2Message::HelloRes(_))]),
+        "the answer left, and opens as plaintext"
+    );
+
+    let mut keyless = node();
+    keyless.handle_datagram(T0, peer, &keyed);
+    assert!(
+        keyless.routing_table().get(id(0xC1)).is_none(),
+        "a node holding no verify keys cannot open the same datagram"
     );
 }

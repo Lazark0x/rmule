@@ -17,8 +17,9 @@ use std::net::Ipv4Addr;
 use rmule_peer::multipacket::RequestItem;
 use rmule_peer::{
     AnswerItem, FileProbeStatus, HashSetAnswer, HelloAnswer, MiscOptions1, MiscOptions2,
-    MultiPacketAnswer, PartRanges, PeerCommand, PeerError, PeerEvent, PeerHelloBody, PeerOutput,
-    PeerPacket, PeerSession,
+    MultiPacketAnswer, NoticeEvent, PartRanges, PeerCommand, PeerError, PeerEvent, PeerHelloBody,
+    PeerOutput, PeerPacket, PeerSession, RequesterCommand, RequesterEvent, ServerCommand,
+    ServerEvent,
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{
@@ -79,13 +80,13 @@ fn peer_without_multipacket_gets_the_standalone_quintet() {
     // separate standalone packets, byte-for-byte the path rmule has always
     // taken, in aMule's request order.
     let mut session = identified_against(vec![misc1_plain()]);
-    session.handle_command(PeerCommand::RequestFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: ED2K_PART_SIZE + 1,
         own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE + 1), // multi-part → SetReqId included
         want_sources: true,
         want_aich_root: true,
-    });
+    }));
     let out = drain(|| session.poll_output());
     let opcodes: Vec<u8> = writes(&out).iter().map(Packet::opcode).collect();
     assert_eq!(
@@ -104,13 +105,13 @@ fn peer_with_multipacket_but_not_ext_gets_one_base_0x92_bundle() {
     // MiscOptions1 bit 1 set, no MiscOptions2: the base `0x92` form — one
     // bundle, no `size8`.
     let mut session = identified_against(vec![misc1_multipacket()]);
-    session.handle_command(PeerCommand::RequestFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: ED2K_PART_SIZE + 1,
         own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE + 1),
         want_sources: true,
         want_aich_root: true,
-    });
+    }));
     let out = drain(|| session.poll_output());
     let sent = writes(&out);
     assert_eq!(sent.len(), 1, "the whole quintet collapses to one packet");
@@ -140,13 +141,13 @@ fn ext_peer_gets_a_0xa4_bundle_carrying_the_file_size() {
     // ext bit alone and always writes the file size — the large-file form.
     let big: u64 = 5_000_000_000; // > 4 GiB, the reason size8 exists
     let mut session = identified_against(vec![misc1_multipacket(), misc2_ext()]);
-    session.handle_command(PeerCommand::RequestFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: big,
         own_status: rmule_peer::PartBitmap::downloader_empty(big),
         want_sources: true,
         want_aich_root: true,
-    });
+    }));
     let out = drain(|| session.poll_output());
     let sent = writes(&out);
     assert_eq!(sent.len(), 1);
@@ -182,13 +183,13 @@ fn sub_part_file_omits_setreqid_and_optional_items_are_gated() {
     // SX and AICH subs only when the caller asks. A single-part download with
     // neither optional item bundles to a lone Name.
     let mut session = identified_against(vec![misc1_multipacket(), misc2_ext()]);
-    session.handle_command(PeerCommand::RequestFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: ED2K_PART_SIZE - 1,
         own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE - 1), // sub-part → no part-status ask
         want_sources: false,
         want_aich_root: false,
-    });
+    }));
     let out = drain(|| session.poll_output());
     let sent = writes(&out);
     assert_eq!(sent.len(), 1);
@@ -213,13 +214,13 @@ fn exact_one_part_size_file_omits_setreqid_one_byte_over_includes_it() {
     // has `GetPartCount() == 1` and gets no `OP_SETREQFILEID`, while one
     // byte over does.
     let mut session = identified_against(vec![]);
-    session.handle_command(PeerCommand::RequestFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: ED2K_PART_SIZE,
         own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE),
         want_sources: false,
         want_aich_root: false,
-    });
+    }));
     let out = drain(|| session.poll_output());
     let opcodes: Vec<u8> = writes(&out).iter().map(Packet::opcode).collect();
     assert_eq!(
@@ -229,13 +230,13 @@ fn exact_one_part_size_file_omits_setreqid_one_byte_over_includes_it() {
     );
 
     let mut session = identified_against(vec![]);
-    session.handle_command(PeerCommand::RequestFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: ED2K_PART_SIZE + 1,
         own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE + 1),
         want_sources: false,
         want_aich_root: false,
-    });
+    }));
     let out = drain(|| session.poll_output());
     let opcodes: Vec<u8> = writes(&out).iter().map(Packet::opcode).collect();
     assert_eq!(
@@ -251,13 +252,13 @@ fn the_decision_core_gates_setreqid_identically_in_both_wire_shapes() {
     // the same choice whether the peer bundles or not — a non-multipacket peer
     // sees Name alone as a single standalone packet, no SetReqId.
     let mut session = identified_against(vec![]);
-    session.handle_command(PeerCommand::RequestFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: ED2K_PART_SIZE - 1,
         own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE - 1),
         want_sources: false,
         want_aich_root: false,
-    });
+    }));
     let out = drain(|| session.poll_output());
     let opcodes: Vec<u8> = writes(&out).iter().map(Packet::opcode).collect();
     assert_eq!(
@@ -274,13 +275,13 @@ fn request_file_before_identify_puts_no_bytes_on_the_wire() {
     let mut session = PeerSession::new_outbound(peer_at(50), serverless_ctx());
     session.start();
     let _ = drain(|| session.poll_output()); // our own hello
-    session.handle_command(PeerCommand::RequestFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: ED2K_PART_SIZE + 1,
         own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE + 1),
         want_sources: true,
         want_aich_root: true,
-    });
+    }));
     let out = drain(|| session.poll_output());
     assert!(
         writes(&out).is_empty(),
@@ -288,9 +289,9 @@ fn request_file_before_identify_puts_no_bytes_on_the_wire() {
     );
     assert!(events(&out).iter().any(|e| matches!(
         e,
-        PeerEvent::CommandRejected {
+        PeerEvent::Notice(NoticeEvent::CommandRejected {
             reason: PeerError::CommandBeforeIdentified
-        }
+        })
     )));
 }
 
@@ -308,13 +309,13 @@ fn emitted_bundle_round_trips_through_a_serving_session_into_file_probed() {
 
     // Downloader: peer advertises full multipacket + ext, so RequestFile emits 0xA4.
     let mut downloader = identified_against(vec![misc1_multipacket(), misc2_ext()]);
-    downloader.handle_command(PeerCommand::RequestFile {
+    downloader.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: fh,
         file_size: ED2K_PART_SIZE + 1,
         own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE + 1),
         want_sources: false,
         want_aich_root: false,
-    });
+    }));
     let bundle_bytes = drain(|| downloader.poll_output())
         .iter()
         .find_map(|o| match o {
@@ -338,18 +339,18 @@ fn emitted_bundle_round_trips_through_a_serving_session_into_file_probed() {
     let served = drain(|| uploader.poll_output());
     assert!(
         events(&served).iter().any(
-            |e| matches!(e, PeerEvent::FileBundleRequested { file_hash, .. } if *file_hash == fh)
+            |e| matches!(e, PeerEvent::Server(ServerEvent::FileBundleRequested { file_hash, .. }) if *file_hash == fh)
         ),
         "the uploader hands the bundle to core as one serve event"
     );
-    uploader.handle_command(PeerCommand::AnswerFileName {
+    uploader.handle_command(PeerCommand::Server(ServerCommand::AnswerFileName {
         file_hash: fh,
         file_name: name.clone(),
-    });
-    uploader.handle_command(PeerCommand::AnswerFileStatus {
+    }));
+    uploader.handle_command(PeerCommand::Server(ServerCommand::AnswerFileStatus {
         file_hash: fh,
         bitmap: bitmap.clone(),
-    });
+    }));
     let answer_bytes = drain(|| uploader.poll_output())
         .iter()
         .find_map(|o| match o {
@@ -369,7 +370,11 @@ fn emitted_bundle_round_trips_through_a_serving_session_into_file_probed() {
     let status = events(&probed)
         .into_iter()
         .find_map(|e| match e {
-            PeerEvent::FileProbed { file_hash, status } if *file_hash == fh => Some(status.clone()),
+            PeerEvent::Requester(RequesterEvent::FileProbed { file_hash, status })
+                if *file_hash == fh =>
+            {
+                Some(status.clone())
+            }
             _ => None,
         })
         .expect("the emitted-then-answered bundle probes the file");
@@ -393,13 +398,13 @@ fn sx2_peer_gets_the_sources2_sub_per_the_source_ask_policy() {
     // `RequestSources` command selects for it.
     let size = ED2K_PART_SIZE + 1;
     let mut session = identified_against(vec![misc1_multipacket(), misc2_ext_sx2()]);
-    session.handle_command(PeerCommand::RequestFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: size,
         own_status: rmule_peer::PartBitmap::downloader_empty(size),
         want_sources: true,
         want_aich_root: true,
-    });
+    }));
     let out = drain(|| session.poll_output());
     let sent = writes(&out);
     assert_eq!(sent.len(), 1);
@@ -441,13 +446,13 @@ fn the_bundles_probe_is_recorded_so_request_parts_does_not_reprobe() {
     let fh = hash();
     let size = ED2K_PART_SIZE + 1;
     let mut session = identified_against(vec![misc1_multipacket(), misc2_ext()]);
-    session.handle_command(PeerCommand::RequestFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: fh,
         file_size: size,
         own_status: rmule_peer::PartBitmap::downloader_empty(size),
         want_sources: false,
         want_aich_root: false,
-    });
+    }));
     let out = drain(|| session.poll_output());
     assert_eq!(
         writes(&out).iter().map(Packet::opcode).collect::<Vec<_>>(),
@@ -455,11 +460,11 @@ fn the_bundles_probe_is_recorded_so_request_parts_does_not_reprobe() {
     );
 
     let ranges = PartRanges::new([(0, 1024), (0, 0), (0, 0)]).unwrap();
-    session.handle_command(PeerCommand::RequestParts {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: fh,
         file_size: size,
         ranges,
-    });
+    }));
     let out = drain(|| session.poll_output());
     assert_eq!(
         writes(&out).iter().map(Packet::opcode).collect::<Vec<_>>(),

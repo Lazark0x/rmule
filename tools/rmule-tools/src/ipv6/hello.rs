@@ -18,7 +18,9 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Args;
 use rmule_net::peer::{ConnectOptions as PeerConnectOptions, Connection as PeerConnection};
-use rmule_peer::{PeerEvent, PeerHandshakeContext, UdpPortsAdvert};
+use rmule_peer::{
+    ConnectionEvent, IdentityChange, PeerEvent, PeerHandshakeContext, UdpPortsAdvert,
+};
 use rmule_primitives::{ClientId, ClientIdentity, Ed2kText, PeerEndpoint, UserHash};
 
 use crate::capture::{hex_lower, write_new};
@@ -192,6 +194,8 @@ pub(crate) async fn run_hello(args: Ipv6HelloArgs) -> Result<()> {
     let ctx = PeerHandshakeContext {
         identity,
         client_id: ClientId::from_u32(args.client_id),
+        ed2k_client_id: ClientId::from_u32(args.client_id),
+        public_ip: None,
         connected_server: None,
     };
     let udp_ports = args
@@ -294,7 +298,7 @@ async fn converse(mut connection: PeerConnection, args: &Ipv6HelloArgs, facts: &
             event = connection.next_event() => event,
         };
         match event {
-            Some(PeerEvent::PeerIdentified { identity }) => {
+            Some(PeerEvent::Connection(ConnectionEvent::Identified { identity })) => {
                 facts.identified = true;
                 facts.failure = String::new();
                 facts.peer_software = format!("{:?}", identity.software());
@@ -342,7 +346,7 @@ async fn converse(mut connection: PeerConnection, args: &Ipv6HelloArgs, facts: &
                     .collect();
                 break;
             }
-            Some(PeerEvent::Disconnected { reason }) => {
+            Some(PeerEvent::Connection(ConnectionEvent::Disconnected { reason })) => {
                 facts.failure = format!("{reason:?}");
                 break;
             }
@@ -358,13 +362,16 @@ async fn converse(mut connection: PeerConnection, args: &Ipv6HelloArgs, facts: &
             event = connection.next_event() => event,
         };
         match event {
-            Some(PeerEvent::PeerSoftwareRevised { software }) => {
-                facts.peer_software = format!("{software:?}");
+            Some(PeerEvent::Connection(ConnectionEvent::IdentityRevised {
+                identity,
+                what: IdentityChange::Software,
+            })) => {
+                facts.peer_software = format!("{:?}", identity.software());
                 facts
                     .events_during_hold
                     .push("PeerSoftwareRevised".to_owned());
             }
-            Some(PeerEvent::Disconnected { reason }) => {
+            Some(PeerEvent::Connection(ConnectionEvent::Disconnected { reason })) => {
                 facts.peer_closed_during_hold = true;
                 facts
                     .events_during_hold

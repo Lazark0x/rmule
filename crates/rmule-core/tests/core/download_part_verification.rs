@@ -7,7 +7,6 @@
 use rmule_core::DownloadRepository;
 use std::sync::Arc;
 
-use crate::fixture::identity;
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent, DownloadFailure,
     DownloadLifecycle, DownloadPaths, DownloadedPart, DurableDownloadRepository,
@@ -244,6 +243,10 @@ async fn first_peer_hash_set_without_link_parts_is_persisted_as_provisional_auth
     let dir = tempfile::tempdir().unwrap();
     let store = open_durable_store(dir.path()).unwrap();
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .source_lookup(source_with_high_id())
         .peer_transfer(StaticPeerTransfer {
             expected_plan_count: 2,
@@ -268,8 +271,8 @@ async fn first_peer_hash_set_without_link_parts_is_persisted_as_provisional_auth
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: link_without_parts,
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: dir.path().join("download.bin"),
+        name: rmule_testkit::file_name("download.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -332,6 +335,7 @@ async fn resumed_download_retires_peer_that_mismatches_persisted_provisional_aut
         .unwrap();
 
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_core::CoreSettings::default())
         .source_lookup(two_high_id_sources())
         .peer_transfer(MismatchedThenSuccess {
             mismatched_peer: loopback_peer(1),
@@ -342,7 +346,6 @@ async fn resumed_download_retires_peer_that_mismatches_persisted_provisional_aut
         .build();
     core.send(CoreCommand::Download(DownloadCommand::ResumeDownload {
         download_id: record.id(),
-        credentials: identity().into(),
     }))
     .await
     .unwrap();

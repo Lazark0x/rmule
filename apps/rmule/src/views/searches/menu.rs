@@ -1,9 +1,8 @@
 //! The per-result action menu: download the file, copy its eD2k link, or
 //! search for files related to it.
 //!
-//! Download needs credentials the UI only has once a session config was
-//! loaded, so without one it says so instead of emitting a command core would
-//! reject. *Search related* is dimmed with its reason while the connected
+//! Download needs a core, which a UI-only run lacks, so without one it says so
+//! instead of emitting a command nothing would take. *Search related* is dimmed with its reason while the connected
 //! server cannot answer it, read off the level on every frame.
 
 use ratatui::Frame;
@@ -201,26 +200,25 @@ mod tests {
         view.handle_key(press(KeyCode::Char('m')), &no_session);
         match view.handle_key(press(KeyCode::Enter), &no_session) {
             ViewOutcome::Emit(Action::Flash(text)) => {
-                assert!(text.contains("credentials"), "got {text:?}");
+                assert!(text.contains("core not attached"), "got {text:?}");
             }
             other => panic!("Download degrades to a flash, got {other:?}"),
         }
         assert_eq!(view.menu, None, "activating closes the menu");
 
-        // With a session: the real StartDownload, output path under the dir.
+        // With a session: the real StartDownload, the file named, the
+        // folder left to core.
         no_session.session = session_state().session;
         let state = no_session;
         view.handle_key(press(KeyCode::Char('m')), &state);
         match view.handle_key(press(KeyCode::Enter), &state) {
             ViewOutcome::Emit(Action::Command(CoreCommand::Download(
                 DownloadCommand::StartDownload {
-                    output_path,
-                    source_hint,
-                    ..
+                    name, source_hint, ..
                 },
             ))) => {
                 assert_eq!(source_hint.expect("a hint").host(), "srv.example");
-                assert!(output_path.starts_with("/tmp/dl"), "got {output_path:?}");
+                assert_eq!(name.as_str(), "clip_low.avi");
             }
             other => panic!("expected StartDownload, got {other:?}"),
         }

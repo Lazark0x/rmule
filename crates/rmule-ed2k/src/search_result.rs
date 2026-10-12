@@ -6,7 +6,7 @@
 
 use rmule_primitives::{
     ClientId, FileHash, Packet, PacketProtocol, PeerSource, PrimitiveError, SearchResult, Tag,
-    TagValue,
+    TagValue, WireReader,
 };
 
 use crate::{Ed2kError, Opcode, Result};
@@ -138,15 +138,15 @@ impl SearchResults {
             return Err(SearchResultSkipReason::MalformedPayload);
         }
 
-        let mut cursor = Cursor::new(packet.payload());
-        let count = cursor
-            .read_u32()
+        let mut reader = WireReader::new(packet.payload());
+        let count = reader
+            .read_u32_le("result count")
             .map_err(|_| SearchResultSkipReason::MalformedPayload)?;
         let mut results = Vec::new();
         let mut skipped = Vec::new();
         let mut framed = true;
         for _ in 0..count {
-            match decode_row(&mut cursor) {
+            match decode_row(&mut reader) {
                 Ok(Ok(result)) => results.push(result),
                 Ok(Err(reason)) => skipped.push(reason),
                 Err(reason) => {
@@ -160,9 +160,9 @@ impl SearchResults {
         // any other tail says none without costing the rows. After a row that
         // did not decode, what follows is not a tail.
         let more_available = framed
-            && cursor.remaining() == 1
-            && cursor
-                .take(1)
+            && reader.remaining() == 1
+            && reader
+                .take(1, "more-results byte")
                 .map_err(|_| SearchResultSkipReason::MalformedPayload)?
                 == [0x01];
 
@@ -269,35 +269,32 @@ impl SearchResultSkipReason {
 pub(crate) fn decode_row_prefix(
     bytes: &[u8],
 ) -> std::result::Result<(Row, usize), SearchResultSkipReason> {
-    let mut cursor = Cursor::new(bytes);
-    let row = decode_row(&mut cursor)?;
-    Ok((row, cursor.pos))
+    let mut reader = WireReader::new(bytes);
+    let row = decode_row(&mut reader)?;
+    Ok((row, reader.position()))
 }
 
 /// A row whose bytes were read whole: the result, or why it does not stand.
 pub(crate) type Row = std::result::Result<SearchResult, SearchResultSkipReason>;
 
-/// One row from the cursor. The outer error is a row whose bytes did not
-/// decode, leaving the cursor with no way to the next row; the inner one a
-/// row read whole that does not stand, with the cursor past it.
-fn decode_row(cursor: &mut Cursor<'_>) -> std::result::Result<Row, SearchResultSkipReason> {
-    let mut hash_bytes = [0u8; FileHash::BYTE_LEN];
-    hash_bytes.copy_from_slice(
-        cursor
-            .take(FileHash::BYTE_LEN)
-            .map_err(|_| SearchResultSkipReason::MalformedPayload)?,
-    );
+/// One row from the reader. The outer error is a row whose bytes did not
+/// decode, leaving the reader with no way to the next row; the inner one a
+/// row read whole that does not stand, with the reader past it.
+fn decode_row(reader: &mut WireReader<'_>) -> std::result::Result<Row, SearchResultSkipReason> {
+    let hash_bytes = reader
+        .read_array::<{ FileHash::BYTE_LEN }>("file hash")
+        .map_err(|_| SearchResultSkipReason::MalformedPayload)?;
     let file_hash = FileHash::from_bytes(hash_bytes);
     let client_id = ClientId::from_u32(
-        cursor
-            .read_u32()
+        reader
+            .read_u32_le("client id")
             .map_err(|_| SearchResultSkipReason::MalformedPayload)?,
     );
-    let tcp_port = cursor
-        .read_u16()
+    let tcp_port = reader
+        .read_u16_le("tcp port")
         .map_err(|_| SearchResultSkipReason::MalformedPayload)?;
-    let tag_count = cursor
-        .read_u32()
+    let tag_count = reader
+        .read_u32_le("tag count")
         .map_err(|_| SearchResultSkipReason::MalformedPayload)?;
 
     let mut names = Vec::new();
@@ -311,10 +308,10 @@ fn decode_row(cursor: &mut Cursor<'_>) -> std::result::Result<Row, SearchResultS
     let mut wrong_type = false;
 
     for _ in 0..tag_count {
-        let (tag, consumed) = Tag::decode_prefix(cursor.remaining_bytes())
+        let (tag, consumed) = Tag::decode_prefix(reader.remaining_bytes())
             .map_err(|_| SearchResultSkipReason::TagDecodeFailed)?;
-        cursor
-            .advance(consumed)
+        reader
+            .skip(consumed, "tag")
             .map_err(|_| SearchResultSkipReason::MalformedPayload)?;
 
         match (tag.name().id(), tag.value()) {
@@ -464,55 +461,5 @@ const fn uint_tag(value: &TagValue) -> Option<u32> {
         TagValue::U16(value) => Some(*value as u32),
         TagValue::U8(value) => Some(*value as u32),
         TagValue::U64(_) | TagValue::String(_) | TagValue::Hash(_) => None,
-    }
-}
-
-struct Cursor<'a> {
-    payload: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Cursor<'a> {
-    const fn new(payload: &'a [u8]) -> Self {
-        Self { payload, pos: 0 }
-    }
-
-    const fn remaining(&self) -> usize {
-        self.payload.len() - self.pos
-    }
-
-    fn remaining_bytes(&self) -> &'a [u8] {
-        &self.payload[self.pos..]
-    }
-
-    fn advance(&mut self, len: usize) -> Result<()> {
-        let end = self.pos.checked_add(len).ok_or(Ed2kError::InvalidPayload {
-            opcode: Opcode::SearchResult.as_u8(),
-            reason: "OP_SEARCHRESULT length overflow",
-        })?;
-        if end > self.payload.len() {
-            return Err(Ed2kError::InvalidPayload {
-                opcode: Opcode::SearchResult.as_u8(),
-                reason: "truncated OP_SEARCHRESULT payload",
-            });
-        }
-        self.pos = end;
-        Ok(())
-    }
-
-    fn take(&mut self, len: usize) -> Result<&'a [u8]> {
-        let start = self.pos;
-        self.advance(len)?;
-        Ok(&self.payload[start..self.pos])
-    }
-
-    fn read_u16(&mut self) -> Result<u16> {
-        let bytes = self.take(2)?;
-        Ok(u16::from_le_bytes(bytes.try_into().expect("2-byte slice")))
-    }
-
-    fn read_u32(&mut self) -> Result<u32> {
-        let bytes = self.take(4)?;
-        Ok(u32::from_le_bytes(bytes.try_into().expect("4-byte slice")))
     }
 }

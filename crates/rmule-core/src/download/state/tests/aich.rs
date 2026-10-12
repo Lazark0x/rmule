@@ -22,13 +22,14 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_resumes_from_it() {
     let recovery = tree.create_part_recovery_data(0).expect("recovery data");
 
     let mut state = aich_state(file_size, root, vec![peer(1), peer(2)], 2);
-    let _ = state.start();
-    let _ = state.on_worker_event(peer(1), PeerWorkerEvent::Connected);
-    let _ = state.on_worker_event(peer(2), PeerWorkerEvent::Connected);
+    let _ = state.start(t0());
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Connected);
 
     let mut corrupt_block1 = true_bytes[emb..2 * emb].to_vec();
     corrupt_block1[0] ^= 0xFF;
     let _ = state.on_worker_event(
+        t0(),
         peer(1),
         PeerWorkerEvent::BlockReceived {
             part_index: 0,
@@ -37,6 +38,7 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_resumes_from_it() {
         },
     );
     let _ = state.on_worker_event(
+        t0(),
         peer(1),
         PeerWorkerEvent::BlockReceived {
             part_index: 0,
@@ -45,6 +47,7 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_resumes_from_it() {
         },
     );
     let completing = state.on_worker_event(
+        t0(),
         peer(2),
         PeerWorkerEvent::BlockReceived {
             part_index: 0,
@@ -61,7 +64,12 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_resumes_from_it() {
 
     // MD4 fails: with a trusted root, ask the completing peer for AICH
     // recovery data rather than retiring everyone up front.
-    let failed = state.on_persist_result(0, peer(2), Err(DownloadFailure::PartVerificationFailed));
+    let failed = state.on_persist_result(
+        t0(),
+        0,
+        peer(2),
+        Err(DownloadFailure::PartVerificationFailed),
+    );
     assert!(
         failed.iter().any(|d| matches!(
             d,
@@ -80,6 +88,7 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_resumes_from_it() {
     // The peer answers; AICH localizes block 1 → retire only its deliverer
     // (peer 1) and re-stream from EMBLOCKSIZE, keeping the good block 0.
     let repaired = state.on_worker_event(
+        t0(),
         peer(2),
         PeerWorkerEvent::AichAnswerReceived {
             part: 0,
@@ -120,7 +129,11 @@ fn trusted_set_commits_a_root_once_enough_distinct_ips_agree() {
     assert_eq!(state.trusted_aich_root(), None);
 
     for n in 1..=9 {
-        let _ = state.on_worker_event(peer(n), PeerWorkerEvent::AichFileHashReceived { root });
+        let _ = state.on_worker_event(
+            t0(),
+            peer(n),
+            PeerWorkerEvent::AichFileHashReceived { root },
+        );
     }
     assert_eq!(
         state.trusted_aich_root(),
@@ -128,7 +141,11 @@ fn trusted_set_commits_a_root_once_enough_distinct_ips_agree() {
         "9 agreeing IPs is below the 10-IP trust threshold"
     );
 
-    let _ = state.on_worker_event(peer(10), PeerWorkerEvent::AichFileHashReceived { root });
+    let _ = state.on_worker_event(
+        t0(),
+        peer(10),
+        PeerWorkerEvent::AichFileHashReceived { root },
+    );
     assert_eq!(
         state.trusted_aich_root(),
         Some(root),
@@ -148,21 +165,15 @@ fn an_aich_attributed_corrupt_block_distrusts_only_its_sender() {
     let tree = AichHashSet::from_bytes(&true_bytes);
     let recovery = tree.create_part_recovery_data(0).expect("recovery data");
     let mut state = aich_state(file_size, tree.master_root(), vec![peer(1), peer(2)], 2);
-    let _ = state.start();
+    let _ = state.start(t0());
     for (at, user_hash) in [(peer(1), CORRUPTER), (peer(2), HONEST)] {
-        let _ = state.on_worker_event(
-            at,
-            PeerWorkerEvent::Identified {
-                user_hash,
-                crypt: None,
-                software: hello_software(),
-            },
-        );
-        let _ = state.on_worker_event(at, PeerWorkerEvent::Connected);
+        let _ = state.on_worker_event(t0(), at, identified(user_hash));
+        let _ = state.on_worker_event(t0(), at, PeerWorkerEvent::Connected);
     }
     let mut corrupt_block0 = true_bytes[..emb].to_vec();
     corrupt_block0[0] ^= 0xFF;
     let _ = state.on_worker_event(
+        t0(),
         peer(1),
         PeerWorkerEvent::BlockReceived {
             part_index: 0,
@@ -171,6 +182,7 @@ fn an_aich_attributed_corrupt_block_distrusts_only_its_sender() {
         },
     );
     let _ = state.on_worker_event(
+        t0(),
         peer(2),
         PeerWorkerEvent::BlockReceived {
             part_index: 0,
@@ -178,9 +190,15 @@ fn an_aich_attributed_corrupt_block_distrusts_only_its_sender() {
             bytes: true_bytes[emb..].to_vec(),
         },
     );
-    let _ = state.on_persist_result(0, peer(2), Err(DownloadFailure::PartVerificationFailed));
+    let _ = state.on_persist_result(
+        t0(),
+        0,
+        peer(2),
+        Err(DownloadFailure::PartVerificationFailed),
+    );
 
     let repaired = state.on_worker_event(
+        t0(),
         peer(2),
         PeerWorkerEvent::AichAnswerReceived {
             part: 0,
@@ -201,23 +219,21 @@ fn an_aich_attributed_corrupt_block_distrusts_only_its_sender() {
 /// A two-part file's true ED2K identity, hashed from its bytes: its file hash
 /// and the part hash set a truthful peer sends.
 fn two_part_file() -> FileHashSummary {
-    FileHashSummary::digest_bytes(&vec![0x5A; (ED2K_PART_SIZE + 1_000) as usize])
+    FileHashSummary::digest_bytes(&[0x5A; (ED2K_PART_SIZE + 1_000) as usize])
 }
 
 /// A started two-peer download of `file`, with no link hash set.
 fn two_part_state(file: &FileHashSummary) -> DownloadState {
-    let mut state = DownloadState::new(
-        DownloadId::from_u64(1),
+    let mut state = pooled_state(
         ContentFacts {
             file_hash: file.file_hash(),
             ..file_hash_only_content(file.file_size())
         },
-        high_id_candidates(vec![peer(1), peer(2)]),
+        &[peer(1), peer(2)],
         QUIET_POSTURE,
-        CALLBACK_TIMEOUT,
         2,
     );
-    let _ = state.start();
+    let _ = state.start(t0());
     state
 }
 
@@ -230,6 +246,7 @@ fn a_first_peer_hash_set_is_adopted_as_the_provisional_authority() {
     // With no link hash set, the first peer set — the file's own — becomes
     // the provisional PeerHashSet authority and is persisted (ADR-0027).
     let out = state.on_worker_event(
+        t0(),
         peer(1),
         PeerWorkerEvent::HashSetReceived {
             part_hashes: hashes.clone(),
@@ -263,19 +280,13 @@ fn a_hash_set_that_is_not_the_files_own_is_refused_and_its_sender_distrusted() {
     const FORGER: UserHash = UserHash::from_bytes([0xF0; UserHash::BYTE_LEN]);
     let file = two_part_file();
     let mut state = two_part_state(&file);
-    let _ = state.on_worker_event(
-        peer(2),
-        PeerWorkerEvent::Identified {
-            user_hash: FORGER,
-            crypt: None,
-            software: hello_software(),
-        },
-    );
-    let _ = state.on_worker_event(peer(2), PeerWorkerEvent::Connected);
+    let _ = state.on_worker_event(t0(), peer(2), identified(FORGER));
+    let _ = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Connected);
     let mut forged = file.part_hash_set().expect("two parts").hashes().to_vec();
     forged[0] = PartHash::from_bytes([0x22; 16]);
 
     let out = state.on_worker_event(
+        t0(),
         peer(2),
         PeerWorkerEvent::HashSetReceived {
             part_hashes: forged,

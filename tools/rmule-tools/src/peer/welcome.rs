@@ -9,7 +9,7 @@ use clap::Args;
 use rmule_ed2k::Ed2kEvent;
 use rmule_net::ed2k::{ConnectOptions, Connection};
 use rmule_net::peer::{ConnectOptions as PeerConnectOptions, Connection as PeerConnection};
-use rmule_peer::PeerEvent;
+use rmule_peer::{ConnectionEvent, PeerEvent};
 use rmule_primitives::{ClientIdentity, Ed2kText, ServerEndpoint, UserHash};
 
 use crate::operand::{parse_peer_endpoint, parse_user_hash};
@@ -69,6 +69,7 @@ pub(crate) async fn welcome_capture(args: PeerCaptureArgs) -> Result<()> {
         connect_timeout: Duration::from_secs(args.connect_timeout),
         login_timeout: response_timeout,
         obfuscation: None,
+        obfuscated_port: None,
         advertised_ipv6: None,
         udp_ports: None,
     };
@@ -101,10 +102,16 @@ pub(crate) async fn welcome_capture(args: PeerCaptureArgs) -> Result<()> {
     let mut peer_conn = PeerConnection::connect(peer_endpoint, ctx, peer_options).await?;
     while let Some(event) = peer_conn.next_event().await {
         println!("{event}");
-        if matches!(event, PeerEvent::PeerIdentified { .. }) {
+        if matches!(
+            event,
+            PeerEvent::Connection(ConnectionEvent::Identified { .. })
+        ) {
             break;
         }
-        if matches!(event, PeerEvent::Disconnected { .. }) {
+        if matches!(
+            event,
+            PeerEvent::Connection(ConnectionEvent::Disconnected { .. })
+        ) {
             break;
         }
     }

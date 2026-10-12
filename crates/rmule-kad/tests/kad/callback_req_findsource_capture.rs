@@ -13,6 +13,8 @@
 //! with aMule's crypt layer on sent the same `0x52` inside a Kad crypt envelope
 //! keyed on the buddy's Kad ID, and the rmule buddy relayed it.
 
+use rmule_kad::KadInstant;
+use rmule_kad::KadNodeStart;
 use std::net::Ipv4Addr;
 
 use rmule_kad::opcode::KADEMLIA2_SEARCH_RES;
@@ -124,12 +126,15 @@ fn amules_keyed_findsource_callback_opens_under_the_buddys_kad_id() {
 #[test]
 fn a_buddy_node_asks_to_relay_amules_keyed_findsource_callback() {
     let buddy_id = row().buddy.expect("a type-3 row names its buddy").buddy_id;
-    let mut node = KadNode::new(KadNodeConfig {
-        id: buddy_id,
-        tcp_port: 4663,
-        udp_port: 4679,
-        user_hash: UserHash::from_bytes([0xEE; 16]),
-    });
+    let mut node = KadNode::new(KadNodeStart::new(
+        KadNodeConfig {
+            id: buddy_id,
+            tcp_port: 4663,
+            udp_port: 4679,
+            user_hash: UserHash::from_bytes([0xEE; 16]),
+        },
+        KadInstant::EPOCH,
+    ));
     let requester = endpoint(7, 4704);
     node.handle_datagram(
         rmule_testkit::kad_node::T0,

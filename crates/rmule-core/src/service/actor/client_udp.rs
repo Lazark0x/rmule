@@ -38,12 +38,12 @@ pub(super) fn spawn_client_udp_front(
     Option<mpsc::Receiver<ClientUdpDatagram>>,
     Option<mpsc::Sender<ClientUdpSend>>,
 ) {
-    // The ADR-0046 per-datagram crypt layer, armed by the one `peer_crypt`
-    // policy (off by default). Receive is dual-path from here on; send is
-    // gated per datagram at the drain below.
-    let peer_udp_crypt = config
-        .peer_crypt
-        .map(|policy| PeerUdpCrypt::new(own_identity.clone(), policy.crypt_stance()));
+    // The ADR-0046 per-datagram crypt layer, armed by the one obfuscation
+    // policy (off by default) as it stands at each datagram: receive is
+    // dual-path while armed, and send is gated per datagram at the drain
+    // below.
+    let policy = &natt.hello_adverts.obfuscation;
+    let peer_udp_crypt = PeerUdpCrypt::new(own_identity.clone(), policy.clone());
     let (reply_tx, mut reply_rx) = mpsc::channel::<ClientUdpSend>(32);
     let (engine, inboxes) = ClientUdpEngine::new(
         RuntimeClientUdpTransport::new(Arc::clone(&socket)),
@@ -73,14 +73,11 @@ pub(super) fn spawn_client_udp_front(
     // too (`CMuleUDPSocket::SendControlData`), so the crypt gate and its OS
     // entropy live here rather than at the sans-I/O sites that framed the
     // plaintext.
-    let send_crypt = config
-        .peer_crypt
-        .map(|policy| PeerUdpCrypt::new(own_identity.clone(), policy.crypt_stance()));
+    let send_crypt = PeerUdpCrypt::new(own_identity.clone(), policy.clone());
     let drain_socket = Arc::clone(&socket);
     tokio::spawn(async move {
         while let Some(send) = reply_rx.recv().await {
-            let (to, datagram) =
-                encrypt_client_udp_send(send_crypt.as_ref(), send, os_datagram_nonce);
+            let (to, datagram) = encrypt_client_udp_send(&send_crypt, send, os_datagram_nonce);
             // The Family Pair picks the socket the destination's family
             // needs (ADR-0085): a reask reply leaves by the half its ping
             // arrived on, so the peer sees the source address it keyed its
@@ -121,23 +118,24 @@ pub(super) fn spawn_client_udp_front(
     // NAT-T front it reaches: its inlets are this socket's `0x95`/`0xA0` and
     // the buddy TCP link, and its acting verdicts become bursts the NAT-T
     // front fires on this same bind.
-    natt.firewalled_front
-        .install(crate::firewalled::front::spawn(
-            crate::firewalled::front::FirewalledWiring {
-                hello: natt.hello_adverts.clone(),
-                reach: natt.reach.clone(),
-                admit: natt.admit.clone(),
-                // A relayed reask re-enters the ordinary `0x90` reply matrix
-                // through the serve task's own inbox, so one shape reaches
-                // `ServeState` whether it arrived by socket or by relay.
-                reask_ping: inboxes.reask_ping_injector,
-                addresses: own_identity.addresses().clone(),
-                file_known: natt.file_known.clone(),
-                diagnostics: diagnostics.clone(),
-                kad_presence: natt.kad_presence.clone(),
-                events: Some(natt.events.clone()),
-            },
-        ));
+    crate::firewalled::front::spawn(
+        &natt.firewalled_front,
+        crate::firewalled::front::FirewalledWiring {
+            hello: natt.hello_adverts.clone(),
+            reach: natt.reach.clone(),
+            natt: natt.natt_front.clone(),
+            // A relayed reask re-enters the ordinary `0x90` reply matrix
+            // through the serve task's own inbox, so one shape reaches
+            // `ServeState` whether it arrived by socket or by relay.
+            reask_ping: inboxes.reask_ping_injector,
+            addresses: own_identity.addresses().clone(),
+            file_known: natt.file_known.clone(),
+            diagnostics: diagnostics.clone(),
+            kad_presence: natt.kad_presence.clone(),
+            events: Some(natt.events.clone()),
+        },
+        natt.admit.clone(),
+    );
     spawn_natt_front(
         &socket,
         config,
@@ -163,13 +161,19 @@ pub(super) struct ClientUdpSinks<'a> {
 /// The cells the **NAT-T Front** reaches that the client-UDP front does not
 /// otherwise hold.
 pub(super) struct NattFrontWiring<'a> {
-    /// **Self Reach**, whose NAT-T family is the front's cell —
-    /// installed here — and which the firewalled front reads.
+    /// **Self Reach**, which the firewalled front reads and the NAT-T front
+    /// asks for our position when a coordinator fails.
     pub(super) reach: &'a crate::reachability::SharedSelfReach,
+    /// The **Server Coordinator**'s session, where the NAT-T front puts a
+    /// server introduction's `0x60`.
+    pub(super) server: crate::natt::server_punch::CoordinatorSession,
+    /// The front's command half — installed here, and where the firewalled
+    /// front enacts an acting punch.
+    pub(super) natt_front: crate::natt::front::SharedNattFront,
     pub(super) admit: crate::adapters::SharedTunnelAdmit,
-    /// The **Pending Tunnel Claim** table, so a retired **Traversal Attempt**
+    /// The **Awaited Inbound** registry, so a retired **Traversal Attempt**
     /// reaches the download that was waiting on it.
-    pub(super) claims: crate::adapters::SharedTunnelClaims,
+    pub(super) claims: crate::adapters::AwaitedInbound,
     pub(super) peer_pin: crate::adapters::SharedPeerPin,
     pub(super) events: mpsc::WeakSender<CoreEvent>,
     /// The **firewalled front**'s two cells (ADR-0061) — its slot
@@ -195,6 +199,7 @@ pub(super) struct NattFrontWiring<'a> {
 /// mapping no coordinator ever saw. A front that cannot start is a
 /// configuration fault in an engine, and it costs rung 1 alone — everything
 /// else on this socket keeps running.
+#[allow(clippy::too_many_arguments)] // one seam per surface the front reads
 fn spawn_natt_front(
     socket: &Arc<rmule_net::ed2k::ClientUdpSocket>,
     config: &CoreConfig,
@@ -204,22 +209,17 @@ fn spawn_natt_front(
     inbox: mpsc::Receiver<ClientUdpDatagram>,
     natt: NattFrontWiring<'_>,
 ) {
-    let stance = config
-        .peer_crypt
-        .map_or(rmule_primitives::CryptStance::disabled(), |policy| {
-            policy.crypt_stance()
-        });
-    // Armed exactly when the peer-UDP crypt layer is, and by the same policy:
-    // a NAT-T KEY frame asserts our hash, which invites a peer to obfuscate
-    // toward a receiver that must be able to dual-path decrypt.
-    let crypt: Option<Box<dyn rmule_net::natt::NattCrypt>> = config.peer_crypt.map(|_| {
-        Box::new(crate::natt::front::OwnIdentityNattCrypt(
-            own_identity.clone(),
-        )) as Box<dyn rmule_net::natt::NattCrypt>
-    });
+    // Armed exactly when the peer-UDP crypt layer is, by the same policy read
+    // per frame: a NAT-T KEY frame asserts our hash, which invites a peer to
+    // obfuscate toward a receiver that must be able to dual-path decrypt, and
+    // a CAPS answer states the crypt ladder the policy stands at.
+    let crypt: Option<Box<dyn rmule_net::natt::NattCrypt>> =
+        Some(Box::new(crate::natt::front::OwnIdentityNattCrypt {
+            own: own_identity.clone(),
+            policy: natt.hello_adverts.obfuscation.clone(),
+        }));
     let identity = rmule_net::natt::NattIdentity {
         local: crate::natt::front::RMULE_NATT_CLAIM,
-        crypt_options: crate::client_udp::direct_callback_connect_options(stance),
     };
     // The demux reads this cell per CAPS frame rather than a value captured
     // here at bind, when no credentialed activity has necessarily run yet
@@ -230,6 +230,8 @@ fn spawn_natt_front(
     let own_hash: Arc<dyn rmule_net::natt::NattOwnHash> = Arc::new(own_identity.clone());
     let wiring = crate::natt::front::NattWiring {
         client_udp: client_udp.clone(),
+        server: natt.server.clone(),
+        reach: natt.reach.clone(),
         addresses: own_identity.addresses().clone(),
         admit: natt.admit,
         claims: natt.claims,
@@ -256,7 +258,7 @@ fn spawn_natt_front(
         wiring,
         inbox,
     ) {
-        Ok(commands) => natt.reach.natt().install(commands),
+        Ok(commands) => natt.natt_front.install(commands),
         Err(error) => {
             tracing::warn!(%error, "NAT-T front disabled: an engine refused to start");
         }

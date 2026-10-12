@@ -210,16 +210,8 @@ async fn data_ticks_serve_snapshots_with_synthesized_rates() {
     assert!(rates.up_total_bps > 0.0, "▲ {rates:?}");
 }
 
-/// Fast Kad cadence so the paused clock reaches several polls quickly.
-fn kad_config() -> BridgeConfig {
-    BridgeConfig {
-        kad_poll_interval: Duration::from_millis(200),
-        ..BridgeConfig::default()
-    }
-}
-
-fn kad_diag(contact_responded: bool) -> KadRuntimeDiagnostics {
-    KadRuntimeDiagnostics {
+fn kad_diag(contact_responded: bool) -> rmule_core::diagnostics::KadRuntimeDiagnostics {
+    rmule_core::diagnostics::KadRuntimeDiagnostics {
         contact_responded,
         contacts: 0,
         keywords_stored: 0,
@@ -231,59 +223,32 @@ fn kad_diag(contact_responded: bool) -> KadRuntimeDiagnostics {
     }
 }
 
-fn kad_echo(contact_responded: bool) -> CoreEvent {
-    CoreEvent::DiagnosticsSnapshot {
-        snapshot: DiagnosticsSnapshot {
-            kad: Some(kad_diag(contact_responded)),
-            ..DiagnosticsSnapshot::default()
-        },
-    }
-}
-
 #[tokio::test(start_paused = true)]
-async fn the_kad_poll_echo_rides_the_next_data_tick_and_never_the_event_lane() {
-    let (core, mut controls) = fake_core();
+async fn the_kad_facts_ride_the_data_tick_of_the_sync_snapshot() {
+    let (core, controls) = fake_core();
     let (action_tx, mut action_rx) = mpsc::channel(64);
-    let _handle = spawn(core, action_tx, kad_config());
+    let _handle = spawn(core, action_tx, BridgeConfig::default());
 
-    // The bridge polls itself; nothing in the UI asked for this.
-    let polled = controls.sent.recv().await.expect("bridge polls on its own");
-    assert!(matches!(polled, CoreCommand::DumpDiagnostics));
-    controls.events.send(kad_echo(true)).await.expect("echo");
-
-    let mut carried = None;
-    for _ in 0..16 {
-        match action_rx.recv().await.expect("bus open") {
-            Action::Snapshot(frame) => {
-                if let Some(kad) = frame.diagnostics.kad {
-                    carried = Some(kad);
-                    break;
-                }
-            }
-            // The echo is the bridge's own poll answer, not the UI's feed.
-            other => panic!("the echo must not reach the event lane: {other:?}"),
+    controls.snapshot.lock().expect("snapshot").kad = Some(kad_diag(false));
+    let mut seen = None;
+    for _ in 0..8 {
+        if let Action::Snapshot(frame) = action_rx.recv().await.expect("bus open")
+            && let Some(kad) = frame.diagnostics.kad
+        {
+            seen = Some(kad);
+            break;
         }
     }
     assert_eq!(
-        carried,
-        Some(kad_diag(true)),
-        "the actor-only Kad facts must reach the UI on the levels lane"
+        seen,
+        Some(kad_diag(false)),
+        "the snapshot's Kad facts reach the UI as they are"
     );
-}
 
-#[tokio::test(start_paused = true)]
-async fn a_later_echo_supersedes_the_kad_facts_the_ui_sees() {
-    let (core, mut controls) = fake_core();
-    let (action_tx, mut action_rx) = mpsc::channel(64);
-    let _handle = spawn(core, action_tx, kad_config());
-
-    controls.sent.recv().await.expect("first poll");
-    controls.events.send(kad_echo(false)).await.expect("echo");
-    controls.sent.recv().await.expect("second poll");
-    controls.events.send(kad_echo(true)).await.expect("echo");
-
+    // Latest-state-wins: the next tick carries the newer level.
+    controls.snapshot.lock().expect("snapshot").kad = Some(kad_diag(true));
     let mut last = None;
-    for _ in 0..24 {
+    for _ in 0..8 {
         if let Action::Snapshot(frame) = action_rx.recv().await.expect("bus open")
             && let Some(kad) = frame.diagnostics.kad
         {
@@ -293,35 +258,7 @@ async fn a_later_echo_supersedes_the_kad_facts_the_ui_sees() {
             }
         }
     }
-    assert_eq!(
-        last,
-        Some(kad_diag(true)),
-        "latest-state-wins: the newer echo replaces the older facts"
-    );
-}
-
-#[tokio::test(start_paused = true)]
-async fn an_unanswered_kad_poll_is_never_queued_behind_itself() {
-    let (core, mut controls) = fake_core();
-    let (action_tx, mut action_rx) = mpsc::channel(64);
-    let _handle = spawn(core, action_tx, kad_config());
-
-    // Never answer the first poll; ticks keep firing while the clock runs.
-    controls.sent.recv().await.expect("first poll");
-    for _ in 0..16 {
-        let _ = action_rx.recv().await.expect("bus open"); // let the clock advance
-    }
-    assert!(
-        controls.sent.try_recv().is_err(),
-        "a poll with an outstanding answer must be skipped, not queued"
-    );
-
-    // The answer re-arms polling.
-    controls.events.send(kad_echo(false)).await.expect("echo");
-    assert!(matches!(
-        controls.sent.recv().await.expect("polling resumes"),
-        CoreCommand::DumpDiagnostics
-    ));
+    assert_eq!(last, Some(kad_diag(true)));
 }
 
 #[tokio::test(start_paused = true)]
@@ -330,8 +267,6 @@ async fn commands_reach_the_core_port() {
     let (action_tx, _action_rx) = mpsc::channel(64);
     let handle = spawn(core, action_tx, BridgeConfig::default());
 
-    // Distinct from the bridge's own `DumpDiagnostics` poll, so the
-    // assertion proves the *UI's* command traversed the port.
     handle
         .send(CoreCommand::DisconnectFromServer)
         .await
@@ -470,5 +405,55 @@ async fn grace_elapsed_sends_an_unconfirmed_flush_flash_before_the_ack() {
         saw_grace_elapsed_flash,
         "a grace-elapsed quit must flash that the flush was unconfirmed, \
              not answer as if it drained cleanly"
+    );
+}
+
+/// The quit steps are facts of the run like any other: each reaches the Run
+/// Log as the core runs it, whether or not the UI is still there to hear it.
+#[tokio::test(start_paused = true)]
+async fn quit_steps_are_written_to_the_run_log_even_with_the_ui_gone() {
+    use std::io::Write;
+
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<u8>>>);
+    impl Write for Captured {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("captured").extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let captured = Captured::default();
+    let sink = captured.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(move || sink.clone())
+        .finish();
+    let _installed = tracing::subscriber::set_default(subscriber);
+
+    let (events_tx, events_rx) = mpsc::channel(4);
+    for step in [rmule_core::QuitStep::Search, rmule_core::QuitStep::Kad] {
+        events_tx
+            .send(CoreEvent::Quitting { step })
+            .await
+            .expect("room");
+    }
+    drop(events_tx);
+    let (action_tx, action_rx) = mpsc::channel(4);
+    drop(action_rx);
+    forward_quit(events_rx, &action_tx, &Default::default()).await;
+
+    let log = String::from_utf8(captured.0.lock().expect("captured").clone()).expect("utf8");
+    let steps: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains("quit.step"))
+        .collect();
+    assert_eq!(steps.len(), 2, "{log}");
+    assert!(
+        steps[0].contains("step=search") && steps[1].contains("step=kad"),
+        "{log}"
     );
 }

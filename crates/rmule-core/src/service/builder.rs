@@ -4,18 +4,21 @@
 //! core cannot be spawned. The durable seams (download repository, shared-file
 //! registry, credit ledger, server list) are not slots: they are always the
 //! store views [`Core::builder`] opens on the one handle it is given, since
-//! nothing ever ran a core over any other implementation.
+//! nothing ever ran a core over any other implementation. The operator's
+//! **Core Settings** come off that handle too, unless a test or a tool
+//! injects its own (ADR-0069).
 
 use std::sync::Arc;
 
+use rmule_kad::KadId;
 use rmule_primitives::{SecureIdentKey, UserHash};
 use tokio::sync::Mutex;
 
 use crate::adapters::{
-    AdapterCells, KadRuntimeFactory, PeerTransferService, RuntimeKadFactory,
+    AdapterCells, KadCells, KadRuntimeFactory, PeerTransferService, RuntimeKadFactory,
     RuntimePeerTransferService, RuntimeServeRuntimeService, RuntimeSourceLookupService,
-    ServeRuntimeService, SharedCallbackTable, SharedDialedServeSink, SharedKadBootstrap,
-    SharedKadPump, SourceLookupService,
+    ServeRuntimeService, SharedDialedServeSink, SharedKadBootstrap, SharedKadPump,
+    SourceLookupService,
 };
 use crate::app_config::AppConfigStore;
 use crate::ban_store::SharedBanStore;
@@ -32,6 +35,7 @@ use crate::store::registry::DurableSharedFileRegistry;
 
 use super::actor::CoreWiring;
 use super::{Core, CoreConfig};
+use crate::CoreSettings;
 
 /// Every knob [`Core`] needs, each defaulting to the shared-session production
 /// adapter set — the single home for the default wiring that replaces the old
@@ -60,11 +64,23 @@ pub struct CoreBuilder<S, P, L, K> {
 /// whole when a setter swaps one slot's type.
 struct NodeParts {
     config: CoreConfig,
+    /// The operator's **Core Settings** a caller injected, or `None`: then
+    /// [`build`](CoreBuilder::build) reads them from the store, and only
+    /// then, so a test that injects its own never has the store read behind
+    /// it.
+    settings: Option<CoreSettings>,
+    /// The one open store, which the settings are read from.
+    store: Arc<DurableStore>,
     repository: DurableDownloadRepository,
     registry: DurableSharedFileRegistry,
     credit: DurableCreditStore,
     /// The one set of shared cells every adapter adopts.
     cells: AdapterCells,
+    /// What every Kad start is lent: built here, once, so the readers wired
+    /// below and each node a restart makes share one set.
+    kad_cells: KadCells,
+    /// A Kad level stated in place of the verdicts a pump publishes.
+    kad_reach: Option<crate::KadReachLevel>,
     /// The node's **User Hash**, fixed here at build time (ADR-0048 "Identity ownership"):
     /// [`Core::builder`] reads it from the store it
     /// is given — the same generate-once row a front-end's
@@ -72,6 +88,14 @@ struct NodeParts {
     /// hash on the command line replaces it with [`CoreBuilder::user_hash`].
     /// No command carries one.
     user_hash: UserHash,
+    /// The node's **Kad ID**, fixed here at build time like the User Hash:
+    /// [`Core::builder`] reads the store's generate-once Kad identity, and a
+    /// tool that names its ID replaces it with [`CoreBuilder::kad_id`]. No
+    /// command carries one.
+    kad_id: KadId,
+    /// The **Kad UDP Key** the store minted once (ADR-0069's key split): the
+    /// seed of every Kad UDP verify key the node hands out.
+    kad_udp_key: u32,
     /// The **Interface Source** (ADR-0084) core polls for the addresses this
     /// host holds. `Core::builder` installs the live enumeration.
     interface_source: Option<Arc<dyn rmule_net::interfaces::InterfaceSource>>,
@@ -88,9 +112,9 @@ struct NodeParts {
     clients_met_dir: Option<std::path::PathBuf>,
     /// What the Shared Directory List's guards refuse (ADR-0101).
     share_guards: crate::ShareGuards,
-    /// The credentials core's own restarts of downloads present (ADR-0094),
-    /// or `None`: then attach starts none.
-    restore_credentials: Option<super::ClientCredentials>,
+    /// Whether attach listens and starts again the downloads the last process
+    /// left running (ADR-0094); off, attach starts none.
+    restore_at_attach: bool,
     /// The managed server list the actor owns (ADR-0080), type-erased.
     server_list: SharedServerListStore,
     /// The one URL-acquisition capability core is given (ADR-0080), or `None`
@@ -132,6 +156,7 @@ where
         mut peer_transfer: P2,
     ) -> CoreBuilder<S, P2, L, K> {
         peer_transfer.adopt_cells(&self.node.cells);
+        peer_transfer.set_kad_presence(self.node.kad_cells.presence.clone());
         CoreBuilder {
             source_lookup: self.source_lookup,
             peer_transfer,
@@ -151,7 +176,7 @@ where
         mut serve_runtime: L2,
     ) -> CoreBuilder<S, P, L2, K> {
         serve_runtime.adopt_cells(&self.node.cells);
-        serve_runtime.set_kad_presence(self.kad.kad_presence());
+        serve_runtime.set_kad_presence(self.node.kad_cells.presence.clone());
         CoreBuilder {
             source_lookup: self.source_lookup,
             peer_transfer: self.peer_transfer,
@@ -163,15 +188,10 @@ where
 
     /// Inject a Kad factory (ADR-0043); the default is [`RuntimeKadFactory`].
     /// Core correctness tests pass a fake so Kad-fed sources reach the scheduler
-    /// with no socket and no server. It adopts the builder's cells.
+    /// with no socket and no server. The factory is lent the builder's one
+    /// [`KadCells`] at each start; it holds none of its own.
     #[must_use]
-    pub fn kad<K2: KadRuntimeFactory>(mut self, mut kad: K2) -> CoreBuilder<S, P, L, K2> {
-        kad.adopt_cells(&self.node.cells);
-        // A served link's `0x99`/`0x95` gate must track *this* factory's own
-        // **Kad Presence**: the default wiring bound the serve
-        // runtime to the *default* factory's view, and a factory swap here
-        // would otherwise leave it reading a cell no pump ever leases.
-        self.serve_runtime.set_kad_presence(kad.kad_presence());
+    pub fn kad<K2: KadRuntimeFactory>(self, kad: K2) -> CoreBuilder<S, P, L, K2> {
         CoreBuilder {
             source_lookup: self.source_lookup,
             peer_transfer: self.peer_transfer,
@@ -181,6 +201,23 @@ where
         }
     }
 
+    /// State the Kad half of **Self Reach** as `level` in place of the
+    /// verdicts a Kad pump publishes into the core's [`KadCells`] — for a test
+    /// that fixes what a node running a self-check would have reached, or a
+    /// core whose Kad runtime runs none.
+    #[must_use]
+    pub fn kad_reach(mut self, level: crate::KadReachLevel) -> Self {
+        self.node.kad_reach = Some(level);
+        self
+    }
+
+    /// The cells this builder lends every Kad start, for a test that reads
+    /// what a fake published.
+    #[cfg(test)]
+    pub(crate) fn kad_cells(&self) -> &KadCells {
+        &self.node.kad_cells
+    }
+
     /// Fix the node's **User Hash** (ADR-0048 "Identity ownership")
     /// in place of the one [`Core::builder`] read from the store — for a
     /// tool or a test that names its hash. Build time is the only time a hash
@@ -188,6 +225,27 @@ where
     #[must_use]
     pub fn user_hash(mut self, user_hash: UserHash) -> Self {
         self.node.user_hash = user_hash;
+        self
+    }
+
+    /// Fix the node's **Kad ID** (ADR-0043) in place of the one
+    /// [`Core::builder`] read from the store — for a tool or a test that
+    /// places its node in the keyspace. Build time is the only time an ID is
+    /// chosen: `EnableKad` carries none.
+    #[must_use]
+    pub fn kad_id(mut self, kad_id: KadId) -> Self {
+        self.node.kad_id = kad_id;
+        self
+    }
+
+    /// Fix the node's **Kad UDP Key** (ADR-0046) in place of the one
+    /// [`Core::builder`] read from the store — for a tool whose caller must
+    /// open what a counterparty keyed on it, and so chooses the seed rather
+    /// than reading one back. Build time is the only time it is chosen, as
+    /// for the Kad ID: `EnableKad` carries none.
+    #[must_use]
+    pub fn kad_udp_key(mut self, kad_udp_key: u32) -> Self {
+        self.node.kad_udp_key = kad_udp_key;
         self
     }
 
@@ -203,7 +261,15 @@ where
         self.source_lookup.adopt_cells(&self.node.cells);
         self.peer_transfer.adopt_cells(&self.node.cells);
         self.serve_runtime.adopt_cells(&self.node.cells);
-        self.kad.adopt_cells(&self.node.cells);
+        self
+    }
+
+    /// Run under `settings` in place of the operator's **Core Settings** the
+    /// store holds (ADR-0069) — for a test or a tool that states its own, so
+    /// nothing reads the store behind it.
+    #[must_use]
+    pub fn settings(mut self, settings: CoreSettings) -> Self {
+        self.node.settings = Some(settings);
         self
     }
 
@@ -318,17 +384,19 @@ where
         self.node.cells.session.clone()
     }
 
-    /// The node's credentials at attach (ADR-0093) — the ones the front end
-    /// gives every `ResumeDownload` and `ConnectToServer`. With them, attach
-    /// binds the eD2k listener on their TCP port (the Serve activity, so the
-    /// port mapping starts too) and starts again every download the last
+    /// Run as the operator's node from attach (ADR-0093, ADR-0094): bind the
+    /// eD2k listener on the Core Settings' TCP port (the Serve activity, so
+    /// the port mapping starts too) and start again every download the last
     /// process left running, each riding the operator's session or waiting
-    /// for one. Without them, attach binds nothing and reports those downloads
-    /// without starting any: core holds no identity of its own (ADR-0069), so
-    /// a tool that opens a store only to read it listens on nothing.
+    /// for one. Everything the node sends presents
+    /// [`CoreSettings::credentials`](crate::CoreSettings::credentials),
+    /// whether or not it restores.
+    /// Without it, attach binds nothing and reports those downloads without
+    /// starting any, so a tool that opens a store only to read it listens on
+    /// nothing.
     #[must_use]
-    pub fn restore_credentials(mut self, credentials: super::ClientCredentials) -> Self {
-        self.node.restore_credentials = Some(credentials);
+    pub fn restore_at_attach(mut self) -> Self {
+        self.node.restore_at_attach = true;
         self
     }
 
@@ -346,18 +414,23 @@ where
     /// `Arc<Mutex<_>>`; the serve runtime goes into the `Option` that
     /// `StartServing` takes it out of exactly once.
     #[must_use]
-    pub fn build(self) -> Core {
+    pub fn build(mut self) -> Core {
+        let settings = match self.node.settings.take() {
+            Some(settings) => settings,
+            None => read_settings(&self.node.store),
+        };
+        // The one obfuscation policy every hello and login states (ADR-0046),
+        // settled before anything can send one; the actor alone writes it
+        // after, and keeps no start copy of it.
+        let (settings, obfuscation) = super::actor::StartSettings::split(settings);
+        self.node.cells.hello_adverts.obfuscation.set(obfuscation);
+        self.source_lookup.adopt_cells(&self.node.cells);
+        self.peer_transfer.adopt_cells(&self.node.cells);
+        self.serve_runtime.adopt_cells(&self.node.cells);
+        // The cells a Kad start is lent are the builder's last word on the
+        // adapter cells, so a key set after `Core::builder` reaches the node.
+        self.node.kad_cells.adapters = self.node.cells.clone();
         let node = self.node;
-        // Every front end builds its Core here, so every Run Log states the
-        // one obfuscation policy (ADR-0046) the session ran under.
-        tracing::info!(
-            policy = node.config.peer_crypt.map_or("off", |policy| match policy {
-                rmule_net::peer::ObfuscationPolicy::Supported => "supported",
-                rmule_net::peer::ObfuscationPolicy::Requested => "requested",
-                rmule_net::peer::ObfuscationPolicy::Required => "required",
-            }),
-            "obfuscation policy"
-        );
         // The IP filter load happens here, synchronously, before
         // the actor spawns: rmule's replacement for aMule's background load +
         // filter-not-ready-blocks-everything branch. The adapters already
@@ -377,41 +450,50 @@ where
         node.cells.own_identity().set_user_hash(node.user_hash);
         let cells = node.cells;
         let credit: SharedCreditStore = Arc::new(node.credit);
-        Core::spawn_with_dialed_serve(CoreWiring {
-            config: node.config,
-            store: Arc::new(node.repository),
-            registry: Arc::new(node.registry),
-            credit,
-            user_hash: node.user_hash,
-            source_lookup: Arc::new(Mutex::new(self.source_lookup)),
-            peer_transfer: Arc::new(Mutex::new(self.peer_transfer)),
-            serve_runtime: Some(self.serve_runtime),
-            kad_factory: self.kad,
-            udp_ports_advert: cells.hello_adverts.udp_ports.clone(),
-            ipv6_advert: cells.hello_adverts.ipv6.clone(),
-            shared_server_session: cells.session,
-            dialed_serve_sink: cells.dialed_serve_sink,
-            callbacks: cells.callbacks,
-            buddy_slot: cells.buddy_slot,
-            hello_adverts: cells.hello_adverts,
-            firewalled_front: cells.firewalled_front,
-            file_known: cells.file_known,
-            tunnel_admit: cells.tunnel_admit,
-            tunnel_claims: cells.tunnel_claims,
-            hello_refusals: cells.hello_refusals,
-            ip_filter: cells.ip_filter,
-            interface_source: node.interface_source,
-            gateway_source: node.gateway_source,
-            mapping_backends: node.mapping_backends,
-            kad_pump: cells.kad_pump,
-            peer_roster: cells.peer_roster,
-            port_mapping_preferences: node.port_mapping_preferences,
-            clients_met_dir: node.clients_met_dir,
-            share_guards: node.share_guards,
-            restore_credentials: node.restore_credentials,
-            server_list: node.server_list,
-            server_list_fetcher: node.server_list_fetcher,
-        })
+        Core::spawn_with_dialed_serve(
+            CoreWiring {
+                config: node.config,
+                settings,
+                store: Arc::new(node.repository),
+                registry: Arc::new(node.registry),
+                credit,
+                user_hash: node.user_hash,
+                source_lookup: Arc::new(Mutex::new(self.source_lookup)),
+                peer_transfer: Arc::new(Mutex::new(self.peer_transfer)),
+                serve_runtime: Some(self.serve_runtime),
+                kad_factory: self.kad,
+                kad_reach: node.kad_reach.unwrap_or_else(|| {
+                    crate::KadReachLevel::published(node.kad_cells.verdicts.clone())
+                }),
+                kad_cells: node.kad_cells,
+                udp_ports_advert: cells.hello_adverts.udp_ports.clone(),
+                ipv6_advert: cells.hello_adverts.ipv6.clone(),
+                shared_server_session: cells.session,
+                dialed_serve_sink: cells.dialed_serve_sink,
+                awaited_inbound: cells.awaited_inbound,
+                buddy_slot: cells.buddy_slot,
+                hello_adverts: cells.hello_adverts,
+                firewalled_front: cells.firewalled_front,
+                file_known: cells.file_known,
+                tunnel_admit: cells.tunnel_admit,
+                hello_refusals: cells.hello_refusals,
+                ip_filter: cells.ip_filter,
+                interface_source: node.interface_source,
+                gateway_source: node.gateway_source,
+                mapping_backends: node.mapping_backends,
+                kad_pump: cells.kad_pump,
+                peer_roster: cells.peer_roster,
+                port_mapping_preferences: node.port_mapping_preferences,
+                clients_met_dir: node.clients_met_dir,
+                share_guards: node.share_guards,
+                restore_at_attach: node.restore_at_attach,
+                kad_id: node.kad_id,
+                kad_udp_key: node.kad_udp_key,
+                server_list: node.server_list,
+                server_list_fetcher: node.server_list_fetcher,
+            },
+            node.store,
+        )
     }
 }
 
@@ -431,8 +513,8 @@ impl Core {
     /// woven into the default adapters, and also handed to the actor by
     /// [`CoreBuilder::build`], so the default path reproduces production exactly:
     /// source-lookup and the serve announce reuse one server session (ADR-0032),
-    /// the serve accept-router and every download runner share one Low-ID
-    /// callback table (ADR-0039), and each dialed download connection's serve
+    /// the serve accept-router and every download runner share one **Awaited
+    /// Inbound** registry (ADR-0039), and each dialed download connection's serve
     /// half reaches the one upload queue through the shared dialed-serve sink
     /// (ADR-0031). Override any slot with the setters; anything left keeps
     /// this default and its shared handles.
@@ -448,11 +530,10 @@ impl Core {
     > {
         let session = SharedServerSession::default();
         let dialed_serve_sink = SharedDialedServeSink::default();
-        let callbacks = SharedCallbackTable::default();
         // One core-owned BanStore (ADR-0064), shared by the Kad event fold
         // and both peer-TCP enforcement surfaces — mirrors how `session` /
-        // `dialed_serve_sink` / `callbacks` are each created once here and
-        // cloned into every adapter that needs them.
+        // `dialed_serve_sink` are each created once here and cloned into
+        // every adapter that needs them.
         let ban_store = SharedBanStore::default();
         // One core-owned ed2k→Kad handoff sink (ADR-0067), shared by the Kad
         // factory (which installs its sender when the node starts) and both peer
@@ -491,13 +572,13 @@ impl Core {
         // path (holds the buddy's persistent inbound link, routes ping/close),
         // and the client-UDP front (0x94 relay) — the same pattern again.
         let buddy_slot = SharedBuddySlot::default();
-        // And its firewalled mirror: the slot the Kad factory
-        // fills from a verified `0x5A`, plus the late-bound command half of
-        // the front that dials it. Woven here for the same reason the buddy
-        // slot is — two adapters and one actor-spawned task share them. Every
-        // hello reads the slot too, through the Hello Adverts below, for the
-        // serving buddy.
-        let firewalled_slot = crate::firewalled::link::SharedFirewalledSlot::default();
+        // And its firewalled mirror's shared face: the late-bound command
+        // half of the Firewalled Front, which owns our own buddy's slot, and
+        // the buddy level it and the Kad pump publish. Woven here for the
+        // same reason the buddy slot is — two adapters and one actor-spawned
+        // task share it. Every hello reads the level too, through the Hello
+        // Adverts below, for the serving buddy.
+        let firewalled_front = crate::firewalled::front::SharedFirewalledFront::default();
         // One view of the store for the managed server list, the learned
         // port-mapping method and the node's SUI keypair: they are the same
         // durable handle (ADR-0083), so a second one would only be a second
@@ -523,11 +604,13 @@ impl Core {
         let hello_adverts = crate::adapters::HelloAdverts {
             udp_ports: udp_ports_advert.clone(),
             ipv6: ipv6_advert.clone(),
-            firewalled_slot,
-            crypt_policy: config.peer_crypt,
+            buddy: firewalled_front.view(),
+            // Settled at `build`, from the settings it resolves. The session
+            // cell's own, so the login reads the policy every hello states.
+            obfuscation: session.obfuscation().clone(),
             secure_ident,
+            ..crate::adapters::HelloAdverts::default()
         };
-        let firewalled_front = crate::firewalled::front::SharedFirewalledFront::default();
         // The file-known predicate, woven here for the same
         // reason: the serve/download command arms and the firewalled front
         // are built at different sites below and share no other lifetime.
@@ -538,12 +621,12 @@ impl Core {
         // punched path meets the IP filter, the ban gate and the inbound
         // triage exactly as a TCP accept does.
         let tunnel_admit = crate::adapters::SharedTunnelAdmit::default();
-        // The second road a pending Low-ID callback may be answered on
-        // (ADR-0091): a download whose callback went silent registers its
-        // target here, and the serve adapter's triage hands it the Dialer
-        // Tunnel the punch raised. One table, cloned into the adapter and
-        // into every runner — the pattern above, again.
-        let tunnel_claims = crate::adapters::SharedTunnelClaims::default();
+        // The **Awaited Inbound** registry (ADR-0039, ADR-0091): every
+        // download files the roads its pending callbacks may be answered on,
+        // and the serve adapter's triage asks it who gets a connection. One
+        // registry, cloned into the adapter, the NAT-T front and every
+        // runner — the pattern above, again.
+        let awaited_inbound = crate::adapters::AwaitedInbound::default();
         // One core-owned sink for the out-of-band signals a running Kad node
         // takes (ADR-0058/0086), shared by the Kad factory (which installs its
         // pump sender on start), the port-mapping runtime (a fresh Exact grant,
@@ -569,9 +652,29 @@ impl Core {
                 crate::app_config::generate_user_hash()
             }
         };
+        // The node's Kad identity and Kad UDP Key (ADR-0043): the store's
+        // generate-once rows, read here like the User Hash, so `EnableKad`
+        // carries neither. A failed read mints fresh ones for this run rather
+        // than failing start, the User Hash's posture.
+        let kad_id = match app_config.ensure_kad_identity() {
+            Ok(identity) => identity.id,
+            Err(error) => {
+                tracing::warn!(%error, "no stored Kad identity; this run uses a fresh Kad ID");
+                crate::app_config::generate_kad_identity().id
+            }
+        };
+        let kad_udp_key = match app_config.ensure_kad_udp_key() {
+            Ok(key) => key,
+            Err(error) => {
+                tracing::warn!(%error, "no stored Kad UDP Key; this run uses a fresh one");
+                let mut bytes = [0_u8; 4];
+                getrandom::fill(&mut bytes).expect("OS entropy for a Kad UDP Key");
+                u32::from_le_bytes(bytes)
+            }
+        };
         let cells = AdapterCells {
             session,
-            callbacks,
+            awaited_inbound,
             dialed_serve_sink,
             slot_wait_timeout: config.slot_wait_timeout,
             ban_store,
@@ -584,7 +687,6 @@ impl Core {
             firewalled_front,
             file_known,
             tunnel_admit,
-            tunnel_claims,
             address_families: config.address_families,
             // One cell every peer connection's first reader reports a refused
             // hello to (ADR-0050); the actor's prologue installs its bus.
@@ -596,13 +698,15 @@ impl Core {
         source_lookup.adopt_cells(&cells);
         let mut peer_transfer = RuntimePeerTransferService::new(config.slot_wait_timeout);
         peer_transfer.adopt_cells(&cells);
-        let kad = RuntimeKadFactory::new(&cells);
+        let kad = RuntimeKadFactory;
+        let kad_cells = KadCells::new(cells.clone());
         let mut serve_runtime = RuntimeServeRuntimeService::new();
         serve_runtime.adopt_cells(&cells);
         // A served link's `0x99` (ADR-0061 route 4) reads the
         // Kad factory's own **Kad Presence** — the pump it spawns is that
         // cell's only writer.
-        serve_runtime.set_kad_presence(kad.kad_presence());
+        serve_runtime.set_kad_presence(kad_cells.presence.clone());
+        peer_transfer.set_kad_presence(kad_cells.presence.clone());
         CoreBuilder {
             source_lookup,
             peer_transfer,
@@ -613,8 +717,14 @@ impl Core {
                 registry: DurableSharedFileRegistry::new(store.clone()),
                 credit: DurableCreditStore::new(store.clone()),
                 config,
+                settings: None,
+                store: Arc::clone(&store),
                 cells,
+                kad_cells,
+                kad_reach: None,
                 user_hash,
+                kad_id,
+                kad_udp_key,
                 // The one place rmule asks the OS which addresses it holds
                 // (ADR-0084). Installed for every production core.
                 interface_source: Some(Arc::new(rmule_net::interfaces::SystemInterfaces)),
@@ -633,10 +743,28 @@ impl Core {
                 ip_filter_dir: None,
                 clients_met_dir: None,
                 share_guards: crate::ShareGuards::default(),
-                restore_credentials: None,
+                restore_at_attach: false,
                 server_list: app_config,
                 server_list_fetcher: None,
             },
+        }
+    }
+}
+
+/// The operator's **Core Settings** as `store` holds them. A store that
+/// will not answer starts the core under the defaults with the operator's
+/// default ports, rather than failing start — the posture the User Hash
+/// and the SUI key take.
+fn read_settings(store: &Arc<DurableStore>) -> CoreSettings {
+    match crate::CoreSettingsHandle::open(Arc::clone(store)).read() {
+        Ok(settings) => settings,
+        Err(error) => {
+            tracing::warn!(%error, "core settings unreadable; this run uses the defaults");
+            CoreSettings {
+                tcp_port: crate::app_config::DEFAULT_TCP_PORT,
+                udp_port: crate::app_config::DEFAULT_UDP_PORT,
+                ..CoreSettings::default()
+            }
         }
     }
 }

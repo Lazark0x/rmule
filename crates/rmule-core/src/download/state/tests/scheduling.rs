@@ -9,10 +9,10 @@ use super::*;
 fn start_spawns_one_worker_per_candidate_up_to_concurrency() {
     let mut state = file_hash_only_state(vec![peer(1), peer(2), peer(3)], 2);
     let spawns: Vec<_> = state
-        .start()
+        .start(t0())
         .into_iter()
         .filter_map(|d| match d {
-            Decision::Spawn { peer, slot } => Some((peer, slot)),
+            Decision::Spawn { peer, slot, .. } => Some((peer, slot)),
             _ => None,
         })
         .collect();
@@ -26,24 +26,19 @@ fn sources_received_refills_the_pool_and_fills_a_free_slot() {
     use rmule_primitives::{ClientId, PeerSource};
     // One initial candidate, concurrency 2 → one worker spawns, one free slot.
     let mut state = file_hash_only_state(vec![peer(1)], 2);
-    let _ = state.start();
-    let _ = state.on_worker_event(peer(1), PeerWorkerEvent::Connected);
+    let _ = state.start(t0());
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
 
     // A worker exchanges two sources: a new High-ID peer(2) and a dup of the
     // already-working peer(1). `peer(n)` is IP 10.0.0.n; its High-ID client
     // id is that IP as a little-endian u32 (ADR-0055 backfill).
     let src = |n: u8| {
-        rmule_primitives::ExchangedSource::plain(PeerSource::new(
+        rmule_primitives::SourceSighting::plain(PeerSource::new(
             ClientId::from_u32(u32::from_le_bytes([10, 0, 0, n])),
             4662,
         ))
     };
-    let decisions = state.on_worker_event(
-        peer(1),
-        PeerWorkerEvent::SourcesReceived {
-            sources: vec![src(2), src(1)],
-        },
-    );
+    let decisions = via_exchange(&mut state, peer(1), vec![src(2), src(1)]);
 
     // The new source refills the pool and fills the free slot → Spawn for
     // peer(2); the dup (already a worker) is not re-spawned.
@@ -59,34 +54,29 @@ fn sources_received_refills_the_pool_and_fills_a_free_slot() {
 
 #[test]
 fn an_exchanged_source_records_the_crypt_side_its_dial_meets() {
-    use rmule_primitives::ExchangedSource;
+    use rmule_primitives::SourceSighting;
     use rmule_primitives::{ClientId, PeerCrypt, PeerSource, SourceCryptOptions};
     let mut state = file_hash_only_state(vec![peer(1)], 4);
-    let _ = state.start();
+    let _ = state.start(t0());
 
     let high_id = |n: u8| ClientId::from_u32(u32::from_le_bytes([10, 0, 0, n]));
     let dial_hash = UserHash::from_bytes([0x42; 16]);
     // peer(2): a v4 source carrying a hash + crypt support → obfuscate-dialable.
-    let crypt_capable = ExchangedSource::new(
+    let crypt_capable = SourceSighting::new(
         PeerSource::new(high_id(2), 4662),
         Some(dial_hash),
         Some(SourceCryptOptions::from_byte(0x01)),
     );
     // peer(3): a v4 source that carries a hash but does NOT support crypt.
-    let no_crypt = ExchangedSource::new(
+    let no_crypt = SourceSighting::new(
         PeerSource::new(high_id(3), 4662),
         Some(UserHash::from_bytes([0x99; 16])),
         Some(SourceCryptOptions::from_byte(0x00)),
     );
     // peer(4): a plain (v1) source, no hash at all.
-    let plain = ExchangedSource::plain(PeerSource::new(high_id(4), 4662));
+    let plain = SourceSighting::plain(PeerSource::new(high_id(4), 4662));
 
-    let _ = state.on_worker_event(
-        peer(1),
-        PeerWorkerEvent::SourcesReceived {
-            sources: vec![crypt_capable, no_crypt, plain],
-        },
-    );
+    let _ = via_exchange(&mut state, peer(1), vec![crypt_capable, no_crypt, plain]);
 
     assert_eq!(
         state.peer_crypt(peer(2)),
@@ -110,8 +100,8 @@ fn a_raced_part_completing_clears_the_losing_racer_and_finalizes() {
     let mut state = two_peer_state();
 
     // peer 1 takes the only part; peer 2, idle with nothing fresh, races it.
-    let _ = state.on_worker_event(peer(1), PeerWorkerEvent::Connected);
-    let assigned_two = state.on_worker_event(peer(2), PeerWorkerEvent::Connected);
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let assigned_two = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Connected);
     assert!(
         assigned_two.iter().any(|d| matches!(
             d,
@@ -124,6 +114,7 @@ fn a_raced_part_completing_clears_the_losing_racer_and_finalizes() {
     // peer 1 delivers the whole part: completion hands it off to persist.
     let part = crate::planning::part_plan(ONE_PART, 0);
     let completing = state.on_worker_event(
+        t0(),
         peer(1),
         PeerWorkerEvent::BlockReceived {
             part_index: 0,
@@ -141,7 +132,7 @@ fn a_raced_part_completing_clears_the_losing_racer_and_finalizes() {
 
     // Persist succeeds: the part is verified, its losing racer is dropped,
     // and with the only part done the download finalizes.
-    let resumed = state.on_persist_result(0, peer(1), Ok(()));
+    let resumed = state.on_persist_result(t0(), 0, peer(1), Ok(()));
     assert!(
         resumed.iter().any(|d| matches!(d, Decision::Finalize)),
         "the last verified part finalizes the download: {resumed:?}"
@@ -157,9 +148,10 @@ fn racing_a_partially_assembled_part_resumes_from_the_shared_prefix() {
     let mut state = two_peer_state();
 
     // peer 1 takes part 0 and delivers a partial prefix, then stalls.
-    let _ = state.on_worker_event(peer(1), PeerWorkerEvent::Connected);
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
     let part = crate::planning::part_plan(ONE_PART, 0);
     let _ = state.on_worker_event(
+        t0(),
         peer(1),
         PeerWorkerEvent::BlockReceived {
             part_index: 0,
@@ -170,7 +162,7 @@ fn racing_a_partially_assembled_part_resumes_from_the_shared_prefix() {
 
     // peer 2 races the same part: it must resume from the shared prefix
     // end, not refetch from the part's first byte (ADR-0029).
-    let raced = state.on_worker_event(peer(2), PeerWorkerEvent::Connected);
+    let raced = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Connected);
     let resume_offset = raced
         .iter()
         .find_map(|d| {
@@ -196,17 +188,17 @@ fn racing_a_partially_assembled_part_resumes_from_the_shared_prefix() {
 fn a_retired_worker_frees_its_slot_and_backfills_a_pooled_candidate() {
     // Three candidates, room for two: peer 3 waits in the pool.
     let mut state = file_hash_only_state(vec![peer(1), peer(2), peer(3)], 2);
-    let _ = state.start();
-    let _ = state.on_worker_event(peer(1), PeerWorkerEvent::Connected);
-    let _ = state.on_worker_event(peer(2), PeerWorkerEvent::Connected);
+    let _ = state.start(t0());
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Connected);
 
     // peer 1 drops while peer 2 still races the part, so nothing is
     // released, but the freed slot 0 is backfilled by the pooled peer 3.
-    let retired = state.on_worker_event(peer(1), PeerWorkerEvent::Disconnected);
+    let retired = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
     assert!(
         retired.iter().any(|d| matches!(
             d,
-            Decision::Spawn { peer: p, slot: s } if *p == peer(3) && *s == slot(0)
+            Decision::Spawn { peer: p, slot: s, .. } if *p == peer(3) && *s == slot(0)
         )),
         "the retired worker's slot is reused to backfill the next candidate: {retired:?}"
     );
@@ -216,12 +208,12 @@ fn a_retired_worker_frees_its_slot_and_backfills_a_pooled_candidate() {
 #[test]
 fn the_last_worker_retiring_with_an_empty_pool_fails_the_download() {
     let mut state = file_hash_only_state(vec![peer(1)], 1);
-    let _ = state.start();
-    let _ = state.on_worker_event(peer(1), PeerWorkerEvent::Connected);
+    let _ = state.start(t0());
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
 
     // The sole worker drops: its part returns to the pool and, with no
     // candidate left to backfill, the download fails (ADR-0030).
-    let retired = state.on_worker_event(peer(1), PeerWorkerEvent::Disconnected);
+    let retired = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
     assert!(
         retired.iter().any(|d| matches!(
             d,
@@ -243,9 +235,9 @@ fn an_armed_download_waits_instead_of_failing_when_its_pool_exhausts() {
     // Same exhaustion as above, but global discovery is armed (ADR-0051): a
     // future UDP sweep may backfill, so the download waits rather than failing.
     let mut state = discovery_armed_state(vec![peer(1)], 2);
-    let _ = state.start();
-    let _ = state.on_worker_event(peer(1), PeerWorkerEvent::Connected);
-    let retired = state.on_worker_event(peer(1), PeerWorkerEvent::Disconnected);
+    let _ = state.start(t0());
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let retired = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
     assert!(
         !retired
             .iter()
@@ -257,13 +249,14 @@ fn an_armed_download_waits_instead_of_failing_when_its_pool_exhausts() {
 #[test]
 fn a_verification_failure_retires_every_contributor() {
     let mut state = two_peer_state();
-    let _ = state.on_worker_event(peer(1), PeerWorkerEvent::Connected);
-    let _ = state.on_worker_event(peer(2), PeerWorkerEvent::Connected);
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Connected);
 
     // Two peers assemble the part across the cross-peer prefix: peer 1 the
     // head, peer 2 the completing tail.
     let part = crate::planning::part_plan(ONE_PART, 0);
     let _ = state.on_worker_event(
+        t0(),
         peer(1),
         PeerWorkerEvent::BlockReceived {
             part_index: 0,
@@ -272,6 +265,7 @@ fn a_verification_failure_retires_every_contributor() {
         },
     );
     let _ = state.on_worker_event(
+        t0(),
         peer(2),
         PeerWorkerEvent::BlockReceived {
             part_index: 0,
@@ -282,7 +276,12 @@ fn a_verification_failure_retires_every_contributor() {
 
     // The assembled part fails verification: with no per-block attribution
     // (no AICH), every contributor is retired (ADR-0029).
-    let failed = state.on_persist_result(0, peer(2), Err(DownloadFailure::PartVerificationFailed));
+    let failed = state.on_persist_result(
+        t0(),
+        0,
+        peer(2),
+        Err(DownloadFailure::PartVerificationFailed),
+    );
     for contributor in [peer(1), peer(2)] {
         assert!(
             failed.iter().any(|d| matches!(
@@ -302,10 +301,11 @@ fn a_verification_failure_retires_every_contributor() {
 #[test]
 fn every_retirement_ends_its_worker() {
     let mut state = two_peer_state();
-    let _ = state.on_worker_event(peer(1), PeerWorkerEvent::Connected);
-    let _ = state.on_worker_event(peer(2), PeerWorkerEvent::Connected);
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Connected);
     let part = crate::planning::part_plan(ONE_PART, 0);
     let _ = state.on_worker_event(
+        t0(),
         peer(1),
         PeerWorkerEvent::BlockReceived {
             part_index: 0,
@@ -314,8 +314,13 @@ fn every_retirement_ends_its_worker() {
         },
     );
 
-    let failed = state.on_persist_result(0, peer(1), Err(DownloadFailure::PartVerificationFailed));
-    let hung_up = state.on_worker_event(peer(2), PeerWorkerEvent::Disconnected);
+    let failed = state.on_persist_result(
+        t0(),
+        0,
+        peer(1),
+        Err(DownloadFailure::PartVerificationFailed),
+    );
+    let hung_up = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Disconnected);
 
     for (out, at) in [(&failed, peer(1)), (&hung_up, peer(2))] {
         assert!(
@@ -328,7 +333,7 @@ fn every_retirement_ends_its_worker() {
 #[test]
 fn on_stop_releases_in_flight_parts_and_fails_with_the_reason() {
     let mut state = two_peer_state();
-    let _ = state.on_worker_event(peer(1), PeerWorkerEvent::Connected);
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
 
     // A pause releases the in-flight part with the Paused reason (so it can
     // resume later) and fails the activity with Paused.

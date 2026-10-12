@@ -92,10 +92,10 @@ const SERVE_ROLE: &str = "v6serve";
 
 /// The serving rmule prints this once it is logged in and has offered the
 /// file, which is what makes it a source the server can hand out.
-const ANNOUNCED_MARKER: &str = "serve files_announced";
+const ANNOUNCED_MARKER: &str = "serve.files_announced";
 
 /// The serving rmule's line for an answered source ask.
-const SERVED_MARKER: &str = "serve sources_served";
+const SERVED_MARKER: &str = "serve.sources_served";
 
 /// emule-qt's readiness once logged in to the server.
 const EMULEQT_READY_MARKER: &str = "rmule-emuleqt-ready";

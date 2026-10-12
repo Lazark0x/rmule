@@ -8,7 +8,7 @@
 //! `rmule_primitives::secure_ident`. The public key and signature bodies are
 //! carried opaquely here, exactly like AICH `recovery_data`.
 
-use rmule_primitives::Packet;
+use rmule_primitives::{Packet, WireReader, WireTruncated};
 use thiserror::Error;
 
 use crate::opcode::PeerOpcode;
@@ -115,9 +115,15 @@ impl SecIdentStatePacket {
                 actual: payload.len(),
             });
         }
-        let state = SecIdentState::from_u8(payload[0])
-            .ok_or(SuiDecodeError::UnknownState { value: payload[0] })?;
-        let challenge = u32::from_le_bytes([payload[1], payload[2], payload[3], payload[4]]);
+        let mut reader = WireReader::new(payload);
+        let short = |truncated: WireTruncated| SuiDecodeError::WrongStateLen {
+            expected: Self::WIRE_LEN,
+            actual: truncated.available,
+        };
+        let raw = reader.read_u8("state").map_err(short)?;
+        let state =
+            SecIdentState::from_u8(raw).ok_or(SuiDecodeError::UnknownState { value: raw })?;
+        let challenge = reader.read_u32_le("challenge").map_err(short)?;
         Ok(Self { state, challenge })
     }
 
@@ -180,30 +186,30 @@ pub struct SignaturePacket {
 impl SignaturePacket {
     /// Read a signature, taking a trailing byte as the V2 `byIPUsed` kind.
     pub fn decode_packet(packet: &Packet) -> Result<Self, SuiDecodeError> {
-        let payload = packet.payload();
-        let (&len, body) = payload
-            .split_first()
-            .ok_or(SuiDecodeError::MissingLengthPrefix {
+        let mut reader = WireReader::new(packet.payload());
+        let len = usize::from(reader.read_u8("signature length").map_err(|_| {
+            SuiDecodeError::MissingLengthPrefix {
                 opcode: "OP_SIGNATURE",
-            })?;
-        let len = usize::from(len);
+            }
+        })?);
+        let body_len = reader.remaining();
+        let mismatch = || SuiDecodeError::LengthMismatch {
+            opcode: "OP_SIGNATURE",
+            declared: len,
+            actual: body_len,
+        };
+        let signature = reader
+            .take(len, "signature")
+            .map_err(|_| mismatch())?
+            .to_vec();
         // V1 carries exactly `len` signature bytes; V2 exactly one more — the
         // trailing `byIPUsed` kind. Anything else is malformed.
-        let ip_kind = match body.len().checked_sub(len) {
-            Some(0) => None,
-            Some(1) => Some(body[len]),
-            _ => {
-                return Err(SuiDecodeError::LengthMismatch {
-                    opcode: "OP_SIGNATURE",
-                    declared: len,
-                    actual: body.len(),
-                });
-            }
+        let ip_kind = match reader.remaining() {
+            0 => None,
+            1 => Some(reader.read_u8("ip kind").map_err(|_| mismatch())?),
+            _ => return Err(mismatch()),
         };
-        Ok(Self {
-            signature: body[..len].to_vec(),
-            ip_kind,
-        })
+        Ok(Self { signature, ip_kind })
     }
 
     #[must_use]
@@ -222,17 +228,21 @@ impl SignaturePacket {
 }
 
 fn decode_length_prefixed(payload: &[u8], opcode: &'static str) -> Result<Vec<u8>, SuiDecodeError> {
-    let (&len, body) = payload
-        .split_first()
-        .ok_or(SuiDecodeError::MissingLengthPrefix { opcode })?;
-    if usize::from(len) != body.len() {
+    let mut reader = WireReader::new(payload);
+    let len = usize::from(
+        reader
+            .read_u8("length prefix")
+            .map_err(|_| SuiDecodeError::MissingLengthPrefix { opcode })?,
+    );
+    let actual = reader.remaining();
+    if len != actual {
         return Err(SuiDecodeError::LengthMismatch {
             opcode,
-            declared: usize::from(len),
-            actual: body.len(),
+            declared: len,
+            actual,
         });
     }
-    Ok(body.to_vec())
+    Ok(reader.remaining_bytes().to_vec())
 }
 
 fn encode_length_prefixed(body: &[u8]) -> Vec<u8> {

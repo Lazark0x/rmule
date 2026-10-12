@@ -6,8 +6,8 @@
 //! capability wire-smoke probe, the full server-cycle acceptance run, and the
 //! search-wire leg (which stands ed2k-server up beside the eserver), and the
 //! announce-switch leg's offer-set probe and rmule legs, the late-port-test
-//! leg, the crypt-ping-port leg, the sweep-follows-list leg, and the ask-budget
-//! leg.
+//! leg, the crypt-ping-port leg, the server-login-crypt leg, the
+//! sweep-follows-list leg, and the ask-budget leg.
 
 pub(crate) mod announce_switch;
 pub(crate) mod ask_budget;
@@ -17,6 +17,7 @@ pub(crate) mod cycle;
 pub(crate) mod late_port_test;
 pub(crate) mod rmule_tools;
 pub(crate) mod search_wire;
+pub(crate) mod server_login_crypt;
 pub(crate) mod skeleton;
 pub(crate) mod sweep_follows_list;
 
@@ -29,6 +30,7 @@ pub use self::late_port_test::{DEFAULT_HELLO_DELAY_MS, LatePortTestOptions, run_
 pub use self::search_wire::{
     SearchSpacingOptions, SearchWireOptions, SearchWireServer, run_search_spacing, run_search_wire,
 };
+pub use self::server_login_crypt::{ServerLoginCryptOptions, run_server_login_crypt};
 pub use self::skeleton::{RmuleClientAction, ServerSkeletonOptions, run_server_skeleton};
 pub use self::sweep_follows_list::{SweepFollowsListOptions, run_sweep_follows_list};
 

@@ -160,6 +160,8 @@ mod tests {
                 60,
             ),
             client_id: ClientId::from_u32(0x10000001),
+            ed2k_client_id: ClientId::from_u32(0x10000001),
+            public_ip: None,
             connected_server: None,
         }
     }

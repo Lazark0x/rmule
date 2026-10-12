@@ -7,7 +7,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Args;
 use rmule_net::peer::{ConnectOptions as PeerConnectOptions, Connection as PeerConnection};
-use rmule_peer::{PartBitmap, PeerCommand, PeerEvent, PeerHandshakeContext};
+use rmule_peer::{
+    ConnectionEvent, PartBitmap, PeerCommand, PeerEvent, PeerHandshakeContext, RequesterCommand,
+    RequesterEvent,
+};
 use rmule_primitives::{ClientId, ClientIdentity, Ed2kLink, Ed2kText, UserHash};
 
 use crate::cli::{CaptureModeArg, ObfuscationArg};
@@ -85,7 +88,7 @@ pub(crate) struct PeerTransferCaptureArgs {
     #[arg(long)]
     sx_nibble: Option<u8>,
     /// Multipacket capture (ADR-0054 emit): open
-    /// the file negotiation with `PeerCommand::RequestFile` — the live
+    /// the file negotiation with `RequesterCommand::RequestFile` — the live
     /// download runner's connect-time shape — so a MultiPacket-advertising
     /// aMule receives one `OP_MULTIPACKET_EXT` (`0xA4`) bundle and answers its
     /// composed `OP_MULTIPACKETANSWER` (`0x93`), the forward-direction capture
@@ -113,6 +116,8 @@ pub(crate) async fn transfer_capture(args: PeerTransferCaptureArgs) -> Result<()
     let ctx = PeerHandshakeContext {
         identity,
         client_id: ClientId::from_u32(0x10000001),
+        ed2k_client_id: ClientId::from_u32(0x10000001),
+        public_ip: None,
         connected_server: None,
     };
     // A fresh keypair per run (ADR-0041): the capture needs a real exchange,
@@ -179,11 +184,11 @@ pub(crate) async fn transfer_capture(args: PeerTransferCaptureArgs) -> Result<()
                 break;
             }
             event = conn.next_event() => match event {
-                Some(event @ PeerEvent::PeerIdentityVerified { .. }) => {
+                Some(event @ PeerEvent::Connection(ConnectionEvent::IdentityVerified { .. })) => {
                     identity_verified = true;
                     println!("{event}");
                 }
-                Some(event @ PeerEvent::PeerIdentified { .. }) => {
+                Some(event @ PeerEvent::Connection(ConnectionEvent::Identified { .. })) => {
                     println!("{event}");
                     if !sent_probe {
                         if args.multipacket {
@@ -191,39 +196,39 @@ pub(crate) async fn transfer_capture(args: PeerTransferCaptureArgs) -> Result<()
                             // session folds name + status + SX asks into one
                             // 0xA4/0x92 bundle when the peer advertised
                             // MultiPacket, else the same standalone packets.
-                            let _ = conn.send(PeerCommand::RequestFile {
+                            let _ = conn.send(PeerCommand::Requester(RequesterCommand::RequestFile {
                                 file_hash: file.file_hash,
                                 file_size: file.size,
                                 own_status: PartBitmap::downloader_empty(file.size),
                                 want_sources: true,
                                 want_aich_root: false,
-                            }).await;
+                            })).await;
                         } else {
                             // Issue the full flow: probe then request.
                             let _ = conn
-                                .send(PeerCommand::ProbeFile {
+                                .send(PeerCommand::Requester(RequesterCommand::ProbeFile {
                                     file_hash: file.file_hash,
                                     file_size: file.size,
                                     own_status: PartBitmap::downloader_empty(file.size),
-                                })
+                                }))
                                 .await;
                         }
                         sent_probe = true;
                     }
                 }
-                Some(PeerEvent::FileProbed { status, .. }) => {
+                Some(PeerEvent::Requester(RequesterEvent::FileProbed { status, .. })) => {
                     println!("file_probed: {status:?}");
                     if !sent_request {
-                        let _ = conn.send(PeerCommand::RequestParts {
+                        let _ = conn.send(PeerCommand::Requester(RequesterCommand::RequestParts {
                             file_hash: file.file_hash,
                             file_size: file.size,
                             ranges,
-                        }).await;
+                        })).await;
                         sent_request = true;
                     }
                 }
-                Some(event @ PeerEvent::PartReceived { .. }) => {
-                    if let PeerEvent::PartReceived { bytes, .. } = &event {
+                Some(event @ PeerEvent::Requester(RequesterEvent::PartReceived { .. })) => {
+                    if let PeerEvent::Requester(RequesterEvent::PartReceived { bytes, .. }) = &event {
                         received = received.saturating_add(bytes.len() as u64);
                     }
                     println!("{event}");
@@ -233,18 +238,18 @@ pub(crate) async fn transfer_capture(args: PeerTransferCaptureArgs) -> Result<()
                     // core worker.
                     if !sent_release && received >= requested_len {
                         let _ = conn
-                            .send(PeerCommand::ReleaseSlot {
+                            .send(PeerCommand::Requester(RequesterCommand::ReleaseSlot {
                                 file_hash: file.file_hash,
-                            })
+                            }))
                             .await;
                         sent_release = true;
                     }
                 }
-                Some(PeerEvent::SlotReleased { reason, .. }) => {
+                Some(PeerEvent::Requester(RequesterEvent::SlotReleased { reason, .. })) => {
                     println!("slot_released: {reason:?}");
                     break;
                 }
-                Some(PeerEvent::Disconnected { reason }) => {
+                Some(PeerEvent::Connection(ConnectionEvent::Disconnected { reason })) => {
                     println!("disconnected: {reason:?}");
                     break;
                 }
@@ -262,7 +267,7 @@ pub(crate) async fn transfer_capture(args: PeerTransferCaptureArgs) -> Result<()
     }
     if args.secure_ident && !identity_verified {
         anyhow::bail!(
-            "secure user identification did not complete: no PeerIdentityVerified from the peer"
+            "secure user identification did not complete: no IdentityVerified from the peer"
         );
     }
     Ok(())

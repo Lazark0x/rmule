@@ -53,7 +53,7 @@ What a view did with an input it was offered: ignored it (bubble on to the globa
 _Avoid_: event result, handled flag
 
 **Sentence**:
-What the Networks log, the status bar's note and a flash hold: a line the TUI wrote from a code core handed it, in the words modules (`crate::words`, one per domain, each an exhaustive match over its codes). Only the words modules can make one, so no `Debug` dump and no core type's `Display` reaches those surfaces; `scripts/guards.sh` refuses a Debug format anywhere else in the TUI's source outside tests and `tracing` calls, and a glyph golden refuses to render `Some(`, `None`, a struct's braces, a Rust path or a byte array. An address reads `host:port`, a hash or a Kad id as its short hex form.
+What the Networks log, the status bar's note and a flash hold: a line written from a code in a words module — `rmule-words`, whose glossary owns the term, or the TUI's own (`crate::words`, which re-exports the shared modules under the same names and adds the sentences that word the TUI's own types: its command line, a run with no core, a Settings edit, a server-health edge, a search entry's paging, the share set's tally). `scripts/guards.sh` refuses a sentence made, or a Debug format, anywhere else in the TUI's source outside tests and `tracing` calls, and a glyph golden refuses to render `Some(`, `None`, a struct's braces, a Rust path or a byte array.
 _Avoid_: message, string, label (a label is a word in a cell; a sentence is a line said)
 
 **Off-screen line**:
@@ -67,10 +67,6 @@ _Avoid_: truncation, ellipsis, fixed layout
 **Data directory**:
 What the app resolves before anything else, by core's rule (`--data-dir`, `RMULE_DATA`, then `$XDG_DATA_HOME` or `$HOME` on Unix and `%LOCALAPPDATA%` on Windows): rmule's Durable Store (`rmule.redb`, ADR-0083) and the data files beside it (`clients.met`, `nodes.dat`, the IP filter). The TUI opens that one store and hands its seams to the embedded core, so a directory carries exactly one running client — the engine holds the file lock.
 _Avoid_: profile, workspace, config dir (the config is a seam of the store, not a file of its own)
-
-**Run Log**:
-The file in the data directory (`rmule.log`) every run appends its **records** to — always on, because the terminal is the alternate screen and a defect met in an ordinary session must leave evidence. A record is an event code plus typed fields, each field added by what it is (own address, peer address, file name, file hash, port, count, code). It is written at one of two **levels**: **lean** by default (reachability evidence — own addresses, ports, the port mapping, the server endpoint, login steps, verdicts — and codes, no peer address, file name, path or hash) or **full** by the preference *Full run log*, which adds the rest and also lets free-form `tracing` lines through. Search text and File History paths are never written. Bounded: at 16 MiB it is moved aside as the single predecessor `rmule.log.1`. `RMULE_LOG` is the filter; the default level is `info`. Even lean names the operator's own addresses, so it is the operator's to share; full names peers and files.
-_Avoid_: debug log, trace file, console, verbose log
 
 **Table Sort**:
 The one column a table is ordered by, and its direction — view state, never core's. Every visible column can hold it and nothing else can; the header of the column holding it carries the arrow. Each table has one, kept across runs. Rows re-order as they change, and the cursor stays on its row rather than its position. A column may rank its rows into groups before its value (Transfers' Progress: moving bytes, then completed, then the rest); reversing reverses the value inside each group, never the groups. A table lists each column once — its stored key, header text and kind — so none of the three is a switch of its own.

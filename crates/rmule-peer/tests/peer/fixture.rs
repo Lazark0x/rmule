@@ -34,6 +34,14 @@ pub const RMULE_USER_HASH: [u8; 16] = [0x42; 16];
 /// decrypt succeeding is that fallback observed rather than assumed.
 pub const AMULE_SENDER_IP: [u8; 4] = [172, 18, 0, 5];
 
+/// The reasker aMule's runtime user hash in the crypt reask mirror run, read
+/// off its own hello. aMule keys a send on the *recipient's* hash, so this is
+/// half the key rmule encrypted its ack under — and half the key that opens it
+/// again.
+pub const AMULE_USER_HASH: [u8; 16] = [
+    0x99, 0x5D, 0x51, 0xF4, 0x3A, 0x0E, 0x54, 0xC9, 0x37, 0x66, 0xD0, 0xC6, 0xBE, 0xDA, 0x6F, 0x23,
+];
+
 /// The synthetic 40 MiB file both sides shared over the reask capture runs.
 pub const FILE_HASH: [u8; 16] = [
     0xC7, 0xC8, 0x96, 0x90, 0x03, 0x5A, 0x1E, 0xA3, 0x2D, 0xC9, 0x7C, 0x6C, 0xD5, 0x3D, 0x68, 0xE5,

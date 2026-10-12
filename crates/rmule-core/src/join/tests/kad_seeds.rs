@@ -63,6 +63,7 @@ async fn a_persisted_nodes_dat_seeds_the_kad_join_and_suppresses_the_acquisition
             nodes_dat_path: Some(path),
             ..kad_config()
         },
+        own_id(),
         &sink,
     )
     .await
@@ -106,6 +107,7 @@ async fn a_cold_kad_start_strands_by_default_and_joins_anyway() {
         &BootstrapConfig::default(),
         &JoinConfig::default(),
         kad_config(),
+        own_id(),
         &sink,
     )
     .await
@@ -137,6 +139,7 @@ async fn the_opt_in_switch_acquires_contacts_for_a_cold_kad_start() {
         &opted_in(),
         &JoinConfig::default(),
         kad_config(),
+        own_id(),
         &sink,
     )
     .await
@@ -174,6 +177,7 @@ async fn an_unusable_persisted_file_is_named_and_falls_through() {
         &BootstrapConfig::default(),
         &JoinConfig::default(),
         kad(),
+        own_id(),
         &sink,
     )
     .await
@@ -194,6 +198,7 @@ async fn an_unusable_persisted_file_is_named_and_falls_through() {
         &opted_in(),
         &JoinConfig::default(),
         kad(),
+        own_id(),
         &sink,
     )
     .await
@@ -223,6 +228,7 @@ async fn a_failed_kad_acquisition_still_joins() {
         &opted_in(),
         &JoinConfig::default(),
         kad_config(),
+        own_id(),
         &sink,
     )
     .await

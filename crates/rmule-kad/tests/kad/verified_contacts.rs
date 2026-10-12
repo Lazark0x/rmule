@@ -10,6 +10,8 @@
 //! fire — is `verify_keys.rs`. The live handshake against a real aMule is
 //! ADR-0064 capture recipe 3: documented, not faked.
 
+use rmule_kad::KadInstant;
+use rmule_kad::KadNodeStart;
 use rmule_kad::opcode::KADEMLIA2_HELLO_RES_ACK;
 use rmule_kad::{
     Kad2Message, Kad2NodeInfo, KadCommand, KadEvent, KadNode, KadNodeConfig, KadNodeDiagnostic,
@@ -20,12 +22,15 @@ use rmule_testkit::kad_node::{
 };
 
 fn node() -> KadNode {
-    KadNode::new(KadNodeConfig {
-        id: NODE_ID,
-        tcp_port: 4662,
-        udp_port: 4672,
-        user_hash: rmule_kad::UserHash::from_bytes([0xEE; 16]),
-    })
+    KadNode::new(KadNodeStart::new(
+        KadNodeConfig {
+            id: NODE_ID,
+            tcp_port: 4662,
+            udp_port: 4672,
+            user_hash: rmule_kad::UserHash::from_bytes([0xEE; 16]),
+        },
+        KadInstant::EPOCH,
+    ))
 }
 
 fn feed(node: &mut KadNode, from: KadNodeEndpoint, message: &Kad2Message) {

@@ -23,19 +23,20 @@
 //! acceptance is proven in the pure tier against public addresses instead.
 //!
 //! The twelve seconds of callback silence that *produce* the claim are not
-//! waited out here either. The claim is registered through the production
-//! table as the production entry — the one `CallbackContext::claim_tunnel`
-//! builds, whose own construction and retraction are driven in
-//! `download::runner::callbacks::tests`, from a decision driven in
-//! `download::state::tests::callbacks`. What this leg adds, and what nothing
-//! else can, is that the adopted worker's bytes really crossed a punched UDP
-//! path.
+//! waited out here either. The claim is filed through the production
+//! registry exactly as `CallbackContext::claim_tunnel` files it, from a
+//! decision driven in `download::state::tests::callbacks`; how the registry
+//! picks and spends it is proven in `adapters::awaited_inbound`. What this leg
+//! adds, and what nothing else can, is that the adopted worker's bytes really
+//! crossed a punched UDP path.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use rmule_peer::natt::{EndpointHint, NattConnectOptions};
-use rmule_peer::{EMBLOCKSIZE, PartBitmap, PartRanges};
+use rmule_peer::{
+    ConnectionEvent, EMBLOCKSIZE, PartBitmap, PartRanges, ServerCommand, ServerEvent,
+};
 use rmule_primitives::{
     ClientId, Ed2kFileLink, Ed2kText, FileHash, FileHashSummary, Ipv4Endpoint, PeerEndpoint,
     UserHash,
@@ -43,9 +44,8 @@ use rmule_primitives::{
 use tokio::sync::mpsc;
 
 use crate::adapters::{
-    AdmittedPeer, CallbackKey, InboundPeerDeps, PeerWorker, PeerWorkerCommand, PeerWorkerEvent,
-    PendingTunnelEntry, ServeConnCommand, ServeConnEvent, SharedCallbackTable, SharedTunnelClaims,
-    triage_inbound_connection,
+    AdmittedPeer, AdoptionBrief, AwaitedInbound, CallbackKey, InboundPeerDeps, PeerWorker,
+    PeerWorkerCommand, PeerWorkerEvent, ServeInput, ServeOutput, triage_inbound_connection,
 };
 
 use super::live::Node;
@@ -100,11 +100,11 @@ fn deps() -> InboundPeerDeps {
     }
 }
 
-/// Hand one admitted path to the production inbound router against `claims`.
+/// Hand one admitted path to the production inbound router against `awaited`.
 /// This is what the serve adapter's `accept()` loop does per connection; an
 /// adoption leaves down the claim's own `adopt_tx`, so nothing comes back
 /// here.
-fn triage_admitted(admitted: AdmittedPeer, claims: SharedTunnelClaims) {
+fn triage_admitted(admitted: AdmittedPeer, awaited: AwaitedInbound) {
     let (_cmd_tx, cmd_rx) = mpsc::channel(4);
     let (evt_tx, mut evt_rx) = mpsc::channel(16);
     // The requesting node serves nothing; draining is what a serve runner
@@ -115,8 +115,7 @@ fn triage_admitted(admitted: AdmittedPeer, claims: SharedTunnelClaims) {
         admitted.dialed_toward,
         cmd_rx,
         evt_tx,
-        SharedCallbackTable::default(),
-        claims,
+        awaited,
         deps(),
     ));
 }
@@ -132,35 +131,40 @@ async fn serve_one_file(admitted: AdmittedPeer, file: Ed2kFileLink, bytes: Vec<u
         admitted.dialed_toward,
         cmd_rx,
         evt_tx,
-        SharedCallbackTable::default(),
-        SharedTunnelClaims::default(),
+        AwaitedInbound::default(),
         deps(),
     ));
     while let Some(event) = evt_rx.recv().await {
         let answer = match event {
-            ServeConnEvent::SlotRequested { file_hash } => {
-                ServeConnCommand::GrantSlot { file_hash }
+            ServeInput::Server(ServerEvent::SlotRequested { file_hash }) => {
+                ServeOutput::Server(ServerCommand::GrantSlot { file_hash })
             }
-            ServeConnEvent::FileRequested { file_hash, .. } => ServeConnCommand::AnswerFileName {
-                file_hash,
-                file_name: file.name.clone(),
-            },
+            ServeInput::Server(ServerEvent::FileRequested { file_hash, .. }) => {
+                ServeOutput::Server(ServerCommand::AnswerFileName {
+                    file_hash,
+                    file_name: file.name.clone(),
+                })
+            }
             // The probe pair's second half: a complete uploader answers with
             // every part set, which is what makes the requester ask for a
             // slot rather than write us off as holding nothing.
-            ServeConnEvent::FileBundleRequested {
+            ServeInput::Server(ServerEvent::FileBundleRequested {
                 file_hash, asks, ..
-            } => {
+            }) => {
                 for ask in asks {
                     let command = match ask {
-                        rmule_peer::BundledAsk::Name { .. } => ServeConnCommand::AnswerFileName {
-                            file_hash,
-                            file_name: file.name.clone(),
-                        },
-                        rmule_peer::BundledAsk::SetReqId => ServeConnCommand::AnswerFileStatus {
-                            file_hash,
-                            bitmap: complete_bitmap(file.size),
-                        },
+                        rmule_peer::BundledAsk::Name { .. } => {
+                            ServeOutput::Server(ServerCommand::AnswerFileName {
+                                file_hash,
+                                file_name: file.name.clone(),
+                            })
+                        }
+                        rmule_peer::BundledAsk::SetReqId => {
+                            ServeOutput::Server(ServerCommand::AnswerFileStatus {
+                                file_hash,
+                                bitmap: complete_bitmap(file.size),
+                            })
+                        }
                         _ => continue,
                     };
                     if cmd_tx.send(command).await.is_err() {
@@ -169,15 +173,17 @@ async fn serve_one_file(admitted: AdmittedPeer, file: Ed2kFileLink, bytes: Vec<u
                 }
                 continue;
             }
-            ServeConnEvent::FileIdSet { file_hash } => ServeConnCommand::AnswerFileStatus {
-                file_hash,
-                bitmap: complete_bitmap(file.size),
-            },
-            ServeConnEvent::PartsRequested { file_hash, ranges } => {
+            ServeInput::Server(ServerEvent::FileIdSet { file_hash }) => {
+                ServeOutput::Server(ServerCommand::AnswerFileStatus {
+                    file_hash,
+                    bitmap: complete_bitmap(file.size),
+                })
+            }
+            ServeInput::Server(ServerEvent::PartsRequested { file_hash, ranges }) => {
                 send_ranges(&cmd_tx, file_hash, &ranges, &bytes).await;
                 continue;
             }
-            ServeConnEvent::Disconnected => return,
+            ServeInput::Connection(ConnectionEvent::Disconnected { .. }) => return,
             _ => continue,
         };
         if cmd_tx.send(answer).await.is_err() {
@@ -198,7 +204,7 @@ fn complete_bitmap(size: u64) -> PartBitmap {
 /// the block discipline a real uploader keeps, so the requester's
 /// one-block-in-flight loop is exercised rather than short-circuited.
 async fn send_ranges(
-    cmd_tx: &mpsc::Sender<ServeConnCommand>,
+    cmd_tx: &mpsc::Sender<ServeOutput>,
     file_hash: FileHash,
     ranges: &PartRanges,
     bytes: &[u8],
@@ -212,12 +218,12 @@ async fn send_ranges(
             let stop = (at + EMBLOCKSIZE).min(end);
             let block = bytes[at as usize..stop as usize].to_vec();
             if cmd_tx
-                .send(ServeConnCommand::SendBlock {
+                .send(ServeOutput::Server(ServerCommand::SendBlock {
                     file_hash,
                     start: at,
                     end: stop,
                     bytes: block,
-                })
+                }))
                 .await
                 .is_err()
             {
@@ -287,24 +293,20 @@ async fn a_download_takes_a_part_over_the_tunnel_it_adopted() {
     let requester = Node::start(requester_hash, "rmule-downloader").await;
     let target = Node::start(target_hash, "rmule-uploader").await;
 
-    // The claim the twelve-second fallback leaves behind, registered through
-    // the production table as the production entry.
-    let claims = SharedTunnelClaims::default();
+    // The claim the twelve-second fallback leaves behind, filed through the
+    // production registry as the runner files it.
+    let claims = AwaitedInbound::default();
     let (adopt_tx, mut adopt_rx) = mpsc::channel(4);
-    claims
-        .register(
-            target_hash,
-            PendingTunnelEntry {
-                own_status: rmule_peer::PartBitmap::downloader_empty(0),
-                want_sources: true,
-                file: file.clone(),
-                callback: callback_key(),
-                adopt_tx,
-                retire_tx: mpsc::channel(4).0,
-                dial_back: false,
-            },
-        )
-        .await;
+    let claim = claims.register(callback_key(), adopt_tx, mpsc::channel(4).0);
+    claim.claim_tunnel(
+        target_hash,
+        AdoptionBrief {
+            own_status: rmule_peer::PartBitmap::downloader_empty(0),
+            want_sources: true,
+            file: file.clone(),
+        },
+        false,
+    );
 
     // Both sides are told at once, as a coordinator tells them: the side that
     // asked dials, the other records its expectation and accepts.
@@ -433,38 +435,32 @@ async fn triage_reports_a_confirmed_hello_and_ends_only_that_peers_hold() {
     // `target`'s Punch Expectation table ever aimed at her.
     let file = link(&served_bytes());
     let (alice_adopt_tx, mut alice_adopt_rx) = mpsc::channel(4);
-    target
+    let alice_claim = target
         .claims
-        .register(
-            alice_hash,
-            PendingTunnelEntry {
-                own_status: rmule_peer::PartBitmap::downloader_empty(0),
-                want_sources: true,
-                file: file.clone(),
-                callback: callback_key(),
-                adopt_tx: alice_adopt_tx,
-                retire_tx: mpsc::channel(4).0,
-                dial_back: true,
-            },
-        )
-        .await;
+        .register(callback_key(), alice_adopt_tx, mpsc::channel(4).0);
+    alice_claim.claim_tunnel(
+        alice_hash,
+        AdoptionBrief {
+            own_status: rmule_peer::PartBitmap::downloader_empty(0),
+            want_sources: true,
+            file: file.clone(),
+        },
+        true,
+    );
     // Bob's own claim, standing beside alice's — proof that alice's hello
     // spends only hers.
-    target
+    let bob_claim = target
         .claims
-        .register(
-            bob_hash,
-            PendingTunnelEntry {
-                own_status: rmule_peer::PartBitmap::downloader_empty(0),
-                want_sources: true,
-                file,
-                callback: callback_key(),
-                adopt_tx: mpsc::channel(4).0,
-                retire_tx: mpsc::channel(4).0,
-                dial_back: true,
-            },
-        )
-        .await;
+        .register(callback_key(), mpsc::channel(4).0, mpsc::channel(4).0);
+    bob_claim.claim_tunnel(
+        bob_hash,
+        AdoptionBrief {
+            own_status: rmule_peer::PartBitmap::downloader_empty(0),
+            want_sources: true,
+            file,
+        },
+        true,
+    );
 
     alice
         .introduced_to(

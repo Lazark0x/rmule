@@ -7,7 +7,7 @@ use rmule_core::{Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, Down
 use rmule_primitives::ServerEndpoint;
 use tokio::time::{Duration, timeout};
 
-use crate::fixture::{dead_port, identity};
+use crate::fixture::dead_port;
 use rmule_testkit::file_link_without_part_hash_set;
 
 #[tokio::test]
@@ -15,12 +15,17 @@ async fn default_core_waits_for_a_connection_when_its_server_is_not_there() {
     let port = dead_port().await;
     let output_dir = tempfile::tempdir().expect("temp dir");
 
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            output_dir.path(),
+        ))
+        .build();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: file_link_without_part_hash_set("example.bin", b"hello world"),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", port).unwrap()),
-        credentials: identity().into(),
-        output_path: output_dir.path().join("example.bin"),
+        name: rmule_testkit::file_name("example.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();

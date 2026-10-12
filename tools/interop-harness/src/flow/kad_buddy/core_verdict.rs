@@ -21,7 +21,7 @@ use crate::flow::kad_buddy::core::{
     KAD_CORE_BUDDY_AMULE_KAD_ID, KAD_CORE_BUDDY_RMULE_KAD_ID, KadCoreBuddyOptions,
 };
 use crate::flow::kad_buddy::core_tap::{TapReadout, read_core_tap};
-use crate::flow::kad_buddy::verify_keys::parse_verify_key_secret;
+use crate::flow::kad_buddy::verify_keys::KAD_UDP_KEY_SEED;
 
 /// Judge flow M from the pcap rows plus both sides' logs.
 ///
@@ -52,18 +52,17 @@ pub(crate) fn assert_kad_core_buddy(
     let rmule_log = read_verdict_log(&layout.kad_node_stdout_log("rmule"))?;
     let rmule_err = read_verdict_log(&layout.kad_node_stderr_log("rmule"))?;
     let rmule_trail = format!("{rmule_log}{rmule_err}");
-    let serving = rmule_trail.contains("serve serving_started");
+    let serving = rmule_trail.contains("serve.serving_started");
     let posture_declared = rmule_trail.contains("kad stimulus posture");
     // rmule's own disposition trail: which branch of the ADR-0061 recruit gate
     // ran. The refusal reason is the finding when the answer never goes out.
     let recruit_accepted = rmule_trail.contains("accepted recruit, answering 0x5A");
     let recruit_refused = rmule_trail.contains("silently refused FINDBUDDY_REQ");
     let link_attached = rmule_trail.contains("buddy link attached");
-    // The Kad-UDP crypt leg: the marker `serve start --kad
-    // --peer-crypt` prints once the seed is minted, in `kad join-node`'s own
-    // marker shape — the same one `verify_keys::parse_verify_key_secret` reads.
+    // The Kad-UDP crypt leg: the marker `serve start --kad --peer-crypt`
+    // prints once crypt arms, the same one `kad join-node --kad-crypt` prints.
+    // It carries no seed: the flow passed `KAD_UDP_KEY_SEED` in.
     let kad_crypt_armed = rmule_trail.contains("rmule-kad-crypt-armed");
-    let kad_crypt_verify_key_secret = parse_verify_key_secret(&rmule_trail);
     // A hostile or malformed datagram is never a panic — `rmule_kad::wire`
     // emits this diagnostic and the node carries on. The Core's kad runtime
     // adapter surfaces `KadEvent::Diagnostic(UndecodableEnvelope)` as a
@@ -93,11 +92,8 @@ pub(crate) fn assert_kad_core_buddy(
     let tap = options
         .kad_crypt
         .then(|| -> Result<TapReadout> {
-            let Some(secret) = kad_crypt_verify_key_secret else {
-                return Ok(TapReadout::Absent);
-            };
             let our_key_for_amule =
-                rmule_kad::udp_verify_key(secret, std::net::Ipv4Addr::from(amule_ip));
+                rmule_kad::udp_verify_key(KAD_UDP_KEY_SEED, std::net::Ipv4Addr::from(amule_ip));
             let inbound_keys = rmule_primitives::ClientDecryptKeys {
                 kad_id: Some(&KAD_CORE_BUDDY_RMULE_KAD_ID),
                 receiver_verify_key: Some(our_key_for_amule),
@@ -172,10 +168,18 @@ pub(crate) fn assert_kad_core_buddy(
     verdict_toml.push_str(&format!("rmule_buddy_link_attached = {link_attached}\n"));
     verdict_toml.push_str(&format!("kad_crypt_requested = {}\n", options.kad_crypt));
     verdict_toml.push_str(&format!("rmule_kad_crypt_armed = {kad_crypt_armed}\n"));
-    verdict_toml.push_str(&format!(
-        "rmule_kad_crypt_verify_key_secret = {}\n",
-        kad_crypt_verify_key_secret.map_or_else(|| "none".to_owned(), |secret| secret.to_string())
-    ));
+    // The live changes the stimulus marked (`--peer-crypt-flip`): the tap's
+    // frames before each ran under the old arming, those after under the new
+    // (ADR-0046). Listed only when flips were asked for.
+    if !options.peer_crypt_flip.is_empty() {
+        verdict_toml.push_str(&format!(
+            "rmule_obfuscation_flips = {}\n",
+            crate::flow::evidence::toml_strings(&crate::flow::evidence::obfuscation_flips(
+                &rmule_trail
+            ))
+        ));
+    }
+    verdict_toml.push_str(&format!("rmule_kad_udp_key_seed = {KAD_UDP_KEY_SEED}\n"));
     verdict_toml.push_str(&format!(
         "rmule_undecodable_envelope_count = {undecodable_envelope_count}\n"
     ));
@@ -274,11 +278,10 @@ pub(crate) fn assert_kad_core_buddy(
     // missing decode line or a nonzero count, and that is the finding, not a
     // harness bug to paper over.
     if options.kad_crypt {
-        if !kad_crypt_armed || kad_crypt_verify_key_secret.is_none() {
+        if !kad_crypt_armed {
             bail!(
-                "--kad-crypt requested but rmule never printed \
-                 `rmule-kad-crypt-armed verify_key_secret=…`: the Core's \
-                 --peer-crypt requested did not arm Kad-UDP crypt"
+                "--kad-crypt requested but rmule never printed `rmule-kad-crypt-armed`: \
+                 the Core's --peer-crypt requested did not arm Kad-UDP crypt"
             );
         }
         if !rmule_kad_crypt_decode_activity {

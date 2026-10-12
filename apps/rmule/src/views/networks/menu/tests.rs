@@ -44,7 +44,7 @@ fn menu_to(view: &mut NetworksView, state: &UiState, prefix: &str) {
 }
 
 #[test]
-fn connect_emits_the_real_command_with_the_session_credentials() {
+fn connect_emits_the_real_command_for_the_selected_row() {
     let state = listed_servers();
     let mut view = NetworksView::new();
     // Row 2 by name: Static Pin, not the connected server.
@@ -60,7 +60,7 @@ fn connect_emits_the_real_command_with_the_session_credentials() {
     assert!(view.menu.is_none(), "menu closes after activating");
 }
 
-/// The degrade pattern: no credentials ⇒ the item is greyed with the
+/// The degrade pattern: no core ⇒ the item is greyed with the
 /// reason. The connected row offers Disconnect in Connect's place,
 /// which ends the session and the intent to stay connected.
 #[test]
@@ -74,7 +74,7 @@ fn connect_is_greyed_without_a_session_and_the_connected_row_offers_disconnect()
     view.handle_key(press(KeyCode::Char('m')), &state);
     let menu = view.menu.as_ref().unwrap();
     assert_eq!(menu.items[0].label, "Connect (c)");
-    assert_eq!(menu.items[0].disabled.as_deref(), Some(NO_CREDENTIALS));
+    assert_eq!(menu.items[0].disabled.as_deref(), Some(NOT_ATTACHED));
     view.menu = None;
 
     // Row 0 *is* the connected server: Disconnect, where Connect was.

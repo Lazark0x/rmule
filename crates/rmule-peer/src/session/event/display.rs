@@ -4,6 +4,7 @@
 use std::fmt;
 
 use super::PeerEvent;
+use crate::{ConnectionEvent, IdentityChange, NoticeEvent, RequesterEvent, ServerEvent, SideEvent};
 
 /// Compact one-line diagnostic summary of a peer-conversation event — the
 /// co-located projection `rmule-tools` prints (every line carries the `peer`
@@ -13,42 +14,90 @@ use super::PeerEvent;
 impl fmt::Display for PeerEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PeerEvent::PeerHelloSent => write!(f, "peer hello_sent"),
-            PeerEvent::PeerIdentified { identity } => write!(
+            PeerEvent::Connection(event) => event.fmt(f),
+            PeerEvent::Requester(event) => event.fmt(f),
+            PeerEvent::Server(event) => event.fmt(f),
+            PeerEvent::Side(event) => event.fmt(f),
+            PeerEvent::Notice(event) => event.fmt(f),
+        }
+    }
+}
+
+impl fmt::Display for ConnectionEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConnectionEvent::HelloSent => write!(f, "peer hello_sent"),
+            ConnectionEvent::Identified { identity } => write!(
                 f,
                 "peer identified user_hash={} client_id={}",
                 identity.user_hash().to_hex_upper(),
                 identity.client_id().as_u32()
             ),
-            PeerEvent::PeerSoftwareRevised { software } => {
-                write!(f, "peer software_revised software={software:?}")
+            ConnectionEvent::IdentityRevised { identity, what } => {
+                write!(f, "peer identity_revised ")?;
+                match what {
+                    IdentityChange::Software => {
+                        write!(f, "software={:?}", identity.software())
+                    }
+                    IdentityChange::ReaskContact => {
+                        let (udp_port, udp_version) =
+                            identity.client_udp_reask().unwrap_or_default();
+                        write!(f, "udp_port={udp_port} udp_version={udp_version}")
+                    }
+                    IdentityChange::SourceExchange => {
+                        write!(f, "{}", SupportLine(identity.source_exchange()))
+                    }
+                    IdentityChange::Ipv6 => match identity.peer_ipv6() {
+                        Some(address) => write!(f, "ipv6={address}"),
+                        None => write!(f, "ipv6=none"),
+                    },
+                    IdentityChange::ClientId => {
+                        write!(f, "client_id={}", identity.client_id().as_u32())
+                    }
+                }
             }
-            PeerEvent::PeerSourceExchangeRevised { support } => {
-                write!(f, "peer source_exchange_revised {}", SupportLine(*support))
+            ConnectionEvent::HelloRefused { refusal } => match refusal.code {
+                crate::HelloRefusalCode::TagCountShort { declared, written } => write!(
+                    f,
+                    "peer hello_refused code=tag_count_short declared={declared} written={written}"
+                ),
+            },
+            ConnectionEvent::Disconnected { reason } => {
+                write!(f, "peer disconnected reason={}", reason.label())
             }
-            PeerEvent::FileRequestSent {
+            ConnectionEvent::IdentityVerified {
+                user_hash,
+                public_key,
+            } => write!(
+                f,
+                "peer identity_verified user_hash={} public_key_len={}",
+                user_hash.to_hex_upper(),
+                public_key.len()
+            ),
+            ConnectionEvent::SecureIdentFailed { reason } => {
+                write!(f, "peer secure_ident_failed reason={reason:?}")
+            }
+        }
+    }
+}
+
+impl fmt::Display for RequesterEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RequesterEvent::FileRequestSent {
                 file_hash,
-                support,
                 sources_asked,
             } => write!(
                 f,
-                "peer file_request_sent file_hash={} {} sources_asked={sources_asked}",
+                "peer file_request_sent file_hash={} sources_asked={sources_asked}",
                 file_hash.to_hex_upper(),
-                SupportLine(*support)
             ),
-            PeerEvent::PeerReaskContactRevised {
-                udp_port,
-                udp_version,
-            } => write!(
-                f,
-                "peer reask_contact_revised udp_port={udp_port} udp_version={udp_version}"
-            ),
-            PeerEvent::FileProbed { file_hash, status } => write!(
+            RequesterEvent::FileProbed { file_hash, status } => write!(
                 f,
                 "peer file_probed file_hash={} status={status:?}",
                 file_hash.to_hex_upper()
             ),
-            PeerEvent::HashSetReceived {
+            RequesterEvent::HashSetReceived {
                 file_hash,
                 part_hashes,
             } => write!(
@@ -57,12 +106,12 @@ impl fmt::Display for PeerEvent {
                 file_hash.to_hex_upper(),
                 part_hashes.len()
             ),
-            PeerEvent::QueueRanked { file_hash, rank } => write!(
+            RequesterEvent::QueueRanked { file_hash, rank } => write!(
                 f,
                 "peer queue_ranked file_hash={} rank={rank}",
                 file_hash.to_hex_upper()
             ),
-            PeerEvent::QueueProgress {
+            RequesterEvent::QueueProgress {
                 file_hash,
                 previous_rank,
                 new_rank,
@@ -71,19 +120,19 @@ impl fmt::Display for PeerEvent {
                 "peer queue_progress file_hash={} previous_rank={previous_rank} new_rank={new_rank}",
                 file_hash.to_hex_upper()
             ),
-            PeerEvent::QueueRejected { file_hash } => write!(
+            RequesterEvent::QueueRejected { file_hash } => write!(
                 f,
                 "peer queue_rejected file_hash={}",
                 file_hash.to_hex_upper()
             ),
-            PeerEvent::SlotGranted { file_hash } => {
+            RequesterEvent::SlotGranted { file_hash } => {
                 write!(
                     f,
                     "peer slot_granted file_hash={}",
                     file_hash.to_hex_upper()
                 )
             }
-            PeerEvent::PartReceived {
+            RequesterEvent::PartReceived {
                 file_hash,
                 offset,
                 bytes,
@@ -93,16 +142,16 @@ impl fmt::Display for PeerEvent {
                 file_hash.to_hex_upper(),
                 bytes.len()
             ),
-            PeerEvent::SourcesReceived { file_hash, sources } => write!(
+            RequesterEvent::SourcesReceived { file_hash, sources } => write!(
                 f,
                 "peer sources_received file_hash={} source_count={}",
                 file_hash.to_hex_upper(),
                 sources.len()
             ),
-            PeerEvent::SourceExchangeAnswerSkipped { reason } => {
+            RequesterEvent::SourceExchangeAnswerSkipped { reason } => {
                 write!(f, "peer source_exchange_answer_skipped reason={reason}")
             }
-            PeerEvent::AichAnswerReceived {
+            RequesterEvent::AichAnswerReceived {
                 file_hash,
                 part,
                 recovery_data,
@@ -113,14 +162,14 @@ impl fmt::Display for PeerEvent {
                 file_hash.to_hex_upper(),
                 recovery_data.len()
             ),
-            PeerEvent::AichFileHashReceived { root } => {
+            RequesterEvent::AichFileHashReceived { root } => {
                 write!(
                     f,
                     "peer aich_file_hash_received root={}",
                     root.to_base32_upper()
                 )
             }
-            PeerEvent::CompressedPartSkipped {
+            RequesterEvent::CompressedPartSkipped {
                 file_hash,
                 offset,
                 reason,
@@ -129,76 +178,30 @@ impl fmt::Display for PeerEvent {
                 "peer compressed_part_skipped file_hash={} offset={offset} reason={reason}",
                 file_hash.to_hex_upper()
             ),
-            PeerEvent::CompressedFrameSkipped {
-                opcode,
-                compressed_len,
-                reason,
-            } => write!(
-                f,
-                "peer compressed_frame_skipped opcode=0x{opcode:02X} compressed_len={compressed_len} reason={reason:?}"
-            ),
-            PeerEvent::SlotReleased { file_hash, reason } => write!(
+            RequesterEvent::SlotReleased { file_hash, reason } => write!(
                 f,
                 "peer slot_released file_hash={} reason={reason:?}",
                 file_hash.to_hex_upper()
             ),
-            PeerEvent::CommandRejected { reason } => {
-                write!(f, "peer command_rejected reason={reason}")
-            }
-            PeerEvent::UnknownPeerPacket {
-                protocol,
-                opcode,
-                payload_len,
-            } => write!(
+            RequesterEvent::FileCommentReceived { rating, comment } => write!(
                 f,
-                "peer unknown protocol={} opcode=0x{opcode:02X} payload_len={payload_len}",
-                protocol.name()
+                "peer file_comment_received rating={rating} comment_len={}",
+                comment.as_bytes().len()
             ),
-            PeerEvent::MultiPacketUnknownSub {
-                file_hash,
-                opcode,
-                remaining,
-            } => write!(
-                f,
-                "peer multipacket_unknown_sub file_hash={} opcode=0x{opcode:02X} remaining={remaining}",
-                file_hash.to_hex_upper()
-            ),
-            PeerEvent::KadFirewallCheckAck => write!(f, "peer kad_fwtcpcheck_ack"),
-            PeerEvent::KadUdpFirewallCheckRequested { request } => {
-                write!(f, "peer kad_fwcheckudpreq len={}", request.len())
-            }
-            PeerEvent::PeerIpv6Changed { address } => {
-                write!(f, "peer ipv6_changed address={address}")
-            }
-            PeerEvent::BuddyPingReceived => write!(f, "peer buddy_ping"),
-            PeerEvent::BuddyCallbackReceived { callback } => write!(
-                f,
-                "peer buddy_callback file_hash={} requester={}",
-                callback.file_hash.to_hex_upper(),
-                callback.requester
-            ),
-            PeerEvent::BuddyReaskCallbackReceived { relay } => write!(
-                f,
-                "peer buddy_reask_callback requester={} forwarded={}",
-                relay.requester,
-                relay.forwarded.len()
-            ),
-            PeerEvent::HelloRefused { refusal } => match refusal.code {
-                crate::HelloRefusalCode::TagCountShort { declared, written } => write!(
-                    f,
-                    "peer hello_refused code=tag_count_short declared={declared} written={written}"
-                ),
-            },
-            PeerEvent::Disconnected { reason } => {
-                write!(f, "peer disconnected reason={}", reason.label())
-            }
-            PeerEvent::FileRequested { file_hash, status } => write!(
+        }
+    }
+}
+
+impl fmt::Display for ServerEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ServerEvent::FileRequested { file_hash, status } => write!(
                 f,
                 "peer file_requested file_hash={} part_status={}B",
                 file_hash.to_hex_upper(),
                 status.as_bytes().len(),
             ),
-            PeerEvent::FileBundleRequested {
+            ServerEvent::FileBundleRequested {
                 file_hash,
                 file_size,
                 asks,
@@ -211,20 +214,20 @@ impl fmt::Display for PeerEvent {
                 asks.len(),
                 cut.is_some(),
             ),
-            PeerEvent::FileIdSet { file_hash } => {
+            ServerEvent::FileIdSet { file_hash } => {
                 write!(f, "peer file_id_set file_hash={}", file_hash.to_hex_upper())
             }
-            PeerEvent::HashSetRequested { file_hash } => write!(
+            ServerEvent::HashSetRequested { file_hash } => write!(
                 f,
                 "peer hash_set_requested file_hash={}",
                 file_hash.to_hex_upper()
             ),
-            PeerEvent::SlotRequested { file_hash } => write!(
+            ServerEvent::SlotRequested { file_hash } => write!(
                 f,
                 "peer slot_requested file_hash={}",
                 file_hash.to_hex_upper()
             ),
-            PeerEvent::PartsRequested { file_hash, ranges } => {
+            ServerEvent::PartsRequested { file_hash, ranges } => {
                 let (start, end) = ranges.as_array()[0];
                 write!(
                     f,
@@ -232,81 +235,121 @@ impl fmt::Display for PeerEvent {
                     file_hash.to_hex_upper()
                 )
             }
-            PeerEvent::ServePartsWithoutSlot { file_hash } => write!(
+            ServerEvent::PartsWithoutSlot { file_hash } => write!(
                 f,
                 "peer parts_without_slot file_hash={}",
                 file_hash.to_hex_upper()
             ),
-            PeerEvent::TransferCancelled { file_hash } => write!(
+            ServerEvent::TransferCancelled { file_hash } => write!(
                 f,
                 "peer transfer_cancelled file_hash={}",
                 file_hash.to_hex_upper()
             ),
-            PeerEvent::SourcesRequested { file_hash, version } => write!(
+            ServerEvent::SourcesRequested { file_hash } => write!(
                 f,
-                "peer sources_requested file_hash={} version={version:?}",
+                "peer sources_requested file_hash={}",
                 file_hash.to_hex_upper()
             ),
-            PeerEvent::AichRequested {
+            ServerEvent::SourcesAnswered { file_hash, count } => write!(
+                f,
+                "peer sources_answered file_hash={} count={count}",
+                file_hash.to_hex_upper()
+            ),
+            ServerEvent::AichRequested {
                 file_hash, part, ..
             } => write!(
                 f,
                 "peer aich_requested file_hash={} part={part}",
                 file_hash.to_hex_upper()
             ),
-            PeerEvent::AichFileHashRequested { file_hash } => write!(
+            ServerEvent::AichFileHashRequested { file_hash } => write!(
                 f,
                 "peer aich_file_hash_requested file_hash={}",
                 file_hash.to_hex_upper()
             ),
-            PeerEvent::PeerIdentityVerified {
-                user_hash,
-                public_key,
-            } => write!(
+        }
+    }
+}
+
+impl fmt::Display for SideEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SideEvent::KadFirewallCheckAck => write!(f, "peer kad_fwtcpcheck_ack"),
+            SideEvent::KadUdpFirewallCheckRequested { request } => {
+                write!(f, "peer kad_fwcheckudpreq len={}", request.len())
+            }
+            SideEvent::BuddyPingReceived => write!(f, "peer buddy_ping"),
+            SideEvent::BuddyCallbackReceived { callback } => write!(
                 f,
-                "peer identity_verified user_hash={} public_key_len={}",
-                user_hash.to_hex_upper(),
-                public_key.len()
+                "peer buddy_callback file_hash={} requester={}",
+                callback.file_hash.to_hex_upper(),
+                callback.requester
             ),
-            PeerEvent::PeerSecureIdentFailed { reason } => {
-                write!(f, "peer secure_ident_failed reason={reason:?}")
-            }
-            PeerEvent::BrowseDenied => write!(f, "peer browse_denied"),
-            PeerEvent::UnsolicitedBrowseAnswerDropped => {
-                write!(f, "peer unsolicited_browse_answer_dropped")
-            }
-            PeerEvent::PublicIpAnswered => write!(f, "peer publicip_answered"),
-            PeerEvent::PublicIpRequestUnanswerable => {
+            SideEvent::BuddyReaskCallbackReceived { relay } => write!(
+                f,
+                "peer buddy_reask_callback requester={} forwarded={}",
+                relay.requester,
+                relay.forwarded.len()
+            ),
+            SideEvent::PublicIpAnswered => write!(f, "peer publicip_answered"),
+            SideEvent::PublicIpRequestUnanswerable => {
                 write!(f, "peer publicip_request_unanswerable")
             }
-            PeerEvent::UnsolicitedPublicIpAnswerDropped => {
+        }
+    }
+}
+
+impl fmt::Display for NoticeEvent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NoticeEvent::CompressedFrameSkipped {
+                opcode,
+                compressed_len,
+                reason,
+            } => write!(
+                f,
+                "peer compressed_frame_skipped opcode=0x{opcode:02X} compressed_len={compressed_len} reason={reason:?}"
+            ),
+            NoticeEvent::CommandRejected { reason } => {
+                write!(f, "peer command_rejected reason={reason}")
+            }
+            NoticeEvent::UnknownPacket {
+                protocol,
+                opcode,
+                payload_len,
+            } => write!(
+                f,
+                "peer unknown protocol={} opcode=0x{opcode:02X} payload_len={payload_len}",
+                protocol.name()
+            ),
+            NoticeEvent::MultiPacketUnknownSub {
+                file_hash,
+                opcode,
+                remaining,
+            } => write!(
+                f,
+                "peer multipacket_unknown_sub file_hash={} opcode=0x{opcode:02X} remaining={remaining}",
+                file_hash.to_hex_upper()
+            ),
+            NoticeEvent::BrowseDenied => write!(f, "peer browse_denied"),
+            NoticeEvent::UnsolicitedBrowseAnswerDropped => {
+                write!(f, "peer unsolicited_browse_answer_dropped")
+            }
+            NoticeEvent::UnsolicitedPublicIpAnswerDropped => {
                 write!(f, "peer unsolicited_publicip_answer_dropped")
             }
-            PeerEvent::ChatMessageReceived { text } => write!(
+            NoticeEvent::ChatMessageReceived { text } => write!(
                 f,
                 "peer chat_message_received len={}",
                 text.as_bytes().len()
             ),
-            PeerEvent::FileCommentReceived { rating, comment } => write!(
-                f,
-                "peer file_comment_received rating={rating} comment_len={}",
-                comment.as_bytes().len()
-            ),
-            PeerEvent::ClientIdChanged {
-                new_id,
-                new_server_ip,
-            } => write!(
-                f,
-                "peer client_id_changed new_id={} new_server_ip={new_server_ip}",
-                new_id.as_u32()
-            ),
-            PeerEvent::ChatCaptchaDropped => write!(f, "peer chat_captcha_dropped"),
+            NoticeEvent::ChatCaptchaDropped => write!(f, "peer chat_captcha_dropped"),
         }
     }
 }
 
 /// A peer's source-exchange facts as `key=value` fields.
-struct SupportLine(super::SourceExchangeSupport);
+struct SupportLine(crate::SourceExchangeSupport);
 
 impl fmt::Display for SupportLine {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

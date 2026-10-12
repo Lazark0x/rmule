@@ -49,6 +49,9 @@ pub struct SessionCounters {
     /// Rendezvous rmule emitted toward a target's serving buddy — NAT
     /// traversal attempts begun (ADR-0091 rung 1).
     pub natt_rendezvous_emitted_total: u64,
+    /// Introductions rmule asked its server for (`0x60`) — NAT traversal
+    /// attempts begun through the server coordinator (ADR-0091 rung 1).
+    pub natt_server_requests_emitted_total: u64,
     /// Rendezvous rmule forwarded as somebody's serving buddy.
     pub natt_relays_forwarded_total: u64,
     /// Rendezvous rmule was asked to forward and did not — wrong buddy ID, no
@@ -237,14 +240,14 @@ pub struct SessionCounters {
     /// the crypt handshake running before the serve pipeline adopted the
     /// stream. A subset of `direct_callbacks_dialed_total`, so the
     /// two read together: equal means every requester that called us asked for
-    /// obfuscation and got it, zero beside a `peer_crypt` policy of `Requested`
+    /// obfuscation and got it, zero beside an obfuscation policy of `Requested`
     /// means nobody is asking. Counted at the decision, so a handshake the
     /// requester then fails still shows here — as a dial-back that went out
     /// obfuscated, which it did.
     pub direct_callbacks_obfuscated_total: u64,
     /// Of the `0x95` refusals above, how many were **our own** obfuscation
     /// policy refusing a requester whose stance could not meet it
-    /// — a requester that requires obfuscation while `peer_crypt` is unset, or
+    /// — a requester that requires obfuscation while the obfuscation policy is unset, or
     /// a `Required` policy facing a requester with no crypt support. These
     /// requesters are reachable; this node chose not to reach them, and this
     /// counter is the only place that choice leaves a trace.

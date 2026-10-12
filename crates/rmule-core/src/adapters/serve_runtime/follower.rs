@@ -274,7 +274,7 @@ mod tests {
     /// The next `OP_OFFERFILES` the session put on the wire.
     async fn offered(sent: &mut mpsc::Receiver<Ed2kCommand>) -> Vec<OfferedFile> {
         match tokio::time::timeout(Duration::from_secs(5), sent.recv()).await {
-            Ok(Some(Ed2kCommand::OfferFiles { files })) => files,
+            Ok(Some(Ed2kCommand::OfferFiles { files, .. })) => files,
             other => panic!("expected an offer, got {other:?}"),
         }
     }

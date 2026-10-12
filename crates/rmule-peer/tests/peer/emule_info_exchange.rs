@@ -10,9 +10,9 @@
 use std::sync::Arc;
 
 use rmule_peer::{
-    ClientFamily, ClientMod, EmuleInfo, Hello, HelloAnswer, LegacyMuleInfo, MiscOptions1,
-    PeerEvent, PeerHelloBody, PeerOutput, PeerPacket, PeerSession, SecIdentState,
-    SecureIdentConfig,
+    ClientFamily, ClientMod, ConnectionEvent, EmuleInfo, Hello, HelloAnswer, IdentityChange,
+    LegacyMuleInfo, MiscOptions1, PeerEvent, PeerHelloBody, PeerIdentity, PeerOutput, PeerPacket,
+    PeerSession, RequesterCommand, RequesterEvent, SecIdentState, SecureIdentConfig,
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{
@@ -97,10 +97,24 @@ fn identified_software(events: &[PeerEvent]) -> rmule_peer::ClientSoftware {
     events
         .iter()
         .find_map(|e| match e {
-            PeerEvent::PeerIdentified { identity } => Some(identity.software().clone()),
+            PeerEvent::Connection(ConnectionEvent::Identified { identity }) => {
+                Some(identity.software().clone())
+            }
             _ => None,
         })
-        .expect("PeerIdentified")
+        .expect("Identified")
+}
+
+/// The identity the revision of `what` among `events` carries, if one was
+/// reported.
+fn revised(events: &[PeerEvent], what: IdentityChange) -> Option<&PeerIdentity> {
+    events.iter().find_map(|e| match e {
+        PeerEvent::Connection(ConnectionEvent::IdentityRevised {
+            identity,
+            what: changed,
+        }) if *changed == what => Some(identity),
+        _ => None,
+    })
 }
 
 #[test]
@@ -125,11 +139,7 @@ fn captured_amule_os_info_block_reads_as_os_info_and_leaves_identity_alone() {
         packets.is_empty(),
         "aMule answers an OS-info block only with its own, which rmule has none of"
     );
-    assert!(
-        events
-            .iter()
-            .all(|e| !matches!(e, PeerEvent::PeerSoftwareRevised { .. }))
-    );
+    assert_eq!(revised(&events, IdentityChange::Software), None);
 }
 
 #[test]
@@ -183,13 +193,9 @@ fn an_accepted_old_mule_is_sent_our_block_and_its_answer_revises_its_software() 
     let (packets, events, closed) = outputs(&mut session);
     assert!(!closed);
     assert!(packets.is_empty(), "an answer is not answered");
-    let revised = events
-        .iter()
-        .find_map(|e| match e {
-            PeerEvent::PeerSoftwareRevised { software } => Some(software.clone()),
-            _ => None,
-        })
-        .expect("the block names its version after identification");
+    let revised = revised(&events, IdentityChange::Software)
+        .expect("the block names its version after identification")
+        .software();
     assert_eq!(revised.family(), ClientFamily::Emule);
     assert_eq!(revised.version(), v(0, 22, 0));
 }
@@ -358,7 +364,9 @@ fn rmules_own_block_is_its_hello_advert_in_the_legacy_form() {
 
 fn identified_reask(events: &[PeerEvent]) -> Option<(u16, u8)> {
     events.iter().find_map(|e| match e {
-        PeerEvent::PeerIdentified { identity } => identity.client_udp_reask(),
+        PeerEvent::Connection(ConnectionEvent::Identified { identity }) => {
+            identity.client_udp_reask()
+        }
         _ => None,
     })
 }
@@ -388,11 +396,9 @@ fn an_accepted_old_mules_answer_revises_the_reask_contact_once() {
 
     session.handle_bytes(&emule_030_block(0x02));
     let (_, events, _) = outputs(&mut session);
-    assert!(
-        events.contains(&PeerEvent::PeerReaskContactRevised {
-            udp_port: 4672,
-            udp_version: 4
-        }),
+    assert_eq!(
+        revised(&events, IdentityChange::ReaskContact).and_then(PeerIdentity::client_udp_reask),
+        Some((4672, 4)),
         "{events:?}"
     );
 }
@@ -408,10 +414,9 @@ fn a_hello_that_named_its_port_keeps_it() {
     let _ = outputs(&mut session);
     session.handle_bytes(&emule_030_block(0x02));
     let (_, events, _) = outputs(&mut session);
-    assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, PeerEvent::PeerReaskContactRevised { .. })),
+    assert_eq!(
+        revised(&events, IdentityChange::ReaskContact),
+        None,
         "{events:?}"
     );
 }
@@ -513,7 +518,7 @@ fn a_made_block_under_an_unknown_protocol_byte_records_its_version_and_clears_th
 
 /// A request for a file only a pre-0.42 mule holds, asking for sources.
 fn request_with_sources() -> rmule_peer::PeerCommand {
-    rmule_peer::PeerCommand::RequestFile {
+    rmule_peer::PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: rmule_primitives::FileHash::from_bytes([
             0x3C, 0x71, 0x0A, 0xE4, 0x92, 0x15, 0x6B, 0xD8, 0x07, 0x4F, 0xA1, 0x2E, 0x5D, 0xC9,
             0x86, 0x33,
@@ -522,20 +527,17 @@ fn request_with_sources() -> rmule_peer::PeerCommand {
         own_status: rmule_peer::PartBitmap::downloader_empty(700_001),
         want_sources: true,
         want_aich_root: false,
-    }
+    })
 }
 
-/// The file request a session reports: its source-exchange facts and
-/// whether it asked.
-fn request_sent(events: &[PeerEvent]) -> (rmule_peer::SourceExchangeSupport, bool) {
+/// Whether the file request a session reports carried a source ask.
+fn request_sent(events: &[PeerEvent]) -> bool {
     events
         .iter()
         .find_map(|e| match e {
-            PeerEvent::FileRequestSent {
-                support,
-                sources_asked,
-                ..
-            } => Some((*support, *sources_asked)),
+            PeerEvent::Requester(RequesterEvent::FileRequestSent { sources_asked, .. }) => {
+                Some(*sources_asked)
+            }
             _ => None,
         })
         .expect("FileRequestSent")
@@ -556,7 +558,7 @@ fn an_old_mules_block_after_the_request_revises_its_source_exchange() {
     let mut session = PeerSession::new_inbound(peer_at(8), serverless_ctx());
     session.handle_bytes(&Hello::new(old_emule_hello()).encode_packet().encode());
     let (_, events, _) = outputs(&mut session);
-    let PeerEvent::PeerIdentified { identity } = &events[0] else {
+    let PeerEvent::Connection(ConnectionEvent::Identified { identity }) = &events[0] else {
         panic!("identified first: {events:?}");
     };
     assert!(!identity.source_exchange().askable());
@@ -564,27 +566,22 @@ fn an_old_mules_block_after_the_request_revises_its_source_exchange() {
     session.handle_command(request_with_sources());
     let (packets, events, _) = outputs(&mut session);
     assert!(!asks_sources(&packets));
-    assert!(!request_sent(&events).1);
+    assert!(!request_sent(&events));
 
     session.handle_bytes(&emule_030_block(0x02));
     let (_, events, _) = outputs(&mut session);
-    let revised = events
-        .iter()
-        .find_map(|e| match e {
-            PeerEvent::PeerSourceExchangeRevised { support } => Some(*support),
-            _ => None,
-        })
-        .expect("the block revises the source-exchange facts");
-    assert!(revised.askable());
-    assert_eq!(revised.sx1_version(), 2);
+    let support = revised(&events, IdentityChange::SourceExchange)
+        .expect("the block revises the source-exchange facts")
+        .source_exchange();
+    assert!(support.askable());
+    assert_eq!(support.sx1_version(), 2);
 
     // The same block again changes nothing and says nothing.
     session.handle_bytes(&emule_030_block(0x02));
     let (_, events, _) = outputs(&mut session);
-    assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, PeerEvent::PeerSourceExchangeRevised { .. })),
+    assert_eq!(
+        revised(&events, IdentityChange::SourceExchange),
+        None,
         "{events:?}"
     );
 }
@@ -601,9 +598,7 @@ fn an_old_mules_block_before_the_request_is_asked_and_reported_asked() {
     session.handle_command(request_with_sources());
     let (packets, events, _) = outputs(&mut session);
     assert!(asks_sources(&packets), "{packets:?}");
-    let (support, asked) = request_sent(&events);
-    assert!(asked);
-    assert!(support.askable());
+    assert!(request_sent(&events));
 }
 
 /// A block naming no compression zeroes its SX version (aMule 2.3.3
@@ -619,5 +614,5 @@ fn an_old_mules_block_without_compression_is_never_asked() {
     session.handle_command(request_with_sources());
     let (packets, events, _) = outputs(&mut session);
     assert!(!asks_sources(&packets));
-    assert!(!request_sent(&events).1);
+    assert!(!request_sent(&events));
 }

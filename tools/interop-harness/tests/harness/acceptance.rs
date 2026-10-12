@@ -12,11 +12,15 @@
 //!
 //! Covered here: flows A–K, plus the two extra legs of flow K's
 //! `kad-firewalled-buddy` subcommand (`--requester-capture`, `--recruit-buddy`)
-//! and ADR-0092's baseline rows ([`bench_baseline`]) — 16 wrappers. Flows L, M and N
-//! (`peer-udp-reask`, `kad-core-buddy`, `kad-direct-callback`) are run from
-//! their subcommands and have no wrapper here, except flow M with its third
+//! and ADR-0092's baseline rows ([`bench_baseline`]) — 16 wrappers. Flows M and N
+//! (`kad-core-buddy`, `kad-direct-callback`) are run from their subcommands and
+//! have no wrapper here, except flow M with its third
 //! party ([`buddy_callback`]: `--callback-downloader` and `--amule-requester`),
-//! and flow R (`kad-required-check`, [`kad_required`]). The other ADR-0092
+//! flow R (`kad-required-check`, [`kad_required`]) and flow S
+//! (`kad-dialed-link`, [`kad_dialed_link`]). Flow L's consume leg
+//! (`peer-udp-reask`, [`peer_udp_reask`]) has wrappers that score a retained run
+//! (~25 min live), and so has the Low-ID callback re-ask
+//! (`peer-lowid-callback-reask`, [`lowid_callback_reask`], ~30 min live). The other ADR-0092
 //! families are siblings: [`portmap`] (port mapping), [`ipv6_dialect`] (IPv6
 //! dialect), [`natt`] (NAT traversal).
 //!
@@ -179,8 +183,11 @@ mod bench_baseline;
 mod buddy_callback;
 mod flows_a_to_k;
 mod ipv6_dialect;
+mod kad_dialed_link;
 mod kad_legs;
 mod kad_required;
+mod lowid_callback_reask;
 mod natt;
+mod peer_udp_reask;
 mod portmap;
 mod search_wire;

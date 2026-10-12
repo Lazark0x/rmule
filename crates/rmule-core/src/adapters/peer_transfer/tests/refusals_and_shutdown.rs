@@ -29,7 +29,9 @@ async fn a_required_policy_names_a_stanceless_seed_s_refusal() {
         .await
         .unwrap();
     let adverts = HelloAdverts {
-        crypt_policy: Some(ObfuscationPolicy::Required),
+        obfuscation: crate::obfuscation_policy::SharedObfuscationPolicy::new(Some(
+            ObfuscationPolicy::Required,
+        )),
         ..HelloAdverts::default()
     };
     let mut transfer = RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT)
@@ -65,6 +67,58 @@ async fn a_required_policy_names_a_stanceless_seed_s_refusal() {
         .await
         .is_err(),
         "a refused seed is never dialed"
+    );
+}
+
+/// The obfuscation policy changes live (ADR-0046): each dial reads it as it
+/// starts, so the dial made before a change to `Required` reaches its
+/// stanceless peer, and the very next one is refused before any socket.
+#[tokio::test]
+async fn a_live_policy_change_reaches_the_very_next_dial() {
+    let listener = PeerListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let policy = crate::obfuscation_policy::SharedObfuscationPolicy::default();
+    let mut transfer = RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT)
+        .with_hello_adverts(HelloAdverts {
+            obfuscation: policy.clone(),
+            ..HelloAdverts::default()
+        });
+    let peer = PeerEndpoint::V4(Ipv4Endpoint::new(
+        Ipv4Addr::LOCALHOST,
+        listener.local_port(),
+    ));
+    let dial = async |transfer: &mut RuntimePeerTransferService| {
+        transfer
+            .start_download_worker(
+                peer,
+                dialed_serve_ctx(),
+                a_file(),
+                WorkerBrief::fresh(&a_file()),
+            )
+            .await
+            .unwrap()
+    };
+
+    let _before = dial(&mut transfer).await;
+    timeout(
+        Duration::from_secs(2),
+        listener.accept(dialed_serve_ctx(), PeerConnectOptions::default()),
+    )
+    .await
+    .expect("the dial before the change reaches the peer")
+    .expect("in plaintext, as off dials");
+
+    policy.set(Some(ObfuscationPolicy::Required));
+    let mut after = dial(&mut transfer).await;
+    assert_eq!(
+        first_two(&mut after).await,
+        [
+            Some(PeerWorkerEvent::DialEnded {
+                cause: DialEnd::CryptStanceUnknown
+            }),
+            Some(PeerWorkerEvent::CryptIncompatible)
+        ]
     );
 }
 

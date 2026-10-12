@@ -22,11 +22,13 @@
 
 #![warn(missing_docs)]
 
+mod client_software;
 mod download;
 mod fake_dialer;
 mod fake_ed2k_server;
 mod fake_peer;
 mod framing;
+mod hang_guard;
 mod interfaces;
 pub mod kad_keyword;
 pub mod kad_mesh;
@@ -41,10 +43,12 @@ mod store;
 mod test_tracing;
 pub mod wire;
 
+pub use client_software::{amule_233, client_software, emule_qt};
 pub use download::{
     PendingPeerTransfer, PlanAssertingPeerTransfer, StaticPeerTransfer, StaticSourceLookup,
-    emit_streamed_part, file_link, file_link_without_part_hash_set, loopback_peer, next_event,
-    plain_sources, run_download, source_with_high_id, two_high_id_sources,
+    emit_streamed_part, file_link, file_link_without_part_hash_set, file_name, in_download_dir,
+    loopback_peer, next_event, plain_sources, run_download, source_with_high_id,
+    two_high_id_sources,
 };
 pub use fake_dialer::{FakeBuddy, FakeDialer};
 pub use fake_ed2k_server::{FakeEd2kServer, spawn_check_answering_listener};
@@ -52,6 +56,7 @@ pub use fake_peer::{
     FakePeer, HashSetPolicy, MultiPacketPolicy, PeerScript, PeerStats, SeenMultiPacketRequest,
     ServePolicy, SlotPolicy, SourcesPolicy,
 };
+pub use hang_guard::HANG_GUARD;
 pub use interfaces::FakeInterfaces;
 pub use kad_mesh::{FakeKadPeer, KadMeshSim, LinkPolicy, TraceEntry, drain_split};
 pub use operator::{connect_to, share_directory};
@@ -61,5 +66,5 @@ pub use serve::{
     test_handshake_ctx, test_identity,
 };
 pub use server_udp::FakeServerUdp;
-pub use store::memory_store;
+pub use store::{memory_store, scratch_ports};
 pub use test_tracing::{CapturedLog, TracingGuard, capture_tracing, init_tracing};

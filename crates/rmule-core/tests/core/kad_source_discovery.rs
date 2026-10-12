@@ -3,7 +3,7 @@
 //! download's candidate pool and the scheduler dials them — no socket, no
 //! eD2k server login (the lookup fails and the download waits on Kad).
 
-use rmule_core::KadSource;
+use rmule_testkit::HANG_GUARD;
 use std::time::Duration;
 
 use crate::fixture::{StubKad, kad_enable_config};
@@ -14,8 +14,8 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, ClientIdentity, Ed2kFileLink, Ed2kText, PeerEndpoint, PeerSource, ServerEndpoint,
-    SourceLookupTarget, UserHash,
+    ClientId, Ed2kFileLink, PeerEndpoint, PeerSource, ServerEndpoint, SourceLookupTarget,
+    SourceSighting,
 };
 use rmule_testkit::file_link_without_part_hash_set;
 use tokio::sync::mpsc;
@@ -97,6 +97,7 @@ impl PeerTransferService for ScriptedPeerTransfer {
 
 #[tokio::test]
 async fn kad_fed_sources_fill_the_pool_and_the_scheduler_dials_them() {
+    let dir = tempfile::tempdir().unwrap();
     let bytes = b"kad serverless payload".to_vec();
     let kad_source = PeerSource::new(ClientId::from_u32(u32::from_le_bytes([10, 0, 0, 9])), 4663);
     let peer = kad_source.as_peer_endpoint().unwrap();
@@ -112,7 +113,7 @@ async fn kad_fed_sources_fill_the_pool_and_the_scheduler_dials_them() {
             }],
         },
     };
-    let factory = StubKad::new().answering_sources(vec![KadSource::dialable(kad_source)]);
+    let factory = StubKad::new().answering_sources(vec![SourceSighting::plain(kad_source)]);
 
     let mut core = Core::builder(
         CoreConfig {
@@ -121,6 +122,10 @@ async fn kad_fed_sources_fill_the_pool_and_the_scheduler_dials_them() {
         },
         rmule_testkit::memory_store(),
     )
+    .settings(rmule_testkit::in_download_dir(
+        rmule_core::CoreSettings::default(),
+        dir.path(),
+    ))
     .source_lookup(FailingSourceLookup)
     .peer_transfer(transfer)
     .kad(factory)
@@ -130,26 +135,19 @@ async fn kad_fed_sources_fill_the_pool_and_the_scheduler_dials_them() {
         .await
         .unwrap();
 
-    let dir = tempfile::tempdir().unwrap();
-    let identity = ClientIdentity::new(
-        UserHash::from_bytes([0x42; UserHash::BYTE_LEN]),
-        Ed2kText::from_utf8("kad-test"),
-        4662,
-        60,
-    );
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: file_link_without_part_hash_set("kad-fed.bin", &bytes),
         // A server nothing listens on: the lookup fails and Kad carries it.
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 1).unwrap()),
-        credentials: identity.into(),
-        output_path: dir.path().join("kad-fed.bin"),
+        name: rmule_testkit::file_name("kad-fed.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
 
     let mut events = Vec::new();
     loop {
-        let event = timeout(Duration::from_secs(5), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted next event")
             .expect("core event stream stayed open");
@@ -189,6 +187,7 @@ async fn kad_fed_sources_fill_the_pool_and_the_scheduler_dials_them() {
 /// nothing ever logs in.
 #[tokio::test]
 async fn with_no_server_at_all_a_kad_search_row_downloads_over_kad() {
+    let dir = tempfile::tempdir().unwrap();
     let bytes = b"kad only operator payload".to_vec();
     let link = file_link_without_part_hash_set("kad-only.bin", &bytes);
     let kad_source = PeerSource::new(ClientId::from_u32(u32::from_le_bytes([10, 0, 0, 11])), 4663);
@@ -200,7 +199,7 @@ async fn with_no_server_at_all_a_kad_search_row_downloads_over_kad() {
     )
     .expect("a valid row");
     let channel = StubKad::new()
-        .answering_sources(vec![KadSource::dialable(kad_source)])
+        .answering_sources(vec![SourceSighting::plain(kad_source)])
         .answering_keywords(vec![row]);
     let mut core = Core::builder(
         CoreConfig {
@@ -209,6 +208,10 @@ async fn with_no_server_at_all_a_kad_search_row_downloads_over_kad() {
         },
         rmule_testkit::memory_store(),
     )
+    .settings(rmule_testkit::in_download_dir(
+        rmule_core::CoreSettings::default(),
+        dir.path(),
+    ))
     .peer_transfer(ScriptedPeerTransfer {
         expected_peer: kad_source.as_peer_endpoint().unwrap(),
         outcome: PeerDownloadOutcome {
@@ -252,18 +255,17 @@ async fn with_no_server_at_all_a_kad_search_row_downloads_over_kad() {
         unreachable!()
     };
 
-    let dir = tempfile::tempdir().unwrap();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: results[0].to_file_link(),
         source_hint: None,
-        credentials: crate::fixture::identity().into(),
-        output_path: dir.path().join("kad-only.bin"),
+        name: rmule_testkit::file_name("kad-only.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
 
     let mut events = Vec::new();
-    timeout(Duration::from_secs(10), async {
+    timeout(HANG_GUARD, async {
         loop {
             let event = core.next_event().await.expect("core alive");
             let done = matches!(

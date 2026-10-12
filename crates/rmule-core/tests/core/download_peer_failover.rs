@@ -4,10 +4,9 @@
 //! one that grants, and a peer that closes mid-part leaves a prefix the next
 //! peer resumes from rather than restarting at block 0 (ADR-0029).
 
-use crate::fixture::identity_with_port;
+use rmule_testkit::HANG_GUARD;
 use std::time::Duration;
 
-use crate::fixture::identity;
 use rmule_core::{Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent};
 use rmule_testkit::{FakeEd2kServer, FakePeer, PeerScript, ServePolicy, SlotPolicy, file_link};
 use tokio::time::timeout;
@@ -36,19 +35,24 @@ async fn core_completes_when_one_source_never_finishes_handshake() {
     let good_task = good.spawn(PeerScript::serving(file_hash, bytes));
 
     let out = tempfile::tempdir().unwrap();
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
-    rmule_testkit::connect_to(&core, &server.endpoint(), identity_with_port(0).into()).await;
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            out.path(),
+        ))
+        .build();
+    rmule_testkit::connect_to(&core, &server.endpoint()).await;
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(server.endpoint()),
-        credentials: identity().into(),
-        output_path: out.path().join("silent-source.bin"),
+        name: rmule_testkit::file_name("silent-source.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
 
     loop {
-        let event = timeout(Duration::from_secs(5), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted event")
             .expect("core event stream stayed open");
@@ -101,20 +105,25 @@ async fn core_single_part_race_completes_when_primary_peer_queues_forever() {
         ..CoreConfig::default()
     };
     let out = tempfile::tempdir().unwrap();
-    let mut core = Core::new(config, rmule_testkit::memory_store());
-    rmule_testkit::connect_to(&core, &server.endpoint(), identity_with_port(0).into()).await;
+    let mut core = Core::builder(config, rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            out.path(),
+        ))
+        .build();
+    rmule_testkit::connect_to(&core, &server.endpoint()).await;
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(server.endpoint()),
-        credentials: identity().into(),
-        output_path: out.path().join("race.bin"),
+        name: rmule_testkit::file_name("race.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
 
     let mut assigned_to = std::collections::HashSet::new();
     loop {
-        let event = timeout(Duration::from_secs(5), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted event")
             .expect("core event stream stayed open");
@@ -176,19 +185,24 @@ async fn core_finishes_a_part_from_a_second_peer_after_the_first_drops_mid_part(
         ..CoreConfig::default()
     };
     let out = tempfile::tempdir().unwrap();
-    let mut core = Core::new(config, rmule_testkit::memory_store());
-    rmule_testkit::connect_to(&core, &server.endpoint(), identity_with_port(0).into()).await;
+    let mut core = Core::builder(config, rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            out.path(),
+        ))
+        .build();
+    rmule_testkit::connect_to(&core, &server.endpoint()).await;
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(server.endpoint()),
-        credentials: identity().into(),
-        output_path: out.path().join("drop-resume.bin"),
+        name: rmule_testkit::file_name("drop-resume.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
 
     loop {
-        let event = timeout(Duration::from_secs(10), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted event")
             .expect("core event stream stayed open");

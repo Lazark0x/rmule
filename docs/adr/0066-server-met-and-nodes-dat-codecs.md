@@ -57,7 +57,12 @@ both and only fetches. File I/O stays in the runtime and core: `rmule-net` write
   `ip4 / port2 / tagcount4` plus an ST_ tag list. Recognised tags project onto
   `Server` fields, unknown tags are skipped, an out-of-range priority normalises to
   Normal (aMule's explicit quirk check), and an empty name becomes
-  `"Server <ip:port>"`.
+  `"Server <ip:port>"`. Besides name, description and priority the reader keeps the
+  figures, the obfuscation and UDP-key tags (`ST_UDPFLAGS`, `ST_UDPKEY`, `ST_UDPKEYIP`,
+  `ST_TCPPORTOBFUSCATION`, `ST_UDPPORTOBFUSCATION`; `Server.cpp:236-251`) and
+  `ST_AUXPORTSLIST` (`Server.cpp:222-231`), a row whose header port is the standard one
+  and whose list starts with the port to dial. A zero key or key address reads as absent,
+  as aMule writes each only when non-zero; an empty aux-ports tag says nothing.
 - **Truncation keeps the rows parsed so far.** aMule's whole-file catch keeps partial
   loads; rmule decodes row by row, a row error ends the parse, and earlier rows stand.
 - **Merge posture.** A new `(ip, port)` is added. A duplicate updates the list name

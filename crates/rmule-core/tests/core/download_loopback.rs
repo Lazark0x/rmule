@@ -6,10 +6,9 @@
 //! part, two parts across two peers, and the server-UDP rescue of a download
 //! the connected server had no source for.
 
-use crate::fixture::identity_with_port;
+use rmule_testkit::HANG_GUARD;
 use std::time::Duration;
 
-use crate::fixture::identity;
 use rmule_core::diagnostics::PartState;
 use rmule_core::{Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent};
 use rmule_primitives::{Ed2kLink, ServerEndpoint};
@@ -30,13 +29,18 @@ async fn core_download_completes_against_loopback_server_and_peer() {
     let peer_task = peer.spawn(PeerScript::serving(file_hash, bytes));
 
     let out = tempfile::tempdir().unwrap();
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
-    rmule_testkit::connect_to(&core, &server.endpoint(), identity_with_port(0).into()).await;
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            out.path(),
+        ))
+        .build();
+    rmule_testkit::connect_to(&core, &server.endpoint()).await;
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(server.endpoint()),
-        credentials: identity().into(),
-        output_path: out.path().join("download-loopback.bin"),
+        name: rmule_testkit::file_name("download-loopback.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -47,7 +51,7 @@ async fn core_download_completes_against_loopback_server_and_peer() {
     let mut saw_hashset = false;
     let mut saw_part = false;
     loop {
-        let event = timeout(Duration::from_secs(5), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted event")
             .expect("core event stream stayed open");
@@ -84,9 +88,9 @@ async fn core_download_completes_against_loopback_server_and_peer() {
     // Serving keeps the dialed link open for uploads (ADR-0031);
     // the peer script ends when the core does.
     core.shutdown().await;
-    let stats = timeout(Duration::from_secs(5), peer_task)
+    let stats = timeout(HANG_GUARD, peer_task)
         .await
-        .expect("the peer script finished within 5s")
+        .expect("the peer script finished")
         .expect("peer task");
     assert_eq!(
         stats.cancel_transfer_count, 0,
@@ -114,18 +118,23 @@ async fn a_link_naming_its_source_downloads_with_no_server() {
 
     let out = tempfile::tempdir().unwrap();
     let output_path = out.path().join("linked.bin");
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            out.path(),
+        ))
+        .build();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: None,
-        credentials: identity().into(),
-        output_path: output_path.clone(),
+        name: rmule_testkit::file_name("linked.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
 
     loop {
-        let event = timeout(Duration::from_secs(10), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted event")
             .expect("core event stream stayed open");
@@ -167,19 +176,24 @@ async fn core_download_completes_from_a_real_serving_core() {
     // the operator CLI uses.
     let out = tempfile::tempdir().unwrap();
     let output_path = out.path().join("from-real-serve.bin");
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
-    rmule_testkit::connect_to(&core, &server.endpoint(), identity_with_port(0).into()).await;
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            out.path(),
+        ))
+        .build();
+    rmule_testkit::connect_to(&core, &server.endpoint()).await;
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(server.endpoint()),
-        credentials: identity().into(),
-        output_path: output_path.clone(),
+        name: rmule_testkit::file_name("from-real-serve.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
 
     loop {
-        let event = timeout(Duration::from_secs(10), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted event")
             .expect("core event stream stayed open");
@@ -216,6 +230,7 @@ async fn core_download_completes_from_a_real_serving_core() {
 
 #[tokio::test]
 async fn global_discovery_rescues_a_download_with_no_connected_server_source() {
+    let out = tempfile::tempdir().unwrap();
     // Global-discovery rescue (ADR-0051): the connected server returns NO sources, but a managed
     // server answers over UDP. The download WAITS (WaitingForSources) instead of
     // failing NoUsableSources, the UDP-discovered High-ID peer is dialed, and the
@@ -238,7 +253,12 @@ async fn global_discovery_rescues_a_download_with_no_connected_server_source() {
         global_source_interval: Duration::from_millis(50),
         ..CoreConfig::default()
     };
-    let mut core = Core::new(config, rmule_testkit::memory_store());
+    let mut core = Core::builder(config, rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            out.path(),
+        ))
+        .build();
 
     // Arm global discovery with the UDP server, then start the download. Commands
     // are processed in order, so the server list is set before the download reads
@@ -252,13 +272,12 @@ async fn global_discovery_rescues_a_download_with_no_connected_server_source() {
     )
     .await;
 
-    let out = tempfile::tempdir().unwrap();
-    rmule_testkit::connect_to(&core, &server.endpoint(), identity_with_port(0).into()).await;
+    rmule_testkit::connect_to(&core, &server.endpoint()).await;
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(server.endpoint()),
-        credentials: identity().into(),
-        output_path: out.path().join("rescue.bin"),
+        name: rmule_testkit::file_name("rescue.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -266,7 +285,7 @@ async fn global_discovery_rescues_a_download_with_no_connected_server_source() {
     let mut saw_waiting = false;
     let mut saw_peer = false;
     loop {
-        let event = timeout(Duration::from_secs(10), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted event")
             .expect("core event stream stayed open");
@@ -322,13 +341,18 @@ async fn core_completes_two_part_download_across_two_loopback_peers() {
 
     let _tracing = rmule_testkit::init_tracing();
     let out = tempfile::tempdir().unwrap();
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
-    rmule_testkit::connect_to(&core, &server.endpoint(), identity_with_port(0).into()).await;
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            out.path(),
+        ))
+        .build();
+    rmule_testkit::connect_to(&core, &server.endpoint()).await;
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(server.endpoint()),
-        credentials: identity().into(),
-        output_path: out.path().join("two-peer.bin"),
+        name: rmule_testkit::file_name("two-peer.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -341,7 +365,7 @@ async fn core_completes_two_part_download_across_two_loopback_peers() {
     let mut level_verified_indexes = std::collections::HashSet::new();
     let mut mid_download_snapshot_captured = false;
     loop {
-        let event = timeout(Duration::from_secs(10), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted event")
             .expect("core event stream stayed open");
@@ -449,19 +473,24 @@ async fn core_download_fetches_single_part_in_multiple_blocks() {
     let peer_task = peer.spawn(PeerScript::serving(file_hash, bytes));
 
     let out = tempfile::tempdir().unwrap();
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
-    rmule_testkit::connect_to(&core, &server.endpoint(), identity_with_port(0).into()).await;
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            out.path(),
+        ))
+        .build();
+    rmule_testkit::connect_to(&core, &server.endpoint()).await;
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(server.endpoint()),
-        credentials: identity().into(),
-        output_path: out.path().join("multiblock.bin"),
+        name: rmule_testkit::file_name("multiblock.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
 
     loop {
-        let event = timeout(Duration::from_secs(10), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted event")
             .expect("core event stream stayed open");

@@ -6,7 +6,7 @@
 
 use std::net::Ipv4Addr;
 
-use rmule_ed2k::{GlobServStatRes, ServerUdpFlags};
+use rmule_ed2k::{GlobServStatRes, ServerMetObfuscation, ServerUdpFlags};
 
 /// What a server's status answer said about keying UDP to it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,6 +35,36 @@ impl ServerUdpCrypt {
             udp_key: status.server_udp_key()?,
             key_ip,
         })
+    }
+
+    /// The facts a server.met row carries: `ST_TCPPORTOBFUSCATION`,
+    /// `ST_UDPPORTOBFUSCATION`, `ST_UDPKEY` and `ST_UDPKEYIP`
+    /// (`Server.cpp:236-251`). `None` when it carries none, a zero being
+    /// aMule's "none" for each.
+    #[must_use]
+    pub(crate) fn from_met(met: &ServerMetObfuscation) -> Option<Self> {
+        let crypt = Self {
+            obfuscation_udp_port: met.udp_port.unwrap_or(0),
+            obfuscation_tcp_port: met.tcp_port.unwrap_or(0),
+            udp_key: met.udp_key.unwrap_or(0),
+            key_ip: met.udp_key_ip,
+        };
+        (crypt.obfuscation_udp_port != 0 || crypt.obfuscation_tcp_port != 0 || crypt.udp_key != 0)
+            .then_some(crypt)
+    }
+
+    /// The facts a row holds when all it knows is the obfuscation TCP port —
+    /// from a server.met tag or a login's `OP_IDCHANGE`, neither of which
+    /// carries a UDP port or a key. The zero key is aMule's "no key"
+    /// ([`key_under`](Self::key_under) never offers it).
+    #[must_use]
+    pub(crate) const fn from_tcp_port(obfuscation_tcp_port: u16) -> Self {
+        Self {
+            obfuscation_udp_port: 0,
+            obfuscation_tcp_port,
+            udp_key: 0,
+            key_ip: None,
+        }
     }
 
     /// The `ServerUDPKey` to key UDP to the server with while our public

@@ -16,7 +16,7 @@ use anyhow::{Context, Result, bail};
 use crate::flow::bench::{Bench, CaptureSidecar, DEFAULT_TAP_INTERFACE, ED2K_SERVER_PORT};
 use crate::flow::ed2k_server::rmule_tools::run_to_exit;
 use crate::flow::ed2k_server::search_wire::ED2KSRV_IP;
-use crate::flow::ed2k_server::search_wire::server_tap::{granted_flags, offers};
+use crate::flow::ed2k_server::search_wire::server_tap::{granted_flags, offered_origins};
 
 /// The files rmule shares at start, and the one it adds before the switch.
 const START_FILES: [&str; 2] = ["announce-alpha.bin", "announce-beta.bin"];
@@ -167,9 +167,16 @@ fn run_leg(
         let pcap = root.join(pcap_name(leg, label));
         let flags = granted_flags(&pcap, client)?
             .map_or_else(|| "none".to_owned(), |flags| format!("{flags:#x}"));
-        let offered: Vec<String> = offers(&pcap, client)?
+        // Each offer as `count@time`, then the ID:port every entry wore.
+        let offered: Vec<String> = offered_origins(&pcap, client)?
             .iter()
-            .map(|(at, count)| format!("{count}@{at:.1}"))
+            .map(|(at, origins)| {
+                let marks: Vec<String> = origins
+                    .iter()
+                    .map(|(id, port)| format!("{id:08x}:{port:04x}"))
+                    .collect();
+                format!("{}@{at:.1}({})", origins.len(), marks.join(" "))
+            })
             .collect();
         lines.push(format!(
             "leg={} server={label} granted_flags={flags} offers=[{}]",

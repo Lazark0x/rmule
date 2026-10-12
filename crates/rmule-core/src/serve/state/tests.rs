@@ -18,7 +18,10 @@ use rmule_peer::{
 };
 use rmule_primitives::{ClientId, ED2K_PART_SIZE, EMBLOCKSIZE, PartHash, PeerSource};
 
-use crate::adapters::ServeConnEvent;
+use rmule_peer::{ConnectionEvent, IdentityChange, ServerEvent};
+
+use crate::adapters::ServeInput;
+use crate::hello_facts::{HelloFacts, nameless_software};
 use crate::registry::ShareSource;
 
 use super::*;
@@ -60,33 +63,44 @@ fn serving_state(budget: usize, entries: Vec<SharedFileEntry>) -> ServeState {
     state
 }
 
+/// The peer closed its connection.
+fn disconnected() -> ServeInput {
+    ServeInput::Connection(ConnectionEvent::Disconnected {
+        reason: rmule_peer::PeerCloseReason::PeerClosed,
+    })
+}
+
 fn no_modifiers() -> HashMap<PeerEndpoint, f64> {
     HashMap::new()
 }
 
-fn send(peer: PeerEndpoint, command: ServeConnCommand) -> ServeDecision {
+fn send(peer: PeerEndpoint, command: ServerCommand) -> ServeDecision {
     ServeDecision::Send { peer, command }
 }
 
+/// The hello facts these tests' peers state: a High ID on no server, crypt
+/// capable as aMule 2.3.3 advertises by default — so a reply to it carries a
+/// usable crypt target (ADR-0046) — advertising `udp_port` and claiming
+/// `extended_requests_version`.
+fn hello_facts(
+    user_hash: UserHash,
+    udp_port: u16,
+    udp_version: u8,
+    extended_requests_version: u8,
+) -> HelloFacts {
+    HelloFacts {
+        udp_port,
+        udp_version,
+        extended_requests_version,
+        crypt: crypt_advert(),
+        ..HelloFacts::of(user_hash)
+    }
+}
+
 fn identify(state: &mut ServeState, p: PeerEndpoint, user_hash: UserHash, t: Instant) {
-    let decisions = state.on_conn_event(
-        t,
-        p,
-        ServeConnEvent::Identified {
-            user_hash,
-            client_id: ClientId::from_u32(0x0100_007F),
-            connected_server: None,
-            tcp_port: 4662,
-            udp_port: 0,
-            udp_version: 0,
-            // aMule 2.3.3's claim: its name asks carry a part status.
-            extended_requests_version: 2,
-            crypt: crypt_advert(),
-            ipv6: None,
-            software: nameless_software(),
-        },
-        &no_modifiers(),
-    );
+    // aMule 2.3.3's claim: its name asks carry a part status.
+    let identified = hello_facts(user_hash, 0, 0, 2).identified();
+    let decisions = state.on_conn_event(t, p, identified, &no_modifiers());
     assert_eq!(decisions, Vec::new(), "identification is bookkeeping only");
 }
 
@@ -136,25 +150,9 @@ fn identify_udp_claiming(
     extended_requests_version: u8,
     t: Instant,
 ) {
-    let decisions = state.on_conn_event(
-        t,
-        p,
-        ServeConnEvent::Identified {
-            user_hash,
-            client_id: ClientId::from_u32(0x0100_007F),
-            connected_server: None,
-            tcp_port: 4662,
-            udp_port,
-            udp_version,
-            extended_requests_version,
-            // A crypt-capable peer, as aMule 2.3.3 advertises by default —
-            // so a reply to it carries a usable crypt target (ADR-0046).
-            crypt: crypt_advert(),
-            ipv6: None,
-            software: nameless_software(),
-        },
-        &no_modifiers(),
-    );
+    let identified =
+        hello_facts(user_hash, udp_port, udp_version, extended_requests_version).identified();
+    let decisions = state.on_conn_event(t, p, identified, &no_modifiers());
     assert_eq!(decisions, Vec::new());
 }
 
@@ -177,7 +175,7 @@ fn slot_request(
     state.on_conn_event(
         t,
         p,
-        ServeConnEvent::SlotRequested { file_hash },
+        ServeInput::Server(ServerEvent::SlotRequested { file_hash }),
         &no_modifiers(),
     )
 }
@@ -225,7 +223,7 @@ fn one_waiter_state(
             [
                 ServeDecision::CountUploadRequest { .. },
                 ServeDecision::Send {
-                    command: ServeConnCommand::SetQueueRank { rank: 1 },
+                    command: ServerCommand::SetQueueRank { rank: 1 },
                     ..
                 },
                 ServeDecision::Emit(ServeEvent::PeerQueued { rank: 1, .. }),
@@ -234,16 +232,4 @@ fn one_waiter_state(
         "the waiter queued at rank 1: {queued:?}"
     );
     state
-}
-
-/// The identification a hello naming no user yields — what these tests'
-/// peers, which say nothing about their client, are read as.
-fn nameless_software() -> rmule_peer::ClientSoftware {
-    rmule_peer::ClientSoftware::from_hello_body(&rmule_peer::PeerHelloBody {
-        user_hash: UserHash::from_bytes([0; UserHash::BYTE_LEN]),
-        client_id: ClientId::from_u32(0),
-        tcp_port: 0,
-        tags: Vec::new(),
-        connected_server: rmule_primitives::Ipv4Endpoint::new(std::net::Ipv4Addr::UNSPECIFIED, 0),
-    })
 }

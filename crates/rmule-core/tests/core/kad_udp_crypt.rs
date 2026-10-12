@@ -1,5 +1,5 @@
 //! A production Core's Kad node speaks the Kad-UDP crypt: with
-//! `CoreConfig::peer_crypt` set it obfuscates toward a crypt-era contact with
+//! `CoreSettings::obfuscation` set it obfuscates toward a crypt-era contact with
 //! its verify key in the trailer, and it decrypts what a keyed counterparty
 //! answers under that key — the lookup reply aMule sends under the requester's
 //! `senderKey` (`KademliaUDPListener.cpp:682`) and the `0x62` a UDP firewall
@@ -10,11 +10,15 @@
 //! driven by hand over a loopback socket so every byte the Core sends and
 //! every byte it is answered with can be judged.
 
+use rmule_kad::KadNodeStart;
+use rmule_kad::KadObfuscation;
+use rmule_testkit::HANG_GUARD;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use rmule_core::{
-    Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, KadEnableConfig, ObfuscationPolicy,
+    AppConfigStore, Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, KadEnableConfig,
+    ObfuscationPolicy, Setting, TakesEffect,
 };
 use rmule_kad::opcode::KADEMLIA2_RES;
 use rmule_kad::{
@@ -26,16 +30,15 @@ use rmule_testkit::kad_node::fixed_nonce;
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 
-use crate::fixture::{dead_port, identity, kad_enable_config, stub_link};
+use crate::fixture::{dead_port, kad_enable_config, stub_link};
 
-/// The Core's persisted Kad UDP key — the seed its verify keys derive from.
-const CORE_KAD_UDP_KEY: u32 = 0x0C0F_FEE5;
 const HELPER_ID: KadId = KadId::from_bytes([0x5C; KadId::BYTE_LEN]);
 
-/// The key the Core hands a counterparty at `ip`, derived as its node derives
-/// it (aMule `CPrefs::GetUDPVerifyKey`, `Prefs.cpp:235-243`).
-fn core_key_for(ip: Ipv4Addr) -> u32 {
-    udp_verify_key(CORE_KAD_UDP_KEY, ip)
+/// The key the Core whose persisted Kad UDP Key is `seed` hands a
+/// counterparty at `ip`, derived as its node derives it (aMule
+/// `CPrefs::GetUDPVerifyKey`, `Prefs.cpp:235-243`).
+fn core_key_for(seed: u32, ip: Ipv4Addr) -> u32 {
+    udp_verify_key(seed, ip)
 }
 
 /// A verify-key-armed, obfuscating Kad node on a loopback socket.
@@ -47,14 +50,20 @@ struct Helper {
 impl Helper {
     async fn keyed() -> Self {
         let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-        let mut node = KadNode::new(KadNodeConfig {
-            id: HELPER_ID,
-            tcp_port: 4662,
-            udp_port: socket.local_addr().unwrap().port(),
-            user_hash: UserHash::from_bytes([0x5C; UserHash::BYTE_LEN]),
-        });
-        node.enable_verify_keys(0x4E1F_0001, Ipv4Addr::LOCALHOST);
-        node.enable_datagram_obfuscation(fixed_nonce);
+        let node = KadNode::new(
+            KadNodeStart::new(
+                KadNodeConfig {
+                    id: HELPER_ID,
+                    tcp_port: 4662,
+                    udp_port: socket.local_addr().unwrap().port(),
+                    user_hash: UserHash::from_bytes([0x5C; UserHash::BYTE_LEN]),
+                },
+                KadInstant::EPOCH,
+            )
+            .obfuscation(
+                KadObfuscation::new(fixed_nonce).with_verify_keys(0x4E1F_0001, Ipv4Addr::LOCALHOST),
+            ),
+        );
         Self { node, socket }
     }
 
@@ -72,9 +81,9 @@ impl Helper {
 
     async fn recv(&self) -> (SocketAddr, Vec<u8>) {
         let mut buffer = vec![0u8; 2048];
-        let (len, from) = timeout(Duration::from_secs(10), self.socket.recv_from(&mut buffer))
+        let (len, from) = timeout(HANG_GUARD, self.socket.recv_from(&mut buffer))
             .await
-            .expect("the Core sent a Kad datagram within 10s")
+            .expect("the Core sent a Kad datagram")
             .unwrap();
         buffer.truncate(len);
         (from, buffer)
@@ -106,18 +115,21 @@ fn is_plaintext_kad(bytes: &[u8]) -> bool {
 /// The plaintext of `bytes` if it decrypts under the receiver-verify family
 /// keyed on the Core's own key for loopback — the family only a
 /// verify-key-armed Core offers its receive path.
-fn opened_by_the_core(bytes: &[u8]) -> Option<Vec<u8>> {
+fn opened_by_the_core(seed: u32, bytes: &[u8]) -> Option<Vec<u8>> {
     decrypt_datagram_client(
         bytes,
         &ClientDecryptKeys {
-            receiver_verify_key: Some(core_key_for(Ipv4Addr::LOCALHOST)),
+            receiver_verify_key: Some(core_key_for(seed, Ipv4Addr::LOCALHOST)),
             ..ClientDecryptKeys::default()
         },
     )
     .map(|decrypted| decrypted.payload)
 }
 
-async fn core_with(peer_crypt: Option<ObfuscationPolicy>, contacts: Vec<KadContact>) -> Core {
+async fn core_with(
+    peer_crypt: Option<ObfuscationPolicy>,
+    contacts: Vec<KadContact>,
+) -> (Core, u32) {
     core_enabled(
         peer_crypt,
         CoreConfig::default(),
@@ -125,31 +137,33 @@ async fn core_with(peer_crypt: Option<ObfuscationPolicy>, contacts: Vec<KadConta
             contacts,
             ..kad_enable_config()
         },
+        None,
     )
     .await
 }
 
-/// A Core with `peer_crypt` as its one obfuscation policy, Kad enabled on
-/// `config` with the Core's Kad UDP Key.
+/// A Core with `peer_crypt` as its one obfuscation policy (`CoreSettings::obfuscation`), Kad enabled on
+/// `config`, and the Kad UDP Key its store holds — the seed its verify keys
+/// derive from; a download it starts lands in `download_dir`.
 async fn core_enabled(
     peer_crypt: Option<ObfuscationPolicy>,
     core_config: CoreConfig,
     config: KadEnableConfig,
-) -> Core {
-    let core = Core::new(
-        CoreConfig {
-            peer_crypt,
-            ..core_config
-        },
-        rmule_testkit::memory_store(),
-    );
-    core.send(CoreCommand::EnableKad(KadEnableConfig {
-        kad_udp_key: CORE_KAD_UDP_KEY,
-        ..config
-    }))
-    .await
-    .unwrap();
-    core
+    download_dir: Option<&std::path::Path>,
+) -> (Core, u32) {
+    let store = rmule_testkit::memory_store();
+    let seed = rmule_core::DurableAppConfig::new(std::sync::Arc::clone(&store))
+        .ensure_kad_udp_key()
+        .unwrap();
+    let core = Core::builder(core_config, store)
+        .settings(rmule_core::CoreSettings {
+            obfuscation: peer_crypt,
+            download_dir: download_dir.map(std::path::Path::to_path_buf),
+            ..rmule_core::CoreSettings::default()
+        })
+        .build();
+    core.send(CoreCommand::EnableKad(config)).await.unwrap();
+    (core, seed)
 }
 
 /// Poll the snapshot until the node reports a received, decoded datagram
@@ -194,7 +208,8 @@ async fn a_crypt_armed_core_walks_on_a_lookup_reply_keyed_on_its_own_verify_key(
     // A routing walk — a download's Kad source search — walks on to every
     // closer row a reply names. (The self-check's UDP helper lookup would
     // hand its rows to the tester instead.)
-    let core = core_enabled(
+    let output = tempfile::tempdir().unwrap();
+    let (core, seed) = core_enabled(
         Some(ObfuscationPolicy::Requested),
         CoreConfig {
             kad_sweep_interval: Duration::from_millis(100),
@@ -205,27 +220,27 @@ async fn a_crypt_armed_core_walks_on_a_lookup_reply_keyed_on_its_own_verify_key(
             assume_open_reachability: true,
             ..kad_enable_config()
         },
+        Some(output.path()),
     )
     .await;
-    let output = tempfile::tempdir().unwrap();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: stub_link("kad-crypt.bin", 4096, 0x39),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", dead_port().await).unwrap()),
-        credentials: identity().into(),
-        output_path: output.path().join("kad-crypt.bin"),
+        name: rmule_testkit::file_name("kad-crypt.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
 
     let mut keyed_lookup_replies = 0;
     let mut buffer = vec![0u8; 2048];
-    let reached = timeout(Duration::from_secs(10), async {
+    let reached = timeout(HANG_GUARD, async {
         loop {
             tokio::select! {
                 (core_addr, request) = helper.recv() => {
                     assert!(!is_plaintext_kad(&request), "the Core obfuscates toward a v8 contact");
                     for reply in helper.answer(core_addr, &request) {
-                        if opened_by_the_core(&reply)
+                        if opened_by_the_core(seed, &reply)
                             .is_some_and(|plain| plain.get(1) == Some(&KADEMLIA2_RES))
                         {
                             keyed_lookup_replies += 1;
@@ -256,7 +271,8 @@ async fn a_crypt_armed_core_walks_on_a_lookup_reply_keyed_on_its_own_verify_key(
 #[tokio::test]
 async fn a_crypt_armed_core_reads_a_0x62_keyed_on_the_0xa7_verify_key() {
     let mut helper = Helper::keyed().await;
-    let mut core = core_with(Some(ObfuscationPolicy::Requested), vec![helper.contact()]).await;
+    let (mut core, seed) =
+        core_with(Some(ObfuscationPolicy::Requested), vec![helper.contact()]).await;
     // Learn where the Core's Kad socket is; answer nothing it asked.
     let (core_addr, _) = helper.recv().await;
 
@@ -265,7 +281,7 @@ async fn a_crypt_armed_core_reads_a_0x62_keyed_on_the_0xa7_verify_key() {
     // (`BaseClient.cpp:3982-3986`). The helper keys both results on it.
     let mut request = core_addr.port().to_le_bytes().to_vec();
     request.extend_from_slice(&0u16.to_le_bytes());
-    request.extend_from_slice(&core_key_for(Ipv4Addr::LOCALHOST).to_le_bytes());
+    request.extend_from_slice(&core_key_for(seed, Ipv4Addr::LOCALHOST).to_le_bytes());
     helper
         .node
         .consume_udp_firewall_request(Ipv4Addr::LOCALHOST, &request, false);
@@ -277,13 +293,13 @@ async fn a_crypt_armed_core_reads_a_0x62_keyed_on_the_0xa7_verify_key() {
         })
         .expect("the helper answers the request");
     assert!(
-        opened_by_the_core(&keyed_0x62).is_some(),
+        opened_by_the_core(seed, &keyed_0x62).is_some(),
         "the helper's 0x62 is keyed on the 0xA7's key"
     );
     helper.socket.send_to(&keyed_0x62, core_addr).await.unwrap();
 
     assert!(
-        heard_within(&mut core, Duration::from_secs(10)).await,
+        heard_within(&mut core, HANG_GUARD).await,
         "the Core decrypted the keyed 0x62 — the only datagram it was sent"
     );
 }
@@ -295,7 +311,77 @@ async fn by_default_a_core_speaks_kad_in_the_clear() {
     // contact in plaintext, as aMule does with `IsClientCryptLayerSupported()`
     // off (`MuleUDPSocket.cpp:282-284`).
     let helper = Helper::keyed().await;
-    let _core = core_with(None, vec![helper.contact()]).await;
+    let (_core, _) = core_with(None, vec![helper.contact()]).await;
     let (_, request) = helper.recv().await;
     assert!(is_plaintext_kad(&request));
+}
+
+/// The policy changes live (ADR-0046): a Core started plaintext and set to
+/// `Requested` through its settings handle has its running Kad node re-armed,
+/// so the lookups it keeps sending a crypt-era contact turn obfuscated with no
+/// restart — and set off again, they turn plaintext.
+#[tokio::test]
+async fn a_live_policy_change_re_arms_the_running_kad_node_both_ways() {
+    let mut helper = Helper::keyed().await;
+    // A download's Kad source search re-asks every sweep, so the Core keeps
+    // talking to the helper while the policy moves under it.
+    let output = tempfile::tempdir().unwrap();
+    let (core, _) = core_enabled(
+        None,
+        CoreConfig {
+            kad_sweep_interval: Duration::from_millis(100),
+            ..CoreConfig::default()
+        },
+        KadEnableConfig {
+            contacts: vec![helper.contact()],
+            assume_open_reachability: true,
+            ..kad_enable_config()
+        },
+        Some(output.path()),
+    )
+    .await;
+    core.send(CoreCommand::Download(DownloadCommand::StartDownload {
+        file: stub_link("kad-live-crypt.bin", 4096, 0x3A),
+        source_hint: Some(ServerEndpoint::new("127.0.0.1", dead_port().await).unwrap()),
+        name: rmule_testkit::file_name("kad-live-crypt.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
+    }))
+    .await
+    .unwrap();
+    // Answer everything, and hand back the first request that is (or is
+    // not) obfuscated.
+    let mut next_where = async |obfuscated: bool| {
+        timeout(HANG_GUARD, async {
+            loop {
+                let (core_addr, request) = helper.recv().await;
+                for reply in helper.answer(core_addr, &request) {
+                    helper.socket.send_to(&reply, core_addr).await.unwrap();
+                }
+                if is_plaintext_kad(&request) != obfuscated {
+                    return request;
+                }
+            }
+        })
+        .await
+        .is_ok()
+    };
+
+    assert!(next_where(false).await, "the Core starts in the clear");
+    assert_eq!(
+        core.settings()
+            .set(Setting::Obfuscation(Some(ObfuscationPolicy::Requested))),
+        Ok(TakesEffect::Now)
+    );
+    assert!(
+        next_where(true).await,
+        "re-armed, the running node obfuscates toward the v8 contact"
+    );
+    assert_eq!(
+        core.settings().set(Setting::Obfuscation(None)),
+        Ok(TakesEffect::Now)
+    );
+    assert!(
+        next_where(false).await,
+        "disarmed, the running node speaks in the clear again"
+    );
 }

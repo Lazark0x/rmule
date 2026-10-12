@@ -5,17 +5,16 @@
 
 use std::time::Duration;
 
-use rmule_kad::KadId;
 use rmule_primitives::{
     ClientId, Ed2kText, FileHash, KeywordQuery, PeerSource, SearchResult, ServerEndpoint,
-    SourceLookupTarget,
+    SourceLookupTarget, SourceSighting,
 };
 
 use crate::server_session::ServerSessionHandle;
 use crate::{
     ClientUdpBind, Core, CoreCommand, CoreConfig, CoreError, CoreEvent, KadEnableConfig,
-    KadKeywordSink, KadRuntimeFactory, KadSource, KadSourceChannel, LegNotSent, SearchCommand,
-    SearchEvent, SearchId, SearchLegState,
+    KadKeywordSink, KadRuntimeFactory, KadSourceChannel, LegNotSent, SearchCommand, SearchEvent,
+    SearchId, SearchLegState,
 };
 
 /// A Kad node whose keyword walk answers one row and ends.
@@ -35,7 +34,7 @@ fn kad_row() -> SearchResult {
 impl KadSourceChannel for AnsweringKad {
     async fn search_sources(&self, _target: SourceLookupTarget) {}
     async fn publish_source(&self, _target: SourceLookupTarget) {}
-    async fn next_sources(&self) -> Option<(FileHash, Vec<KadSource>)> {
+    async fn next_sources(&self) -> Option<(FileHash, Vec<SourceSighting>)> {
         std::future::pending().await
     }
     async fn search_keyword(&self, _query: KeywordQuery, results: KadKeywordSink) {
@@ -49,7 +48,9 @@ impl KadRuntimeFactory for AnsweringKad {
     async fn start(
         &mut self,
         _config: &KadEnableConfig,
+        _node: &crate::KadNodeIdentity,
         _bind: ClientUdpBind,
+        _cells: &crate::KadCells,
     ) -> Result<Self, CoreError> {
         Ok(Self)
     }
@@ -57,13 +58,10 @@ impl KadRuntimeFactory for AnsweringKad {
 
 fn kad_config() -> KadEnableConfig {
     KadEnableConfig {
-        kad_id: KadId::from_bytes([0x0A; KadId::BYTE_LEN]),
-        peer_credentials: rmule_testkit::test_identity(0x42, "rmule-core", 4662).into(),
         bootstrap: Vec::new(),
         contacts: Vec::new(),
         nodes_dat_path: None,
         assume_open_reachability: false,
-        kad_udp_key: 0,
         kad_capture_dir: None,
         kad_shutdown: None,
     }
@@ -79,6 +77,7 @@ async fn a_session_ending_as_the_search_starts_counts_as_none_and_the_search_com
         },
         rmule_testkit::memory_store(),
     )
+    .settings(crate::CoreSettings::default())
     .kad(AnsweringKad);
     let session = builder.shared_server_session();
     let mut core = builder.build();

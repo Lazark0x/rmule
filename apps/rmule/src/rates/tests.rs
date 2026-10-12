@@ -416,47 +416,48 @@ fn session_totals_keep_metering_after_every_row_is_gone() {
     );
 }
 
-/// The Kad totals move once per echo, so their meters difference echo to
-/// echo: the data ticks between two echoes neither decay nor spike the
-/// rate, and a node that stops takes its meters with it.
+/// The Kad totals ride the snapshot, so their meters difference tick to
+/// tick, and a node that stops takes its meters with it.
 #[test]
-fn kad_rates_difference_echo_to_echo_not_tick_to_tick() {
+fn kad_rates_difference_tick_to_tick_and_a_stopped_node_drops_them() {
     use rmule_core::diagnostics::{
         KadFirewallCheck, KadFirewallVerdict, KadTraffic, KadUdpVerdict,
     };
-    let kad = |datagrams_in, bytes_in, datagrams_out, bytes_out| KadRuntimeDiagnostics {
-        contact_responded: true,
-        contacts: 1,
-        keywords_stored: 0,
-        node_id: rmule_core::KadId::from_bytes([1; 16]),
-        firewall: KadFirewallVerdict::Firewalled,
-        firewall_check: KadFirewallCheck::NotYetRun,
-        udp: KadUdpVerdict::Unverified,
-        traffic: KadTraffic {
-            datagrams_in,
-            bytes_in,
-            datagrams_out,
-            bytes_out,
-        },
+    let snapshot = |datagrams_in, bytes_in, datagrams_out, bytes_out| DiagnosticsSnapshot {
+        kad: Some(KadRuntimeDiagnostics {
+            contact_responded: true,
+            contacts: 1,
+            keywords_stored: 0,
+            node_id: rmule_core::KadId::from_bytes([1; 16]),
+            firewall: KadFirewallVerdict::Firewalled,
+            firewall_check: KadFirewallCheck::NotYetRun,
+            udp: KadUdpVerdict::Unverified,
+            traffic: KadTraffic {
+                datagrams_in,
+                bytes_in,
+                datagrams_out,
+                bytes_out,
+            },
+        }),
+        ..DiagnosticsSnapshot::default()
     };
     let t0 = Instant::now();
     let mut synth = RateSynthesizer::new(Duration::from_secs(4));
-    let first = kad(1, 1_000, 1, 500);
-    synth.observe_kad(Some(&first), t0);
     assert_eq!(
-        synth.observe(&DiagnosticsSnapshot::default(), t0).kad,
+        synth.observe(&snapshot(1, 1_000, 1, 500), t0).kad,
         Some(KadRates::default()),
         "a first sighting meters nothing"
     );
 
     // Five seconds on: 10 KiB / 20 datagrams in, 5 KiB / 10 datagrams out.
-    let echo = t0 + Duration::from_secs(5);
-    synth.observe_kad(
-        Some(&kad(1 + 20, 1_000 + 10_240, 1 + 10, 500 + 5_120)),
-        echo,
-    );
-    let at_echo = synth.observe(&DiagnosticsSnapshot::default(), echo).kad;
-    let rates = at_echo.expect("a running node has rates");
+    let later = t0 + Duration::from_secs(5);
+    let rates = synth
+        .observe(
+            &snapshot(1 + 20, 1_000 + 10_240, 1 + 10, 500 + 5_120),
+            later,
+        )
+        .kad
+        .expect("a running node has rates");
     let alpha = 1.0 - (-5.0f64 / 4.0).exp();
     assert!((rates.in_bps - alpha * 2_048.0).abs() < 1e-6, "{rates:?}");
     assert!((rates.out_bps - alpha * 1_024.0).abs() < 1e-6, "{rates:?}");
@@ -469,16 +470,13 @@ fn kad_rates_difference_echo_to_echo_not_tick_to_tick() {
         "{rates:?}"
     );
 
-    // Data ticks before the next echo carry the same reading.
-    let tick = synth.observe(
-        &DiagnosticsSnapshot::default(),
-        echo + Duration::from_secs(3),
-    );
-    assert_eq!(tick.kad, at_echo);
-
-    synth.observe_kad(None, echo + Duration::from_secs(5));
     assert_eq!(
-        synth.observe(&DiagnosticsSnapshot::default(), echo).kad,
+        synth
+            .observe(
+                &DiagnosticsSnapshot::default(),
+                later + Duration::from_secs(1)
+            )
+            .kad,
         None
     );
 }

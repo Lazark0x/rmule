@@ -7,19 +7,20 @@
 //! `test_identity`, `file_link`, and the fakes already live there.
 
 use rmule_core::{DurableStore, open_durable_store};
+use rmule_testkit::HANG_GUARD;
 use std::net::SocketAddrV4;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use rmule_core::{
     ClientUdpBind, Core, CoreConfig, CoreError, CoreEvent, DurableAppConfig,
-    DurableSharedFileRegistry, KadEnableConfig, KadId, KadReachLevel, KadRuntimeFactory, KadSource,
-    KadSourceChannel, ServeEvent,
+    DurableSharedFileRegistry, KadEnableConfig, KadRuntimeFactory, KadSourceChannel, ServeEvent,
 };
 use rmule_ed2k::{IdChange, LoginRequest};
+use rmule_peer::{ConnectionEvent, ServerCommand, ServerEvent};
 use rmule_primitives::{
     Capabilities, ClientId, ClientIdentity, CryptStance, Ed2kFileLink, Ed2kText, FileHash,
-    KeywordQuery, Packet, ServerEndpoint, SourceLookupTarget,
+    KeywordQuery, Packet, ServerEndpoint, SourceLookupTarget, SourceSighting,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -35,26 +36,35 @@ pub use dual_stack::{
 pub use kad::StubKad;
 pub use search_server::LoopbackSearchServer;
 pub use session::{
-    connect_and_settle, connect_server, connect_server_as, list_and_connect, list_server,
-    search_result, start_search, start_search_confirmed,
+    connect_and_settle, connect_server, list_and_connect, list_server, search_result, start_search,
+    start_search_confirmed,
 };
 
 // ---- who the core is -------------------------------------------------------
 
-/// The identity a core logs in with: a `0x42` User Hash on the default eD2k
-/// TCP port, protocol version 60.
-pub fn identity() -> ClientIdentity {
-    identity_with_port(4662)
-}
-
-/// The same identity advertising `port` instead — the
-/// advertise-what-you-bind invariant a serve leg has to hold to earn a
-/// High-ID (ADR-0040).
+/// A `0x42` User Hash advertising `port`, protocol version 60 — the
+/// identity a fake counterparty or a probe listener presents; a core's own
+/// is its Core Settings'.
 pub fn identity_with_port(port: u16) -> ClientIdentity {
     rmule_testkit::test_identity(0x42, "rmule-core", port)
 }
 
 // ---- the durable store ------------------------------------------------------
+
+/// The identity a peer whose hello names `user_hash` and `crypt` reads as —
+/// what a fake worker reports for its peer.
+pub fn peer_identity(
+    user_hash: rmule_primitives::UserHash,
+    crypt: CryptStance,
+) -> rmule_peer::PeerIdentity {
+    rmule_peer::PeerIdentity::from_hello_body(&rmule_peer::PeerHelloBody {
+        user_hash,
+        client_id: ClientId::from_u32(0),
+        tcp_port: 0,
+        tags: vec![rmule_peer::MiscOptions2::from_stance(crypt).to_tag()],
+        connected_server: rmule_primitives::Ipv4Endpoint::new(std::net::Ipv4Addr::UNSPECIFIED, 0),
+    })
+}
 
 /// The app-config seam on the engine's in-memory backend — no file, no lock, and
 /// the same single implementation a real run uses (ADR-0083).
@@ -178,33 +188,28 @@ pub fn search_config() -> CoreConfig {
 /// node a leg drives itself rather than one that goes looking for contacts.
 pub fn kad_enable_config() -> KadEnableConfig {
     KadEnableConfig {
-        kad_id: KadId::from_bytes([0x0A; KadId::BYTE_LEN]),
-        peer_credentials: identity().into(),
         bootstrap: Vec::new(),
         contacts: Vec::new(),
         nodes_dat_path: None,
         assume_open_reachability: false,
-        kad_udp_key: 0,
         kad_capture_dir: None,
         kad_shutdown: None,
     }
 }
 
-/// A Kad runtime that never starts a node but *publishes a TCP verdict* — the
-/// ADR-0058 fact the chooser's route 1 gate reads. `open` false is the honest
-/// fresh-node default and makes a LowID peer off our server a LowID→LowID drop;
-/// `open` true states a verdict a real node would have reached (ADR-0058's
-/// injected TCP verdict).
-pub struct VerdictOnlyKad {
-    pub open: bool,
-}
+/// A Kad runtime that never runs a node; a test states the TCP verdict the
+/// chooser's route 1 gate reads (ADR-0058) with `CoreBuilder::kad_reach`.
+/// Fresh-node firewalled is the honest default and makes a LowID peer off our
+/// server a LowID→LowID drop; open states a verdict a real node would have
+/// reached.
+pub struct VerdictOnlyKad;
 
 /// A Kad seam that is asked things and never answers.
 pub struct NeverChannel;
 impl KadSourceChannel for NeverChannel {
     async fn search_sources(&self, _target: SourceLookupTarget) {}
     async fn publish_source(&self, _target: SourceLookupTarget) {}
-    async fn next_sources(&self) -> Option<(FileHash, Vec<KadSource>)> {
+    async fn next_sources(&self) -> Option<(FileHash, Vec<SourceSighting>)> {
         std::future::pending().await
     }
 }
@@ -212,14 +217,12 @@ impl KadSourceChannel for NeverChannel {
 impl KadRuntimeFactory for VerdictOnlyKad {
     type Channel = NeverChannel;
 
-    fn kad_reach(&self) -> KadReachLevel {
-        KadReachLevel::fixed(self.open)
-    }
-
     async fn start(
         &mut self,
         _config: &KadEnableConfig,
+        _node: &rmule_core::KadNodeIdentity,
         _bind: ClientUdpBind,
+        _cells: &rmule_core::KadCells,
     ) -> Result<NeverChannel, CoreError> {
         Ok(NeverChannel)
     }
@@ -320,9 +323,9 @@ pub async fn login_and_read_id(server: SocketAddrV4, advertised_port: u16) -> Cl
                 .client_id;
         }
         let mut tmp = [0u8; 4096];
-        let n = timeout(Duration::from_secs(2), sock.read(&mut tmp))
+        let n = timeout(HANG_GUARD, sock.read(&mut tmp))
             .await
-            .expect("IdChange within 2s")
+            .expect("IdChange")
             .expect("read ok");
         assert!(n > 0, "server closed before sending IdChange");
         buf.extend_from_slice(&tmp[..n]);
@@ -343,13 +346,14 @@ pub async fn login_and_read_id(server: SocketAddrV4, advertised_port: u16) -> Cl
 //
 // - [`dead_port`] needs a number *nothing* is listening on, the opposite of
 //   what a live `:0` bind gives you.
-// - [`free_port`] needs the same number in two places at once inside one
-//   command — `listen_addr` and the login identity's advertised
-//   `tcp_port` (ADR-0040's advertise-what-you-bind invariant) — so it has to
-//   be chosen before either is sent, not read back after a bind that has not
-//   happened yet.
+// - [`free_port`] needs the same number in two places at once — the Core
+//   Settings' advertised `tcp_port` and the listener's `listen_addr`
+//   (ADR-0040's advertise-what-you-bind invariant) — so it has to be chosen
+//   before the builder, not read back after a bind that has not happened yet.
+//   A leg that never needs the number leaves the settings' port at `0`, and
+//   the OS's choice is what the core advertises.
 //
-// Audited for oversubscription robustness: all nine call sites across the binary are one of those
+// Audited for oversubscription robustness: every call site across the binary is one of those
 // two shapes, so none converts.
 //
 // What is left is the gap `take_port` cannot close on its own: it proves a
@@ -366,12 +370,19 @@ pub async fn login_and_read_id(server: SocketAddrV4, advertised_port: u16) -> Cl
 // bans everywhere, tests included. Recorded rather than done: under 1% is a
 // flake rate worth documenting, not worth an unsafe block for.
 
-/// Login credentials whose TCP port is free: an operator connect binds the
-/// listener on it (**Listen Before Login**, ADR-0086),
-/// so a leg on the shared `identity()` port could answer a sibling leg's
-/// server port check under the same user hash.
-pub async fn connect_credentials() -> rmule_core::ClientCredentials {
-    identity_with_port(free_port().await).into()
+/// Core Settings for a core that listens from attach on `port` under the
+/// legs' nickname, every other key at its default.
+pub fn settings_on(port: u16) -> rmule_core::CoreSettings {
+    rmule_core::CoreSettings {
+        nickname: "rmule-core".to_owned(),
+        tcp_port: port,
+        ..rmule_core::CoreSettings::default()
+    }
+}
+
+/// [`settings_on`] a port this leg will bind ([`free_port`]).
+pub async fn attach_settings() -> rmule_core::CoreSettings {
+    settings_on(free_port().await)
 }
 
 /// A port this leg will bind itself, and also has to name in the same breath
@@ -466,72 +477,79 @@ pub async fn serve_called_back(
     let _ = timeout(Duration::from_secs(10), async {
         while let Some(event) = conn.next_event().await {
             match event {
-                PeerEvent::FileRequested { file_hash, .. } => {
-                    conn.send(PeerCommand::AnswerFileName {
+                PeerEvent::Server(ServerEvent::FileRequested { file_hash, .. }) => {
+                    conn.send(PeerCommand::Server(ServerCommand::AnswerFileName {
                         file_hash,
                         file_name: Ed2kText::from_utf8(file_name),
-                    })
+                    }))
                     .await
                     .unwrap();
                 }
-                PeerEvent::FileBundleRequested {
+                PeerEvent::Server(ServerEvent::FileBundleRequested {
                     file_hash, asks, ..
-                } => {
+                }) => {
                     for ask in asks {
                         let command = match ask {
-                            rmule_peer::BundledAsk::Name { .. } => PeerCommand::AnswerFileName {
-                                file_hash,
-                                file_name: Ed2kText::from_utf8(file_name),
-                            },
-                            rmule_peer::BundledAsk::SetReqId => PeerCommand::AnswerFileStatus {
-                                file_hash,
-                                bitmap: PartBitmap::decode(
-                                    rmule_primitives::part_count(file_bytes.len() as u64),
-                                    &[0xFF],
-                                )
-                                .unwrap(),
-                            },
+                            rmule_peer::BundledAsk::Name { .. } => {
+                                PeerCommand::Server(ServerCommand::AnswerFileName {
+                                    file_hash,
+                                    file_name: Ed2kText::from_utf8(file_name),
+                                })
+                            }
+                            rmule_peer::BundledAsk::SetReqId => {
+                                PeerCommand::Server(ServerCommand::AnswerFileStatus {
+                                    file_hash,
+                                    bitmap: PartBitmap::decode(
+                                        rmule_primitives::part_count(file_bytes.len() as u64),
+                                        &[0xFF],
+                                    )
+                                    .unwrap(),
+                                })
+                            }
                             _ => continue,
                         };
                         conn.send(command).await.unwrap();
                     }
                 }
-                PeerEvent::FileIdSet { file_hash } => {
+                PeerEvent::Server(ServerEvent::FileIdSet { file_hash }) => {
                     let bitmap = PartBitmap::decode(
                         rmule_primitives::part_count(file_bytes.len() as u64),
                         &[0xFF],
                     )
                     .unwrap();
-                    conn.send(PeerCommand::AnswerFileStatus { file_hash, bitmap })
-                        .await
-                        .unwrap();
-                }
-                PeerEvent::HashSetRequested { file_hash } => {
-                    conn.send(PeerCommand::AnswerHashSet {
+                    conn.send(PeerCommand::Server(ServerCommand::AnswerFileStatus {
                         file_hash,
-                        part_hashes: Vec::new(),
-                    })
+                        bitmap,
+                    }))
                     .await
                     .unwrap();
                 }
-                PeerEvent::SlotRequested { file_hash } => {
-                    conn.send(PeerCommand::GrantSlot { file_hash })
+                PeerEvent::Server(ServerEvent::HashSetRequested { file_hash }) => {
+                    conn.send(PeerCommand::Server(ServerCommand::AnswerHashSet {
+                        file_hash,
+                        part_hashes: Vec::new(),
+                    }))
+                    .await
+                    .unwrap();
+                }
+                PeerEvent::Server(ServerEvent::SlotRequested { file_hash }) => {
+                    conn.send(PeerCommand::Server(ServerCommand::GrantSlot { file_hash }))
                         .await
                         .unwrap();
                 }
-                PeerEvent::PartsRequested { file_hash, ranges } => {
+                PeerEvent::Server(ServerEvent::PartsRequested { file_hash, ranges }) => {
                     for &(start, end) in ranges.as_array().iter().filter(|(s, e)| e > s) {
-                        conn.send(PeerCommand::SendBlock {
+                        conn.send(PeerCommand::Server(ServerCommand::SendBlock {
                             file_hash,
                             start,
                             end,
                             bytes: file_bytes[start as usize..end as usize].to_vec(),
-                        })
+                        }))
                         .await
                         .unwrap();
                     }
                 }
-                PeerEvent::Disconnected { .. } => break,
+                PeerEvent::Connection(ConnectionEvent::Disconnected { .. }) => break,
                 _ => {}
             }
         }

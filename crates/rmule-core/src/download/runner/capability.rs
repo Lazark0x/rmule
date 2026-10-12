@@ -23,7 +23,9 @@ use crate::download::state::CallbackCapability;
 pub(crate) struct CallbackFacts {
     /// **Self Reach**: the owner that answers `CanDoCallback`.
     pub(crate) reach: crate::reachability::SharedSelfReach,
-    /// The TCP port we advertise — the one a called-back peer dials.
+    /// The TCP port the Core Settings name; a `0` presents the port the
+    /// listener holds bound as each request is sent — the one a called-back
+    /// peer dials.
     pub(crate) our_tcp_port: u16,
 }
 
@@ -33,19 +35,26 @@ impl CallbackFacts {
         self.reach.callback_capability()
     }
 
+    /// The server we are logged into now, when its host is an IPv4 literal —
+    /// the brain's [`CallbackCapability::server`], read live.
+    pub(crate) fn server(&self) -> Option<Ipv4Endpoint> {
+        self.reach.session().and_then(|session| session.server)
+    }
+
     /// Our own contact for an `OP_GLOBCALLBACKREQUEST` payload (ADR-0051): our
-    /// High-ID address (decoded exactly as a source is) and the advertised TCP
-    /// port. `None` off a server High ID, which is also when
+    /// High-ID address (decoded exactly as a source is) and the TCP port a
+    /// hello presents now. `None` off a server High ID, which is also when
     /// [`CallbackCapability::server_relays`] admits no global callback.
     pub(crate) fn requester(&self) -> Option<Ipv4Endpoint> {
         let session = self.reach.session()?;
-        PeerSource::new(session.client_id, self.our_tcp_port).high_id()
+        let port = self.reach.presented_tcp_port(self.our_tcp_port);
+        PeerSource::new(session.client_id, port).high_id()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use rmule_primitives::{ClientId, ExchangedSource};
+    use rmule_primitives::{ClientId, SourceSighting};
 
     use super::*;
     use crate::KadReachLevel;
@@ -68,16 +77,44 @@ mod tests {
     /// without a real serve activity. The caller aborts the handle when done.
     fn live_listener(reach: &SharedSelfReach) -> tokio::task::JoinHandle<()> {
         let handle = tokio::spawn(std::future::pending::<()>());
-        reach.listener().bind(&handle);
+        reach.listener().bind(&handle, 4662);
         handle
     }
 
     fn low_id_candidate() -> LowIdCandidate {
-        LowIdCandidate::from_source(
-            ExchangedSource::plain(PeerSource::new(ClientId::from_u32(9), 4662)),
+        LowIdCandidate::from_sighting(
+            SourceSighting::plain(PeerSource::new(ClientId::from_u32(9), 4662)),
             None,
         )
         .expect("a Low-ID source is a candidate")
+    }
+
+    /// A settings port of `0` gives the called-back peer the port the
+    /// listener holds bound as the request is sent, as the hello does: a
+    /// listener restarted on another port is named from then on.
+    #[test]
+    fn a_requester_port_of_zero_is_the_port_the_listener_holds_now() {
+        let own = SharedOwnIdentity::default();
+        own.set_connected_session(Some(ConnectedSession {
+            server: None,
+            client_id: ClientId::from_u32(0x0A00_0001),
+        }));
+        let facts = CallbackFacts {
+            reach: reach_over(&own, KadReachLevel::fixed(false)),
+            our_tcp_port: 0,
+        };
+        let v4 = rmule_net::family::FamilyBinds {
+            bound: vec![rmule_primitives::AddressFamily::V4],
+            refused: Vec::new(),
+        };
+        for port in [51_234, 51_235] {
+            own.addresses()
+                .record_bind(crate::address_learning::SocketRole::Tcp, &v4, port);
+            assert_eq!(
+                facts.requester().map(|requester| requester.port),
+                Some(port)
+            );
+        }
     }
 
     /// The login-snapshot defect, for this reader: the capability used to be computed from
@@ -125,7 +162,7 @@ mod tests {
         );
 
         let handle = tokio::spawn(std::future::pending::<()>());
-        facts.reach.listener().bind(&handle);
+        facts.reach.listener().bind(&handle, 4662);
         assert!(
             facts.sample().admits(&candidate),
             "the serve activity that just started admits the waiting row"

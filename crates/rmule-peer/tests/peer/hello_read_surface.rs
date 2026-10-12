@@ -10,8 +10,9 @@
 //! are swept at the end.
 
 use rmule_peer::{
-    ClientFamily, Hello, HelloAnswer, HelloRefusal, HelloRefusalCode, HelloTrailer, MiscOptions1,
-    PeerEvent, PeerIdentity, PeerOutput, PeerPacket, PeerPacketDecodeError, PeerSession,
+    ClientFamily, ConnectionEvent, Hello, HelloAnswer, HelloRefusal, HelloRefusalCode,
+    HelloTrailer, MiscOptions1, PeerEvent, PeerIdentity, PeerOutput, PeerPacket,
+    PeerPacketDecodeError, PeerSession,
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{Packet, PacketProtocol};
@@ -73,7 +74,9 @@ fn accepted(frame: &[u8]) -> Option<PeerIdentity> {
         return None;
     }
     outputs.into_iter().find_map(|o| match o {
-        PeerOutput::Event(PeerEvent::PeerIdentified { identity }) => Some(identity),
+        PeerOutput::Event(PeerEvent::Connection(ConnectionEvent::Identified { identity })) => {
+            Some(identity)
+        }
         _ => None,
     })
 }
@@ -344,11 +347,21 @@ fn a_hello_counting_a_tag_it_never_wrote_is_refused_by_name() {
         .collect();
     let refused = events
         .iter()
-        .position(|e| matches!(e, PeerEvent::HelloRefused { .. }))
+        .position(|e| {
+            matches!(
+                e,
+                PeerEvent::Connection(ConnectionEvent::HelloRefused { .. })
+            )
+        })
         .expect("the refusal is raised");
     let closed = events
         .iter()
-        .position(|e| matches!(e, PeerEvent::Disconnected { .. }))
+        .position(|e| {
+            matches!(
+                e,
+                PeerEvent::Connection(ConnectionEvent::Disconnected { .. })
+            )
+        })
         .expect("the session closes");
     assert!(refused < closed);
 }

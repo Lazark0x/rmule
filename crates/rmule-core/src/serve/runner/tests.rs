@@ -11,7 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rmule_ed2k::OfferedFile;
-use rmule_peer::{ReaskAck, ReaskFilePing};
+use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
+use rmule_peer::{ReaskAck, ReaskFilePing, ServerCommand, ServerEvent};
 use rmule_primitives::{
     ClientId, CryptStance, FileHash, Ipv4Endpoint, PeerEndpoint, PeerSource, UserHash,
 };
@@ -20,12 +21,13 @@ use tokio::time::timeout;
 
 use super::ServeTask;
 use crate::CoreError;
-use crate::adapters::{ServeConnCommand, ServeConnEvent, ServeConnection, ServeRuntimeService};
+use crate::adapters::{ServeConnection, ServeInput, ServeOutput, ServeRuntimeService};
 use crate::client_udp::{
     ClientUdpDatagram, ClientUdpEngine, ClientUdpSend, ClientUdpTransport, PeerUdpCrypt,
-    PeerUdpCryptTarget, encrypt_client_udp_send, os_datagram_nonce,
+    encrypt_client_udp_send, os_datagram_nonce,
 };
 use crate::credit::SharedCreditStore;
+use crate::hello_facts::HelloFacts;
 use crate::own_identity::SharedOwnIdentity;
 use crate::registry::{ShareSource, SharedFileEntry, SharedFileRegistry};
 use crate::service::{CoreEvent, ServeEvent, ServeStopReason};
@@ -131,7 +133,7 @@ async fn a_queued_waiters_live_reask_egresses_a_reask_ack_through_the_real_clien
 #[tokio::test]
 async fn an_armed_front_decrypts_a_live_reask_and_obfuscates_the_ack_back() {
     reask_loopback(
-        Some(CryptStance::new(true, true, false)),
+        Some(rmule_net::peer::ObfuscationPolicy::Requested),
         WaiterPing::WithStatus,
     )
     .await;
@@ -158,10 +160,11 @@ enum WaiterPing {
 }
 
 /// The live reask loopback, plaintext or crypt-armed (`crypt`). With a
-/// stance the waiter obfuscates its ping and the ack must come back
+/// policy the waiter obfuscates its ping and the ack must come back
 /// obfuscated; without one both directions stay plaintext. A
 /// [`WaiterPing::HashOnly`] ping must draw no reply at all.
-async fn reask_loopback(crypt: Option<CryptStance>, shape: WaiterPing) {
+async fn reask_loopback(crypt: Option<rmule_net::peer::ObfuscationPolicy>, shape: WaiterPing) {
+    let policy = crate::obfuscation_policy::SharedObfuscationPolicy::new(crypt);
     let file = FileHash::from_bytes([0x11; FileHash::BYTE_LEN]);
     // One store for both seams, exactly as a front-end opens it (ADR-0083).
     let store = rmule_testkit::memory_store();
@@ -195,7 +198,7 @@ async fn reask_loopback(crypt: Option<CryptStance>, shape: WaiterPing) {
         ChannelTransport {
             inbound: Mutex::new(inbound_rx),
         },
-        crypt.map(|stance| PeerUdpCrypt::new(own.clone(), stance)),
+        PeerUdpCrypt::new(own.clone(), policy.clone()),
         crate::buddy_link::SharedBuddySlot::default(),
         crate::firewalled::front::SharedFirewalledFront::default(),
         crate::diagnostics::DiagnosticsState::default(),
@@ -260,7 +263,9 @@ async fn reask_loopback(crypt: Option<CryptStance>, shape: WaiterPing) {
         .await
         .unwrap();
     holder_evt_tx
-        .send(ServeConnEvent::SlotRequested { file_hash: file })
+        .send(ServeInput::Server(ServerEvent::SlotRequested {
+            file_hash: file,
+        }))
         .await
         .unwrap();
     next_serve_event(&mut evt_rx, |e| {
@@ -281,24 +286,24 @@ async fn reask_loopback(crypt: Option<CryptStance>, shape: WaiterPing) {
         .await
         .unwrap();
     waiter_evt_tx
-        .send(ServeConnEvent::Identified {
-            user_hash: waiter_hash,
-            client_id: ClientId::from_u32(0x0100_007F),
-            connected_server: None,
-            tcp_port: 4000,
-            udp_port: waiter_udp_port,
-            udp_version: 4,
-            extended_requests_version: 2,
-            // The hello's crypt advert: it decides whether the ack may be
-            // obfuscated at all (ADR-0046).
-            crypt: crypt.unwrap_or_else(CryptStance::disabled),
-            ipv6: None,
-            software: nameless_software(),
-        })
+        .send(
+            HelloFacts {
+                tcp_port: 4000,
+                udp_port: waiter_udp_port,
+                udp_version: 4,
+                // The hello's crypt advert: it decides whether the ack may be
+                // obfuscated at all (ADR-0046).
+                crypt: rmule_net::peer::ObfuscationPolicy::stance_of(crypt),
+                ..HelloFacts::of(waiter_hash)
+            }
+            .identified(),
+        )
         .await
         .unwrap();
     waiter_evt_tx
-        .send(ServeConnEvent::SlotRequested { file_hash: file })
+        .send(ServeInput::Server(ServerEvent::SlotRequested {
+            file_hash: file,
+        }))
         .await
         .unwrap();
     next_serve_event(&mut evt_rx, |e| {
@@ -338,11 +343,11 @@ async fn reask_loopback(crypt: Option<CryptStance>, shape: WaiterPing) {
         .observe(crate::address_learning::AddressObservation::server_high_id(
             Ipv4Addr::from([198, 51, 100, 2]),
         ));
-    let waiter_crypt = crypt.map(|stance| PeerUdpCrypt::new(waiter_own, stance));
-    let ping = match (&waiter_crypt, crypt) {
-        (Some(waiter_crypt), Some(stance)) => {
+    let waiter_crypt = PeerUdpCrypt::new(waiter_own, policy.clone());
+    let ping = match crypt.map(rmule_net::peer::ObfuscationPolicy::crypt_stance) {
+        Some(stance) => {
             let (_, obfuscated) = encrypt_client_udp_send(
-                Some(waiter_crypt),
+                &waiter_crypt,
                 ClientUdpSend::to_peer(
                     reask_src,
                     plain_ping.clone(),
@@ -385,9 +390,7 @@ async fn reask_loopback(crypt: Option<CryptStance>, shape: WaiterPing) {
     // The live socket drain's transform, applied here exactly as `run_actor`
     // applies it before `socket.send_to`.
     let (to, datagram) = encrypt_client_udp_send(
-        crypt
-            .map(|stance| PeerUdpCrypt::new(own.clone(), stance))
-            .as_ref(),
+        &PeerUdpCrypt::new(own.clone(), policy.clone()),
         send,
         os_datagram_nonce,
     );
@@ -397,8 +400,8 @@ async fn reask_loopback(crypt: Option<CryptStance>, shape: WaiterPing) {
     );
     // Crypt-armed: the egress is obfuscated on the wire and only the
     // waiter's key — our public IP as the sender — recovers the `0x91`.
-    let datagram = match &waiter_crypt {
-        Some(waiter_crypt) => {
+    let datagram = match crypt {
+        Some(_) => {
             assert_ne!(
                 &datagram[..2],
                 &[0xC5, 0x91],
@@ -574,7 +577,9 @@ async fn the_fifth_asker_from_one_address_is_served_silence_and_a_counter() {
             .await
             .unwrap();
         conn_evt_tx
-            .send(ServeConnEvent::SlotRequested { file_hash: file })
+            .send(ServeInput::Server(ServerEvent::SlotRequested {
+                file_hash: file,
+            }))
             .await
             .unwrap();
         command_halves.push(cmd_rx);
@@ -698,25 +703,23 @@ async fn a_hash_only_name_ask_from_a_claimant_closes_the_connection_and_is_count
         .await
         .unwrap();
     conn_evt_tx
-        .send(ServeConnEvent::Identified {
-            user_hash: UserHash::from_bytes([0x0A; UserHash::BYTE_LEN]),
-            client_id: ClientId::from_u32(0x0100_007F),
-            connected_server: None,
-            tcp_port: 4000,
-            udp_port: 0,
-            udp_version: 4,
-            extended_requests_version: 1,
-            crypt: CryptStance::disabled(),
-            ipv6: None,
-            software: nameless_software(),
-        })
+        .send(
+            HelloFacts {
+                tcp_port: 4000,
+                udp_version: 4,
+                extended_requests_version: 1,
+                crypt: CryptStance::disabled(),
+                ..HelloFacts::of(UserHash::from_bytes([0x0A; UserHash::BYTE_LEN]))
+            }
+            .identified(),
+        )
         .await
         .unwrap();
     conn_evt_tx
-        .send(ServeConnEvent::FileRequested {
+        .send(ServeInput::Server(ServerEvent::FileRequested {
             file_hash: file,
             status: rmule_peer::PartStatusTail::default(),
-        })
+        }))
         .await
         .unwrap();
 
@@ -732,8 +735,10 @@ async fn a_hash_only_name_ask_from_a_claimant_closes_the_connection_and_is_count
             .expect("the connection is told to close")
             .expect("the command half stays open");
         match command {
-            ServeConnCommand::Disconnect => break,
-            ServeConnCommand::AnswerFileName { .. } => panic!("a malformed ask was answered"),
+            ServeOutput::Disconnect => break,
+            ServeOutput::Server(ServerCommand::AnswerFileName { .. }) => {
+                panic!("a malformed ask was answered")
+            }
             _ => {}
         }
     }
@@ -795,15 +800,3 @@ fn self_position_follows_a_mid_session_reassignment() {
 }
 
 mod roster;
-
-/// The identification a hello naming no user yields — what these tests'
-/// peers, which say nothing about their client, are read as.
-fn nameless_software() -> rmule_peer::ClientSoftware {
-    rmule_peer::ClientSoftware::from_hello_body(&rmule_peer::PeerHelloBody {
-        user_hash: UserHash::from_bytes([0; UserHash::BYTE_LEN]),
-        client_id: ClientId::from_u32(0),
-        tcp_port: 0,
-        tags: Vec::new(),
-        connected_server: rmule_primitives::Ipv4Endpoint::new(std::net::Ipv4Addr::UNSPECIFIED, 0),
-    })
-}

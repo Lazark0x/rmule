@@ -4,15 +4,19 @@
 //! Untyped tags survive byte-faithful, so a later capability read can promote
 //! one without a fresh capture.
 
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
-use rmule_primitives::{ClientId, CryptStance, Ed2kText, Ipv4Endpoint, Tag, TagValue, UserHash};
+use rmule_primitives::{
+    ClientId, CryptStance, Ed2kText, Ipv4Endpoint, Ipv6Endpoint, PeerSource, SourceSighting, Tag,
+    TagValue, UserHash,
+};
 
 use crate::capability::{CT_EMULE_UDPPORTS, MiscOptions1, MiscOptions2, ModMiscOptions};
 use crate::handshake::{CT_EMULE_BUDDYIP, CT_EMULE_BUDDYUDP, ServingBuddyAdvert};
 use crate::hello::{PeerHelloBody, hello_int, hello_text};
 use crate::hello_tag::{CT_NAME, CT_VERSION};
 use crate::ipv6::PeerIpv6Tags;
+use crate::peer_udp::crypt::PeerUdpCryptTarget;
 use crate::session::SourceExchangeSupport;
 use crate::software::ClientSoftware;
 
@@ -28,9 +32,12 @@ fn is_read_as(tag: &Tag, id: u8) -> bool {
         }
 }
 
-/// Typed projection of a decoded peer hello body. Untyped tags are
-/// preserved byte-faithful so a later capability read can promote one
-/// without losing wire fidelity.
+/// Typed projection of a decoded peer hello body, kept current by the session
+/// that read it: an `OP_EMULEINFO` revises its software, reask contact and
+/// source-exchange facts, an `OP_CHANGE_CLIENT_IP` its IPv6, an `OP_CHANGE_CLIENT_ID` its Client ID,
+/// and nothing
+/// else moves it. Untyped tags are preserved byte-faithful so a later
+/// capability read can promote one without losing wire fidelity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeerIdentity {
     user_hash: UserHash,
@@ -39,6 +46,10 @@ pub struct PeerIdentity {
     nickname: Option<Ed2kText>,
     protocol_version: Option<u32>,
     connected_server: Option<Ipv4Endpoint>,
+    /// The server an `OP_CHANGE_CLIENT_ID` named, once one has: the packet
+    /// carries an address and no port, and the claim it supersedes the hello's
+    /// (`None` until the peer revises its ID).
+    revised_server: Option<Ipv4Addr>,
     /// The peer's advertised **Kad** UDP port (`0` = none), the high half of
     /// `CT_EMULE_UDPPORTS` (ADR-0067).
     kad_udp_port: u16,
@@ -129,6 +140,7 @@ impl PeerIdentity {
             nickname,
             protocol_version,
             connected_server,
+            revised_server: None,
             // The ed2k→Kad handoff hint (ADR-0067): the Kad UDP port is the
             // high 16 bits of CT_EMULE_UDPPORTS, the Kad version the low nibble
             // of MiscOptions2 — the consume-side counterpart of the ADR-0047
@@ -174,24 +186,66 @@ impl PeerIdentity {
     }
 
     #[must_use]
-    /// This identity with the client-UDP reask contact a legacy `OP_EMULEINFO`
-    /// named (`ET_UDPPORT`), when the hello named none — both references
-    /// keep one `m_nUDPPort` that either packet sets.
-    pub const fn with_reask_contact_if_unnamed(mut self, udp_port: u16, udp_version: u8) -> Self {
-        if self.client_udp_port == 0 {
-            self.client_udp_port = udp_port;
-            self.udp_version = udp_version;
-        }
-        self
-    }
-
-    #[must_use]
     /// This identity with `software` in place of what the hello alone says —
     /// what a session read from the hello's trailer and the peer's
     /// `OP_EMULEINFO` as well.
     pub fn with_software(mut self, software: ClientSoftware) -> Self {
         self.software = software;
         self
+    }
+
+    /// This identity with the source-exchange facts the session read beside
+    /// the hello — the extended protocol lives in the software evidence, which
+    /// an `OP_EMULEINFO` before the hello may have set (ADR-0108).
+    #[must_use]
+    pub const fn with_source_exchange(mut self, support: SourceExchangeSupport) -> Self {
+        self.source_exchange = support;
+        self
+    }
+
+    /// Take the software a later `OP_EMULEINFO` reads as; `true` when it
+    /// changed.
+    pub(crate) fn revise_software(&mut self, software: ClientSoftware) -> bool {
+        let changed = self.software != software;
+        self.software = software;
+        changed
+    }
+
+    /// Take the client-UDP reask contact a legacy `OP_EMULEINFO` named
+    /// (`ET_UDPPORT`) — both references keep one `m_nUDPPort` that either
+    /// packet sets; `true` when it changed. The session offers it only when
+    /// the hello named none.
+    pub(crate) const fn revise_reask_contact(&mut self, udp_port: u16, udp_version: u8) -> bool {
+        let changed = self.client_udp_port != udp_port || self.udp_version != udp_version;
+        self.client_udp_port = udp_port;
+        self.udp_version = udp_version;
+        changed
+    }
+
+    /// Take what the peer now says about source exchange (ADR-0108); `true`
+    /// when it changed.
+    pub(crate) fn revise_source_exchange(&mut self, support: SourceExchangeSupport) -> bool {
+        let changed = self.source_exchange != support;
+        self.source_exchange = support;
+        changed
+    }
+
+    /// Take the Client ID an `OP_CHANGE_CLIENT_ID` says the peer now answers
+    /// to, and the server it named beside it, which then stands as the server
+    /// it claims; `true` when either changed.
+    pub(crate) fn revise_client_id(&mut self, client_id: ClientId, server: Ipv4Addr) -> bool {
+        let changed = self.client_id != client_id || self.revised_server != Some(server);
+        self.client_id = client_id;
+        self.revised_server = Some(server);
+        changed
+    }
+
+    /// Take the IPv6 an `OP_CHANGE_CLIENT_IP` says the peer now holds
+    /// (ADR-0087), already past `IsUsableTagIdentity`; `true` when it changed.
+    pub(crate) fn revise_peer_ipv6(&mut self, address: Ipv6Addr) -> bool {
+        let changed = self.ipv6_tags.peer_ipv6 != Some(address);
+        self.ipv6_tags.peer_ipv6 = Some(address);
+        changed
     }
 
     #[must_use]
@@ -259,15 +313,6 @@ impl PeerIdentity {
         }
     }
 
-    /// This identity with the source-exchange facts the session read beside
-    /// the hello — the extended protocol lives in the software evidence, which
-    /// an `OP_EMULEINFO` before the hello may have set (ADR-0108).
-    #[must_use]
-    pub const fn with_source_exchange(mut self, support: SourceExchangeSupport) -> Self {
-        self.source_exchange = support;
-        self
-    }
-
     /// What the peer said about source exchange (ADR-0108).
     #[must_use]
     pub const fn source_exchange(&self) -> SourceExchangeSupport {
@@ -296,6 +341,50 @@ impl PeerIdentity {
         self.crypt
     }
 
+    /// The peer's **peer-UDP crypt target** (ADR-0046): its User Hash keys a
+    /// datagram obfuscated toward it, and its stance says whether it accepts
+    /// one at all ([`PeerUdpCryptTarget::should_receive_crypt_udp_packets`]).
+    #[must_use]
+    pub const fn udp_crypt_target(&self) -> PeerUdpCryptTarget {
+        PeerUdpCryptTarget::new(self.user_hash, self.crypt)
+    }
+
+    /// The peer as a source of the files it deals in (ADR-0055 §Serving): its
+    /// advertised `(client id, listen port)` with its User Hash, and the
+    /// usable IPv6 its hello (or a later `OP_CHANGE_CLIENT_IP`) named as the
+    /// source's IPv6 half. emule-qt writes `CT_MOD_IP_V6` for any source with
+    /// one, High ID included (`KnownFile.cpp:937`), and only an ExtSX record
+    /// can carry it (ADR-0087). A Low-ID client with an IPv6 is a source over
+    /// that IPv6 alone, the client emule-qt's writer keeps
+    /// (`KnownFile.cpp:846-854`); any other Low-ID client is a source an
+    /// answer filters out.
+    #[must_use]
+    pub fn source_coordinate(&self) -> SourceSighting {
+        let classic = PeerSource::new(self.client_id, self.tcp_port);
+        let ipv6 = self
+            .peer_ipv6()
+            .map(|address| Ipv6Endpoint::new(address, self.tcp_port));
+        let source = match ipv6 {
+            Some(endpoint) if !classic.is_high_id() => PeerSource::Ipv6(endpoint),
+            _ => classic,
+        };
+        SourceSighting::new(source, Some(self.user_hash), None).with_ipv6_half(ipv6)
+    }
+
+    /// Whether the peer claims to be logged in to `server` — the "on our
+    /// server" half of the **Low-ID abuse guard**. A claim of `0.0.0.0:0`
+    /// is no server, so it never matches. After an `OP_CHANGE_CLIENT_ID` the
+    /// claim is the server that packet named, matched by address alone: it
+    /// names no port, and the server a node knows by that address is the one
+    /// whose port aMule takes (`ClientTCPSocket.cpp:751-776`).
+    #[must_use]
+    pub fn is_on_server(&self, server: Ipv4Endpoint) -> bool {
+        match self.revised_server {
+            Some(named) => named == server.ip,
+            None => self.connected_server == Some(server),
+        }
+    }
+
     /// The peer's **Static Capability Claim** (`CT_MOD_MISCOPTIONS`,
     /// ADR-0087), or `None` when it sent none. Gates what rmule may *send*
     /// this peer — the ExtSX record form and its optional tags — never what
@@ -309,7 +398,7 @@ impl PeerIdentity {
     /// of the dialect: a peer that claims the IPv6 bit but sends no tag is not
     /// dialable over IPv6, and a peer that sends the tag is, bit or no bit.
     #[must_use]
-    pub const fn peer_ipv6(&self) -> Option<std::net::Ipv6Addr> {
+    pub const fn peer_ipv6(&self) -> Option<Ipv6Addr> {
         self.ipv6_tags.peer_ipv6
     }
 
@@ -318,14 +407,14 @@ impl PeerIdentity {
     /// integer form of the tag is refused outright, so a peer can never set
     /// what rmule believes its own public IPv4 to be.
     #[must_use]
-    pub const fn reflected_ipv6(&self) -> Option<std::net::Ipv6Addr> {
+    pub const fn reflected_ipv6(&self) -> Option<Ipv6Addr> {
         self.ipv6_tags.reflected_ipv6
     }
 
     /// The peer's buddy's IPv6 (`CT_EMULE_SERVINGBUDDYIPV6`), or `None` — the
     /// v6 half of the ADR-0061 buddy contact.
     #[must_use]
-    pub const fn serving_buddy_ipv6(&self) -> Option<std::net::Ipv6Addr> {
+    pub const fn serving_buddy_ipv6(&self) -> Option<Ipv6Addr> {
         self.ipv6_tags.serving_buddy_ipv6
     }
 

@@ -4,7 +4,7 @@
 
 use std::net::Ipv4Addr;
 
-use rmule_primitives::{FileHash, Ipv4Endpoint, UserHash};
+use rmule_primitives::{FileHash, Ipv4Endpoint, SourceLookupTarget, UserHash};
 
 use super::KadNodeDiagnostic;
 use crate::keyword_store::KadKeywordResult;
@@ -55,7 +55,7 @@ pub enum KadEvent {
     /// A contact's IP was proven not spoofed — via a hello with a valid receiver
     /// key or the `0x22` three-way (ADR-0064). Only verified contacts are served
     /// and seed walks. Online verification is key-coupled: it fires only under
-    /// the armed verify-key state ([`KadNode::enable_verify_keys`](crate::KadNode::enable_verify_keys)).
+    /// the armed verify-key state ([`KadObfuscation::with_verify_keys`](crate::KadObfuscation::with_verify_keys)).
     ContactVerified {
         /// The contact whose IP is now proven.
         id: KadId,
@@ -74,8 +74,9 @@ pub enum KadEvent {
     /// sealed **Kad Source Row Projection** (`decode_source_result`): direct
     /// High-ID rows are Peer Sources, everything else is a row diagnostic.
     SourcesFound {
-        /// The walk target these rows answer — the file key, not a file hash.
-        target: KadId,
+        /// The file these rows answer, hash and size — the lookup the request
+        /// carried, echoed back whole.
+        target: SourceLookupTarget,
         /// The projected rows: a Peer Source per direct High-ID row, a
         /// diagnostic for every row the projection refused.
         candidates: Vec<KadSourceCandidate>,

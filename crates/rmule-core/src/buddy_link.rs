@@ -49,7 +49,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use rmule_kad::KadId;
-use rmule_peer::{Callback, PeerCommand, ReaskCallbackTcp};
+use rmule_peer::{Callback, PeerCommand, ReaskCallbackTcp, SideCommand};
 use rmule_primitives::{FileHash, Ipv4Endpoint, PeerEndpoint, UserHash};
 use tokio::sync::mpsc;
 
@@ -166,7 +166,7 @@ impl BuddySlot {
     }
 
     /// Hand the slot the live diagnostics state, once, from the actor (the
-    /// `SharedTunnelClaims` install pattern): the slot is the single writer of
+    /// `AwaitedInbound` install pattern): the slot is the single writer of
     /// the open-node buddy facts, so it counts them itself rather than leaving
     /// each caller to remember.
     pub(crate) fn install_diagnostics(&self, diagnostics: DiagnosticsState) {
@@ -219,11 +219,11 @@ impl BuddySlot {
                 forwarded: Vec::new(),
             },
             |callback| {
-                PeerCommand::SendBuddyCallback(Callback {
+                PeerCommand::Side(SideCommand::SendBuddyCallback(Callback {
                     buddy_id: *claimed_buddy_id.as_bytes(),
                     file_hash,
                     requester: callback.requester,
-                })
+                }))
             },
         )
     }
@@ -253,10 +253,10 @@ impl BuddySlot {
                 forwarded,
             },
             |callback| {
-                PeerCommand::SendReaskCallbackTcp(ReaskCallbackTcp {
+                PeerCommand::Side(SideCommand::SendReaskCallbackTcp(ReaskCallbackTcp {
                     requester: PeerEndpoint::V4(callback.requester),
                     forwarded: callback.forwarded,
-                })
+                }))
             },
         )
     }
@@ -308,10 +308,10 @@ impl BuddySlot {
             }
             (callback, commands, subject)
         };
-        let command = PeerCommand::SendReaskCallbackTcp(ReaskCallbackTcp {
+        let command = PeerCommand::Side(SideCommand::SendReaskCallbackTcp(ReaskCallbackTcp {
             requester: PeerEndpoint::V4(callback.requester),
             forwarded: callback.forwarded,
-        });
+        }));
         match commands.try_send(command) {
             Ok(()) => RendezvousRelay::Sent { target, target_udp },
             Err(_) => RendezvousRelay::Undelivered(RelayDisposition::LinkSendFailed),
@@ -420,7 +420,9 @@ impl BuddySlot {
             };
             (link.commands.clone(), diagnostics)
         };
-        let answered = commands.try_send(PeerCommand::SendBuddyPong).is_ok();
+        let answered = commands
+            .try_send(PeerCommand::Side(SideCommand::SendBuddyPong))
+            .is_ok();
         Self::count_ping(diagnostics.as_ref(), answered);
         if answered {
             PingDisposition::Ponged
@@ -587,11 +589,11 @@ mod tests {
         );
         assert_eq!(
             rx.try_recv().expect("the 0x99 relay rode the held link"),
-            PeerCommand::SendBuddyCallback(Callback {
+            PeerCommand::Side(SideCommand::SendBuddyCallback(Callback {
                 buddy_id: *buddy.as_bytes(),
                 file_hash,
                 requester,
-            })
+            }))
         );
 
         let forwarded = vec![0xAB, 0xCD, 0xEF];
@@ -601,10 +603,10 @@ mod tests {
         );
         assert_eq!(
             rx.try_recv().expect("the 0x9A relay rode the held link"),
-            PeerCommand::SendReaskCallbackTcp(ReaskCallbackTcp {
+            PeerCommand::Side(SideCommand::SendReaskCallbackTcp(ReaskCallbackTcp {
                 requester: PeerEndpoint::V4(requester),
                 forwarded,
-            })
+            }))
         );
 
         // A mismatched buddy-ID is rejected on both relays (the tightening) and
@@ -670,7 +672,7 @@ mod tests {
         );
         assert_eq!(
             rx.try_recv().expect("the pong rode the held link"),
-            PeerCommand::SendBuddyPong
+            PeerCommand::Side(SideCommand::SendBuddyPong)
         );
         assert_eq!(
             slot.on_buddy_ping(peer(1, 62000), now),

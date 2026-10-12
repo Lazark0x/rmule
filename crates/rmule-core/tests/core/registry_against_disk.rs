@@ -17,7 +17,7 @@ use rmule_ed2k::OfferedFile;
 use rmule_primitives::{FileHash, FileHashSummary};
 use rmule_testkit::{PendingSourceLookup, RefusingPeerTransfer};
 
-use crate::fixture::{identity, next_expected};
+use crate::fixture::next_expected;
 
 /// A serve runtime that accepts nobody and keeps each announce's size.
 struct CountingServeRuntime {
@@ -50,6 +50,7 @@ impl ServeRuntimeService for CountingServeRuntime {
 
 fn core(store: Arc<DurableStore>, announced: &Arc<Mutex<Vec<usize>>>) -> Core {
     Core::builder(CoreConfig::default(), store)
+        .settings(rmule_core::CoreSettings::default())
         .source_lookup(PendingSourceLookup)
         .peer_transfer(RefusingPeerTransfer)
         .serve_runtime(CountingServeRuntime {
@@ -107,7 +108,6 @@ async fn a_share_outside_the_download_directory_that_vanishes_while_running_join
     // a file gone by then for one missing at start.
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: "0.0.0.0:0".parse().unwrap(),
-        credentials: identity().into(),
     }))
     .await
     .unwrap();
@@ -157,7 +157,6 @@ async fn a_share_whose_folder_goes_is_withheld_and_announced_no_more() {
     let mut core = core(store, &announced);
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: "0.0.0.0:0".parse().unwrap(),
-        credentials: identity().into(),
     }))
     .await
     .unwrap();

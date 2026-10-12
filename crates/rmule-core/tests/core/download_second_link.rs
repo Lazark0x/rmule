@@ -11,13 +11,14 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, Ed2kLink, ExchangedSource, PeerEndpoint, PeerSource, SourceLookupTarget,
+    ClientId, Ed2kFileLink, Ed2kLink, PeerEndpoint, PeerSource, SourceLookupTarget, SourceSighting,
 };
+use rmule_testkit::HANG_GUARD;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
-use crate::fixture::{identity, stub_server};
+use crate::fixture::stub_server;
 
 const HASH: &str = "31D6CFE0D16AE931B73C59D7E0C089C0";
 
@@ -47,7 +48,7 @@ impl SourceLookupService for OneSourceLookup {
     ) -> Result<SourceLookupOutcome, DownloadFailure> {
         Ok(SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![ExchangedSource::plain(server_source())],
+            sources: vec![SourceSighting::plain(server_source())],
         })
     }
 }
@@ -77,38 +78,42 @@ impl PeerTransferService for DialRecorder {
 }
 
 async fn next_event(core: &mut Core) -> CoreEvent {
-    timeout(Duration::from_secs(5), core.next_event())
+    timeout(HANG_GUARD, core.next_event())
         .await
         .expect("core emitted next event")
         .expect("core event stream stayed open")
 }
 
 async fn next_dial(dials: &mut mpsc::UnboundedReceiver<PeerEndpoint>) -> PeerEndpoint {
-    timeout(Duration::from_secs(5), dials.recv())
+    timeout(HANG_GUARD, dials.recv())
         .await
-        .expect("a dial within 5 s")
+        .expect("a dial")
         .expect("the recorder stayed open")
 }
 
-fn start(file: Ed2kFileLink, out: &std::path::Path) -> CoreCommand {
+fn start(file: Ed2kFileLink) -> CoreCommand {
     CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(stub_server("127.0.0.1")),
-        credentials: identity().into(),
-        output_path: out.join("second.bin"),
+        name: rmule_testkit::file_name("second.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     })
 }
 
 #[tokio::test]
 async fn a_second_link_adds_its_sources_to_the_running_download() {
+    let out = tempfile::tempdir().unwrap();
     let (dials_tx, mut dials) = mpsc::unbounded_channel();
     let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            out.path(),
+        ))
         .source_lookup(OneSourceLookup)
         .peer_transfer(DialRecorder { dials: dials_tx })
         .build();
-    let out = tempfile::tempdir().unwrap();
 
-    core.send(start(file_link(""), out.path())).await.unwrap();
+    core.send(start(file_link(""))).await.unwrap();
     let download_id = loop {
         if let CoreEvent::Download(DownloadEvent::DownloadQueued { download_id, .. }) =
             next_event(&mut core).await
@@ -122,10 +127,9 @@ async fn a_second_link_adds_its_sources_to_the_running_download() {
         "the run starts on the server's source"
     );
 
-    core.send(start(
-        file_link("|sources,198.51.100.23:4665,198.51.100.23:4665|/"),
-        out.path(),
-    ))
+    core.send(start(file_link(
+        "|sources,198.51.100.23:4665,198.51.100.23:4665|/",
+    )))
     .await
     .unwrap();
     loop {
@@ -160,12 +164,9 @@ async fn a_second_link_adds_its_sources_to_the_running_download() {
 
     // The same link again: its source is the one the run already works, so
     // nothing new joins and nothing is dialed twice.
-    core.send(start(
-        file_link("|sources,198.51.100.23:4665|/"),
-        out.path(),
-    ))
-    .await
-    .unwrap();
+    core.send(start(file_link("|sources,198.51.100.23:4665|/")))
+        .await
+        .unwrap();
     loop {
         if let CoreEvent::Download(DownloadEvent::LinkSourcesAdded {
             named,
@@ -185,7 +186,7 @@ async fn a_second_link_adds_its_sources_to_the_running_download() {
         "a source the run already knows is not dialed again"
     );
 
-    core.send(start(file_link(""), out.path())).await.unwrap();
+    core.send(start(file_link(""))).await.unwrap();
     loop {
         match next_event(&mut core).await {
             CoreEvent::CommandRejected { reason } => {

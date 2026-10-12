@@ -12,6 +12,7 @@
 //! storer feeding rmule's reader, over sizes and slot states no single
 //! captured datagram carries.
 
+use rmule_kad::KadNodeStart;
 use std::net::Ipv4Addr;
 
 use rmule_kad::{
@@ -75,12 +76,15 @@ fn publisher_with(
     posture: KadPublishPosture,
     connect_options: Option<u8>,
 ) -> (KadNode, [KadNodeEndpoint; 3]) {
-    let mut node = KadNode::new(KadNodeConfig {
-        id: KadId::from_bytes([0x0F; 16]),
-        tcp_port: 4662,
-        udp_port: 4672,
-        user_hash: UserHash::from_bytes(PUBLISHER_USER_HASH),
-    });
+    let mut node = KadNode::new(KadNodeStart::new(
+        KadNodeConfig {
+            id: KadId::from_bytes([0x0F; 16]),
+            tcp_port: 4662,
+            udp_port: 4672,
+            user_hash: UserHash::from_bytes(PUBLISHER_USER_HASH),
+        },
+        KadInstant::EPOCH,
+    ));
     node.handle_command(now, KadCommand::SetPublishPosture { posture });
     node.handle_command(
         now,

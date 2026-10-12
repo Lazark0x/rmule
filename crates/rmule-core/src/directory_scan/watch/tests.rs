@@ -528,6 +528,7 @@ fn scan(
             rows: &mut || harness.rows_now(),
             report: &mut |report| harness.report(report),
             turn: crate::directory_scan::HashTurn::default(),
+            missing_look: crate::CoreConfig::default().missing_directory_look,
         },
         Path::new(ROOT),
         &rows,

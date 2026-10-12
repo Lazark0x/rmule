@@ -1,6 +1,7 @@
 //! Why a source's road ended short: a dial that ended before the peer's
-//! hello, and a reask reply the download could not take. Both are codes the
-//! front end words; neither names an address.
+//! hello, a reask reply the download could not take, and a source let go to
+//! make room. Each is a code the front end words; none names an address but
+//! [`PurgedSource`], which says which source went.
 
 /// Why a download's dial to a source ended before the peer's hello
 /// ([`DownloadEvent::DialEnded`](super::DownloadEvent::DialEnded)). Such a
@@ -58,4 +59,39 @@ pub enum IgnoredReaskReply {
     /// Its body did not read as the reply shape both ends' UDP versions
     /// call for.
     Misframed,
+    /// Its part status counts other than the file's parts: aMule's
+    /// `ProcessFileStatus` throws on it and drops the whole answer, rank
+    /// unread (stock 2.3.3 `DownloadClient.cpp:416-424`).
+    PartCountMismatch,
+}
+
+/// Why a download let a source go to make room as the file neared its source
+/// limit ([`DownloadEvent::SourcePurged`](super::DownloadEvent::SourcePurged)):
+/// aMule's three purges in `CPartFile::Process` (stock 2.3.3
+/// `PartFile.cpp:1406-1456`), one source at a time on one clock per file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourcePurgeReason {
+    /// A Low ID that no road reaches: we cannot be called back for it and it
+    /// names no coordinator (aMule `DS_LOWTOLOWIP`).
+    LowToLow,
+    /// It holds no part we lack (aMule `DS_NONEEDEDPARTS`).
+    NoNeededParts,
+    /// Its queue stayed full (aMule `IsRemoteQueueFull`).
+    QueueFull,
+}
+
+/// The source a download let go
+/// ([`DownloadEvent::SourcePurged`](super::DownloadEvent::SourcePurged)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PurgedSource {
+    /// The endpoint it stood queued at.
+    Endpoint(rmule_primitives::PeerEndpoint),
+    /// A Low ID never reached, by the id and the server that assigned it —
+    /// `None` when it was the server we are logged into.
+    LowId {
+        /// Its server-assigned Low ID.
+        low_id: rmule_primitives::ClientId,
+        /// The server that assigned it, when not ours.
+        server: Option<rmule_primitives::Ipv4Endpoint>,
+    },
 }

@@ -47,7 +47,9 @@ pub enum NattStartError {
 /// credentialed activity starts first, which is after the client-UDP socket
 /// binds and this type is built. [`NattDemux::start`] instead takes a
 /// [`NattOwnHash`] it reads per use, so what remains here really is static
-/// for the surface's whole life.
+/// for the surface's whole life. The crypt-ladder bits a CAPS answer states
+/// are not here either: the policy behind them changes live, so they come
+/// from the sender's [`NattCrypt`](super::NattCrypt) per frame.
 #[derive(Clone, Copy, Debug)]
 pub struct NattIdentity {
     /// The transports this build serves. `quic` is false until a live handshake
@@ -55,8 +57,6 @@ pub struct NattIdentity {
     /// `CT_MOD_MISCOPTIONS` bit 4 follows — rmule is uTP-only exactly like an
     /// eMuleAI build with no QUIC runtime.
     pub local: HelloNattClaim,
-    /// rmule's crypt-ladder bits, sharing the one connect-options byte.
-    pub crypt_options: u8,
 }
 
 /// What the demux did with one datagram — the observable a deterministic test
@@ -361,7 +361,8 @@ impl<S: NattDatagramSink> NattDemux<S> {
         let quic = self.identity.local.quic && !self.quic_blacklisted(peer, now);
         CapsFrame {
             connect_options: NattConnectOptions::advertise(
-                self.identity.crypt_options,
+                // The crypt half's bits as the policy stands at this frame.
+                self.sender.crypt_options(),
                 self.identity.local.utp,
                 quic,
             ),

@@ -7,20 +7,21 @@
 use std::path::Path;
 
 use rmule_core::{
-    ClientCredentials, Core, CoreCommand, CoreEvent, ManagedServer, ScanCommand, ScanEvent,
-    ServeEvent, ServerListCommand,
+    Core, CoreCommand, CoreEvent, ManagedServer, ScanCommand, ScanEvent, ServeEvent,
+    ServerListCommand,
 };
 use rmule_primitives::{FileHash, ServerEndpoint};
 use tokio::time::{Duration, timeout};
 
 /// List `server` and send the operator's `ConnectToServer` to it, as the
-/// TUI's `c` does. Returns once core has both commands; the connect's trail
+/// TUI's `c` does; the login presents the core's Core Settings'
+/// credentials. Returns once core has both commands; the connect's trail
 /// (`Connecting` → `Connected` / `ConnectFailed`) follows on the event stream,
 /// and every download or search already waiting rides the session it makes.
 ///
 /// # Panics
 /// Core refused a command (it has stopped).
-pub async fn connect_to(core: &Core, server: &ServerEndpoint, credentials: ClientCredentials) {
+pub async fn connect_to(core: &Core, server: &ServerEndpoint) {
     core.send(CoreCommand::ServerList(ServerListCommand::AddServer {
         server: ManagedServer::listed(server.clone()),
     }))
@@ -28,7 +29,6 @@ pub async fn connect_to(core: &Core, server: &ServerEndpoint, credentials: Clien
     .expect("core accepts the server");
     core.send(CoreCommand::ConnectToServer {
         server: server.clone(),
-        credentials,
     })
     .await
     .expect("core accepts the connect");

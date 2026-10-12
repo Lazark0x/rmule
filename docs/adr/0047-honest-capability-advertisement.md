@@ -96,6 +96,12 @@ feeds the server-crypt dial (ADR-0042).
 server-reported public IP, obfuscation TCP port. The public IP feeds Address Learning
 (ADR-0084). A second `OP_IDCHANGE` is a re-assignment, not a protocol violation.
 
+**`CAPABLE_AUXPORT` is lit, because the aux port is acted on.** aMule answers an aux-port
+login by replacing the row's port with the standard one and keeping the dialed port in an
+aux-ports list (`ServerSocket.cpp:289-311`, `Server.cpp:233-241`); the Managed Server List
+does the same (ADR-0080, "Aux ports"). The login flags word is therefore `0x11D`, aMule's
+own (`ServerConnect.cpp:287-288`).
+
 ## Consequences
 
 - The honest-advert invariant has one enforcement point instead of a convention at each

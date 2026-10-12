@@ -10,6 +10,7 @@
 //! ends unanswered once no intent stands; the Kad leg and its rows stand
 //! either way.
 
+use rmule_testkit::HANG_GUARD;
 use std::time::Duration;
 
 use rmule_core::{
@@ -20,8 +21,8 @@ use rmule_primitives::{ClientId, ED2K_PART_SIZE, PeerSource, ServerEndpoint};
 use rmule_testkit::{FakeEd2kServer, PendingPeerTransfer, file_link};
 
 use crate::fixture::{
-    StubKad, identity, kad_enable_config, list_and_connect, next_expected, search_config,
-    search_query, search_result, start_search,
+    StubKad, kad_enable_config, list_and_connect, next_expected, search_config, search_query,
+    search_result, start_search,
 };
 
 async fn legs_reach(
@@ -59,6 +60,7 @@ async fn with_kad_alone_and_no_intent_the_server_leg_is_not_sent_and_the_search_
         },
         rmule_testkit::memory_store(),
     )
+    .settings(rmule_core::CoreSettings::default())
     .kad(StubKad::new().answering_keywords(vec![search_result(0xBB, 1024, "linux kad.iso")]))
     .build();
     core.send(CoreCommand::EnableKad(kad_enable_config()))
@@ -117,6 +119,7 @@ async fn search_while_reconnecting() -> (Core, SearchId, FakeEd2kServer) {
         },
         rmule_testkit::memory_store(),
     )
+    .settings(rmule_core::CoreSettings::default())
     .kad(StubKad::new().answering_keywords(vec![search_result(0xBB, 1024, "linux kad.iso")]))
     .build();
     core.send(CoreCommand::EnableKad(kad_enable_config()))
@@ -226,7 +229,9 @@ async fn with_neither_a_session_nor_kad_the_whole_search_waits_and_the_connect_s
         .set_search_results(vec![search_result(0xAA, 1024, "linux server.iso")])
         .await;
     let endpoint = server.endpoint();
-    let mut core = Core::builder(search_config(), rmule_testkit::memory_store()).build();
+    let mut core = Core::builder(search_config(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
 
     let search_id = start_search(&core, search_query("linux")).await;
     next_expected(&mut core, "the search to wait whole", |event| {
@@ -275,6 +280,10 @@ async fn a_download_on_kad_alone_gains_the_servers_sources_when_the_operator_con
     bytes.push(0x4B);
 
     let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .peer_transfer(PendingPeerTransfer)
         .kad(StubKad::new().answering_keywords(vec![search_result(0xBB, 1024, "unused")]))
         .build();
@@ -285,8 +294,8 @@ async fn a_download_on_kad_alone_gains_the_servers_sources_when_the_operator_con
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: file_link("kad-first.bin", &bytes),
         source_hint: Some(server.endpoint()),
-        credentials: identity().into(),
-        output_path: dir.path().join("kad-first.bin"),
+        name: rmule_testkit::file_name("kad-first.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -340,6 +349,10 @@ async fn a_part_file_removed_while_the_run_waits_for_sources_is_told() {
     let mut bytes = vec![0x4B; ED2K_PART_SIZE as usize];
     bytes.push(0x4B);
     let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .peer_transfer(PendingPeerTransfer)
         .kad(StubKad::new().answering_keywords(vec![search_result(0xBB, 1024, "unused")]))
         .build();
@@ -350,8 +363,8 @@ async fn a_part_file_removed_while_the_run_waits_for_sources_is_told() {
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: file_link("waits.bin", &bytes),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: output.clone(),
+        name: rmule_testkit::file_name("waits.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -390,6 +403,7 @@ async fn search_lost_under_the_server_leg() -> (Core, SearchId, FakeEd2kServer) 
         },
         rmule_testkit::memory_store(),
     )
+    .settings(rmule_core::CoreSettings::default())
     .kad(StubKad::new().answering_keywords(vec![search_result(0xBB, 1024, "linux kad.iso")]))
     .build();
     core.send(CoreCommand::EnableKad(kad_enable_config()))
@@ -417,7 +431,7 @@ async fn search_lost_under_the_server_leg() -> (Core, SearchId, FakeEd2kServer) 
 
 /// The server has received `count` search requests.
 async fn requests_reach(server: &FakeEd2kServer, count: usize) {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(HANG_GUARD, async {
         while server.search_phrases().await.len() < count {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }

@@ -22,12 +22,6 @@ use crate::service::{
 
 use super::{CoreActor, send_event};
 
-/// How long a retire waits for the serve task it stopped before aborting it
-/// (ADR-0093 invariant 3): the task can be parked writing to a connection
-/// whose peer stopped reading, and then it never sees its stop signal. An
-/// aborted task takes the adapter with it, so the stop reads `TaskFailed`.
-const SERVE_STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
-
 impl<S, P, L, K> CoreActor<S, P, L, K>
 where
     S: SourceLookupService,
@@ -57,11 +51,8 @@ where
                 };
                 send_event(&self.evt_tx, ServeEvent::ShareRejected { reason }.into()).await;
             }
-            ServeCommand::StartServing {
-                listen_addr,
-                credentials,
-            } => {
-                self.start_serving(listen_addr, credentials).await;
+            ServeCommand::StartServing { listen_addr } => {
+                self.start_serving(listen_addr).await;
             }
             ServeCommand::StopServing => {
                 self.stop_serve().await;
@@ -75,38 +66,47 @@ where
         }
     }
 
-    /// Bind the eD2k listener at attach on the node's credentials' TCP port
+    /// Bind the eD2k listener at attach on the Core Settings' TCP port
     /// (ADR-0095, "Connecting is the operator's act"; aMule listens from
     /// `OnInit`, `amule.cpp:917`, `:1631`), so a Kad-only run accepts peers and
-    /// the mapping starts before any login. A core built without credentials
-    /// binds on its first connect or `StartServing` instead. A failed bind is
+    /// the mapping starts before any login. A core not built to restore at
+    /// attach binds on its first connect or `StartServing` instead. A failed bind is
     /// reported as `ServingFailed`, and the operator's connect tries again.
     pub(super) async fn listen_at_attach(&mut self) {
-        let Some(credentials) = self.wiring.restore_credentials.clone() else {
+        if !self.wiring.restore_at_attach {
             return;
-        };
-        let listen_addr =
-            std::net::SocketAddrV4::new(std::net::Ipv4Addr::UNSPECIFIED, credentials.tcp_port());
-        self.start_serving(listen_addr, credentials).await;
+        }
+        let listen_addr = self.settings_listen_addr();
+        self.start_serving(listen_addr).await;
+    }
+
+    /// Where the listener binds when the Core Settings name it
+    /// ([`listen_tcp_port`](crate::server_session::listen_tcp_port)): their
+    /// TCP port, or, when they hold `0`, the port this process's listener
+    /// first bound, so one that stopped and starts again rebinds the port it
+    /// had.
+    pub(super) fn settings_listen_addr(&self) -> std::net::SocketAddrV4 {
+        let port = crate::server_session::listen_tcp_port(
+            self.wiring.settings.credentials.tcp_port(),
+            &self.own_identity,
+        );
+        std::net::SocketAddrV4::new(std::net::Ipv4Addr::UNSPECIFIED, port)
     }
 
     /// Start the serve activity: bind the listener on `listen_addr` and
-    /// announce the bind. It dials no server (ADR-0095).
+    /// announce the bind. It dials no server (ADR-0095). Its hellos present
+    /// the Core Settings' credentials.
     /// Idempotent while one runs — the answer is the bind fact the first start
     /// earned.
-    pub(super) async fn start_serving(
-        &mut self,
-        listen_addr: std::net::SocketAddrV4,
-        credentials: crate::service::ClientCredentials,
-    ) {
-        if let Some(serve) = self.activities.serve.as_ref() {
+    pub(super) async fn start_serving(&mut self, listen_addr: std::net::SocketAddrV4) {
+        if let Some(serve) = self.activities.serving() {
             // Idempotent, and it says so: the command
             // asked for serving on this identity, serving is up, and
             // the answer is the same bind fact the first one earned.
             // A silent no-op here would make a front end's retry —
             // after a login failure the serve survived, say —
             // indistinguishable from a core that stopped listening.
-            let listen_addr = serve.bound;
+            let listen_addr = serve.bound();
             send_event(
                 &self.evt_tx,
                 ServeEvent::ServingStarted { listen_addr }.into(),
@@ -133,10 +133,7 @@ where
         // it is a syscall, not a round trip, and a bind that
         // fails must leave the adapter where it was, or the retry the
         // failure invites could only ever be answered with silence.
-        let bound = match serve_runtime
-            .start(self.identity(&credentials), listen_addr)
-            .await
-        {
+        let bound = match serve_runtime.start(self.identity(), listen_addr).await {
             Ok(bound) => bound,
             Err(error) => {
                 let reason = match error {
@@ -159,7 +156,7 @@ where
         // dialed download connection's serve half reaches this
         // serve task's queue; cleared on StopServing.
         let (dialed_serve_tx, dialed_serve_rx) = mpsc::channel(32);
-        *self.wiring.dialed_serve_sink.lock().await = Some(dialed_serve_tx);
+        let dialed_sink = self.wiring.dialed_serve_sink.install(dialed_serve_tx);
         // The one roster the builder made and every adapter adopted
         // — inbound triage's helper-bias read
         // included — never a copy an adapter hands back.
@@ -224,14 +221,19 @@ where
         // Capability reads, bound the moment the ledger names this
         // activity — never a separate flag that a start or stop path
         // could forget to flip.
-        self.download_runtime.reach.listener().bind(&handle);
-        self.activities.serve = Some(ServeActivity {
+        self.download_runtime
+            .shared
+            .reach
+            .listener()
+            .bind(&handle, bound.port());
+        self.activities.serve_started(ServeActivity::new(
             generation,
             stop_tx,
             share_changed_tx,
             handle,
             bound,
-        });
+            dialed_sink,
+        ));
         // The bind fact, at the bind — and only once the
         // activity is in the ledger, so a consumer that answers
         // `ServingStarted` with another command finds it there.
@@ -279,11 +281,10 @@ where
         }
     }
 
-    /// Stop the serve activity (ADR-0093): signal it, then retire it. A
+    /// Stop the serve activity (ADR-0093): retire it, which signals it. A
     /// no-op when nothing serves.
     pub(super) async fn stop_serve(&mut self) {
-        if let Some(serve) = self.activities.serve.take() {
-            let _ = serve.stop_tx.send(true);
+        if let Some(serve) = self.activities.take_serve() {
             self.finish_serve(serve).await;
         }
     }
@@ -294,13 +295,7 @@ where
     /// activity the `StopServing` arm already retired names a generation the
     /// ledger no longer holds and retires nothing.
     pub(super) async fn on_serve_ended(&mut self, generation: u64) {
-        if self
-            .activities
-            .serve
-            .as_ref()
-            .is_some_and(|serve| serve.generation == generation)
-            && let Some(serve) = self.activities.serve.take()
-        {
+        if let Some(serve) = self.activities.take_ended_serve(generation) {
             self.finish_serve(serve).await;
         }
     }
@@ -308,27 +303,18 @@ where
     /// Wind one ended-or-ending serve activity down: take its adapter back,
     /// undo every install its start made, and say so.
     ///
-    /// Awaiting the handle is what makes `ServingStopped` mean *startable
-    /// again* rather than *stopping*. The wait is bounded by
-    /// [`SERVE_STOP_GRACE`]: the task has either already finished (the
-    /// reclaim road) or been told to stop (the `StopServing` and quit roads),
-    /// and one that does not end within the grace is aborted.
+    /// Awaiting the task's end is what makes `ServingStopped` mean
+    /// *startable again* rather than *stopping*; the activity's own
+    /// [`end`](ServeActivity::end) bounds the wait, whether the task has
+    /// already finished (a death) or is being told to stop (the `StopServing`
+    /// and quit roads).
     async fn finish_serve(&mut self, serve: ServeActivity<L>) {
         // Withdraw the live Callback Capability's listener
         // conjunct the instant the ledger gives this activity up — on both
         // roads, the requested stop and the reclaim of one that died on its
         // own.
-        self.download_runtime.reach.listener().clear();
-        let mut handle = serve.handle;
-        let joined = match tokio::time::timeout(SERVE_STOP_GRACE, &mut handle).await {
-            Ok(joined) => joined,
-            Err(_) => {
-                tracing::warn!("the stopped serve task did not end within its grace; aborting it");
-                handle.abort();
-                handle.await
-            }
-        };
-        let reason = match joined {
+        self.download_runtime.shared.reach.listener().clear();
+        let reason = match serve.end().await {
             Ok(outcome) => {
                 // Back where a failed start already puts it, so the next
                 // `StartServing` is a first start in every respect.
@@ -347,9 +333,6 @@ where
                 ServeStopReason::TaskFailed
             }
         };
-        // Stop handing dialed connections to a serve task that no longer
-        // exists (the twin of the start's install).
-        *self.wiring.dialed_serve_sink.lock().await = None;
         // The listener's bind leaves Address Learning with the listener
         // (ADR-0093), so its Desired Mapping Set row departs and the lease is
         // released (ADR-0086) — on every road, the lost-adapter one too.

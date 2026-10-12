@@ -10,7 +10,7 @@
 //! - `RMULE_LIVE_ED2K_ENDPOINT`: `host:port` of an eD2k server.
 //! - `RMULE_LOCAL_TCP_PORT`: optional u16, defaults to `4662`.
 //!
-//! The example exits after the first `PeerIdentified` event, or after the
+//! The example exits after the first `Identified` event, or after the
 //! ed2k session disconnects.
 
 use std::time::Duration;
@@ -18,7 +18,7 @@ use std::time::Duration;
 use rmule_ed2k::Ed2kEvent;
 use rmule_net::ed2k::{ConnectOptions, Connection};
 use rmule_net::peer::{ConnectOptions as PeerOptions, Connection as PeerConnection};
-use rmule_peer::PeerEvent;
+use rmule_peer::{ConnectionEvent, PeerEvent};
 use rmule_primitives::{ClientId, ClientIdentity, Ed2kText, ServerEndpoint, UserHash};
 
 #[tokio::main]
@@ -45,6 +45,7 @@ async fn main() -> anyhow::Result<()> {
             login_timeout: Duration::from_secs(15),
             capture_dir: None,
             obfuscation: None,
+            obfuscated_port: None,
             advertised_ipv6: None,
             udp_ports: None,
         },
@@ -76,7 +77,7 @@ async fn main() -> anyhow::Result<()> {
                 )
                 .await?;
                 while let Some(pe) = peer_conn.next_event().await {
-                    if let PeerEvent::PeerIdentified { identity } = &pe {
+                    if let PeerEvent::Connection(ConnectionEvent::Identified { identity }) = &pe {
                         println!(
                             "peer identified user_hash={} nickname={:?}",
                             identity.user_hash().to_hex_upper(),
@@ -84,7 +85,10 @@ async fn main() -> anyhow::Result<()> {
                         );
                         break;
                     }
-                    if matches!(pe, PeerEvent::Disconnected { .. }) {
+                    if matches!(
+                        pe,
+                        PeerEvent::Connection(ConnectionEvent::Disconnected { .. })
+                    ) {
                         break;
                     }
                 }

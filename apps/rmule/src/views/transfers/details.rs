@@ -10,9 +10,8 @@ use rmule_core::DownloadId;
 use rmule_primitives::FileHash;
 
 use super::chunks::chunk_bar;
-use super::downloads::{
-    diag_counts, diag_parts, display_name, done_percent, origin_label, size_cell, source_counts,
-};
+use super::downloads::{diag_counts, diag_parts, origin_label, source_counts};
+use super::sort::DownloadLine;
 use super::{Overlay, TransfersView, selected_id};
 use crate::rates::format_rate;
 use crate::state::UiState;
@@ -62,16 +61,16 @@ impl TransfersView {
         let diag = state.diagnostics.downloads.get(&id);
         let hash = row.and_then(|r| r.file_hash);
         let metadata = row.and_then(|r| r.metadata.as_ref());
-        let part_count = row.and_then(|r| r.part_count);
         let bps = state.download_speed(id);
         let counts = diag_counts(diag);
         let total_parts = counts.total();
 
-        let (name, _) = display_name(metadata, hash);
-        let size = size_cell(metadata, part_count);
+        let line = DownloadLine::new(id, state);
+        let name = line.name.clone();
+        let size = line.size_cell();
         let origin =
             metadata.map_or_else(|| "—".to_string(), |m| origin_label(m.origin).to_string());
-        let percent_done = done_percent(row, diag);
+        let percent_done = line.done_cell();
         let done = if total_parts == 0 {
             percent_done
         } else {

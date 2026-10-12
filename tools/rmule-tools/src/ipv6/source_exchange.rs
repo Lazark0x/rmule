@@ -24,8 +24,8 @@ use anyhow::{Context, Result, bail};
 use clap::Args;
 use rmule_net::peer::{ConnectOptions as PeerConnectOptions, Connection as PeerConnection};
 use rmule_peer::{
-    AnswerSources, AnswerSources2, MiscOptions1, PartBitmap, PartRanges, PeerCommand, PeerEvent,
-    PeerHandshakeContext,
+    AnswerSources, AnswerSources2, ConnectionEvent, MiscOptions1, PartBitmap, PartRanges,
+    PeerCommand, PeerEvent, PeerHandshakeContext, RequesterCommand, RequesterEvent,
 };
 use rmule_primitives::{
     ClientId, ClientIdentity, Ed2kFileLink, Ed2kLink, Ed2kText, Ipv4Endpoint, Packet,
@@ -139,6 +139,8 @@ async fn connect(body: &SxBodyArgs) -> Result<PeerConnection> {
     let ctx = PeerHandshakeContext {
         identity,
         client_id: ClientId::from_u32(body.client_id),
+        ed2k_client_id: ClientId::from_u32(body.client_id),
+        public_ip: None,
         connected_server: body
             .connected_server
             .map(|server| Ipv4Endpoint::new(*server.ip(), server.port())),
@@ -176,31 +178,37 @@ pub(crate) async fn run_hold_slot(args: Ipv6HoldSlotArgs) -> Result<()> {
                     event = conn.next_event() => event,
                 };
                 match event {
-                    Some(PeerEvent::PeerIdentified { .. }) if !identified => {
+                    Some(PeerEvent::Connection(ConnectionEvent::Identified { .. }))
+                        if !identified =>
+                    {
                         identified = true;
                         let _ = conn
-                            .send(PeerCommand::ProbeFile {
+                            .send(PeerCommand::Requester(RequesterCommand::ProbeFile {
                                 file_hash: file.file_hash,
                                 file_size: file.size,
                                 own_status: PartBitmap::downloader_empty(file.size),
-                            })
+                            }))
                             .await;
                     }
-                    Some(PeerEvent::FileProbed { status, .. }) => {
+                    Some(PeerEvent::Requester(RequesterEvent::FileProbed { status, .. })) => {
                         println!("file_probed: {status:?}");
                         let _ = conn
-                            .send(PeerCommand::RequestParts {
+                            .send(PeerCommand::Requester(RequesterCommand::RequestParts {
                                 file_hash: file.file_hash,
                                 file_size: file.size,
                                 ranges,
-                            })
+                            }))
                             .await;
                     }
                     Some(
-                        event @ (PeerEvent::SlotGranted { .. } | PeerEvent::QueueRanked { .. }),
+                        event @ (PeerEvent::Requester(RequesterEvent::SlotGranted { .. })
+                        | PeerEvent::Requester(RequesterEvent::QueueRanked { .. })),
                     ) => {
                         if slot.is_empty() {
-                            slot = if matches!(event, PeerEvent::SlotGranted { .. }) {
+                            slot = if matches!(
+                                event,
+                                PeerEvent::Requester(RequesterEvent::SlotGranted { .. })
+                            ) {
                                 "granted".to_owned()
                             } else {
                                 "queued".to_owned()
@@ -209,10 +217,10 @@ pub(crate) async fn run_hold_slot(args: Ipv6HoldSlotArgs) -> Result<()> {
                         }
                         println!("{event}");
                     }
-                    Some(PeerEvent::PartReceived { bytes, .. }) => {
+                    Some(PeerEvent::Requester(RequesterEvent::PartReceived { bytes, .. })) => {
                         received = received.saturating_add(bytes.len() as u64);
                     }
-                    Some(PeerEvent::Disconnected { reason }) => {
+                    Some(PeerEvent::Connection(ConnectionEvent::Disconnected { reason })) => {
                         failure = format!("{reason:?}");
                         break;
                     }
@@ -284,20 +292,24 @@ pub(crate) async fn run_sx_ask(args: Ipv6SxAskArgs) -> Result<()> {
                     event = conn.next_event() => event,
                 };
                 match event {
-                    Some(PeerEvent::PeerIdentified { identity }) if !identified => {
+                    Some(PeerEvent::Connection(ConnectionEvent::Identified { identity }))
+                        if !identified =>
+                    {
                         identified = true;
                         peer_sx1_version = MiscOptions1::from_tags(identity.unknown_tags())
                             .map_or(0, MiscOptions1::source_exchange_version);
-                        let command = PeerCommand::RequestFile {
+                        let command = PeerCommand::Requester(RequesterCommand::RequestFile {
                             file_hash: file.file_hash,
                             file_size: file.size,
                             own_status: PartBitmap::downloader_empty(file.size),
                             want_sources: true,
                             want_aich_root: false,
-                        };
+                        });
                         let _ = conn.send(command).await;
                     }
-                    Some(PeerEvent::SourcesReceived { sources, .. }) => {
+                    Some(PeerEvent::Requester(RequesterEvent::SourcesReceived {
+                        sources, ..
+                    })) => {
                         event_note = format!("SourcesReceived {} rows", sources.len());
                         session_sources = sources
                             .iter()
@@ -310,11 +322,13 @@ pub(crate) async fn run_sx_ask(args: Ipv6SxAskArgs) -> Result<()> {
                             .collect();
                         break;
                     }
-                    Some(PeerEvent::SourceExchangeAnswerSkipped { reason }) => {
+                    Some(PeerEvent::Requester(RequesterEvent::SourceExchangeAnswerSkipped {
+                        reason,
+                    })) => {
                         event_note = format!("SourceExchangeAnswerSkipped {reason}");
                         break;
                     }
-                    Some(PeerEvent::Disconnected { reason }) => {
+                    Some(PeerEvent::Connection(ConnectionEvent::Disconnected { reason })) => {
                         failure = format!("{reason:?}");
                         break;
                     }
@@ -435,7 +449,10 @@ fn read_answer(capture: &std::path::Path, peer_sx1_version: u8) -> Result<Answer
                 let ipv6 = entry.ipv6().map(|e| e.to_string()).unwrap_or_default();
                 facts.records.push(format!(
                     "wire_id=0x{:08X} port={} ipv6={ipv6} user_hash={} crypt={}",
-                    entry.source().peer_source().wire_id(),
+                    entry
+                        .source()
+                        .peer_source()
+                        .map_or(0, rmule_primitives::PeerSource::wire_id),
                     entry.tcp_port(),
                     entry
                         .user_hash()

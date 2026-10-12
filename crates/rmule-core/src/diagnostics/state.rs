@@ -29,6 +29,7 @@ mod search_counters;
 mod server_health;
 mod uploads;
 pub use buddy_hash_spelling::BuddyHashSpellingCounters;
+pub(crate) use server_health::ServerHalf;
 
 use super::{
     AddressDiagnostics, ClientUdpBindFailure, DiagnosticsSnapshot, DownloadDiagnostics, PartState,
@@ -46,6 +47,9 @@ use crate::{CoreError, DownloadId, DownloadMetadata};
 #[derive(Clone, Debug, Default)]
 pub struct DiagnosticsState {
     inner: Arc<Mutex<DiagnosticsInner>>,
+    /// Bumped after every write to the server half of the level — see
+    /// [`server_changes`](Self::server_changes).
+    server_changes: Arc<tokio::sync::watch::Sender<u64>>,
 }
 
 #[derive(Debug, Default)]
@@ -57,6 +61,8 @@ struct DiagnosticsInner {
     servers: Vec<ManagedServer>,
     connected_server: Option<ServerEndpoint>,
     kad_state: super::KadState,
+    /// The running Kad Activity's fact reader; `None` while Kad is off.
+    kad: Option<super::kad::KadFactsSource>,
     /// What the connected server granted at its last `OP_IDCHANGE`; the
     /// `Default` (nothing) whenever `connected_server` is `None`.
     connected_server_grants: ServerGrants,
@@ -391,6 +397,8 @@ impl DiagnosticsState {
     pub fn set_servers(&self, servers: Vec<ManagedServer>) {
         let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
         Self::install_servers(&mut inner, servers);
+        drop(inner);
+        self.server_moved();
     }
 
     /// Read the managed server list back from the store and publish it in one
@@ -405,6 +413,8 @@ impl DiagnosticsState {
     ) -> Result<(), CoreError> {
         let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
         Self::install_servers(&mut inner, read()?);
+        drop(inner);
+        self.server_moved();
         Ok(())
     }
 
@@ -441,10 +451,12 @@ impl DiagnosticsState {
         }
         inner.connected_server = server;
         inner.connected_server_grants = grants;
-        let inner = &mut *inner;
-        inner
+        let level = &mut *inner;
+        level
             .server_health
-            .project(&inner.servers, inner.connected_server.as_ref());
+            .project(&level.servers, level.connected_server.as_ref());
+        drop(inner);
+        self.server_moved();
     }
 
     /// Publish where the Kad activity stands.
@@ -453,6 +465,17 @@ impl DiagnosticsState {
             .lock()
             .expect("diagnostics mutex poisoned")
             .kad_state = state;
+    }
+
+    /// The Kad Activity installs its fact reader at start (ADR-0028: the
+    /// snapshot is complete without an actor round trip).
+    pub(crate) fn install_kad(&self, source: super::kad::KadFactsSource) {
+        self.inner.lock().expect("diagnostics mutex poisoned").kad = Some(source);
+    }
+
+    /// The Kad Activity retired: `kad` reads `None` again.
+    pub(crate) fn clear_kad(&self) {
+        self.inner.lock().expect("diagnostics mutex poisoned").kad = None;
     }
 
     /// The connected server's grants, or `None` with no session.
@@ -474,8 +497,8 @@ impl DiagnosticsState {
     }
 
     /// Clone the whole state under one lock, so every figure in the result was
-    /// read at the same instant. [`DiagnosticsSnapshot::kad`] is left `None` —
-    /// the Kad facts live with the actor, not in this shared state.
+    /// read at the same instant; the Kad facts are read through the running
+    /// activity's installed reader (leaf reads, no lock back into this state).
     #[must_use]
     pub fn snapshot(&self) -> DiagnosticsSnapshot {
         let inner = self.inner.lock().expect("diagnostics mutex poisoned");
@@ -505,7 +528,7 @@ impl DiagnosticsState {
             addresses: inner.addresses.as_ref().map_or_else(Vec::new, address_rows),
             mappings: inner.mappings.clone(),
             taken_at: Some(Instant::now()),
-            kad: None,
+            kad: inner.kad.as_ref().map(super::kad::KadFactsSource::read),
             kad_state: inner.kad_state,
             shared_directories: inner
                 .shared_directories
@@ -516,7 +539,7 @@ impl DiagnosticsState {
                 .addresses
                 .as_ref()
                 .map(|addresses| addresses.own_mapping(SocketRole::Udp)),
-            kad_tasks_live: 0,
+            kad_tasks_live: inner.kad.as_ref().map_or(0, |kad| kad.tasks_live),
             client_udp_bind_failure: inner.client_udp_bind_failure,
             half_bound_pairs: inner
                 .addresses
@@ -538,7 +561,7 @@ impl DiagnosticsState {
 /// Only bound combinations are listed. A row for a family a role never bound
 /// would read as "unknown" forever and say nothing — absence is the honest
 /// rendering of a socket that does not exist.
-fn address_rows(addresses: &SharedAddressLearning) -> Vec<AddressDiagnostics> {
+pub(crate) fn address_rows(addresses: &SharedAddressLearning) -> Vec<AddressDiagnostics> {
     let mut rows = Vec::new();
     for family in [AddressFamily::V4, AddressFamily::V6] {
         let hint = addresses.nat_hint(family);

@@ -18,8 +18,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use rmule_core::{Core, CoreCommand, DownloadCommand as CoreDownloadCommand};
-use rmule_primitives::{ClientIdentity, Ed2kLink, ServerEndpoint};
+use rmule_core::Core;
+use rmule_core::run_log::Level;
+use rmule_primitives::{Ed2kLink, ServerEndpoint};
 
 use super::first_dial;
 use super::row::{self, BuddyRow};
@@ -53,8 +54,6 @@ pub(super) struct DownloadPlan {
     pub(super) output: PathBuf,
     /// The `--server` endpoint every body names; nothing answers it.
     pub(super) server: ServerEndpoint,
-    /// Our identity, as the serve activity carries it.
-    pub(super) identity: ClientIdentity,
     /// How long the download is given once it starts.
     pub(super) window: Duration,
 }
@@ -76,13 +75,8 @@ pub(super) async fn download(
         anyhow::bail!("--file must be an ed2k *file* link, got {}", plan.link);
     };
     let mut watch = first_dial::Watch::armed();
-    core.send(CoreCommand::Download(CoreDownloadCommand::StartDownload {
-        file,
-        source_hint: Some(plan.server),
-        credentials: plan.identity.into(),
-        output_path: plan.output.clone(),
-    }))
-    .await?;
+    core.send(crate::output::start(file, Some(plan.server), &plan.output)?)
+        .await?;
     row.download_started = true;
     println!("rmule-natt-buddy-download started");
 
@@ -91,7 +85,7 @@ pub(super) async fn download(
         let Some(event) = first_dial::next_event(core, deadline, &mut watch, row).await? else {
             break;
         };
-        println!("{event}");
+        println!("{}", event.record().render(Level::Full));
         row::observe(&event, row);
     }
     // A file on a local bridge completes well inside one poll interval of the

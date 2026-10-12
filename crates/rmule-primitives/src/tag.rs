@@ -3,7 +3,7 @@
 //! spelling, values in the integer and string types the wire defines, and
 //! decoding is byte-faithful so a round trip re-emits what arrived.
 
-use crate::{Ed2kText, PrimitiveError, Result};
+use crate::{Ed2kText, PrimitiveError, Result, WireReader};
 
 /// `TAGTYPE_HASH` — 16 raw bytes with no length prefix. The IPv6 dialect's
 /// four address tags all ride it (ADR-0087), and writing one of them as
@@ -136,18 +136,18 @@ impl Tag {
     /// [`PrimitiveError::UnsupportedTagType`] on a type byte this crate has no
     /// model for (which also ends any walk: the value's width is unknown, so
     /// the next tag's offset is unknowable), [`PrimitiveError::InvalidTag`] on
-    /// a name that is not UTF-8 or a length that overflows.
+    /// a name that is not UTF-8.
     pub fn decode_prefix(bytes: &[u8]) -> Result<(Self, usize)> {
-        let mut cursor = Cursor::new(bytes);
-        let encoded_type = cursor.read_u8()?;
+        let mut reader = WireReader::new(bytes);
+        let encoded_type = reader.read_u8("tag type")?;
         let (tag_type, name) = if encoded_type & NUMERIC_NAME_FLAG != 0 {
             (
                 encoded_type & !NUMERIC_NAME_FLAG,
-                TagName::compact_id(cursor.read_u8()?),
+                TagName::compact_id(reader.read_u8("tag name id")?),
             )
         } else {
-            let name_len = cursor.read_u16_le()? as usize;
-            let name_bytes = cursor.read_bytes(name_len)?;
+            let name_len = reader.read_u16_le("tag name length")? as usize;
+            let name_bytes = reader.take(name_len, "tag name")?;
             // Per `docs/reference/notes/tags.md`, a length-prefixed
             // name with `name_len == 1` is *always* a numeric ID, never
             // a 1-character text name (the latter has no use in
@@ -172,28 +172,28 @@ impl Tag {
 
         let value = match tag_type {
             TAGTYPE_STRING => {
-                let len = cursor.read_u16_le()? as usize;
-                let value = Ed2kText::from_bytes(cursor.read_bytes(len)?.to_vec());
+                let len = reader.read_u16_le("string tag length")? as usize;
+                let value = Ed2kText::from_bytes(reader.take(len, "string tag value")?.to_vec());
                 TagValue::String(value)
             }
             TAGTYPE_HASH => {
                 let mut hash = [0u8; HASH_TAG_LEN];
-                hash.copy_from_slice(cursor.read_bytes(HASH_TAG_LEN)?);
+                hash.copy_from_slice(reader.take(HASH_TAG_LEN, "hash tag value")?);
                 TagValue::Hash(hash)
             }
-            TAGTYPE_UINT64 => TagValue::U64(cursor.read_u64_le()?),
-            TAGTYPE_UINT32 => TagValue::U32(cursor.read_u32_le()?),
-            TAGTYPE_UINT16 => TagValue::U16(cursor.read_u16_le()?),
-            TAGTYPE_UINT8 => TagValue::U8(cursor.read_u8()?),
+            TAGTYPE_UINT64 => TagValue::U64(reader.read_u64_le("u64 tag value")?),
+            TAGTYPE_UINT32 => TagValue::U32(reader.read_u32_le("u32 tag value")?),
+            TAGTYPE_UINT16 => TagValue::U16(reader.read_u16_le("u16 tag value")?),
+            TAGTYPE_UINT8 => TagValue::U8(reader.read_u8("u8 tag value")?),
             t if (TAGTYPE_STR_MIN..=TAGTYPE_STR_MAX).contains(&t) => {
                 let len = (t - 0x10) as usize;
-                let value = Ed2kText::from_bytes(cursor.read_bytes(len)?.to_vec());
+                let value = Ed2kText::from_bytes(reader.take(len, "string tag value")?.to_vec());
                 TagValue::String(value)
             }
             tag_type => return Err(PrimitiveError::UnsupportedTagType { tag_type }),
         };
 
-        Ok((Self { name, value }, cursor.position()))
+        Ok((Self { name, value }, reader.position()))
     }
 
     /// How many bytes the first tag in `bytes` occupies, for every eD2k tag
@@ -207,32 +207,32 @@ impl Tag {
     /// [`PrimitiveError::UnsupportedTagType`] on a type byte eD2k does not
     /// define, whose width nobody knows.
     pub fn skip_prefix(bytes: &[u8]) -> Result<usize> {
-        let mut cursor = Cursor::new(bytes);
-        let encoded_type = cursor.read_u8()?;
+        let mut reader = WireReader::new(bytes);
+        let encoded_type = reader.read_u8("tag type")?;
         let tag_type = if encoded_type & NUMERIC_NAME_FLAG != 0 {
-            cursor.read_u8()?;
+            reader.read_u8("tag name id")?;
             encoded_type & !NUMERIC_NAME_FLAG
         } else {
-            let name_len = cursor.read_u16_le()? as usize;
-            cursor.read_bytes(name_len)?;
+            let name_len = reader.read_u16_le("tag name length")? as usize;
+            reader.take(name_len, "tag name")?;
             encoded_type
         };
         let value_len = match tag_type {
             TAGTYPE_HASH => HASH_TAG_LEN,
-            TAGTYPE_STRING => cursor.read_u16_le()? as usize,
+            TAGTYPE_STRING => reader.read_u16_le("string tag length")? as usize,
             TAGTYPE_UINT32 | TAGTYPE_FLOAT32 => 4,
             TAGTYPE_UINT8 | TAGTYPE_BOOL => 1,
             // eMule reads `(len / 8) + 1` bytes, not `(len + 7) / 8`.
-            TAGTYPE_BOOLARRAY => cursor.read_u16_le()? as usize / 8 + 1,
-            TAGTYPE_BLOB => cursor.read_u32_le()? as usize,
+            TAGTYPE_BOOLARRAY => reader.read_u16_le("bool array length")? as usize / 8 + 1,
+            TAGTYPE_BLOB => reader.read_u32_le("blob length")? as usize,
             TAGTYPE_UINT16 => 2,
-            TAGTYPE_BSOB => usize::from(cursor.read_u8()?),
+            TAGTYPE_BSOB => usize::from(reader.read_u8("bsob length")?),
             TAGTYPE_UINT64 => 8,
             t if (TAGTYPE_STR_MIN..=TAGTYPE_STR22).contains(&t) => usize::from(t - 0x10),
             tag_type => return Err(PrimitiveError::UnsupportedTagType { tag_type }),
         };
-        cursor.read_bytes(value_len)?;
-        Ok(cursor.position())
+        reader.take(value_len, "tag value")?;
+        Ok(reader.position())
     }
 
     /// Decode `count` tags off the front of `bytes`, returning them and the
@@ -446,60 +446,6 @@ impl TagName {
             TagNameKind::Id { encoding, .. } => *encoding,
             TagNameKind::Text(_) => TagNameEncoding::LengthPrefixed,
         }
-    }
-}
-
-struct Cursor<'a> {
-    bytes: &'a [u8],
-    position: usize,
-}
-
-impl<'a> Cursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, position: 0 }
-    }
-
-    fn read_u8(&mut self) -> Result<u8> {
-        Ok(self.read_bytes(1)?[0])
-    }
-
-    fn read_u16_le(&mut self) -> Result<u16> {
-        let bytes = self.read_bytes(2)?;
-        Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
-    }
-
-    fn read_u32_le(&mut self) -> Result<u32> {
-        let bytes = self.read_bytes(4)?;
-        Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-    }
-
-    fn read_u64_le(&mut self) -> Result<u64> {
-        let bytes = self.read_bytes(8)?;
-        Ok(u64::from_le_bytes(
-            bytes.try_into().expect("read_bytes(8) returns 8 bytes"),
-        ))
-    }
-
-    fn read_bytes(&mut self, len: usize) -> Result<&'a [u8]> {
-        let end = self
-            .position
-            .checked_add(len)
-            .ok_or(PrimitiveError::InvalidTag {
-                reason: "tag length overflow",
-            })?;
-        if end > self.bytes.len() {
-            return Err(PrimitiveError::TruncatedTag {
-                needed: end,
-                actual: self.bytes.len(),
-            });
-        }
-        let bytes = &self.bytes[self.position..end];
-        self.position = end;
-        Ok(bytes)
-    }
-
-    const fn position(&self) -> usize {
-        self.position
     }
 }
 

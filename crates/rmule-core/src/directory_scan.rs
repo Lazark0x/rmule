@@ -42,7 +42,7 @@ pub use progress::{
 pub(crate) use progress::{InstalledDirectory, InstalledState};
 pub(crate) use report::{PassEnd, ScanReport};
 pub use shared_directories::{DirectoryRefusal, ShareGuards};
-pub(crate) use shared_directories::{admit, canonical, covering};
+pub(crate) use shared_directories::{RefusedFolders, admit, canonical, covering, guard_in_place};
 pub use source::{DirEntry, DirectorySource, EntryKind, FileIdentity, FileStamp};
 pub use watch::WatchFault;
 pub(crate) use watch::{
@@ -225,10 +225,6 @@ pub(crate) enum Consent {
     Confirm(Ask),
 }
 
-/// How long a missing directory waits between looks for its return: one
-/// `stat` a minute, the cost already accepted for a missing folder.
-const MISSING_LOOK: Duration = Duration::from_secs(60);
-
 /// The progress level the ledger owns and the worker writes.
 pub(crate) type ProgressCell = Arc<Mutex<Option<DirectoryScanDiagnostics>>>;
 
@@ -267,6 +263,8 @@ pub(crate) struct ScanSeams<'a> {
     pub(crate) report: &'a mut dyn FnMut(ScanReport),
     /// The one turn to read a file, shared by every scan of the core.
     pub(crate) turn: HashTurn,
+    /// How long a missing directory waits between looks for its return.
+    pub(crate) missing_look: Duration,
 }
 
 /// The scan's worker: one pass over `root` against `known`, then, if it
@@ -287,12 +285,13 @@ pub(crate) fn run_scan(
         rows: rows_now,
         report,
         turn,
+        missing_look,
     } = seams;
     let mut known = known.clone();
     let mut consent = Some(consent);
     loop {
         if missing(source, root) {
-            if !await_return(source, watcher, root, stop, progress, report) {
+            if !await_return(source, watcher, root, missing_look, stop, progress, report) {
                 return ScanEnd::Stopped;
             }
             match rows_now() {
@@ -366,12 +365,13 @@ fn missing(source: &dyn DirectorySource, root: &Path) -> bool {
     }
 }
 
-/// The directory is missing: say so, then look for it every
-/// [`MISSING_LOOK`] until it is back (true) or the stop flag is raised.
+/// The directory is missing: say so, then look for it every `look` until
+/// it is back (true) or the stop flag is raised.
 fn await_return(
     source: &dyn DirectorySource,
     watcher: &mut dyn WatchStarter,
     root: &Path,
+    look: Duration,
     stop: &AtomicBool,
     progress: &ProgressCell,
     report: &mut dyn FnMut(ScanReport),
@@ -381,7 +381,7 @@ fn await_return(
     report(ScanReport::RootMissing { since });
     set_phase(progress, root, ScanPhase::Missing { since });
     loop {
-        if !watch::pause(watcher, MISSING_LOOK, stop) {
+        if !watch::pause(watcher, look, stop) {
             return false;
         }
         if !missing(source, root) {

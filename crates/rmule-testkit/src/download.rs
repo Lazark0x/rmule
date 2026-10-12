@@ -7,17 +7,34 @@
 //! sequences. Socket-level loopback scenarios use [`crate::FakePeer`] instead.
 
 use ed2k::digest::Digest;
+use std::path::Path;
+
 use rmule_core::{
-    Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent, DownloadFailure,
-    DownloadedPart, PeerDownloadOutcome, PeerTransferService, PeerWorker, PeerWorkerCommand,
-    PeerWorkerEvent, SourceLookupOutcome, SourceLookupService,
+    Core, CoreCommand, CoreConfig, CoreEvent, CoreSettings, DownloadCommand, DownloadEvent,
+    DownloadFailure, DownloadedPart, NameTaken, PeerDownloadOutcome, PeerTransferService,
+    PeerWorker, PeerWorkerCommand, PeerWorkerEvent, SourceLookupOutcome, SourceLookupService,
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, Ed2kText, ExchangedSource, FileHash, FileHashSummary, Ipv4Endpoint,
-    PeerEndpoint, PeerSource, ServerEndpoint, SourceLookupTarget,
+    ClientId, Ed2kFileLink, Ed2kText, FileHash, FileHashSummary, Ipv4Endpoint, PeerEndpoint,
+    PeerSource, SafeFileName, ServerEndpoint, SourceLookupTarget, SourceSighting,
 };
 use tokio::time::{Duration, timeout};
+
+/// `name` as a start names its file, cleaned as a link's name is.
+#[must_use]
+pub fn file_name(name: &str) -> SafeFileName {
+    SafeFileName::clean(name, &FileHash::from_bytes([0; 16]))
+}
+
+/// `settings` with `dir` as the download directory every start lands in.
+#[must_use]
+pub fn in_download_dir(settings: CoreSettings, dir: &Path) -> CoreSettings {
+    CoreSettings {
+        download_dir: Some(dir.to_path_buf()),
+        ..settings
+    }
+}
 
 /// The link a publisher of `bytes` would compute: file hash plus the **ED2K
 /// Part Hash Set** when the content spans more than one part (a sub-part file
@@ -59,9 +76,9 @@ pub fn loopback_peer(last_octet: u8) -> PeerEndpoint {
 }
 
 /// Wrap plain server-lookup sources as candidates: a `0x42` reply carries no
-/// crypt provenance, so every source is `ExchangedSource::plain` (ADR-0046).
-pub fn plain_sources(sources: Vec<PeerSource>) -> Vec<ExchangedSource> {
-    sources.into_iter().map(ExchangedSource::plain).collect()
+/// crypt provenance, so every source is `SourceSighting::plain` (ADR-0046).
+pub fn plain_sources(sources: Vec<PeerSource>) -> Vec<SourceSighting> {
+    sources.into_iter().map(SourceSighting::plain).collect()
 }
 
 /// A `SourceLookupService` that answers every lookup with the same outcome.
@@ -274,6 +291,7 @@ where
     let dir = tempfile::tempdir().unwrap();
     let identity = crate::test_identity(0x42, "rmule-core-test", 4662);
     let mut core = Core::builder(CoreConfig::default(), crate::memory_store())
+        .settings(in_download_dir(CoreSettings::default(), dir.path()))
         .user_hash(identity.user_hash())
         .source_lookup(source)
         .peer_transfer(peer)
@@ -281,8 +299,8 @@ where
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity.into(),
-        output_path: dir.path().join("download-workflow.bin"),
+        name: file_name("download-workflow.bin"),
+        if_taken: NameTaken::Refuse,
     }))
     .await
     .unwrap();

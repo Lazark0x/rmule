@@ -1,0 +1,32 @@
+[package]
+name = "rmule-words"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish.workspace = true
+
+[dependencies]
+# A moment rmule noticed something reads in local time, to the minute.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# The nodes.dat fetch failures a Kad seed outcome carries; the seam and
+# pipeline only — the fetcher, and the HTTP stack behind it, stay off.
+rmule-bootstrap = { path = "../rmule-bootstrap", default-features = false }
+rmule-core = { path = "../rmule-core" }
+rmule-primitives = { path = "../rmule-primitives" }
+
+[dev-dependencies]
+# The captured clients a Software label is asserted against are built from
+# real hellos by the shared fixture.
+rmule-testkit = { path = "../rmule-testkit" }
+
+[features]
+# `Sentence::for_test`: any text as a sentence, for a front end's test that
+# exercises a surface's layout rather than its words. A front end turns it on
+# in its dev-dependencies only.
+test-support = []
+
+[lints]
+workspace = true

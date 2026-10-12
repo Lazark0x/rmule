@@ -24,8 +24,6 @@
 //! - [`connect`] — the connect at start (ADR-0095): off unless the operator
 //!   turned it on, and then the operator's own `ConnectToServer` to the
 //!   server they last connected to — nothing else in the app ever dials.
-//! - [`run_log`] — the Run Log: the file in the data directory a run's
-//!   `tracing` output lands in, the terminal being the alternate screen.
 //! - [`config`] — front-end-owned configuration (ADR-0069): the app-config
 //!   seam over the one Durable Store that core's server-list seam and the
 //!   Settings tab share, the preference snapshot, and the edit vocabulary that
@@ -68,7 +66,6 @@ pub mod input;
 pub mod kad;
 pub mod rates;
 pub mod row_selection;
-pub mod run_log;
 pub mod state;
 pub mod table_sort;
 pub mod theme;

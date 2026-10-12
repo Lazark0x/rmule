@@ -50,11 +50,24 @@ other first byte starts an obfuscated handshake.
 **An Obfuscation Policy governs each connection.** `ConnectOptions.obfuscation:
 Option<ObfuscationConfig>`; `None` is disabled. The active states are `Supported`
 (accept obfuscated inbound, never initiate), `Requested` (initiate when possible) and
-`Required` (refuse plaintext). Under `Requested`, a failed server connect falls back to
-plaintext; a failed peer dial does not. Under `Required`, the listener still accepts a
-plain connection from a party rmule is awaiting a reachability test from (ADR-0046). The
-crypt handshake runs below the session, so it has its own short deadline and does not
-eat the hello budget.
+`Required` (refuse plaintext). A failed peer dial does not fall back to plaintext. Under
+`Required`, the listener still accepts a plain connection from a party rmule is awaiting
+a reachability test from (ADR-0046). The crypt handshake runs below the session, so it
+has its own short deadline (the connect timeout, for a server) and does not eat the
+hello budget.
+
+**A server login opens its link by aMule's gate** (`ServerSocket.cpp:786-795`). Each
+dial reads the policy: under `Requested` or `Required`, a server whose row says it takes
+obfuscated TCP (an obfuscation TCP port from its status answer, and `TCPOBFUSCATION` in
+its UDP flags or its last login's TCP flags, aMule's `SupportsObfuscationTCP()`) is
+dialed at that port with the server-form handshake before the login. Any other dial
+goes plain to the server's own port. The login's `CT_SERVER_FLAGS` states the policy
+whatever the link, as aMule's does (`ServerConnect.cpp:273-288`). A failed obfuscated
+attempt (dial, handshake, or a link that closes or times out before the answer) earns
+one plain dial under `Requested` and none under `Required` (`ServerConnect.cpp:465-470`).
+Like aMule, `Required` does not refuse a server that has said nothing about
+obfuscation: it dials it plain. Each dial states its **Login Link** in the Run Log
+(ADR-0075).
 
 **Outbound peer obfuscation needs the target's User Hash.** A candidate source without
 it is dialed plaintext. Plain `OP_FOUNDSOURCES` sources carry only id and port, so they
@@ -71,8 +84,9 @@ login flags, from the one policy-to-stance ladder in ADR-0049.
   `crypto-bigint` rather than `num-bigint` keeps the RustCrypto family and gives
   constant-time modexp, which is not needed against passive DPI but costs nothing.
 - Byte facts carry evidence tags in `docs/reference/notes/obfuscation.md`. The peer
-  form is captured. The server form stays `[pending]` until a live rmule-participant
-  handshake against an obfuscation-capable server proves it.
+  form is captured. The server form is live-proven: stock Lugdunum and ed2k-server
+  answer rmule's obfuscated login (interop-harness `server-login-crypt`), once the
+  opening carries the plain padding-length byte aMule writes after `G^A`.
 - The evidence ladder must defeat two crypto-direction traps. A symmetric loopback where
   both ends use one key round-trips even with send and receive flipped; deriving with
   the real 34/203 magic split and asserting cross-decryption plus intra-side key

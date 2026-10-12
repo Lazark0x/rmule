@@ -38,3 +38,7 @@ tools/ed2ksrv-differ/target/
 # Only manually promoted minimal datagrams (*.bin) plus metadata are checked in.
 *.pcap
 *.pcapng
+
+# Python bytecode from the harness fakes.
+__pycache__/
+*.pyc

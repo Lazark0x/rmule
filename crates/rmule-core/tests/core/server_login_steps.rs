@@ -2,19 +2,20 @@
 //! rmule claimed about itself, what the server answered, and why a dial never
 //! came up, each a typed event a reachability diagnosis reads.
 
+use rmule_testkit::HANG_GUARD;
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
 use rmule_core::{
-    AssignedAddress, Core, CoreConfig, CoreEvent, DialFailure, LoginStep, PortTestAdmission,
-    PortTestEnd, ServerConnectFailure, ServerConnectionEvent,
+    AssignedAddress, Core, CoreConfig, CoreEvent, DialFailure, LoginLink, LoginStep,
+    PlainLinkReason, PortTestAdmission, PortTestEnd, ServerConnectFailure, ServerConnectionEvent,
 };
 use rmule_primitives::{AddressFamily, ServerEndpoint};
 use rmule_testkit::FakeEd2kServer;
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 
-use crate::fixture::{connect_server_as, free_port, identity_with_port, list_server};
+use crate::fixture::{connect_server, free_port, list_server, settings_on};
 
 fn connect_only() -> CoreConfig {
     CoreConfig {
@@ -25,7 +26,7 @@ fn connect_only() -> CoreConfig {
 
 /// Every login step and session edge up to the one that settles the connect.
 async fn trail_until_settled(core: &mut Core) -> Vec<CoreEvent> {
-    timeout(Duration::from_secs(5), async {
+    timeout(HANG_GUARD, async {
         let mut trail = Vec::new();
         loop {
             let event = core.next_event().await.expect("core is alive");
@@ -65,14 +66,22 @@ fn steps(trail: &[CoreEvent]) -> Vec<LoginStep> {
 async fn an_answered_login_reports_what_it_claimed_and_what_the_server_named_us() {
     let server = FakeEd2kServer::start_scripted().await;
     let endpoint = server.endpoint();
-    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store()).build();
-    list_server(&core, &endpoint).await;
     let port = free_port().await;
-    connect_server_as(&core, &endpoint, identity_with_port(port).into()).await;
+    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store())
+        .settings(settings_on(port))
+        .build();
+    list_server(&core, &endpoint).await;
+    connect_server(&core, &endpoint).await;
 
     let trail = trail_until_settled(&mut core).await;
     let steps = steps(&trail);
     let [
+        LoginStep::LinkChosen {
+            link:
+                LoginLink::Plain {
+                    why: PlainLinkReason::PolicyDoesNotInitiate,
+                },
+        },
         LoginStep::PortTestAwaited,
         LoginStep::LoginSent { claim },
         LoginStep::Answered { assignment },
@@ -106,25 +115,27 @@ async fn a_refused_dial_names_the_os_cause_before_the_failure() {
     let refused = ServerEndpoint::new("127.0.0.1", listener.local_addr().expect("addr").port())
         .expect("a loopback endpoint");
     drop(listener);
-    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store()).build();
+    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store())
+        .settings(settings_on(free_port().await))
+        .build();
     list_server(&core, &refused).await;
-    connect_server_as(
-        &core,
-        &refused,
-        identity_with_port(free_port().await).into(),
-    )
-    .await;
+    connect_server(&core, &refused).await;
 
     let trail = trail_until_settled(&mut core).await;
     assert!(
         matches!(
             steps(&trail).as_slice(),
-            [LoginStep::DialFailed {
-                cause: DialFailure::Os {
-                    kind: std::io::ErrorKind::ConnectionRefused,
-                    ..
+            [
+                LoginStep::LinkChosen {
+                    link: LoginLink::Plain { .. }
+                },
+                LoginStep::DialFailed {
+                    cause: DialFailure::Os {
+                        kind: std::io::ErrorKind::ConnectionRefused,
+                        ..
+                    }
                 }
-            }]
+            ]
         ),
         "{trail:?}"
     );
@@ -151,14 +162,11 @@ async fn a_refused_dial_names_the_os_cause_before_the_failure() {
 async fn a_servers_port_test_dialling_in_is_reported_inside_its_window() {
     let server = FakeEd2kServer::start().await;
     let endpoint = server.endpoint();
-    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store()).build();
+    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store())
+        .settings(settings_on(free_port().await))
+        .build();
     list_server(&core, &endpoint).await;
-    connect_server_as(
-        &core,
-        &endpoint,
-        identity_with_port(free_port().await).into(),
-    )
-    .await;
+    connect_server(&core, &endpoint).await;
 
     let trail = trail_until_settled(&mut core).await;
     let ended = LoginStep::PortTestEnded {
@@ -172,7 +180,7 @@ async fn a_servers_port_test_dialling_in_is_reported_inside_its_window() {
     let ended_in_trail = steps.contains(&ended);
     steps.retain(|step| *step != ended);
     if !ended_in_trail {
-        timeout(Duration::from_secs(5), async {
+        timeout(HANG_GUARD, async {
             while let Some(event) = core.next_event().await {
                 if matches!(event, CoreEvent::ServerLogin { step, .. } if step == ended) {
                     return;
@@ -184,6 +192,12 @@ async fn a_servers_port_test_dialling_in_is_reported_inside_its_window() {
         .expect("the test's end is reported once the server hangs up");
     }
     let [
+        LoginStep::LinkChosen {
+            link:
+                LoginLink::Plain {
+                    why: PlainLinkReason::PolicyDoesNotInitiate,
+                },
+        },
         LoginStep::PortTestAwaited,
         LoginStep::LoginSent { .. },
         LoginStep::PortTestArrived {

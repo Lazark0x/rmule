@@ -154,7 +154,7 @@ pub enum KadCommand {
         address: Option<std::net::Ipv6Addr>,
     },
     /// The publish posture — core's **Self Reach** `firewalled` and, while
-    /// firewalled, its `FirewalledSlot::publish_buddy_info` verdict
+    /// firewalled, the buddy row of its Buddy Snapshot
     /// (ADR-0060, ADR-0061).
     ///
     /// Same discipline as [`SetAdvertisedIpv6`](Self::SetAdvertisedIpv6): the
@@ -341,10 +341,25 @@ pub enum KadCommand {
     /// contact's key rides the wire again. The key this node *hands out* to
     /// a target is unaffected: `GetUDPVerifyKey` derives from the secret and
     /// the target's IP alone, never our own. A no-op while crypt is unarmed
-    /// (`enable_verify_keys` never ran): there is no verify-key state to
+    /// (the node started without verify keys): there is no verify-key state to
     /// move and no stored key reads it yet.
     SetOwnPublicIp {
         /// The address Address Learning now judges as our own.
         public_ip: std::net::Ipv4Addr,
+    },
+    /// Re-arm the per-datagram crypt live (ADR-0046): obfuscation with its
+    /// verify keys, or plaintext — exactly what the start value installs,
+    /// replacing what the node held, so the one obfuscation policy holds at
+    /// every instant rather than from the next start. aMule reads
+    /// `IsClientCryptLayerSupported()` on every send; this is how a driver
+    /// whose policy changed feeds the node the same answer.
+    ///
+    /// The next datagram the node sends follows it. Receive stays dual-path
+    /// either way, and a contact key learned while armed is kept for a later
+    /// re-arm.
+    SetObfuscation {
+        /// The crypt to send under from now on; `None` sends plaintext and
+        /// hands out no verify key.
+        obfuscation: Option<crate::KadObfuscation>,
     },
 }

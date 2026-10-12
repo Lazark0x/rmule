@@ -25,11 +25,20 @@ use std::sync::Arc;
 use tokio::sync::watch;
 use tokio::task::{AbortHandle, JoinHandle};
 
-/// A live, cheaply-cloneable read of "is a serve listener bound right now."
-/// `None` (the default) is the actor's resting state — no serve activity has
-/// ever bound one, or the last one has been [`clear`](Self::clear)ed.
+/// A live, cheaply-cloneable read of "is a serve listener bound right now,
+/// and on which port." `None` (the default) is the actor's resting state — no
+/// serve activity has ever bound one, or the last one has been
+/// [`clear`](Self::clear)ed.
 #[derive(Clone, Debug)]
-pub(crate) struct SharedServeListener(Arc<watch::Sender<Option<AbortHandle>>>);
+pub(crate) struct SharedServeListener(Arc<watch::Sender<Option<BoundListener>>>);
+
+/// The serve activity a [`SharedServeListener`] points at: its task, and the
+/// port its listener actually bound — the port a callback invites a dial to.
+#[derive(Clone, Debug)]
+pub(crate) struct BoundListener {
+    task: AbortHandle,
+    port: u16,
+}
 
 impl Default for SharedServeListener {
     fn default() -> Self {
@@ -38,10 +47,14 @@ impl Default for SharedServeListener {
 }
 
 impl SharedServeListener {
-    /// Point at the serve activity the actor just spawned — called once, at
-    /// the same site `Activities::serve` is set to `Some` (`StartServing`).
-    pub(crate) fn bind<T>(&self, handle: &JoinHandle<T>) {
-        self.0.send_replace(Some(handle.abort_handle()));
+    /// Point at the serve activity the actor just spawned, listening on
+    /// `port` — called once, at the same site `Activities::serve` is set to
+    /// `Some` (`StartServing`).
+    pub(crate) fn bind<T>(&self, handle: &JoinHandle<T>, port: u16) {
+        self.0.send_replace(Some(BoundListener {
+            task: handle.abort_handle(),
+            port,
+        }));
     }
 
     /// The activity ended, requested or not — called once, at the same site
@@ -53,15 +66,21 @@ impl SharedServeListener {
 
     /// Whether the bound activity, if any, is still running.
     pub(crate) fn is_live(&self) -> bool {
+        self.port().is_some()
+    }
+
+    /// The port the bound listener answers on, while its activity runs.
+    pub(crate) fn port(&self) -> Option<u16> {
         self.0
             .borrow()
             .as_ref()
-            .is_some_and(|handle| !handle.is_finished())
+            .filter(|bound| !bound.task.is_finished())
+            .map(|bound| bound.port)
     }
 
     /// A change subscription: wakes on every [`bind`](Self::bind) and
     /// [`clear`](Self::clear).
-    pub(crate) fn subscribe(&self) -> watch::Receiver<Option<AbortHandle>> {
+    pub(crate) fn subscribe(&self) -> watch::Receiver<Option<BoundListener>> {
         self.0.subscribe()
     }
 }
@@ -83,7 +102,7 @@ mod tests {
     async fn a_finished_task_reads_not_live_though_it_was_never_cleared() {
         let listener = SharedServeListener::default();
         let handle = tokio::spawn(async {});
-        listener.bind(&handle);
+        listener.bind(&handle, 4662);
         assert!(listener.is_live());
 
         handle.await.expect("task completes");
@@ -104,7 +123,7 @@ mod tests {
         assert!(!listener.is_live(), "no serve activity yet");
 
         let handle = tokio::spawn(std::future::pending::<()>());
-        listener.bind(&handle);
+        listener.bind(&handle, 4662);
         assert!(listener.is_live(), "the new activity is live immediately");
 
         handle.abort();

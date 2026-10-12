@@ -10,9 +10,20 @@ use rmule_peer::{
     SourceExchangeEntry, SourceExchangeVersion,
 };
 use rmule_primitives::{
-    ClientId, Ed2kText, ExchangedSource, FileHash, Ipv4Endpoint, Packet, PacketProtocol, PartHash,
+    ClientId, Ed2kText, FileHash, Ipv4Endpoint, Packet, PacketProtocol, PartHash, SourceSighting,
     Tag, TagName, TagValue, UserHash,
 };
+
+/// `packet` with its payload cut to the first `at` bytes: the framing byte
+/// and opcode stay, so a decoder sees a genuine message that ended early.
+#[must_use]
+pub fn cut_payload(packet: &Packet, at: usize) -> Packet {
+    Packet::new(
+        packet.protocol(),
+        packet.opcode(),
+        packet.payload()[..at].to_vec(),
+    )
+}
 
 /// The peer hello body shared by the `OP_HELLO` and `OP_HELLOANSWER` builders:
 /// a High-ID peer on 4662 advertising `nickname` under tag 0x01, plus a mule's
@@ -195,7 +206,7 @@ pub fn sending_part_bytes(file_hash: FileHash, start: u32, data: &[u8]) -> Vec<u
 /// fixture asserts it actually packed rather than silently exercising the
 /// plain path; callers must pick a `sources` list redundant/large enough to
 /// compress smaller (a handful of repeated entries is enough).
-pub fn packed_answer_sources_bytes(file_hash: FileHash, sources: &[ExchangedSource]) -> Vec<u8> {
+pub fn packed_answer_sources_bytes(file_hash: FileHash, sources: &[SourceSighting]) -> Vec<u8> {
     let plain = AnswerSources {
         file_hash,
         sources: sources

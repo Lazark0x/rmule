@@ -1,5 +1,5 @@
 //! Kad liveness never flipped back when the live Kad node's pump
-//! died mid-session, so `SelfReach::kad_running` and the
+//! died mid-session, so `RoutePosition::kad_running` and the
 //! `KadNotRunning` guard kept believing Kad was up. This leg kills a running
 //! Kad activity's pump — by ending the channel behind it, the same effect a
 //! receive-error budget exhaustion or any other driver death has on
@@ -7,18 +7,20 @@
 //! fires, and a buddy-only `ReachPeer` that took route 4 before the death
 //! drops for want of a buddy afterward.
 
+use rmule_testkit::HANG_GUARD;
 use std::net::Ipv4Addr;
 
 use rmule_core::{
     ClientUdpBind, Core, CoreCommand, CoreConfig, CoreError, CoreEvent, DownloadCommand,
-    DownloadEvent, DownloadFailure, KadEnableConfig, KadReachLevel, KadRuntimeFactory, KadSource,
+    DownloadEvent, DownloadFailure, KadEnableConfig, KadReachLevel, KadRuntimeFactory,
     KadSourceChannel, KadStopReason, PeerBuddy, PeerReach, PeerReachDropReason, PeerReachRoute,
 };
 use rmule_primitives::{
     ClientId, FileHash, Ipv4Endpoint, PeerEndpoint, ServerEndpoint, SourceLookupTarget,
+    SourceSighting,
 };
 use tokio::sync::mpsc;
-use tokio::time::{Duration, timeout};
+use tokio::time::timeout;
 
 use crate::fixture::kad_enable_config;
 
@@ -37,7 +39,7 @@ struct KillableChannel {
 impl KadSourceChannel for KillableChannel {
     async fn search_sources(&self, _target: SourceLookupTarget) {}
     async fn publish_source(&self, _target: SourceLookupTarget) {}
-    async fn next_sources(&self) -> Option<(FileHash, Vec<KadSource>)> {
+    async fn next_sources(&self) -> Option<(FileHash, Vec<SourceSighting>)> {
         let _ = self.killed.lock().await.recv().await;
         None
     }
@@ -50,18 +52,12 @@ struct KillableKad {
 impl KadRuntimeFactory for KillableKad {
     type Channel = KillableChannel;
 
-    fn kad_reach(&self) -> KadReachLevel {
-        // Reachable on our own, so the buddy row (route 4) is what a
-        // `ReachPeer` reaches for rather than the LowID→LowID drop rung
-        // ahead of it (ADR-0061) — the fact under test is `kad_running`
-        // alone.
-        KadReachLevel::fixed(true)
-    }
-
     async fn start(
         &mut self,
         _config: &KadEnableConfig,
+        _node: &rmule_core::KadNodeIdentity,
         _bind: ClientUdpBind,
+        _cells: &rmule_core::KadCells,
     ) -> Result<KillableChannel, CoreError> {
         Ok(self.channel.take().expect("kad started once"))
     }
@@ -87,7 +83,7 @@ fn buddy_only_peer() -> PeerReach {
 }
 
 async fn next_reach_route(core: &mut Core) -> PeerReachRoute {
-    timeout(Duration::from_secs(5), async {
+    timeout(HANG_GUARD, async {
         loop {
             match core.next_event().await.expect("core still running") {
                 CoreEvent::PeerReachRouted { route, .. } => return route,
@@ -103,11 +99,17 @@ async fn next_reach_route(core: &mut Core) -> PeerReachRoute {
 async fn a_dead_pump_flips_kad_active_and_the_buddy_route_retires() {
     let (kill_tx, kill_rx) = mpsc::channel(1);
     let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
         .kad(KillableKad {
             channel: Some(KillableChannel {
                 killed: tokio::sync::Mutex::new(kill_rx),
             }),
         })
+        // Reachable on our own, so the buddy row (route 4) is what a
+        // `ReachPeer` reaches for rather than the LowID→LowID drop rung
+        // ahead of it (ADR-0061) — the fact under test is `kad_running`
+        // alone.
+        .kad_reach(KadReachLevel::fixed(true))
         .build();
 
     core.send(CoreCommand::EnableKad(kad_enable_config()))
@@ -131,7 +133,7 @@ async fn a_dead_pump_flips_kad_active_and_the_buddy_route_retires() {
     // blocked on, ending it exactly as a dead deep node would.
     drop(kill_tx);
 
-    let stopped = timeout(Duration::from_secs(5), async {
+    let stopped = timeout(HANG_GUARD, async {
         loop {
             if let CoreEvent::KadStopped { reason } =
                 core.next_event().await.expect("core still running")
@@ -168,25 +170,34 @@ async fn a_dead_pump_flips_kad_active_and_the_buddy_route_retires() {
 /// turns its wait into the `NoUsableSources` it would have been with Kad off.
 #[tokio::test]
 async fn a_kad_death_ends_the_wait_of_a_download_that_had_only_kad() {
+    let dir = tempfile::tempdir().unwrap();
     let (kill_tx, kill_rx) = mpsc::channel(1);
     let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .kad(KillableKad {
             channel: Some(KillableChannel {
                 killed: tokio::sync::Mutex::new(kill_rx),
             }),
         })
+        // Reachable on our own, so the buddy row (route 4) is what a
+        // `ReachPeer` reaches for rather than the LowID→LowID drop rung
+        // ahead of it (ADR-0061) — the fact under test is `kad_running`
+        // alone.
+        .kad_reach(KadReachLevel::fixed(true))
         .build();
     core.send(CoreCommand::EnableKad(kad_enable_config()))
         .await
         .expect("kad enabled");
 
-    let dir = tempfile::tempdir().unwrap();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: crate::fixture::stub_link("kad-only.bin", 1024, 0x5A),
         // Nothing listens: the lookup fails and the download waits on Kad.
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 1).unwrap()),
-        credentials: crate::fixture::identity().into(),
-        output_path: dir.path().join("kad-only.bin"),
+        name: rmule_testkit::file_name("kad-only.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .expect("download started");
@@ -216,7 +227,7 @@ async fn a_kad_death_ends_the_wait_of_a_download_that_had_only_kad() {
 }
 
 async fn wait_for(core: &mut Core, wanted: impl Fn(&CoreEvent) -> bool) {
-    timeout(Duration::from_secs(10), async {
+    timeout(HANG_GUARD, async {
         while !wanted(&core.next_event().await.expect("core still running")) {}
     })
     .await

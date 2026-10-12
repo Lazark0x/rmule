@@ -6,6 +6,7 @@
 //! this leg's request and fixture helpers. Real-aMule `0x3B` interop is
 //! pinned by `captured_source_result`.
 
+use rmule_kad::KadNodeStart;
 use std::net::Ipv4Addr;
 
 use rmule_kad::{
@@ -71,12 +72,15 @@ const FIXTURE_0X3B: &[u8] = include_bytes!(
 );
 
 fn requester_node() -> KadNode {
-    KadNode::new(KadNodeConfig {
-        id: KadId::from_bytes([OWN_ID_BYTE; KadId::BYTE_LEN]),
-        tcp_port: 4662,
-        udp_port: 4672,
-        user_hash: rmule_kad::UserHash::from_bytes([0xEE; 16]),
-    })
+    KadNode::new(KadNodeStart::new(
+        KadNodeConfig {
+            id: KadId::from_bytes([OWN_ID_BYTE; KadId::BYTE_LEN]),
+            tcp_port: 4662,
+            udp_port: 4672,
+            user_hash: rmule_kad::UserHash::from_bytes([0xEE; 16]),
+        },
+        KadInstant::EPOCH,
+    ))
 }
 
 fn request_for(file_hash: [u8; 16]) -> KadSourceLookupRequest {
@@ -438,7 +442,7 @@ fn solicited_fixture_search_res_projects_through_the_sealed_boundary() {
     let KadEvent::SourcesFound { target, candidates } = &events[0] else {
         panic!("expected SourcesFound, got {events:?}");
     };
-    assert_eq!(*target, fixture_target());
+    assert_eq!(*target, fixture_request().target());
     // The five documented rows, projected exactly as the sealed decoder does:
     // one direct High ID Peer Source, four row diagnostics.
     assert_eq!(candidates.len(), 5);

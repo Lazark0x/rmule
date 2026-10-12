@@ -15,7 +15,11 @@
 //! `searcher.jsonl`, are the evidence. Each server's `offer-set-summary` line
 //! lands in `announce-switch/verdict.txt`, followed, when asked, by rmule's
 //! own legs (`rmule_legs`): what rmule offers each server across a switch,
-//! plain and withholding.
+//! plain and withholding. The same probe also runs in `markers` mode against
+//! each server: it offers one whole file and one part-file the way aMule marks
+//! them, and the searcher's `marker-summary` line records the ID, port and
+//! counters each result row carries for either; the legs' summary lines carry
+//! the ID and port every entry of rmule's own offers wore.
 
 mod rmule_legs;
 
@@ -34,6 +38,22 @@ use crate::flow::ed2k_server::search_wire::{ED2KSRV_IP, SUBNET, start_ed2ksrv};
 const OFFER_PROBE: &str = include_str!("announce_switch/offer_probe.py");
 /// The marker line the searcher closes with.
 const SUMMARY_MARKER: &str = "offer-set-summary";
+/// The marker line the `markers`-mode searcher closes with.
+const MARKER_SUMMARY: &str = "marker-summary";
+/// Each probe run's publisher and searcher addresses, the ones their
+/// listeners bind: by server (Lugdunum, then ed2k-server), then by mode (the
+/// offer set, then `markers`). A pair per run, so one left standing under
+/// `--keep-containers` holds no address a later run takes.
+const PROBE_ADDRESSES: [[(&str, &str); 2]; 2] = [
+    [
+        ("203.0.113.80", "203.0.113.81"),
+        ("203.0.113.82", "203.0.113.83"),
+    ],
+    [
+        ("203.0.113.84", "203.0.113.85"),
+        ("203.0.113.86", "203.0.113.87"),
+    ],
+];
 
 /// Options for the announce-switch leg.
 pub struct AnnounceSwitchOptions<'a> {
@@ -55,8 +75,11 @@ pub struct AnnounceSwitchOptions<'a> {
     pub ed2ksrv_config: &'a Path,
     /// An image carrying `python3`, the probe's interpreter.
     pub probe_image: &'a str,
-    /// Run the offer probes (skipped when only rmule's legs are wanted).
+    /// Run the offer-set probes (skipped when only rmule's legs are wanted).
     pub probes: bool,
+    /// Run the `markers` probe: one whole file and one part-file offered the
+    /// way aMule marks them.
+    pub markers: bool,
     /// The `rmule-tools` image, when rmule's own legs run after the probes.
     pub rmule_tools_image: Option<&'a str>,
     /// The tcpdump capture-sidecar image rmule's legs tap the servers with.
@@ -86,13 +109,15 @@ pub fn run_announce_switch(options: AnnounceSwitchOptions<'_>) -> Result<()> {
         )?;
         let endpoint = bench.names.server_endpoint();
         let mut lines = Vec::new();
-        if options.probes {
+        for markers in probe_modes(&options) {
             lines.push(probe_server(
                 &mut bench,
                 options.probe_image,
                 &root,
                 "lugdunum",
                 &endpoint,
+                markers,
+                PROBE_ADDRESSES[0][usize::from(markers)],
             )?);
         }
 
@@ -104,13 +129,15 @@ pub fn run_announce_switch(options: AnnounceSwitchOptions<'_>) -> Result<()> {
             timeout,
         )?;
         let outcome = (|| -> Result<()> {
-            if options.probes {
+            for markers in probe_modes(&options) {
                 lines.push(probe_server(
                     &mut bench,
                     options.probe_image,
                     &root,
                     "ed2k-server",
                     &format!("{ED2KSRV_IP}:4661"),
+                    markers,
+                    PROBE_ADDRESSES[1][usize::from(markers)],
                 )?);
             }
             if let Some(image) = options.rmule_tools_image {
@@ -149,42 +176,62 @@ pub fn run_announce_switch(options: AnnounceSwitchOptions<'_>) -> Result<()> {
     Ok(())
 }
 
+/// The probe runs wanted: the offer-set probe (`false`), the markers probe
+/// (`true`), or both.
+fn probe_modes(options: &AnnounceSwitchOptions<'_>) -> Vec<bool> {
+    [(false, options.probes), (true, options.markers)]
+        .into_iter()
+        .filter_map(|(markers, wanted)| wanted.then_some(markers))
+        .collect()
+}
+
 /// One server's probe: the publisher detached, the searcher in the
-/// foreground; both logs retained under `root/<label>/`. Returns the
-/// searcher's summary line prefixed with the server's label.
+/// foreground, each at its own of `addresses` (publisher, searcher); both logs
+/// retained under `root/<label>/` (`root/<label>-markers/` for the `markers`
+/// run). Returns the searcher's summary line prefixed with the server's label.
 fn probe_server(
     bench: &mut Bench,
     image: &str,
     root: &Path,
     label: &str,
     endpoint: &str,
+    markers: bool,
+    (publisher_ip, searcher_ip): (&str, &str),
 ) -> Result<String> {
-    let dir = root.join(label);
+    let (dir_name, summary_marker) = if markers {
+        (format!("{label}-markers"), MARKER_SUMMARY)
+    } else {
+        (label.to_owned(), SUMMARY_MARKER)
+    };
+    let dir = root.join(&dir_name);
     let sync = dir.join("sync");
     fs::create_dir_all(&sync).with_context(|| format!("create {}", sync.display()))?;
     let prefix = bench.names.server_container_name.clone();
     let network = bench.names.network_name.clone();
-    let role = |role: &str| {
-        RunContainer::new(image.to_owned())
-            .name(format!("{prefix}-{label}-{role}"))
+    let role = |role: &str, address: &str| {
+        let run = RunContainer::new(image.to_owned())
+            .name(format!("{prefix}-{dir_name}-{role}"))
             .network(network.clone())
+            .ip(address)
             .volume(root, "/w")
             .entrypoint("python3")
             .arg("/w/offer_probe.py")
             .arg(role)
             .arg(endpoint)
-            .arg(format!("/w/{label}/sync"))
+            .arg(format!("/w/{dir_name}/sync"))
+            .arg(address);
+        if markers { run.arg("markers") } else { run }
     };
-    let publisher = format!("{prefix}-{label}-publisher");
+    let publisher = format!("{prefix}-{dir_name}-publisher");
     bench.start_extra(
         &publisher,
-        role("publisher").detach(),
+        role("publisher", publisher_ip).detach(),
         "run offer publisher",
     )?;
     let searched = run_checked(
         bench
             .docker
-            .run_container(role("searcher").remove_after_exit()),
+            .run_container(role("searcher", searcher_ip).remove_after_exit()),
         "run offer searcher",
     );
     let published = run_checked(bench.docker.logs(publisher.clone()), "offer publisher logs");
@@ -196,11 +243,17 @@ fn probe_server(
     fs::write(dir.join("searcher.jsonl"), format!("{searched}\n")).context("write searcher")?;
     let Some(summary) = searched
         .lines()
-        .find(|line| line.starts_with(SUMMARY_MARKER))
+        .find(|line| line.starts_with(summary_marker))
     else {
-        bail!("{label}: the searcher printed no {SUMMARY_MARKER} line");
+        bail!("{label}: the searcher printed no {summary_marker} line");
     };
-    if !summary.contains("baseline_found=2") {
+    if markers {
+        // A file the server leaves out is a finding the summary records; a
+        // search that answered nothing at all is a failed run.
+        if summary.contains(" found=none") || summary.contains(" found=0 ") {
+            bail!("{label}: the server listed neither marked file: {summary}");
+        }
+    } else if !summary.contains("baseline_found=2") {
         bail!("{label}: the two offered files were not found at baseline: {summary}");
     }
     Ok(format!("server={label} {summary}"))

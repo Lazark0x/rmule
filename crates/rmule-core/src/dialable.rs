@@ -16,10 +16,7 @@
 //! reply attribution and dial-back, so the peer's address alone is not enough.
 //! Holding one alone is not enough either. The AND is deliberate.
 
-use rmule_primitives::{ExchangedSource, Ipv6Endpoint, PeerEndpoint, PeerSource};
-
-use crate::diagnostics::DiagnosticsState;
-use crate::kad_sources::KadSource;
+use rmule_primitives::{Ipv6Endpoint, PeerEndpoint, PeerSource, SourceSighting};
 
 /// Our own half of the family question: the IPv6 the Advertised Endpoints
 /// chooser says we hold, or `None`.
@@ -80,11 +77,11 @@ impl DialOrder {
     }
 }
 
-/// The one rule both source channels that can name two families settle on —
-/// an ExtSX record ([`resolve_family`]) and a Kad row
-/// ([`resolve_kad_family`]) — so the two cannot drift apart. `None` for a
-/// source with no address to dial (a Low ID: its half is rung 0 of the
-/// callback route tree, which reads it there).
+/// The one rule every channel that can name two families settles on — an
+/// ExtSX record, a serve client's hello, a Kad row with its `ip6` — so none
+/// can drift from another. `None` for a source with no address to dial (a Low
+/// ID or a Kad callback row: its half is rung 0 of the callback route tree,
+/// which reads it there).
 fn settle_dual_stack(
     source: PeerSource,
     ipv6: Option<Ipv6Endpoint>,
@@ -110,18 +107,12 @@ fn settle_dual_stack(
     })
 }
 
-/// An exchanged source's dial order ([`settle_dual_stack`]).
-pub(crate) fn resolve_family(source: ExchangedSource, ours: DialPosition) -> Option<DialOrder> {
-    settle_dual_stack(source.peer_source(), source.ipv6(), ours)
-}
-
-/// A Kad source row's dial order ([`settle_dual_stack`]): a High-ID row whose
-/// `ip6` rode beside it (ADR-0087) is dialed in the family the chooser picks,
-/// exactly as an ExtSX record with an IPv6 half is. A callback row has none —
-/// it keeps its half for rung 0; a rescued row already is its IPv6.
-pub(crate) fn resolve_kad_family(row: &KadSource, ours: DialPosition) -> Option<DialOrder> {
-    row.direct
-        .and_then(|direct| settle_dual_stack(direct, row.ipv6, ours))
+/// A sighting's dial order ([`settle_dual_stack`]): a High ID whose IPv6 half
+/// rode beside it (ADR-0087) is dialed in the family the chooser picks, its
+/// other half kept. A callback road has no dial order — it keeps its half for
+/// rung 0 — and an IPv6-only record is its one address.
+pub(crate) fn resolve_family(sighting: SourceSighting, ours: DialPosition) -> Option<DialOrder> {
+    settle_dual_stack(sighting.peer_source()?, sighting.ipv6(), ours)
 }
 
 /// A source's addresses, each judged on its own by `admits` — the IP filter at
@@ -158,63 +149,20 @@ fn judge_halves(
     }
 }
 
-/// An exchanged source with its addresses judged ([`judge_halves`]).
-pub(crate) fn admit_exchanged_halves(
-    source: ExchangedSource,
+/// A sighting with its addresses judged ([`judge_halves`]): a record whose
+/// client id is refused keeps its IPv6 half as its one address, and a refused
+/// half is dropped from any road. Only an address changes — the road a Kad
+/// callback row names and the facts beside it stand.
+pub(crate) fn admit_halves(
+    sighting: SourceSighting,
     admits: impl Fn(PeerEndpoint) -> bool,
-) -> Option<ExchangedSource> {
-    let (kept, half) = judge_halves(Some(source.peer_source()), source.ipv6(), admits)?;
-    // A record that names a source keeps one: only its address can change.
-    let kept = kept?;
-    Some(
-        ExchangedSource::new(kept, source.user_hash(), source.crypt_options()).with_ipv6_half(half),
-    )
-}
-
-/// A Kad row with its addresses judged ([`judge_halves`]): a row whose client
-/// id is refused keeps its `ip6` as the rescued shape, its `direct` the IPv6;
-/// a callback row keeps its `ip6` only if the filter admits it.
-pub(crate) fn admit_kad_halves(
-    row: KadSource,
-    admits: impl Fn(PeerEndpoint) -> bool,
-) -> Option<KadSource> {
-    let (direct, ipv6) = judge_halves(row.direct, row.ipv6, admits)?;
-    Some(KadSource {
-        direct,
-        ipv6,
-        ..row
-    })
-}
-
-/// Whether this build can dial a source at `endpoint` right now, counting the
-/// drop when it cannot.
-///
-/// `None` — a Low-ID source — passes: it has no address to judge, and a
-/// callback through its server is how it is reached.
-///
-/// An IPv6 source passes exactly when we hold a Known IPv6 of our own. Before
-/// ADR-0087 this was a flat refusal, because the address was genuine but the
-/// dialect that peer speaks over IPv6 was not implemented. It is now, so the
-/// only thing that can still stop the dial is having nowhere to dial *from* —
-/// and a source dropped for that reason is counted rather than silently lost,
-/// so an operator's "no sources" does not look like a network fault.
-pub(crate) fn admits_family(
-    diagnostics: &DiagnosticsState,
-    endpoint: Option<PeerEndpoint>,
-    ours: DialPosition,
-) -> bool {
-    match endpoint {
-        None | Some(PeerEndpoint::V4(_)) => true,
-        Some(PeerEndpoint::V6(_)) if ours.can_dial_ipv6() => true,
-        Some(endpoint) => {
-            tracing::debug!(
-                %endpoint,
-                "dropping an IPv6 source: this node holds no IPv6 to dial it from"
-            );
-            diagnostics.count_undialable_family_source();
-            false
-        }
-    }
+) -> Option<SourceSighting> {
+    let (record, half) = judge_halves(sighting.peer_source(), sighting.ipv6(), admits)?;
+    let judged = match record {
+        Some(record) => sighting.with_record(record),
+        None => sighting,
+    };
+    Some(judged.with_ipv6_half(half))
 }
 
 #[cfg(test)]
@@ -266,38 +214,6 @@ mod tests {
         assert_eq!(choose_dial(None, None, ours()), None);
     }
 
-    #[test]
-    fn an_ipv6_source_is_admitted_only_while_we_hold_an_ipv6_of_our_own() {
-        let diagnostics = DiagnosticsState::new();
-        let source = PeerEndpoint::V6(v6());
-
-        assert!(admits_family(&diagnostics, Some(v4()), ours()));
-        assert!(admits_family(&diagnostics, None, DialPosition::default()));
-        assert!(
-            admits_family(&diagnostics, Some(source), ours()),
-            "the dialect is implemented and we have somewhere to dial from"
-        );
-        assert!(!admits_family(
-            &diagnostics,
-            Some(source),
-            DialPosition::default()
-        ));
-        assert!(!admits_family(
-            &diagnostics,
-            Some(source),
-            DialPosition::default()
-        ));
-
-        assert_eq!(
-            diagnostics
-                .snapshot()
-                .session
-                .undialable_family_sources_total,
-            2,
-            "every dropped source is counted, not just the first"
-        );
-    }
-
     /// A dual-stack source from source exchange is dialed first on the family
     /// the AND picks, with the other half kept as its one fallback.
     #[test]
@@ -306,7 +222,7 @@ mod tests {
             unreachable!()
         };
         let hash = rmule_primitives::UserHash::from_bytes([0x51; 16]);
-        let dual = ExchangedSource::new(PeerSource::HighId(v4), Some(hash), None)
+        let dual = SourceSighting::new(PeerSource::HighId(v4), Some(hash), None)
             .with_ipv6_half(Some(v6()));
 
         assert_eq!(
@@ -334,12 +250,12 @@ mod tests {
             unreachable!()
         };
         let hash = rmule_primitives::UserHash::from_bytes([0x52; 16]);
-        let dual = ExchangedSource::new(PeerSource::HighId(v4), Some(hash), None)
+        let dual = SourceSighting::new(PeerSource::HighId(v4), Some(hash), None)
             .with_ipv6_half(Some(v6()));
         let refusing = |refused: PeerEndpoint| move |endpoint| endpoint != refused;
 
-        let v4_only = admit_exchanged_halves(dual, refusing(PeerEndpoint::V6(v6())))
-            .expect("the IPv4 half passes");
+        let v4_only =
+            admit_halves(dual, refusing(PeerEndpoint::V6(v6()))).expect("the IPv4 half passes");
         assert_eq!(v4_only.ipv6(), None, "the refused IPv6 half is dropped");
         assert_eq!(
             resolve_family(v4_only, ours()).map(|order| order.fallback),
@@ -347,12 +263,12 @@ mod tests {
             "and never becomes a fallback"
         );
 
-        let v6_only = admit_exchanged_halves(dual, refusing(PeerEndpoint::V4(v4)))
-            .expect("the IPv6 half passes");
-        assert_eq!(v6_only.peer_source(), PeerSource::Ipv6(v6()));
+        let v6_only =
+            admit_halves(dual, refusing(PeerEndpoint::V4(v4))).expect("the IPv6 half passes");
+        assert_eq!(v6_only.peer_source(), Some(PeerSource::Ipv6(v6())));
         assert_eq!(v6_only.user_hash(), Some(hash));
 
-        assert_eq!(admit_exchanged_halves(dual, |_| false), None);
+        assert_eq!(admit_halves(dual, |_| false), None);
     }
 
     /// kno's own `0x3B` (bench run `1790199666`), re-serving a High-ID row
@@ -374,12 +290,12 @@ mod tests {
         let [row] = rows.as_slice() else {
             panic!("one published source, one row: {rows:?}");
         };
-        let row = KadSource::from_candidate(row);
+        let row = row.sighting().expect("a direct row is a sighting");
         let high_id = PeerSource::HighId(Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 8), 4662));
         let half = Ipv6Endpoint::new("3fff:ed2:1::8".parse().unwrap(), 4662);
 
-        assert_eq!(row.direct, Some(high_id));
-        assert_eq!(row.ipv6, Some(half));
+        assert_eq!(row.peer_source(), Some(high_id));
+        assert_eq!(row.ipv6(), Some(half));
         let (high_id, half) = (
             high_id
                 .as_peer_endpoint()
@@ -388,14 +304,14 @@ mod tests {
         );
 
         assert_eq!(
-            resolve_kad_family(&row, ours()),
+            resolve_family(row, ours()),
             Some(DialOrder {
                 first: half,
                 fallback: Some(high_id),
             })
         );
         assert_eq!(
-            resolve_kad_family(&row, DialPosition::default()),
+            resolve_family(row, DialPosition::default()),
             Some(DialOrder {
                 first: high_id,
                 fallback: Some(half),
@@ -403,7 +319,7 @@ mod tests {
             "no IPv6 of ours: the row's IPv4 stands, and its half is kept, not lost"
         );
         let refused_half =
-            admit_kad_halves(row, |endpoint| endpoint != half).expect("the row's IPv4 passes");
-        assert_eq!(refused_half.ipv6, None, "the filter judged the half too");
+            admit_halves(row, |endpoint| endpoint != half).expect("the row's IPv4 passes");
+        assert_eq!(refused_half.ipv6(), None, "the filter judged the half too");
     }
 }

@@ -7,13 +7,14 @@
 //! disconnect or a connect elsewhere ends the intent, and a restart carries
 //! none. The delays are the core's config, set short here.
 
+use rmule_testkit::HANG_GUARD;
 use std::time::Duration;
 
 use rmule_core::{Core, CoreCommand, CoreConfig, CoreEvent, ReconnectEnd, ServerConnectionEvent};
 use rmule_testkit::FakeEd2kServer;
 use tokio::time::timeout;
 
-use crate::fixture::{free_port, identity_with_port, next_expected};
+use crate::fixture::{free_port, next_expected};
 
 /// Short delays; every re-made session counts as held at once, so each loss
 /// starts the count over unless a leg sets `server_session_holds` itself.
@@ -28,8 +29,8 @@ fn reconnect_config(first: Duration, ceiling: Duration) -> CoreConfig {
 }
 
 /// The operator's connect, and its landing.
-async fn operator_connects(core: &mut Core, server: &FakeEd2kServer, port: u16) {
-    rmule_testkit::connect_to(core, &server.endpoint(), identity_with_port(port).into()).await;
+async fn operator_connects(core: &mut Core, server: &FakeEd2kServer) {
+    rmule_testkit::connect_to(core, &server.endpoint()).await;
     let endpoint = server.endpoint();
     next_expected(core, "the operator's connect", |event| {
         matches!(
@@ -47,7 +48,7 @@ async fn edges_until(
     stop: impl Fn(&ServerConnectionEvent) -> bool,
 ) -> Vec<ServerConnectionEvent> {
     let mut edges = Vec::new();
-    timeout(Duration::from_secs(20), async {
+    timeout(HANG_GUARD, async {
         loop {
             if let CoreEvent::ServerConnection(edge) =
                 core.next_event().await.expect("core is alive")
@@ -102,8 +103,9 @@ async fn a_dropped_session_is_re_made_through_the_one_establishment() {
         reconnect_config(Duration::from_millis(20), Duration::from_millis(80)),
         rmule_testkit::memory_store(),
     )
+    .settings(crate::fixture::settings_on(port))
     .build();
-    operator_connects(&mut core, &server, port).await;
+    operator_connects(&mut core, &server).await;
 
     server.hang_up_all().await;
     let edges = edges_until(&mut core, |edge| {
@@ -157,8 +159,9 @@ async fn a_session_dropped_before_it_holds_continues_the_count() {
         },
         rmule_testkit::memory_store(),
     )
+    .settings(crate::fixture::settings_on(port))
     .build();
-    operator_connects(&mut core, &server, port).await;
+    operator_connects(&mut core, &server).await;
 
     let mut tries = Vec::new();
     for _ in 0..3 {
@@ -188,8 +191,9 @@ async fn with_no_bound_the_tries_go_on_at_the_ceiling() {
         reconnect_config(Duration::from_millis(2), Duration::from_millis(4)),
         rmule_testkit::memory_store(),
     )
+    .settings(crate::fixture::settings_on(port))
     .build();
-    operator_connects(&mut core, &server, port).await;
+    operator_connects(&mut core, &server).await;
 
     server.set_refusing(true).await;
     server.hang_up_all().await;
@@ -251,8 +255,9 @@ async fn a_reconnect_hands_the_time_of_the_next_attempt() {
         reconnect_config(Duration::from_millis(700), Duration::from_millis(700)),
         rmule_testkit::memory_store(),
     )
+    .settings(crate::fixture::settings_on(port))
     .build();
-    operator_connects(&mut core, &server, port).await;
+    operator_connects(&mut core, &server).await;
 
     let before = std::time::Instant::now();
     server.hang_up_all().await;
@@ -285,8 +290,9 @@ async fn the_delay_grows_to_its_ceiling_and_a_configured_bound_ends_the_tries() 
         },
         rmule_testkit::memory_store(),
     )
+    .settings(crate::fixture::settings_on(port))
     .build();
-    operator_connects(&mut core, &server, port).await;
+    operator_connects(&mut core, &server).await;
 
     server.set_refusing(true).await;
     server.hang_up_all().await;
@@ -342,8 +348,9 @@ async fn the_operators_disconnect_during_a_retry_ends_the_intent() {
         reconnect_config(Duration::from_millis(300), Duration::from_millis(300)),
         rmule_testkit::memory_store(),
     )
+    .settings(crate::fixture::settings_on(port))
     .build();
-    operator_connects(&mut core, &server, port).await;
+    operator_connects(&mut core, &server).await;
 
     server.hang_up_all().await;
     edges_until(&mut core, |edge| {
@@ -382,8 +389,9 @@ async fn the_operators_disconnect_hangs_up_the_session_and_nothing_re_makes_it()
         reconnect_config(Duration::from_millis(20), Duration::from_millis(20)),
         rmule_testkit::memory_store(),
     )
+    .settings(crate::fixture::settings_on(port))
     .build();
-    operator_connects(&mut core, &server, port).await;
+    operator_connects(&mut core, &server).await;
 
     core.send(CoreCommand::DisconnectFromServer).await.unwrap();
     let edges = edges_until(&mut core, |edge| {
@@ -409,15 +417,16 @@ async fn connecting_elsewhere_replaces_the_intent() {
         reconnect_config(Duration::from_millis(300), Duration::from_millis(300)),
         rmule_testkit::memory_store(),
     )
+    .settings(crate::fixture::settings_on(port))
     .build();
-    operator_connects(&mut core, &first, port).await;
+    operator_connects(&mut core, &first).await;
     first.hang_up_all().await;
     edges_until(&mut core, |edge| {
         matches!(edge, ServerConnectionEvent::Reconnecting { .. })
     })
     .await;
 
-    rmule_testkit::connect_to(&core, &second.endpoint(), identity_with_port(port).into()).await;
+    rmule_testkit::connect_to(&core, &second.endpoint()).await;
     let edges = edges_until(&mut core, |edge| {
         matches!(edge, ServerConnectionEvent::Connected { .. })
     })
@@ -456,15 +465,17 @@ async fn a_restart_carries_no_intent_and_dials_nothing() {
         reconnect_config(Duration::from_millis(20), Duration::from_millis(20)),
         std::sync::Arc::clone(&store),
     )
+    .settings(crate::fixture::settings_on(port))
     .build();
-    operator_connects(&mut core, &server, port).await;
+    operator_connects(&mut core, &server).await;
     core.shutdown().await;
 
     let mut restarted = Core::builder(
         reconnect_config(Duration::from_millis(20), Duration::from_millis(20)),
         store,
     )
-    .restore_credentials(identity_with_port(port).into())
+    .settings(crate::fixture::settings_on(port))
+    .restore_at_attach()
     .build();
     quiet_through(
         &mut restarted,

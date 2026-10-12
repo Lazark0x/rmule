@@ -7,7 +7,7 @@
 
 use std::net::Ipv4Addr;
 
-use rmule_primitives::UserHash;
+use rmule_primitives::{UserHash, WireReader, WireTruncated};
 
 use crate::KadEnvelope;
 
@@ -111,13 +111,15 @@ impl FirewallMessage {
                 if payload.len() < FIREWALLED2_REQ_MIN_LEN {
                     return Err(malformed("0x53 is shorter than its 19-byte minimum"));
                 }
-                let tcp_port = u16::from_le_bytes([payload[0], payload[1]]);
-                let mut hash = [0u8; UserHash::BYTE_LEN];
-                hash.copy_from_slice(&payload[2..2 + UserHash::BYTE_LEN]);
+                let short =
+                    |_: WireTruncated| malformed("0x53 is shorter than its 19-byte minimum");
+                let mut reader = WireReader::new(payload);
+                let tcp_port = reader.read_u16_le("TCP port").map_err(short)?;
+                let hash = reader.read_array("user hash").map_err(short)?;
                 Ok(Self::Firewalled2Req {
                     tcp_port,
                     user_hash: UserHash::from_bytes(crate::lookup::kad_wire_id(hash)),
-                    connect_options: payload[2 + UserHash::BYTE_LEN],
+                    connect_options: reader.read_u8("connect options").map_err(short)?,
                 })
             }
             KADEMLIA_FIREWALLED_RES => {
@@ -231,11 +233,16 @@ impl FirewallUdpResult {
                 reason: "0x62 is shorter than its three-byte minimum",
             });
         }
+        let short = |_: WireTruncated| FirewallDecodeError::Malformed {
+            opcode,
+            reason: "0x62 is shorter than its three-byte minimum",
+        };
+        let mut reader = WireReader::new(payload);
         Ok(Self {
-            error_code: payload[0],
+            error_code: reader.read_u8("error code").map_err(short)?,
             // The tested port as aMule's `WriteUInt16`/`PeekUInt16` render it:
             // little-endian (`ENDIAN_SWAP_16` is a no-op on the LE wire).
-            tested_port: u16::from_le_bytes([payload[1], payload[2]]),
+            tested_port: reader.read_u16_le("tested port").map_err(short)?,
         })
     }
 
@@ -284,17 +291,18 @@ impl FwCheckUdpRequest {
     /// payloads are rejected — the responder round-trip KAT and the live helper
     /// leg both read exactly what [`encode`](Self::encode) wrote.
     pub(crate) fn decode(payload: &[u8]) -> Result<Self, FirewallDecodeError> {
-        let bytes: [u8; FWCHECKUDPREQ_LEN] =
-            payload
-                .try_into()
-                .map_err(|_| FirewallDecodeError::Malformed {
-                    opcode: OP_FWCHECKUDPREQ,
-                    reason: "OP_FWCHECKUDPREQ is not exactly eight bytes",
-                })?;
+        let malformed = || FirewallDecodeError::Malformed {
+            opcode: OP_FWCHECKUDPREQ,
+            reason: "OP_FWCHECKUDPREQ is not exactly eight bytes",
+        };
+        if payload.len() != FWCHECKUDPREQ_LEN {
+            return Err(malformed());
+        }
+        let mut reader = WireReader::new(payload);
         Ok(Self {
-            intern_port: u16::from_le_bytes([bytes[0], bytes[1]]),
-            extern_port: u16::from_le_bytes([bytes[2], bytes[3]]),
-            sender_key: u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+            intern_port: reader.read_u16_le("intern port").map_err(|_| malformed())?,
+            extern_port: reader.read_u16_le("extern port").map_err(|_| malformed())?,
+            sender_key: reader.read_u32_le("sender key").map_err(|_| malformed())?,
         })
     }
 }
@@ -482,5 +490,53 @@ mod tests {
         assert!(is_firewall_check_res(KADEMLIA_FIREWALLED_ACK_RES));
         assert!(!is_firewall_check_res(KADEMLIA_FIREWALLED_REQ));
         assert!(!is_firewall_check_res(KADEMLIA_FIREWALLED2_REQ));
+    }
+
+    /// The size-gated layouts, each cut at every byte: only the whole
+    /// (or, for the `>=` gates, longer) payload decodes.
+    #[test]
+    fn firewall_payloads_cut_at_every_byte_are_rejected() {
+        let req2 = FirewallMessage::Firewalled2Req {
+            tcp_port: 4662,
+            user_hash: user_hash(),
+            connect_options: 0x83,
+        }
+        .encode();
+        for cut in 0..req2.payload().len() {
+            let short = KadEnvelope::plain(req2.opcode(), req2.payload()[..cut].to_vec());
+            assert!(
+                FirewallMessage::decode(&short).is_err(),
+                "0x53 cut to {cut}"
+            );
+        }
+        assert!(FirewallMessage::decode(&req2).is_ok());
+
+        let udp = FirewallUdpResult {
+            error_code: 0,
+            tested_port: 4672,
+        }
+        .encode();
+        for cut in 0..udp.payload().len() {
+            let short = KadEnvelope::plain(udp.opcode(), udp.payload()[..cut].to_vec());
+            assert!(
+                FirewallUdpResult::decode(&short).is_err(),
+                "0x62 cut to {cut}"
+            );
+        }
+        assert!(FirewallUdpResult::decode(&udp).is_ok());
+
+        let request = FwCheckUdpRequest {
+            intern_port: 4672,
+            extern_port: 4673,
+            sender_key: 0x0102_0304,
+        }
+        .encode();
+        for cut in 0..request.len() {
+            assert!(
+                FwCheckUdpRequest::decode(&request[..cut]).is_err(),
+                "OP_FWCHECKUDPREQ cut to {cut}"
+            );
+        }
+        assert!(FwCheckUdpRequest::decode(&request).is_ok());
     }
 }

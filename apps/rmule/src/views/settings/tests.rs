@@ -117,17 +117,21 @@ fn a_rejected_commit_keeps_the_form_up_with_the_typing_in_it() {
 }
 
 /// A download directory is a shared directory (ADR-0101): its commit
-/// warns first, and only the second `Enter` hands the app the edit.
+/// has the app ask the share guards first, warns once they pass, and only
+/// the `Enter` after the warning hands the app the edit.
 #[test]
 fn a_download_directory_commit_warns_before_it_lands() {
     let mut view = SettingsView::new();
     let state = state_with_a_rooted_download_dir();
     focus_on(&mut view, Row::DownloadDir);
     view.handle_key(press(KeyCode::Enter), &state);
-    assert!(matches!(
-        view.handle_key(press(KeyCode::Enter), &state),
-        ViewOutcome::Redraw
-    ));
+    let ViewOutcome::Emit(Action::ConfirmDownloadDir(dir)) =
+        view.handle_key(press(KeyCode::Enter), &state)
+    else {
+        panic!("the commit asks the guards first");
+    };
+    assert_eq!(view.form.error, None, "no warning before the guards pass");
+    view.warn_share(dir);
     assert!(
         view.form
             .error
@@ -149,12 +153,17 @@ fn a_cancelled_download_directory_warning_asks_again() {
     let state = state_with_a_rooted_download_dir();
     focus_on(&mut view, Row::DownloadDir);
     view.handle_key(press(KeyCode::Enter), &state);
-    view.handle_key(press(KeyCode::Enter), &state);
+    let ViewOutcome::Emit(Action::ConfirmDownloadDir(dir)) =
+        view.handle_key(press(KeyCode::Enter), &state)
+    else {
+        panic!("the commit asks the guards first");
+    };
+    view.warn_share(dir);
     view.handle_key(press(KeyCode::Esc), &state);
     view.handle_key(press(KeyCode::Enter), &state);
     assert!(matches!(
         view.handle_key(press(KeyCode::Enter), &state),
-        ViewOutcome::Redraw
+        ViewOutcome::Emit(Action::ConfirmDownloadDir(_))
     ));
 }
 

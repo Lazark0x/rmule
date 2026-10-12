@@ -16,12 +16,9 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use clap::{Args, ValueEnum};
-use rmule_core::{
-    AppConfigStore, Core, CoreCommand, CoreEvent, DurableAppConfig, KadEnableConfig, OwnMapping,
-    PortPrediction, open_durable_store_in_memory,
-};
+use rmule_core::run_log::Level;
+use rmule_core::{Core, CoreCommand, CoreEvent, KadEnableConfig, OwnMapping, PortPrediction};
 use rmule_kad::KadId;
-use rmule_primitives::ClientIdentity;
 
 use crate::operand::{parse_hex16, parse_seeded_kad_contacts};
 
@@ -98,23 +95,24 @@ impl PredictionArgs {
     }
 }
 
-/// Start Kad when a Kad ID was given.
-pub(super) async fn enable_kad(
-    core: &mut Core,
-    args: &PredictionArgs,
-    identity: &ClientIdentity,
-) -> Result<bool> {
-    let Some(kad_id) = args.kad_id.as_deref() else {
+/// The Kad ID `--kad-id` names, which the core is built under.
+pub(super) fn kad_id(args: &PredictionArgs) -> Result<Option<KadId>> {
+    args.kad_id
+        .as_deref()
+        .map(|hex| parse_hex16("--kad-id", hex).map(KadId::from_bytes))
+        .transpose()
+}
+
+/// Start Kad when a Kad ID was given; the core was built under it.
+pub(super) async fn enable_kad(core: &mut Core, args: &PredictionArgs) -> Result<bool> {
+    if args.kad_id.is_none() {
         return Ok(false);
-    };
+    }
     core.send(CoreCommand::EnableKad(KadEnableConfig {
-        kad_id: KadId::from_bytes(parse_hex16("--kad-id", kad_id)?),
-        peer_credentials: identity.clone().into(),
         bootstrap: args.kad_bootstrap.clone(),
         contacts: parse_seeded_kad_contacts(&args.kad_contacts)?,
         nodes_dat_path: None,
         assume_open_reachability: false,
-        kad_udp_key: DurableAppConfig::new(open_durable_store_in_memory()?).ensure_kad_udp_key()?,
         kad_capture_dir: None,
         kad_shutdown: None,
     }))
@@ -150,7 +148,7 @@ async fn read_own_mapping(core: &mut Core) -> Result<OwnMapping> {
         if let CoreEvent::DiagnosticsSnapshot { snapshot } = event {
             return Ok(snapshot.natt_own_mapping.unwrap_or(OwnMapping::Unknown));
         }
-        println!("{event}");
+        println!("{}", event.record().render(Level::Full));
     }
 }
 

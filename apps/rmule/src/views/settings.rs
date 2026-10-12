@@ -19,7 +19,8 @@
 //! session command is sent, and is never reconfigured behind one. So a knob is
 //! live exactly when something re-reads it — the theme (every frame), the
 //! download directory (the next `StartDownload`, and its scan), the `server.met` mirror (the
-//! next Networks list update) — and every other knob is honestly labelled
+//! next Networks list update), the obfuscation policy (the next dial, accept,
+//! datagram and Kad exchange) — and every other knob is honestly labelled
 //! "takes effect on restart" rather than pretended at. Building live
 //! re-configuration for a listen port would mean tearing down and re-logging a
 //! session the operator did not ask to lose.
@@ -260,7 +261,7 @@ fn build(prefs: &Preferences, state: &UiState) -> (Form, Vec<Slot>) {
                     .position(|choice| *choice == prefs.obfuscation)
                     .unwrap_or(0),
             )
-            .with_note("peer TCP/UDP + Kad + server UDP  (on restart)"),
+            .with_note("peer TCP/UDP + Kad + server UDP"),
             Row::PortMapping => Field::choice(
                 "Port mapping",
                 ON_OFF.to_vec(),
@@ -496,14 +497,11 @@ impl SettingsView {
     fn emit(&mut self, prefs: &Preferences) -> ViewOutcome {
         match self.commit(prefs) {
             // Everything under a download directory is offered to the network
-            // (ADR-0101): the first `Enter` says so, the second commits.
+            // (ADR-0101): the first `Enter` has the app ask the share guards,
+            // which warn through [`Self::warn_share`] when they pass; the
+            // second commits.
             Ok(Some(PrefEdit::DownloadDir(dir))) if self.warned_dir.as_ref() != Some(&dir) => {
-                self.form.error = Some(format!(
-                    "everything under {} will be offered to the network — Enter to confirm, Esc to cancel",
-                    dir.display()
-                ));
-                self.warned_dir = Some(dir);
-                ViewOutcome::Redraw
+                ViewOutcome::Emit(Action::ConfirmDownloadDir(dir))
             }
             Ok(Some(edit)) => {
                 self.warned_dir = None;
@@ -517,6 +515,22 @@ impl SettingsView {
                 ViewOutcome::Redraw
             }
         }
+    }
+
+    /// The share guards pass `dir`: say that everything under it will be
+    /// offered, and let the next `Enter` commit it.
+    pub fn warn_share(&mut self, dir: std::path::PathBuf) {
+        self.form.error = Some(format!(
+            "everything under {} will be offered to the network — Enter to confirm, Esc to cancel",
+            dir.display()
+        ));
+        self.warned_dir = Some(dir);
+    }
+
+    /// The download directory whose share warning waits for its confirm.
+    #[cfg(test)]
+    pub(crate) fn warned_dir(&self) -> Option<&std::path::Path> {
+        self.warned_dir.as_deref()
     }
 
     /// A click selects the field it landed on. Editing stays keyboard-only,

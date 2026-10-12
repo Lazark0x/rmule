@@ -3,7 +3,6 @@
 //! login retry that gives up clearly instead of hanging.
 
 use std::net::TcpListener;
-use std::path::Path;
 use std::time::Duration;
 
 use rmule_interop_harness::artifacts::RunLayout;
@@ -38,8 +37,9 @@ fn reverse_default_runs_rmule_serve_and_amule_download_inside_interop_network() 
     assert_ordered(
         &log,
         &[
+            "cargo build -p rmule-tools".to_owned(),
             "run --detach --name rmule-interop-rmule-".to_owned(),
-            "cargo run -p rmule-tools -- ed2k serve start".to_owned(),
+            "/tmp/rmule-target/debug/rmule-tools ed2k serve start".to_owned(),
             "--server rmule-interop-server-".to_owned(),
             ":4661 --listen 0.0.0.0:4663".to_owned(),
             "logs rmule-interop-rmule-".to_owned(),
@@ -110,8 +110,8 @@ fn rmule_serve_login_retry_restarts_the_stalled_container_then_gives_up_clearly(
     let docker_path = fake_login_retry_docker(fake_bin.path(), &docker_log);
     let docker = rmule_interop_harness::docker::Docker::new(docker_path.to_str().unwrap());
     let layout = RunLayout::create(run_root.path().join("run")).unwrap();
-    let serve_container =
-        RmuleServeContainer::new("rust:1.94.0-bookworm", Path::new("/host/rmule"));
+    let workspace = tempfile::tempdir().unwrap();
+    let serve_container = RmuleServeContainer::new("rust:1.94.0-bookworm", workspace.path());
 
     let error = rmule_interop_harness::flow::start_rmule_serve_with_login_retry(
         BenchStaging {

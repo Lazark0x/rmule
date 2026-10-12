@@ -18,11 +18,13 @@ use rmule_core::{
     RuntimePeerTransferService, ServeCommand, SourceLookupOutcome, SourceLookupService,
 };
 use rmule_net::peer::{ConnectOptions, Connection, PeerListener};
-use rmule_peer::{PartBitmap, PeerCommand, PeerEvent, PeerHandshakeContext, SecureIdentConfig};
+use rmule_peer::{
+    ConnectionEvent, PartBitmap, PeerCommand, PeerEvent, PeerHandshakeContext, SecureIdentConfig,
+    ServerCommand, ServerEvent,
+};
 use rmule_primitives::{
-    ClientId, ClientIdentity, Ed2kFileLink, Ed2kText, ExchangedSource, FileHashSummary,
-    PeerEndpoint, PeerSource, SecureIdentKey, ServerEndpoint, SourceLookupTarget, UserHash,
-    part_count,
+    ClientId, ClientIdentity, Ed2kFileLink, Ed2kText, FileHashSummary, PeerEndpoint, PeerSource,
+    SecureIdentKey, ServerEndpoint, SourceLookupTarget, SourceSighting, UserHash, part_count,
 };
 use rmule_testkit::{PendingSourceLookup, RefusingPeerTransfer};
 
@@ -39,7 +41,7 @@ impl SourceLookupService for OneSourceLookup {
     ) -> Result<SourceLookupOutcome, DownloadFailure> {
         Ok(SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![ExchangedSource::plain(self.peer)],
+            sources: vec![SourceSighting::plain(self.peer)],
         })
     }
 }
@@ -55,6 +57,8 @@ async fn serve_once_with_sui(
     let ctx = PeerHandshakeContext {
         identity: rmule_testkit::test_identity(0x0B, "sui-loopback-peer", 4662),
         client_id: ClientId::from_u32(0x0100_007F),
+        ed2k_client_id: ClientId::from_u32(0x0100_007F),
+        public_ip: None,
         connected_server: None,
     };
     let options = ConnectOptions {
@@ -68,67 +72,76 @@ async fn serve_once_with_sui(
     let mut verified = None;
     while let Some(event) = conn.next_event().await {
         match event {
-            PeerEvent::PeerIdentityVerified {
+            PeerEvent::Connection(ConnectionEvent::IdentityVerified {
                 user_hash,
                 public_key,
-            } => verified = Some((user_hash, public_key)),
-            PeerEvent::FileRequested { file_hash, .. } => {
+            }) => verified = Some((user_hash, public_key)),
+            PeerEvent::Server(ServerEvent::FileRequested { file_hash, .. }) => {
                 let _ = conn
-                    .send(PeerCommand::AnswerFileName {
+                    .send(PeerCommand::Server(ServerCommand::AnswerFileName {
                         file_hash,
                         file_name: Ed2kText::from_utf8("loopback.bin"),
-                    })
+                    }))
                     .await;
             }
-            PeerEvent::FileBundleRequested {
+            PeerEvent::Server(ServerEvent::FileBundleRequested {
                 file_hash, asks, ..
-            } => {
+            }) => {
                 for ask in asks {
                     let command = match ask {
-                        rmule_peer::BundledAsk::Name { .. } => PeerCommand::AnswerFileName {
-                            file_hash,
-                            file_name: Ed2kText::from_utf8("loopback.bin"),
-                        },
-                        rmule_peer::BundledAsk::SetReqId => PeerCommand::AnswerFileStatus {
-                            file_hash,
-                            bitmap: PartBitmap::decode(part_count(bytes.len() as u64), &[0xFF])
-                                .unwrap(),
-                        },
+                        rmule_peer::BundledAsk::Name { .. } => {
+                            PeerCommand::Server(ServerCommand::AnswerFileName {
+                                file_hash,
+                                file_name: Ed2kText::from_utf8("loopback.bin"),
+                            })
+                        }
+                        rmule_peer::BundledAsk::SetReqId => {
+                            PeerCommand::Server(ServerCommand::AnswerFileStatus {
+                                file_hash,
+                                bitmap: PartBitmap::decode(part_count(bytes.len() as u64), &[0xFF])
+                                    .unwrap(),
+                            })
+                        }
                         _ => continue,
                     };
                     let _ = conn.send(command).await;
                 }
             }
-            PeerEvent::FileIdSet { file_hash } => {
+            PeerEvent::Server(ServerEvent::FileIdSet { file_hash }) => {
                 let bitmap = PartBitmap::decode(part_count(bytes.len() as u64), &[0xFF]).unwrap();
                 let _ = conn
-                    .send(PeerCommand::AnswerFileStatus { file_hash, bitmap })
+                    .send(PeerCommand::Server(ServerCommand::AnswerFileStatus {
+                        file_hash,
+                        bitmap,
+                    }))
                     .await;
             }
-            PeerEvent::HashSetRequested { file_hash } => {
+            PeerEvent::Server(ServerEvent::HashSetRequested { file_hash }) => {
                 let _ = conn
-                    .send(PeerCommand::AnswerHashSet {
+                    .send(PeerCommand::Server(ServerCommand::AnswerHashSet {
                         file_hash,
                         part_hashes: Vec::new(),
-                    })
+                    }))
                     .await;
             }
-            PeerEvent::SlotRequested { file_hash } => {
-                let _ = conn.send(PeerCommand::GrantSlot { file_hash }).await;
+            PeerEvent::Server(ServerEvent::SlotRequested { file_hash }) => {
+                let _ = conn
+                    .send(PeerCommand::Server(ServerCommand::GrantSlot { file_hash }))
+                    .await;
             }
-            PeerEvent::PartsRequested { file_hash, ranges } => {
+            PeerEvent::Server(ServerEvent::PartsRequested { file_hash, ranges }) => {
                 for &(start, end) in ranges.as_array().iter().filter(|(s, e)| e > s) {
                     let _ = conn
-                        .send(PeerCommand::SendBlock {
+                        .send(PeerCommand::Server(ServerCommand::SendBlock {
                             file_hash,
                             start,
                             end,
                             bytes: bytes[start as usize..end as usize].to_vec(),
-                        })
+                        }))
                         .await;
                 }
             }
-            PeerEvent::Disconnected { .. } => break,
+            PeerEvent::Connection(ConnectionEvent::Disconnected { .. }) => break,
             _ => {}
         }
     }
@@ -161,6 +174,7 @@ enum DialAdapter {
 }
 
 async fn sui_download(dial: DialAdapter) {
+    let output_dir = tempfile::tempdir().expect("temp dir");
     let store = rmule_testkit::memory_store();
     let key_rmule = the_core_s_key(&store);
     let key_peer = Arc::new(SecureIdentKey::generate().unwrap());
@@ -189,6 +203,10 @@ async fn sui_download(dial: DialAdapter) {
     let credit = DurableCreditStore::new(store.clone());
     let config = CoreConfig::default();
     let builder = Core::builder(config, store)
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            output_dir.path(),
+        ))
         .user_hash(UserHash::from_bytes([0x01; UserHash::BYTE_LEN]))
         .source_lookup(OneSourceLookup { peer: source });
     let mut core = match dial {
@@ -198,7 +216,6 @@ async fn sui_download(dial: DialAdapter) {
             .build(),
     };
 
-    let output_dir = tempfile::tempdir().expect("temp dir");
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: Ed2kFileLink {
             name: Ed2kText::from_utf8("loopback.bin"),
@@ -210,8 +227,8 @@ async fn sui_download(dial: DialAdapter) {
             sources: Default::default(),
         },
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: rmule_testkit::test_identity(0x01, "rmule", 4662).into(),
-        output_path: output_dir.path().join("loopback.bin"),
+        name: rmule_testkit::file_name("loopback.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -261,23 +278,19 @@ async fn an_inbound_sui_peer_becomes_a_secured_identity_on_the_serving_side() {
     let dialer_hash = UserHash::from_bytes([0x0D; UserHash::BYTE_LEN]);
 
     let credit = DurableCreditStore::new(store.clone());
-    let mut core = Core::builder(
-        CoreConfig {
+    let mut core = Core::builder(CoreConfig::default(), store)
+        .settings(rmule_core::CoreSettings {
             udp_port: free_udp_port(),
-            ..CoreConfig::default()
-        },
-        store,
-    )
-    .user_hash(UserHash::from_bytes([0x01; UserHash::BYTE_LEN]))
-    .source_lookup(PendingSourceLookup)
-    .peer_transfer(RefusingPeerTransfer)
-    // The woven production serve adapter: its accept pump reads the Hello
-    // Adverts the builder loaded the keypair into.
-    .build();
-    let identity = rmule_testkit::test_identity(0x01, "rmule-serving", 4662);
+            ..rmule_core::CoreSettings::default()
+        })
+        .user_hash(UserHash::from_bytes([0x01; UserHash::BYTE_LEN]))
+        .source_lookup(PendingSourceLookup)
+        .peer_transfer(RefusingPeerTransfer)
+        // The woven production serve adapter: its accept pump reads the Hello
+        // Adverts the builder loaded the keypair into.
+        .build();
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
-        credentials: identity.clone().into(),
     }))
     .await
     .unwrap();
@@ -285,12 +298,9 @@ async fn an_inbound_sui_peer_becomes_a_secured_identity_on_the_serving_side() {
     // A later credentialed start: before, the last start's key
     // won and one carrying none cleared it. No command carries a key now, so
     // the accept pump still proves with the Core's.
-    core.send(CoreCommand::EnableKad(rmule_core::KadEnableConfig {
-        peer_credentials: identity.into(),
-        ..crate::fixture::kad_enable_config()
-    }))
-    .await
-    .unwrap();
+    core.send(CoreCommand::EnableKad(crate::fixture::kad_enable_config()))
+        .await
+        .unwrap();
 
     // An inbound peer dials with its own keypair and holds the connection open
     // while the exchange completes.
@@ -303,6 +313,8 @@ async fn an_inbound_sui_peer_becomes_a_secured_identity_on_the_serving_side() {
                 60,
             ),
             client_id: ClientId::from_u32(0x0100_007F),
+            ed2k_client_id: ClientId::from_u32(0x0100_007F),
+            public_ip: None,
             connected_server: None,
         };
         let options = ConnectOptions {
@@ -321,11 +333,13 @@ async fn an_inbound_sui_peer_becomes_a_secured_identity_on_the_serving_side() {
         let mut verified_server = None;
         loop {
             match tokio::time::timeout(std::time::Duration::from_secs(5), conn.next_event()).await {
-                Ok(Some(PeerEvent::PeerIdentityVerified {
+                Ok(Some(PeerEvent::Connection(ConnectionEvent::IdentityVerified {
                     user_hash,
                     public_key,
-                })) => verified_server = Some((user_hash, public_key)),
-                Ok(Some(PeerEvent::Disconnected { .. })) | Ok(None) | Err(_) => break,
+                }))) => verified_server = Some((user_hash, public_key)),
+                Ok(Some(PeerEvent::Connection(ConnectionEvent::Disconnected { .. })))
+                | Ok(None)
+                | Err(_) => break,
                 Ok(Some(_)) => {}
             }
         }
@@ -375,20 +389,15 @@ async fn an_inbound_sui_peer_becomes_a_secured_identity_on_the_serving_side() {
 #[tokio::test]
 async fn a_kad_only_node_s_dial_back_hello_carries_sui() {
     let udp_port = free_udp_port();
-    let mut core = Core::new(
-        CoreConfig {
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings {
             udp_port,
-            ..CoreConfig::default()
-        },
-        rmule_testkit::memory_store(),
-    );
-    let identity = rmule_testkit::test_identity(0x01, "rmule-kad-only", 4662);
-    core.send(CoreCommand::EnableKad(rmule_core::KadEnableConfig {
-        peer_credentials: identity.into(),
-        ..crate::fixture::kad_enable_config()
-    }))
-    .await
-    .unwrap();
+            ..rmule_core::CoreSettings::default()
+        })
+        .build();
+    core.send(CoreCommand::EnableKad(crate::fixture::kad_enable_config()))
+        .await
+        .unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             core.send(CoreCommand::DumpDiagnostics).await.unwrap();

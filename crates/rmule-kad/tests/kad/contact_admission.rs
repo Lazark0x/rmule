@@ -10,6 +10,8 @@
 //! behavior (a hello from a filtered IP still gets its `HELLO_RES`) is
 //! preserved, since aMule has no IP-filter gate at datagram entry.
 
+use rmule_kad::KadInstant;
+use rmule_kad::KadNodeStart;
 use std::net::Ipv4Addr;
 
 use rmule_kad::{
@@ -27,16 +29,17 @@ const FILTERED_HOST: u8 = 66;
 /// A node whose admission refuses `203.0.113.66` and admits everything else —
 /// the smallest faithful stand-in for a loaded ipfilter.dat table.
 fn filtering_node() -> KadNode {
-    let mut node = KadNode::new(KadNodeConfig {
+    let config = KadNodeConfig {
         id: id(0xAA),
         tcp_port: 4662,
         udp_port: 4672,
         user_hash: rmule_kad::UserHash::from_bytes([0xEE; 16]),
-    });
-    node.arm_contact_admission(KadContactAdmission::new(|ip| {
-        ip != Ipv4Addr::new(203, 0, 113, FILTERED_HOST)
-    }));
-    node
+    };
+    KadNode::new(
+        KadNodeStart::new(config, KadInstant::EPOCH).admission(KadContactAdmission::new(|ip| {
+            ip != Ipv4Addr::new(203, 0, 113, FILTERED_HOST)
+        })),
+    )
 }
 
 fn node_info(id_byte: u8) -> Kad2NodeInfo {

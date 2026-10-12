@@ -32,6 +32,7 @@ mod source_result;
 mod source_store;
 mod time;
 mod udp_key;
+mod wire_fields;
 
 pub use bootstrap::{BootstrapDialList, KadBootstrapNode, KadNodeEndpoint};
 pub use buddy::BuddyDecodeError;
@@ -55,8 +56,8 @@ pub use messages::{
 };
 pub use node::{
     KadCallbackWalkEnd, KadCommand, KadContactAdmission, KadEvent, KadNode, KadNodeConfig,
-    KadNodeDiagnostic, KadOutput, KadPublishRejection, KadReachability, RoutingCensus,
-    UdpFirewallHelper,
+    KadNodeDiagnostic, KadNodeStart, KadObfuscation, KadOutput, KadPublishRejection,
+    KadReachability, KadSelfCheck, RoutingCensus, UdpFirewallHelper,
 };
 pub use nodes_dat::{CONTACT_FILE_LIMIT, MIN_CONTACTS_TO_WRITE, NodesDat, NodesDatError};
 pub use nodes_dat_bootstrap::BootstrapEditionError;
@@ -80,6 +81,6 @@ pub use rmule_primitives::UserHash;
 pub use rmule_primitives::{FileHash, SourceLookupTarget};
 
 /// Re-exported because it is the parameter type of
-/// [`KadNode::enable_datagram_obfuscation`]: a driver supplying the per-packet
+/// [`KadObfuscation::new`]: a driver supplying the per-packet
 /// entropy has to be able to name what it returns.
 pub use rmule_primitives::DatagramNonce;

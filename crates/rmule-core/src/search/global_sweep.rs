@@ -16,8 +16,8 @@ use rmule_primitives::{Ipv4Endpoint, KeywordQuery, ServerEndpoint};
 use tokio::sync::mpsc;
 
 use crate::adapters::ServerUdpTransport;
-use crate::server_capabilities::{SharedServerCapabilities, capability_flags};
-use crate::server_udp::ServerUdpDatagram;
+use crate::server_capabilities::{SharedServerCapabilities, capability_flags, server_tcp_key};
+use crate::server_udp::{ServerUdpDatagram, ServerUdpSeal};
 
 use super::LiveSearches;
 
@@ -31,13 +31,13 @@ pub(crate) async fn forward_global_search_answers(
     mut inbox: mpsc::Receiver<ServerUdpDatagram>,
     live: LiveSearches,
 ) {
-    while let Some((datagram, udp_src)) = inbox.recv().await {
-        forward_one_answer(&datagram, udp_src, &live);
+    while let Some((datagram, server)) = inbox.recv().await {
+        forward_one_answer(&datagram, server, &live);
     }
 }
 
 /// One datagram's forwarding step: decode, then attribute, naming the
-/// server-UDP address it came from.
+/// server that answered by its standard endpoint.
 pub(super) fn forward_one_answer(datagram: &[u8], from: Ipv4Endpoint, live: &LiveSearches) {
     match GlobSearchRes::decode_udp(datagram) {
         Ok(answer) => live.deliver_udp_answer(answer.results().to_vec(), from),
@@ -99,7 +99,8 @@ impl UdpSearchPacer {
 /// Skipping a server (connected, or a 64-bit packet it can't serve) does not
 /// consume a tick — aMule's timer handler walks to the next sendable server.
 pub(crate) struct GlobalSearchSweep<T> {
-    pub(crate) transport: T,
+    /// Where each search datagram leaves.
+    pub(crate) seal: ServerUdpSeal<T>,
     /// The managed server list, snapshotted at search start.
     pub(crate) servers: Vec<ServerEndpoint>,
     /// The capability store (ADR-0052) the variant selection reads.
@@ -123,6 +124,10 @@ impl<T: ServerUdpTransport> GlobalSearchSweep<T> {
             if *server == self.connected {
                 continue;
             }
+            // The swept list holds IPv4 literals at their standard port.
+            let Some(key) = server_tcp_key(server) else {
+                continue;
+            };
             let flags = capability_flags(&self.capabilities, server);
             // Per addressee (ADR-0051): a size bound past
             // `u32::MAX` rides a `0x08` term toward a server that takes it and
@@ -138,7 +143,7 @@ impl<T: ServerUdpTransport> GlobalSearchSweep<T> {
             tick.tick().await;
             tokio::time::sleep_until(self.pacer.book(server)).await;
             let datagram = request.encode_packet(select_variant(flags)).encode_udp();
-            self.transport.send_to(server.clone(), datagram).await;
+            self.seal.send(key, datagram).await;
             asked = asked.saturating_add(1);
         }
         asked

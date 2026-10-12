@@ -5,8 +5,8 @@
 //! same tag. That fallback leg is **source-derived**: no eMule-family row has
 //! been captured, and every test here that sends it says so.
 
-use rmule_kad::{KadBuddyContact, KadId};
-use rmule_primitives::{SourceCryptOptions, UserHash};
+use rmule_kad::KadId;
+use rmule_primitives::UserHash;
 
 use super::*;
 
@@ -16,22 +16,13 @@ const PRIMARY: KadId = KadId::from_bytes([
     0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x00,
 ]);
 
-fn row(buddy_id: KadId, buddy_udp: Option<Ipv4Endpoint>) -> crate::KadSource {
-    crate::KadSource {
-        direct: None,
-        user_hash: Some(UserHash::from_bytes([0xAB; UserHash::BYTE_LEN])),
-        kad_udp: Some(Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 77), 4672)),
-        connect_options: Some(SourceCryptOptions::from_byte(0x00)),
-        buddy: Some(KadBuddyContact {
-            buddy_id,
-            buddy_udp,
-            buddy_ipv6: None,
-            buddy_udp_ipv6: None,
-        }),
-        direct_udp_callback: false,
-        tcp_port: 4662,
-        ipv6: None,
-    }
+fn row(buddy_id: KadId, buddy_udp: Option<Ipv4Endpoint>) -> SourceSighting {
+    kad_buddy_sighting(
+        Some(UserHash::from_bytes([0xAB; UserHash::BYTE_LEN])),
+        buddy_id,
+        buddy_udp,
+        0x00,
+    )
 }
 
 fn buddy_udp() -> Option<Ipv4Endpoint> {
@@ -44,10 +35,10 @@ fn asks(decisions: &[Decision]) -> Vec<(KadId, bool)> {
     decisions
         .iter()
         .filter_map(|d| match d {
-            Decision::RequestBuddyCallback { candidate } => {
+            Decision::RequestBuddyCallback { candidate, .. } => {
                 Some((candidate.buddy?.buddy_id, false))
             }
-            Decision::RequestFallbackBuddyCallback { candidate } => {
+            Decision::RequestFallbackBuddyCallback { candidate, .. } => {
                 Some((candidate.buddy?.buddy_id, true))
             }
             _ => None,
@@ -58,7 +49,7 @@ fn asks(decisions: &[Decision]) -> Vec<(KadId, bool)> {
 fn released(decisions: &[Decision], key: CallbackKey) -> bool {
     decisions
         .iter()
-        .any(|d| matches!(d, Decision::CancelCallbackTimeout { key: k } if *k == key))
+        .any(|d| matches!(d, Decision::EndCallback { key: k } if *k == key))
 }
 
 /// Source-derived fallback leg: the primary `0x52`, thirty silent seconds,
@@ -69,7 +60,7 @@ fn released(decisions: &[Decision], key: CallbackKey) -> bool {
 fn source_derived_a_silent_primary_callback_earns_one_fallback_spelling_callback() {
     let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
 
-    let opened = state.on_kad_sources(vec![row(PRIMARY, buddy_udp())]);
+    let opened = via_kad(&mut state, vec![row(PRIMARY, buddy_udp())]);
     assert_eq!(
         asks(&opened),
         vec![(PRIMARY, false)],
@@ -77,22 +68,20 @@ fn source_derived_a_silent_primary_callback_earns_one_fallback_spelling_callback
     );
     let key = super::buddy_callback::buddy_key(&opened);
 
-    let lapsed = state.on_callback_timeout(key);
+    let lapsed = state.on_tick(t0() + CALLBACK_TIMEOUT);
     assert_eq!(
         asks(&lapsed),
         vec![(PRIMARY.word_swapped(), true)],
         "one 0x52 under the other spelling: {lapsed:?}"
     );
-    assert!(
-        lapsed.iter().any(|d| matches!(
-            d,
-            Decision::ArmCallbackTimeout { key: k, after } if *k == key && *after == CALLBACK_TIMEOUT
-        )),
-        "the fallback gets the same wait: {lapsed:?}"
+    assert_eq!(
+        state.next_wake(),
+        Some(t0() + CALLBACK_TIMEOUT * 2),
+        "the fallback gets the same wait"
     );
     assert!(!released(&lapsed, key), "the slot stays held: {lapsed:?}");
 
-    let ended = state.on_callback_timeout(key);
+    let ended = state.on_tick(t0() + CALLBACK_TIMEOUT * 2);
     assert!(asks(&ended).is_empty(), "one extra 0x52 at most: {ended:?}");
     assert!(released(&ended, key), "then the road ends: {ended:?}");
 }
@@ -103,10 +92,10 @@ fn source_derived_a_silent_primary_callback_earns_one_fallback_spelling_callback
 fn a_primary_callback_that_drew_a_dial_back_sends_no_fallback() {
     let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
     let key =
-        super::buddy_callback::buddy_key(&state.on_kad_sources(vec![row(PRIMARY, buddy_udp())]));
-    let _ = state.on_callback_connected(key, peer(9));
+        super::buddy_callback::buddy_key(&via_kad(&mut state, vec![row(PRIMARY, buddy_udp())]));
+    let _ = state.on_callback_connected(t0(), key, peer(9));
 
-    assert!(state.on_callback_timeout(key).is_empty());
+    assert!(state.on_tick(t0() + CALLBACK_TIMEOUT).is_empty());
 }
 
 /// Where the two spellings are one ID there is nothing else to try, and a
@@ -120,8 +109,8 @@ fn no_fallback_for_a_word_palindrome_id_or_a_walked_buddy() {
         row(PRIMARY, None),
     ] {
         let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
-        let key = super::buddy_callback::buddy_key(&state.on_kad_sources(vec![source]));
-        let lapsed = state.on_callback_timeout(key);
+        let key = super::buddy_callback::buddy_key(&via_kad(&mut state, vec![source]));
+        let lapsed = state.on_tick(t0() + CALLBACK_TIMEOUT);
         assert!(asks(&lapsed).is_empty(), "{lapsed:?}");
         assert!(released(&lapsed, key), "{lapsed:?}");
     }

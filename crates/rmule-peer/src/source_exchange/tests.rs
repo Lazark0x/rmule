@@ -2,14 +2,14 @@
 
 use std::net::Ipv4Addr;
 
-use rmule_primitives::{ClientId, ExchangedSource, Ipv4Endpoint, PeerEndpoint, PeerSource};
+use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint, PeerSource, SourceSighting};
 
 use super::admission::{PER_FILE_SOURCE_CAP, is_plausible_high_id_endpoint, sanitize_and_route};
 use super::{ServedSourcesVersion, SourceExchangeEntry, SourceExchangeVersion};
 
 fn high_id_entry(octets: [u8; 4], port: u16) -> SourceExchangeEntry {
     let id = u32::from_le_bytes(octets);
-    SourceExchangeEntry::plain(ExchangedSource::plain(PeerSource::new(
+    SourceExchangeEntry::plain(SourceSighting::plain(PeerSource::new(
         ClientId::from_u32(id),
         port,
     )))
@@ -17,7 +17,7 @@ fn high_id_entry(octets: [u8; 4], port: u16) -> SourceExchangeEntry {
 
 fn low_id_entry(low_id: u32, server: Option<Ipv4Endpoint>) -> SourceExchangeEntry {
     SourceExchangeEntry::new(
-        ExchangedSource::plain(PeerSource::new(ClientId::from_u32(low_id), 4662)),
+        SourceSighting::plain(PeerSource::new(ClientId::from_u32(low_id), 4662)),
         server,
     )
 }
@@ -99,7 +99,11 @@ fn sanitize_and_route_keeps_low_id_matching_connected_server() {
     let connected = server(192, 0, 2, 1, 4661);
     let entries = vec![low_id_entry(5000, Some(connected))];
     let out = sanitize_and_route(entries, None, Some(connected), 0);
-    assert_eq!(out.len(), 1);
+    assert_eq!(
+        out.iter().map(|s| s.server()).collect::<Vec<_>>(),
+        vec![Some(connected)],
+        "the kept Low ID carries the server its row named, its namespace"
+    );
 }
 
 #[test]

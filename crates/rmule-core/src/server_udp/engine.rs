@@ -12,11 +12,11 @@ use std::sync::Mutex;
 
 use rmule_ed2k::{GlobServStatRes, Opcode, ServerDescReq, ServerDescRes};
 use rmule_primitives::{
-    Ipv4Endpoint, PacketProtocol, ServerCryptDirection, ServerEndpoint, decrypt_datagram_server,
+    Ipv4Endpoint, PacketProtocol, ServerCryptDirection, decrypt_datagram_server,
 };
 use tokio::sync::mpsc;
 
-use super::{ServerUdpDatagram, StatusChallenges};
+use super::{ServerUdpDatagram, ServerUdpSeal, StatusChallenges};
 use crate::adapters::{
     SERVER_UDP_OBFUSCATION_PORT_OFFSET, SERVER_UDP_PORT_OFFSET, ServerUdpTransport,
 };
@@ -62,7 +62,16 @@ struct DescState {
 /// trigger + `0xA3` consume, ADR-0068) run in-engine: challenge-gated store
 /// populate plus the auto-fired desc-req, no separate consumer task.
 pub(crate) struct ServerUdpEngine<T> {
+    /// The socket's receive side, drained by [`run`](Self::run).
     transport: T,
+    /// Where the auto-fired `0xA2` leaves, and the crypt context the
+    /// dual-path receive opens with: the obfuscation policy that arms the
+    /// layer in both directions (ADR-0046; aMule `IsServerCryptLayerUDPEnabled`
+    /// reads one preference), read per datagram so a live change reaches the
+    /// next one, and our public IPv4, which a `0x97`'s `ServerUDPKey` is
+    /// recorded under (ADR-0052: the key is good only while that address is
+    /// ours).
+    seal: ServerUdpSeal<T>,
     /// `OP_GLOBFOUNDSOURCES` (`0x9B`) → the global Discovery Channel.
     sources_tx: mpsc::Sender<ServerUdpDatagram>,
     /// `OP_GLOBSEARCHRES` (`0x99`) → the global-search forwarder.
@@ -79,35 +88,26 @@ pub(crate) struct ServerUdpEngine<T> {
     /// Entropy for desc-challenge minting — caller-supplied so the trigger
     /// stays deterministic under test ([`os_rand16`](super::status_challenge::os_rand16) in production).
     desc_entropy: fn() -> u16,
-    /// Whether the server-UDP crypt layer is enabled (ADR-0046,
-    /// `CoreConfig::server_udp_crypt()`, derived from `peer_crypt` / aMule
-    /// `IsServerCryptLayerUDPEnabled`).
-    /// Off ⇒ every datagram routes as the plaintext it already is (the shipped
-    /// behavior); on ⇒ a crypt-eligible source's datagram is decrypted before
-    /// routing (dual-path receive).
-    crypt_enabled: bool,
     /// Where the transport closing is counted: the
     /// client-UDP front's twin, `count_server_udp_transport_ended`.
     diagnostics: DiagnosticsState,
-    /// Our public IPv4, which a `0x97`'s `ServerUDPKey` is recorded under
-    /// (ADR-0052: the key is good only while that address is ours).
-    own: crate::own_identity::SharedOwnIdentity,
 }
 
 impl<T: ServerUdpTransport> ServerUdpEngine<T> {
-    /// The engine plus the demuxed inboxes its routing feeds. `challenges`
-    /// is the sweep-shared gate for `0x97` replies; `capabilities` the store
+    /// The engine plus the demuxed inboxes its routing feeds. `transport` is
+    /// the socket it drains; `seal` the send side the `0xA2` leaves through,
+    /// whose policy arms the dual-path receive (ADR-0046); `challenges` is
+    /// the sweep-shared gate for `0x97` replies; `capabilities` the store
     /// they populate and `facts` the managed list's dynamic half they fill;
-    /// `desc_entropy` mints the auto-fired `0xA2` challenges; `crypt_enabled`
-    /// arms the dual-path receive (ADR-0046); `diagnostics` is where the
-    /// transport closing is counted.
+    /// `desc_entropy` mints the auto-fired `0xA2` challenges; `diagnostics`
+    /// is where the transport closing is counted.
     pub(crate) fn new(
         transport: T,
+        seal: ServerUdpSeal<T>,
         challenges: StatusChallenges,
         capabilities: SharedServerCapabilities,
         facts: ServerFacts,
         desc_entropy: fn() -> u16,
-        crypt_enabled: bool,
         diagnostics: DiagnosticsState,
     ) -> (Self, ServerUdpInboxes) {
         let (sources_tx, sources_rx) = mpsc::channel(INBOX_CAPACITY);
@@ -115,6 +115,7 @@ impl<T: ServerUdpTransport> ServerUdpEngine<T> {
         (
             Self {
                 transport,
+                seal,
                 sources_tx,
                 search_tx,
                 challenges,
@@ -122,9 +123,7 @@ impl<T: ServerUdpTransport> ServerUdpEngine<T> {
                 facts,
                 desc: Mutex::default(),
                 desc_entropy,
-                crypt_enabled,
                 diagnostics,
-                own: crate::own_identity::SharedOwnIdentity::default(),
             },
             ServerUdpInboxes {
                 sources: sources_rx,
@@ -148,7 +147,10 @@ impl<T: ServerUdpTransport> ServerUdpEngine<T> {
     }
 
     /// Route one datagram by its leading packet's opcode, after the dual-path
-    /// receive recovers its plaintext (ADR-0046). A server packs a
+    /// receive recovers its plaintext and the server it answers for
+    /// (ADR-0046); a consumer's inbox gets the datagram tagged with that
+    /// server's standard endpoint, whichever of its ports it came from — a
+    /// sealed answer comes from the obfuscation port. A server packs a
     /// datagram with packets of one opcode (aMule's per-opcode handlers walk
     /// the continuations themselves), so routing the whole datagram *is* the
     /// demux; the consumer owns the packet walk. Anything unroutable — header
@@ -170,14 +172,26 @@ impl<T: ServerUdpTransport> ServerUdpEngine<T> {
             return;
         }
         match Opcode::try_from_u8(opcode) {
-            Some(Opcode::GlobFoundSources) => {
-                // A dropped receiver (discovery gone) must not stop the
-                // engine: other concerns keep receiving.
-                let _ = self.sources_tx.send((datagram, udp_src)).await;
-            }
-            Some(Opcode::GlobSearchRes) => {
-                let _ = self.search_tx.send((datagram, udp_src)).await;
-            }
+            // A dropped receiver (discovery gone) must not stop the engine:
+            // other concerns keep receiving.
+            Some(Opcode::GlobFoundSources) => match server {
+                Some(server) => {
+                    let _ = self.sources_tx.send((datagram, server)).await;
+                }
+                None => tracing::trace!(
+                    port = udp_src.port,
+                    "OP_GLOBFOUNDSOURCES from an unmappable UDP source; dropped"
+                ),
+            },
+            Some(Opcode::GlobSearchRes) => match server {
+                Some(server) => {
+                    let _ = self.search_tx.send((datagram, server)).await;
+                }
+                None => tracing::trace!(
+                    port = udp_src.port,
+                    "OP_GLOBSEARCHRES from an unmappable UDP source; dropped"
+                ),
+            },
             Some(Opcode::GlobServStatRes) => match server {
                 Some(server) => self.consume_status(&datagram, server).await,
                 None => tracing::trace!(
@@ -213,8 +227,10 @@ impl<T: ServerUdpTransport> ServerUdpEngine<T> {
     /// datagram that fails to decrypt (wrong key / not for us) passes through as
     /// plaintext and is dropped by the demux's `0xE3` check.
     fn receive(&self, datagram: Vec<u8>, udp_src: Ipv4Endpoint) -> (Vec<u8>, Option<Ipv4Endpoint>) {
-        let resolved = self.resolve_source(udp_src);
-        if !self.crypt_enabled || datagram.first() == Some(&PacketProtocol::Edonkey.as_byte()) {
+        // Read once: the source map and the decrypt answer to one policy.
+        let armed = self.seal.armed();
+        let resolved = self.resolve_source(udp_src, armed);
+        if !armed || datagram.first() == Some(&PacketProtocol::Edonkey.as_byte()) {
             return (datagram, resolved.map(|(server, _)| server));
         }
         match resolved {
@@ -239,9 +255,13 @@ impl<T: ServerUdpTransport> ServerUdpEngine<T> {
     /// keys the reply, whichever port it came from; otherwise a reply from the
     /// obfuscation port is keyed on its `ServerUDPKey`, and one from TCP + 4
     /// is plaintext (`None`). The crypt relations are consulted only when the
-    /// layer is enabled.
-    fn resolve_source(&self, udp_src: Ipv4Endpoint) -> Option<(Ipv4Endpoint, Option<u32>)> {
-        if self.crypt_enabled {
+    /// layer is `armed`.
+    fn resolve_source(
+        &self,
+        udp_src: Ipv4Endpoint,
+        armed: bool,
+    ) -> Option<(Ipv4Endpoint, Option<u32>)> {
+        if armed {
             let relations = [
                 udp_src.port.checked_sub(SERVER_UDP_OBFUSCATION_PORT_OFFSET),
                 udp_src.port.checked_sub(SERVER_UDP_PORT_OFFSET),
@@ -252,45 +272,13 @@ impl<T: ServerUdpTransport> ServerUdpEngine<T> {
                     return Some((server, Some(challenge)));
                 }
             }
-            if let Some((server, key)) = self.obfuscation_source(udp_src) {
+            if let Some((server, key)) = self.seal.obfuscation_source(udp_src) {
                 let key = self.challenges.crypt_base_key(server).or(key);
                 return Some((server, key));
             }
         }
         let tcp = udp_src.port.checked_sub(SERVER_UDP_PORT_OFFSET)?;
         Some((Ipv4Endpoint::new(udp_src.ip, tcp), None))
-    }
-
-    /// The engine recording each `ServerUDPKey` under the public IPv4 `own`
-    /// holds when the key arrives.
-    pub(crate) fn keyed_under(mut self, own: crate::own_identity::SharedOwnIdentity) -> Self {
-        self.own = own;
-        self
-    }
-
-    /// The server whose obfuscation UDP port this source is, with the
-    /// `ServerUDPKey` the receive gate allows — aMule's
-    /// `ServerKeyUDP != 0 && SupportsObfuscationUDP`, the key learned under
-    /// the public IPv4 we hold now (`ServerUDPSocket.cpp:71`,
-    /// `Server.cpp:300-307`). This run's record is consulted first; a server
-    /// this run has not heard is found by the port its row saved (ADR-0052's
-    /// durable UDP crypt amendment). A server whose port matches but whose key the gate
-    /// withholds is still found, keyed `None`: its outstanding crypt-ping may
-    /// key it instead.
-    fn obfuscation_source(&self, udp_src: Ipv4Endpoint) -> Option<(Ipv4Endpoint, Option<u32>)> {
-        let own = self.own.public_ip();
-        let heard = {
-            let store = self.capabilities.lock().expect("server capabilities store");
-            store.iter().find_map(|(server, caps)| {
-                let crypt = caps.udp_crypt?;
-                (server.ip == udp_src.ip && crypt.obfuscation_udp_port == udp_src.port)
-                    .then(|| (*server, crypt.key_under(caps.udp_flags, own)))
-            })
-        };
-        heard.or_else(|| {
-            let (server, crypt, udp_flags) = self.facts.saved_udp_crypt_at(udp_src)?;
-            Some((server, crypt.key_under(udp_flags, own)))
-        })
     }
 
     /// Consume one `0x97` status reply (ADR-0052) for the already-resolved
@@ -329,7 +317,7 @@ impl<T: ServerUdpTransport> ServerUdpEngine<T> {
         if let Some(endpoint) = self.facts.row_at(server)
             && let Err(error) = self
                 .facts
-                .answered(&endpoint, round_trip, &status, self.own.public_ip())
+                .answered(&endpoint, round_trip, &status, self.seal.public_ip())
                 .await
         {
             tracing::warn!(%error, ?server, "status reply recorded on the wire but not in the list");
@@ -344,7 +332,7 @@ impl<T: ServerUdpTransport> ServerUdpEngine<T> {
                 .unwrap_or_default();
             store.insert(
                 server,
-                ServerCapabilities::from_status(&status, display, self.own.public_ip()),
+                ServerCapabilities::from_status(&status, display, self.seal.public_ip()),
             );
         }
         let request = {
@@ -361,11 +349,8 @@ impl<T: ServerUdpTransport> ServerUdpEngine<T> {
             }
         };
         if let Some(request) = request {
-            let Ok(endpoint) = ServerEndpoint::new(server.ip.to_string(), server.port) else {
-                return;
-            };
-            self.transport
-                .send_to(endpoint, request.encode_packet().encode_udp())
+            self.seal
+                .send(server, request.encode_packet().encode_udp())
                 .await;
         }
     }

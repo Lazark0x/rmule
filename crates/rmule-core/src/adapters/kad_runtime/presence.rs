@@ -36,9 +36,9 @@ struct Presence {
 /// the same cell. A default view is a fresh cell no activity has leased —
 /// "no node", what a core that never enables Kad answers. `pub` (not `pub(crate)`):
 /// it rides the public
-/// [`KadRuntimeFactory::kad_presence`](crate::adapters::KadRuntimeFactory::kad_presence)
-/// and
 /// [`ServeRuntimeService::set_kad_presence`](crate::adapters::ServeRuntimeService::set_kad_presence)
+/// and
+/// [`PeerTransferService::set_kad_presence`](crate::adapters::PeerTransferService::set_kad_presence)
 /// trait methods, so a private type there would be unreachable through them.
 #[derive(Clone, Debug, Default)]
 pub struct KadPresenceView(Arc<watch::Sender<Presence>>);

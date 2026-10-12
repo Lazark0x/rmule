@@ -18,7 +18,7 @@
 //! the whole-file hash is already sufficient. Per ADR-0018 an empty answer is
 //! still preserved as an empty `part_hashes`.
 
-use rmule_primitives::{FileHash, Packet, PartHash};
+use rmule_primitives::{FileHash, Packet, PartHash, WireReader, WireTruncated};
 use thiserror::Error;
 
 use crate::opcode::PeerOpcode;
@@ -52,7 +52,7 @@ impl HashSetRequest {
             });
         }
         Ok(Self {
-            file_hash: read_file_hash(payload),
+            file_hash: WireReader::new(payload).read_file_hash("file hash")?,
         })
     }
 
@@ -78,11 +78,10 @@ impl HashSetAnswer {
                 actual: payload.len(),
             });
         }
-        let file_hash = read_file_hash(&payload[..FileHash::BYTE_LEN]);
-        let declared_count =
-            u16::from_le_bytes([payload[FileHash::BYTE_LEN], payload[FileHash::BYTE_LEN + 1]])
-                as usize;
-        let body = &payload[header_len..];
+        let mut reader = WireReader::new(payload);
+        let file_hash = reader.read_file_hash("file hash")?;
+        let declared_count = usize::from(reader.read_u16_le("part hash count")?);
+        let body = reader.remaining_bytes();
         let expected_body = declared_count.checked_mul(PartHash::BYTE_LEN).ok_or(
             HashSetDecodeError::CountOverflow {
                 count: declared_count,
@@ -127,12 +126,6 @@ impl HashSetAnswer {
     }
 }
 
-fn read_file_hash(bytes: &[u8]) -> FileHash {
-    let mut buf = [0u8; FileHash::BYTE_LEN];
-    buf.copy_from_slice(&bytes[..FileHash::BYTE_LEN]);
-    FileHash::from_bytes(buf)
-}
-
 /// Why a hash-set packet could not be read.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum HashSetDecodeError {
@@ -161,4 +154,13 @@ pub enum HashSetDecodeError {
         /// The count the header declared.
         count: usize,
     },
+}
+
+impl From<WireTruncated> for HashSetDecodeError {
+    fn from(truncated: WireTruncated) -> Self {
+        Self::Truncated {
+            needed: truncated.needed,
+            actual: truncated.available,
+        }
+    }
 }

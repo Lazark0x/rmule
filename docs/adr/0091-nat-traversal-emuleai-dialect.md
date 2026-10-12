@@ -172,6 +172,14 @@ exception, Port prediction, gated on our own observed mapping.**
   The requester ledger, punched paths, expectations, dial schedule and prediction plans live on
   it. It never awaits a consumer it does not drain: a risen Tunnel goes to an adopter task
   through a bounded `try_send` backlog, and a refused hand-off closes the tunnel and is counted.
+- **One emitter for rung 1.** Peer Reach hands the front one command per traversal: toward
+  this peer, through this coordinator. The front puts every rung-1 frame on the wire itself —
+  the server's `0x60` on the session, through the Server Coordinator's session half it holds
+  and never awaiting it (a full or ended session costs the introduction, which retires as
+  `NoCoordinator`); the buddy rendezvous and its retries; and the buddy rendezvous a
+  fall-through arms. A `0x60` for a target with no User Hash still leaves and is owned by no
+  attempt. The attempt keeps no snapshot of our position: when a coordinator fails, the front
+  reads Self Reach's route position at that moment and asks the one selector who is next.
 - **The side that asked dials; the other accepts.** The rendezvous requester dials, and on the
   server road the `0x61` role byte says who asked; an unknown role reads as responder.
 - **A `0xA1` corrects where the dial goes** — to the endpoint the punch was observed from —
@@ -191,8 +199,9 @@ exception, Port prediction, gated on our own observed mapping.**
   Claim** the peer's hello confirms, beside the ADR-0039 callback match; a peer that answers on
   the path but names somebody else is refused and closed, and the claim stays pending. An
   accepted Tunnel, or one dialed toward a hash nobody claimed, takes the serve road. Every
-  adoption reports the hello's peer back to the front, which ends that peer's hold. The claim
-  table keeps an ordered list per User Hash, one claim per download (ADR-0107): the oldest
+  adoption reports the hello's peer back to the front, which ends that peer's hold. A claim is
+  filed in the **Awaited Inbound** registry beside its callback, in the same registration,
+  which keeps an ordered list per User Hash, one claim per download (ADR-0107): the oldest
   takes a Tunnel, a retirement reaches every claimant, and only a claim's owner retracts it.
 
 ### Attempt lifecycle
@@ -260,7 +269,7 @@ our own interfaces, with no test bypass.
 
 rmule's Kad publish states `TAG_ENCRYPTION` in eMuleAI's form (`OtherFunctions.cpp:4122-4147`),
 every bit from its owner, re-derived on every reachability edge and recruit tick by the Kad
-pump's `ConnectOptionsFeed`: the crypt ladder from the obfuscation policy (ADR-0046); `0x08` from
+pump's reconciler: the crypt ladder from the obfuscation policy (ADR-0046); `0x08` from
 `Reachability::accepts_direct_udp_callback` — aMule's `IsFirewalled() && !IsFirewalledUDP(true)
 && IsVerified()` (`Prefs.cpp:224-226`), with `IsFirewalled` the server-High-ID-or-Kad-open union
 (`amule.cpp:3118-3125`); `0x80` while the NAT-T front is live on the bind the node rides
@@ -330,9 +339,10 @@ it.
   non-SYN frame is dropped, never answered with an unsolicited RST. The Prediction Fan and
   routes live in `rmule-net`'s client-UDP socket.
 - **`rmule-ed2k`**: the `0xF9` login tag, `0x60`–`0x62` codecs, the `0x9F` keepalive.
-- **`rmule-core`**: the rung, `LowIdRoad`, relay admission and the two-direction budgets, the
-  NAT-T Front, the claim table, the PCP `PEER` follow-up, diagnostics (attempt, outcome, reason,
-  transport, relay counts).
+- **`rmule-core`**: the rung, `LowIdRoad`, Peer Reach (the route position read, the choice
+  and its enactment), relay admission and the two-direction budgets, the NAT-T Front (the one
+  rung-1 emitter), the Awaited Inbound registry, the PCP `PEER` follow-up, diagnostics (attempt,
+  outcome, reason, transport, relay counts).
 
 ## Consequences
 

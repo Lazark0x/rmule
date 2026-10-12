@@ -2,7 +2,6 @@
 //! requester; the pump brokers the dial-back and, on a `Dial` verdict,
 //! connects back to the requester's TCP port and delivers the ack.
 
-use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{Ipv4Endpoint, UserHash};
 
 use crate::adapters::peer_transfer::enact_tcp_dial_back;
@@ -15,13 +14,11 @@ use crate::reachability::{
 pub(crate) struct DialBack {
     /// The dial-backs in flight: per-endpoint dedupe and the concurrent budget.
     pub(crate) registry: DialBackRegistry,
-    /// The identity rmule presents when it connects back.
-    pub(crate) ctx: PeerHandshakeContext,
-    /// Our obfuscation policy, read per request.
-    pub(crate) crypt_policy: Option<rmule_net::peer::ObfuscationPolicy>,
+    /// The hello rmule presents when it connects back, read at each dial.
+    pub(crate) presents: crate::server_session::HelloSource,
     /// Where a requester our own policy turned away is counted.
     pub(crate) diagnostics: crate::diagnostics::DiagnosticsState,
-    /// The self-facts the self-connect guard and the hello read.
+    /// The self-facts the self-connect guard reads.
     pub(crate) own: crate::own_identity::SharedOwnIdentity,
     /// Our advertised eD2k TCP port.
     pub(crate) own_tcp_port: u16,
@@ -39,14 +36,13 @@ impl DialBack {
     ) {
         let Self {
             registry: dial_back_registry,
-            ctx: dial_back_ctx,
-            crypt_policy: dial_back_crypt_policy,
+            presents,
             diagnostics: dial_back_diagnostics,
             own,
             own_tcp_port,
             hello,
         } = self;
-        let (dial_back_crypt_policy, own_tcp_port) = (*dial_back_crypt_policy, *own_tcp_port);
+        let own_tcp_port = *own_tcp_port;
         // ADR-0058 responder enactment: the sans-I/O node
         // already answered `0x58`; now broker the dial-back and, on
         // a `Dial` verdict, connect back to the requester's TCP port
@@ -62,7 +58,8 @@ impl DialBack {
         let guards = DialBackGuards {
             own: OwnListenEndpoint::current(own, own_tcp_port),
             busy: &engaged,
-            crypt: dial_back_crypt_policy,
+            // Our policy as it stands at this request.
+            crypt: hello.obfuscation.get(),
         };
         match broker_dial_back(&request, &guards) {
             DialBackVerdict::Dial {
@@ -78,12 +75,9 @@ impl DialBack {
                 // the concurrent budget) and retires when the
                 // enactment task ends, however it ends.
                 if let Some(ticket) = dial_back_registry.begin(requester) {
-                    // The live session's id and server, as
-                    // every hello names them.
-                    let ctx = crate::server_session::live_peer_handshake_context(
-                        &dial_back_ctx.identity,
-                        own,
-                    );
+                    // The Presented Client ID and the live session's
+                    // server, as every hello names them.
+                    let ctx = presents.now();
                     let hello = hello.clone();
                     tokio::spawn(async move {
                         enact_tcp_dial_back(requester, requester_crypt, &hello, ctx).await;

@@ -213,7 +213,7 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
             row_mut(state, download_id).part_count = Some(part_count);
             true
         }
-        E::DownloadCompleted { download_id } => {
+        E::DownloadCompleted { download_id, .. } => {
             let changed = set_status(state, download_id, DownloadStatus::Completed);
             note(state, words::COMPLETED) || changed
         }
@@ -322,6 +322,8 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
         | E::SourceRemoteQueued { .. }
         | E::SourceReaskAcked { .. }
         | E::SourceReaskQueueFull { .. }
+        | E::SourceReaskedOverTcp { .. }
+        | E::SourcePurged { .. }
         | E::SourceReaskDropped { .. }
         | E::ReaskReplyIgnored { .. }
         | E::DialEnded { .. }

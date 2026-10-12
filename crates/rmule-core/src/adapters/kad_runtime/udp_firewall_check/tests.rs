@@ -6,7 +6,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Duration;
 
 use rmule_net::peer::{ConnectOptions as PeerConnectOptions, PeerListener};
-use rmule_peer::{PeerEvent, PeerHandshakeContext, UdpPortsAdvert};
+use rmule_peer::{ConnectionEvent, PeerEvent, PeerHandshakeContext, SideEvent, UdpPortsAdvert};
 use rmule_primitives::{
     ClientId, ClientIdentity, Ed2kFileLink, Ed2kText, Ipv4Endpoint, PeerEndpoint, ServerEndpoint,
     UserHash,
@@ -30,6 +30,8 @@ fn ctx(hash: u8, nick: &str) -> PeerHandshakeContext {
             0x3C,
         ),
         client_id: ClientId::from_u32(0),
+        ed2k_client_id: ClientId::from_u32(0),
+        public_ip: None,
         connected_server: None,
     }
 }
@@ -53,11 +55,13 @@ async fn helper(kad_udp: u16) -> (Ipv4Endpoint, tokio::task::JoinHandle<Option<V
             .expect("the requester dials in");
         loop {
             match conn.next_event().await {
-                Some(PeerEvent::KadUdpFirewallCheckRequested { request }) => {
+                Some(PeerEvent::Side(SideEvent::KadUdpFirewallCheckRequested { request })) => {
                     let _ = conn.shutdown().await;
                     return Some(request);
                 }
-                Some(PeerEvent::Disconnected { .. }) | None => return None,
+                Some(PeerEvent::Connection(ConnectionEvent::Disconnected { .. })) | None => {
+                    return None;
+                }
                 Some(_) => {}
             }
         }
@@ -75,6 +79,7 @@ async fn the_request_rides_a_completed_hello_and_a_link_that_ends_after_it_is_a_
         REQUEST.to_vec(),
         ctx(0x11, "rmule"),
         &crate::adapters::HelloAdverts::default(),
+        &crate::hello_refusals::SharedHelloRefusals::default(),
         Duration::from_secs(5),
     )
     .await;
@@ -108,7 +113,7 @@ async fn the_helper_dial_s_hello_states_every_advert() {
         helper.local_addr().expect("bound").port(),
     );
     let adverts = crate::adapters::tests::hello_wire::live_adverts(
-        crate::firewalled::link::SharedFirewalledSlot::default(),
+        crate::firewalled::front::BuddyView::default(),
     );
     let check = tokio::spawn(async move {
         enact_udp_firewall_check(
@@ -116,6 +121,7 @@ async fn the_helper_dial_s_hello_states_every_advert() {
             REQUEST.to_vec(),
             ctx(0x11, "rmule"),
             &adverts,
+            &crate::hello_refusals::SharedHelloRefusals::default(),
             Duration::from_secs(5),
         )
         .await
@@ -143,6 +149,7 @@ async fn a_helper_whose_hello_names_no_kad_port_is_cancelled_unasked() {
         REQUEST.to_vec(),
         ctx(0x11, "rmule"),
         &crate::adapters::HelloAdverts::default(),
+        &crate::hello_refusals::SharedHelloRefusals::default(),
         Duration::from_secs(5),
     )
     .await;
@@ -166,7 +173,9 @@ async fn a_helper_whose_hello_names_no_kad_port_is_cancelled_unasked() {
 async fn a_required_policy_node_asks_its_helper_over_a_plain_test_link() {
     let (endpoint, helper) = helper(4672).await;
     let required = crate::adapters::HelloAdverts {
-        crypt_policy: Some(rmule_net::peer::ObfuscationPolicy::Required),
+        obfuscation: crate::obfuscation_policy::SharedObfuscationPolicy::new(Some(
+            rmule_net::peer::ObfuscationPolicy::Required,
+        )),
         ..crate::adapters::HelloAdverts::default()
     };
     let end = enact_udp_firewall_check(
@@ -174,6 +183,7 @@ async fn a_required_policy_node_asks_its_helper_over_a_plain_test_link() {
         REQUEST.to_vec(),
         ctx(0x11, "rmule"),
         &required,
+        &crate::hello_refusals::SharedHelloRefusals::default(),
         Duration::from_secs(5),
     )
     .await;
@@ -188,6 +198,63 @@ async fn a_required_policy_node_asks_its_helper_over_a_plain_test_link() {
     assert_eq!(end, UdpCheckLinkEnd::Closed);
 }
 
+/// kno's `ab483654` answer over IPv6, 10 tags declared and 9 carried
+/// (captured; provenance in the fixture's `meta.toml`).
+const KNO_SHORT_COUNT_ANSWER: &[u8] = include_bytes!(
+    "../../../../../rmule-peer/tests/fixtures/hello_refusal/captured/amule-kno-ab483654-short-count-20260924/amule_kno_op_helloanswer_short_count.bin"
+);
+
+/// A helper whose hello answer is refused (ADR-0050) is counted and raised
+/// like every other refused hello, and the check is cancelled unasked: the
+/// helper dial waits for the hello through the one wait every connection
+/// shares.
+#[tokio::test]
+async fn a_helper_whose_hello_is_refused_is_reported_and_cancelled_unasked() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind the helper");
+    let endpoint = Ipv4Endpoint::new(
+        Ipv4Addr::LOCALHOST,
+        listener.local_addr().expect("bound").port(),
+    );
+    let helper = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("the requester dials in");
+        let mut hello = [0u8; 512];
+        let _ = socket.read(&mut hello).await;
+        socket
+            .write_all(KNO_SHORT_COUNT_ANSWER)
+            .await
+            .expect("answer");
+        let _ = socket.read(&mut hello).await;
+    });
+    let diagnostics = crate::diagnostics::DiagnosticsState::default();
+    let (events_tx, mut events) = mpsc::channel(4);
+    let refusals = crate::hello_refusals::SharedHelloRefusals::default();
+    refusals.install(diagnostics, events_tx.downgrade());
+
+    let end = enact_udp_firewall_check(
+        endpoint,
+        REQUEST.to_vec(),
+        ctx(0x11, "rmule"),
+        &crate::adapters::HelloAdverts::default(),
+        &refusals,
+        Duration::from_secs(5),
+    )
+    .await;
+    assert_eq!(end, UdpCheckLinkEnd::Cancelled);
+    let raised = timeout(Duration::from_secs(2), events.recv())
+        .await
+        .expect("raised within 2s")
+        .expect("an event");
+    assert!(
+        matches!(raised, CoreEvent::PeerHelloRefused { .. }),
+        "the refusal is raised, got {raised:?}"
+    );
+    helper.abort();
+}
+
 #[tokio::test]
 async fn a_refused_dial_is_cancelled() {
     let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -198,6 +265,7 @@ async fn a_refused_dial_is_cancelled() {
         REQUEST.to_vec(),
         ctx(0x11, "rmule"),
         &crate::adapters::HelloAdverts::default(),
+        &crate::hello_refusals::SharedHelloRefusals::default(),
         Duration::from_secs(5),
     )
     .await;
@@ -219,16 +287,15 @@ async fn a_helper_the_peer_roster_already_knows_is_cancelled_unasked() {
         Ipv4Endpoint::new(helper_ip, 4761),
     );
 
-    let sink: SharedKadPump = std::sync::Arc::new(std::sync::Mutex::new(None));
     let (tx, mut rx) = mpsc::channel(4);
-    *sink.lock().unwrap() = Some(tx);
 
     run_udp_firewall_check(
         Ipv4Endpoint::new(helper_ip, 4700),
         REQUEST.to_vec(),
         ctx(0x11, "rmule"),
         crate::adapters::HelloAdverts::default(),
-        sink,
+        crate::hello_refusals::SharedHelloRefusals::default(),
+        tx.downgrade(),
         roster,
     )
     .await;
@@ -297,6 +364,7 @@ impl PeerTransferService for DisconnectingPeerTransfer {
 
 #[tokio::test]
 async fn a_download_workers_connect_marks_the_roster_and_disconnect_forgets_it() {
+    let out_dir = tempfile::tempdir().unwrap();
     // The download runner's fleet loop is the roster's other
     // writer. This drives a real worker session — a live `Core`, a scripted
     // `PeerTransferService` — through the fleet's own `Connected`/
@@ -313,11 +381,11 @@ async fn a_download_workers_connect_marks_the_roster_and_disconnect_forgets_it()
         outcome: crate::SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
             sources: vec![
-                rmule_primitives::ExchangedSource::plain(rmule_primitives::PeerSource::new(
+                rmule_primitives::SourceSighting::plain(rmule_primitives::PeerSource::new(
                     ClientId::from_u32(42),
                     4662,
                 )),
-                rmule_primitives::ExchangedSource::plain(rmule_primitives::PeerSource::new(
+                rmule_primitives::SourceSighting::plain(rmule_primitives::PeerSource::new(
                     ClientId::from_u32(0x0100_007F),
                     4663,
                 )),
@@ -326,6 +394,10 @@ async fn a_download_workers_connect_marks_the_roster_and_disconnect_forgets_it()
     };
     let disconnect = std::sync::Arc::new(tokio::sync::Notify::new());
     let builder = Core::builder(CoreConfig::default(), store)
+        .settings(crate::CoreSettings {
+            download_dir: Some(out_dir.path().to_path_buf()),
+            ..crate::CoreSettings::default()
+        })
         .source_lookup(source)
         .peer_transfer(DisconnectingPeerTransfer {
             disconnect: disconnect.clone(),
@@ -333,7 +405,6 @@ async fn a_download_workers_connect_marks_the_roster_and_disconnect_forgets_it()
     let roster = builder.shared_peer_roster();
     let mut core = builder.build();
 
-    let out_dir = tempfile::tempdir().unwrap();
     let file = Ed2kFileLink {
         name: Ed2kText::from_utf8("example.bin"),
         size: 11,
@@ -348,8 +419,11 @@ async fn a_download_workers_connect_marks_the_roster_and_disconnect_forgets_it()
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: ctx(0x42, "rmule-core").identity.into(),
-        output_path: out_dir.path().join("roster-download-leg.bin"),
+        name: rmule_primitives::SafeFileName::clean(
+            "roster-download-leg.bin",
+            &rmule_primitives::FileHash::from_bytes([0; 16]),
+        ),
+        if_taken: crate::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -377,15 +451,14 @@ async fn a_download_workers_connect_marks_the_roster_and_disconnect_forgets_it()
     // The requester gate (ADR-0058), exercised end to end against
     // a roster the download side fed for real: a helper at this same IP is
     // cancelled unasked, exactly as an upload-known one is above.
-    let sink: SharedKadPump = std::sync::Arc::new(std::sync::Mutex::new(None));
     let (tx, mut rx) = mpsc::channel(4);
-    *sink.lock().unwrap() = Some(tx);
     run_udp_firewall_check(
         Ipv4Endpoint::new(peer_ip, 4700),
         REQUEST.to_vec(),
         ctx(0x11, "rmule"),
         crate::adapters::HelloAdverts::default(),
-        sink,
+        crate::hello_refusals::SharedHelloRefusals::default(),
+        tx.downgrade(),
         roster.clone(),
     )
     .await;
@@ -434,4 +507,40 @@ async fn next_core_event(core: &mut Core) -> CoreEvent {
         .await
         .expect("core emitted next event within 2s")
         .expect("core event stream stayed open")
+}
+
+/// The check outlives a Kad restart (it holds its link up to 40 s): its end
+/// belongs to the node that asked. The shared pump cell now holds the
+/// successor's inbox, and a result that reached it would be counted against
+/// whatever helper the successor engaged.
+#[tokio::test]
+async fn a_check_that_outlives_its_node_does_not_report_to_the_successor() {
+    let helper_ip = Ipv4Addr::new(203, 0, 113, 51);
+    let roster = SharedPeerRoster::default();
+    roster.mark_known(
+        crate::peer_roster::PeerRelation::Upload,
+        Ipv4Endpoint::new(helper_ip, 4761),
+    );
+    let (predecessor_tx, predecessor_rx) = mpsc::channel(4);
+    let asker = predecessor_tx.downgrade();
+    drop((predecessor_tx, predecessor_rx));
+    let successor = crate::adapters::kad_runtime::SharedKadPump::default();
+    let (successor_tx, mut successor_rx) = mpsc::channel(4);
+    successor.install_for_good(successor_tx);
+
+    run_udp_firewall_check(
+        Ipv4Endpoint::new(helper_ip, 4700),
+        REQUEST.to_vec(),
+        ctx(0x11, "rmule"),
+        crate::adapters::HelloAdverts::default(),
+        crate::hello_refusals::SharedHelloRefusals::default(),
+        asker,
+        roster,
+    )
+    .await;
+
+    assert!(
+        successor_rx.try_recv().is_err(),
+        "the old node's result is dropped, not delivered to the node now running"
+    );
 }

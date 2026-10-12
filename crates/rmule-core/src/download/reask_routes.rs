@@ -22,7 +22,7 @@ use rmule_primitives::PeerEndpoint;
 use tokio::sync::mpsc;
 
 use crate::client_udp::ClientUdpDatagram;
-use crate::download::remote_queue::UDP_REASK_LEAD;
+use crate::download::source_book::UDP_REASK_LEAD;
 use crate::service::DownloadId;
 
 /// One `0x90` out, awaiting its reply.

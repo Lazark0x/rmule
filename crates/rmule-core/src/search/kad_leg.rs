@@ -115,11 +115,6 @@ impl KadKeywordSink {
         )
     }
 
-    /// Whether the search has ended.
-    pub(crate) fn is_closed(&self) -> bool {
-        self.rows.is_closed()
-    }
-
     /// Tell the search `fact`; never lost while the search listens.
     pub(crate) fn tell(&self, fact: KadWalkFact) {
         let _ = self.facts.send(fact);

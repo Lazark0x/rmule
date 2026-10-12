@@ -9,7 +9,7 @@
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
-use crate::run_log::Level;
+use rmule_core::run_log::Level;
 
 /// What an invocation asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -21,6 +21,7 @@
 //! Node-level, explicit-time, no sockets (ADR-0045 deterministic tier), the
 //! `join_dial.rs` harness shape.
 
+use rmule_kad::KadNodeStart;
 use std::time::Duration;
 
 use crate::fixture::{OWN_ID, SECOND, TWENTY_MIN, ep};
@@ -31,13 +32,22 @@ use rmule_kad::{
 use rmule_testkit::drain_split;
 use rmule_testkit::kad_node::T0;
 
-fn node() -> KadNode {
-    KadNode::new(KadNodeConfig {
+fn config() -> KadNodeConfig {
+    KadNodeConfig {
         id: KadId::from_bytes(OWN_ID),
         tcp_port: 4662,
         udp_port: 4672,
         user_hash: rmule_kad::UserHash::from_bytes([0xEE; 16]),
-    })
+    }
+}
+
+fn node() -> KadNode {
+    KadNode::new(KadNodeStart::new(config(), T0))
+}
+
+/// A node running the small-timer hello pass from [`T0`].
+fn timed_node() -> KadNode {
+    KadNode::new(KadNodeStart::new(config(), T0).small_timer())
 }
 
 /// A nodes.dat-merged contact: enters `Responded` (the `MergeContacts`
@@ -107,8 +117,7 @@ fn hello_destinations(datagrams: &[(KadNodeEndpoint, Vec<u8>)]) -> Vec<KadNodeEn
 /// contract.
 #[test]
 fn the_first_pass_hellos_each_bucket_front_within_seconds() {
-    let mut n = node();
-    n.arm_small_timer(T0);
+    let mut n = timed_node();
     // Three contacts in three distinct buckets (first-byte XOR distances
     // 0x80/0x40/0x20 → buckets 0/1/2).
     merge(
@@ -142,8 +151,7 @@ fn the_first_pass_hellos_each_bucket_front_within_seconds() {
 /// eviction on its own, not the probe machinery's timeout.
 #[test]
 fn a_lapsed_contact_gets_a_second_hello_before_it_is_evicted() {
-    let mut n = node();
-    n.arm_small_timer(T0);
+    let mut n = timed_node();
     merge(&mut n, vec![merged(0x8F, 1)]);
     let id = KadId::from_bytes([0x8F; 16]);
     let check_window = Duration::from_secs(2 * 60);
@@ -201,8 +209,7 @@ fn a_lapsed_contact_gets_a_second_hello_before_it_is_evicted() {
 /// usual alive-window re-greet cadence resumes.
 #[test]
 fn an_answer_between_the_two_hellos_saves_the_contact() {
-    let mut n = node();
-    n.arm_small_timer(T0);
+    let mut n = timed_node();
     merge(&mut n, vec![merged(0x8F, 1)]);
 
     // First hello, unanswered.
@@ -311,8 +318,7 @@ fn had_contact_fires_on_the_silent_to_heard_edge_only() {
 /// very next pass, since a never-checked contact is due at once.
 #[test]
 fn a_merged_contact_draws_a_hello_while_joined() {
-    let mut n = node();
-    n.arm_small_timer(T0);
+    let mut n = timed_node();
     n.handle_datagram(T0, ep(9), &ping_bytes());
     drain_split(&mut n);
     n.tick(T0 + KadNode::SMALL_TIMER_INITIAL);
@@ -340,8 +346,7 @@ fn a_merged_contact_draws_a_hello_while_joined() {
 /// next contact.
 #[test]
 fn each_bucket_greets_at_most_one_due_contact_per_pass() {
-    let mut n = node();
-    n.arm_small_timer(T0);
+    let mut n = timed_node();
     // Three in bucket 0 (first-byte distance ≥ 0x80), one in bucket 1.
     merge(
         &mut n,
@@ -387,8 +392,7 @@ fn each_bucket_greets_at_most_one_due_contact_per_pass() {
 /// long-running node's table honest.
 #[test]
 fn an_answered_contact_is_not_regreeted_until_its_alive_window_lapses() {
-    let mut n = node();
-    n.arm_small_timer(T0);
+    let mut n = timed_node();
     merge(&mut n, vec![merged(0x8F, 1)]);
     let hour = Duration::from_secs(60 * 60);
 

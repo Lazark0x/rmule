@@ -57,12 +57,6 @@ pub enum AttachFailure {
     NoDataDir,
     /// The Durable Store would not open.
     OpenStore,
-    /// The node's identity could not be read or made.
-    Identity,
-    /// The Kad identity could not be read or made.
-    KadIdentity,
-    /// The Kad UDP key could not be read or made.
-    KadUdpKey,
     /// The port-mapping secret could not be read or made.
     PortMapSecret,
     /// The server list could not be read.
@@ -247,6 +241,7 @@ impl UiState {
             | Action::Actions(_)
             | Action::CopyLink(_)
             | Action::Preference(_)
+            | Action::ConfirmDownloadDir(_)
             | Action::SearchRelated(_)
             | Action::StartKad
             | Action::Quit => false,
@@ -254,9 +249,8 @@ impl UiState {
     }
 
     /// Replace the level set (latest-state-wins) and stamp the injected
-    /// observation time. `diagnostics.kad` arrives here too: the bridge lifts
-    /// it off the actor's `DumpDiagnostics` echo and patches it into the tick
-    /// Because the sync accessor cannot see it.
+    /// observation time. `diagnostics.kad` arrives here too: the sync
+    /// accessor reports it in full (ADR-0028).
     pub fn apply_snapshot(&mut self, frame: BridgeSnapshot, now: Instant) -> bool {
         self.push_rate_sample(&frame.rates, now);
         server_health::log_edges(self, &frame.diagnostics, now);
@@ -320,12 +314,10 @@ pub fn fold(state: &mut UiState, event: CoreEvent) -> bool {
         }
         CoreEvent::ServerList(event) => server::fold_list(state, event),
         CoreEvent::ServerConnection(event) => server::fold_connection(state, event),
-        // Levels ride the bridge's data tick ([`Action::Snapshot`]) — Kad
-        // facts included: the bridge polls `DumpDiagnostics`, lifts
-        // `kad` off this echo, and patches it into the next tick's snapshot,
-        // so the echo never reaches the bus. An echo that arrives here came
-        // from some other diagnostics tooling and is still not the UI's
-        // channel; the log line `apply` pushed is its whole footprint.
+        // Levels ride the bridge's data tick ([`Action::Snapshot`]), Kad facts
+        // included; the TUI never sends `DumpDiagnostics`. The event stays in
+        // core for mpsc-only tooling (ADR-0028), so this exhaustive match
+        // names it and folds nothing.
         CoreEvent::DiagnosticsSnapshot { .. } => false,
         CoreEvent::FileHistory { history } => serve::fold_history(state, history),
         // The Kad node died mid-session — an operator-relevant
@@ -343,6 +335,11 @@ pub fn fold(state: &mut UiState, event: CoreEvent) -> bool {
         // So is a late Kad helper test: the TCP verdict is the level, and a
         // test that no longer counts leaves it where it was.
         CoreEvent::KadHelperTestLate { .. } => false,
+        // Our own posture: the Settings tab holds the value, the log pane the
+        // line `apply` pushed.
+        CoreEvent::ObfuscationPolicyAtStart { .. } | CoreEvent::ObfuscationPolicyChanged { .. } => {
+            false
+        }
     }
 }
 

@@ -4,7 +4,9 @@
 //! speaks (the inverse of the outbound deadline).
 
 use crate::fixture::plain_hello_body;
-use rmule_peer::{Hello, PeerCloseReason, PeerEvent, PeerOutput, PeerPacket, PeerSession};
+use rmule_peer::{
+    ConnectionEvent, Hello, PeerCloseReason, PeerEvent, PeerOutput, PeerPacket, PeerSession,
+};
 use rmule_primitives::session::drain;
 use rmule_primitives::{Packet, UserHash};
 use rmule_testkit::peer_session::{peer_at, serverless_ctx};
@@ -23,10 +25,12 @@ fn inbound_hello_identifies_peer_and_replies_hello_answer() {
     let identified = outputs
         .iter()
         .find_map(|o| match o {
-            PeerOutput::Event(PeerEvent::PeerIdentified { identity }) => Some(identity),
+            PeerOutput::Event(PeerEvent::Connection(ConnectionEvent::Identified { identity })) => {
+                Some(identity)
+            }
             _ => None,
         })
-        .expect("PeerIdentified emitted for the dialing peer");
+        .expect("Identified emitted for the dialing peer");
     assert_eq!(identified.user_hash(), remote);
 
     let reply = outputs

@@ -16,8 +16,8 @@ use std::time::Duration;
 use rmule_net::family::FamilySelection;
 
 use super::{
-    HelloAdverts, SharedCallbackTable, SharedDialedServeSink, SharedKadBootstrap, SharedKadPump,
-    SharedTunnelAdmit, SharedTunnelClaims,
+    AwaitedInbound, HelloAdverts, SharedDialedServeSink, SharedKadBootstrap, SharedKadPump,
+    SharedTunnelAdmit,
 };
 use crate::address_learning::SharedAddressLearning;
 use crate::ban_store::SharedBanStore;
@@ -35,8 +35,8 @@ pub struct AdapterCells {
     /// The one eD2k server session (ADR-0032); also the home of the node's
     /// own-identity cell and, through it, Address Learning.
     pub(crate) session: SharedServerSession,
-    /// The Low-ID callback table (ADR-0039).
-    pub(crate) callbacks: SharedCallbackTable,
+    /// The **Awaited Inbound** registry (ADR-0039, ADR-0091).
+    pub(crate) awaited_inbound: AwaitedInbound,
     /// Where a dialed download connection's serve half goes (ADR-0031).
     pub(crate) dialed_serve_sink: SharedDialedServeSink,
     /// `CoreConfig::slot_wait_timeout`, which the serve half of a called-back
@@ -62,8 +62,6 @@ pub struct AdapterCells {
     pub(crate) file_known: crate::known_files::SharedFileKnown,
     /// Where a risen NAT-T Tunnel enters the serve pipeline (ADR-0091).
     pub(crate) tunnel_admit: SharedTunnelAdmit,
-    /// The Pending Tunnel Claim table (ADR-0091).
-    pub(crate) tunnel_claims: SharedTunnelClaims,
     /// `CoreConfig::address_families` (ADR-0085).
     pub(crate) address_families: FamilySelection,
     /// Where a refused peer hello is counted and raised (ADR-0050).
@@ -88,7 +86,7 @@ impl AdapterCells {
     pub(crate) fn detached() -> Self {
         Self {
             session: SharedServerSession::default(),
-            callbacks: SharedCallbackTable::default(),
+            awaited_inbound: AwaitedInbound::default(),
             dialed_serve_sink: SharedDialedServeSink::default(),
             slot_wait_timeout: crate::DEFAULT_SLOT_WAIT_TIMEOUT,
             ban_store: SharedBanStore::default(),
@@ -101,7 +99,6 @@ impl AdapterCells {
             firewalled_front: crate::firewalled::front::SharedFirewalledFront::default(),
             file_known: crate::known_files::SharedFileKnown::default(),
             tunnel_admit: SharedTunnelAdmit::default(),
-            tunnel_claims: SharedTunnelClaims::default(),
             address_families: FamilySelection::default(),
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
         }

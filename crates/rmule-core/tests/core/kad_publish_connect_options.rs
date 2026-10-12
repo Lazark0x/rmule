@@ -11,13 +11,14 @@
 //! firewalled, so no direct-callback bit), and the NAT-T front (uTP served,
 //! QUIC dark, ADR-0091).
 
+use rmule_testkit::HANG_GUARD;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::time::Duration;
 
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, KadEnableConfig, KadId, ServeCommand, ServeEvent,
 };
-use rmule_primitives::{ClientIdentity, Ed2kText, FileHashSummary, SourceLookupTarget, UserHash};
+use rmule_primitives::{FileHashSummary, SourceLookupTarget, UserHash};
 use tokio::time::timeout;
 
 fn reserve_tcp_port() -> u16 {
@@ -29,9 +30,9 @@ fn reserve_tcp_port() -> u16 {
 
 async fn until(core: &mut Core, wanted: impl Fn(&CoreEvent) -> bool) {
     loop {
-        let event = timeout(Duration::from_secs(10), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
-            .expect("core emitted the awaited event within 10s")
+            .expect("core emitted the awaited event")
             .expect("core event stream stayed open");
         if wanted(&event) {
             return;
@@ -58,8 +59,7 @@ async fn a_reachable_rmule_publishes_the_connect_options_it_holds() {
             capture_dir: None,
             nodes_dat_path: None,
             firewall_self_check: false,
-            datagram_obfuscation: false,
-            verify_keys: None,
+            obfuscation: None,
             contact_admission: None,
         },
         SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
@@ -72,20 +72,24 @@ async fn a_reachable_rmule_publishes_the_connect_options_it_holds() {
 
     let config = CoreConfig {
         kad_sweep_interval: Duration::from_millis(100),
-        peer_crypt: Some(rmule_net::peer::ObfuscationPolicy::Requested),
         ..CoreConfig::default()
     };
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("payload.bin"), &bytes).unwrap();
     let tcp = reserve_tcp_port();
     let user_hash = UserHash::from_bytes([0xA1; UserHash::BYTE_LEN]);
-    let identity = ClientIdentity::new(user_hash, Ed2kText::from_utf8("rmule-fw"), tcp, 60);
     let mut core = Core::builder(config, rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings {
+            nickname: "rmule-fw".to_owned(),
+            tcp_port: tcp,
+            obfuscation: Some(rmule_net::peer::ObfuscationPolicy::Requested),
+            ..rmule_core::CoreSettings::default()
+        })
         .user_hash(user_hash)
+        .kad_id(KadId::from_bytes([0xA1; KadId::BYTE_LEN]))
         .build();
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, tcp),
-        credentials: identity.clone().into(),
     }))
     .await
     .unwrap();
@@ -94,15 +98,12 @@ async fn a_reachable_rmule_publishes_the_connect_options_it_holds() {
     })
     .await;
     core.send(CoreCommand::EnableKad(KadEnableConfig {
-        kad_id: KadId::from_bytes([0xA1; KadId::BYTE_LEN]),
-        peer_credentials: identity.into(),
         bootstrap: vec![storer_addr],
         contacts: Vec::new(),
         nodes_dat_path: None,
         // Reachable, so the Core publishes the direct row: firewalled with no
         // buddy, it would publish nothing.
         assume_open_reachability: true,
-        kad_udp_key: 0,
         kad_capture_dir: None,
         kad_shutdown: None,
     }))
@@ -120,7 +121,7 @@ async fn a_reachable_rmule_publishes_the_connect_options_it_holds() {
         .await
         .unwrap();
     let search = rmule_testkit::kad_source::search_datagram(key, 0, summary.file_size());
-    let row = timeout(Duration::from_secs(15), async {
+    let row = timeout(HANG_GUARD, async {
         let mut buffer = [0u8; 2048];
         loop {
             searcher.send_to(&search, storer_addr).await.unwrap();
@@ -147,7 +148,7 @@ async fn a_reachable_rmule_publishes_the_connect_options_it_holds() {
         }
     })
     .await
-    .expect("the storer re-served the Core's publish within 15s");
+    .expect("the storer re-served the Core's publish");
 
     // Reachable, so the row is the direct one — the byte is what varies.
     assert_eq!(row.source_type, 1);

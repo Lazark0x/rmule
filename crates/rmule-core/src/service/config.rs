@@ -1,6 +1,7 @@
-//! What the operator hands the core at build time: the tunables a session
-//! runs against ([`CoreConfig`]) and the verification stance a download's
-//! hash authority grants it. Every default here is aMule's, so a stock
+//! The engineering knobs a session runs against ([`CoreConfig`]: timeouts,
+//! concurrency, cadences) and the verification stance a download's hash
+//! authority grants it. The operator's preferences are not here: they are
+//! **Core Settings** (ADR-0069). Every default here is aMule's, so a stock
 //! session behaves like a stock aMule.
 
 use std::time::Duration;
@@ -9,7 +10,6 @@ use rmule_net::family::FamilySelection;
 
 use crate::address_learning::ExternalAddressOverride;
 use crate::port_mapping::PortMappingConfig;
-use rmule_net::peer::ObfuscationPolicy;
 use serde::{Deserialize, Serialize};
 
 /// Where a download's part hashes came from, which is what verifying a part
@@ -34,9 +34,11 @@ pub enum VerificationAuthority {
 /// deadline.
 pub const DEFAULT_SLOT_WAIT_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// The tunables one session runs against, fixed for the life of the [`Core`]
-/// it is built with. Every default matches stock aMule, so a `CoreConfig`
-/// straight from `Default` behaves the way aMule would.
+/// The engineering knobs one session runs against, fixed for the life of the
+/// [`Core`] it is built with — timeouts, concurrency, cadences. What the
+/// operator chooses is [`CoreSettings`](crate::CoreSettings), not this. Every
+/// default matches stock aMule, so a `CoreConfig` straight from `Default`
+/// behaves the way aMule would.
 ///
 /// [`Core`]: crate::Core
 #[derive(Clone, Debug)]
@@ -141,35 +143,6 @@ pub struct CoreConfig {
     /// The crypt-ping reply grace before a plain fallback (aMule's 20 s
     /// `CryptPingReplyPending` window, ADR-0046).
     pub crypt_ping_grace: Duration,
-    /// rmule's **peer** protocol-obfuscation policy (ADR-0042/0046), or `None`
-    /// (the default) for no obfuscation at all. ADR-0046 keeps one policy value
-    /// across the stream and datagram forms, interpreted per transport, so this
-    /// single knob:
-    ///
-    /// - lights the peer hello's `MiscOptions2` crypt bits — honestly, because
-    ///   it simultaneously
-    /// - makes every accepted peer-TCP connection dual-path (`rmule_net::peer`'s
-    ///   obfuscation-aware accept), and
-    /// - arms the peer-UDP per-datagram layer on the shared client-UDP socket:
-    ///   dual-path receive always, send-encrypt under the ADR-0046 gate, and
-    /// - arms the Kad node's datagram crypt and UDP verify keys, keyed on
-    ///   [`KadEnableConfig::kad_udp_key`](crate::KadEnableConfig::kad_udp_key)
-    ///   — aMule gates Kad obfuscation on the same
-    ///   `IsClientCryptLayerSupported()`, and
-    /// - arms the server-UDP crypt-ping arm ([`CoreConfig::server_udp_crypt`]):
-    ///   the status sweep probes each due server with an obfuscated crypt-ping
-    ///   first and the engine dual-path decrypts replies — aMule ties this to
-    ///   the same `IsServerCryptLayerUDPEnabled() == IsClientCryptLayerSupported()`
-    ///   preference (`Preferences.h:883`); rmule keeps no separate
-    ///   bool, matching ADR-0046's own rejection of "a separate datagram policy
-    ///   enum".
-    ///
-    /// `Supported` accepts obfuscation without initiating it (rmule's dials and
-    /// datagrams stay plaintext unless the peer asks for obfuscation);
-    /// `Requested`/`Required` also initiate. Off by default: the datagram byte
-    /// facts are `[pending]` until an ADR-0046 peer-UDP capture ratifies them,
-    /// and rmule advertises no capability it has not proven it can answer.
-    pub peer_crypt: Option<ObfuscationPolicy>,
     /// How often the Kad source discovery task (ADR-0043) scans the active
     /// downloads and shared files for due work. Bounds first-ask and
     /// first-publish latency; the protocol cadences below gate actual sends.
@@ -185,6 +158,9 @@ pub struct CoreConfig {
     /// `MAX_PURGEQUEUETIME`, 1 h): disconnected standing survives only while
     /// the reask heartbeat keeps beating (ADR-0057).
     pub upload_reask_purge_after: Duration,
+    /// How long a shared directory that is not there waits between looks for
+    /// its return (ADR-0101, "Missing"): one `stat` a minute.
+    pub missing_directory_look: Duration,
     /// Whether the peer-TCP surfaces consult the IP filter (aMule
     /// `IpFilterClients`, default **true** — aMule filters out of the box,
     /// with an empty table until a dat file exists). Gates the accept, dial,
@@ -199,28 +175,14 @@ pub struct CoreConfig {
     /// 127): only ranges whose level is **strictly below** this block, and
     /// the cut is applied when the table is built from the dat files.
     pub ip_filter_level: u8,
-    /// The UDP port rmule's **one client-UDP socket** binds (ADR-0057's
-    /// socket unification): the peer-UDP reask surface, the NAT-T transport
-    /// frames and the Kad node all ride it, so there is one port to configure,
-    /// one router mapping to hold open, and one **External Endpoint** every
-    /// observer is talking about.
-    ///
-    /// `0` — the default — takes an OS-assigned ephemeral port, which is what
-    /// a test wants and what a session with no persisted preference falls back
-    /// to. A front-end passes the operator's stored port here (the eMule/aMule
-    /// default is [`DEFAULT_UDP_PORT`](crate::app_config::DEFAULT_UDP_PORT),
-    /// 4672); core reads no config store of its own (ADR-0069), so it cannot
-    /// default to the stored value itself — and a fixed default would have
-    /// every test core fight for one port.
-    pub udp_port: u16,
     /// The UDP port the **server-UDP** socket binds (the global source
-    /// sweep, status pings and the server description ask). Unlike
-    /// [`udp_port`](Self::udp_port) this is never advertised — no server or
-    /// peer is ever told this number, a reply simply returns to whichever
-    /// port sent the ask — so `0`, the default, is right for every real
-    /// deployment as well as a test. The field exists at all so a test can
-    /// pin it and hold it, the way [`udp_port`](Self::udp_port) already lets
-    /// one prove a **Half-Bound Pair**.
+    /// sweep, status pings and the server description ask). Unlike the
+    /// client-UDP port ([`CoreSettings::udp_port`](crate::CoreSettings::udp_port))
+    /// this is never advertised — no server or peer is ever told this number,
+    /// a reply simply returns to whichever port sent the ask — so `0`, the
+    /// default, is right for every real deployment as well as a test. The
+    /// field exists at all so a test can pin it and hold it, the way the
+    /// client-UDP port already lets one prove a **Half-Bound Pair**.
     pub server_udp_port: u16,
     /// Which **Address Families** every socket role binds (ADR-0085): the
     /// peer TCP listener, client UDP and server UDP each bind a **Family
@@ -237,16 +199,10 @@ pub struct CoreConfig {
     /// operator who states an address has information rmule does not, and is
     /// the only source exempt from the local-interface corroboration filter.
     pub external_address: ExternalAddressOverride,
-    /// The **Port Mapping** knobs (ADR-0086): whether to map at all, which of
-    /// PCP / NAT-PMP / UPnP may be raced, the lifetime to ask a gateway for,
-    /// and whether mappings are withdrawn on a clean exit.
-    ///
-    /// **On by default**, against aMule's off-by-default: a firewalled home
-    /// node is the common rmule deployment, and forfeiting High-ID for every
-    /// operator who never opens a settings screen is the larger harm. The
-    /// field lives here rather than on a session type because core has no
-    /// `SessionConfig` — that name belongs to the `rmule` app — and this is where
-    /// ADR-0084's `external_address` override landed for the same reason.
+    /// The **Port Mapping** knobs (ADR-0086): which of PCP / NAT-PMP / UPnP
+    /// may be raced, the lifetime to ask a gateway for, and whether mappings
+    /// are withdrawn on a clean exit. Whether to map at all is the operator's
+    /// [`CoreSettings::port_mapping`](crate::CoreSettings::port_mapping).
     pub port_mapping: PortMappingConfig,
     /// The **NAT-T** knobs (ADR-0091). Today one: `natt.port_prediction`,
     /// the one-symmetric birthday policy of ADR-0091's port-prediction
@@ -256,14 +212,9 @@ pub struct CoreConfig {
     pub natt: NattConfig,
     /// Response-body cap for the server.met download an on-demand
     /// [`ServerListCommand::UpdateServerList`](crate::ServerListCommand::UpdateServerList) runs (ADR-0080). The URL rides
-    /// the command — a front-end owns which mirror it trusts (ADR-0069) — but
+    /// the command — the operator may name any mirror for one update — but
     /// the hardening cap is core's, so no caller can raise it.
     pub max_server_met_bytes: usize,
-    /// The operator's `Remember peers` at start (ADR-0109, "Source Seeds"):
-    /// how many peers each running download writes as its seeds. A front end
-    /// changes it live with
-    /// [`CoreCommand::SetRememberPeers`](crate::CoreCommand::SetRememberPeers).
-    pub remember_peers: crate::RememberPeers,
 }
 
 /// The NAT-T knobs [`CoreConfig::natt`] carries (ADR-0091).
@@ -302,8 +253,6 @@ impl Default for CoreConfig {
             status_ping_tick: Duration::from_secs(5),
             status_ping_reask: Duration::from_secs(20 * 60),
             crypt_ping_grace: Duration::from_secs(20),
-            peer_crypt: None,
-            udp_port: 0,
             server_udp_port: 0,
             address_families: FamilySelection::default(),
             external_address: ExternalAddressOverride::default(),
@@ -313,11 +262,11 @@ impl Default for CoreConfig {
             kad_reask_interval: Duration::from_secs(3600),
             upload_purge_interval: Duration::from_secs(60),
             upload_reask_purge_after: Duration::from_secs(3600),
+            missing_directory_look: Duration::from_secs(60),
             ip_filter_clients: true,
             ip_filter_servers: true,
             ip_filter_level: 127,
             max_server_met_bytes: rmule_bootstrap::DEFAULT_MAX_SERVER_MET_BYTES,
-            remember_peers: crate::RememberPeers::DEFAULT,
         }
     }
 }
@@ -333,17 +282,6 @@ impl CoreConfig {
         } else {
             self.peer_concurrency_per_download
         }
-    }
-
-    /// Whether the server-UDP crypt layer is armed: derived from
-    /// [`CoreConfig::peer_crypt`] rather than a bool of its own (ADR-0046)
-    /// — aMule's `IsServerCryptLayerUDPEnabled()` reads the same
-    /// preference as every other crypt surface (`Preferences.h:883`). Any set
-    /// policy arms the status sweep's obfuscated crypt-ping and the engine's
-    /// dual-path decrypt; unset leaves the server-UDP surface plaintext.
-    #[must_use]
-    pub const fn server_udp_crypt(&self) -> bool {
-        self.peer_crypt.is_some()
     }
 }
 
@@ -364,20 +302,5 @@ mod tests {
             ..CoreConfig::default()
         };
         assert_eq!(none_configured.effective_peer_concurrency_per_download(), 1);
-    }
-
-    /// ADR-0046: rmule keeps no bool of its own for the
-    /// server-UDP crypt layer — it follows whichever `peer_crypt` policy is
-    /// set, matching aMule's one `IsServerCryptLayerUDPEnabled() ==
-    /// IsClientCryptLayerSupported()` preference.
-    #[test]
-    fn server_udp_crypt_follows_the_peer_crypt_policy() {
-        assert!(!CoreConfig::default().server_udp_crypt());
-
-        let armed = CoreConfig {
-            peer_crypt: Some(ObfuscationPolicy::Supported),
-            ..CoreConfig::default()
-        };
-        assert!(armed.server_udp_crypt());
     }
 }

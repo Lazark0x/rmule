@@ -11,8 +11,8 @@ use rmule_core::{
     RuntimeServeRuntimeService, SourceLookupOutcome, SourceLookupService,
 };
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, Ed2kText, ExchangedSource, FileHashSummary, PeerEndpoint, PeerSource,
-    ServerEndpoint, SourceLookupTarget, UserHash,
+    ClientId, Ed2kFileLink, Ed2kText, FileHashSummary, PeerEndpoint, PeerSource, ServerEndpoint,
+    SourceLookupTarget, SourceSighting, UserHash,
 };
 
 const FILE_BYTES: usize = 4096; // sub-part file: one block, one BlockReceived
@@ -28,7 +28,7 @@ impl SourceLookupService for OneSourceLookup {
     ) -> Result<SourceLookupOutcome, DownloadFailure> {
         Ok(SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![ExchangedSource::plain(self.peer)],
+            sources: vec![SourceSighting::plain(self.peer)],
         })
     }
 }
@@ -54,11 +54,10 @@ impl PeerTransferService for CreditingPeerTransfer {
         let verified_key = self.verified_key.clone();
         tokio::spawn(async move {
             let _ = event_tx
-                .send(PeerWorkerEvent::Identified {
+                .send(PeerWorkerEvent::Identity(crate::fixture::peer_identity(
                     user_hash,
-                    crypt: Some(rmule_primitives::CryptStance::disabled()),
-                    software: nameless_software(),
-                })
+                    rmule_primitives::CryptStance::disabled(),
+                )))
                 .await;
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
             if let Some(public_key) = verified_key {
@@ -108,11 +107,16 @@ async fn run_credited_download(
     user_hash: UserHash,
     verified_key: Option<Vec<u8>>,
 ) -> Vec<CoreEvent> {
+    let output_dir = tempfile::tempdir().expect("temp dir");
     let bytes = vec![0x5A_u8; FILE_BYTES];
     let summary = FileHashSummary::digest_bytes(&bytes);
     let source = PeerSource::new(ClientId::from_u32(0x0200_007F), 5000);
 
     let mut core = Core::builder(CoreConfig::default(), store)
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            output_dir.path(),
+        ))
         .source_lookup(OneSourceLookup { peer: source })
         .peer_transfer(CreditingPeerTransfer {
             bytes,
@@ -131,12 +135,11 @@ async fn run_credited_download(
         ipv6_sources: Vec::new(),
         sources: Default::default(),
     };
-    let output_dir = tempfile::tempdir().expect("temp dir");
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: rmule_testkit::test_identity(0x01, "rmule", 4662).into(),
-        output_path: output_dir.path().join("credited.bin"),
+        name: rmule_testkit::file_name("credited.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -229,16 +232,4 @@ async fn a_mismatched_key_never_rebinds_and_reports_the_theft() {
         FILE_BYTES as u64,
         "unsecured accrual is untouched by the denial"
     );
-}
-
-/// The identification a hello naming no user yields — the fake worker has
-/// no hello, and credit accounting reads none.
-fn nameless_software() -> rmule_peer::ClientSoftware {
-    rmule_peer::ClientSoftware::from_hello_body(&rmule_peer::PeerHelloBody {
-        user_hash: rmule_primitives::UserHash::from_bytes([0; 16]),
-        client_id: rmule_primitives::ClientId::from_u32(0),
-        tcp_port: 0,
-        tags: Vec::new(),
-        connected_server: rmule_primitives::Ipv4Endpoint::new(std::net::Ipv4Addr::UNSPECIFIED, 0),
-    })
 }

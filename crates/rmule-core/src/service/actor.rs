@@ -1,5 +1,5 @@
 //! The core actor: one task owning every activity a session runs. It takes
-//! [`CoreCommand`]s off the front end's channel, drives the
+//! [`CoreCommand`]s and live Core Settings off its one inbox, drives the
 //! download, serve, search, server-list and Kad legs against the seams the
 //! builder wove, and reports back as [`CoreEvent`]s. Nothing
 //! here decides protocol behaviour — each activity's brain does that; the actor
@@ -18,6 +18,7 @@ mod serve;
 mod server;
 mod server_intent;
 mod server_udp_front;
+mod settings;
 mod share_flush;
 mod shared_directory;
 
@@ -32,8 +33,7 @@ use tokio::sync::{Mutex, mpsc, watch};
 
 use crate::adapters::{
     KadRuntimeFactory, PeerTransferService, RuntimeServerUdpTransport, ServeRuntimeService,
-    SharedCallbackTable, SharedDialedServeSink, SharedUdpPortsAdvert, SourceLookupService,
-    relay_global_callbacks,
+    SharedDialedServeSink, SharedUdpPortsAdvert, SourceLookupService, relay_global_callbacks,
 };
 use crate::buddy_link::SharedBuddySlot;
 use crate::client_udp::{ClientUdpDatagram, ClientUdpSend};
@@ -44,12 +44,11 @@ use crate::global_sources::{
 use crate::ip_filter::SharedIpFilter;
 use crate::kad_sources::KadSourceRegistry;
 use crate::own_identity::SharedOwnIdentity;
-use crate::registry::auto_share_completed_download;
 use crate::search::LiveSearches;
 use crate::server_capabilities::SharedServerCapabilities;
 use crate::server_list::{ServerFacts, ServerListFetcher, SharedServerListStore};
 use crate::server_session::SharedServerSession;
-use crate::server_udp::{ServerUdpEngine, StatusChallenges};
+use crate::server_udp::{ServerUdpEngine, ServerUdpSeal, StatusChallenges};
 use crate::source_discovery::SourceDiscovery;
 use crate::store::download::DurableDownloadRepository;
 use crate::store::registry::DurableSharedFileRegistry;
@@ -75,6 +74,62 @@ fn notify_kad_publisher<C>(kad: &Option<kad::KadActivity<C>>) {
     }
 }
 
+/// The **Core Settings** a core starts under (ADR-0069), less the
+/// **Obfuscation Policy**: that key is live, and from build on it lives in its
+/// one cell (ADR-0046), so its start value is not kept where a reader could
+/// take it for the policy in force. The live keys kept here — the server
+/// policy, `Remember peers`, the download directory — are read once, at
+/// start, to seed the owner each live change then writes; the rest take
+/// effect at the next start.
+pub(super) struct StartSettings {
+    /// The nickname and TCP port every login, hello and Kad dial presents.
+    pub(super) credentials: super::ClientCredentials,
+    /// The one client-UDP socket's port.
+    pub(super) udp_port: u16,
+    /// Whether rmule maps its own ports.
+    pub(super) port_mapping: crate::port_mapping::PortMappingMode,
+    /// How many peers each running download writes as its seeds, at start.
+    pub(super) remember_peers: crate::RememberPeers,
+    /// The Dead Server Limit and the Announce Policy, at start.
+    pub(super) server_policy: crate::ServerPolicy,
+    /// The download directory, at start.
+    pub(super) download_dir: Option<PathBuf>,
+}
+
+impl StartSettings {
+    /// Split the settings a core is built under into the Obfuscation Policy,
+    /// which seeds its cell, and the rest. Every key is named, so a new one
+    /// does not compile until it is placed.
+    pub(super) fn split(
+        settings: crate::CoreSettings,
+    ) -> (Self, Option<rmule_net::peer::ObfuscationPolicy>) {
+        let credentials = settings.credentials();
+        let crate::CoreSettings {
+            download_dir,
+            nickname: _,
+            tcp_port: _,
+            udp_port,
+            obfuscation,
+            port_mapping,
+            remember_peers,
+            server_policy,
+            server_met_url: _,
+            auto_fetch_server_met: _,
+            nodes_dat_url: _,
+            auto_fetch_nodes_dat: _,
+        } = settings;
+        let start = Self {
+            credentials,
+            udp_port,
+            port_mapping,
+            remember_peers,
+            server_policy,
+            download_dir,
+        };
+        (start, obfuscation)
+    }
+}
+
 /// The adapter set and shared handles the actor is built over — everything
 /// `CoreBuilder::build` assembles, handed across as one value and held whole by
 /// `CoreActor` for the session's life. The stores arrive already shared
@@ -84,6 +139,9 @@ fn notify_kad_publisher<C>(kad: &Option<kad::KadActivity<C>>) {
 /// `StartServing` takes it by value exactly once.
 pub(super) struct CoreWiring<S, P, L, K> {
     pub(super) config: CoreConfig,
+    /// The operator's **Core Settings** this core started under (ADR-0069),
+    /// less the **Obfuscation Policy**, which seeded its cell.
+    pub(super) settings: StartSettings,
     pub(super) store: Arc<DurableDownloadRepository>,
     pub(super) registry: Arc<DurableSharedFileRegistry>,
     pub(super) credit: SharedCreditStore,
@@ -94,9 +152,19 @@ pub(super) struct CoreWiring<S, P, L, K> {
     pub(super) peer_transfer: Arc<Mutex<P>>,
     pub(super) serve_runtime: Option<L>,
     pub(super) kad_factory: K,
+    /// What every Kad start is lent: the verdicts, facts and presence cells,
+    /// the handoff slot, the diagnostics and the adapter cells, built by the
+    /// builder before any node starts.
+    pub(super) kad_cells: crate::KadCells,
+    /// The Kad half of Self Reach as the builder stated it: the verdicts the
+    /// pump publishes into `kad_cells`, unless a test fixed a level.
+    pub(super) kad_reach: crate::KadReachLevel,
     pub(super) shared_server_session: SharedServerSession,
     pub(super) dialed_serve_sink: SharedDialedServeSink,
-    pub(super) callbacks: SharedCallbackTable,
+    /// The **Awaited Inbound** registry (ADR-0039, ADR-0091): filed into by
+    /// every download, asked by the serve adapter's triage, told of a retired
+    /// attempt by the NAT-T front.
+    pub(super) awaited_inbound: crate::adapters::AwaitedInbound,
     pub(super) udp_ports_advert: SharedUdpPortsAdvert,
     /// The **Advertised IPv6** (ADR-0087): the Advertised Endpoints chooser's
     /// IPv6 verdict, published once and read by the hello tag, the Kad publish
@@ -122,9 +190,6 @@ pub(super) struct CoreWiring<S, P, L, K> {
     /// Where a refused peer hello is counted and raised (ADR-0050): the
     /// adapters hold clones; the prologue installs the bus and diagnostics.
     pub(super) hello_refusals: crate::hello_refusals::SharedHelloRefusals,
-    /// The **Pending Tunnel Claim** table (ADR-0091): filled by a download
-    /// whose callback went silent, consulted by the serve adapter's triage.
-    pub(super) tunnel_claims: crate::adapters::SharedTunnelClaims,
     pub(super) ip_filter: SharedIpFilter,
     /// The **Interface Source** (ADR-0084) core polls for the addresses this
     /// host holds. `Core::builder` installs the live enumeration; the
@@ -148,7 +213,14 @@ pub(super) struct CoreWiring<S, P, L, K> {
     /// filesystem's own facts: the operator's home and rmule's data
     /// directory, as the front end names them.
     pub(super) share_guards: crate::ShareGuards,
-    pub(super) restore_credentials: Option<super::ClientCredentials>,
+    /// Whether attach listens and starts again the downloads the last
+    /// process left running (ADR-0094).
+    pub(super) restore_at_attach: bool,
+    /// The node's Kad ID, fixed at build (ADR-0043): the one every Kad node
+    /// this core starts runs under.
+    pub(super) kad_id: crate::KadId,
+    /// The store's **Kad UDP Key**, read at build.
+    pub(super) kad_udp_key: u32,
     pub(super) server_list: SharedServerListStore,
     pub(super) server_list_fetcher: Option<Arc<dyn ServerListFetcher>>,
 }
@@ -216,7 +288,7 @@ struct CoreActor<S, P, L, K: KadRuntimeFactory> {
     /// the one store behind it.
     own_identity: SharedOwnIdentity,
     /// The node's User Hash, fixed at build — the same one the
-    /// builder wrote into `own_identity`; a command's credentials are
+    /// builder wrote into `own_identity`; the Core Settings' credentials are
     /// composed with it into the wire identity ([`Self::identity`]).
     user_hash: rmule_primitives::UserHash,
     /// The spawn-invariant runner runtime, built once; the two
@@ -233,10 +305,12 @@ struct CoreActor<S, P, L, K: KadRuntimeFactory> {
     /// Handed to the Kad factory on `EnableKad`.
     client_udp_bind: Option<crate::adapters::ClientUdpBind>,
     /// **Self Reach** (ADR-0060): the one owner of our own
-    /// reachability every actor-side reader asks — and, as its NAT-T family,
-    /// the **NAT-T Front**'s command half where the reach arm begins a
-    /// rendezvous (empty when the client-UDP socket did not bind).
+    /// reachability every actor-side reader asks.
     self_reach: crate::reachability::SharedSelfReach,
+    /// The client-UDP send half's family of Self Reach, which Quit clears.
+    client_udp_bound: crate::reachability::ClientUdpBound,
+    /// **Peer Reach**: where both reach arms end.
+    peer_reach: crate::peer_reach::PeerReacher,
     /// The **Interface Source** poll's life guard (ADR-0084). Never read: the
     /// poll task selects on this sender's receiver, so dropping the actor ends
     /// the poll. `None` when no source is installed.
@@ -249,10 +323,12 @@ struct CoreActor<S, P, L, K: KadRuntimeFactory> {
     /// socket binds — the Desired Mapping Set grows over a session's life — and
     /// for its `Drop`, which is what triggers the release-on-exit pass.
     port_mapping: Option<crate::adapters::PortMappingHandle>,
+    /// The **Reachability Trail**'s task (ADR-0075), aborted as Quit begins.
+    trail: tokio::task::JoinHandle<()>,
     /// The operator's intent to stay connected, and its retries.
     intent: server_intent::IntentLedger,
     /// How many peers each running download writes as its **Source Seeds**
-    /// (ADR-0109): the config's at start, then the operator's latest.
+    /// (ADR-0109): the settings' at start, then the operator's latest.
     remember_peers: crate::RememberPeers,
 }
 
@@ -263,13 +339,31 @@ where
     L: ServeRuntimeService,
     K: KadRuntimeFactory,
 {
-    /// The wire identity a command's `credentials` present: its nickname,
-    /// port and version as this node — the build-time hash (ADR-0048 "Identity ownership").
-    pub(super) fn identity(
-        &self,
-        credentials: &super::ClientCredentials,
-    ) -> rmule_primitives::ClientIdentity {
-        credentials.identity(self.user_hash)
+    /// What this node presents beside its hash (ADR-0048, ADR-0069): the
+    /// Core Settings' nickname and TCP port. An injected port of `0` is the
+    /// OS's choice: the port the listener holds bound, by the one rule
+    /// every hello reads ([`presented_tcp_port`](crate::server_session::presented_tcp_port)).
+    /// No command carries credentials.
+    pub(super) fn credentials(&self) -> super::ClientCredentials {
+        let credentials = self.wiring.settings.credentials.clone();
+        let port =
+            crate::server_session::presented_tcp_port(credentials.tcp_port(), &self.own_identity);
+        credentials.on_port(port)
+    }
+
+    /// The wire identity this node presents now: [`Self::credentials`] as
+    /// the build-time hash (ADR-0048 "Identity ownership").
+    pub(super) fn identity(&self) -> rmule_primitives::ClientIdentity {
+        self.credentials().identity(self.user_hash)
+    }
+
+    /// The wire identity as the Core Settings name it, for a surface that
+    /// outlives a listener: a port of `0` stays `0`, and each hello it
+    /// presents reads the port the listener holds bound then
+    /// ([`presented_tcp_port`](crate::server_session::presented_tcp_port)),
+    /// never one a listener since restarted held.
+    pub(super) fn settings_identity(&self) -> rmule_primitives::ClientIdentity {
+        self.wiring.settings.credentials.identity(self.user_hash)
     }
 
     /// Tell the **Port Mapping** runtime something happened (ADR-0086). A
@@ -291,31 +385,11 @@ where
             .map(|bind| bind.socket.local_port())
     }
 
-    /// The **Reachability** facts the **Advertised Endpoints** chooser reads
-    /// (ADR-0084): our own TCP verdict as the Kad runtime publishes it, and
-    /// the IPv6 probe verdict as the connected server stated it.
-    ///
-    /// Both are read fresh at every advert rather than cached: a verdict that
-    /// changed since the last hello must change the next one, and the whole
-    /// point of one chooser is that no site keeps its own copy.
-    pub(super) fn advert_reachability(&self) -> crate::address_learning::AdvertReachability {
-        crate::address_learning::AdvertReachability {
-            // The Kad flag of Self Reach, open or not: a
-            // recheck in flight reads its pre-recheck verdict.
-            tcp: if self.self_reach.kad_tcp_open() {
-                crate::reachability::TcpReachability::Open
-            } else {
-                crate::reachability::TcpReachability::Firewalled
-            },
-            ipv6: self.wiring.shared_server_session.ipv6_probe().get(),
-        }
-    }
-
     /// Take commands until the front end drops every handle, then flush what
     /// the session owes to disk.
     async fn run(
         mut self,
-        mut cmd_rx: mpsc::Receiver<CoreCommand>,
+        mut inbox: super::inbox::Inbox,
         mut finished_rx: mpsc::Receiver<FinishedActivity>,
         mut scan_rx: mpsc::UnboundedReceiver<registry_check::RegistryMessage>,
         mut download_reach_rx: mpsc::Receiver<crate::callback::DownloadReach>,
@@ -336,44 +410,44 @@ where
         seed_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
-                _ = seed_tick.tick(), if !self.activities.downloads.is_empty() => {
+                _ = seed_tick.tick(), if !self.activities.downloads_idle() => {
                     self.write_source_seeds();
                 }
-                _ = restore_tick.tick(), if !self.activities.restoring.is_empty() => {
+                _ = restore_tick.tick(), if self.activities.restore_pending() => {
                     self.restore_next().await;
                 }
                 Some(reach) = download_reach_rx.recv() => {
                     // A download's callback has been silent for twelve seconds
                     // (ADR-0091). The actor keeps its own clone of the sender in
                     // `download_runtime`, so this arm never closes and never
-                    // becomes the shutdown signal — `cmd_rx` alone is that.
+                    // becomes the shutdown signal — the inbox alone is that.
                     self.on_download_reach(reach).await;
                 }
-                command = cmd_rx.recv() => {
-                    // A closed command channel (every `Core` handle dropped or
+                letter = inbox.recv() => {
+                    // A closed inbox (the `Core` dropped or
                     // `Core::shutdown` called) is the actor's shutdown signal —
                     // the persistence flush below must actually run, so shutdown
                     // cannot ride the `else` arm (the actor holds its own
                     // `finished_tx` clone, which keeps that arm from ever firing).
-                    let Some(command) = command else { break };
+                    // A Core Settings key the operator changed, persisted
+                    // already, arrives here in order with the commands.
+                    let command = match letter {
+                        None => break,
+                        Some(super::inbox::Letter::Setting(live)) => {
+                            self.on_live_setting(live).await;
+                            continue;
+                        }
+                        Some(super::inbox::Letter::Command(command)) => *command,
+                    };
                     match command {
                         CoreCommand::Download(command) => {
                             self.on_download_command(command).await;
                         }
-                        CoreCommand::SetServerPolicy(policy) => {
-                            self.on_set_server_policy(policy);
-                        }
-                        CoreCommand::SetRememberPeers(peers) => {
-                            self.remember_peers = peers;
-                        }
                         CoreCommand::ServerList(command) => {
                             self.on_server_list_command(command).await;
                         }
-                        CoreCommand::ConnectToServer {
-                            server,
-                            credentials,
-                        } => {
-                            self.on_connect_to_server(server, credentials).await;
+                        CoreCommand::ConnectToServer { server } => {
+                            self.on_connect_to_server(server).await;
                         }
                         CoreCommand::DisconnectFromServer => {
                             self.on_disconnect_from_server().await;
@@ -402,24 +476,7 @@ where
                             crate::adapters::request_kad_recheck(&self.wiring.kad_pump);
                         }
                         CoreCommand::DumpDiagnostics => {
-                            let mut snapshot = self.diagnostics.snapshot();
-                            // The Kad join state lives with the actor's factory
-                            // (ADR-0067): `None` while no Kad activity runs — the
-                            // ledger value is the whole record's one gate.
-                            snapshot.kad = self.kad.as_ref().map(|kad| {
-                                crate::diagnostics::KadRuntimeDiagnostics {
-                                    contact_responded: self.wiring.kad_factory.has_had_contact(),
-                                    contacts: self.wiring.kad_factory.contact_count(),
-                                    keywords_stored: self.wiring.kad_factory.keywords_stored(),
-                                    node_id: kad.node_id(),
-                                    firewall: self.self_reach.kad_firewall_verdict(),
-                                    firewall_check: self.self_reach.kad_firewall_check(),
-                                    udp: self.self_reach.kad_udp_verdict(),
-                                    traffic: self.wiring.kad_factory.kad_traffic(),
-                                }
-                            });
-                            snapshot.kad_tasks_live =
-                                self.kad.as_ref().map_or(0, kad::KadActivity::tasks_live);
+                            let snapshot = self.diagnostics.snapshot();
                             send_event(&self.evt_tx, CoreEvent::DiagnosticsSnapshot { snapshot }).await;
                         }
                         CoreCommand::DumpFileHistory => {
@@ -487,30 +544,22 @@ where
                             // ADR-0093) retires here; one a stop already
                             // retired is gone from the ledger, or replaced by
                             // a later run, so its late notice retires nothing.
-                            if self.activities.downloads.get(&download_id).is_some_and(|active| active.run == run) {
+                            if self.activities.download(download_id).is_some_and(|active| active.run == run) {
                                 self.retire_download(download_id);
                             }
                             download_id
                         }
-                        FinishedActivity::Search(search_id) => {
-                            if let Some(mut active) = self.activities.searches.remove(&search_id) {
-                                active.stop_global();
-                            }
+                        FinishedActivity::Search(search_id, run) => {
+                            // A search that ended on its own retires here, as
+                            // a download does.
+                            self.activities.searches.death(search_id, run, &self.evt_tx).await;
                             continue;
                         }
                     };
                     // The join point where the download and serve halves meet
-                    // (ADR-0031): a download that reached `Completed` auto-shares.
-                    // The policy — the `Completed` gate, the behind-the-seam
-                    // per-part hash authority, the registry write, and
-                    // the `FileShared` event — lives in `auto_share_completed_download`
-                    // So the actor keeps no storage-model knowledge and
-                    // only fires the two share-set triggers once the file registers.
-                    if let Some(file_hash) = auto_share_completed_download(download_id, &*self.wiring.store, &*self.wiring.registry, &self.evt_tx).await {
-                        // A share-set change like any other: the
-                        // predicate, the serve snapshot and the Kad publisher.
-                        self.row_shared(file_hash);
-                    }
+                    // (ADR-0031): a download that reached `Completed` auto-shares,
+                    // unless it finished under a refused entry (ADR-0101).
+                    self.share_completed(download_id).await;
                 }
                 else => break,
             }

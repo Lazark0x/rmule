@@ -89,6 +89,7 @@ fn runtime_behind(
     own: &SharedOwnIdentity,
 ) -> PortMappingHandle {
     spawn_port_mapping(
+        crate::port_mapping::PortMappingMode::Auto,
         PortMappingConfig::default(),
         addresses.clone(),
         Arc::new(gateways),

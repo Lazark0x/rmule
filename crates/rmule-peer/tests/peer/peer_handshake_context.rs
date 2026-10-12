@@ -26,6 +26,8 @@ fn ctx_with(identity: ClientIdentity, server: Option<Ipv4Endpoint>) -> PeerHands
     PeerHandshakeContext {
         identity,
         client_id: ClientId::from_u32(0x10000001),
+        ed2k_client_id: ClientId::from_u32(0x10000001),
+        public_ip: None,
         connected_server: server,
     }
 }
@@ -75,7 +77,7 @@ fn from_handshake_context_emits_identity_plus_compression_capability() {
         .expect("0xFB present");
     // aMule emits the identical version word on the peer hello
     // (BaseClient.cpp#L1077) as on server login: the aMule 2.3.3 parity value
-    // 0x0304_0D80, not rmule's real 0.1.0.
+    // 0x0304_0D80, not rmule's own version.
     assert_eq!(*mule_version.value(), TagValue::U32(0x0304_0D80));
 }
 

@@ -1,6 +1,7 @@
 //! The enacted firewalled slot's decisions, driven with explicit time and no
-//! socket: what fills it, what empties it, and how each of the three inlets is
-//! ruled on against the buddy it holds.
+//! socket as its one owner drives it: what fills it, what empties it, what it
+//! publishes, and how each of the three inlets is ruled on against the buddy
+//! it holds.
 
 use std::net::Ipv4Addr;
 
@@ -9,10 +10,9 @@ use rmule_peer::natt::{NattConnectOptions, PunchTargetSource, RendezvousBody, Re
 use rmule_primitives::UserHash;
 
 use super::*;
-use crate::buddy::BuddyUdpPosture;
-use crate::firewalled::recruit::{FIND_BUDDY_INTERVAL, RecruitRefusal};
+use crate::adapters::tests::held_buddy::{a_buddy, adopt};
+use crate::firewalled::front::SharedFirewalledFront;
 use crate::firewalled::relayed_callback::CallbackDrop;
-use crate::reachability::TcpReachability;
 
 fn kad_id(byte: u8) -> KadId {
     KadId::from_bytes([byte; KadId::BYTE_LEN])
@@ -28,51 +28,38 @@ fn at(a: u8, b: u8, c: u8, d: u8, port: u16) -> Ipv4Endpoint {
     Ipv4Endpoint::new(Ipv4Addr::new(a, b, c, d), port)
 }
 
-/// The buddy a verified `0x5A` names: answering from its Kad UDP port, serving
-/// on its eD2k port. `45.55.200.0/24` is publicly routable, which the acting
-/// path's target rule requires of anything it punches at.
-fn a_buddy() -> RecruitedBuddy {
-    RecruitedBuddy {
-        udp: at(45, 55, 200, 2, 4672),
-        tcp: at(45, 55, 200, 2, 4662),
-        hash: UserHash::from_bytes([0xBB; UserHash::BYTE_LEN]),
-        crypt: Some(CryptStance::disabled()),
-    }
-}
-
 /// The connection identity the dialed link is matched on: the buddy's address
 /// at the port we dialed.
 fn buddy_link() -> PeerEndpoint {
     PeerEndpoint::V4(a_buddy().tcp)
 }
 
-fn firewalled_everywhere() -> RecruitContext {
-    RecruitContext {
-        kad_connected: true,
-        tcp: TcpReachability::Firewalled,
-        udp: BuddyUdpPosture::Firewalled,
-        last_recheck: None,
-        crypt_required: false,
-    }
+/// A fresh slot for our ID, publishing into a front's snapshot nothing else
+/// reads.
+fn new_slot() -> FirewalledSlot {
+    SharedFirewalledFront::detached_slot(our_id()).0
 }
 
-/// Recruit, adopt and hold — the whole path to a live link, as the Kad pump
-/// and the front drive it. Returns the held link's command receiver.
-fn held(slot: &FirewalledSlot, now: Instant) -> mpsc::Receiver<PeerCommand> {
+/// The slot's state and, while a link is held, since when — as it publishes
+/// them.
+fn state(slot: &FirewalledSlot) -> (BuddyState, Option<Instant>) {
+    let snapshot = slot.snapshot();
+    (snapshot.state, snapshot.held_since)
+}
+
+/// Adopt and hold — the whole path to a live link, as the front drives it.
+/// Returns the held link's command receiver.
+fn held(slot: &mut FirewalledSlot, now: Instant) -> mpsc::Receiver<PeerCommand> {
     held_over(slot, now, buddy_link(), None)
 }
 
 /// [`held`], over `remote`, with the buddy's hello having claimed `claimed`.
 fn held_over(
-    slot: &FirewalledSlot,
+    slot: &mut FirewalledSlot,
     now: Instant,
     remote: PeerEndpoint,
     claimed: Option<std::net::Ipv6Addr>,
 ) -> mpsc::Receiver<PeerCommand> {
-    assert!(matches!(
-        slot.consider_recruitment(&firewalled_everywhere(), now),
-        RecruitDecision::Recruit { .. }
-    ));
     assert_eq!(
         slot.adopt_buddy(
             &FindBuddyRes {
@@ -115,62 +102,74 @@ fn embedded_rendezvous() -> Vec<u8> {
     rendezvous().embed([0x55; 16]).forwarded
 }
 
+/// Every change reaches the readers as one snapshot: adopted, the buddy row
+/// a publish names; held, the hello's advert from the link it runs to;
+/// lost, nothing named and the loss stamped — what re-arms the walk at once.
 #[test]
-fn one_walk_runs_at_a_time_and_its_end_does_not_re_arm_the_pacing() {
-    let slot = FirewalledSlot::new(our_id());
+fn every_change_is_published_to_the_readers() {
+    let (mut slot, view) = SharedFirewalledFront::detached_slot(our_id());
     let t0 = Instant::now();
+    assert_eq!(view.snapshot(), BuddySnapshot::default());
 
-    assert!(matches!(
-        slot.consider_recruitment(&firewalled_everywhere(), t0),
-        RecruitDecision::Recruit { walk_target } if walk_target == kad_id(0x55)
-    ));
-    assert_eq!(slot.state().0, BuddyState::Walking);
-    // A second tick while the first walk runs must not start another: two
-    // walks would ask two open nodes for a slot that holds one buddy.
+    adopt(&mut slot);
+    let adopted = view.snapshot();
+    assert_eq!(adopted.state, BuddyState::Recruited);
     assert_eq!(
-        slot.consider_recruitment(&firewalled_everywhere(), t0),
-        RecruitDecision::Refuse {
-            reason: RecruitRefusal::PacingNotDue
-        }
+        adopted.publish,
+        Some(crate::firewalled::BuddyPublish {
+            buddy_udp: a_buddy().udp,
+            buddy_id: kad_id(0x55),
+            buddy_ipv6: None,
+        })
+    );
+    assert_eq!(
+        adopted.serving, None,
+        "aMule names a buddy only once linked"
     );
 
-    // The walk ending clears the flag but not the clock: a cold routing table
-    // is not a reason to walk again every tick.
-    slot.on_walk_ended();
-    assert_eq!(slot.state(), (BuddyState::None, None));
+    let (tx, _rx) = mpsc::channel(8);
+    assert!(slot.hold_link(a_buddy(), buddy_link(), tx, None, t0));
+    let held = view.snapshot();
+    assert_eq!((held.state, held.held_since), (BuddyState::Held, Some(t0)));
     assert_eq!(
-        slot.consider_recruitment(&firewalled_everywhere(), t0),
-        RecruitDecision::Refuse {
-            reason: RecruitRefusal::PacingNotDue
+        held.serving,
+        Some(rmule_peer::ServingBuddyAdvert {
+            buddy_udp: a_buddy().udp,
+            ipv6: None,
+        })
+    );
+
+    let t1 = t0 + Duration::from_secs(5);
+    assert!(slot.on_link_closed(buddy_link(), t1));
+    assert_eq!(
+        view.snapshot(),
+        BuddySnapshot {
+            lost_at: Some(t1),
+            ..BuddySnapshot::default()
         }
     );
-    assert!(matches!(
-        slot.consider_recruitment(&firewalled_everywhere(), t0 + FIND_BUDDY_INTERVAL),
-        RecruitDecision::Recruit { .. }
-    ));
 }
 
 #[test]
-fn losing_the_link_empties_the_slot_and_re_arms_the_walk_at_once() {
-    let slot = FirewalledSlot::new(our_id());
+fn losing_the_link_empties_the_slot_and_stamps_the_loss() {
+    let mut slot = new_slot();
     let t0 = Instant::now();
-    let _rx = held(&slot, t0);
-    assert_eq!(slot.state(), (BuddyState::Held, Some(t0)));
+    let _rx = held(&mut slot, t0);
+    assert_eq!(state(&slot), (BuddyState::Held, Some(t0)));
     assert_eq!(slot.buddy(), Some(a_buddy()));
 
     // Somebody else's connection closing leaves the held link alone.
-    assert!(!slot.on_link_closed(PeerEndpoint::V4(at(45, 55, 200, 9, 4662))));
-    assert_eq!(slot.state().0, BuddyState::Held);
+    let t1 = t0 + Duration::from_secs(1);
+    assert!(!slot.on_link_closed(PeerEndpoint::V4(at(45, 55, 200, 9, 4662)), t1));
+    assert_eq!(state(&slot).0, BuddyState::Held);
+    assert_eq!(slot.snapshot().lost_at, None);
 
-    // The buddy's does not: the slot empties and the 20-minute leg is
-    // satisfied at once, as aMule resets its FindBuddy tick on buddy loss.
-    assert!(slot.on_link_closed(buddy_link()));
-    assert_eq!(slot.state(), (BuddyState::None, None));
+    // The buddy's does not: the slot empties and the loss is stamped, which
+    // is what the recruit rule reads as aMule's FindBuddy tick reset.
+    assert!(slot.on_link_closed(buddy_link(), t1));
+    assert_eq!(state(&slot), (BuddyState::None, None));
     assert_eq!(slot.buddy(), None);
-    assert!(matches!(
-        slot.consider_recruitment(&firewalled_everywhere(), t0),
-        RecruitDecision::Recruit { .. }
-    ));
+    assert_eq!(slot.snapshot().lost_at, Some(t1));
 }
 
 /// A buddy whose `0x5A` connect-options byte *requires* the crypt
@@ -181,11 +180,7 @@ fn losing_the_link_empties_the_slot_and_re_arms_the_walk_at_once() {
 /// The same answer, met by a node that speaks the layer, seats.
 #[test]
 fn a_buddy_requiring_crypt_we_cannot_speak_is_refused_unseated() {
-    let slot = FirewalledSlot::new(our_id());
-    assert!(matches!(
-        slot.consider_recruitment(&firewalled_everywhere(), Instant::now()),
-        RecruitDecision::Recruit { .. }
-    ));
+    let mut slot = new_slot();
     let requiring = RecruitedBuddy {
         crypt: Some(rmule_primitives::SourceCryptOptions::from_byte(0x07).crypt_stance()),
         ..a_buddy()
@@ -200,8 +195,7 @@ fn a_buddy_requiring_crypt_we_cannot_speak_is_refused_unseated() {
         AdoptOutcome::CryptIncompatible
     );
     assert_eq!(slot.buddy(), None);
-    assert_eq!(slot.state(), (BuddyState::None, None));
-    assert!(slot.publish_buddy_info(true).is_none());
+    assert_eq!(slot.snapshot(), BuddySnapshot::default());
 
     let supports = CryptStance::new(true, false, false);
     assert_eq!(
@@ -216,48 +210,31 @@ fn a_buddy_requiring_crypt_we_cannot_speak_is_refused_unseated() {
 /// buddy adopted since, nor one whose link another dial already holds.
 #[test]
 fn a_failed_dial_frees_only_its_own_unlinked_buddy() {
-    let slot = FirewalledSlot::new(our_id());
+    let mut slot = new_slot();
     let t0 = Instant::now();
-    assert!(matches!(
-        slot.consider_recruitment(&firewalled_everywhere(), t0),
-        RecruitDecision::Recruit { .. }
-    ));
-    let res = FindBuddyRes {
-        buddy_id: kad_id(0x55),
-        buddy_endpoint: a_buddy().udp,
-    };
-    assert_eq!(
-        slot.adopt_buddy(&res, a_buddy(), CryptStance::disabled()),
-        AdoptOutcome::Adopted
-    );
+    adopt(&mut slot);
 
     // A dial for a buddy the slot no longer holds frees nothing.
     let gone = RecruitedBuddy {
         tcp: at(45, 55, 200, 9, 4662),
         ..a_buddy()
     };
-    assert!(!slot.on_dial_failed(gone));
+    assert!(!slot.on_dial_failed(gone, t0));
     assert_eq!(slot.buddy(), Some(a_buddy()));
-    assert_eq!(
-        slot.consider_recruitment(&firewalled_everywhere(), t0),
-        RecruitDecision::Refuse {
-            reason: RecruitRefusal::AlreadyHaveBuddy
-        }
-    );
+    assert!(slot.snapshot().holds_buddy());
+    assert_eq!(slot.snapshot().lost_at, None);
 
-    // Its own buddy's failure frees the slot and arms an instant recruit.
-    assert!(slot.on_dial_failed(a_buddy()));
-    assert_eq!(slot.state(), (BuddyState::None, None));
-    assert!(matches!(
-        slot.consider_recruitment(&firewalled_everywhere(), t0),
-        RecruitDecision::Recruit { .. }
-    ));
+    // Its own buddy's failure frees the slot and stamps the loss, which arms
+    // an instant recruit.
+    assert!(slot.on_dial_failed(a_buddy(), t0));
+    assert_eq!(state(&slot), (BuddyState::None, None));
+    assert_eq!(slot.snapshot().lost_at, Some(t0));
 
     // A held link is never a failed dial's to free.
-    let fresh = FirewalledSlot::new(our_id());
-    let _rx = held(&fresh, t0);
-    assert!(!fresh.on_dial_failed(a_buddy()));
-    assert_eq!(fresh.state(), (BuddyState::Held, Some(t0)));
+    let mut fresh = new_slot();
+    let _rx = held(&mut fresh, t0);
+    assert!(!fresh.on_dial_failed(a_buddy(), t0));
+    assert_eq!(state(&fresh), (BuddyState::Held, Some(t0)));
 }
 
 /// A second link landing for the buddy already held is refused and the first
@@ -265,15 +242,15 @@ fn a_failed_dial_frees_only_its_own_unlinked_buddy() {
 /// the second replaced the link the keepalive and the relays were bound to.
 #[test]
 fn a_second_link_for_the_held_buddy_is_refused_and_the_first_kept() {
-    let slot = FirewalledSlot::new(our_id());
+    let mut slot = new_slot();
     let t0 = Instant::now();
-    let _first = held(&slot, t0);
+    let _first = held(&mut slot, t0);
 
     let (second, _second_rx) = mpsc::channel(8);
     let t1 = t0 + Duration::from_secs(1);
     assert!(!slot.hold_link(a_buddy(), buddy_link(), second.clone(), None, t1));
 
-    assert_eq!(slot.state(), (BuddyState::Held, Some(t0)));
+    assert_eq!(state(&slot), (BuddyState::Held, Some(t0)));
     let keepalive = slot
         .due_keepalive(t0 + BUDDY_PING_INTERVAL)
         .expect("the first link is still paced from its own hold");
@@ -286,31 +263,17 @@ fn a_second_link_for_the_held_buddy_is_refused_and_the_first_kept() {
 /// linked.
 #[test]
 fn a_dial_claims_its_buddy_until_it_lands_however_it_lands() {
-    let slot = FirewalledSlot::new(our_id());
+    let mut slot = new_slot();
     let t0 = Instant::now();
-    let res = FindBuddyRes {
-        buddy_id: kad_id(0x55),
-        buddy_endpoint: a_buddy().udp,
-    };
-    let adopt = |now| {
-        assert!(matches!(
-            slot.consider_recruitment(&firewalled_everywhere(), now),
-            RecruitDecision::Recruit { .. }
-        ));
-        assert_eq!(
-            slot.adopt_buddy(&res, a_buddy(), CryptStance::disabled()),
-            AdoptOutcome::Adopted
-        );
-    };
-    adopt(t0);
+    adopt(&mut slot);
     assert!(slot.begin_dial(a_buddy()));
     assert!(!slot.begin_dial(a_buddy()), "one dial per buddy in flight");
 
     // Let go mid-dial: the late landing is refused, and ends the claim.
-    assert!(slot.release().is_none());
+    assert!(slot.release(t0).is_none());
     let (tx, _rx) = mpsc::channel(8);
     assert!(!slot.hold_link(a_buddy(), buddy_link(), tx.clone(), None, t0));
-    adopt(t0);
+    adopt(&mut slot);
     assert!(
         slot.begin_dial(a_buddy()),
         "a refused landing ends its claim"
@@ -324,52 +287,38 @@ fn a_dial_claims_its_buddy_until_it_lands_however_it_lands() {
     assert!(!slot.hold_link(stranger, buddy_link(), tx.clone(), None, t0));
     assert!(!slot.begin_dial(a_buddy()));
 
-    assert!(slot.on_dial_failed(a_buddy()));
-    adopt(t0);
+    assert!(slot.on_dial_failed(a_buddy(), t0));
+    adopt(&mut slot);
     assert!(slot.begin_dial(a_buddy()), "a failed dial ends its claim");
     assert!(slot.hold_link(a_buddy(), buddy_link(), tx, None, t0));
-    assert!(slot.on_link_closed(buddy_link()));
-    adopt(t0);
+    assert!(slot.on_link_closed(buddy_link(), t0));
+    adopt(&mut slot);
     assert!(slot.begin_dial(a_buddy()), "a held dial ends its claim");
 }
 
 #[test]
 fn becoming_reachable_releases_the_buddy_and_hands_back_its_link() {
-    let slot = FirewalledSlot::new(our_id());
+    let mut slot = new_slot();
     let t0 = Instant::now();
-    let _rx = held(&slot, t0);
+    let _rx = held(&mut slot, t0);
 
     // The release hands the caller the link's command half so the front can
     // shut that socket rather than leave a stranger holding it open.
-    assert!(slot.release().is_some());
-    assert_eq!(slot.state(), (BuddyState::None, None));
-    // And an open node is refused a fresh recruit outright, whatever its
-    // pacing says.
-    assert_eq!(
-        slot.consider_recruitment(
-            &RecruitContext {
-                tcp: TcpReachability::Open,
-                ..firewalled_everywhere()
-            },
-            t0,
-        ),
-        RecruitDecision::Refuse {
-            reason: RecruitRefusal::TcpOpen
-        }
-    );
+    assert!(slot.release(t0).is_some());
+    assert_eq!(state(&slot), (BuddyState::None, None));
     // Releasing twice is a no-op with nothing to hand back.
-    assert!(slot.release().is_none());
+    assert!(slot.release(t0).is_none());
 }
 
 #[test]
 fn the_keepalive_fires_once_per_interval_on_the_held_link_only() {
-    let slot = FirewalledSlot::new(our_id());
+    let mut slot = new_slot();
     let t0 = Instant::now();
     assert!(
         slot.due_keepalive(t0).is_none(),
         "nothing to keep alive without a link"
     );
-    let _rx = held(&slot, t0);
+    let _rx = held(&mut slot, t0);
 
     assert!(
         slot.due_keepalive(t0).is_none(),
@@ -392,7 +341,7 @@ fn the_keepalive_fires_once_per_interval_on_the_held_link_only() {
 
 #[test]
 fn a_relayed_reask_is_split_by_its_forwarded_tail() {
-    let slot = FirewalledSlot::new(our_id());
+    let mut slot = new_slot();
     let t0 = Instant::now();
 
     // With no link held nothing can have been relayed to us at all.
@@ -401,7 +350,7 @@ fn a_relayed_reask_is_split_by_its_forwarded_tail() {
         ReaskRelayConsume::NoHeldLink
     );
 
-    let _rx = held(&slot, t0);
+    let _rx = held(&mut slot, t0);
     // An ordinary tail is handed on verbatim, with the endpoint the buddy
     // injected as the answer's destination.
     assert_eq!(
@@ -443,9 +392,9 @@ fn a_relayed_reask_is_split_by_its_forwarded_tail() {
 
 #[test]
 fn the_self_punch_guard_is_asked_on_the_relayed_path_too() {
-    let slot = FirewalledSlot::new(our_id());
+    let mut slot = new_slot();
     let t0 = Instant::now();
-    let _rx = held(&slot, t0);
+    let _rx = held(&mut slot, t0);
     // Correction 4: whatever resolved the target, an address this host holds
     // is never punched at.
     assert_eq!(
@@ -461,7 +410,7 @@ fn the_self_punch_guard_is_asked_on_the_relayed_path_too() {
 
 #[test]
 fn a_standalone_rendezvous_is_held_to_our_buddys_whole_udp_endpoint() {
-    let slot = FirewalledSlot::new(our_id());
+    let mut slot = new_slot();
     let t0 = Instant::now();
     let refused = ActingVerdict::Refuse(ActingRefusal::NotFromOurBuddy);
     let body = RendezvousBody {
@@ -483,21 +432,7 @@ fn a_standalone_rendezvous_is_held_to_our_buddys_whole_udp_endpoint() {
 
     // A buddy adopted but its link not yet held is no live relation: the
     // standalone carrier needs the link the `0x9A` carrier arrives on.
-    assert!(matches!(
-        slot.consider_recruitment(&firewalled_everywhere(), t0),
-        RecruitDecision::Recruit { .. }
-    ));
-    assert_eq!(
-        slot.adopt_buddy(
-            &FindBuddyRes {
-                buddy_id: kad_id(0x55),
-                buddy_endpoint: a_buddy().udp,
-            },
-            a_buddy(),
-            CryptStance::disabled(),
-        ),
-        AdoptOutcome::Adopted
-    );
+    adopt(&mut slot);
     assert_eq!(
         slot.consume_standalone_rendezvous(
             &body,
@@ -543,7 +478,7 @@ fn a_standalone_rendezvous_is_held_to_our_buddys_whole_udp_endpoint() {
 
 #[test]
 fn a_relayed_callback_needs_a_link_and_an_id_that_inverts_to_ours() {
-    let slot = FirewalledSlot::new(our_id());
+    let mut slot = new_slot();
     let t0 = Instant::now();
     let good = CallbackConsume {
         check_id: kad_id(0x55),
@@ -560,7 +495,7 @@ fn a_relayed_callback_needs_a_link_and_an_id_that_inverts_to_ours() {
         }
     );
 
-    let _rx = held(&slot, t0);
+    let _rx = held(&mut slot, t0);
     assert_eq!(
         slot.consume_callback(&good, true),
         CallbackVerdict::Dial {
@@ -590,14 +525,16 @@ fn a_relayed_callback_needs_a_link_and_an_id_that_inverts_to_ours() {
 
 #[test]
 fn a_kad_restart_re_seats_the_slot_against_the_new_nodes_id() {
-    let slot = FirewalledSlot::new(our_id());
+    let mut slot = new_slot();
     let t0 = Instant::now();
-    let _rx = held(&slot, t0);
+    let _rx = held(&mut slot, t0);
+    assert!(slot.release(t0).is_some());
 
-    // A restart with a different node ID drops everything the old one had:
-    // a `0x5A` verified against `~0xAA` says nothing about `~0x33`.
-    slot.reset(kad_id(0x33));
-    assert_eq!(slot.state(), (BuddyState::None, None));
+    // A restart with a different node ID drops everything the old one had,
+    // its loss included: a `0x5A` verified against `~0xAA` says nothing about
+    // `~0x33`.
+    slot.reseat(kad_id(0x33));
+    assert_eq!(slot.snapshot(), BuddySnapshot::default());
     assert_eq!(
         slot.adopt_buddy(
             &FindBuddyRes {
@@ -623,25 +560,6 @@ fn a_kad_restart_re_seats_the_slot_against_the_new_nodes_id() {
     );
 }
 
-#[test]
-fn publish_buddy_info_names_the_buddy_only_while_firewalled_with_one() {
-    let slot = FirewalledSlot::new(our_id());
-    let t0 = Instant::now();
-    assert!(slot.publish_buddy_info(true).is_none());
-
-    let _rx = held(&slot, t0);
-    assert_eq!(
-        slot.publish_buddy_info(true),
-        Some(crate::firewalled::BuddyPublish {
-            buddy_udp: a_buddy().udp,
-            buddy_id: kad_id(0x55),
-            buddy_ipv6: None,
-        })
-    );
-    // A reachable node publishes a direct source instead.
-    assert_eq!(slot.publish_buddy_info(false), None);
-}
-
 /// The `bi6` the publish names is the held link's fact. A buddy
 /// adopted but not yet held has none; holding the link over IPv4 names the
 /// IPv6 its hello claimed; a link verified over a usable IPv6 names that
@@ -650,22 +568,11 @@ fn publish_buddy_info_names_the_buddy_only_while_firewalled_with_one() {
 fn the_publish_names_the_held_links_buddy_ipv6_and_drops_it_with_the_link() {
     let claimed: std::net::Ipv6Addr = "3fff:ed2:1::8".parse().unwrap();
     let verified: std::net::Ipv6Addr = "3fff:ed2:1::9".parse().unwrap();
-    let bi6 = |slot: &FirewalledSlot| slot.publish_buddy_info(true).map(|p| p.buddy_ipv6);
+    let bi6 = |slot: &FirewalledSlot| slot.snapshot().publish.map(|p| p.buddy_ipv6);
     let t0 = Instant::now();
 
-    let slot = FirewalledSlot::new(our_id());
-    assert!(matches!(
-        slot.consider_recruitment(&firewalled_everywhere(), t0),
-        RecruitDecision::Recruit { .. }
-    ));
-    let answer = FindBuddyRes {
-        buddy_id: kad_id(0x55),
-        buddy_endpoint: a_buddy().udp,
-    };
-    assert_eq!(
-        slot.adopt_buddy(&answer, a_buddy(), CryptStance::disabled()),
-        AdoptOutcome::Adopted
-    );
+    let mut slot = new_slot();
+    adopt(&mut slot);
     assert_eq!(
         bi6(&slot),
         Some(None),
@@ -676,52 +583,23 @@ fn the_publish_names_the_held_links_buddy_ipv6_and_drops_it_with_the_link() {
     assert!(slot.hold_link(a_buddy(), buddy_link(), tx, Some(claimed), t0));
     assert_eq!(bi6(&slot), Some(Some(claimed)));
 
-    assert!(slot.on_link_closed(buddy_link()));
-    assert!(slot.publish_buddy_info(true).is_none());
+    assert!(slot.on_link_closed(buddy_link(), t0));
+    assert!(slot.snapshot().publish.is_none());
 
     let over_v6 = PeerEndpoint::V6(rmule_primitives::Ipv6Endpoint::new(verified, 4662));
-    let slot = FirewalledSlot::new(our_id());
-    let _rx = held_over(&slot, t0, over_v6, Some(claimed));
+    let mut slot = new_slot();
+    let _rx = held_over(&mut slot, t0, over_v6, Some(claimed));
     assert_eq!(bi6(&slot), Some(Some(verified)), "verified beats claimed");
 
     let over_ula = PeerEndpoint::V6(rmule_primitives::Ipv6Endpoint::new(
         "fd00::9".parse().unwrap(),
         4662,
     ));
-    let slot = FirewalledSlot::new(our_id());
-    let _rx = held_over(&slot, t0, over_ula, Some(claimed));
+    let mut slot = new_slot();
+    let _rx = held_over(&mut slot, t0, over_ula, Some(claimed));
     assert_eq!(
         bi6(&slot),
         Some(Some(claimed)),
         "a link address no tag may name falls back to the claim"
-    );
-}
-
-/// The buddy publish verdict at the enacted slot: the caller passes the ADR-0060 union, so
-/// a held buddy still names the buddy row unless the union itself reads
-/// reachable — a server High ID withdraws the row through the same `bool`
-/// the Kad-only TCP verdict used to gate alone.
-#[test]
-fn publish_buddy_info_takes_the_union_a_server_high_id_withdraws_it() {
-    let slot = FirewalledSlot::new(our_id());
-    let t0 = Instant::now();
-    let _rx = held(&slot, t0);
-
-    // Low-ID, Kad-firewalled, held buddy: the union reads firewalled, so the
-    // buddy row still publishes.
-    assert_eq!(
-        slot.publish_buddy_info(true),
-        Some(crate::firewalled::BuddyPublish {
-            buddy_udp: a_buddy().udp,
-            buddy_id: kad_id(0x55),
-            buddy_ipv6: None,
-        })
-    );
-    // A server High ID moves the union to reachable with no change to the
-    // held buddy or the Kad TCP verdict: the direct row publishes instead.
-    assert_eq!(
-        slot.publish_buddy_info(false),
-        None,
-        "a server-High-ID node holding a buddy publishes the direct row"
     );
 }

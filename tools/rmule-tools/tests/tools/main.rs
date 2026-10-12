@@ -30,3 +30,6 @@ mod peer_transfer_sui_cli;
 
 // Callback: reaching a Low-ID peer through its server.
 mod callback_replay;
+
+// NAT-T drivers: a firewalled body's posture before it recruits.
+mod natt_buddy_cli;

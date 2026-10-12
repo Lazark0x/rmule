@@ -11,8 +11,11 @@ use rmule_core::{
     SharedFileRegistry,
 };
 use rmule_net::peer::{ConnectOptions, Connection};
-use rmule_peer::{PartRanges, PeerCommand, PeerEvent};
+use rmule_peer::{
+    ConnectionEvent, PartRanges, PeerCommand, PeerEvent, RequesterCommand, RequesterEvent,
+};
 use rmule_primitives::{FileHashSummary, Ipv4Endpoint, PeerEndpoint, UserHash};
+use rmule_testkit::HANG_GUARD;
 use rmule_testkit::{
     LoopbackServeRuntime, PendingSourceLookup, RefusingPeerTransfer, ServingCore,
     test_handshake_ctx,
@@ -43,35 +46,39 @@ async fn mock_peer_downloads_a_shared_part_over_a_real_socket() {
     .await
     .unwrap();
 
-    // Wait for the peer session handshake to complete (PeerIdentified) before
+    // Wait for the peer session handshake to complete (Identified) before
     // issuing application commands — RequestParts is rejected before identification.
-    timeout(Duration::from_secs(5), async {
+    timeout(HANG_GUARD, async {
         while let Some(event) = peer.next_event().await {
-            if matches!(event, PeerEvent::PeerIdentified { .. }) {
+            if matches!(
+                event,
+                PeerEvent::Connection(ConnectionEvent::Identified { .. })
+            ) {
                 return;
             }
         }
     })
     .await
-    .expect("peer identified within 5s");
+    .expect("peer identified");
 
     // Drive the requester side: RequestParts auto-issues probe + hashset +
     // slot acquisition, and the serve side answers each step, grants
     // the slot, and streams the block.
     let ranges = PartRanges::new([(0, bytes.len() as u64), (0, 0), (0, 0)]).unwrap();
-    peer.send(PeerCommand::RequestParts {
+    peer.send(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash,
         file_size: bytes.len() as u64,
         ranges,
-    })
+    }))
     .await
     .unwrap();
 
     // Collect PartReceived bytes until we have the full file content.
-    let received = timeout(Duration::from_secs(5), async {
+    let received = timeout(HANG_GUARD, async {
         let mut got = Vec::new();
         while let Some(event) = peer.next_event().await {
-            if let PeerEvent::PartReceived { offset, bytes, .. } = event {
+            if let PeerEvent::Requester(RequesterEvent::PartReceived { offset, bytes, .. }) = event
+            {
                 assert_eq!(
                     offset,
                     got.len() as u64,
@@ -86,7 +93,7 @@ async fn mock_peer_downloads_a_shared_part_over_a_real_socket() {
         got
     })
     .await
-    .expect("received the served block within 5s");
+    .expect("received the served block");
 
     assert_eq!(received, bytes);
     drop(serving);
@@ -121,6 +128,7 @@ async fn serving_a_block_records_uploaded_bytes_in_the_credit_store() {
     let (serve_runtime, bound_rx) = LoopbackServeRuntime::new(ctx.clone());
     let credit = DurableCreditStore::new(store.clone());
     let mut core = Core::builder(CoreConfig::default(), store)
+        .settings(rmule_core::CoreSettings::default())
         .source_lookup(PendingSourceLookup)
         .peer_transfer(RefusingPeerTransfer)
         .serve_runtime(serve_runtime)
@@ -128,14 +136,13 @@ async fn serving_a_block_records_uploaded_bytes_in_the_credit_store() {
 
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
-        credentials: ctx.identity.clone().into(),
     }))
     .await
     .unwrap();
     serving_started(&mut core).await;
-    let bound = timeout(Duration::from_secs(2), bound_rx)
+    let bound = timeout(HANG_GUARD, bound_rx)
         .await
-        .expect("bound addr within 2s")
+        .expect("bound addr")
         .unwrap();
 
     let peer_endpoint = PeerEndpoint::V4(Ipv4Endpoint::new(*bound.ip(), bound.port()));
@@ -146,28 +153,31 @@ async fn serving_a_block_records_uploaded_bytes_in_the_credit_store() {
     )
     .await
     .unwrap();
-    timeout(Duration::from_secs(5), async {
+    timeout(HANG_GUARD, async {
         while let Some(event) = peer.next_event().await {
-            if matches!(event, PeerEvent::PeerIdentified { .. }) {
+            if matches!(
+                event,
+                PeerEvent::Connection(ConnectionEvent::Identified { .. })
+            ) {
                 return;
             }
         }
     })
     .await
-    .expect("identified within 5s");
+    .expect("identified");
 
     let ranges = PartRanges::new([(0, bytes.len() as u64), (0, 0), (0, 0)]).unwrap();
-    peer.send(PeerCommand::RequestParts {
+    peer.send(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash,
         file_size: bytes.len() as u64,
         ranges,
-    })
+    }))
     .await
     .unwrap();
-    timeout(Duration::from_secs(5), async {
+    timeout(HANG_GUARD, async {
         let mut got = 0usize;
         while let Some(event) = peer.next_event().await {
-            if let PeerEvent::PartReceived { bytes, .. } = event {
+            if let PeerEvent::Requester(RequesterEvent::PartReceived { bytes, .. }) = event {
                 got += bytes.len();
                 if got >= 4096 {
                     return;
@@ -176,12 +186,12 @@ async fn serving_a_block_records_uploaded_bytes_in_the_credit_store() {
         }
     })
     .await
-    .expect("received the block within 5s");
+    .expect("received the block");
 
     // The dialer identifies with test_handshake_ctx's user_hash 0x01.
     let dialer = UserHash::from_bytes([0x01; UserHash::BYTE_LEN]);
     // Allow the serve task to process the PartsRequested accounting.
-    timeout(Duration::from_secs(5), async {
+    timeout(HANG_GUARD, async {
         loop {
             if credit.totals(dialer).unwrap().uploaded >= 4096 {
                 return;
@@ -190,7 +200,7 @@ async fn serving_a_block_records_uploaded_bytes_in_the_credit_store() {
         }
     })
     .await
-    .expect("uploaded bytes recorded within 5s");
+    .expect("uploaded bytes recorded");
 
     assert_eq!(credit.totals(dialer).unwrap().uploaded, 4096);
     assert_eq!(credit.totals(dialer).unwrap().downloaded, 0);
@@ -222,28 +232,31 @@ async fn serving_a_block_counts_upload_bytes_per_peer_and_for_the_session() {
     )
     .await
     .unwrap();
-    timeout(Duration::from_secs(5), async {
+    timeout(HANG_GUARD, async {
         while let Some(event) = peer.next_event().await {
-            if matches!(event, PeerEvent::PeerIdentified { .. }) {
+            if matches!(
+                event,
+                PeerEvent::Connection(ConnectionEvent::Identified { .. })
+            ) {
                 return;
             }
         }
     })
     .await
-    .expect("identified within 5s");
+    .expect("identified");
 
     let ranges = PartRanges::new([(0, bytes.len() as u64), (0, 0), (0, 0)]).unwrap();
-    peer.send(PeerCommand::RequestParts {
+    peer.send(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash,
         file_size: bytes.len() as u64,
         ranges,
-    })
+    }))
     .await
     .unwrap();
-    timeout(Duration::from_secs(5), async {
+    timeout(HANG_GUARD, async {
         let mut got = 0usize;
         while let Some(event) = peer.next_event().await {
-            if let PeerEvent::PartReceived { bytes, .. } = event {
+            if let PeerEvent::Requester(RequesterEvent::PartReceived { bytes, .. }) = event {
                 got += bytes.len();
                 if got >= 4096 {
                     return;
@@ -252,7 +265,7 @@ async fn serving_a_block_counts_upload_bytes_per_peer_and_for_the_session() {
         }
     })
     .await
-    .expect("received the block within 5s");
+    .expect("received the block");
 
     let served = serving.core_mut().diagnostics_snapshot();
     assert_eq!(
@@ -271,7 +284,7 @@ async fn serving_a_block_counts_upload_bytes_per_peer_and_for_the_session() {
     // The requester hangs up: its row retires with the slot, but the bytes it
     // took stay counted for the session — the monotonic guarantee.
     peer.shutdown().await.unwrap();
-    let after = timeout(Duration::from_secs(5), async {
+    let after = timeout(HANG_GUARD, async {
         loop {
             let snapshot = serving.core_mut().diagnostics_snapshot();
             if snapshot.uploads.is_empty() {
@@ -281,7 +294,7 @@ async fn serving_a_block_counts_upload_bytes_per_peer_and_for_the_session() {
         }
     })
     .await
-    .expect("the released slot's upload row retired within 5s");
+    .expect("the released slot's upload row retired");
     assert_eq!(
         after.session.up_bytes_total, 4096,
         "a retired upload row must not subtract from the session total",

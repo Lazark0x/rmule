@@ -63,10 +63,14 @@ V2, `‖ challenge_ip(u32-le) ‖ ip_kind(u8)`.
 
 **V2 IP + kind selection** (resolves the "whose IP under NAT?" question from source):
 
-| Our own ID | `challenge_ip` signed | `ip_kind` byte |
+| Our eD2k ID (`GetED2KID`) | `challenge_ip` signed | `ip_kind` byte |
 | --- | --- | --- |
-| Low-ID | the REMOTE peer's IP | `CRYPT_CIP_REMOTECLIENT` |
-| High-ID | OUR OWN public ID | `CRYPT_CIP_LOCALCLIENT` |
+| Low, or no server | the REMOTE peer's IP | `CRYPT_CIP_REMOTECLIENT` |
+| High | OUR eD2k ID | `CRYPT_CIP_LOCALCLIENT` |
+
+The row keys on the **eD2k ID** the server session holds (`BaseClient.cpp:2096-2104`), never
+the Presented Client ID a hello names: an open Kad verdict presents a High ID and still signs
+the remote IP while no server holds us at one.
 
 Kind constants [aMule `ClientCredits.h`]: `CRYPT_CIP_REMOTECLIENT = 10`,
 `CRYPT_CIP_LOCALCLIENT = 20`, `CRYPT_CIP_NONECLIENT = 30`. Verification uses the observed

@@ -4,6 +4,7 @@
 //! dropping what changed or vanished, and the real watch sharing a file
 //! dropped in after the pass.
 
+use rmule_testkit::HANG_GUARD;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration as StdDuration, SystemTime};
@@ -20,12 +21,14 @@ use rmule_primitives::FileHashSummary;
 use tokio::time::{Duration, timeout};
 
 fn core(store: Arc<DurableStore>) -> Core {
-    Core::builder(CoreConfig::default(), store).build()
+    Core::builder(CoreConfig::default(), store)
+        .settings(rmule_core::CoreSettings::default())
+        .build()
 }
 
 async fn next_scan_event(core: &mut Core) -> ScanEvent {
     loop {
-        let event = timeout(Duration::from_secs(10), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted a scan event")
             .expect("core event stream stayed open");
@@ -50,7 +53,7 @@ fn scan_phase(snapshot: DiagnosticsSnapshot) -> Option<ScanPhase> {
 async fn diagnostics(core: &mut Core) -> DiagnosticsSnapshot {
     core.send(CoreCommand::DumpDiagnostics).await.unwrap();
     loop {
-        let event = timeout(Duration::from_secs(2), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("a snapshot")
             .expect("stream open");
@@ -60,12 +63,15 @@ async fn diagnostics(core: &mut Core) -> DiagnosticsSnapshot {
     }
 }
 
-async fn start(core: &Core, dir: &Path) {
-    core.send(CoreCommand::Scan(ScanCommand::Start {
-        dir: dir.to_path_buf(),
-    }))
-    .await
-    .unwrap();
+/// Name `dir` the download directory on the running core, as Settings do:
+/// core scans it, asking with no answer on record.
+fn name_download_dir(core: &Core, dir: &Path) {
+    core.settings()
+        .set(rmule_core::Setting::DownloadDir {
+            dir: dir.to_path_buf(),
+            share_confirmed: false,
+        })
+        .unwrap();
 }
 
 async fn answer(core: &Core, dir: &Path, share: bool) {
@@ -127,7 +133,7 @@ async fn a_download_directory_is_asked_about_hashed_trusted_and_diffed() {
 
     // First start: the guard asks, and nothing is shared while it waits.
     let mut first = core(store.clone());
-    start(&first, &root).await;
+    name_download_dir(&first, &root);
     assert_eq!(
         next_scan_event(&mut first).await,
         ScanEvent::ConsentRequested {
@@ -181,7 +187,7 @@ async fn a_download_directory_is_asked_about_hashed_trusted_and_diffed() {
 
     // Restart: the answer is on record and every row is trusted unread.
     let mut second = core(store.clone());
-    start(&second, &root).await;
+    name_download_dir(&second, &root);
     assert_eq!(
         next_scan_event(&mut second).await,
         ScanEvent::Finished {
@@ -199,7 +205,7 @@ async fn a_download_directory_is_asked_about_hashed_trusted_and_diffed() {
     std::fs::remove_file(&nested).unwrap();
     write(&root.join("films").join("new.mkv"), b"new bytes", 4_000);
     let mut third = core(store);
-    start(&third, &root).await;
+    name_download_dir(&third, &root);
     assert_eq!(
         next_scan_event(&mut third).await,
         ScanEvent::Finished {
@@ -248,7 +254,7 @@ async fn a_declined_directory_is_never_shared_and_not_asked_again() {
     let registry = DurableSharedFileRegistry::new(store.clone());
 
     let mut first = core(store.clone());
-    start(&first, &root).await;
+    name_download_dir(&first, &root);
     assert!(matches!(
         next_scan_event(&mut first).await,
         ScanEvent::ConsentRequested { .. }
@@ -261,7 +267,7 @@ async fn a_declined_directory_is_never_shared_and_not_asked_again() {
     first.shutdown().await;
 
     let mut second = core(store);
-    start(&second, &root).await;
+    name_download_dir(&second, &root);
     assert_eq!(
         next_scan_event(&mut second).await,
         ScanEvent::Declined { dir: root.clone() }
@@ -280,12 +286,71 @@ async fn an_answer_sent_before_the_start_spares_the_question() {
     let mut core = core(store);
     // The Settings path: the warning was confirmed, then the scan starts.
     answer(&core, &root, true).await;
-    start(&core, &root).await;
+    name_download_dir(&core, &root);
     assert!(matches!(
         next_scan_event(&mut core).await,
         ScanEvent::Finished { summary, .. } if summary.hashed == 2
     ));
     core.shutdown().await;
+}
+
+/// The Settings path through Core Settings (ADR-0069): the confirmed
+/// directory set on the running core is persisted, and core starts its scan
+/// at once without a question.
+#[tokio::test]
+async fn a_confirmed_download_dir_set_on_the_running_core_is_scanned_at_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    populate(&root);
+    let store = rmule_testkit::memory_store();
+    own_part(&store, &root);
+    let mut core = core(store);
+    assert_eq!(
+        core.settings().set(rmule_core::Setting::DownloadDir {
+            dir: root.clone(),
+            share_confirmed: true,
+        }),
+        Ok(rmule_core::TakesEffect::Now)
+    );
+    assert!(matches!(
+        next_scan_event(&mut core).await,
+        ScanEvent::Finished { summary, .. } if summary.hashed == 2
+    ));
+    assert_eq!(core.settings().read().unwrap().download_dir, Some(root));
+    core.shutdown().await;
+}
+
+/// A core scans the download directory its Core Settings name from attach,
+/// with no command, and asks from the answer recorded for it: one the
+/// operator confirmed asks nothing, one they declined is not scanned.
+#[tokio::test]
+async fn a_core_scans_its_configured_download_dir_from_attach_under_the_recorded_answer() {
+    for confirmed in [true, false] {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        populate(&root);
+        let store = rmule_testkit::memory_store();
+        own_part(&store, &root);
+        DurableSharedFileRegistry::new(store.clone())
+            .record_directory_answer(&root, confirmed)
+            .unwrap();
+        let mut core = Core::builder(CoreConfig::default(), store)
+            .settings(rmule_core::CoreSettings {
+                download_dir: Some(root.clone()),
+                ..rmule_core::CoreSettings::default()
+            })
+            .build();
+        let scan = next_scan_event(&mut core).await;
+        if confirmed {
+            assert!(
+                matches!(&scan, ScanEvent::Finished { summary, .. } if summary.hashed == 2),
+                "{scan:?}"
+            );
+        } else {
+            assert_eq!(scan, ScanEvent::Declined { dir: root });
+        }
+        core.shutdown().await;
+    }
 }
 
 #[tokio::test]
@@ -297,7 +362,7 @@ async fn quit_while_the_guard_waits_ends_the_scan_and_shares_nothing() {
     own_part(&store, &root);
     let registry = DurableSharedFileRegistry::new(store.clone());
     let mut core = core(store);
-    start(&core, &root).await;
+    name_download_dir(&core, &root);
     assert!(matches!(
         next_scan_event(&mut core).await,
         ScanEvent::ConsentRequested { .. }
@@ -323,7 +388,7 @@ async fn a_file_dropped_into_a_watched_directory_becomes_a_registry_row() {
     let registry = DurableSharedFileRegistry::new(store.clone());
     let mut core = core(store);
     answer(&core, &root, true).await;
-    start(&core, &root).await;
+    name_download_dir(&core, &root);
     assert!(matches!(
         next_scan_event(&mut core).await,
         ScanEvent::Finished { summary, .. } if summary == ScanSummary::default()
@@ -371,7 +436,7 @@ async fn a_file_renamed_between_starts_is_carried_where_its_identity_proves_it()
 
     let mut first = core(store.clone());
     answer(&first, &root, true).await;
-    start(&first, &root).await;
+    name_download_dir(&first, &root);
     assert!(matches!(
         next_scan_event(&mut first).await,
         ScanEvent::Finished { summary, .. } if summary.hashed == 1
@@ -383,7 +448,7 @@ async fn a_file_renamed_between_starts_is_carried_where_its_identity_proves_it()
     std::fs::rename(&before, &after).unwrap();
 
     let mut second = core(store.clone());
-    start(&second, &root).await;
+    name_download_dir(&second, &root);
     let ScanEvent::Finished { summary, .. } = next_scan_event(&mut second).await else {
         panic!("the second pass finishes");
     };
@@ -453,7 +518,7 @@ async fn past_the_inotify_limit_the_operator_is_told_once_and_a_fresh_pass_still
     let registry = DurableSharedFileRegistry::new(store.clone());
     let mut core = core(store);
     answer(&core, &root, true).await;
-    start(&core, &root).await;
+    name_download_dir(&core, &root);
 
     let mut finished = None;
     let mut unavailable = Vec::new();
@@ -494,8 +559,8 @@ async fn past_the_inotify_limit_the_operator_is_told_once_and_a_fresh_pass_still
     let later = root.join("later.bin");
     write(&later, b"added after the watch failed", 6_000);
     let file_hash = FileHashSummary::digest_bytes(b"added after the watch failed").file_hash();
-    start(&core, &root).await;
-    timeout(Duration::from_secs(20), async {
+    name_download_dir(&core, &root);
+    timeout(HANG_GUARD, async {
         loop {
             if let CoreEvent::Serve(rmule_core::ServeEvent::FileShared { file_hash: shared }) =
                 core.next_event().await.expect("stream open")

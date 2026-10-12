@@ -13,7 +13,7 @@ use rmule_primitives::Ipv4Endpoint;
 use super::{KadEvent, KadNode, KadNodeDiagnostic, KadReachability};
 use crate::messages::Kad2NodeInfo;
 use crate::reachability::{
-    CHECK_WINDOW, FirewallMessage, FirewallResponseOutcome, FirewallSelfCheck, UdpFirewallTester,
+    CHECK_WINDOW, FirewallMessage, FirewallResponseOutcome, FirewallSelfCheck,
 };
 use crate::{KadEnvelope, KadInstant, KadNodeEndpoint};
 
@@ -55,25 +55,6 @@ impl KadNode {
     /// assume-open. Idempotent, applied at the next publish poll / inbound `0x43`.
     pub fn set_reachability(&mut self, reachability: KadReachability) {
         self.reachability = reachability;
-    }
-
-    /// Arm this node's own firewall self-check (ADR-0058 requester cycle),
-    /// anchored at `now`: from here the node piggybacks `0x50`/`0x53` checks on
-    /// hello traffic (budget-capped), tracks their 180 s response windows,
-    /// consumes `0x58`/`0x59`, and rechecks hourly — emitting the
-    /// [`ReachabilityRecheckStarted`](KadEvent::ReachabilityRecheckStarted) /
-    /// [`ReachabilityConnectBack`](KadEvent::ReachabilityConnectBack) /
-    /// [`ReachabilityRecheckConcluded`](KadEvent::ReachabilityRecheckConcluded)
-    /// events the core store projects. Dormant by default (see the `firewall`
-    /// field); a driver arms it once the ADR-0058 dial-back capture ratifies the
-    /// live legs, the same capture-gating the obfuscation seam carries.
-    pub fn enable_firewall_self_check(&mut self, now: KadInstant) {
-        self.firewall = Some(FirewallSelfCheck::new(now));
-        // The UDP tester arms alongside the TCP check (ADR-0058 breakdown 3), not
-        // as a separate driver: one call turns on both self-checks, exactly as
-        // aMule's `CKademlia::Start` starts the TCP recheck cadence and
-        // `CUDPFirewallTester::Connected` the UDP test together.
-        self.udp_firewall = Some(UdpFirewallTester::new(now));
     }
 
     /// The **Reachability** responder (ADR-0058): a peer's `0x50`/`0x53`
@@ -406,17 +387,14 @@ impl KadNode {
     /// `ReCheckFirewallUDP(false)`, `Kademlia.cpp:365-380`) — shared by the
     /// hourly cadence and the ADR-0086 external trigger, since aMule's sole
     /// caller pairs them the same way for both. Resets the tester's counters
-    /// ([`UdpFirewallTester::recheck`]) and launches a fresh Helper Lookup
+    /// ([`UdpFirewallTester::recheck`](crate::reachability::UdpFirewallTester::recheck)) and launches a fresh Helper Lookup
     /// rather than waiting for the next datagram, exactly as
     /// `ReCheckFirewallUDP` calls `FindNodeFWCheckUDP` itself
     /// (`UDPFirewallTester.cpp:220`). A no-op when the UDP tester is not armed
-    /// (a driver that never called [`arm_udp_firewall_helper_lookup`] runs the
-    /// TCP self-check alone). Emits [`KadEvent::ExternPortRoundStarted`]
+    /// (a node started without a self-check runs neither test). Emits [`KadEvent::ExternPortRoundStarted`]
     /// exactly when a tester restarts, so core's Address
     /// Learning store forgets the previous round's UDP-role Kad port reports
     /// — aMule's `FindExternKadPort(true)` starting the observer lists empty.
-    ///
-    /// [`arm_udp_firewall_helper_lookup`]: Self::arm_udp_firewall_helper_lookup
     fn restart_udp_self_check(&mut self, now: KadInstant) {
         let restarted = if let Some(tester) = self.udp_firewall.as_mut() {
             tester.recheck(now);

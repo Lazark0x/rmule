@@ -5,7 +5,7 @@
 //! survival — the aMule-mirrored sanity filter, the Low-ID routing rule and
 //! the cumulative per-file cap — without touching an entry's provenance.
 
-use rmule_primitives::{ExchangedSource, Ipv4Endpoint, PeerEndpoint, PeerSource};
+use rmule_primitives::{Ipv4Endpoint, PeerEndpoint, PeerSource, SourceSighting};
 
 use super::SourceExchangeEntry;
 
@@ -55,8 +55,9 @@ fn keep_entry(
     }
 }
 
-/// The candidate one entry yields, if any: its classic form when
-/// [`keep_entry`] keeps it — **with** the IPv6 half an ExtSX record carried
+/// The candidate one entry yields, if any: its classic form, naming the
+/// server the row declared, when [`keep_entry`] keeps it — **with** the IPv6
+/// half an ExtSX record carried
 /// beside it, so a dual-stack source surfaces as one source with two
 /// addresses and the core Dial Chooser picks the family — and otherwise that
 /// IPv6 alone (ADR-0087 judges the two families independently).
@@ -70,14 +71,16 @@ fn admit(
     entry: SourceExchangeEntry,
     own_endpoint: Option<PeerEndpoint>,
     connected_server: Option<Ipv4Endpoint>,
-) -> Option<ExchangedSource> {
+) -> Option<SourceSighting> {
     if keep_entry(entry, own_endpoint, connected_server) {
-        return Some(entry.source());
+        // The row's server rides on: a Low ID is read in the namespace of
+        // the server that assigned it (aMule `AddClientSources`).
+        return Some(entry.source().with_server(entry.server()));
     }
     let ipv6 = entry.ipv6()?;
     let endpoint = PeerEndpoint::V6(ipv6);
     (is_plausible_high_id_endpoint(endpoint) && Some(endpoint) != own_endpoint).then(|| {
-        ExchangedSource::new(
+        SourceSighting::new(
             PeerSource::Ipv6(ipv6),
             entry.user_hash(),
             entry.crypt_options(),
@@ -92,10 +95,10 @@ fn admit(
 /// this file has already been handed across earlier answers, so the cap is
 /// honored cumulatively rather than reset per packet.
 ///
-/// The surviving [`ExchangedSource`]s carry exactly the provenance
-/// ([`ExchangedSource::user_hash`] / [`ExchangedSource::crypt_options`]) they
+/// The surviving [`SourceSighting`]s carry exactly the provenance
+/// ([`SourceSighting::user_hash`] / [`SourceSighting::crypt_options`]) they
 /// decoded with — the same ADR-0046 model the server `0x44` path feeds, read
-/// through [`ExchangedSource::peer_crypt`] and met with ours by
+/// through [`SourceSighting::peer_crypt`] and met with ours by
 /// `PeerCrypt::outbound` (ADR-0049); this function only decides *which*
 /// entries survive, never touches their provenance fields.
 pub(crate) fn sanitize_and_route(
@@ -103,7 +106,7 @@ pub(crate) fn sanitize_and_route(
     own_endpoint: Option<PeerEndpoint>,
     connected_server: Option<Ipv4Endpoint>,
     already_forwarded: usize,
-) -> Vec<ExchangedSource> {
+) -> Vec<SourceSighting> {
     let remaining_capacity = PER_FILE_SOURCE_CAP.saturating_sub(already_forwarded);
     entries
         .into_iter()

@@ -2,71 +2,36 @@
 //! adopted by the download that requested it (ADR-0039), a **Dialer Tunnel**
 //! raised toward a claimed target is adopted by the download whose callback
 //! went silent (ADR-0091), and anything else is admitted as a serve
-//! connection. Holds the callback table the requesting runners register into
-//! and this triage consumes.
+//! connection. Who gets a connection is the **Awaited Inbound** registry's
+//! answer to one question; this module asks it and carries the answer out.
 //!
 //! The two adoption roads meet here, and not one step earlier, because this is
 //! where the hello is — and both roads decide on what the peer *says*, not on
 //! where the bytes came from. It is also the one place downstream of the IP
 //! filter and the ban gate, so neither road can skip them.
 
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rmule_net::peer::Connection as PeerConnection;
-use rmule_peer::{PartBitmap, PeerEvent, PeerIdentity};
-use rmule_primitives::{ClientId, Ed2kFileLink, Ipv4Endpoint, PeerEndpoint, UserHash};
-use tokio::sync::{Mutex, mpsc};
+use rmule_peer::{ConnectionEvent, PeerCommand, PeerEvent, PeerIdentity, SideEvent};
+use rmule_primitives::{PeerEndpoint, UserHash};
+use tokio::sync::mpsc;
 
 use crate::buddy_link::SharedBuddySlot;
 use crate::service::PortTestClosedBy;
 
+use super::awaited_inbound::{
+    AdoptionBrief, AwaitedInbound, CallbackKey, InboundArrival, InboundVerdict,
+};
 use super::dialed_serve::SharedDialedServeSink;
+use super::hello_wait::{Opening, await_hello};
 use super::kad_runtime::{
     SharedKadBootstrap, SharedKadPump, broker_peer_kad_handoff, report_kad_firewall_ack,
     report_kad_udp_firewall_request,
 };
 use super::peer_transfer::PeerWorker;
 use super::peer_transfer::worker::drive_peer_worker;
-use super::serve_projection::{serve_command_to_peer, serve_event_from_peer};
-use super::serve_runtime::{ServeConnCommand, ServeConnEvent};
-use super::tunnel_claims::{SharedTunnelClaims, TunnelClaimVerdict};
-
-/// Identifies one pending Low-ID callback (ADR-0039 / ADR-0051) — the single key
-/// `download::state`'s `DownloadState` owns and threads verbatim through
-/// its deadline heap, its adoption routing, and this [`SharedCallbackTable`].
-/// `low_id` is the source's server-assigned id (unique only per server, so the
-/// server namespaces it); `server` is the server that relays the callback and
-/// that the called-back peer reports as its `connected_server`:
-/// - `None` — the *connected-server* form: the download's own connected server.
-///   The sans-I/O brain does not hold that endpoint (a runtime fact, like the
-///   clock), so it leaves `None`; the runner resolves it to the live connected
-///   server when it registers or retracts this routing index.
-/// - `Some(server)` — a *per-server global* callback (ADR-0051): the source-server that
-///   answered `OP_GLOBFOUNDSOURCES` and relays the callback.
-///
-/// In this table the `server` is always the concrete endpoint the inbound peer
-/// reports (the runner has resolved any `None`) — a `None` here could never match
-/// an inbound hello. It stays `Option` because a DNS-named server's hello encodes
-/// `0.0.0.0:0` → `None`; such a callback simply degrades to the timeout.
-///
-/// It lives here, not in `download::state`, so that the vocabulary it shares
-/// with [`SharedCallbackTable`] and `PeerWorkerEvent`/`PeerWorkerCommand` has
-/// one home and the `download::state -> adapters` dependency direction holds;
-/// the lifecycle (the pending set and all callback policy) is still the brain's.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct CallbackKey {
-    pub(crate) server: Option<Ipv4Endpoint>,
-    pub(crate) low_id: ClientId,
-}
-
-/// The core-owned table the inbound accept-router consults to adopt a
-/// called-back Low-ID peer (ADR-0039) — the [`SharedDialedServeSink`] ownership
-/// pattern inverted (serve → download). The core actor owns the `Arc`; it clones
-/// one to the serve adapter (which matches inbound hellos against it) and one to
-/// each download's runner (which registers an entry per requested callback).
-/// One entry per download per key, the oldest adopted first (ADR-0107).
-pub(crate) type SharedCallbackTable = Arc<Mutex<PendingCallbacks>>;
+use super::serve_runtime::{ServeInput, ServeOutput};
 
 /// The runtime handles the inbound accept path threads as **one value** —
 /// accept → triage → adopt/serve — instead of a positional parade. Grouped so
@@ -117,69 +82,51 @@ pub(crate) enum InboundEnd {
 }
 
 /// The inbound accept-router (ADR-0039): drive one accepted `Connection` to its
-/// hello, then route by a Low-ID callback match. The raw connection and its
-/// identify are owned here, in the adapter — the only place the download (adopt)
-/// and serve sinks both live — so the decision is made before serve-bridging.
-/// On a match the connection becomes an **Adopted Inbound Worker** for the
-/// requesting download; with no match it is served exactly as before. The
-/// handshake guarantees no serve-capability event precedes `PeerIdentified`, so
-/// nothing is lost by waiting for identify before deciding.
+/// hello, then ask the **Awaited Inbound** registry who gets it. The raw
+/// connection and its identify are owned here, in the adapter — the only place
+/// the download (adopt) and serve sinks both live — so the decision is made
+/// before serve-bridging. An adopted connection becomes an **Adopted Inbound
+/// Worker** for the download that awaited it; an unclaimed one is served
+/// exactly as before. The handshake guarantees no serve-capability event
+/// precedes `Identified`, so nothing is lost by waiting for identify before
+/// deciding.
 ///
-/// `dialed_toward` is the second adoption road (ADR-0091): the target User
-/// Hash a NAT-T punch raised this stream toward, `None` for every stream this
-/// node did not aim. It is consulted before the callback key and decided on
-/// the same hello.
+/// `dialed_toward` is the target User Hash a NAT-T punch raised this stream
+/// toward (ADR-0091), `None` for every stream this node did not aim.
 ///
 /// Returns how the connection left the router: closed here, with who closed
 /// it, or adopted.
 pub(crate) async fn triage_inbound_connection(
     mut conn: PeerConnection,
     dialed_toward: Option<UserHash>,
-    command_rx: mpsc::Receiver<ServeConnCommand>,
-    event_tx: mpsc::Sender<ServeConnEvent>,
-    callbacks: SharedCallbackTable,
-    tunnel_claims: SharedTunnelClaims,
+    command_rx: mpsc::Receiver<ServeOutput>,
+    event_tx: mpsc::Sender<ServeInput>,
+    awaited: AwaitedInbound,
     deps: InboundPeerDeps,
 ) -> InboundEnd {
     // Drain until the peer identifies; that yields the `(connected_server,
-    // client_id)` correlation key. A disconnect or a stray pre-identify serve
-    // event is handled exactly as the serve bridge would.
-    let identity = loop {
-        match conn.next_event().await {
-            Some(PeerEvent::PeerIdentified { identity }) => break identity,
-            // The opening was refused by name (ADR-0050); the close follows.
-            Some(PeerEvent::HelloRefused { refusal }) => deps.hello_refusals.report(refusal).await,
-            Some(PeerEvent::Disconnected { reason }) => {
-                let _ = event_tx.send(ServeConnEvent::Disconnected).await;
-                let _ = conn.shutdown().await;
-                return InboundEnd::Closed((&reason).into());
-            }
-            None => {
-                let _ = event_tx.send(ServeConnEvent::Disconnected).await;
-                let _ = conn.shutdown().await;
-                return InboundEnd::Closed(PortTestClosedBy::DriverEnded);
-            }
-            Some(PeerEvent::KadFirewallCheckAck) => {
-                // A dial-back can ack before its hello has been folded into an
-                // identity here; the requester cycle needs only the IP.
-                report_kad_firewall_ack(&deps.kad_pump, conn.peer_endpoint());
-            }
-            Some(PeerEvent::KadUdpFirewallCheckRequested { request }) => {
-                report_kad_udp_firewall_request(
-                    &deps.kad_pump,
-                    conn.peer_endpoint(),
-                    request,
-                    &deps.peer_roster,
-                );
-            }
-            Some(other) => {
-                if let Some(serve) = serve_event_from_peer(other)
-                    && event_tx.send(serve).await.is_err()
-                {
-                    let _ = conn.shutdown().await;
-                    return InboundEnd::Closed(PortTestClosedBy::Us);
-                }
-            }
+    // client_id)` correlation key.
+    let remote = conn.peer_endpoint();
+    let opening = await_hello(&mut conn, &deps.hello_refusals, |side| {
+        report_side_before_hello(&deps, remote, side);
+    })
+    .await;
+    let identity = match opening {
+        Opening::Identified(identity) => *identity,
+        Opening::Closed(reason) => {
+            let closed_by = PortTestClosedBy::from(&reason);
+            let _ = event_tx
+                .send(ServeInput::Connection(ConnectionEvent::Disconnected {
+                    reason,
+                }))
+                .await;
+            let _ = conn.shutdown().await;
+            return InboundEnd::Closed(closed_by);
+        }
+        Opening::Ended => {
+            let _ = event_tx.send(ServeInput::closed_here()).await;
+            let _ = conn.shutdown().await;
+            return InboundEnd::Closed(PortTestClosedBy::DriverEnded);
         }
     };
 
@@ -224,137 +171,72 @@ pub(crate) async fn triage_inbound_connection(
         );
     }
 
-    // The NAT-T road first (ADR-0091), when this stream was raised by a punch
-    // rmule aimed at a named target. It outranks the callback key because it
-    // is the stronger evidence — we asked for *this hash*, and the hello
-    // either confirms it or the connection is not what was asked for. A
-    // refused adoption is closed rather than served: it arrived down a path
-    // only this node's own punch opened, so nothing else wanted it, and the
-    // claim stays pending for the target that may still come.
-    if let Some(target) = dialed_toward {
-        match tunnel_claims.rule(target, identity.user_hash()).await {
-            TunnelClaimVerdict::Adopted(entry) => {
-                let _ = event_tx.send(ServeConnEvent::Readopted).await;
-                // The hello just confirmed this peer: report it
-                // back to the front exactly as a closed path does, so it can
-                // end their attempt and take any hold still waiting to dial
-                // them with it — every adoption, not only one an address
-                // alone could not attribute, since the front's own end is a
-                // no-op for a peer it never held an attempt for.
-                tunnel_claims.identified(identity.user_hash());
-                let peer = conn.peer_endpoint();
-                let worker = adopt_inbound_worker(
-                    conn,
-                    peer,
-                    &identity,
-                    entry.file,
-                    entry.own_status,
-                    entry.want_sources,
-                    deps,
-                );
-                // The *callback's* key, not a tunnel key: NAT traversal is an
-                // additional attempt on one pending callback, so the brain
-                // ends exactly one of them whichever road landed.
-                let _ = entry.adopt_tx.send((entry.callback, worker)).await;
-                return InboundEnd::Adopted;
-            }
-            TunnelClaimVerdict::HelloMismatch => {
-                tracing::info!(
-                    peer = %conn.peer_endpoint(),
-                    reported = ?identity.user_hash(),
-                    "a punched path's peer is not the target it was raised for; adoption refused"
-                );
-                let _ = event_tx.send(ServeConnEvent::Disconnected).await;
-                let _ = conn.shutdown().await;
-                return InboundEnd::Closed(PortTestClosedBy::Us);
-            }
-            // Nobody is waiting for this target: the serve road, unchanged.
-            TunnelClaimVerdict::Unclaimed => {}
-        }
-    }
-
-    // Match the inbound peer against the pending-callback table. A match removes
-    // the entry (claiming this adoption) and routes the connection to that
-    // download; no match flows to serve, as before. The key carries the concrete
-    // server the peer reports — the runner resolved any connected-server `None`
-    // to it at registration, so this matches directly.
-    let key = CallbackKey {
+    // The one question (ADR-0039, ADR-0091): how the connection came in and
+    // what its hello says. The key carries the concrete server the peer
+    // reports; the runner resolved any connected-server `None` when it filed.
+    let arrival = match dialed_toward {
+        Some(target) => InboundArrival::DialedToward(target),
+        None => InboundArrival::Accepted,
+    };
+    let reported = CallbackKey {
         server: identity.connected_server(),
         low_id: identity.client_id(),
     };
-    let adopted = callbacks.lock().await.adopt(&key);
-    // A buddy callback's dial-back reports no key the table holds — a Kad
-    // candidate is in no server's namespace — so it is matched by the User
-    // Hash its hello names, and only for a claim that asked for a dial-back
-    // (ADR-0061 route 4). Consulted only on a key miss, so the
-    // ADR-0039 road is unchanged.
-    let dial_back = match adopted {
-        Some(_) => None,
-        None => tunnel_claims.adopt_dial_back(identity.user_hash()).await,
-    };
-    if let Some(entry) = dial_back {
-        let _ = event_tx.send(ServeConnEvent::Readopted).await;
-        // The same report a NAT-T road adoption makes above —
-        // this dial-back's claim just named itself too.
-        tunnel_claims.identified(identity.user_hash());
-        let peer = conn.peer_endpoint();
-        let worker = adopt_inbound_worker(
-            conn,
-            peer,
-            &identity,
-            entry.file,
-            entry.own_status,
-            entry.want_sources,
-            deps,
-        );
-        let _ = entry.adopt_tx.send((entry.callback, worker)).await;
-        return InboundEnd::Adopted;
-    }
-    match adopted {
-        Some(entry) => {
-            // Retract the (already-registered) serve connection, build a download
-            // worker over the raw socket, and hand it to the requesting download.
-            let _ = event_tx.send(ServeConnEvent::Readopted).await;
-            // An ADR-0039 callback match is also an adoption a
-            // confirmed hello granted, so it reports the same way.
-            tunnel_claims.identified(identity.user_hash());
-            let peer = conn.peer_endpoint();
-            let worker = adopt_inbound_worker(
-                conn,
-                peer,
-                &identity,
-                entry.file,
-                entry.own_status,
-                entry.want_sources,
-                deps,
+    match awaited.triage(arrival, identity.user_hash(), reported) {
+        InboundVerdict::Adopt(adoption) => {
+            // The registration is spent; the hand-over waits on the download
+            // outside the registry's lock. A download that ended since gives
+            // no permit, and the connection takes the serve road below.
+            if let Ok(permit) = adoption.adopt_tx.reserve().await {
+                // Retract the (already-registered) serve connection, build a
+                // download worker over the raw socket, and hand it over under
+                // the callback's key, whichever road landed.
+                let _ = event_tx.send(ServeInput::Readopted).await;
+                let peer = conn.peer_endpoint();
+                let worker = adopt_inbound_worker(conn, peer, &identity, adoption.brief, deps);
+                permit.send((adoption.callback, worker));
+                return InboundEnd::Adopted;
+            }
+        }
+        InboundVerdict::Mismatch => {
+            // It arrived down a path only this node's own punch opened, so
+            // nothing else wanted it: closed rather than served.
+            tracing::info!(
+                peer = %conn.peer_endpoint(),
+                reported = ?identity.user_hash(),
+                "a punched path's peer is not the target it was raised for; adoption refused"
             );
-            let _ = entry.adopt_tx.send((key, worker)).await;
-            InboundEnd::Adopted
+            let _ = event_tx.send(ServeInput::closed_here()).await;
+            let _ = conn.shutdown().await;
+            return InboundEnd::Closed(PortTestClosedBy::Us);
         }
-        None => {
-            // Re-emit the identity the bridge would have surfaced, then serve.
-            // The peer's advertised client-UDP reask contact rides now that the
-            // live front binds and serves peer-UDP (ADR-0057): a queued waiter's
-            // inbound `OP_REASKFILEPING` matches on it by IP + port.
-            let (udp_port, udp_version) = identity.client_udp_reask().unwrap_or((0, 0));
-            let _ = event_tx
-                .send(ServeConnEvent::Identified {
-                    user_hash: identity.user_hash(),
-                    client_id: identity.client_id(),
-                    connected_server: identity.connected_server(),
-                    // The peer's advertised eD2k listen port — its own source
-                    // coordinate for source-exchange serving (ADR-0055 §Serving).
-                    tcp_port: identity.tcp_port(),
-                    udp_port,
-                    udp_version,
-                    extended_requests_version: identity.extended_requests_version(),
-                    crypt: identity.crypt_stance(),
-                    ipv6: identity.peer_ipv6(),
-                    software: identity.software().clone(),
-                })
-                .await;
-            InboundEnd::Closed(serve_bridge_loop(conn, command_rx, event_tx, deps).await)
+        InboundVerdict::Unclaimed => {}
+    }
+    // Hand the serve side the identification the hello wait consumed, then
+    // serve.
+    let _ = event_tx
+        .send(ServeInput::Connection(ConnectionEvent::Identified {
+            identity,
+        }))
+        .await;
+    InboundEnd::Closed(serve_bridge_loop(conn, command_rx, event_tx, deps).await)
+}
+
+/// A Kad firewall-check frame that arrived before the hello: a dial-back can
+/// ack before its hello is folded into an identity, and the requester cycle
+/// and the UDP Firewall Helper need only the IP (ADR-0058). Any other
+/// side-channel frame waits for an identified link and is dropped.
+fn report_side_before_hello(deps: &InboundPeerDeps, remote: PeerEndpoint, side: SideEvent) {
+    match side {
+        SideEvent::KadFirewallCheckAck => report_kad_firewall_ack(&deps.kad_pump, remote),
+        SideEvent::KadUdpFirewallCheckRequested { request } => {
+            report_kad_udp_firewall_request(&deps.kad_pump, remote, request, &deps.peer_roster);
         }
+        SideEvent::BuddyPingReceived
+        | SideEvent::BuddyCallbackReceived { .. }
+        | SideEvent::BuddyReaskCallbackReceived { .. }
+        | SideEvent::PublicIpAnswered
+        | SideEvent::PublicIpRequestUnanswerable => {}
     }
 }
 
@@ -362,19 +244,25 @@ pub(crate) async fn triage_inbound_connection(
 /// already-identified inbound `conn` (a called-back Low-ID peer): the dial-free,
 /// identify-free sibling of [`RuntimePeerTransferService`](crate::RuntimePeerTransferService)'s `start_peer_worker`. It
 /// spawns the shared [`drive_peer_worker`] with `identified = Some(identity)` —
-/// the accept-side identity's own hello stance and serving buddy ride through
-/// with it, so an adopted peer seeds `hello_crypts` and the
-/// brain's hello buddies too — and returns the `PeerWorker`
+/// the accept-side identity is the one the download starts from, so an adopted
+/// peer's hello stance and serving buddy reach its record and the run's hello
+/// buddies as a dialed peer's do. A revision the session read after the hello
+/// waits in the connection's event queue, which the worker's router forwards
+/// right after that identity, so the download ends on the session's — and
+/// returns the `PeerWorker`
 /// handle for the download runner to register.
 fn adopt_inbound_worker(
     conn: PeerConnection,
     peer: PeerEndpoint,
     identity: &PeerIdentity,
-    file: Ed2kFileLink,
-    own_status: PartBitmap,
-    want_sources: bool,
+    brief: AdoptionBrief,
     deps: InboundPeerDeps,
 ) -> PeerWorker {
+    let AdoptionBrief {
+        file,
+        own_status,
+        want_sources,
+    } = brief;
     let (command_tx, command_rx) = mpsc::channel(8);
     let (event_tx, event_rx) = mpsc::channel(16);
     let identity = identity.clone();
@@ -388,15 +276,10 @@ fn adopt_inbound_worker(
             Some(identity),
             command_rx,
             event_tx,
-            deps.slot_wait_timeout,
-            deps.dialed_serve_sink,
-            // The adopted peer already identified during accept, where the handoff
-            // was already brokered; the drive body re-runs no identify, so this sink
-            // simply goes unused for it (no double-broker).
-            deps.kad_bootstrap,
-            deps.addresses,
-            // Identified at accept, so its hello can no longer be refused.
-            deps.hello_refusals,
+            // The adopted peer already identified during accept, where the
+            // handoff was already brokered and its hello can no longer be
+            // refused; the drive body re-runs no identify.
+            deps.clone(),
         )
         .await;
         // ADR-0061: the adopted connection may double as the held buddy
@@ -408,9 +291,10 @@ fn adopt_inbound_worker(
     PeerWorker::new(peer, command_tx, event_rx)
 }
 
-/// Bridge one accepted peer `Connection` to the narrow serve vocab: peer
-/// serve-side `PeerEvent`s become `ServeConnEvent`s, and `ServeConnCommand`s
-/// become `PeerCommand`s. Runs until the connection closes or core drops the
+/// Bridge one accepted peer `Connection` to the serve task: its `Server`
+/// requests and `Connection` facts go up as they are, its side-channel frames
+/// go to the node-wide services, and the serve task's `Server` commands go
+/// down to the session. Runs until the connection closes or core drops the
 /// command channel. Entered post-identify by [`triage_inbound_connection`] for a
 /// connection that was not adopted as a download worker.
 ///
@@ -426,92 +310,51 @@ fn adopt_inbound_worker(
 /// when it ended there, rmule when core let the connection go.
 async fn serve_bridge_loop(
     mut conn: PeerConnection,
-    mut command_rx: mpsc::Receiver<ServeConnCommand>,
-    event_tx: mpsc::Sender<ServeConnEvent>,
+    mut command_rx: mpsc::Receiver<ServeOutput>,
+    event_tx: mpsc::Sender<ServeInput>,
     deps: InboundPeerDeps,
 ) -> PortTestClosedBy {
-    let InboundPeerDeps {
-        buddy_slot,
-        kad_pump,
-        peer_roster,
-        ..
-    } = &deps;
     let remote = conn.peer_endpoint();
     let closed_by = loop {
         tokio::select! {
             command = command_rx.recv() => {
-                let Some(command) = command else { break PortTestClosedBy::Us };
-                if matches!(command, ServeConnCommand::Disconnect) {
-                    break PortTestClosedBy::Us;
-                }
-                if conn.send(serve_command_to_peer(command)).await.is_err() {
+                let command = match command {
+                    None | Some(ServeOutput::Disconnect) => break PortTestClosedBy::Us,
+                    Some(ServeOutput::Server(command)) => PeerCommand::Server(command),
+                };
+                if conn.send(command).await.is_err() {
                     // The driver stopped first; its paired `Disconnected`
                     // is queued behind whatever it said before.
                     break close_reason(&mut conn).await;
                 }
             }
             event = conn.next_event() => {
-                let Some(event) = event else {
-                    let _ = event_tx.send(ServeConnEvent::Disconnected).await;
-                    break PortTestClosedBy::DriverEnded;
+                let input = match event {
+                    None => {
+                        let _ = event_tx.send(ServeInput::closed_here()).await;
+                        break PortTestClosedBy::DriverEnded;
+                    }
+                    Some(PeerEvent::Server(request)) => ServeInput::Server(request),
+                    Some(PeerEvent::Connection(fact)) => ServeInput::Connection(fact),
+                    Some(PeerEvent::Side(side)) => {
+                        serve_side(&deps, remote, side);
+                        continue;
+                    }
+                    // A served link's own pull and its notices concern no
+                    // serve decision.
+                    Some(PeerEvent::Requester(_) | PeerEvent::Notice(_)) => continue,
                 };
-                if matches!(event, PeerEvent::KadFirewallCheckAck) {
-                    // ADR-0058 requester, the v7+ ack path: this peer dialed us
-                    // back because we asked it to prove our TCP port open, and
-                    // this packet is that proof. It rides the serve bridge
-                    // because a dial-back *is* an ordinary inbound peer session
-                    // — the Kad-ignorant peer crate reports the packet, and the
-                    // node decides whether the IP was one we checked.
-                    report_kad_firewall_ack(kad_pump, remote);
-                    tracing::debug!(
-                        peer = ?remote,
-                        "OP_KAD_FWTCPCHECK_ACK routed to the Kad requester cycle"
-                    );
-                    continue;
-                }
-                if let PeerEvent::KadUdpFirewallCheckRequested { request } = event {
-                    // ADR-0058, rmule as UDP Firewall Helper: the requester
-                    // dialed us to send this, and the answer is a Kad
-                    // datagram — so, like the `0xA8` above, it leaves the
-                    // serve bridge for the node.
-                    report_kad_udp_firewall_request(kad_pump, remote, request, peer_roster);
-                    tracing::debug!(
-                        peer = ?remote,
-                        "OP_FWCHECKUDPREQ routed to the Kad node"
-                    );
-                    continue;
-                }
-                if matches!(event, PeerEvent::BuddyPingReceived) {
-                    // ADR-0061 keepalive: the pong decision (is this connection
-                    // the held buddy link?) and the pong send (over that same
-                    // held link) both live in the slot; a stranger's ping is
-                    // refused there silently, exactly like aMule's
-                    // `GetBuddy() != client` drop.
-                    let disposition = buddy_slot.on_buddy_ping(remote, Instant::now());
-                    tracing::debug!(
-                        peer = ?remote,
-                        ?disposition,
-                        "OP_BUDDYPING routed to the buddy slot"
-                    );
-                    continue;
-                }
-                if let PeerEvent::BuddyCallbackReceived { callback } = event {
-                    served_callback::consume(&deps, remote, &callback);
-                    continue;
-                }
-                // The serve vocabulary carries no close reason; it is read
-                // here, before the projection drops it.
-                let closed = match &event {
-                    PeerEvent::Disconnected { reason } => Some(PortTestClosedBy::from(reason)),
+                let closed = match &input {
+                    ServeInput::Connection(ConnectionEvent::Disconnected { reason }) => {
+                        Some(PortTestClosedBy::from(reason))
+                    }
                     _ => None,
                 };
-                if let Some(serve) = serve_event_from_peer(event) {
-                    if event_tx.send(serve).await.is_err() {
-                        break closed.unwrap_or(PortTestClosedBy::Us);
-                    }
-                    if let Some(closed_by) = closed {
-                        break closed_by;
-                    }
+                if event_tx.send(input).await.is_err() {
+                    break closed.unwrap_or(PortTestClosedBy::Us);
+                }
+                if let Some(closed_by) = closed {
+                    break closed_by;
                 }
             }
         }
@@ -519,7 +362,7 @@ async fn serve_bridge_loop(
     let _ = conn.shutdown().await;
     // When this connection was the held buddy link, its close frees the
     // buddy slot at once so a fresh recruit can take it.
-    if buddy_slot.on_link_closed(remote) {
+    if deps.buddy_slot.on_link_closed(remote) {
         tracing::debug!(
             peer = ?remote,
             "held buddy link closed; buddy slot released"
@@ -528,21 +371,66 @@ async fn serve_bridge_loop(
     closed_by
 }
 
+/// Carry one side-channel frame a served link read to the node-wide service
+/// that answers it.
+pub(super) fn serve_side(deps: &InboundPeerDeps, remote: PeerEndpoint, side: SideEvent) {
+    match side {
+        SideEvent::KadFirewallCheckAck => {
+            // ADR-0058 requester, the v7+ ack path: this peer dialed us back
+            // because we asked it to prove our TCP port open, and this packet
+            // is that proof. It rides the serve bridge because a dial-back
+            // *is* an ordinary inbound peer session — the Kad-ignorant peer
+            // crate reports the packet, and the node decides whether the IP
+            // was one we checked.
+            report_kad_firewall_ack(&deps.kad_pump, remote);
+            tracing::debug!(
+                peer = ?remote,
+                "OP_KAD_FWTCPCHECK_ACK routed to the Kad requester cycle"
+            );
+        }
+        SideEvent::KadUdpFirewallCheckRequested { request } => {
+            // ADR-0058, rmule as UDP Firewall Helper: the requester dialed us
+            // to send this, and the answer is a Kad datagram — so, like the
+            // `0xA8` above, it leaves the serve bridge for the node.
+            report_kad_udp_firewall_request(&deps.kad_pump, remote, request, &deps.peer_roster);
+            tracing::debug!(peer = ?remote, "OP_FWCHECKUDPREQ routed to the Kad node");
+        }
+        SideEvent::BuddyPingReceived => {
+            // ADR-0061 keepalive: the pong decision (is this connection the
+            // held buddy link?) and the pong send (over that same held link)
+            // both live in the slot; a stranger's ping is refused there
+            // silently, exactly like aMule's `GetBuddy() != client` drop.
+            let disposition = deps.buddy_slot.on_buddy_ping(remote, Instant::now());
+            tracing::debug!(
+                peer = ?remote,
+                ?disposition,
+                "OP_BUDDYPING routed to the buddy slot"
+            );
+        }
+        SideEvent::BuddyCallbackReceived { callback } => {
+            served_callback::consume(deps, remote, &callback);
+        }
+        // A buddy reask relay rides only our own buddy link, which the
+        // firewalled front owns; the public-IP ask was answered by the
+        // session.
+        SideEvent::BuddyReaskCallbackReceived { .. }
+        | SideEvent::PublicIpAnswered
+        | SideEvent::PublicIpRequestUnanswerable => {}
+    }
+}
+
 /// Drain a connection whose driver has stopped to its paired `Disconnected`
 /// and say who closed it.
 async fn close_reason(conn: &mut PeerConnection) -> PortTestClosedBy {
     while let Some(event) = conn.next_event().await {
-        if let PeerEvent::Disconnected { reason } = event {
+        if let PeerEvent::Connection(ConnectionEvent::Disconnected { reason }) = event {
             return (&reason).into();
         }
     }
     PortTestClosedBy::DriverEnded
 }
 
-mod pending_callbacks;
 mod served_callback;
-
-pub(crate) use pending_callbacks::{PendingCallbackEntry, PendingCallbacks};
 
 #[cfg(test)]
 mod tests;

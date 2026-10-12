@@ -34,6 +34,58 @@ pub(crate) fn read_verdict_log(path: &Path) -> Result<String> {
     fs::read_to_string(path).with_context(|| format!("read {}", path.display()))
 }
 
+/// One `rmule-obfuscation-flip` marker line an rmule printed
+/// (`--peer-crypt-flip`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FlipMarker {
+    /// Seconds after the run's login was asked for.
+    pub(crate) after_secs: u64,
+    /// The policy word put in force: `off`, `supported`, `requested` or
+    /// `required`.
+    pub(crate) policy: String,
+    /// The wall clock the policy took effect at, in Unix milliseconds — the
+    /// clock the bench's taps stamp packets with. Absent from markers printed
+    /// before the tools carried it.
+    pub(crate) at_unix_ms: Option<u64>,
+}
+
+/// The obfuscation flips an rmule marked, in the order they fired: what a
+/// verdict splits rmule's taps on, since every surface reads the policy as
+/// it decides (ADR-0046). A flip the log does not hold is a flip that did
+/// not fire, never one assumed.
+pub(crate) fn flip_markers(log: &str) -> Vec<FlipMarker> {
+    log.lines()
+        .filter_map(|line| {
+            let marker = line.split("rmule-obfuscation-flip ").nth(1)?;
+            let field = |key: &str| {
+                marker
+                    .split_whitespace()
+                    .find_map(|word| word.strip_prefix(key))
+            };
+            Some(FlipMarker {
+                after_secs: field("after_secs=")?.parse().ok()?,
+                policy: field("policy=")?.to_owned(),
+                at_unix_ms: field("at_unix_ms=").and_then(|ms| ms.parse().ok()),
+            })
+        })
+        .collect()
+}
+
+/// [`flip_markers`], each as `<secs>:<policy>` — the form a flow's result
+/// line prints.
+pub(crate) fn obfuscation_flips(log: &str) -> Vec<String> {
+    flip_markers(log)
+        .into_iter()
+        .map(|flip| format!("{}:{}", flip.after_secs, flip.policy))
+        .collect()
+}
+
+/// `items` as a TOML array of strings.
+pub(crate) fn toml_strings(items: &[String]) -> String {
+    let quoted: Vec<String> = items.iter().map(|item| format!("\"{item}\"")).collect();
+    format!("[{}]", quoted.join(", "))
+}
+
 /// Read a golden a [`flush_golden_files`] run lifted out, where **absence is
 /// the observation**: the counterparty authored no such file, so `docker cp`
 /// copied nothing and the verdict records a zero-byte golden.
@@ -463,7 +515,23 @@ fn write_pcap_matches(
 
 #[cfg(test)]
 mod tests {
-    use super::{frames, names_a_missing_source};
+    use super::{flip_markers, frames, names_a_missing_source, obfuscation_flips, toml_strings};
+
+    /// The flips are read off rmule's own marker lines, in the order they
+    /// fired, and nothing else in the log reads as one.
+    #[test]
+    fn the_flips_are_the_marker_lines_rmule_printed() {
+        let log = "rmule-kad-crypt-armed\n\
+                   rmule-obfuscation-flip after_secs=60 policy=off\n\
+                   INFO run_log: obfuscation policy changed policy=off\n\
+                   rmule-obfuscation-flip after_secs=180 policy=requested at_unix_ms=1791428597250\n";
+        let flips = obfuscation_flips(log);
+        assert_eq!(flips, ["60:off", "180:requested"]);
+        assert_eq!(toml_strings(&flips), r#"["60:off", "180:requested"]"#);
+        let clocks: Vec<_> = flip_markers(log).iter().map(|m| m.at_unix_ms).collect();
+        assert_eq!(clocks, [None, Some(1_791_428_597_250)]);
+        assert!(obfuscation_flips("no markers here\n").is_empty());
+    }
 
     /// The golden flush may only skip a golden the node never authored. A
     /// vanished container, a denied destination or a dead daemon must stay

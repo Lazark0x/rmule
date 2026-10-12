@@ -17,8 +17,7 @@ use crate::server_list::{
     acquire_server_met, install_server_met_plan, mutate_and_publish,
 };
 use crate::service::{
-    ClientCredentials, CoreCommandRejectReason, CoreEvent, LoginStep, ServerListCommand,
-    ServerListEvent,
+    CoreCommandRejectReason, CoreEvent, LoginStep, ServerListCommand, ServerListEvent,
 };
 
 use super::{CoreActor, send_event};
@@ -57,11 +56,7 @@ where
     }
 
     /// Dial a listed server for the session slot — one connect at a time.
-    pub(super) async fn on_connect_to_server(
-        &mut self,
-        server: ServerEndpoint,
-        credentials: ClientCredentials,
-    ) {
+    pub(super) async fn on_connect_to_server(&mut self, server: ServerEndpoint) {
         // Only a listed server can be connected to, the same
         // invariant every other server command holds: the list
         // is what an operator picks from, and a row the
@@ -101,19 +96,16 @@ where
             return;
         }
         // The operator's word: stay connected to this server.
-        self.begin_intent(server.clone(), credentials.clone()).await;
-        self.establish(server, credentials).await;
+        self.begin_intent(server.clone()).await;
+        self.establish(server).await;
     }
 
     /// The one establishment (ADR-0095): listen, wait for the listener's
     /// mapping, log in — for the operator's connect and for every re-make of
     /// a session the operator's intent keeps. The caller holds the in-flight
-    /// flag; the dial's outcome reaches the intent ledger.
-    pub(super) async fn establish(
-        &mut self,
-        server: ServerEndpoint,
-        credentials: ClientCredentials,
-    ) {
+    /// flag; the dial's outcome reaches the intent ledger. The login presents
+    /// the Core Settings' credentials.
+    pub(super) async fn establish(&mut self, server: ServerEndpoint) {
         // Off the actor, like the list update: a dial is a
         // multi-second round trip, and the whole point of the
         // Servers tab is that the rest of the UI keeps
@@ -131,7 +123,7 @@ where
         // **Listen Before Login** (ADR-0086): the server's High-ID port check dials the port this
         // login advertises, so the listener binds first — here, on the actor,
         // before the dial is spawned.
-        let listener_port = self.listen_before_login(&credentials).await;
+        let listener_port = self.listen_before_login().await;
         // The **Login Mapping Wait**: with a mapping runtime running, the
         // listener's row must settle before the login leaves, or a gateway
         // still granting the port is raced by the server's port check.
@@ -139,7 +131,7 @@ where
         let session = self.wiring.shared_server_session.clone();
         let ip_filter = self.wiring.ip_filter.clone();
         let in_flight = Arc::clone(&self.server_connect_in_flight);
-        let identity = self.identity(&credentials);
+        let identity = self.identity();
         let (epoch, news) = self.intent.reporter();
         let evt_tx = self.evt_tx.clone();
         tokio::spawn(async move {
@@ -191,24 +183,24 @@ where
         self.start_waiting_searches().await;
     }
 
-    /// Make sure the eD2k listener is up before a login, and answer the port
-    /// it listens on — `None` when it could not bind, which the serve start has
-    /// already reported (`ServingFailed`); the login still goes out, Low ID,
-    /// as aMule's does (`amule.cpp:1688`). The listener is the Serve
-    /// activity's (ADR-0095), started here on the credentials' TCP port — the
-    /// port the login and the Kad firewall check advertise.
-    async fn listen_before_login(&mut self, credentials: &ClientCredentials) -> Option<u16> {
-        if self.activities.serve.is_none() {
-            let listen_addr = std::net::SocketAddrV4::new(
-                std::net::Ipv4Addr::UNSPECIFIED,
-                credentials.tcp_port(),
-            );
-            self.start_serving(listen_addr, credentials.clone()).await;
+    /// Make sure the eD2k listener is up before a login — or a Kad start
+    /// with an injected port of `0`, which has no port to present without
+    /// it — and answer the port it listens on: `None` when it could not
+    /// bind, which the serve start has already reported (`ServingFailed`);
+    /// the login still goes out, Low ID, as aMule's does (`amule.cpp:1688`). The listener is the Serve
+    /// activity's (ADR-0095), started here on the Core Settings' TCP port —
+    /// the port the login and the Kad firewall check advertise; an injected
+    /// `0` takes one the OS assigns the first time, and they advertise the
+    /// port bound. A listener that stops and starts again rebinds that same
+    /// port, so neither the Kad node nor a live login goes stale.
+    pub(super) async fn listen_before_login(&mut self) -> Option<u16> {
+        if self.activities.serving().is_none() {
+            let listen_addr = self.settings_listen_addr();
+            self.start_serving(listen_addr).await;
         }
         self.activities
-            .serve
-            .as_ref()
-            .map(|serve| serve.bound.port())
+            .serving()
+            .map(crate::service::activity::ServeActivity::bound_listen_port)
     }
 }
 

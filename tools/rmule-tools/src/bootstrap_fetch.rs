@@ -44,9 +44,10 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use rmule_bootstrap::{BootstrapConfig, NodesDatInstall, ReqwestFetcher, fetch_nodes_dat};
+use rmule_core::run_log::Level;
 use rmule_core::{
-    AppConfigStore, Core, CoreCommand, CoreConfig, CoreEvent, DurableAppConfig, FirstRunFetch,
-    JoinConfig, KadEnableConfig, KadId, open_durable_store_in_memory, run_join_sequence,
+    Core, CoreCommand, CoreConfig, CoreEvent, DurableAppConfig, FirstRunFetch, JoinConfig,
+    KadEnableConfig, KadId, open_durable_store_in_memory, run_join_sequence,
 };
 use rmule_ed2k::Ed2kEvent;
 use rmule_kad::BootstrapDialList;
@@ -164,20 +165,11 @@ pub(crate) async fn run(args: BootstrapFetchArgs) -> Result<()> {
     // first-run hook therefore fetches server.met, persists it, and dispatches
     // the defaults-ON parallel joins (eD2k list + EnableKad with the fetched
     // seeds, which the node's s2 dial loop walks).
-    let identity = ClientIdentity::new(
-        user_hash,
-        Ed2kText::from_utf8(&args.nickname),
-        args.tcp_port,
-        args.protocol_version,
-    );
     let kad_enable = KadEnableConfig {
-        kad_id,
-        peer_credentials: identity.clone().into(),
         bootstrap: seeds.clone(),
         contacts: Vec::new(),
         nodes_dat_path: None,
         assume_open_reachability: false,
-        kad_udp_key: DurableAppConfig::new(open_durable_store_in_memory()?).ensure_kad_udp_key()?,
         kad_capture_dir: None,
         kad_shutdown: None,
     };
@@ -186,20 +178,21 @@ pub(crate) async fn run(args: BootstrapFetchArgs) -> Result<()> {
         connect_ed2k: !args.skip_ed2k,
         ..JoinConfig::default()
     };
-    let mut core = Core::builder(
-        CoreConfig {
+    let mut core = Core::builder(CoreConfig::default(), open_durable_store_in_memory()?)
+        .settings(rmule_core::CoreSettings {
             // The one UDP bind — Kad, client-UDP and NAT-T share it
             // (ADR-0057); `--kad-bind`'s IP has nowhere to go (no literal-address
             // bind on the unified socket), only its port does, as
             // `kad_handoff.rs` already wires it.
             udp_port: kad_bind.port(),
-            ..CoreConfig::default()
-        },
-        open_durable_store_in_memory()?,
-    )
-    .user_hash(user_hash)
-    .build();
-    let outcome = run_join_sequence(&store, &fetcher, &config, &join, kad_enable, &core)
+            nickname: args.nickname.clone(),
+            tcp_port: args.tcp_port,
+            ..rmule_core::CoreSettings::default()
+        })
+        .user_hash(user_hash)
+        .kad_id(kad_id)
+        .build();
+    let outcome = run_join_sequence(&store, &fetcher, &config, &join, kad_enable, kad_id, &core)
         .await
         .map_err(|error| anyhow::anyhow!("run the core join sequence: {error}"))?;
     let first_run = match &outcome.first_run {
@@ -214,6 +207,12 @@ pub(crate) async fn run(args: BootstrapFetchArgs) -> Result<()> {
     );
 
     // Stage 3: eD2k verification — the acquired server accepts our login.
+    let identity = ClientIdentity::new(
+        user_hash,
+        Ed2kText::from_utf8(&args.nickname),
+        args.tcp_port,
+        args.protocol_version,
+    );
     let server_endpoint = if join.connect_ed2k {
         let Some(server) = outcome.servers.first() else {
             bail!(
@@ -299,6 +298,7 @@ async fn connect_and_login(
         connect_timeout: Duration::from_secs(args.connect_timeout),
         login_timeout: Duration::from_secs(args.login_timeout),
         obfuscation: None,
+        obfuscated_port: None,
         advertised_ipv6: None,
         udp_ports: None,
     };
@@ -356,7 +356,10 @@ async fn wait_for_kad_contact(core: &mut Core, window: Duration) -> Result<bool>
                 Some(CoreEvent::CommandRejected { reason }) => {
                     bail!("core rejected a join command: {reason:?}");
                 }
-                Some(event) => println!("bootstrap-fetch core_event={event}"),
+                Some(event) => println!(
+                    "bootstrap-fetch core_event={}",
+                    event.record().render(Level::Full)
+                ),
                 None => bail!("core event stream ended before the Kad join settled"),
             }
         }

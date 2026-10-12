@@ -16,6 +16,7 @@ use rmule_peer::{
     PeerCommand, PeerEvent, PeerHandshakeContext, PeerHelloBody, PeerOutput, PeerSession,
     multipacket::AnswerItem,
 };
+use rmule_peer::{RequesterCommand, RequesterEvent};
 use rmule_primitives::session::drain;
 use rmule_primitives::{
     ClientId, ClientIdentity, Ed2kText, FileHash, Ipv4Endpoint, Packet, PeerEndpoint, UserHash,
@@ -77,6 +78,8 @@ fn live_shaped_request_consumes_the_genuine_answer_into_file_probed() {
             0x3C,
         ),
         client_id: ClientId::from_u32(0x1000_0001),
+        ed2k_client_id: ClientId::from_u32(0x1000_0001),
+        public_ip: None,
         connected_server: None,
     };
     let mut session = PeerSession::new_outbound(peer, ctx);
@@ -99,13 +102,13 @@ fn live_shaped_request_consumes_the_genuine_answer_into_file_probed() {
     let _ = drain(|| session.poll_output());
 
     let file_hash = FileHash::from_bytes(FILE_HASH);
-    session.handle_command(PeerCommand::RequestFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash,
         file_size: FILE_SIZE,
         own_status: PartBitmap::downloader_empty(FILE_SIZE),
         want_sources: true,
         want_aich_root: false,
-    });
+    }));
     let out = drain(|| session.poll_output());
     let sent: Vec<Vec<u8>> = out
         .iter()
@@ -131,10 +134,10 @@ fn live_shaped_request_consumes_the_genuine_answer_into_file_probed() {
     let probed = drain(|| session.poll_output())
         .iter()
         .find_map(|o| match o {
-            PeerOutput::Event(PeerEvent::FileProbed {
+            PeerOutput::Event(PeerEvent::Requester(RequesterEvent::FileProbed {
                 file_hash: fh,
                 status,
-            }) if *fh == file_hash => Some(status.clone()),
+            })) if *fh == file_hash => Some(status.clone()),
             _ => None,
         })
         .expect("aMule's genuine 0x93 upgrades the live-shaped probe");

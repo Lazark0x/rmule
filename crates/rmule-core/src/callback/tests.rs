@@ -52,8 +52,8 @@ fn v6() -> Ipv6Endpoint {
 
 /// Fully reachable us, *and* holding a Known IPv6 — rung 0's half of the
 /// AND.
-fn holding_ipv6() -> SelfReach {
-    SelfReach {
+fn holding_ipv6() -> RoutePosition {
+    RoutePosition {
         dial: DialPosition {
             known_ipv6: Some("2001:db8::1".parse().unwrap()),
         },
@@ -63,8 +63,8 @@ fn holding_ipv6() -> SelfReach {
 
 /// Fully reachable us: HighID, UDP up, Kad up — so a route is chosen by the
 /// *target's* facts, not gated away by our own position.
-fn open_self() -> SelfReach {
-    SelfReach {
+fn open_self() -> RoutePosition {
+    RoutePosition {
         reachable: true,
         udp_on: true,
         kad_running: true,
@@ -94,8 +94,8 @@ fn a_high_id_peer_is_dialed_directly_never_the_callback_tree() {
     };
     assert_eq!(
         select_callback_route(&target, &open_self()),
-        CallbackRoute::Direct {
-            tcp: peer(203, 0, 113, 4, 4662)
+        PeerReachRoute::Direct {
+            endpoint: peer(203, 0, 113, 4, 4662)
         }
     );
 }
@@ -116,7 +116,7 @@ fn route_2_direct_udp_callback_when_advertised_and_our_udp_is_up() {
     };
     assert_eq!(
         select_callback_route(&target, &open_self()),
-        CallbackRoute::DirectUdp {
+        PeerReachRoute::DirectUdp {
             target_kad_udp: endpoint(198, 51, 100, 7, 4665)
         }
     );
@@ -125,12 +125,12 @@ fn route_2_direct_udp_callback_when_advertised_and_our_udp_is_up() {
     assert_eq!(
         select_callback_route(
             &target,
-            &SelfReach {
+            &RoutePosition {
                 udp_on: false,
                 ..open_self()
             }
         ),
-        CallbackRoute::Server { low_id: low_id() }
+        PeerReachRoute::Server { low_id: low_id() }
     );
     // Advert set but no Kad UDP port known: the direct route cannot address
     // the `0x95`, so it falls through to the server route.
@@ -142,7 +142,7 @@ fn route_2_direct_udp_callback_when_advertised_and_our_udp_is_up() {
             },
             &open_self()
         ),
-        CallbackRoute::Server { low_id: low_id() }
+        PeerReachRoute::Server { low_id: low_id() }
     );
 }
 
@@ -159,13 +159,16 @@ fn route_3_server_callback_when_on_our_server_and_no_direct_route() {
     };
     assert_eq!(
         select_callback_route(&target, &open_self()),
-        CallbackRoute::Server { low_id: low_id() }
+        PeerReachRoute::Server { low_id: low_id() }
     );
 }
 
+/// Route 4 is the buddy road whether its endpoint is known or not: a
+/// straight `0x52` or a Callback Walk is what carrying it out decides, and
+/// only a caller with a file to name can send either (Peer Reach's tests).
 #[test]
-fn route_4_buddy_callback_emits_to_a_known_endpoint_or_walks_toward_the_id() {
-    // Buddy endpoint known: 0x52 straight to it.
+fn route_4_buddy_callback_whether_or_not_the_buddy_endpoint_is_known() {
+    // Buddy endpoint known.
     let known = CallbackTarget {
         buddy: Some(BuddyContact {
             buddy_id: buddy(),
@@ -175,13 +178,13 @@ fn route_4_buddy_callback_emits_to_a_known_endpoint_or_walks_toward_the_id() {
     };
     assert_eq!(
         select_callback_route(&known, &open_self()),
-        CallbackRoute::Buddy {
+        PeerReachRoute::Buddy {
             buddy_id: buddy(),
-            buddy_udp: Some(endpoint(198, 51, 100, 8, 9001)),
+            emitted_to: None,
         }
     );
 
-    // Endpoint unknown: a FINDSOURCE walk toward the buddy id (buddy_udp None).
+    // Endpoint unknown: named by ID alone.
     let walk = CallbackTarget {
         buddy: Some(BuddyContact {
             buddy_id: buddy(),
@@ -191,16 +194,16 @@ fn route_4_buddy_callback_emits_to_a_known_endpoint_or_walks_toward_the_id() {
     };
     assert_eq!(
         select_callback_route(&walk, &open_self()),
-        CallbackRoute::Buddy {
+        PeerReachRoute::Buddy {
             buddy_id: buddy(),
-            buddy_udp: None,
+            emitted_to: None,
         }
     );
 }
 
 /// A firewalled us — the position rung 1 exists for.
-fn firewalled_self() -> SelfReach {
-    SelfReach {
+fn firewalled_self() -> RoutePosition {
+    RoutePosition {
         reachable: false,
         ..open_self()
     }
@@ -219,11 +222,17 @@ fn punchable_target() -> CallbackTarget {
     }
 }
 
-fn natt_via_buddy(buddy_udp: Option<Ipv4Endpoint>) -> CallbackRoute {
-    CallbackRoute::NatTraversal {
-        coordinator: NattCoordinator::Buddy {
+/// Rung 1 through the target's buddy: a rendezvous when its endpoint is
+/// known, and no punch at all for one named by ID alone.
+fn natt_via_buddy(buddy_udp: Option<Ipv4Endpoint>) -> PeerReachRoute {
+    match buddy_udp {
+        Some(buddy_udp) => PeerReachRoute::NatTraversal {
             buddy_id: buddy(),
             buddy_udp,
+        },
+        None => PeerReachRoute::NatTraversalUnavailable {
+            buddy_id: buddy(),
+            reason: NatTraversalUnavailableReason::BuddyEndpointUnknown,
         },
     }
 }
@@ -242,8 +251,8 @@ fn rung_1_punches_a_low_to_low_pair_instead_of_dropping_it() {
 /// costs a Kad walk, so *that* row needs Kad; a known one does not.
 #[test]
 fn rung_1_drops_only_when_no_punch_is_possible() {
-    let dropped = CallbackRoute::Drop {
-        reason: CallbackDrop::LowToLow,
+    let dropped = PeerReachRoute::Dropped {
+        reason: PeerReachDropReason::LowToLow,
     };
     let walk_needed = CallbackTarget {
         buddy: Some(BuddyContact {
@@ -252,11 +261,11 @@ fn rung_1_drops_only_when_no_punch_is_possible() {
         }),
         ..punchable_target()
     };
-    let kad_down = SelfReach {
+    let kad_down = RoutePosition {
         kad_running: false,
         ..firewalled_self()
     };
-    let udp_down = SelfReach {
+    let udp_down = RoutePosition {
         udp_on: false,
         ..firewalled_self()
     };
@@ -300,17 +309,19 @@ fn rung_1_sits_after_rung_0_and_never_pre_empts_a_callback() {
         ipv6: Some(v6()),
         ..punchable_target()
     };
-    let firewalled_holding_v6 = SelfReach {
+    let firewalled_holding_v6 = RoutePosition {
         reachable: false,
         ..holding_ipv6()
     };
     assert!(matches!(
         select_callback_route(&with_v6, &firewalled_holding_v6),
-        CallbackRoute::Direct { .. }
+        PeerReachRoute::Direct {
+            endpoint: PeerEndpoint::V6(_)
+        }
     ));
     assert!(matches!(
         select_callback_route(&punchable_target(), &open_self()),
-        CallbackRoute::Buddy { .. }
+        PeerReachRoute::Buddy { .. }
     ));
 }
 
@@ -322,7 +333,7 @@ fn rung_1_sits_after_rung_0_and_never_pre_empts_a_callback() {
 /// still gets ADR-0061's server callback, exactly as before this rung.
 #[test]
 fn the_server_coordinates_first_and_the_buddy_is_what_is_left() {
-    let ours = SelfReach {
+    let ours = RoutePosition {
         server_punch: true,
         ..firewalled_self()
     };
@@ -330,9 +341,7 @@ fn the_server_coordinates_first_and_the_buddy_is_what_is_left() {
         on_our_server: true,
         ..punchable_target()
     };
-    let via_server = CallbackRoute::NatTraversal {
-        coordinator: NattCoordinator::Server { low_id: low_id() },
-    };
+    let via_server = PeerReachRoute::ServerPunch { low_id: low_id() };
     assert_eq!(select_callback_route(&on_server, &ours), via_server);
 
     let unknown_caps = CallbackTarget {
@@ -351,7 +360,7 @@ fn the_server_coordinates_first_and_the_buddy_is_what_is_left() {
 
     assert_eq!(
         select_callback_route(&unknown_caps, &firewalled_self()),
-        CallbackRoute::Server { low_id: low_id() },
+        PeerReachRoute::Server { low_id: low_id() },
         "no coordinator: ADR-0061's route stands"
     );
 }
@@ -361,7 +370,7 @@ fn the_server_coordinates_first_and_the_buddy_is_what_is_left() {
 /// its retries are the schedule's, and going back up would loop.
 #[test]
 fn a_failed_server_introduction_falls_to_the_buddy_and_never_back() {
-    let ours = SelfReach {
+    let ours = RoutePosition {
         server_punch: true,
         ..firewalled_self()
     };
@@ -400,7 +409,7 @@ fn a_failed_server_introduction_falls_to_the_buddy_and_never_back() {
 /// without holding a second copy of the rung's condition.
 #[test]
 fn natt_facts_admit_exactly_the_coordinators_the_selector_can_find() {
-    let ours = SelfReach {
+    let ours = RoutePosition {
         server_punch: true,
         ..firewalled_self()
     };
@@ -436,7 +445,7 @@ fn a_silent_callback_falls_back_to_nat_traversal_after_twelve_seconds() {
     let target = punchable_target();
     let ours = open_self();
     let taken = select_callback_route(&target, &ours);
-    assert!(matches!(taken, CallbackRoute::Buddy { .. }));
+    assert!(matches!(taken, PeerReachRoute::Buddy { .. }));
 
     let just_under = CALLBACK_SILENCE_FALLBACK - Duration::from_millis(1);
     assert_eq!(
@@ -455,10 +464,12 @@ fn a_silent_callback_falls_back_to_nat_traversal_after_twelve_seconds() {
     };
     assert_eq!(select_natt_fallback(&legacy, &ours, &taken, long), None);
     for not_a_callback in [
-        CallbackRoute::Direct { tcp: target.tcp },
+        PeerReachRoute::Direct {
+            endpoint: target.tcp,
+        },
         natt_via_buddy(None),
-        CallbackRoute::Drop {
-            reason: CallbackDrop::NoBuddy,
+        PeerReachRoute::Dropped {
+            reason: PeerReachDropReason::NoBuddy,
         },
     ] {
         assert_eq!(
@@ -476,13 +487,13 @@ fn route_1_drops_low_to_low_off_our_server_but_the_server_relay_saves_on_server(
     assert_eq!(
         select_callback_route(
             &off_server,
-            &SelfReach {
+            &RoutePosition {
                 reachable: false,
                 ..open_self()
             }
         ),
-        CallbackRoute::Drop {
-            reason: CallbackDrop::LowToLow
+        PeerReachRoute::Dropped {
+            reason: PeerReachDropReason::LowToLow,
         }
     );
 
@@ -495,12 +506,12 @@ fn route_1_drops_low_to_low_off_our_server_but_the_server_relay_saves_on_server(
     assert_eq!(
         select_callback_route(
             &on_server,
-            &SelfReach {
+            &RoutePosition {
                 reachable: false,
                 ..open_self()
             }
         ),
-        CallbackRoute::Server { low_id: low_id() }
+        PeerReachRoute::Server { low_id: low_id() }
     );
 }
 
@@ -510,8 +521,8 @@ fn no_buddy_or_kad_down_drops_an_otherwise_off_server_low_id_target() {
     // buddy route remains. No buddy contact ⇒ drop.
     assert_eq!(
         select_callback_route(&bare_low_id_target(), &open_self()),
-        CallbackRoute::Drop {
-            reason: CallbackDrop::NoBuddy
+        PeerReachRoute::Dropped {
+            reason: PeerReachDropReason::NoBuddy,
         }
     );
 
@@ -526,13 +537,13 @@ fn no_buddy_or_kad_down_drops_an_otherwise_off_server_low_id_target() {
     assert_eq!(
         select_callback_route(
             &with_buddy,
-            &SelfReach {
+            &RoutePosition {
                 kad_running: false,
                 ..open_self()
             }
         ),
-        CallbackRoute::Drop {
-            reason: CallbackDrop::NoBuddy
+        PeerReachRoute::Dropped {
+            reason: PeerReachDropReason::NoBuddy,
         }
     );
 }
@@ -555,8 +566,8 @@ fn the_low_id_grant_dial_back_routes_through_the_same_selector() {
     };
     assert_eq!(
         select_callback_route(&high_waiter, &open_self()),
-        CallbackRoute::Direct {
-            tcp: peer(203, 0, 113, 20, 4662)
+        PeerReachRoute::Direct {
+            endpoint: peer(203, 0, 113, 20, 4662)
         }
     );
 
@@ -570,7 +581,7 @@ fn the_low_id_grant_dial_back_routes_through_the_same_selector() {
     };
     assert_eq!(
         select_callback_route(&low_waiter, &open_self()),
-        CallbackRoute::Server { low_id: low_id() }
+        PeerReachRoute::Server { low_id: low_id() }
     );
 
     // A LowID waiter off our server, reachable only through its buddy —
@@ -586,9 +597,9 @@ fn the_low_id_grant_dial_back_routes_through_the_same_selector() {
     };
     assert_eq!(
         select_callback_route(&buddy_waiter, &open_self()),
-        CallbackRoute::Buddy {
+        PeerReachRoute::Buddy {
             buddy_id: buddy(),
-            buddy_udp: Some(endpoint(198, 51, 100, 9, 9002)),
+            emitted_to: None,
         }
     );
 }
@@ -610,8 +621,8 @@ fn rung_zero_dials_a_low_id_peer_over_ipv6_and_skips_every_callback() {
     };
     assert_eq!(
         select_callback_route(&target, &holding_ipv6()),
-        CallbackRoute::Direct {
-            tcp: PeerEndpoint::V6(v6())
+        PeerReachRoute::Direct {
+            endpoint: PeerEndpoint::V6(v6())
         }
     );
 }
@@ -628,7 +639,7 @@ fn rung_zero_needs_both_halves_or_the_ordinary_tree_stands() {
     };
     assert_eq!(
         select_callback_route(&with_v6, &open_self()),
-        CallbackRoute::Server { low_id: low_id() },
+        PeerReachRoute::Server { low_id: low_id() },
         "we hold no IPv6, so its address is one we cannot dial from"
     );
 
@@ -638,7 +649,7 @@ fn rung_zero_needs_both_halves_or_the_ordinary_tree_stands() {
     };
     assert_eq!(
         select_callback_route(&without, &holding_ipv6()),
-        CallbackRoute::Server { low_id: low_id() },
+        PeerReachRoute::Server { low_id: low_id() },
         "we hold one, the peer named none"
     );
 }
@@ -656,15 +667,15 @@ fn rung_zero_precedes_the_plain_high_id_dial() {
     };
     assert_eq!(
         select_callback_route(&dual_stack, &holding_ipv6()),
-        CallbackRoute::Direct {
-            tcp: PeerEndpoint::V6(v6())
+        PeerReachRoute::Direct {
+            endpoint: PeerEndpoint::V6(v6())
         }
     );
     // And with no address of our own the same peer is dialed over IPv4.
     assert_eq!(
         select_callback_route(&dual_stack, &open_self()),
-        CallbackRoute::Direct {
-            tcp: peer(203, 0, 113, 4, 4662)
+        PeerReachRoute::Direct {
+            endpoint: peer(203, 0, 113, 4, 4662)
         }
     );
 }

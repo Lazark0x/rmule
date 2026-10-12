@@ -25,7 +25,7 @@ impl SourceLookupService for StancelessSources {
             client_id: ClientId::from_u32(STANCELESS[0]),
             sources: STANCELESS
                 .iter()
-                .map(|&id| ExchangedSource::plain(PeerSource::new(ClientId::from_u32(id), 4663)))
+                .map(|&id| SourceSighting::plain(PeerSource::new(ClientId::from_u32(id), 4663)))
                 .collect(),
         })
     }
@@ -33,23 +33,27 @@ impl SourceLookupService for StancelessSources {
 
 #[tokio::test]
 async fn a_required_policy_tells_each_stanceless_source_s_refusal_once() {
+    let out_dir = tempfile::tempdir().unwrap();
     let store = crate::open_durable_store_in_memory().expect("in-memory store opens");
-    let config = CoreConfig {
-        peer_crypt: Some(ObfuscationPolicy::Required),
-        ..CoreConfig::default()
-    };
-    let mut core = Core::builder(config, store)
+    let mut core = Core::builder(CoreConfig::default(), store)
+        .settings(crate::CoreSettings {
+            obfuscation: Some(ObfuscationPolicy::Required),
+            download_dir: Some(out_dir.path().to_path_buf()),
+            ..crate::CoreSettings::default()
+        })
         .source_lookup(StancelessSources)
         .peer_transfer(crate::RuntimePeerTransferService::new(
             crate::DEFAULT_SLOT_WAIT_TIMEOUT,
         ))
         .build();
-    let out_dir = tempfile::tempdir().unwrap();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: example_file(),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: ctx(0x42, "rmule-core").identity.into(),
-        output_path: out_dir.path().join("stanceless.bin"),
+        name: rmule_primitives::SafeFileName::clean(
+            "stanceless.bin",
+            &rmule_primitives::FileHash::from_bytes([0; 16]),
+        ),
+        if_taken: crate::NameTaken::Refuse,
     }))
     .await
     .unwrap();

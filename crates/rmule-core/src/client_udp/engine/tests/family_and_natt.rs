@@ -2,6 +2,7 @@
 //! inlets the NAT-T and firewalled fronts drive through this socket.
 
 use super::*;
+use rmule_peer::SideCommand;
 
 /// A global-unicast IPv6 for the fixtures below — documentation range, so it
 /// passes **Address Learning**'s admissibility filter exactly as a real one
@@ -185,10 +186,10 @@ async fn an_ipv6_0x94_is_dropped_and_counted_while_its_ipv4_twin_relays() {
     // Exactly one relay rode the held link — the IPv4 one.
     assert_eq!(
         link_rx.try_recv().expect("the IPv4 0x94 relayed"),
-        PeerCommand::SendReaskCallbackTcp(ReaskCallbackTcp {
+        PeerCommand::Side(SideCommand::SendReaskCallbackTcp(ReaskCallbackTcp {
             requester: PeerEndpoint::V4(v4_requester),
             forwarded,
-        })
+        }))
     );
     assert!(
         link_rx.try_recv().is_err(),
@@ -378,7 +379,7 @@ async fn the_firewalled_front_takes_the_standalone_rendezvous_and_the_direct_cal
             (v4_src, vec![0xC5, 0xA0, 0x01]),
             (v4_src, vec![0xC5, 0x95, 0x00]),
         ]),
-        None,
+        PeerUdpCrypt::disarmed(),
         SharedBuddySlot::default(),
         front.clone(),
         diagnostics.clone(),

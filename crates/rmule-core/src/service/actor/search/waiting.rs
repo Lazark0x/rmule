@@ -8,7 +8,7 @@ use crate::adapters::{
     KadRuntimeFactory, PeerTransferService, ServeRuntimeService, SourceLookupService,
 };
 use crate::server_session::ServerSessionHandle;
-use crate::service::activity::WaitingSearch;
+use crate::service::activity::{ActiveSearch, WaitingSearch};
 use crate::service::{SearchEvent, SearchId};
 
 use super::super::{CoreActor, send_event};
@@ -27,16 +27,16 @@ where
         let Some(session) = self.wiring.shared_server_session.session_in_slot().await else {
             return;
         };
-        for waiting in std::mem::take(&mut self.activities.waiting_searches) {
+        for waiting in self.activities.searches.take_waiting() {
             self.start_keyword_search(waiting, Some(session.clone()))
                 .await;
         }
         let ids: Vec<SearchId> = self
             .activities
             .searches
-            .iter()
+            .each_running_mut()
             .filter(|(_, active)| active.waiting.server.is_some())
-            .map(|(id, _)| *id)
+            .map(|(id, _)| id)
             .collect();
         for search_id in ids {
             self.send_waiting_server_leg(search_id, &session).await;
@@ -56,7 +56,7 @@ where
         if !self.intent.stands() {
             return;
         }
-        let Some(active) = self.activities.searches.get_mut(&search_id) else {
+        let Some(active) = self.activities.searches.running_mut(search_id) else {
             return;
         };
         if active.waiting.query.is_none() {
@@ -73,7 +73,7 @@ where
     /// unanswered, one that never went out ends not sent, its sweep
     /// with it (ADR-0034, "A server leg's states").
     pub(in crate::service::actor) fn end_waiting_server_legs(&mut self) {
-        for active in self.activities.searches.values_mut() {
+        for (_, active) in self.activities.searches.each_running_mut() {
             active.waiting.server = None;
         }
     }
@@ -82,11 +82,11 @@ where
     /// leg waits on), and every running search whose Kad leg waited sends it.
     pub(in crate::service::actor) async fn start_waiting_kad_legs(&mut self) {
         let session = self.wiring.shared_server_session.session_now().await;
-        for waiting in std::mem::take(&mut self.activities.waiting_searches) {
+        for waiting in self.activities.searches.take_waiting() {
             self.start_keyword_search(waiting, session.clone()).await;
         }
         let mut sends = Vec::new();
-        for active in self.activities.searches.values_mut() {
+        for (_, active) in self.activities.searches.each_running_mut() {
             if let (Some(tx), Some(query)) =
                 (active.waiting.kad.take(), active.waiting.query.clone())
             {
@@ -113,7 +113,7 @@ where
         let Some(query) = self
             .activities
             .searches
-            .get(&search_id)
+            .running(search_id)
             .and_then(|active| active.waiting.query.clone())
         else {
             return;
@@ -129,22 +129,20 @@ where
         let swept = self
             .activities
             .searches
-            .get(&search_id)
-            .is_some_and(|active| active.global_sweep.is_some());
+            .running(search_id)
+            .is_some_and(ActiveSearch::has_swept);
         let (sweep, sweep_settled) = if swept {
             (None, None)
         } else {
             self.spawn_sweep(&query, session.server().clone())
         };
-        let Some(active) = self.activities.searches.get_mut(&search_id) else {
+        let Some(active) = self.activities.searches.running_mut(search_id) else {
             return;
         };
         let Some(tx) = active.waiting.server.take() else {
             return;
         };
-        if !swept {
-            active.global_sweep = sweep;
-        }
+        active.attach_sweep(sweep);
         let _ = tx.send(crate::search::SentServerLeg {
             stream,
             session: session.clone(),
@@ -156,7 +154,7 @@ where
     /// say so.
     pub(super) async fn wait_whole(&mut self, search: WaitingSearch) {
         let search_id = search.search_id;
-        self.activities.waiting_searches.push(search);
+        self.activities.searches.wait(search);
         send_event(
             &self.evt_tx,
             SearchEvent::SearchWaitingForConnection { search_id }.into(),

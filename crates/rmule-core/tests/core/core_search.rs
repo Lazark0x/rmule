@@ -2,11 +2,9 @@
 //! trail, the quiet timeout that ends it, a cancel that leaves the session
 //! up, and the result folding — duplicates merge their names, a conflicting size does
 //! not. A download started mid-search rides the same server session.
-use crate::fixture::identity_with_port;
 use std::time::Duration;
 
 use crate::fixture::LoopbackSearchServer;
-use crate::fixture::identity;
 use crate::fixture::next_matching;
 use crate::fixture::search_query;
 use crate::fixture::stub_link;
@@ -24,9 +22,11 @@ fn file_link() -> Ed2kFileLink {
 #[tokio::test]
 async fn start_search_emits_started_and_results() {
     let mut server = LoopbackSearchServer::start().await;
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
 
-    rmule_testkit::connect_to(&core, &server.endpoint, identity_with_port(0).into()).await;
+    rmule_testkit::connect_to(&core, &server.endpoint).await;
 
     let search_id =
         start_search_confirmed(&mut core, "the search to start", search_query("ubuntu")).await;
@@ -56,15 +56,17 @@ async fn start_search_emits_started_and_results() {
 #[tokio::test]
 async fn search_completes_after_quiet_timeout() {
     let mut server = LoopbackSearchServer::start().await;
-    let mut core = Core::new(
+    let mut core = Core::builder(
         CoreConfig {
             search_quiet_timeout: Duration::from_millis(20),
             ..CoreConfig::default()
         },
         rmule_testkit::memory_store(),
-    );
+    )
+    .settings(rmule_core::CoreSettings::default())
+    .build();
 
-    rmule_testkit::connect_to(&core, &server.endpoint, identity_with_port(0).into()).await;
+    rmule_testkit::connect_to(&core, &server.endpoint).await;
 
     let search_id =
         start_search_confirmed(&mut core, "the search to start", search_query("ubuntu")).await;
@@ -102,9 +104,11 @@ async fn search_completes_after_quiet_timeout() {
 #[tokio::test]
 async fn cancel_search_keeps_server_session_alive() {
     let mut server = LoopbackSearchServer::start().await;
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
 
-    rmule_testkit::connect_to(&core, &server.endpoint, identity_with_port(0).into()).await;
+    rmule_testkit::connect_to(&core, &server.endpoint).await;
 
     let search_id =
         start_search_confirmed(&mut core, "the search to start", search_query("ubuntu")).await;
@@ -140,15 +144,17 @@ async fn cancel_search_keeps_server_session_alive() {
 #[tokio::test]
 async fn duplicates_merge_names_and_preserve_primary() {
     let mut server = LoopbackSearchServer::start().await;
-    let mut core = Core::new(
+    let mut core = Core::builder(
         CoreConfig {
             search_quiet_timeout: Duration::from_millis(200),
             ..CoreConfig::default()
         },
         rmule_testkit::memory_store(),
-    );
+    )
+    .settings(rmule_core::CoreSettings::default())
+    .build();
 
-    rmule_testkit::connect_to(&core, &server.endpoint, identity_with_port(0).into()).await;
+    rmule_testkit::connect_to(&core, &server.endpoint).await;
 
     let search_id =
         start_search_confirmed(&mut core, "the search to start", search_query("ubuntu")).await;
@@ -190,9 +196,11 @@ async fn duplicates_merge_names_and_preserve_primary() {
 #[tokio::test]
 async fn conflicting_size_does_not_merge() {
     let mut server = LoopbackSearchServer::start().await;
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
 
-    rmule_testkit::connect_to(&core, &server.endpoint, identity_with_port(0).into()).await;
+    rmule_testkit::connect_to(&core, &server.endpoint).await;
 
     let search_id =
         start_search_confirmed(&mut core, "the search to start", search_query("ubuntu")).await;
@@ -226,9 +234,11 @@ async fn conflicting_size_does_not_merge() {
 #[tokio::test]
 async fn search_result_skipped_is_visible_warning() {
     let mut server = LoopbackSearchServer::start().await;
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
 
-    rmule_testkit::connect_to(&core, &server.endpoint, identity_with_port(0).into()).await;
+    rmule_testkit::connect_to(&core, &server.endpoint).await;
 
     let search_id =
         start_search_confirmed(&mut core, "the search to start", search_query("ubuntu")).await;
@@ -256,19 +266,24 @@ async fn search_result_skipped_is_visible_warning() {
 
 #[tokio::test]
 async fn default_core_search_and_source_lookup_share_server_session() {
+    let output_dir = tempfile::tempdir().expect("temp dir");
     let mut server = LoopbackSearchServer::start().await;
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
-    rmule_testkit::connect_to(&core, &server.endpoint, identity_with_port(0).into()).await;
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            output_dir.path(),
+        ))
+        .build();
+    rmule_testkit::connect_to(&core, &server.endpoint).await;
 
     let _search_id =
         start_search_confirmed(&mut core, "the search to start", search_query("ubuntu")).await;
     server.wait_for_search_request().await;
-    let output_dir = tempfile::tempdir().expect("temp dir");
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: file_link(),
         source_hint: Some(server.endpoint.clone()),
-        credentials: identity().into(),
-        output_path: output_dir.path().join("shared-session.bin"),
+        name: rmule_testkit::file_name("shared-session.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();

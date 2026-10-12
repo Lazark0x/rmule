@@ -23,7 +23,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use rmule_primitives::{Tag, TagValue};
 
-use super::super::{READY_TIMEOUT_SECS, absent_server, common_args, mesh};
+use super::super::{PLACEHOLDER_SHARE, READY_TIMEOUT_SECS, absent_server, common_args, mesh};
 use crate::docker::RunContainer;
 use crate::flow::bench::Bench;
 use crate::flow::gate::wait_for_container_log;
@@ -88,6 +88,7 @@ pub(super) fn start_requester(
         requester_v4,
         REQUESTER_WINDOW_SECS,
         &absent_server(),
+        PLACEHOLDER_SHARE,
     ) {
         container = container.arg(arg);
     }

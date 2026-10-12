@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use rmule_primitives::{RelatedFilesQuery, SearchQuery};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 
@@ -15,7 +15,7 @@ use crate::adapters::{
 };
 use crate::search::{KadKeywordLeg, LateLegs, kad_keyword_leg};
 use crate::server_session::{SearchStream, ServerSearchStartError, ServerSessionHandle};
-use crate::service::activity::{ActiveSearch, WaitingLegs, WaitingSearch};
+use crate::service::activity::{SearchLevers, WaitingLegs, WaitingSearch};
 use crate::service::{LegNotSent, SearchEvent, SearchFailure, SearchId, SearchLegState};
 
 use super::super::{CoreActor, send_event};
@@ -168,7 +168,7 @@ where
         // widens only toward a server advertising large-file UDP support
         // (ADR-0051).
         let sweep = crate::search::GlobalSearchSweep {
-            transport: Arc::clone(&ctx.transport),
+            seal: ctx.seal.clone(),
             servers: self
                 .global_source_servers
                 .lock()
@@ -298,8 +298,8 @@ where
             .await
     }
 
-    /// Spawn the task that merges every leg into one result set, and hold it
-    /// beside the other running searches.
+    /// Start the task that merges every leg into one result set, held in the
+    /// ledger beside the other running searches.
     fn run_search(
         &mut self,
         search_id: SearchId,
@@ -307,48 +307,48 @@ where
         session: Option<ServerSessionHandle>,
         legs: SearchLegs,
     ) {
-        let (cancel_tx, cancel_rx) = watch::channel(false);
-        let (more_tx, requests) = mpsc::channel(1);
         let search_span = tracing::info_span!("search", search_id = search_id.as_u64(),);
-        let handle = tokio::spawn(
+        let SearchLegs {
+            query,
+            rows,
+            global_settled,
+            global_sweep,
+            kad_rx,
+            states,
+            late,
+            waiting,
+        } = legs;
+        let task = |levers: SearchLevers| {
             crate::search::SearchTask {
                 search_id,
                 stream,
-                rows: legs.rows,
-                kad_rx: legs.kad_rx,
-                global_sweep: legs.global_settled,
+                rows,
+                kad_rx,
+                global_sweep: global_settled,
                 windows: crate::search::SearchWindows {
                     quiet: self.wiring.config.search_quiet_timeout,
                     kad_lifetime: self.wiring.config.search_kad_lifetime,
                 },
                 evt_tx: self.evt_tx.clone(),
-                cancel_rx,
-                finished_tx: self.finished_tx.clone(),
+                cancel_rx: levers.cancel_rx,
                 paging: crate::search::Paging {
-                    requests,
+                    requests: levers.more_rx,
                     session,
                     pager: self.live_searches.watch_more(),
                     live: self.live_searches.clone(),
-                    query: legs.query,
+                    query,
                     answer_wait: self.wiring.config.search_server_answer_timeout,
                 },
-                legs: legs.states,
-                late: legs.late,
+                legs: states,
+                late,
                 lost: self.intent.lost_legs(),
             }
             .run()
-            .instrument(search_span),
-        );
-        self.activities.searches.insert(
-            search_id,
-            ActiveSearch {
-                cancel_tx,
-                handle,
-                more_tx,
-                global_sweep: legs.global_sweep,
-                waiting: legs.waiting,
-            },
-        );
+            .instrument(search_span)
+        };
+        self.activities
+            .searches
+            .start(search_id, global_sweep, waiting, &self.finished_tx, task);
     }
 }
 

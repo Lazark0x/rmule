@@ -6,7 +6,7 @@
 //! ([`mutate_and_publish`]), so the published level is always a list the store
 //! actually held.
 
-use rmule_ed2k::{ServerGrants, ServerTcpFlags};
+use rmule_ed2k::{ServerAssignedFacts, ServerGrants, ServerTcpFlags};
 use rmule_primitives::{ClientId, Ed2kText, ServerEndpoint};
 
 use crate::CoreError;
@@ -145,6 +145,21 @@ impl ServerFacts {
         self.diagnostics.fresh_resolved_address(row)
     }
 
+    /// `endpoint`'s row at its standard port: the endpoint aMule writes as the
+    /// connected server in a hello (`GetCurrentServer()->GetPort()`,
+    /// `BaseClient.cpp:1168-1169`). An unlisted endpoint, or a list that
+    /// cannot be read, is its own standard endpoint.
+    pub(crate) fn standard_endpoint_of(&self, endpoint: &ServerEndpoint) -> ServerEndpoint {
+        self.listed()
+            .ok()
+            .and_then(|rows| {
+                rows.into_iter()
+                    .find(|row| row.endpoint == *endpoint)
+                    .map(|row| row.standard_endpoint())
+            })
+            .unwrap_or_else(|| endpoint.clone())
+    }
+
     /// The listed row a reply from `endpoint` is about: the row whose name
     /// resolved to it, else the address itself.
     pub(crate) fn row_at(
@@ -166,6 +181,32 @@ impl ServerFacts {
         Option<rmule_ed2k::ServerUdpFlags>,
     )> {
         self.diagnostics.saved_udp_crypt_at(udp_src)
+    }
+
+    /// The crypt facts and UDP flags the listed row reached at `server` (its
+    /// address on its standard port) saved from its last answer; `None` for
+    /// an unlisted server or a row that saved none.
+    pub(crate) fn saved_udp_crypt_of(
+        &self,
+        server: rmule_primitives::Ipv4Endpoint,
+    ) -> Option<(super::ServerUdpCrypt, Option<rmule_ed2k::ServerUdpFlags>)> {
+        self.diagnostics.saved_udp_crypt_of(server)
+    }
+
+    /// The port `endpoint` takes obfuscated TCP on, by what its row says
+    /// ([`ManagedServer::obfuscation_tcp_port`]); `None` for an unlisted
+    /// endpoint, one that has not said so, or a list that cannot be read.
+    pub(crate) fn obfuscation_tcp_port(&self, endpoint: &ServerEndpoint) -> Option<u16> {
+        match self.listed() {
+            Ok(rows) => rows
+                .iter()
+                .find(|row| row.endpoint == *endpoint)
+                .and_then(ManagedServer::obfuscation_tcp_port),
+            Err(error) => {
+                tracing::warn!(%error, "server list unreadable; the login's link stays plain");
+                None
+            }
+        }
     }
 
     /// Whether the Status Ping Sweep hears servers at all: `false` once it
@@ -407,22 +448,60 @@ impl ServerFacts {
     /// A mid-session `OP_IDCHANGE` re-projected the connected server's grants
     /// (ADR-0047): the level follows, so a menu gated on it never reads the
     /// login's stale answer, and the row keeps the new report.
-    pub(crate) fn regranted(&self, endpoint: &ServerEndpoint, tcp_flags: Option<ServerTcpFlags>) {
+    pub(crate) fn regranted(
+        &self,
+        endpoint: &ServerEndpoint,
+        client_id: ClientId,
+        tcp_flags: Option<ServerTcpFlags>,
+        assigned: &ServerAssignedFacts,
+    ) {
         self.diagnostics
             .set_connected_server_grants(tcp_flags.map(ServerGrants::from).unwrap_or_default());
-        self.granted(endpoint, tcp_flags);
+        self.granted(endpoint, client_id, tcp_flags, assigned);
     }
 
     /// `endpoint`'s `OP_IDCHANGE` named what it grants (ADR-0080, "What a
     /// server grants is durable"): the row keeps the word, dated now. A reply
     /// that carried no flags word grants nothing, and is kept as that.
-    pub(crate) fn granted(&self, endpoint: &ServerEndpoint, tcp_flags: Option<ServerTcpFlags>) {
+    ///
+    /// The answer's obfuscation TCP port is kept with it when it names one:
+    /// aMule sets it on the connected server and on the listed row alike, and
+    /// only when non-zero (`ServerSocket.cpp:333-341`), so a server known only
+    /// by a name no status ping reaches is dialed obfuscated next time.
+    ///
+    /// An aux-port login's answer names the server's standard port; the row
+    /// is re-ported to it, keeping the dialed port in its aux-ports list
+    /// (`ServerSocket.cpp:337-355`). A Lugdunum server's answer fills that
+    /// slot with the assigned id (captured: id 936, "port" 936), which is not
+    /// a port, and which aMule would still write into the row; a slot equal to
+    /// the id is therefore left alone, so a server that never had an aux port
+    /// is not renamed to its client id.
+    pub(crate) fn granted(
+        &self,
+        endpoint: &ServerEndpoint,
+        client_id: ClientId,
+        tcp_flags: Option<ServerTcpFlags>,
+        assigned: &ServerAssignedFacts,
+    ) {
         let report = super::ServerGrantsReport {
             tcp_flags: tcp_flags.unwrap_or(ServerTcpFlags::from_bits(0)),
             reported_at: super::unix_seconds(std::time::SystemTime::now()),
         };
         if let Err(error) = self.write(|store| store.set_server_grants(endpoint, report)) {
             tracing::warn!(%error, "server grants not recorded in the list");
+        }
+        if let Some(port) = assigned.obfuscation_tcp_port.filter(|port| *port != 0)
+            && let Err(error) =
+                self.write(|store| store.set_server_obfuscation_tcp_port(endpoint, port))
+        {
+            tracing::warn!(%error, "server obfuscation port not recorded in the list");
+        }
+        if let Some(port) = assigned
+            .standard_tcp_port
+            .filter(|port| *port != 0 && *port != client_id.as_u32() as u16)
+            && let Err(error) = self.write(|store| store.set_server_standard_port(endpoint, port))
+        {
+            tracing::warn!(%error, "server standard port not recorded in the list");
         }
     }
 
@@ -472,13 +551,17 @@ impl ServerFacts {
 /// welcome burst), so all three are asserted on the same surfaced row.
 #[cfg(test)]
 pub(crate) fn test_facts(servers: &[ServerEndpoint]) -> (ServerFacts, DiagnosticsState) {
+    test_facts_rows(servers.iter().cloned().map(ManagedServer::listed).collect())
+}
+
+/// [`test_facts`] over rows the test shaped itself — an aux-port row, say.
+#[cfg(test)]
+pub(crate) fn test_facts_rows(rows: Vec<ManagedServer>) -> (ServerFacts, DiagnosticsState) {
     let store = crate::DurableAppConfig::new(
         crate::open_durable_store_in_memory().expect("the in-memory store opens"),
     );
-    for endpoint in servers {
-        store
-            .merge_server(ManagedServer::listed(endpoint.clone()))
-            .expect("seed the list");
+    for row in rows {
+        store.merge_server(row).expect("seed the list");
     }
     let diagnostics = DiagnosticsState::new();
     // The level starts as the store holds it, exactly as the actor seeds it
@@ -581,7 +664,16 @@ mod tests {
         let never = &diagnostics.snapshot().servers[0];
         assert_eq!((never.server.grants, never.grants_age), (None, None));
 
-        facts.granted(&listed, Some(ServerTcpFlags::from_bits(0x0000_0559)));
+        facts.granted(
+            &listed,
+            ClientId::from_u32(0x0100_0001),
+            Some(ServerTcpFlags::from_bits(0x0000_0559)),
+            &ServerAssignedFacts {
+                public_ip: None,
+                standard_tcp_port: None,
+                obfuscation_tcp_port: None,
+            },
+        );
         let mut datagram = vec![0xE3, rmule_ed2k::Opcode::GlobServStatRes.as_u8()];
         for word in [0, 12, 34, 3000, 4000, 5000, 0x0000_073B] {
             datagram.extend_from_slice(&u32::to_le_bytes(word));

@@ -7,7 +7,7 @@
 //! the type space is the dialect's only extension point and a stranger's byte
 //! must not become a reply.
 
-use rmule_primitives::UserHash;
+use rmule_primitives::{UserHash, WireReader, WireTruncated};
 use thiserror::Error;
 
 use super::caps::CapsFrame;
@@ -136,15 +136,16 @@ impl<'a> NattFrame<'a> {
     /// the dialect has no failure frame (its own maintainers call that a gap),
     /// so a malformed NAT-T datagram is silence by design, not by omission.
     pub fn decode(datagram: &'a [u8]) -> Result<Self, NattFrameDecodeError> {
-        let (&protocol, rest) = datagram
-            .split_first()
-            .ok_or(NattFrameDecodeError::TooShort { actual: 0 })?;
+        let too_short = |truncated: WireTruncated| NattFrameDecodeError::TooShort {
+            actual: truncated.available,
+        };
+        let mut reader = WireReader::new(datagram);
+        let protocol = reader.read_u8("protocol").map_err(too_short)?;
         if protocol != NATT_PROTOCOL {
             return Err(NattFrameDecodeError::WrongProtocol { actual: protocol });
         }
-        let (&frame_type, body) = rest
-            .split_first()
-            .ok_or(NattFrameDecodeError::TooShort { actual: 1 })?;
+        let frame_type = reader.read_u8("frame type").map_err(too_short)?;
+        let body = reader.remaining_bytes();
         match NattFrameType::from_byte(frame_type) {
             Some(NattFrameType::Utp) => Ok(Self::Utp(body)),
             Some(NattFrameType::Quic) => Ok(Self::Quic(body)),

@@ -21,6 +21,7 @@ mod nat;
 mod natt;
 mod node;
 mod operand;
+mod output;
 mod peer;
 mod register_sources;
 mod search;

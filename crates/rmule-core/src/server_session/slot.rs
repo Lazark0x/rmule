@@ -98,6 +98,18 @@ pub(crate) struct SharedServerSession {
     /// woven before the actor that reads it from the store exists; a `watch`,
     /// so a change reaches the live session at once.
     withhold_shares: Arc<watch::Sender<bool>>,
+    /// The node's one **Obfuscation Policy** (ADR-0042/0046). It rides the
+    /// session cell for the reason the adverts above do: establishment reads
+    /// it at each dial — whether to open the link obfuscated, and the crypt
+    /// flags the login states — off the actor, holding only this cell, and
+    /// every hello reads the same cell through the Hello Adverts, so the
+    /// login and a hello cannot state different policies.
+    obfuscation: crate::obfuscation_policy::SharedObfuscationPolicy,
+    /// **Self Reach**, late-bound like [`facts`](Self::facts): the session's
+    /// offer names the Presented Client ID, which the actor's owner answers
+    /// and which is woven after this cell. Unset, a session presents its own
+    /// id, which is what the owner answers with no Kad node anyway.
+    reach: Arc<std::sync::OnceLock<crate::reachability::SharedSelfReach>>,
 }
 
 impl Default for SharedServerSession {
@@ -117,6 +129,8 @@ impl Default for SharedServerSession {
             pending_connect: Arc::default(),
             login_timeout: Arc::default(),
             withhold_shares: Arc::new(watch::channel(false).0),
+            obfuscation: crate::obfuscation_policy::SharedObfuscationPolicy::default(),
+            reach: Arc::default(),
         }
     }
 }
@@ -131,6 +145,17 @@ pub(crate) struct OperatorConnectClaim {
 }
 
 impl SharedServerSession {
+    /// Bind Self Reach, which every later session's offer reads its
+    /// Presented Client ID from. Binding twice keeps the first.
+    pub(crate) fn install_reach(&self, reach: crate::reachability::SharedSelfReach) {
+        let _ = self.reach.set(reach);
+    }
+
+    /// Self Reach as bound, or `None` for a cell no actor wove.
+    pub(crate) fn reach(&self) -> Option<crate::reachability::SharedSelfReach> {
+        self.reach.get().cloned()
+    }
+
     /// The self-facts cell every UDP crypt surface reads (ADR-0046).
     pub(crate) fn own_identity(&self) -> &SharedOwnIdentity {
         &self.own
@@ -157,6 +182,12 @@ impl SharedServerSession {
             self.own.addresses().clone(),
             self.ipv6_probe.clone(),
         )
+    }
+
+    /// The **Obfuscation Policy** cell (ADR-0046), the one every surface
+    /// reads as it decides.
+    pub(crate) fn obfuscation(&self) -> &crate::obfuscation_policy::SharedObfuscationPolicy {
+        &self.obfuscation
     }
 
     /// The live `CT_EMULE_UDPPORTS` advert cell (ADR-0057/0047).

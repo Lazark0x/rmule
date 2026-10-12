@@ -4,7 +4,6 @@
 //! every one of them and the session still runs.
 
 mod buddy;
-mod display;
 mod download;
 mod lifecycle;
 mod login;
@@ -17,15 +16,15 @@ pub use buddy::BuddyDialFailure;
 pub use download::{DownloadEvent, PartsLost, RestartOutcome, SourceWait};
 pub use lifecycle::{KadStopReason, QuitStep, ServeStopReason};
 pub use login::{
-    DialFailure, IdAssignment, Ipv6Probe, LoginClaim, LoginCloseCause, LoginStep,
-    PortTestAdmission, PortTestClosedBy, PortTestEnd, PortTestLateAdmission,
+    DialFailure, IdAssignment, Ipv6Probe, LoginClaim, LoginCloseCause, LoginLink, LoginStep,
+    PlainLinkReason, PortTestAdmission, PortTestClosedBy, PortTestEnd, PortTestLateAdmission,
 };
 pub use peer_reach::{
     NatTraversalUnavailableReason, PeerBuddy, PeerReach, PeerReachDropReason, PeerReachRoute,
 };
 pub use scan::ScanEvent;
 pub use search::{LegNotSent, SearchEvent, SearchFailure, SearchLegState, SearchLegs, SweepTally};
-pub use source_ends::{DialEnd, IgnoredReaskReply};
+pub use source_ends::{DialEnd, IgnoredReaskReply, PurgedSource, SourcePurgeReason};
 
 use std::net::SocketAddrV4;
 
@@ -493,14 +492,15 @@ pub enum CoreEvent {
         /// Which precondition the command did not meet.
         reason: CoreCommandRejectReason,
     },
-    /// The ADR-0061 callback chooser picked a route for a
-    /// [`CoreCommand::ReachPeer`](crate::CoreCommand::ReachPeer). Route 2
-    /// ([`PeerReachRoute::DirectUdp`]) is enacted by core (the `0x95` is
-    /// already on the wire when this event fires), and so is route 4 for a
-    /// download's Kad source, whose `0x52` [`Buddy`](PeerReachRoute::Buddy)
-    /// reports; [`Direct`](PeerReachRoute::Direct) and
-    /// [`Server`](PeerReachRoute::Server) report the verdict for the caller to
-    /// enact (the dial / the `0x1C`). Cross-activity: the download worker, a
+    /// **Peer Reach** took a road to a peer (ADR-0061): for a
+    /// [`CoreCommand::ReachPeer`](crate::CoreCommand::ReachPeer) or a
+    /// download's Low-ID candidate. Route 2 ([`PeerReachRoute::DirectUdp`]) is
+    /// enacted by core (the `0x95` is already on the wire when this event
+    /// fires), and so is route 4 for a download's Kad source, whose `0x52`
+    /// [`Buddy`](PeerReachRoute::Buddy) reports; rung 1 has been handed to the
+    /// NAT-T Front, which puts it on the wire; [`Direct`](PeerReachRoute::Direct)
+    /// and [`Server`](PeerReachRoute::Server) report the verdict for the caller
+    /// to enact (the dial / the `0x1C`). Cross-activity: the download worker, a
     /// LowID source-exchange candidate and the ADR-0057 LowID grant dial-back
     /// all ask the same selector, so they all report here.
     PeerReachRouted {
@@ -538,7 +538,7 @@ pub enum CoreEvent {
     /// only one **Address Family** (ADR-0085) — a partial bind is not a total
     /// one, and Kad, the reask surface and NAT-T all still have a socket.
     ClientUdpBindFailed {
-        /// The port core asked the OS for — `CoreConfig::udp_port`.
+        /// The port core asked the OS for — `CoreSettings::udp_port`.
         port: u16,
         /// The OS's reason. When every selected **Address Family** refused
         /// the bind, `UdpFamilyPair::bind` (ADR-0085) picks a real kind
@@ -633,6 +633,20 @@ pub enum CoreEvent {
         buddy: Ipv4Endpoint,
         /// Why.
         cause: BuddyDialFailure,
+    },
+    /// The **Obfuscation Policy** this core starts under (ADR-0046): our own
+    /// posture, stated once before anything is dialed, so the Run Log says
+    /// what every later crypt decision read.
+    ObfuscationPolicyAtStart {
+        /// The policy; `None` for none.
+        policy: Option<crate::ObfuscationPolicy>,
+    },
+    /// The operator changed the **Obfuscation Policy** live (ADR-0046): from
+    /// here on every surface decides under it, while a connection that
+    /// already negotiated keeps what it agreed.
+    ObfuscationPolicyChanged {
+        /// The policy now in force; `None` for none.
+        policy: Option<crate::ObfuscationPolicy>,
     },
     /// A Kad helper's connect-back came after its firewall-check window
     /// closed, within the Awaited Testers' memory of it (ADR-0075, Run Log):

@@ -17,11 +17,14 @@ pub struct ServerObfuscationTransport {
 
 impl ServerObfuscationTransport {
     /// Client side — the role rmule uses in production (it dials servers). The
-    /// opening `[marker][G^A]` is emitted from
+    /// opening `[marker][G^A][padlen][pad]` is emitted from
     /// [`initial_output`](ObfuscationTransport::initial_output).
     #[must_use]
     pub fn client() -> Self {
-        let (inner, initial) = ServerObfuscation::client(random_marker(), &random_padding());
+        // The opening's plain padding is clamped to aMule's 15 bytes by the
+        // state machine; the reply block's is the shared draw.
+        let (inner, initial) =
+            ServerObfuscation::client(random_marker(), &random_padding(), &random_padding());
         Self { inner, initial }
     }
 

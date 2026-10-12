@@ -8,6 +8,7 @@
 use rmule_primitives::{AichRootHash, FileHash};
 
 use super::{PeerEvent, PeerSession};
+use crate::ServerEvent;
 
 impl PeerSession {
     /// Send `OP_AICHREQUEST` for `part` of `file_hash`, quoting the trusted
@@ -31,11 +32,12 @@ impl PeerSession {
     }
 
     pub(super) fn on_aich_requested(&mut self, req: crate::aich::AichRequest) {
-        self.core.push_event(PeerEvent::AichRequested {
-            file_hash: req.file_hash,
-            part: req.part,
-            root: req.root,
-        });
+        self.core
+            .push_event(PeerEvent::Server(ServerEvent::AichRequested {
+                file_hash: req.file_hash,
+                part: req.part,
+                root: req.root,
+            }));
     }
 
     pub(super) fn on_aich_file_hash_requested(&mut self, file_hash: FileHash) {
@@ -44,7 +46,9 @@ impl PeerSession {
         // back to route the eventual answer, standalone or bundled alike.
         self.served_aich_request = Some(file_hash);
         self.core
-            .push_event(PeerEvent::AichFileHashRequested { file_hash });
+            .push_event(PeerEvent::Server(ServerEvent::AichFileHashRequested {
+                file_hash,
+            }));
     }
 
     /// Server Capability — answer the connection's outstanding AICH-root

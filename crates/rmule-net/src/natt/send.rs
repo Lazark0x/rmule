@@ -69,13 +69,23 @@ pub trait NattDatagramSink: Send + Sync + 'static {
 }
 
 /// The self-facts the obfuscated send path needs, supplied by whoever holds
-/// rmule's own identity (core's peer-UDP crypt layer in production).
+/// rmule's own identity (core's peer-UDP crypt layer in production), and
+/// what a CAPS answer states about our crypt.
 ///
-/// Holding one of these is itself the armed signal: with no crypt policy there
-/// is nothing to supply, every NAT-T frame goes plaintext, and no **Key Frame**
-/// is emitted — asserting our hash would invite a peer to obfuscate toward a
-/// receiver that cannot dual-path decrypt.
+/// Every method is read per frame, never at construction, because the
+/// policy behind it may change while the surface runs (ADR-0046). While
+/// [`armed`](Self::armed) says no, every NAT-T frame goes plaintext and no
+/// **Key Frame** is emitted — asserting our hash would invite a peer to
+/// obfuscate toward a receiver that cannot dual-path decrypt. A surface built
+/// with no crypt half at all is never armed and states no crypt bits.
 pub trait NattCrypt: Send + Sync + 'static {
+    /// Whether frames are obfuscated, and our hash asserted, from this frame.
+    fn armed(&self) -> bool;
+
+    /// The crypt-ladder bits a CAPS answer states in its connect-options
+    /// byte, beside the transport bits the surface serves.
+    fn crypt_options(&self) -> u8;
+
     /// Our own user hash — the KEY frame's whole body.
     fn own_user_hash(&self) -> UserHash;
 
@@ -147,6 +157,12 @@ impl<S: NattDatagramSink> NattSender<S> {
             crypt,
             keys: Mutex::new(NattKeyTable::new()),
         }
+    }
+
+    /// The crypt-ladder bits our CAPS answer states now: the crypt half's,
+    /// or none without one.
+    pub(crate) fn crypt_options(&self) -> u8 {
+        self.crypt.as_ref().map_or(0, |crypt| crypt.crypt_options())
     }
 
     /// Adopt the hash an inbound KEY frame carried.
@@ -298,7 +314,7 @@ impl<S: NattDatagramSink> NattSender<S> {
         now: Instant,
     ) -> (Option<Vec<u8>>, Vec<u8>, bool) {
         let plain = frame_transport(frame_type, payload);
-        let Some(crypt) = &self.crypt else {
+        let Some(crypt) = self.crypt.as_deref().filter(|crypt| crypt.armed()) else {
             return (None, plain, false);
         };
         let mut keys = self
@@ -375,14 +391,28 @@ mod tests {
         }
     }
 
-    /// Armed self-facts with a fixed nonce, so a crypt datagram's bytes are
-    /// deterministic.
+    /// Self-facts with a fixed nonce, so a crypt datagram's bytes are
+    /// deterministic, armed while `on` holds — a policy a test can flip under
+    /// a running sender.
     struct Armed {
         hash: UserHash,
         v4: Option<[u8; 4]>,
+        on: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    fn on() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true))
     }
 
     impl NattCrypt for Armed {
+        fn armed(&self) -> bool {
+            self.on.load(std::sync::atomic::Ordering::Relaxed)
+        }
+
+        fn crypt_options(&self) -> u8 {
+            0x01
+        }
+
         fn own_user_hash(&self) -> UserHash {
             self.hash
         }
@@ -421,6 +451,7 @@ mod tests {
             Some(Box::new(Armed {
                 hash: hash(0x11),
                 v4: Some([192, 0, 2, 5]),
+                on: on(),
             })),
         );
         (recorder, sender)
@@ -504,6 +535,7 @@ mod tests {
             Some(Box::new(Armed {
                 hash: hash(0x11),
                 v4: None,
+                on: on(),
             })),
         );
         let now = Instant::now();
@@ -538,6 +570,40 @@ mod tests {
             }
         );
         assert_eq!(recorder.sent.lock().expect("recorder").len(), 1);
+    }
+
+    /// The policy behind the crypt half changes live (ADR-0046): disarmed,
+    /// the very next frame goes plaintext with no KEY frame even toward a
+    /// keyed endpoint, and re-armed, the one after is obfuscated again — the
+    /// learned key kept across.
+    #[tokio::test]
+    async fn a_policy_change_reaches_the_very_next_frame() {
+        let recorder = std::sync::Arc::new(Recorder::default());
+        let switch = on();
+        let sender = NattSender::new(
+            std::sync::Arc::clone(&recorder),
+            Some(Box::new(Armed {
+                hash: hash(0x11),
+                v4: Some([192, 0, 2, 5]),
+                on: std::sync::Arc::clone(&switch),
+            })),
+        );
+        let now = Instant::now();
+        sender.learn_key(peer(), hash(0x99), now);
+        let send = || sender.send_transport(peer(), NattFrameType::Utp, &[0x41], true, now);
+
+        assert!(send().await.expect("recorded").obfuscated);
+        switch.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            send().await.expect("recorded"),
+            SentFrame {
+                key_frame_sent: false,
+                obfuscated: false
+            }
+        );
+        assert_eq!(sender.crypt_options(), 0x01, "the bits are the half's own");
+        switch.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(send().await.expect("recorded").obfuscated);
     }
 
     /// The poll shape makes the same decisions and reports the payload length
@@ -612,6 +678,7 @@ mod tests {
             Some(Box::new(Armed {
                 hash: hash(0x11),
                 v4: Some([192, 0, 2, 5]),
+                on: on(),
             })),
         );
         let now = Instant::now();

@@ -4,6 +4,7 @@
 //! preempts a keyword publish, or finds the target held by another walk.
 //! Driven on `KadNode` with explicit time.
 
+use rmule_kad::KadNodeStart;
 use rmule_kad::keyword::keyword_id;
 use rmule_kad::keyword_store::{KeywordResultRow, encode_search_key_res};
 use rmule_kad::{
@@ -33,12 +34,15 @@ const CONTACTS: [u8; 3] = [10, 20, 30];
 
 /// A joined, TCP-open node with three contacts near the keyword.
 fn node(now: KadInstant) -> KadNode {
-    let mut node = KadNode::new(KadNodeConfig {
-        id: KadId::from_bytes([0x0F; 16]),
-        tcp_port: 4662,
-        udp_port: 4672,
-        user_hash: UserHash::from_bytes([0xEE; 16]),
-    });
+    let mut node = KadNode::new(KadNodeStart::new(
+        KadNodeConfig {
+            id: KadId::from_bytes([0x0F; 16]),
+            tcp_port: 4662,
+            udp_port: 4672,
+            user_hash: UserHash::from_bytes([0xEE; 16]),
+        },
+        KadInstant::EPOCH,
+    ));
     for d in CONTACTS {
         node.handle_datagram(
             now,

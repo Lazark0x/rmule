@@ -7,8 +7,8 @@
 //! candidate falls to the next one — the punch when its facts admit a
 //! coordinator, otherwise nothing, and its slot goes to the next candidate.
 
-use rmule_kad::{KadBuddyContact, KadId};
-use rmule_primitives::{SourceCryptOptions, UserHash};
+use rmule_kad::KadId;
+use rmule_primitives::UserHash;
 
 use crate::callback::CallbackSilence;
 use crate::diagnostics::NattRetirement;
@@ -20,28 +20,14 @@ const BUDDY_ID: KadId = KadId::from_bytes([0x7A; KadId::BYTE_LEN]);
 
 /// A type-3 row whose buddy tags carried the ID and no endpoint. `0x00` is an
 /// aMule row's `TAG_ENCRYPTION`; `0x81` an eMuleAI row's, NAT-T bit set.
-fn id_only_row(connect_options: u8) -> crate::KadSource {
-    crate::KadSource {
-        direct: None,
-        user_hash: Some(TARGET),
-        kad_udp: Some(Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 77), 4672)),
-        connect_options: Some(SourceCryptOptions::from_byte(connect_options)),
-        buddy: Some(KadBuddyContact {
-            buddy_id: BUDDY_ID,
-            buddy_udp: None,
-            buddy_ipv6: None,
-            buddy_udp_ipv6: None,
-        }),
-        tcp_port: 4662,
-        direct_udp_callback: false,
-        ipv6: None,
-    }
+fn id_only_row(connect_options: u8) -> SourceSighting {
+    kad_buddy_sighting(Some(TARGET), BUDDY_ID, None, connect_options)
 }
 
 fn admitted(state: &mut DownloadState, connect_options: u8) -> CallbackKey {
-    let decisions = state.on_kad_sources(vec![id_only_row(connect_options)]);
+    let decisions = via_kad(state, vec![id_only_row(connect_options)]);
     let Some(candidate) = decisions.iter().find_map(|d| match d {
-        Decision::RequestBuddyCallback { candidate } => Some(*candidate),
+        Decision::RequestBuddyCallback { candidate, .. } => Some(*candidate),
         _ => None,
     }) else {
         panic!("an ID-only buddy row takes the buddy-callback road: {decisions:?}");
@@ -54,12 +40,8 @@ fn admitted(state: &mut DownloadState, connect_options: u8) -> CallbackKey {
         "the candidate carries the ID and admits it has no endpoint"
     );
     assert!(
-        decisions.iter().any(|d| matches!(
-            d,
-            Decision::ArmCallbackTimeout { key, after }
-                if *key == candidate.key() && *after == CALLBACK_TIMEOUT
-        )),
-        "the slot is held for the dial-back the walk may yet draw: {decisions:?}"
+        state.match_inbound_callback(candidate.key()).is_some(),
+        "the slot is held for the dial-back the walk may yet draw"
     );
     candidate.key()
 }
@@ -67,7 +49,7 @@ fn admitted(state: &mut DownloadState, connect_options: u8) -> CallbackKey {
 fn releases(decisions: &[Decision], key: CallbackKey) -> bool {
     decisions
         .iter()
-        .any(|d| matches!(d, Decision::CancelCallbackTimeout { key: held } if *held == key))
+        .any(|d| matches!(d, Decision::EndCallback { key: held } if *held == key))
 }
 
 /// An aMule row: no NAT-T bit, so no punch behind the callback. A walk that met
@@ -78,7 +60,7 @@ fn a_fruitless_callback_walk_releases_an_amule_rows_slot_at_once() {
     let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
     let key = admitted(&mut state, 0x00);
 
-    let retired = state.on_traversal_retired(key, NattRetirement::BuddyNotFound);
+    let retired = state.on_traversal_retired(t0(), key, NattRetirement::BuddyNotFound);
 
     assert!(
         releases(&retired, key),
@@ -91,7 +73,7 @@ fn a_fruitless_callback_walk_releases_an_amule_rows_slot_at_once() {
         "nothing can punch an aMule row: {retired:?}"
     );
     assert!(
-        state.on_callback_timeout(key).is_empty(),
+        state.on_tick(t0() + CALLBACK_TIMEOUT).is_empty(),
         "the 30 s has nothing left to release"
     );
 }
@@ -104,10 +86,11 @@ fn a_fruitless_callback_walk_falls_a_natt_row_to_the_punch_now() {
     let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
     let key = admitted(&mut state, 0x81);
 
-    let retired = state.on_traversal_retired(key, NattRetirement::BuddyNotFound);
+    let retired = state.on_traversal_retired(t0(), key, NattRetirement::BuddyNotFound);
     let [
-        Decision::FallToNatTraversal { candidate, silence },
-        Decision::ArmTraversalBound { .. },
+        Decision::FallToNatTraversal {
+            candidate, silence, ..
+        },
     ] = retired.as_slice()
     else {
         panic!("the walk's failure raises exactly one fall: {retired:?}");
@@ -116,10 +99,10 @@ fn a_fruitless_callback_walk_falls_a_natt_row_to_the_punch_now() {
     assert_eq!(*silence, CallbackSilence::NoCallbackPossible);
 
     assert!(
-        state.on_callback_silence(key).is_empty(),
+        state.on_tick(t0() + CALLBACK_SILENCE_FALLBACK).is_empty(),
         "the 12 s deadline armed for the callback raises no second punch"
     );
-    let ended = state.on_traversal_retired(key, NattRetirement::NoCoordinator);
+    let ended = state.on_traversal_retired(t0(), key, NattRetirement::NoCoordinator);
     assert!(
         releases(&ended, key),
         "the punch was the last road: {ended:?}"
@@ -138,16 +121,16 @@ fn a_fruitless_walk_then_a_coordinatorless_punch_ends_the_candidate_in_one_step(
     let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
     let key = admitted(&mut state, 0x81);
 
-    let fell = state.on_traversal_retired(key, NattRetirement::BuddyNotFound);
+    let fell = state.on_traversal_retired(t0(), key, NattRetirement::BuddyNotFound);
     assert!(
         matches!(
             fell.as_slice(),
-            [Decision::FallToNatTraversal { candidate, .. }, Decision::ArmTraversalBound { .. }] if candidate.key() == key
+            [Decision::FallToNatTraversal { candidate, .. }] if candidate.key() == key
         ),
         "the walk's failure falls the row to the punch at once: {fell:?}"
     );
 
-    let ended = state.on_traversal_retired(key, NattRetirement::CoordinatorEndpointUnknown);
+    let ended = state.on_traversal_retired(t0(), key, NattRetirement::CoordinatorEndpointUnknown);
     assert!(
         releases(&ended, key),
         "the same buddy still has no endpoint, so the punch ends now: {ended:?}"
@@ -167,15 +150,18 @@ fn a_fruitless_walk_then_a_coordinatorless_punch_ends_the_candidate_in_one_step(
 fn a_callback_walk_failing_after_the_punch_began_starts_no_second_punch() {
     let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
     let key = admitted(&mut state, 0x81);
-    assert!(!state.on_callback_silence(key).is_empty(), "the 12 s fell");
+    assert!(
+        !state.on_tick(t0() + CALLBACK_SILENCE_FALLBACK).is_empty(),
+        "the 12 s fell"
+    );
 
     assert!(
         state
-            .on_traversal_retired(key, NattRetirement::CallbackWalkBusy)
+            .on_traversal_retired(t0(), key, NattRetirement::CallbackWalkBusy)
             .is_empty(),
         "the punch already running is the candidate's road"
     );
-    let ended = state.on_traversal_retired(key, NattRetirement::NoCoordinator);
+    let ended = state.on_traversal_retired(t0(), key, NattRetirement::NoCoordinator);
     assert!(
         releases(&ended, key),
         "and its end is the candidate's: {ended:?}"
@@ -188,15 +174,15 @@ fn a_callback_walk_failing_after_the_punch_began_starts_no_second_punch() {
 fn a_callback_walk_failing_after_the_punch_retired_releases_the_slot() {
     let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
     let key = admitted(&mut state, 0x81);
-    assert!(!state.on_callback_silence(key).is_empty());
+    assert!(!state.on_tick(t0() + CALLBACK_SILENCE_FALLBACK).is_empty());
     assert!(
         state
-            .on_traversal_retired(key, NattRetirement::NoCoordinator)
+            .on_traversal_retired(t0(), key, NattRetirement::NoCoordinator)
             .is_empty(),
         "beside a live callback road the punch's end costs nothing"
     );
 
-    let retired = state.on_traversal_retired(key, NattRetirement::BuddyNotFound);
+    let retired = state.on_traversal_retired(t0(), key, NattRetirement::BuddyNotFound);
     assert!(releases(&retired, key), "{retired:?}");
 }
 
@@ -210,10 +196,11 @@ fn kad_not_running_falls_a_natt_row_to_the_punch_now() {
     let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
     let key = admitted(&mut state, 0x81);
 
-    let retired = state.on_traversal_retired(key, NattRetirement::KadNotRunning);
+    let retired = state.on_traversal_retired(t0(), key, NattRetirement::KadNotRunning);
     let [
-        Decision::FallToNatTraversal { candidate, silence },
-        Decision::ArmTraversalBound { .. },
+        Decision::FallToNatTraversal {
+            candidate, silence, ..
+        },
     ] = retired.as_slice()
     else {
         panic!("the retirement raises exactly one fall: {retired:?}");
@@ -229,7 +216,7 @@ fn kad_not_running_releases_an_amule_rows_slot_at_once() {
     let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
     let key = admitted(&mut state, 0x00);
 
-    let retired = state.on_traversal_retired(key, NattRetirement::KadNotRunning);
+    let retired = state.on_traversal_retired(t0(), key, NattRetirement::KadNotRunning);
     assert!(
         releases(&retired, key),
         "the candidate lapses now: {retired:?}"
@@ -243,35 +230,47 @@ fn kad_not_running_releases_an_amule_rows_slot_at_once() {
 }
 
 /// The source's own hello names its buddy's endpoint, so its next
-/// buddy callback — drawn by a later ID-only row — goes straight to the buddy
-/// instead of walking toward its ID again.
+/// buddy callback goes straight to the buddy instead of walking toward its ID
+/// again — the one its record draws back in its lane when its worker ends
+/// without a rank (ADR-0090), and, once that lapses, the one a later ID-only
+/// row draws.
 #[test]
 fn a_buddy_the_hello_named_takes_the_next_callback_without_a_walk() {
     let buddy_udp = Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 2), 4672);
     let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
     let key = admitted(&mut state, 0x00);
+    let named_buddy = |decisions: &[Decision]| {
+        decisions.iter().find_map(|d| match d {
+            Decision::RequestBuddyCallback { candidate, .. } => candidate
+                .buddy
+                .map(|buddy| (buddy.buddy_id, buddy.buddy_udp)),
+            _ => None,
+        })
+    };
 
-    let _ = state.on_callback_connected(key, peer(9));
+    let _ = state.on_callback_connected(t0(), key, peer(9));
+    let mut ended = Vec::new();
+    let named = HelloFacts {
+        serving_buddy: Some(buddy_udp),
+        ..HelloFacts::of(TARGET)
+    };
     for event in [
-        PeerWorkerEvent::Identified {
-            user_hash: TARGET,
-            crypt: None,
-            software: hello_software(),
-        },
+        PeerWorkerEvent::Identity(named.identity()),
         PeerWorkerEvent::Connected,
-        PeerWorkerEvent::ServingBuddy { buddy_udp },
         PeerWorkerEvent::Disconnected,
     ] {
-        let _ = state.on_worker_event(peer(9), event);
+        ended = state.on_worker_event(t0(), peer(9), event);
     }
-
-    let later = state.on_kad_sources(vec![id_only_row(0x00)]);
-    let buddy = later.iter().find_map(|d| match d {
-        Decision::RequestBuddyCallback { candidate } => candidate.buddy,
-        _ => None,
-    });
     assert_eq!(
-        buddy.map(|buddy| (buddy.buddy_id, buddy.buddy_udp)),
+        named_buddy(&ended),
+        Some((BUDDY_ID, Some(buddy_udp))),
+        "back in its lane, the source's callback goes to the hello's endpoint: {ended:?}"
+    );
+
+    let _ = state.on_tick(t0() + CALLBACK_TIMEOUT);
+    let later = via_kad(&mut state, vec![id_only_row(0x00)]);
+    assert_eq!(
+        named_buddy(&later),
         Some((BUDDY_ID, Some(buddy_udp))),
         "the row's ID with the hello's endpoint: {later:?}"
     );

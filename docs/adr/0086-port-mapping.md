@@ -122,8 +122,8 @@ aMule binds its listener, then its UDP socket, then maps both, and only then aut
 (`amule.cpp:1631`, `:1705`, `:1739`, `:1310`); eMule defers its connect while UPnP works
 (`EmuleDlg.cpp:1963-1970`). rmule keeps the order for every session:
 
-- A core built with credentials binds the eD2k listener at attach (in the Serve activity,
-  ADR-0095), on the credentials' TCP port — the port the login, the hello and the Kad TCP
+- A core built to restore at attach binds the eD2k listener at attach (in the Serve activity,
+  ADR-0095), on the Core Settings' TCP port — the port the login, the hello and the Kad TCP
   self-check advertise — so its row and mapping exist before any connect. A failed bind is
   reported (`ServingFailed { Bind }`) and the login still goes out, as aMule's does.
 - `ConnectToServer` is the only login. When a Port Mapping runtime runs, the connect task

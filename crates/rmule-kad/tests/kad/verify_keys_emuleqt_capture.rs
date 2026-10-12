@@ -6,8 +6,8 @@
 use std::net::Ipv4Addr;
 
 use rmule_kad::{
-    Kad2Message, Kad2NodeInfo, KadDecoded, KadNode, KadNodeConfig, KadNodeEndpoint,
-    MISC_OPTIONS_ACK_REQUEST, decode_exact,
+    Kad2Message, Kad2NodeInfo, KadDecoded, KadInstant, KadNode, KadNodeConfig, KadNodeEndpoint,
+    KadNodeStart, KadObfuscation, MISC_OPTIONS_ACK_REQUEST, decode_exact,
 };
 use rmule_primitives::{ClientDecryptKeys, DatagramSenderAddress, decrypt_datagram_client};
 use rmule_testkit::kad_node::{T0, datagrams, drain_outputs, fixed_nonce, solicit_hello_res};
@@ -79,20 +79,27 @@ fn emule_qt_keys_its_ack_request_so_only_a_keyed_0x22_can_answer_it() {
         MISC_OPTIONS_ACK_REQUEST
     );
 
-    // Replayed into rmule as it ran (rmule's Kad ID, verify keys armed): with
-    // send-obfuscation off there is no 0x22 at all; with it on, the 0x22's
+    // Replayed into rmule as it ran (rmule's Kad ID): with
+    // send-obfuscation off (and so no verify keys) there is no 0x22 at all; with it on, the 0x22's
     // receiver slot echoes emule-qt's key — its `validReceiverKey`.
     let ack_for = |obfuscate: bool| {
-        let mut node = KadNode::new(KadNodeConfig {
-            id: rmule.id,
-            tcp_port: 4662,
-            udp_port: 4672,
-            user_hash: rmule_kad::UserHash::from_bytes([0xEE; 16]),
-        });
-        if obfuscate {
-            node.enable_datagram_obfuscation(fixed_nonce);
-        }
-        node.enable_verify_keys(0x4981_0498, RMULE_IP);
+        let start = KadNodeStart::new(
+            KadNodeConfig {
+                id: rmule.id,
+                tcp_port: 4662,
+                udp_port: 4672,
+                user_hash: rmule_kad::UserHash::from_bytes([0xEE; 16]),
+            },
+            KadInstant::EPOCH,
+        );
+        let start = if obfuscate {
+            start.obfuscation(
+                KadObfuscation::new(fixed_nonce).with_verify_keys(0x4981_0498, RMULE_IP),
+            )
+        } else {
+            start
+        };
+        let mut node = KadNode::new(start);
         solicit_hello_res(&mut node, EMULEQT, qt.id);
         node.handle_datagram(T0, EMULEQT, &qt_res);
         datagrams(&drain_outputs(&mut node))

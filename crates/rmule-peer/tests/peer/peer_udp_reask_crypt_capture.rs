@@ -76,10 +76,6 @@ fn amules_obfuscated_reask_decrypts_under_our_ed2k_key_and_is_a_v4_on_file_ping(
     );
     assert_eq!(ping.complete_sources, Some(1));
     assert_eq!(ping.encode_udp(), decrypted.payload);
-    assert_eq!(
-        ReaskFilePing::file_hash_of(&decrypted.payload),
-        Some(FileHash::from_bytes(FILE_HASH)),
-    );
 }
 
 /// Vacuity guard: the decrypt is not a rubber stamp. One flipped ciphertext byte

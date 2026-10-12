@@ -323,10 +323,7 @@ mod tests {
         let theme = Theme::default_dark();
         let t0 = now();
         let mut chrome = ChromeState::default();
-        chrome.update(
-            &Action::Flash(crate::words::Sentence::for_test(LONG_FLASH)),
-            t0,
-        );
+        chrome.update(&Action::Flash(LONG_FLASH), t0);
         let expected = format!("✱ {LONG_FLASH}");
 
         for width in 20u16..=140 {
@@ -423,10 +420,7 @@ mod tests {
         // …unless the info cannot fit at all — then it wraps above the border
         // and the fixed segments reclaim the row.
         let mut flashed = ChromeState::default();
-        flashed.update(
-            &Action::Flash(crate::words::Sentence::for_test(LONG_FLASH)),
-            t0,
-        );
+        flashed.update(&Action::Flash(LONG_FLASH), t0);
         let spilled = status_bar(&state, &flashed, &theme, t0, 44);
         assert!(
             !spilled.overflow.is_empty(),
@@ -443,10 +437,7 @@ mod tests {
     fn golden_status_bar_wraps_an_overlong_flash_above_the_border() {
         let t0 = now();
         let mut chrome = ChromeState::default();
-        chrome.update(
-            &Action::Flash(crate::words::Sentence::for_test(LONG_FLASH)),
-            t0,
-        );
+        chrome.update(&Action::Flash(LONG_FLASH), t0);
         assert_golden("chrome_status_wrap_narrow", 44, 12, |frame| {
             draw_frame(
                 frame,

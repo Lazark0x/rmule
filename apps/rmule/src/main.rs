@@ -33,7 +33,8 @@ use rmule::input::spawn_input_pump;
 use rmule::theme::Theme;
 use rmule::tui::Tui;
 use rmule::words::front_door;
-use rmule_core::{CoreCommand, ScanCommand};
+use rmule_core::CoreCommand;
+use rmule_core::run_log::{self, Level, RunLog, RunLogFailure};
 
 /// A refused command line.
 const EXIT_USAGE: u8 = 2;
@@ -101,45 +102,33 @@ async fn run(run_args: RunArgs) -> std::io::Result<()> {
     // normally; the UI-only fallback still runs with the reason visible.
     // The Run Log first, so the attachment's own events are in it.
     let data_dir = data_dir(&run_args);
-    let (log_tell, log_told) = std::sync::mpsc::channel();
-    let run_log = data_dir
+    let opened = data_dir
         .as_ref()
-        .ok_or(rmule::run_log::RunLogFailure::NoDataDir)
-        .and_then(|data_dir| {
-            rmule::run_log::install(
-                &data_dir.path,
-                log_tell,
-                run_args.log_level.unwrap_or_default(),
-            )
-        });
-    if run_log.is_ok() {
-        // The log names the build that wrote it, so two runs' logs tell
-        // their builds apart.
-        rmule::run_log::write(
-            &rmule::run_log::Record::new("run_start")
-                .code("version", BUILD.version)
-                .code("commit", front_door::build_fact(BUILD.commit))
-                .flag("dirty", BUILD.dirty)
-                .code("committed", front_door::build_fact(BUILD.committed)),
-            rmule::run_log::Level::Lean,
-        );
-    }
+        .ok_or(RunLogFailure::NoDataDir)
+        .and_then(|data_dir| RunLog::open(&data_dir.path, run_args.log_level.unwrap_or_default()));
     // Without a log the handle still exists, held by nobody who writes.
-    let (run_log_level, run_log) = match run_log {
-        Ok(level) => (level, Ok(())),
-        Err(failure) => (rmule::run_log::LevelHandle::default(), Err(failure)),
+    let run_log_level = opened.as_ref().map(RunLog::level).unwrap_or_default();
+    let run_log = match opened.and_then(RunLog::install) {
+        Ok(failures) => {
+            // The log names the build that wrote it, so two runs' logs tell
+            // their builds apart.
+            run_log::write(
+                &run_log::run_start(BUILD.version, BUILD.commit, BUILD.committed, BUILD.dirty),
+                Level::Lean,
+            );
+            // The log's first failed write is a fact the operator is owed;
+            // the thread ends with the run.
+            let actions_tx = actions_tx.clone();
+            std::thread::spawn(move || {
+                if let Ok(failure) = failures.recv() {
+                    let _ = actions_tx
+                        .blocking_send(Action::Note(rmule::words::app::no_run_log(failure)));
+                }
+            });
+            Ok(())
+        }
+        Err(failure) => Err(failure),
     };
-    {
-        // The log's first failed write is a fact the operator is owed; the
-        // thread ends with the run, or at once when there is no log.
-        let actions_tx = actions_tx.clone();
-        std::thread::spawn(move || {
-            if let Ok(failure) = log_told.recv() {
-                let _ =
-                    actions_tx.blocking_send(Action::Note(rmule::words::app::no_run_log(failure)));
-            }
-        });
-    }
     let attachment = attach(data_dir.clone(), &Live).await;
 
     let mut tui = Tui::enter()?;
@@ -158,9 +147,9 @@ async fn run(run_args: RunArgs) -> std::io::Result<()> {
             // `--log-level` holds for this run and is never stored; the
             // Settings tab shows the level in force.
             if let Some(level) = run_args.log_level {
-                preferences.run_log_full = level == rmule::run_log::Level::Full;
+                preferences.run_log_full = level == Level::Full;
             }
-            run_log_level.set(rmule::run_log::Level::from_full(preferences.run_log_full));
+            run_log_level.set(Level::from_full(preferences.run_log_full));
             let handle = bridge::spawn(
                 core,
                 actions_tx.clone(),
@@ -174,25 +163,13 @@ async fn run(run_args: RunArgs) -> std::io::Result<()> {
             match at_start {
                 rmule::connect::AtStart::Nothing => {}
                 rmule::connect::AtStart::Connect(server) => {
-                    let command = CoreCommand::ConnectToServer {
-                        server,
-                        credentials: session.credentials.clone(),
-                    };
+                    let command = CoreCommand::ConnectToServer { server };
                     if let Err(error) = rmule::client::CoreClient::send(&handle, command).await {
                         tracing::warn!(%error, "connect at start could not be sent");
                     }
                 }
                 rmule::connect::AtStart::CannotConnect(why) => {
                     let _ = actions_tx.send(Action::Note(why)).await;
-                }
-            }
-            // The download directory is a shared directory (ADR-0101): its
-            // scan starts with the core, and asks before it shares anything
-            // the first time it finds files there.
-            if let Some(dir) = session.download_dir.clone() {
-                let command = CoreCommand::Scan(ScanCommand::Start { dir });
-                if let Err(error) = rmule::client::CoreClient::send(&handle, command).await {
-                    tracing::warn!(%error, "download directory scan could not be started");
                 }
             }
             // The Kad join, parked behind the run's first eD2k login
@@ -215,6 +192,7 @@ async fn run(run_args: RunArgs) -> std::io::Result<()> {
                     &mut kad_starts,
                     &kad_client,
                     &kad.config,
+                    kad.own_id,
                     &kad.bootstrap,
                     &kad.fetcher,
                 )

@@ -37,6 +37,14 @@ start of the value and every later tag in the packet shifts. Tag decoding
 preserves both name spellings so a re-encode is byte-identical.
 _Avoid_: attribute, property, field
 
+**Wire Reader**:
+The one forward-only, little-endian, bounds-checked reader every wire decoder
+in the protocol crates reads through. A read past the end answers a truncation
+that names the field being read; each decoder maps it into its own error type
+and none of them panics on any input. A decoder keeps its own accept/reject
+rules (trailing bytes, optional tails) — the reader only owns the bounds.
+_Avoid_: cursor, byte stream
+
 **Ed2k Text**:
 A string that keeps the bytes a counterparty sent. Server banners, file names
 and descriptions are routinely Windows-1252 or mojibake, so text is stored as
@@ -156,9 +164,19 @@ _Avoid_: hit, match, search row
 A peer that has some of a file. Three shapes with different provenance: the
 **Source Lookup Target** a request asks about, the `PeerSource` a server hands
 back (a High-ID IPv4 endpoint, a Low ID, or a **Sentinel Source**'s IPv6
-endpoint), and the richer `ExchangedSource` peers trade among themselves (which may
+endpoint), and the richer **Source Sighting** every channel delivers (which may
 carry a **User Hash** and crypt options, and so may be dialed obfuscated).
 _Avoid_: seed, provider, host
+
+**Source Sighting**:
+One channel's statement that a peer has a file — a server answer, a source exchange, a
+link, a Kad source row — and the one road it names: an eD2k source record (a High ID, a
+Low ID or a **Sentinel Source**'s IPv6), or, from a Kad row alone, the publisher's serving
+buddy or its own direct-UDP callback endpoint. Beside the road, whatever the channel
+carried and nothing more: the **User Hash**, the crypt or connect-options byte, the IPv6
+half. A download takes every source through this one value.
+_Avoid_: exchanged source (the name it had while only source exchange carried it),
+candidate (that is the download's Low-ID record), source record (that is the wire form)
 
 **Session Core**:
 The two traits (`SessionCore`, `SessionOutput`) that define the sans-I/O shape

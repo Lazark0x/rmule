@@ -154,7 +154,10 @@ fn amule_kno_lists_a_dual_stack_source_by_its_ipv4_alone() {
     };
     assert_eq!(
         record.source().peer_source(),
-        PeerSource::HighId(Ipv4Endpoint::new([45, 55, 200, 8].into(), 4662)),
+        Some(PeerSource::HighId(Ipv4Endpoint::new(
+            [45, 55, 200, 8].into(),
+            4662
+        ))),
         "the requester's IPv4 hybrid id, at its listen port",
     );
     assert_eq!(record.user_hash(), Some(UserHash::from_bytes([0x51; 16])));

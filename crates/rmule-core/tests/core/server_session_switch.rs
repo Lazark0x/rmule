@@ -8,6 +8,7 @@
 //! command reaches. The session loop's own request handling is pinned sans-I/O
 //! in `server_session.rs`.
 
+use rmule_testkit::HANG_GUARD;
 use std::time::Duration;
 
 use crate::fixture::search_query;
@@ -48,7 +49,7 @@ async fn refused_endpoint() -> ServerEndpoint {
 /// The next session-lifecycle edge or rejection, whichever comes first; every
 /// other cross-activity fact is walked past.
 async fn next_answer(core: &mut Core) -> CoreEvent {
-    timeout(Duration::from_secs(5), async {
+    timeout(HANG_GUARD, async {
         loop {
             match core.next_event().await.expect("core is alive") {
                 event @ (CoreEvent::ServerConnection(_) | CoreEvent::CommandRejected { .. }) => {
@@ -98,7 +99,9 @@ fn fail_count(core: &Core, server: &ServerEndpoint) -> u32 {
 async fn a_connect_reports_its_trail_and_raises_the_connected_marker() {
     let server = FakeEd2kServer::start_scripted().await;
     let endpoint = server.endpoint();
-    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store()).build();
+    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     list_server(&core, &endpoint).await;
 
     assert_eq!(core.diagnostics_snapshot().connected_server, None);
@@ -134,7 +137,9 @@ async fn a_switch_ends_the_old_session_before_dialing_the_new_one() {
     let first = FakeEd2kServer::start_scripted().await;
     let second = FakeEd2kServer::start_scripted().await;
     let (a, b) = (first.endpoint(), second.endpoint());
-    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store()).build();
+    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     list_server(&core, &a).await;
     list_server(&core, &b).await;
 
@@ -172,7 +177,9 @@ async fn a_refused_switch_leaves_the_marker_down_and_counts_a_failure() {
     let live = FakeEd2kServer::start_scripted().await;
     let reachable = live.endpoint();
     let refused = refused_endpoint().await;
-    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store()).build();
+    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     list_server(&core, &reachable).await;
     list_server(&core, &refused).await;
 
@@ -217,7 +224,9 @@ async fn a_mute_server_fails_the_login_with_the_typed_timeout() {
         server_login_timeout: Duration::from_millis(300),
         ..connect_only()
     };
-    let mut core = Core::builder(config, rmule_testkit::memory_store()).build();
+    let mut core = Core::builder(config, rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     list_server(&core, &mute).await;
 
     connect_server(&core, &mute).await;
@@ -256,7 +265,9 @@ async fn a_server_that_hangs_up_before_answering_is_named_apart_from_an_unreacha
             drop(stream);
         }
     });
-    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store()).build();
+    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     list_server(&core, &hang_up).await;
 
     connect_server(&core, &hang_up).await;
@@ -276,7 +287,9 @@ async fn a_server_that_hangs_up_before_answering_is_named_apart_from_an_unreacha
 async fn an_accepted_login_absolves_the_failure_tally() {
     let server = FakeEd2kServer::start_scripted().await;
     let endpoint = server.endpoint();
-    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store()).build();
+    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     core.send(CoreCommand::ServerList(ServerListCommand::AddServer {
         server: ManagedServer {
             fail_count: 7,
@@ -297,7 +310,9 @@ async fn an_accepted_login_absolves_the_failure_tally() {
 async fn an_unlisted_endpoint_is_refused_without_dialing() {
     let server = FakeEd2kServer::start_scripted().await;
     let endpoint = server.endpoint();
-    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store()).build();
+    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
 
     connect_server(&core, &endpoint).await;
 
@@ -321,7 +336,9 @@ async fn a_later_activity_rides_the_picked_server_not_the_one_it_named() {
     let picked = FakeEd2kServer::start_scripted().await;
     let stale = FakeEd2kServer::start_scripted().await;
     let (picked_endpoint, stale_endpoint) = (picked.endpoint(), stale.endpoint());
-    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store()).build();
+    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     list_server(&core, &picked_endpoint).await;
     list_server(&core, &stale_endpoint).await;
 
@@ -335,7 +352,7 @@ async fn a_later_activity_rides_the_picked_server_not_the_one_it_named() {
     .await
     .expect("core accepts the command");
 
-    timeout(Duration::from_secs(5), async {
+    timeout(HANG_GUARD, async {
         while picked.search_phrases().await.is_empty() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -357,7 +374,9 @@ async fn after_a_failed_connect_a_search_waits_and_dials_nothing() {
     let live = FakeEd2kServer::start_scripted().await;
     let reachable = live.endpoint();
     let refused = refused_endpoint().await;
-    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store()).build();
+    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     list_server(&core, &reachable).await;
     list_server(&core, &refused).await;
 
@@ -374,7 +393,7 @@ async fn after_a_failed_connect_a_search_waits_and_dials_nothing() {
     .await
     .expect("core accepts the command");
 
-    timeout(Duration::from_secs(5), async {
+    timeout(HANG_GUARD, async {
         loop {
             if let CoreEvent::Search(SearchEvent::SearchWaitingForConnection { .. }) =
                 core.next_event().await.expect("core is alive")
@@ -404,7 +423,9 @@ async fn an_answered_search_survives_its_session_being_switched_out() {
     let first = FakeEd2kServer::start_scripted().await;
     let second = FakeEd2kServer::start_scripted().await;
     let (a, b) = (first.endpoint(), second.endpoint());
-    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store()).build();
+    let mut core = Core::builder(connect_only(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     list_server(&core, &a).await;
     list_server(&core, &b).await;
 
@@ -416,7 +437,7 @@ async fn an_answered_search_survives_its_session_being_switched_out() {
     }))
     .await
     .expect("core accepts the command");
-    timeout(Duration::from_secs(5), async {
+    timeout(HANG_GUARD, async {
         while first.search_phrases().await.is_empty() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -424,7 +445,7 @@ async fn an_answered_search_survives_its_session_being_switched_out() {
     .await
     .expect("the search is running");
 
-    let search_id = timeout(Duration::from_secs(5), async {
+    let search_id = timeout(HANG_GUARD, async {
         loop {
             if let CoreEvent::Search(SearchEvent::SearchStarted { search_id }) =
                 core.next_event().await.expect("core is alive")
@@ -443,7 +464,7 @@ async fn an_answered_search_survives_its_session_being_switched_out() {
     .await
     .expect("core accepts the command");
 
-    let ended = timeout(Duration::from_secs(5), async {
+    let ended = timeout(HANG_GUARD, async {
         loop {
             if let CoreEvent::Search(
                 event @ (SearchEvent::SearchFailed { .. } | SearchEvent::SearchCancelled { .. }),

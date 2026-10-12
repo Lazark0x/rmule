@@ -10,10 +10,11 @@
 //! diagnostics level and in the address store, and that turning the feature off
 //! really does talk to no gateway.
 
+use rmule_testkit::HANG_GUARD;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 
-use rmule_core::port_mapping::{MappingStatus, PortMappingConfig, PortMappingMode};
+use rmule_core::port_mapping::{MappingStatus, PortMappingMode};
 use rmule_core::{
     ConfidenceTier, Core, CoreCommand, CoreConfig, PairRole, ServeCommand, SocketRole,
 };
@@ -24,7 +25,7 @@ use std::net::UdpSocket;
 use tokio::net::TcpListener;
 use tokio::time::{Duration, timeout};
 
-use crate::fixture::{identity, reserve_dual_stack_port};
+use crate::fixture::reserve_dual_stack_port;
 
 /// A core wired to `backends` behind a scripted home-LAN gateway.
 fn core_with(backends: Vec<Arc<dyn MappingBackend>>, config: CoreConfig) -> Core {
@@ -39,6 +40,7 @@ fn core_on(
     config: CoreConfig,
 ) -> Core {
     Core::builder(config, store)
+        .settings(rmule_core::CoreSettings::default())
         .gateway_source(FakeGateways::home_lan())
         .mapping_backends(backends)
         .build()
@@ -49,7 +51,7 @@ async fn mappings_until(
     core: &Core,
     ready: impl Fn(&[rmule_core::port_mapping::MappingDiagnostics]) -> bool,
 ) -> Vec<rmule_core::port_mapping::MappingDiagnostics> {
-    timeout(Duration::from_secs(10), async {
+    timeout(HANG_GUARD, async {
         loop {
             let rows = core.diagnostics_snapshot().mappings;
             if ready(&rows) {
@@ -63,7 +65,7 @@ async fn mappings_until(
         }
     })
     .await
-    .expect("the mapping rows settled within 10s")
+    .expect("the mapping rows settled")
 }
 
 /// Poll the snapshot until `ready` accepts its half-bound-pair rows.
@@ -78,7 +80,7 @@ async fn half_bound_until(
     core: &Core,
     ready: impl Fn(&[rmule_net::family::HalfBound]) -> bool,
 ) -> Vec<rmule_net::family::HalfBound> {
-    timeout(Duration::from_secs(10), async {
+    timeout(HANG_GUARD, async {
         loop {
             let rows = core.diagnostics_snapshot().half_bound_pairs;
             if ready(&rows) {
@@ -88,7 +90,7 @@ async fn half_bound_until(
         }
     })
     .await
-    .expect("the half-bound-pair rows settled within 10s")
+    .expect("the half-bound-pair rows settled")
 }
 
 #[tokio::test]
@@ -120,7 +122,7 @@ async fn a_granted_mapping_reaches_the_diagnostics_level_and_the_address_store()
 
     // And the store learned it at the mapping-grant tier, which is what puts
     // the endpoint on the CT_EMULE_UDPPORTS advert and route 2's 0x95.
-    let learned = timeout(Duration::from_secs(10), async {
+    let learned = timeout(HANG_GUARD, async {
         loop {
             let rows = core.diagnostics_snapshot().addresses;
             if let Some(row) = rows.iter().find(|row| {
@@ -134,7 +136,7 @@ async fn a_granted_mapping_reaches_the_diagnostics_level_and_the_address_store()
         }
     })
     .await
-    .expect("the grant reached Address Learning within 10s");
+    .expect("the grant reached Address Learning");
     assert_eq!(
         learned.verdict.known().map(|endpoint| endpoint.ip()),
         Some(std::net::IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)))
@@ -160,7 +162,6 @@ async fn the_ed2k_listener_joins_the_desired_set_when_the_serve_side_binds() {
     // anything the login produced. The trigger and the truth stay one object.
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
-        credentials: identity().into(),
     }))
     .await
     .expect("serve accepted");
@@ -198,7 +199,6 @@ async fn the_ed2k_listener_joins_the_desired_set_when_the_serve_side_binds() {
 
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, second_port),
-        credentials: identity().into(),
     }))
     .await
     .expect("serve accepted");
@@ -294,16 +294,14 @@ async fn port_mapping_off_talks_to_no_gateway_at_all() {
     // The operator who already has a static forward and wants nothing speaking
     // to their router gets exactly that: no probe, no map, and no rows.
     let pcp = Arc::new(ScriptedBackend::available(MappingProtocol::Pcp));
-    let core = core_with(
-        vec![pcp.clone()],
-        CoreConfig {
-            port_mapping: PortMappingConfig {
-                mode: PortMappingMode::Off,
-                ..PortMappingConfig::default()
-            },
-            ..CoreConfig::default()
-        },
-    );
+    let core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings {
+            port_mapping: PortMappingMode::Off,
+            ..rmule_core::CoreSettings::default()
+        })
+        .gateway_source(FakeGateways::home_lan())
+        .mapping_backends(vec![pcp.clone()])
+        .build();
     // The recheck command is the strongest nudge there is, and it must still
     // reach nothing.
     core.send(CoreCommand::RecheckReachability)
@@ -331,13 +329,13 @@ async fn the_operator_recheck_re_races_the_mappers() {
     core.send(CoreCommand::RecheckReachability)
         .await
         .expect("recheck accepted");
-    timeout(Duration::from_secs(10), async {
+    timeout(HANG_GUARD, async {
         while pcp.asked().len() <= before {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await
-    .expect("the recheck re-raced within 10s");
+    .expect("the recheck re-raced");
 }
 
 #[tokio::test]

@@ -21,9 +21,9 @@ use rmule_interop_harness::artifacts::RunLayout;
 use rmule_interop_harness::flow::{
     BenchSmokeOptions, CryptPingPortOptions, DEFAULT_HELLO_DELAY_MS, LatePortTestOptions,
     RmuleClientAction, SearchSpacingOptions, SearchWireOptions, SearchWireServer,
-    ServerCycleOptions, ServerSkeletonOptions, run_bench_smoke, run_crypt_ping_port,
-    run_late_port_test, run_rmule_serves_amule_downloads, run_search_spacing, run_search_wire,
-    run_server_cycle, run_server_skeleton,
+    ServerCycleOptions, ServerLoginCryptOptions, ServerSkeletonOptions, run_bench_smoke,
+    run_crypt_ping_port, run_late_port_test, run_rmule_serves_amule_downloads, run_search_spacing,
+    run_search_wire, run_server_cycle, run_server_login_crypt, run_server_skeleton,
 };
 use rmule_interop_harness::rmule::{RmuleClientContainer, RmuleServeContainer, RmuleToolsCommand};
 use serde::Serialize;
@@ -102,6 +102,14 @@ pub(crate) struct AmuleServesRmuleDownloadsArgs {
     /// eserver's plain port test admitted as a Test Connection (ADR-0046).
     #[arg(long, value_parser = ["supported", "requested", "required"])]
     pub(crate) peer_crypt: Option<String>,
+    /// Change the serving rmule's obfuscation policy mid-run, as
+    /// `<secs>:<off|supported|requested|required>`; repeat for several (`ed2k
+    /// serve start --peer-crypt-flip`). Read only by
+    /// `rmule-serves-amule-downloads`, whose net then takes a fake-public
+    /// subnet so the server crypt-ping's public-IP gate can open. The flips
+    /// rmule marked are printed as `obfuscation_flips`.
+    #[arg(long, value_parser = rmule_interop_harness::rmule::crypt_flip_arg)]
+    pub(crate) peer_crypt_flip: Vec<String>,
     /// Test hook for the ED2K hash command.
     #[arg(long, hide = true)]
     pub(crate) ed2k_hash_command: Option<PathBuf>,
@@ -212,6 +220,7 @@ fn skeleton(args: AmuleServesRmuleDownloadsArgs, leg: SkeletonLeg) -> Result<()>
         amule_low_id: leg.amule_low_id,
         rmule_serve: leg.rmule_serve,
         rmule_peer_crypt: args.peer_crypt.as_deref(),
+        rmule_peer_crypt_flip: &args.peer_crypt_flip,
         rmule_client_action: leg.action,
     })
 }
@@ -650,6 +659,11 @@ pub(crate) struct CryptPingPortArgs {
     /// Per-step readiness budget in seconds.
     #[arg(long, default_value_t = DEFAULT_TIMEOUT_SECS)]
     pub(crate) timeout: u64,
+    /// Also score the sealed exchange after the answered crypt-ping: the
+    /// datagrams rmule seals under the server's UDP key to its obfuscation
+    /// port, and the server's sealed answers.
+    #[arg(long)]
+    pub(crate) sealed: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -661,6 +675,7 @@ struct CryptPingPortResolvedConfig {
     capture_image: String,
     container_runtime: String,
     timeout_secs: u64,
+    sealed: bool,
 }
 
 pub(crate) fn crypt_ping_port(args: CryptPingPortArgs) -> Result<()> {
@@ -676,6 +691,7 @@ pub(crate) fn crypt_ping_port(args: CryptPingPortArgs) -> Result<()> {
             capture_image: args.capture.capture_image.clone(),
             container_runtime: args.bench.container_runtime.clone(),
             timeout_secs: args.timeout,
+            sealed: args.sealed,
         },
     )?;
     println!("run_dir={}", run_dir.display());
@@ -688,5 +704,93 @@ pub(crate) fn crypt_ping_port(args: CryptPingPortArgs) -> Result<()> {
         server_env: &args.eserver.server_env,
         rmule_tools_image: &args.rmule_tools_image,
         capture_image: &args.capture.capture_image,
+        sealed: args.sealed,
+    })
+}
+
+/// `server-login-crypt`: whether rmule's server login opens its link as the
+/// obfuscation policy says, and whether Lugdunum serves it.
+#[derive(Debug, Args)]
+pub(crate) struct ServerLoginCryptArgs {
+    #[command(flatten)]
+    pub(crate) bench: BenchArgs,
+    #[command(flatten)]
+    pub(crate) eserver: EserverArgs,
+    #[command(flatten)]
+    pub(crate) capture: CaptureArgs,
+    /// The `rmule-tools` image (build it from the tip under test).
+    #[arg(long, default_value = crate::cli::nat::DEFAULT_RMULE_TOOLS_IMAGE)]
+    pub(crate) rmule_tools_image: String,
+    /// rmule's obfuscation policy: off, supported, requested or required.
+    #[arg(long, default_value = "requested")]
+    pub(crate) policy: String,
+    /// Log in to ed2k-server at its pin instead of Lugdunum.
+    #[arg(long)]
+    pub(crate) ed2ksrv: bool,
+    /// The ed2k-server image (refused unless its commit label matches the pin).
+    #[arg(long, default_value = DEFAULT_ED2KSRV_IMAGE)]
+    pub(crate) ed2ksrv_image: String,
+    /// The ed2k-server bench config; its `this_ip` is rendered per run.
+    #[arg(long, default_value = DEFAULT_ED2KSRV_CONFIG)]
+    pub(crate) ed2ksrv_config: PathBuf,
+    /// Dial the server by its container DNS name, not its address, and skip
+    /// the status-sweep wait: only the login's `OP_IDCHANGE` extension (or
+    /// server.met) can then teach the obfuscation port.
+    #[arg(long)]
+    pub(crate) by_name: bool,
+    /// Per-step readiness budget in seconds.
+    #[arg(long, default_value_t = DEFAULT_TIMEOUT_SECS)]
+    pub(crate) timeout: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct ServerLoginCryptResolvedConfig {
+    #[serde(rename = "scenario")]
+    flow: &'static str,
+    policy: String,
+    by_name: bool,
+    server_image: String,
+    rmule_tools_image: String,
+    capture_image: String,
+    container_runtime: String,
+    timeout_secs: u64,
+}
+
+pub(crate) fn server_login_crypt(args: ServerLoginCryptArgs) -> Result<()> {
+    args.bench
+        .prepare(&[args.eserver.build_context(), args.capture.build_context()])?;
+    let (run_dir, layout) = args.bench.create_run()?;
+    write_resolved_config(
+        &run_dir,
+        &ServerLoginCryptResolvedConfig {
+            flow: "server-login-crypt",
+            policy: args.policy.clone(),
+            by_name: args.by_name,
+            server_image: if args.ed2ksrv {
+                args.ed2ksrv_image.clone()
+            } else {
+                args.eserver.server_image.clone()
+            },
+            rmule_tools_image: args.rmule_tools_image.clone(),
+            capture_image: args.capture.capture_image.clone(),
+            container_runtime: args.bench.container_runtime.clone(),
+            timeout_secs: args.timeout,
+        },
+    )?;
+    println!("run_dir={}", run_dir.display());
+    run_server_login_crypt(ServerLoginCryptOptions {
+        layout: &layout,
+        container_runtime: &args.bench.container_runtime,
+        keep_containers: args.bench.keep_containers,
+        timeout_secs: args.timeout,
+        server_image: &args.eserver.server_image,
+        server_env: &args.eserver.server_env,
+        rmule_tools_image: &args.rmule_tools_image,
+        capture_image: &args.capture.capture_image,
+        policy: &args.policy,
+        ed2ksrv: args
+            .ed2ksrv
+            .then_some((args.ed2ksrv_image.as_str(), args.ed2ksrv_config.as_path())),
+        by_name: args.by_name,
     })
 }

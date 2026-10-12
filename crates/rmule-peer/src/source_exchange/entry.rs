@@ -10,8 +10,8 @@
 use std::net::Ipv4Addr;
 
 use rmule_primitives::{
-    ClientId, ExchangedSource, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, PeerSource,
-    SourceCryptOptions, UserHash,
+    ClientId, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, PeerSource, SourceCryptOptions,
+    SourceSighting, UserHash, WireReader, WireTruncated,
 };
 
 /// Per-source strides by source-exchange version, pinned from aMule
@@ -119,17 +119,21 @@ impl SourceExchangeVersion {
 /// crypt support — rather than fabricating data the source never carried.
 pub(super) fn encode_source_entry(
     out: &mut Vec<u8>,
-    source: ExchangedSource,
+    source: SourceSighting,
     version: SourceExchangeVersion,
 ) {
     // A hybrid-id version writes a High ID big-endian; a Low ID rides as-is.
     // (So would an IPv6 source's sentinel id — the classic exchange has no
     // address block for it, which is why the serve path never hands one over.)
-    let peer_source = source.peer_source();
-    let wire_id = if version.uses_hybrid_id() && peer_source.is_high_id() {
-        peer_source.wire_id().swap_bytes()
-    } else {
-        peer_source.wire_id()
+    // A Kad callback row has no record at all, and the serve path never hands
+    // one over either: it is written as the unassigned id `0`, which names
+    // nobody, so every reader drops it.
+    let wire_id = match source.peer_source() {
+        Some(record) if version.uses_hybrid_id() && record.is_high_id() => {
+            record.wire_id().swap_bytes()
+        }
+        Some(record) => record.wire_id(),
+        None => 0,
     };
     out.extend_from_slice(&wire_id.to_le_bytes());
     out.extend_from_slice(&source.tcp_port().to_le_bytes());
@@ -149,7 +153,7 @@ pub(super) fn encode_source_entry(
     }
 }
 
-/// One decoded source-answer entry, pairing the [`ExchangedSource`]
+/// One decoded source-answer entry, pairing the [`SourceSighting`]
 /// provenance (ADR-0046) with the server it declares itself registered on
 /// (ADR-0055). Every version's wire entry carries `[srvIP4][srvPort2]` right
 /// after `[id][port]`, and both [`AnswerSources`](super::AnswerSources)
@@ -158,17 +162,17 @@ pub(super) fn encode_source_entry(
 /// (`sanitize_and_route`) reads it without a second, divergent parse.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SourceExchangeEntry {
-    source: ExchangedSource,
+    source: SourceSighting,
     server: Option<Ipv4Endpoint>,
 }
 
 impl SourceExchangeEntry {
     /// Pair a source with the server it declared itself registered on. An
     /// ExtSX record's IPv6 half rides inside the source
-    /// ([`ExchangedSource::with_ipv6_half`]); a classic entry has no address
+    /// ([`SourceSighting::with_ipv6_half`]); a classic entry has no address
     /// block, so its source never carries one.
     #[must_use]
-    pub const fn new(source: ExchangedSource, server: Option<Ipv4Endpoint>) -> Self {
+    pub const fn new(source: SourceSighting, server: Option<Ipv4Endpoint>) -> Self {
         Self { source, server }
     }
 
@@ -179,7 +183,7 @@ impl SourceExchangeEntry {
     /// Present alongside a High ID for a dual-stack source, alongside a Low ID
     /// for a firewalled one that is nevertheless dialable over IPv6, and
     /// *inside* [`PeerSource::Ipv6`] when the record named no usable IPv4 at
-    /// all — see [`ExchangedSource::ipv6`].
+    /// all — see [`SourceSighting::ipv6`].
     #[must_use]
     pub const fn ipv6(self) -> Option<Ipv6Endpoint> {
         self.source.ipv6()
@@ -188,13 +192,13 @@ impl SourceExchangeEntry {
     /// An entry with no declared server — the shape every served entry takes,
     /// since the serve path writes the server fields as zero.
     #[must_use]
-    pub const fn plain(source: ExchangedSource) -> Self {
+    pub const fn plain(source: SourceSighting) -> Self {
         Self::new(source, None)
     }
 
     /// The provenance half alone, for a caller with no use for the server.
     #[must_use]
-    pub const fn source(self) -> ExchangedSource {
+    pub const fn source(self) -> SourceSighting {
         self.source
     }
 
@@ -207,8 +211,8 @@ impl SourceExchangeEntry {
         self.server
     }
 
-    // Delegators so an entry reads like the `ExchangedSource` it wraps
-    // (mirroring `ExchangedSource`'s own delegation onto `PeerSource`).
+    // Delegators so an entry reads like the `SourceSighting` it wraps
+    // (mirroring `SourceSighting`'s own delegation onto `PeerSource`).
     /// The source's own id on the IPv4 network, or `None` for an IPv6 source.
     #[must_use]
     pub const fn client_id(self) -> Option<ClientId> {
@@ -249,27 +253,31 @@ impl SourceExchangeEntry {
     }
 }
 
-/// Read an entry's `[srvIP4 4][srvPort2 2]` fields at `bytes[6..12]`, present
-/// in every version — the same u32-little-endian-as-IPv4-octets wire
-/// convention `PeerSource::as_peer_endpoint` decodes a client id with.
-fn decode_source_server(bytes: &[u8]) -> Option<Ipv4Endpoint> {
-    let ip_raw = u32::from_le_bytes(bytes[6..10].try_into().expect("stride-checked"));
-    let port = u16::from_le_bytes([bytes[10], bytes[11]]);
+/// Read an entry's `[srvIP4 4][srvPort2 2]` fields, present in every version —
+/// the same u32-little-endian-as-IPv4-octets wire convention
+/// `PeerSource::as_peer_endpoint` decodes a client id with.
+fn decode_source_server(
+    reader: &mut WireReader<'_>,
+) -> Result<Option<Ipv4Endpoint>, WireTruncated> {
+    let ip_raw = reader.read_u32_le("entry server address")?;
+    let port = reader.read_u16_le("entry server port")?;
     if ip_raw == 0 && port == 0 {
-        return None;
+        return Ok(None);
     }
     let octets = ip_raw.to_le_bytes();
-    Some(Ipv4Endpoint::new(
+    Ok(Some(Ipv4Endpoint::new(
         Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]),
         port,
-    ))
+    )))
 }
 
-/// Decode one `version`-strided source entry from `bytes`, which is exactly
-/// `version.entry_stride()` long — the caller validates total geometry
-/// first.
-fn decode_source_entry(bytes: &[u8], version: SourceExchangeVersion) -> SourceExchangeEntry {
-    let raw = u32::from_le_bytes(bytes[0..4].try_into().expect("stride-checked"));
+/// Read one `version`-strided source entry, advancing `reader` by exactly
+/// `version.entry_stride()` bytes.
+fn decode_source_entry(
+    reader: &mut WireReader<'_>,
+    version: SourceExchangeVersion,
+) -> Result<SourceExchangeEntry, WireTruncated> {
+    let raw = reader.read_u32_le("entry client id")?;
     // LowID-vs-HighID is decided on the as-received bytes, before any swap: a
     // LowID's magnitude is scheme-invariant, and a HighID's raw wire value
     // stays >= the threshold under either byte order (barring a leftmost
@@ -283,33 +291,38 @@ fn decode_source_entry(bytes: &[u8], version: SourceExchangeVersion) -> SourceEx
     } else {
         ClientId::from_u32(raw)
     };
-    let tcp_port = u16::from_le_bytes([bytes[4], bytes[5]]);
-    let server = decode_source_server(bytes);
+    let tcp_port = reader.read_u16_le("entry port")?;
+    let server = decode_source_server(reader)?;
     let source = PeerSource::new(id, tcp_port);
-    let user_hash = version.carries_user_hash().then(|| {
-        let mut hash = [0u8; UserHash::BYTE_LEN];
-        hash.copy_from_slice(&bytes[12..12 + UserHash::BYTE_LEN]);
-        UserHash::from_bytes(hash)
-    });
-    let crypt_options = version
-        .carries_crypt_options()
-        .then(|| SourceCryptOptions::from_byte(bytes[V2_SOURCE_LEN]));
-    SourceExchangeEntry::new(
-        ExchangedSource::new(source, user_hash, crypt_options),
+    let user_hash = if version.carries_user_hash() {
+        Some(UserHash::from_bytes(reader.read_array("entry user hash")?))
+    } else {
+        None
+    };
+    let crypt_options = if version.carries_crypt_options() {
+        Some(SourceCryptOptions::from_byte(
+            reader.read_u8("entry crypt options")?,
+        ))
+    } else {
+        None
+    };
+    Ok(SourceExchangeEntry::new(
+        SourceSighting::new(source, user_hash, crypt_options),
         server,
-    )
+    ))
 }
 
 /// Decode `count` consecutive `version`-strided entries from `body`. The
 /// caller has already validated `body.len() == count as usize *
-/// version.entry_stride()`.
+/// version.entry_stride()`, so the reader's truncation is unreachable from a
+/// decoded packet and is returned only to keep the walk panic-free.
 pub(super) fn decode_source_entries(
     body: &[u8],
     count: u16,
     version: SourceExchangeVersion,
-) -> Vec<SourceExchangeEntry> {
-    let stride = version.entry_stride();
-    (0..count as usize)
-        .map(|i| decode_source_entry(&body[i * stride..(i + 1) * stride], version))
+) -> Result<Vec<SourceExchangeEntry>, WireTruncated> {
+    let mut reader = WireReader::new(body);
+    (0..count)
+        .map(|_| decode_source_entry(&mut reader, version))
         .collect()
 }

@@ -18,8 +18,9 @@ directory is hashed and enters the Shared File Registry, so Have is registry mem
 needs no store of its own.
 
 - **The Shared Directory List** is ordered. Entry 0 is the download directory: it follows
-  `Preference::DownloadDir`, carried in `ScanCommand::Start` (core never reads the preference),
-  is never stored as a row, and cannot be removed. Every other entry is one the operator added,
+  the download-directory Core Setting (ADR-0069) — scanned by core itself from attach, and
+  moved by core itself when the setting changes — is never stored as a row, and
+  cannot be removed. Every other entry is one the operator added,
   keyed by its canonical path (`fs::canonicalize`), stored in `shared_directory`, and living
   from the operator's yes to their remove — across restarts, its directory going missing, and
   the download directory moving. A path that is not valid UTF-8 is refused.
@@ -46,6 +47,27 @@ needs no store of its own.
   The home and data directories are handed to core by the front end at build time. A parent of
   an added entry is not refused: it replaces the entry after the confirm names it.
 
+  The download directory passes the guards on what a directory is (UTF-8, home, root, data
+  directory) at the set: Core Settings refuses one that fails them with the guard's reason
+  (`SettingRefusal::DownloadDirRefused`, ADR-0069) and stores nothing. Core judges it again
+  whenever it names it — at attach and when the setting moves — and again when it appears after
+  missing, since the directory and the guards can change after the set. It need not exist yet,
+  so one not made is judged where it would be made. A download directory refused then
+  (`ScanEvent::DownloadDirectoryRefused`) stays the setting and where downloads finish, but is
+  listed as refused, never scanned, and covers no other entry. A download that completes into it
+  is recorded withheld (`folder refused`) as its row is written, and never offered.
+
+  Every added entry passes the same guards again where its path leads now — at attach and when
+  it appears after missing — since a remount or a link can change what the path names after the
+  add. One refused then (`ScanEvent::DirectoryRefused`) stays in the list until the operator
+  removes it, is listed as refused, never scanned, covers no other entry, and is judged again at
+  the next start.
+
+  Whether a row lies under a refused entry — at completion, at start and in the Registry
+  Check — is read twice: by the paths as spelt and by where they lead now, symlinks resolved.
+  Either reading holds the row back, so a link into a refused directory, or the directory named
+  through a link, lets nothing out.
+
 - **States**, one diagnostics level per list entry in list order:
 
   | State | Its files |
@@ -57,6 +79,7 @@ needs no store of its own.
   | missing (since when rmule noticed) | Withheld (`folder missing`), never Had |
   | covered | the parent's |
   | declined (the download directory's guard answered no) | not offered |
+  | refused (the download directory, or where an added one now leads, fails a guard) | Withheld (`folder refused`) at the refusal, or at the completion of a download finished into it, and never offered while refused, however readable; a passing entry inside it offers its own |
 
 - **Add** (`ScanCommand::AddSharedDirectory`): the scan walks and plans, then always asks
   (`ScanEvent::ConsentRequested`) with the files and bytes it would offer, those already hashed,
@@ -76,7 +99,7 @@ needs no store of its own.
   that finds a path with the same stamp takes the entry from it instead of reading, so adding the
   directory back reads nothing.
 - **Missing.** A listed directory not there is *missing*; its rows are Withheld, the entry stays,
-  and the scan looks once a minute. When it returns, a fresh pass re-validates every row without
+  and the scan looks once a minute. When it returns it is guarded first; then a fresh pass re-validates every row without
   reading and the Registry Check (ADR-0106) looks again at once (`ScanEvent::DirectoryMissing`,
   `DirectoryReturned`).
 - **The download directory moves:** its old scan is retired and a new one starts; rows under the
@@ -91,7 +114,8 @@ share is guarded: with no answer on record the scan plans, and if it would hash 
 `ConsentRequested` and waits; nothing is hashed, shared or unshared until `ScanCommand::Answer`. A
 no ends the scan and a declined directory is not scanned at later starts; a plan that hashes
 nothing records a silent yes. Choosing a directory in Settings warns that everything under it will
-be offered, and confirming is a yes (sent before `Start`, so the operator is asked once).
+be offered, and confirming is a yes (it rides the setting's change, ahead of the scan core
+starts, so the operator is asked once).
 
 ## Consequences
 

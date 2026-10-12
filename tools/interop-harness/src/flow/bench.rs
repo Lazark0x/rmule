@@ -484,14 +484,17 @@ impl Bench {
     }
 
     /// Start the eserver role container as given (already named and networked),
-    /// own it for teardown and record its id.
+    /// own it for teardown and record its id. Ownership is taken before the
+    /// runtime is invoked: a `run` refused after the container was created (a
+    /// host port another run already publishes) leaves it behind as
+    /// `Created`.
     pub(crate) fn start_server_container(
         &mut self,
         layout: &RunLayout,
         server: RunContainer,
     ) -> Result<()> {
-        let id = run_checked(self.docker.run_container(server), "run server container")?;
         self.server_started = true;
+        let id = run_checked(self.docker.run_container(server), "run server container")?;
         write_id(
             &layout.server_container_id_file(),
             fallback_id(&id, &self.names.server_container_name),
@@ -580,7 +583,9 @@ impl Bench {
     }
 
     /// Start the aMule role container, own it for teardown, record its id, and
-    /// hold until its log carries `ready_log_pattern`.
+    /// hold until its log carries `ready_log_pattern`. Ownership is taken
+    /// before the runtime is invoked, as [`Self::start_server_container`]
+    /// takes it.
     pub(crate) fn start_amule(
         &mut self,
         layout: &RunLayout,
@@ -588,8 +593,8 @@ impl Bench {
         ready_log_pattern: &str,
         timeout: Duration,
     ) -> Result<()> {
-        let id = run_checked(self.docker.run_container(amule), "run aMule container")?;
         self.amule_started = true;
+        let id = run_checked(self.docker.run_container(amule), "run aMule container")?;
         write_id(
             &layout.amule_container_id_file(),
             fallback_id(&id, &self.names.amule_container_name),

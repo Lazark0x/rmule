@@ -33,7 +33,7 @@ mod obfuscation;
 mod opcode;
 mod packet;
 mod parts;
-mod reask;
+pub mod peer_udp;
 mod secure_ident;
 mod session;
 mod slot;
@@ -79,17 +79,19 @@ pub use parts::{
     CompressedPart, EMBLOCKSIZE, PartOffsetWidth, PartRanges, PartRangesError, RequestParts,
     SendingPart,
 };
-pub use reask::{
-    BUDDY_ID_LEN, ClientUdpOpcode, DirectCallbackReq, PingStatus, ReaskAck, ReaskCallbackUdp,
-    ReaskFilePing, file_not_found_datagram, queue_full_datagram,
+pub use peer_udp::{
+    BUDDY_ID_LEN, ClientUdpOpcode, DirectCallbackReq, ReaskAck, ReaskCallbackUdp, ReaskFilePing,
+    file_not_found_datagram, queue_full_datagram,
 };
 pub use secure_ident::{
     CRYPT_CIP_LOCALCLIENT, CRYPT_CIP_NONECLIENT, CRYPT_CIP_REMOTECLIENT, PublicKeyPacket,
     SecIdentState, SecIdentStatePacket, SignaturePacket, SuiDecodeError,
 };
 pub use session::{
-    FileProbeStatus, PeerCloseReason, PeerCommand, PeerError, PeerEvent, PeerOutput, PeerSession,
-    SecureIdentFailure, SlotReleaseReason, SourceExchangeSupport,
+    ConnectionCommand, ConnectionEvent, FileProbeStatus, IdentityChange, NoticeEvent,
+    PeerCloseReason, PeerCommand, PeerError, PeerEvent, PeerOutput, PeerSession, RequesterCommand,
+    RequesterEvent, SecureIdentFailure, ServerCommand, ServerEvent, SideCommand, SideEvent,
+    SlotReleaseReason, SourceExchangeSupport,
 };
 pub use slot::{AcceptUploadReq, CancelTransfer, OutOfPartReqs, QueueRanking, StartUploadReq};
 pub use software::{ClientFamily, ClientMod, ClientSoftware, ClientVersion, SoftwareEvidence};

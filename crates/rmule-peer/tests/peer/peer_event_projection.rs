@@ -5,8 +5,8 @@
 //! whose event depends on session state must return `None`, leaving them
 //! to `PeerSession::dispatch`.
 use rmule_peer::{
-    AcceptUploadReq, FileProbeStatus, FileReqAnsNoFil, HashSetAnswer, PeerEvent, PeerPacket,
-    QueueRanking, SendingPart,
+    AcceptUploadReq, FileProbeStatus, FileReqAnsNoFil, HashSetAnswer, NoticeEvent, PeerEvent,
+    PeerPacket, QueueRanking, RequesterEvent, SendingPart, SideEvent,
 };
 use rmule_primitives::{FileHash, PacketProtocol, PartHash};
 
@@ -20,11 +20,11 @@ fn sending_part_projects_start_offset_and_verbatim_bytes() {
         data: vec![0xAB, 0xCD, 0xEF],
     });
     match PeerEvent::from_peer_packet(&packet) {
-        Some(PeerEvent::PartReceived {
+        Some(PeerEvent::Requester(RequesterEvent::PartReceived {
             file_hash: fh,
             offset,
             bytes,
-        }) => {
+        })) => {
             assert_eq!(fh, file_hash);
             assert_eq!(offset, 0x4000, "offset must be `start`, never `end`");
             assert_eq!(bytes, vec![0xAB, 0xCD, 0xEF]);
@@ -45,10 +45,10 @@ fn hash_set_answer_projects_hashes_losslessly() {
         part_hashes: hashes.clone(),
     });
     match PeerEvent::from_peer_packet(&packet) {
-        Some(PeerEvent::HashSetReceived {
+        Some(PeerEvent::Requester(RequesterEvent::HashSetReceived {
             file_hash: fh,
             part_hashes,
-        }) => {
+        })) => {
             assert_eq!(fh, file_hash);
             assert_eq!(part_hashes, hashes);
         }
@@ -61,10 +61,10 @@ fn no_file_answer_projects_to_not_available_probe() {
     let file_hash = FileHash::from_bytes([0x33; 16]);
     let packet = PeerPacket::FileReqAnsNoFil(FileReqAnsNoFil { file_hash });
     match PeerEvent::from_peer_packet(&packet) {
-        Some(PeerEvent::FileProbed {
+        Some(PeerEvent::Requester(RequesterEvent::FileProbed {
             file_hash: fh,
             status,
-        }) => {
+        })) => {
             assert_eq!(fh, file_hash);
             assert_eq!(status, FileProbeStatus::NotAvailable);
         }
@@ -81,16 +81,16 @@ fn unknown_packet_projects_payload_length_not_bytes() {
         payload: payload.clone(),
     };
     match PeerEvent::from_peer_packet(&packet) {
-        Some(PeerEvent::UnknownPeerPacket {
+        Some(PeerEvent::Notice(NoticeEvent::UnknownPacket {
             protocol,
             opcode,
             payload_len,
-        }) => {
+        })) => {
             assert_eq!(protocol, PacketProtocol::Emule);
             assert_eq!(opcode, 0x99);
             assert_eq!(payload_len, payload.len());
         }
-        other => panic!("expected UnknownPeerPacket, got {other:?}"),
+        other => panic!("expected UnknownPacket, got {other:?}"),
     }
 }
 
@@ -113,6 +113,6 @@ fn kad_firewall_ack_projects_to_the_reachability_signal() {
     // Kad window guard (ADR-0058 requester).
     assert!(matches!(
         PeerEvent::from_peer_packet(&PeerPacket::KadFirewallAck),
-        Some(PeerEvent::KadFirewallCheckAck)
+        Some(PeerEvent::Side(SideEvent::KadFirewallCheckAck))
     ));
 }

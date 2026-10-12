@@ -14,7 +14,7 @@ use crate::address_learning::{
 };
 use crate::port_mapping::desired::DesiredMappingSet;
 use crate::port_mapping::{
-    MappingCommand, MappingGrade, MappingStatus, PortMapper, PortMappingConfig, PortMappingMode,
+    MappingCommand, MappingGrade, MappingStatus, PortMapper, PortMappingConfig,
 };
 
 use super::{
@@ -401,19 +401,8 @@ fn a_learned_method_turns_the_next_race_into_one_probe_and_falls_back_when_it_is
 }
 
 #[test]
-fn nothing_is_probed_while_port_mapping_is_off_or_nothing_bound() {
+fn nothing_is_probed_while_nothing_bound() {
     let t0 = Instant::now();
-    let mut off = PortMapper::new(
-        PortMappingConfig {
-            mode: PortMappingMode::Off,
-            ..PortMappingConfig::default()
-        },
-        bound_v4_store(),
-        1,
-    );
-    off.start(t0);
-    assert!(drain(&mut off).is_empty());
-
     let mut unbound = mapper(SharedAddressLearning::new());
     unbound.start(t0);
     assert!(drain(&mut unbound).is_empty());

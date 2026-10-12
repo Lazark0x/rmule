@@ -113,7 +113,7 @@ async fn a_link_with_its_own_sources_does_not_wait_for_a_server() {
 
 /// A run's server leg for `target`, subscribed as the run subscribes it.
 fn leg_of<'a, S, P>(runner: &'a RunnerContext<S, P>, target: SourceLookupTarget) -> ServerLeg<'a> {
-    ServerLeg::new(runner.server_session.session_changes(), target)
+    ServerLeg::new(runner.rt.server_session.session_changes(), target)
 }
 
 /// One download of the **Download Set** asking for `file_hash`.
@@ -146,8 +146,8 @@ fn request_for<S, P>(
         peer_concurrency: 1,
         discovery: DiscoveryLiveness {
             global_servers: std::sync::Arc::default(),
-            reach: runner.reach.clone(),
-            session: runner.diagnostics.clone(),
+            reach: runner.rt.reach.clone(),
+            session: runner.rt.diagnostics.clone(),
         },
         remembered: Vec::new(),
     }
@@ -304,7 +304,7 @@ async fn sixteen_downloads_started_at_login_ask_fifteen_then_one_a_window_later(
     );
     let runner = std::sync::Arc::new(runner);
     let start = tokio::time::Instant::now();
-    connect_lands(&runner.server_session, Duration::from_secs(1));
+    connect_lands(&runner.rt.server_session, Duration::from_secs(1));
     let mut runs = Vec::new();
     for index in 0..16 {
         let runner = std::sync::Arc::clone(&runner);
@@ -352,7 +352,7 @@ async fn the_server_leg_asks_no_session_the_first_lookup_already_asked() {
     let target = SourceLookupTarget::new(file(2), 4);
     let request = request_for(&runner, 3, file(2));
     let mut leg = leg_of(&runner, target);
-    connect_lands(&runner.server_session, Duration::from_secs(1));
+    connect_lands(&runner.rt.server_session, Duration::from_secs(1));
     lookup_once(&request, &runner, target, false, &mut leg)
         .await
         .expect("the first lookup");
@@ -362,7 +362,7 @@ async fn the_server_leg_asks_no_session_the_first_lookup_already_asked() {
     assert!(again.is_err(), "the leg waited for a newer session");
     assert_eq!(server.asks().len(), 1, "one ask per file per session");
 
-    runner.server_session.session_established();
+    runner.rt.server_session.session_established();
     leg.next_answer(&runner).await;
     assert_eq!(server.asks().len(), 2, "a new session is asked once");
 }

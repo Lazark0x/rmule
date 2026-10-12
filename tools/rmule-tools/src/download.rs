@@ -9,17 +9,20 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Args;
-use rmule_core::{AppConfigStore, DurableAppConfig, KadEnableConfig, open_durable_store_in_memory};
+use rmule_core::KadEnableConfig;
+use rmule_core::run_log::Level;
 use rmule_core::{
     CoreCommand, CoreConfig, CoreEvent, DownloadCommand as CoreDownloadCommand, DownloadEvent,
     DownloadId, DownloadLifecycle, DurableDownloadRepository, ServeCommand as CoreServeCommand,
     open_durable_store,
 };
 use rmule_kad::KadId;
-use rmule_primitives::{ClientIdentity, Ed2kLink, ServerEndpoint};
+use rmule_primitives::{Ed2kLink, ServerEndpoint};
 
 use crate::cli::DownloadIdentityArgs;
 use crate::operand::{parse_hex16, parse_seeded_kad_contacts};
+use crate::serve::PeerCryptPolicyArg;
+use crate::serve::crypt_flip;
 use endings::{Endings, Noted};
 
 mod endings;
@@ -77,6 +80,21 @@ pub(crate) struct DownloadStartArgs {
     /// `0` takes an ephemeral one.
     #[arg(long, default_value_t = 0)]
     udp_port: u16,
+    /// Arm rmule's peer protocol-obfuscation policy for this run, as `ed2k
+    /// serve start --peer-crypt` does — off unless passed. The download's own
+    /// peer dials read it as they decide (ADR-0046).
+    #[arg(long, value_enum)]
+    peer_crypt: Option<PeerCryptPolicyArg>,
+    /// Change the obfuscation policy mid-run, as `<secs>:<policy>` with the
+    /// policy one of `off`, `supported`, `requested`, `required`; repeat for
+    /// several. At each, the running core takes the policy up through its Core
+    /// Settings handle, so a peer dialled after it runs under the new policy
+    /// and a connection already negotiated keeps its own (ADR-0046), and a
+    /// `rmule-obfuscation-flip after_secs=… policy=… at_unix_ms=…` line marks
+    /// the moment. Seconds count from the login being asked for. `--peer-crypt` is the
+    /// policy the run starts under.
+    #[arg(long, value_parser = crypt_flip::parse)]
+    peer_crypt_flip: Vec<crypt_flip::CryptFlip>,
     #[command(flatten)]
     identity: DownloadIdentityArgs,
 }
@@ -121,26 +139,12 @@ pub(crate) struct DownloadStatusArgs {
 
 /// The Kad half of a Kad-sourced download: seeded, never bootstrapped, so the
 /// source walk has its storer in hand from the first sweep.
-fn kad_enable_config(
-    args: &DownloadStartArgs,
-    identity: &ClientIdentity,
-) -> Result<KadEnableConfig> {
-    let kad_id = match args.kad_id_hex.as_deref() {
-        Some(hex) => KadId::from_bytes(parse_hex16("--kad-id-hex", hex)?),
-        None => {
-            DurableAppConfig::new(open_durable_store_in_memory()?)
-                .ensure_kad_identity()?
-                .id
-        }
-    };
+fn kad_enable_config(args: &DownloadStartArgs) -> Result<KadEnableConfig> {
     Ok(KadEnableConfig {
-        kad_id,
-        peer_credentials: identity.clone().into(),
         bootstrap: Vec::new(),
         contacts: parse_seeded_kad_contacts(&args.kad_contacts)?,
         nodes_dat_path: None,
         assume_open_reachability: false,
-        kad_udp_key: DurableAppConfig::new(open_durable_store_in_memory()?).ensure_kad_udp_key()?,
         kad_capture_dir: None,
         kad_shutdown: None,
     })
@@ -163,28 +167,34 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
             _ => anyhow::bail!("--file must be an ed2k file link, got {text}"),
         }
     }
-    let identity = args.identity.client_identity()?;
-
     let store = open_store(&args.data_dir)?;
-    let mut config = CoreConfig {
-        udp_port: args.udp_port,
-        ..CoreConfig::default()
-    };
+    let mut config = CoreConfig::default();
     if let Some(concurrency) = args.peer_concurrency {
         config.peer_concurrency_per_download = concurrency;
     }
+    let settings = args.identity.settings(rmule_core::CoreSettings {
+        udp_port: args.udp_port,
+        obfuscation: args.peer_crypt.map(rmule_core::ObfuscationPolicy::from),
+        download_dir: Some(crate::output::download_dir(&args.out)?),
+        ..rmule_core::CoreSettings::default()
+    });
     // One production core either way: with `--serve` it also
     // binds the inbound listener (earning High ID + Callback Capability,
     // ADR-0039) and shares the one Low-ID callback table so the accept-router
     // can adopt a called-back source. No files are shared — only the bound
     // listener matters. Without it the same wiring simply never serves.
-    let mut core = args.identity.core_builder(config, store)?.build();
+    let builder = args.identity.core_builder(config, settings, store)?;
+    // A pinned `--kad-id-hex` places the node; otherwise its store mints one.
+    let mut core = match args.kad_id_hex.as_deref() {
+        Some(hex) => builder.kad_id(KadId::from_bytes(parse_hex16("--kad-id-hex", hex)?)),
+        None => builder,
+    }
+    .build();
 
     if args.serve {
         let listen = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, args.identity.tcp_port);
         core.send(CoreCommand::Serve(CoreServeCommand::StartServing {
             listen_addr: listen,
-            credentials: identity.clone().into(),
         }))
         .await?;
         // Wait for the listener to bind before downloading so Callback Capability
@@ -196,7 +206,7 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
             let Some(event) = core.next_event().await else {
                 anyhow::bail!("serve event stream ended before ServingStarted");
             };
-            println!("{event}");
+            println!("{}", event.record().render(Level::Full));
             match event {
                 CoreEvent::Serve(rmule_core::ServeEvent::ServingStarted { .. }) => break,
                 CoreEvent::Serve(rmule_core::ServeEvent::ServingFailed { reason }) => {
@@ -210,22 +220,19 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
         }
     }
     if !args.kad_contacts.is_empty() {
-        core.send(CoreCommand::EnableKad(kad_enable_config(&args, &identity)?))
+        core.send(CoreCommand::EnableKad(kad_enable_config(&args)?))
             .await?;
     }
 
     // The operator's word, given on the command line (ADR-0095): the one
     // login, which binds the listener if `--serve` has not, then the download
     // rides it.
-    crate::node::connect(&core, &server, identity.clone().into()).await?;
+    let began = tokio::time::Instant::now();
+    let mut crypt_flips = crypt_flip::CryptFlips::new(args.peer_crypt_flip.clone());
+    crate::node::connect(&core, &server).await?;
     for (file, out) in files.into_iter().zip(&args.out) {
-        core.send(CoreCommand::Download(CoreDownloadCommand::StartDownload {
-            file,
-            source_hint: Some(server.clone()),
-            credentials: identity.clone().into(),
-            output_path: out.clone(),
-        }))
-        .await?;
+        core.send(crate::output::start(file, Some(server.clone()), out)?)
+            .await?;
     }
 
     let deadline = args
@@ -243,19 +250,45 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
         // claimed here — the server-assigned HighID is only surfaced as an
         // event once the (blocked) source lookup returns. Unbounded runs keep
         // the plain await.
-        let event = match deadline {
-            Some(deadline) => tokio::select! {
-                biased;
-                () = tokio::time::sleep_until(deadline) => {
-                    println!(
-                        "download deadline_reached id={}",
-                        endings.first().map_or(0, |id| id.as_u64()),
-                    );
-                    break endings.verdict();
+        // Resolved into a `Step` first: `next_event` borrows the core mutably
+        // for the whole select, so a flip, which reads the core, runs after it.
+        // One value per loop pass, so the size imbalance of the event arm is
+        // intentional, as `CoreEvent` itself notes.
+        #[allow(clippy::large_enum_variant)]
+        enum Step {
+            Deadline,
+            Flip,
+            Event(Option<CoreEvent>),
+        }
+        let step = tokio::select! {
+            biased;
+            () = async {
+                match deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending().await,
                 }
-                event = core.next_event() => event,
-            },
-            None => core.next_event().await,
+            } => Step::Deadline,
+            () = async {
+                match crypt_flips.next_at(began) {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            } => Step::Flip,
+            event = core.next_event() => Step::Event(event),
+        };
+        let event = match step {
+            Step::Deadline => {
+                println!(
+                    "download deadline_reached id={}",
+                    endings.first().map_or(0, |id| id.as_u64()),
+                );
+                break endings.verdict();
+            }
+            Step::Flip => {
+                crypt_flips.fire(&core)?;
+                continue;
+            }
+            Step::Event(event) => event,
         };
         let Some(event) = event else {
             break Err(anyhow::anyhow!(
@@ -263,7 +296,7 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
                 endings.queued().collect::<Vec<_>>()
             ));
         };
-        println!("{event}");
+        println!("{}", event.record().render(Level::Full));
         let CoreEvent::Download(event) = event else {
             continue;
         };
@@ -310,7 +343,6 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
 }
 
 pub(crate) async fn resume(args: DownloadResumeArgs) -> Result<()> {
-    let identity = args.identity.client_identity()?;
     let server_override = args
         .server
         .as_deref()
@@ -334,17 +366,23 @@ pub(crate) async fn resume(args: DownloadResumeArgs) -> Result<()> {
     if let Some(concurrency) = args.peer_concurrency {
         config.peer_concurrency_per_download = concurrency;
     }
-    let mut core = args.identity.core_builder(config, store)?.build();
+    let mut core = args
+        .identity
+        .core_builder(
+            config,
+            args.identity.settings(rmule_core::CoreSettings::default()),
+            store,
+        )?
+        .build();
     // The operator's word, given on the command line (ADR-0095).
-    crate::node::connect(&core, &server, identity.clone().into()).await?;
+    crate::node::connect(&core, &server).await?;
     core.send(CoreCommand::Download(CoreDownloadCommand::ResumeDownload {
         download_id,
-        credentials: identity.into(),
     }))
     .await?;
 
     while let Some(event) = core.next_event().await {
-        println!("{event}");
+        println!("{}", event.record().render(Level::Full));
         match event {
             CoreEvent::Download(DownloadEvent::DownloadCompleted { .. }) => return Ok(()),
             CoreEvent::Download(DownloadEvent::DownloadCancelled { .. }) => {

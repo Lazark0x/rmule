@@ -1,39 +1,73 @@
 //! Session-level source-exchange **serve** side (ADR-0055). A
 //! peer's `OP_REQUESTSOURCES` / `OP_REQUESTSOURCES2` (standalone
 //! or a multipacket `Sources`/`Sources2` sub) surfaces as
-//! [`PeerEvent::SourcesRequested`] carrying the aMule-exact serve wire form,
-//! and core's `AnswerSources` command frames `OP_ANSWERSOURCES` (`0x82`) or
-//! `OP_ANSWERSOURCES2` (`0x84`) — pack-attempted above `PEER_PACK_THRESHOLD`
-//! (354 bytes, ADR-0053). The pool / filter / per-peer throttle brain is
-//! core-side (`rmule-core` `serve::source_exchange`); this file pins the wire.
+//! [`ServerEvent::SourcesRequested`]; the session keeps the aMule-exact serve
+//! wire form it picked from the asker's advert, and core's `AnswerSources`
+//! command frames `OP_ANSWERSOURCES` (`0x82`) or `OP_ANSWERSOURCES2` (`0x84`)
+//! in it — pack-attempted above `PEER_PACK_THRESHOLD` (354 bytes, ADR-0053).
+//! The pool / filter / per-peer throttle brain is core-side (`rmule-core`
+//! `serve::source_exchange`); this file pins the wire.
 
 use std::net::Ipv4Addr;
 
 use rmule_peer::{
-    AnswerSources, AnswerSources2, HelloAnswer, MiscOptions1, MiscOptions2, MultiPacketRequest,
-    PeerCommand, PeerEvent, PeerHelloBody, PeerOutput, PeerSession, RequestItem, RequestSources2,
-    RequestSourcesPacket, ServedSourcesVersion, SourceExchangeVersion,
+    AnswerSources, AnswerSources2, BundledAsk, HelloAnswer, MiscOptions1, MiscOptions2,
+    ModMiscOptions, MultiPacketRequest, NoticeEvent, PeerCommand, PeerError, PeerEvent,
+    PeerHelloBody, PeerOutput, PeerSession, RequestItem, RequestSources2, RequestSourcesPacket,
+    ServerCommand, ServerEvent, SourceExchangeVersion,
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{
-    ClientId, Ed2kText, ExchangedSource, FileHash, Ipv4Endpoint, Packet, PacketProtocol,
-    PeerSource, Tag, TagName, TagValue, UserHash,
+    ClientId, Ed2kText, FileHash, Ipv4Endpoint, Packet, PacketProtocol, PeerSource, SourceSighting,
+    Tag, TagName, TagValue, UserHash,
 };
 use rmule_testkit::peer_session::{ctx, file_hash, last_write_bytes, peer_at};
 
-/// A framed `OP_HELLOANSWER` from a peer advertising SX1 `sx1_nibble` and,
-/// when `supports_sx2`, `SupportsSourceEx2` (`MiscOptions2` bit 10) — the two
-/// inputs the serve-version pick reads off the *requester's* hello.
-fn peer_hello_answer(sx1_nibble: u8, supports_sx2: bool) -> Vec<u8> {
+/// What a requester's hello says about source exchange: the three inputs the
+/// serve-form pick reads off it.
+#[derive(Clone, Copy)]
+struct Advert {
+    /// Its SX1 nibble (`MiscOptions1`).
+    sx1_nibble: u8,
+    /// Whether it advertised `SupportsSourceEx2` (`MiscOptions2` bit 10).
+    supports_sx2: bool,
+    /// Its `CT_MOD_MISCOPTIONS` claim, when it sent one (ADR-0087).
+    mod_misc: Option<ModMiscOptions>,
+}
+
+const fn classic(sx1_nibble: u8, supports_sx2: bool) -> Advert {
+    Advert {
+        sx1_nibble,
+        supports_sx2,
+        mod_misc: None,
+    }
+}
+
+/// A requester claiming ExtSX (`MODMISC_EXTXS`), and the skip-tags bit when
+/// `skip_tags`.
+const fn ext_sx(sx1_nibble: u8, supports_sx2: bool, skip_tags: bool) -> Advert {
+    let bits = if skip_tags { 1 | (1 << 5) } else { 1 };
+    Advert {
+        sx1_nibble,
+        supports_sx2,
+        mod_misc: Some(ModMiscOptions::from_bits(bits)),
+    }
+}
+
+/// A framed `OP_HELLOANSWER` from a peer making `advert`.
+fn peer_hello_answer(advert: Advert) -> Vec<u8> {
     let mut tags = vec![
         Tag::new(
             TagName::length_prefixed_id(0x01),
             TagValue::String(Ed2kText::from_utf8("remote")),
         ),
-        MiscOptions1::from_bits(u32::from(sx1_nibble) << 12).to_tag(),
+        MiscOptions1::from_bits(u32::from(advert.sx1_nibble) << 12).to_tag(),
     ];
-    if supports_sx2 {
+    if advert.supports_sx2 {
         tags.push(MiscOptions2::from_bits(1 << 10).to_tag());
+    }
+    if let Some(claim) = advert.mod_misc {
+        tags.push(claim.to_tag());
     }
     let body = PeerHelloBody {
         user_hash: UserHash::from_bytes([0x99; UserHash::BYTE_LEN]),
@@ -45,156 +79,137 @@ fn peer_hello_answer(sx1_nibble: u8, supports_sx2: bool) -> Vec<u8> {
     HelloAnswer::new(body).encode_packet().encode()
 }
 
-/// An identified session against a peer with the given advertised SX capability.
-fn identified(sx1_nibble: u8, supports_sx2: bool) -> PeerSession {
+/// An identified session against a peer making `advert`.
+fn identified(advert: Advert) -> PeerSession {
     let mut session = PeerSession::new_outbound(peer_at(9), ctx());
     session.start();
     drain(|| session.poll_output());
-    session.handle_bytes(&peer_hello_answer(sx1_nibble, supports_sx2));
+    session.handle_bytes(&peer_hello_answer(advert));
     drain(|| session.poll_output());
     session
 }
 
-fn sources_requested(outputs: &[PeerOutput]) -> Option<(FileHash, ServedSourcesVersion)> {
+/// A standalone `OP_REQUESTSOURCES` (`0x81`).
+fn plain_ask(file_hash: FileHash) -> Vec<u8> {
+    RequestSourcesPacket { file_hash }.encode_packet().encode()
+}
+
+/// A standalone `OP_REQUESTSOURCES2` (`0x83`) naming `version`.
+fn sx2_ask(file_hash: FileHash, version: u8) -> Vec<u8> {
+    RequestSources2 {
+        version,
+        options: 0,
+        file_hash,
+    }
+    .encode_packet()
+    .encode()
+}
+
+/// The file a standalone or bundled source ask in `outputs` named.
+fn sources_requested(outputs: &[PeerOutput]) -> Option<FileHash> {
     outputs.iter().find_map(|o| match o {
-        PeerOutput::Event(PeerEvent::SourcesRequested { file_hash, version }) => {
-            Some((*file_hash, *version))
+        PeerOutput::Event(PeerEvent::Server(ServerEvent::SourcesRequested { file_hash })) => {
+            Some(*file_hash)
         }
-        PeerOutput::Event(PeerEvent::FileBundleRequested {
-            file_hash, asks, ..
-        }) => asks.iter().find_map(|ask| match ask {
-            rmule_peer::BundledAsk::Sources(version) => Some((*file_hash, *version)),
-            _ => None,
-        }),
+        PeerOutput::Event(PeerEvent::Server(ServerEvent::FileBundleRequested {
+            file_hash,
+            asks,
+            ..
+        })) => asks
+            .iter()
+            .any(|ask| matches!(ask, BundledAsk::Sources))
+            .then_some(*file_hash),
         _ => None,
     })
 }
 
-fn high_id_source(id: u32, port: u16) -> ExchangedSource {
-    ExchangedSource::plain(PeerSource::new(ClientId::from_u32(id), port))
+/// The source count the session reported for the answer in `outputs`.
+fn sources_answered(outputs: &[PeerOutput]) -> Option<usize> {
+    outputs.iter().find_map(|o| match o {
+        PeerOutput::Event(PeerEvent::Server(ServerEvent::SourcesAnswered { count, .. })) => {
+            Some(*count)
+        }
+        _ => None,
+    })
+}
+
+/// Feed `ask` to `session`, check it surfaced as a source ask for
+/// `file_hash`, answer it with `sources`, and return what went out.
+fn ask_then_answer(
+    session: &mut PeerSession,
+    ask: &[u8],
+    file_hash: FileHash,
+    sources: Vec<SourceSighting>,
+) -> Vec<PeerOutput> {
+    session.handle_bytes(ask);
+    let asked = drain(|| session.poll_output());
+    assert_eq!(
+        sources_requested(&asked),
+        Some(file_hash),
+        "the ask surfaced"
+    );
+    session.handle_command(PeerCommand::Server(ServerCommand::AnswerSources {
+        file_hash,
+        sources,
+    }));
+    drain(|| session.poll_output())
+}
+
+fn answer_packet(outputs: &[PeerOutput]) -> Packet {
+    Packet::decode(&last_write_bytes(outputs))
+        .expect("answer frames")
+        .0
+}
+
+fn high_id_source(id: u32, port: u16) -> SourceSighting {
+    SourceSighting::plain(PeerSource::new(ClientId::from_u32(id), port))
+}
+
+fn ids(sources: &[rmule_peer::SourceExchangeEntry]) -> Vec<u32> {
+    sources
+        .iter()
+        .filter_map(|e| e.source().peer_source())
+        .map(PeerSource::wire_id)
+        .collect()
+}
+
+fn ipv6_source() -> SourceSighting {
+    SourceSighting::plain(PeerSource::Ipv6(rmule_primitives::Ipv6Endpoint::new(
+        "2a01:4f8::7".parse().unwrap(),
+        4662,
+    )))
 }
 
 #[test]
-fn a_standalone_request_sources_surfaces_an_sx1_serve_request_at_the_peer_nibble() {
-    let mut session = identified(3, false);
+fn a_standalone_request_sources_is_answered_in_sx1_at_the_peer_nibble() {
+    let mut session = identified(classic(3, false));
     let fh = file_hash(0x42);
-    session.handle_bytes(
-        &RequestSourcesPacket { file_hash: fh }
-            .encode_packet()
-            .encode(),
-    );
-    let out = drain(|| session.poll_output());
-    assert_eq!(
-        sources_requested(&out),
-        Some((fh, ServedSourcesVersion::Sx1(SourceExchangeVersion::V3))),
-        "a plain 0x81 serves SX1 at the requester's own advertised nibble",
-    );
-}
-
-#[test]
-fn a_request_sources2_from_an_sx2_peer_surfaces_an_sx2_serve_request() {
-    let mut session = identified(3, true);
-    let fh = file_hash(0x43);
-    session.handle_bytes(
-        &RequestSources2 {
-            version: 4,
-            options: 0,
-            file_hash: fh,
-        }
-        .encode_packet()
-        .encode(),
-    );
-    let out = drain(|| session.poll_output());
-    assert_eq!(
-        sources_requested(&out),
-        Some((fh, ServedSourcesVersion::Sx2(SourceExchangeVersion::V4))),
-        "an SX2-advertising peer naming version 4 earns a 0x84 answer",
-    );
-}
-
-#[test]
-fn a_request_sources2_from_a_non_sx2_peer_falls_to_the_sx1_path() {
-    // aMule serves SX2 only when the requester *advertised* SupportsSourceEx2;
-    // without it, even a 0x83 falls to 0x82 at the requester's SX1 nibble.
-    let mut session = identified(2, false);
-    let fh = file_hash(0x44);
-    session.handle_bytes(
-        &RequestSources2 {
-            version: 4,
-            options: 0,
-            file_hash: fh,
-        }
-        .encode_packet()
-        .encode(),
-    );
-    let out = drain(|| session.poll_output());
-    assert_eq!(
-        sources_requested(&out),
-        Some((fh, ServedSourcesVersion::Sx1(SourceExchangeVersion::V2))),
-    );
-}
-
-#[test]
-fn a_bundled_sources_sub_reaches_the_same_serve_callback() {
-    // ADR-0055: a multipacket Sources sub shares the standalone ask's serve
-    // path (and, core-side, its per-peer throttle).
-    let mut session = identified(3, false);
-    let fh = file_hash(0x46);
-    let bundle = MultiPacketRequest {
-        file_hash: fh,
-        file_size: None,
-        items: vec![RequestItem::Sources],
-        unknown_sub: None,
-        cut: None,
-    };
-    session.handle_bytes(&bundle.encode_packet().encode());
-    let out = drain(|| session.poll_output());
-    assert_eq!(
-        sources_requested(&out),
-        Some((fh, ServedSourcesVersion::Sx1(SourceExchangeVersion::V3))),
-    );
-}
-
-#[test]
-fn answer_sources_command_frames_op_answersources_and_round_trips_the_sources() {
-    let mut session = identified(3, false);
-    let fh = file_hash(0x45);
     let sources = vec![
         high_id_source(0x0203_0405, 4662),
         high_id_source(0x0607_0809, 5000),
     ];
-    session.handle_command(PeerCommand::AnswerSources {
-        file_hash: fh,
-        sources,
-        version: ServedSourcesVersion::Sx1(SourceExchangeVersion::V3),
-    });
-    let out = drain(|| session.poll_output());
-    let (packet, _) = Packet::decode(&last_write_bytes(&out)).expect("answer frames");
+    let out = ask_then_answer(&mut session, &plain_ask(fh), fh, sources);
+    let packet = answer_packet(&out);
     assert_eq!(packet.protocol(), PacketProtocol::Emule);
     assert_eq!(packet.opcode(), 0x82, "SX1 answer is OP_ANSWERSOURCES");
     // Decode back at the peer's own nibble (3 → v3, hybrid ids): the sources
     // round-trip through the serve encoder's byte-swap.
     let decoded = AnswerSources::decode_packet(&packet, 3).expect("v3 answer decodes");
     assert_eq!(decoded.file_hash, fh);
-    let ids: Vec<u32> = decoded
-        .sources
-        .iter()
-        .map(|e| e.source().peer_source().wire_id())
-        .collect();
-    assert_eq!(ids, vec![0x0203_0405, 0x0607_0809]);
+    assert_eq!(ids(&decoded.sources), vec![0x0203_0405, 0x0607_0809]);
 }
 
 #[test]
-fn answer_sources_command_frames_op_answersources2_for_an_sx2_answer() {
-    let mut session = identified(3, true);
-    let fh = file_hash(0x4A);
-    session.handle_command(PeerCommand::AnswerSources {
-        file_hash: fh,
-        sources: vec![high_id_source(0x0203_0405, 4662)],
-        version: ServedSourcesVersion::Sx2(SourceExchangeVersion::V4),
-    });
-    let out = drain(|| session.poll_output());
-    let (packet, _) = Packet::decode(&last_write_bytes(&out)).expect("answer frames");
+fn a_request_sources2_from_an_sx2_peer_is_answered_in_sx2() {
+    let mut session = identified(classic(3, true));
+    let fh = file_hash(0x43);
+    let out = ask_then_answer(
+        &mut session,
+        &sx2_ask(fh, 4),
+        fh,
+        vec![high_id_source(0x0203_0405, 4662)],
+    );
+    let packet = answer_packet(&out);
     assert_eq!(packet.protocol(), PacketProtocol::Emule);
     assert_eq!(packet.opcode(), 0x84, "SX2 answer is OP_ANSWERSOURCES2");
     let decoded = AnswerSources2::decode_packet(&packet).expect("0x84 decodes");
@@ -204,23 +219,79 @@ fn answer_sources_command_frames_op_answersources2_for_an_sx2_answer() {
 }
 
 #[test]
+fn a_request_sources2_from_a_non_sx2_peer_falls_to_the_sx1_path() {
+    // aMule serves SX2 only when the requester *advertised* SupportsSourceEx2;
+    // without it, even a 0x83 falls to 0x82 at the requester's SX1 nibble.
+    let mut session = identified(classic(2, false));
+    let fh = file_hash(0x44);
+    let out = ask_then_answer(
+        &mut session,
+        &sx2_ask(fh, 4),
+        fh,
+        vec![high_id_source(0x0203_0405, 4662)],
+    );
+    let packet = answer_packet(&out);
+    assert_eq!(packet.opcode(), 0x82);
+    let decoded = AnswerSources::decode_packet(&packet, 2).expect("v2 answer decodes");
+    assert_eq!(ids(&decoded.sources), vec![0x0203_0405]);
+}
+
+#[test]
+fn a_bundled_sources_sub_is_answered_like_the_standalone_ask() {
+    // ADR-0055: a multipacket Sources sub shares the standalone ask's serve
+    // path (and, core-side, its per-peer throttle).
+    let mut session = identified(classic(3, false));
+    let fh = file_hash(0x46);
+    let bundle = MultiPacketRequest {
+        file_hash: fh,
+        file_size: None,
+        items: vec![RequestItem::Sources],
+        unknown_sub: None,
+        cut: None,
+    };
+    let out = ask_then_answer(
+        &mut session,
+        &bundle.encode_packet().encode(),
+        fh,
+        vec![high_id_source(0x0203_0405, 4662)],
+    );
+    let packet = answer_packet(&out);
+    assert_eq!(packet.opcode(), 0x82);
+    let decoded = AnswerSources::decode_packet(&packet, 3).expect("v3 answer decodes");
+    assert_eq!(ids(&decoded.sources), vec![0x0203_0405]);
+}
+
+#[test]
+fn an_answer_to_a_file_never_asked_about_is_rejected_and_sends_nothing() {
+    let mut session = identified(classic(3, false));
+    session.handle_command(PeerCommand::Server(ServerCommand::AnswerSources {
+        file_hash: file_hash(0x47),
+        sources: vec![high_id_source(0x0203_0405, 4662)],
+    }));
+    let out = drain(|| session.poll_output());
+    assert!(
+        !out.iter().any(|o| matches!(o, PeerOutput::Write(_))),
+        "no wire form was negotiated, so nothing is framed"
+    );
+    assert!(out.iter().any(|o| matches!(
+        o,
+        PeerOutput::Event(PeerEvent::Notice(NoticeEvent::CommandRejected {
+            reason: PeerError::SourcesNotAsked
+        }))
+    )));
+}
+
+#[test]
 fn the_pack_threshold_gates_the_answersources_emit() {
     // v1 payload = 16 (hash) + 2 (count) + count*12. 28 sources → 354 bytes
     // (at the threshold, stays plain); 29 → 366 (over it, packed 0xD4).
     let answer = |count: u32| {
-        let mut session = identified(1, false);
+        let mut session = identified(classic(1, false));
         let sources: Vec<_> = (0..count)
             .map(|i| high_id_source(0x0A00_0000 + i, 4662))
             .collect();
-        session.handle_command(PeerCommand::AnswerSources {
-            file_hash: file_hash(0x77),
-            sources,
-            version: ServedSourcesVersion::Sx1(SourceExchangeVersion::V1),
-        });
-        let out = drain(|| session.poll_output());
-        Packet::decode(&last_write_bytes(&out))
-            .expect("answer frames")
-            .0
+        let fh = file_hash(0x77);
+        answer_packet(&ask_then_answer(&mut session, &plain_ask(fh), fh, sources))
     };
 
     let at_threshold = answer(28);
@@ -249,13 +320,7 @@ fn a_serve_request_before_identify_is_preserved_as_unknown_not_answered() {
     // The serve callback never fires on an out-of-order request: an inbound
     // 0x81 before the hello exchange is preserved as Unknown, session open.
     let mut session = PeerSession::new_inbound(peer_at(9), ctx());
-    session.handle_bytes(
-        &RequestSourcesPacket {
-            file_hash: file_hash(0x42),
-        }
-        .encode_packet()
-        .encode(),
-    );
+    session.handle_bytes(&plain_ask(file_hash(0x42)));
     let out = drain(|| session.poll_output());
     assert!(
         sources_requested(&out).is_none(),
@@ -264,7 +329,10 @@ fn a_serve_request_before_identify_is_preserved_as_unknown_not_answered() {
     assert!(
         out.iter().any(|o| matches!(
             o,
-            PeerOutput::Event(PeerEvent::UnknownPeerPacket { opcode: 0x81, .. })
+            PeerOutput::Event(PeerEvent::Notice(NoticeEvent::UnknownPacket {
+                opcode: 0x81,
+                ..
+            }))
         )),
         "the premature request is preserved as Unknown (ADR-0018)",
     );
@@ -277,30 +345,73 @@ fn a_serve_request_before_identify_is_preserved_as_unknown_not_answered() {
 /// broker. The IPv4 sources around it still go out.
 #[test]
 fn a_native_ipv6_source_is_omitted_from_a_classic_answer_never_zeroed() {
-    let mut session = identified(1, false);
+    let mut session = identified(classic(1, false));
     let fh = file_hash(0x5C);
-    let ipv6 = ExchangedSource::plain(PeerSource::Ipv6(rmule_primitives::Ipv6Endpoint::new(
-        "2a01:4f8::7".parse().unwrap(),
-        4662,
-    )));
-    session.handle_command(PeerCommand::AnswerSources {
-        file_hash: fh,
-        sources: vec![high_id_source(0x0203_0405, 4662), ipv6],
-        version: ServedSourcesVersion::Sx1(SourceExchangeVersion::V1),
-    });
-    let out = drain(|| session.poll_output());
-    let (packet, _) = Packet::decode(&last_write_bytes(&out)).expect("answer frames");
-    let decoded = AnswerSources::decode_packet(&packet, 1).expect("v1 answer decodes");
-
-    let ids: Vec<u32> = decoded
-        .sources
-        .iter()
-        .map(|e| e.source().peer_source().wire_id())
-        .collect();
+    let out = ask_then_answer(
+        &mut session,
+        &plain_ask(fh),
+        fh,
+        vec![high_id_source(0x0203_0405, 4662), ipv6_source()],
+    );
+    let decoded = AnswerSources::decode_packet(&answer_packet(&out), 1).expect("v1 answer decodes");
     assert_eq!(
-        ids,
+        ids(&decoded.sources),
         vec![0x0203_0405],
         "the IPv4 source stands, the IPv6 one is absent — not 0, not 0xFFFFFFFF"
+    );
+    assert_eq!(
+        sources_answered(&out),
+        Some(1),
+        "the report counts what went out, not what core handed over"
+    );
+}
+
+/// One ask is owed one answer: the negotiated form is spent when the answer
+/// goes out, so a link that asks about many files over its life does not keep
+/// a form per file, and a repeat answer is refused as unasked.
+#[test]
+fn an_answered_ask_is_forgotten_and_a_second_answer_is_refused() {
+    let mut session = identified(classic(1, false));
+    let fh = file_hash(0x5D);
+    let first = ask_then_answer(
+        &mut session,
+        &plain_ask(fh),
+        fh,
+        vec![high_id_source(0x0203_0405, 4662)],
+    );
+    assert_eq!(sources_answered(&first), Some(1));
+    session.handle_command(PeerCommand::Server(ServerCommand::AnswerSources {
+        file_hash: fh,
+        sources: vec![high_id_source(0x0203_0405, 4662)],
+    }));
+    let second = drain(|| session.poll_output());
+    assert!(
+        second.iter().any(|o| matches!(
+            o,
+            PeerOutput::Event(PeerEvent::Notice(NoticeEvent::CommandRejected {
+                reason: PeerError::SourcesNotAsked
+            }))
+        )),
+        "the repeat answer is refused: {second:?}"
+    );
+    assert!(!second.iter().any(|o| matches!(o, PeerOutput::Write(_))));
+}
+
+/// A classic answer the framing limit leaves empty is aMule's `NULL` reply:
+/// nothing goes out, not an empty list.
+#[test]
+fn a_classic_answer_of_only_ipv6_sources_sends_nothing() {
+    let mut session = identified(classic(1, false));
+    let fh = file_hash(0x5F);
+    let out = ask_then_answer(&mut session, &plain_ask(fh), fh, vec![ipv6_source()]);
+    assert!(
+        !out.iter().any(|o| matches!(o, PeerOutput::Write(_))),
+        "an answer with no framable entry is not framed: {out:?}"
+    );
+    assert_eq!(
+        sources_answered(&out),
+        None,
+        "nothing sent, nothing reported"
     );
 }
 
@@ -308,29 +419,23 @@ fn a_native_ipv6_source_is_omitted_from_a_classic_answer_never_zeroed() {
 /// answered to a peer that claimed `MODMISC_EXTXS`, keeps both.
 #[test]
 fn the_ext_sx_answer_carries_the_ipv6_source_the_classic_one_omits() {
-    let mut session = identified(1, false);
+    let mut session = identified(ext_sx(1, false, false));
     let fh = file_hash(0x5D);
     let endpoint = rmule_primitives::Ipv6Endpoint::new("2a01:4f8::7".parse().unwrap(), 4662);
-    session.handle_command(PeerCommand::AnswerSources {
-        file_hash: fh,
-        sources: vec![
-            high_id_source(0x0203_0405, 4662),
-            ExchangedSource::plain(PeerSource::Ipv6(endpoint)),
-        ],
-        version: ServedSourcesVersion::Ext {
-            sx2: false,
-            emission: rmule_peer::ExtSxEmission::default(),
-        },
-    });
-    let out = drain(|| session.poll_output());
-    let (packet, _) = Packet::decode(&last_write_bytes(&out)).expect("answer frames");
-    let decoded = AnswerSources::decode_ext_packet(&packet).expect("ExtSX answer decodes");
+    let out = ask_then_answer(
+        &mut session,
+        &plain_ask(fh),
+        fh,
+        vec![high_id_source(0x0203_0405, 4662), ipv6_source()],
+    );
+    let decoded =
+        AnswerSources::decode_ext_packet(&answer_packet(&out)).expect("ExtSX answer decodes");
 
     assert_eq!(decoded.sources.len(), 2);
     assert_eq!(decoded.sources[1].ipv6(), Some(endpoint));
     assert_eq!(
         decoded.sources[1].source().peer_source(),
-        PeerSource::Ipv6(endpoint)
+        Some(PeerSource::Ipv6(endpoint))
     );
 }
 
@@ -349,28 +454,20 @@ fn a_dual_stack_source_carries_its_ipv6_beside_the_ipv4_in_an_ext_answer_only() 
     );
     let v6 = rmule_primitives::Ipv6Endpoint::new("3fff:ed2:1::7".parse().unwrap(), 4662);
     let hash = UserHash::from_bytes([0x51; UserHash::BYTE_LEN]);
-    let single = ExchangedSource::new(v4, Some(hash), None);
+    let single = SourceSighting::new(v4, Some(hash), None);
     let dual = single.with_ipv6_half(Some(v6));
 
-    let answer = |source: ExchangedSource, version: ServedSourcesVersion| {
-        let mut session = identified(4, true);
-        session.handle_command(PeerCommand::AnswerSources {
-            file_hash: fh,
-            sources: vec![source],
-            version,
-        });
-        let out = drain(|| session.poll_output());
-        let (packet, _) = Packet::decode(&last_write_bytes(&out)).expect("answer frames");
-        packet
+    let answer = |source: SourceSighting, advert: Advert| {
+        let mut session = identified(advert);
+        answer_packet(&ask_then_answer(
+            &mut session,
+            &sx2_ask(fh, 4),
+            fh,
+            vec![source],
+        ))
     };
 
-    let ext = answer(
-        dual,
-        ServedSourcesVersion::Ext {
-            sx2: true,
-            emission: rmule_peer::ExtSxEmission { skip_tags: true },
-        },
-    );
+    let ext = answer(dual, ext_sx(4, true, true));
     assert_eq!(ext.opcode(), 0x84);
     let mut expected = vec![0x01]; // ExtSX pins the version at 1
     expected.extend_from_slice(fh.as_bytes());
@@ -383,10 +480,10 @@ fn a_dual_stack_source_carries_its_ipv6_beside_the_ipv4_in_an_ext_answer_only() 
     expected.extend_from_slice(hash.as_bytes());
     assert_eq!(ext.payload(), expected.as_slice());
 
-    let classic = ServedSourcesVersion::Sx2(SourceExchangeVersion::V4);
+    let sx2 = classic(4, true);
     assert_eq!(
-        answer(dual, classic).payload(),
-        answer(single, classic).payload(),
+        answer(dual, sx2).payload(),
+        answer(single, sx2).payload(),
         "the classic writer is unchanged by the IPv6 half"
     );
 }

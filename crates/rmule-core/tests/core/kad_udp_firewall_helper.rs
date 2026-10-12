@@ -5,13 +5,13 @@
 //! Kad socket — aMule `ClientTCPSocket.cpp:1942-1948` →
 //! `BaseClient.cpp:4021-4030`.
 
+use rmule_testkit::HANG_GUARD;
 use std::net::{Ipv4Addr, SocketAddrV4};
-use std::time::Duration;
 
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, KadEnableConfig, KadId, ServeCommand, ServeEvent,
 };
-use rmule_peer::{PeerCommand, PeerHandshakeContext};
+use rmule_peer::{PeerCommand, PeerHandshakeContext, SideCommand};
 use rmule_primitives::{ClientId, ClientIdentity, Ed2kText, Ipv4Endpoint, PeerEndpoint, UserHash};
 use tokio::time::timeout;
 
@@ -24,9 +24,9 @@ fn reserve_tcp_port() -> u16 {
 
 async fn until(core: &mut Core, wanted: impl Fn(&CoreEvent) -> bool) {
     loop {
-        let event = timeout(Duration::from_secs(10), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
-            .expect("core emitted the awaited event within 10s")
+            .expect("core emitted the awaited event")
             .expect("core event stream stayed open");
         if wanted(&event) {
             return;
@@ -37,12 +37,16 @@ async fn until(core: &mut Core, wanted: impl Fn(&CoreEvent) -> bool) {
 #[tokio::test]
 async fn an_inbound_0xa7_draws_a_0x62_at_the_requested_port() {
     let tcp = reserve_tcp_port();
-    let user_hash = UserHash::from_bytes([0xA2; UserHash::BYTE_LEN]);
-    let identity = ClientIdentity::new(user_hash, Ed2kText::from_utf8("rmule-helper"), tcp, 60);
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings {
+            nickname: "rmule-helper".to_owned(),
+            tcp_port: tcp,
+            ..rmule_core::CoreSettings::default()
+        })
+        .kad_id(KadId::from_bytes([0xA2; KadId::BYTE_LEN]))
+        .build();
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, tcp),
-        credentials: identity.clone().into(),
     }))
     .await
     .unwrap();
@@ -51,13 +55,10 @@ async fn an_inbound_0xa7_draws_a_0x62_at_the_requested_port() {
     })
     .await;
     core.send(CoreCommand::EnableKad(KadEnableConfig {
-        kad_id: KadId::from_bytes([0xA2; KadId::BYTE_LEN]),
-        peer_credentials: identity.into(),
         bootstrap: Vec::new(),
         contacts: Vec::new(),
         nodes_dat_path: None,
         assume_open_reachability: false,
-        kad_udp_key: 0,
         kad_capture_dir: None,
         kad_shutdown: None,
     }))
@@ -65,7 +66,7 @@ async fn an_inbound_0xa7_draws_a_0x62_at_the_requested_port() {
     .unwrap();
     // Kad is up once the snapshot names a node — the moment a hello may
     // name its Kad port (aMule's `Kademlia::IsRunning() ? kadPort : 0`).
-    timeout(Duration::from_secs(10), async {
+    timeout(HANG_GUARD, async {
         loop {
             core.send(CoreCommand::DumpDiagnostics).await.unwrap();
             if let Some(CoreEvent::DiagnosticsSnapshot { snapshot }) = core.next_event().await
@@ -76,7 +77,7 @@ async fn an_inbound_0xa7_draws_a_0x62_at_the_requested_port() {
         }
     })
     .await
-    .expect("Kad started within 10s");
+    .expect("Kad started");
     let drain = tokio::spawn(async move { while core.next_event().await.is_some() {} });
 
     // The requester's Kad socket: where it asks the helper to answer.
@@ -96,6 +97,8 @@ async fn an_inbound_0xa7_draws_a_0x62_at_the_requested_port() {
             0x3C,
         ),
         client_id: ClientId::from_u32(0),
+        ed2k_client_id: ClientId::from_u32(0),
+        public_ip: None,
         connected_server: None,
     };
     // The first peer the listener admits since Kad came up: its hello answer
@@ -113,13 +116,15 @@ async fn an_inbound_0xa7_draws_a_0x62_at_the_requested_port() {
         helper.serves_udp_firewall_checks(),
         "the hello answer names the running Kad node's port and version"
     );
-    conn.send(PeerCommand::SendKadUdpFirewallRequest { request })
-        .await
-        .expect("the request goes out");
+    conn.send(PeerCommand::Side(SideCommand::SendKadUdpFirewallRequest {
+        request,
+    }))
+    .await
+    .expect("the request goes out");
     let mut buffer = [0u8; 64];
-    let (len, _) = timeout(Duration::from_secs(5), requester_udp.recv_from(&mut buffer))
+    let (len, _) = timeout(HANG_GUARD, requester_udp.recv_from(&mut buffer))
         .await
-        .expect("the Core answered 0x62 within 5s")
+        .expect("the Core answered 0x62")
         .unwrap();
     let answer = buffer[..len].to_vec();
     let _ = conn.shutdown().await;
@@ -147,13 +152,15 @@ async fn a_kad_core_pings_a_contact_for_its_extern_port() {
         .unwrap();
     let contact_port = contact.local_addr().unwrap().port();
     let tcp = reserve_tcp_port();
-    let user_hash = UserHash::from_bytes([0xA3; UserHash::BYTE_LEN]);
-    let identity = ClientIdentity::new(user_hash, Ed2kText::from_utf8("rmule-asker"), tcp, 60);
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings {
+            nickname: "rmule-asker".to_owned(),
+            tcp_port: tcp,
+            ..rmule_core::CoreSettings::default()
+        })
+        .kad_id(KadId::from_bytes([0xA3; KadId::BYTE_LEN]))
+        .build();
     core.send(CoreCommand::EnableKad(KadEnableConfig {
-        kad_id: KadId::from_bytes([0xA3; KadId::BYTE_LEN]),
-        kad_udp_key: 0,
-        peer_credentials: identity.into(),
         bootstrap: Vec::new(),
         contacts: vec![rmule_kad::KadContact::new(
             KadId::from_bytes([0x5C; KadId::BYTE_LEN]),
@@ -172,7 +179,7 @@ async fn a_kad_core_pings_a_contact_for_its_extern_port() {
 
     // The join hellos reach the contact too; wait for the ping among them.
     let ping = [0xE4, 0x60];
-    let asker = timeout(Duration::from_secs(10), async {
+    let asker = timeout(HANG_GUARD, async {
         let mut buffer = [0u8; 256];
         loop {
             let (len, from) = contact.recv_from(&mut buffer).await.unwrap();
@@ -182,7 +189,7 @@ async fn a_kad_core_pings_a_contact_for_its_extern_port() {
         }
     })
     .await
-    .expect("the Core pinged its contact for its extern port within 10s");
+    .expect("the Core pinged its contact for its extern port");
     drain.abort();
     assert_eq!(
         asker.ip(),

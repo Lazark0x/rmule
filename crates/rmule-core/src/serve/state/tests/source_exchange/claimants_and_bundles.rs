@@ -16,18 +16,14 @@ fn identify_claiming(
     let _ = state.on_conn_event(
         t,
         p,
-        ServeConnEvent::Identified {
-            user_hash: user(octets[0]),
+        HelloFacts {
             client_id: high_id_client(octets),
-            connected_server: None,
-            tcp_port: 4662,
             udp_port: 6000,
             udp_version,
             extended_requests_version,
-            crypt: crypt_advert(),
-            ipv6: None,
-            software: nameless_software(),
-        },
+            ..HelloFacts::of(user(octets[0]))
+        }
+        .identified(),
         &no_modifiers(),
     );
     p
@@ -52,13 +48,7 @@ fn a_v0_claimants_name_ask_status_is_discarded_and_a_v1_claimants_kept() {
         let asker = identify_claiming(&mut state, octets, claim, 0, t);
         name_ask(&mut state, asker, file, Some(holds_0_and_1.clone()), t);
         assert_eq!(
-            answered(
-                &mut state,
-                asker,
-                file,
-                ServedSourcesVersion::Sx1(rmule_peer::SourceExchangeVersion::V1),
-                t,
-            ),
+            answered(&mut state, asker, file, t,),
             expected,
             "extended-requests claim {claim}",
         );
@@ -91,16 +81,7 @@ fn a_v0_claimants_udp_reask_status_is_discarded_too() {
             .as_slice(),
         [ServeDecision::SendClientUdp { .. }],
     ));
-    assert_eq!(
-        answered(
-            &mut state,
-            waiter,
-            file,
-            ServedSourcesVersion::Sx1(rmule_peer::SourceExchangeVersion::V1),
-            t,
-        ),
-        vec![a, b, c],
-    );
+    assert_eq!(answered(&mut state, waiter, file, t,), vec![a, b, c],);
 }
 
 /// A name ask that is the hash alone, from a peer whose hello
@@ -113,20 +94,17 @@ fn a_hash_only_name_ask_ends_the_connection_only_from_a_peer_claiming_extended_r
     let file = hash(0x5A);
     let t = Instant::now();
     let mut state = serving_state(1, vec![entry(file, 4096, "served.bin")]);
-    let bare = ServeConnEvent::FileRequested {
+    let bare = ServeInput::Server(ServerEvent::FileRequested {
         file_hash: file,
         status: PartStatusTail::default(),
-    };
+    });
 
     let claimant = identify_claiming(&mut state, [8, 8, 8, 8], 1, 0, t);
     assert_eq!(
         state.on_conn_event(t, claimant, bare.clone(), &no_modifiers()),
         vec![
             ServeDecision::Emit(ServeEvent::NameAskMalformed { peer: claimant }),
-            ServeDecision::Send {
-                peer: claimant,
-                command: ServeConnCommand::Disconnect,
-            },
+            ServeDecision::Disconnect { peer: claimant },
         ],
     );
 
@@ -135,7 +113,7 @@ fn a_hash_only_name_ask_ends_the_connection_only_from_a_peer_claiming_extended_r
         state.on_conn_event(t, v0, bare, &no_modifiers()),
         vec![ServeDecision::Send {
             peer: v0,
-            command: ServeConnCommand::AnswerFileName {
+            command: ServerCommand::AnswerFileName {
                 file_hash: file,
                 file_name: rmule_primitives::Ed2kText::from_utf8("served.bin"),
             },
@@ -161,16 +139,16 @@ fn a_name_asks_status_is_read_by_the_files_part_count_not_the_wires() {
         let wire = [file.as_bytes().as_slice(), tail].concat();
         let packet =
             rmule_primitives::Packet::new(rmule_primitives::PacketProtocol::Edonkey, 0x58, wire);
-        ServeConnEvent::FileRequested {
+        ServeInput::Server(ServerEvent::FileRequested {
             file_hash: file,
             status: rmule_peer::RequestFileName::decode_packet(&packet)
                 .unwrap()
                 .status,
-        }
+        })
     };
     let answered = vec![ServeDecision::Send {
         peer: asker,
-        command: ServeConnCommand::AnswerFileName {
+        command: ServerCommand::AnswerFileName {
             file_hash: file,
             file_name: rmule_primitives::Ed2kText::from_utf8("served.bin"),
         },
@@ -195,23 +173,20 @@ fn a_name_asks_status_is_read_by_the_files_part_count_not_the_wires() {
         state.on_conn_event(t, asker, ask(&[0x09, 0x00]), &no_modifiers()),
         vec![
             ServeDecision::Emit(ServeEvent::NameAskMalformed { peer: asker }),
-            ServeDecision::Send {
-                peer: asker,
-                command: ServeConnCommand::Disconnect,
-            },
+            ServeDecision::Disconnect { peer: asker },
         ],
     );
 }
 
 /// The bundle's asks as the session hands them on, from a real request packet
 /// decoded at level 1 (name and status asks only).
-fn bundle_event(packet: &rmule_primitives::Packet) -> ServeConnEvent {
+fn bundle_event(packet: &rmule_primitives::Packet) -> ServeInput {
     let req = rmule_peer::MultiPacketRequest::decode_packet(
         packet,
         rmule_peer::ExtendedRequests::negotiated(1, 2),
     )
     .unwrap();
-    ServeConnEvent::FileBundleRequested {
+    ServeInput::Server(ServerEvent::FileBundleRequested {
         file_hash: req.file_hash,
         file_size: req.file_size,
         asks: req
@@ -224,7 +199,7 @@ fn bundle_event(packet: &rmule_primitives::Packet) -> ServeConnEvent {
             })
             .collect(),
         cut: req.cut,
-    }
+    })
 }
 
 /// Both bundle shapes: a name sub whose count is not the file's clears
@@ -253,11 +228,11 @@ fn a_bundled_name_status_whose_count_is_not_the_files_is_cleared_and_the_bundle_
             decisions,
             [
                 ServeDecision::Send {
-                    command: ServeConnCommand::AnswerFileName { .. },
+                    command: ServerCommand::AnswerFileName { .. },
                     ..
                 },
                 ServeDecision::Send {
-                    command: ServeConnCommand::AnswerFileStatus { .. },
+                    command: ServerCommand::AnswerFileStatus { .. },
                     ..
                 },
             ]
@@ -289,17 +264,19 @@ fn a_bundle_cut_short_is_gated_before_it_ends_the_connection() {
     let t = Instant::now();
     let mut state = serving_state(1, vec![entry(file, 4096, "served.bin")]);
     let asker = identify_claiming(&mut state, [8, 8, 8, 8], 1, 0, t);
-    let cut = |file_hash| ServeConnEvent::FileBundleRequested {
-        file_hash,
-        file_size: None,
-        asks: vec![BundledAsk::SetReqId],
-        cut: Some(rmule_peer::BundleCut::NameStatus(None)),
+    let cut = |file_hash| {
+        ServeInput::Server(ServerEvent::FileBundleRequested {
+            file_hash,
+            file_size: None,
+            asks: vec![BundledAsk::SetReqId],
+            cut: Some(rmule_peer::BundleCut::NameStatus(None)),
+        })
     };
     assert_eq!(
         state.on_conn_event(t, asker, cut(hash(0x99)), &no_modifiers()),
         vec![ServeDecision::Send {
             peer: asker,
-            command: ServeConnCommand::AnswerFileNotFound {
+            command: ServerCommand::AnswerFileNotFound {
                 file_hash: hash(0x99)
             },
         }],
@@ -308,10 +285,7 @@ fn a_bundle_cut_short_is_gated_before_it_ends_the_connection() {
         state.on_conn_event(t, asker, cut(file), &no_modifiers()),
         vec![
             ServeDecision::Emit(ServeEvent::NameAskMalformed { peer: asker }),
-            ServeDecision::Send {
-                peer: asker,
-                command: ServeConnCommand::Disconnect,
-            },
+            ServeDecision::Disconnect { peer: asker },
         ],
     );
 }

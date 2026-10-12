@@ -5,7 +5,7 @@
 
 use std::future::Future;
 
-use rmule_primitives::{ClientId, ExchangedSource, SourceLookupTarget};
+use rmule_primitives::{ClientId, SourceLookupTarget, SourceSighting};
 
 use crate::DownloadFailure;
 use crate::server_session::SharedServerSession;
@@ -20,8 +20,8 @@ pub struct SourceLookupOutcome {
     /// Server-lookup sources as candidates carrying the optional `(user_hash,
     /// crypt_options)` provenance an `OP_FOUNDSOURCES_OBFU` (`0x44`) reply
     /// delivers (ADR-0046). A plain `0x42` reply yields
-    /// [`ExchangedSource::plain`] entries — plaintext-dial only.
-    pub sources: Vec<ExchangedSource>,
+    /// [`SourceSighting::plain`] entries — plaintext-dial only.
+    pub sources: Vec<SourceSighting>,
 }
 
 /// The source-lookup seam (ADR-0031): how core asks a server who has a file

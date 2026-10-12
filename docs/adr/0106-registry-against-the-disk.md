@@ -39,7 +39,10 @@ honestly and the row is corrected at that moment, not at the next start.**
   that never ends would hold the runtime's shutdown), reads the registry through the actor, and ends
   within a quarter second of its stop flag. Every minute it looks again at each withheld row and
   nothing else, opening (not reading) a file its stamp says is back; a row withheld as unreadable is
-  never offered again on its stamp alone. It watches the parent directory of each row outside every
+  never offered again on its stamp alone, and a row under a shared directory the guards refuse
+  (ADR-0101) is never offered again while it is refused: no look touches it then — not the start
+  look, a recheck or a change notice — and the actor, which knows when a list change lifts the
+  refusal, has it looked at that moment. It watches the parent directory of each row outside every
   shared directory, non-recursively, one watch per distinct parent, looking a second after quiet
   (at most five) and once a second after each watch begins. When that watch cannot start, the
   operator is told once; nothing polls in its place.
@@ -59,7 +62,7 @@ honestly and the row is corrected at that moment, not at the next start.**
 ### What the front end shows
 
 Shared Files has a **State** column — `shared`, or why the row is withheld and the day noticed —
-sorted by rank (offered, missing, changed, folder missing, unreadable), never by its words; a
+sorted by rank (offered, missing, changed, folder missing, unreadable, folder refused), never by its words; a
 withheld row's name is dimmed. Its title names the scans' progress. A strip of the shared
 directories filters the table (ADR-0073). The events read as sentences in the status feed and the
 log.

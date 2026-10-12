@@ -2,18 +2,29 @@
 //! a download directory, and a configured server unless the link names its
 //! own sources — each refused by name.
 
-use crate::fixture::cli;
+use crate::fixture::{cli, off_the_host};
+use predicates::prelude::PredicateBooleanExt;
 use predicates::str::contains;
 use tempfile::tempdir;
 
 // A syntactically valid synthetic ed2k file link (16-byte hash, size 100).
 const LINK: &str = "ed2k://|file|sample.bin|100|0123456789ABCDEF0123456789ABCDEF|/";
 
+// The same link naming one source, on a port nothing listens on: the add runs
+// without a server and fails on the source.
+const SOURCED_LINK: &str =
+    "ed2k://|file|sample.bin|100|0123456789ABCDEF0123456789ABCDEF|/|sources,127.0.0.1:1|/";
+
 #[test]
 fn add_without_a_server_fails_with_guidance() {
     let dir = tempdir().unwrap();
+    let downloads = tempdir().unwrap();
     cli(dir.path())
-        .args(["config", "set-download-dir", dir.path().to_str().unwrap()])
+        .args([
+            "config",
+            "set-download-dir",
+            downloads.path().to_str().unwrap(),
+        ])
         .assert()
         .success();
     cli(dir.path())
@@ -61,15 +72,18 @@ fn add_names_the_fields_the_link_carried_that_no_client_reads() {
 #[test]
 fn add_without_a_server_runs_from_the_links_own_source() {
     let dir = tempdir().unwrap();
+    let downloads = tempdir().unwrap();
+    off_the_host(dir.path());
     cli(dir.path())
-        .args(["config", "set-download-dir", dir.path().to_str().unwrap()])
+        .args([
+            "config",
+            "set-download-dir",
+            downloads.path().to_str().unwrap(),
+        ])
         .assert()
         .success();
     cli(dir.path())
-        .args([
-            "add",
-            "ed2k://|file|sample.bin|100|0123456789ABCDEF0123456789ABCDEF|/|sources,127.0.0.1:1|/",
-        ])
+        .args(["add", SOURCED_LINK])
         .timeout(std::time::Duration::from_secs(60))
         .assert()
         .failure()
@@ -77,4 +91,49 @@ fn add_without_a_server_runs_from_the_links_own_source() {
             "no server configured; starting from the 1 source the link names",
         ))
         .stdout(contains("queued id="));
+}
+
+/// The share guards hold for the download directory (ADR-0101): rmule's data
+/// directory is refused at the set, with the reason, and nothing is stored;
+/// one that is the operator's home by the time the add's core scans it is
+/// refused at attach and the operator told, and so is the download, which
+/// would finish where it is shared.
+#[test]
+fn the_share_guards_refuse_the_data_dir_at_the_set_and_the_home_at_the_add() {
+    let dir = tempdir().unwrap();
+    off_the_host(dir.path());
+    cli(dir.path())
+        .args(["config", "set-download-dir", dir.path().to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(contains(
+            "is not set as the download directory: everything under it is shared, and it is rmule's own data directory",
+        ));
+    cli(dir.path())
+        .args(["config", "show"])
+        .assert()
+        .success()
+        .stdout(contains("download_dir <unset>"));
+
+    let home = tempdir().unwrap();
+    cli(dir.path())
+        .args(["config", "set-download-dir", home.path().to_str().unwrap()])
+        .assert()
+        .success();
+    cli(dir.path())
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .args(["add", SOURCED_LINK])
+        .timeout(std::time::Duration::from_secs(60))
+        .assert()
+        .failure()
+        .stdout(contains(format!(
+            "the download directory {} is not shared: it is your home directory",
+            home.path().display()
+        )))
+        .stdout(contains("queued id=").not())
+        .stderr(contains(
+            "download refused: everything under the download directory is shared, and it is your home directory",
+        ));
+    assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
 }

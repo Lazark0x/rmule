@@ -12,7 +12,7 @@
 
 use std::fmt;
 
-use rmule_primitives::UserHash;
+use rmule_primitives::{UserHash, WireReader, WireTruncated};
 use thiserror::Error;
 
 use super::caps::is_null_hash;
@@ -115,18 +115,23 @@ impl QuicProof {
     /// # Errors
     /// [`QuicProofError`] when the width or the magic is wrong.
     pub fn decode(bytes: &[u8]) -> Result<Self, QuicProofError> {
-        let bytes: &[u8; QUIC_PROOF_LEN] =
-            bytes.try_into().map_err(|_| QuicProofError::WrongSize {
+        if bytes.len() != QUIC_PROOF_LEN {
+            return Err(QuicProofError::WrongSize {
                 actual: bytes.len(),
-            })?;
-        let magic: [u8; 5] = bytes[0..5].try_into().expect("five bytes of a fixed proof");
+            });
+        }
+        let mut reader = WireReader::new(bytes);
+        let wrong_size = |truncated: WireTruncated| QuicProofError::WrongSize {
+            actual: truncated.available,
+        };
+        let magic = reader.read_array::<5>("proof magic").map_err(wrong_size)?;
         if magic != QUIC_PROOF_MAGIC {
             return Err(QuicProofError::WrongMagic { actual: magic });
         }
         Ok(Self {
-            sender: UserHash::from_bytes(bytes[5..21].try_into().expect("16 of a fixed proof")),
+            sender: UserHash::from_bytes(reader.read_array("proof sender").map_err(wrong_size)?),
             expected_recipient: UserHash::from_bytes(
-                bytes[21..37].try_into().expect("16 of a fixed proof"),
+                reader.read_array("proof recipient").map_err(wrong_size)?,
             ),
         })
     }

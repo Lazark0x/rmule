@@ -5,24 +5,29 @@
 //! Unlike the peer form (user-hash-keyed, two messages), the client and server
 //! share no prior secret, so they agree one by 768-bit DH across **three**
 //! messages:
-//! - client → server: `[marker:1][G^A:96]`
+//! - client → server: `[marker:1][G^A:96][padlen:1][pad:0-15]`, all plain
 //! - server → client: `[G^B:96][enc: sync:4 ‖ methods:1 ‖ pref:1 ‖ padlen:1 ‖ pad]`
 //! - client → server: `[enc: sync:4 ‖ selected:1 ‖ padlen:1 ‖ pad]`
 //!
-//! rmule is only ever the *client* to eD2k servers, so it sends no trailing
-//! random bytes after `G^A` (aMule's optional 0–15 rand is `[pending]`); the
-//! server role exists for the loopback test and symmetry. The DH primitive and
-//! key derivation live in `rmule-primitives`; the async transport (`CryptStream`)
-//! and the runtime adapter are `rmule-net`. Byte
-//! layouts are `[pending]` until a server interop run confirms them.
+//! The opening's padding length byte is written even for no padding, as
+//! aMule's client writes it (`EncryptedStreamSocket.cpp:541-546`, kno pin):
+//! a server that reads that byte waits for it. rmule is only ever the
+//! *client* to eD2k servers; the server role exists for the loopback test and
+//! symmetry. The DH primitive and key derivation live in `rmule-primitives`;
+//! the async transport (`CryptStream`) and the runtime adapter are
+//! `rmule-net`.
 
 use rmule_primitives::{
     DH_PRIME_SIZE, ENM_OBFUSCATION, MAGICVALUE_SYNC, ObfuscationDhKeypair, ObfuscationKeys,
     ObfuscationRole, derive_server_keys,
 };
 
-/// Client's first message length: marker(1) + `G^A`(96).
-const CLIENT_HELLO_LEN: usize = 1 + DH_PRIME_SIZE;
+/// Client's first message up to its padding: marker(1) + `G^A`(96) +
+/// padlen(1).
+const CLIENT_HELLO_LEN: usize = 1 + DH_PRIME_SIZE + 1;
+/// The most padding the client's opening carries: aMule draws its length as
+/// `rand % 16` (`EncryptedStreamSocket.cpp:541`).
+const MAX_OPENING_PADDING_LEN: usize = 15;
 /// Server encrypted block header: sync(4) + methods(1) + preferred(1) + padlen(1).
 const SERVER_HEADER_LEN: usize = 7;
 /// Client reply encrypted header: sync(4) + selected(1) + padlen(1).
@@ -79,13 +84,19 @@ enum Flow {
 
 impl ServerObfuscation {
     /// Build the client (dialer) side. Returns `self` plus the opening
-    /// `[marker][G^A]`; `padding` is this side's padding for its reply block.
+    /// `[marker][G^A][padlen][pad]`, its plain padding `opening_padding`
+    /// clamped to 15 bytes; `padding` is this side's padding for its reply
+    /// block.
     #[must_use]
-    pub fn client(marker: u8, padding: &[u8]) -> (Self, Vec<u8>) {
+    pub fn client(marker: u8, opening_padding: &[u8], padding: &[u8]) -> (Self, Vec<u8>) {
         let keypair = ObfuscationDhKeypair::generate();
-        let mut opening = Vec::with_capacity(CLIENT_HELLO_LEN);
+        let opening_padding =
+            &opening_padding[..opening_padding.len().min(MAX_OPENING_PADDING_LEN)];
+        let mut opening = Vec::with_capacity(CLIENT_HELLO_LEN + opening_padding.len());
         opening.push(marker);
         opening.extend_from_slice(&keypair.public());
+        opening.push(opening_padding.len() as u8);
+        opening.extend_from_slice(opening_padding);
         let this = Self {
             flow: Flow::ClientAwaitServerHello,
             keypair,
@@ -137,16 +148,19 @@ impl ServerObfuscation {
             }
             Flow::ServerAwaitClientHello => {
                 self.raw.extend_from_slice(input);
-                if self.raw.len() < CLIENT_HELLO_LEN {
+                if self.raw.len() < CLIENT_HELLO_LEN
+                    || self.raw.len() < CLIENT_HELLO_LEN + self.raw[CLIENT_HELLO_LEN - 1] as usize
+                {
                     return ServerObfuscationStep::NeedMore { write: Vec::new() };
                 }
                 let mut peer_public = [0u8; DH_PRIME_SIZE];
-                peer_public.copy_from_slice(&self.raw[1..CLIENT_HELLO_LEN]);
+                peer_public.copy_from_slice(&self.raw[1..=DH_PRIME_SIZE]);
                 let secret = self.keypair.agree(&peer_public);
                 self.keys = Some(derive_server_keys(&secret, ObfuscationRole::Responder));
                 let write = self.build_server_hello();
-                // Discard the client's trailing rand (aMule sends 0-15; rmule
-                // sends none) and reset the buffers for the client's reply.
+                // The whole opening is in, its padding included, and the
+                // client sends nothing more before this answer: reset the
+                // buffers for its reply.
                 self.raw.clear();
                 self.dec.clear();
                 self.flow = Flow::ServerAwaitClientReply;
@@ -283,8 +297,17 @@ mod tests {
 
     #[test]
     fn dh_handshake_completes_and_streams_cross_decrypt() {
-        let (mut client, opening) = ServerObfuscation::client(0x80, &[1, 2, 3]);
-        assert_eq!(opening.len(), CLIENT_HELLO_LEN, "opening is marker + G^A");
+        let (mut client, opening) = ServerObfuscation::client(0x80, &[], &[1, 2, 3]);
+        assert_eq!(
+            opening.len(),
+            CLIENT_HELLO_LEN,
+            "marker + G^A + a zero padlen"
+        );
+        assert_eq!(
+            opening[DH_PRIME_SIZE + 1],
+            0,
+            "the padlen byte rides even for none"
+        );
         let mut server = ServerObfuscation::server(&[9, 9]);
 
         // msg1 client → server: server replies [G^B][enc] and awaits the reply
@@ -332,9 +355,35 @@ mod tests {
         assert_eq!(b, plain_b, "client decrypts server app stream");
     }
 
+    /// aMule's opening is `[marker][G^A][padlen][pad]`: the server answers
+    /// only once the padding its length byte names has arrived, so a split
+    /// delivery neither answers early nor reads padding as the reply.
+    #[test]
+    fn the_server_answers_once_the_openings_padding_is_in() {
+        let (mut client, opening) = ServerObfuscation::client(0x80, &[7, 7, 7], &[]);
+        assert_eq!(opening[DH_PRIME_SIZE + 1], 3, "padlen names the padding");
+        let mut server = ServerObfuscation::server(&[]);
+        let (head, padding) = opening.split_at(CLIENT_HELLO_LEN);
+        assert!(matches!(
+            server.feed(head),
+            ServerObfuscationStep::NeedMore { write } if write.is_empty()
+        ));
+        let server_hello = match server.feed(padding) {
+            ServerObfuscationStep::NeedMore { write } if !write.is_empty() => write,
+            other => panic!("the padding completes the opening, got {other:?}"),
+        };
+        let ServerObfuscationStep::Done { write, .. } = client.feed(&server_hello) else {
+            panic!("the client completes on the server's hello");
+        };
+        assert!(matches!(
+            server.feed(&write),
+            ServerObfuscationStep::Done { .. }
+        ));
+    }
+
     #[test]
     fn corrupt_dh_public_fails_the_sync() {
-        let (mut client, opening) = ServerObfuscation::client(0x80, &[]);
+        let (mut client, opening) = ServerObfuscation::client(0x80, &[], &[]);
         let mut server = ServerObfuscation::server(&[]);
         let mut server_hello = match server.feed(&opening) {
             ServerObfuscationStep::NeedMore { write } => write,
@@ -354,7 +403,12 @@ mod tests {
         // Padding is caller-supplied; a length past the one-byte wire field
         // must be clamped, else `padlen` truncates while the full padding is
         // written and the peer's block scan desyncs. 300 bytes on both sides.
-        let (mut client, opening) = ServerObfuscation::client(0x80, &[0xCD; 300]);
+        let (mut client, opening) = ServerObfuscation::client(0x80, &[0x11; 40], &[0xCD; 300]);
+        assert_eq!(
+            opening.len(),
+            CLIENT_HELLO_LEN + MAX_OPENING_PADDING_LEN,
+            "the opening's padding stops at aMule's 15"
+        );
         let mut server = ServerObfuscation::server(&[0xAB; 300]);
 
         let server_hello = match server.feed(&opening) {

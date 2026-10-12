@@ -8,11 +8,21 @@ search after every step. What the probe sends is Stimulus; the server's
 `OP_IDCHANGE` and `OP_SEARCHRESULT` payloads, retained as hex beside each
 decoded row, are the evidence.
 
-Run as `offer_probe.py <publisher|searcher> <server host:port> <sync dir>`,
-one role per container: Lugdunum drops a second concurrent login from one
-address, so the two links need two addresses. The roles step in lockstep
+Run as `offer_probe.py <publisher|searcher> <server host:port> <sync dir>
+<address> [markers]`, one role per container: Lugdunum drops a second concurrent
+login from one address, so the two links need two addresses. Each role's
+port-test listener binds `<address>`, the one the harness gave its container,
+and no other interface. The roles step in lockstep
 through marker files in the shared sync dir; searches stay six seconds
 apart, clear of Lugdunum's same-second empty answer and its strike rule.
+
+The `markers` mode is a second, shorter run: the publisher offers one whole
+file and one part-file the way aMule marks them (`KnownFile.cpp:1097-1124`: a
+server granting `SRV_TCPFLG_COMPRESSION` reads `0xFBFBFBFB:0xFBFB` as complete
+and `0xFCFCFCFC:0xFCFC` as incomplete; any other server gets the link's own ID
+and port while it is High, else 0:0), and the searcher prints, per file, the ID,
+port and numeric tags the server's result row carries. What the server makes of
+each marker is the evidence; the probe asserts nothing about it.
 
 Output: one JSON object per line on stdout.
 """
@@ -35,6 +45,7 @@ OP_OFFERFILES = 0x15
 OP_SEARCHREQUEST = 0x16
 OP_SEARCHRESULT = 0x33
 OP_IDCHANGE = 0x40
+SRV_TCPFLG_COMPRESSION = 0x00000001
 
 KEYWORD = "annswprobe"
 # Asymmetric identities and file hashes (never one repeated byte).
@@ -44,6 +55,11 @@ FILES = [
     (bytes.fromhex("0d3c9a1f7e2b48c5a6e1f04b9d27c813"), "annswprobe alpha.bin", 1_048_577),
     (bytes.fromhex("e47b02c95a1d4f36b8c07e2a91d5f460"), "annswprobe beta.bin", 2_097_155),
     (bytes.fromhex("7a26e5b1c04f4d98a3b61c0e5f2d8479"), "annswprobe gamma.bin", 3_145_733),
+]
+# The `markers` run: one whole file and one part-file, told apart by name.
+MARKED_FILES = [
+    (bytes.fromhex("3b8f61d2a0c74e95b1d6082f7ac4e513"), "annswprobe complete.bin", 1_048_583),
+    (bytes.fromhex("b52c9e07f4a1483d86e0a3175d9c2f64"), "annswprobe partial.bin", 2_097_169),
 ]
 
 
@@ -84,41 +100,56 @@ def read_frame(sock):
     return proto, opcode, payload
 
 
-def skip_tag(buf, pos):
+def read_tag(buf, pos):
+    """One tag: the position after it, its compact name id (or None), its integer value (or None)."""
     kind = buf[pos]
     pos += 1
+    name = None
     if kind & 0x80:
         kind &= 0x7F
+        name = buf[pos]
         pos += 1
     else:
         (name_len,) = struct.unpack_from("<H", buf, pos)
+        if name_len == 1:
+            name = buf[pos + 2]
         pos += 2 + name_len
     if 0x11 <= kind <= 0x20:
-        return pos + (kind - 0x10)
-    sizes = {0x03: 4, 0x04: 4, 0x08: 2, 0x09: 1, 0x0B: 8, 0x01: 16, 0x05: 1}
+        return pos + (kind - 0x10), name, None
+    ints = {0x03: "<I", 0x08: "<H", 0x09: "<B", 0x0B: "<Q"}
+    if kind in ints:
+        (value,) = struct.unpack_from(ints[kind], buf, pos)
+        return pos + struct.calcsize(ints[kind]), name, value
+    sizes = {0x04: 4, 0x01: 16, 0x05: 1}
     if kind == 0x02:
         (n,) = struct.unpack_from("<H", buf, pos)
-        return pos + 2 + n
+        return pos + 2 + n, name, None
     if kind == 0x07:
         (n,) = struct.unpack_from("<I", buf, pos)
-        return pos + 4 + n
+        return pos + 4 + n, name, None
     if kind in sizes:
-        return pos + sizes[kind]
+        return pos + sizes[kind], name, None
     raise ValueError(f"tag type 0x{kind:02x} at {pos}")
 
 
-def decode_results(payload):
+def decode_rows(payload):
+    """Each result row: file hash, the row's client id and port, and its integer tags by name id."""
     (count,) = struct.unpack_from("<I", payload, 0)
     pos = 4
-    hashes = []
+    rows = []
     for _ in range(count):
-        hashes.append(payload[pos : pos + 16].hex())
+        file_hash = payload[pos : pos + 16].hex()
+        client_id, port = struct.unpack_from("<IH", payload, pos + 16)
         pos += 16 + 4 + 2
         (tags,) = struct.unpack_from("<I", payload, pos)
         pos += 4
+        ints = {}
         for _ in range(tags):
-            pos = skip_tag(payload, pos)
-    return hashes
+            pos, name, value = read_tag(payload, pos)
+            if name is not None and value is not None:
+                ints[name] = value
+        rows.append({"hash": file_hash, "client_id": client_id, "port": port, "tags": ints})
+    return rows
 
 
 def answer_port_test(listener, user_hash, port):
@@ -177,10 +208,22 @@ class Link:
             raise RuntimeError(f"{role}: no OP_IDCHANGE")
         self.port = port
 
-    def offer(self, files, step):
+    def origin(self, complete):
+        """The ID and port aMule writes for a file (`KnownFile.cpp:1097-1124`)."""
+        if self.tcp_flags is not None and self.tcp_flags & SRV_TCPFLG_COMPRESSION:
+            return (0xFBFBFBFB, 0xFBFB) if complete else (0xFCFCFCFC, 0xFCFC)
+        if self.client_id >= 0x01000000:
+            return (self.client_id, self.port)
+        return (0, 0)
+
+    def offer(self, files, step, marked=False):
         payload = struct.pack("<I", len(files))
         for file_hash, name, size in files:
-            payload += file_hash + struct.pack("<IHI", self.client_id, self.port, 2)
+            if marked:
+                origin = self.origin(complete="partial" not in name)
+            else:
+                origin = (self.client_id, self.port)
+            payload += file_hash + struct.pack("<IHI", *origin, 2)
             payload += tag_str(0x01, name) + tag_u32(0x02, size)
         self.sock.sendall(frame(OP_OFFERFILES, payload))
         emit(event="offered", step=step, entries=len(files), hashes=[f[0].hex() for f in files])
@@ -192,12 +235,15 @@ class Link:
         while time.time() < deadline:
             proto, opcode, body = read_frame(self.sock)
             if opcode == OP_SEARCHRESULT:
-                found = decode_results(body)
+                rows = decode_rows(body)
+                self.last_rows = rows
+                found = [row["hash"] for row in rows]
                 emit(
                     event="search",
                     step=step,
                     found=len(found),
                     hashes=sorted(found),
+                    rows=rows,
                     packed=proto == OP_PACKED,
                     result_hex=body.hex(),
                 )
@@ -233,26 +279,31 @@ STEPS = [
 ]
 
 
-def listen(user_hash, port=4662):
-    """Answer the server's port test on `port`, so the link logs in High ID."""
+MARKED_STEPS = [("after_marked_offer", "offer_marked", 6)]
+
+
+def listen(user_hash, address, port=4662):
+    """Answer the server's port test on `address:port`, so the link logs in High ID."""
     listener = socket.socket()
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind(("0.0.0.0", port))
+    listener.bind((address, port))
     listener.listen(4)
     threading.Thread(target=answer_port_test, args=(listener, user_hash, port), daemon=True).start()
     return port
 
 
-def publisher(server, sync):
-    link = Link("publisher", server, PUBLISHER_HASH, listen(PUBLISHER_HASH))
+def publisher(server, sync, address, markers=False):
+    link = Link("publisher", server, PUBLISHER_HASH, listen(PUBLISHER_HASH, address))
     sets = {
         "offer_two": FILES[:2],
         "offer_second_set": FILES[1:],
         "offer_empty": [],
         "offer_all_three": FILES,
     }
-    for step, action, wait in STEPS:
-        if action in sets:
+    for step, action, wait in MARKED_STEPS if markers else STEPS:
+        if action == "offer_marked":
+            link.offer(MARKED_FILES, action, marked=True)
+        elif action in sets:
             link.offer(sets[action], action)
         elif action == "disconnect":
             link.close()
@@ -263,8 +314,40 @@ def publisher(server, sync):
     emit(event="done", role="publisher")
 
 
-def searcher(server, sync):
-    link = Link("searcher", server, SEARCHER_HASH, listen(SEARCHER_HASH))
+def marker_searcher(server, sync, address):
+    """One search after the marked offer; print what each row carries."""
+    link = Link("searcher", server, SEARCHER_HASH, listen(SEARCHER_HASH, address))
+    step = MARKED_STEPS[0][0]
+    wait_for(f"{sync}/{step}.ready")
+    found = link.search(step)
+    touch(f"{sync}/{step}.done")
+    link.close()
+    rows = {row["hash"]: row for row in getattr(link, "last_rows", [])}
+
+    def describe(file_hash):
+        row = rows.get(file_hash.hex())
+        if row is None:
+            return "absent"
+        # Tag 0x15 is the source count, 0x30 the complete-source count.
+        tags = row["tags"]
+        return (
+            f"{row['client_id']:08x}:{row['port']:04x}"
+            f"/sources={tags.get(0x15, 'none')}/complete={tags.get(0x30, 'none')}"
+        )
+
+    print(
+        "marker-summary"
+        f" searcher_tcp_flags={'none' if link.tcp_flags is None else hex(link.tcp_flags)}"
+        f" found={'none' if found is None else len(found)}"
+        f" complete_row={describe(MARKED_FILES[0][0])}"
+        f" partial_row={describe(MARKED_FILES[1][0])}",
+        flush=True,
+    )
+    emit(event="done", role="searcher")
+
+
+def searcher(server, sync, address):
+    link = Link("searcher", server, SEARCHER_HASH, listen(SEARCHER_HASH, address))
     seen = {}
     for step, _, _ in STEPS:
         wait_for(f"{sync}/{step}.ready")
@@ -294,10 +377,15 @@ def searcher(server, sync):
 
 
 def main():
-    role, target, sync = sys.argv[1], sys.argv[2], sys.argv[3]
+    role, target, sync, address = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
     host, port = target.rsplit(":", 1)
     server = (socket.gethostbyname(host), int(port))
-    {"publisher": publisher, "searcher": searcher}[role](server, sync)
+    if len(sys.argv) > 5 and sys.argv[5] == "markers":
+        {"publisher": lambda *a: publisher(*a, markers=True), "searcher": marker_searcher}[role](
+            server, sync, address
+        )
+    else:
+        {"publisher": publisher, "searcher": searcher}[role](server, sync, address)
 
 
 if __name__ == "__main__":

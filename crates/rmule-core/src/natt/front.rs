@@ -64,14 +64,13 @@ use rmule_peer::natt::{
 use rmule_primitives::{AccountingKey, ClientId, Ipv4Endpoint, PeerEndpoint, UserHash};
 use tokio::sync::mpsc;
 
-use crate::adapters::{SharedPeerPin, SharedTunnelAdmit, SharedTunnelClaims};
+use crate::adapters::{AwaitedInbound, SharedPeerPin, SharedTunnelAdmit};
 use crate::address_learning::SharedAddressLearning;
 use crate::client_udp::{ClientUdpDatagram, ClientUdpSend};
 use crate::diagnostics::DiagnosticsState;
 use crate::interval_limiter::IntervalLimiter;
 use crate::service::CoreEvent;
 
-use super::RendezvousOffer;
 use super::acting::{ACTING_MIN_INTERVAL, ACTING_TRACKED_MAX};
 use super::paths::PunchedPaths;
 use super::requester::{HintVerdict, RendezvousRequester};
@@ -91,9 +90,9 @@ mod prediction;
 mod tests;
 mod tunnels;
 
-pub(crate) use attempts::AttemptCoordinator;
 pub use attempts::AttemptRetirement;
 use attempts::Attempts;
+pub(crate) use attempts::{AttemptCoordinator, AttemptOwner};
 use dialing::DialSchedule;
 use expectations::{Expectations, PunchSide, PunchVerdict};
 use held::{HeldBurst, HeldBursts};
@@ -127,29 +126,23 @@ const COMMAND_QUEUE_LEN: usize = 32;
 /// What the running node asks the **NAT-T Front** to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NattCommand {
-    /// The route tree took rung 1 toward `target` through `coordinator`: own
-    /// the introduction from here.
+    /// Rung 1 toward a peer through `coordinator` (ADR-0091): put the
+    /// coordinator's ask on the wire and own what follows.
     ///
-    /// The front begins a **Traversal Attempt**, which outlives the
-    /// coordinator that opened it. On the buddy leg it also emits the
-    /// rendezvous: the emit lives here rather than at the reach arm because
-    /// the *retries* are the ledger's, and one emitter is the only way the two
-    /// can agree on what went out. On the server leg the `0x60` has already
-    /// left through the server session — the front holds no server link — and
-    /// what this command buys is the owner that hears how it ends.
-    Begin {
-        /// The target's user hash — the ledger's key, and what a hint names.
-        target: UserHash,
+    /// The front is rung 1's one emitter — the server's `0x60` on our
+    /// session, the buddy rendezvous and its retries, the rendezvous a
+    /// fall-through arms — because the *retries* are the ledger's, and one
+    /// emitter is the only way the two can agree on what went out. The
+    /// **Traversal Attempt** it begins outlives the coordinator that opened
+    /// it.
+    Traverse {
         /// Who introduces us first.
         coordinator: AttemptCoordinator,
-        /// The candidate's own half of rung 1's condition, for picking the
-        /// next coordinator when this one fails.
-        facts: crate::callback::NattFacts,
-        /// Our position as the route tree measured it, the other half of that
-        /// decision.
-        ours: crate::callback::SelfReach,
-        /// What rmule says about itself in a rendezvous.
-        offer: RendezvousOffer,
+        /// The attempt that owns the introduction, keyed by the target's User
+        /// Hash. `None` when either side's hash is unknown, which only the
+        /// server coordinator takes: its `0x60` names an id alone, and what
+        /// it brings rises unclaimed.
+        owner: Option<AttemptOwner>,
     },
     /// A coordinator settled an introduction without a transport: our server
     /// refused it (`OP_LOWID_HOLEPUNCH_FAIL`), or it waited out
@@ -209,6 +202,31 @@ impl SharedNattFront {
         let _ = self.0.set(commands);
     }
 
+    /// The front's liveness, and nothing to send through — what **Self
+    /// Reach** holds as its NAT-T family (ADR-0060).
+    pub(crate) fn liveness(&self) -> NattLiveness {
+        NattLiveness(Arc::clone(&self.0))
+    }
+
+    /// Ask the front for something, reporting whether there was a front to ask.
+    ///
+    /// `try_send`, never `send`: every caller runs inside another loop — the
+    /// reach on the core actor, the introduction on the server session's
+    /// multiplexer, the acting punch on the firewalled front — and a full
+    /// NAT-T inbox must cost a traversal rather than stall any of them.
+    pub(crate) fn send(&self, command: NattCommand) -> bool {
+        self.0
+            .get()
+            .is_some_and(|commands| commands.try_send(command).is_ok())
+    }
+}
+
+/// Whether the **NAT-T Front** runs: the same cell as [`SharedNattFront`],
+/// read and never sent through — **Self Reach**'s NAT-T family (ADR-0060).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct NattLiveness(Arc<std::sync::OnceLock<mpsc::Sender<NattCommand>>>);
+
+impl NattLiveness {
     /// Whether a front is installed **and still running** — read live, on
     /// every call, never cached (a `OnceLock::is_some` snapshot
     /// stays true forever once a front is ever installed, even after its
@@ -231,18 +249,6 @@ impl SharedNattFront {
             Some(commands) => commands.closed().await,
             None => std::future::pending().await,
         }
-    }
-
-    /// Ask the front for something, reporting whether there was a front to ask.
-    ///
-    /// `try_send`, never `send`: both callers run inside another loop — the
-    /// reach arm on the core actor, the introduction on the server session's
-    /// multiplexer — and a full NAT-T inbox must cost a traversal attempt
-    /// rather than stall either of them.
-    pub(crate) fn send(&self, command: NattCommand) -> bool {
-        self.0
-            .get()
-            .is_some_and(|commands| commands.try_send(command).is_ok())
     }
 }
 
@@ -271,7 +277,7 @@ enum Risen {
 }
 
 /// A clone of the front's own risen-tunnel sender, held outside this module
-/// What the **Pending Tunnel Claim** table reports a confirmed
+/// What the **Awaited Inbound** registry reports a confirmed
 /// adoption's hello through, exactly as [`path_guard::PunchedPathGuard::drop`]
 /// reports a closed path. `Risen` itself never crosses this module's
 /// boundary — only this one operation does.
@@ -337,17 +343,23 @@ pub(crate) struct NattWiring {
     /// leave. It must be *this* socket: the pinhole a punch opened belongs to
     /// this bind.
     pub(crate) client_udp: mpsc::Sender<ClientUdpSend>,
+    /// The **Server Coordinator**'s session — where a server introduction's
+    /// `0x60` leaves, never awaited.
+    pub(crate) server: crate::natt::server_punch::CoordinatorSession,
+    /// **Self Reach**: our **Route Position**, read when a coordinator fails
+    /// and the attempt asks the one selector who is next.
+    pub(crate) reach: crate::reachability::SharedSelfReach,
     /// The one **Address Learning** store: the self-punch guard's interface
     /// set, the bound client-UDP port, and the external port a Mapping Grant
     /// reported for it.
     pub(crate) addresses: SharedAddressLearning,
     /// Where a risen tunnel enters the serve pipeline.
     pub(crate) admit: SharedTunnelAdmit,
-    /// The **Pending Tunnel Claim** table: which download asked for a Tunnel
+    /// The **Awaited Inbound** registry: which download claimed a Tunnel
     /// toward which target. Read here for one thing only — telling a claimant
     /// that the attempt it is waiting on has retired. Adoption
     /// itself happens downstream, where the hello is.
-    pub(crate) claims: SharedTunnelClaims,
+    pub(crate) claims: AwaitedInbound,
     /// Where a punched path asks for its one PCP `PEER` pin.
     pub(crate) peer_pin: SharedPeerPin,
     pub(crate) diagnostics: DiagnosticsState,
@@ -452,7 +464,7 @@ fn assemble<S: NattDatagramSink>(
         Arc::new(std::sync::Mutex::new(TunnelRegistry::new())),
     )?);
     let (risen_tx, risen_rx) = mpsc::channel(COMMAND_QUEUE_LEN);
-    // The claim table's report-back seam: the same channel
+    // The Awaited Inbound registry's report-back seam: the same channel
     // `PunchedPathGuard` closes with, so the adoption inbound triage confirms
     // through it can name a peer exactly as a closed path does.
     wiring
@@ -650,15 +662,8 @@ impl<S: NattDatagramSink> NattFront<S> {
     /// One command from the running node.
     async fn on_command(&mut self, command: NattCommand, now: Instant) {
         match command {
-            NattCommand::Begin {
-                target,
-                coordinator,
-                facts,
-                ours,
-                offer,
-            } => {
-                self.begin_attempt(target, coordinator, facts, ours, offer, now)
-                    .await;
+            NattCommand::Traverse { coordinator, owner } => {
+                self.traverse(coordinator, owner, now).await;
             }
             NattCommand::IntroductionFailed { target, failure } => {
                 self.on_introduction_failed(target, failure, now).await;
@@ -707,9 +712,9 @@ impl<S: NattDatagramSink> NattFront<S> {
         match step {
             RendezvousStep::Send => {
                 // Only the buddy leg has a rendezvous to re-emit: the server
-                // leg's introduction left through the session and the
-                // schedule is not armed for it, so there is no step to reach
-                // this arm with.
+                // leg's `0x60` left once, on the session, and the schedule is
+                // not armed for it, so there is no step to reach this arm
+                // with.
                 let Some((buddy_id, buddy_udp, offer)) =
                     self.attempts
                         .get(&target)

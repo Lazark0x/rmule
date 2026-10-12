@@ -113,7 +113,7 @@ fn dial_back(
         SERVE_ROLE,
         HOST_DRIVER,
         &args,
-        "serve files_announced",
+        "serve.files_announced",
     )?;
     if !announced {
         let log = keep_log(bench, stage, &serve, "rmule-serve-c");
@@ -340,7 +340,7 @@ fn kno_over_counted_answer(
         "--file",
         kno_link,
         "--out",
-        "/out/hs-kno6.bin",
+        "/out/dl/hs-kno6.bin",
         "--user-hash",
         KNO_DOWNLOADER_HASH,
         "--max-seconds",
@@ -410,7 +410,7 @@ fn kno_over_counted_answer(
         .collect::<Vec<_>>();
     let named = downloader_log
         .lines()
-        .find(|l| l.contains("peer_hello_refused code=tag_count_short"))
+        .find(|l| l.contains("peer.hello_refused code=tag_count_short"))
         .map(str::trim)
         .unwrap_or_default()
         .to_owned();

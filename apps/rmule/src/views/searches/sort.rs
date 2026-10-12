@@ -162,8 +162,6 @@ mod tests {
 
     use ratatui::crossterm::event::KeyCode;
 
-    use rmule_core::DurableAppConfig;
-
     use super::*;
     use crate::action::Action;
     use crate::config::PrefEdit;
@@ -357,7 +355,7 @@ mod tests {
 
     #[test]
     fn the_sort_survives_a_restart_through_the_config_store() {
-        let config = SharedConfig::new(DurableAppConfig::new(rmule_testkit::memory_store()));
+        let config = SharedConfig::open(rmule_testkit::memory_store());
         let state = tiers();
         let mut view = SearchesView::new();
         view.handle_key(press(KeyCode::Char('s')), &state);

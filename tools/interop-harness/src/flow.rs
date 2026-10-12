@@ -41,17 +41,18 @@ pub use self::bootstrap::{
 pub use self::ed2k_server::{
     AnnounceSwitchOptions, AskBudgetOptions, BenchSmokeOptions, CryptPingPortOptions,
     DEFAULT_HELLO_DELAY_MS, LatePortTestOptions, RmuleClientAction, SearchSpacingOptions,
-    SearchWireOptions, SearchWireServer, ServerCycleOptions, ServerSkeletonOptions,
-    SweepFollowsListOptions, rescore_ask_budget, run_announce_switch, run_ask_budget,
-    run_bench_smoke, run_crypt_ping_port, run_late_port_test, run_search_spacing, run_search_wire,
-    run_server_cycle, run_server_skeleton, run_sweep_follows_list,
+    SearchWireOptions, SearchWireServer, ServerCycleOptions, ServerLoginCryptOptions,
+    ServerSkeletonOptions, SweepFollowsListOptions, rescore_ask_budget, run_announce_switch,
+    run_ask_budget, run_bench_smoke, run_crypt_ping_port, run_late_port_test, run_search_spacing,
+    run_search_wire, run_server_cycle, run_server_login_crypt, run_server_skeleton,
+    run_sweep_follows_list,
 };
 pub use self::evidence::flush_golden_files;
 pub use self::gate::start_rmule_serve_with_login_retry;
 pub use self::kad_buddy::{
-    KadCoreBuddyOptions, KadDirectCallbackOptions, KadFirewalledBuddyOptions,
-    KadRequiredCheckOptions, RequiredCheckVerdict, run_kad_core_buddy, run_kad_direct_callback,
-    run_kad_firewalled_buddy, run_kad_required_check,
+    DialedLinkVerdict, KadCoreBuddyOptions, KadDialedLinkOptions, KadDirectCallbackOptions,
+    KadFirewalledBuddyOptions, KadRequiredCheckOptions, RequiredCheckVerdict, run_kad_core_buddy,
+    run_kad_dialed_link, run_kad_direct_callback, run_kad_firewalled_buddy, run_kad_required_check,
 };
 pub use self::kad_capture::{
     KadFakePublicSourceOptions, KadSourceCaptureOptions, run_kad_distance_ordering_capture,
@@ -71,8 +72,10 @@ pub use self::nat::{
 pub use self::packed_source_exchange::{PackedSourceExchangeOptions, run_packed_source_exchange};
 pub use self::pcap::ed2k_frame_listing;
 pub use self::peer::{
-    DEFAULT_REASK_WINDOW_SECS, DirectSuiOptions, PeerUdpReaskEmitOptions, PeerUdpReaskOptions,
-    Sx1GateOptions, TwoHellosOptions, run_amule_direct_sui, run_peer_udp_reask,
+    DEFAULT_REASK_WINDOW_SECS, DirectSuiOptions, PeerLowIdCallbackReaskOptions,
+    PeerUdpReaskEmitOptions, PeerUdpReaskOptions, Sx1GateOptions, TwoHellosOptions,
+    run_amule_direct_sui, run_peer_lowid_callback_reask, run_peer_udp_reask,
     run_peer_udp_reask_emit, run_rmule_serves_amule_downloads, run_sx1_gate, run_two_hellos,
-    stage_reask_emit_files,
+    score_emit_run_dir as score_peer_udp_reask_emit, score_lowid_callback_reask,
+    score_run_dir as score_peer_udp_reask, stage_reask_emit_files,
 };

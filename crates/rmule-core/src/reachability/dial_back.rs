@@ -30,7 +30,7 @@ use std::collections::HashSet;
 use rmule_net::peer::ObfuscationPolicy;
 use rmule_primitives::{Ipv4Endpoint, OutboundCrypt, PeerCrypt, UserHash};
 
-use crate::client_udp::crypt_stance_from_connect_options;
+use rmule_peer::peer_udp::crypt::stance_from_connect_options;
 
 /// One firewall-check dial-back the KadNode responder asked core to broker: the
 /// requester's TCP endpoint (its IP as we observed the `0x50`/`0x53` datagram
@@ -86,8 +86,8 @@ pub(crate) enum DialBackVerdict {
 
 /// Our own listen endpoint, as far as the ADR-0058 self-connect guard can
 /// currently tell. Address Learning's IPv4 projection —
-/// `own.public_ip()`, the same read `PublicIpFeed` (the Kad pump's own-IPv4 level)
-/// re-derives at Kad start and every recruit tick — is the one
+/// `own.public_ip()`, the same read the Kad pump samples for the node's own-IPv4
+/// level at Kad start, on every Own Address Generation and every recruit tick — is the one
 /// source: a second, independently-read copy of the level would only give
 /// the guard a chance to disagree with the verify-key state bound to the
 /// same value.
@@ -151,7 +151,7 @@ pub(crate) enum DialBackRefusal {
 pub(crate) struct DialBackGuards<'a> {
     pub(crate) own: OwnListenEndpoint,
     pub(crate) busy: &'a HashSet<Ipv4Endpoint>,
-    /// **Our own** obfuscation policy (`CoreConfig::peer_crypt`, ADR-0046) —
+    /// **Our own** obfuscation policy (`CoreSettings::obfuscation`, ADR-0046) —
     /// `None` when obfuscation is off entirely, gating the dial-back exactly
     /// as the same-named field on
     /// [`DirectCallbackContext`](crate::firewalled::direct_callback::DirectCallbackContext)
@@ -189,7 +189,7 @@ pub(crate) fn broker_dial_back(
     // regardless, so there is no crypt fact to read and the dial stays plain.
     let requester_crypt = match request.connect_options {
         Some(connect_options) => PeerCrypt::new(
-            crypt_stance_from_connect_options(connect_options),
+            stance_from_connect_options(connect_options),
             request.user_hash,
         ),
         None => PeerCrypt::unknown(),

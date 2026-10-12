@@ -8,7 +8,7 @@ use std::time::Duration;
 use rmule_ed2k::{Ed2kEvent, IdChange, LoginRequest, PeerCallback};
 use rmule_net::ed2k::{ConnectOptions, Connection};
 use rmule_net::peer::{ConnectOptions as PeerOptions, Connection as PeerConnection};
-use rmule_peer::{HelloAnswer, PeerEvent, PeerHandshakeContext, PeerHelloBody};
+use rmule_peer::{ConnectionEvent, HelloAnswer, PeerEvent, PeerHandshakeContext, PeerHelloBody};
 use rmule_primitives::{
     ClientId, ClientIdentity, Ed2kText, Ipv4Endpoint, Packet, ServerEndpoint, Tag, TagName,
     TagValue, UserHash,
@@ -99,6 +99,7 @@ async fn callback_replay_drives_server_then_peer_dial() {
             login_timeout: Duration::from_secs(2),
             capture_dir: None,
             obfuscation: None,
+            obfuscated_port: None,
             advertised_ipv6: None,
             udp_ports: None,
         },
@@ -123,6 +124,8 @@ async fn callback_replay_drives_server_then_peer_dial() {
     let ctx = PeerHandshakeContext {
         identity: identity(),
         client_id,
+        ed2k_client_id: client_id,
+        public_ip: None,
         connected_server: Some(Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, server_addr.port())),
     };
     let mut peer_conn = PeerConnection::connect(
@@ -140,7 +143,7 @@ async fn callback_replay_drives_server_then_peer_dial() {
 
     let mut identified = false;
     while let Some(event) = peer_conn.next_event().await {
-        if let PeerEvent::PeerIdentified { identity } = &event {
+        if let PeerEvent::Connection(ConnectionEvent::Identified { identity }) = &event {
             assert_eq!(
                 identity.nickname().map(|n| n.to_display_string()),
                 Some("mock-peer".to_owned())
@@ -148,11 +151,14 @@ async fn callback_replay_drives_server_then_peer_dial() {
             identified = true;
             break;
         }
-        if matches!(event, PeerEvent::Disconnected { .. }) {
+        if matches!(
+            event,
+            PeerEvent::Connection(ConnectionEvent::Disconnected { .. })
+        ) {
             break;
         }
     }
-    assert!(identified, "peer side reached PeerIdentified");
+    assert!(identified, "peer side reached Identified");
 
     peer_conn.shutdown().await.expect("peer shutdown");
     server_conn.shutdown().await.expect("server shutdown");

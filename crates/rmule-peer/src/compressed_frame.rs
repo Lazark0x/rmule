@@ -57,7 +57,7 @@ pub(crate) fn pack_peer_frame_if_over_threshold(packet: Packet) -> Packet {
 /// in debug builds. Returns a typed [`CompressedFrameSkipReason`] when
 /// inflation fails or the decompressed payload would exceed
 /// [`PEER_COMPRESSED_FRAME_LIMIT`] — both are non-terminal at the session
-/// level (see [`crate::PeerEvent::CompressedFrameSkipped`]). Re-attributes
+/// level (see [`crate::NoticeEvent::CompressedFrameSkipped`]). Re-attributes
 /// to [`PacketProtocol::Emule`] unconditionally — aMule sets `OP_EMULEPROT`
 /// after unpack regardless of the packed frame's logical origin
 /// (`Packet.cpp#L301`).

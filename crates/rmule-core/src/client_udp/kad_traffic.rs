@@ -42,7 +42,7 @@ async fn one_exchange(obfuscated: bool) -> (Vec<u8>, Vec<Vec<u8>>, KadTrafficTot
     let (reply_tx, _reply_rx) = mpsc::channel::<ClientUdpSend>(16);
     let (engine, _inboxes) = ClientUdpEngine::new(
         RuntimeClientUdpTransport::new(Arc::clone(&socket)),
-        None,
+        crate::client_udp::PeerUdpCrypt::disarmed(),
         SharedBuddySlot::default(),
         crate::firewalled::front::SharedFirewalledFront::default(),
         DiagnosticsState::default(),
@@ -66,8 +66,10 @@ async fn one_exchange(obfuscated: bool) -> (Vec<u8>, Vec<Vec<u8>>, KadTrafficTot
             firewall_self_check: false,
             // The production pairing: the keys ride inside the crypt header,
             // so the two arm together.
-            datagram_obfuscation: obfuscated,
-            verify_keys: obfuscated.then_some((0x005E_C2E7, Ipv4Addr::LOCALHOST)),
+            obfuscation: obfuscated.then(|| {
+                rmule_kad::KadObfuscation::new(rmule_net::kad::os_datagram_nonce)
+                    .with_verify_keys(0x005E_C2E7, Ipv4Addr::LOCALHOST)
+            }),
             contact_admission: None,
         },
         rmule_net::kad::KadInlet {
@@ -78,7 +80,7 @@ async fn one_exchange(obfuscated: bool) -> (Vec<u8>, Vec<Vec<u8>>, KadTrafficTot
     )
     .await
     .expect("the Kad node starts over the shared bind");
-    *kad_inlet.lock().expect("kad inlet mutex") = Some(inlet_tx);
+    kad_inlet.install_for_good(inlet_tx);
 
     let peer = ClientUdpSocket::bind_with(0, FamilySelection::v4_only())
         .await

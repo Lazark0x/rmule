@@ -207,16 +207,31 @@ enabled. Then:
   the server family key is `MD5(base_key_LE ‖ 0xA5 ‖ random_key)`, no IP (confirms the
   datagram primitive).
 
-rmule: `StatusPingSweep::send_crypt_ping` (raw `[challenge LE][padding]` via the
-transport's `SERVER_UDP_OBFUSCATION_PORT_OFFSET = 12`), `SweepState::CryptPending`
+- **Every other datagram is sealed when it can be** (`SendPacket`,
+  `src/ServerUDPSocket.cpp#L351-L385`): a non-raw send to a server whose learned UDP
+  key is non-zero (learned under our current public IP, `Server.cpp#L300`) and which
+  supports UDP obfuscation is encrypted under that key with the client-to-server magic
+  `0x6B`, its marker byte never `0xE3`, no padding (`EncryptSendServer`), and sent to
+  the server's **advertised obfuscation UDP port**, not TCP + 4 or + 12. That covers
+  the plain-fallback `0x96`, the `0xA2` description ask, global search and
+  get-sources. Lugdunum's plain `0x97` is 34 bytes and carries no key; its crypt-ping
+  answer carries obfuscation UDP port 4675 and a key (bench run `1791422886`, opened
+  under the ping's challenge).
+
+rmule: `ServerUdpSeal` (`server_udp/seal.rs`) is the one send gate: `send` seals
+under the key `ServerUdpCrypt::key_under` offers (this run's `0x97` record, else the
+row's saved facts) to the obfuscation UDP port, or sends plain to TCP + 4;
+`send_crypt_ping` sends raw to TCP + 12. `StatusPingSweep::send_crypt_ping` (raw
+`[challenge LE][padding]`), `SweepState::CryptPending`
 (grace) → `Pinged` (answered) or plain fallback (timeout); `ServerUdpEngine`
 dual-path `receive` (`resolve_source` three-way map + `decrypt_datagram_server`
 keyed on `StatusChallenges::crypt_base_key` or the store's `ServerUDPKey`, gated on
 `ServerUdpFlags::supports_udp_obfuscation`). Consumes the datagram primitive
 (`datagram_key_server` / `decrypt_datagram_server`) — not re-derived. Capture-gated:
-`CoreConfig::server_udp_crypt()` derives from `peer_crypt` (ADR-0046;
-aMule's server-UDP-crypt-enabled check reads the one crypt preference too) and is
-**off by default** since `peer_crypt` is `None`; `public_ip_known` (aMule's
+the layer is armed by the one obfuscation policy, read at every sweep tick and
+every datagram so a live change reaches the next (ADR-0046; aMule's
+server-UDP-crypt-enabled check reads the one crypt preference too), and is
+**off by default** since `obfuscation` is `None`; `public_ip_known` (aMule's
 public-IP getter) is a shared flag the session raises on a High-ID login (the
 IDCHANGE `public_ip`), wired at capture-run enablement.
 

@@ -76,9 +76,9 @@ ADR-0044):
   ([BaseClient.cpp#L1176](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/BaseClient.cpp#L1176))
   and emit `FileCommentReceived`. Its collision with `OP_ASKSHAREDDENIEDANS 0x61`
   (`0xE3`) is resolved by keying on protocol and opcode together.
-- **`OP_CHANGE_CLIENT_ID 0x4D`** — parse `<newID4><newServerIP4>` and emit a
-  source-ID change; core applies it to the matching candidate-pool entry (ADR-0030),
-  refreshing its ID and server endpoint the way aMule updates `UserIDHybrid`
+- **`OP_CHANGE_CLIENT_ID 0x4D`** — parse `<newID4><newServerIP4>` and revise
+  the session's peer identity (an `IdentityRevised` of kind `ClientId`), the way aMule
+  updates `UserIDHybrid`; a High ID is taken only when it is the connection's own address
   ([ClientTCPSocket.cpp#L765](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/ClientTCPSocket.cpp#L765)).
   Ignoring it would leave source records stale and break later dials.
 

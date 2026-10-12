@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use rmule_net::peer::ConnectOptions;
 use rmule_net::peer::PeerListener;
-use rmule_peer::PeerCloseReason;
 use rmule_peer::PeerEvent;
+use rmule_peer::{ConnectionEvent, PeerCloseReason};
 use rmule_primitives::{Ed2kText, UserHash};
 use rmule_testkit::FakeDialer;
 use rmule_testkit::peer_session::loopback_ctx;
@@ -47,12 +47,12 @@ async fn accept_identifies_dialer_and_replies_hello_answer() {
 
     let mut identity = None;
     while let Some(event) = conn.next_event().await {
-        if let PeerEvent::PeerIdentified { identity: id } = event {
+        if let PeerEvent::Connection(ConnectionEvent::Identified { identity: id }) = event {
             identity = Some(id);
             break;
         }
     }
-    let identity = identity.expect("PeerIdentified arrived");
+    let identity = identity.expect("Identified arrived");
     assert_eq!(identity.user_hash(), user_hash);
     assert_eq!(
         identity.nickname().map(Ed2kText::to_display_string),
@@ -83,7 +83,7 @@ async fn inbound_hello_timeout_closes_when_dialer_silent() {
 
     let mut saw_timeout = false;
     while let Some(event) = conn.next_event().await {
-        if let PeerEvent::Disconnected { reason } = event {
+        if let PeerEvent::Connection(ConnectionEvent::Disconnected { reason }) = event {
             saw_timeout = matches!(reason, PeerCloseReason::HelloTimeout);
             break;
         }

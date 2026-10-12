@@ -17,7 +17,7 @@ use crate::adapters::{
     KadRuntimeFactory, PeerTransferService, ServeRuntimeService, SourceLookupService,
 };
 use crate::service::activity::WaitingSearch;
-use crate::service::{CoreCommandRejectReason, CoreEvent, SearchCommand, SearchEvent, SearchId};
+use crate::service::{CoreCommandRejectReason, CoreEvent, SearchCommand, SearchEvent};
 
 use super::{CoreActor, send_event};
 
@@ -35,8 +35,7 @@ where
     pub(super) async fn on_search_command(&mut self, command: SearchCommand) {
         match command {
             SearchCommand::StartSearch { search_id, .. }
-                if self.activities.searches.contains_key(&search_id)
-                    || self.search_waits(search_id) =>
+                if self.activities.searches.holds(search_id) =>
             {
                 send_event(
                     &self.evt_tx,
@@ -61,14 +60,7 @@ where
                 ..
             } => self.start_related_search(search_id, query).await,
             SearchCommand::MoreResults { search_id } => {
-                // A full channel is a request already on its way: the second
-                // would only be refused.
-                let forwarded = self
-                    .activities
-                    .searches
-                    .get(&search_id)
-                    .is_some_and(|active| active.more_tx.try_send(()).is_ok());
-                if !forwarded {
+                if !self.activities.searches.ask_more(search_id) {
                     send_event(
                         &self.evt_tx,
                         SearchEvent::SearchMoreRefused { search_id }.into(),
@@ -76,25 +68,8 @@ where
                     .await;
                 }
             }
-            SearchCommand::CancelSearch { search_id } if self.search_waits(search_id) => {
-                self.activities
-                    .waiting_searches
-                    .retain(|waiting| waiting.search_id != search_id);
-                send_event(
-                    &self.evt_tx,
-                    SearchEvent::SearchCancelled { search_id }.into(),
-                )
-                .await;
-            }
             SearchCommand::CancelSearch { search_id } => {
-                if let Some(mut active) = self.activities.searches.remove(&search_id) {
-                    // The server request, if out, keeps its place on the link;
-                    // its answer's rows reach whichever live searches they
-                    // prove, and none of them is this one any more.
-                    active.stop_global();
-                    let _ = active.cancel_tx.send(true);
-                    let _ = active.handle.await;
-                } else {
+                if !self.activities.searches.stop(search_id, &self.evt_tx).await {
                     send_event(
                         &self.evt_tx,
                         CoreEvent::CommandRejected {
@@ -105,14 +80,6 @@ where
                 }
             }
         }
-    }
-
-    /// Whether `search_id` names a search still waiting for a session.
-    fn search_waits(&self, search_id: SearchId) -> bool {
-        self.activities
-            .waiting_searches
-            .iter()
-            .any(|waiting| waiting.search_id == search_id)
     }
 }
 

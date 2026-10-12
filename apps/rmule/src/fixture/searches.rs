@@ -3,7 +3,6 @@
 use std::collections::BTreeMap;
 
 use ratatui::crossterm::event::KeyCode;
-use rmule_core::{AppConfigStore, ClientCredentials};
 use rmule_primitives::{Ed2kText, FileHash, SearchResult};
 
 use crate::state::{SearchPane, SearchStatus, SessionConfig, UiState};
@@ -94,12 +93,9 @@ pub(crate) fn three_tier_results() -> Vec<SearchResult> {
 /// A state whose session config is complete, so a search commits for real
 /// instead of flashing the honest reason.
 pub(crate) fn session_state() -> UiState {
-    let store = rmule_core::DurableAppConfig::new(rmule_testkit::memory_store());
-    let identity = store.ensure_identity().expect("identity");
     UiState {
         session: Some(SessionConfig {
             server: Some(endpoint("srv.example", 4661)),
-            credentials: ClientCredentials::from(identity),
             download_dir: Some(std::path::PathBuf::from("/tmp/dl")),
         }),
         ..UiState::default()

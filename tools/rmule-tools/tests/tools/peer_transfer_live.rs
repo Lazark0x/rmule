@@ -12,7 +12,10 @@
 use std::time::Duration;
 
 use rmule_net::peer::{ConnectOptions, Connection};
-use rmule_peer::{PartRanges, PeerCommand, PeerEvent, PeerHandshakeContext};
+use rmule_peer::{
+    ConnectionEvent, PartRanges, PeerCommand, PeerEvent, PeerHandshakeContext, RequesterCommand,
+    RequesterEvent,
+};
 use rmule_primitives::{
     ClientId, ClientIdentity, ED2K_PART_SIZE, Ed2kLink, Ed2kText, Ipv4Endpoint, PeerEndpoint,
     UserHash,
@@ -48,6 +51,8 @@ async fn live_transfer_reaches_hash_set_received() {
     let ctx = PeerHandshakeContext {
         identity,
         client_id: ClientId::from_u32(0x10000001),
+        ed2k_client_id: ClientId::from_u32(0x10000001),
+        public_ip: None,
         connected_server: None,
     };
     let options = ConnectOptions {
@@ -79,19 +84,19 @@ async fn live_transfer_reaches_hash_set_received() {
             continue;
         };
         match evt {
-            PeerEvent::PeerIdentified { .. } => {
+            PeerEvent::Connection(ConnectionEvent::Identified { .. }) => {
                 identified = true;
-                conn.send(PeerCommand::RequestParts {
+                conn.send(PeerCommand::Requester(RequesterCommand::RequestParts {
                     file_hash: file.file_hash,
                     file_size: file.size,
                     ranges,
-                })
+                }))
                 .await
                 .ok();
             }
-            PeerEvent::FileProbed { .. } => probed = true,
-            PeerEvent::HashSetReceived { .. } => hash_set = true,
-            PeerEvent::Disconnected { reason } => {
+            PeerEvent::Requester(RequesterEvent::FileProbed { .. }) => probed = true,
+            PeerEvent::Requester(RequesterEvent::HashSetReceived { .. }) => hash_set = true,
+            PeerEvent::Connection(ConnectionEvent::Disconnected { reason }) => {
                 panic!("peer disconnected: {reason:?}");
             }
             _ => {}
@@ -99,7 +104,7 @@ async fn live_transfer_reaches_hash_set_received() {
     }
     let _ = conn.shutdown().await;
 
-    assert!(identified, "PeerIdentified arrived");
+    assert!(identified, "Identified arrived");
     assert!(probed, "FileProbed arrived");
     assert!(hash_set, "HashSetReceived arrived within 30s");
 }
