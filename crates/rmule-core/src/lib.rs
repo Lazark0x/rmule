@@ -113,8 +113,11 @@ mod reachability;
 mod registry;
 mod registry_check;
 mod scheduler;
+// The Served Downloads (ADR-0113): the downloads that answer a peer's probes
+// and offer their verified parts, written under one lease at a time.
 mod search;
 mod serve;
+mod served_downloads;
 mod server_capabilities;
 /// The managed server list: model, store seam, and server.met acquisition
 /// (ADR-0080).
@@ -214,6 +217,7 @@ pub use rmule_peer::natt::{OwnMapping, PortPrediction};
 pub use rmule_peer::{HelloRefusal, HelloRefusalCode};
 pub use scheduler::DownloadScheduler;
 pub use search::{KadKeywordSink, MORE_RESULTS_ASKS, RelatedSearchRefusal, ServerMoreResults};
+pub use served_downloads::PartialEnd;
 pub use server_session::build_peer_handshake_context;
 pub use service::{
     BuddyDialFailure, ClientCredentials, Core, CoreBuilder, CoreCommand, CoreCommandRejectReason,

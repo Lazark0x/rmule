@@ -1,0 +1,539 @@
+//! The **Served Downloads** (ADR-0113): every download larger than one part
+//! that is queued, running or paused, keyed by its file hash, and the
+//! actor-written **held back** set beside them. A Served Download belongs to
+//! its download and is never a Shared File Registry row; it is offered — a
+//! **Partial Share** — while its **Verified Range** holds a part, its part
+//! hash set is whole and it is not held back.
+//!
+//! One writer per entry at every instant, by a lease: the core actor holds it
+//! while the download is queued or paused, hands it to the run a start or a
+//! Resume spawns ([`ServedDownloads::hand_to_run`]) and takes it back once the
+//! run has ended ([`ServedDownloads::take_back`]). A run writes only through
+//! its [`RunLease`], and every write checks that the entry's holder is still
+//! that run, so a run the actor took the lease back from writes nothing. The
+//! held back set and an entry's end are the actor's alone.
+//!
+//! A run's write that changes whether its entry is offered bumps the **offer
+//! generation**; the actor selects on it, reads what moved
+//! ([`ServedDownloads::look`]) and fires its one share trigger. The actor's
+//! own changes it looks at in the same step that made them.
+
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::SystemTime;
+
+use rmule_peer::PartBitmap;
+use rmule_primitives::{ED2K_PART_SIZE, FileHash, PartHash, PartHashSet};
+use tokio::sync::watch;
+
+use crate::file_key::FileKey;
+use crate::{DownloadId, DownloadLifecycle, DurableDownloadRecord, VerifiedPartRecord};
+
+/// Why a Partial Share stopped being offered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PartialEnd {
+    /// The download completed; its registry row offers the file whole.
+    Completed,
+    /// The download was cancelled or failed; its own event says why.
+    Ended,
+    /// Its destination lies under a refused entry of the Shared Directory
+    /// List (ADR-0101).
+    HeldBack,
+    /// The part file is not the one the Verified Range named.
+    Changed,
+    /// The part file could not be read.
+    Unreadable,
+}
+
+/// Whether a download row is a Served Download: queued, active or paused,
+/// and larger than one part (aMule's `GetFileSize() > PARTSIZE`). A failed
+/// row's part file is in doubt; a file of one part has no part hash set and
+/// is shared by its completion alone.
+pub(crate) fn is_member(lifecycle: DownloadLifecycle, file_size: u64) -> bool {
+    matches!(
+        lifecycle,
+        DownloadLifecycle::Queued | DownloadLifecycle::Active | DownloadLifecycle::Paused
+    ) && file_size > ED2K_PART_SIZE
+}
+
+/// A part hash set holding every hash its file's size calls for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WholeSet(Arc<[PartHash]>);
+
+impl WholeSet {
+    /// `hashes` as the whole set of a `file_size`-byte file; `None` when they
+    /// are not as many as the size calls for (none held is not a set).
+    pub(crate) fn of(file_size: u64, hashes: &[PartHash]) -> Option<Self> {
+        let expected = PartHashSet::expected_hash_count(file_size).ok()?;
+        (expected > 0 && hashes.len() == expected).then(|| Self(hashes.into()))
+    }
+
+    /// The hashes in part order.
+    pub(crate) fn hashes(&self) -> &[PartHash] {
+        &self.0
+    }
+}
+
+/// The parts whose recorded hash equals the whole set's at their index: the
+/// only bytes the serve side reads from a part file.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct VerifiedRange(BTreeSet<u32>);
+
+impl VerifiedRange {
+    /// The range `records` hold against `set`. Without a whole set no part is
+    /// checked, so the range is empty.
+    pub(crate) fn of_records(set: Option<&WholeSet>, records: &[VerifiedPartRecord]) -> Self {
+        let Some(set) = set else {
+            return Self::default();
+        };
+        Self(
+            records
+                .iter()
+                .filter(|record| {
+                    set.hashes().get(record.part_index as usize) == Some(&record.part_hash)
+                })
+                .map(|record| record.part_index)
+                .collect(),
+        )
+    }
+
+    /// Whether part `part_index` lies inside the range.
+    pub(crate) fn holds(&self, part_index: u32) -> bool {
+        self.0.contains(&part_index)
+    }
+
+    /// Whether the range holds any part of the file.
+    pub(crate) fn holds_a_part(&self) -> bool {
+        !self.0.is_empty()
+    }
+
+    /// The status this range advertises, spelt as the download spells its
+    /// own ([`PartBitmap::downloader`]), so the two are one set.
+    pub(crate) fn status(&self, file_size: u64) -> PartBitmap {
+        PartBitmap::downloader(file_size, |part| self.holds(part.value()))
+    }
+}
+
+/// The file a Served Download's verified bytes are read from, as the writer
+/// that last held it read it through its handle. Memory only: every start
+/// re-reads the parts it vouches for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PartFileIdentity {
+    /// Which file it is.
+    pub(crate) key: FileKey,
+    /// Its length and modification time as the run left it; `None` while a
+    /// run writes it, when only the key is compared.
+    pub(crate) at_rest: Option<AtRest>,
+}
+
+/// A file's length and modification time with nobody writing it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AtRest {
+    /// Its length in bytes.
+    pub(crate) len: u64,
+    /// When it was last written.
+    pub(crate) modified: SystemTime,
+}
+
+impl PartFileIdentity {
+    /// The identity of the file `meta` describes, `key` its file key; at
+    /// rest when `at_rest`. `None` when the system keeps no modification time.
+    pub(crate) fn read(key: FileKey, meta: &std::fs::Metadata, at_rest: bool) -> Option<Self> {
+        let at_rest = if at_rest {
+            Some(AtRest {
+                len: meta.len(),
+                modified: meta.modified().ok()?,
+            })
+        } else {
+            None
+        };
+        Some(Self { key, at_rest })
+    }
+}
+
+/// Which of a download's two paths holds its verified bytes now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BytesAt {
+    /// The part file.
+    PartFile,
+    /// The finished file, in place at the final path.
+    FinalFile,
+}
+
+/// One Served Download as a reader sees it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Served {
+    /// The download it belongs to.
+    pub(crate) download_id: DownloadId,
+    /// The file's exact size.
+    pub(crate) file_size: u64,
+    /// The name the file is offered under: its destination's file name, the
+    /// name its registry row takes at completion.
+    pub(crate) name: String,
+    /// The part file.
+    pub(crate) part_path: PathBuf,
+    /// The destination.
+    pub(crate) final_path: PathBuf,
+    /// Which of the two holds the bytes now.
+    pub(crate) bytes_at: BytesAt,
+    /// The part hash set, once whole.
+    pub(crate) set: Option<WholeSet>,
+    /// The parts proven against the set.
+    pub(crate) range: VerifiedRange,
+    /// The file the range was read from, once a writer read it.
+    pub(crate) identity: Option<PartFileIdentity>,
+}
+
+impl Served {
+    /// The path the verified bytes are read from now.
+    pub(crate) fn bytes_path(&self) -> &Path {
+        match self.bytes_at {
+            BytesAt::PartFile => &self.part_path,
+            BytesAt::FinalFile => &self.final_path,
+        }
+    }
+}
+
+/// Who writes an entry now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Holder {
+    /// The core actor: the download is queued or paused, or its run ended.
+    Actor,
+    /// The run with this number.
+    Run(u64),
+}
+
+struct Entry {
+    served: Served,
+    holder: Holder,
+    /// Why a run's write withdrew the offer, until the actor looks.
+    withdrawn: Option<PartialEnd>,
+}
+
+/// What the actor's last look saw of a Served Download.
+#[derive(Clone, Copy)]
+struct Seen {
+    offered: bool,
+}
+
+#[derive(Default)]
+struct Book {
+    entries: HashMap<FileHash, Entry>,
+    held_back: HashSet<FileHash>,
+    /// The entries the actor ended since its last look, and why.
+    ended: HashMap<FileHash, PartialEnd>,
+    /// What the actor's last look saw.
+    seen: HashMap<FileHash, Seen>,
+}
+
+impl Book {
+    fn offered(&self, file_hash: FileHash) -> bool {
+        self.entries.get(&file_hash).is_some_and(|entry| {
+            entry.served.set.is_some()
+                && entry.served.range.holds_a_part()
+                && !self.held_back.contains(&file_hash)
+        })
+    }
+
+    /// The entry `lease` writes, while its run still holds it.
+    fn leased(&mut self, lease: &RunLease) -> Option<&mut Entry> {
+        self.entries
+            .get_mut(&lease.file_hash)
+            .filter(|entry| entry.holder == Holder::Run(lease.run))
+    }
+}
+
+/// One change the actor's look found since the last.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OfferChange {
+    /// A download became a Served Download.
+    Joined(FileHash),
+    /// A Served Download began to offer its parts.
+    Offered(FileHash),
+    /// A Partial Share stopped being offered.
+    Withdrawn(FileHash, PartialEnd),
+    /// A Served Download ended.
+    Left(FileHash),
+}
+
+/// The cell itself — cloned into the actor and every run's lease. A plain
+/// `std::sync::Mutex`: every section is a map update that never crosses an
+/// `.await`.
+#[derive(Clone)]
+pub(crate) struct ServedDownloads {
+    book: Arc<Mutex<Book>>,
+    offers: Arc<watch::Sender<u64>>,
+}
+
+impl Default for ServedDownloads {
+    fn default() -> Self {
+        Self {
+            book: Arc::default(),
+            offers: Arc::new(watch::channel(0).0),
+        }
+    }
+}
+
+impl ServedDownloads {
+    fn lock(&self) -> MutexGuard<'_, Book> {
+        self.book.lock().expect("served downloads mutex")
+    }
+
+    /// The offer generation, bumped by every run's write that changes
+    /// whether its entry is offered.
+    pub(crate) fn offer_changes(&self) -> watch::Receiver<u64> {
+        self.offers.subscribe()
+    }
+
+    /// Make `record`'s download a Served Download, held by the actor, with an
+    /// empty range and no identity, and `set` as its part hash set when it is
+    /// whole. `false` when the row is no member, or the file already has an
+    /// entry (the store admits one live download per file).
+    pub(crate) fn install(&self, record: &DurableDownloadRecord, set: &[PartHash]) -> bool {
+        if !is_member(record.lifecycle(), record.file_size()) {
+            return false;
+        }
+        let paths = record.paths();
+        let served = Served {
+            download_id: record.id(),
+            file_size: record.file_size(),
+            name: paths
+                .final_path()
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            part_path: paths.part_path().to_path_buf(),
+            final_path: paths.final_path().to_path_buf(),
+            bytes_at: BytesAt::PartFile,
+            set: WholeSet::of(record.file_size(), set),
+            range: VerifiedRange::default(),
+            identity: None,
+        };
+        let mut book = self.lock();
+        if book.entries.contains_key(&record.file_hash()) {
+            return false;
+        }
+        book.entries.insert(
+            record.file_hash(),
+            Entry {
+                served,
+                holder: Holder::Actor,
+                withdrawn: None,
+            },
+        );
+        true
+    }
+
+    /// Hand the entry of `file_hash` to run `run`: its lease, or `None` when
+    /// there is no entry or the actor does not hold it.
+    pub(crate) fn hand_to_run(&self, file_hash: FileHash, run: u64) -> Option<RunLease> {
+        let mut book = self.lock();
+        let entry = book.entries.get_mut(&file_hash)?;
+        if entry.holder != Holder::Actor {
+            return None;
+        }
+        entry.holder = Holder::Run(run);
+        Some(RunLease {
+            cell: self.clone(),
+            file_hash,
+            run,
+        })
+    }
+
+    /// Take the entry of `file_hash` back from run `run`, which has ended or
+    /// been told to; from here its lease writes nothing.
+    pub(crate) fn take_back(&self, file_hash: FileHash, run: u64) {
+        if let Some(entry) = self.lock().entries.get_mut(&file_hash)
+            && entry.holder == Holder::Run(run)
+        {
+            entry.holder = Holder::Actor;
+        }
+    }
+
+    /// End the Served Download of `download_id` for `cause`, which the next
+    /// look reports. `false` when it has no entry or a run still holds it.
+    pub(crate) fn end(&self, download_id: DownloadId, cause: PartialEnd) -> bool {
+        let mut book = self.lock();
+        let Some(file_hash) = book
+            .entries
+            .iter()
+            .find(|(_, entry)| entry.served.download_id == download_id)
+            .map(|(file_hash, _)| *file_hash)
+        else {
+            return false;
+        };
+        if book.entries[&file_hash].holder != Holder::Actor {
+            return false;
+        }
+        book.entries.remove(&file_hash);
+        book.held_back.remove(&file_hash);
+        book.ended.insert(file_hash, cause);
+        true
+    }
+
+    /// Hold back `file_hash`'s entry, or release it.
+    pub(crate) fn hold_back(&self, file_hash: FileHash, held: bool) {
+        let mut book = self.lock();
+        if !held {
+            book.held_back.remove(&file_hash);
+        } else if book.entries.contains_key(&file_hash) {
+            book.held_back.insert(file_hash);
+        }
+    }
+
+    /// Every entry's destination, for the refused-folder rule.
+    pub(crate) fn destinations(&self) -> Vec<(FileHash, PathBuf)> {
+        self.lock()
+            .entries
+            .iter()
+            .map(|(file_hash, entry)| (*file_hash, entry.served.final_path.clone()))
+            .collect()
+    }
+
+    /// What changed since the actor's last look, each change once: the
+    /// membership and the offer of every entry.
+    pub(crate) fn look(&self) -> Vec<OfferChange> {
+        let mut guard = self.lock();
+        let book = &mut *guard;
+        let mut changes = Vec::new();
+        let mut seen = HashMap::with_capacity(book.entries.len());
+        let mut hashes: Vec<FileHash> = book.entries.keys().copied().collect();
+        hashes.sort_unstable();
+        for file_hash in hashes {
+            let offered = book.offered(file_hash);
+            let entry = book.entries.get_mut(&file_hash).expect("listed above");
+            let withdrawn = entry.withdrawn.take();
+            match book.seen.get(&file_hash) {
+                None => {
+                    changes.push(OfferChange::Joined(file_hash));
+                    if offered {
+                        changes.push(OfferChange::Offered(file_hash));
+                    }
+                }
+                Some(was) if offered && !was.offered => {
+                    changes.push(OfferChange::Offered(file_hash));
+                }
+                Some(was) if !offered && was.offered => {
+                    let cause = if book.held_back.contains(&file_hash) {
+                        PartialEnd::HeldBack
+                    } else {
+                        withdrawn.unwrap_or(PartialEnd::Changed)
+                    };
+                    changes.push(OfferChange::Withdrawn(file_hash, cause));
+                }
+                Some(_) => {}
+            }
+            seen.insert(file_hash, Seen { offered });
+        }
+        let mut left: Vec<(FileHash, Seen)> = book
+            .seen
+            .iter()
+            .filter(|(file_hash, _)| !seen.contains_key(file_hash))
+            .map(|(file_hash, was)| (*file_hash, *was))
+            .collect();
+        left.sort_unstable_by_key(|(file_hash, _)| *file_hash);
+        for (file_hash, was) in left {
+            if was.offered {
+                let cause = book
+                    .ended
+                    .get(&file_hash)
+                    .copied()
+                    .unwrap_or(PartialEnd::Ended);
+                changes.push(OfferChange::Withdrawn(file_hash, cause));
+            }
+            changes.push(OfferChange::Left(file_hash));
+        }
+        book.ended.clear();
+        book.seen = seen;
+        changes
+    }
+
+    /// The file hashes offered now, in hash order.
+    pub(crate) fn offered(&self) -> Vec<FileHash> {
+        let book = self.lock();
+        let mut offered: Vec<FileHash> = book
+            .entries
+            .keys()
+            .copied()
+            .filter(|file_hash| book.offered(*file_hash))
+            .collect();
+        offered.sort_unstable();
+        offered
+    }
+
+    /// The Served Download of `file_hash`, as it stands.
+    pub(crate) fn served(&self, file_hash: FileHash) -> Option<Served> {
+        self.lock()
+            .entries
+            .get(&file_hash)
+            .map(|entry| entry.served.clone())
+    }
+
+    /// Run `write` on the entry `lease` holds and bump the offer generation
+    /// when it changed whether the entry is offered. `false` when the lease's
+    /// run no longer holds the entry.
+    fn write(&self, lease: &RunLease, write: impl FnOnce(&mut Served)) -> bool {
+        let mut guard = self.lock();
+        let book = &mut *guard;
+        let was = book.offered(lease.file_hash);
+        let Some(entry) = book.leased(lease) else {
+            return false;
+        };
+        write(&mut entry.served);
+        let now = book.offered(lease.file_hash);
+        if was && !now {
+            let entry = book.leased(lease).expect("written above");
+            entry.withdrawn = Some(PartialEnd::Changed);
+        }
+        drop(guard);
+        if was != now {
+            self.offers.send_modify(|generation| *generation += 1);
+        }
+        true
+    }
+}
+
+/// A run's lease on its download's entry: the only way a run writes it, and
+/// good only while the actor has not taken it back.
+pub(crate) struct RunLease {
+    cell: ServedDownloads,
+    file_hash: FileHash,
+    run: u64,
+}
+
+impl RunLease {
+    /// The file the lease is on.
+    pub(crate) const fn file_hash(&self) -> FileHash {
+        self.file_hash
+    }
+
+    /// Rule the Verified Range from the part hash set in force and the parts
+    /// the store records: `set` becomes the entry's set when it is whole.
+    pub(crate) fn record_range(&self, set: &[PartHash], records: &[VerifiedPartRecord]) -> bool {
+        self.cell.write(self, |served| {
+            if let Some(whole) = WholeSet::of(served.file_size, set) {
+                served.set = Some(whole);
+            }
+            served.range = VerifiedRange::of_records(served.set.as_ref(), records);
+        })
+    }
+
+    /// The file the run holds, as it read it through its handle.
+    pub(crate) fn record_identity(&self, identity: PartFileIdentity) -> bool {
+        self.cell
+            .write(self, |served| served.identity = Some(identity))
+    }
+
+    /// The finished file is in place at the final path, `identity` the file
+    /// that holds the bytes now.
+    pub(crate) fn bytes_in_place(&self, identity: Option<PartFileIdentity>) -> bool {
+        self.cell.write(self, |served| {
+            served.bytes_at = BytesAt::FinalFile;
+            served.identity = identity;
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests;
