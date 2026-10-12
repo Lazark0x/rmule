@@ -363,16 +363,12 @@ impl SearchResult {
     /// the norm; the extension is the workhorse.
     #[must_use]
     pub fn file_class(&self) -> Option<Ed2kFileClass> {
-        self.primary_name()
-            .try_as_str()
-            .ok()
-            .and_then(Ed2kFileClass::from_file_name)
-            .or_else(|| {
-                self.file_type
-                    .as_ref()
-                    .and_then(|tag| tag.try_as_str().ok())
-                    .and_then(Ed2kFileClass::from_type_tag)
-            })
+        Ed2kFileClass::from_name_bytes(self.primary_name().as_bytes()).or_else(|| {
+            self.file_type
+                .as_ref()
+                .and_then(|tag| tag.try_as_str().ok())
+                .and_then(Ed2kFileClass::from_type_tag)
+        })
     }
 
     /// Every tag the answer carried that this crate does not type, kept so a

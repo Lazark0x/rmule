@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rmule_primitives::{Ed2kFileLink, Ed2kText, FileHash, PartHash, ServerEndpoint};
+use rmule_primitives::{Ed2kFileClass, Ed2kFileLink, Ed2kText, FileHash, PartHash, ServerEndpoint};
 use serde::{Deserialize, Serialize};
 
 use crate::{DownloadFailure, DownloadId, VerificationAuthority};
@@ -156,6 +156,39 @@ impl DownloadMetadata {
             origin: DownloadMetadataOrigin::Unknown,
         }
     }
+
+    /// The name's eD2k File Class, read from its bytes; `None` for an empty
+    /// or unclassifiable name.
+    #[must_use]
+    pub fn file_class(&self) -> Option<Ed2kFileClass> {
+        Ed2kFileClass::from_name_bytes(self.name.as_bytes())
+    }
+
+    /// Whether the download is in the **Streaming Priority** set — video,
+    /// audio or archive — which the scheduler serves head and tail first and
+    /// through a sequential window (ADR-0112). aMule's preview priority is
+    /// video and archive behind its `PreviewPrio` preference
+    /// (`PartFile.cpp:1941-1945`); rmule adds audio, with no switch, so every
+    /// Previewable download is fetched head first. A CD image is not an
+    /// archive (`OtherFunctions.cpp:125-138`).
+    #[must_use]
+    pub fn is_streaming_priority(&self) -> bool {
+        matches!(
+            self.file_class(),
+            Some(Ed2kFileClass::Video | Ed2kFileClass::Audio | Ed2kFileClass::Archive)
+        )
+    }
+
+    /// Whether the download is **Previewable** — video or audio, aMule's
+    /// preview gate (`PartFile.cpp:3795-3797`): a player can open its file
+    /// while it runs (ADR-0114). A front end reads this, never re-derives it.
+    #[must_use]
+    pub fn is_previewable(&self) -> bool {
+        matches!(
+            self.file_class(),
+            Some(Ed2kFileClass::Video | Ed2kFileClass::Audio)
+        )
+    }
 }
 
 /// One part that passed its hash check and is on disk. The store keeps these
@@ -285,4 +318,44 @@ pub(crate) struct DurableDownloadRecordInput {
     pub lifecycle: DownloadLifecycle,
     pub verification_authority: Option<VerificationAuthority>,
     pub failure: Option<DownloadFailure>,
+}
+
+#[cfg(test)]
+mod tests {
+    use rmule_primitives::Ed2kText;
+
+    use super::{DownloadMetadata, DownloadMetadataOrigin};
+
+    fn named(name: &[u8]) -> DownloadMetadata {
+        DownloadMetadata {
+            name: Ed2kText::from_bytes(name.to_vec()),
+            size: 1,
+            origin: DownloadMetadataOrigin::Link,
+        }
+    }
+
+    /// The two sets the scheduler and the Preview control read: video and
+    /// audio are both, an archive is Streaming Priority only, a CD image and
+    /// everything else neither; a name that is not UTF-8 keeps its class.
+    #[test]
+    fn previewable_and_streaming_priority_follow_the_name() {
+        let cases: [(&[u8], bool, bool); 8] = [
+            (b"film.MKV", true, true),
+            (b"song.mp3", true, true),
+            (b"pack.rar", false, true),
+            (b"disc.iso", false, false),
+            (b"notes.txt", false, false),
+            (b"README", false, false),
+            (b".avi", false, false),
+            (b"Cr\xe9dits.avi", true, true),
+        ];
+        for (name, previewable, priority) in cases {
+            let metadata = named(name);
+            assert_eq!(metadata.is_previewable(), previewable, "{name:?}");
+            assert_eq!(metadata.is_streaming_priority(), priority, "{name:?}");
+        }
+        let unnamed = DownloadMetadata::unnamed(1);
+        assert!(!unnamed.is_previewable());
+        assert!(!unnamed.is_streaming_priority());
+    }
 }
