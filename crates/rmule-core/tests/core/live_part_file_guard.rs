@@ -1,5 +1,5 @@
-//! Who may touch a live part file (ADR-0093, "The part file under a running
-//! download"): every path in rmule that removes, renames or clears
+//! Who may touch a live part file (ADR-0094, "The run holds its part
+//! file"): every path in rmule that removes, renames or clears
 //! anything in the download directory, run beside a download whose run holds
 //! its part file — and that part file is still the same file, with the same
 //! bytes, and its run never reports it lost.

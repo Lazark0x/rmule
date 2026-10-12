@@ -30,8 +30,8 @@ impl ContentFileStore {
     /// Write `bytes` into the `.part` file at absolute `offset`, creating the
     /// file and its parent directory if needed — for a part file written
     /// outside a run (a test's or a tool's seed). A run never writes by path:
-    /// it writes through its held handle (ADR-0093, "The part file under a
-    /// running download"). Never truncates, and flushed before returning.
+    /// it writes through its held handle (ADR-0094, "The run holds its part
+    /// file"). Never truncates, and flushed before returning.
     pub async fn write_verified_part(
         paths: &DownloadPaths,
         offset: u64,

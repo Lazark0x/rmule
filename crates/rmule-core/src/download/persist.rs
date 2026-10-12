@@ -4,8 +4,8 @@
 //! Both are fallible effects, so the sans-I/O brain asks for them as decisions
 //! and resumes on the result.
 //!
-//! The part file is the operator's to delete (ADR-0093, "The part file under a
-//! running download"). A run that finds the file at its path gone, replaced
+//! The part file is the operator's to delete (ADR-0094, "The run holds its
+//! part file"). A run that finds the file at its path gone, replaced
 //! or cut short says what that cost ([`DownloadEvent::PartFileLost`]), drops
 //! the verified parts it lost, and never writes into a file nobody can reach:
 //! gone or replaced fails the download, cut short repairs it in place — the

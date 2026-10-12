@@ -47,8 +47,10 @@ and nothing left to request from this source
    download while its slot is granted or active sends `0x56` before closing. This covers
    aMule's first two triggers; closing right after is safe because aMule's receipt path
    expects no follow-up.
-2. **No needed parts.** A worker with a granted slot and no assignable part sends `0x56`,
-   gives up the slot and stays connected in a slotless **standby** state. When a part
+2. **No needed parts.** A worker with a granted slot and no assignable part, while it
+   advertises a part we lack, sends `0x56`, gives up the slot and stays connected in a
+   slotless **standby** state; one advertising no part we lack sends `0x56` and is retired
+   `NoNeededParts` (ADR-0112). When a part
    frees, it re-runs the full ask cycle from the start-upload request. Holding one of the
    counterparty's few upload slots while requesting nothing is the incivility aMule's
    `DS_NONEEDEDPARTS` cancel avoids.

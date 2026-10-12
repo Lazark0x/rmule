@@ -57,8 +57,8 @@ impl DiagnosticsState {
         row.dial_ends.clear();
     }
 
-    /// `parts` were lost from the part file (ADR-0093, "The part file under a
-    /// running download"): the picture shows them missing at once, so what
+    /// `parts` were lost from the part file (ADR-0094, "The run holds its
+    /// part file"): the picture shows them missing at once, so what
     /// the operator reads is what the file holds.
     pub fn parts_lost(&self, download_id: DownloadId, parts: &[u32]) {
         let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");

@@ -1,4 +1,4 @@
-//! The part file under a running download (ADR-0094):
+//! The run holds its part file (ADR-0094):
 //! the part file is the operator's to delete. The run holds it from its first
 //! act, and at the next part it notices that the file at its path is gone,
 //! replaced or cut short. It says what that cost, drops the parts it lost,

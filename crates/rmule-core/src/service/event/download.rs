@@ -70,8 +70,8 @@ pub enum DownloadEvent {
         damaged: Vec<crate::PartFault>,
     },
     /// The run found that the file at its part file's path is not the file it
-    /// holds, or no longer all of it (ADR-0093, "The part file under a running
-    /// download"): removed, replaced or cut short. The verified parts it cost
+    /// holds, or no longer all of it (ADR-0094, "The run holds its part
+    /// file"): removed, replaced or cut short. The verified parts it cost
     /// are dropped and are to be fetched again; a removed or replaced file
     /// fails the download (`PartFileMissing`) rather than being recreated, and
     /// a file cut short keeps its run going. Told even when the store cannot

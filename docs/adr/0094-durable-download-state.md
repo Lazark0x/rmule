@@ -22,6 +22,7 @@ attach. aMule likewise persists only a part file's paused bit (`PartFile.cpp:105
 | Downloading / Waiting | `Active` | yes, or queued to start | started again by core, paced |
 | Waiting (never started) | `Queued` | no | started by core, paced |
 | Paused | `Paused` | no | reported, not started |
+| Completing | `Completing` | yes | started again by core, straight to the move (ADR-0115) |
 | Failed | `Failed` | no | reported, not started |
 | Completed | `Completed` | no | listed until cleared; the file is in the Shared File Registry |
 | Cancelled | `Cancelled` | no | not reported |
@@ -74,7 +75,9 @@ never its message). A row failed before the store carried a reason says "reason 
   over: its disk or permissions may return. `DownloadRestarted` says `Continued` or `StartedOver`
   and what it cost. Only the operator's Restart starts over; attach and a paused download's
   Resume still fail, so a download the operator meant to drop by deleting its part file does not
-  come back on its own. A Restart that fails again leaves the row as it was and says why.
+  come back on its own. A Restart that fails again leaves the row as it was and says why. A
+  download that failed while completing (`CompletedFileNotMoved`, `CompletionCopyFailed`)
+  continues: its run finds every part verified and moves the file again (ADR-0115).
 
 **The run holds its part file.** It opens the file once — creating it for a download with no
 part recorded — and writes every part through that handle, never re-opening by path. Before each
@@ -91,14 +94,17 @@ file's handle stays writable on macOS and Linux, so an error is never the signal
 - **A whole-file hash failing at finalize** re-checks every recorded part, drops those that fail,
   and goes on; when no part can be named, every recorded part is dropped.
 
-Who may touch a live part file: only its run's held handle writes it; finalize renames the run's
-own `.part` after the run releases its handle; cancel unlinks the row's `.part` only after the run
+Who may touch a live part file: only its run's held handle writes it; completion moves the run's
+own `.part` after the run releases its handle — a rename, or across volumes a copy to a
+dot-prefixed file beside its destination first (ADR-0115); cancel unlinks the row's `.part` only after the run
 is joined; a starting-over Restart unlinks only for a `Failed` row with no run; clearing completed
 downloads, the directory scan and its watch, the rename carry, spare copies, the Registry Check,
 the Had Set and serve reads never open a file under the download directory for writing.
 `ContentFileStore::write_verified_part` writes by path and is called only by tests and tools.
 rmule's other file writes (`clients.met`, `nodes.dat`, the Run Log, capture taps) land in the
-data directory or a capture directory.
+data directory or a capture directory. The run's Hole Probe writes and removes one dot-prefixed
+file of its own beside the `.part`, and the run punches the gaps its own writes open through its
+held handle (ADR-0111).
 
 **Clearing a completed download.** A completed download stays in Transfers until the operator
 clears it, across restarts: attach reports every completed record, so the list shows exactly what

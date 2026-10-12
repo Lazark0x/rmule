@@ -1,5 +1,5 @@
-//! The **Held Part File** (ADR-0093, "The part file under a running
-//! download"): a run opens its `.part` file once and writes every verified
+//! The **Held Part File** (ADR-0094, "The run holds its part
+//! file"): a run opens its `.part` file once and writes every verified
 //! part through that one handle, never re-opening by path. A removed file's
 //! handle stays valid and writes into it succeed — into a file nobody can
 //! reach — so an I/O error is never the signal. Before each part is written,

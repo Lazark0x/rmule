@@ -53,7 +53,7 @@ What a view did with an input it was offered: ignored it (bubble on to the globa
 _Avoid_: event result, handled flag
 
 **Sentence**:
-What the Networks log, the status bar's note and a flash hold: a line written from a code in a words module — `rmule-words`, whose glossary owns the term, or the TUI's own (`crate::words`, which re-exports the shared modules under the same names and adds the sentences that word the TUI's own types: its command line, a run with no core, a Settings edit, a server-health edge, a search entry's paging, the share set's tally). `scripts/guards.sh` refuses a sentence made, or a Debug format, anywhere else in the TUI's source outside tests and `tracing` calls, and a glyph golden refuses to render `Some(`, `None`, a struct's braces, a Rust path or a byte array.
+What the Networks log, the status bar's note and a flash hold: a line written from a code in a words module — `rmule-words`, whose glossary owns the term, or the TUI's own (`crate::words`, which re-exports the shared modules under the same names and adds the sentences that word the TUI's own types: its command line, a run with no core, a Settings edit, a server-health edge, a search entry's paging, the share set's tally, a preview's reasons and notes). `scripts/guards.sh` refuses a sentence made, or a Debug format, anywhere else in the TUI's source outside tests and `tracing` calls, and a glyph golden refuses to render `Some(`, `None`, a struct's braces, a Rust path or a byte array.
 _Avoid_: message, string, label (a label is a word in a cell; a sentence is a line said)
 
 **Off-screen line**:
@@ -97,3 +97,11 @@ _Avoid_: search tab (the Search tab holds them), search history, saved search, s
 The Settings preference, off by default, under which the app sends at start the same `ConnectToServer` the `c` key sends, to the server last connected to (recorded on every `Connected` edge) — once, to that server alone (ADR-0095, "Connecting is the operator's act"). Nothing else in the app dials a server; with it off, a start connects to nothing and the Kad join waits for the operator's connect.
 A session lost later is a different matter: core re-makes it while the operator's intent stands (**Server Intent**) — Autoconnect is only what dials at start.
 _Avoid_: auto-reconnect (that is the Server Intent, not this preference), connect on startup to any server (aMule walks the list; rmule does not)
+
+**Preview Ready**:
+A Transfers row the Preview action acts on (ADR-0114): core says the download is **Previewable** (`DownloadMetadata::is_previewable()`, read, never re-derived) and it is complete or its diagnostics row has part 0 `Verified`. A resting row counts, so a restored download is ready before it resumes, and so is a failed one that kept the part. Read from the row each frame, never stored; the tail never gates.
+_Avoid_: playable, preview available (aMule's `PreviewAvailable`, a byte-range query), head and tail verified
+
+**Player Command**:
+The operator's player: one text under the TUI's own key `player_command`, edited on the Settings tab, unset by default — no `open`/`xdg-open`/`start` default, since those resolve `.part`, not the media inside. Split POSIX-style at launch (`shlex`, no shell); every `%PARTFILE` inside a word becomes the **Download File Path**, else the path goes last; the first word is the program and never holds `%PARTFILE`. Read at every launch.
+_Avoid_: video player path, command line (a line implies a shell), viewer

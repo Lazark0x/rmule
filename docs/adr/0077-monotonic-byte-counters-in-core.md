@@ -35,6 +35,11 @@ statistics API:
   (`KnownFile.cpp:76-98`): upload requests, slots granted and bytes served, for this
   run and all time (`ShareTotals`).
 
+**A storage reading on the same row is not a counter.** `DownloadDiagnostics::allocated_bytes`
+(ADR-0111) is what the filesystem reserved for the `.part`, read after a write: it falls when a
+gap is punched, may exceed the file's length, and is never a total or a rate. Facts only, no
+ratio, kept in the shared `DiagnosticsState`.
+
 **Rows are transient; totals are not.** A download row retires on teardown and an
 upload row when its slot is released, but nothing subtracts from the session totals,
 and a byte counted after its row is gone still lands there. A consumer polling more

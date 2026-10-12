@@ -185,7 +185,7 @@ impl DurableDownloadRepository {
     }
 
     /// Drop the verified-part records of `parts`, which the part file no
-    /// longer holds (ADR-0094, "The part file under a running download"), and
+    /// longer holds (ADR-0094, "The run holds its part file"), and
     /// return the records dropped, so the caller can say what they cost.
     ///
     /// # Errors

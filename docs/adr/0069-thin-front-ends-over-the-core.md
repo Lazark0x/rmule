@@ -44,11 +44,11 @@ the `CoreSettings` value and a synchronous handle on it — `Core::settings()` o
 running core, or opened on the store alone where no core runs (the CLI's `config`
 subcommands).
 
-- **The key split.** Core's keys are the download directory, obfuscation, port mapping
-  (with the learned method and the PCP secret), the Kad UDP Key, `Remember peers`, the
-  Dead Server Limit, the Announce Policy, both mirror URLs with their fetch switches,
-  the nickname and both ports. The nickname and the ports stay in the identity rows;
-  the handle hides where each value is kept. `CoreSettings::credentials` turns the
+- **The key split.** Core's keys are the download directory, the Temp Directory,
+  obfuscation, port mapping (with the learned method and the PCP secret), the Kad UDP
+  Key, `Remember peers`, the Dead Server Limit, the Announce Policy, both mirror URLs
+  with their fetch switches, the nickname and both ports. The nickname and the ports stay
+  in the identity rows; the handle hides where each value is kept. `CoreSettings::credentials` turns the
   nickname and the TCP port into what every login, hello and Kad dial presents. Core
   reads them itself, so no command carries credentials and a front end never composes
   them from the rows; `StartServing` names only where to listen. A test or a tool
@@ -63,9 +63,11 @@ subcommands).
   start when there is none or the guards refuse it, so no front end composes a path and
   no download finishes where core would not share it. `DownloadCompleted` names the
   final path core placed the file at, so a front end shows where it landed without
-  composing one. Five keys are the front end's: the theme,
-  the table sorts, the Run Log level, connect at start and the last server — the last
-  two because connecting is the operator's act (ADR-0095). They stay in the one
+  composing one. `DownloadQueued` and `DownloadRecovered` name where a download's bytes
+  lie now (ADR-0114). Six keys are the front end's: the theme, the table sorts, the Run
+  Log level, connect at start and the last server — those two because connecting is the
+  operator's act (ADR-0095) — and the Player Command, because core never runs a player
+  (ADR-0114). They stay in the one
   `preferences` table under the same key strings. Core keeps them through a raw
   key/value surface that refuses a key of core's own, and never interprets one; each
   front end names its keys in an enum of its own.
@@ -92,6 +94,7 @@ subcommands).
 | `Remember peers` | now: the next seed write keeps that many |
 | Dead Server Limit, Announce Policy | now: every server is judged again, and the live session follows |
 | Download directory | now: core starts its scan, with the answer the front end's confirm gave (ADR-0101); a core scans the one its settings name from attach, asking from the answer recorded for it |
+| Temp Directory | now: downloads started after the change place their part files there; every stored download keeps its own (ADR-0115) |
 | Obfuscation | now: every surface reads the one policy as it decides, and the Kad node is re-armed (ADR-0046) |
 | every other key | at the next start |
 

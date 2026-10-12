@@ -50,10 +50,12 @@ is `DownloadScheduler`.
 - `CoreConfig::peer_concurrency_per_download` (default 2; `0` reads as 1) caps a
   download's workers — active, connecting, and waiting on a callback together.
 - A worker holds at most one part at a time and keeps its connection across
-  assignments. A fresh assignment takes the lowest-indexed pending part; there is
-  no availability voting.
+  assignments. A fresh assignment takes the first-ranked pending part the peer
+  advertised (ADR-0112); outside Streaming Priority, with every part advertised, that
+  is the lowest index.
 - **Bounded racing.** When no pending part remains, a backup peer — one that has not
-  yet delivered a verified part in this download — joins an in-flight part, so
+  yet delivered a verified part in this download — joins the first-ranked in-flight
+  part it advertised (ADR-0112), so
   several peers can sit queued on the same scarce part. The first verified copy
   wins and the losing racers are cleared; a loser's later failure is a no-op. A
   peer that has already delivered a part idles instead of racing a healthy peer, so

@@ -36,7 +36,7 @@ connected server, then Low ID global — under the Low-ID admission rule (ADR-00
 
 - **Record tier**, gone with the record: its endpoints (a dual-stack source's other half),
   its Low-ID Candidate Record, its queue standing, its ask facts (ADR-0108), its seed
-  origin (ADR-0109), and the crypt side, User Hash and UDP contact its hello stated
+  origin (ADR-0109), its Advertised Parts (ADR-0112), and the crypt side, User Hash and UDP contact its hello stated
   (ADR-0049, ADR-0057) — the last three pruned at the worker's end besides.
 - **Run tier**, the book's own tables for the run: the crypt side a record stated, by
   endpoint (`0x44`, source exchange, a Kad row's `TAG_ENCRYPTION`), the buddy a hello
@@ -48,8 +48,9 @@ connected server, then Low ID global — under the Low-ID admission rule (ADR-00
 UDP contact, the reask clock with its one-ping latch, and the queue-full and
 no-needed-parts marks (ADR-0057). It rides the record from Worker to RemoteQueued and
 back, so a queued source still ending its worker is one record, counted once. A rank on a
-live worker earns or refreshes it; a worker that hangs up, times out its slot wait or is
-refused for parts keeps it, and its record waits in the RemoteQueued stage; a grant, a
+live worker earns or refreshes it, and so do Advertised Parts holding no part we lack
+(rank 0, ADR-0112); a worker that hangs up, times out its slot wait, is refused for parts
+or is retired `NoNeededParts` keeps it, and its record waits in the RemoteQueued stage; a grant, a
 transfer, a `0x92` or any other retirement ends it. The reask sweep runs inside the brain's
 tick. Its TCP full ask is aMule's `AskForDownload` (`DownloadClient.cpp:139-160`): the
 record leaves RemoteQueued for its road — a High ID dialed at its endpoint, a called-back

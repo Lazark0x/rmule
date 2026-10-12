@@ -134,7 +134,8 @@ aMule's `FILEREASKTIME` of 1 300 000 ms
   recheck
   ([PartFile.cpp#L1439](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/PartFile.cpp#L1439)).
   A slotless standby worker (ADR-0056) that loses its connection degrades into this
-  cadence.
+  cadence. A worker whose Advertised Parts hold no part we lack enters this cadence too,
+  its record keeping or earning a rank-0 standing with the mark (ADR-0112).
 
 ### Uploader: standing that survives disconnect
 

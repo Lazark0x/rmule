@@ -283,13 +283,12 @@ mechanical ones; review enforces the rest.
 - **Delete over archive.** A document that has been superseded or acted on is
   deleted; git history is the archive. There are no `archive/` folders and no
   dated one-off plan files.
-- **A small docs tree.** `docs/` holds `adr`, `architecture`, `parity`,
-  `protocol` and `reference`, and nothing else at the top level.
-- **Decisions are ADRs.** Every ADR in `docs/adr/` carries a `Status:` line
-  (`live`, `amended-by NNNN` or `superseded-by NNNN`). The text of a decision is
-  never rewritten to match later events: the status line and an amendment section
-  carry the change. Adding or amending an ADR updates the index in
-  `docs/adr/README.md` and the affected status lines in the same change.
+- **A small docs tree.** `docs/` holds `adr`, `architecture`, `protocol` and
+  `reference`, and nothing else at the top level.
+- **Decisions are ADRs.** Each file in `docs/adr/` is a decision in force: a
+  changed decision is edited in place and a dropped one is deleted, so no ADR
+  carries a status line. Adding or changing an ADR updates its row in the index,
+  `docs/adr/README.md`, in the same change.
 - **Glossaries.** Each crate has a `CONTEXT.md`, indexed from the repository
   root. A new crate arrives with its glossary and its index row in the same pull
   request.
