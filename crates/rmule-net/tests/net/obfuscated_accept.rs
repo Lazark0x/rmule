@@ -13,7 +13,7 @@ use rmule_net::peer::{
     Admitted, AwaitedTesters, ConnectOptions, ObfuscationConfig, ObfuscationPolicy, PeerListener,
     PeerNetError, PeerObfuscationTransport,
 };
-use rmule_peer::{PeerEvent, PeerHandshakeContext, PeerOpcode};
+use rmule_peer::{ConnectionEvent, PeerEvent, PeerHandshakeContext, PeerOpcode, SideEvent};
 use rmule_primitives::{ClientId, ClientIdentity, Ed2kText, Ipv4Endpoint, Packet, UserHash};
 use rmule_testkit::wire;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -28,6 +28,8 @@ fn responder_ctx() -> PeerHandshakeContext {
             0x3C,
         ),
         client_id: ClientId::from_u32(0x1000_0001),
+        ed2k_client_id: ClientId::from_u32(0x1000_0001),
+        public_ip: None,
         connected_server: Some(Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, 4661)),
     }
 }
@@ -77,15 +79,15 @@ async fn accepts_obfuscated_inbound_and_identifies_peer() {
     let mut identity = None;
     while let Some(event) = conn.next_event().await {
         match event {
-            PeerEvent::PeerIdentified { identity: id } => {
+            PeerEvent::Connection(ConnectionEvent::Identified { identity: id }) => {
                 identity = Some(id);
                 break;
             }
-            PeerEvent::Disconnected { .. } => break,
+            PeerEvent::Connection(ConnectionEvent::Disconnected { .. }) => break,
             _ => {}
         }
     }
-    let identity = identity.expect("PeerIdentified arrived through the crypt layer");
+    let identity = identity.expect("Identified arrived through the crypt layer");
     assert_eq!(identity.user_hash(), dialer_hash);
 
     conn.shutdown().await.expect("shutdown");
@@ -184,7 +186,7 @@ async fn required_admits_a_plain_dial_it_awaits_a_test_from_as_a_test_connection
     };
     assert!(matches!(
         conn.next_event().await,
-        Some(PeerEvent::PeerIdentified { .. })
+        Some(PeerEvent::Connection(ConnectionEvent::Identified { .. }))
     ));
     assert_eq!(
         dialer.await.expect("dialer"),
@@ -243,7 +245,7 @@ async fn below_required_an_awaited_plain_dial_is_an_ordinary_peer() {
         };
         assert!(matches!(
             conn.next_event().await,
-            Some(PeerEvent::PeerIdentified { .. })
+            Some(PeerEvent::Connection(ConnectionEvent::Identified { .. }))
         ));
         assert!(dialer.await.expect("dialer").is_some());
     }
@@ -287,7 +289,8 @@ async fn replay_flow_r_dialback(stream: Vec<u8>) -> Vec<PeerEvent> {
         while let Some(event) = conn.next_event().await {
             let end = matches!(
                 event,
-                PeerEvent::Disconnected { .. } | PeerEvent::KadFirewallCheckAck
+                PeerEvent::Connection(ConnectionEvent::Disconnected { .. })
+                    | PeerEvent::Side(SideEvent::KadFirewallCheckAck)
             );
             seen.push(event);
             if end {
@@ -312,14 +315,16 @@ async fn a_captured_required_dialback_keyed_on_our_hash_is_accepted_and_acks() {
     let identity = seen
         .iter()
         .find_map(|event| match event {
-            PeerEvent::PeerIdentified { identity } => Some(identity.user_hash()),
+            PeerEvent::Connection(ConnectionEvent::Identified { identity }) => {
+                Some(identity.user_hash())
+            }
             _ => None,
         })
         .expect("the helper's hello reads through the crypt layer");
     assert_eq!((identity.as_bytes()[5], identity.as_bytes()[14]), (14, 111));
     assert!(
         seen.iter()
-            .any(|event| matches!(event, PeerEvent::KadFirewallCheckAck)),
+            .any(|event| matches!(event, PeerEvent::Side(SideEvent::KadFirewallCheckAck))),
         "the helper's OP_KAD_FWTCPCHECK_ACK arrives: {seen:?}"
     );
 }
@@ -332,15 +337,16 @@ async fn a_captured_required_dialback_keyed_on_a_word_swapped_hash_fails_the_han
     let seen =
         replay_flow_r_dialback(flow_r_dialback("dialback_keyed_on_raw_order_hash.bin")).await;
     assert!(
-        !seen
-            .iter()
-            .any(|event| matches!(event, PeerEvent::PeerIdentified { .. })),
+        !seen.iter().any(|event| matches!(
+            event,
+            PeerEvent::Connection(ConnectionEvent::Identified { .. })
+        )),
         "no hello reads through a handshake keyed on another hash: {seen:?}"
     );
     assert!(
         seen.iter().any(|event| matches!(
             event,
-            PeerEvent::Disconnected { reason: rmule_peer::PeerCloseReason::Io(kind) }
+            PeerEvent::Connection(ConnectionEvent::Disconnected { reason: rmule_peer::PeerCloseReason::Io(kind) })
                 if *kind == std::io::ErrorKind::InvalidData
         )),
         "the link ends Io(InvalidData), as it did live: {seen:?}"

@@ -206,6 +206,25 @@ impl<T: Copy + PartialEq> Ladder<T> {
             .collect()
     }
 
+    /// The earliest instant after `now` at which a remembered observation
+    /// can lapse with nobody writing — its window closing, its lease running
+    /// out. Every rung, report and verdict this ladder offers ages only at one
+    /// of these instants, though not every one of them moves what it offers.
+    pub(super) fn next_lapse(&self, now: Instant) -> Option<Instant> {
+        self.entries
+            .iter()
+            .flat_map(|entry| {
+                [
+                    Some(entry.at + OBSERVATION_WINDOW),
+                    entry.lease.map(|lease| entry.at + lease),
+                    entry.ended,
+                ]
+            })
+            .flatten()
+            .filter(|at| *at > now)
+            .min()
+    }
+
     /// Whether any observation is remembered at all.
     pub(super) fn is_empty(&self) -> bool {
         self.entries.is_empty()

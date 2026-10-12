@@ -21,6 +21,7 @@ use rmule_primitives::FileHash;
 
 use super::dialing::{DIAL_ATTEMPT_TIMEOUT, DIAL_BUDGET, REDIAL_INTERVAL};
 use super::*;
+use crate::natt::RendezvousOffer;
 use crate::natt::acting::ACTING_MIN_INTERVAL;
 use crate::natt::requester::HINT_TIMEOUT;
 
@@ -87,15 +88,98 @@ fn buddy_facts() -> crate::callback::NattFacts {
     }
 }
 
-/// A firewalled node with its client-UDP surface up and Kad running: the
-/// position rung 1 is chosen under.
-fn firewalled_here() -> crate::callback::SelfReach {
-    crate::callback::SelfReach {
-        reachable: false,
-        udp_on: true,
-        kad_running: true,
-        dial: crate::dialable::DialPosition::default(),
-        server_punch: true,
+/// The client-UDP port our socket bound, which a `0x60` names.
+const OUR_UDP_PORT: u16 = 4672;
+
+/// What the front reads of the node around it: **Self Reach** with the
+/// client-UDP half bound and a Kad node running — the position rung 1 is
+/// chosen under — and a live **Server Coordinator** session over a fake
+/// link, off which a leg reads the `0x60`s the front put on it.
+struct Surroundings {
+    reach: crate::reachability::SharedSelfReach,
+    server: crate::natt::server_punch::CoordinatorSession,
+    addresses: crate::address_learning::SharedAddressLearning,
+    /// The client-UDP half's family, for a leg that clears it.
+    client_udp: crate::reachability::ClientUdpBound,
+    /// What the fake session put on its link.
+    session_sent: mpsc::Receiver<rmule_ed2k::Ed2kCommand>,
+    /// The session's handle.
+    session: crate::server_session::ServerSessionHandle,
+    /// The sender that keeps the session's link open.
+    link: Option<mpsc::Sender<rmule_ed2k::Ed2kEvent>>,
+    _kad: crate::adapters::KadPresenceLease,
+}
+
+impl Surroundings {
+    fn new() -> Self {
+        Self::over(crate::address_learning::SharedAddressLearning::default())
+    }
+
+    /// The same, over a leg's own **Address Learning** store, into which the
+    /// client-UDP bind is recorded.
+    fn over(addresses: crate::address_learning::SharedAddressLearning) -> Self {
+        let client_udp = crate::reachability::ClientUdpBound::default();
+        client_udp.set();
+        let presence = crate::adapters::KadPresenceView::default();
+        let kad = presence.lease(rmule_kad::KadId::from_bytes(
+            [0x11; rmule_kad::KadId::BYTE_LEN],
+        ));
+        let punch = crate::natt::server_punch::SharedServerPunch::default();
+        let (handle, events, session_sent) = crate::server_session::tests::fake_session(
+            crate::server_session::tests::connected(),
+            rmule_ed2k::ServerGrants::default(),
+        );
+        punch.go_live(&handle);
+        addresses.record_bind(
+            crate::address_learning::SocketRole::Udp,
+            &rmule_net::family::FamilyBinds {
+                bound: vec![rmule_primitives::AddressFamily::V4],
+                refused: Vec::new(),
+            },
+            OUR_UDP_PORT,
+        );
+        let reach = crate::reachability::SharedSelfReach::new(
+            crate::KadReachLevel::fixed(false),
+            crate::own_identity::SharedOwnIdentity::default(),
+            SharedNattFront::default(),
+        )
+        .with_kad_presence(presence)
+        .with_client_udp(client_udp.clone())
+        .with_server_coordinator(punch.coordinator_session());
+        Self {
+            reach,
+            server: punch.coordinator_session(),
+            addresses,
+            client_udp,
+            session_sent,
+            session: handle,
+            link: Some(events),
+            _kad: kad,
+        }
+    }
+
+    /// End the session — its link closes — and wait until it has.
+    async fn end_session(&mut self) {
+        self.link = None;
+        self.session.closed().await;
+    }
+
+    /// The next `0x60` the session put on its link, as `(target, our UDP
+    /// port)`.
+    async fn next_introduction(&mut self) -> (ClientId, u16) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let rmule_ed2k::Ed2kCommand::RequestHolepunch {
+                    target,
+                    our_udp_port,
+                } = self.session_sent.recv().await.expect("the link is open")
+                {
+                    return (target, our_udp_port);
+                }
+            }
+        })
+        .await
+        .expect("a 0x60 reached the session's link")
     }
 }
 
@@ -103,10 +187,12 @@ fn firewalled_here() -> crate::callback::SelfReach {
 /// off: the client-UDP send queue and the diagnostics level.
 struct Harness {
     front: NattFront<NullSink>,
+    /// The node around the front.
+    around: Surroundings,
     sent: mpsc::Receiver<ClientUdpSend>,
     diagnostics: DiagnosticsState,
-    /// The **Pending Tunnel Claim** table the front reports retirements to.
-    claims: crate::adapters::SharedTunnelClaims,
+    /// The **Awaited Inbound** registry the front reports retirements to.
+    claims: crate::adapters::AwaitedInbound,
     /// The risen-tunnel receiver, kept for a test that runs the whole loop.
     risen: mpsc::Receiver<Risen>,
 }
@@ -115,20 +201,22 @@ impl Harness {
     fn new() -> Self {
         let (client_udp, sent) = mpsc::channel(256);
         let diagnostics = DiagnosticsState::default();
-        let claims = crate::adapters::SharedTunnelClaims::default();
+        let claims = crate::adapters::AwaitedInbound::default();
         let own_identity = crate::own_identity::SharedOwnIdentity::default();
         own_identity.set_user_hash(hash(0xAA));
+        let around = Surroundings::new();
         let assembled = assemble(
             NullSink,
             NattIdentity {
                 local: RMULE_NATT_CLAIM,
-                crypt_options: 0,
             },
             Arc::new(own_identity) as Arc<dyn NattOwnHash>,
             None,
             NattWiring {
                 client_udp,
-                addresses: crate::address_learning::SharedAddressLearning::default(),
+                server: around.server.clone(),
+                reach: around.reach.clone(),
+                addresses: around.addresses.clone(),
                 admit: crate::adapters::SharedTunnelAdmit::default(),
                 claims: claims.clone(),
                 peer_pin: crate::adapters::SharedPeerPin::default(),
@@ -142,6 +230,7 @@ impl Harness {
         // front holds its own senders, so nothing it emits is lost.
         Self {
             front: assembled.front,
+            around,
             sent,
             diagnostics,
             claims,
@@ -149,9 +238,10 @@ impl Harness {
         }
     }
 
-    /// Open a server-coordinated attempt, as the reach arm does once the
-    /// `0x60` is on the link. `buddy` is what the candidate's own facts say,
-    /// which is all that decides where the attempt can fall to.
+    /// Traverse toward `target` through our server, as Peer Reach hands it
+    /// over: the front puts the `0x60` on the session and opens the attempt.
+    /// `buddy` is what the candidate's own facts say, which is all that
+    /// decides where the attempt can fall to.
     async fn asked_our_server(
         &mut self,
         target: UserHash,
@@ -161,25 +251,66 @@ impl Harness {
     ) {
         self.front
             .on_command(
-                NattCommand::Begin {
-                    target,
+                NattCommand::Traverse {
                     coordinator: AttemptCoordinator::Server { low_id },
-                    facts: crate::callback::NattFacts {
-                        buddy,
-                        ..buddy_facts()
-                    },
-                    ours: firewalled_here(),
-                    offer: RendezvousOffer {
-                        our_user_hash: hash(0xAA),
-                        options: NattConnectOptions::advertise(0, true, false),
-                        file_hash: None,
-                        claimed_endpoint: None,
-                        transport: NattTransport::Utp,
-                    },
+                    owner: Some(AttemptOwner {
+                        target,
+                        facts: crate::callback::NattFacts {
+                            buddy,
+                            ..buddy_facts()
+                        },
+                        offer: RendezvousOffer {
+                            our_user_hash: hash(0xAA),
+                            options: NattConnectOptions::advertise(0, true, false),
+                            file_hash: None,
+                            claimed_endpoint: None,
+                            transport: NattTransport::Utp,
+                        },
+                    }),
                 },
                 now,
             )
             .await;
+    }
+
+    /// File a download's claim on `target` under the pending callback for
+    /// `low_id`, returning its key, the retire channel it is told on, and the
+    /// registration that holds the claim while it lives.
+    fn claim(
+        &self,
+        target: UserHash,
+        low_id: ClientId,
+    ) -> (
+        crate::adapters::CallbackKey,
+        mpsc::Receiver<(crate::adapters::CallbackKey, AttemptRetirement)>,
+        crate::adapters::AwaitedInboundHandle,
+    ) {
+        let callback = crate::adapters::CallbackKey {
+            server: None,
+            low_id,
+        };
+        let (retire_tx, retire_rx) = mpsc::channel(4);
+        let claim = self
+            .claims
+            .register(callback, mpsc::channel(1).0, retire_tx);
+        claim.claim_tunnel(
+            target,
+            crate::adapters::AdoptionBrief {
+                own_status: rmule_peer::PartBitmap::downloader_empty(0),
+                want_sources: true,
+                file: rmule_primitives::Ed2kFileLink {
+                    file_hash: FileHash::from_bytes([0x22; FileHash::BYTE_LEN]),
+                    size: 9_728_000,
+                    name: rmule_primitives::Ed2kText::from_utf8("claimed"),
+                    part_hash_set: None,
+                    aich_root: None,
+                    ipv6_sources: Vec::new(),
+                    sources: Default::default(),
+                },
+            },
+            false,
+        );
+        (callback, retire_rx, claim)
     }
 
     /// Everything the front has put on the client-UDP send half so far.
@@ -194,23 +325,24 @@ impl Harness {
     }
 }
 
-/// The reach arm's rung-1 command for `target` through the buddy above.
+/// Peer Reach's rung-1 command for `target` through the buddy above.
 fn rendezvous_toward(target: UserHash) -> NattCommand {
-    NattCommand::Begin {
-        target,
+    NattCommand::Traverse {
         coordinator: AttemptCoordinator::Buddy {
             buddy_id: BUDDY_ID,
             buddy_udp: buddy(),
         },
-        facts: buddy_facts(),
-        ours: firewalled_here(),
-        offer: RendezvousOffer {
-            our_user_hash: hash(0xAA),
-            options: NattConnectOptions::advertise(0, true, false),
-            file_hash: Some(FileHash::from_bytes([0x22; FileHash::BYTE_LEN])),
-            claimed_endpoint: None,
-            transport: NattTransport::Utp,
-        },
+        owner: Some(AttemptOwner {
+            target,
+            facts: buddy_facts(),
+            offer: RendezvousOffer {
+                our_user_hash: hash(0xAA),
+                options: NattConnectOptions::advertise(0, true, false),
+                file_hash: Some(FileHash::from_bytes([0x22; FileHash::BYTE_LEN])),
+                claimed_endpoint: None,
+                transport: NattTransport::Utp,
+            },
+        }),
     }
 }
 
@@ -234,7 +366,7 @@ fn known_buddy() -> crate::callback::BuddyContact {
     }
 }
 
-/// The whole requester ladder in one pass: the reach arm's command puts a
+/// The whole requester ladder in one pass: Peer Reach's command puts a
 /// readable rendezvous on the wire, the buddy's hint is believed, its burst is
 /// **held** for the half round trip the exchange measured, and its release
 /// fires the six punches plus the ±16 sweep at the endpoint the

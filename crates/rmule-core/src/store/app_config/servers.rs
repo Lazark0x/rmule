@@ -16,9 +16,8 @@ use rmule_store::{Indexed, Readable, Record, Schema, Sequence, StoreError, Uniqu
 use serde::{Deserialize, Serialize};
 
 use crate::CoreError;
-use crate::Preference;
 use crate::server_list::{
-    ManagedServer, ServerFigures, ServerGrantsReport, ServerListStore, ServerMerge, ServerPolicy,
+    ManagedServer, ServerAuxPorts, ServerFigures, ServerGrantsReport, ServerListStore, ServerMerge,
     ServerUdpCrypt,
 };
 
@@ -27,8 +26,8 @@ use super::DurableAppConfig;
 mod rung;
 
 #[cfg(test)]
-pub(super) use rung::{add_v1, schema_v1};
-pub(crate) use rung::{grow_from_v8, grow_from_v9, grow_from_v11};
+pub(super) use rung::{add_v1, schema_v1, schema_v13};
+pub(crate) use rung::{grow_from_v8, grow_from_v9, grow_from_v11, grow_from_v13};
 
 /// One managed-server row. The priority is stored as aMule's raw
 /// `ST_PREFERENCE` word — the same mapping the wire uses, which
@@ -51,11 +50,42 @@ pub(super) struct ServerRecord {
     /// How to key UDP to the server, as its last status answer said: kept
     /// since store version 12.
     udp_crypt: Option<UdpCryptRecord>,
+    /// The standard port and aux-ports list of a row dialed on another port:
+    /// kept since store version 14.
+    aux_ports: Option<AuxPortsRecord>,
+    /// The UDP flags word a server.met row named for a server with no dated
+    /// figures: kept since store version 14.
+    listed_udp_flags: Option<u32>,
 }
 
 impl Record for ServerRecord {
     const NAME: &'static str = "app_config.server";
-    const VERSION: u32 = 4;
+    const VERSION: u32 = 5;
+}
+
+/// A server's aux-ports relation as the row keeps it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct AuxPortsRecord {
+    standard_port: u16,
+    ports: Vec<u16>,
+}
+
+impl From<ServerAuxPorts> for AuxPortsRecord {
+    fn from(aux: ServerAuxPorts) -> Self {
+        Self {
+            standard_port: aux.standard_port,
+            ports: aux.ports,
+        }
+    }
+}
+
+impl From<AuxPortsRecord> for ServerAuxPorts {
+    fn from(record: AuxPortsRecord) -> Self {
+        Self {
+            standard_port: record.standard_port,
+            ports: record.ports,
+        }
+    }
 }
 
 /// A server's UDP crypt facts as the row keeps them (ADR-0052).
@@ -157,6 +187,8 @@ impl From<ManagedServer> for ServerRecord {
                 reported_at: report.reported_at,
             }),
             udp_crypt: server.udp_crypt.map(UdpCryptRecord::from),
+            aux_ports: server.aux_ports.map(AuxPortsRecord::from),
+            listed_udp_flags: server.listed_udp_flags.map(ServerUdpFlags::bits),
         }
     }
 }
@@ -176,6 +208,8 @@ impl From<ServerRecord> for ManagedServer {
                 reported_at: record.reported_at,
             }),
             udp_crypt: record.udp_crypt.map(ServerUdpCrypt::from),
+            aux_ports: record.aux_ports.map(ServerAuxPorts::from),
+            listed_udp_flags: record.listed_udp_flags.map(ServerUdpFlags::from_bits),
         }
     }
 }
@@ -212,6 +246,19 @@ fn row_at(
     Ok(SERVERS.get(txn, &key)?.map(|record| (key, record)))
 }
 
+/// The row listed under `standard` as its standard endpoint, for a row not
+/// keyed by it — a scan, because only rows dialed on an aux port are listed
+/// under a port other than their key's, and the list is small.
+fn row_by_standard(
+    txn: &impl Readable,
+    standard: &ServerEndpoint,
+) -> Result<Option<(u64, ServerRecord)>, StoreError> {
+    Ok(SERVERS.iter(txn)?.into_iter().find(|(_, record)| {
+        let listed = ManagedServer::from(record.clone());
+        &listed.standard_endpoint() == standard
+    }))
+}
+
 impl DurableAppConfig {
     /// Apply `edit` to the row holding `endpoint`, reporting whether it was
     /// there — the shared body of the three operator mutators, whose only
@@ -244,8 +291,17 @@ impl ServerListStore for DurableAppConfig {
     }
 
     fn merge_server(&self, server: ManagedServer) -> Result<ServerMerge, CoreError> {
-        self.store
-            .write(|txn| match row_at(txn, &server.endpoint)? {
+        self.store.write(|txn| {
+            // A row is found by the endpoint it is dialed on, and failing
+            // that by the standard endpoint it is listed under: a downloaded
+            // row names a server by its standard port, aMule's dedup key
+            // (`ServerList.cpp:223-237`), which an aux-port row is not keyed
+            // by.
+            let found = match row_at(txn, &server.endpoint)? {
+                Some(found) => Some(found),
+                None => row_by_standard(txn, &server.standard_endpoint())?,
+            };
+            match found {
                 // The fold (ADR-0080) is the model's own rather than this seam's,
                 // so what a downloaded row may touch is decided in one place: the
                 // name always, the description when non-empty, and never the
@@ -261,7 +317,8 @@ impl ServerListStore for DurableAppConfig {
                     SERVERS.insert(txn, &key, &ServerRecord::from(server))?;
                     Ok(ServerMerge::Added)
                 }
-            })
+            }
+        })
     }
 
     fn remove_server(&self, endpoint: &ServerEndpoint) -> Result<bool, CoreError> {
@@ -323,6 +380,51 @@ impl ServerListStore for DurableAppConfig {
         })
     }
 
+    fn set_server_standard_port(
+        &self,
+        endpoint: &ServerEndpoint,
+        standard_port: u16,
+    ) -> Result<bool, CoreError> {
+        self.store.write::<_, CoreError>(|txn| {
+            let Some((key, record)) = row_at(txn, endpoint)? else {
+                return Ok(false);
+            };
+            let mut row = ManagedServer::from(record);
+            let Some(aux) = ServerAuxPorts::from_login(
+                row.aux_ports.as_ref(),
+                row.endpoint.port(),
+                standard_port,
+            ) else {
+                return Ok(true);
+            };
+            row.aux_ports = Some(aux);
+            // The standard endpoint may already be a row of its own: the
+            // server was listed before it was dialed on an aux port.
+            let standard = row.standard_endpoint();
+            if let Some((other, listed)) = row_at(txn, &standard)?
+                && other != key
+            {
+                SERVERS.remove(txn, &other)?;
+                row.absorb(ManagedServer::from(listed));
+            }
+            SERVERS.put(txn, &key, &ServerRecord::from(row))?;
+            Ok(true)
+        })
+    }
+
+    fn set_server_obfuscation_tcp_port(
+        &self,
+        endpoint: &ServerEndpoint,
+        port: u16,
+    ) -> Result<bool, CoreError> {
+        self.edit_server(endpoint, |record| {
+            record
+                .udp_crypt
+                .get_or_insert_with(|| ServerUdpCrypt::from_tcp_port(port).into())
+                .obfuscation_tcp_port = port;
+        })
+    }
+
     fn set_server_udp_crypt(
         &self,
         endpoint: &ServerEndpoint,
@@ -330,16 +432,6 @@ impl ServerListStore for DurableAppConfig {
     ) -> Result<bool, CoreError> {
         self.edit_server(endpoint, |record| {
             record.udp_crypt = crypt.map(UdpCryptRecord::from);
-        })
-    }
-
-    fn server_policy(&self) -> Result<ServerPolicy, CoreError> {
-        let dead_after = crate::AppConfigStore::preference(self, Preference::DeadServerRetries)?;
-        let withhold =
-            crate::AppConfigStore::preference(self, Preference::WithholdSharesFromRelatedSearch)?;
-        Ok(ServerPolicy {
-            dead_after: ServerPolicy::parse_dead_after(dead_after.as_deref()),
-            withhold_from_related_search: withhold.as_deref() == Some("true"),
         })
     }
 

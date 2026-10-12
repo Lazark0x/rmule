@@ -15,6 +15,7 @@ mod obfu_source_lookup;
 mod offer_files;
 mod search_packets;
 mod source_lookup_packets;
+mod truncation;
 
 // What we read: the server packets, and the typed facts they project to.
 mod compressed_server_packet;

@@ -6,7 +6,7 @@
 
 use std::net::Ipv6Addr;
 
-use rmule_primitives::PrimitiveError;
+use rmule_primitives::{PrimitiveError, WireTruncated};
 use thiserror::Error;
 
 pub use crate::aich::AichDecodeError;
@@ -15,7 +15,7 @@ pub use crate::hash_set::HashSetDecodeError;
 pub use crate::human_layer::HumanLayerDecodeError;
 pub use crate::multipacket::MultiPacketDecodeError;
 pub use crate::parts::{PartsDecodeError, PartsEncodeError};
-pub use crate::reask::ReaskDecodeError;
+pub use crate::peer_udp::ReaskDecodeError;
 pub use crate::secure_ident::SuiDecodeError;
 pub use crate::slot::SlotDecodeError;
 pub use crate::source_exchange::{
@@ -111,6 +111,24 @@ pub enum PeerHelloDecodeError {
         /// The primitive decoder's reason.
         source: PrimitiveError,
     },
+}
+
+impl From<WireTruncated> for PeerHelloDecodeError {
+    fn from(truncated: WireTruncated) -> Self {
+        Self::Truncated {
+            needed: truncated.needed,
+            actual: truncated.available,
+        }
+    }
+}
+
+impl From<WireTruncated> for EmuleInfoDecodeError {
+    fn from(truncated: WireTruncated) -> Self {
+        Self::Truncated {
+            needed: truncated.needed,
+            actual: truncated.available,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]

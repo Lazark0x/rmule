@@ -25,18 +25,18 @@
 //! frames the reconstructed shape and proves its round-trip, not a committed
 //! golden vector.
 //!
-//! [`ReaskCallbackUdp`]: crate::reask::ReaskCallbackUdp
+//! [`ReaskCallbackUdp`]: crate::peer_udp::ReaskCallbackUdp
 
 use std::net::Ipv4Addr;
 
 use rmule_primitives::{
     FileHash, Ipv4Endpoint, Ipv6Endpoint, Packet, PacketProtocol, PeerEndpoint, PeerSource,
-    is_usable_tag_identity, kad_wire_id,
+    WireReader, WireTruncated, is_usable_tag_identity, kad_wire_id,
 };
 use thiserror::Error;
 
 use crate::opcode::PeerOpcode;
-use crate::reask::BUDDY_ID_LEN;
+use crate::peer_udp::BUDDY_ID_LEN;
 
 /// The injected-endpoint prefix of a `0x9A` relay body: `<ip 4><port 2>`.
 const ENDPOINT_LEN: usize = 6;
@@ -114,25 +114,13 @@ impl ReaskCallbackTcp {
                 opcode: packet.opcode(),
             });
         }
-        let body = packet.payload();
-        if body.len() < ENDPOINT_LEN {
-            return Err(BuddyRelayDecodeError::Truncated {
-                needed: ENDPOINT_LEN,
-                actual: body.len(),
-            });
-        }
+        let mut reader = WireReader::new(packet.payload());
         // A sentinel id is all-ones in either byte order, so no convention
         // question arises.
-        if body[..4] == PeerSource::IPV6_SENTINEL.to_le_bytes() {
-            if body.len() < SENTINEL_ENDPOINT_LEN {
-                return Err(BuddyRelayDecodeError::Truncated {
-                    needed: SENTINEL_ENDPOINT_LEN,
-                    actual: body.len(),
-                });
-            }
-            let mut address = [0u8; Ipv6Endpoint::ADDR_WIRE_LEN];
-            address.copy_from_slice(&body[4..4 + Ipv6Endpoint::ADDR_WIRE_LEN]);
-            let port = u16::from_le_bytes([body[20], body[21]]);
+        let lead = reader.read_array::<4>("requester address")?;
+        if lead == PeerSource::IPV6_SENTINEL.to_le_bytes() {
+            let address = reader.read_array::<{ Ipv6Endpoint::ADDR_WIRE_LEN }>("requester IPv6")?;
+            let port = reader.read_u16_le("requester port")?;
             let endpoint = Ipv6Endpoint::from_addr_bytes(address, port);
             // The address is where the firewalled client sends its answer, so
             // it meets the gate every other IPv6 reader applies (ADR-0087).
@@ -141,14 +129,14 @@ impl ReaskCallbackTcp {
             }
             return Ok(Self {
                 requester: PeerEndpoint::V6(endpoint),
-                forwarded: body[SENTINEL_ENDPOINT_LEN..].to_vec(),
+                forwarded: reader.remaining_bytes().to_vec(),
             });
         }
-        let port = u16::from_le_bytes([body[4], body[5]]);
-        let requester = Ipv4Endpoint::new(Ipv4Addr::new(body[0], body[1], body[2], body[3]), port);
+        let port = reader.read_u16_le("requester port")?;
+        let requester = Ipv4Endpoint::new(Ipv4Addr::from(lead), port);
         Ok(Self {
             requester: PeerEndpoint::V4(requester),
-            forwarded: body[ENDPOINT_LEN..].to_vec(),
+            forwarded: reader.remaining_bytes().to_vec(),
         })
     }
 }
@@ -223,31 +211,27 @@ impl Callback {
                 opcode: packet.opcode(),
             });
         }
-        let body = packet.payload();
-        if body.len() < Self::BODY_LEN {
-            return Err(BuddyRelayDecodeError::Truncated {
-                needed: Self::BODY_LEN,
-                actual: body.len(),
-            });
-        }
-        let mut buddy_id = [0u8; BUDDY_ID_LEN];
-        buddy_id.copy_from_slice(&body[..BUDDY_ID_LEN]);
-        let hash_end = BUDDY_ID_LEN + FileHash::BYTE_LEN;
-        let file_hash = FileHash::from_bytes(kad_wire_id(
-            body[BUDDY_ID_LEN..hash_end]
-                .try_into()
-                .expect("validated 16-byte file hash"),
-        ));
-        let ep = &body[hash_end..Self::BODY_LEN];
+        let mut reader = WireReader::new(packet.payload());
+        let buddy_id = reader.read_array::<BUDDY_ID_LEN>("buddy id")?;
+        let file_hash = FileHash::from_bytes(kad_wire_id(reader.read_array("file hash")?));
         let requester = Ipv4Endpoint::new(
-            Ipv4Addr::from(u32::from_le_bytes([ep[0], ep[1], ep[2], ep[3]])),
-            u16::from_le_bytes([ep[4], ep[5]]),
+            Ipv4Addr::from(reader.read_u32_le("requester address")?),
+            reader.read_u16_le("requester port")?,
         );
         Ok(Self {
             buddy_id,
             file_hash,
             requester,
         })
+    }
+}
+
+impl From<WireTruncated> for BuddyRelayDecodeError {
+    fn from(truncated: WireTruncated) -> Self {
+        Self::Truncated {
+            needed: truncated.needed,
+            actual: truncated.available,
+        }
     }
 }
 

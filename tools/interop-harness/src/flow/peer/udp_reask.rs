@@ -5,9 +5,16 @@
 //! `OP_REASKFILEPING` (`0x90`) toward rmule's client-UDP endpoint. rmule serves
 //! with a single upload slot, a throttled slot-holder aMule occupies it, and a
 //! second aMule is therefore held queued, hangs up, and enters rmule's
-//! disconnected standing. A passive tcpdump on rmule's own network namespace
+//! disconnected standing. The shared file is one no compressor shrinks, as the
+//! emit leg's is: rmule sends compressed parts, and a compressible file would
+//! reach the throttled holder whole within minutes and free the slot. A passive tcpdump on rmule's own network namespace
 //! records every datagram the reasker sends across the window; the datagram
 //! count toward rmule is the captured fact either way (ADR-0045).
+
+pub(crate) mod tap;
+mod verdict;
+
+pub use self::verdict::score_run_dir;
 
 use std::ffi::OsString;
 use std::fs;
@@ -19,8 +26,8 @@ use anyhow::{Context, Result};
 use crate::artifacts::RunLayout;
 use crate::flow::bench::{Bench, CaptureSidecar, DEFAULT_TAP_INTERFACE, Eserver, run_checked};
 use crate::flow::gate::{sit_tap_window, wait_for_amule_ready};
-use crate::flow::identity::ed2k_link_with_source;
-use crate::flow::logs::{collect_amule_logs, collect_rmule_logs, collect_server_logs};
+use crate::flow::identity::{ed2k_link_with_source, parse_ed2k_file_hash};
+use crate::flow::logs::{collect_amule_role_logs, collect_rmule_logs, collect_server_logs};
 use crate::rmule::{RMULE_SERVE_TCP_PORT, RmuleServeContainer, ServeKnobs};
 
 /// aMule `FILEREASKTIME` (`Constants.h`, 1,300,000 ms). The UDP source-reask
@@ -32,6 +39,21 @@ pub const DEFAULT_REASK_WINDOW_SECS: u64 = 1_500;
 /// a large shared file cannot complete inside the reask window, so it keeps
 /// rmule's single upload slot occupied and the reasker stays queued.
 const REASK_HOLDER_THROTTLE_KIB: &str = "2";
+
+/// The bench subnet for a reask run: the first fake-public `/24` when any
+/// part of it arms rmule's peer obfuscation, else the default. rmule's send
+/// gate keys on its own public address and takes no RFC 1918 address as one
+/// (ADR-0084), so on a private net its datagrams could only leave plain.
+///
+/// # Errors
+/// If the fake-public plan cannot be read.
+pub(super) fn crypt_subnet(peer_crypt: Option<&str>, flips: &[String]) -> Result<Option<String>> {
+    let crypt_at_all = peer_crypt.is_some() || flips.iter().any(|flip| !flip.ends_with(":off"));
+    Ok(crypt_at_all
+        .then(|| crate::fake_public::fake_public_address(0))
+        .transpose()?
+        .map(|address| address.subnet))
+}
 
 /// Options for [`run_peer_udp_reask`] (flow L).
 pub struct PeerUdpReaskOptions<'a> {
@@ -69,6 +91,11 @@ pub struct PeerUdpReaskOptions<'a> {
     /// peer-UDP **crypt** capture: aMule obfuscates its own `0x90`
     /// only toward a peer whose hello claimed `SupportsCryptLayer`.
     pub peer_crypt: Option<&'a str>,
+    /// `--peer-crypt-flip <secs>:<policy>` for the serving rmule, one per
+    /// entry: its obfuscation policy changes mid-run, live (ADR-0046), so a
+    /// reask before a flip and the one after meet different policies. The
+    /// result line lists each change rmule marked.
+    pub peer_crypt_flip: &'a [String],
     /// Extra environment for both aMule containers (`KEY=VALUE`).
     pub amule_env: &'a [String],
 }
@@ -126,7 +153,8 @@ pub fn run_peer_udp_reask(options: PeerUdpReaskOptions<'_>) -> Result<()> {
         .with_context(|| format!("create {}", capture_dir.display()))?;
 
     let result = (|| -> Result<()> {
-        bench.create_network(options.layout, None)?;
+        let subnet = crypt_subnet(options.peer_crypt, options.peer_crypt_flip)?;
+        bench.create_network(options.layout, subnet.as_deref())?;
         // eserver (published so readiness is a host TCP probe, as in flow C).
         bench.start_eserver(
             options.layout,
@@ -146,6 +174,7 @@ pub fn run_peer_udp_reask(options: PeerUdpReaskOptions<'_>) -> Result<()> {
             ServeKnobs {
                 upload_slots: Some(1),
                 peer_crypt: options.peer_crypt,
+                peer_crypt_flip: options.peer_crypt_flip,
                 identity_dir: None,
             },
             timeout,
@@ -211,13 +240,15 @@ pub fn run_peer_udp_reask(options: PeerUdpReaskOptions<'_>) -> Result<()> {
             "inspect reasker ip",
         )?;
 
-        // Confirm rmule queued the reasker (the OP_QUEUERANKING wire).
+        // Confirm rmule queued the reasker (the OP_QUEUERANKING wire). The
+        // log is collected again once the window has ended, so the retained
+        // copy covers the whole run.
         let rmule_log = collect_rmule_logs(
             &bench.docker,
             options.layout,
             &bench.names.rmule_container_name,
         )?;
-        let queued = rmule_log.contains("peer_queued");
+        let queued = rmule_log.contains("serve.peer_queued");
         println!(
             "peer_udp_reask queued_by_rmule={queued} reasker_ip={}",
             reasker_ip.trim()
@@ -251,16 +282,51 @@ pub fn run_peer_udp_reask(options: PeerUdpReaskOptions<'_>) -> Result<()> {
             "peer_udp_reask result queued={queued} reask_udp_datagrams={} (0 ⇒ no OP_REASKFILEPING reached rmule)",
             reask_udp.trim()
         );
+        if !options.peer_crypt_flip.is_empty() {
+            let rmule_log = collect_rmule_logs(
+                &bench.docker,
+                options.layout,
+                &bench.names.rmule_container_name,
+            )?;
+            println!(
+                "peer_udp_reask obfuscation_flips={}",
+                crate::flow::evidence::toml_strings(&crate::flow::evidence::obfuscation_flips(
+                    &rmule_log
+                ))
+            );
+        }
 
-        // Persist the counterparties' own logs before teardown: the reasker's
-        // server-connection lifecycle ("Connection lost"/re-login attempts) is
-        // the IsConnected()-gate evidence the pcap alone can't show.
-        collect_amule_logs(&bench.docker, options.layout, &holder)?;
-        collect_amule_logs(&bench.docker, options.layout, &reasker)?;
+        // Persist every log after the window, so each covers the whole run:
+        // the reasker's server-connection lifecycle ("Connection lost"/re-login
+        // attempts) is the IsConnected()-gate evidence the pcap alone can't
+        // show. The two aMules write to their own role paths.
+        collect_rmule_logs(
+            &bench.docker,
+            options.layout,
+            &bench.names.rmule_container_name,
+        )?;
+        collect_amule_role_logs(&bench.docker, options.layout, "holder", &holder)?;
+        collect_amule_role_logs(&bench.docker, options.layout, "reasker", &reasker)?;
         collect_server_logs(
             &bench.docker,
             options.layout,
             &bench.names.server_container_name,
+        )?;
+
+        // Score the retained tap: the verdict file is what a re-score reads.
+        verdict::write(
+            options.layout.root(),
+            &verdict::ReaskRun {
+                pcap: &capture_dir.join("reask.pcap"),
+                rmule: rmule_ip.trim().parse().context("rmule address")?,
+                reasker: reasker_ip.trim().parse().context("reasker address")?,
+                file_hash: parse_ed2k_file_hash(ed2k_link.trim())?,
+                file_size: fs::metadata(options.layout.synthetic_shared_file())
+                    .context("stat the shared file")?
+                    .len(),
+                crypt: options.peer_crypt.is_some(),
+                flips: tap::Flip::read_run_dir(options.layout.root()),
+            },
         )?;
         Ok(())
     })();

@@ -13,6 +13,7 @@ use crate::file_request::{FileStatus, ReqFileNameAnswer};
 use crate::multipacket::{
     AnswerItem, BundledAsk, MultiPacketAnswer, MultiPacketRequest, RequestItem,
 };
+use crate::{NoticeEvent, RequesterEvent, ServerEvent};
 
 /// Accumulates the standalone-shaped serve answers a bundled
 /// `OP_MULTIPACKET`/`OP_MULTIPACKET_EXT` request is owed, so they can compose
@@ -42,7 +43,7 @@ pub(super) struct PendingMultipacketAnswer {
 
 impl PeerSession {
     /// Hand a bundled `OP_MULTIPACKET`/`OP_MULTIPACKET_EXT` request (ADR-0054)
-    /// to core as one [`PeerEvent::FileBundleRequested`], so the file gates
+    /// to core as one [`ServerEvent::FileBundleRequested`], so the file gates
     /// the whole bundle as aMule's does before its sub-opcode loop (stock
     /// 2.3.3 `4e8f2b3c` `ClientTCPSocket.cpp:1061-1085`): one
     /// `OP_FILEREQANSNOFIL` for a file we do not share, else each ask
@@ -73,10 +74,9 @@ impl PeerSession {
             // bundle asked about, for `answer_aich_file_hash` to route.
             self.served_aich_request = Some(req.file_hash);
         }
-        let asks = req
-            .items
-            .iter()
-            .map(|item| match item {
+        let mut asks = Vec::with_capacity(req.items.len());
+        for item in &req.items {
+            asks.push(match item {
                 RequestItem::Name { part_status } => BundledAsk::Name {
                     part_status: part_status.clone(),
                 },
@@ -84,24 +84,30 @@ impl PeerSession {
                 RequestItem::AichRoot => BundledAsk::AichRoot,
                 // A plain `Sources` sub carries no version (`0`, SX1 path);
                 // `Sources2` carries the SX2 `<ver>` the serve pick reads.
-                RequestItem::Sources => BundledAsk::Sources(self.served_sources_version(0)),
-                RequestItem::Sources2 { version, .. } => {
-                    BundledAsk::Sources(self.served_sources_version(*version))
+                RequestItem::Sources => {
+                    self.note_source_ask(req.file_hash, 0);
+                    BundledAsk::Sources
                 }
-            })
-            .collect();
-        self.core.push_event(PeerEvent::FileBundleRequested {
-            file_hash: req.file_hash,
-            file_size: req.file_size,
-            asks,
-            cut: req.cut,
-        });
-        if let Some(unknown) = req.unknown_sub {
-            self.core.push_event(PeerEvent::MultiPacketUnknownSub {
-                file_hash: req.file_hash,
-                opcode: unknown.opcode,
-                remaining: unknown.remaining,
+                RequestItem::Sources2 { version, .. } => {
+                    self.note_source_ask(req.file_hash, *version);
+                    BundledAsk::Sources
+                }
             });
+        }
+        self.core
+            .push_event(PeerEvent::Server(ServerEvent::FileBundleRequested {
+                file_hash: req.file_hash,
+                file_size: req.file_size,
+                asks,
+                cut: req.cut,
+            }));
+        if let Some(unknown) = req.unknown_sub {
+            self.core
+                .push_event(PeerEvent::Notice(NoticeEvent::MultiPacketUnknownSub {
+                    file_hash: req.file_hash,
+                    opcode: unknown.opcode,
+                    remaining: unknown.remaining,
+                }));
         }
     }
 
@@ -121,17 +127,19 @@ impl PeerSession {
                     self.on_file_status(FileStatus { file_hash, bitmap });
                 }
                 AnswerItem::AichRoot(root) => {
-                    self.core
-                        .push_event(PeerEvent::AichFileHashReceived { root });
+                    self.core.push_event(PeerEvent::Requester(
+                        RequesterEvent::AichFileHashReceived { root },
+                    ));
                 }
             }
         }
         if let Some(unknown) = ans.unknown_sub {
-            self.core.push_event(PeerEvent::MultiPacketUnknownSub {
-                file_hash,
-                opcode: unknown.opcode,
-                remaining: unknown.remaining,
-            });
+            self.core
+                .push_event(PeerEvent::Notice(NoticeEvent::MultiPacketUnknownSub {
+                    file_hash,
+                    opcode: unknown.opcode,
+                    remaining: unknown.remaining,
+                }));
         }
     }
 

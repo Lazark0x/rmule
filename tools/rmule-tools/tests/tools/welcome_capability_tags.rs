@@ -26,10 +26,11 @@ use tokio::sync::oneshot;
 
 const CT_SERVER_FLAGS: u8 = 0x20;
 const CT_EMULE_VERSION: u8 = 0xFB;
-// What the registry lights: zlib | newtags | unicode | largefiles. The
-// `auxport` bit (0x04) is absent because `Capabilities::supports_aux_port()`
-// is false — rmule has no UDP aux port to advertise.
-const EXPECTED_SERVER_FLAGS: u32 = 0x0001 | 0x0008 | 0x0010 | 0x0100;
+// What the registry lights: zlib | auxport | newtags | unicode | largefiles,
+// aMule's 0x11D. The `auxport` bit (0x04) is honest because the managed
+// server list re-ports a row to the standard port an aux-port login names
+// (ADR-0047, ADR-0080).
+const EXPECTED_SERVER_FLAGS: u32 = 0x0001 | 0x0004 | 0x0008 | 0x0010 | 0x0100;
 
 fn id_change_bytes() -> Vec<u8> {
     let mut payload = 0x1020_3040u32.to_le_bytes().to_vec(); // HighID client_id
@@ -122,7 +123,7 @@ async fn welcome_live_login_advertises_capability_tags() {
     match flags.value() {
         TagValue::U32(v) => assert_eq!(
             *v, EXPECTED_SERVER_FLAGS,
-            "honest server-flags: zlib|newtags|unicode|largefiles, no auxport"
+            "honest server-flags: zlib|auxport|newtags|unicode|largefiles"
         ),
         other => panic!("CT_SERVER_FLAGS must be a U32, got {other:?}"),
     }

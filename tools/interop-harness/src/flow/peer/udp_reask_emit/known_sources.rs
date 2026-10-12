@@ -31,6 +31,8 @@ use crate::flow::bench::{AMULE_PEER_TCP_PORT, Bench, amulecmd_command, run_check
 use crate::flow::gate::wait_for_amule_ready;
 use crate::flow::identity::ed2k_link_with_source;
 use crate::flow::pcap;
+use crate::flow::peer::udp_reask::tap::OP_REASKFILEPING;
+use crate::flow::wire_filter::OP_EMULEPROT;
 
 /// Each holder's download cap (KiB/s) while the seeder runs. The seeder is
 /// uncapped, so it serves both holders at once; at 40 KiB/s a 9.28 MB part
@@ -47,9 +49,6 @@ const PART_POLL: Duration = Duration::from_secs(5);
 const HOLDER_SETTLE: Duration = Duration::from_secs(45);
 /// The environment that turns on the source and part-file trails.
 pub(super) const DEBUG_SOURCES: (&str, &str) = ("AMULE_DEBUG_SOURCE_CATEGORIES", "1");
-
-const OP_EMULEPROT: u8 = 0xC5;
-const OP_REASKFILEPING: u8 = 0x90;
 
 /// Start the seeder sharing `synthetic_dir`; returns its address.
 ///

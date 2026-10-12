@@ -16,7 +16,8 @@ use rmule_kad::{
 use rmule_primitives::Ipv4Endpoint;
 use rmule_primitives::session::drain;
 use rmule_testkit::kad_node::{
-    OUR_INTERN_UDP, T0, datagrams, deliver, diagnostics, endpoint, events, hello, id, node,
+    OUR_INTERN_UDP, T0, datagrams, deliver, diagnostics, endpoint, events, hello, id,
+    self_checking_node,
 };
 
 /// The port the gateway maps our Kad socket to in these tests.
@@ -67,8 +68,7 @@ fn observations(outputs: &[KadOutput]) -> Vec<(Ipv4Addr, u16)> {
 
 /// A node with the self-check armed and three v8 contacts to ask.
 fn armed() -> KadNode {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     node.handle_command(
         T0,
         KadCommand::MergeContacts {

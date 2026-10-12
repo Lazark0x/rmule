@@ -9,13 +9,13 @@ use std::net::Ipv4Addr;
 use flate2::{Compression, write::ZlibEncoder};
 
 use rmule_peer::{
-    AnswerSources, CompressedFrameSkipReason, HelloAnswer, MiscOptions1,
+    AnswerSources, CompressedFrameSkipReason, HelloAnswer, MiscOptions1, NoticeEvent,
     PEER_COMPRESSED_FRAME_LIMIT, PeerCommand, PeerEvent, PeerHelloBody, PeerOutput, PeerSession,
-    SourceExchangeEntry, SourceExchangeVersion,
+    RequesterCommand, RequesterEvent, SourceExchangeEntry, SourceExchangeVersion,
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{
-    ClientId, ExchangedSource, FileHash, Ipv4Endpoint, Packet, PacketProtocol, PeerSource, UserHash,
+    ClientId, FileHash, Ipv4Endpoint, Packet, PacketProtocol, PeerSource, SourceSighting, UserHash,
 };
 use rmule_testkit::peer_session::{ctx, peer};
 
@@ -66,11 +66,11 @@ fn invalid_compressed_frame_is_skipped_without_closing_session() {
     let (opcode, compressed_len, reason) = outputs
         .iter()
         .find_map(|o| match o {
-            PeerOutput::Event(PeerEvent::CompressedFrameSkipped {
+            PeerOutput::Event(PeerEvent::Notice(NoticeEvent::CompressedFrameSkipped {
                 opcode,
                 compressed_len,
                 reason,
-            }) => Some((*opcode, *compressed_len, *reason)),
+            })) => Some((*opcode, *compressed_len, *reason)),
             _ => None,
         })
         .expect("CompressedFrameSkipped emitted");
@@ -94,7 +94,10 @@ fn oversized_compressed_frame_is_skipped_without_closing_session() {
     let reason = outputs
         .iter()
         .find_map(|o| match o {
-            PeerOutput::Event(PeerEvent::CompressedFrameSkipped { reason, .. }) => Some(*reason),
+            PeerOutput::Event(PeerEvent::Notice(NoticeEvent::CompressedFrameSkipped {
+                reason,
+                ..
+            })) => Some(*reason),
             _ => None,
         })
         .expect("CompressedFrameSkipped emitted");
@@ -111,7 +114,7 @@ fn oversized_compressed_frame_is_skipped_without_closing_session() {
 #[test]
 fn packed_answer_sources_inflates_to_sources_received() {
     let file_hash = FileHash::from_bytes([0x21; 16]);
-    let source = ExchangedSource::plain(PeerSource::new(ClientId::from_u32(0x0100_00A8), 4662));
+    let source = SourceSighting::plain(PeerSource::new(ClientId::from_u32(0x0100_00A8), 4662));
     let plain = AnswerSources {
         file_hash,
         sources: vec![SourceExchangeEntry::plain(source)],
@@ -128,13 +131,13 @@ fn packed_answer_sources_inflates_to_sources_received() {
     // never-requested file are dropped; this test's subject is the
     // packed-frame codec, not that gate. The name ask opens it: a nibble-1
     // peer is never asked for sources (ADR-0108).
-    session.handle_command(PeerCommand::RequestFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash,
         file_size: 4096,
         own_status: rmule_peer::PartBitmap::downloader_empty(4096),
         want_sources: false,
         want_aich_root: false,
-    });
+    }));
     let _ = drain(|| session.poll_output());
 
     session.handle_bytes(&packed_frame_bytes(0x82, &compressed));
@@ -143,9 +146,10 @@ fn packed_answer_sources_inflates_to_sources_received() {
     let (fh, sources) = outputs
         .iter()
         .find_map(|o| match o {
-            PeerOutput::Event(PeerEvent::SourcesReceived { file_hash, sources }) => {
-                Some((*file_hash, sources.clone()))
-            }
+            PeerOutput::Event(PeerEvent::Requester(RequesterEvent::SourcesReceived {
+                file_hash,
+                sources,
+            })) => Some((*file_hash, sources.clone())),
             _ => None,
         })
         .expect("SourcesReceived emitted");

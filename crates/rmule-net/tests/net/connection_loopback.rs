@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::fixture::peer_endpoint;
 use rmule_net::peer::{ConnectOptions, Connection};
-use rmule_peer::PeerEvent;
+use rmule_peer::{ConnectionEvent, PeerEvent};
 use rmule_primitives::{Ed2kText, UserHash};
 use rmule_testkit::peer_session::loopback_ctx;
 use rmule_testkit::{FakePeer, PeerScript};
@@ -34,12 +34,12 @@ async fn connection_handshake_round_trips_with_loopback_peer() {
 
     let mut identity = None;
     while let Some(event) = conn.next_event().await {
-        if let PeerEvent::PeerIdentified { identity: id } = event {
+        if let PeerEvent::Connection(ConnectionEvent::Identified { identity: id }) = event {
             identity = Some(id);
             break;
         }
     }
-    let identity = identity.expect("PeerIdentified arrived");
+    let identity = identity.expect("Identified arrived");
     assert_eq!(identity.user_hash(), user_hash);
     assert_eq!(
         identity.nickname().map(Ed2kText::to_display_string),
@@ -74,7 +74,7 @@ async fn hello_timeout_closes_session_when_remote_silent() {
 
     let mut saw_timeout = false;
     while let Some(event) = conn.next_event().await {
-        if let PeerEvent::Disconnected { reason } = event {
+        if let PeerEvent::Connection(ConnectionEvent::Disconnected { reason }) = event {
             saw_timeout = matches!(reason, rmule_peer::PeerCloseReason::HelloTimeout);
             break;
         }

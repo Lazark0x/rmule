@@ -2,17 +2,21 @@
 //! directory: the same core `main` builds, with the one swap a test needs — a
 //! canned fetch and no router backends, so nothing here reaches past the host.
 
+use rmule_testkit::HANG_GUARD;
 use std::net::Ipv4Addr;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use rmule::attach::{Attachment, Deployment, attach};
+use rmule::config::PrefEdit;
 use rmule_bootstrap::{BootstrapConfig, FetchError, Fetcher};
-use rmule_core::port_mapping::MappingProtocol;
+use rmule_core::port_mapping::{MappingProtocol, PortMappingMode};
 use rmule_core::{
-    AppConfigStore, Core, CoreCommand, CoreEvent, DataDir, DataDirSource, DurableAppConfig,
-    LoginStep, ManagedServer, MappingBackend, Preference, ServerConnectFailure,
-    ServerConnectionEvent, ServerListEvent, ServerListStore, open_durable_store,
+    Core, CoreCommand, CoreEvent, CoreSettingsHandle, DataDir, DataDirSource, DirectoryRefusal,
+    DirectoryRole, DirectoryState, DurableAppConfig, LoginStep, ManagedServer, MappingBackend,
+    ScanEvent, ServerConnectFailure, ServerConnectionEvent, ServerListEvent, ServerListStore,
+    Setting, TakesEffect, open_durable_store,
 };
 use rmule_primitives::{Ipv4Endpoint, ServerEndpoint};
 use rmule_testkit::ScriptedBackend;
@@ -59,12 +63,14 @@ fn server_met(servers: &[(Ipv4Addr, u16)]) -> Vec<u8> {
     bytes
 }
 
-/// The test deployment: the canned fetch, and scripted Mapping Backends or
-/// none, so nothing speaks to a real mirror or router.
+/// The test deployment: the canned fetch, scripted Mapping Backends or none,
+/// and a scratch home or none, so nothing speaks to a real mirror or router
+/// or names the operator's home.
 #[derive(Default)]
 struct Scratch {
     fetch: CannedFetch,
     backends: Vec<Arc<dyn MappingBackend>>,
+    home: Option<PathBuf>,
 }
 
 impl Deployment for Scratch {
@@ -77,21 +83,24 @@ impl Deployment for Scratch {
     fn mapping_backends(&self, _port_map_secret: u32) -> Vec<Arc<dyn MappingBackend>> {
         self.backends.clone()
     }
+
+    fn home(&self) -> Option<PathBuf> {
+        self.home.clone()
+    }
 }
 
-/// A scratch data directory whose store is seeded by `seed` and closed again
-/// before the app opens it — the engine's file lock admits one opener.
-fn data_dir(seed: impl FnOnce(&DurableAppConfig)) -> tempfile::TempDir {
+/// A scratch data directory whose store is seeded by `seed` — its server
+/// rows, and Core Settings through the handle as an operator would — and
+/// closed again before the app opens it: the engine's file lock admits one
+/// opener.
+fn data_dir(seed: impl FnOnce(&DurableAppConfig, &CoreSettingsHandle)) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
-    let store = DurableAppConfig::new(open_durable_store(dir.path()).expect("open the store"));
-    // Ephemeral ports: the core binds its client UDP socket at start and its
-    // eD2k listener before a login, and a fixed port would fight any other
-    // client on this host.
-    store.ensure_identity().expect("identity");
-    store.ensure_kad_identity().expect("kad identity");
-    store.set_tcp_port(0).expect("tcp port");
-    store.set_udp_port(0).expect("udp port");
-    seed(&store);
+    let durable = open_durable_store(dir.path()).expect("open the store");
+    let settings = CoreSettingsHandle::open(durable.clone());
+    // The core binds its client UDP socket at start and its eD2k listener at
+    // attach, and a fixed port would fight any other client on this host.
+    rmule_testkit::scratch_ports(&settings);
+    seed(&DurableAppConfig::new(durable), &settings);
     dir
 }
 
@@ -114,7 +123,7 @@ async fn list_edges_so_far(core: &mut Core) -> Vec<ServerListEvent> {
         .await
         .expect("the core takes the dump");
     let mut edges = Vec::new();
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(HANG_GUARD, async {
         loop {
             match core.next_event().await.expect("core alive") {
                 CoreEvent::DiagnosticsSnapshot { .. } => return,
@@ -124,7 +133,7 @@ async fn list_edges_so_far(core: &mut Core) -> Vec<ServerListEvent> {
         }
     })
     .await
-    .expect("the dump answers within 10s");
+    .expect("the dump answers");
     edges
 }
 
@@ -133,7 +142,7 @@ async fn list_edges_so_far(core: &mut Core) -> Vec<ServerListEvent> {
 /// — through the fetch the deployment gave the core, without a key press.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_fresh_data_dir_fetches_its_server_list_once_at_attach() {
-    let dir = data_dir(|_| {});
+    let dir = data_dir(|_, _| {});
     let fetch = CannedFetch {
         body: Some(Arc::new(server_met(&[
             (Ipv4Addr::new(198, 51, 100, 7), 4661),
@@ -147,7 +156,7 @@ async fn a_fresh_data_dir_fetches_its_server_list_once_at_attach() {
     };
 
     let Attachment { mut core, .. } = attach_in(&dir, &deployment).await;
-    let updated = tokio::time::timeout(Duration::from_secs(10), async {
+    let updated = tokio::time::timeout(HANG_GUARD, async {
         loop {
             match core.next_event().await.expect("core alive") {
                 CoreEvent::ServerList(ServerListEvent::ServerListUpdated {
@@ -163,7 +172,7 @@ async fn a_fresh_data_dir_fetches_its_server_list_once_at_attach() {
         }
     })
     .await
-    .expect("the first-run fetch lands within 10s");
+    .expect("the first-run fetch lands");
 
     assert_eq!(updated, (2, 2), "both rows listed, into the empty list");
     assert_eq!(
@@ -173,13 +182,31 @@ async fn a_fresh_data_dir_fetches_its_server_list_once_at_attach() {
     );
 }
 
+/// The Settings tab edits through the attached core's own Core Settings
+/// handle (ADR-0069): a live key is taken up at once, and a start-shaped one
+/// is kept for the next start.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_settings_tab_edits_through_the_attached_core() {
+    let dir = data_dir(|_, _| {});
+    let Attachment { core, config, .. } = attach_in(&dir, &Scratch::default()).await;
+    let effect = |edit: PrefEdit| config.commit(&edit).expect("commit");
+    assert_eq!(effect(PrefEdit::DeadServerRetries(5)), TakesEffect::Now);
+    assert_eq!(effect(PrefEdit::UdpPort(4999)), TakesEffect::NextStart);
+    core.shutdown().await;
+    assert_eq!(
+        config.load(None).expect("load").dead_server_retries,
+        5,
+        "and the store holds it"
+    );
+}
+
 /// The off switch: with `auto_fetch_server_met` off, a fresh data directory
 /// starts with its empty list and nothing is fetched.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_off_switch_keeps_a_first_run_from_fetching() {
-    let dir = data_dir(|store| {
-        store
-            .set_preference(Preference::AutoFetchServerMet, "false")
+    let dir = data_dir(|_, settings| {
+        settings
+            .set(Setting::AutoFetchServerMet(false))
             .expect("turn the fetch off");
     });
     let deployment = Scratch::default();
@@ -197,12 +224,12 @@ fn filtered_server() -> ServerEndpoint {
 
 /// A scratch data directory listing [`filtered_server`] beside an
 /// `ipfilter.dat` that blocks it, seeded further by `seed`.
-fn filtered_data_dir(seed: impl FnOnce(&DurableAppConfig)) -> tempfile::TempDir {
-    let dir = data_dir(|store| {
+fn filtered_data_dir(seed: impl FnOnce(&CoreSettingsHandle)) -> tempfile::TempDir {
+    let dir = data_dir(|store, settings| {
         store
             .merge_server(ManagedServer::listed(filtered_server()))
             .expect("list the server");
-        seed(store);
+        seed(settings);
     });
     std::fs::write(
         dir.path().join("ipfilter.dat"),
@@ -219,12 +246,9 @@ async fn connect_to_the_filtered_server(
     dir: &tempfile::TempDir,
     deployment: &Scratch,
 ) -> (Vec<LoginStep>, ServerConnectFailure) {
-    let Attachment {
-        mut core, session, ..
-    } = attach_in(dir, deployment).await;
+    let Attachment { mut core, .. } = attach_in(dir, deployment).await;
     core.send(CoreCommand::ConnectToServer {
         server: filtered_server(),
-        credentials: session.credentials,
     })
     .await
     .expect("the core takes the connect");
@@ -260,10 +284,10 @@ async fn the_app_core_refuses_a_server_its_ip_filter_blocks() {
 
 /// With mapping backends installed, does the login wait on the listener's
 /// router mapping before it leaves — the mark of a running mapping runtime?
-async fn login_waits_on_a_mapping(port_mapping: &str) -> bool {
-    let dir = filtered_data_dir(|store| {
-        store
-            .set_preference(Preference::PortMapping, port_mapping)
+async fn login_waits_on_a_mapping(port_mapping: PortMappingMode) -> bool {
+    let dir = filtered_data_dir(|settings| {
+        settings
+            .set(Setting::PortMapping(port_mapping))
             .expect("set port mapping");
     });
     let deployment = Scratch {
@@ -281,6 +305,75 @@ async fn login_waits_on_a_mapping(port_mapping: &str) -> bool {
 /// runtime, so nothing ever speaks to the router.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_port_mapping_switch_starts_or_withholds_the_mapping_runtime() {
-    assert!(login_waits_on_a_mapping("true").await, "on: mapped first");
-    assert!(!login_waits_on_a_mapping("false").await, "off: no mapping");
+    assert!(
+        login_waits_on_a_mapping(PortMappingMode::Auto).await,
+        "on: mapped first"
+    );
+    assert!(
+        !login_waits_on_a_mapping(PortMappingMode::Off).await,
+        "off: no mapping"
+    );
+}
+
+/// The share guards hold for the download directory core scans at attach
+/// (ADR-0101): one that is rmule's data directory, or the operator's home, is
+/// refused — said, listed as refused, never scanned — though the operator's
+/// share answer for it is on record.
+#[tokio::test(flavor = "multi_thread")]
+async fn attach_refuses_a_download_dir_that_is_the_data_dir_or_the_home() {
+    let home = tempfile::tempdir().expect("home");
+    for (in_home, reason) in [
+        (false, DirectoryRefusal::DataDirectory),
+        (true, DirectoryRefusal::HomeDirectory),
+    ] {
+        let dir = data_dir(|_, _| {});
+        let download_dir = if in_home { home.path() } else { dir.path() }.to_path_buf();
+        CoreSettingsHandle::open(open_durable_store(dir.path()).expect("reopen the store"))
+            .set(Setting::DownloadDir {
+                dir: download_dir.clone(),
+                share_confirmed: true,
+            })
+            .expect("the download dir is stored");
+        let deployment = Scratch {
+            home: Some(home.path().to_path_buf()),
+            ..Scratch::default()
+        };
+        let Attachment { mut core, .. } = attach_in(&dir, &deployment).await;
+
+        let said = tokio::time::timeout(HANG_GUARD, async {
+            loop {
+                match core.next_event().await.expect("core alive") {
+                    CoreEvent::Scan(ScanEvent::DownloadDirectoryRefused { dir, reason }) => {
+                        return (dir, reason);
+                    }
+                    CoreEvent::Scan(other) => panic!("scanned before the guard: {other:?}"),
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("the refusal is said at attach");
+        assert_eq!(said, (download_dir.clone(), reason.clone()));
+        core.send(CoreCommand::DumpDiagnostics)
+            .await
+            .expect("the core takes the dump");
+        let listed = tokio::time::timeout(HANG_GUARD, async {
+            loop {
+                match core.next_event().await.expect("core alive") {
+                    CoreEvent::DiagnosticsSnapshot { snapshot } => {
+                        return snapshot.shared_directories;
+                    }
+                    CoreEvent::Scan(other) => panic!("scanned after the refusal: {other:?}"),
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("the dump answers");
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(listed[0].dir, download_dir);
+        assert_eq!(listed[0].role, DirectoryRole::DownloadDirectory);
+        assert_eq!(listed[0].state, DirectoryState::Refused(reason));
+        core.shutdown().await;
+    }
 }

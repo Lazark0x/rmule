@@ -4,41 +4,33 @@
 //! start paths assemble the same task.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use rmule_primitives::Ed2kFileLink;
 use tokio::sync::{Mutex, mpsc, watch};
 use tracing::Instrument;
 
 use crate::adapters::{
-    KadRuntimeFactory, PeerTransferService, ServeRuntimeService, SharedCallbackTable,
-    SourceLookupService,
+    KadRuntimeFactory, PeerTransferService, ServeRuntimeService, SourceLookupService,
 };
-use crate::client_udp::ClientUdpSend;
 use crate::content::{ContentFileStore, RestoredProgress, Revalidation};
-use crate::credit::SharedCreditStore;
 use crate::download::source_seeds::SourceSeed;
 use crate::download::{
-    DownloadRequest, DownloadTask, RunnerContext, StopReason, file_link_from_record,
+    DownloadRequest, DownloadTask, RunnerContext, SharedRuntime, StopReason, file_link_from_record,
 };
-use crate::global_sources::{GlobalCallbackSender, GlobalSourceRegistry};
-use crate::ip_filter::SharedIpFilter;
-use crate::kad_sources::KadSourceRegistry;
-use crate::server_session::SharedServerSession;
 use crate::service::activity::ActiveDownload;
 use crate::service::{
-    ClientCredentials, CoreCommandRejectReason, CoreEvent, DownloadCommand, DownloadEvent,
-    DownloadId, FinishedActivity, RestartOutcome, SharedReaskReplySink, send_download_event,
+    CoreCommandRejectReason, CoreEvent, DownloadCommand, DownloadEvent, DownloadId,
+    FinishedActivity, RestartOutcome, send_download_event,
 };
 use crate::storage::DownloadRepository;
-use crate::store::download::DurableDownloadRepository;
 use crate::{
-    CoreError, DownloadFailure, DownloadLifecycle, DownloadPaths, DurableDownloadRecord, PartFault,
+    CoreError, DownloadFailure, DownloadLifecycle, DurableDownloadRecord, PartFault,
     StorageIntegrityFault, VerifiedPartRecord,
 };
 
 use super::{CoreActor, send_event};
 
+mod placement;
 mod restore;
 mod seeds;
 
@@ -57,18 +49,28 @@ where
             DownloadCommand::StartDownload {
                 file,
                 source_hint,
-                credentials,
-                output_path,
+                name,
+                if_taken,
             } => {
                 // A link for a file the Download Set already holds is a second
                 // link, not a second download (ADR-0089's amendment).
                 if self.second_link(&file).await {
                     return;
                 }
+                let paths = match self.place_download(&name, if_taken) {
+                    Ok(paths) => paths,
+                    Err(reason) => {
+                        tracing::warn!(
+                            file_hash = %file.file_hash.to_hex_upper(),
+                            ?reason,
+                            "download start refused",
+                        );
+                        return self.reject(reason).await;
+                    }
+                };
                 // The Download Set admits any number of downloads; the store
                 // refuses the one thing that cannot coexist — a second live
                 // row for the same file or the same output — and says which.
-                let paths = DownloadPaths::from_final_path(output_path);
                 let record =
                     match self
                         .wiring
@@ -120,12 +122,12 @@ where
                     runtime: &self.download_runtime,
                     download_id,
                     file,
-                    identity: self.identity(&credentials),
+                    identity: self.settings_identity(),
                     verified_part_indexes: Vec::new(),
                     run: self.activities.take_download_run(),
                     remembered: Vec::new(),
                 });
-                self.activities.downloads.insert(download_id, active);
+                self.activities.download_started(download_id, active);
             }
             DownloadCommand::CancelDownload { download_id } => {
                 if let Some(active) = self.retire_download(download_id) {
@@ -137,14 +139,14 @@ where
                 }
                 // Running, waiting its turn or at rest alike: a download with
                 // no run is still the operator's to drop (ADR-0094).
-                self.take_restoring(download_id);
+                self.activities.take_restoring(download_id);
                 self.cancel(download_id).await;
             }
             DownloadCommand::PauseDownload { download_id } => {
                 if let Some(active) = self.retire_download(download_id) {
                     let _ = active.stop_tx.send(StopReason::Pause);
                     let _ = active.handle.await;
-                } else if self.take_restoring(download_id).is_none() {
+                } else if self.activities.take_restoring(download_id).is_none() {
                     self.reject(CoreCommandRejectReason::UnknownDownload).await;
                     return;
                 }
@@ -175,19 +177,16 @@ where
                     let _ = self.clear(download_id).await;
                 }
             }
-            DownloadCommand::ResumeDownload {
-                download_id,
-                credentials,
-            } => {
+            DownloadCommand::ResumeDownload { download_id } => {
                 // One waiting its turn after attach starts now instead, with
                 // the seeds attach loaded for it; any other — a paused row
                 // the operator resumes, a failed one restarted — reads its
                 // own, as attach would have (ADR-0109, "Source Seeds").
-                let remembered = match self.take_restoring(download_id) {
+                let remembered = match self.activities.take_restoring(download_id) {
                     Some(remembered) => remembered,
                     None => self.stored_seeds(download_id),
                 };
-                if let Err(reason) = self.resume(download_id, &credentials, remembered).await {
+                if let Err(reason) = self.resume(download_id, remembered).await {
                     self.reject(reason).await;
                 }
             }
@@ -209,13 +208,13 @@ where
         let Some(holder) = holder else {
             return false;
         };
-        let running = self.activities.downloads.get(&holder.id());
+        let running = self.activities.download(holder.id());
         match running {
             Some(active) if crate::download::names_sources(file) => {
                 // Resolved off the actor, as a first link's are: a named
                 // source may take the resolver's whole bound.
                 let later_links = active.later_links.clone();
-                let resolver = self.download_runtime.resolver.clone();
+                let resolver = self.download_runtime.shared.resolver.clone();
                 let file = file.clone();
                 tokio::spawn(async move {
                     let now = crate::server_list::unix_seconds(std::time::SystemTime::now());
@@ -239,10 +238,9 @@ where
     pub(super) async fn resume(
         &mut self,
         download_id: DownloadId,
-        credentials: &ClientCredentials,
         remembered: Vec<SourceSeed>,
     ) -> Result<(), CoreCommandRejectReason> {
-        if self.activities.downloads.contains_key(&download_id) {
+        if self.activities.has_download(download_id) {
             return Err(CoreCommandRejectReason::DownloadAlreadyActive);
         }
         let Ok(record) = self.wiring.store.load_download(download_id) else {
@@ -360,12 +358,12 @@ where
             runtime: &self.download_runtime,
             download_id,
             file,
-            identity: self.identity(credentials),
+            identity: self.settings_identity(),
             verified_part_indexes,
             run: self.activities.take_download_run(),
             remembered,
         });
-        self.activities.downloads.insert(download_id, active);
+        self.activities.download_started(download_id, active);
         Ok(())
     }
 
@@ -481,7 +479,7 @@ where
     /// (the auto-share rides its retire), so it is refused like any download
     /// not completed.
     async fn clear(&mut self, download_id: DownloadId) -> Result<(), CoreCommandRejectReason> {
-        if self.activities.downloads.contains_key(&download_id) {
+        if self.activities.has_download(download_id) {
             return Err(CoreCommandRejectReason::DownloadNotCompleted);
         }
         match self.wiring.store.clear_completed(download_id) {
@@ -532,7 +530,7 @@ where
     /// it hands back: a stop signals and joins it, a death finds it already
     /// ended.
     pub(super) fn retire_download(&mut self, download_id: DownloadId) -> Option<ActiveDownload> {
-        let active = self.activities.downloads.remove(&download_id)?;
+        let active = self.activities.take_download(download_id)?;
         self.wiring.file_known.download_ended(active.file_hash);
         Some(active)
     }
@@ -547,60 +545,17 @@ fn start_refusal(error: &CoreError) -> CoreCommandRejectReason {
     }
 }
 
-/// The spawn-invariant runtime every download runner clones from: the shared
-/// stores, adapters, event sink, diagnostics, and per-download channels that
-/// never change across the actor's life. Built once; [`spawn_download`] clones
-/// out of it, so a new runner handle is added in one place instead of in both
-/// the `StartDownload` and `ResumeDownload` arms.
+/// What the actor keeps to spawn download runners: the core-wide
+/// [`SharedRuntime`] every run clones by one `Arc`, and the three handles
+/// only the actor reads. Built once; [`spawn_download`] clones out of it, so a
+/// new runner handle is added in one place instead of in both the
+/// `StartDownload` and `ResumeDownload` arms.
 pub(super) struct DownloadRuntime<S, P> {
+    /// The handles every run shares. Its `download_reach_tx` clone is the
+    /// actor's own, which keeps the reach arm from ever closing.
+    pub(super) shared: Arc<SharedRuntime<S, P>>,
     pub(super) peer_concurrency: usize,
-    pub(super) source_lookup_timeout: Duration,
-    pub(super) callback_timeout: Duration,
-    pub(super) store: Arc<DurableDownloadRepository>,
-    pub(super) source_lookup: Arc<Mutex<S>>,
-    /// The core's one **Source Ask Budget** (ADR-0107), cloned into every run.
-    pub(super) source_asks: crate::download::source_asks::SharedSourceAskBudget,
-    pub(super) peer_transfer: Arc<Mutex<P>>,
-    pub(super) credit: SharedCreditStore,
-    pub(super) evt_tx: mpsc::Sender<CoreEvent>,
-    pub(super) diagnostics: crate::diagnostics::DiagnosticsState,
-    pub(super) server_session: SharedServerSession,
-    pub(super) pending_callbacks: SharedCallbackTable,
-    /// The core-owned **Pending Tunnel Claim** table (ADR-0091), cloned into
-    /// every runner: the second road a pending callback may be answered on.
-    pub(super) tunnel_claims: crate::adapters::SharedTunnelClaims,
-    pub(super) global_source_registry: GlobalSourceRegistry,
-    pub(super) global_callback_tx: GlobalCallbackSender,
-    pub(super) kad_source_registry: KadSourceRegistry,
     pub(super) finished_tx: mpsc::Sender<FinishedActivity>,
-    /// Every running download installs its Remote-Queued Pool's reply sink
-    /// here under its id, so the shared client-UDP forwarder offers it
-    /// `0x91`/`0x92`/`0x93` (ADR-0057). Each install is an RAII lease.
-    pub(super) reask_reply_sink: SharedReaskReplySink,
-    /// The client-UDP send half a downloader `0x90` reask ping rides out
-    /// (ADR-0057); `None` when the socket did not bind (reask stays TCP-only).
-    pub(super) client_udp_tx: Option<mpsc::Sender<ClientUdpSend>>,
-    /// The core-owned IP filter: the runner's source-ingest gates
-    /// drop filtered High-ID rows before they reach any candidate pool.
-    pub(super) ip_filter: SharedIpFilter,
-    /// The **Advertised IPv6** (ADR-0087): the runner's own half of the Dial
-    /// Chooser's family question.
-    pub(super) ipv6_advert: crate::adapters::SharedIpv6Advert,
-    /// **Self Reach** (ADR-0060), which every runner's
-    /// **Callback Capability** and reask gate ask.
-    pub(super) reach: crate::reachability::SharedSelfReach,
-    /// Where a runner sends a callback that has gone silent for twelve seconds
-    /// (ADR-0091), so the actor's reach arm can ask the one selector whether it
-    /// should fall to a punch. The actor's own clone lives here, which is what
-    /// keeps its receiving arm from ever closing.
-    pub(super) download_reach_tx: mpsc::Sender<crate::callback::DownloadReach>,
-    /// The core-owned Peer Roster (ADR-0059): the runner marks it
-    /// when a worker's peer session connects (the hello completes) and
-    /// forgets it when the worker ends, the download leg beside the upload
-    /// queue's own writes.
-    pub(super) peer_roster: crate::peer_roster::SharedPeerRoster,
-    /// The Name Resolver a link's named sources go through (ADR-0089).
-    pub(super) resolver: crate::name_resolver::SharedNameResolver,
     /// The discovery channels every runner waits on, read live (ADR-0093):
     /// the managed global server list and the Kad activity's liveness.
     pub(super) discovery: crate::download::DiscoveryLiveness,
@@ -615,8 +570,8 @@ struct SpawnDownload<'a, S, P> {
     runtime: &'a DownloadRuntime<S, P>,
     download_id: DownloadId,
     file: Ed2kFileLink,
-    /// The node's wire identity, composed from the command's credentials and
-    /// the build-time hash.
+    /// The node's wire identity: the Core Settings' credentials as the
+    /// build-time hash, a TCP port of `0` read live at each hello.
     identity: rmule_primitives::ClientIdentity,
     verified_part_indexes: Vec<u32>,
     /// Which run of the download this is.
@@ -663,30 +618,8 @@ where
             },
             run,
             runner: RunnerContext {
-                store: Arc::clone(&runtime.store),
-                source_lookup: Arc::clone(&runtime.source_lookup),
-                source_asks: Arc::clone(&runtime.source_asks),
-                peer_transfer: Arc::clone(&runtime.peer_transfer),
-                credit: Arc::clone(&runtime.credit),
-                evt_tx: runtime.evt_tx.clone(),
+                rt: Arc::clone(&runtime.shared),
                 stop_rx,
-                diagnostics: runtime.diagnostics.clone(),
-                server_session: runtime.server_session.clone(),
-                pending_callbacks: runtime.pending_callbacks.clone(),
-                tunnel_claims: runtime.tunnel_claims.clone(),
-                source_lookup_timeout: runtime.source_lookup_timeout,
-                callback_timeout: runtime.callback_timeout,
-                global_source_registry: runtime.global_source_registry.clone(),
-                global_callback_tx: runtime.global_callback_tx.clone(),
-                kad_source_registry: runtime.kad_source_registry.clone(),
-                reask_reply_sink: runtime.reask_reply_sink.clone(),
-                client_udp_tx: runtime.client_udp_tx.clone(),
-                ip_filter: runtime.ip_filter.clone(),
-                ipv6_advert: runtime.ipv6_advert.clone(),
-                reach: runtime.reach.clone(),
-                download_reach_tx: runtime.download_reach_tx.clone(),
-                peer_roster: runtime.peer_roster.clone(),
-                resolver: runtime.resolver.clone(),
                 part_file: Mutex::new(None),
                 later_links: Mutex::new(later_inbox),
                 repair: std::sync::atomic::AtomicBool::new(false),

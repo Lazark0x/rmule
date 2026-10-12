@@ -28,7 +28,7 @@ quartet as aMule does.
 ### One client-UDP socket
 
 - One `ClientUdpSocket` **Family Pair** (ADR-0085), bound once at core start on
-  the configured `CoreConfig::udp_port` (`0` is legal for tests), carries everything a
+  the configured `CoreSettings::udp_port` (`0` is legal for tests), carries everything a
   counterparty sends to rmule's advertised UDP endpoint: the reask surface, NAT-T and Kad.
 - After the receive transform (ADR-0046) the front demuxes: `0xC5` to the peer-UDP
   engine; `0xE4`, and `0xE5` after zlib inflate, to the running Kad node's inlet; and
@@ -72,11 +72,13 @@ quartet as aMule does.
   the bound socket at actor start, and the conditions that cause a failure (a second
   instance, a stale hold after a crash) clear with a process restart.
 
-### Downloader: a remote-queued pool and a reask cycle
+### Downloader: queue standing on the source's record, and a reask cycle
 
-After a rank arrives, the worker disconnects and the source moves to the
-`RemoteQueuedPool` owned by download state: queue standing held without a socket. Per
-pooled source, on aMule's `FILEREASKTIME` of 1 300 000 ms
+After a rank arrives, the worker disconnects and the source's **Source Book** record moves
+to its RemoteQueued stage, its queue standing riding the record (ADR-0090): the rank, the
+UDP contact its hello stated, the reask clock and the one-ping latch, held without a
+socket. The download's brain runs the cycle on its tick (ADR-0026). Per pooled source, on
+aMule's `FILEREASKTIME` of 1 300 000 ms
 ([Constants.h#L35](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/include/protocol/ed2k/Constants.h#L35)):
 
 - **UDP first.** At `FILEREASKTIME` − 20 s, send `0x90 <hash16>` plus version-gated extras
@@ -86,19 +88,48 @@ pooled source, on aMule's `FILEREASKTIME` of 1 300 000 ms
   Gates: the socket is up, the source's UDP port is known, rmule is reachable (Self
   Reach's `!firewalled()`: a server High ID or Kad open, aMule's `!IsFirewalled()`), the
   source is not connected, and the TCP ask is preferred when a source-exchange ask is due
-  (ADR-0055), because a TCP session carries value a datagram cannot.
+  (ADR-0055), because a TCP session carries value a datagram cannot. A called-back Low-ID
+  source is pinged like any other, at the address its connection came from and the port
+  its hello advertised: aMule has no `HasLowID` gate here and sends to `GetConnectIP()`
+  (stock 2.3.3 `DownloadClient.cpp:1269-1296`). Its answer refreshes the clock, so its
+  callback road is taken again only on silence.
+- **Connected, or nothing.** Neither the ping nor the TCP full ask leaves while rmule is
+  connected to no network — no server login and no Kad node that has heard a contact,
+  aMule's `IsConnected()` (stock 2.3.3 `PartFile.cpp:1460`, `:1475`). A standing that
+  falls due offline waits, and is asked the moment a Callback Capability sample connects
+  us again.
 - **One ping in flight per peer client-UDP endpoint**, remembered with the download that
   sent it; the reply goes to that download alone, and a reply matching no ping in flight
   is dropped (ADR-0107).
 - **Replies:** `0x91` records the rank, clears queue-full and refreshes the ask clock
   ([DownloadClient.cpp#L1220](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/DownloadClient.cpp#L1220));
-  `0x93` sets queue-full and rank 0 and refreshes the clock, keeping the source
-  deprioritized; `0x92` drops the source as dead
+  its UDPv4 part status is read as a TCP one is (stock 2.3.3 `ClientUDPSocket.cpp:259`):
+  holding no part we lack makes the source no-needed-parts, and a status counting other
+  than the file's parts throws in aMule before the rank is read, so rmule ignores that
+  whole reply (`DownloadClient.cpp:416-424`, `:487-491`);
+  `0x93` sets queue-full and rank 0 and refreshes the clock; `0x92` drops the source as dead
   ([DownloadClient.cpp#L1228](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/DownloadClient.cpp#L1228)).
+- **Queue full:** aMule neither lengthens a queue-full source's reask nor ranks it lower
+  for a slot; it is one of the sources let go to make room.
+- **Purges:** once the file holds 80 % of aMule's default `MaxSourcesPerFile` (300), one
+  source goes at a time, on one clock per file (`lastpurgetime`, the run's start counting
+  as the last): a Low ID no road reaches 30 s after the last purge, a no-needed-parts
+  source 40 s after, a queue-full source 60 s after (stock 2.3.3 `PartFile.cpp:1406-1456`,
+  `:3644`). The Source Book takes the oldest record whose kind's spacing has passed, only
+  ever a record no worker holds; a Low ID counts as unreachable only while we are
+  connected, since aMule reaches `DS_LOWTOLOWIP` only by asking. aMule first offers a
+  no-needed-parts source to another download (`SwapToAnotherFile`); rmule's downloads
+  share no source, so none takes it over. The brain reports each as `SourcePurged`, with
+  its reason.
 - **Silence:** the TCP full ask fires at `FILEREASKTIME`
   ([PartFile.cpp#L1476](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/PartFile.cpp#L1476))
   and resets the one-in-flight latch, so a lost datagram costs 20 seconds, never the
-  standing.
+  standing. It reaches a High ID at its endpoint and a called-back Low ID by its callback
+  road, the one a fresh Low-ID candidate takes (ADR-0090).
+- **A held window looks again a second later.** While the ping is due but cannot leave —
+  we are unreachable, a source ask is due, or another download's ping holds the endpoint
+  (ADR-0107) — the brain names a wake one second on, as aMule's once-a-second `Process`
+  re-reads its gate.
 - **No needed parts:** such a source reasks at twice the period, then forces a TCP
   recheck
   ([PartFile.cpp#L1439](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/PartFile.cpp#L1439)).
@@ -127,9 +158,14 @@ pooled source, on aMule's `FILEREASKTIME` of 1 300 000 ms
   of ADR-0031. A Low-ID waiter cannot be dialed directly.
 
 All four opcodes map onto existing core meanings (rank, queue full, dead source); the
-UDP forms are transport variants. The reask codecs live in `rmule_peer` beside the TCP
-opcodes; the pool and scheduler belong to download state, the purge clock and dial-back
-promotion to serve state.
+UDP forms are transport variants. The reask codecs and every reply and parse rule live in
+`rmule_peer`'s sans-I/O peer-UDP module: the Reask Responder answers a ping once core has
+resolved the pinger against its queue, and the Reask Requester frames the ping and reads
+the reply. The socket and its demux stay in core. On the downloader side the brain holds
+the standing in its Source Book, builds each ping and parses each reply through the
+Requester, because the source's UDP version is on the record; the runner installs the
+download's reply sink on the socket, sends what the brain hands it, and sleeps until the
+brain's next wake. The purge clock and dial-back promotion belong to serve state.
 
 ## Consequences
 
@@ -137,7 +173,8 @@ promotion to serve state.
   `0xE3`, `0xD4` and junk; the 2-byte minimum), the reask codecs across UDP versions, the
   uploader reply matrix, the purge clock and heartbeat, dial-back promotion, and the
   downloader cycle (UDP-first timing, latch, TCP fallback, the no-needed-parts doubling,
-  the source-exchange preference).
+  the source-exchange preference) as the brain's decisions at the instants a test hands
+  it.
 - Captures live in `crates/rmule-peer/tests/fixtures/peer_udp_reask/captured/`: aMule's
   replies to rmule's pings, plain and encrypted, and aMule's own ping to rmule as an
   uploader. `0x92` is provoked by unsharing mid-queue and `0x93` by a queue-size

@@ -81,7 +81,7 @@ const EMULEQT_READY_MARKER: &str = "rmule-emuleqt-ready";
 const EMULEQT_HASHED_MARKER: &str = "Hashed OK";
 
 /// The downloader's event line for a worker put on a peer.
-const PEER_SELECTED: &str = "download peer_selected";
+const PEER_SELECTED: &str = "download.peer_selected";
 /// The download's trace when a rung-0 dial ends unconnected and the Low-ID
 /// candidate goes back to its callback roads.
 const RUNG_0_FELL: &str =
@@ -234,7 +234,7 @@ pub(super) fn drive(
         "--file",
         &shared.link,
         "--out",
-        &out("rung0-download.bin"),
+        &out("dl/rung0-download.bin"),
         "--serve",
         "--max-seconds",
         &DOWNLOAD_SECS.to_string(),

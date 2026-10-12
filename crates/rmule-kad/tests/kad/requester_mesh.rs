@@ -182,7 +182,7 @@ fn mesh_fake_storers_deliver_fixture_sources_and_noise_stays_diagnostic() {
         let KadEvent::SourcesFound { target, candidates } = event else {
             unreachable!()
         };
-        assert_eq!(*target, fixture_target);
+        assert_eq!(*target, fixture_request().target());
         assert_eq!(candidates.len(), 5);
         assert_eq!(
             candidates[0].peer_source(),

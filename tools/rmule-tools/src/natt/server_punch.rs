@@ -40,13 +40,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Args;
+use rmule_core::run_log::Level;
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, NattConfig, OwnMapping, PeerReach,
     ServeCommand as CoreServeCommand, open_durable_store_in_memory,
 };
-use rmule_primitives::{
-    ClientId, ClientIdentity, Ed2kText, Ipv4Endpoint, PeerEndpoint, ServerEndpoint, UserHash,
-};
+use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint, ServerEndpoint, UserHash};
 
 use crate::driver_row::Row;
 use crate::operand::parse_user_hash;
@@ -121,6 +120,7 @@ struct PunchRow {
     target_id: u32,
     routed: String,
     punches: u64,
+    server_requests_emitted: u64,
     refusals: u64,
     last_refusal: String,
     dials: u64,
@@ -156,16 +156,10 @@ pub(crate) async fn run_server_punch(args: NattServerPunchArgs) -> Result<()> {
     let server = ServerEndpoint::parse_host_port(&args.server)
         .with_context(|| format!("parse server endpoint {}", args.server))?;
     let our_hash = UserHash::from_bytes(parse_user_hash(&args.user_hash)?);
-    let identity = ClientIdentity::new(
-        our_hash,
-        Ed2kText::from_utf8(&args.nickname),
-        args.listen.port(),
-        60,
-    );
+    let kad_id = prediction::kad_id(&args.prediction)?;
 
-    let mut core = Core::builder(
+    let builder = Core::builder(
         CoreConfig {
-            udp_port: args.udp_port,
             natt: NattConfig {
                 port_prediction: args.prediction.port_prediction.into(),
             },
@@ -173,21 +167,30 @@ pub(crate) async fn run_server_punch(args: NattServerPunchArgs) -> Result<()> {
         },
         open_durable_store_in_memory()?,
     )
-    .user_hash(our_hash)
+    .settings(rmule_core::CoreSettings {
+        nickname: args.nickname.clone(),
+        tcp_port: args.listen.port(),
+        udp_port: args.udp_port,
+        ..rmule_core::CoreSettings::default()
+    })
+    .user_hash(our_hash);
+    let mut core = match kad_id {
+        Some(kad_id) => builder.kad_id(kad_id),
+        None => builder,
+    }
     .build();
     let _share =
         crate::share::share_files(&mut core, std::slice::from_ref(&args.share), |_| {}).await?;
     core.send(CoreCommand::Serve(CoreServeCommand::StartServing {
         listen_addr: args.listen,
-        credentials: identity.clone().into(),
     }))
     .await?;
-    crate::node::connect(&core, &server, identity.clone().into()).await?;
+    crate::node::connect(&core, &server).await?;
 
     let mut row = PunchRow {
         // Kad starts beside the login rather than after it, so the Extern
         // Port Round is already counting observers while the server answers.
-        kad_enabled: prediction::enable_kad(&mut core, &args.prediction, &identity).await?,
+        kad_enabled: prediction::enable_kad(&mut core, &args.prediction).await?,
         ..PunchRow::default()
     };
     // The login is its own fact: `ServingStarted` is a bind, and a `0x60` needs
@@ -247,9 +250,9 @@ pub(crate) async fn run_server_punch(args: NattServerPunchArgs) -> Result<()> {
             event = core.next_event() => event,
         };
         let Some(event) = event else { break };
-        println!("{event}");
+        println!("{}", event.record().render(Level::Full));
         if let CoreEvent::PeerReachRouted { route, .. } = &event {
-            row.routed = format!("{route:?}");
+            row.routed = crate::natt::route_code(route).to_owned();
         }
     }
 
@@ -261,6 +264,7 @@ pub(crate) async fn run_server_punch(args: NattServerPunchArgs) -> Result<()> {
     if let Some(snapshot) = await_snapshot(&mut core, Duration::from_secs(10)).await? {
         row.snapshot_read = true;
         row.punches = snapshot.session.natt_server_punches_total;
+        row.server_requests_emitted = snapshot.session.natt_server_requests_emitted_total;
         row.refusals = snapshot.session.natt_server_refusals_total;
         row.last_refusal = snapshot
             .session
@@ -339,7 +343,7 @@ async fn await_login(core: &mut Core, budget: Duration) -> Result<Login> {
         let Some(event) = event else {
             return Ok(Login::Failed("the core event stream ended".to_owned()));
         };
-        println!("{event}");
+        println!("{}", event.record().render(Level::Full));
         match event {
             CoreEvent::ServerConnection(rmule_core::ServerConnectionEvent::Connected {
                 client_id,
@@ -368,7 +372,7 @@ async fn await_target(core: &mut Core, path: &Path, budget: Duration) -> Result<
             () = tokio::time::sleep(TARGET_POLL) => {}
             event = core.next_event() => {
                 let Some(event) = event else { return Ok(None) };
-                println!("{event}");
+                println!("{}", event.record().render(Level::Full));
             }
         }
     }
@@ -459,6 +463,10 @@ fn render(row: &PunchRow) -> Row {
         .str("routed", &row.routed)
         .bool("snapshot_read", row.snapshot_read)
         .int("server_punches", counted(row.punches))
+        .int(
+            "server_requests_emitted",
+            counted(row.server_requests_emitted),
+        )
         .int("server_refusals", counted(row.refusals))
         .str("last_refusal", &row.last_refusal)
         .int("dials", counted(row.dials))

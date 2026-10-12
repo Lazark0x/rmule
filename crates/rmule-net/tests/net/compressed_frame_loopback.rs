@@ -1,15 +1,15 @@
 //! Peer inbound packed (`0xD4`) frame loopback (ADR-0053, Correctness
 //! Tier): `FakePeer` answers `OP_REQUESTSOURCES` with a packed
 //! `OP_ANSWERSOURCES`, and the live session over a real TCP connection
-//! inflates it to `PeerEvent::SourcesReceived` — the wire-level companion to
+//! inflates it to `RequesterEvent::SourcesReceived` — the wire-level companion to
 //! `rmule-peer`'s `session_compressed_frames.rs` unit vectors.
 
 use std::time::Duration;
 
 use crate::fixture::peer_endpoint;
 use rmule_net::peer::{ConnectOptions, Connection};
-use rmule_peer::{PeerCommand, PeerEvent};
-use rmule_primitives::{ClientId, ExchangedSource, FileHash, PeerSource, UserHash};
+use rmule_peer::{ConnectionEvent, PeerCommand, PeerEvent, RequesterCommand, RequesterEvent};
+use rmule_primitives::{ClientId, FileHash, PeerSource, SourceSighting, UserHash};
 use rmule_testkit::peer_session::loopback_ctx;
 use rmule_testkit::{FakePeer, PeerScript, SourcesPolicy};
 
@@ -24,9 +24,9 @@ async fn packed_answer_sources_inflates_to_sources_received_over_real_connection
         0x13, 0x57, 0x9B, 0xDF, 0x24, 0x68, 0xAC, 0xE0, 0x31, 0x75, 0xB9, 0xFD, 0x42, 0x86, 0xCA,
         0x0E,
     ]);
-    let sources: Vec<ExchangedSource> = (0..20)
+    let sources: Vec<SourceSighting> = (0..20)
         .map(|_| {
-            ExchangedSource::new(
+            SourceSighting::new(
                 PeerSource::new(ClientId::from_u32(0xC0A8_0101), 4662),
                 Some(source_hash),
                 None,
@@ -52,20 +52,26 @@ async fn packed_answer_sources_inflates_to_sources_received_over_real_connection
 
     let mut identified = false;
     while let Some(event) = conn.next_event().await {
-        if matches!(event, PeerEvent::PeerIdentified { .. }) {
+        if matches!(
+            event,
+            PeerEvent::Connection(ConnectionEvent::Identified { .. })
+        ) {
             identified = true;
             break;
         }
     }
-    assert!(identified, "PeerIdentified arrived");
+    assert!(identified, "Identified arrived");
 
-    conn.send(PeerCommand::RequestSources { file_hash })
-        .await
-        .expect("send RequestSources");
+    conn.send(PeerCommand::Requester(RequesterCommand::RequestSources {
+        file_hash,
+    }))
+    .await
+    .expect("send RequestSources");
 
     let mut received = None;
     while let Some(event) = conn.next_event().await {
-        if let PeerEvent::SourcesReceived { file_hash, sources } = event {
+        if let PeerEvent::Requester(RequesterEvent::SourcesReceived { file_hash, sources }) = event
+        {
             received = Some((file_hash, sources));
             break;
         }

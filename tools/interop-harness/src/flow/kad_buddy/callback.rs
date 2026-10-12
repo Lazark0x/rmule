@@ -167,7 +167,7 @@ impl CallbackLeg {
             "--file",
             &plan.link,
             "--download-out",
-            "/out/download.bin",
+            "/out/dl/download.bin",
             "--target-file",
             "/out/target.toml",
             "--target-timeout",
@@ -337,7 +337,7 @@ impl CallbackLeg {
             ),
             (
                 "the-download-routed-the-buddy-callback-from-the-kad-row",
-                routed.starts_with("Buddy") && routed.contains("emitted_to: Some"),
+                routed == "buddy emitted_to=peer",
             ),
             (
                 "the-0x52-left-the-downloader-for-the-buddy",

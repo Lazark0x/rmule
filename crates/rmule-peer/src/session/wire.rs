@@ -22,6 +22,7 @@ use crate::hello::HelloRefusal;
 use crate::opcode::PeerOpcode;
 use crate::packet::{DecodedPeerFrame, PeerPacket};
 use crate::software::SoftwareEvidence;
+use crate::{ConnectionEvent, NoticeEvent, RequesterEvent};
 
 impl PeerSession {
     /// Append bytes from the socket, extract complete frames, and dispatch
@@ -63,7 +64,7 @@ impl PeerSession {
             // ADR-0087: an ExtSX claimant answers in the record form, which no
             // geometry check could recognise.
             ext_sx: self
-                .peer_mod_misc
+                .peer_mod_misc()
                 .is_some_and(crate::capability::ModMiscOptions::supports_ext_sx),
         };
         let peer_packet = match PeerPacket::decode_frame(&packet, claim, self.extended_requests()) {
@@ -73,11 +74,12 @@ impl PeerSession {
                 compressed_len,
                 reason,
             }) => {
-                self.core.push_event(PeerEvent::CompressedFrameSkipped {
-                    opcode,
-                    compressed_len,
-                    reason,
-                });
+                self.core
+                    .push_event(PeerEvent::Notice(NoticeEvent::CompressedFrameSkipped {
+                        opcode,
+                        compressed_len,
+                        reason,
+                    }));
                 return;
             }
             Err(PeerPacketDecodeError::SourceExchange { source }) => {
@@ -86,20 +88,22 @@ impl PeerSession {
                 // protocol violation. Closing here would tear down an
                 // otherwise-healthy (possibly actively downloading) peer over a
                 // bad source list, so emit a diagnostic and drop only the answer.
-                self.core
-                    .push_event(PeerEvent::SourceExchangeAnswerSkipped {
+                self.core.push_event(PeerEvent::Requester(
+                    RequesterEvent::SourceExchangeAnswerSkipped {
                         reason: source.into(),
-                    });
+                    },
+                ));
                 return;
             }
             Err(PeerPacketDecodeError::SourceExchange2 { source }) => {
                 // A malformed `0x84` gets the same non-terminal treatment as
                 // `0x82` above — aMule's `AddClientSources` returns silently for
                 // the SX2 branch too (`PartFile.cpp` @4e8f2b3c).
-                self.core
-                    .push_event(PeerEvent::SourceExchangeAnswerSkipped {
+                self.core.push_event(PeerEvent::Requester(
+                    RequesterEvent::SourceExchangeAnswerSkipped {
                         reason: source.into(),
-                    });
+                    },
+                ));
                 return;
             }
             Err(PeerPacketDecodeError::Slot { .. })
@@ -110,11 +114,12 @@ impl PeerSession {
                 // otherwise lets it pass, connection kept (stock 2.3.3
                 // `4e8f2b3c` `ClientTCPSocket.cpp:606-618`, no `throw`):
                 // preserved as unknown, stay open (ADR-0018).
-                self.core.push_event(PeerEvent::UnknownPeerPacket {
-                    protocol: packet.protocol(),
-                    opcode: packet.opcode(),
-                    payload_len: packet.payload().len(),
-                });
+                self.core
+                    .push_event(PeerEvent::Notice(NoticeEvent::UnknownPacket {
+                        protocol: packet.protocol(),
+                        opcode: packet.opcode(),
+                        payload_len: packet.payload().len(),
+                    }));
                 return;
             }
             Err(
@@ -122,7 +127,10 @@ impl PeerSession {
                 | PeerPacketDecodeError::HelloAnswer { source },
             ) => {
                 if let Some(refusal) = HelloRefusal::from_decode_error(&source) {
-                    self.core.push_event(PeerEvent::HelloRefused { refusal });
+                    self.core
+                        .push_event(PeerEvent::Connection(ConnectionEvent::HelloRefused {
+                            refusal,
+                        }));
                 }
                 self.close_protocol_violation();
                 return;
@@ -159,20 +167,22 @@ impl PeerSession {
                 } else {
                     // Outbound dialer, or already past the handshake: an
                     // OP_HELLO is unexpected. Preserve as Unknown, stay open.
-                    self.core.push_event(PeerEvent::UnknownPeerPacket {
-                        protocol: PeerOpcode::Hello.protocol(),
-                        opcode: PeerOpcode::Hello.as_u8(),
-                        payload_len: packet.payload().len(),
-                    });
+                    self.core
+                        .push_event(PeerEvent::Notice(NoticeEvent::UnknownPacket {
+                            protocol: PeerOpcode::Hello.protocol(),
+                            opcode: PeerOpcode::Hello.as_u8(),
+                            payload_len: packet.payload().len(),
+                        }));
                 }
             }
             PeerPacket::HelloAnswer(answer) => {
                 if !matches!(self.state, State::AwaitingHelloAnswer) {
-                    self.core.push_event(PeerEvent::UnknownPeerPacket {
-                        protocol: PeerOpcode::HelloAnswer.protocol(),
-                        opcode: PeerOpcode::HelloAnswer.as_u8(),
-                        payload_len: packet.payload().len(),
-                    });
+                    self.core
+                        .push_event(PeerEvent::Notice(NoticeEvent::UnknownPacket {
+                            protocol: PeerOpcode::HelloAnswer.protocol(),
+                            opcode: PeerOpcode::HelloAnswer.as_u8(),
+                            payload_len: packet.payload().len(),
+                        }));
                     return;
                 }
                 self.peer_software.hello(answer.body(), answer.trailer());
@@ -207,11 +217,12 @@ impl PeerSession {
             | PeerPacket::MultiPacketRequest(_)
                 if !matches!(self.state, State::Identified) =>
             {
-                self.core.push_event(PeerEvent::UnknownPeerPacket {
-                    protocol: packet.protocol(),
-                    opcode: packet.opcode(),
-                    payload_len: packet.payload().len(),
-                });
+                self.core
+                    .push_event(PeerEvent::Notice(NoticeEvent::UnknownPacket {
+                        protocol: packet.protocol(),
+                        opcode: packet.opcode(),
+                        payload_len: packet.payload().len(),
+                    }));
             }
             PeerPacket::RequestFileName(r) => {
                 self.on_file_requested(r.file_hash, r.status);
@@ -246,11 +257,12 @@ impl PeerSession {
             PeerPacket::SecIdentState(_) | PeerPacket::PublicKey(_) | PeerPacket::Signature(_)
                 if !matches!(self.state, State::Identified) =>
             {
-                self.core.push_event(PeerEvent::UnknownPeerPacket {
-                    protocol: packet.protocol(),
-                    opcode: packet.opcode(),
-                    payload_len: packet.payload().len(),
-                });
+                self.core
+                    .push_event(PeerEvent::Notice(NoticeEvent::UnknownPacket {
+                        protocol: packet.protocol(),
+                        opcode: packet.opcode(),
+                        payload_len: packet.payload().len(),
+                    }));
             }
             PeerPacket::SecIdentState(p) => self.on_secident_state(p),
             PeerPacket::PublicKey(p) => self.on_public_key(p),
@@ -275,11 +287,12 @@ impl PeerSession {
             | PeerPacket::ChatCaptchaRes
                 if !matches!(self.state, State::Identified) =>
             {
-                self.core.push_event(PeerEvent::UnknownPeerPacket {
-                    protocol: packet.protocol(),
-                    opcode: packet.opcode(),
-                    payload_len: packet.payload().len(),
-                });
+                self.core
+                    .push_event(PeerEvent::Notice(NoticeEvent::UnknownPacket {
+                        protocol: packet.protocol(),
+                        opcode: packet.opcode(),
+                        payload_len: packet.payload().len(),
+                    }));
             }
             // Respond-by-parity (ADR-0068): the most private aMule refuses
             // explicitly rather than going silent. Denied unconditionally —
@@ -300,6 +313,8 @@ impl PeerSession {
             PeerPacket::Message(m) => self.on_message(m),
             PeerPacket::FileDesc(d) => self.on_file_desc(d),
             PeerPacket::ChangeClientId(c) => self.on_change_client_id(c),
+            // The peer's IPv6 moved: a revision of its identity (ADR-0087).
+            PeerPacket::ChangeClientIpV6(c) => self.on_change_client_ipv6(c.address()),
             // Drop-with-counter: rmule never emits `OP_MESSAGE`, so a captcha
             // challenge/answer riding on it is always unsolicited.
             PeerPacket::ChatCaptchaReq | PeerPacket::ChatCaptchaRes => self.on_chat_captcha(),
@@ -328,7 +343,6 @@ impl PeerSession {
             | PeerPacket::AichFileHashAns(_)
             | PeerPacket::KadFirewallAck
             | PeerPacket::KadUdpFirewallRequest(_)
-            | PeerPacket::ChangeClientIpV6(_)
             | PeerPacket::Unknown { .. } => {}
         }
     }

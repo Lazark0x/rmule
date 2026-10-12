@@ -1,6 +1,7 @@
-//! Firewalled-node unit tests: recruitment gating on both surfaces being
-//! firewalled, the twenty-minute pacing and its instant retry after a buddy
-//! loss, the XOR inversion checked on adoption, the relayed and direct
+//! Firewalled-node unit tests: the recruit rule's gating on both surfaces
+//! being firewalled, its one walk at a time, the twenty-minute pacing and its
+//! instant retry after a published buddy loss, the XOR inversion checked on
+//! adoption, the relayed and direct
 //! callback refusal matrices (Kad gating, file knowledge, per-IP rate limit
 //! and its capped tracker), and the buddy facts published only while
 //! firewalled with a slot filled.
@@ -13,6 +14,7 @@ use rmule_net::peer::ObfuscationPolicy;
 use rmule_primitives::{Ipv4Endpoint, PeerEndpoint, UserHash};
 
 use super::direct_callback::*;
+use super::link::{BuddySnapshot, BuddyState};
 use super::recruit::*;
 use super::relayed_callback::*;
 use super::*;
@@ -53,15 +55,20 @@ fn valid_answer() -> FindBuddyRes {
     }
 }
 
+/// The slot as its owner publishes it with nothing held and nothing lost.
+fn empty() -> BuddySnapshot {
+    BuddySnapshot::default()
+}
+
 #[test]
 fn recruitment_fires_only_when_both_surfaces_are_firewalled() {
     let t0 = Instant::now();
 
     // Both firewalled (and Kad up, no buddy, pacing due, no crypt): recruit,
     // walking toward ~ourKadID.
-    let mut node = FirewalledNode::new(our_id());
+    let mut rule = Recruiter::new(our_id());
     assert_eq!(
-        node.consider_recruitment(&both_firewalled(), t0),
+        rule.consider(&both_firewalled(), &empty(), t0),
         RecruitDecision::Recruit {
             walk_target: inverted(&our_id())
         }
@@ -107,49 +114,103 @@ fn recruitment_fires_only_when_both_surfaces_are_firewalled() {
             RecruitRefusal::CryptRequired,
         ),
     ] {
-        let mut node = FirewalledNode::new(our_id());
+        let mut rule = Recruiter::new(our_id());
         assert_eq!(
-            node.consider_recruitment(&ctx, t0),
+            rule.consider(&ctx, &empty(), t0),
             RecruitDecision::Refuse { reason },
             "context {ctx:?} must refuse"
+        );
+        assert_eq!(
+            rule.status(),
+            RecruitStatus {
+                walking: false,
+                refusal: Some(reason)
+            },
+            "the refusal is the status a reader sees"
         );
     }
 }
 
 #[test]
+fn one_walk_runs_at_a_time_and_its_end_does_not_re_arm_the_pacing() {
+    let t0 = Instant::now();
+    let mut rule = Recruiter::new(our_id());
+
+    assert!(matches!(
+        rule.consider(&both_firewalled(), &empty(), t0),
+        RecruitDecision::Recruit { .. }
+    ));
+    assert!(rule.status().walking);
+    // A second tick while the first walk runs must not start another: two
+    // walks would ask two open nodes for a slot that holds one buddy — even
+    // with the slot publishing a loss the walk has not answered yet.
+    let lost_meanwhile = BuddySnapshot {
+        lost_at: Some(t0 + Duration::from_secs(1)),
+        ..empty()
+    };
+    assert_eq!(
+        rule.consider(
+            &both_firewalled(),
+            &lost_meanwhile,
+            t0 + Duration::from_secs(2)
+        ),
+        RecruitDecision::Refuse {
+            reason: RecruitRefusal::PacingNotDue
+        }
+    );
+
+    // The walk ending clears the flag but not the clock: a cold routing table
+    // is not a reason to walk again every tick.
+    rule.walk_ended();
+    assert!(!rule.status().walking);
+    assert_eq!(
+        rule.consider(&both_firewalled(), &empty(), t0 + Duration::from_secs(60)),
+        RecruitDecision::Refuse {
+            reason: RecruitRefusal::PacingNotDue
+        }
+    );
+    assert!(matches!(
+        rule.consider(&both_firewalled(), &empty(), t0 + FIND_BUDDY_INTERVAL),
+        RecruitDecision::Recruit { .. }
+    ));
+}
+
+#[test]
 fn recruitment_paces_at_twenty_minutes_clears_a_recheck_and_recruits_instantly_after_a_loss() {
     let t0 = Instant::now();
-    let mut node = FirewalledNode::new(our_id());
+    let mut rule = Recruiter::new(our_id());
 
     // First recruit stamps the pacing clock.
     assert!(matches!(
-        node.consider_recruitment(&both_firewalled(), t0),
+        rule.consider(&both_firewalled(), &empty(), t0),
         RecruitDecision::Recruit { .. }
     ));
+    rule.walk_ended();
 
-    // Inside the 20-minute tick a second walk is paced off (no buddy landed
-    // yet — the walk is simply still in flight).
+    // Inside the 20-minute tick a second walk is paced off.
     assert_eq!(
-        node.consider_recruitment(&both_firewalled(), t0 + Duration::from_secs(60)),
+        rule.consider(&both_firewalled(), &empty(), t0 + Duration::from_secs(60)),
         RecruitDecision::Refuse {
             reason: RecruitRefusal::PacingNotDue
         }
     );
     // At the 20-minute boundary the walk may retry.
     assert!(matches!(
-        node.consider_recruitment(&both_firewalled(), t0 + FIND_BUDDY_INTERVAL),
+        rule.consider(&both_firewalled(), &empty(), t0 + FIND_BUDDY_INTERVAL),
         RecruitDecision::Recruit { .. }
     ));
+    rule.walk_ended();
 
     // A recent firewall recheck holds recruitment off even when the interval
     // is due — the recheck could flip our verdict.
     let after_interval = t0 + FIND_BUDDY_INTERVAL + FIND_BUDDY_INTERVAL;
     assert_eq!(
-        node.consider_recruitment(
+        rule.consider(
             &RecruitContext {
                 last_recheck: Some(after_interval - Duration::from_secs(60)),
                 ..both_firewalled()
             },
+            &empty(),
             after_interval,
         ),
         RecruitDecision::Refuse {
@@ -158,31 +219,42 @@ fn recruitment_paces_at_twenty_minutes_clears_a_recheck_and_recruits_instantly_a
     );
     // ≥5 minutes clear of the recheck, it recruits.
     assert!(matches!(
-        node.consider_recruitment(
+        rule.consider(
             &RecruitContext {
                 last_recheck: Some(after_interval - POST_RECHECK_GUARD),
                 ..both_firewalled()
             },
+            &empty(),
             after_interval,
         ),
         RecruitDecision::Recruit { .. }
     ));
+    rule.walk_ended();
 
-    // Adopt a buddy → the slot is taken, so recruitment refuses regardless of
+    // The slot publishes a buddy held → recruitment refuses regardless of
     // pacing.
-    assert_eq!(node.adopt_buddy(&valid_answer()), AdoptOutcome::Adopted);
+    let held = BuddySnapshot {
+        state: BuddyState::Held,
+        held_since: Some(after_interval),
+        ..empty()
+    };
+    let later = after_interval + Duration::from_secs(1);
     assert_eq!(
-        node.consider_recruitment(&both_firewalled(), after_interval),
+        rule.consider(&both_firewalled(), &held, later),
         RecruitDecision::Refuse {
             reason: RecruitRefusal::AlreadyHaveBuddy
         }
     );
 
-    // Losing the buddy arms an instant recruit — no waiting out another 20
-    // minutes (aMule resets its tick), the recheck guard still clear here.
-    node.on_buddy_lost();
+    // The slot publishes the buddy lost after the last walk began: an instant
+    // recruit — no waiting out another 20 minutes (aMule resets its tick),
+    // the recheck guard still clear here.
+    let lost = BuddySnapshot {
+        lost_at: Some(later),
+        ..empty()
+    };
     assert!(matches!(
-        node.consider_recruitment(&both_firewalled(), after_interval + Duration::from_secs(1)),
+        rule.consider(&both_firewalled(), &lost, later + Duration::from_secs(1)),
         RecruitDecision::Recruit { .. }
     ));
 }

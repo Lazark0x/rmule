@@ -13,6 +13,7 @@
 //! window: `OP_IDCHANGE` lands well after `OP_LOGINREQUEST`, so
 //! the login is genuinely in flight when the search command arrives.
 
+use rmule_testkit::HANG_GUARD;
 use std::time::Duration;
 
 use crate::fixture::search_config;
@@ -57,7 +58,6 @@ async fn add_server(core: &mut Core, endpoint: &ServerEndpoint) {
 async fn connect_cmd(endpoint: &ServerEndpoint) -> CoreCommand {
     CoreCommand::ConnectToServer {
         server: endpoint.clone(),
-        credentials: crate::fixture::connect_credentials().await,
     }
 }
 
@@ -72,7 +72,7 @@ fn search_cmd() -> CoreCommand {
 /// so the assertions read the one whole trail rather than racing the bus.
 async fn trail_until_search_settles(core: &mut Core) -> Vec<CoreEvent> {
     let mut trail = Vec::new();
-    timeout(Duration::from_secs(5), async {
+    timeout(HANG_GUARD, async {
         loop {
             let event = core.next_event().await.expect("core is alive");
             let settled = matches!(
@@ -88,7 +88,7 @@ async fn trail_until_search_settles(core: &mut Core) -> Vec<CoreEvent> {
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("no search settlement within 5s; trail so far: {trail:#?}"));
+    .unwrap_or_else(|_| panic!("no search settlement; trail so far: {trail:#?}"));
     trail
 }
 
@@ -196,7 +196,9 @@ fn assert_single_session_search_trail(trail: &[CoreEvent]) {
 #[tokio::test]
 async fn a_search_racing_the_eager_connect_rides_its_session() {
     let (server, endpoint) = login_delayed_server().await;
-    let mut core = Core::builder(search_config(), rmule_testkit::memory_store()).build();
+    let mut core = Core::builder(search_config(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     add_server(&mut core, &endpoint).await;
 
     core.send(connect_cmd(&endpoint).await)
@@ -219,7 +221,9 @@ async fn a_search_racing_the_eager_connect_rides_its_session() {
 #[tokio::test]
 async fn a_search_arriving_mid_login_rides_the_connecting_session() {
     let (server, endpoint) = login_delayed_server().await;
-    let mut core = Core::builder(search_config(), rmule_testkit::memory_store()).build();
+    let mut core = Core::builder(search_config(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     add_server(&mut core, &endpoint).await;
 
     core.send(connect_cmd(&endpoint).await)
@@ -241,7 +245,9 @@ async fn a_search_arriving_mid_login_rides_the_connecting_session() {
 #[tokio::test]
 async fn a_cold_search_waits_for_the_operators_connect_and_is_sent_on_it() {
     let (server, endpoint) = login_delayed_server().await;
-    let mut core = Core::builder(search_config(), rmule_testkit::memory_store()).build();
+    let mut core = Core::builder(search_config(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
 
     core.send(search_cmd()).await.expect("search accepted");
     crate::fixture::next_expected(&mut core, "the search to say it waits", |event| {
@@ -278,7 +284,9 @@ async fn a_search_behind_a_failing_connect_waits_and_dials_nothing_of_its_own() 
     let addr = dead.local_addr().expect("read the throwaway port");
     drop(dead);
     let endpoint = ServerEndpoint::new(addr.ip().to_string(), addr.port()).expect("endpoint");
-    let mut core = Core::builder(search_config(), rmule_testkit::memory_store()).build();
+    let mut core = Core::builder(search_config(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     add_server(&mut core, &endpoint).await;
 
     core.send(connect_cmd(&endpoint).await)

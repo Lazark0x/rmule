@@ -29,7 +29,7 @@ fn p_on_a_paused_row_flashes_without_a_session_and_resumes_with_one() {
     match view.handle_key(press(KeyCode::Char('p')), &state) {
         ViewOutcome::Emit(Action::Flash(message)) => {
             assert!(
-                message.contains("no session"),
+                message.contains("core not attached"),
                 "honest resume gap, got {message:?}"
             );
         }
@@ -37,13 +37,8 @@ fn p_on_a_paused_row_flashes_without_a_session_and_resumes_with_one() {
     }
 
     // With a session the real ResumeDownload goes out.
-    use rmule_core::AppConfigStore;
-    let store = rmule_core::DurableAppConfig::new(rmule_testkit::memory_store());
     state.session = Some(crate::state::SessionConfig {
         server: Some(rmule_primitives::ServerEndpoint::new("srv.example", 4661).expect("endpoint")),
-        credentials: rmule_core::ClientCredentials::from(
-            store.ensure_identity().expect("identity"),
-        ),
         download_dir: None,
     });
     match view.handle_key(press(KeyCode::Char('p')), &state) {

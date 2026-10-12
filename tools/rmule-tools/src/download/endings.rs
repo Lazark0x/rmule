@@ -58,7 +58,9 @@ impl Endings {
                 }
                 return Noted::Nothing;
             }
-            DownloadEvent::DownloadCompleted { download_id } => (*download_id, Ending::Completed),
+            DownloadEvent::DownloadCompleted { download_id, .. } => {
+                (*download_id, Ending::Completed)
+            }
             DownloadEvent::DownloadCancelled { download_id } => (*download_id, Ending::Cancelled),
             DownloadEvent::DownloadFailed {
                 download_id,
@@ -157,6 +159,7 @@ mod tests {
 
         let completed = DownloadEvent::DownloadCompleted {
             download_id: second,
+            final_path: "/downloads/second.bin".into(),
         };
         assert_eq!(
             endings.observe(&completed),
@@ -180,6 +183,7 @@ mod tests {
         for raw in [3, 9] {
             endings.observe(&DownloadEvent::DownloadCompleted {
                 download_id: DownloadId::from_u64(raw),
+                final_path: format!("/downloads/{raw}.bin").into(),
             });
         }
         assert!(endings.all_ended());

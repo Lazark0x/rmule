@@ -51,8 +51,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use super::{
-    HOST_BUDDY, HOST_STORER, PeerPlan, READY_TIMEOUT_SECS, absent_server, collect_buddy_log,
-    common_args, mesh, parse_hash, start_buddy, start_peer,
+    HOST_BUDDY, HOST_STORER, PLACEHOLDER_SHARE, PeerPlan, READY_TIMEOUT_SECS, absent_server,
+    collect_buddy_log, common_args, mesh, parse_hash, start_buddy, start_peer,
 };
 use crate::docker::{InternalNetwork, RunContainer};
 use crate::fake_public::{MAX_NODES_PER_SUBNET, fake_public_address, subnet_cidr};
@@ -78,7 +78,7 @@ const REMAPPED_PUBLIC_PORT: u16 = 14672;
 
 /// The helpers' WAN host indices — the two routing-only slots the buddy rows
 /// use, since this row needs no walk alternatives and the `/24` holds eight.
-const HOST_HELPERS: [usize; 2] = [5, 6];
+pub(super) const HOST_HELPERS: [usize; 2] = [5, 6];
 
 /// The helpers' fixed user hashes and Kad IDs, far from the target's
 /// `0x11…` and the storer's key so nothing about them is placement.
@@ -86,7 +86,7 @@ const HASH_HELPERS: [&str; 2] = [
     "45454545454545454545454545454545",
     "46464646464646464646464646464646",
 ];
-const HELPER_KAD_IDS: [[u8; 16]; 2] = [[0x66; 16], [0x99; 16]];
+pub(super) const HELPER_KAD_IDS: [[u8; 16]; 2] = [[0x66; 16], [0x99; 16]];
 
 /// The target's user hash — the buddy rows' target, so the two rows name the
 /// same body the same way.
@@ -518,7 +518,7 @@ impl RemapTaps {
 /// Start one open **UDP Firewall Helper**: an rmule Core in the stimulus
 /// posture, bootstrapping from the root so the root's table names it.
 #[allow(clippy::too_many_arguments)]
-fn start_helper(
+pub(super) fn start_helper(
     bench: &mut Bench,
     options: &NattOptions<'_>,
     suffix: &str,
@@ -544,6 +544,7 @@ fn start_helper(
         helper_v4,
         run_secs,
         &absent_server(),
+        PLACEHOLDER_SHARE,
     ) {
         container = container.arg(arg);
     }

@@ -9,7 +9,7 @@ One long-lived unit of work the core actor manages: a search, a download, the Ka
 _Avoid_: job, task (reserved for Tokio tasks), session
 
 **Activity Transition**:
-What moves an **Activity** in or out of the ledger (ADR-0093). **Start** acquires its resource set. **Stop** (`StopServing`, `DisableKad`, `CancelDownload`/`PauseDownload`, `CancelSearch`) asks it to end and then **retires** it. **Death** is an end nobody asked for — a closed listener, a dead Kad pump, a download that completed or failed — and retires through the same place; a death notice names the generation of the activity it reports, so one arriving after a stop and a restart retires nothing. **Retire** (`retire_kad`, `finish_serve`, `retire_download`) is the one place an activity's resources come back, all of them. `DisableKad` is the Kad node's stop.
+What moves an **Activity** in or out of the ledger (ADR-0093). **Start** acquires its resource set. **Stop** (`StopServing`, `DisableKad`, `CancelDownload`/`PauseDownload`, `CancelSearch`) asks it to end and then **retires** it. **Death** is an end nobody asked for — a closed listener, a dead Kad pump, a download or a search that completed or failed — and retires through the same place; a death notice names the generation of the activity it reports, so one arriving after a stop and a restart retires nothing. **Retire** (`retire_kad`, `finish_serve`, `retire_download`, a search's `retire` in the `Searches` ledger) is the one place an activity's resources come back, all of them. `DisableKad` is the Kad node's stop.
 _Avoid_: reclaim (the retired name of the death-only reaper), teardown, cleanup
 
 **Download Set**:
@@ -27,6 +27,10 @@ _Avoid_: start over (not an action of its own), retry, re-add (the Failed mark's
 **Quit**:
 `Core::shutdown`, or every `Core` handle dropped: every **Activity**'s stop in dependency order, each within a bound — search, download (aborted, its store row left as the operator last set it, so attach starts a running one again and leaves a paused one paused), serve, Kad, then the port-mapping runtime's release pass, awaited — before the credit flush (ADR-0093). A front end issues no stop of its own before it: `Core::quit` hands back the rest of the event stream, where each step that runs is announced as a `CoreEvent::Quitting` — what the TUI's status bar names.
 _Avoid_: exit, teardown
+
+**Core Settings**:
+The operator's preferences that change what core does, and the one door to them (ADR-0069): a `CoreSettings` value the builder reads from the store it is given (or a test injects), and a synchronous handle — `Core::settings()` on a running core, or opened on the store alone where no core runs. `set(Setting)` validates — a download directory against the **Shared Directory List**'s guards too, refusing it with the guard's reason — persists, and answers `TakesEffect::Now` (`Remember peers`, the **Dead Server Limit**, the **Announce Policy**, the download directory, whose scan core starts with the answer the front end's confirm gave, and the **Obfuscation Policy**, which every surface reads as it decides) or `NextStart` (every other key, and every key set through a handle no core runs behind). A live key shares the actor's one inbox with the commands, so a command sent after `Now` runs under it. The nickname and the two ports live in the identity rows and the rest in the preferences table; the handle hides which, and `CoreSettings::credentials` is the one place the nickname and TCP port become what a login, a hello and a Kad dial present: no command carries credentials. An injected TCP port of `0` takes one the OS assigns, and the port presented is the one the listener bound; the store refuses `0`. The front end's own keys (theme, table sorts, Run Log level, connect at start, last server) share that table through a raw key/value surface core never interprets.
+_Avoid_: config (that is `CoreConfig`, the engineering knobs: timeouts, concurrency, cadences), preferences (the stored key/value rows)
 
 **Serving Started**:
 `ServeEvent::ServingStarted` — the **bind** fact and nothing more: the inbound
@@ -95,8 +99,16 @@ The attach is decided at the accept path's triage, and **by the hello, never by 
 _Avoid_: helper (that's the UDP firewall-test role), relay peer, friend (unrelated eMule concept)
 
 **Firewalled Front**:
-The one core task that enacts the firewalled half of the **Buddy** relationship (ADR-0061). It dials the recruited buddy, holds that link, paces its keepalive, and answers everything that arrives on it — an `OP_CALLBACK` through the relayed-callback gates to a dial-back, an `OP_REASKCALLBACKTCP` split by its forwarded tail into an ordinary reask (which re-enters the reply matrix with the injected requester standing in for the datagram source) or a rendezvous for the **Acting Path** — plus the client-UDP surface's standalone rendezvous and direct callbacks. Every dial-back it opens enters the serve pipeline through the admit seam as the dialer's side; a `0x95`'s may be obfuscated toward the requester's own User Hash first, since that body names both a hash and a crypt stance where the `0x99` relay names neither. It does not own the recruit trigger (that reads **Reachability**, which is the Kad pump's) and it does not own the burst (that is the **NAT-T Front**'s, which holds the send half). Its `0x99`/`0x95` gates read **Kad Presence** live rather than a task-local copy: `KadStarted` carries only the dial identity, and a stopped node's buddy is let go the moment Kad Presence changes, awaited rather than polled, rather than on a dedicated command. A late dial outcome — a link or a failure — acts only on the buddy it was dialed for. One buddy, one dial, one link: a second `BuddyAdopted` while a dial to that buddy is in flight starts none (`buddy_dials_refused_total`), and a second link landing for a buddy already held is shut, the first kept.
+The one core task that enacts the firewalled half of the **Buddy** relationship (ADR-0061). It dials the recruited buddy, holds that link, paces its keepalive, and answers everything that arrives on it — an `OP_CALLBACK` through the relayed-callback gates to a dial-back, an `OP_REASKCALLBACKTCP` split by its forwarded tail into an ordinary reask (which re-enters the reply matrix with the injected requester standing in for the datagram source) or a rendezvous for the **Acting Path** — plus the client-UDP surface's standalone rendezvous and direct callbacks. Every dial-back it opens enters the serve pipeline through the admit seam as the dialer's side; a `0x95`'s may be obfuscated toward the requester's own User Hash first, since that body names both a hash and a crypt stance where the `0x99` relay names neither. It is the firewalled slot's only owner and only writer: the slot is a plain struct on its task, the `0x5A` the Kad pump verified reaches it as an `AdoptBuddy` command it answers with its verdict, and every other reader goes through the **Buddy Snapshot** it publishes. Its buddy dial and its dial-backs go through one Dialer seam: the real adapter dials the buddy with `PeerConnection::connect_identified` and a dial-back through the admit seam, a test's is scripted and records both. It does not own the recruit trigger (that is the **Kad Pump State**'s rule over the Buddy Snapshot and **Self Reach**) and it does not own the burst (that is the **NAT-T Front**'s, which holds the send half). Its `0x99`/`0x95` gates read **Kad Presence** live rather than a task-local copy: a node's start reaches it through a latest-wins cell beside its inbox rather than as a command — so a full inbox cannot lose it, and an unseen start is applied before any command — carrying the dial identity and the new node's Kad ID the slot is re-seated against, and a stopped node's buddy is let go the moment Kad Presence changes, awaited rather than polled, rather than on a dedicated command. A late dial outcome — a link or a failure — acts only on the buddy it was dialed for. One buddy, one dial, one link: a second adopt while a dial to that buddy is in flight starts none (`buddy_dials_refused_total`), and a second link landing for a buddy already held is shut, the first kept.
 _Avoid_: buddy manager, firewalled node service (`crate::firewalled` is the sans-I/O decision half beneath it)
+
+**Buddy Snapshot**:
+What the **Firewalled Front** publishes of its slot after every change (`BuddySnapshot`, a `watch`): whether a buddy is adopted or its link held and since when, when the last one was lost, the buddy row a Kad source publish names (with the held link's `bi6`), and the advert a hello's buddy tags name while the link is held. Its readers never touch the slot: the hello (gated by **Self Reach**'s `IsFirewalled()` union per hello), the **Kad Pump State** (the publish posture and the recruit rule, whose instant re-arm is a loss newer than its last walk), and the **Reachability Trail**. Beside it the Kad pump publishes its **Recruit Status** — a walk in flight and the last recruit refusal — so a reader composes the operator's `BuddyState` from the two owners, each with one writer.
+_Avoid_: slot state, shared slot
+
+**Recruit Status**:
+The Kad pump's published reading of its own ADR-0061 recruit rule (`RecruitStatus`): whether a FINDBUDDY walk is in flight, and why the last recruit tick refused to walk. Its one writer is the **Kad Pump State**, which restates it fresh when a node starts and drops the walk when the node stops; the **Firewalled Front** copies it into the diagnostics beside its own slot's state, and the **Reachability Trail** writes `buddy=walking` from it.
+_Avoid_: recruit state, walking flag
 
 **Buddy Link**:
 The enacted open half of the **Buddy** relationship (`BuddySlot`, ADR-0061): the `0x51` recruit's accept, the attached held link an identified inbound peer's user hash earns, the verified `0x52`/`0x94` relays that link carries, and `OP_BUDDYPING`'s pong — gated to the held link, the connection-identity check aMule's `GetBuddy() != client` also runs.
@@ -104,7 +116,7 @@ An inbound `OP_CALLBACK` is not gated that way: aMule's `case OP_CALLBACK:` carr
 _Avoid_: firewalled front (the other half — the link *we* dial), buddy manager
 
 **Kad Presence**:
-Whether a Kad node runs on this core, and as which Kad ID — one cell with one writer: the **Kad Activity** in the actor's ledger holds the only lease on it from start to retire (ADR-0093), taken through **Self Reach** together with the Kad verdicts' reset, so "Kad running" and "nothing proven" flip as one fact at the one retire; a stale lease never clears a restart's successor. Every reader reads it: Self Reach's `kad_running` (the download's liveness at each decision, the route chooser, the `KadNotRunning` guard), and the readers that live on a task of their own — the serve bridge's and the **Firewalled Front**'s `OP_CALLBACK`/`OP_DIRECTCALLBACKREQ` gates. A reader that must act on a change subscribes to it instead of polling: the **Firewalled Front** lets its buddy go the moment the cell reads no node. The Kad runtime owns the cell and `KadRuntimeFactory::kad_presence` is how a swapped-in factory's cell reaches every reader.
+Whether a Kad node runs on this core, and as which Kad ID — one cell with one writer: the **Kad Activity** in the actor's ledger holds the only lease on it from start to retire (ADR-0093), taken through **Self Reach** together with the Kad verdicts' reset, so "Kad running" and "nothing proven" flip as one fact at the one retire; a stale lease never clears a restart's successor. Every reader reads it: Self Reach's `kad_running` (the download's liveness at each decision, the route chooser, the `KadNotRunning` guard), and the readers that live on a task of their own — the serve bridge's and the **Firewalled Front**'s `OP_CALLBACK`/`OP_DIRECTCALLBACKREQ` gates. A reader that must act on a change subscribes to it instead of polling: the **Firewalled Front** lets its buddy go the moment the cell reads no node. Core builds the cell once, with the rest of the `KadCells` every Kad start is lent, so a swapped-in factory publishes into the cell every reader already holds.
 _Avoid_: kad_running (a task-local copy), Kad status, Kad Liveness (the retired second flag)
 
 **Reachability**:
@@ -112,12 +124,20 @@ The Kad pump's accumulator for whether we can be reached, fed by the Kad self-ch
 _Avoid_: firewall status (ambiguous about whose), connection state (that's the server session), NAT type
 
 **Self Reach**:
-The one live owner of our own reachability (ADR-0060 "Self Reach"; `SharedSelfReach`), over four families each with one writer: the Kad TCP and Kad UDP verdicts (the Kad pump, reset to unproven at a node's start and end), the **Server High ID** (the session self-facts) and the NAT-T front's liveness. aMule's union rules live here and nowhere else — `IsFirewalled()` (High ID or Kad TCP open), `!IsFirewalledKad()` (Kad TCP open), `CanDoCallback` (the **Callback Capability**) and the direct-callback bit — and every reader asks the question aMule asks at the moment it needs the answer, or subscribes to the **Reach Generation**; no reader holds a copy or composes two facts itself. The serve listener is not a reach family but `CanDoCallback`'s own conjunct; the owner carries its cell (bound and cleared by the actor's ledger) so that answer is composed here too.
-_Avoid_: reachable/firewalled flag (a copy), Reachability (the pump's accumulator), `SelfReach` (the route chooser's one reading of it)
+The one live owner of our own reachability (ADR-0060 "Self Reach"; `SharedSelfReach`), over families each with one writer: the Kad TCP and Kad UDP verdicts and whether the node has joined (the Kad pump, reset to unproven at a node's start and end), the **Server High ID** (the session self-facts), the NAT-T front's liveness (its liveness only — the front's command half rides the wiring of whoever sends to it), whether the client-UDP send half is bound (the client-UDP bind: set at the actor's prologue, cleared at Quit), and whether the **Server Coordinator** is live (the server session: set when the login's punch keepalive starts, cleared when the session ends). aMule's union rules live here and nowhere else — `IsFirewalled()` (High ID or Kad TCP open), `!IsFirewalledKad()` (Kad TCP open), `CanDoCallback` (the **Callback Capability**), the direct-callback bit, `GetID` (the **Presented Client ID**) and the **Route Position** — and every reader asks the question aMule asks at the moment it needs the answer, or subscribes to the **Reach Generation**; no reader holds a copy or composes two facts itself. The serve listener is not a reach family but `CanDoCallback`'s own conjunct; the owner carries its cell (bound and cleared by the actor's ledger) so that answer is composed here too, and so is the port a callback invites a dial to.
+_Avoid_: reachable/firewalled flag (a copy), Reachability (the pump's accumulator)
+
+**Presented Client ID**:
+The client id every hello and hello answer names for us, answered by **Self Reach** at each hello (`SharedSelfReach::presented_client_id`) in aMule's `GetID` order: a Kad node that has joined and whose TCP verdict is open names our address (the **Address Learning** verdict) as a High ID, even under a server Low ID; otherwise a live session names the id its server assigned last; otherwise a joined, firewalled Kad node names `1`; otherwise `0`. The `1` matters: a peer reads `0` as "use the address I see", so a serverless firewalled node that said `0` would be taken for a High ID and dropped as a buddy. Never the server's id alone.
+_Avoid_: client id (unqualified: the server-assigned one is the session's), own ID, hybrid ID
+
+**Route Position**:
+Our own half of the ADR-0061 route tree, answered by **Self Reach** in one read (`SharedSelfReach::route_position`, a `RoutePosition`): reachable, client-UDP up, Kad running, the **Advertised IPv6** the **Dial Chooser** pairs with a peer's, and whether the **Server Coordinator** can introduce us. **Peer Reach** reads it at each reach and the **NAT-T Front** reads it when a coordinator fails; the selector takes it as a value, which is how a route-tree test states a position directly.
+_Avoid_: `SelfReach` (reads as the owner, **Self Reach**), our facts
 
 **Reach Generation**:
-The change event of **Self Reach** (`SharedSelfReach::changes`): one wake for a Kad verdict write, a session write (login, re-assignment, server move, end), the NAT-T front's end, or a serve-listener bind or clear. It says only that something moved — the subscriber re-reads the owner. The readers that must cache subscribe: the Kad pump (the publish byte and the buddy row it tells the sans-I/O node), a download runner (the brain's **Callback Capability**), and the **Firewalled Front** (releasing the buddy when Kad TCP opens).
-_Avoid_: reachability event, High-ID watch (the one family watch it replaced)
+The change event of **Self Reach** (`SharedSelfReach::changes`): one wake for a Kad verdict write or the node's join, a session write (login, re-assignment, server move, end), the NAT-T front's end, a serve-listener bind or clear, the client-UDP bind or its clear, or the **Server Coordinator** going live or dark. It says only that something moved — the subscriber re-reads the owner. The readers that must cache subscribe: the Kad pump (the publish byte and the buddy row it tells the sans-I/O node), a download runner (the brain's **Callback Capability**), the **Firewalled Front** (releasing the buddy when Kad TCP opens), and the **Reachability Trail** (the Kad verdicts it writes).
+_Avoid_: reachability event, High-ID watch (names one family; the generation wakes for every family)
 
 **UDP Firewall Helper**:
 A Kad node asked to prove somebody else's Kad UDP port reachable (ADR-0058). The asking is peer TCP — the requester dials the helper's eD2k port, completes the hello and sends `OP_FWCHECKUDPREQ` (`0xA7`: its intern and extern Kad ports and its UDP verify key for the helper's IP) — and the answer is a Kad datagram, `KADEMLIA2_FIREWALLUDP` (`0x62`), to each port named. Both roles are the Kad pump's: as requester it enacts every helper the node engages and reports how the link ended — **cancelled** when the request never went out (a refused dial, a hello that never finished, a helper whose hello names no Kad port or a Kad version below 6, *or* a candidate the **Peer Roster** already knows, checked before the dial and never sent one) — **failed** when the link ended after it did (aMule's 40 s idle close) — and as helper it hands an inbound `0xA7` from the triage to the node, which answers, biased (`errorcode 1`) when the requester is a routing-zone contact *or* the Peer Roster says we already have an active upload with it. The node finds its helpers with the **Helper Lookup**; no helper it was seeded with, or ever sent a datagram, can serve. A biased answer reads to the requester's own tester exactly like a cancelled one: neither pass nor fail, the next candidate engaged in its place.
@@ -128,12 +148,16 @@ The core-owned set of IPs this session already has an eD2k relationship with (AD
 _Avoid_: client list (that's aMule's whole peer-tracking object; this is one membership question), ban store (a different enforcement, unrelated criteria)
 
 **Roster Relation**:
-One owner's hold on a peer endpoint in the **Peer Roster**, added by that owner's start event and removed only by its own terminal event — never by a purge that guesses (ADR-0059 "Roster relations"). Three exist: a **Download Relation** (one download's worker whose hello completed — `Connected` — ended by `EndWorker` or the fleet's whole-fleet shutdown on completion or failure, held per download so two downloads on one peer never retire each other's), a **Waiter Relation** (`PeerQueued`, ended by `WaiterLeft` — purged or cancelled — or turned into an Upload Relation by a promotion), and an **Upload Relation** (`UploadSlotGranted` ↔ `UploadSlotReleased`). Waiter and Upload share one membership, as aMule's one upload state does. The owning activity's end — a serve stop or listener death, a download's run ending on any road, a quit's abort — ends every relation it still holds.
+One owner's hold on a peer endpoint in the **Peer Roster**, added by that owner's start event and removed only by its own terminal event — never by a purge that guesses (ADR-0059 "Roster relations"). Four exist: a **Download Relation** (one download's worker whose hello completed — `Connected` — ended by `EndWorker` or the fleet's whole-fleet shutdown on completion or failure, held per download so two downloads on one peer never retire each other's), a **Queued Relation** (one download's **Remote-Queued Pool** membership, held to its Source Book's RemoteQueued stage after each brain step, so every way out of the pool ends it — a TCP full ask, a `0x92`, a merge, an endpoint another record took), a **Waiter Relation** (`PeerQueued`, ended by `WaiterLeft` — purged or cancelled — or turned into an Upload Relation by a promotion), and an **Upload Relation** (`UploadSlotGranted` ↔ `UploadSlotReleased`). Waiter and Upload share one membership, as aMule's one upload state does. The owning activity's end — a serve stop or listener death, a download's run ending on any road, a quit's abort — ends every relation it still holds.
 _Avoid_: known client (aMule keeps an object per client whether or not any state is live; a relation is a live state), mark/forget as nouns (those are the roster's write calls)
 
 **Crypt Stance** (of a peer):
-What rmule believes about one peer's obfuscation — supports / requests / requires, through aMule's getter ladder — plus the User Hash an obfuscated dial is keyed on (`PeerCrypt`; ADR-0049's amendment). Stated by the peer's own hello (`CT_EMULE_MISCOPTIONS2`), relayed by records (`0x44`, source exchange v4, a Kad row's `TAG_ENCRYPTION`) or carried by one request (`0x53`, `0x95`, the buddy's `0x5A`). Each stance rides one owner's record — the download's `hello_crypts` (read by both the TCP re-dial and the `0x90` reask), `peer_crypts` for a High-ID record, a `LowIdCandidate` for a Low-ID one, a verdict for a request. The hello outranks every record; among records the newest *statement* wins, a record with no crypt byte is silence and never overwrites one, and a record naming another User Hash replaces the older record whole. Unstated reads all lights dark at the dial and is never stored as a statement. The node's *own* stance is a separate cell (ADR-0048).
+What rmule believes about one peer's obfuscation — supports / requests / requires, through aMule's getter ladder — plus the User Hash an obfuscated dial is keyed on (`PeerCrypt`; ADR-0049's amendment). Stated by the peer's own hello (`CT_EMULE_MISCOPTIONS2`), relayed by records (`0x44`, source exchange v4, a Kad row's `TAG_ENCRYPTION`) or carried by one request (`0x53`, `0x95`, the buddy's `0x5A`). Each stance rides one place in the download's **Source Book** — the hello's on the endpoint its worker read it on (read by both the TCP re-dial and the `0x90` reask), the run tier's record-stated crypt by endpoint for a High-ID source, a `LowIdCandidate` for a Low-ID one — or a verdict for a request. The hello outranks every record; among records the newest *statement* wins, a record with no crypt byte is silence and never overwrites one, and a record naming another User Hash replaces the older record whole. Unstated reads all lights dark at the dial and is never stored as a statement. The node's *own* stance is a separate cell (ADR-0048).
 _Avoid_: obfuscation policy (that is ours, `ObfuscationPolicy`), crypt options (the wire byte a source states it with), encryption status (aMule's per-connection `GetObfuscationStatus`)
+
+**Obfuscation Policy**:
+The node's own crypt choice (ADR-0042/0046) — off, supported, requested or required — one value for every peer stream and datagram, the server login, the NAT-T frames, the server-UDP crypt-ping and the Kad node. A running core holds it in one cell, `SharedObfuscationPolicy`, which the server session cell owns and the Hello Adverts every hello starts from share, so the login and a hello state one policy; the builder settles from **Core Settings** and the actor alone changes when the operator sets it live (`TakesEffect::Now`). No surface keeps a copy: each reads the cell as it decides — the next dial's options, the next accept's byte-0 rule, the next server login's **Login Link** and crypt flags, the next datagram's send gate and dual-path receive, the next CAPS answer and KEY frame, the next crypt-ping tick — and the Kad pump, whose node caches its arming, wakes on the change and re-arms it whole. A connection that already negotiated keeps what it agreed. The Run Log states it at every build and every change.
+_Avoid_: crypt policy (Kad has none of its own), Crypt Stance (that is what we believe about a peer)
 
 **Server High ID**:
 The level "a live eD2k session holds a High ID" — the server dialled our TCP port and reached it. Owned by the session self-facts (`SharedOwnIdentity`): written at login, re-written on a mid-session `OP_IDCHANGE`, cleared when the session ends. A family of **Self Reach**, which reads it live as aMule's `IsConnectedED2K() && !IsLowID()` half of `IsFirewalled()` — nothing copies it. It never feeds the Kad TCP verdict.
@@ -160,7 +184,7 @@ The node's own external IP and each socket role's external port, per address fam
 _Avoid_: public IP (one projection of it), own IP, our endpoint, advertised address (that is what **Advertised Endpoints** chooses from it)
 
 **Own Address Generation**:
-The counter **Address Learning** advances on every write that moved the **Own Address** projection — per family the fresh-or-stale address and the fresh one, per (family, role) the **External Endpoint** verdict, and the learned ports; a write that moved nothing a reader can see advances nothing. The one change event every caching reader subscribes to (the Kad pump, the **Port Mapping** runtime). Time alone never advances it.
+The counter **Address Learning** advances on every write that moved the **Own Address** projection — per family the fresh-or-stale address and the fresh one, per (family, role) the **External Endpoint** verdict, and the learned ports — or the NAT facts read beside it, each family's **NAT Hint** and each role's **Own Mapping**; a write that moved nothing a reader can see advances nothing. The one change event every caching reader subscribes to (the Kad pump, the **Port Mapping** runtime, the **Reachability Trail**). Time alone never advances it: the store names the next instant a remembered observation can lapse (`next_lapse`), where a reader that caches reads again.
 _Avoid_: address event, address notification, refresh
 
 **Address Observation**:
@@ -172,7 +196,7 @@ The address and port the outside world can use for one of our sockets (the eD2k 
 _Avoid_: public endpoint, mapped port (that is one source), bound address (the local one)
 
 **Extern Kad Port**:
-The UDP role's **learned** port in **Address Learning** — the best fresh port tier alone, with no fallback to the bound port — answered back to the Kad node after every `0x61` observation (`0` while none holds; ADR-0058). The Kad tier adopts a port two distinct observers name, not necessarily in a row (aMule `SetExternKadPort` compares each answer with every earlier one); addresses from `0x58` keep the consecutive rule. The store is the one owner (ADR-0084): `ExternPortFeed` also restates this answer at Kad start, on every **Own Address Generation** and on the pump's recruit tick — idempotently, unlike the observation answer — so a `KadCheck` rung's 30-minute window ageing out with no fresh observer reconciles the node's cache within one tick instead of waiting for a round that may not run again soon. Scoped to the current round: `KadEvent::ExternPortRoundStarted` marks the boundary the node draws at every recheck, and `ExternPortFeed::round_started` answers it with `AddressLearning::forget_kad_port_round(SocketRole::Udp)`, withdrawing that role's `KadCheck` rung alone — the address ladders and every other tier untouched — so a vote from before the boundary cannot back one named after it, matching aMule's `FindExternKadPort(true)` starting each round's observer lists empty.
+The UDP role's **learned** port in **Address Learning** — the best fresh port tier alone, with no fallback to the bound port — answered back to the Kad node after every `0x61` observation (`0` while none holds; ADR-0058). The Kad tier adopts a port two distinct observers name, not necessarily in a row (aMule `SetExternKadPort` compares each answer with every earlier one); addresses from `0x58` keep the consecutive rule. The store is the one owner (ADR-0084): the **Kad Pump State**'s reconciler also restates this answer at Kad start, on every **Own Address Generation** and on the pump's recruit tick — only when it moved, unlike the observation answer — so a `KadCheck` rung's 30-minute window ageing out with no fresh observer reconciles the node's cache within one tick instead of waiting for a round that may not run again soon. Scoped to the current round: `KadEvent::ExternPortRoundStarted` marks the boundary the node draws at every recheck, and the Kad Pump State answers it with an Address Learning write, `forget_kad_port_round(SocketRole::Udp)`, withdrawing that role's `KadCheck` rung alone — the address ladders and every other tier untouched — so a vote from before the boundary cannot back one named after it, matching aMule's `FindExternKadPort(true)` starting each round's observer lists empty.
 _Avoid_: external port (ambiguous with the TCP role), mapped port
 
 **Socket Role**:
@@ -188,7 +212,7 @@ The address a server's `OP_IDCHANGE` reports for us when it assigned a **Low ID*
 _Avoid_: server tier (that is the High ID alone), reported IP (the wire field, not the grade)
 
 **Listen Before Login**:
-The rule that no eD2k Server Login precedes the eD2k listener's bind (ADR-0086; aMule binds in `ReinitializeNetwork` before autoconnect). A core built with credentials binds the listener at attach (ADR-0095, "Connecting is the operator's act"); otherwise the **Server Session Switch** starts the **Serve** activity when none is live, on the actor, before its connect task dials. A failed bind is reported and the login still goes out Low ID, as aMule's does. Since the Switch is the only login, the rule holds for every session rmule opens.
+The rule that no eD2k Server Login precedes the eD2k listener's bind (ADR-0086; aMule binds in `ReinitializeNetwork` before autoconnect). A core built to restore at attach binds the listener at attach (ADR-0095, "Connecting is the operator's act"); otherwise the **Server Session Switch** starts the **Serve** activity when none is live, on the actor, before its connect task dials. A failed bind is reported and the login still goes out Low ID, as aMule's does. Since the Switch is the only login, the rule holds for every session rmule opens.
 _Avoid_: autoserve, listen-on-connect (the rule is the order, not the trigger)
 
 **Session Generation**:
@@ -209,11 +233,12 @@ session the operator makes it announces the share set (`OP_OFFERFILES`) — unle
 are not sent by it: they read the live session through the **Hello Source**.
 
 **Hello Source**:
-Where a long-lived surface reads the hello it presents: our identity under the live
-session's server and current id, read from the shared session facts at each connection, never
-kept as a copy — the listener's accept pump and its admissions (tunnels, callback dial-backs)
-and the firewalled front's buddy dial. Every dial and every accept therefore names the live
-session's server and the id its last `OP_IDCHANGE` assigned, or none between sessions.
+Where a long-lived surface reads the hello it presents: our identity under the **Presented
+Client ID** and the live session's server, read from **Self Reach** at each connection, never
+kept as a copy — the listener's accept pump and its admissions (tunnels, callback dial-backs),
+the firewalled front's buddy dial and the Kad node's dial-backs. Every dial and every accept
+therefore names the id Self Reach answers then and the live session's server, or none between
+sessions.
 _Avoid_: hello context cell, handshake snapshot
 _Avoid_: serve login (retired), announce relay
 
@@ -221,8 +246,12 @@ _Avoid_: serve login (retired), announce relay
 The bounded wait (`LOGIN_MAPPING_WAIT`, 10 s — eMule's UPnP connect delay) between the operator's connect and its dial, while a **Port Mapping** runtime runs: until the **Desired Mapping Set** holds the listener's IPv4 TCP row and its **Mapping Status** reads Mapped, Degraded or Failed. Read off the rows the runtime publishes on a watch. A grant landing later does not re-log in; its Exact recheck and the Kad TCP verdict carry the reachability instead.
 _Avoid_: UPnP delay (three backends race), login retry
 
+**Login Link**:
+How one dial of an eD2k Server Login opens its link (ADR-0042, aMule `ServerSocket.cpp:786-795`): **obfuscated**, to the server's obfuscation TCP port with the server-form crypt handshake before the login, when the **Obfuscation Policy** requests or requires obfuscation and the server's row says it takes it (an obfuscation TCP port from its last status answer, and `TCPOBFUSCATION` in its UDP flags or its last login's TCP flags); otherwise **plain**, to its own port, naming why — the policy does not initiate, the server has not said, or the obfuscated attempt failed. A failed obfuscated attempt earns one plain one under `Requested` and none under `Required`, which like aMule dials a server that said nothing plain. Whatever the link, the login's flags state the policy. Chosen at each dial and reported as a **Login Step**.
+_Avoid_: crypt dial, server crypt mode
+
 **Login Step**:
-One step of an eD2k Server Login between its session edges (`CoreEvent::ServerLogin`, ADR-0075 Run Log): the **Login Mapping Wait**'s end, a dial that did not come up and why, the login sent with what it claimed of us (listen and UDP ports, advertised IPv6), a close before the answer, the server's High-ID port test (its window opening, a connection from the server arriving and how it was admitted, how a test from it ended, the window closing with or without one), the answer with the id, our public IPv4 or the server's own address refused as ours, and the TCP flags it granted, the same answer again mid-session, the server's IPv6 probe verdict, and the Kad recheck a High ID asks for. Evidence for a reachability diagnosis: no level moves with it, and every field is ours or the server's, never a peer's. A dial to the own **Buddy** that did not hold a link is the sibling step `CoreEvent::BuddyDialFailed`, whose buddy address is a peer's.
+One step of an eD2k Server Login between its session edges (`CoreEvent::ServerLogin`, ADR-0075 Run Log): the **Login Mapping Wait**'s end, the **Login Link** each dial takes, a dial that did not come up and why (an obfuscated one's crypt handshake included), the login sent with what it claimed of us (listen and UDP ports, advertised IPv6), a close before the answer, the server's High-ID port test (its window opening, a connection from the server arriving and how it was admitted, how a test from it ended, the window closing with or without one), the answer with the id, our public IPv4 or the server's own address refused as ours, and the TCP flags it granted, the same answer again mid-session, the server's IPv6 probe verdict, and the Kad recheck a High ID asks for. Evidence for a reachability diagnosis: no level moves with it, and every field is ours or the server's, never a peer's. A dial to the own **Buddy** that did not hold a link is the sibling step `CoreEvent::BuddyDialFailed`, whose buddy address is a peer's.
 _Avoid_: login trace, handshake log (a step is a typed event, not a log line)
 
 **Advertised Endpoints**:
@@ -282,11 +311,11 @@ The **Connect-Options Byte** rmule's own Kad source publish carries as `TAG_ENCR
 _Avoid_: crypt options (three of its bits), capability claim (that is the hello's, and states what rmule can speak, not what it serves now)
 
 **Kad UDP Key**:
-The private per-install seed every Kad UDP verify key rmule hands a counterparty derives from, per target IP (aMule `thePrefs::GetKadUDPKey()` into `CPrefs::GetUDPVerifyKey`). Minted once from OS entropy and persisted as a preference where aMule persists `/Obfuscation/CryptoKadUDPKey`, because a counterparty checks the key we echo against the one it derived for us — a seed that changed across a restart makes every learned key a mismatch. Front-end-owned (ADR-0069): `AppConfigStore::ensure_kad_udp_key` reads it, `KadEnableConfig::kad_udp_key` carries it. Never transmitted. It arms nothing by itself: the node's Kad-UDP crypt (datagram obfuscation plus verify keys, armed together) follows the one obfuscation policy, `CoreConfig::peer_crypt` — any set policy arms it, unset leaves Kad plaintext (ADR-0046). Our own public IP never enters this seed's per-target derivation — only a *learned* contact key binds to it: `KadCommand::SetOwnPublicIp`, fed by the Kad pump's `PublicIpFeed` off Address Learning's IPv4 verdict, moves that binding when the verdict moves, retiring keys learned under the old address exactly as aMule's `CKadUDPKey::GetKeyValue` does.
-_Avoid_: Kad crypt key (the RC4 key is per datagram), verify key (that is one IP's derivation of this), Kad crypt policy (there is none — the policy is `peer_crypt`)
+The private per-install seed every Kad UDP verify key rmule hands a counterparty derives from, per target IP (aMule `thePrefs::GetKadUDPKey()` into `CPrefs::GetUDPVerifyKey`). Minted once from OS entropy and persisted as a preference where aMule persists `/Obfuscation/CryptoKadUDPKey`, because a counterparty checks the key we echo against the one it derived for us — a seed that changed across a restart makes every learned key a mismatch. A core-owned key of **Core Settings** (ADR-0069), never set by the operator: core reads it at build (`AppConfigStore::ensure_kad_udp_key`) and hands it to the node in `KadNodeIdentity`; no command carries it. Never transmitted. It arms nothing by itself: the node's Kad-UDP crypt (datagram obfuscation plus verify keys, armed together) follows the one **Obfuscation Policy** — any set policy arms it, unset leaves Kad plaintext (ADR-0046), and a live change re-arms the running node through the **Kad Pump State**'s reconciler (`KadCommand::SetObfuscation`). Our own public IP never enters this seed's per-target derivation — only a *learned* contact key binds to it: `KadCommand::SetOwnPublicIp`, told by the **Kad Pump State**'s reconciler from Address Learning's IPv4 verdict, moves that binding when the verdict moves, retiring keys learned under the old address exactly as aMule's `CKadUDPKey::GetKeyValue` does.
+_Avoid_: Kad crypt key (the RC4 key is per datagram), verify key (that is one IP's derivation of this), Kad crypt policy (there is none — the policy is `CoreSettings::obfuscation`)
 
 **NAT-T Rung**:
-Rung 1 of the ADR-0061 route tree after ADR-0091: a LowID↔LowID candidate attempts a **Rendezvous** and **Punch** instead of being dropped, and any pair whose callback stays silent for 12 s falls to it. Core owns the attempt budgets, the two-direction relay limiters (service given to strangers vs our own path), relay admission (buddy relations only, capped), and the PCP `PEER` follow-up on success. Pairs the punch cannot reach retire as *temporarily unreachable* with a reason.
+Rung 1 of the ADR-0061 route tree after ADR-0091: a LowID↔LowID candidate attempts a **Rendezvous** and **Punch** instead of being dropped, and any pair whose callback stays silent for 12 s falls to it. Core owns the attempt budgets, the two-direction relay limiters (service given to strangers vs our own path), relay admission (buddy relations only, capped), and the PCP `PEER` follow-up on success. Pairs the punch cannot reach retire as *temporarily unreachable* with a reason. The core's NAT-T machines (`acting`, `requester`, `relay`, the pure part of the server punch) are already sans-I/O and take core state as inputs; they stay in core because `rmule-peer` depends on primitives only, and moving them would close dependency cycles through `rmule-ed2k` and `rmule-net` while only relocating a few hundred lines.
 _Avoid_: NAT-T mode, fallback (it is a rung, not a mode)
 
 **Rendezvous Coordinator**:
@@ -294,7 +323,7 @@ Who introduces the two sides of a **Punch** (ADR-0091) — the **NAT-T Rung**'s 
 _Avoid_: relay (the limited-relay tier is a different, parked thing), signalling server, STUN server
 
 **Server Coordinator**:
-The core side of ed2k-server's punch, one cell shared by the three places that need it: *establishment* advertises `0xF9` and starts the 60 s keepalive — only with an IPv4 client-UDP bind and its send half, and only over an IPv4 session; the *session multiplexer* hears the answers; the *actor* chooses the route. The keepalive is owned by the session because the session is its lifetime, and the flag the route chooser reads goes dark when the session ends. An introduction has no sender gate (it arrives on our own session) and no claim to judge (the endpoint was observed) — only public, not ourselves, not punched this window, which is also what absorbs the server's re-sends. `0x61` names no target, so it settles a pending request only when exactly one is outstanding.
+The core side of ed2k-server's punch, one cell shared by the three places that need it: *establishment* advertises `0xF9` and starts the 60 s keepalive — only with an IPv4 client-UDP bind and its send half, and only over an IPv4 session; the *session multiplexer* hears the answers; the **NAT-T Front** asks it for an introduction. The keepalive is owned by the session because the session is its lifetime. Establishment records the live session's request half — weakly, so the cell never keeps a session alive — and the session's end clears it: that cell is **Self Reach**'s "Server Coordinator live" family, and the half the front puts its `0x60` on without awaiting it. An introduction has no sender gate (it arrives on our own session) and no claim to judge (the endpoint was observed) — only public, not ourselves, not punched this window, which is also what absorbs the server's re-sends. `0x61` names no target, so it settles a pending request only when exactly one is outstanding.
 _Avoid_: server punch client, holepunch manager
 
 **Acting Path**:
@@ -306,7 +335,7 @@ The rendezvous forwarding rmule performs as somebody's serving **Buddy**. Verify
 _Avoid_: relay tier (the parked data relay), buddy relay (that is the ordinary `0x94`/`0x52` forwarding this sits beside)
 
 **NAT-T Front**:
-The one core task that turns the **NAT-T Rung**'s decisions into a risen **Tunnel** (ADR-0091). It owns both ledgers — the rendezvous requester's and the **Punched Path**s' — plus the **Punch Expectation** table and one **Traversal Attempt** per target, so no lock orders them and no two can read the same instant differently. It drives `rmule_net::natt`'s demux and engines from the client-UDP front's NAT-T inbox, emits every rendezvous, burst and keepalive on that same bind, and hands a risen Tunnel to the serve pipeline's accept channel as the inbound source it is. Its uTP accept is a pump of its own: a cancelled accept drops a handshake the peer already completed, and its hand-off to the accept channel is an **Adopter** of its own, because the loop that feeds the demux may never wait on a consumer it does not drain — a stalled serve pipeline would otherwise silence every tunnel on the node, not just the one being handed over.
+The one core task that turns the **NAT-T Rung**'s decisions into a risen **Tunnel** (ADR-0091). It owns both ledgers — the rendezvous requester's and the **Punched Path**s' — plus the **Punch Expectation** table and one **Traversal Attempt** per target, so no lock orders them and no two can read the same instant differently. It drives `rmule_net::natt`'s demux and engines from the client-UDP front's NAT-T inbox, emits every rendezvous, burst and keepalive on that same bind and every server `0x60` on our session — rung 1's one emitter, handed one traverse command per target by **Peer Reach** — and hands a risen Tunnel to the serve pipeline's accept channel as the inbound source it is. Its uTP accept is a pump of its own: a cancelled accept drops a handshake the peer already completed, and its hand-off to the accept channel is an **Adopter** of its own, because the loop that feeds the demux may never wait on a consumer it does not drain — a stalled serve pipeline would otherwise silence every tunnel on the node, not just the one being handed over.
 _Avoid_: NAT-T manager, tunnel service, punch handler (the demux in `rmule_net::natt` is the *transport* front, not this)
 
 **Traversal Attempt**:
@@ -314,9 +343,9 @@ One target's punch end to end, owned by the **NAT-T Front** and keyed by the tar
 **User Hash** like every other name a punch has (ADR-0091). It outlives a
 **Rendezvous Coordinator**, which is why it exists: the server's `0x62` and its fifteen
 seconds of silence surface on the server session, which knows a `ClientId` and nothing
-about the target, so the attempt carries the join to the user hash, the candidate's own
-facts and our position as the route tree measured them — and asks the one selector who
-is next. Server first, buddy on its refusal or silence, never back up. With no buddy to
+about the target, so the attempt carries the join to the user hash and the candidate's own
+facts — and, reading **Self Reach**'s **Route Position** at that moment, asks the one
+selector who is next. It keeps no snapshot of our position. Server first, buddy on its refusal or silence, never back up. With no buddy to
 ask it retires carrying *what the coordinator said* ("the server refused: target has no
 UDP") rather than the schedule's "attempts exhausted", which would claim rendezvous that
 were never sent. Every way it can die — a spent **Rendezvous Schedule**, a refusal with
@@ -356,6 +385,29 @@ _Avoid_: hole, pinhole (that is the IPv6 firewall opening ADR-0086 makes), sessi
 A diagnostics-level fact that two fresh **Address Observation** tiers disagree about our address (server sees one, the gateway granted another, Kad reports a third) — the trace of double NAT, CGNAT or hairpin. Published, never resolved by overwriting.
 _Avoid_: NAT type (a verdict this store does not make), error, warning
 
+**Source Book**:
+Where one download's sources live and who owns each (ADR-0090): one record per source,
+known by its aliases — up to two endpoints, a `CallbackKey`, a **User Hash** — through one
+index, and carrying exactly one stage: pooled in a lane, dialing, worker, callback pending
+(with its road's deadlines) or remote-queued, so one owner holds it by construction; a
+worker's stage holds the peer's **Peer Identity** (`rmule-peer` glossary) once its hello is
+read, so the hello's facts end with that worker (ADR-0049). Its
+one entry takes a **Source Sighting** and merges a held source rather than pooling it
+twice; two records merge only on wire proof, never on a matching User Hash. It holds the
+blocks — the IP filter and address family it judges each half of a sighting by, the spent
+endpoints, turned once a period at the brain's tick, and the **Distrusted Peer**s — the
+attachments that ride each record (its queue standing and its **Source Ask Clock** facts
+among them), and picks the next dial in lane order. **Download State** maps its outcomes to
+decisions and keeps the slots' numbers and the part scheduler.
+_Avoid_: source list (aMule's `m_SrcList` is only the pool), ledger (the Activity ledger,
+NAT-T, credit and `SeedLedger` already are)
+
+**Source Sighting**:
+One channel's statement that a peer has the file, with the one road it names
+(`rmule-primitives` glossary). Every channel — a server answer, a source exchange, a link,
+a Kad source row — hands the **Source Book** this one value.
+_Avoid_: exchanged source, Kad source (each was one channel's copy)
+
 **Distrusted Peer**:
 A peer proven to have served a download's file bad data — the AICH recovery pinned corrupt blocks on it, or it alone sent a part that failed its hash. Keyed by **User Hash**, not address, and held for the download's life beside its durable record, so a resumed run starts from it: a source whose record names it is never pooled, and one reached without its hash is retired at its hello (ADR-0090 "Source ownership"). A per-file avoidance, not the core-wide, IP-keyed, expiring ban.
 _Avoid_: banned peer (that is `BanStore`), blacklist, bad source
@@ -366,7 +418,7 @@ pool one peer: each running download's reply sink, and the one `0x90` in flight 
 client-UDP endpoint with the download that sent it. The reply reaches that download alone;
 a second download's ping to the endpoint waits until the first is answered or lapses at
 the 20 s lead; a reply nothing asked for drops (ADR-0107).
-_Avoid_: reply fan-out (every download is no longer offered every reply)
+_Avoid_: reply fan-out (a reply reaches the one download that asked)
 
 **Source Ask Budget**:
 How many `OP_GETSOURCES` the **Download Set** may put on one server session: fifteen in
@@ -376,19 +428,21 @@ stoppable, and its bound starts once admitted (ADR-0107).
 _Avoid_: lookup lock, lookup queue (nothing takes turns)
 
 **Source Ask Clock**:
-One download's record, per peer, of when it last asked for sources (stamped when the
+One download's facts, per peer, of when it last asked for sources (stamped when the
 session sends the ask), when the peer answered, what its hello said about source exchange
 and whether its last advertisement was complete, plus the file's own last-answered time:
-aMule's `IsSourceRequestAllowed`, kept per (peer, download) under the peer's **Ask Names**.
-With the file's source need it decides whether a connection carries a source-exchange ask,
-and whether a pooled source's UDP reask gives way to the TCP ask (ADR-0108).
+aMule's `IsSourceRequestAllowed`, kept per (peer, download). The peer's facts ride its
+**Source Book** record and are read under its **Ask Names**. With the file's source need
+they decide whether a connection carries a source-exchange ask, and whether a pooled
+source's UDP reask gives way to the TCP ask (ADR-0108).
 _Avoid_: SX throttle (that is the serving side's)
 
 **Ask Name**:
-One of the names the **Source Ask Clock** knows a peer by — its TCP endpoint, a Low-ID
-callback's `(server, low_id)`, its User Hash. Reads merge every name a connection is bound
-to and stamps land on all of them, so a peer is the same peer to the gate across
-connections — aMule's `FindMatchingClient` (ADR-0108).
+One of the names the **Source Ask Clock** knows a peer by: its **Source Book** record's
+aliases — its TCP endpoint, a Low-ID callback's `(server, low_id)` when the server that
+assigned the id is known — and the User Hash the record knows. A stamp lands on the record; a read merges what the run kept under each of its
+names and every live record sharing its User Hash, so a peer is the same peer to the gate
+across connections — aMule's `FindMatchingClient` (ADR-0108).
 _Avoid_: peer key (several names, one peer)
 
 **Source Seeds**:
@@ -410,8 +464,8 @@ that peer again, is cleared when a run starts, and the row keeps the newest 64 (
 _Avoid_: dial failure (`DialFailure` is a server dial's)
 
 **Remote-Queued Pool**:
-The downloader-side pool of sources holding a queue position at a remote uploader **without a connection** — entered when a rank arrives and the worker hangs up, kept alive by the reask heartbeat (UDP ping first, TCP full ask as fallback), and left on grant (the uploader dials back), file-not-found, or purge (ADR-0057). Queue standing is a fact about the remote peer, not about a socket.
-_Avoid_: waiting workers (no worker exists while pooled), source cache, reconnect list
+The **Source Book** records in their RemoteQueued stage, each holding its queue standing at a remote uploader **without a connection**: the rank, the UDP contact and peer-UDP crypt target the identity it queued under stated, the reask clock and its one-ping latch (ADR-0057, ADR-0090). Entered when a rank arrives and the worker hangs up; kept alive by the reask heartbeat the brain's tick runs while we are connected to a server or Kad (UDP ping first — a called-back source's at the address it called in from — TCP full ask as fallback, a called-back source's by its callback road); left on grant (the uploader dials back), file-not-found, the TCP full ask, or — queue-full or holding no part we lack, while the file holds 80 % of aMule's default source limit — one of the book's purges. Queue standing is a fact about the remote peer, not about a socket.
+_Avoid_: waiting workers (no worker exists while pooled), source cache, reconnect list, pool (as a list apart from the book)
 
 **Slotless Standby**:
 A download worker that sent `OP_CANCELTRANSFER` because the scheduler had no part to assign it, surrendered its remote upload slot, and stays connected awaiting a released part — at which point it re-runs the full ask cycle from the start-upload request (ADR-0056). Distinct from an idle worker, which still holds its granted slot.
@@ -446,7 +500,7 @@ The activity that keeps the **Shared File Registry** equal to what lies under on
 _Avoid_: library scan, indexer, import
 
 **Shared Directory List**:
-The directories whose contents rmule offers (ADR-0101, "Shared Directories"): the download directory first, from the front end's preference, never stored and never removable; then each directory the operator added and confirmed, keyed by its canonical path, stored in order of adding. Always recursive. An entry under another is covered by it; a listed directory that is not there stays listed, missing, its files **Withheld Rows**.
+The directories whose contents rmule offers (ADR-0101, "Shared Directories"): the download directory first, from the Core Settings, never stored and never removable, and guarded like an add whenever core names it — refused, it is listed, never scanned, and covers nothing; then each directory the operator added and confirmed, keyed by its canonical path, stored in order of adding, and guarded again where its path leads at attach and when it appears after missing — refused, it stays listed, never scanned, covering nothing. A file under a refused entry, and under no passing entry nearer to it, is a **Withheld Row** however readable. Always recursive. An entry under another is covered by it; a listed directory that is not there stays listed, missing, its files **Withheld Rows**.
 _Avoid_: shared folders, library, share roots
 
 **Set-Aside Row**:
@@ -454,7 +508,7 @@ A registry row a removed **Shared Directory List** entry took out, or a **Spare 
 _Avoid_: hash cache, tombstone, dormant row
 
 **Withheld Row**:
-A **Shared File Registry** row kept, with its hash set, while nothing is offered for it, because its file is not readable now: its folder is missing, it cannot be opened or read, or it is gone or changed and awaits a ruling (ADR-0106, "The registry against the disk"). Held in memory with its reason and when rmule noticed; a withheld row is in no serve snapshot, no announce, no Kad publication and not in the **File-Known Predicate**'s shared half. It is offered again once a look finds it readable.
+A **Shared File Registry** row kept, with its hash set, while nothing is offered for it, because its file is not readable now: its folder is missing, it cannot be opened or read, or it is gone or changed and awaits a ruling (ADR-0106, "The registry against the disk"); or because it lies under a **Shared Directory List** entry the guards refuse (ADR-0101). Held in memory with its reason and when rmule noticed; a withheld row is in no serve snapshot, no announce, no Kad publication and not in the **File-Known Predicate**'s shared half. It is offered again once a look finds it readable, unless it lies under a refused entry.
 _Avoid_: hidden, disabled, offline file
 
 **Registry Check**:
@@ -481,6 +535,14 @@ _Avoid_: profile dir, workspace, config dir
 The single on-disk home of every durable seam — download records, the Shared File Registry and its Had Set, the credit ledger, identities and the server list — opened once per process and owned by core. Seams are views over it, not files of their own; a change that must hold across seams can be one atomic step.
 _Avoid_: database file (there is one, but callers see seams), config file, cache
 
+**Run Log**:
+The file in the **Data Directory** (`rmule.log`) a front end's run appends core's **records** to (ADR-0075, `run_log`) — always on in the TUI, whose terminal is the alternate screen, because a defect met in an ordinary session must leave evidence, and opened by `rmule-cli` for a command that runs a core; both read its level from the one *Full run log* preference (`run_log::PREFERENCE_KEY`). A front end writes the records of the events it receives; core writes the **Reachability Trail** itself. A record is an event code plus typed fields, each field added by what it is (own address, peer address, file name, file hash, port, count, code); the field's **kind** decides, in one place, the lowest level that admits it, and every event and reason projects into records beside its type. It is written at one of two **levels**: **lean** by default (reachability evidence — own addresses, ports, the port mapping, the server endpoint, login steps, verdicts — and codes, no peer address, file name, path or hash) or **full** by the preference *Full run log*, which adds the rest and also lets free-form `tracing` lines through. Search text and File History paths are never written. Bounded: at 16 MiB it is moved aside as the single predecessor `rmule.log.1`. `RMULE_LOG` is the filter; the default level is `info`. Even lean names the operator's own addresses, so it is the operator's to share; full names peers and files.
+_Avoid_: debug log, trace file, console, verbose log
+
+**Reachability Trail**:
+Core's own reachability levels written into the **Run Log** as they move (ADR-0075's first path, `run_log::trail`): the connected server and the server list's health edges and grant words, the **Port Mapping** rows, the **Own Address** rows, the Kad verdicts with our own **Buddy**'s state, and the NAT-T **Own Mapping**. Each level is read from its one owner when that owner's change notice wakes — the server half of the diagnostics level, the mapping runtime's published rows, the **Own Address Generation** and **Bind Generation** (and the next lapse the store names), the **Reach Generation**, the **Buddy Snapshot** and the **Recruit Status** — and written only when its records differ from the ones last written: a level that moved is its record once, a wake that moved nothing is none. Every field is ours or the operator's own list's, so a level's records read the same at both levels; it is written at lean. It starts with the actor's prologue, writing every level once, and stops as Quit begins.
+_Avoid_: snapshot diff, reach log, state dump
+
 **Part Path Slot**:
 A download row's `.part` file, held, or released once a terminal row gave the path up to a new row so that the store's one-writer-per-`.part` rule lets the new row in. A released slot is not a path; stored, it is the stand-in text `"\0released:{key}"`, which the row's unique index sees as a value no other row can hold.
 _Avoid_: part path string, tombstone
@@ -498,7 +560,7 @@ The name + exact byte size core recorded for one download, with the origin that 
 _Avoid_: file info, display name, file details
 
 **Download State**:
-The sans-I/O scheduling brain for one download (`download/state.rs`). It owns every clock-free, channel-free decision — which part a peer works, how cross-peer blocks assemble (ADR-0029), when a raced part completes and clears its losers (ADR-0026), which candidate backfills a retired worker (ADR-0030) — and returns an ordered `Vec<Decision>` the async runner *enacts* (the only async surface). Persistence is a fallible effect, so it round-trips through `on_persist_result`. Touching no socket, clock, store, or channel is what makes the racing / resume / retire-all / backfill behaviours assertable as plain decision sequences instead of only through a live Tokio actor.
+The sans-I/O scheduling brain for one download (`download/state.rs`). It owns every channel-free decision — which part a peer works, how cross-peer blocks assemble (ADR-0029), when a raced part completes and clears its losers (ADR-0026), which candidate backfills a retired worker (ADR-0030), when a pooled source is reasked and when a callback road lapses — and returns an ordered `Vec<Decision>` the async runner *enacts* (the only async surface). Time is an argument: each entry takes `now`, `on_tick(now)` runs the reask sweep, turns the spent period and expires deadlines, and `next_wake()` names when the runner wakes it next. Persistence is a fallible effect, so it round-trips through `on_persist_result`. Touching no socket, clock, store, or channel is what makes the racing / resume / retire-all / backfill / reask behaviours assertable as plain decision sequences instead of only through a live Tokio actor.
 _Avoid_: download manager, actor, scheduler (the `DownloadScheduler` is one of the bags it owns)
 
 **Serve State**:
@@ -512,6 +574,31 @@ Byte reads are fallible effects that round-trip through `on_read_result`, the
 read-side twin of `on_persist_result`. Explicit `Instant` parameters only (the
 **Upload Slot Queue** contract); no clock, socket, store, or channel.
 _Avoid_: serve manager, upload scheduler (the queue is one bag it owns), handle_serve_event (the retired I/O-interleaved shape)
+
+**Kad Pump State**:
+The sans-I/O brain of the Kad pump (`KadPumpState`, `adapters/kad_runtime/pump_state.rs`),
+the Kad-side mirror of **Download State** and **Serve State**. Every input is handed in
+with an explicit `now` (ADR-0043): the core's commands (each with the sources sampled as it arrived),
+the node's events, the 30 s recruit tick, samples of
+the sources it reads taken when they move — **Self Reach** on a **Reach Generation**,
+**Address Learning** on an **Own Address Generation**, the **Obfuscation Policy** on its
+live change, the **Buddy Snapshot** — and the answers to its own effects: whether a node command landed, what the
+open-node buddy service decided, room again in the node's inbox, and the **Firewalled Front**'s verdict on a buddy it was asked to adopt. It
+holds the ADR-0061 recruit rule: a pure decision over the Buddy Snapshot, Self Reach and its own recheck
+clock, with its own pacing stamp and walk-in-flight flag, published as the **Recruit Status**. It holds who
+rides each keyword walk (ADR-0062) and who waits on each Callback Walk, as addresses it never writes to.
+Everything leaves as an effect the pump's driver carries out:
+node commands, source answers and each search's rows and facts, a Callback Walk's retirement, Address Learning writes, bans, the Kad
+verdicts and the diagnostics it writes, the `AdoptBuddy` command to the Firewalled Front and its own
+Recruit Status, and the dial-back and buddy-service spawns. One reconciler inside works out the whole desired node state — the
+TCP level, own IPv4, **Extern Kad Port**, **Publish Connect Options**, publish posture,
+the datagram crypt and the **Advertised IPv6** — after every input and commands only what the node does not already hold, so no input
+can forget to restate one. The core's commands become node commands told one at a time, in the order sent, once the
+node holds every level; one the node's full inbox turns away waits in the brain, which then takes no further core
+command, so the core's commands wait in the pump's own bounded channel and nothing the pump took is lost. The driver
+(`node/pump.rs`) owns the select loop, the `KadNetHandle` and the channels, never waits for inbox room while it holds
+the loop — it waits for room beside the node's events — and decides nothing.
+_Avoid_: Kad state (the **Kad State** level; `rmule-kad`'s node has its own), Kad manager, feed (it holds one desired node state, not a cache per level)
 
 **Transfer Byte Counters**:
 The monotonic payload totals core publishes on its `DiagnosticsSnapshot` (ADR-0077): per-download `received_bytes`, per-upload-peer `bytes_sent`, and the process-lifetime `SessionCounters`. Facts only — running totals of payload that crossed core's wire boundary, counted where a block is delivered (download runner) or handed to a connection writer (serve enactor). Core derives nothing from a clock, so a *rate* is always the consumer's own differencing of two snapshots (ADR-0069 dataflow). The per-transfer rows retire with their transfer; the session totals never decrease.
@@ -535,6 +622,10 @@ contributor. The contiguous-prefix *build phase* stays as ADR-0029; a *repair ph
 turns the completed-but-failed buffer into a block-set with holes punched where AICH
 found corruption.
 _Avoid_: retire-all (that is the no-root fallback), AICH verification (MD4 is verification; this is recovery)
+
+**Peer Reach**:
+The one module that reaches a peer (ADR-0061, ADR-0091), over handles the core already shares: **Self Reach**, the client-UDP send half, the **NAT-T Front**'s command half, the Kad pump's and the event bus. Its one call, `reach(peer, retire)`, reads the **Route Position**, asks the route tree for the road, carries it out — a direct `0x95`, a buddy `0x52` or its **Callback Walk**, or rung 1 handed to the NAT-T Front whole — and reports the road taken. Both callers end in it: an operator's `ReachPeer` (nothing to retire) and a download's Low-ID candidate (its **Pending Callback**, whose road the brain already chose and whose retire channel hears at once when the road never opens).
+_Avoid_: reach arm (the actor's arms are one call each into this), enactment helpers
 
 **Low-ID Callback**:
 The mechanism (ADR-0039) that makes a **Low-ID** source usable: rmule cannot dial it,
@@ -590,16 +681,33 @@ candidate, because that road was the only one.
 _Avoid_: callback capability (that is one half of it), reachable (that is about rmule,
 not about the pair)
 
+**Awaited Inbound**:
+The one registry of the fact *a download is waiting for this peer to reach us*, whatever
+road the peer takes (`AwaitedInbound`). A download holds one registration per pending
+callback, as an `AwaitedInboundHandle`, and the registration carries both of the callback's
+keys: the **Pending Callback**'s `(server, low id)` and the **Pending Tunnel Claim**'s User
+Hash, with its dial-back flag. Either key reaches it. Inbound triage asks one question per
+identified connection, giving how the connection came in (accepted, or a **Dialer Tunnel**
+toward a named hash) and what its hello says (User Hash, server, low id). The answer is one
+of three. *Adopt*: the registration is spent, both roads with it, under one lock. *Mismatch*:
+a Dialer Tunnel's hello names somebody else, so the connection is closed and the claim stays
+pending. *Unclaimed*: the connection takes the serve road. Dropping the handle releases both
+keys at once, so however a callback ends (adopted, lapsed, or with its run) it cannot leave
+one road behind to hand the download a second worker. Several downloads may wait on one key,
+and the oldest is adopted first (ADR-0107).
+_Avoid_: callback table, claim table
+
 **Pending Callback**:
 A held worker-slot state: a download took one of the **Low-ID Admission**'s two roads for
 a candidate and awaits the inbound adoption — a relayed callback it emitted a
 `RequestCallback` for, or, when no callback was possible, the **Tunnel** the punch it
-asked for may raise. Cleared by adoption, released by a per-callback timeout, which
+asked for may raise. Cleared by adoption, released by a per-callback deadline on its
+**Source Book** record, which
 retires the candidate and frees the slot for the next one, or retired early when its road
 never opened (the ask could not leave). `OP_CALLBACK_FAIL` carries no id, so it releases
 nothing. Every one a download still holds ends with the download, however its run ends.
-The core actor keys pending callbacks by `(connected server, low id)` because low-ids
-are unique only per server. It holds the **Low-ID Candidate Record** it was requested
+The **Awaited Inbound** registry files a pending callback under `(connected server, low id)`
+because low-ids are unique only per server. It holds the **Low-ID Candidate Record** it was requested
 for, and — when that record admits a **Rendezvous Coordinator** — a second deadline, the
 **Callback Silence Fallback**.
 _Avoid_: queued (that is the upload-side rank), pending source (the candidate pool term)
@@ -620,8 +728,8 @@ _Avoid_: candidate (that is the High-ID pool's unqualified term), peer facts (th
 `PeerReach`, the public record this projects into)
 
 **Callback Silence Fallback**:
-ADR-0091's 12 s deadline, armed by the download brain *beside* ADR-0039's slot-release
-one whenever the candidate's own facts admit a **Rendezvous Coordinator**. On its fire
+ADR-0091's 12 s deadline, set on the callback's record by the download brain *beside*
+ADR-0039's slot-release one whenever the candidate's own facts admit a **Rendezvous Coordinator**. On its fire
 the callback's candidate is handed to the one route selector as a NAT-T attempt, and
 nothing is retracted: the slot stays held, the slot-release deadline stays armed, and
 whichever connection arrives first — the relayed callback or the punched **Tunnel** —
@@ -633,8 +741,8 @@ re-requested; a second route is attempted beside the first)
 What a download registers when it falls to NAT traversal — on its **Callback Silence
 Fallback**, or on admission when no callback was possible — so the **Dialer Tunnel** the
 punch may raise comes back to *it* instead of taking the serve road (ADR-0091). The **Pending Callback**'s sibling with the only key a punch has — the
-target's **User Hash** — and it carries that callback's key, so an adoption down either
-road ends one pending callback and the one cancel retracts both registrations. A
+target's **User Hash** — filed in the same **Awaited Inbound** registration as that
+callback, so an adoption down either road ends one pending callback and spends both roads. A
 candidate no channel gave a User Hash claims nothing: there is nothing to file it under,
 and nothing a hello could confirm. A claim is also released early, with a reason, when
 the **Traversal Attempt** toward its target retires — the callback keeps its slot and
@@ -736,8 +844,8 @@ _Avoid_: ping (wrong protocol), health check (this assigns identity, not livenes
 A source learned over **server-UDP** (`OP_GLOBFOUNDSOURCES`) from a server rmule is *not*
 logged into (ADR-0051), as opposed to one from the connected server's TCP `OP_GETSOURCES` or
 peer source-exchange. A **High-ID** global source goes straight into the candidate pool; a
-Low-ID global source is dropped (it is callbackable only via its own source-server, a
-deferred path — never the connected one), so it never enters `low_id_pool`.
+Low-ID global source is callbackable only via its own source-server, never the connected one,
+so it waits in the **Source Book**'s global Low-ID lane, apart from the connected server's.
 _Avoid_: peer source (the exchange term), found source (ambiguous across the TCP/UDP paths)
 
 **Managed Server List**:
@@ -750,6 +858,7 @@ published whole on the **Diagnostics Snapshot** level. A downloaded list may ren
 an explicit command re-prioritises, pins or absolves one. Distinct from the *connected* server
 (a session fact). The **Global Search Sweep** and **Global Source Discovery** walk a projection of it:
 every listed server minus the dead, the IP-filtered and the connected one, recomputed on every change (ADR-0051).
+A row dialed on an **aux port** keeps its dialed endpoint as the key and gains the server's standard port plus an aux-ports list (store version 14, which also keeps the UDP flags word an import named for a never-pinged row), learned from an aux-port login's ID answer or a server.met `ST_AUXPORTSLIST`; a downloaded row names the server by its standard port and finds the row there (ADR-0080).
 _Avoid_: server database, server config, connected server
 
 **Dead Server**:
@@ -776,7 +885,7 @@ server never logged into has none. Its UDP twin is the `udp_flags` of the **Serv
 **Dead Server Limit**:
 The failure tally at which a server is a **Dead Server**: aMule's `/eMule/DeadServerRetry`,
 default 3, at least 1. Core-owned server-list configuration (`ServerPolicy::dead_after`), read from
-the store at start and changed live by `CoreCommand::SetServerPolicy`.
+the store at start and changed live through **Core Settings**.
 
 **Server UDP Crypt**:
 How to key UDP to a server, as its last challenge-matched `0x97` said: the obfuscation UDP and TCP
@@ -860,7 +969,7 @@ _Avoid_: global search sweep (a per-search fan-out), server-list refresh (the se
 The Core-level service (ADR-0051) that batches all active downloads' file hashes and, on an
 interval, queries every server in the **Managed Server List**, routing each
 `OP_GLOBFOUNDSOURCES` answer's High-ID sources to the matching download via
-`DownloadState::on_global_sources`. The ask form is per-server from the **Server Capability
+`DownloadState::on_sightings` (`Channel::Global`). The ask form is per-server from the **Server Capability
 Store** (ADR-0052): `0x94` size-extended entries when the server advertises
 ExtGetSources2 (unlocking > 4 GiB files), legacy bare-hash `0x9A` otherwise; large files are
 skipped toward servers without proven LargeFiles support; ≤31 files per datagram with
@@ -872,12 +981,25 @@ The single owner of the server-UDP socket's receive side (ADR-0051, `server_udp`
 drains the transport and demuxes each datagram on its leading packet's opcode — `0x9B` feeds
 **Global Source Discovery**'s channel; `0x97` is consumed in-engine through the status-challenge
 gate into the **Server Capability Store** (ADR-0052); the global-search (`0x99`) and description
-(`0xA3`) rows plug into the same demux. Sends stay per-consumer over the
-`Arc`-shared transport (fire-and-forget needs no single owner); receive must be owned once
-because eD2k UDP packets carry no length prefix, so packet boundaries inside a datagram are the
-consuming concern's decode.
+(`0xA3`) rows plug into the same demux. Each consumer's inbox gets its datagrams tagged with
+the answering server's standard endpoint, whichever of the server's ports they came from.
+Sends go through the **Server-UDP Seal**; receive must be owned once because eD2k UDP packets
+carry no length prefix, so packet boundaries inside a datagram are the consuming concern's
+decode.
 _Avoid_: discovery channel (the get-sources consumer, not the socket owner), server-UDP transport
 (the socket seam the engine reads — `adapters::ServerUdpTransport`)
+
+**Server-UDP Seal**:
+The one send gate of the server-UDP socket (ADR-0046, `server_udp::ServerUdpSeal`), aMule's
+`CServerUDPSocket::SendPacket`. Every sender — the **Status Ping Sweep**, the engine's `0xA2`,
+**Global Source Discovery**, the **Global Search Sweep** and the callback relay — hands it a
+server's standard endpoint and a plain frame. While the obfuscation policy is set and the
+server's **Server UDP Crypt** offers a key (this run's `0x97` record first, else the row's
+saved facts), the frame is sealed under that `ServerUDPKey` and sent to the server's
+obfuscation UDP port; otherwise it goes plain to standard port + 4. The crypt-ping alone goes
+raw, to standard port + 12. The transport behind it knows no port rule.
+_Avoid_: send gate (the peer-UDP one, keyed on a peer's User Hash), crypt layer (the whole
+datagram obfuscation, both directions)
 
 **Related-Files Search**:
 A **Search Activity** whose query is a file, not words: it asks the connected server which files its users hold beside that one (ADR-0037). It travels to the connected server over TCP alone — never the **Global Search Sweep**, never Kad — and only to a server that grants it. In code it is the `SearchQuery::RelatedFiles` kind; the sweep and Kad accept only `KeywordQuery`, so the rule is held by the type.
@@ -913,12 +1035,12 @@ to query — the store holds what those servers *proved*)
 **Kad Source Discovery**:
 The second **Source Discovery Policy** channel (ADR-0043): a Core task started by
 `CoreCommand::EnableKad`, owning the live Kad node only through the `KadSourceChannel` seam
-(projected vocabulary — file hashes and projected source rows, never Kad wire types, because the
-Kad Source Row Projection is sealed in `rmule-kad`; a row crosses whole, so the brain sees the
-buddy of a firewalled source instead of only the address of a dialable one). Sweeps the active downloads for due source
+(projected vocabulary — file hashes and each row's **Source Sighting**, never Kad wire types,
+because the Kad Source Row Projection is sealed in `rmule-kad`; a row crosses whole, so the brain
+sees the buddy of a firewalled source instead of only the address of a dialable one). Sweeps the active downloads for due source
 asks (first ask immediate, re-asks on eMule's 1-hour `KADEMLIAREASKTIME`) and publish-registers
 every shared file once (the node owns the 5-hour republish). Routes answers to
-`DownloadState::on_kad_sources`. Never enabled ⇒ zero behavioral change.
+`DownloadState::on_sightings` (`Channel::Kad`). Never enabled ⇒ zero behavioral change.
 _Avoid_: Kad lookup (the walk is the node's concern, not Core's), DHT search (keyword search is out of scope)
 
 **Source Discovery Engine**:
@@ -942,6 +1064,10 @@ Split out of Kad discovery because publishing is registry-driven, not
 download-driven — it runs even with zero active downloads.
 _Avoid_: republish timer (the node's), discovery sweep, announce (the eD2k `OP_OFFERFILES` path)
 
+**Diagnostics Snapshot**:
+The core's level of observable facts (`DiagnosticsState`, read whole by `diagnostics_snapshot()` or a `DumpDiagnostics` echo, which return the same value — ADR-0028): per-activity rows (downloads, uploads, servers, Kad facts) and the counters each module bumps. Its writers are one-line counters written where their owning module makes the decision — NAT-T in the NAT-T Front, buddy and callback in the **Firewalled Front**, serve in the serve runner, downloads in the download runner, server health in the server-list facts — so a family's writes already sit with its owner; there is no later settle point to gather them behind, unlike a download's positional part-state vector.
+_Avoid_: stats, metrics (the operator-facing Statistics view reads it, but it is not that view)
+
 **Kad State**:
 Where the **Kad Activity** stands, as a level on the **Diagnostics Snapshot** (`kad_state`): `Off`, `Running` or `Stopping`, written by the actor at the activity's start, its stop's begin and its retire. The TUI's Kad switch (`K`) reads it to start or stop Kad, and the Kad pane reads a running node nobody has answered yet as joining. Disconnecting from the server leaves it as it is (ADR-0096, "Disconnect, and Kad's own switch").
 _Avoid_: Kad connected (Kad has no session), Kad on
@@ -951,10 +1077,10 @@ The **Activity** for a running Kad node (ADR-0093): one
 `KadActivity` value in the actor's ledger holding the owned `JoinHandle`s on
 the **Kad Source Discovery** task (whose channel closes the moment the deep
 node's own pump does) and its watchdog, the **Kad Publisher** and its
-share-changed trigger, the ed2k→Kad handoff forwarder, the node id and search
-channel `DumpDiagnostics`/`StartSearch` read, and this activity's own **Kad
+share-changed trigger, the ed2k→Kad handoff forwarder, the search
+channel `StartSearch` reads, and this activity's own **Kad
 Shutdown Lever** handle — always installed. It holds the one **Kad Presence** lease, which is
-what `SelfReach::kad_running`, the `KadNotRunning` guard and every
+what `RoutePosition::kad_running`, the `KadNotRunning` guard and every
 download read. `EnableKad` fills it at once; `retire_kad` takes
 every piece back — the lease dropped, the **`CT_EMULE_UDPPORTS`** advert's Kad half
 cleared (aMule's `Kademlia::IsRunning() ? kadPort : 0`), every
@@ -963,8 +1089,9 @@ discovery task ended on its own, or **Quit** stopped it. The discovery task's
 own end-of-loop bump is cooperative code, so an abort or a panic mid-`await`
 never runs it: the watchdog polls its `AbortHandle` and bumps the
 same watch with the activity's generation once it reads finished.
-`DumpDiagnostics` reports how many long-lived tasks it holds as
-`kad_tasks_live` (`0` with no activity).
+It installs its fact reader into the shared diagnostics state at start and
+clears it at retire, so the snapshot reports how many long-lived tasks it holds
+as `kad_tasks_live` (`0` with no activity).
 _Avoid_: Kad pump (the deep node/pump.rs task the discovery task's channel rides,
 one layer below this), Kad Source Discovery (one task in the bundle, not the
 bundle itself), Kad Shutdown Lever (the stop mechanism this bundle now owns
@@ -993,6 +1120,18 @@ _Avoid_: DisableKad (the command that fires this activity's *own* lever, not
 the lever itself), Kad Activity's retire (`retire_kad`, what runs after
 either lever stops the pump — join the tasks back, clear liveness and the
 advert, emit the event — not the stop signal itself)
+
+**Kad Cells**:
+What core lends each Kad node for its life (`KadCells`): the Kad half of **Self Reach**'s verdicts, the table size, keyword index size and traffic counters the pump keeps moving, **Kad Presence**, the slot the handoff forwarder is left in, the diagnostics state, and the `AdapterCells` the node meets the peer surfaces on. Core builds the one set before any start and hands it to `KadRuntimeFactory::start`, because a node starts, stops and starts again over the same readers: a runtime that made its own would leave every reader holding a cell no pump of the core's writes, and a fake runtime states what it publishes through the same cells.
+_Avoid_: Kad context, Kad state (the **Kad State** level)
+
+**Mailbox**:
+The cell holding the one live sender of a node that starts, stops and starts again over a socket or a front that outlives it (`Mailbox<T>`): the Kad node's datagram inlet, its pump and its bootstrap handoff, and the serve activity's dialed-connection sink. Empty while no node runs — the emptiness is the gate a sender reads — and a send never waits: it says whether a message was dropped for want of a node or for want of room, and each caller counts or logs the reason it cares about. A node's start fills it and takes a **Lease**.
+_Avoid_: inbox (the channel a task drains; a mailbox holds only the sender into one), slot
+
+**Lease**:
+One node's claim on a **Mailbox** (`Lease<T>`), returned when its start fills the cell and dropped at its teardown. The drop empties the Mailbox only while it still holds the sender this lease installed, so a node whose stop timed out, still tearing down after its successor filled the cell, never empties the successor's. It holds that sender weakly: a task that pushes to its own node through the lease never keeps the node's channel open.
+_Avoid_: guard, token; not a **Mapping Lease** (a router grant's lifetime) nor the **Kad Presence** lease the **Kad Activity** holds (its one writer's claim)
 
 **Join Sequence**:
 Core's cold-start orchestration: load persisted state, acquire a server list on first run if empty, then join the eD2k and Kad networks in parallel — each gated only on its own per-network config, all enabled by default. Unattended dual-network join is core policy, overridable per network by the caller. A stranded Kad side (empty table, empty dial list) idles with a named event rather than fetching anything unattended.
@@ -1083,7 +1222,7 @@ _Avoid_: offline mode (peers are very much online), Kad-only mode (a config post
 ## Relationships
 
 - The core actor owns the unified set of live peer **Connection**s; the **download scheduler** and the **Upload Slot Queue** are two consumers over that one set (a connection may both pull and serve — wired on accepted connections first, dialed connections later).
-- The inbound accept loop routes by a **Pending Callback** match (ADR-0039): an accepted connection whose identified `(server, low id)` matches a pending callback becomes an **Adopted Inbound Worker** for that download; every other accepted connection flows to the serve path as before. So the accept stream is a third reader of the unified connection set, feeding the download scheduler — not only serve.
+- The inbound accept loop routes by asking the **Awaited Inbound** registry (ADR-0039, ADR-0091): an accepted connection whose identified `(server, low id)` matches a **Pending Callback**, or whose hello confirms a **Pending Tunnel Claim**, becomes an **Adopted Inbound Worker** for that download; every other accepted connection flows to the serve path as before. So the accept stream is a third reader of the unified connection set, feeding the download scheduler — not only serve.
 - A **Search Activity** consumes search support from the eD2k server protocol service and presents app-facing result streams; selecting a result starts a separate download workflow rather than mutating the search.
 - Search uses its own `SearchCommand` / `SearchEvent` vocabulary under `CoreCommand::Search` / `CoreEvent::Search`; it is not a hidden phase of `DownloadCommand`.
 - A **Search Result Set** is process-local state for one **Search Activity**; durable search history and searchable local result indexes are later product features.

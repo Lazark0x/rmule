@@ -3,7 +3,8 @@
 //! software evidence and capabilities, answer it, and send one to an accepted
 //! peer that needs it — each exactly where both references do.
 
-use super::{PeerEvent, PeerSession, State};
+use super::{PeerSession, State};
+use crate::IdentityChange;
 use crate::emule_info::{EmuleInfo, LegacyMuleInfo};
 
 impl PeerSession {
@@ -26,7 +27,6 @@ impl PeerSession {
         if matches!(self.state, State::AwaitingHello | State::BeforeStart) {
             return;
         }
-        let support_before = self.source_exchange_support();
         if !answer {
             // Both references answer every block that is not OS info, to
             // its sender, each time (stock aMule 2.3.3
@@ -43,7 +43,7 @@ impl PeerSession {
             if let Some(mule_version) = unknown_version {
                 self.peer_software.unknown_emule_info(mule_version);
             }
-            self.revise_source_exchange(support_before);
+            self.revise_source_exchange();
             return;
         };
         self.peer_software.emule_info(legacy);
@@ -55,37 +55,36 @@ impl PeerSession {
         if self.peer_misc_options.is_none() {
             self.peer_misc_options = Some(legacy.capabilities());
         }
-        if matches!(self.state, State::Identified) {
-            self.core.push_event(PeerEvent::PeerSoftwareRevised {
-                software: self.peer_software.software(),
+        let software = self.peer_software.software();
+        self.revise_identity(IdentityChange::Software, |identity| {
+            identity.revise_software(software)
+        });
+        if let Some((udp_port, udp_version)) = reask
+            && !self.peer_hello_named_reask
+        {
+            self.revise_identity(IdentityChange::ReaskContact, |identity| {
+                identity.revise_reask_contact(udp_port, udp_version)
             });
-            if let Some((udp_port, udp_version)) = reask
-                && !self.peer_hello_named_reask
-            {
-                self.core.push_event(PeerEvent::PeerReaskContactRevised {
-                    udp_port,
-                    udp_version,
-                });
-            }
+        }
+        if matches!(self.state, State::Identified) {
             // An old eMule starts Secure User Identification once hello and
             // block have both arrived (its `InfoPacketsReceived`).
             self.maybe_start_secure_ident();
         }
-        self.revise_source_exchange(support_before);
+        self.revise_source_exchange();
     }
 
-    /// An identified peer's block changed what it says about source exchange
-    /// — a pre-0.42 mule's SX version arrives only here (stock aMule 2.3.3
-    /// `BaseClient.cpp:918-921`, eMule `BaseClient.cpp:804-808`): say so, so
+    /// An identified peer's block may change what it says about source
+    /// exchange — a pre-0.42 mule's SX version arrives only here (stock aMule
+    /// 2.3.3 `BaseClient.cpp:918-921`, eMule `BaseClient.cpp:804-808`) — so
     /// the download's Source Ask Clock reads what this session's own ask gate
     /// reads (ADR-0108). A block before the hello answer needs no revision:
     /// the identity carries it.
-    fn revise_source_exchange(&mut self, before: super::SourceExchangeSupport) {
+    fn revise_source_exchange(&mut self) {
         let support = self.source_exchange_support();
-        if matches!(self.state, State::Identified) && support != before {
-            self.core
-                .push_event(PeerEvent::PeerSourceExchangeRevised { support });
-        }
+        self.revise_identity(IdentityChange::SourceExchange, |identity| {
+            identity.revise_source_exchange(support)
+        });
     }
 
     /// Before answering an accepted hello: a peer behind eMule's hash mark

@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 
 use super::{bench_enabled, bench_run_root, read_string, run_flow};
 
+/// The debug build of the pinned aMule body, whose log names a source's fate.
+const AMULE_DEBUG_IMAGE: &str = "rmule/interop-amule-debug:local";
+
 /// Drive one IPv6-dialect flow through its CLI subcommand with every build context
 /// resolved absolutely, and hand back its run dir.
 fn run_ipv6_dialect_flow(flow: &str) -> PathBuf {
@@ -69,7 +72,13 @@ fn run_ipv6_dialect_flow(flow: &str) -> PathBuf {
         args.extend_from_slice(&["--emuleqt-image", image]);
     }
     // And for the stock aMule `ipv6-extsx-core` asks: any 2.3.3 build serves.
-    let amule_image = std::env::var("RMULE_BENCH_AMULE_IMAGE").ok();
+    // `peer-hello-surface` scores a claim on stock aMule's own debug lines
+    // naming a source it met earlier, and only the debug build writes them:
+    // it defaults to that image, so a run on the release image cannot score
+    // the claim absent.
+    let amule_image = std::env::var("RMULE_BENCH_AMULE_IMAGE")
+        .ok()
+        .or_else(|| (flow == "peer-hello-surface").then(|| AMULE_DEBUG_IMAGE.to_owned()));
     if let Some(image) = &amule_image {
         args.extend_from_slice(&["--amule-image", image]);
     }
@@ -424,9 +433,11 @@ fn peer_hello_surface() {
     let text = read_string(&run_dir, "peer-hello-surface-verdict.toml");
     let verdict: toml::Table = toml::from_str(&text)
         .unwrap_or_else(|error| panic!("peer-hello-surface: the verdict does not parse: {error}"));
-    // The three `log-names-rmule` rows are blocked (no client's own log is
-    // reachable from the bench), so the label is `OBSERVED`; a `PASS` would
-    // mean a blocked claim had been quietly dropped.
+    // The `log-names-rmule` rows of kno's aMule and emule-qt are blocked (no
+    // log of theirs names a peer), so the label is `OBSERVED`; a `PASS` would
+    // mean a blocked claim had been quietly dropped. Stock aMule's row is held
+    // on the debug image the wrapper defaults to: its client-deletion line
+    // names the peer's software.
     assert_eq!(
         verdict.get("verdict").and_then(toml::Value::as_str),
         Some("OBSERVED"),
@@ -461,10 +472,15 @@ fn peer_hello_surface() {
             );
         }
         let name = format!("{client}-log-names-rmule");
+        let expected = if client == "amule-233" {
+            "held"
+        } else {
+            "blocked"
+        };
         assert_eq!(
             outcome(&name),
-            Some("blocked"),
-            "peer-hello-surface: {name} must be the blocked row:\n{text}",
+            Some(expected),
+            "peer-hello-surface: {name} must be the {expected} row:\n{text}",
         );
     }
     for claim in [

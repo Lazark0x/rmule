@@ -4,6 +4,7 @@
 //! `SHAHashSet` counts it.
 
 use std::collections::HashSet;
+use std::time::Instant;
 
 use crate::service::{DownloadEvent, PeerRetirementReason};
 use rmule_primitives::{AichHashSet, AichRootHash, EMBLOCKSIZE, PeerEndpoint};
@@ -72,6 +73,7 @@ impl DownloadState {
     /// mismatch) — falls back to ADR-0029 retire-all.
     pub(super) fn on_aich_answer(
         &mut self,
+        now: Instant,
         part_index: u32,
         recovery_data: &[u8],
         out: &mut Vec<Decision>,
@@ -80,7 +82,7 @@ impl DownloadState {
             return; // stale or duplicate answer
         };
         let Some(root) = self.trusted_aich_root else {
-            self.retire_all_contributors(&assembled, out);
+            self.retire_all_contributors(now, &assembled, out);
             return;
         };
         let part = crate::planning::part_plan(self.file_size, part_index);
@@ -93,7 +95,7 @@ impl DownloadState {
         ) {
             Ok(blocks) if !blocks.is_empty() => blocks,
             _ => {
-                self.retire_all_contributors(&assembled, out);
+                self.retire_all_contributors(now, &assembled, out);
                 return;
             }
         };
@@ -103,7 +105,7 @@ impl DownloadState {
         let mut bad: Vec<(usize, PeerEndpoint)> = bad_blocks
             .iter()
             .filter_map(|&b| assembled.contributor_of_block(b as usize))
-            .filter_map(|c| self.workers.get(&c).map(|w| (w.slot.as_usize(), c)))
+            .filter_map(|c| self.worker_slots.get(&c).map(|slot| (slot.as_usize(), c)))
             .collect();
         bad.sort_unstable_by_key(|&(slot, _)| slot);
         bad.dedup_by_key(|&mut (_, c)| c);
@@ -124,6 +126,7 @@ impl DownloadState {
                 reason: PeerRetirementReason::PartVerificationFailed,
             }));
             self.release(
+                now,
                 contributor,
                 PeerRetirementReason::PartVerificationFailed,
                 out,
@@ -132,16 +135,9 @@ impl DownloadState {
         // Hand the re-pended part to a still-connected idle worker (slot order),
         // then backfill. Redundant with `release`'s own reassign when a bad
         // contributor was retired, but covers the case where none still are.
-        let mut connected: Vec<(usize, PeerEndpoint)> = self
-            .workers
-            .iter()
-            .filter(|(_, w)| w.connected)
-            .map(|(p, w)| (w.slot.as_usize(), *p))
-            .collect();
-        connected.sort_unstable_by_key(|&(slot, _)| slot);
-        for (_, p) in connected {
+        for p in self.connected_workers() {
             self.assign(p, out);
         }
-        self.fill(out);
+        self.fill(now, out);
     }
 }

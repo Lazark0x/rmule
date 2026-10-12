@@ -70,10 +70,10 @@ always goes plaintext, even under `Required`: its target is usually unidentified
 punch that fails to deobfuscate looks the same as one that never arrived.
 
 **One policy, one knob.** The `ObfuscationPolicy` of ADR-0042 governs datagrams too, and
-`CoreConfig::peer_crypt` is the only setting. Any set policy arms peer-UDP crypt, Kad-UDP
+`CoreSettings::obfuscation` is the only setting. Any set policy arms peer-UDP crypt, Kad-UDP
 crypt together with Kad verify keys (the keys ride inside the crypt header), and the
-server-UDP crypt-ping and dual-path decrypt (`CoreConfig::server_udp_crypt()` derives
-from it). Unset, every UDP surface stays plaintext. Per transport:
+server-UDP crypt-ping and dual-path decrypt. Unset, every UDP surface stays plaintext. Per
+transport:
 
 - **Receive** is always dual-path, whatever the policy: bypass the whitelist, otherwise
   try to decrypt in marker-bit key order. Dropping plaintext would break reask and Kad
@@ -82,12 +82,35 @@ from it). Unset, every UDP surface stays plaintext. Per transport:
   verify key, `ServerUDPKey`), otherwise sends plaintext.
 - **`Required`** reads as `Requested` on the datagram side.
 
+**The policy changes live, on every surface at once.** A running core holds the policy in
+one shared cell, and Core Settings answers `TakesEffect::Now` for it (ADR-0069). No surface
+keeps a copy: each reads the cell at the moment it decides, so the change reaches the next
+outbound peer dial, the next inbound accept, the next server login (its link and crypt flags,
+ADR-0042), the next peer-UDP and NAT-T datagram (send gate,
+dual-path receive, KEY frame and CAPS crypt bits), and the server-UDP crypt-ping sweep and
+decrypt. The Kad node is the one surface that caches its obfuscation: its **Kad Node Start**
+installs it, and the Kad pump's reconciler installs it anew before the pump takes another
+input — `KadCommand::SetObfuscation` runs the start's own install, obfuscation and verify keys
+together or neither — and states the publish byte's crypt ladder from the same read. That
+install is asynchronous, and stays so: the setter writes the cell and returns, and the node,
+which runs on its own task and timers, takes the new obfuscation when the pump next wakes,
+after the step it is in. A datagram the node sends inside that window leaves under the old
+obfuscation. Installing from the setter would not close the window, because the node takes
+commands through its own queue; only a node that read the cell per datagram could, and the
+node is a sans-I/O state machine over the obfuscation installed in it.
+The window is one pump step (under a second in the live flip). A connection that has already negotiated keeps what it agreed: an
+obfuscated link stays obfuscated and a plain one stays plain, and a dial or accept past its
+crypt decision finishes under the policy it read. A datagram negotiates nothing, so the next
+one follows the new policy. What the layers learned stays put across a change: learned Kad
+contact keys, NAT-T key-frame hashes and a pending crypt-ping's challenge are kept, so
+a new install finds them.
+
 **The Kad UDP Key** is a private per-install seed, minted once from OS entropy and
-persisted (`AppConfigStore::ensure_kad_udp_key`, carried by `KadEnableConfig::kad_udp_key`,
-owned by the front end per ADR-0069), where aMule persists `/Obfuscation/CryptoKadUDPKey`.
+persisted (`AppConfigStore::ensure_kad_udp_key`, read by core at build into
+`KadNodeIdentity::kad_udp_key`, a core key per ADR-0069), where aMule persists `/Obfuscation/CryptoKadUDPKey`.
 Own verify keys derive from it per target IP, so our own address never enters them. A
 *learned* contact key binds to our public IP, as aMule's `CKadUDPKey` does: the Kad
-pump's `PublicIpFeed` sends `KadCommand::SetOwnPublicIp` from Address Learning's IPv4
+pump's reconciler sends `KadCommand::SetOwnPublicIp` from Address Learning's IPv4
 verdict (ADR-0084), at Kad start and whenever the verdict moves, which retires keys
 learned under the old address. With no verdict the node binds `0.0.0.0`, aMule's
 `GetPublicIP() == 0`.
@@ -105,6 +128,19 @@ eMule `ServerList.cpp:563-575`): TCP + 4, the advertised obfuscation port and TC
 While a crypt-ping is pending, its challenge keys the decrypt whichever relation matched;
 otherwise the obfuscation port's `ServerUDPKey` does. A leading `0xE3` skips the decrypt,
 and a datagram that fails to decrypt passes through to be dropped.
+
+**Server datagram seal.** Every other server datagram leaves through one gate, the
+Server-UDP Seal (aMule `CServerUDPSocket::SendPacket`, `ServerUDPSocket.cpp:366-374`):
+the status ping, the description ask, global search, get-sources and the callback
+request. While the policy is set and the server's UDP crypt facts offer a key — non-zero,
+UDP obfuscation advertised, learned under the public IPv4 we hold now — the frame is
+sealed under that `ServerUDPKey` in the client-to-server direction, its marker never
+`0xE3`, and sent to the server's advertised obfuscation UDP port; otherwise it goes plain
+to TCP + 4. The facts come from this run's `0x97` first, else from the row's saved ones,
+the order the receive side finds a server by its obfuscation port in. No sender knows a
+port offset or a key, and the transport sends to the address the seal names. The engine
+hands each consumer its datagrams tagged with the answering server's standard endpoint,
+because a sealed answer comes from the obfuscation port.
 
 **What `Required` still accepts plain: Test Connections.** On TCP, `Required` refuses
 every plaintext opener, but the two parties that test whether rmule is reachable may
@@ -148,10 +184,15 @@ departs on purpose.
 - `crates/rmule-net/tests/fixtures/kad_fwcheck/captured/amule-233-required-dialback-20260929`
   holds aMule helpers' obfuscated dial-backs under `Required` and `Requested`, replayed
   against the `Required` listener.
-- Which port a server answers a crypt-ping from is not captured; the three-relation rule
-  follows both references.
-- The Run Log states the policy where every Core is built. The Settings row is a
-  four-way choice: off, supported, requested, required.
+- Lugdunum answers a crypt-ping from TCP + 12 (`tools/interop-harness` `crypt-ping-port`,
+  run `1790791973`); its answer, opened under the ping's challenge, carries obfuscation UDP
+  port 4675 and a `ServerUDPKey` (run `1791422886`), while its plain `0x97` carries neither.
+  The other two relations follow both references.
+- Lugdunum's answers to sealed datagrams: `crypt-ping-port --sealed`, run `1791811231`.
+- The Run Log states the policy as every Core starts and at every live change, as core
+  events whose records the lean level holds: it is our own posture (ADR-0075). The
+  Settings row is a four-way choice: off, supported, requested, required, and its receipt
+  says the change took effect at once.
 
 ## Considered options
 

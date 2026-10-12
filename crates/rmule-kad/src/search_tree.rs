@@ -32,6 +32,8 @@
 //! rather than mapped, so the codec is byte-faithful regardless of the eventual
 //! semantic map, and round-trip is guaranteed.
 
+use rmule_primitives::{WireReader, WireTruncated};
+
 /// Maximum search-expression recursion depth (KademliaUDPListener.cpp#L784):
 /// a tree nested deeper is rejected on decode.
 pub const MAX_TREE_DEPTH: usize = 24;
@@ -145,9 +147,9 @@ pub enum SearchTreeDecodeError {
 impl SearchTree {
     /// Decode one complete search-expression tree; rejects trailing bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, SearchTreeDecodeError> {
-        let mut cursor = Cursor::new(bytes);
-        let tree = decode_node(&mut cursor, 0)?;
-        if !cursor.is_exhausted() {
+        let mut reader = WireReader::new(bytes);
+        let tree = decode_node(&mut reader, 0)?;
+        if !reader.is_exhausted() {
             return Err(SearchTreeDecodeError::TrailingBytes);
         }
         Ok(tree)
@@ -194,48 +196,51 @@ impl SearchTree {
     }
 }
 
-fn decode_node(cursor: &mut Cursor<'_>, depth: usize) -> Result<SearchTree, SearchTreeDecodeError> {
+fn decode_node(
+    reader: &mut WireReader<'_>,
+    depth: usize,
+) -> Result<SearchTree, SearchTreeDecodeError> {
     if depth >= MAX_TREE_DEPTH {
         return Err(SearchTreeDecodeError::TooDeep);
     }
-    let node = cursor.read_u8("node byte")?;
+    let node = reader.read_u8("node byte")?;
     match node {
         NODE_BOOL => {
-            let op_byte = cursor.read_u8("boolean operator")?;
+            let op_byte = reader.read_u8("boolean operator")?;
             let op =
                 BoolOp::from_byte(op_byte).ok_or(SearchTreeDecodeError::UnknownBoolOp(op_byte))?;
-            let left = Box::new(decode_node(cursor, depth + 1)?);
-            let right = Box::new(decode_node(cursor, depth + 1)?);
+            let left = Box::new(decode_node(reader, depth + 1)?);
+            let right = Box::new(decode_node(reader, depth + 1)?);
             Ok(SearchTree::Bool { op, left, right })
         }
-        NODE_STRING => Ok(SearchTree::Term(read_string(cursor)?)),
+        NODE_STRING => Ok(SearchTree::Term(read_string(reader)?)),
         NODE_META => Ok(SearchTree::MetaTerm {
-            value: read_string(cursor)?,
-            tag: read_name(cursor)?,
+            value: read_string(reader)?,
+            tag: read_name(reader)?,
         }),
         NODE_U32 => Ok(SearchTree::U32Relation {
-            value: cursor.read_u32_le("u32 relation value")?,
-            op: cursor.read_u8("u32 relation operator")?,
-            tag: read_name(cursor)?,
+            value: reader.read_u32_le("u32 relation value")?,
+            op: reader.read_u8("u32 relation operator")?,
+            tag: read_name(reader)?,
         }),
         NODE_U64 => Ok(SearchTree::U64Relation {
-            value: cursor.read_u64_le("u64 relation value")?,
-            op: cursor.read_u8("u64 relation operator")?,
-            tag: read_name(cursor)?,
+            value: reader.read_u64_le("u64 relation value")?,
+            op: reader.read_u8("u64 relation operator")?,
+            tag: read_name(reader)?,
         }),
         other => Err(SearchTreeDecodeError::UnknownNode(other)),
     }
 }
 
-fn read_string(cursor: &mut Cursor<'_>) -> Result<String, SearchTreeDecodeError> {
-    let len = usize::from(cursor.read_u16_le("string term length")?);
-    let bytes = cursor.take(len, "string term bytes")?;
+fn read_string(reader: &mut WireReader<'_>) -> Result<String, SearchTreeDecodeError> {
+    let len = usize::from(reader.read_u16_le("string term length")?);
+    let bytes = reader.take(len, "string term bytes")?;
     String::from_utf8(bytes.to_vec()).map_err(|_| SearchTreeDecodeError::InvalidUtf8)
 }
 
-fn read_name(cursor: &mut Cursor<'_>) -> Result<Vec<u8>, SearchTreeDecodeError> {
-    let len = usize::from(cursor.read_u16_le("meta-tag name length")?);
-    Ok(cursor.take(len, "meta-tag name bytes")?.to_vec())
+fn read_name(reader: &mut WireReader<'_>) -> Result<Vec<u8>, SearchTreeDecodeError> {
+    let len = usize::from(reader.read_u16_le("meta-tag name length")?);
+    Ok(reader.take(len, "meta-tag name bytes")?.to_vec())
 }
 
 fn push_string(out: &mut Vec<u8>, value: &str) {
@@ -254,53 +259,8 @@ fn push_name(out: &mut Vec<u8>, name: &[u8]) {
     out.extend_from_slice(bytes);
 }
 
-/// A forward-only byte reader whose errors carry the static field name — the
-/// per-module idiom (`messages`, `source_result`).
-struct Cursor<'a> {
-    bytes: &'a [u8],
-    position: usize,
-}
-
-impl<'a> Cursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, position: 0 }
-    }
-
-    fn take(&mut self, len: usize, field: &'static str) -> Result<&'a [u8], SearchTreeDecodeError> {
-        let end = self
-            .position
-            .checked_add(len)
-            .filter(|&end| end <= self.bytes.len())
-            .ok_or(SearchTreeDecodeError::Truncated(field))?;
-        let slice = &self.bytes[self.position..end];
-        self.position = end;
-        Ok(slice)
-    }
-
-    fn read_u8(&mut self, field: &'static str) -> Result<u8, SearchTreeDecodeError> {
-        Ok(self.take(1, field)?[0])
-    }
-
-    fn read_u16_le(&mut self, field: &'static str) -> Result<u16, SearchTreeDecodeError> {
-        let bytes = self.take(2, field)?;
-        Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
-    }
-
-    fn read_u32_le(&mut self, field: &'static str) -> Result<u32, SearchTreeDecodeError> {
-        let bytes = self.take(4, field)?;
-        let mut word = [0u8; 4];
-        word.copy_from_slice(bytes);
-        Ok(u32::from_le_bytes(word))
-    }
-
-    fn read_u64_le(&mut self, field: &'static str) -> Result<u64, SearchTreeDecodeError> {
-        let bytes = self.take(8, field)?;
-        let mut word = [0u8; 8];
-        word.copy_from_slice(bytes);
-        Ok(u64::from_le_bytes(word))
-    }
-
-    const fn is_exhausted(&self) -> bool {
-        self.position >= self.bytes.len()
+impl From<WireTruncated> for SearchTreeDecodeError {
+    fn from(truncated: WireTruncated) -> Self {
+        SearchTreeDecodeError::Truncated(truncated.field)
     }
 }

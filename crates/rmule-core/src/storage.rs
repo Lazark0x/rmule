@@ -7,6 +7,7 @@
 //! guarantee than the link it came from.
 
 use std::future::Future;
+use std::path::PathBuf;
 
 use rmule_primitives::{Ed2kFileLink, Ed2kLink, FileHash, PartHash, ServerEndpoint};
 
@@ -130,15 +131,16 @@ pub trait DownloadRepository: Send + Sync + 'static {
 
     /// Verify the assembled content against the expected ED2K file hash, then
     /// promote the download to [`DownloadLifecycle::Completed`] (for
-    /// content-file storage, the `.part` → final rename). On any refusal
-    /// nothing is promoted, and the cause comes back typed: only
-    /// [`FinalizeError::Mismatch`] says the parts are wrong.
+    /// content-file storage, the `.part` → final rename) and answer where the
+    /// finished file now lies. On any refusal nothing is promoted, and the
+    /// cause comes back typed: only [`FinalizeError::Mismatch`] says the parts
+    /// are wrong.
     fn finalize(
         &self,
         id: DownloadId,
         expected: FileHash,
         file_size: u64,
-    ) -> impl Future<Output = Result<(), FinalizeError>> + Send;
+    ) -> impl Future<Output = Result<PathBuf, FinalizeError>> + Send;
 
     /// Resume-time revalidation: re-hash the stored content against the
     /// durable verified-part records (ADR-0094, "Damaged parts"). A part that

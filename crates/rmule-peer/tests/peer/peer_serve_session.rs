@@ -5,9 +5,10 @@
 
 use crate::fixture::plain_hello_body;
 use rmule_peer::{
-    CancelTransfer, HashSetRequest, Hello, HelloAnswer, MiscOptions1, PartOffsetWidth, PartRanges,
-    PeerCommand, PeerError, PeerEvent, PeerOpcode, PeerOutput, PeerPacket, PeerSession,
-    RequestFileName, RequestParts, SetReqFileId, StartUploadReq,
+    CancelTransfer, ConnectionEvent, HashSetRequest, Hello, HelloAnswer, MiscOptions1, NoticeEvent,
+    PartOffsetWidth, PartRanges, PeerCommand, PeerError, PeerEvent, PeerOpcode, PeerOutput,
+    PeerPacket, PeerSession, RequestFileName, RequestParts, ServerCommand, ServerEvent,
+    SetReqFileId, StartUploadReq,
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{Ed2kText, FileHash, Packet, PartHash, UserHash};
@@ -57,7 +58,7 @@ fn inbound_file_request_emits_file_requested() {
     let outputs = drain(|| s.poll_output());
     assert!(
         outputs.iter().any(|o| matches!(o,
-            PeerOutput::Event(PeerEvent::FileRequested { file_hash, .. }) if *file_hash == fh)),
+            PeerOutput::Event(PeerEvent::Server(ServerEvent::FileRequested { file_hash, .. })) if *file_hash == fh)),
         "expected FileRequested, got {outputs:?}"
     );
 }
@@ -69,7 +70,7 @@ fn inbound_set_req_file_id_emits_file_id_set() {
     s.handle_bytes(&SetReqFileId { file_hash: fh }.encode_packet().encode());
     let outputs = drain(|| s.poll_output());
     assert!(outputs.iter().any(|o| matches!(o,
-        PeerOutput::Event(PeerEvent::FileIdSet { file_hash }) if *file_hash == fh)));
+        PeerOutput::Event(PeerEvent::Server(ServerEvent::FileIdSet { file_hash })) if *file_hash == fh)));
 }
 
 #[test]
@@ -77,10 +78,10 @@ fn answer_file_name_frames_req_file_name_answer() {
     let mut s = inbound_session();
     let fh = FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]);
     let name = Ed2kText::from_utf8("movie.avi");
-    s.handle_command(PeerCommand::AnswerFileName {
+    s.handle_command(PeerCommand::Server(ServerCommand::AnswerFileName {
         file_hash: fh,
         file_name: name.clone(),
-    });
+    }));
     match decode_last_write(&drain(|| s.poll_output())) {
         PeerPacket::ReqFileNameAnswer(a) => {
             assert_eq!(a.file_hash, fh);
@@ -94,7 +95,9 @@ fn answer_file_name_frames_req_file_name_answer() {
 fn answer_file_not_found_frames_file_req_ans_no_fil() {
     let mut s = inbound_session();
     let fh = FileHash::from_bytes([0xA3; FileHash::BYTE_LEN]);
-    s.handle_command(PeerCommand::AnswerFileNotFound { file_hash: fh });
+    s.handle_command(PeerCommand::Server(ServerCommand::AnswerFileNotFound {
+        file_hash: fh,
+    }));
     match decode_last_write(&drain(|| s.poll_output())) {
         PeerPacket::FileReqAnsNoFil(a) => assert_eq!(a.file_hash, fh),
         other => panic!("expected FileReqAnsNoFil, got {other:?}"),
@@ -122,7 +125,7 @@ fn serve_dispatch_is_symmetric_on_dialed_sessions() {
     let outputs = drain(|| s.poll_output());
     assert!(
         outputs.iter().any(|o| matches!(o,
-            PeerOutput::Event(PeerEvent::FileRequested { file_hash, .. }) if *file_hash == fh)),
+            PeerOutput::Event(PeerEvent::Server(ServerEvent::FileRequested { file_hash, .. })) if *file_hash == fh)),
         "serve request on a dialed session must emit FileRequested, not Unknown"
     );
 }
@@ -133,16 +136,14 @@ fn serve_request_before_hello_stays_unknown() {
     let fh = FileHash::from_bytes([0xC3; FileHash::BYTE_LEN]);
     s.handle_bytes(&RequestFileName::new(fh, None).encode_packet().encode());
     let outputs = drain(|| s.poll_output());
-    assert!(
-        outputs
-            .iter()
-            .any(|o| matches!(o, PeerOutput::Event(PeerEvent::UnknownPeerPacket { .. })))
-    );
-    assert!(
-        !outputs
-            .iter()
-            .any(|o| matches!(o, PeerOutput::Event(PeerEvent::FileRequested { .. })))
-    );
+    assert!(outputs.iter().any(|o| matches!(
+        o,
+        PeerOutput::Event(PeerEvent::Notice(NoticeEvent::UnknownPacket { .. }))
+    )));
+    assert!(!outputs.iter().any(|o| matches!(
+        o,
+        PeerOutput::Event(PeerEvent::Server(ServerEvent::FileRequested { .. }))
+    )));
     assert!(!outputs.iter().any(|o| matches!(o, PeerOutput::Close(_))));
 }
 
@@ -150,13 +151,14 @@ fn serve_request_before_hello_stays_unknown() {
 fn answer_before_identify_is_command_rejected() {
     let mut s = PeerSession::new_inbound(peer_at(9), serverless_ctx());
     let fh = FileHash::from_bytes([0xD4; FileHash::BYTE_LEN]);
-    s.handle_command(PeerCommand::AnswerFileNotFound { file_hash: fh });
+    s.handle_command(PeerCommand::Server(ServerCommand::AnswerFileNotFound {
+        file_hash: fh,
+    }));
     let outputs = drain(|| s.poll_output());
-    assert!(
-        outputs
-            .iter()
-            .any(|o| matches!(o, PeerOutput::Event(PeerEvent::CommandRejected { .. })))
-    );
+    assert!(outputs.iter().any(|o| matches!(
+        o,
+        PeerOutput::Event(PeerEvent::Notice(NoticeEvent::CommandRejected { .. }))
+    )));
     assert!(
         !outputs.iter().any(|o| matches!(o, PeerOutput::Write(_))),
         "no wire bytes may be framed before the hello exchange"
@@ -170,14 +172,16 @@ fn inbound_start_upload_req_emits_slot_requested() {
     s.handle_bytes(&StartUploadReq { file_hash: fh }.encode_packet().encode());
     let outputs = drain(|| s.poll_output());
     assert!(outputs.iter().any(|o| matches!(o,
-        PeerOutput::Event(PeerEvent::SlotRequested { file_hash }) if *file_hash == fh)));
+        PeerOutput::Event(PeerEvent::Server(ServerEvent::SlotRequested { file_hash })) if *file_hash == fh)));
 }
 
 #[test]
 fn grant_slot_frames_accept_upload_req() {
     let mut s = inbound_session();
     let fh = FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]);
-    s.handle_command(PeerCommand::GrantSlot { file_hash: fh });
+    s.handle_command(PeerCommand::Server(ServerCommand::GrantSlot {
+        file_hash: fh,
+    }));
     assert!(matches!(
         decode_last_write(&drain(|| s.poll_output())),
         PeerPacket::AcceptUploadReq(_)
@@ -193,7 +197,7 @@ fn set_queue_rank_frames_queue_ranking() {
         .push(rmule_testkit::peer_session::mule_version_tag());
     s.handle_bytes(&Hello::new(body).encode_packet().encode());
     let _ = drain(|| s.poll_output());
-    s.handle_command(PeerCommand::SetQueueRank { rank: 7 });
+    s.handle_command(PeerCommand::Server(ServerCommand::SetQueueRank { rank: 7 }));
     match decode_last_write(&drain(|| s.poll_output())) {
         PeerPacket::QueueRanking(q) => assert_eq!(q.rank, 7),
         other => panic!("expected QueueRanking, got {other:?}"),
@@ -201,28 +205,19 @@ fn set_queue_rank_frames_queue_ranking() {
 }
 
 #[test]
-fn refuse_slot_frames_out_of_part_reqs() {
-    let mut s = inbound_session();
-    let fh = FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]);
-    s.handle_command(PeerCommand::RefuseSlot { file_hash: fh });
-    assert!(matches!(
-        decode_last_write(&drain(|| s.poll_output())),
-        PeerPacket::OutOfPartReqs(_)
-    ));
-}
-
-#[test]
 fn inbound_cancel_transfer_after_grant_emits_transfer_cancelled_and_clears_served_slot() {
     let mut s = inbound_session();
     let fh = FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]);
-    s.handle_command(PeerCommand::GrantSlot { file_hash: fh });
+    s.handle_command(PeerCommand::Server(ServerCommand::GrantSlot {
+        file_hash: fh,
+    }));
     let _ = drain(|| s.poll_output());
 
     s.handle_bytes(&CancelTransfer.encode_packet().encode());
     let outputs = drain(|| s.poll_output());
     assert!(
         outputs.iter().any(|o| matches!(o,
-            PeerOutput::Event(PeerEvent::TransferCancelled { file_hash }) if *file_hash == fh)),
+            PeerOutput::Event(PeerEvent::Server(ServerEvent::TransferCancelled { file_hash })) if *file_hash == fh)),
         "expected TransferCancelled, got {outputs:?}"
     );
     assert!(
@@ -232,18 +227,18 @@ fn inbound_cancel_transfer_after_grant_emits_transfer_cancelled_and_clears_serve
 
     // served_slot is cleared: a stray late SendBlock for the cancelled file
     // is rejected rather than framed (ADR-0056 "pending unsent blocks dropped").
-    s.handle_command(PeerCommand::SendBlock {
+    s.handle_command(PeerCommand::Server(ServerCommand::SendBlock {
         file_hash: fh,
         start: 0,
         end: 4,
         bytes: vec![1, 2, 3, 4],
-    });
+    }));
     let after = drain(|| s.poll_output());
     assert!(after.iter().any(|o| matches!(
         o,
-        PeerOutput::Event(PeerEvent::CommandRejected {
+        PeerOutput::Event(PeerEvent::Notice(NoticeEvent::CommandRejected {
             reason: PeerError::ServeSlotNotGranted
-        })
+        }))
     )));
     assert!(!after.iter().any(|o| matches!(o, PeerOutput::Write(_))));
 }
@@ -265,7 +260,9 @@ fn inbound_cancel_transfer_without_a_granted_slot_is_a_silent_noop() {
 fn parts_request_after_grant_emits_parts_requested() {
     let mut s = inbound_session();
     let fh = FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]);
-    s.handle_command(PeerCommand::GrantSlot { file_hash: fh });
+    s.handle_command(PeerCommand::Server(ServerCommand::GrantSlot {
+        file_hash: fh,
+    }));
     let _ = drain(|| s.poll_output());
 
     let ranges = PartRanges::new([(0, 10), (0, 0), (0, 0)]).unwrap();
@@ -280,7 +277,7 @@ fn parts_request_after_grant_emits_parts_requested() {
     );
     let outputs = drain(|| s.poll_output());
     assert!(outputs.iter().any(|o| matches!(o,
-        PeerOutput::Event(PeerEvent::PartsRequested { file_hash, ranges: r })
+        PeerOutput::Event(PeerEvent::Server(ServerEvent::PartsRequested { file_hash, ranges: r }))
             if *file_hash == fh && *r == ranges)));
 }
 
@@ -300,7 +297,7 @@ fn parts_request_without_slot_reports_serve_parts_without_slot() {
     );
     let outputs = drain(|| s.poll_output());
     assert!(outputs.iter().any(|o| matches!(o,
-        PeerOutput::Event(PeerEvent::ServePartsWithoutSlot { file_hash }) if *file_hash == fh)));
+        PeerOutput::Event(PeerEvent::Server(ServerEvent::PartsWithoutSlot { file_hash })) if *file_hash == fh)));
     assert!(
         !outputs.iter().any(|o| matches!(o, PeerOutput::Close(_))),
         "an unslotted parts request closes the flow, not the session"
@@ -311,15 +308,17 @@ fn parts_request_without_slot_reports_serve_parts_without_slot() {
 fn send_block_after_grant_frames_sending_part() {
     let mut s = inbound_session();
     let fh = FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]);
-    s.handle_command(PeerCommand::GrantSlot { file_hash: fh });
+    s.handle_command(PeerCommand::Server(ServerCommand::GrantSlot {
+        file_hash: fh,
+    }));
     let _ = drain(|| s.poll_output());
 
-    s.handle_command(PeerCommand::SendBlock {
+    s.handle_command(PeerCommand::Server(ServerCommand::SendBlock {
         file_hash: fh,
         start: 0,
         end: 4,
         bytes: vec![1, 2, 3, 4],
-    });
+    }));
     match decode_last_write(&drain(|| s.poll_output())) {
         PeerPacket::SendingPart(sp) => {
             assert_eq!(sp.file_hash, fh);
@@ -334,16 +333,18 @@ fn send_block_after_grant_frames_sending_part() {
 fn serve_compresses_block_for_a_compression_capable_peer() {
     let mut s = inbound_session_with_compression();
     let fh = FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]);
-    s.handle_command(PeerCommand::GrantSlot { file_hash: fh });
+    s.handle_command(PeerCommand::Server(ServerCommand::GrantSlot {
+        file_hash: fh,
+    }));
     let _ = drain(|| s.poll_output());
 
     let plain: Vec<u8> = b"compressible block ".repeat(40);
-    s.handle_command(PeerCommand::SendBlock {
+    s.handle_command(PeerCommand::Server(ServerCommand::SendBlock {
         file_hash: fh,
         start: 0,
         end: plain.len() as u64,
         bytes: plain.clone(),
-    });
+    }));
     match decode_last_write(&drain(|| s.poll_output())) {
         PeerPacket::CompressedPart(cp) => {
             assert_eq!(cp.start, 0);
@@ -370,15 +371,17 @@ fn serve_sends_raw_when_compression_does_not_shrink() {
     // raw OP_SENDINGPART wins (compress-only-if-smaller).
     let mut s = inbound_session_with_compression();
     let fh = FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]);
-    s.handle_command(PeerCommand::GrantSlot { file_hash: fh });
+    s.handle_command(PeerCommand::Server(ServerCommand::GrantSlot {
+        file_hash: fh,
+    }));
     let _ = drain(|| s.poll_output());
 
-    s.handle_command(PeerCommand::SendBlock {
+    s.handle_command(PeerCommand::Server(ServerCommand::SendBlock {
         file_hash: fh,
         start: 0,
         end: 4,
         bytes: vec![1, 2, 3, 4],
-    });
+    }));
     assert!(matches!(
         decode_last_write(&drain(|| s.poll_output())),
         PeerPacket::SendingPart(_)
@@ -389,18 +392,18 @@ fn serve_sends_raw_when_compression_does_not_shrink() {
 fn send_block_without_grant_is_command_rejected() {
     let mut s = inbound_session();
     let fh = FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]);
-    s.handle_command(PeerCommand::SendBlock {
+    s.handle_command(PeerCommand::Server(ServerCommand::SendBlock {
         file_hash: fh,
         start: 0,
         end: 4,
         bytes: vec![1, 2, 3, 4],
-    });
+    }));
     let outputs = drain(|| s.poll_output());
     assert!(outputs.iter().any(|o| matches!(
         o,
-        PeerOutput::Event(PeerEvent::CommandRejected {
+        PeerOutput::Event(PeerEvent::Notice(NoticeEvent::CommandRejected {
             reason: PeerError::ServeSlotNotGranted
-        })
+        }))
     )));
     assert!(
         !outputs.iter().any(|o| matches!(o, PeerOutput::Write(_))),
@@ -423,10 +426,10 @@ fn full_inbound_serve_flow_hello_to_part_bytes() {
             .encode(),
     );
     let out = drain(|| s.poll_output());
-    assert!(
-        out.iter()
-            .any(|o| matches!(o, PeerOutput::Event(PeerEvent::PeerIdentified { .. })))
-    );
+    assert!(out.iter().any(|o| matches!(
+        o,
+        PeerOutput::Event(PeerEvent::Connection(ConnectionEvent::Identified { .. }))
+    )));
     assert!(matches!(
         decode_last_write(&out),
         PeerPacket::HelloAnswer(_)
@@ -434,15 +437,14 @@ fn full_inbound_serve_flow_hello_to_part_bytes() {
 
     // 2. RequestFileName → FileRequested; answer the name.
     s.handle_bytes(&RequestFileName::new(fh, None).encode_packet().encode());
-    assert!(
-        drain(|| s.poll_output())
-            .iter()
-            .any(|o| matches!(o, PeerOutput::Event(PeerEvent::FileRequested { .. })))
-    );
-    s.handle_command(PeerCommand::AnswerFileName {
+    assert!(drain(|| s.poll_output()).iter().any(|o| matches!(
+        o,
+        PeerOutput::Event(PeerEvent::Server(ServerEvent::FileRequested { .. }))
+    )));
+    s.handle_command(PeerCommand::Server(ServerCommand::AnswerFileName {
         file_hash: fh,
         file_name: Ed2kText::from_utf8("f.bin"),
-    });
+    }));
     assert!(matches!(
         decode_last_write(&drain(|| s.poll_output())),
         PeerPacket::ReqFileNameAnswer(_)
@@ -450,15 +452,14 @@ fn full_inbound_serve_flow_hello_to_part_bytes() {
 
     // 3. SetReqFileId → FileIdSet; answer the bitmap.
     s.handle_bytes(&SetReqFileId { file_hash: fh }.encode_packet().encode());
-    assert!(
-        drain(|| s.poll_output())
-            .iter()
-            .any(|o| matches!(o, PeerOutput::Event(PeerEvent::FileIdSet { .. })))
-    );
-    s.handle_command(PeerCommand::AnswerFileStatus {
+    assert!(drain(|| s.poll_output()).iter().any(|o| matches!(
+        o,
+        PeerOutput::Event(PeerEvent::Server(ServerEvent::FileIdSet { .. }))
+    )));
+    s.handle_command(PeerCommand::Server(ServerCommand::AnswerFileStatus {
         file_hash: fh,
         bitmap: PartBitmap::decode(1, &[0b1]).unwrap(),
-    });
+    }));
     assert!(matches!(
         decode_last_write(&drain(|| s.poll_output())),
         PeerPacket::FileStatus(_)
@@ -466,15 +467,14 @@ fn full_inbound_serve_flow_hello_to_part_bytes() {
 
     // 4. HashSetRequest → HashSetRequested; answer the hashes.
     s.handle_bytes(&HashSetRequest { file_hash: fh }.encode_packet().encode());
-    assert!(
-        drain(|| s.poll_output())
-            .iter()
-            .any(|o| matches!(o, PeerOutput::Event(PeerEvent::HashSetRequested { .. })))
-    );
-    s.handle_command(PeerCommand::AnswerHashSet {
+    assert!(drain(|| s.poll_output()).iter().any(|o| matches!(
+        o,
+        PeerOutput::Event(PeerEvent::Server(ServerEvent::HashSetRequested { .. }))
+    )));
+    s.handle_command(PeerCommand::Server(ServerCommand::AnswerHashSet {
         file_hash: fh,
         part_hashes: vec![PartHash::from_bytes([0x01; PartHash::BYTE_LEN])],
-    });
+    }));
     assert!(matches!(
         decode_last_write(&drain(|| s.poll_output())),
         PeerPacket::HashSetAnswer(_)
@@ -482,12 +482,13 @@ fn full_inbound_serve_flow_hello_to_part_bytes() {
 
     // 5. StartUploadReq → SlotRequested; grant the slot.
     s.handle_bytes(&StartUploadReq { file_hash: fh }.encode_packet().encode());
-    assert!(
-        drain(|| s.poll_output())
-            .iter()
-            .any(|o| matches!(o, PeerOutput::Event(PeerEvent::SlotRequested { .. })))
-    );
-    s.handle_command(PeerCommand::GrantSlot { file_hash: fh });
+    assert!(drain(|| s.poll_output()).iter().any(|o| matches!(
+        o,
+        PeerOutput::Event(PeerEvent::Server(ServerEvent::SlotRequested { .. }))
+    )));
+    s.handle_command(PeerCommand::Server(ServerCommand::GrantSlot {
+        file_hash: fh,
+    }));
     assert!(matches!(
         decode_last_write(&drain(|| s.poll_output())),
         PeerPacket::AcceptUploadReq(_)
@@ -504,17 +505,16 @@ fn full_inbound_serve_flow_hello_to_part_bytes() {
         .unwrap()
         .encode(),
     );
-    assert!(
-        drain(|| s.poll_output())
-            .iter()
-            .any(|o| matches!(o, PeerOutput::Event(PeerEvent::PartsRequested { .. })))
-    );
-    s.handle_command(PeerCommand::SendBlock {
+    assert!(drain(|| s.poll_output()).iter().any(|o| matches!(
+        o,
+        PeerOutput::Event(PeerEvent::Server(ServerEvent::PartsRequested { .. }))
+    )));
+    s.handle_command(PeerCommand::Server(ServerCommand::SendBlock {
         file_hash: fh,
         start: 0,
         end: 4,
         bytes: vec![9, 9, 9, 9],
-    });
+    }));
     match decode_last_write(&drain(|| s.poll_output())) {
         PeerPacket::SendingPart(sp) => {
             assert_eq!((sp.start, sp.end), (0, 4));
@@ -534,10 +534,10 @@ fn answer_file_status_for_a_complete_file_writes_amules_zero_part_count_sentinel
 
     let fh = FileHash::from_bytes([0x7A; FileHash::BYTE_LEN]);
     let mut s = inbound_session();
-    s.handle_command(PeerCommand::AnswerFileStatus {
+    s.handle_command(PeerCommand::Server(ServerCommand::AnswerFileStatus {
         file_hash: fh,
         bitmap: PartBitmap::all_present(4),
-    });
+    }));
     match decode_last_write(&drain(|| s.poll_output())) {
         PeerPacket::FileStatus(status) => {
             assert_eq!(status.bitmap, PartBitmap::complete_source_sentinel());
@@ -553,10 +553,10 @@ fn answer_file_status_for_a_partial_file_writes_the_bitmap_literally() {
     let fh = FileHash::from_bytes([0x7B; FileHash::BYTE_LEN]);
     let mut s = inbound_session();
     let partial = PartBitmap::decode(4, &[0b0111]).unwrap();
-    s.handle_command(PeerCommand::AnswerFileStatus {
+    s.handle_command(PeerCommand::Server(ServerCommand::AnswerFileStatus {
         file_hash: fh,
         bitmap: partial.clone(),
-    });
+    }));
     match decode_last_write(&drain(|| s.poll_output())) {
         PeerPacket::FileStatus(status) => {
             assert_eq!(status.bitmap, partial);
@@ -583,12 +583,15 @@ fn a_slot_ask_of_the_wrong_length_and_a_cancel_with_a_body_keep_the_connection()
     assert!(
         !outputs.iter().any(|o| matches!(
             o,
-            PeerOutput::Close(_) | PeerOutput::Event(PeerEvent::SlotRequested { .. })
+            PeerOutput::Close(_)
+                | PeerOutput::Event(PeerEvent::Server(ServerEvent::SlotRequested { .. }))
         )),
         "{outputs:?}"
     );
 
-    s.handle_command(PeerCommand::GrantSlot { file_hash: fh });
+    s.handle_command(PeerCommand::Server(ServerCommand::GrantSlot {
+        file_hash: fh,
+    }));
     let _ = drain(|| s.poll_output());
     let cancel = Packet::new(
         PeerOpcode::CancelTransfer.protocol(),
@@ -599,7 +602,7 @@ fn a_slot_ask_of_the_wrong_length_and_a_cancel_with_a_body_keep_the_connection()
     let outputs = drain(|| s.poll_output());
     assert!(
         outputs.iter().any(|o| matches!(o,
-            PeerOutput::Event(PeerEvent::TransferCancelled { file_hash }) if *file_hash == fh)),
+            PeerOutput::Event(PeerEvent::Server(ServerEvent::TransferCancelled { file_hash })) if *file_hash == fh)),
         "{outputs:?}"
     );
     assert!(!outputs.iter().any(|o| matches!(o, PeerOutput::Close(_))));

@@ -14,19 +14,22 @@
 //!
 //! # What the attempt keeps, and what it deliberately does not
 //!
-//! It keeps which coordinator is in play, the candidate's facts, our position
-//! **as the route tree measured it**, and what a buddy rendezvous re-emits on
-//! a retry. It does not keep the claimant: the **Pending Tunnel Claim** table
-//! is keyed by the same target hash and is the one owner of that fact, and a
-//! second copy here would go stale the moment a later download displaced the
-//! claim.
+//! It keeps which coordinator is in play, the candidate's facts and what a
+//! buddy rendezvous re-emits on a retry. It does not keep the claimant: the
+//! **Pending Tunnel Claim** table is keyed by the same target hash and is the
+//! one owner of that fact, and a second copy here would go stale the moment a
+//! later download displaced the claim. Nor does it keep our own position:
+//! **Self Reach** answers the **Route Position** in one lock-free read, so the
+//! front reads it at the moment a coordinator fails — a Kad node that stopped
+//! or a client-UDP half that went dark since the attempt began is seen, not
+//! remembered.
 //!
-//! The position is a snapshot on purpose. The alternative — re-reading it when
-//! an introduction settles — means the front asking the core actor for the
-//! server session lock and the Kad flag from inside the loop that feeds the
-//! demux, which is exactly the await the front may not make. A coordinator
-//! chosen from a stale position is still enacted against live seams, and they
-//! refuse if the surface has gone.
+//! # One emitter
+//!
+//! The front is rung 1's one emitter (ADR-0091): the server's `0x60` leaves
+//! here on the Server Coordinator's session, as the buddy rendezvous and its
+//! retries do on the client-UDP send half, so one ledger records everything
+//! that went out.
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -37,12 +40,26 @@ use rmule_peer::BUDDY_ID_LEN;
 use rmule_peer::natt::{RENDEZVOUS_TIMEOUT, RetireReason};
 use rmule_primitives::{ClientId, Ipv4Endpoint, UserHash};
 
-use crate::callback::{NattCoordinator, NattFacts, SelfReach, next_natt_coordinator};
+use crate::address_learning::SocketRole;
+use crate::callback::{NattCoordinator, NattFacts, RoutePosition, next_natt_coordinator};
 use crate::natt::RendezvousOffer;
 use crate::natt::server_punch::IntroductionFailure;
 
 use super::NattFront;
 use super::identity::os_punch_jitter;
+
+/// Who owns a traversal's introduction: the **Traversal Attempt** keyed by
+/// the target's **User Hash**, and what it carries from the reach that asked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AttemptOwner {
+    /// The target's user hash — the ledger's key, and what a hint names.
+    pub(crate) target: UserHash,
+    /// The candidate's own half of rung 1's condition, for picking the next
+    /// coordinator when this one fails.
+    pub(crate) facts: NattFacts,
+    /// What rmule says about itself in a rendezvous.
+    pub(crate) offer: RendezvousOffer,
+}
 
 /// Which **Rendezvous coordinator** is carrying one attempt right now.
 ///
@@ -52,8 +69,7 @@ use super::identity::os_punch_jitter;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AttemptCoordinator {
     /// Our connected server was asked to introduce us (`0x60` naming
-    /// `low_id`). The request left through the session, not through this
-    /// front — the front owns what happens to it afterwards.
+    /// `low_id`, put on the session by this front).
     Server {
         /// The Low-ID the `0x60` named, and the id a `0x62` names back.
         low_id: ClientId,
@@ -185,8 +201,6 @@ pub(super) struct TraversalAttempt {
     /// The candidate's own half of rung 1's condition, as the channel that
     /// named it stated it.
     facts: NattFacts,
-    /// Our position as the route tree measured it (see the module docs).
-    ours: SelfReach,
     /// What a rendezvous toward the buddy re-emits on a retry. Carried from
     /// the first coordinator so a fall-through needs nothing from the caller —
     /// the caller is a `0x62` on the server session, which has no offer to
@@ -198,14 +212,18 @@ pub(super) struct TraversalAttempt {
 
 impl TraversalAttempt {
     /// Who introduces us next, now that the coordinator in play has settled
-    /// without a transport. Pure: the one place ADR-0091's fallback ordering
-    /// is read at run time.
+    /// without a transport and our position reads `ours`. Pure: the one place
+    /// ADR-0091's fallback ordering is read at run time.
     ///
     /// A buddy the selector names but whose endpoint is unknown retires the
     /// attempt rather than arming anything: finding it is a FINDSOURCE walk
     /// toward the buddy ID, which is the Kad surface's emit and not this
     /// front's, so the attempt would sit on a rendezvous nobody sent.
-    pub(super) fn on_coordinator_failed(&self, failure: IntroductionFailure) -> FallThrough {
+    pub(super) fn on_coordinator_failed(
+        &self,
+        failure: IntroductionFailure,
+        ours: &RoutePosition,
+    ) -> FallThrough {
         let retire = || {
             FallThrough::Retire(match failure {
                 IntroductionFailure::Refused { reason, .. } => {
@@ -224,7 +242,7 @@ impl TraversalAttempt {
                 buddy_udp: Some(buddy_udp),
             },
         };
-        match next_natt_coordinator(&self.facts, &self.ours, &failed) {
+        match next_natt_coordinator(&self.facts, ours, &failed) {
             Some(NattCoordinator::Buddy {
                 buddy_id,
                 buddy_udp: Some(buddy_udp),
@@ -238,7 +256,7 @@ impl TraversalAttempt {
 }
 
 /// Every **Traversal Attempt** this front owns, keyed the way a hint, a `0x61`
-/// and the claim table all key a target: by its **User Hash**.
+/// and a **Pending Tunnel Claim** all key a target: by its **User Hash**.
 ///
 /// The second index is what lets a coordinator's outcome find its attempt at
 /// all. A `0x62` and an overdue `0x60` name a **`ClientId`** — the only name
@@ -367,23 +385,84 @@ impl<S: NattDatagramSink> NattFront<S> {
         self.attempts.end(target)
     }
 
-    /// The route tree chose NAT traversal toward `target` and picked
-    /// `coordinator`: own the introduction from here.
+    /// Rung 1 toward a peer through `coordinator`: put the coordinator's ask
+    /// on the wire, and — when `owner` names the target — own what follows.
     ///
-    /// The server leg's `0x60` has already left through the server session —
-    /// the front holds no server link — so a server-coordinated attempt begins
-    /// with nothing on the wire and waits for the coordinator's own outcome.
-    /// A buddy-coordinated one arms the **Rendezvous Schedule** and emits what
-    /// the schedule asks for, which is what this front has always done.
-    pub(super) async fn begin_attempt(
+    /// The server leg's `0x60` leaves on the Server Coordinator's session and
+    /// is never awaited. One that cannot leave — the session gone, its inbox
+    /// full, no client-UDP port bound to name — went nowhere, so nothing
+    /// could ever settle it: a target it would have opened an attempt for
+    /// retires at once (`NoCoordinator`), told through its claim. One with no
+    /// owner leaves all the same, and what its introduction brings rises
+    /// unclaimed. A target already in an attempt is asked about again exactly
+    /// as the first reach asked, and joins that attempt.
+    ///
+    /// The buddy leg arms the **Rendezvous Schedule** and emits what it asks
+    /// for. It needs an owner: its hint names the target by hash.
+    pub(super) async fn traverse(
         &mut self,
-        target: UserHash,
         coordinator: AttemptCoordinator,
-        facts: NattFacts,
-        ours: SelfReach,
-        offer: RendezvousOffer,
+        owner: Option<AttemptOwner>,
         now: Instant,
     ) {
+        if let AttemptCoordinator::Server { low_id } = coordinator
+            && !self.request_introduction(low_id)
+        {
+            tracing::debug!(
+                low_id = low_id.as_u32(),
+                "server introduction not sent: no live session or bound client-UDP port to name"
+            );
+            if let Some(owner) = owner
+                && !self.attempts.contains(&owner.target)
+            {
+                self.wiring
+                    .claims
+                    .retire(owner.target, AttemptRetirement::NoCoordinator);
+            }
+            return;
+        }
+        let Some(owner) = owner else {
+            if matches!(coordinator, AttemptCoordinator::Buddy { .. }) {
+                tracing::debug!("a rendezvous with no target hash is never sent");
+            }
+            return;
+        };
+        self.begin_attempt(owner, coordinator, now).await;
+    }
+
+    /// Put a server introduction toward `low_id` on the session (`0x60`),
+    /// reporting whether it was queued. What it names is our client-UDP port
+    /// *as bound*: the server prefers the port it observed our keepalive
+    /// arrive from and falls back to this one, so a mapped external port here
+    /// would be a second guess at something the server already measured.
+    fn request_introduction(&self, low_id: ClientId) -> bool {
+        let Some((_, our_udp_port)) = self.wiring.addresses.bind(SocketRole::Udp) else {
+            return false;
+        };
+        let sent = self
+            .wiring
+            .server
+            .request_introduction(low_id, our_udp_port);
+        if sent {
+            self.wiring.diagnostics.count_natt_server_request_emitted();
+        }
+        sent
+    }
+
+    /// Open `owner`'s attempt with `coordinator` in play. A buddy-coordinated
+    /// one arms the **Rendezvous Schedule** and emits what the schedule asks
+    /// for; a server-coordinated one waits for the coordinator's outcome.
+    async fn begin_attempt(
+        &mut self,
+        owner: AttemptOwner,
+        coordinator: AttemptCoordinator,
+        now: Instant,
+    ) {
+        let AttemptOwner {
+            target,
+            facts,
+            offer,
+        } = owner;
         if self.attempts.contains(&target) {
             // One attempt per peer at a time: a second download
             // falling to the same target joins the traversal already running.
@@ -401,7 +480,6 @@ impl<S: NattDatagramSink> NattFront<S> {
             TraversalAttempt {
                 coordinator,
                 facts,
-                ours,
                 offer,
                 began_at: now,
             },
@@ -449,7 +527,7 @@ impl<S: NattDatagramSink> NattFront<S> {
         let Some(attempt) = self.attempts.get(&target) else {
             return;
         };
-        match attempt.on_coordinator_failed(failure) {
+        match attempt.on_coordinator_failed(failure, &self.wiring.reach.route_position()) {
             FallThrough::Buddy {
                 buddy_id,
                 buddy_udp,
@@ -491,11 +569,11 @@ impl<S: NattDatagramSink> NattFront<S> {
             spent = ?began_at.map(|at| now.saturating_duration_since(at)),
             "NAT traversal target temporarily unreachable"
         );
-        // The claim table's lock is a plain mutex held for one map lookup and
-        // a `try_send` — never a channel the front would wait on. A runner
-        // that has stopped draining costs its own retirement notice, not the
-        // front's whole loop.
-        self.wiring.claims.retire(target, retirement).await;
+        // The registry's lock is a std mutex held for one map lookup, and
+        // each claimant is told by `try_send` — never a channel the front
+        // would wait on. A runner that has stopped draining costs its own
+        // retirement notice, not the front's whole loop.
+        self.wiring.claims.retire(target, retirement);
     }
 }
 
@@ -522,8 +600,8 @@ mod tests {
         }
     }
 
-    fn ours() -> SelfReach {
-        SelfReach {
+    fn ours() -> RoutePosition {
+        RoutePosition {
             reachable: false,
             udp_on: true,
             kad_running: true,
@@ -538,7 +616,6 @@ mod tests {
                 low_id: ClientId::from_u32(42),
             },
             facts: facts(buddy),
-            ours: ours(),
             offer: RendezvousOffer {
                 our_user_hash: UserHash::from_bytes([0xAA; UserHash::BYTE_LEN]),
                 options: rmule_peer::natt::NattConnectOptions::advertise(0, true, false),
@@ -579,7 +656,7 @@ mod tests {
             },
             IntroductionFailure::Silence,
         ] {
-            assert_eq!(attempt.on_coordinator_failed(failure), fell);
+            assert_eq!(attempt.on_coordinator_failed(failure, &ours()), fell);
         }
     }
 
@@ -591,16 +668,19 @@ mod tests {
     fn a_candidate_with_no_buddy_retires_with_the_servers_own_reason() {
         let attempt = attempt(None);
         assert_eq!(
-            attempt.on_coordinator_failed(IntroductionFailure::Refused {
-                reason: HolepunchFailReason::TargetIsHighId,
-                permanent: true,
-            }),
+            attempt.on_coordinator_failed(
+                IntroductionFailure::Refused {
+                    reason: HolepunchFailReason::TargetIsHighId,
+                    permanent: true,
+                },
+                &ours()
+            ),
             FallThrough::Retire(AttemptRetirement::ServerRefused(
                 HolepunchFailReason::TargetIsHighId
             ))
         );
         assert_eq!(
-            attempt.on_coordinator_failed(IntroductionFailure::Silence),
+            attempt.on_coordinator_failed(IntroductionFailure::Silence, &ours()),
             FallThrough::Retire(AttemptRetirement::ServerSilent)
         );
     }
@@ -616,7 +696,7 @@ mod tests {
             ..known_buddy()
         }));
         assert_eq!(
-            walk_only.on_coordinator_failed(IntroductionFailure::Silence),
+            walk_only.on_coordinator_failed(IntroductionFailure::Silence, &ours()),
             FallThrough::Retire(AttemptRetirement::ServerSilent)
         );
 
@@ -628,9 +708,34 @@ mod tests {
             ..attempt(Some(known_buddy()))
         };
         assert_eq!(
-            on_the_buddy.on_coordinator_failed(IntroductionFailure::Silence),
+            on_the_buddy.on_coordinator_failed(IntroductionFailure::Silence, &ours()),
             FallThrough::Retire(AttemptRetirement::ServerSilent)
         );
+    }
+
+    /// Our position is read when the coordinator fails, not when the attempt
+    /// began: a client-UDP half that went dark since (Quit) leaves no buddy
+    /// to fall to, since the rendezvous rides it — and a Kad node that
+    /// stopped does not matter to a buddy whose endpoint the candidate named.
+    #[test]
+    fn the_fall_through_reads_our_position_at_the_failure() {
+        let attempt = attempt(Some(known_buddy()));
+        let dark = RoutePosition {
+            udp_on: false,
+            ..ours()
+        };
+        assert_eq!(
+            attempt.on_coordinator_failed(IntroductionFailure::Silence, &dark),
+            FallThrough::Retire(AttemptRetirement::ServerSilent)
+        );
+        let kad_stopped = RoutePosition {
+            kad_running: false,
+            ..ours()
+        };
+        assert!(matches!(
+            attempt.on_coordinator_failed(IntroductionFailure::Silence, &kad_stopped),
+            FallThrough::Buddy { .. }
+        ));
     }
 
     /// The join a `0x62` needs: an attempt opened on the server coordinator

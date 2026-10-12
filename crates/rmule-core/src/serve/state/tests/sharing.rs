@@ -3,6 +3,7 @@
 //! not-found a refreshed-away file starts returning.
 
 use super::*;
+use rmule_peer::{ServerCommand, ServerEvent};
 
 /// aMule `CKnownFile::SetFileSize` sets `m_iED2KPartCount = size / PARTSIZE +
 /// 1` (KnownFile.cpp), so a file whose size is an exact multiple of the
@@ -21,14 +22,14 @@ fn file_status_reports_amule_ed2k_part_count_at_an_exact_part_multiple() {
     let status = state.on_conn_event(
         Instant::now(),
         peer(1),
-        ServeConnEvent::FileIdSet {
+        ServeInput::Server(ServerEvent::FileIdSet {
             file_hash: hash(0x21),
-        },
+        }),
         &no_modifiers(),
     );
     let [
         ServeDecision::Send {
-            command: ServeConnCommand::AnswerFileStatus { bitmap, .. },
+            command: ServerCommand::AnswerFileStatus { bitmap, .. },
             ..
         },
     ] = status.as_slice()
@@ -68,15 +69,15 @@ fn the_share_snapshot_answers_probes_and_derives_the_announce_list() {
         state.on_conn_event(
             t,
             p,
-            ServeConnEvent::FileRequested {
+            ServeInput::Server(ServerEvent::FileRequested {
                 file_hash: hash(0x11),
                 status: PartStatusTail::default(),
-            },
+            }),
             &no_modifiers(),
         ),
         vec![send(
             p,
-            ServeConnCommand::AnswerFileName {
+            ServerCommand::AnswerFileName {
                 file_hash: hash(0x11),
                 file_name: Ed2kText::from_utf8("served.bin"),
             }
@@ -87,14 +88,14 @@ fn the_share_snapshot_answers_probes_and_derives_the_announce_list() {
     let status = state.on_conn_event(
         t,
         p,
-        ServeConnEvent::FileIdSet {
+        ServeInput::Server(ServerEvent::FileIdSet {
             file_hash: hash(0x11),
-        },
+        }),
         &no_modifiers(),
     );
     let [
         ServeDecision::Send {
-            command: ServeConnCommand::AnswerFileStatus { bitmap, .. },
+            command: ServerCommand::AnswerFileStatus { bitmap, .. },
             ..
         },
     ] = status.as_slice()
@@ -115,15 +116,15 @@ fn an_unshared_file_draws_silence_standalone_and_one_not_found_per_bundle() {
     let mut state = serving_state(1, vec![entry(hash(0x11), 4096, "served.bin")]);
     let t = Instant::now();
     let p = peer(1);
-    let standalone = ServeConnEvent::FileRequested {
+    let standalone = ServeInput::Server(ServerEvent::FileRequested {
         file_hash: hash(0x99),
         status: PartStatusTail::default(),
-    };
+    });
     assert_eq!(
         state.on_conn_event(t, p, standalone, &no_modifiers()),
         Vec::new()
     );
-    let bundle = ServeConnEvent::FileBundleRequested {
+    let bundle = ServeInput::Server(ServerEvent::FileBundleRequested {
         file_hash: hash(0x99),
         file_size: None,
         asks: vec![
@@ -132,12 +133,12 @@ fn an_unshared_file_draws_silence_standalone_and_one_not_found_per_bundle() {
             BundledAsk::AichRoot,
         ],
         cut: None,
-    };
+    });
     assert_eq!(
         state.on_conn_event(t, p, bundle, &no_modifiers()),
         vec![send(
             p,
-            ServeConnCommand::AnswerFileNotFound {
+            ServerCommand::AnswerFileNotFound {
                 file_hash: hash(0x99)
             }
         )],
@@ -153,17 +154,19 @@ fn an_ext_bundle_naming_another_size_is_answered_not_found() {
     let mut state = serving_state(1, vec![entry(hash(0x11), 4096, "served.bin")]);
     let t = Instant::now();
     let p = peer(1);
-    let bundle = |file_size| ServeConnEvent::FileBundleRequested {
-        file_hash: hash(0x11),
-        file_size: Some(file_size),
-        asks: vec![BundledAsk::Name { part_status: None }, BundledAsk::SetReqId],
-        cut: None,
+    let bundle = |file_size| {
+        ServeInput::Server(ServerEvent::FileBundleRequested {
+            file_hash: hash(0x11),
+            file_size: Some(file_size),
+            asks: vec![BundledAsk::Name { part_status: None }, BundledAsk::SetReqId],
+            cut: None,
+        })
     };
     assert_eq!(
         state.on_conn_event(t, p, bundle(4097), &no_modifiers()),
         vec![send(
             p,
-            ServeConnCommand::AnswerFileNotFound {
+            ServerCommand::AnswerFileNotFound {
                 file_hash: hash(0x11)
             }
         )],
@@ -174,11 +177,11 @@ fn an_ext_bundle_naming_another_size_is_answered_not_found() {
             answered.as_slice(),
             [
                 ServeDecision::Send {
-                    command: ServeConnCommand::AnswerFileName { .. },
+                    command: ServerCommand::AnswerFileName { .. },
                     ..
                 },
                 ServeDecision::Send {
-                    command: ServeConnCommand::AnswerFileStatus { .. },
+                    command: ServerCommand::AnswerFileStatus { .. },
                     ..
                 },
             ]
@@ -203,14 +206,14 @@ fn an_unshared_file_answers_not_found_after_the_snapshot_refresh() {
         state.on_conn_event(
             t,
             p,
-            ServeConnEvent::HashSetRequested {
+            ServeInput::Server(ServerEvent::HashSetRequested {
                 file_hash: hash(0x22)
-            },
+            }),
             &no_modifiers(),
         ),
         vec![send(
             p,
-            ServeConnCommand::AnswerHashSet {
+            ServerCommand::AnswerHashSet {
                 file_hash: hash(0x22),
                 part_hashes,
             }
@@ -226,14 +229,14 @@ fn an_unshared_file_answers_not_found_after_the_snapshot_refresh() {
         state.on_conn_event(
             t,
             p,
-            ServeConnEvent::HashSetRequested {
+            ServeInput::Server(ServerEvent::HashSetRequested {
                 file_hash: hash(0x22)
-            },
+            }),
             &no_modifiers(),
         ),
         vec![send(
             p,
-            ServeConnCommand::AnswerFileNotFound {
+            ServerCommand::AnswerFileNotFound {
                 file_hash: hash(0x22)
             }
         )],

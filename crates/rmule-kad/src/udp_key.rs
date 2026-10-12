@@ -129,11 +129,11 @@ mod tests {
     fn a_derived_key_is_never_the_no_key_sentinel() {
         // The `% 0xFFFF_FFFE + 1` range clamp: 0 means "no key" on the wire, so
         // the derivation must never mint it — probe a spread of inputs.
-        for secret in [0u32, 1, 0xDEAD_BEEF, u32::MAX] {
+        for (probe, secret) in [0u32, 1, 0xDEAD_BEEF, u32::MAX].into_iter().enumerate() {
             for host in 0..=u8::MAX {
                 let key = udp_verify_key(secret, ip(host));
-                assert_ne!(key, 0, "secret {secret:#X} host {host}");
-                assert_ne!(key, u32::MAX, "secret {secret:#X} host {host}");
+                assert_ne!(key, 0, "probe {probe} host {host}");
+                assert_ne!(key, u32::MAX, "probe {probe} host {host}");
             }
         }
     }

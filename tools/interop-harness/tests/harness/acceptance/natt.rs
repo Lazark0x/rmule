@@ -421,7 +421,7 @@ fn natt_tunnel_transfer() {
     }
     assert!(
         run_dir
-            .join("nat/natt-tunnel-transfer/peer-a/downloaded.bin")
+            .join("nat/natt-tunnel-transfer/peer-a/dl/downloaded.bin")
             .is_file(),
         "natt-tunnel-transfer: the fetched file itself is the row's claim and must be retained",
     );
@@ -801,6 +801,85 @@ fn natt_udp_selfcheck_amule_crypt() {
         assert!(
             verdict.contains(expected),
             "natt-udp-selfcheck-amule --kad-crypt: {expected} missing from the verdict:\n{verdict}",
+        );
+    }
+}
+
+/// **`natt-buddy-recruit-amule`** — rmule's Firewalled Front against stock
+/// aMule 2.3.3 (`rmule/interop-amule-debug:local`, pre-built by hand) as the
+/// open buddy. aMule reads itself open off two rmule TCP testers in its
+/// routing zone and two fresh UDP helpers; a Core rmule behind a
+/// `port-restricted` gateway, holding an `ed2ksrv` Low ID, walks to it, adopts
+/// its `0x5A`, dials and holds the link, pings it, and dials back the
+/// requester of the `OP_CALLBACK` aMule relays over it.
+///
+/// Every step must hold: a step aMule's own gate kept from running is
+/// `blocked` and reads `OBSERVED`, which this wrapper does not accept. About
+/// 35 minutes — drive it once in the foreground and score the retained run
+/// with `RMULE_BENCH_VERDICT_DIR`.
+#[test]
+#[ignore = "bench flow: requires Docker + RMULE_BENCH=1; ~35 min, score a retained run with RMULE_BENCH_VERDICT_DIR"]
+fn natt_buddy_recruit_amule() {
+    if !bench_enabled("natt-buddy-recruit-amule") {
+        return;
+    }
+    let run_dir = run_natt_flow("natt-buddy-recruit-amule");
+    let verdict = read_string(&run_dir, "natt-buddy-recruit-amule-verdict.toml");
+    assert!(
+        verdict.contains("verdict = \"PASS\""),
+        "natt-buddy-recruit-amule: every step of the front's lifecycle must hold:\n{verdict}",
+    );
+    for expected in [
+        "each-gateway-probed-as-its-claimed-nat-type",
+        "the-target-holds-a-server-low-id",
+        "the-amule-read-kad-tcp-open",
+        "the-amule-udp-verdict-read-open",
+        "the-target-walked-to-amule-with-0x51",
+        "amule-answered-the-recruit-with-0x5a",
+        "the-target-dialed-amule-and-amule-answered-its-hello",
+        "the-target-held-the-link-through-its-window",
+        "the-target-pinged-its-buddy-0x9f",
+        "amule-ponged-0xa0-on-the-buddy-link",
+        "the-walker-sent-0x52-to-amule",
+        "amule-relayed-the-callback-as-0x99",
+        "the-target-dialed-the-requester-back",
+    ] {
+        assert!(
+            verdict.contains(expected),
+            "natt-buddy-recruit-amule: {expected} missing from the verdict:\n{verdict}",
+        );
+    }
+}
+
+/// **`natt-buddy-recruit-amule --no-server`** — the same lifecycle with no
+/// `ed2ksrv` on the WAN: the target is firewalled on Kad alone, so every
+/// `OP_HELLO` aMule receives from it must name the Kad-firewalled id `1`
+/// (aMule's `GetID`), the Low ID an open aMule keeps a buddy for — and aMule
+/// must still pong it at the second keepalive, the first it answers.
+///
+/// About 35 minutes — drive it once in the foreground and score the retained
+/// run with `RMULE_BENCH_VERDICT_DIR`.
+#[test]
+#[ignore = "bench flow: requires Docker + RMULE_BENCH=1; ~35 min, score a retained run with RMULE_BENCH_VERDICT_DIR"]
+fn natt_buddy_recruit_amule_no_server() {
+    if !bench_enabled("natt-buddy-recruit-amule --no-server") {
+        return;
+    }
+    let run_dir = run_natt_flow_with("natt-buddy-recruit-amule", &["--no-server"]);
+    let verdict = read_string(&run_dir, "natt-buddy-recruit-amule-verdict.toml");
+    assert!(
+        verdict.contains("verdict = \"PASS\""),
+        "natt-buddy-recruit-amule --no-server: the serverless target must hold aMule:\n{verdict}",
+    );
+    for expected in [
+        "the-target-presents-the-kad-firewalled-id-1",
+        "the-target-dialed-amule-and-amule-answered-its-hello",
+        "the-target-held-the-link-through-its-window",
+        "amule-ponged-0xa0-on-the-buddy-link",
+    ] {
+        assert!(
+            verdict.contains(expected),
+            "natt-buddy-recruit-amule --no-server: {expected} missing from the verdict:\n{verdict}",
         );
     }
 }

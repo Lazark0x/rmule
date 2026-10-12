@@ -73,6 +73,7 @@ async fn a_related_search_reaches_neither_the_sweep_nor_kad_and_completes_on_the
         },
         rmule_testkit::memory_store(),
     )
+    .settings(rmule_core::CoreSettings::default())
     .kad(kad)
     .build();
     core.send(CoreCommand::EnableKad(kad_enable_config()))
@@ -136,7 +137,9 @@ async fn a_related_search_reaches_neither_the_sweep_nor_kad_and_completes_on_the
 #[tokio::test]
 async fn a_related_search_with_no_session_is_refused_and_dials_nothing() {
     let server = granting_server(Some(ServerTcpFlags::RELATEDSEARCH)).await;
-    let mut core = Core::new(search_config(), rmule_testkit::memory_store());
+    let mut core = Core::builder(search_config(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
 
     assert_eq!(
         core.diagnostics_snapshot().related_search_refusal(),
@@ -156,7 +159,9 @@ async fn a_related_search_toward_a_server_without_the_grant_is_refused_unsent() 
     // Lugdunum's observed word without `0x40`.
     let server = granting_server(Some(0x17F9 & !ServerTcpFlags::RELATEDSEARCH)).await;
     let endpoint = server.endpoint();
-    let mut core = Core::new(search_config(), rmule_testkit::memory_store());
+    let mut core = Core::builder(search_config(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     connect_and_settle(&mut core, &endpoint).await;
 
     assert_eq!(
@@ -173,7 +178,9 @@ async fn a_related_search_toward_a_server_without_the_grant_is_refused_unsent() 
 async fn the_grant_level_follows_a_server_switch() {
     let granting = granting_server(Some(ServerTcpFlags::RELATEDSEARCH)).await;
     let withholding = granting_server(None).await;
-    let mut core = Core::new(search_config(), rmule_testkit::memory_store());
+    let mut core = Core::builder(search_config(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
 
     connect_and_settle(&mut core, &granting.endpoint()).await;
     let snapshot = core.diagnostics_snapshot();

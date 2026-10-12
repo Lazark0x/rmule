@@ -3,7 +3,10 @@
 //! inflate, an oversized declared length, and the session-wide in-flight
 //! cap.
 
-use rmule_peer::{InflateFailed, PartRanges, PeerCommand, PeerEvent, PeerOutput, PeerSession};
+use rmule_peer::{
+    InflateFailed, PartRanges, PeerCommand, PeerEvent, PeerOutput, PeerSession, RequesterCommand,
+    RequesterEvent, ServerCommand,
+};
 use rmule_primitives::session::drain;
 use rmule_primitives::{PartHash, UserHash};
 use rmule_testkit::peer_session::*;
@@ -15,11 +18,11 @@ fn sendingpart_i64_decodes_offset_above_4gb() {
     let big: u64 = 5_000_000_000;
     let len: u64 = 16;
     let ranges = PartRanges::new([(big, big + len), (0, 0), (0, 0)]).unwrap();
-    session.handle_command(PeerCommand::RequestParts {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 10_000_000_000,
         ranges,
-    });
+    }));
     session.handle_bytes(&reqfilename_answer(h, "big"));
     session.handle_bytes(&file_status(h, 1029, &[0xFF; 129]));
     session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
@@ -31,7 +34,7 @@ fn sendingpart_i64_decodes_offset_above_4gb() {
     let out = drain(|| session.poll_output());
     assert!(events(&out).iter().any(|e| matches!(
         e,
-        PeerEvent::PartReceived { offset, bytes, .. } if *offset == big && bytes == &data
+        PeerEvent::Requester(RequesterEvent::PartReceived { offset, bytes, .. }) if *offset == big && bytes == &data
     )));
 }
 
@@ -40,11 +43,11 @@ fn compressed_part_inflates_to_part_received() {
     let h = file_hash(0x8C);
     let mut session = identified_session();
     let ranges = PartRanges::new([(0, 64), (0, 0), (0, 0)]).unwrap();
-    session.handle_command(PeerCommand::RequestParts {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 1_000_000,
         ranges,
-    });
+    }));
     session.handle_bytes(&reqfilename_answer(h, "z"));
     session.handle_bytes(&file_status(h, 1, &[0x01]));
     session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
@@ -59,7 +62,7 @@ fn compressed_part_inflates_to_part_received() {
     let out = drain(|| session.poll_output());
     assert!(events(&out).iter().any(|e| matches!(
         e,
-        PeerEvent::PartReceived { file_hash, offset: 0, bytes }
+        PeerEvent::Requester(RequesterEvent::PartReceived { file_hash, offset: 0, bytes })
             if *file_hash == h && bytes == &plain
     )));
 }
@@ -69,11 +72,11 @@ fn corrupt_compressed_part_is_skipped_and_keeps_session_open() {
     let h = file_hash(0x8D);
     let mut session = identified_session();
     let ranges = PartRanges::new([(0, 64), (0, 0), (0, 0)]).unwrap();
-    session.handle_command(PeerCommand::RequestParts {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 1_000_000,
         ranges,
-    });
+    }));
     session.handle_bytes(&reqfilename_answer(h, "z"));
     session.handle_bytes(&file_status(h, 1, &[0x01]));
     session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
@@ -90,12 +93,12 @@ fn corrupt_compressed_part_is_skipped_and_keeps_session_open() {
     let out = drain(|| session.poll_output());
     assert!(events(&out).iter().any(|e| matches!(
         e,
-        PeerEvent::CompressedPartSkipped { file_hash, offset: 0, .. } if *file_hash == h
+        PeerEvent::Requester(RequesterEvent::CompressedPartSkipped { file_hash, offset: 0, .. }) if *file_hash == h
     )));
     assert!(
         !events(&out)
             .iter()
-            .any(|e| matches!(e, PeerEvent::PartReceived { .. }))
+            .any(|e| matches!(e, PeerEvent::Requester(RequesterEvent::PartReceived { .. })))
     );
     assert!(!out.iter().any(|o| matches!(o, PeerOutput::Close(_))));
 }
@@ -105,11 +108,11 @@ fn oversized_declared_compressed_len_is_refused_before_buffering() {
     let h = file_hash(0x8E);
     let mut session = identified_session();
     let ranges = PartRanges::new([(0, 64), (0, 0), (0, 0)]).unwrap();
-    session.handle_command(PeerCommand::RequestParts {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 1_000_000,
         ranges,
-    });
+    }));
     session.handle_bytes(&reqfilename_answer(h, "z"));
     session.handle_bytes(&file_status(h, 1, &[0x01]));
     session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
@@ -123,11 +126,11 @@ fn oversized_declared_compressed_len_is_refused_before_buffering() {
     let out = drain(|| session.poll_output());
     assert!(events(&out).iter().any(|e| matches!(
         e,
-        PeerEvent::CompressedPartSkipped {
+        PeerEvent::Requester(RequesterEvent::CompressedPartSkipped {
             file_hash,
             offset: 0,
             reason: InflateFailed::DeclaredTooLarge { .. },
-        } if *file_hash == h
+        }) if *file_hash == h
     )));
     // Non-terminal: the session stays open, like any other skipped block.
     assert!(!out.iter().any(|o| matches!(o, PeerOutput::Close(_))));
@@ -138,11 +141,11 @@ fn inflight_compressed_blocks_are_capped_session_wide() {
     let h = file_hash(0x8F);
     let mut session = identified_session();
     let ranges = PartRanges::new([(0, 64), (0, 0), (0, 0)]).unwrap();
-    session.handle_command(PeerCommand::RequestParts {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 1_000_000,
         ranges,
-    });
+    }));
     session.handle_bytes(&reqfilename_answer(h, "z"));
     session.handle_bytes(&file_status(h, 1, &[0x01]));
     session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
@@ -156,20 +159,21 @@ fn inflight_compressed_blocks_are_capped_session_wide() {
     }
     let out = drain(|| session.poll_output());
     assert!(
-        !events(&out)
-            .iter()
-            .any(|e| matches!(e, PeerEvent::CompressedPartSkipped { .. })),
+        !events(&out).iter().any(|e| matches!(
+            e,
+            PeerEvent::Requester(RequesterEvent::CompressedPartSkipped { .. })
+        )),
         "8 in-flight blocks are within budget"
     );
 
     // The 9th never-completing start is refused — and the cap is session-wide:
     // a second file we probed (so its flow exists) is refused just the same.
     let h2 = file_hash(0x90);
-    session.handle_command(PeerCommand::ProbeFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: h2,
         file_size: 20_000_000,
         own_status: rmule_peer::PartBitmap::downloader_empty(20_000_000),
-    });
+    }));
     let _ = drain(|| session.poll_output());
     session.handle_bytes(&compressedpart_chunk(h, 900_000, 1_000, &[0x11; 10]));
     session.handle_bytes(&compressedpart_chunk(h2, 0, 1_000, &[0x11; 10]));
@@ -179,10 +183,10 @@ fn inflight_compressed_blocks_are_capped_session_wide() {
         .filter(|e| {
             matches!(
                 e,
-                PeerEvent::CompressedPartSkipped {
+                PeerEvent::Requester(RequesterEvent::CompressedPartSkipped {
                     reason: InflateFailed::TooManyInFlight,
                     ..
-                }
+                })
             )
         })
         .count();
@@ -195,17 +199,18 @@ fn inflight_compressed_blocks_are_capped_session_wide() {
     let out = drain(|| session.poll_output());
     assert!(events(&out).iter().any(|e| matches!(
         e,
-        PeerEvent::CompressedPartSkipped {
+        PeerEvent::Requester(RequesterEvent::CompressedPartSkipped {
             reason: InflateFailed::Corrupt,
             ..
-        }
+        })
     )));
     session.handle_bytes(&compressedpart_chunk(h, 900_000, 1_000, &[0x11; 10]));
     let out = drain(|| session.poll_output());
     assert!(
-        !events(&out)
-            .iter()
-            .any(|e| matches!(e, PeerEvent::CompressedPartSkipped { .. })),
+        !events(&out).iter().any(|e| matches!(
+            e,
+            PeerEvent::Requester(RequesterEvent::CompressedPartSkipped { .. })
+        )),
         "freed capacity admits a new in-flight block"
     );
 }
@@ -229,24 +234,26 @@ fn served_compressed_block_round_trips_into_a_requester() {
         .push(MiscOptions1::rmule_advertised().to_tag());
     server.handle_bytes(&Hello::new(peer_hello).encode_packet().encode());
     let _ = drain(|| server.poll_output());
-    server.handle_command(PeerCommand::GrantSlot { file_hash: fh });
+    server.handle_command(PeerCommand::Server(ServerCommand::GrantSlot {
+        file_hash: fh,
+    }));
     let _ = drain(|| server.poll_output());
-    server.handle_command(PeerCommand::SendBlock {
+    server.handle_command(PeerCommand::Server(ServerCommand::SendBlock {
         file_hash: fh,
         start: 0,
         end: plain.len() as u64,
         bytes: plain.clone(),
-    });
+    }));
     let compressed_wire = last_write_bytes(&drain(|| server.poll_output()));
 
     // Requester: a separate rmule session driven to Downloading for `fh`.
     let mut client = identified_session();
     let ranges = PartRanges::new([(0, plain.len() as u64), (0, 0), (0, 0)]).unwrap();
-    client.handle_command(PeerCommand::RequestParts {
+    client.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: fh,
         file_size: 1_000_000,
         ranges,
-    });
+    }));
     client.handle_bytes(&reqfilename_answer(fh, "x"));
     client.handle_bytes(&file_status(fh, 1, &[0x01]));
     client.handle_bytes(&hashset_answer(fh, &[PartHash::from_bytes([0; 16])]));
@@ -257,7 +264,7 @@ fn served_compressed_block_round_trips_into_a_requester() {
     let out = drain(|| client.poll_output());
     assert!(events(&out).iter().any(|e| matches!(
         e,
-        PeerEvent::PartReceived { file_hash, offset: 0, bytes }
+        PeerEvent::Requester(RequesterEvent::PartReceived { file_hash, offset: 0, bytes })
             if *file_hash == fh && bytes == &plain
     )));
 }

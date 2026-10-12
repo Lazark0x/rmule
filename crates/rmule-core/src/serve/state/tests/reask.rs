@@ -1,21 +1,24 @@
-//! The uploader-side reask answers (ADR-0057): rank replies carrying our part
-//! status for a UDPv4-era waiter, the not-found and queue-full refusals, the
-//! silent drops, and the purge sweep a reask heartbeat saves a waiter from.
+//! The uploader's reask, as queue policy (ADR-0057): how serve state resolves
+//! a pinger for the **Reask Responder** — its rank, file, UDP version, hello
+//! claim and crypt target, the ambiguity of a shared IP, the queue's room —
+//! how a heard reask refreshes the standing the purge clock reaps, and how a
+//! silenced malformed ping is counted. The reply rules themselves are the
+//! responder's, tested on captures in `rmule-peer`.
 
 use super::*;
+use rmule_peer::{ConnectionEvent, ServerCommand, ServerEvent};
 
+/// A waiter is resolved by its advertised UDP endpoint, or by its IP alone
+/// when it is the only waiter there, and answered with its own rank, its UDP
+/// version and its crypt target.
 #[test]
-fn a_matched_reask_answers_the_rank_with_our_part_status_for_a_udpv4_waiter() {
+fn a_waiter_is_resolved_by_its_udp_endpoint_or_its_ip_alone() {
     let file = hash(0x11);
     let two_parts = ED2K_PART_SIZE + 1;
     let waiter = peer_at([10, 0, 0, 2], 4000);
     let t = Instant::now();
     let mut state = one_waiter_state(file, two_parts, waiter, 6000, 4, t);
 
-    // A reask from the waiter's advertised UDP endpoint answers OP_REASKACK
-    // with rank 1 and — since the peer is UDPv4 — our part status, in aMule's
-    // shape for a complete file: the count `0` alone
-    // (`ClientUDPSocket.cpp:214-219`).
     let src = udp([10, 0, 0, 2], 6000);
     assert_eq!(
         state.on_reask_ping(t, src, &reask_ping(file)),
@@ -49,53 +52,11 @@ fn a_matched_reask_answers_the_rank_with_our_part_status_for_a_udpv4_waiter() {
     );
 }
 
+/// The waiter's hello claim reaches the responder: the same hash-only ping
+/// is silenced from a waiter claiming extended requests, and the silence is
+/// counted against that waiter, while one claiming none is answered.
 #[test]
-fn a_reask_ack_omits_our_part_status_for_a_pre_udpv4_waiter() {
-    let file = hash(0x22);
-    let waiter = peer_at([10, 0, 0, 2], 4000);
-    let t = Instant::now();
-    // UDP version 3 (not > 3): no part status rides the ack.
-    let mut state = one_waiter_state(file, 4096, waiter, 6000, 3, t);
-    let src = udp([10, 0, 0, 2], 6000);
-    assert_eq!(
-        state.on_reask_ping(t, src, &reask_ping(file)),
-        vec![ServeDecision::SendClientUdp {
-            to: src,
-            datagram: ReaskAck {
-                part_status: None,
-                rank: 1,
-            }
-            .encode_udp(),
-            crypt_target: target_of(user(0x0A)),
-        }],
-    );
-}
-
-/// A UDPv3 waiter's ping is read for its complete-source count
-/// right after the hash, whatever its extended-requests claim (stock 2.3.3
-/// `4e8f2b3c` `ClientUDPSocket.cpp:204-205`); the hash alone makes that read
-/// throw, the dispatcher only logs (`:131-134`), and nothing is sent.
-#[test]
-fn a_hash_only_udpv3_ping_is_silenced() {
-    let file = hash(0x23);
-    let waiter = peer_at([10, 0, 0, 2], 4000);
-    let t = Instant::now();
-    let mut state = one_waiter_state(file, 4096, waiter, 6000, 3, t);
-    assert_eq!(
-        state.on_reask_ping(t, udp([10, 0, 0, 2], 6000), &hash_only_ping(file)),
-        vec![ServeDecision::Emit(ServeEvent::ReaskPingMalformed {
-            peer: waiter
-        })],
-    );
-}
-
-/// A UDPv4 waiter's ping carrying the file hash alone. aMule's
-/// reader returns before looking at it for a peer whose hello claimed
-/// extended requests `0` (stock 2.3.3 `UploadClient.cpp:403-406`), so that
-/// peer is answered; from any other it throws (`:408-412`), its dispatcher
-/// only logs (`ClientUDPSocket.cpp:131-132`), and nothing is sent.
-#[test]
-fn a_hash_only_udpv4_ping_is_silenced_only_from_a_peer_claiming_extended_requests() {
+fn a_waiters_hello_claim_decides_its_ping_and_a_silenced_one_is_counted() {
     let file = hash(0x33);
     let waiter = peer_at([10, 0, 0, 2], 4000);
     let src = udp([10, 0, 0, 2], 6000);
@@ -127,91 +88,10 @@ fn a_hash_only_udpv4_ping_is_silenced_only_from_a_peer_claiming_extended_request
     );
 }
 
-/// AMule's reader sizes the status by the file's part count and
-/// reads the complete-source count after it only for a claim above `1`
-/// (stock 2.3.3 `4e8f2b3c` `UploadClient.cpp:424-455`); a ping cut short of
-/// either throws, and is silenced as the hash-only one is. The same ping
-/// without the count is whole from a claim of `1`.
+/// The queue's own room reaches the responder: an unknown pinger is refused
+/// by a small queue and left unanswered by a roomy one.
 #[test]
-fn a_udpv4_ping_short_of_its_status_or_complete_count_is_silenced() {
-    let file = hash(0x34);
-    let size = 2 * ED2K_PART_SIZE + 1; // three parts: one status byte
-    let waiter = peer_at([10, 0, 0, 2], 4000);
-    let src = udp([10, 0, 0, 2], 6000);
-    let t = Instant::now();
-    let ping = |tail: &[u8]| [hash_only_ping(file).as_slice(), tail].concat();
-    let silenced = vec![ServeDecision::Emit(ServeEvent::ReaskPingMalformed {
-        peer: waiter,
-    })];
-
-    // `one_waiter_state` identifies the waiter claiming extended requests 2.
-    let mut claim_2 = one_waiter_state(file, size, waiter, 6000, 4, t);
-    assert_eq!(
-        claim_2.on_reask_ping(t, src, &ping(&[0x03, 0x00])),
-        silenced
-    );
-    assert_eq!(
-        claim_2.on_reask_ping(t, src, &ping(&[0x03, 0x00, 0x05])),
-        silenced
-    );
-
-    let mut claim_1 = serving_state(1, vec![entry(file, size, "served.bin")]);
-    let _ = slot_request(&mut claim_1, peer_at([10, 0, 0, 1], 4000), file, t);
-    identify_udp_claiming(&mut claim_1, waiter, user(0x0A), 6000, 4, 1, t);
-    let _ = slot_request(&mut claim_1, waiter, file, t);
-    assert_eq!(
-        claim_1.on_reask_ping(t, src, &ping(&[0x03, 0x00, 0x05])),
-        vec![ServeDecision::SendClientUdp {
-            to: src,
-            datagram: ReaskAck {
-                part_status: Some(PartBitmap::complete_source_sentinel()),
-                rank: 1,
-            }
-            .encode_udp(),
-            crypt_target: target_of(user(0x0A)),
-        }],
-    );
-}
-
-#[test]
-fn a_reask_for_an_unshared_hash_answers_file_not_found() {
-    let mut state = serving_state(1, vec![entry(hash(0x11), 4096, "served.bin")]);
-    let t = Instant::now();
-    let src = udp([10, 0, 0, 9], 6000);
-    assert_eq!(
-        state.on_reask_ping(t, src, &reask_ping(hash(0x99))),
-        vec![ServeDecision::SendClientUdp {
-            to: src,
-            datagram: file_not_found_datagram(),
-            // A stranger's ping: no identity, so no crypt target — plaintext.
-            crypt_target: None,
-        }],
-    );
-}
-
-#[test]
-fn a_known_waiters_file_not_found_still_carries_its_crypt_target() {
-    // aMule resolves the *sender* before the file (`ClientUDPSocket.cpp`),
-    // so even the "I don't share that" answer is obfuscated for a client it
-    // knows — the ordering this row has to reproduce.
-    let served = hash(0x11);
-    let waiter = peer_at([10, 0, 0, 2], 4000);
-    let t = Instant::now();
-    let mut state = one_waiter_state(served, 4096, waiter, 6000, 4, t);
-    let src = udp([10, 0, 0, 2], 6000);
-
-    assert_eq!(
-        state.on_reask_ping(t, src, &reask_ping(hash(0x99))),
-        vec![ServeDecision::SendClientUdp {
-            to: src,
-            datagram: file_not_found_datagram(),
-            crypt_target: target_of(user(0x0A)),
-        }],
-    );
-}
-
-#[test]
-fn an_unknown_pinger_gets_queue_full_only_when_the_queue_is_nearly_full() {
+fn an_unknown_pinger_is_answered_by_the_queues_own_room() {
     let file = hash(0x11);
     let t = Instant::now();
     let src = udp([10, 0, 0, 9], 6000);
@@ -240,34 +120,20 @@ fn an_unknown_pinger_gets_queue_full_only_when_the_queue_is_nearly_full() {
     assert_eq!(roomy.on_reask_ping(t, src, &reask_ping(file)), Vec::new());
 }
 
+/// Several waiters behind one IP on different UDP ports make a ping from a
+/// third port of that IP ambiguous: the queue cannot say who it is, so nothing
+/// is answered.
 #[test]
-fn a_hash_mismatch_and_a_port_mapping_ambiguity_are_silent_drops() {
+fn a_ping_from_an_ip_several_waiters_share_resolves_to_no_one() {
     let served = hash(0x11);
-    let other = hash(0x22);
     let mut state = ServeState::new(UploadSlotQueue::new(1, 100));
     let _ = state.on_share_set(
-        vec![entry(served, 4096, "a.bin"), entry(other, 4096, "b.bin")],
+        vec![entry(served, 4096, "a.bin")],
         std::time::Instant::now(),
         &std::collections::HashMap::new(),
     );
     let t = Instant::now();
     let _ = slot_request(&mut state, peer_at([10, 0, 0, 1], 4000), served, t);
-
-    // A known waiter queued for `other`, pinging for `served` → hash
-    // mismatch → silent (forces a TCP full ask).
-    let waiter = peer_at([10, 0, 0, 2], 4000);
-    identify_udp(&mut state, waiter, user(0x0A), 6000, 4, t);
-    let _ = slot_request(&mut state, waiter, other, t);
-    let src = udp([10, 0, 0, 2], 6000);
-    assert_eq!(state.on_reask_ping(t, src, &reask_ping(served)), Vec::new());
-    // Its reask for the file it *is* queued for does answer.
-    assert!(matches!(
-        state.on_reask_ping(t, src, &reask_ping(other)).as_slice(),
-        [ServeDecision::SendClientUdp { .. }]
-    ));
-
-    // Two waiters share one IP on different UDP ports; a ping from a third
-    // port of that IP is the port-mapping ambiguity → silent.
     for (tcp, udp_port) in [(4000, 6001), (4001, 6002)] {
         let p = peer_at([10, 0, 0, 3], tcp);
         identify_udp(&mut state, p, user(0x0B), udp_port, 4, t);
@@ -290,7 +156,7 @@ fn a_waiting_peer_keeps_its_position_across_disconnect_and_still_reasks() {
     // The waiter's TCP drops: the holder still holds the slot, so nothing
     // frees and no UploadSlotReleased fires — disconnected standing.
     assert_eq!(
-        state.on_conn_event(t, waiter, ServeConnEvent::Disconnected, &no_modifiers()),
+        state.on_conn_event(t, waiter, disconnected(), &no_modifiers()),
         Vec::new(),
     );
     // Its reask still answers rank 1 — the position survived the disconnect,
@@ -321,9 +187,9 @@ fn promoting_a_disconnected_waiter_dials_back_rather_than_granting_over_a_dead_s
     // The waiter loses its socket (keeps standing), then the holder frees
     // the slot: the sole waiter is promoted, but with no live connection it
     // is a dial-back grant, not a GrantSlot over a dead socket.
-    let _ = state.on_conn_event(t, waiter, ServeConnEvent::Disconnected, &no_modifiers());
+    let _ = state.on_conn_event(t, waiter, disconnected(), &no_modifiers());
     assert_eq!(
-        state.on_conn_event(t, holder, ServeConnEvent::Disconnected, &no_modifiers()),
+        state.on_conn_event(t, holder, disconnected(), &no_modifiers()),
         vec![
             ServeDecision::DialBackGrant {
                 peer: waiter,
@@ -360,15 +226,14 @@ fn a_reask_from_a_promoted_dial_back_grant_answers_rank_with_part_status() {
     // Reproduce the live churn: the queued reasker drops its TCP (disconnected
     // standing), then the slot-holder drops, promoting the reasker to a
     // dial-back grant it moves out of the waiting list.
-    let _ = state.on_conn_event(t, waiter, ServeConnEvent::Disconnected, &no_modifiers());
-    let _ = state.on_conn_event(t, holder, ServeConnEvent::Disconnected, &no_modifiers());
+    let _ = state.on_conn_event(t, waiter, disconnected(), &no_modifiers());
+    let _ = state.on_conn_event(t, holder, disconnected(), &no_modifiers());
 
     // Its FILEREASKTIME `0x90` now resolves through the dial-back grant, not
     // the (empty) waiting list, and answers rank 1 rather than dropping.
     let src = udp([10, 0, 0, 2], 6000);
-    let decisions = state.on_reask_ping(t, src, &reask_ping(file));
     assert_eq!(
-        decisions,
+        state.on_reask_ping(t, src, &reask_ping(file)),
         vec![ServeDecision::SendClientUdp {
             to: src,
             datagram: ReaskAck {
@@ -379,13 +244,6 @@ fn a_reask_from_a_promoted_dial_back_grant_answers_rank_with_part_status() {
             crypt_target: target_of(user(0x0A)),
         }],
     );
-    // The proof a v4 counterparty can actually read it: the egress decodes
-    // under the version the waiter advertised (and we advertised back).
-    let ServeDecision::SendClientUdp { datagram, .. } = &decisions[0] else {
-        unreachable!("asserted shape above");
-    };
-    let ack = ReaskAck::decode_udp(datagram, 4).expect("a v4 waiter parses the ack");
-    assert_eq!(ack.rank, 1);
 }
 
 #[test]
@@ -579,7 +437,7 @@ fn a_waiters_standing_follows_the_file_it_last_asked_about() {
     let _ = state.on_conn_event(
         t,
         waiter,
-        ServeConnEvent::FileIdSet { file_hash: second },
+        ServeInput::Server(ServerEvent::FileIdSet { file_hash: second }),
         &no_modifiers(),
     );
     assert!(acked(&mut state, second) && !acked(&mut state, first));
@@ -589,7 +447,7 @@ fn a_waiters_standing_follows_the_file_it_last_asked_about() {
         slot_request(&mut state, waiter, first, t).as_slice(),
         [
             ServeDecision::Send {
-                command: ServeConnCommand::SetQueueRank { rank: 1 },
+                command: ServerCommand::SetQueueRank { rank: 1 },
                 ..
             },
             ..
@@ -607,14 +465,16 @@ fn an_emule_info_reask_contact_reaches_a_waiter_its_hello_named_none() {
     let waiter = peer_at([10, 0, 0, 2], 4000);
     let t = Instant::now();
     let mut state = one_waiter_state(file, 4096, waiter, 0, 0, t);
-    let revised = ServeConnEvent::ReaskContactRevised {
-        udp_port: 6000,
-        udp_version: 4,
-    };
+    let identity = hello_facts(user(0x0A), 6000, 4, 2).identity();
+    let revised = ServeInput::Connection(ConnectionEvent::IdentityRevised {
+        identity: identity.clone(),
+        what: IdentityChange::ReaskContact,
+    });
     assert_eq!(
         state.on_conn_event(t, waiter, revised, &no_modifiers()),
         Vec::new()
     );
+    assert_eq!(state.identities().get(&waiter), Some(&identity));
     let src = udp([10, 0, 0, 2], 6000);
     assert_eq!(
         state.on_reask_ping(t, src, &reask_ping(file)),
@@ -626,6 +486,35 @@ fn an_emule_info_reask_contact_reaches_a_waiter_its_hello_named_none() {
             }
             .encode_udp(),
             crypt_target: target_of(user(0x0A)),
+        }],
+    );
+}
+
+/// A readopted peer's advertised UDP contact dies with its serve-side identity:
+/// when the same endpoint later queues without a fresh hello, its old UDP
+/// version must not be stamped on the waiter: the IP-matched reask is answered
+/// as a version-less waiter's, without our part status.
+#[test]
+fn a_readopted_peers_udp_contact_is_not_stamped_on_a_later_waiter() {
+    let file = hash(0x25);
+    let peer = peer_at([10, 0, 0, 3], 4000);
+    let t = Instant::now();
+    let mut state = one_waiter_state(file, 4096, peer_at([10, 0, 0, 9], 4000), 0, 0, t);
+    identify_udp(&mut state, peer, user(0x0B), 6000, 4, t);
+    let _ = state.on_conn_event(t, peer, ServeInput::Readopted, &no_modifiers());
+    let _ = slot_request(&mut state, peer, file, t);
+
+    let src = udp([10, 0, 0, 3], 6000);
+    assert_eq!(
+        state.on_reask_ping(t, src, &reask_ping(file)),
+        vec![ServeDecision::SendClientUdp {
+            to: src,
+            datagram: ReaskAck {
+                part_status: None,
+                rank: 2,
+            }
+            .encode_udp(),
+            crypt_target: None,
         }],
     );
 }

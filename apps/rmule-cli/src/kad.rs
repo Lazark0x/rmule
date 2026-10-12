@@ -25,7 +25,7 @@ use rmule_kad::{
 use rmule_net::kad::{KadNetConfig, spawn};
 use rmule_primitives::Ed2kLink;
 
-use rmule_core::{AppConfigStore, KadIdentity};
+use rmule_core::{AppConfigStore, CoreSettings};
 
 /// How often the run loop prints a routing-census line while idling.
 const CENSUS_INTERVAL: Duration = Duration::from_secs(15);
@@ -100,10 +100,13 @@ pub fn parse_search_target(link: &str) -> Result<SourceLookupTarget> {
 }
 
 /// Run the live Kad smoke: spawn the node, bootstrap, observe for `duration`,
-/// and (when `search` is set) fire one source lookup after a warmup. All
-/// observability goes to stdout; nothing is written to disk.
+/// and (when `search` is set) fire one source lookup after a warmup. The two
+/// ports are the ones `settings` name (ADR-0069), the node ID and the user
+/// hash the store's identity rows. All observability goes to stdout; nothing
+/// is written to disk.
 pub async fn run_join(
     store: &dyn AppConfigStore,
+    settings: &CoreSettings,
     bootstraps: &[KadNodeEndpoint],
     duration: Duration,
     search: Option<SourceLookupTarget>,
@@ -111,14 +114,14 @@ pub async fn run_join(
     if bootstraps.is_empty() {
         bail!("at least one --bootstrap A.B.C.D:PORT is required");
     }
-    let KadIdentity { id, udp_port } = store.ensure_kad_identity()?;
+    let id = store.ensure_kad_identity()?.id;
 
     let mut node = spawn(
         KadNetConfig {
             node: KadNodeConfig {
                 id,
-                tcp_port: store.ensure_identity()?.tcp_port(),
-                udp_port,
+                tcp_port: settings.tcp_port,
+                udp_port: settings.udp_port,
                 user_hash: store.ensure_identity()?.user_hash(),
             },
             // Doctrine: NEVER capture the public network to disk.
@@ -130,11 +133,10 @@ pub async fn run_join(
             firewall_self_check: false,
             // ...and stays plaintext on the public network: the ADR-0046 crypt and
             // verify-key layers are capture-gated and arm only in the bench.
-            datagram_obfuscation: false,
-            verify_keys: None,
+            obfuscation: None,
             contact_admission: None,
         },
-        std::net::SocketAddr::from((Ipv4Addr::UNSPECIFIED, udp_port)),
+        std::net::SocketAddr::from((Ipv4Addr::UNSPECIFIED, settings.udp_port)),
     )
     .await
     .context("spawn the Kad node")?;
@@ -144,6 +146,7 @@ pub async fn run_join(
         hex16(id.as_bytes()),
         node.local_addr().port()
     );
+    tracing::info!(bootstraps = bootstraps.len(), "kad join: bootstrapping");
     for endpoint in bootstraps {
         node.command(KadCommand::Bootstrap {
             endpoint: *endpoint,

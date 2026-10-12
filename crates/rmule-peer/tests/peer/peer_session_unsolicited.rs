@@ -3,7 +3,10 @@
 //! never seeds state, never poisons a later request, and never holds
 //! in-flight budget.
 
-use rmule_peer::{FileProbeStatus, PartRanges, PeerCommand, PeerEvent};
+use rmule_peer::{
+    FileProbeStatus, NoticeEvent, PartRanges, PeerCommand, PeerEvent, RequesterCommand,
+    RequesterEvent,
+};
 use rmule_primitives::session::drain;
 use rmule_primitives::{ED2K_PART_SIZE, PartHash};
 use rmule_testkit::peer_session::*;
@@ -20,15 +23,15 @@ fn unsolicited_probe_answers_do_not_seed_state_or_emit_probed() {
     assert!(
         !events(&out)
             .iter()
-            .any(|e| matches!(e, PeerEvent::FileProbed { .. })),
+            .any(|e| matches!(e, PeerEvent::Requester(RequesterEvent::FileProbed { .. }))),
         "unsolicited answers must not probe: {out:?}"
     );
     // A real probe afterwards starts from scratch and completes.
-    session.handle_command(PeerCommand::ProbeFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: h,
         file_size: 20_000_000,
         own_status: rmule_peer::PartBitmap::downloader_empty(20_000_000),
-    });
+    }));
     let out = drain(|| session.poll_output());
     assert!(writes(&out).iter().any(|p| p.opcode() == 0x58));
     session.handle_bytes(&reqfilename_answer(h, "real"));
@@ -36,10 +39,10 @@ fn unsolicited_probe_answers_do_not_seed_state_or_emit_probed() {
     let out = drain(|| session.poll_output());
     assert!(events(&out).iter().any(|e| matches!(
         e,
-        PeerEvent::FileProbed {
+        PeerEvent::Requester(RequesterEvent::FileProbed {
             file_hash,
             status: FileProbeStatus::Available { .. },
-        } if *file_hash == h
+        }) if *file_hash == h
     )));
 }
 
@@ -53,16 +56,16 @@ fn unsolicited_nofil_does_not_poison_a_later_request() {
 
     // A later legitimate request must not be vetoed by it.
     let ranges = PartRanges::new([(0, 64), (0, 0), (0, 0)]).unwrap();
-    session.handle_command(PeerCommand::RequestParts {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 1_000_000,
         ranges,
-    });
+    }));
     let out = drain(|| session.poll_output());
     assert!(
         !events(&out)
             .iter()
-            .any(|e| matches!(e, PeerEvent::CommandRejected { .. })),
+            .any(|e| matches!(e, PeerEvent::Notice(NoticeEvent::CommandRejected { .. }))),
         "planted NOFIL must not veto the request: {out:?}"
     );
     assert!(
@@ -89,11 +92,11 @@ fn unsolicited_compressed_parts_hold_no_inflight_budget() {
     // A legitimate transfer afterwards still has its full budget.
     let h = file_hash(0x93);
     let ranges = PartRanges::new([(0, 64), (0, 0), (0, 0)]).unwrap();
-    session.handle_command(PeerCommand::RequestParts {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 1_000_000,
         ranges,
-    });
+    }));
     session.handle_bytes(&reqfilename_answer(h, "z"));
     session.handle_bytes(&file_status(h, 1, &[0x01]));
     session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
@@ -106,16 +109,15 @@ fn unsolicited_compressed_parts_hold_no_inflight_budget() {
     assert!(
         events(&out).iter().any(|e| matches!(
             e,
-            PeerEvent::PartReceived { file_hash, offset: 0, bytes }
+            PeerEvent::Requester(RequesterEvent::PartReceived { file_hash, offset: 0, bytes })
                 if *file_hash == h && bytes == &plain
         )),
         "legit block inflates despite the earlier junk: {out:?}"
     );
-    assert!(
-        !events(&out)
-            .iter()
-            .any(|e| matches!(e, PeerEvent::CompressedPartSkipped { .. }))
-    );
+    assert!(!events(&out).iter().any(|e| matches!(
+        e,
+        PeerEvent::Requester(RequesterEvent::CompressedPartSkipped { .. })
+    )));
 }
 
 #[test]
@@ -127,29 +129,29 @@ fn unsolicited_answer_sources_is_dropped() {
     session.handle_bytes(&answer_sources_wire(h, &[source]));
     let out = drain(|| session.poll_output());
     assert!(
-        !events(&out)
-            .iter()
-            .any(|e| matches!(e, PeerEvent::SourcesReceived { .. })),
+        !events(&out).iter().any(|e| matches!(
+            e,
+            PeerEvent::Requester(RequesterEvent::SourcesReceived { .. })
+        )),
         "unsolicited sources dropped: {out:?}"
     );
     // Once the file's flow is open, its sources are taken. The flow is opened
     // by the name ask: an SX1 nibble-1 peer is never asked for sources
     // (ADR-0108), and this test's subject is the flow gate.
-    session.handle_command(PeerCommand::RequestFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: h,
         file_size: 4096,
         own_status: rmule_peer::PartBitmap::downloader_empty(4096),
         want_sources: false,
         want_aich_root: false,
-    });
+    }));
     let _ = drain(|| session.poll_output());
     session.handle_bytes(&answer_sources_wire(h, &[source]));
     let out = drain(|| session.poll_output());
-    assert!(
-        events(&out)
-            .iter()
-            .any(|e| matches!(e, PeerEvent::SourcesReceived { .. }))
-    );
+    assert!(events(&out).iter().any(|e| matches!(
+        e,
+        PeerEvent::Requester(RequesterEvent::SourcesReceived { .. })
+    )));
 }
 
 #[test]
@@ -163,11 +165,11 @@ fn unsolicited_hashset_answer_does_not_precache() {
     // A real multi-part download afterwards must still fetch the hash set
     // instead of trusting the planted "cache".
     let ranges = PartRanges::new([(0, 64), (0, 0), (0, 0)]).unwrap();
-    session.handle_command(PeerCommand::RequestParts {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: ED2K_PART_SIZE + 1,
         ranges,
-    });
+    }));
     let out = drain(|| session.poll_output());
     assert!(
         writes(&out).iter().any(|p| p.opcode() == 0x51),

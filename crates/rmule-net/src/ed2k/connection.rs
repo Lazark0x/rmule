@@ -7,12 +7,11 @@
 use rmule_ed2k::{Ed2kCommand, Ed2kEvent, Ed2kSession};
 use rmule_primitives::{Capabilities, ClientIdentity, CryptStance, ServerEndpoint};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpStream;
 use tracing::Instrument;
 
 use crate::driver::{
-    ChannelCaps, CryptStream, DriverError, ObfuscationPolicy, SpawnCapture, SpawnHandles,
-    run_capture, spawn_connection,
+    ChannelCaps, CryptStream, DriverError, SpawnCapture, SpawnHandles, run_capture,
+    spawn_connection,
 };
 use crate::ed2k::capture::{Ed2kCaptureFormat, event_to_toml};
 use crate::ed2k::driver::Ed2kDriven;
@@ -37,29 +36,33 @@ impl Connection {
     }
 
     /// Open a TCP connection with caller-supplied timeouts and capture
-    /// directory. Returns once TCP is up (or the connect timeout has
-    /// elapsed); login outcome and any later `LoginTimeout` arrive as
-    /// [`Ed2kEvent`]s on [`Self::next_event`].
+    /// directory. Returns once TCP is up — and, for an obfuscated dial, once
+    /// the crypt handshake completed — or the connect timeout has elapsed;
+    /// login outcome and any later `LoginTimeout` arrive as [`Ed2kEvent`]s on
+    /// [`Self::next_event`].
+    ///
+    /// With [`ConnectOptions::obfuscated_port`] set, the dial goes to that
+    /// port and the server form of the crypt handshake runs before the login
+    /// (ADR-0042), bounded by the connect timeout; it is one attempt, and its
+    /// failure is [`Ed2kNetError::CryptHandshake`] or the dial's own.
     pub async fn connect_with_options(
         endpoint: ServerEndpoint,
         identity: ClientIdentity,
         options: ConnectOptions,
     ) -> Result<Self, Ed2kNetError> {
+        let port = options.obfuscated_port.unwrap_or_else(|| endpoint.port());
         // A-first with one AAAA fallback (ADR-0087 §4.7): a HighID *is* the
         // packed public IPv4, so preferring AAAA on a dual-stack server costs
         // one for nothing.
-        let (stream, resolved) = crate::ed2k::resolve::connect_server(
-            endpoint.host(),
-            endpoint.port(),
-            options.connect_timeout,
-        )
-        .await
-        .map_err(|error| match error.kind() {
-            std::io::ErrorKind::TimedOut => Ed2kNetError::from(DriverError::ConnectTimeout),
-            _ => Ed2kNetError::from(error),
-        })?;
-        // The login's `CT_SERVER_FLAGS` advertises this connection's crypt
-        // stance (ADR-0047); no obfuscation config keeps the crypt lights dark.
+        let (stream, resolved) =
+            crate::ed2k::resolve::connect_server(endpoint.host(), port, options.connect_timeout)
+                .await
+                .map_err(|error| match error.kind() {
+                    std::io::ErrorKind::TimedOut => Ed2kNetError::from(DriverError::ConnectTimeout),
+                    _ => Ed2kNetError::from(error),
+                })?;
+        // The login's `CT_SERVER_FLAGS` advertises our crypt stance
+        // (ADR-0047); no obfuscation config keeps the crypt lights dark.
         let crypt_stance = options
             .obfuscation
             .map_or(CryptStance::disabled(), |config| {
@@ -73,38 +76,21 @@ impl Connection {
         if let Some(ports) = options.udp_ports {
             session = session.with_udp_ports_advertisement(ports);
         }
-
-        let Some(config) = options.obfuscation else {
+        if options.obfuscated_port.is_none() {
             return Ok(Self::spawn_with_options(session, stream, options).with_resolved(resolved));
-        };
-        // rmule is always the client to a server, so only Requested/Required
-        // initiate obfuscation (Supported connects plaintext until per-server
-        // crypt flags exist to hint that a server speaks it).
-        if !matches!(
-            config.policy,
-            ObfuscationPolicy::Requested | ObfuscationPolicy::Required
-        ) {
-            return Ok(Self::spawn_with_options(session, stream, options));
         }
-
-        // Attempt an obfuscated DH connection, driving the handshake eagerly so
-        // a non-crypt server surfaces here rather than as a later disconnect.
+        // Driven eagerly, so a server that does not take obfuscation on that
+        // port surfaces here, as a failed dial, rather than as a later
+        // disconnect the login would misread.
         let mut crypt = CryptStream::new(stream, ServerObfuscationTransport::client());
-        match crypt.complete_handshake().await {
-            Ok(()) => Ok(Self::spawn_with_options(session, crypt, options).with_resolved(resolved)),
-            Err(error) => {
-                if config.policy == ObfuscationPolicy::Required {
-                    return Err(error.into());
-                }
-                // Requested: fall back to a plaintext connection — to the same
-                // address the crypt attempt reached, never a fresh resolve that
-                // could pick a different one.
-                let stream =
-                    tokio::time::timeout(options.connect_timeout, TcpStream::connect(resolved))
-                        .await
-                        .map_err(|_| DriverError::ConnectTimeout)??;
-                Ok(Self::spawn_with_options(session, stream, options).with_resolved(resolved))
+        match tokio::time::timeout(options.connect_timeout, crypt.complete_handshake()).await {
+            Ok(Ok(())) => {
+                Ok(Self::spawn_with_options(session, crypt, options).with_resolved(resolved))
             }
+            Ok(Err(error)) => Err(Ed2kNetError::CryptHandshake(error)),
+            Err(_) => Err(Ed2kNetError::CryptHandshake(std::io::Error::from(
+                std::io::ErrorKind::TimedOut,
+            ))),
         }
     }
 

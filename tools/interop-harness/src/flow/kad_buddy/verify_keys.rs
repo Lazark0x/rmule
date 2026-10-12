@@ -19,14 +19,12 @@ use crate::flow::evidence::{
 use crate::flow::identity::ipv4_string;
 use crate::flow::kad_buddy::firewalled::{KAD_FW_AMULE_KAD_ID, KAD_FW_RMULE_KAD_ID};
 
-/// The private verify-key derivation secret this run's rmule node minted, read
-/// from the marker it prints when `--kad-crypt` arms. Without it a counterparty
-/// datagram encrypted under a key rmule handed out cannot be opened at all.
-pub(crate) fn parse_verify_key_secret(log: &str) -> Option<u32> {
-    log.lines()
-        .filter_map(|line| line.split("verify_key_secret=").nth(1))
-        .find_map(|value| value.split_whitespace().next()?.parse().ok())
-}
+/// The **Kad UDP Key** every crypt-armed rmule body a verdict decodes runs
+/// under: the harness chooses it and passes it in (`kad join-node
+/// --kad-udp-key-seed`, `ed2k serve start --kad-udp-key-seed`), so a
+/// counterparty datagram encrypted under a key rmule handed out opens without
+/// the tool ever printing its seed.
+pub(crate) const KAD_UDP_KEY_SEED: u32 = 0x5A3C_91E7;
 
 /// Judge the **verify-key / `0x22` three-way leg** (ADR-0064).
 ///
@@ -45,14 +43,17 @@ pub(crate) fn assert_kad_verify_keys(
     rmule_ip: [u8; 4],
 ) -> Result<()> {
     let rmule_log = read_verdict_log(&layout.kad_node_stdout_log("rmule"))?;
-    let secret = parse_verify_key_secret(&rmule_log).context(
-        "rmule never printed `rmule-kad-crypt-armed ... verify_key_secret=`: the crypt + \
-         verify-key arming did not take, so no sender key could reach aMule",
-    )?;
+    if !rmule_log.contains("rmule-kad-crypt-armed") {
+        bail!(
+            "rmule never printed `rmule-kad-crypt-armed`: the crypt + verify-key arming did \
+             not take, so no sender key could reach aMule"
+        );
+    }
+    let seed = KAD_UDP_KEY_SEED;
     // The key rmule hands aMule — and therefore the key aMule encrypts its `0x22`
     // answer under (`SendPacket(..., senderKey, NULL)` takes the receiver-key
     // family, `EncryptSendClient` `kadRecvKeyUsed`).
-    let our_key_for_amule = rmule_kad::udp_verify_key(secret, std::net::Ipv4Addr::from(amule_ip));
+    let our_key_for_amule = rmule_kad::udp_verify_key(seed, std::net::Ipv4Addr::from(amule_ip));
 
     let frames = read_tap_frames(&layout.kad_rmule_dir().join("tap"))?;
     let amule_remote = format!("{}:{hub_udp_port}", ipv4_string(amule_ip));
@@ -171,7 +172,7 @@ pub(crate) fn assert_kad_verify_keys(
     let verdict_toml = format!(
         "# Kad UDP verify keys — the 0x22 three-way leg (ADR-0064).\n\
          verdict = \"{verdict}\"\n\
-         rmule_verify_key_secret = {secret}\n\
+         rmule_kad_udp_key_seed = {seed}\n\
          rmule_public_ip_argument = \"{}\"\n\
          amule_hello_req_in = {hellos_in}\n\
          rmule_hello_res_out = {hello_res_out}\n\

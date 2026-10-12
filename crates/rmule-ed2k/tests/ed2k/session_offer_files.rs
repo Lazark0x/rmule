@@ -3,8 +3,8 @@
 //! server advertised large-file support.
 
 use rmule_ed2k::{
-    CommandRejectReason, Ed2kCommand, Ed2kCommandKind, Ed2kEvent, OfferFiles, OfferedFile, Output,
-    ServerCapability, ServerTcpFlags,
+    CommandRejectReason, Ed2kCommand, Ed2kCommandKind, Ed2kEvent, FileCompleteness, OfferFiles,
+    OfferedFile, Output, ServerCapability, ServerTcpFlags,
 };
 use rmule_primitives::{ClientId, Ed2kText, FileHash, Packet, PacketProtocol};
 
@@ -21,6 +21,7 @@ fn offer_files_before_login_emits_command_rejection() {
     let mut session = crate::fixture::started_session(0x42);
 
     session.handle_command(Ed2kCommand::OfferFiles {
+        presented_id: None,
         files: vec![offered(42)],
     });
 
@@ -34,11 +35,12 @@ fn offer_files_before_login_emits_command_rejection() {
 }
 
 #[test]
-fn offer_files_after_login_writes_offerfiles_with_our_id_and_port() {
+fn offer_files_after_a_high_id_login_writes_our_id_and_port() {
     let mut session = crate::fixture::started_session(0x42);
-    crate::fixture::login_with_flags(&mut session, None);
+    crate::fixture::login_as(&mut session, 0x0403_0201, None);
 
     session.handle_command(Ed2kCommand::OfferFiles {
+        presented_id: None,
         files: vec![offered(42)],
     });
 
@@ -50,7 +52,7 @@ fn offer_files_after_login_writes_offerfiles_with_our_id_and_port() {
     let entries = offer.entries();
     assert_eq!(entries.len(), 1);
     // Complete-source hint = our login-assigned id + identity port.
-    assert_eq!(entries[0].client_id(), ClientId::from_u32(1));
+    assert_eq!(entries[0].client_id(), ClientId::from_u32(0x0403_0201));
     assert_eq!(entries[0].client_port(), 4662);
     assert_eq!(
         entries[0].file_hash(),
@@ -58,12 +60,92 @@ fn offer_files_after_login_writes_offerfiles_with_our_id_and_port() {
     );
 }
 
+/// The session gates on the id its server assigned and writes the presented
+/// id the command names, not its own.
+#[test]
+fn a_high_id_session_writes_the_presented_id_the_command_names() {
+    let mut session = crate::fixture::started_session(0x42);
+    crate::fixture::login_as(&mut session, 0x0403_0201, None);
+
+    session.handle_command(Ed2kCommand::OfferFiles {
+        presented_id: Some(ClientId::from_u32(0x0A0B_0C0D)),
+        files: vec![offered(42)],
+    });
+
+    let Some(Output::Write(bytes)) = session.poll_output() else {
+        panic!("expected an OP_OFFERFILES write");
+    };
+    let offer = OfferFiles::decode_packet(&Packet::decode_exact(&bytes).unwrap()).unwrap();
+    assert_eq!(
+        offer.entries()[0].client_id(),
+        ClientId::from_u32(0x0A0B_0C0D)
+    );
+    assert_eq!(offer.entries()[0].client_port(), 4662);
+}
+
+#[test]
+fn offer_files_after_a_low_id_login_writes_zero_id_and_port() {
+    let mut session = crate::fixture::started_session(0x42);
+    crate::fixture::login_with_flags(&mut session, None);
+
+    session.handle_command(Ed2kCommand::OfferFiles {
+        presented_id: None,
+        files: vec![offered(42)],
+    });
+
+    let Some(Output::Write(bytes)) = session.poll_output() else {
+        panic!("expected an OP_OFFERFILES write");
+    };
+    let offer = OfferFiles::decode_packet(&Packet::decode_exact(&bytes).unwrap()).unwrap();
+    assert_eq!(offer.entries()[0].client_id(), ClientId::from_u32(0));
+    assert_eq!(offer.entries()[0].client_port(), 0);
+}
+
+/// The session reads the compression flag once at login and marks a part-file
+/// `0xFCFCFCFC:0xFCFC` and a whole one `0xFBFBFBFB:0xFBFB`.
+#[test]
+fn a_compression_server_session_marks_each_file_by_completeness() {
+    let mut session = crate::fixture::started_session(0x42);
+    crate::fixture::login_with_flags(
+        &mut session,
+        Some(ServerTcpFlags::from_bits(ServerTcpFlags::COMPRESSION)),
+    );
+
+    session.handle_command(Ed2kCommand::OfferFiles {
+        presented_id: None,
+        files: vec![
+            offered(42),
+            offered(43).with_completeness(FileCompleteness::Incomplete),
+        ],
+    });
+
+    let Some(Output::Write(bytes)) = session.poll_output() else {
+        panic!("expected an OP_OFFERFILES write");
+    };
+    let packet = Packet::decode_exact(&bytes).unwrap();
+    let packet = if packet.protocol() == PacketProtocol::PackedEd2k {
+        rmule_primitives::inflate(&packet, 250_000, PacketProtocol::Edonkey).expect("inflates")
+    } else {
+        packet
+    };
+    let offer = OfferFiles::decode_packet(&packet).unwrap();
+    let marks: Vec<_> = offer
+        .entries()
+        .iter()
+        .map(|e| (e.client_id().as_u32(), e.client_port()))
+        .collect();
+    assert_eq!(marks, [(0xFBFB_FBFB, 0xFBFB), (0xFCFC_FCFC, 0xFCFC)]);
+}
+
 #[test]
 fn empty_offer_files_after_login_writes_zero_count_keepalive() {
     let mut session = crate::fixture::started_session(0x42);
     crate::fixture::login_with_flags(&mut session, None);
 
-    session.handle_command(Ed2kCommand::OfferFiles { files: vec![] });
+    session.handle_command(Ed2kCommand::OfferFiles {
+        presented_id: None,
+        files: vec![],
+    });
 
     let Some(Output::Write(bytes)) = session.poll_output() else {
         panic!("expected an OP_OFFERFILES write");
@@ -78,6 +160,7 @@ fn large_offer_without_capability_is_rejected() {
     crate::fixture::login_with_flags(&mut session, None);
 
     session.handle_command(Ed2kCommand::OfferFiles {
+        presented_id: None,
         files: vec![offered(u64::from(u32::MAX) + 1)],
     });
 
@@ -101,6 +184,7 @@ fn large_offer_with_capability_writes_split_size() {
     );
 
     session.handle_command(Ed2kCommand::OfferFiles {
+        presented_id: None,
         files: vec![offered(u64::from(u32::MAX) + 1)],
     });
 
@@ -119,6 +203,7 @@ fn offer_files_without_compression_flag_emits_plain() {
     crate::fixture::login_with_flags(&mut session, None);
 
     session.handle_command(Ed2kCommand::OfferFiles {
+        presented_id: None,
         files: vec![offered(42)],
     });
 
@@ -150,6 +235,7 @@ fn offer_files_with_compression_flag_attempts_pack_when_payload_compressible() {
         Ed2kText::from_utf8("x".repeat(1000)),
     );
     session.handle_command(Ed2kCommand::OfferFiles {
+        presented_id: None,
         files: vec![compressible_file],
     });
 
@@ -183,6 +269,7 @@ fn offer_files_emitted_size_is_smaller_with_compression_flag_on_compressible_dat
     let mut session_no_compression = crate::fixture::started_session(0x42);
     crate::fixture::login_with_flags(&mut session_no_compression, None);
     session_no_compression.handle_command(Ed2kCommand::OfferFiles {
+        presented_id: None,
         files: vec![highly_compressible.clone()],
     });
     let Some(Output::Write(plain_bytes)) = session_no_compression.poll_output() else {
@@ -196,6 +283,7 @@ fn offer_files_emitted_size_is_smaller_with_compression_flag_on_compressible_dat
         Some(ServerTcpFlags::from_bits(ServerTcpFlags::COMPRESSION)),
     );
     session_with_compression.handle_command(Ed2kCommand::OfferFiles {
+        presented_id: None,
         files: vec![highly_compressible],
     });
     let Some(Output::Write(packed_bytes)) = session_with_compression.poll_output() else {

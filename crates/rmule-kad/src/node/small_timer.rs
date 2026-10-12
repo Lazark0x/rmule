@@ -24,17 +24,6 @@ impl KadNode {
     /// start greets its seeds within seconds.
     pub const SMALL_TIMER_INITIAL: Duration = Duration::from_secs(1);
 
-    /// Arm the small-timer pass, anchored at `now` — the driver calls this once
-    /// when it begins joining Kad, beside
-    /// [`arm_self_lookup`](Self::arm_self_lookup). The first pass fires
-    /// [`SMALL_TIMER_INITIAL`](Self::SMALL_TIMER_INITIAL) later, then every
-    /// [`SMALL_TIMER_INTERVAL`](Self::SMALL_TIMER_INTERVAL), joined or not.
-    /// Left un-armed, a node runs no pass at all — the routing-only mesh-sim
-    /// posture, which must still quiesce.
-    pub fn arm_small_timer(&mut self, now: KadInstant) {
-        self.next_small_timer = Some(now + Self::SMALL_TIMER_INITIAL);
-    }
-
     /// When due, run one [`small_timer_pass`](crate::KadRoutingTable::small_timer_pass)
     /// and act on what it returns — at most one hello or one eviction per
     /// bucket. A hello probe rides the ordinary machinery (an answer marks

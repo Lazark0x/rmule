@@ -148,19 +148,21 @@ pub(super) fn driven(
         ),
         Claim::about(
             "the-requester-routed-through-the-buddy-coordinator",
-            requester.text("routed").contains("NatTraversal")
+            requester.text("routed") == "nat_traversal"
                 && requester.int("attempts_buddy") >= 1
                 && requester.int("attempts_server") == 0,
             Evidence::RmuleOnly,
             format!(
                 "The requester routed {}; {} Traversal Attempts opened with a buddy \
-                 coordinator and {} with a server one; {} rendezvous emitted. The route \
+                 coordinator and {} with a server one; {} buddy rendezvous and {} server \
+                 requests emitted. The route \
                  tree reached the buddy rung because this body has no session at all, so \
                  `on_our_server` is honestly false and the server coordinator cannot apply.",
                 requester.text("routed"),
                 requester.int("attempts_buddy"),
                 requester.int("attempts_server"),
                 requester.int("rendezvous_emitted"),
+                requester.int("server_requests_emitted"),
             ),
         ),
         Claim::about(
@@ -288,7 +290,7 @@ fn transfer_claims(
         Claim::about(
             "the-download-found-the-buddy-coordinator-from-a-kad-row-alone",
             requester.flag("download_started")
-                && requester.text("routed").contains("NatTraversal")
+                && requester.text("routed") == "nat_traversal"
                 && requester.int("download_fallbacks") >= 1
                 && requester.int("download_fallbacks_unclaimable") == 0,
             Evidence::RmuleOnly,

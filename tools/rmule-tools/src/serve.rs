@@ -1,5 +1,6 @@
 //! Diagnostic serve orchestration command (`ed2k serve start`).
 
+pub(crate) mod crypt_flip;
 mod switch;
 
 use std::net::SocketAddrV4;
@@ -8,12 +9,13 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Args;
+use rmule_core::run_log::Level;
 use rmule_core::{
-    AppConfigStore, Core, CoreCommand, CoreConfig, CoreEvent, DurableAppConfig,
-    ExternalAddressOverride, KadEnableConfig, KadId, KadShutdownSlot, ObfuscationPolicy, PeerReach,
-    Preference, ServeCommand as CoreServeCommand, open_durable_store_in_memory,
+    Core, CoreCommand, CoreConfig, CoreEvent, CoreSettings, ExternalAddressOverride,
+    KadEnableConfig, KadId, KadShutdownSlot, ObfuscationPolicy, PeerReach,
+    ServeCommand as CoreServeCommand, ServerPolicy, open_durable_store_in_memory,
 };
-use rmule_primitives::{ClientId, ClientIdentity, Ipv4Endpoint, PeerEndpoint, ServerEndpoint};
+use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint, ServerEndpoint};
 
 use crate::cli::DownloadIdentityArgs;
 use crate::operand::parse_hex16;
@@ -42,9 +44,8 @@ pub(crate) struct ServeStartArgs {
     #[arg(long, requires = "switch_to")]
     add_at_switch: Vec<PathBuf>,
     /// Withhold the share set from a server that grants related search
-    /// (`Preference::WithholdSharesFromRelatedSearch`, ADR-0099): set on
-    /// this run's in-memory store before the core is built, which reads it
-    /// at start as it reads the operator's. Off unless passed.
+    /// (the Announce Policy, ADR-0099): the core starts under it as it starts
+    /// under the operator's. Off unless passed.
     #[arg(long, default_value_t = false)]
     withhold_from_related_search: bool,
     /// Local IPv4 listen address as `ip:port`.
@@ -73,6 +74,12 @@ pub(crate) struct ServeStartArgs {
     /// distance-driven exchange is left to chance.
     #[arg(long)]
     kad_id_hex: Option<String>,
+    /// The **Kad UDP Key** the node's verify keys derive from, in place of
+    /// the one the run's store mints. A caller that must open what a
+    /// counterparty keys on it chooses the seed here; the tool never prints
+    /// it.
+    #[arg(long, requires = "kad")]
+    kad_udp_key_seed: Option<u32>,
     /// The one UDP listen port (peer reask, NAT-T frames and Kad share it,
     /// ADR-0057); `0` binds ephemeral.
     #[arg(long, default_value_t = 0)]
@@ -136,7 +143,7 @@ pub(crate) struct ServeStartArgs {
     /// `0`, the default, asks nothing.
     #[arg(long, default_value_t = 0)]
     report_kad_verdicts_every_secs: u64,
-    /// Arm rmule's peer protocol-obfuscation policy (`CoreConfig::peer_crypt`,
+    /// Arm rmule's peer protocol-obfuscation policy (`CoreSettings::obfuscation`,
     /// ADR-0042/0046) for this run — off unless passed. It lights the peer
     /// hello's `MiscOptions2` crypt bits, makes the accepted peer-TCP
     /// connections obfuscation-aware, and arms the peer-UDP per-datagram layer
@@ -151,39 +158,36 @@ pub(crate) struct ServeStartArgs {
     /// unflagged run stays byte-for-byte the plaintext one.
     #[arg(long, value_enum)]
     peer_crypt: Option<PeerCryptPolicyArg>,
+    /// Change the obfuscation policy mid-run, as `<secs>:<policy>` with the
+    /// policy one of `off`, `supported`, `requested`, `required`; repeat for
+    /// several. At each, the running core takes the policy up through its
+    /// Core Settings handle — every surface reads it as it decides, and a
+    /// connection already negotiated keeps its own (ADR-0046) — and a
+    /// `rmule-obfuscation-flip after_secs=… policy=… at_unix_ms=…` line marks
+    /// the moment. Seconds count from the first login being asked for, as
+    /// `--switch-after` does. `--peer-crypt` is the policy the run starts
+    /// under.
+    #[arg(long, value_parser = crypt_flip::parse)]
+    peer_crypt_flip: Vec<crypt_flip::CryptFlip>,
     #[command(flatten)]
     identity: DownloadIdentityArgs,
 }
 
-/// The Kad half of a **Core-Pumped Stimulus Node**. `tcp_port` is deliberately
-/// the serve listener's own port: peers dial what Kad advertises, so a buddy or
-/// callback relay only reaches us if the two agree.
-fn kad_enable_config(args: &ServeStartArgs, identity: &ClientIdentity) -> Result<KadEnableConfig> {
-    // Config ownership stays as ADR-0069 has it: the front-end supplies the Kad
-    // identity, Core never mints one. An unpinned run borrows the app config
-    // store's generate-once path rather than rolling its own.
-    let id = match args.kad_id_hex.as_deref() {
-        Some(hex) => KadId::from_bytes(parse_hex16("--kad-id-hex", hex)?),
-        None => {
-            DurableAppConfig::new(open_durable_store_in_memory()?)
-                .ensure_kad_identity()?
-                .id
-        }
-    };
-    Ok(KadEnableConfig {
-        kad_id: id,
-        peer_credentials: identity.clone().into(),
+/// The Kad half of a **Core-Pumped Stimulus Node**. Its identity is the
+/// core's: the Kad ID `--kad-id-hex` pinned at build or the store minted, the
+/// Kad UDP Key the run's store minted, and the serve listener's port, since
+/// peers dial what Kad advertises and a buddy or callback relay only reaches
+/// us if the two agree.
+fn kad_enable_config(args: &ServeStartArgs) -> KadEnableConfig {
+    KadEnableConfig {
         bootstrap: args.kad_bootstrap.clone(),
         contacts: Vec::new(),
         nodes_dat_path: None,
         assume_open_reachability: args.kad_assume_open,
-        // A per-run seed from the same generate-once path, over a store
-        // that lives as long as the run: the node's verify keys hold for it.
-        kad_udp_key: DurableAppConfig::new(open_durable_store_in_memory()?).ensure_kad_udp_key()?,
         kad_capture_dir: args.kad_capture_dir.clone(),
         // Installed by `start` itself, once `args.kad` is known.
         kad_shutdown: None,
-    })
+    }
 }
 
 /// The CLI spelling of [`ObfuscationPolicy`] (clap cannot derive `ValueEnum`
@@ -208,22 +212,8 @@ impl From<PeerCryptPolicyArg> for ObfuscationPolicy {
 pub(crate) async fn start(args: ServeStartArgs) -> Result<()> {
     let server = ServerEndpoint::parse_host_port(&args.server)
         .with_context(|| format!("parse server endpoint {}", args.server))?;
-    // The serve listener's port is the one advertised, not the identity's
-    // default.
-    let identity = args.identity.client_identity()?;
-    let identity = ClientIdentity::new(
-        identity.user_hash(),
-        identity.nickname().clone(),
-        args.listen.port(),
-        args.identity.protocol_version,
-    );
-
     let config = CoreConfig {
         upload_slot_budget: args.upload_slots,
-        peer_crypt: args.peer_crypt.map(ObfuscationPolicy::from),
-        // One socket for reask, NAT-T and Kad (ADR-0057): what used to be the
-        // Kad bind is the core's one UDP bind.
-        udp_port: args.udp_port,
         // The Address Learning Override tier (ADR-0084); `--own-ip` is its
         // one CLI surface.
         external_address: ExternalAddressOverride {
@@ -232,20 +222,40 @@ pub(crate) async fn start(args: ServeStartArgs) -> Result<()> {
         },
         ..CoreConfig::default()
     };
+    let settings = CoreSettings {
+        // The serve listener's port is the one advertised, not the
+        // identity's default.
+        tcp_port: args.listen.port(),
+        ..args.identity.settings(CoreSettings::default())
+    };
+    let settings = CoreSettings {
+        obfuscation: args.peer_crypt.map(ObfuscationPolicy::from),
+        // One socket for reask, NAT-T and Kad (ADR-0057): the core's one UDP
+        // bind.
+        udp_port: args.udp_port,
+        server_policy: ServerPolicy {
+            withhold_from_related_search: args.withhold_from_related_search,
+            ..ServerPolicy::default()
+        },
+        ..settings
+    };
     let store = open_durable_store_in_memory()?;
-    if args.withhold_from_related_search {
-        DurableAppConfig::new(store.clone())
-            .set_preference(Preference::WithholdSharesFromRelatedSearch, "true")
-            .context("set the withhold preference")?;
+    let builder = args.identity.core_builder(config, settings, store)?;
+    let builder = match args.kad_id_hex.as_deref() {
+        Some(hex) => builder.kad_id(KadId::from_bytes(parse_hex16("--kad-id-hex", hex)?)),
+        None => builder,
+    };
+    let mut core = match args.kad_udp_key_seed {
+        Some(seed) => builder.kad_udp_key(seed),
+        None => builder,
     }
-    let mut core = args.identity.core_builder(config, store)?.build();
+    .build();
     let share = crate::share::share_files(&mut core, &args.file, |_| {}).await?;
     core.send(CoreCommand::Serve(CoreServeCommand::StartServing {
         listen_addr: args.listen,
-        credentials: identity.clone().into(),
     }))
     .await?;
-    crate::node::connect(&core, &server, identity.clone().into()).await?;
+    crate::node::connect(&core, &server).await?;
     let mut switch = match (&args.switch_to, args.switch_after) {
         (Some(to), Some(after)) => Some(switch::Switch {
             to: ServerEndpoint::parse_host_port(to)
@@ -256,9 +266,9 @@ pub(crate) async fn start(args: ServeStartArgs) -> Result<()> {
         }),
         _ => None,
     };
-    let switch_at = switch
-        .as_ref()
-        .map(|switch| tokio::time::Instant::now() + switch.after);
+    let began = tokio::time::Instant::now();
+    let switch_at = switch.as_ref().map(|switch| began + switch.after);
+    let mut crypt_flips = crypt_flip::CryptFlips::new(args.peer_crypt_flip.clone());
 
     // The external stop lever: installed whenever Kad runs, so
     // SIGTERM/SIGINT below can wait for a *finalized* ADR-0022 tap before
@@ -267,18 +277,16 @@ pub(crate) async fn start(args: ServeStartArgs) -> Result<()> {
     // diagnostic path keeps its own raw lever rather than switching to it.
     let mut kad_shutdown_handle = None;
     if args.kad {
-        let mut kad = kad_enable_config(&args, &identity)?;
+        let mut kad = kad_enable_config(&args);
         let (slot, handle) = KadShutdownSlot::new();
         kad.kad_shutdown = Some(slot);
         kad_shutdown_handle = Some(handle);
-        // With a crypt policy the Core's node arms Kad-UDP crypt keyed on this
-        // run's seed: print it in `kad join-node`'s marker shape,
-        // so a verdict can open what a counterparty keys on it.
-        if args.peer_crypt.is_some() {
-            println!(
-                "rmule-kad-crypt-armed verify_key_secret={}",
-                kad.kad_udp_key
-            );
+        // With a crypt policy the Core's node arms Kad-UDP crypt — at start,
+        // or at a flip that arms one. The marker says so and carries no
+        // seed: a verdict that opens what a counterparty keys on it chose the
+        // seed itself (`--kad-udp-key-seed`).
+        if args.peer_crypt.is_some() || args.peer_crypt_flip.iter().any(|flip| flip.arms()) {
+            println!("rmule-kad-crypt-armed");
         }
         core.send(CoreCommand::EnableKad(kad)).await?;
     }
@@ -310,6 +318,7 @@ pub(crate) async fn start(args: ServeStartArgs) -> Result<()> {
         DirectCallback,
         ReportVerdicts,
         Switch,
+        CryptFlip,
         Deadline,
         Signal,
     }
@@ -335,6 +344,12 @@ pub(crate) async fn start(args: ServeStartArgs) -> Result<()> {
                 }
             } => Step::Switch,
             () = async {
+                match crypt_flips.next_at(began) {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            } => Step::CryptFlip,
+            () = async {
                 match deadline {
                     Some(deadline) => tokio::time::sleep_until(deadline).await,
                     None => std::future::pending().await,
@@ -351,14 +366,15 @@ pub(crate) async fn start(args: ServeStartArgs) -> Result<()> {
                     report_kad_verdicts(snapshot, &mut last_verdicts);
                     continue;
                 }
-                println!("{event}");
+                println!("{}", event.record().render(Level::Full));
             }
             Step::ReportVerdicts => core.send(CoreCommand::DumpDiagnostics).await?,
             Step::Switch => {
                 if let Some(switch) = switch.take() {
-                    switch::run(&mut core, &share, &switch, identity.clone().into()).await?;
+                    switch::run(&mut core, &share, &switch).await?;
                 }
             }
+            Step::CryptFlip => crypt_flips.fire(&core)?,
             Step::DirectCallback => {
                 if let Some(target) = args.direct_callback {
                     core.send(CoreCommand::ReachPeer(firewalled_peer_reach(target)))
@@ -505,7 +521,7 @@ fn firewalled_peer_reach(kad_udp: SocketAddrV4) -> PeerReach {
 mod tests {
     use std::time::Duration;
 
-    use rmule_core::{Core, CoreCommand, CoreConfig, KadId, open_durable_store_in_memory};
+    use rmule_core::{Core, CoreCommand, CoreConfig, open_durable_store_in_memory};
 
     use super::{KadEnableConfig, KadShutdownSlot};
 
@@ -517,19 +533,18 @@ mod tests {
     #[tokio::test]
     async fn a_stop_request_finalizes_the_tap_in_a_temp_dir() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let core = Core::new(
+        let core = Core::builder(
             CoreConfig::default(),
             open_durable_store_in_memory().expect("in-memory store"),
-        );
+        )
+        .settings(rmule_core::CoreSettings::default())
+        .build();
         let (slot, handle) = KadShutdownSlot::new();
         core.send(CoreCommand::EnableKad(KadEnableConfig {
-            kad_id: KadId::from_bytes([0x07; KadId::BYTE_LEN]),
-            peer_credentials: rmule_testkit::test_identity(0x42, "rmule-tools-test", 4662).into(),
             bootstrap: Vec::new(),
             contacts: Vec::new(),
             nodes_dat_path: None,
             assume_open_reachability: true,
-            kad_udp_key: 1,
             kad_capture_dir: Some(dir.path().to_path_buf()),
             kad_shutdown: Some(slot),
         }))

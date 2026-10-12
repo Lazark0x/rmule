@@ -74,52 +74,53 @@ async fn worker_events_toward(
 async fn a_dialed_worker_reports_the_source_ask_only_when_the_hello_allows_it() {
     let asked = worker_events_toward_sx1(2).await;
     assert!(asked.contains(&PeerWorkerEvent::SourcesAsked));
-    assert!(asked.contains(&PeerWorkerEvent::SourceExchange {
-        support: rmule_peer::SourceExchangeSupport::new(true, 2, false),
-    }));
+    assert_eq!(
+        supports(&asked),
+        vec![rmule_peer::SourceExchangeSupport::new(true, 2, false)]
+    );
 
     let refused = worker_events_toward_sx1(1).await;
     assert!(!refused.contains(&PeerWorkerEvent::SourcesAsked));
-    assert!(refused.contains(&PeerWorkerEvent::SourceExchange {
-        support: rmule_peer::SourceExchangeSupport::new(true, 1, false),
-    }));
+    assert_eq!(
+        supports(&refused),
+        vec![rmule_peer::SourceExchangeSupport::new(true, 1, false)]
+    );
+}
+
+/// The source-exchange facts each identity among `events` carries, in order.
+fn supports(events: &[PeerWorkerEvent]) -> Vec<rmule_peer::SourceExchangeSupport> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            PeerWorkerEvent::Identity(identity) => Some(identity.source_exchange()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// A pre-0.42 mule states its SX version only in its `OP_EMULEINFO` (aMule
-/// 2.3.3 `BaseClient.cpp:918-921`), here after its hello: whether the block
-/// beats the file request or not, the router hands the facts up in the
-/// session's order, so once the block has been read nothing staler follows it
-/// (ADR-0108).
+/// 2.3.3 `BaseClient.cpp:918-921`), here after its hello: the router hands
+/// the identity up whole at the hello and again at the block's revision, in
+/// the session's order, so once the block has been read nothing staler
+/// follows it (ADR-0108).
 #[tokio::test]
 async fn a_legacy_mules_block_reaches_the_source_ask_clock() {
     let block = rmule_peer::SourceExchangeSupport::new(true, 3, false);
     let events = worker_events_toward(0, Some(3), |event| {
-        *event == PeerWorkerEvent::SourceExchange { support: block }
+        matches!(event, PeerWorkerEvent::Identity(identity) if identity.source_exchange() == block)
     })
     .await;
-    let last = events
-        .iter()
-        .rev()
-        .find_map(|event| match event {
-            PeerWorkerEvent::SourceExchange { support } => Some(*support),
-            _ => None,
-        })
-        .expect("the worker hands up source-exchange facts");
-    assert_eq!(last, block);
-    let hello = events
-        .iter()
-        .position(|event| {
-            *event
-                == PeerWorkerEvent::SourceExchange {
-                    support: rmule_peer::SourceExchangeSupport::new(false, 0, false),
-                }
-        })
-        .expect("the hello's facts come first");
-    let revised = events
-        .iter()
-        .position(|event| *event == PeerWorkerEvent::SourceExchange { support: block })
-        .expect("the block's facts");
-    assert!(hello < revised, "{events:?}");
+    let supports = supports(&events);
+    assert_eq!(
+        supports.first(),
+        Some(&rmule_peer::SourceExchangeSupport::new(false, 0, false)),
+        "the hello's facts come first"
+    );
+    assert_eq!(
+        supports.last(),
+        Some(&block),
+        "nothing staler follows the block"
+    );
 }
 
 /// A worker let go before it reported anything still sends its connect-time

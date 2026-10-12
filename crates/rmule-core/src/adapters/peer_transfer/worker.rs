@@ -7,17 +7,16 @@ use std::time::Duration;
 
 use rmule_net::peer::Connection as PeerConnection;
 use rmule_peer::{
-    EMBLOCKSIZE, FileProbeStatus, PartBitmap, PartRanges, PeerCommand, PeerEvent, PeerIdentity,
-    SlotReleaseReason,
+    ConnectionEvent, EMBLOCKSIZE, FileProbeStatus, NoticeEvent, PartBitmap, PartRanges,
+    PeerCommand, PeerEvent, PeerIdentity, RequesterCommand, RequesterEvent, SlotReleaseReason,
 };
 use rmule_primitives::{AichRootHash, Ed2kFileLink, PeerEndpoint};
 use tokio::sync::mpsc;
 
 use crate::PartPlan;
-use crate::adapters::dialed_serve::{
-    DialedRoute, SharedDialedServeSink, bridge_dialed_serve, route_dialed_connection,
-};
-use crate::adapters::kad_runtime::SharedKadBootstrap;
+use crate::adapters::InboundPeerDeps;
+use crate::adapters::dialed_serve::{DialedRoute, bridge_dialed_serve, route_dialed_connection};
+use crate::adapters::hello_wait::{Opening, await_hello};
 use crate::adapters::peer_transfer::{PeerWorkerCommand, PeerWorkerEvent};
 use crate::adapters::serve_runtime::ServeConnection;
 use crate::service::DialEnd;
@@ -27,9 +26,8 @@ use crate::service::DialEnd;
 /// inbound worker (a called-back Low-ID peer, ADR-0039). `identified` is `None`
 /// for a dialed worker (wait for the peer's hello) and `Some(identity)` for an
 /// adopted one — the inbound hello already identified it during accept, so the
-/// wait is skipped, the worker enters the requester flow directly, and the
-/// identity's own hello stance and serving buddy
-/// ride through with it.
+/// wait is skipped, the worker enters the requester flow directly, and that
+/// identity is what the download keeps.
 /// `own_status` is what rmule holds of `file`; the connect-time name ask
 /// carries it. `want_sources` is the download's source-ask
 /// decision for this connection (ADR-0108).
@@ -43,12 +41,11 @@ pub(crate) async fn drive_peer_worker(
     identified: Option<PeerIdentity>,
     mut command_rx: mpsc::Receiver<PeerWorkerCommand>,
     event_tx: mpsc::Sender<PeerWorkerEvent>,
-    slot_wait_timeout: Duration,
-    dialed_serve_sink: SharedDialedServeSink,
-    kad_bootstrap: SharedKadBootstrap,
-    addresses: crate::address_learning::SharedAddressLearning,
-    hello_refusals: crate::hello_refusals::SharedHelloRefusals,
+    deps: InboundPeerDeps,
 ) {
+    let slot_wait_timeout = deps.slot_wait_timeout;
+    let hello_refusals = deps.hello_refusals.clone();
+    let dialed_serve_sink = deps.dialed_serve_sink.clone();
     // Split the one socket into the two consumers: the router owns the
     // connection, fans events to the download (requester) half and the serve
     // (Server Capability) half, and frames commands from both back onto the
@@ -57,8 +54,21 @@ pub(crate) async fn drive_peer_worker(
     let (requester_tx, mut requester_rx) = mpsc::channel(64);
     // Server Capability events arriving before the serve bridge attaches
     // (below, post-identify) buffer here; the handshake ordering means no
-    // serve burst precedes `PeerIdentified`, so this depth is ample.
+    // serve burst precedes `Identified`, so this depth is ample.
     let (server_tx, server_rx) = mpsc::channel(16);
+    // An adopted inbound worker already identified during accept (ADR-0039):
+    // its identity reaches the download before the router starts, so every
+    // revision the router forwards follows it. A dialed worker's comes from
+    // the router at the peer's hello.
+    let adopted = identified.is_some();
+    if let Some(identity) = identified
+        && event_tx
+            .send(PeerWorkerEvent::Identity(identity))
+            .await
+            .is_err()
+    {
+        return;
+    }
     tokio::spawn(route_dialed_connection(
         conn,
         peer_cmd_rx,
@@ -66,76 +76,17 @@ pub(crate) async fn drive_peer_worker(
             requester_tx,
             server_tx,
             worker_evt_tx: event_tx.clone(),
-            adopted_support: identified.as_ref().map(PeerIdentity::source_exchange),
-            kad_bootstrap,
-            addresses,
+            deps,
         },
     ));
-
-    // A dialed worker waits for the peer's hello; an adopted inbound worker
-    // already identified during accept (ADR-0039), so its `user_hash` and
-    // crypt stance are supplied and the wait is skipped.
-    // An adopted inbound worker (a called-back Low-ID peer) is firewalled with no
-    // reachable client-UDP contact, so it never carries a reask endpoint; only a
-    // dialed worker learns one from the peer's hello.
-    let (identity, udp_contact) = match identified {
-        // An adopted inbound worker identified during accept; the accept-side
-        // identity's own hello stance rides through adoption, so
-        // it seeds `hello_crypts` the same as a dialed worker's — moot for the
-        // reask itself: a called-back Low-ID peer advertises no reachable
-        // client-UDP contact.
-        Some(identity) => (identity, None),
-        None => match wait_for_peer_identified(&mut requester_rx, &hello_refusals).await {
-            Ok(identity) => {
-                let udp_contact = identity.client_udp_reask();
-                (identity, udp_contact)
-            }
-            Err(cause) => {
-                super::end_dial(&event_tx, cause).await;
-                let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-                return; // dropping peer_cmd_tx winds the router (and socket) down
-            }
-        },
-    };
-    let user_hash = identity.user_hash();
-    if event_tx
-        .send(PeerWorkerEvent::Identified {
-            user_hash,
-            crypt: Some(identity.crypt_stance()),
-            software: identity.software().clone(),
-        })
-        .await
-        .is_err()
+    if !adopted
+        && let Err(cause) = wait_for_peer_identified(&mut requester_rx, &hello_refusals).await
     {
-        return;
+        super::end_dial(&event_tx, cause).await;
+        let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
+        return; // dropping peer_cmd_tx winds the router (and socket) down
     }
     if event_tx.send(PeerWorkerEvent::Connected).await.is_err() {
-        return;
-    }
-    // Surface the peer's client-UDP reask contact right after `Connected`, so the
-    // runner can pool this source for UDP reask if it queues us and hangs up
-    // (ADR-0057). Absent ⇒ the source is TCP-reask-only.
-    if let Some((udp_port, udp_version)) = udp_contact
-        && event_tx
-            .send(PeerWorkerEvent::UdpContact {
-                udp_port,
-                udp_version,
-            })
-            .await
-            .is_err()
-    {
-        return;
-    }
-    // The peer's serving buddy: kept by the brain so the
-    // source's next buddy callback goes straight to it.
-    if let Some(buddy) = identity.serving_buddy()
-        && event_tx
-            .send(PeerWorkerEvent::ServingBuddy {
-                buddy_udp: buddy.buddy_udp,
-            })
-            .await
-            .is_err()
-    {
         return;
     }
 
@@ -153,13 +104,13 @@ pub(crate) async fn drive_peer_worker(
     // separate Connected-time decision (ADR-0038) — it owns "still rootless?"
     // dynamically, stopping once a root commits — so `want_aich_root` is not
     // folded from a spawn-time snapshot here.
-    let connect_request = PeerCommand::RequestFile {
+    let connect_request = PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: file.file_hash,
         file_size: file.size,
         want_sources,
         want_aich_root: false,
         own_status,
-    };
+    });
     // Whether the ask went out is the session's to say (ADR-0108): its
     // `FileRequestSent` reaches the download through the router as
     // `SourceExchange` + `SourcesAsked`.
@@ -170,7 +121,7 @@ pub(crate) async fn drive_peer_worker(
     // cross-connection UploadSlotQueue exactly like an accepted connection. When
     // not serving the sink is empty and the router drops Server Capability
     // requests.
-    let serve_sink = dialed_serve_sink.lock().await.clone();
+    let serve_sink = dialed_serve_sink.sender();
     if let Some(serve_sink) = serve_sink {
         let (serve_cmd_tx, serve_cmd_rx) = mpsc::channel(16);
         let (serve_evt_tx, serve_evt_rx) = mpsc::channel(16);
@@ -255,9 +206,11 @@ pub(crate) async fn drive_peer_worker(
                 // event stream and is forwarded as AichFileHashReceived while a
                 // part streams (ADR-0038).
                 let _ = peer_cmd_tx
-                    .send(PeerCommand::RequestAichFileHash {
-                        file_hash: file.file_hash,
-                    })
+                    .send(PeerCommand::Requester(
+                        RequesterCommand::RequestAichFileHash {
+                            file_hash: file.file_hash,
+                        },
+                    ))
                     .await;
             }
             PeerWorkerCommand::Shutdown { cancel: c } => {
@@ -286,38 +239,29 @@ pub(crate) async fn drive_peer_worker(
     // serving until the peer disconnects; otherwise the router sees its command
     // channel close and shuts the socket down (ADR-0025 release).
     let teardown = if cancel {
-        PeerCommand::CancelTransfer {
+        PeerCommand::Requester(RequesterCommand::CancelTransfer {
             file_hash: file.file_hash,
-        }
+        })
     } else {
-        PeerCommand::ReleaseSlot {
+        PeerCommand::Requester(RequesterCommand::ReleaseSlot {
             file_hash: file.file_hash,
-        }
+        })
     };
     let _ = peer_cmd_tx.send(teardown).await;
     drop(peer_cmd_tx);
 }
 
+/// Wait for a dialed peer's hello, or learn why the connection ended before
+/// it. The identity itself reaches the download from the router.
 async fn wait_for_peer_identified(
     events: &mut mpsc::Receiver<PeerEvent>,
     hello_refusals: &crate::hello_refusals::SharedHelloRefusals,
-) -> Result<PeerIdentity, DialEnd> {
-    while let Some(event) = events.recv().await {
-        match event {
-            // The peer's user hash keys its credit ledger; its client-UDP reask
-            // contact (ADR-0057) rides alongside so a queued-then-hung-up source
-            // can be UDP-reasked at its advertised endpoint, and its crypt stance
-            // says whether that reask may be obfuscated (ADR-0046).
-            PeerEvent::PeerIdentified { identity } => return Ok(identity),
-            // The answer was refused by name (ADR-0050); the close follows.
-            PeerEvent::HelloRefused { refusal } => hello_refusals.report(refusal).await,
-            PeerEvent::Disconnected { reason } => {
-                return Err(super::dial_end::closed_before_hello(reason));
-            }
-            _ => {}
-        }
+) -> Result<(), DialEnd> {
+    match await_hello(events, hello_refusals, |_| {}).await {
+        Opening::Identified(_) => Ok(()),
+        Opening::Closed(reason) => Err(super::dial_end::closed_before_hello(reason)),
+        Opening::Ended => Err(DialEnd::ClosedBeforeHello),
     }
-    Err(DialEnd::ClosedBeforeHello)
 }
 
 /// Ask the peer for the AICH recovery data of `part` (quoting the trusted
@@ -336,11 +280,11 @@ async fn request_aich_recovery(
     timeout: Duration,
 ) -> bool {
     if cmd_tx
-        .send(PeerCommand::RequestAich {
+        .send(PeerCommand::Requester(RequesterCommand::RequestAich {
             file_hash: file.file_hash,
             part,
             root,
-        })
+        }))
         .await
         .is_err()
     {
@@ -351,11 +295,11 @@ async fn request_aich_recovery(
     loop {
         match tokio::time::timeout_at(deadline, events.recv()).await {
             // The peer answered: forward it; core verifies + localizes.
-            Ok(Some(PeerEvent::AichAnswerReceived {
+            Ok(Some(PeerEvent::Requester(RequesterEvent::AichAnswerReceived {
                 part: answered,
                 recovery_data,
                 ..
-            })) if answered == part => {
+            }))) if answered == part => {
                 return event_tx
                     .send(PeerWorkerEvent::AichAnswerReceived {
                         part,
@@ -366,7 +310,7 @@ async fn request_aich_recovery(
             }
             // Disconnected: resolve the awaiting part with an empty answer (→
             // retire-all fallback), then wind the worker down.
-            Ok(None) | Ok(Some(PeerEvent::Disconnected { .. })) => {
+            Ok(None) | Ok(Some(PeerEvent::Connection(ConnectionEvent::Disconnected { .. }))) => {
                 let _ = event_tx
                     .send(PeerWorkerEvent::AichAnswerReceived {
                         part,
@@ -448,11 +392,11 @@ async fn stream_part_download(
                 }
             };
             if cmd_tx
-                .send(PeerCommand::RequestParts {
+                .send(PeerCommand::Requester(RequesterCommand::RequestParts {
                     file_hash,
                     file_size: file.size,
                     ranges,
-                })
+                }))
                 .await
                 .is_err()
             {
@@ -481,7 +425,7 @@ async fn stream_part_download(
                 }
                 Some(PeerWorkerCommand::RequestAichFileHash) => {
                     let _ = cmd_tx
-                        .send(PeerCommand::RequestAichFileHash { file_hash })
+                        .send(PeerCommand::Requester(RequesterCommand::RequestAichFileHash { file_hash }))
                         .await;
                     continue;
                 }
@@ -500,10 +444,10 @@ async fn stream_part_download(
             },
         };
         match event {
-            Some(PeerEvent::HashSetReceived {
+            Some(PeerEvent::Requester(RequesterEvent::HashSetReceived {
                 file_hash: received,
                 part_hashes,
-            }) if received == file_hash => {
+            })) if received == file_hash => {
                 if event_tx
                     .send(PeerWorkerEvent::HashSetReceived { part_hashes })
                     .await
@@ -512,16 +456,18 @@ async fn stream_part_download(
                     return Streamed::WindDown;
                 }
             }
-            Some(PeerEvent::SlotGranted { file_hash: granted }) if granted == file_hash => {
+            Some(PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash: granted }))
+                if granted == file_hash =>
+            {
                 if event_tx.send(PeerWorkerEvent::SlotGranted).await.is_err() {
                     return Streamed::WindDown;
                 }
             }
-            Some(PeerEvent::PartReceived {
+            Some(PeerEvent::Requester(RequesterEvent::PartReceived {
                 file_hash: received,
                 offset,
                 bytes,
-            }) if received == file_hash => {
+            })) if received == file_hash => {
                 // Data progress: extend the no-progress budget and forward
                 // the block to core, which merges it into the shared prefix.
                 progress_deadline = tokio::time::Instant::now() + slot_wait_timeout;
@@ -538,20 +484,20 @@ async fn stream_part_download(
                     return Streamed::WindDown;
                 }
             }
-            Some(PeerEvent::SourcesReceived {
+            Some(PeerEvent::Requester(RequesterEvent::SourcesReceived {
                 file_hash: received,
                 sources,
-            }) if received == file_hash => {
+            })) if received == file_hash => {
                 // Forward exchanged sources to the runner's candidate pool
                 // (ADR-0055); non-terminal — keep streaming this part.
                 let _ = event_tx
                     .send(PeerWorkerEvent::SourcesReceived { sources })
                     .await;
             }
-            Some(PeerEvent::FileProbed {
+            Some(PeerEvent::Requester(RequesterEvent::FileProbed {
                 file_hash: probed,
                 status,
-            }) if probed == file_hash => {
+            })) if probed == file_hash => {
                 // The one bit of the peer's part picture the source-ask gate
                 // reads (ADR-0108); non-terminal.
                 let complete = match &status {
@@ -562,7 +508,7 @@ async fn stream_part_download(
                     .send(PeerWorkerEvent::PartsAdvertised { complete })
                     .await;
             }
-            Some(PeerEvent::AichFileHashReceived { root }) => {
+            Some(PeerEvent::Requester(RequesterEvent::AichFileHashReceived { root })) => {
                 // A trusted-set root proposal (ADR-0038); forward to the
                 // runner's vote tally. Non-terminal — keep streaming. No file
                 // guard: the 0x9D answer carries no file hash.
@@ -574,36 +520,36 @@ async fn stream_part_download(
             // range-done check at the top of the loop emits PartStreamed
             // once the assigned range is delivered, otherwise the next block
             // is requested.
-            Some(PeerEvent::SlotReleased {
+            Some(PeerEvent::Requester(RequesterEvent::SlotReleased {
                 file_hash: released,
                 reason: SlotReleaseReason::DownloadComplete,
-            }) if released == file_hash => {}
-            Some(PeerEvent::SlotReleased {
+            })) if released == file_hash => {}
+            Some(PeerEvent::Requester(RequesterEvent::SlotReleased {
                 file_hash: released,
                 reason: SlotReleaseReason::QueueRejected,
-            }) if released == file_hash => {
+            })) if released == file_hash => {
                 let _ = event_tx.send(PeerWorkerEvent::SlotRejected).await;
                 return Streamed::WindDown;
             }
-            Some(PeerEvent::SlotReleased {
+            Some(PeerEvent::Requester(RequesterEvent::SlotReleased {
                 file_hash: released,
                 ..
-            }) if released == file_hash => {
+            })) if released == file_hash => {
                 let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
                 return Streamed::WindDown;
             }
             // The peer is holding us in its upload queue. Non-terminal:
             // keep the connection open and keep waiting for a slot grant,
             // but forward the position so core/CLI see queue progress.
-            Some(PeerEvent::QueueRanked {
+            Some(PeerEvent::Requester(RequesterEvent::QueueRanked {
                 file_hash: ranked,
                 rank,
-            })
-            | Some(PeerEvent::QueueProgress {
+            }))
+            | Some(PeerEvent::Requester(RequesterEvent::QueueProgress {
                 file_hash: ranked,
                 new_rank: rank,
                 ..
-            }) if ranked == file_hash => {
+            })) if ranked == file_hash => {
                 if event_tx
                     .send(PeerWorkerEvent::Queued { rank })
                     .await
@@ -612,8 +558,14 @@ async fn stream_part_download(
                     return Streamed::WindDown;
                 }
             }
-            Some(PeerEvent::CommandRejected { .. })
-            | Some(PeerEvent::Disconnected { .. })
+            // A serving command the session refused (a block after the slot
+            // was released) concerns the serve half; the link and this
+            // download carry on, as aMule's `RemoveFromUploadQueue` leaves
+            // the socket alone (`UploadQueue.cpp:560-587`).
+            Some(PeerEvent::Notice(NoticeEvent::CommandRejected { reason }))
+                if reason.is_serving_refusal() => {}
+            Some(PeerEvent::Notice(NoticeEvent::CommandRejected { .. }))
+            | Some(PeerEvent::Connection(ConnectionEvent::Disconnected { .. }))
             | None => {
                 let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
                 return Streamed::WindDown;
@@ -639,3 +591,6 @@ enum Streamed {
     /// The download told this worker to stop mid-part.
     Shutdown { cancel: bool },
 }
+
+#[cfg(test)]
+mod tests;

@@ -4,8 +4,8 @@
 
 use rmule_kad::{Kad2Message, KadContact, KadNodeEndpoint, KadRoutingTable, KadUdpKey};
 use rmule_testkit::kad_node::{
-    NODE_ID, OWN_IP, T0, crypt_node, crypt_to_node, drain_outputs, endpoint, hello, id, keyed_node,
-    node, our_key_for, sent_messages,
+    NODE_ID, OWN_IP, T0, crypt_node, crypt_to_node, drain_outputs, endpoint, hello, id, node,
+    our_key_for, sent_messages,
 };
 
 #[test]
@@ -84,7 +84,7 @@ fn a_spoofed_ip_claimant_never_becomes_servable() {
     // entry must not move, and the attacker's endpoint must never appear in a
     // routing answer — otherwise we would hand every asking node a pointer to
     // the attacker.
-    let mut node = keyed_node();
+    let mut node = crypt_node();
     let honest = endpoint(7, 5000);
     let attacker = endpoint(66, 5000);
     let victim = id(0xC1);
@@ -161,7 +161,7 @@ fn a_keyed_entry_is_never_updated_by_a_claimant_without_its_key() {
     // key or be denied outright — the anti-hijack guard that protects even
     // *unverified* entries (which the endpoint-move rule alone would let an
     // attacker relocate at will).
-    let mut node = keyed_node();
+    let mut node = crypt_node();
     let honest = endpoint(7, 5000);
     let attacker = endpoint(66, 5000);
     let victim = id(0xC1);
@@ -221,7 +221,7 @@ fn the_servable_set_never_empties_when_nothing_can_verify() {
     // node — aMule in that topology serves silence too, but it also loads its
     // nodes.dat all-verified, so it never actually lands in the empty state.
     for keyed in [false, true] {
-        let mut node = if keyed { keyed_node() } else { node() };
+        let mut node = if keyed { crypt_node() } else { node() };
         for host in [10u8, 20, 30] {
             let peer = endpoint(host, 5000 + u16::from(host));
             node.handle_datagram(

@@ -6,6 +6,8 @@
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use crate::mailbox::Lease;
+
 use rmule_primitives::Ipv4Endpoint;
 
 use super::{KadPumpCommand, SharedKadBootstrap};
@@ -17,14 +19,16 @@ use super::{KadPumpCommand, SharedKadBootstrap};
 /// throttle. The returned `JoinHandle` is `RuntimeKadFactory`'s to track:
 /// the forwarder ends once `kad_bootstrap` is cleared back to `None`, which
 /// `node.rs`'s own teardown now does on a clean stop rather
-/// than only ever on the next `start`'s overwrite.
+/// than only ever on the next `start`'s overwrite. The lease on the
+/// installed sender comes back with it, so the node's teardown clears the
+/// cell only while it still holds this one.
 pub(super) async fn spawn(
     kad_bootstrap: &SharedKadBootstrap,
     commands: mpsc::Sender<KadPumpCommand>,
-) -> JoinHandle<()> {
+) -> (JoinHandle<()>, Lease<Ipv4Endpoint>) {
     let (handoff_tx, mut handoff_rx) = mpsc::channel::<Ipv4Endpoint>(32);
-    *kad_bootstrap.lock().await = Some(handoff_tx);
-    tokio::spawn(async move {
+    let lease = kad_bootstrap.install(handoff_tx);
+    let forwarder = tokio::spawn(async move {
         while let Some(peer) = handoff_rx.recv().await {
             if commands
                 .send(KadPumpCommand::BootstrapFromPeer(peer))
@@ -34,5 +38,6 @@ pub(super) async fn spawn(
                 break;
             }
         }
-    })
+    });
+    (forwarder, lease)
 }

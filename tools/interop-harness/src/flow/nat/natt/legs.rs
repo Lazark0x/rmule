@@ -52,7 +52,8 @@ pub(crate) fn drive(bench: &mut Bench, options: &NattOptions<'_>, stage: &Stage)
         | NattFlow::BuddyTransferCone
         | NattFlow::UdpSelfCheckCone
         | NattFlow::UdpSelfCheckRemapped
-        | NattFlow::UdpSelfCheckAmule => {
+        | NattFlow::UdpSelfCheckAmule
+        | NattFlow::BuddyRecruitAmule => {
             anyhow::bail!("{} drives its own topology", options.flow.name())
         }
     }
@@ -74,7 +75,8 @@ pub(crate) fn wire_claims(flow: NattFlow, wire: &[WireRow]) -> Vec<Claim> {
         // capture, decoded, rather than a BPF count.
         NattFlow::UdpSelfCheckCone
         | NattFlow::UdpSelfCheckRemapped
-        | NattFlow::UdpSelfCheckAmule => Vec::new(),
+        | NattFlow::UdpSelfCheckAmule
+        | NattFlow::BuddyRecruitAmule => Vec::new(),
     }
 }
 
@@ -468,12 +470,13 @@ pub(crate) fn punch_claims(
         ),
         Claim::about(
             "the-requester-routed-through-the-server-coordinator",
-            requester.text("routed").contains("ServerPunch"),
+            requester.text("routed") == "server_punch",
             Evidence::RmuleOnly,
             format!(
-                "ReachPeer for {} routed {}; {} server punches emitted, {} refused ({})",
+                "ReachPeer for {} routed {}; {} server requests emitted, {} punches, {} refused ({})",
                 requester.int("target_id"),
                 requester.text("routed"),
+                requester.int("server_requests_emitted"),
                 requester.int("server_punches"),
                 requester.int("server_refusals"),
                 requester.text("last_refusal"),

@@ -28,27 +28,18 @@ fn low_id_kad_open() -> CallbackCapability {
 
 /// A download that waits on discovery rather than failing, starting from
 /// `low_ids` under `capability`.
-fn state_under(
-    capability: CallbackCapability,
-    low_ids: Vec<ConnectedServerCandidate>,
-) -> DownloadState {
-    DownloadState::new(
-        DownloadId::from_u64(1),
+fn state_under(capability: CallbackCapability, low_ids: Vec<SourceSighting>) -> DownloadState {
+    state_from(
         file_hash_only_content(ONE_PART),
-        StartingCandidates {
-            high_id: Vec::new(),
-            peer_crypts: HashMap::new(),
-            low_id: low_ids,
-            distrusted: HashSet::new(),
-            remembered: RememberedSeeds::default(),
-        },
         SourcingPosture {
             callback_capability: capability,
             discovery_active: true,
             ..QUIET_POSTURE
         },
-        CALLBACK_TIMEOUT,
         1,
+        no_facts(),
+        Vec::new(),
+        low_ids,
     )
 }
 
@@ -71,7 +62,7 @@ fn asks_for_a_callback(decisions: &[Decision]) -> bool {
 fn an_open_kad_verdict_alone_asks_a_buddy_rows_buddy_for_a_callback() {
     let mut state = state_under(kad_only_open(), Vec::new());
 
-    let decisions = state.on_kad_sources(vec![row(0x00)]);
+    let decisions = via_kad(&mut state, vec![row(0x00)]);
 
     buddy_key(&decisions);
 }
@@ -83,7 +74,7 @@ fn an_open_kad_verdict_alone_asks_a_buddy_rows_buddy_for_a_callback() {
 fn a_low_id_kad_open_downloader_never_asks_its_own_server_for_a_callback() {
     let mut state = state_under(low_id_kad_open(), vec![low_candidate(9)]);
 
-    let started = state.start();
+    let started = state.start(t0());
     assert!(
         !asks_for_a_callback(&started),
         "no callback for a candidate on our own server: {started:?}"
@@ -100,7 +91,7 @@ fn a_low_id_kad_open_downloader_never_asks_its_own_server_for_a_callback() {
     );
 
     let mut kad = state_under(low_id_kad_open(), Vec::new());
-    buddy_key(&kad.on_kad_sources(vec![row(0x00)]));
+    buddy_key(&via_kad(&mut kad, vec![row(0x00)]));
 }
 
 /// Degradation, from aMule: a verdict that flips firewalled leaves a callback
@@ -109,9 +100,9 @@ fn a_low_id_kad_open_downloader_never_asks_its_own_server_for_a_callback() {
 #[test]
 fn a_lost_capability_keeps_the_held_slot_until_its_release_and_admits_nothing_new() {
     let mut state = state_under(kad_only_open(), Vec::new());
-    let key = buddy_key(&state.on_kad_sources(vec![row(0x00)]));
+    let key = buddy_key(&via_kad(&mut state, vec![row(0x00)]));
 
-    let flipped = state.on_callback_capability(CallbackCapability::of(true, None, false));
+    let flipped = state.on_callback_capability(t0(), CallbackCapability::of(true, None, false));
     assert!(
         flipped.is_empty(),
         "nothing is retired on the flip: {flipped:?}"
@@ -119,17 +110,19 @@ fn a_lost_capability_keeps_the_held_slot_until_its_release_and_admits_nothing_ne
 
     // A second aMule row arrives while the slot is held, then the slot lapses:
     // the freed slot finds no road to it, so no callback is asked for.
-    let other = crate::KadSource {
-        user_hash: Some(UserHash::from_bytes([0xCD; UserHash::BYTE_LEN])),
-        ..row(0x00)
-    };
+    let other = kad_buddy_sighting(
+        Some(UserHash::from_bytes([0xCD; UserHash::BYTE_LEN])),
+        rmule_kad::KadId::from_bytes([0x7A; rmule_kad::KadId::BYTE_LEN]),
+        Some(Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 9), 9000)),
+        0x00,
+    );
     assert!(
-        state.on_kad_sources(vec![other]).is_empty(),
+        via_kad(&mut state, vec![other]).is_empty(),
         "the slot is held"
     );
-    let lapsed = state.on_callback_timeout(key);
+    let lapsed = state.on_tick(t0() + CALLBACK_TIMEOUT);
     assert!(
-        matches!(lapsed.first(), Some(Decision::CancelCallbackTimeout { key: held }) if *held == key),
+        matches!(lapsed.first(), Some(Decision::EndCallback { key: held }) if *held == key),
         "the slot is released on its own deadline: {lapsed:?}"
     );
     assert!(!asks_for_a_callback(&lapsed), "{lapsed:?}");
@@ -140,11 +133,70 @@ fn a_lost_capability_keeps_the_held_slot_until_its_release_and_admits_nothing_ne
 #[test]
 fn a_gained_capability_admits_the_row_that_was_waiting() {
     let mut state = state_under(CallbackCapability::of(true, None, false), Vec::new());
-    assert!(!asks_for_a_callback(&state.on_kad_sources(vec![row(0x00)])));
+    assert!(!asks_for_a_callback(&via_kad(&mut state, vec![row(0x00)])));
 
-    buddy_key(&state.on_callback_capability(kad_only_open()));
+    buddy_key(&state.on_callback_capability(t0(), kad_only_open()));
     assert!(
-        state.on_callback_capability(kad_only_open()).is_empty(),
+        state
+            .on_callback_capability(t0(), kad_only_open())
+            .is_empty(),
         "an unchanged sample decides nothing"
+    );
+}
+
+/// A server High ID on `server`.
+fn high_id_on(server: Ipv4Endpoint) -> CallbackCapability {
+    CallbackCapability::of(
+        true,
+        Some(ConnectedSession {
+            server: Some(server),
+            client_id: ClientId::from_u32(0x0A00_0001),
+        }),
+        false,
+    )
+}
+
+/// A low id means something only beside the server that assigned it (aMule
+/// `IsLocalServer`, stock 2.3.3 `BaseClient.cpp:1530`): after a move from A to
+/// B, the low id 7 A named is relayed by A, and the low id 7 B names is
+/// another source, which B's own session calls back.
+#[test]
+fn after_a_server_move_a_low_id_is_called_back_by_the_server_that_assigned_it() {
+    let server_a = Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 201, 1), 4661);
+    let server_b = Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 201, 2), 4661);
+    let low_7 = || SourceSighting::plain(rmule_primitives::PeerSource::new(low(7), 4662));
+    let mut state = state_from(
+        file_hash_only_content(ONE_PART),
+        SourcingPosture {
+            callback_capability: high_id_on(server_a),
+            discovery_active: true,
+            ..QUIET_POSTURE
+        },
+        2,
+        no_facts(),
+        vec![(Channel::Server, vec![low_7()])],
+        Vec::new(),
+    );
+
+    let moved = state.on_callback_capability(t0(), high_id_on(server_b));
+    assert!(
+        moved.iter().any(|d| matches!(
+            d,
+            Decision::RequestGlobalCallback { low_id, source_server, .. }
+                if *low_id == low(7) && *source_server == server_a
+        )),
+        "A's low id is relayed by A: {moved:?}"
+    );
+
+    let taken = take(&mut state, Channel::Server, [low_7()]);
+    assert_eq!(taken.tally.fresh, 1, "B's low id 7 is not A's");
+    assert!(
+        taken.decisions.iter().any(|d| matches!(
+            d,
+            Decision::RequestCallback { low_id, server, .. }
+                if *low_id == low(7) && *server == Some(server_b)
+        )),
+        "B's low id is called back over our session: {:?}",
+        taken.decisions
     );
 }

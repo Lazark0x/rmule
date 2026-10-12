@@ -39,8 +39,8 @@
 //! ## Wiring degrades (documented, real commands where they exist)
 //!
 //! - `Pause`, `Resume` and `Cancel…` emit real
-//!   [`rmule_core::DownloadCommand`]s; `Resume` needs the session's
-//!   credentials, so on a UI-only run it flashes instead.
+//!   [`rmule_core::DownloadCommand`]s; `Resume` needs a core, so on a
+//!   UI-only run it flashes instead.
 //! - `L` opens the Add-link form: a pasted file link becomes a download
 //!   through the same reader and command `rmule-cli add` and the Search
 //!   tab's Download use.
@@ -398,14 +398,15 @@ impl TransfersView {
         theme: &Theme,
         now: Instant,
     ) {
-        let ids = self.download_ids(state);
+        let lines = self.sorted_lines(state);
+        let ids: Vec<DownloadId> = lines.iter().map(|line| line.id).collect();
         self.clamp(&ids, state);
 
         let [table_area, sources_area] =
             Layout::vertical([Constraint::Percentage(62), Constraint::Percentage(38)]).areas(area);
         self.table_area = table_area;
         self.sources_area = sources_area;
-        self.draw_downloads(frame, table_area, state, theme, &ids);
+        self.draw_downloads(frame, table_area, state, theme, &lines);
         self.draw_sources(frame, sources_area, state, theme, &ids, now);
 
         match &self.overlay {

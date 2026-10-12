@@ -39,7 +39,7 @@ const SERVE_ROLE: &str = "hsserve";
 const SERVE_SECS: u64 = 300;
 const DOWNLOAD_SECS: u64 = 150;
 
-const ANNOUNCED: &str = "serve files_announced";
+const ANNOUNCED: &str = "serve.files_announced";
 /// `OP_OFFERFILES`, plain or packed.
 const OP_OFFERFILES: u8 = 0x15;
 /// How long the server gets to take the serving rmule's offer.
@@ -146,7 +146,7 @@ pub(super) fn drive(
         &download(
             "/out/hs-peer-data",
             &shared_a.link,
-            "/out/hs-peer-a.bin",
+            "/out/dl/hs-peer-a.bin",
             PEER_RMULE_HASH,
         ),
         DOWNLOAD_STARTED,
@@ -167,7 +167,7 @@ pub(super) fn drive(
             &download(
                 &format!("/out/hs-dl-{}-data", client.name),
                 link.trim(),
-                &format!("/out/hs-dl-{}.bin", client.name),
+                &format!("/out/dl/hs-dl-{}.bin", client.name),
                 hash,
             ),
             DOWNLOAD_STARTED,
@@ -216,7 +216,7 @@ pub(super) fn drive(
     claims.extend([
         Claim::about(
             "serving-rmule-names-the-downloading-rmule",
-            serve_names_peer.contains("Rmule"),
+            serve_names_peer.contains("software=\"rmule"),
             Evidence::RmuleOnly,
             serve_names_peer,
         ),

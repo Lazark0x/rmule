@@ -30,14 +30,16 @@ use rmule_net::ed2k::ClientUdpSocket;
 use rmule_net::family::FamilySelection;
 use rmule_net::natt::{ClientUdpNattSink, NattOwnHash};
 use rmule_net::peer::Connection as PeerConnection;
+use rmule_peer::PeerHandshakeContext;
 use rmule_peer::natt::{CapsFrame, NattConnectOptions, NattFrame, NattTransport};
-use rmule_peer::{PeerEvent, PeerHandshakeContext};
 use rmule_primitives::{ClientId, ClientIdentity, Ed2kText, FileHash};
 
 use super::*;
+use crate::adapters::hello_wait::{Opening, await_hello};
 use crate::adapters::{AdmittedPeer, RuntimeClientUdpTransport, SharedTunnelAdmit};
 use crate::buddy_link::SharedBuddySlot;
 use crate::client_udp::ClientUdpEngine;
+use crate::hello_refusals::SharedHelloRefusals;
 
 /// One whole node's client-UDP surface: the bound socket, the demux front, the
 /// send drain and the NAT-T front — assembled exactly as
@@ -70,20 +72,22 @@ pub(super) struct Node {
     pub(super) diagnostics: DiagnosticsState,
     /// Held so the admit cell's weak sender stays upgradable for the leg.
     admit_tx: mpsc::Sender<AdmittedPeer>,
-    /// This node's own **Pending Tunnel Claim** table — the exact instance
+    /// This node's own **Awaited Inbound** registry — the exact instance
     /// its front's `NattWiring.claims` was built over, so a leg that also
     /// hands a raw accepted connection to `triage_inbound_connection` reaches
-    /// the same table the front installed its risen-report sender on.
+    /// the same registry the front installed its risen-report sender on.
     /// Production shares one instance the same way; a fixture that
-    /// built its own separate table would report nothing this front ever
+    /// built its own separate registry would report nothing this front ever
     /// reads.
-    pub(super) claims: crate::adapters::SharedTunnelClaims,
+    pub(super) claims: crate::adapters::AwaitedInbound,
 }
 
 fn ctx(user_hash: UserHash, nickname: &str) -> PeerHandshakeContext {
     PeerHandshakeContext {
         identity: ClientIdentity::new(user_hash, Ed2kText::from_utf8(nickname), 4662, 0x3C),
         client_id: ClientId::from_u32(0x1000_0001),
+        ed2k_client_id: ClientId::from_u32(0x1000_0001),
+        public_ip: None,
         connected_server: None,
     }
 }
@@ -128,7 +132,7 @@ impl Node {
         let (reply_tx, mut reply_rx) = mpsc::channel(64);
         let (engine, inboxes) = ClientUdpEngine::new(
             RuntimeClientUdpTransport::new(Arc::clone(&socket)),
-            None,
+            crate::client_udp::PeerUdpCrypt::disarmed(),
             SharedBuddySlot::default(),
             crate::firewalled::front::SharedFirewalledFront::default(),
             diagnostics.clone(),
@@ -152,17 +156,23 @@ impl Node {
             ctx(ctx_hash, nickname),
             crate::adapters::HelloAdverts::default(),
         );
-        let claims = crate::adapters::SharedTunnelClaims::default();
+        let claims = crate::adapters::AwaitedInbound::default();
         let commands = spawn(
             ClientUdpNattSink(socket),
             NattIdentity {
                 local: RMULE_NATT_CLAIM,
-                crypt_options: 0,
             },
             Arc::new(identity) as Arc<dyn NattOwnHash>,
             None,
             NattWiring {
                 client_udp: reply_tx,
+                // Only buddy legs run here: no server is asked.
+                server: crate::natt::server_punch::CoordinatorSession::default(),
+                reach: crate::reachability::SharedSelfReach::new(
+                    crate::KadReachLevel::fixed(false),
+                    crate::own_identity::SharedOwnIdentity::default(),
+                    SharedNattFront::default(),
+                ),
                 addresses: crate::address_learning::SharedAddressLearning::default(),
                 admit,
                 claims: claims.clone(),
@@ -287,34 +297,29 @@ impl Node {
         buddy_udp: Ipv4Endpoint,
     ) {
         self.commands
-            .send(NattCommand::Begin {
-                target: peer,
+            .send(NattCommand::Traverse {
                 coordinator: AttemptCoordinator::Buddy {
                     buddy_id,
                     buddy_udp,
                 },
-                facts: crate::callback::NattFacts {
-                    on_our_server: false,
-                    supports_natt: true,
-                    buddy: None,
-                    advertised_udp: None,
-                },
-                ours: crate::callback::SelfReach {
-                    reachable: false,
-                    udp_on: true,
-                    kad_running: false,
-                    dial: crate::dialable::DialPosition::default(),
-                    server_punch: false,
-                },
-                offer: RendezvousOffer {
-                    // The buddy in this fixture is our own test code and
-                    // never reads what we claim about ourselves.
-                    our_user_hash: UserHash::from_bytes([0; UserHash::BYTE_LEN]),
-                    options: NattConnectOptions::advertise(0, true, false),
-                    file_hash: None,
-                    claimed_endpoint: None,
-                    transport: NattTransport::Utp,
-                },
+                owner: Some(AttemptOwner {
+                    target: peer,
+                    facts: crate::callback::NattFacts {
+                        on_our_server: false,
+                        supports_natt: true,
+                        buddy: None,
+                        advertised_udp: None,
+                    },
+                    offer: crate::natt::RendezvousOffer {
+                        // The buddy in this fixture is our own test code and
+                        // never reads what we claim about ourselves.
+                        our_user_hash: UserHash::from_bytes([0; UserHash::BYTE_LEN]),
+                        options: NattConnectOptions::advertise(0, true, false),
+                        file_hash: None,
+                        claimed_endpoint: None,
+                        transport: NattTransport::Utp,
+                    },
+                }),
             })
             .await
             .expect("the front is running");
@@ -356,17 +361,13 @@ async fn discard_queued(socket: &ClientUdpSocket) -> usize {
     syns
 }
 
-/// Drive a connection until it identifies its peer.
+/// Wait for a connection's peer to identify, through the one hello wait every
+/// connection shares (a refused hello is reported, and its close follows).
 async fn identified(conn: &mut PeerConnection) -> UserHash {
-    loop {
-        match conn.next_event().await {
-            Some(PeerEvent::PeerIdentified { identity }) => return identity.user_hash(),
-            Some(PeerEvent::Disconnected { reason }) => {
-                panic!("the tunnelled session closed: {reason:?}")
-            }
-            Some(_) => {}
-            None => panic!("the driver ended before the peer identified"),
-        }
+    match await_hello(conn, &SharedHelloRefusals::default(), |_| {}).await {
+        Opening::Identified(identity) => identity.user_hash(),
+        Opening::Closed(reason) => panic!("the tunnelled session closed: {reason:?}"),
+        Opening::Ended => panic!("the driver ended before the peer identified"),
     }
 }
 

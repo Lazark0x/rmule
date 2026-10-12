@@ -15,25 +15,17 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::time::Duration;
 
-use crate::adapters::{
-    ClientUdpBind, KadEnableConfig, KadPresenceView, KadRuntimeFactory, KadSourceChannel,
-};
+use crate::adapters::{ClientUdpBind, KadEnableConfig, KadRuntimeFactory, KadSourceChannel};
 use crate::kad_sources::KadAnswer;
 use crate::{
     Core, CoreCommand, CoreConfig, CoreError, CoreEvent, ScanCommand, ScanEvent, ServeCommand,
     ServeEvent,
 };
 
-/// A Kad factory that owns its own **Kad Presence** cell, which the Kad
-/// Activity leases when it starts (ADR-0093) — "running its
-/// lease" (the Done-when's phrase) without a real `rmule-net-kad` node
-/// underneath. `kad_presence` is the [`KadRuntimeFactory`] trait method
-/// `CoreBuilder::kad` must read from *this* installed factory rather than the
-/// default it replaces.
-#[derive(Default)]
-struct LeasedKadFactory {
-    presence: KadPresenceView,
-}
+/// A Kad factory with no node underneath: the Kad Activity leases the core's
+/// own **Kad Presence** cell when it starts (ADR-0093), which is all the served
+/// link reads.
+struct LeasedKadFactory;
 
 /// Never asked to search, publish or read sources: the test enables Kad only
 /// to run its presence lease, never a discovery.
@@ -55,39 +47,22 @@ impl KadRuntimeFactory for LeasedKadFactory {
     async fn start(
         &mut self,
         _config: &KadEnableConfig,
+        _node: &crate::KadNodeIdentity,
         _bind: ClientUdpBind,
+        _cells: &crate::KadCells,
     ) -> Result<Self::Channel, CoreError> {
         Ok(NeverSearches)
     }
-
-    fn kad_presence(&self) -> KadPresenceView {
-        self.presence.clone()
-    }
-}
-
-/// The one eD2k identity both `EnableKad` (its dial-back context) and
-/// `StartServing` (its login credentials) present — production shares one
-/// identity between the two the same way (ADR-0069).
-fn identity() -> ClientIdentity {
-    ClientIdentity::new(
-        UserHash::from_bytes([0x42; UserHash::BYTE_LEN]),
-        Ed2kText::from_utf8("issue-427"),
-        4662,
-        60,
-    )
 }
 
 /// The `KadEnableConfig` this leg drives `EnableKad` with — serverless, since
 /// nothing here ever dials Kad's own socket.
-fn kad_enable_config(kad_id: KadId) -> KadEnableConfig {
+fn kad_enable_config() -> KadEnableConfig {
     KadEnableConfig {
-        kad_id,
-        peer_credentials: identity().into(),
         bootstrap: Vec::new(),
         contacts: Vec::new(),
         nodes_dat_path: None,
         assume_open_reachability: false,
-        kad_udp_key: 0,
         kad_capture_dir: None,
         kad_shutdown: None,
     }
@@ -107,24 +82,21 @@ async fn next_expected(core: &mut Core, want: impl Fn(&CoreEvent) -> bool) -> Co
     .expect("the expected event arrived")
 }
 
-/// **The done-when this leg pins:** `CoreBuilder::kad` installs
-/// a replacement factory *after* `Core::builder`'s default wiring already
-/// bound the serve runtime to the default `RuntimeKadFactory`'s own **Kad
-/// Presence**. Before the fix, that bound view was never re-pointed, so a
-/// served link's `0x99` read Kad-down forever no matter what the installed
-/// factory's own lease said. Here the installed factory leases a Kad ID,
-/// a peer dials the real bound listener and sends a `0x99` whose buddy-ID
-/// inverts to that ID and whose file is genuinely shared: only a served
-/// runtime reading the *installed* factory's presence can reach `Dial` and
-/// count it.
+/// **The done-when this leg pins:** with a replacement factory installed, the
+/// Kad Activity leases a Kad ID, a peer dials the real bound listener and
+/// sends a `0x99` whose buddy-ID inverts to that ID and whose file is
+/// genuinely shared: only a served runtime reading the core's **Kad Presence**
+/// can reach `Dial` and count it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn kad_rewires_the_served_links_kad_presence_to_the_installed_factory() {
+async fn a_served_link_reads_the_kad_presence_the_kad_activity_leases() {
     let our_kad_id = KadId::from_bytes([0x0A; KadId::BYTE_LEN]);
     let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
-        .kad(LeasedKadFactory::default())
+        .settings(crate::CoreSettings::default())
+        .kad_id(our_kad_id)
+        .kad(LeasedKadFactory)
         .build();
 
-    core.send(CoreCommand::EnableKad(kad_enable_config(our_kad_id)))
+    core.send(CoreCommand::EnableKad(kad_enable_config()))
         .await
         .expect("core accepts EnableKad");
 
@@ -164,9 +136,6 @@ async fn kad_rewires_the_served_links_kad_presence_to_the_installed_factory() {
 
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
-        // Nothing listens here — the bind is the whole contract;
-        // the login this also causes is not what this leg proves.
-        credentials: identity().into(),
     }))
     .await
     .expect("core accepts StartServing");
@@ -186,7 +155,13 @@ async fn kad_rewires_the_served_links_kad_presence_to_the_installed_factory() {
     // factory's leased Kad ID, naming the file just shared. TCP orders the
     // two frames regardless of when the server's bridge starts reading —
     // no synchronization with the accept/triage race is needed.
-    let mut peer = TcpStream::connect(SocketAddrV4::new(*listen_addr.ip(), listen_addr.port()))
+    // Windows refuses a dial to the unspecified address a wildcard bind reports.
+    let dial_ip = if listen_addr.ip().is_unspecified() {
+        Ipv4Addr::LOCALHOST
+    } else {
+        *listen_addr.ip()
+    };
+    let mut peer = TcpStream::connect(SocketAddrV4::new(dial_ip, listen_addr.port()))
         .await
         .expect("dial the bound listener");
     peer.write_all(&rmule_testkit::wire::hello_bytes(
@@ -258,20 +233,21 @@ impl crate::adapters::SourceLookupService for RefusingLookup {
     }
 }
 
-fn start_download(seed: u8, dir: &std::path::Path) -> CoreCommand {
+fn start_download(seed: u8) -> CoreCommand {
+    let file_hash = FileHash::from_bytes([seed; FileHash::BYTE_LEN]);
     CoreCommand::Download(crate::DownloadCommand::StartDownload {
         file: rmule_primitives::Ed2kFileLink {
             name: Ed2kText::from_utf8("lifecycle.bin"),
             size: 1024,
-            file_hash: FileHash::from_bytes([seed; FileHash::BYTE_LEN]),
+            file_hash,
             part_hash_set: None,
             aich_root: None,
             ipv6_sources: Vec::new(),
             sources: Default::default(),
         },
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 1).expect("server endpoint")),
-        credentials: identity().into(),
-        output_path: dir.join(format!("lifecycle-{seed}.bin")),
+        name: rmule_primitives::SafeFileName::clean(&format!("lifecycle-{seed}.bin"), &file_hash),
+        if_taken: crate::NameTaken::Refuse,
     })
 }
 
@@ -312,6 +288,7 @@ async fn settle(core: &mut Core) {
 /// the hash of the download started after it.
 #[tokio::test]
 async fn a_stopped_download_returns_its_file_known_entry_and_its_late_finish_clears_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
     let builder = Core::builder(
         CoreConfig {
             source_lookup_timeout: Duration::from_secs(3600),
@@ -319,14 +296,15 @@ async fn a_stopped_download_returns_its_file_known_entry_and_its_late_finish_cle
         },
         rmule_testkit::memory_store(),
     )
+    .settings(crate::CoreSettings {
+        download_dir: Some(dir.path().to_path_buf()),
+        ..crate::CoreSettings::default()
+    })
     .source_lookup(SilentLookup);
     let known = builder.node.cells.file_known.clone();
     let mut core = builder.build();
-    let dir = tempfile::tempdir().expect("tempdir");
 
-    core.send(start_download(1, dir.path()))
-        .await
-        .expect("start");
+    core.send(start_download(1)).await.expect("start");
     let mut running = queued(&mut core).await;
     for seed in 2..8u8 {
         // Back to back, so the cancelled run's finish notice and the next
@@ -338,9 +316,7 @@ async fn a_stopped_download_returns_its_file_known_entry_and_its_late_finish_cle
         ))
         .await
         .expect("cancel");
-        core.send(start_download(seed, dir.path()))
-            .await
-            .expect("start");
+        core.send(start_download(seed)).await.expect("start");
         running = queued(&mut core).await;
         settle(&mut core).await;
         assert!(
@@ -356,6 +332,7 @@ async fn a_stopped_download_returns_its_file_known_entry_and_its_late_finish_cle
 /// it stay dialable for the firewalled front's `0x99` gate.
 #[tokio::test]
 async fn retiring_one_of_several_downloads_leaves_the_others_known() {
+    let dir = tempfile::tempdir().expect("tempdir");
     let builder = Core::builder(
         CoreConfig {
             source_lookup_timeout: Duration::from_secs(3600),
@@ -363,17 +340,18 @@ async fn retiring_one_of_several_downloads_leaves_the_others_known() {
         },
         rmule_testkit::memory_store(),
     )
+    .settings(crate::CoreSettings {
+        download_dir: Some(dir.path().to_path_buf()),
+        ..crate::CoreSettings::default()
+    })
     .source_lookup(SilentLookup);
     let known = builder.node.cells.file_known.clone();
     let mut core = builder.build();
-    let dir = tempfile::tempdir().expect("tempdir");
     let hash = |seed: u8| FileHash::from_bytes([seed; FileHash::BYTE_LEN]);
 
     let mut ids = Vec::new();
     for seed in 1..=3u8 {
-        core.send(start_download(seed, dir.path()))
-            .await
-            .expect("start");
+        core.send(start_download(seed)).await.expect("start");
         ids.push(queued(&mut core).await);
     }
     assert!((1..=3).all(|seed| known.contains(hash(seed))));
@@ -394,15 +372,17 @@ async fn retiring_one_of_several_downloads_leaves_the_others_known() {
 /// same place a stop does, returning its file-known entry.
 #[tokio::test]
 async fn a_dead_download_returns_its_file_known_entry() {
+    let dir = tempfile::tempdir().expect("tempdir");
     let builder = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(crate::CoreSettings {
+            download_dir: Some(dir.path().to_path_buf()),
+            ..crate::CoreSettings::default()
+        })
         .source_lookup(RefusingLookup);
     let known = builder.node.cells.file_known.clone();
     let mut core = builder.build();
-    let dir = tempfile::tempdir().expect("tempdir");
 
-    core.send(start_download(9, dir.path()))
-        .await
-        .expect("start");
+    core.send(start_download(9)).await.expect("start");
     next_expected(&mut core, |event| {
         matches!(
             event,
@@ -428,6 +408,7 @@ async fn an_injected_dial_adapter_meets_the_node_s_ban_store() {
         .unwrap();
     let bound = SocketAddrV4::new(Ipv4Addr::LOCALHOST, listener.local_port());
     let mut builder = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(crate::CoreSettings::default())
         .peer_transfer(RuntimePeerTransferService::new(
             crate::DEFAULT_SLOT_WAIT_TIMEOUT,
         ));
@@ -524,11 +505,11 @@ impl crate::ServeRuntimeService for WedgedServeRuntime {
 #[tokio::test(start_paused = true)]
 async fn a_serve_task_that_never_ends_is_aborted_after_its_grace() {
     let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(crate::CoreSettings::default())
         .serve_runtime(WedgedServeRuntime)
         .build();
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
-        credentials: identity().into(),
     }))
     .await
     .unwrap();

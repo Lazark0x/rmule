@@ -15,8 +15,8 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rmule_ed2k::{FoundSources, FoundSourcesObfu, GlobFoundSources};
 use rmule_primitives::{
-    ExchangedSource, Ipv4Endpoint, Ipv6Endpoint, Packet, PacketProtocol, PeerSource,
-    SourceCryptOptions, SourceListTail, UserHash,
+    Ipv4Endpoint, Ipv6Endpoint, Packet, PacketProtocol, PeerSource, SourceCryptOptions,
+    SourceListTail, SourceSighting, UserHash,
 };
 
 const V6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
@@ -307,12 +307,12 @@ fn the_obfuscated_form_carries_the_address_after_the_crypt_fields() {
         payload.clone(),
     ))
     .expect("decodes");
-    let v6 = ExchangedSource::new(
+    let v6 = SourceSighting::new(
         PeerSource::Ipv6(Ipv6Endpoint::new(V6, 5000)),
         Some(user_hash),
         Some(SourceCryptOptions::from_byte(0x01)),
     );
-    let v4 = ExchangedSource::new(
+    let v4 = SourceSighting::new(
         high(10, 0, 0, 9, 4662),
         None,
         Some(SourceCryptOptions::from_byte(0)),

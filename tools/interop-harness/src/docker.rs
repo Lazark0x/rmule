@@ -50,18 +50,21 @@ impl DockerCommand {
 /// dangling image on the host.
 pub const BENCH_STAGE_LABEL: &str = "org.rmule.bench.stage=1";
 
-/// Whether a failed `docker build`'s combined output names one of the three
+/// Whether a failed `docker build`'s combined output names one of the four
 /// containerd content-store races the legacy (non-BuildKit) builder flakes
 /// with on colima: a layer export whose content digest went missing, a
-/// snapshot ingest rename that lost the race, or a commit that could no
-/// longer find the snapshot it just made. Each is a
+/// content ingest whose rename into the blob store lost the race (`rename
+/// …/ingest/<digest>/data …/blobs/…`), a commit that could no longer find
+/// the snapshot it just made, or a layer diff whose containerd lease was
+/// collected before the commit (`lease does not exist`). Each is a
 /// transient loser inside the image store, not a Dockerfile or compile
 /// error, so a bare retry — same context, same cache — clears it; anything
-/// else (a real compile failure, a missing file) is not retried.
+/// else (a real compile failure, a missing file, a full disk) is not retried.
 pub fn is_retriable_build_export_failure(output: &str) -> bool {
     (output.contains("content digest") && output.contains("not found"))
-        || output.contains("ingest rename")
+        || (output.contains("ingest") && output.contains("rename"))
         || (output.contains("snapshot") && output.contains("not found"))
+        || output.contains("lease does not exist")
 }
 
 /// The container runtime: every builder below composes `<runtime> ...` argv.

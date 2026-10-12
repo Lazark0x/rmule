@@ -31,6 +31,7 @@
 mod claims;
 mod hello_tags;
 mod mesh;
+pub(in crate::flow::nat::natt) mod recruit_amule;
 pub(in crate::flow::nat::natt) mod selfcheck;
 mod wire;
 
@@ -508,7 +509,14 @@ fn start_buddy(
         )
         .volume(dir, "/out");
     let server = server.map_or_else(absent_server, str::to_owned);
-    for arg in common_args("buddy", HASH_BUDDY, buddy_v4, run_secs, &server) {
+    for arg in common_args(
+        "buddy",
+        HASH_BUDDY,
+        buddy_v4,
+        run_secs,
+        &server,
+        PLACEHOLDER_SHARE,
+    ) {
         container = container.arg(arg);
     }
     for arg in [
@@ -566,6 +574,7 @@ fn start_peer(
         peer.lan.client,
         window,
         &absent_server(),
+        PLACEHOLDER_SHARE,
     ) {
         container = container.arg(arg);
     }
@@ -625,7 +634,7 @@ fn start_peer(
                 "--file".to_owned(),
                 link.to_owned(),
                 "--download-out".to_owned(),
-                "/out/download.bin".to_owned(),
+                "/out/dl/download.bin".to_owned(),
             ]) {
                 container = container.arg(arg);
             }
@@ -639,6 +648,10 @@ fn start_peer(
 }
 
 /// The operands every body of this flow shares.
+/// What a body shares when nothing in the flow asks for a particular file:
+/// the serve activity needs one, and no claim reads which.
+const PLACEHOLDER_SHARE: &str = "/etc/hostname";
+
 /// The eD2k endpoint a body with no server on its WAN logs in to. Nothing
 /// listens here; the bind is what the body needs.
 fn absent_server() -> String {
@@ -651,6 +664,7 @@ fn common_args(
     own_ip: &str,
     window: u64,
     server: &str,
+    share: &str,
 ) -> Vec<String> {
     vec![
         "natt".to_owned(),
@@ -668,7 +682,7 @@ fn common_args(
         "--own-ip".to_owned(),
         own_ip.to_owned(),
         "--share".to_owned(),
-        "/etc/hostname".to_owned(),
+        share.to_owned(),
         "--window".to_owned(),
         window.to_string(),
         "--out".to_owned(),

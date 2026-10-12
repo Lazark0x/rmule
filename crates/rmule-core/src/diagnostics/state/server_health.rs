@@ -111,7 +111,7 @@ impl ServerHealthLevel {
             .filter(|row| !self.policy.is_dead(row))
             .filter(|row| connected != Some(&row.endpoint))
             .filter_map(|row| {
-                let Some(reached) = self.resolved.endpoint_of(&row.endpoint) else {
+                let Some(reached) = self.resolved.udp_endpoint_of(row) else {
                     tracing::debug!(
                         host = %row.endpoint.host(),
                         "a server whose name has no address yet stays out of the swept list"
@@ -133,9 +133,49 @@ impl ServerHealthLevel {
     }
 }
 
+/// The server half of the level in one read: the server a session holds,
+/// every listed row with the policy its health is judged under, whether the
+/// Status Ping Sweep last heard nobody, and what the session was told of the
+/// shares.
+pub(crate) struct ServerHalf<'a> {
+    pub(crate) connected: Option<&'a ServerEndpoint>,
+    pub(crate) servers: &'a [ManagedServer],
+    pub(crate) policy: ServerPolicy,
+    pub(crate) unheard: bool,
+    pub(crate) shares: Option<&'a crate::diagnostics::ShareAnnouncement>,
+}
+
 impl DiagnosticsState {
     fn with_health<T>(&self, act: impl FnOnce(&mut DiagnosticsInner) -> T) -> T {
         act(&mut self.inner.lock().expect("diagnostics mutex poisoned"))
+    }
+
+    /// A write to the server half landed: wake every subscriber, after the
+    /// lock is released, so a reader woken by it reads the write.
+    pub(super) fn server_moved(&self) {
+        self.server_changes
+            .send_modify(|generation| *generation += 1);
+    }
+
+    /// Subscribe to the server half of the level: one wake per write to the
+    /// managed list, the connected server, the dead-server policy, the Status
+    /// Ping Sweep's verdict or the share announcement. It says only that one
+    /// was written; the subscriber reads the half again.
+    pub(crate) fn server_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.server_changes.subscribe()
+    }
+
+    /// Read the server half under one lock.
+    pub(crate) fn read_server_half<T>(&self, read: impl FnOnce(ServerHalf<'_>) -> T) -> T {
+        self.with_health(|inner| {
+            read(ServerHalf {
+                connected: inner.connected_server.as_ref(),
+                servers: &inner.servers,
+                policy: inner.server_health.policy,
+                unheard: inner.server_health.unheard,
+                shares: inner.share_announcement.as_ref(),
+            })
+        })
     }
 
     /// Bind the list the global sweeps read, so the level keeps it a
@@ -158,6 +198,7 @@ impl DiagnosticsState {
                 .server_health
                 .project(&inner.servers, inner.connected_server.as_ref());
         });
+        self.server_moved();
     }
 
     /// The policy rows are judged under now.
@@ -177,6 +218,7 @@ impl DiagnosticsState {
                 shares,
             });
         });
+        self.server_moved();
     }
 
     /// `row`'s name answered `address` just now: the row and the swept list
@@ -195,11 +237,17 @@ impl DiagnosticsState {
         self.with_health(|inner| inner.server_health.resolved.fresh(row))
     }
 
-    /// The listed row `endpoint` answers for: the named row that resolved to
-    /// it, else the address itself.
+    /// The listed row a server-UDP datagram from `endpoint` answers for: the
+    /// row whose UDP endpoint (its reached address on its standard port) it
+    /// is, else the address itself.
     pub(crate) fn listed_row_at(&self, endpoint: Ipv4Endpoint) -> Option<ServerEndpoint> {
-        self.with_health(|inner| inner.server_health.resolved.row_at(endpoint))
-            .or_else(|| ServerEndpoint::new(endpoint.ip.to_string(), endpoint.port).ok())
+        self.with_health(|inner| {
+            inner.servers.iter().find_map(|row| {
+                (inner.server_health.resolved.udp_endpoint_of(row) == Some(endpoint))
+                    .then(|| row.endpoint.clone())
+            })
+        })
+        .or_else(|| ServerEndpoint::new(endpoint.ip.to_string(), endpoint.port).ok())
     }
 
     /// The listed server whose saved obfuscation UDP port `udp_src` is, at
@@ -214,13 +262,30 @@ impl DiagnosticsState {
         self.with_health(|inner| {
             inner.servers.iter().find_map(|row| {
                 let crypt = row.udp_crypt?;
-                let reached = inner.server_health.resolved.endpoint_of(&row.endpoint)?;
+                let reached = inner.server_health.resolved.udp_endpoint_of(row)?;
                 (reached.ip == udp_src.ip && crypt.obfuscation_udp_port == udp_src.port).then(
                     || {
-                        let flags = row.figures.as_ref().and_then(|figures| figures.udp_flags);
+                        let flags = row.udp_flags();
                         (reached, crypt, flags)
                     },
                 )
+            })
+        })
+    }
+
+    /// The **Server UDP Crypt** and UDP flags of the listed row whose UDP
+    /// endpoint (its reached address on its standard port) is `server` — how
+    /// a send keys a server this run has not heard (ADR-0052's durable UDP
+    /// crypt amendment).
+    pub(crate) fn saved_udp_crypt_of(
+        &self,
+        server: Ipv4Endpoint,
+    ) -> Option<(ServerUdpCrypt, Option<ServerUdpFlags>)> {
+        self.with_health(|inner| {
+            inner.servers.iter().find_map(|row| {
+                let crypt = row.udp_crypt?;
+                (inner.server_health.resolved.udp_endpoint_of(row) == Some(server))
+                    .then(|| (crypt, row.udp_flags()))
             })
         })
     }
@@ -234,6 +299,7 @@ impl DiagnosticsState {
     /// Whether the Status Ping Sweep's latest verdict found nobody answering.
     pub(crate) fn set_status_sweep_unheard(&self, unheard: bool) {
         self.with_health(|inner| inner.server_health.unheard = unheard);
+        self.server_moved();
     }
 }
 
@@ -349,6 +415,34 @@ mod tests {
             ..ServerPolicy::default()
         });
         assert!(matches!(since("192.0.2.30"), Some(DeadSince::For(_))));
+    }
+
+    /// A row an aux-port login re-ported is swept at its standard port, the
+    /// one its UDP derives from (`ServerUDPSocket.cpp:363`), and a reply from
+    /// that address is the row dialed on the other port.
+    #[test]
+    fn an_aux_port_row_is_swept_and_answered_at_its_standard_port() {
+        let level = DiagnosticsState::new();
+        let swept: SharedServerList = Arc::new(Mutex::new(Vec::new()));
+        level.install_swept_servers(swept.clone(), blocking(&[]));
+        let mut row = ManagedServer::listed(ServerEndpoint::new("192.0.2.10", 5000).unwrap());
+        row.aux_ports = Some(crate::server_list::ServerAuxPorts {
+            standard_port: 4661,
+            ports: vec![5000],
+        });
+        level.set_servers(vec![row.clone()]);
+
+        assert_eq!(
+            swept.lock().unwrap().clone(),
+            vec![ServerEndpoint::new("192.0.2.10", 4661).unwrap()]
+        );
+        assert_eq!(
+            level.listed_row_at(rmule_primitives::Ipv4Endpoint::new(
+                Ipv4Addr::new(192, 0, 2, 10),
+                4661
+            )),
+            Some(row.endpoint),
+        );
     }
 
     /// A named row enters the swept list at the address its name resolved

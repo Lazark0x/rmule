@@ -25,6 +25,8 @@ mod error;
 mod persist;
 mod transport;
 
-pub use driver::{KadNetConfig, KadNetHandle, KadNetSummary, spawn, spawn_over};
+pub use driver::{
+    KadCommandRoom, KadNetConfig, KadNetHandle, KadNetSummary, os_datagram_nonce, spawn, spawn_over,
+};
 pub use error::KadNetError;
 pub use transport::{KAD_INLET_CAPACITY, KadDatagram, KadInlet, KadTraffic, KadTrafficTotals};

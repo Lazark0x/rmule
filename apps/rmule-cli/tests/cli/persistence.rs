@@ -25,8 +25,10 @@ fn identity_servers_and_prefs_survive_a_restart() {
         .args(["server", "add", "9.9.9.9:5000"])
         .assert()
         .success();
+    let download_dir = rmule_testkit::absolute_path("tmp/rmule-dl");
     cli(dir.path())
-        .args(["config", "set-download-dir", "/tmp/rmule-dl"])
+        .args(["config", "set-download-dir"])
+        .arg(&download_dir)
         .assert()
         .success();
 
@@ -45,5 +47,5 @@ fn identity_servers_and_prefs_survive_a_restart() {
         .args(["config", "show"])
         .assert()
         .success()
-        .stdout(contains("/tmp/rmule-dl"));
+        .stdout(contains(download_dir.display().to_string()));
 }

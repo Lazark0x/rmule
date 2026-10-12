@@ -3,6 +3,7 @@
 //! order — including the identity proof that binds a waiter to its ledger.
 
 use super::*;
+use rmule_peer::{ConnectionEvent, ServerCommand, ServerEvent};
 
 #[test]
 fn slot_requests_grant_queue_or_refuse_within_the_shared_budget() {
@@ -14,7 +15,7 @@ fn slot_requests_grant_queue_or_refuse_within_the_shared_budget() {
         &std::collections::HashMap::new(),
     );
     let t0 = Instant::now();
-    let slot_request = |file_hash| ServeConnEvent::SlotRequested { file_hash };
+    let slot_request = |file_hash| ServeInput::Server(ServerEvent::SlotRequested { file_hash });
 
     // Each new asker is one request the file drew — granted, queued or turned
     // away at the full wait list alike (aMule `UploadQueue.cpp:519-522`).
@@ -22,7 +23,7 @@ fn slot_requests_grant_queue_or_refuse_within_the_shared_budget() {
         state.on_conn_event(t0, peer(1), slot_request(file_hash), &no_modifiers()),
         vec![
             ServeDecision::CountUploadRequest { file_hash },
-            send(peer(1), ServeConnCommand::GrantSlot { file_hash }),
+            send(peer(1), ServerCommand::GrantSlot { file_hash }),
             ServeDecision::Emit(ServeEvent::UploadSlotGranted {
                 peer: peer(1),
                 file_hash,
@@ -34,7 +35,7 @@ fn slot_requests_grant_queue_or_refuse_within_the_shared_budget() {
         state.on_conn_event(t0, peer(2), slot_request(file_hash), &no_modifiers()),
         vec![
             ServeDecision::CountUploadRequest { file_hash },
-            send(peer(2), ServeConnCommand::SetQueueRank { rank: 1 }),
+            send(peer(2), ServerCommand::SetQueueRank { rank: 1 }),
             ServeDecision::Emit(ServeEvent::PeerQueued {
                 peer: peer(2),
                 rank: 1,
@@ -82,10 +83,10 @@ fn identity_proofs_bind_through_the_ledger_decision() {
             state.on_conn_event(
                 t,
                 p,
-                ServeConnEvent::IdentityVerified {
+                ServeInput::Connection(ConnectionEvent::IdentityVerified {
                     user_hash,
                     public_key: key.to_vec(),
-                },
+                }),
                 &no_modifiers(),
             ),
             vec![ServeDecision::BindIdentity {
@@ -108,19 +109,19 @@ fn disconnect_promotes_the_highest_credit_waiter_and_releases_the_slot() {
     let _ = state.on_conn_event(
         t0,
         holder,
-        ServeConnEvent::SlotRequested { file_hash },
+        ServeInput::Server(ServerEvent::SlotRequested { file_hash }),
         &no_modifiers(),
     );
     let _ = state.on_conn_event(
         t0 + Duration::from_secs(1),
         slow,
-        ServeConnEvent::SlotRequested { file_hash },
+        ServeInput::Server(ServerEvent::SlotRequested { file_hash }),
         &no_modifiers(),
     );
     let _ = state.on_conn_event(
         t0 + Duration::from_secs(2),
         rich,
-        ServeConnEvent::SlotRequested { file_hash },
+        ServeInput::Server(ServerEvent::SlotRequested { file_hash }),
         &no_modifiers(),
     );
 
@@ -132,11 +133,11 @@ fn disconnect_promotes_the_highest_credit_waiter_and_releases_the_slot() {
         state.on_conn_event(
             t0 + Duration::from_secs(10),
             holder,
-            ServeConnEvent::Disconnected,
+            disconnected(),
             &modifiers,
         ),
         vec![
-            send(rich, ServeConnCommand::GrantSlot { file_hash }),
+            send(rich, ServerCommand::GrantSlot { file_hash }),
             ServeDecision::Emit(ServeEvent::UploadSlotGranted {
                 peer: rich,
                 file_hash,
@@ -162,19 +163,19 @@ fn transfer_cancelled_promotes_the_highest_credit_waiter_and_releases_the_slot()
     let _ = state.on_conn_event(
         t0,
         holder,
-        ServeConnEvent::SlotRequested { file_hash },
+        ServeInput::Server(ServerEvent::SlotRequested { file_hash }),
         &no_modifiers(),
     );
     let _ = state.on_conn_event(
         t0 + Duration::from_secs(1),
         slow,
-        ServeConnEvent::SlotRequested { file_hash },
+        ServeInput::Server(ServerEvent::SlotRequested { file_hash }),
         &no_modifiers(),
     );
     let _ = state.on_conn_event(
         t0 + Duration::from_secs(2),
         rich,
-        ServeConnEvent::SlotRequested { file_hash },
+        ServeInput::Server(ServerEvent::SlotRequested { file_hash }),
         &no_modifiers(),
     );
 
@@ -183,11 +184,11 @@ fn transfer_cancelled_promotes_the_highest_credit_waiter_and_releases_the_slot()
         state.on_conn_event(
             t0 + Duration::from_secs(10),
             holder,
-            ServeConnEvent::TransferCancelled { file_hash },
+            ServeInput::Server(ServerEvent::TransferCancelled { file_hash }),
             &modifiers,
         ),
         vec![
-            send(rich, ServeConnCommand::GrantSlot { file_hash }),
+            send(rich, ServerCommand::GrantSlot { file_hash }),
             ServeDecision::Emit(ServeEvent::UploadSlotGranted {
                 peer: rich,
                 file_hash,
@@ -225,7 +226,7 @@ fn transfer_cancelled_wipes_served_ranges_so_a_fresh_ask_re_reads() {
         state.on_conn_event(
             t,
             p,
-            ServeConnEvent::PartsRequested { file_hash, ranges },
+            ServeInput::Server(ServerEvent::PartsRequested { file_hash, ranges }),
             &no_modifiers(),
         ),
         vec![read.clone()],
@@ -236,14 +237,14 @@ fn transfer_cancelled_wipes_served_ranges_so_a_fresh_ask_re_reads() {
     let _ = state.on_conn_event(
         t,
         p,
-        ServeConnEvent::TransferCancelled { file_hash },
+        ServeInput::Server(ServerEvent::TransferCancelled { file_hash }),
         &no_modifiers(),
     );
     assert_eq!(
         state.on_conn_event(
             t,
             p,
-            ServeConnEvent::PartsRequested { file_hash, ranges },
+            ServeInput::Server(ServerEvent::PartsRequested { file_hash, ranges }),
             &no_modifiers(),
         ),
         vec![read],
@@ -264,7 +265,7 @@ fn transfer_cancelled_for_a_peer_holding_no_granted_slot_is_a_noop() {
         state.on_conn_event(
             t,
             peer(9),
-            ServeConnEvent::TransferCancelled { file_hash },
+            ServeInput::Server(ServerEvent::TransferCancelled { file_hash }),
             &no_modifiers(),
         ),
         Vec::new(),
@@ -288,7 +289,7 @@ fn rerank_reorders_waiters_by_live_credit() {
         let _ = state.on_conn_event(
             t,
             p,
-            ServeConnEvent::SlotRequested { file_hash },
+            ServeInput::Server(ServerEvent::SlotRequested { file_hash }),
             &no_modifiers(),
         );
     }
@@ -297,14 +298,14 @@ fn rerank_reorders_waiters_by_live_credit() {
     assert_eq!(
         state.on_rerank_tick(t0 + Duration::from_secs(62), &modifiers),
         vec![
-            send(rich, ServeConnCommand::SetQueueRank { rank: 1 }),
+            send(rich, ServerCommand::SetQueueRank { rank: 1 }),
             ServeDecision::Emit(ServeEvent::PeerQueued {
                 peer: rich,
                 rank: 1,
                 file_hash,
                 software: None,
             }),
-            send(slow, ServeConnCommand::SetQueueRank { rank: 2 }),
+            send(slow, ServerCommand::SetQueueRank { rank: 2 }),
             ServeDecision::Emit(ServeEvent::PeerQueued {
                 peer: slow,
                 rank: 2,
@@ -333,17 +334,18 @@ fn readopted_peers_leave_no_queue_release_and_lose_their_flow_state() {
     let _ = state.on_conn_event(
         t,
         waiter,
-        ServeConnEvent::SlotRequested { file_hash },
+        ServeInput::Server(ServerEvent::SlotRequested { file_hash }),
         &no_modifiers(),
     );
 
     assert_eq!(
-        state.on_conn_event(t, adopted, ServeConnEvent::Readopted, &no_modifiers()),
+        state.on_conn_event(t, adopted, ServeInput::Readopted, &no_modifiers()),
         Vec::new(),
         "readoption releases no slot and emits no event"
     );
-    assert!(
-        !state.identified_peers().contains_key(&adopted),
+    assert_eq!(
+        state.identities().get(&adopted),
+        None,
         "the adopted peer's serve-side identity is dropped"
     );
 }
@@ -363,7 +365,7 @@ fn a_firewalled_node_refuses_strangers_once_the_wait_list_is_over_fifty() {
         &std::collections::HashMap::new(),
     );
     let t0 = Instant::now();
-    let slot_request = ServeConnEvent::SlotRequested { file_hash };
+    let slot_request = ServeInput::Server(ServerEvent::SlotRequested { file_hash });
     let our_server = rmule_primitives::Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 9), 4661);
     state.on_self_position(ServeSelfPosition {
         low_id: true,
@@ -449,19 +451,12 @@ fn distinct_peer(nth: u16) -> PeerEndpoint {
 }
 
 /// An `Identified` event whose hello named `server` and nothing else of note.
-fn identified_on(server: Option<rmule_primitives::Ipv4Endpoint>) -> ServeConnEvent {
-    ServeConnEvent::Identified {
-        user_hash: user(0x4D),
-        client_id: ClientId::from_u32(0x0100_007F),
+fn identified_on(server: Option<rmule_primitives::Ipv4Endpoint>) -> ServeInput {
+    HelloFacts {
         connected_server: server,
-        tcp_port: 4662,
-        udp_port: 0,
-        udp_version: 0,
-        extended_requests_version: 2,
-        crypt: crypt_advert(),
-        ipv6: None,
-        software: nameless_software(),
+        ..HelloFacts::of(user(0x4D))
     }
+    .identified()
 }
 
 /// The per-address queue cap on the brain's own surface (ADR-0088): the
@@ -477,7 +472,7 @@ fn the_fourth_waiter_from_one_address_is_refused_without_a_packet() {
     let file_hash = hash(0x33);
     let mut state = serving_state(1, vec![entry(file_hash, 4096, "served.bin")]);
     let t0 = Instant::now();
-    let slot_request = ServeConnEvent::SlotRequested { file_hash };
+    let slot_request = ServeInput::Server(ServerEvent::SlotRequested { file_hash });
 
     // `peer(port)` varies only the port, so all five share one address.
     let _ = state.on_conn_event(t0, peer(1), slot_request.clone(), &no_modifiers());
@@ -486,10 +481,7 @@ fn the_fourth_waiter_from_one_address_is_refused_without_a_packet() {
             state.on_conn_event(t0, peer(place + 1), slot_request.clone(), &no_modifiers()),
             vec![
                 ServeDecision::CountUploadRequest { file_hash },
-                send(
-                    peer(place + 1),
-                    ServeConnCommand::SetQueueRank { rank: place },
-                ),
+                send(peer(place + 1), ServerCommand::SetQueueRank { rank: place },),
                 ServeDecision::Emit(ServeEvent::PeerQueued {
                     peer: peer(place + 1),
                     rank: place,
@@ -511,7 +503,7 @@ fn the_fourth_waiter_from_one_address_is_refused_without_a_packet() {
     assert_eq!(
         state.on_conn_event(t0, peer(2), slot_request, &no_modifiers()),
         vec![
-            send(peer(2), ServeConnCommand::SetQueueRank { rank: 1 }),
+            send(peer(2), ServerCommand::SetQueueRank { rank: 1 }),
             ServeDecision::Emit(ServeEvent::PeerQueued {
                 peer: peer(2),
                 rank: 1,
@@ -536,7 +528,7 @@ fn a_waiter_asking_about_another_file_is_reported_waiting_for_it() {
     let _ = slot_request(&mut state, peer(1), film, t0);
     let _ = slot_request(&mut state, peer(2), film, t0);
 
-    let status_ask = |file_hash| ServeConnEvent::FileIdSet { file_hash };
+    let status_ask = |file_hash| ServeInput::Server(ServerEvent::FileIdSet { file_hash });
     let moved = state.on_conn_event(t0, peer(2), status_ask(song), &no_modifiers());
     assert!(
         moved.contains(&ServeDecision::Emit(ServeEvent::PeerQueued {
@@ -591,22 +583,17 @@ fn grant_and_queue_edges_name_each_peers_own_client() {
         let _ = state.on_conn_event(
             t0,
             peer(n),
-            ServeConnEvent::Identified {
-                user_hash: UserHash::from_bytes([hash_byte; UserHash::BYTE_LEN]),
-                client_id: ClientId::from_u32(0x0100_007F),
-                connected_server: None,
-                tcp_port: 4662,
-                udp_port: 0,
-                udp_version: 0,
+            HelloFacts {
                 extended_requests_version: 0,
                 crypt: rmule_primitives::CryptStance::disabled(),
-                ipv6: None,
                 software: client.clone(),
-            },
+                ..HelloFacts::of(UserHash::from_bytes([hash_byte; UserHash::BYTE_LEN]))
+            }
+            .identified(),
             &no_modifiers(),
         );
     }
-    let request = ServeConnEvent::SlotRequested { file_hash };
+    let request = ServeInput::Server(ServerEvent::SlotRequested { file_hash });
     let granted = state.on_conn_event(t0, peer(1), request.clone(), &no_modifiers());
     let queued = state.on_conn_event(t0, peer(2), request, &no_modifiers());
     assert!(
@@ -651,9 +638,14 @@ fn a_software_revision_reaches_the_upload_row() {
         connected_server: rmule_primitives::Ipv4Endpoint::new(std::net::Ipv4Addr::UNSPECIFIED, 0),
     });
     for p in [peer(1), peer(2)] {
-        let revised = ServeConnEvent::SoftwareRevised {
-            software: named.clone(),
-        };
+        let revised = ServeInput::Connection(ConnectionEvent::IdentityRevised {
+            identity: HelloFacts {
+                software: named.clone(),
+                ..hello_facts(UserHash::from_bytes([0x11; 16]), 0, 0, 2)
+            }
+            .identity(),
+            what: IdentityChange::Software,
+        });
         assert_eq!(
             state.on_conn_event(t0, p, revised, &no_modifiers()),
             Vec::new()
@@ -664,7 +656,7 @@ fn a_software_revision_reaches_the_upload_row() {
             .on_conn_event(
                 t0,
                 p,
-                ServeConnEvent::SlotRequested { file_hash },
+                ServeInput::Server(ServerEvent::SlotRequested { file_hash }),
                 &no_modifiers(),
             )
             .into_iter()

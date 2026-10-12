@@ -2,18 +2,16 @@
 //! that asks *us* for a file over the connection we opened to *it* is admitted
 //! to the one upload slot queue exactly like an accepted connection.
 
-use std::sync::Arc;
-
 use rmule_net::peer::Connection as PeerConnection;
-use rmule_peer::{PeerCommand, PeerEvent, SourceExchangeSupport};
-use tokio::sync::{Mutex, mpsc};
+use rmule_peer::{ConnectionCommand, ConnectionEvent, PeerCommand, PeerEvent, RequesterEvent};
+use rmule_primitives::PeerEndpoint;
+use tokio::sync::mpsc;
 
-use super::kad_runtime::{SharedKadBootstrap, broker_peer_kad_handoff};
+use super::InboundPeerDeps;
+use super::inbound_triage::serve_side;
+use super::kad_runtime::broker_peer_kad_handoff;
 use super::peer_transfer::PeerWorkerEvent;
-use super::serve_projection::{
-    is_server_capability_event, serve_command_to_peer, serve_event_from_peer,
-};
-use super::serve_runtime::{ServeConnCommand, ServeConnEvent, ServeConnection};
+use super::serve_runtime::{ServeConnection, ServeInput, ServeOutput};
 
 /// The slot through which dialed connections reach the serve activity.
 /// `RuntimePeerTransferService` pushes each dialed connection's serve half
@@ -23,62 +21,52 @@ use super::serve_runtime::{ServeConnCommand, ServeConnEvent, ServeConnection};
 /// serving** — dialed connections then never produce a serve half, and the
 /// router drops their Server Capability requests. Mirrors ADR-0032's
 /// `SharedServerSession` slot.
-pub(crate) type SharedDialedServeSink = Arc<Mutex<Option<mpsc::Sender<ServeConnection>>>>;
+pub(crate) type SharedDialedServeSink = crate::mailbox::Mailbox<ServeConnection>;
 
 /// Where a dialed connection's router sends what the socket reads, built by
 /// the worker that owns the connection: the download half, the serve half,
 /// the worker event stream, and the node-wide folds a hello feeds.
 pub(crate) struct DialedRoute {
-    /// Requester Capability events, to the download half.
+    /// Requester Capability events and the facts the download waits on, to
+    /// the download half.
     pub(crate) requester_tx: mpsc::Sender<PeerEvent>,
-    /// Server Capability events, to the serve half.
-    pub(crate) server_tx: mpsc::Sender<PeerEvent>,
-    /// Connection facts the download keeps (source exchange, identity, contact).
+    /// Server Capability requests and the connection facts the serve side
+    /// keeps, to the serve half.
+    pub(crate) server_tx: mpsc::Sender<ServeInput>,
+    /// Connection facts the download keeps: the peer's identity, whole at
+    /// every revision, and its source asks.
     pub(crate) worker_evt_tx: mpsc::Sender<PeerWorkerEvent>,
-    /// An adopted connection's source-exchange facts, read from its hello at
-    /// accept; `None` for a dialed one, whose hello the router reads itself.
-    pub(crate) adopted_support: Option<SourceExchangeSupport>,
-    /// The ed2k→Kad handoff a hello's Kad hint feeds (ADR-0067).
-    pub(crate) kad_bootstrap: SharedKadBootstrap,
-    /// The IPv6 quorum a hello's reflection votes into (ADR-0084/0087).
-    pub(crate) addresses: crate::address_learning::SharedAddressLearning,
+    /// The node-wide services a hello feeds (the ed2k→Kad handoff, the IPv6
+    /// quorum) and a side-channel frame is carried to — the same ones an
+    /// accepted link reaches, since aMule's handlers do not ask who dialed.
+    pub(crate) deps: InboundPeerDeps,
 }
 
 /// Own one dialed `PeerConnection` and split it into the two consumers
-/// ADR-0031 names: every inbound `PeerEvent` is fanned to the **download** half
-/// (Requester Capability) or the **serve** half (Server Capability), and
-/// `PeerCommand`s from either half are framed onto the one socket. The concrete
-/// "two consumers over one connection" for a dialed connection — the
-/// session is already bidirectional, so this is pure orchestration.
+/// ADR-0031 names: every inbound `PeerEvent` is routed by its group — the
+/// **download** half takes the Requester group (Requester Capability), the
+/// **serve** half the Server group (Server Capability), the connection facts
+/// go where each is kept — and `PeerCommand`s from either half are framed onto
+/// the one socket. The concrete "two consumers over one connection" for a
+/// dialed connection — the session is already bidirectional, so this is pure
+/// orchestration.
 ///
 /// The socket is shut down when every command sender is dropped (the download
 /// worker finished and — if serving — the serve bridge closed) or the peer
 /// disconnects. `Disconnected` is delivered to **both** halves so each frees
 /// its per-connection state.
 ///
-/// The router is the one sender of the peer's source-exchange facts to the
-/// download (ADR-0108), so they reach it in the session's order: the hello's
-/// at `PeerIdentified` — or, for an adopted connection whose hello was read at
-/// accept, `adopted_support` before anything else — then each file request's
-/// and each `OP_EMULEINFO` revision's.
+/// The router is the one sender of the peer's identity to the download once
+/// the connection is up, so it reaches the download in the session's order:
+/// whole at `Identified` (an adopted connection's worker sends the one the
+/// accept side read before this router starts), then whole again at each
+/// `IdentityRevised` — the source-exchange facts the Source Ask Clock reads
+/// among them (ADR-0108).
 pub(crate) async fn route_dialed_connection(
     mut conn: PeerConnection,
     mut peer_cmd_rx: mpsc::Receiver<PeerCommand>,
     route: DialedRoute,
 ) {
-    let DialedRoute {
-        requester_tx,
-        server_tx,
-        worker_evt_tx,
-        adopted_support,
-        kad_bootstrap,
-        addresses,
-    } = route;
-    if let Some(support) = adopted_support {
-        let _ = worker_evt_tx
-            .send(PeerWorkerEvent::SourceExchange { support })
-            .await;
-    }
     // Set once every command sender let go: the session was told to close
     // after the last command, and the events it read before closing are still
     // forwarded — a file request's report among them — until it stops or the
@@ -90,7 +78,8 @@ pub(crate) async fn route_dialed_connection(
                 // None: every sender dropped (download done and not serving) —
                 // close the session behind the commands it already has.
                 let Some(command) = command else {
-                    if conn.send(PeerCommand::Disconnect).await.is_err() {
+                    let disconnect = PeerCommand::Connection(ConnectionCommand::Disconnect);
+                    if conn.send(disconnect).await.is_err() {
                         break;
                     }
                     closing = Some(tokio::time::Instant::now() + rmule_net::driver::SHUTDOWN_GRACE);
@@ -104,124 +93,8 @@ pub(crate) async fn route_dialed_connection(
                 if closing.is_some() => break,
             event = conn.next_event() => {
                 let Some(event) = event else { break }; // driver/peer gone
-                if matches!(event, PeerEvent::Disconnected { .. }) {
-                    let _ = requester_tx.send(event.clone()).await;
-                    let _ = server_tx.send(event).await;
+                if route.dispatch(conn.peer_endpoint(), event).await == Routed::Closed {
                     break;
-                }
-                if let PeerEvent::PeerIdentified { identity } = &event {
-                    // ed2k→Kad handoff (ADR-0067): a dialed peer that carries
-                    // a Kad node hint bootstraps our Kad node — aMule's
-                    // `ConnectionEstablished` handoff on the outbound side too. A
-                    // no-op unless the peer advertised a usable Kad contact and
-                    // Kad is running.
-                    broker_peer_kad_handoff(
-                        &kad_bootstrap,
-                        conn.peer_endpoint(),
-                        identity,
-                    )
-                    .await;
-                    // And its `CT_MOD_YOUR_IP` reflection casts one vote into
-                    // the IPv6 quorum (ADR-0084/0087), the dial side of the
-                    // same fold.
-                    crate::address_learning::record_peer_ipv6_vote(
-                        &addresses,
-                        conn.peer_endpoint(),
-                        identity,
-                    );
-                    // The hello's source-exchange facts, ahead of any revision
-                    // the session reads after it (ADR-0108).
-                    let _ = worker_evt_tx
-                        .send(PeerWorkerEvent::SourceExchange {
-                            support: identity.source_exchange(),
-                        })
-                        .await;
-                    // Both halves need identify: the download half to proceed
-                    // past the handshake, the serve half to key credit.
-                    let _ = requester_tx.send(event.clone()).await;
-                    let _ = server_tx.send(event).await;
-                    continue;
-                }
-                // A connection-lifecycle fact (ADR-0041), forwarded straight to
-                // the worker event stream: the transfer loops drain requester
-                // events only while a command is in flight, so routing it there
-                // would park the verification behind an idle worker.
-                let event = match event {
-                    PeerEvent::PeerIdentityVerified { user_hash, public_key } => {
-                        let _ = worker_evt_tx
-                            .send(PeerWorkerEvent::IdentityVerified { user_hash, public_key })
-                            .await;
-                        continue;
-                    }
-                    // Both halves show the peer's software: the source
-                    // row through the worker stream, the upload row through
-                    // the serve half.
-                    // The reask contact an `OP_EMULEINFO` named, to both
-                    // halves as the hello's is: the worker's reask pool and
-                    // the serve side's wait list.
-                    PeerEvent::PeerReaskContactRevised {
-                        udp_port,
-                        udp_version,
-                    } => {
-                        let _ = worker_evt_tx
-                            .send(PeerWorkerEvent::UdpContact {
-                                udp_port,
-                                udp_version,
-                            })
-                            .await;
-                        let _ = server_tx
-                            .send(PeerEvent::PeerReaskContactRevised {
-                                udp_port,
-                                udp_version,
-                            })
-                            .await;
-                        continue;
-                    }
-                    // The source-exchange facts the session framed the
-                    // file request under, and whether it asked (ADR-0108),
-                    // and any later revision by an `OP_EMULEINFO`: the
-                    // download half alone keeps them, in the session's order.
-                    PeerEvent::FileRequestSent {
-                        support,
-                        sources_asked,
-                        ..
-                    } => {
-                        let _ = worker_evt_tx
-                            .send(PeerWorkerEvent::SourceExchange { support })
-                            .await;
-                        if sources_asked {
-                            let _ = worker_evt_tx.send(PeerWorkerEvent::SourcesAsked).await;
-                        }
-                        continue;
-                    }
-                    PeerEvent::PeerSourceExchangeRevised { support } => {
-                        let _ = worker_evt_tx
-                            .send(PeerWorkerEvent::SourceExchange { support })
-                            .await;
-                        continue;
-                    }
-                    PeerEvent::PeerSoftwareRevised { software } => {
-                        let _ = worker_evt_tx
-                            .send(PeerWorkerEvent::SoftwareRevised {
-                                software: software.clone(),
-                            })
-                            .await;
-                        let _ = server_tx
-                            .send(PeerEvent::PeerSoftwareRevised { software })
-                            .await;
-                        continue;
-                    }
-                    event => event,
-                };
-                if is_server_capability_event(&event) {
-                    // A closed serve half (not serving / serve task gone) just
-                    // drops the request; the download half keeps running.
-                    let _ = server_tx.send(event).await;
-                } else if requester_tx.send(event).await.is_err() {
-                    // The download worker is gone; drop its events and keep the
-                    // socket alive for the serve half. The loop still exits when
-                    // every `peer_cmd_tx` is dropped or the peer disconnects.
-                    continue;
                 }
             }
         }
@@ -229,39 +102,154 @@ pub(crate) async fn route_dialed_connection(
     let _ = conn.shutdown().await;
 }
 
-/// Translate the serve half of a dialed connection both ways: the router's
-/// Server Capability `PeerEvent`s become `ServeConnEvent`s for the serve task,
-/// and the serve task's `ServeConnCommand`s become `PeerCommand`s framed onto
-/// the shared socket via `peer_cmd_tx`. Unlike `translate_serve_connection`
-/// (which owns the whole socket for an accepted connection), here the socket
+/// Whether the connection is still open after an event was routed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Routed {
+    Open,
+    Closed,
+}
+
+impl DialedRoute {
+    /// Send one event to the half that keeps its group.
+    async fn dispatch(&self, peer: PeerEndpoint, event: PeerEvent) -> Routed {
+        match event {
+            PeerEvent::Connection(fact) => return self.connection_fact(peer, fact).await,
+            // Whether the file request carried a source ask (ADR-0108): the
+            // download half alone stamps it. The facts it was framed under
+            // are the identity's, which reached the download first.
+            PeerEvent::Requester(RequesterEvent::FileRequestSent { sources_asked, .. }) => {
+                if sources_asked {
+                    let _ = self.worker_evt_tx.send(PeerWorkerEvent::SourcesAsked).await;
+                }
+            }
+            // A closed serve half (not serving / serve task gone) just drops
+            // the request; the download half keeps running.
+            PeerEvent::Server(request) => {
+                let _ = self.server_tx.send(ServeInput::Server(request)).await;
+            }
+            // The side-channel frames (Kad firewall checks, buddy keepalive,
+            // `0x99`) go where an accepted link's go: aMule's
+            // `ClientTCPSocket.cpp` handlers run on whichever socket they
+            // arrive on, whoever dialed it.
+            PeerEvent::Side(side) => serve_side(&self.deps, peer, side),
+            // A gone download worker drops its events; the socket stays up
+            // for the serve half until every `peer_cmd_tx` is dropped or the
+            // peer disconnects.
+            event @ (PeerEvent::Requester(_) | PeerEvent::Notice(_)) => {
+                let _ = self.requester_tx.send(event).await;
+            }
+        }
+        Routed::Open
+    }
+
+    /// Route one fact about the link to every half that keeps it.
+    async fn connection_fact(&self, peer: PeerEndpoint, fact: ConnectionEvent) -> Routed {
+        match fact {
+            ConnectionEvent::Identified { identity } => {
+                // ed2k→Kad handoff (ADR-0067): a dialed peer that carries a
+                // Kad node hint bootstraps our Kad node — aMule's
+                // `ConnectionEstablished` handoff on the outbound side too. A
+                // no-op unless the peer advertised a usable Kad contact and Kad
+                // is running.
+                broker_peer_kad_handoff(&self.deps.kad_bootstrap, peer, &identity).await;
+                // And its `CT_MOD_YOUR_IP` reflection casts one vote into the
+                // IPv6 quorum (ADR-0084/0087), the dial side of the same fold.
+                crate::address_learning::record_peer_ipv6_vote(
+                    &self.deps.addresses,
+                    peer,
+                    &identity,
+                );
+                // The identity, to the download ahead of the `Identified` its
+                // worker waits on, so it precedes the worker's `Connected`
+                // and every revision the session reads after it.
+                let _ = self
+                    .worker_evt_tx
+                    .send(PeerWorkerEvent::Identity(identity.clone()))
+                    .await;
+                // Both halves need identify: the download half to proceed past
+                // the handshake, the serve half to key credit.
+                let fact = ConnectionEvent::Identified { identity };
+                let _ = self
+                    .requester_tx
+                    .send(PeerEvent::Connection(fact.clone()))
+                    .await;
+                let _ = self.server_tx.send(ServeInput::Connection(fact)).await;
+            }
+            ConnectionEvent::Disconnected { .. } => {
+                let _ = self
+                    .requester_tx
+                    .send(PeerEvent::Connection(fact.clone()))
+                    .await;
+                let _ = self.server_tx.send(ServeInput::Connection(fact)).await;
+                return Routed::Closed;
+            }
+            // A connection-lifecycle fact (ADR-0041), forwarded straight to the
+            // worker event stream: the transfer loops drain requester events
+            // only while a command is in flight, so routing it there would park
+            // the verification behind an idle worker.
+            ConnectionEvent::IdentityVerified {
+                user_hash,
+                public_key,
+            } => {
+                let _ = self
+                    .worker_evt_tx
+                    .send(PeerWorkerEvent::IdentityVerified {
+                        user_hash,
+                        public_key,
+                    })
+                    .await;
+            }
+            // A revision, whole, to both halves that keep the identity: the
+            // download's record and the serve side's connection.
+            ConnectionEvent::IdentityRevised { ref identity, .. } => {
+                let _ = self
+                    .worker_evt_tx
+                    .send(PeerWorkerEvent::Identity(identity.clone()))
+                    .await;
+                let _ = self.server_tx.send(ServeInput::Connection(fact)).await;
+            }
+            // The rest is the download half's: the hello wait reads a refusal,
+            // and nothing else here is kept by either half.
+            ConnectionEvent::HelloSent
+            | ConnectionEvent::HelloRefused { .. }
+            | ConnectionEvent::SecureIdentFailed { .. } => {
+                let _ = self.requester_tx.send(PeerEvent::Connection(fact)).await;
+            }
+        }
+        Routed::Open
+    }
+}
+
+/// Carry the serve half of a dialed connection both ways: the router's serve
+/// inputs reach the serve task as they are, and the serve task's outputs
+/// become `PeerCommand`s framed onto the shared socket via `peer_cmd_tx`.
+/// Unlike the accepted bridge (which owns the whole socket), here the socket
 /// is shared with the download half, so a serve-flow end (`Disconnect`) stops
 /// serving **without** tearing the socket down — the download half may still
 /// be pulling. Dropping this task's `peer_cmd_tx` clone lets the router close
 /// the socket once the download half is also done.
 pub(crate) async fn bridge_dialed_serve(
-    mut server_rx: mpsc::Receiver<PeerEvent>,
-    mut serve_cmd_rx: mpsc::Receiver<ServeConnCommand>,
+    mut server_rx: mpsc::Receiver<ServeInput>,
+    mut serve_cmd_rx: mpsc::Receiver<ServeOutput>,
     peer_cmd_tx: mpsc::Sender<PeerCommand>,
-    serve_evt_tx: mpsc::Sender<ServeConnEvent>,
+    serve_evt_tx: mpsc::Sender<ServeInput>,
 ) {
     loop {
         tokio::select! {
             command = serve_cmd_rx.recv() => {
-                let Some(command) = command else { break };
-                if matches!(command, ServeConnCommand::Disconnect) {
-                    break;
-                }
-                if peer_cmd_tx.send(serve_command_to_peer(command)).await.is_err() {
+                let command = match command {
+                    None | Some(ServeOutput::Disconnect) => break,
+                    Some(ServeOutput::Server(command)) => PeerCommand::Server(command),
+                };
+                if peer_cmd_tx.send(command).await.is_err() {
                     break;
                 }
             }
-            event = server_rx.recv() => {
-                let Some(event) = event else { break };
-                if let Some(serve) = serve_event_from_peer(event) {
-                    let disconnected = matches!(serve, ServeConnEvent::Disconnected);
-                    if serve_evt_tx.send(serve).await.is_err() || disconnected {
-                        break;
-                    }
+            input = server_rx.recv() => {
+                let Some(input) = input else { break };
+                let disconnected = input.is_disconnect();
+                if serve_evt_tx.send(input).await.is_err() || disconnected {
+                    break;
                 }
             }
         }

@@ -21,7 +21,7 @@
 //! standard protocol) has never been sent by any aMule version (git
 //! search returns zero hits) and falls through to `PeerPacket::Unknown`.
 
-use rmule_primitives::{FileHash, Packet, empty_body_codec};
+use rmule_primitives::{FileHash, Packet, WireReader, empty_body_codec};
 use thiserror::Error;
 
 use crate::opcode::PeerOpcode;
@@ -109,7 +109,12 @@ impl QueueRanking {
                 actual: payload.len(),
             });
         }
-        let rank = u16::from_le_bytes([payload[0], payload[1]]);
+        let rank = WireReader::new(payload)
+            .read_u16_le("queue rank")
+            .map_err(|truncated| SlotDecodeError::WrongPayloadLen {
+                expected: QUEUE_RANKING_PAYLOAD_LEN,
+                actual: truncated.available,
+            })?;
         Ok(Self { rank })
     }
 

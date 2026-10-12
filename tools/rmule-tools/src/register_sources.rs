@@ -32,7 +32,7 @@ use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, ServeCommand as CoreServeCommand, ServeEvent,
     ServerConnectionEvent, open_durable_store_in_memory,
 };
-use rmule_primitives::{ClientIdentity, Ed2kText, ServerEndpoint, UserHash};
+use rmule_primitives::{ServerEndpoint, UserHash};
 
 /// Port offset between staging attempts for one identity, wide enough that a
 /// retry never lands on another identity's port.
@@ -59,9 +59,6 @@ pub(crate) struct RegisterSourcesArgs {
     /// The advertised/listen TCP port; identity `i` serves on `port_base + i`.
     #[arg(long, default_value_t = 14662)]
     port_base: u16,
-    /// CT_VERSION value advertised in each login.
-    #[arg(long, default_value_t = 60)]
-    protocol_version: u32,
     /// Per-registrant announce timeout, seconds.
     #[arg(long, default_value_t = 30)]
     announce_timeout: u64,
@@ -153,26 +150,23 @@ async fn stage_one(
     index: u16,
     port: u16,
 ) -> Result<()> {
-    let identity = ClientIdentity::new(
-        registrant_user_hash(index),
-        Ed2kText::from_utf8(format!("rmule-reg-{index}")),
-        port,
-        args.protocol_version,
-    );
-
     let mut core = Core::builder(CoreConfig::default(), open_durable_store_in_memory()?)
-        .user_hash(identity.user_hash())
+        .settings(rmule_core::CoreSettings {
+            nickname: format!("rmule-reg-{index}"),
+            tcp_port: port,
+            ..rmule_core::CoreSettings::default()
+        })
+        .user_hash(registrant_user_hash(index))
         .build();
     let share = crate::share::share_files(&mut core, std::slice::from_ref(&args.file), |_| {})
         .await
         .context("share file")?;
     core.send(CoreCommand::Serve(CoreServeCommand::StartServing {
         listen_addr: SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port),
-        credentials: identity.clone().into(),
     }))
     .await
     .context("start serving")?;
-    crate::node::connect(&core, &server, identity.into()).await?;
+    crate::node::connect(&core, &server).await?;
 
     // Wait for the login AND the announce. Two facts, two events: the serve
     // start does not wait for the login, and `FilesAnnounced` is raised when

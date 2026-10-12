@@ -78,6 +78,30 @@ pub(crate) fn collect_amule_logs(
     )
 }
 
+/// Drain one of several aMules into its own role's files under the aMule log
+/// directory (`<role>.stdout.log`, `<role>.stderr.log`), where
+/// [`collect_amule_logs`] would write them all to the one slot.
+pub(crate) fn collect_amule_role_logs(
+    docker: &Docker,
+    layout: &RunLayout,
+    role: &str,
+    container: &str,
+) -> Result<String> {
+    fs::create_dir_all(layout.amule_logs_dir()).with_context(|| {
+        format!(
+            "create aMule log directory {}",
+            layout.amule_logs_dir().display()
+        )
+    })?;
+    collect_logs(
+        docker,
+        container,
+        &layout.amule_logs_dir().join(format!("{role}.stdout.log")),
+        &layout.amule_logs_dir().join(format!("{role}.stderr.log")),
+        "collect aMule container logs",
+    )
+}
+
 pub(crate) fn collect_rmule_logs(
     docker: &Docker,
     layout: &RunLayout,

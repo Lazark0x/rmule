@@ -1,6 +1,6 @@
 [package]
 name = "rmule"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -35,13 +35,12 @@ ratatui.workspace = true
 rmule-bootstrap = { path = "../../crates/rmule-bootstrap", features = ["reqwest-fetcher"] }
 rmule-core = { path = "../../crates/rmule-core" }
 rmule-primitives = { path = "../../crates/rmule-primitives" }
+rmule-words = { path = "../../crates/rmule-words" }
 thiserror.workspace = true
 # `rt-multi-thread` on top of the workspace set: one multi-thread runtime for
 # UI loop, bridge, and core tasks alike (ADR-0069 §Runtime).
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 tracing.workspace = true
-# The Run Log (`run_log`): the file every `tracing` event of a run lands in.
-tracing-subscriber.workspace = true
 
 [dev-dependencies]
 # The front-door leg runs the built `rmule` binary and asserts what it printed.
@@ -51,15 +50,17 @@ predicates.workspace = true
 # needs the codec. The production dep graph stays Kad-free — the app
 # talks to core, and core owns the Kad vocabulary.
 rmule-kad = { path = "../../crates/rmule-kad" }
-# Test-only: a Software cell is asserted against the identification a real
-# hello yields, so the fixture builds that hello with the peer codec.
-rmule-peer = { path = "../../crates/rmule-peer" }
 # Test-only: the search-options end-to-end proof needs a counterparty
 # that decodes `OP_SEARCHREQUEST` back into the query it states, so the
 # constraint tree is asserted where it lands — on the server — not where it
-# was built.
+# was built. A Software cell is asserted against the client a real hello
+# names, which the shared fixture builds with the peer codec.
 rmule-testkit = { path = "../../crates/rmule-testkit" }
+# A surface's layout test holds a sentence whatever its words.
+rmule-words = { path = "../../crates/rmule-words", features = ["test-support"] }
 tempfile.workspace = true
+# Test-only: the bridge test reads the records a subscriber of its own receives.
+tracing-subscriber.workspace = true
 # `start_paused` + `time::advance` pace the bridge's data tick deterministically.
 tokio = { workspace = true, features = ["test-util"] }
 

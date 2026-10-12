@@ -224,11 +224,14 @@ impl ServerPunch {
 /// client-UDP send half a burst and the keepalive leave by, and whether the
 /// connected session is one the server can introduce us through.
 ///
-/// One cell, cloned to the three places that need it — establishment (which
-/// advertises and starts the keepalive), the session multiplexer (which hears
-/// the server's answers) and the actor (which chooses the route). The send
-/// half is late-bound for the reason the session's other cells are: the
-/// client-UDP socket is bound by the actor, after this cell was woven in.
+/// One cell, cloned to the places that need it — establishment (which
+/// advertises, starts the keepalive and records the session it runs on), the
+/// session multiplexer (which hears the server's answers and clears that
+/// session as it ends); its [`CoordinatorSession`] reaches **Self Reach**
+/// (which reads it) and the **NAT-T Front** (which asks an introduction
+/// through it). The send half is late-bound for the reason the session's
+/// other cells are: the client-UDP socket is bound by the actor, after this
+/// cell was woven in.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SharedServerPunch {
     inner: std::sync::Arc<SharedInner>,
@@ -238,7 +241,8 @@ pub(crate) struct SharedServerPunch {
 struct SharedInner {
     ledger: std::sync::Mutex<ServerPunch>,
     client_udp: std::sync::OnceLock<tokio::sync::mpsc::Sender<ClientUdpSend>>,
-    live: std::sync::atomic::AtomicBool,
+    /// The session an introduction is asked through, while it can be.
+    session: CoordinatorSession,
     /// Where punches and the server's stated refusals are reported. Late-bound
     /// like the send half; absent, nothing is counted and nothing else changes.
     diagnostics: std::sync::OnceLock<crate::diagnostics::DiagnosticsState>,
@@ -272,22 +276,48 @@ impl SharedServerPunch {
     }
 
     /// Whether the connected session advertised `0xF9` and its keepalive is
-    /// running — the chooser's `server_punch` fact.
+    /// running — **Self Reach**'s "Server Coordinator live" family.
+    #[cfg(test)]
     pub(crate) fn is_live(&self) -> bool {
-        self.inner.live.load(std::sync::atomic::Ordering::Relaxed)
+        self.inner.session.is_live()
     }
 
-    /// Set by establishment when the keepalive starts, cleared when the
-    /// session ends — which also fails every outstanding request.
-    pub(crate) fn set_live(&self, live: bool) {
+    /// The session cell: what **Self Reach** reads and the **NAT-T Front**
+    /// asks an introduction through.
+    pub(crate) fn coordinator_session(&self) -> CoordinatorSession {
+        self.inner.session.clone()
+    }
+
+    /// The keepalive started on `session` (establishment, the family's
+    /// writer): we can be introduced through it until it ends.
+    pub(crate) fn go_live(&self, session: &crate::server_session::ServerSessionHandle) {
         self.inner
-            .live
-            .store(live, std::sync::atomic::Ordering::Relaxed);
-        if !live {
-            let abandoned = self.ledger().on_session_closed();
-            for target in abandoned {
-                self.report_failure(target, IntroductionFailure::Silence);
+            .session
+            .0
+            .send_replace(Some(session.coordinator_link()));
+    }
+
+    /// The session behind `ended` ended (its own exit, the family's writer):
+    /// nothing can be asked through it, and every request it still waited on
+    /// has failed. Only the link this session set is cleared: a newer login
+    /// may have taken the cell before this exit ran, and that one stays live.
+    pub(crate) fn go_dark(&self, ended: &crate::server_session::SessionLink) {
+        let cleared = self.inner.session.0.send_if_modified(|held| {
+            if held.as_ref().is_some_and(|link| link.is_session(ended)) {
+                *held = None;
+                true
+            } else {
+                false
             }
+        });
+        if !cleared {
+            // A newer session owns the cell and the ledger's waits: they are
+            // not this exit's to fail.
+            return;
+        }
+        let abandoned = self.ledger().on_session_closed();
+        for target in abandoned {
+            self.report_failure(target, IntroductionFailure::Silence);
         }
     }
 
@@ -357,6 +387,51 @@ impl SharedServerPunch {
             }
         }
         verdict
+    }
+}
+
+/// The **Server Coordinator**'s session cell (ADR-0060 "Server Coordinator
+/// live", ADR-0091): the session we can be introduced through, while one can
+/// be. One writer — the server session: set when establishment starts the
+/// `0x9F` keepalive, cleared by the session's own exit. A `watch`, so its
+/// moves wake the **Reach Generation**; a session that died without its exit
+/// reads dark at the next read, because the link it holds is weak.
+#[derive(Clone, Debug)]
+pub(crate) struct CoordinatorSession(
+    std::sync::Arc<tokio::sync::watch::Sender<Option<crate::server_session::SessionLink>>>,
+);
+
+impl Default for CoordinatorSession {
+    fn default() -> Self {
+        Self(std::sync::Arc::new(tokio::sync::watch::Sender::new(None)))
+    }
+}
+
+impl CoordinatorSession {
+    /// Whether a session that advertised `0xF9` holds the cell and still
+    /// runs.
+    pub(crate) fn is_live(&self) -> bool {
+        self.0
+            .borrow()
+            .as_ref()
+            .is_some_and(crate::server_session::SessionLink::is_alive)
+    }
+
+    /// Ask the live session's server to introduce us to the Low-ID `target`
+    /// (`0x60`), naming `our_udp_port`, reporting whether the request was
+    /// queued. Never awaited: no live session, or a full one, is `false`.
+    pub(crate) fn request_introduction(&self, target: ClientId, our_udp_port: u16) -> bool {
+        self.0
+            .borrow()
+            .as_ref()
+            .is_some_and(|link| link.request_holepunch(target, our_udp_port))
+    }
+
+    /// A change subscription: wakes when a session goes live or dark.
+    pub(crate) fn subscribe(
+        &self,
+    ) -> tokio::sync::watch::Receiver<Option<crate::server_session::SessionLink>> {
+        self.0.subscribe()
     }
 }
 
@@ -552,6 +627,29 @@ mod tests {
         two.on_request(ClientId::from_u32(8), t0);
         two.on_info(&info_at([45, 55, 200, 7], 31999), |_| false, t0);
         assert_eq!(two.overdue(t0 + INTRODUCTION_TIMEOUT).len(), 2);
+    }
+
+    /// A session that exits after a newer login took the cell clears nothing:
+    /// the family stays live on the newer session.
+    #[tokio::test]
+    async fn a_stale_sessions_exit_leaves_the_newer_coordinator_live() {
+        let punch = SharedServerPunch::default();
+        let (stale, _stale_events, _stale_sent) = crate::server_session::tests::fake_session(
+            crate::server_session::tests::connected(),
+            rmule_ed2k::ServerGrants::default(),
+        );
+        let (newer, _newer_events, _newer_sent) = crate::server_session::tests::fake_session(
+            crate::server_session::tests::connected(),
+            rmule_ed2k::ServerGrants::default(),
+        );
+        punch.go_live(&stale);
+        punch.go_live(&newer);
+
+        punch.go_dark(&stale.coordinator_link());
+        assert!(punch.is_live(), "the newer login is still the coordinator");
+
+        punch.go_dark(&newer.coordinator_link());
+        assert!(!punch.is_live());
     }
 
     /// Live: an introduction becomes the burst on the client-UDP send half —

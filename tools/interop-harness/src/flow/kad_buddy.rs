@@ -23,6 +23,7 @@ pub(crate) mod core_swarm;
 pub(crate) mod core_tap;
 pub(crate) mod core_verdict;
 pub(crate) mod core_wire;
+pub(crate) mod dialed_link;
 pub(crate) mod direct_callback;
 pub(crate) mod firewalled;
 pub(crate) mod firewalled_verdict;
@@ -33,6 +34,7 @@ pub(crate) mod third_party;
 pub(crate) mod verify_keys;
 
 pub use self::core::{KadCoreBuddyOptions, run_kad_core_buddy};
+pub use self::dialed_link::{DialedLinkVerdict, KadDialedLinkOptions, run_kad_dialed_link};
 pub use self::direct_callback::{KadDirectCallbackOptions, run_kad_direct_callback};
 pub use self::firewalled::{KadFirewalledBuddyOptions, run_kad_firewalled_buddy};
 pub use self::required_check::{

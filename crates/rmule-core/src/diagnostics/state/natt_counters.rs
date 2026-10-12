@@ -13,6 +13,15 @@ impl DiagnosticsState {
             .saturating_add(1);
     }
 
+    /// Count one introduction requested from our server (`0x60`).
+    pub fn count_natt_server_request_emitted(&self) {
+        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        inner.session.natt_server_requests_emitted_total = inner
+            .session
+            .natt_server_requests_emitted_total
+            .saturating_add(1);
+    }
+
     /// Count one server introduction that became a punch burst.
     pub fn count_natt_server_punch(&self) {
         let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");

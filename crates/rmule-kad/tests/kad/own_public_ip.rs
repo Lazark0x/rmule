@@ -9,8 +9,8 @@
 use rmule_kad::{Kad2Message, KadUdpKey, udp_verify_key};
 use rmule_primitives::{ClientDecryptKeys, decrypt_datagram_client};
 use rmule_testkit::kad_node::{
-    NODE_ID, OWN_IP, SECRET, T0, crypt_to_node, drain_outputs, endpoint, fixed_nonce, hello, id,
-    keyed_node, our_key_for,
+    NODE_ID, OWN_IP, SECRET, T0, crypt_node, crypt_to_node, drain_outputs, endpoint, hello, id,
+    our_key_for,
 };
 
 /// Decrypt one of the node's own NodeID-family sends toward `contact_id` —
@@ -32,14 +32,13 @@ fn opened_by_contact(
 
 #[test]
 fn moving_the_own_ip_retires_a_learned_key_but_leaves_the_own_key_derivation_alone() {
-    let mut node = keyed_node();
-    node.enable_datagram_obfuscation(fixed_nonce);
+    let mut node = crypt_node();
     let peer = endpoint(7, 5000);
     let contact = id(0xC1);
     let sender_key = 0xABCD_0001;
 
     // The peer hellos in keyed: the node learns and stores its sender key
-    // bound to `OWN_IP` (`enable_verify_keys`'s binding).
+    // bound to `OWN_IP` (the verify keys' binding).
     let hello_req = Kad2Message::HelloReq(hello(contact, peer, 8, 0))
         .encode()
         .encode();
@@ -137,7 +136,7 @@ fn moving_the_own_ip_retires_a_learned_key_but_leaves_the_own_key_derivation_alo
 #[test]
 fn an_unarmed_node_ignores_a_public_ip_move() {
     // No verify-key state exists to move, and nothing in the routing table
-    // reads `own_public_ip` while `enable_verify_keys` never ran — a no-op,
+    // reads `own_public_ip` while the node started without verify keys — a no-op,
     // not a panic, matching the always-safe driver-facing command surface.
     let mut node = rmule_testkit::kad_node::node();
     node.set_own_public_ip(std::net::Ipv4Addr::new(203, 0, 113, 4));

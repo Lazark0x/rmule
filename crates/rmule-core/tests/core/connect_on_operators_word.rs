@@ -9,6 +9,7 @@
 //! seen; none may happen until the operator connects, and the connect lands
 //! behind the listener attach already bound and the mapping it already made.
 
+use rmule_testkit::HANG_GUARD;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,7 +26,7 @@ use rmule_testkit::{
 };
 use tokio::time::timeout;
 
-use crate::fixture::{free_port, identity_with_port, next_expected};
+use crate::fixture::{free_port, next_expected};
 
 /// Two downloads the last process left running, both naming `server`.
 fn two_running_downloads(
@@ -69,16 +70,17 @@ async fn attach_listens_and_waits_and_only_the_operators_connect_logs_in() {
         },
         Arc::clone(&store),
     )
+    .settings(crate::fixture::settings_on(port))
     .gateway_source(FakeGateways::home_lan())
     .mapping_backends(vec![upnp])
     .peer_transfer(PendingPeerTransfer)
-    .restore_credentials(identity_with_port(port).into())
+    .restore_at_attach()
     .build();
 
-    // The listener is up from attach, on the credentials' port.
+    // The listener is up from attach, on the settings' port.
     let mut waiting = Vec::new();
     let mut listening = None;
-    timeout(Duration::from_secs(10), async {
+    timeout(HANG_GUARD, async {
         while listening.is_none() || waiting.len() < 2 {
             match core.next_event().await.expect("core is alive") {
                 CoreEvent::Serve(ServeEvent::ServingStarted { listen_addr }) => {
@@ -104,7 +106,7 @@ async fn attach_listens_and_waits_and_only_the_operators_connect_logs_in() {
     assert_eq!(waiting, ids.to_vec(), "both restored downloads wait");
 
     // The mapping for the attach listener settles with nobody logged in.
-    timeout(Duration::from_secs(10), async {
+    timeout(HANG_GUARD, async {
         loop {
             let mapped = core.diagnostics_snapshot().mappings.into_iter().any(|row| {
                 row.mapping.role == SocketRole::Tcp
@@ -125,7 +127,7 @@ async fn attach_listens_and_waits_and_only_the_operators_connect_logs_in() {
     );
 
     // The operator's word: one login, High ID, both downloads start on it.
-    rmule_testkit::connect_to(&core, &server.endpoint(), identity_with_port(port).into()).await;
+    rmule_testkit::connect_to(&core, &server.endpoint()).await;
     next_expected(&mut core, "the operator's connect", |event| {
         matches!(
             event,
@@ -140,7 +142,7 @@ async fn attach_listens_and_waits_and_only_the_operators_connect_logs_in() {
         "the attach listener answered the port check"
     );
     let mut found = Vec::new();
-    timeout(Duration::from_secs(10), async {
+    timeout(HANG_GUARD, async {
         while found.len() < 2 {
             if let CoreEvent::Download(DownloadEvent::SourcesFound { download_id, .. }) =
                 core.next_event().await.expect("core is alive")

@@ -3,7 +3,10 @@
 //! contract, so one harness drives both the dialed and the accepted role.
 
 use crate::driver::{DrivenSession, DriverOutput};
-use rmule_peer::{PeerCloseReason, PeerCommand, PeerEvent, PeerOutput, PeerSession};
+use rmule_peer::{
+    ConnectionCommand, ConnectionEvent, PeerCloseReason, PeerCommand, PeerEvent, PeerOutput,
+    PeerSession,
+};
 
 /// Runtime newtype around the sans-I/O [`PeerSession`] implementing the
 /// shared harness contract (see the `ed2k` module's `Ed2kDriven`).
@@ -56,16 +59,19 @@ impl DrivenSession for PeerDriven {
         })
     }
     fn disconnect_command() -> PeerCommand {
-        PeerCommand::Disconnect
+        PeerCommand::Connection(ConnectionCommand::Disconnect)
     }
     fn deadline_elapsed(&mut self) {
         self.0.hello_deadline_elapsed();
     }
     fn resolves_deadline(event: &PeerEvent) -> bool {
-        matches!(event, PeerEvent::PeerIdentified { .. })
+        matches!(
+            event,
+            PeerEvent::Connection(ConnectionEvent::Identified { .. })
+        )
     }
     fn disconnected_event(reason: PeerCloseReason) -> PeerEvent {
-        PeerEvent::Disconnected { reason }
+        PeerEvent::Connection(ConnectionEvent::Disconnected { reason })
     }
     fn close_label(reason: &PeerCloseReason) -> &'static str {
         reason.label()

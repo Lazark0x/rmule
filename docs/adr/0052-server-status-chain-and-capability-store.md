@@ -63,8 +63,8 @@ from aMule here on purpose.
 
 - **Dead is derived, not stored.** A server is dead while its consecutive failure tally
   is at or above the Dead Server Limit, the `dead_server_retries` preference (default 3,
-  at least 1), read from the store at start and changed live by
-  `CoreCommand::SetServerPolicy`. The tally is the row's one stored fact; changing the
+  at least 1): a Core Setting (ADR-0069) the actor starts under, changed live through
+  the settings handle. The tally is the row's one stored fact; changing the
   limit re-derives every row.
 - **Server Health**, ranked for sorting: `Answered` (tally 0, has answered at least
   once), `Unproven` (tally 0, never answered), `Failing` (below the limit), `Dead`.

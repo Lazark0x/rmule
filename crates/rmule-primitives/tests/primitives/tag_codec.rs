@@ -2,7 +2,7 @@
 //! a compact uint narrows to its smallest width, and a truncated or unknown
 //! tag is rejected rather than guessed at.
 
-use rmule_primitives::{Tag, TagName, TagNameEncoding, TagValue};
+use rmule_primitives::{PrimitiveError, Tag, TagName, TagNameEncoding, TagValue};
 
 #[test]
 fn u32_tag_with_numeric_name_round_trips() {
@@ -217,4 +217,47 @@ fn a_tag_block_reserves_by_its_bytes_not_by_its_claimed_count() {
 
     let (tags, used) = Tag::decode_block(&bytes, 2).unwrap();
     assert_eq!((tags.len(), used), (2, bytes.len()));
+}
+
+/// Every tag shape, cut at every byte: both the decoder and the skipper answer
+/// a truncation error, and neither reads a short tag as a whole one.
+#[test]
+fn a_tag_cut_at_any_byte_is_a_truncation_for_every_shape() {
+    let shapes = [
+        Tag::new(TagName::compact_id(0x01), TagValue::U8(7)),
+        Tag::new(TagName::compact_id(0x01), TagValue::U16(700)),
+        Tag::new(TagName::compact_id(0x01), TagValue::U32(70_000)),
+        Tag::new(TagName::compact_id(0x01), TagValue::U64(1 << 40)),
+        Tag::new(TagName::compact_id(0x01), TagValue::Hash([9; 16])),
+        Tag::new(
+            TagName::compact_id(0x01),
+            TagValue::String(rmule_primitives::Ed2kText::from_bytes(b"hello".to_vec())),
+        ),
+        Tag::new(TagName::text("longname").unwrap(), TagValue::U32(1)),
+        Tag::new(
+            TagName::length_prefixed_id(0x02),
+            TagValue::String(rmule_primitives::Ed2kText::from_bytes(b"x".to_vec())),
+        ),
+    ];
+    for tag in shapes {
+        let bytes = tag.encode();
+        assert_eq!(Tag::decode_prefix(&bytes).unwrap().1, bytes.len());
+        assert_eq!(Tag::skip_prefix(&bytes).unwrap(), bytes.len());
+        for cut in 0..bytes.len() {
+            assert!(
+                matches!(
+                    Tag::decode_prefix(&bytes[..cut]),
+                    Err(PrimitiveError::TruncatedTag { .. })
+                ),
+                "decode of {tag:?} cut to {cut}"
+            );
+            assert!(
+                matches!(
+                    Tag::skip_prefix(&bytes[..cut]),
+                    Err(PrimitiveError::TruncatedTag { .. })
+                ),
+                "skip of {tag:?} cut to {cut}"
+            );
+        }
+    }
 }

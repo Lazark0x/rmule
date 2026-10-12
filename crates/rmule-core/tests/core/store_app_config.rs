@@ -1,6 +1,6 @@
 //! The [`AppConfigStore`] ⊃ [`ServerListStore`] contract against the durable
-//! implementation (ADR-0083): the generate-once minting, what a preferences
-//! or presentation edit may and may not disturb, the managed list's fold and
+//! implementation (ADR-0083): the generate-once minting, what a Core
+//! Settings edit to the identity rows may and may not disturb, the managed list's fold and
 //! its mutators' `false`, and what all of it looks like after a restart.
 //!
 //! Every contract assertion runs on both backends the one implementation
@@ -9,15 +9,13 @@
 //! saw memory would not notice a record that fails to round-trip through
 //! bytes. The restart legs are file-only by definition.
 
-use std::path::{Path, PathBuf};
-
 use rmule_core::{
-    AppConfigStore, DurableAppConfig, ManagedServer, Preference, ServerListStore, ServerMerge,
-    ServerPriority,
+    AppConfigStore, CoreSettingsHandle, DurableAppConfig, ManagedServer, Preference,
+    ServerListStore, ServerMerge, ServerPriority, Setting,
 };
 use rmule_primitives::{Ed2kText, ServerEndpoint};
 
-use crate::fixture::{file_config_store, memory_config_store};
+use crate::fixture::{file_config_store, memory_config_store, open_store};
 
 /// Run one contract assertion against both backends.
 fn on_both_backends(assert: impl Fn(&DurableAppConfig)) {
@@ -95,28 +93,27 @@ fn fresh_stores_mint_distinct_identity_material() {
 
 // ---- preferences ------------------------------------------------------------
 
-/// The three answers a front-end's editor reads defaults through: unset, set,
-/// and replaced — and the keys are distinct, so one edit cannot shadow
-/// another.
+/// The three answers a settings read defaults through: unset, set, and
+/// replaced — and the keys are distinct, so one edit cannot shadow another.
 #[test]
 fn preferences_round_trip() {
-    on_both_backends(|store| {
-        assert_eq!(store.preference(Preference::Theme).unwrap(), None);
-        store.set_preference(Preference::Theme, "light").unwrap();
-        store.set_preference(Preference::Theme, "256").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    for opened in [rmule_testkit::memory_store(), open_store(dir.path())] {
+        let store = DurableAppConfig::new(opened.clone());
+        let settings = CoreSettingsHandle::open(opened);
+        assert_eq!(store.preference(Preference::ServerMetUrl).unwrap(), None);
+        for url in ["http://a.example/server.met", "http://b.example/server.met"] {
+            settings.set(Setting::ServerMetUrl(url.to_owned())).unwrap();
+        }
         assert_eq!(
-            store.preference(Preference::Theme).unwrap().as_deref(),
-            Some("256")
+            store
+                .preference(Preference::ServerMetUrl)
+                .unwrap()
+                .as_deref(),
+            Some("http://b.example/server.met")
         );
         assert_eq!(store.preference(Preference::NodesDatUrl).unwrap(), None);
-
-        assert_eq!(store.download_dir().unwrap(), None);
-        store.set_download_dir(Path::new("/tmp/dl")).unwrap();
-        assert_eq!(
-            store.download_dir().unwrap(),
-            Some(PathBuf::from("/tmp/dl"))
-        );
-    });
+    }
 }
 
 // ---- the managed server list -----------------------------------------------
@@ -249,12 +246,18 @@ fn editing_nickname_and_ports_never_disturbs_the_minted_identity() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path();
     let (minted, kad) = {
-        let store = file_config_store(path);
+        let opened = open_store(path);
+        let store = DurableAppConfig::new(opened.clone());
         let minted = store.ensure_identity().unwrap();
         let kad = store.ensure_kad_identity().unwrap();
-        store.set_nickname(&Ed2kText::from_utf8("hübsch")).unwrap();
-        store.set_tcp_port(4711).unwrap();
-        store.set_udp_port(4722).unwrap();
+        let settings = CoreSettingsHandle::open(opened);
+        for setting in [
+            Setting::Nickname("hübsch".to_owned()),
+            Setting::TcpPort(4711),
+            Setting::UdpPort(4722),
+        ] {
+            settings.set(setting).unwrap();
+        }
         (minted, kad)
     };
 
@@ -279,12 +282,19 @@ fn secure_ident_key_and_preferences_survive_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path();
     let signature = {
-        let store = file_config_store(path);
-        store.set_download_dir(dir.path()).unwrap();
+        let opened = open_store(path);
+        let store = DurableAppConfig::new(opened.clone());
+        CoreSettingsHandle::open(opened)
+            .set(Setting::DownloadDir {
+                dir: dir.path().to_path_buf(),
+                share_confirmed: false,
+            })
+            .unwrap();
         store.ensure_secure_ident_key().unwrap().sign(b"challenge")
     };
 
-    let reopened = file_config_store(path);
+    let opened = open_store(path);
+    let reopened = DurableAppConfig::new(opened.clone());
     assert_eq!(
         reopened
             .ensure_secure_ident_key()
@@ -294,7 +304,11 @@ fn secure_ident_key_and_preferences_survive_reopen() {
         "the persisted keypair reproduces the same deterministic signature"
     );
     assert_eq!(
-        reopened.download_dir().unwrap().as_deref(),
+        CoreSettingsHandle::open(opened)
+            .read()
+            .unwrap()
+            .download_dir
+            .as_deref(),
         Some(dir.path())
     );
 }
@@ -335,6 +349,8 @@ fn server_rows_round_trip_every_model_field_and_fold_across_reopen() {
                 figures: None,
                 grants: None,
                 udp_crypt: None,
+                aux_ports: None,
+                listed_udp_flags: None,
             })
             .unwrap();
         store.set_server_fail_count(&server, 5).unwrap();
@@ -363,6 +379,8 @@ fn server_rows_round_trip_every_model_field_and_fold_across_reopen() {
             figures: None,
             grants: None,
             udp_crypt: None,
+            aux_ports: None,
+            listed_udp_flags: None,
         })
         .unwrap();
     let folded = &reopened.servers().unwrap()[0];

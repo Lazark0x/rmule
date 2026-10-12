@@ -22,7 +22,7 @@ use rmule_primitives::ED2K_PART_SIZE;
 use rmule_testkit::{FakeEd2kServer, ServingCore, file_link};
 use tokio::time::timeout;
 
-use crate::fixture::{connect_credentials, next_expected};
+use crate::fixture::next_expected;
 
 const PART: usize = ED2K_PART_SIZE as usize;
 
@@ -80,7 +80,8 @@ impl Leg {
             },
             store,
         )
-        .restore_credentials(connect_credentials().await)
+        .settings(crate::fixture::attach_settings().await)
+        .restore_at_attach()
         .build();
         next_expected(
             &mut core,
@@ -110,12 +111,7 @@ impl Leg {
     }
 
     async fn connect(&self) {
-        rmule_testkit::connect_to(
-            &self.core,
-            &self.server.endpoint(),
-            connect_credentials().await,
-        )
-        .await;
+        rmule_testkit::connect_to(&self.core, &self.server.endpoint()).await;
     }
 
     /// Every download event until the run ends, completed or failed.

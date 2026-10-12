@@ -15,8 +15,8 @@ aMule references are to 2.3.3 (`4e8f2b3c`); read, never ported (ADR-0082).
 set from servers that grant related search (`ServerPolicy::withhold_from_related_search`, stored
 as `WithholdSharesFromRelatedSearch`). Withheld shares stay available over Kad and on every server
 that does not grant it; there is no per-server switch. It is core-owned server-list configuration
-beside the Dead Server Limit (ADR-0052), read at the actor's start and changed live by
-`CoreCommand::SetServerPolicy`.
+beside the Dead Server Limit (ADR-0052): a Core Setting (ADR-0069) the actor starts under,
+changed live through the settings handle.
 
 The Session Follower decides per session, from the session's grants as they stand:
 

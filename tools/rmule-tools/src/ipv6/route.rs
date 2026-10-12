@@ -25,7 +25,7 @@ use rmule_core::{
     ServeCommand, open_durable_store_in_memory,
 };
 use rmule_net::family::FamilySelection;
-use rmule_primitives::{ClientId, ClientIdentity, Ed2kText, Ipv6Endpoint, PeerEndpoint, UserHash};
+use rmule_primitives::{ClientId, Ipv6Endpoint, PeerEndpoint, UserHash};
 
 use crate::driver_row::Row;
 
@@ -134,12 +134,15 @@ pub(crate) async fn run_route(args: Ipv6RouteArgs) -> Result<()> {
     };
     let user_hash = UserHash::from_bytes(crate::operand::parse_user_hash(&args.user_hash)?);
     let mut core = Core::builder(config, open_durable_store_in_memory()?)
+        .settings(rmule_core::CoreSettings {
+            nickname: "rmule-tools".to_owned(),
+            tcp_port: 4662,
+            ..rmule_core::CoreSettings::default()
+        })
         .user_hash(user_hash)
         .build();
-    let identity = ClientIdentity::new(user_hash, Ed2kText::from_utf8("rmule-tools"), 4662, 60);
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: args.listen,
-        credentials: identity.into(),
     }))
     .await?;
 
@@ -197,7 +200,12 @@ pub(crate) async fn run_route(args: Ipv6RouteArgs) -> Result<()> {
         if let CoreEvent::PeerReachRouted { route, .. } = event {
             row.route = name(route);
             row.route_detail = format!("{route:?}");
-            row.rung_zero = matches!(route, PeerReachRoute::Direct) && row.peer_is_low_id;
+            row.rung_zero = matches!(
+                route,
+                PeerReachRoute::Direct {
+                    endpoint: PeerEndpoint::V6(_)
+                }
+            ) && row.peer_is_low_id;
             if row.rung_zero || !row.peer_is_low_id {
                 break;
             }
@@ -228,7 +236,7 @@ pub(crate) async fn run_route(args: Ipv6RouteArgs) -> Result<()> {
 
 const fn name(route: PeerReachRoute) -> &'static str {
     match route {
-        PeerReachRoute::Direct => "direct",
+        PeerReachRoute::Direct { .. } => "direct",
         PeerReachRoute::DirectUdp { .. } => "direct-udp",
         PeerReachRoute::DirectUdpUnavailable { .. } => "direct-udp-unavailable",
         PeerReachRoute::Server { .. } => "server",

@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use rmule_ed2k::GlobCallbackRequest;
 use rmule_primitives::{
-    AddressFamily, ClientEncryptKey, ClientId, CryptStance, DatagramSenderAddress, FileHash,
-    Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, ServerEndpoint, UserHash, encrypt_datagram_client,
+    AddressFamily, ClientEncryptKey, ClientId, DatagramSenderAddress, FileHash, Ipv4Endpoint,
+    Ipv6Endpoint, PeerEndpoint, UserHash, encrypt_datagram_client,
 };
 use tokio::sync::mpsc;
 use tokio::time::timeout;
@@ -39,7 +39,7 @@ async fn a_reask_ping_on_the_bound_client_udp_socket_reaches_the_engine() {
     let engine_port = engine_socket.local_port();
     let (engine, mut inboxes) = crate::client_udp::ClientUdpEngine::new(
         RuntimeClientUdpTransport::new(Arc::clone(&engine_socket)),
-        None,
+        crate::client_udp::PeerUdpCrypt::disarmed(),
         SharedBuddySlot::default(),
         crate::firewalled::front::SharedFirewalledFront::default(),
         crate::diagnostics::DiagnosticsState::default(),
@@ -106,7 +106,12 @@ async fn an_ipv6_reask_on_the_bound_family_pair_decrypts_under_the_35_byte_key()
     own.set_user_hash(our_hash);
     let (engine, mut inboxes) = crate::client_udp::ClientUdpEngine::new(
         RuntimeClientUdpTransport::new(Arc::clone(&engine_socket)),
-        Some(PeerUdpCrypt::new(own, CryptStance::new(true, true, false))),
+        PeerUdpCrypt::new(
+            own,
+            crate::obfuscation_policy::SharedObfuscationPolicy::new(Some(
+                rmule_net::peer::ObfuscationPolicy::Requested,
+            )),
+        ),
         SharedBuddySlot::default(),
         crate::firewalled::front::SharedFirewalledFront::default(),
         DiagnosticsState::default(),
@@ -162,16 +167,12 @@ async fn an_ipv6_reask_on_the_bound_family_pair_decrypts_under_the_35_byte_key()
 /// A transport that records every `send_to` and never receives, so the
 /// relay's only activity is the callback send under test.
 struct RecordingTransport {
-    sent_tx: mpsc::Sender<(ServerEndpoint, Vec<u8>)>,
+    sent_tx: mpsc::Sender<(Ipv4Endpoint, Vec<u8>)>,
 }
 
 impl ServerUdpTransport for RecordingTransport {
-    async fn send_to(&self, server: ServerEndpoint, datagram: Vec<u8>) {
-        let _ = self.sent_tx.send((server, datagram)).await;
-    }
-
-    async fn send_crypt_ping(&self, server: ServerEndpoint, datagram: Vec<u8>) {
-        let _ = self.sent_tx.send((server, datagram)).await;
+    async fn send_to(&self, to: Ipv4Endpoint, datagram: Vec<u8>) {
+        let _ = self.sent_tx.send((to, datagram)).await;
     }
 
     async fn recv(&self) -> Option<(Vec<u8>, Ipv4Endpoint)> {
@@ -188,7 +189,10 @@ async fn relays_a_global_callback_send_to_the_source_server() {
     let (sent_tx, mut sent_rx) = mpsc::channel(4);
     let transport = RecordingTransport { sent_tx };
     let (callback_tx, callback_rx) = mpsc::channel(4);
-    let task = tokio::spawn(relay_global_callbacks(transport, callback_rx));
+    let task = tokio::spawn(relay_global_callbacks(
+        crate::server_udp::tests::plain_seal(transport),
+        callback_rx,
+    ));
 
     let requester = Ipv4Endpoint::new(std::net::Ipv4Addr::new(9, 9, 9, 9), 5000);
     let source_server = Ipv4Endpoint::new(std::net::Ipv4Addr::LOCALHOST, 4661);
@@ -206,9 +210,11 @@ async fn relays_a_global_callback_send_to_the_source_server() {
         .await
         .expect("a callback datagram was sent within 2s")
         .expect("transport stayed open");
-    // Addressed to the source-server's TCP endpoint; the real send adapter
-    // maps it to the server's UDP port (TCP + 4).
-    assert_eq!(server, ServerEndpoint::new("127.0.0.1", 4661).unwrap());
+    // Sent to the source-server's UDP port, its standard port + 4.
+    assert_eq!(
+        server,
+        Ipv4Endpoint::new(std::net::Ipv4Addr::LOCALHOST, 4665)
+    );
     // A no-length UDP datagram carrying OP_GLOBCALLBACKREQ for rmule's own
     // contact + the target low id.
     let decoded = GlobCallbackRequest::decode_udp(&datagram).expect("OP_GLOBCALLBACKREQ");

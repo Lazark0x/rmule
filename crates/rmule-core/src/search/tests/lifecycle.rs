@@ -44,7 +44,6 @@ async fn a_kad_answer_later_than_the_quiet_window_is_kept_while_the_walk_is_live
     let (kad_tx, kad_rx) = crate::search::kad_keyword_leg();
     let (evt_tx, mut evt_rx) = mpsc::channel(16);
     let (_cancel_tx, cancel_rx) = watch::channel(false);
-    let (finished_tx, _finished_rx) = mpsc::channel(4);
     let task = tokio::spawn(
         SearchTask {
             search_id: SearchId::from_u64(552),
@@ -55,7 +54,6 @@ async fn a_kad_answer_later_than_the_quiet_window_is_kept_while_the_walk_is_live
             windows: production_windows(),
             evt_tx,
             cancel_rx,
-            finished_tx,
             paging: crate::search::Paging::inert(
                 rmule_primitives::KeywordQuery::new(rmule_primitives::Ed2kText::from_utf8("a"))
                     .expect("a query")
@@ -106,7 +104,6 @@ async fn a_search_nobody_answers_completes_after_the_server_answer_wait() {
     let live = LiveSearches::default();
     let (evt_tx, mut evt_rx) = mpsc::channel(16);
     let (_cancel_tx, cancel_rx) = watch::channel(false);
-    let (finished_tx, _finished_rx) = mpsc::channel(4);
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(12)).await;
         drop(tcp_tx);
@@ -122,7 +119,6 @@ async fn a_search_nobody_answers_completes_after_the_server_answer_wait() {
             windows: production_windows(),
             evt_tx,
             cancel_rx,
-            finished_tx,
             paging: crate::search::Paging::inert(
                 rmule_primitives::KeywordQuery::new(rmule_primitives::Ed2kText::from_utf8("a"))
                     .expect("a query")
@@ -153,7 +149,6 @@ async fn each_accepted_batch_restarts_the_quiet_window() {
     let live = LiveSearches::default();
     let (evt_tx, mut evt_rx) = mpsc::channel(16);
     let (_cancel_tx, cancel_rx) = watch::channel(false);
-    let (finished_tx, _finished_rx) = mpsc::channel(4);
     let task = tokio::spawn(
         SearchTask {
             search_id: SearchId::from_u64(554),
@@ -164,7 +159,6 @@ async fn each_accepted_batch_restarts_the_quiet_window() {
             windows: production_windows(),
             evt_tx,
             cancel_rx,
-            finished_tx,
             paging: crate::search::Paging::inert(
                 rmule_primitives::KeywordQuery::new(rmule_primitives::Ed2kText::from_utf8("a"))
                     .expect("a query")

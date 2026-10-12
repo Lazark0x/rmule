@@ -5,10 +5,11 @@
 
 use super::*;
 
-/// Bring up the server-UDP front on the one bound socket, shared by an `Arc`
-/// for sends: the discovery channel asks on it, the global-callback relay sends
-/// `OP_GLOBCALLBACKREQUEST` on it, and each search's sweep fires its variant
-/// datagrams on it. The receive side has one owner (ADR-0051): the server-UDP
+/// Bring up the server-UDP front on the one bound socket, shared by an `Arc`.
+/// Every send leaves through one **Server-UDP Seal** over it: the discovery
+/// channel's asks, the global-callback relay's `OP_GLOBCALLBACKREQUEST`, each
+/// search's sweep, the status probes and the engine's `0xA2`. The receive
+/// side has one owner (ADR-0051): the server-UDP
 /// engine demuxes each datagram by opcode — `0x9B` feeds the discovery
 /// channel's inbox, `0x99` the search forwarder's, and `0x97` plus the `0xA3`
 /// desc reply are consumed in-engine (ADR-0068). `diagnostics` is where the
@@ -19,6 +20,7 @@ use super::*;
 pub(super) fn spawn_server_udp_front(
     transport: Arc<RuntimeServerUdpTransport>,
     config: &CoreConfig,
+    obfuscation: &crate::obfuscation_policy::SharedObfuscationPolicy,
     server_facts: &ServerFacts,
     own_identity: &SharedOwnIdentity,
     global_callback_rx: mpsc::Receiver<GlobCallbackSend>,
@@ -28,10 +30,6 @@ pub(super) fn spawn_server_udp_front(
     live_searches: &LiveSearches,
 ) -> ServerUdpFront {
     let mut tasks = Vec::with_capacity(5);
-    tasks.push(tokio::spawn(relay_global_callbacks(
-        Arc::clone(&transport),
-        global_callback_rx,
-    )));
     // The status chain's per-server state (ADR-0052): the sweep registers
     // outstanding challenges here, and a gated `0x97` populates the capability
     // store the `0x94` upgrade and search variant selection read — then
@@ -39,20 +37,33 @@ pub(super) fn spawn_server_udp_front(
     // fields (ADR-0068).
     let status_challenges = StatusChallenges::default();
     let server_capabilities = SharedServerCapabilities::default();
+    // The crypt facts the seal keys each server by are the ones the engine
+    // records: this run's `0x97` records, then the rows' saved ones.
+    let seal = ServerUdpSeal::new(
+        Arc::clone(&transport),
+        obfuscation.clone(),
+        own_identity.clone(),
+        Arc::clone(&server_capabilities),
+        server_facts.clone(),
+        crate::client_udp::os_datagram_nonce,
+    );
+    tasks.push(tokio::spawn(relay_global_callbacks(
+        seal.clone(),
+        global_callback_rx,
+    )));
     let (server_udp_engine, inboxes) = ServerUdpEngine::new(
         Arc::clone(&transport),
+        seal.clone(),
         status_challenges.clone(),
         Arc::clone(&server_capabilities),
         server_facts.clone(),
         crate::server_udp::os_rand16,
-        config.server_udp_crypt(),
         diagnostics.clone(),
     );
-    let server_udp_engine = server_udp_engine.keyed_under(own_identity.clone());
     tasks.push(tokio::spawn(server_udp_engine.run()));
     tasks.push(tokio::spawn(
         crate::server_udp::StatusPingSweep {
-            transport: Arc::clone(&transport),
+            seal: seal.clone(),
             // The sweep walks the *managed* list (ADR-0080), not the narrower
             // source-sweep list below: this is list health, measured for
             // every listed server.
@@ -63,7 +74,7 @@ pub(super) fn spawn_server_udp_front(
             tick: config.status_ping_tick,
             reask: config.status_ping_reask,
             crypt: crate::server_udp::CryptPingArm {
-                enabled: config.server_udp_crypt(),
+                policy: obfuscation.clone(),
                 // The crypt-ping probe's public-IP precondition (ADR-0046,
                 // aMule `theApp->GetPublicIP()`), fed by the live session's
                 // High-ID IDCHANGE (ADR-0047 `public_ip`) through the shared
@@ -81,14 +92,14 @@ pub(super) fn spawn_server_udp_front(
         live_searches.clone(),
     )));
     let global_search = GlobalSearchContext {
-        transport: Arc::clone(&transport),
+        seal: seal.clone(),
         capabilities: Arc::clone(&server_capabilities),
         pacer: crate::search::UdpSearchPacer::default(),
     };
     tasks.push(tokio::spawn(
         SourceDiscovery::new(
             GlobalDiscoveryChannel::new(
-                transport,
+                seal,
                 global_source_servers.clone(),
                 // The level's connected server gates every ask (ADR-0051's
                 // session-only amendment).

@@ -11,6 +11,7 @@
 
 const FIXTURE_DIR: &str = "fixtures/firewalled/captured/amule-233-publish-source-type6-20260923/";
 
+use rmule_kad::KadNodeStart;
 use rmule_kad::{Kad2Message, KadPublishedSource};
 use rmule_primitives::kad_wire_id;
 
@@ -123,12 +124,15 @@ fn rmules_publisher_reproduces_the_captured_datagram_less_its_sourceuport() {
         panic!("0x44 decodes to a publish");
     };
     let now = KadInstant::EPOCH;
-    let mut node = KadNode::new(KadNodeConfig {
-        id: KadId::from_bytes([0x11; 16]),
-        tcp_port: AMULE_TCP_PORT,
-        udp_port: AMULE_KAD_UDP_PORT,
-        user_hash: rmule_primitives::UserHash::from_bytes(kad_wire_id(source_id)),
-    });
+    let mut node = KadNode::new(KadNodeStart::new(
+        KadNodeConfig {
+            id: KadId::from_bytes([0x11; 16]),
+            tcp_port: AMULE_TCP_PORT,
+            udp_port: AMULE_KAD_UDP_PORT,
+            user_hash: rmule_primitives::UserHash::from_bytes(kad_wire_id(source_id)),
+        },
+        KadInstant::EPOCH,
+    ));
     node.handle_command(
         now,
         KadCommand::SetPublishPosture {

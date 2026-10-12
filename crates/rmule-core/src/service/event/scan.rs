@@ -4,7 +4,6 @@
 //! kept. What the scan shares or unshares arrives as the ordinary
 //! `ServeEvent::FileShared` / `FileUnshared`, as any share-set change does.
 
-use std::fmt;
 use std::path::PathBuf;
 
 use crate::{DirectoryOffer, DirectoryRefusal, ScanSummary, WatchFault};
@@ -35,11 +34,24 @@ pub enum ScanEvent {
         /// The listed directories it replaced.
         replaced: Vec<PathBuf>,
     },
-    /// `dir` was not added or removed, for `reason`.
+    /// `dir` was not added or removed, for `reason` — or an added `dir`
+    /// fails a guard where its path leads now, at attach or as it appears
+    /// after missing: it stays in the list, listed as refused, and is not
+    /// scanned until a later start finds it passes.
     DirectoryRefused {
-        /// The directory, as the command named it.
+        /// The directory, as the command or the list named it.
         dir: PathBuf,
         /// Why.
+        reason: DirectoryRefusal,
+    },
+    /// The download directory the Core Settings name, `dir`, fails the
+    /// guards for `reason`, at attach, when it moves, or when it appears: it
+    /// is not scanned, and nothing under it is offered. The setting stands;
+    /// downloads still finish there.
+    DownloadDirectoryRefused {
+        /// The directory, as the setting names it.
+        dir: PathBuf,
+        /// The guard it failed.
         reason: DirectoryRefusal,
     },
     /// `dir` left the list: `files` left the registry at once, not Had, and
@@ -145,99 +157,5 @@ pub enum ScanEvent {
 impl From<ScanEvent> for CoreEvent {
     fn from(event: ScanEvent) -> Self {
         Self::Scan(event)
-    }
-}
-
-impl fmt::Display for ScanEvent {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::ConsentRequested {
-                dir,
-                offer,
-                adding,
-                replaces,
-            } => {
-                write!(
-                    f,
-                    "scan_consent_requested dir={} files={} bytes={} unread={} adding={adding} replaces={}",
-                    dir.display(),
-                    offer.files,
-                    offer.bytes,
-                    offer.unread,
-                    replaces.len(),
-                )
-            }
-            Self::DirectoryAdded { dir, replaced } => write!(
-                f,
-                "shared_directory_added dir={} replaced={}",
-                dir.display(),
-                replaced.len()
-            ),
-            Self::DirectoryRefused { dir, reason } => write!(
-                f,
-                "shared_directory_refused dir={} reason={reason:?}",
-                dir.display()
-            ),
-            Self::DirectoryRemoved { dir, files } => write!(
-                f,
-                "shared_directory_removed dir={} files={files}",
-                dir.display()
-            ),
-            Self::DirectoryMissing { dir, .. } => {
-                write!(f, "shared_directory_missing dir={}", dir.display())
-            }
-            Self::DirectoryReturned { dir } => {
-                write!(f, "shared_directory_returned dir={}", dir.display())
-            }
-            Self::Finished { dir, summary } => write!(
-                f,
-                "scan_finished dir={} trusted={} hashed={} carried={} dropped={} skipped={}",
-                dir.display(),
-                summary.trusted,
-                summary.hashed,
-                summary.carried,
-                summary.dropped,
-                summary.skipped,
-            ),
-            Self::Declined { dir } => write!(f, "scan_declined dir={}", dir.display()),
-            Self::Unlistable { dir } => write!(f, "scan_unlistable dir={}", dir.display()),
-            Self::WatchInterrupted { dir, reason } => write!(
-                f,
-                "scan_watch_interrupted dir={} reason={reason:?}",
-                dir.display()
-            ),
-            Self::WatchRestored { dir } => {
-                write!(f, "scan_watch_restored dir={}", dir.display())
-            }
-            Self::PathUnwatched { dir, path, reason } => write!(
-                f,
-                "scan_path_unwatched dir={} path={} reason={reason:?}",
-                dir.display(),
-                path.display()
-            ),
-            Self::FileNotHashed {
-                dir,
-                path,
-                kind,
-                os_code,
-            } => write!(
-                f,
-                "scan_file_not_hashed dir={} path={} kind={kind:?} os_code={}",
-                dir.display(),
-                path.display(),
-                os_code.map_or_else(|| "none".to_string(), |code| code.to_string()),
-            ),
-            Self::LeftoverParts { dir, paths } => write!(
-                f,
-                "scan_leftover_parts dir={} count={}",
-                dir.display(),
-                paths.len()
-            ),
-            Self::WatchUnavailable { dir, reason } => write!(
-                f,
-                "scan_watch_unavailable dir={} reason={reason:?}",
-                dir.display()
-            ),
-        }
     }
 }

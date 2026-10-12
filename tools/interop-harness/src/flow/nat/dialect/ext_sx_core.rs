@@ -59,7 +59,7 @@ const CORE_SECS: u64 = 90;
 
 /// The downloader prints this once a source answer decoded
 /// (`DownloadEvent::SourcesExchanged`).
-const EXCHANGED_MARKER: &str = "download sources_exchanged";
+const EXCHANGED_MARKER: &str = "download.sources_exchanged";
 
 /// Why the flow's queued requester claims extended-requests 0, for the verdict.
 const NOTE: &str = "The queued requester claims extended-requests 0 by capture override: it \
@@ -203,7 +203,7 @@ pub(super) fn drive(
         "--file",
         &shared.link,
         "--out",
-        &out("core-download.bin"),
+        &out("dl/core-download.bin"),
         "--tcp-port",
         &BODY_PEER_TCP_PORT.to_string(),
         "--user-hash",

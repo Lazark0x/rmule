@@ -1,9 +1,9 @@
 //! The row-action menu: which actions a download in a given status offers,
 //! and which are greyed with a reason.
 //!
-//! `Pause`/`Resume`/`Cancel…` emit real download commands. `Resume` needs credentials
-//! the UI only has once a session config was loaded, so without one it flashes
-//! an honest note instead of emitting. *Search related* asks the connected
+//! `Pause`/`Resume`/`Cancel…` emit real download commands. `Resume` needs a
+//! core, which a UI-only run lacks, so without one it flashes an honest note
+//! instead of emitting. *Search related* asks the connected
 //! server about the download's file, dimmed with its reason while it cannot.
 
 use ratatui::Frame;
@@ -167,8 +167,8 @@ pub(super) fn first_action(status: DownloadStatus) -> MenuAction {
 }
 
 /// Pause always emits the real command; resume — of a paused download, or
-/// the restart of a failed one — needs the session's credentials, and without
-/// a session it flashes the honest reason.
+/// the restart of a failed one — needs a core, and a UI-only run flashes the
+/// honest reason.
 pub(super) fn pause_toggle_action(
     status: DownloadStatus,
     id: DownloadId,
@@ -179,13 +179,10 @@ pub(super) fn pause_toggle_action(
     }
     if matches!(status, DownloadStatus::Paused | DownloadStatus::Failed) {
         match &state.session {
-            Some(session) => {
-                Action::Command(CoreCommand::Download(DownloadCommand::ResumeDownload {
-                    download_id: id,
-                    credentials: session.credentials.clone(),
-                }))
-            }
-            None => Action::Flash(crate::words::download::RESUME_NEEDS_CREDENTIALS),
+            Some(_) => Action::Command(CoreCommand::Download(DownloadCommand::ResumeDownload {
+                download_id: id,
+            })),
+            None => Action::Flash(crate::words::app::CORE_NOT_ATTACHED),
         }
     } else {
         Action::Command(CoreCommand::Download(DownloadCommand::PauseDownload {

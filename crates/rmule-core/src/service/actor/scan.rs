@@ -28,11 +28,6 @@ use crate::service::{ScanCommand, ScanEvent, ServeEvent};
 use super::registry_check::RegistryMessage;
 use super::{CoreActor, send_event};
 
-/// How long a retire waits for the worker after raising its stop flag. The
-/// flag is read between reads of at most a mebibyte, so this bounds a wedged
-/// disk, not a large file.
-const SCAN_STOP_GRACE: Duration = Duration::from_secs(5);
-
 /// What a scan worker sends the actor, tagged with the start it ran under.
 #[derive(Debug)]
 pub(super) struct ScanMessage {
@@ -63,7 +58,6 @@ where
     /// Enact one scan command.
     pub(super) async fn on_scan_command(&mut self, command: ScanCommand) {
         match command {
-            ScanCommand::Start { dir } => self.download_directory(dir).await,
             ScanCommand::Answer { dir, share } => self.answer(dir, share).await,
             ScanCommand::AddSharedDirectory { path } => self.add_shared_directory(path).await,
             ScanCommand::RemoveSharedDirectory { path } => {
@@ -75,7 +69,7 @@ where
     /// The operator's answer for `dir`: a directory being added is stored or
     /// dropped; the download directory's is recorded durably.
     async fn answer(&mut self, dir: PathBuf, share: bool) {
-        if let Some(scan) = self.activities.scans.get(&dir)
+        if let Some(scan) = self.activities.scan(&dir)
             && let ScanRole::Adding { replaces } = &scan.role
         {
             let replaces = replaces.clone();
@@ -93,7 +87,7 @@ where
 
     /// Free a worker waiting on the disclosure guard for `dir`.
     pub(super) fn release_consent(&mut self, dir: &Path, share: bool) {
-        if let Some(scan) = self.activities.scans.get_mut(dir)
+        if let Some(scan) = self.activities.scan_mut(dir)
             && let Some(consent_tx) = scan.consent_tx.take()
         {
             let _ = consent_tx.send(share);
@@ -101,15 +95,15 @@ where
     }
 
     /// Start the scan of `dir` in `role`, unless one runs there and is
-    /// watched. The download directory asks its first-share question from
-    /// its recorded answer; an added one is confirmed; one being added always
-    /// asks.
+    /// watched, or it is a download directory the guards refused. The
+    /// download directory asks its first-share question from its recorded
+    /// answer; an added one is confirmed; one being added always asks.
     pub(super) async fn start_scan(&mut self, dir: PathBuf, role: ScanRole) {
         if self
             .activities
-            .scans
-            .get(&dir)
+            .scan(&dir)
             .is_some_and(|scan| !scan.unwatched)
+            || (role == ScanRole::DownloadDirectory && self.directories.download_refused.is_some())
         {
             return;
         }
@@ -170,6 +164,7 @@ where
                 dir.clone(),
             );
             let turn = self.directories.turn.clone();
+            let missing_look = self.wiring.config.missing_directory_look;
             move || {
                 let send = |kind| {
                     let _ = tx.send(RegistryMessage::Scan(ScanMessage { generation, kind }));
@@ -181,6 +176,7 @@ where
                         rows: &mut || rows_now(&send, &stop),
                         report: &mut |report| send(ScanMessageKind::Report(report)),
                         turn,
+                        missing_look,
                     },
                     &dir,
                     &known,
@@ -191,56 +187,48 @@ where
                 send(ScanMessageKind::Ended(end));
             }
         });
-        self.activities.scans.insert(
-            dir.clone(),
-            ScanActivity {
-                generation,
-                dir,
-                stop: ScanStop(stop),
-                consent_tx: Some(consent_tx),
-                answered: consent_given != Some(false),
-                unwatched: false,
-                missing: false,
-                role,
-                progress,
-                handle,
-            },
-        );
+        self.activities.scan_started(ScanActivity {
+            generation,
+            dir,
+            stop: ScanStop(stop),
+            consent_tx: Some(consent_tx),
+            answered: consent_given != Some(false),
+            unwatched: false,
+            missing: false,
+            role,
+            progress,
+            handle,
+        });
         self.scans_changed();
     }
 
     /// Stop the scan of `dir`, if any, and retire it (ADR-0093): raise its
     /// flag, free a worker waiting on the guard, join it within the grace.
     pub(super) async fn stop_scan(&mut self, dir: &Path) {
-        let Some(scan) = self.activities.scans.remove(dir) else {
+        let Some(scan) = self.activities.take_scan(dir) else {
             return;
         };
         self.scans_changed();
-        join_scan(scan).await;
+        scan.stop().await;
     }
 
     /// Stop every scan: quit's step. Every flag is raised before the first
     /// join, so each lets go within one read of the same moment.
     pub(super) async fn stop_scans(&mut self) {
-        let scans = std::mem::take(&mut self.activities.scans);
+        let scans = self.activities.take_scans();
         self.scans_changed();
-        for scan in scans.values() {
+        for scan in &scans {
             scan.stop.raise();
         }
-        for scan in scans.into_values() {
-            join_scan(scan).await;
+        for scan in scans {
+            scan.stop().await;
         }
     }
 
     /// Apply one worker message. One from a scan the ledger no longer holds
     /// moves nothing.
     pub(super) async fn on_scan_message(&mut self, message: ScanMessage) {
-        let Some(scan) = self
-            .activities
-            .scans
-            .values()
-            .find(|scan| scan.generation == message.generation)
-        else {
+        let Some(scan) = self.activities.scan_of(message.generation) else {
             return;
         };
         let dir = scan.dir.clone();
@@ -271,7 +259,7 @@ where
                 Err(error) => tracing::warn!(%error, "registry unreadable for the watch"),
             },
             ScanMessageKind::Ended(ScanEnd::Unwatched(reason)) => {
-                if let Some(scan) = self.activities.scans.get_mut(&dir) {
+                if let Some(scan) = self.activities.scan_mut(&dir) {
                     scan.unwatched = true;
                 }
                 // An unwatched directory's rows are the Registry Check's.
@@ -361,7 +349,7 @@ where
                 // directory is now shared, and its later files are not asked
                 // about again. Only the download directory keeps answers; an
                 // added directory's answer is its place in the list.
-                if let Some(scan) = self.activities.scans.get_mut(&dir)
+                if let Some(scan) = self.activities.scan_mut(&dir)
                     && !scan.answered
                     && scan.role == ScanRole::DownloadDirectory
                 {
@@ -374,7 +362,13 @@ where
             }
             ScanReport::RootMissing { since } => self.directory_missing(dir, since).await,
             ScanReport::RootReturned => {
-                if let Some(scan) = self.activities.scans.get_mut(&dir) {
+                // A directory missing when it was guarded is judged again as
+                // it appears, before its pass reads anything: the worker's
+                // next message waits on the actor.
+                if !self.returned_root_admitted(&dir).await {
+                    return;
+                }
+                if let Some(scan) = self.activities.scan_mut(&dir) {
                     scan.missing = false;
                 }
                 self.scans_changed();
@@ -429,7 +423,7 @@ where
     /// withheld as its folder missing, never Had, and the Registry Check
     /// holds them until it is back.
     async fn directory_missing(&mut self, dir: PathBuf, since: std::time::SystemTime) {
-        if let Some(scan) = self.activities.scans.get_mut(&dir) {
+        if let Some(scan) = self.activities.scan_mut(&dir) {
             scan.missing = true;
         }
         self.scans_changed();
@@ -478,14 +472,14 @@ where
     }
 
     /// The worker ended on its own (a death, ADR-0093): retire the activity
-    /// and say how it ended.
+    /// through its own stop, which a returning worker answers at once, and
+    /// say how it ended.
     async fn retire_ended_scan(&mut self, dir: PathBuf, end: ScanEnd) {
-        let Some(scan) = self.activities.scans.remove(&dir) else {
+        let Some(scan) = self.activities.take_scan(&dir) else {
             return;
         };
         let role = scan.role.clone();
-        // The worker sent its last message; its thread is returning.
-        let _ = tokio::time::timeout(SCAN_STOP_GRACE, scan.handle).await;
+        scan.stop().await;
         let event = match end {
             ScanEnd::Declined => {
                 if role == ScanRole::DownloadDirectory {
@@ -515,8 +509,7 @@ where
     pub(super) fn scans_changed(&self) {
         let owned = self
             .activities
-            .scans
-            .values()
+            .scans()
             .filter(|scan| {
                 !scan.unwatched && !scan.missing && !matches!(scan.role, ScanRole::Adding { .. })
             })
@@ -524,21 +517,6 @@ where
             .collect();
         self.registry_check.tell(CheckInput::ScanOwns(owned));
         self.install_directories();
-    }
-}
-
-/// Raise a scan's flag, free a worker waiting on the guard, and join it
-/// within the grace.
-async fn join_scan(scan: ScanActivity) {
-    scan.stop.raise();
-    drop(scan.consent_tx);
-    // A blocking task cannot be aborted; past the grace it is left to see its
-    // flag, and its messages name a generation the ledger no longer holds.
-    if tokio::time::timeout(SCAN_STOP_GRACE, scan.handle)
-        .await
-        .is_err()
-    {
-        tracing::warn!(dir = %scan.dir.display(), "scan worker did not stop within its grace");
     }
 }
 

@@ -8,11 +8,12 @@
 //! answered the server's port check. These legs drive exactly that shape
 //! against a Fake eD2k Server whose login runs the real High-ID port check.
 
+use rmule_testkit::HANG_GUARD;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use rmule_core::port_mapping::MappingStatus;
-use rmule_core::{Core, CoreConfig, CoreEvent, SocketRole};
+use rmule_core::{Core, CoreCommand, CoreConfig, CoreEvent, ServeCommand, ServeEvent, SocketRole};
 use rmule_net::portmap::{
     Gateway, MappedTransport, MappingBackend, MappingError, MappingFuture, MappingGrant,
     MappingProtocol, MappingRequest, ProbeReport,
@@ -22,7 +23,7 @@ use rmule_testkit::{FakeEd2kServer, FakeGateways, ScriptedBackend};
 use tokio::sync::watch;
 use tokio::time::{Duration, timeout};
 
-use crate::fixture::{connect_server_as, free_port, identity_with_port, list_server};
+use crate::fixture::{connect_server, free_port, list_server, settings_on};
 
 /// A UPnP gateway that grants exactly, but holds its TCP grant until the test
 /// opens the gate — the ~2 s the measured router took, made a knob.
@@ -90,14 +91,15 @@ async fn a_front_end_connect_listens_and_maps_its_port_before_the_login_leaves()
         open,
     });
     let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(settings_on(port))
         .gateway_source(FakeGateways::home_lan())
         .mapping_backends(vec![gated])
         .build();
     list_server(&core, &endpoint).await;
 
-    connect_server_as(&core, &endpoint, identity_with_port(port).into()).await;
+    connect_server(&core, &endpoint).await;
 
-    timeout(Duration::from_secs(10), asked.wait_for(|asked| *asked))
+    timeout(HANG_GUARD, asked.wait_for(|asked| *asked))
         .await
         .expect("the gateway was asked for the listener's port")
         .expect("the backend is alive");
@@ -130,7 +132,7 @@ async fn a_front_end_connect_listens_and_maps_its_port_before_the_login_leaves()
     );
 
     gate.send_replace(true);
-    let ids = timeout(Duration::from_secs(10), server.assigned_ids_after(1))
+    let ids = timeout(HANG_GUARD, server.assigned_ids_after(1))
         .await
         .expect("the login went out once the row settled");
     assert_eq!(ids.len(), 1, "one login, the operator's");
@@ -169,16 +171,67 @@ async fn a_listener_that_cannot_bind_still_lets_the_login_out() {
     // Something else holds the port on IPv4 — the family the server's port
     // check dials — and answers nothing.
     let _holder = std::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, port)).expect("hold");
-    let core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store()).build();
+    let core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(settings_on(port))
+        .build();
     list_server(&core, &endpoint).await;
 
-    connect_server_as(&core, &endpoint, identity_with_port(port).into()).await;
+    connect_server(&core, &endpoint).await;
 
-    let ids = timeout(Duration::from_secs(15), server.assigned_ids_after(1))
+    let ids = timeout(HANG_GUARD, server.assigned_ids_after(1))
         .await
         .expect("the login went out");
     assert!(
         ids[0].is_low_id(),
         "nothing of ours answered the port check"
     );
+}
+
+/// With the settings' port `0`, a listener that stopped and starts again for
+/// the next login rebinds the port it first had: the login names the port
+/// the server's first one reached, and its port check still lands High ID.
+#[tokio::test]
+async fn a_login_after_a_listener_restart_names_the_port_the_listener_first_bound() {
+    let server = FakeEd2kServer::start().await;
+    let endpoint = server.endpoint();
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(settings_on(0))
+        .build();
+    list_server(&core, &endpoint).await;
+
+    connect_server(&core, &endpoint).await;
+    let first = serving_started(&mut core).await;
+    let ids = timeout(HANG_GUARD, server.assigned_ids_after(1))
+        .await
+        .expect("the first login went out");
+    assert!(ids[0].is_high_id());
+
+    core.send(CoreCommand::DisconnectFromServer)
+        .await
+        .expect("core alive");
+    core.send(CoreCommand::Serve(ServeCommand::StopServing))
+        .await
+        .expect("core alive");
+    connect_server(&core, &endpoint).await;
+    let second = serving_started(&mut core).await;
+
+    assert_eq!(second, first, "the restarted listener took its port back");
+    let ids = timeout(HANG_GUARD, server.assigned_ids_after(2))
+        .await
+        .expect("the second login went out");
+    assert!(ids[1].is_high_id(), "the login named the port that answers");
+}
+
+async fn serving_started(core: &mut Core) -> u16 {
+    timeout(HANG_GUARD, async {
+        loop {
+            if let CoreEvent::Serve(ServeEvent::ServingStarted { listen_addr }) =
+                core.next_event().await.expect("core alive")
+            {
+                return listen_addr.port();
+            }
+        }
+    })
+    .await
+    .expect("the listener started")
 }

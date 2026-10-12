@@ -29,10 +29,10 @@ use rmule_primitives::AccountingKey;
 use std::time::{Duration, Instant};
 
 use rmule_net::peer::ObfuscationPolicy;
+use rmule_peer::peer_udp::crypt::stance_from_connect_options;
 use rmule_primitives::{OutboundCrypt, PeerCrypt, PeerEndpoint, UserHash};
 
 use super::FirewalledNode;
-use crate::client_udp::crypt_stance_from_connect_options;
 use crate::reachability::TcpReachability;
 
 /// Per-source-IP minimum interval between honored direct-callback (`0x95`)
@@ -94,7 +94,7 @@ pub(crate) struct DirectCallbackContext {
     pub(crate) tcp: TcpReachability,
     /// Kad is running.
     pub(crate) kad_running: bool,
-    /// **Our own** obfuscation policy (`CoreConfig::peer_crypt`, ADR-0046) —
+    /// **Our own** obfuscation policy (`CoreSettings::obfuscation`, ADR-0046) —
     /// `None` when obfuscation is off entirely. It gates the dial-back exactly
     /// as it gates every other dial: a requester that *requires* obfuscation
     /// gets nothing from a node whose crypt is disabled.
@@ -181,7 +181,7 @@ impl FirewalledNode {
             };
         }
         let requester = PeerCrypt::new(
-            crypt_stance_from_connect_options(req.connect_options),
+            stance_from_connect_options(req.connect_options),
             Some(req.user_hash),
         );
         match requester.outbound(ObfuscationPolicy::stance_of(ctx.crypt)) {

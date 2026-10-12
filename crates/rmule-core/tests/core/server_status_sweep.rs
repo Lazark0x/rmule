@@ -9,6 +9,7 @@
 //! challenge gate, and the store write, none of which a scripted transport
 //! exercises.
 
+use rmule_testkit::HANG_GUARD;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Duration;
 
@@ -81,7 +82,7 @@ async fn settled_row(
     listed: &ServerEndpoint,
     settled: impl Fn(&ServerDiagnostics) -> bool,
 ) -> ServerDiagnostics {
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(HANG_GUARD, async {
         loop {
             let row = core
                 .diagnostics_snapshot()
@@ -97,7 +98,7 @@ async fn settled_row(
         }
     })
     .await
-    .expect("the sweep completed a round trip within 10s")
+    .expect("the sweep completed a round trip")
 }
 
 /// One swept round trip end to end: the ping leaves on the bound socket, the
@@ -118,6 +119,7 @@ async fn a_swept_round_trip_fills_the_listed_rows_ping_and_load() {
         },
         rmule_testkit::memory_store(),
     )
+    .settings(rmule_core::CoreSettings::default())
     .build();
     core.send(CoreCommand::ServerList(ServerListCommand::AddServer {
         server: ManagedServer::listed(listed.clone()),

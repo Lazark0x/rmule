@@ -3,7 +3,6 @@
 //! protocol adapter answers, and what a restart recovers. Pause, resume, and
 //! failure each land a distinct durable lifecycle.
 use crate::fixture::host_binds_ipv6;
-use crate::fixture::identity;
 use crate::fixture::next_matching;
 use crate::fixture::stub_link;
 use rmule_core::DownloadRepository;
@@ -15,9 +14,10 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, ExchangedSource, PeerEndpoint, PeerSource, ServerEndpoint,
-    SourceLookupTarget,
+    ClientId, Ed2kFileLink, PeerEndpoint, PeerSource, ServerEndpoint, SourceLookupTarget,
+    SourceSighting,
 };
+use rmule_testkit::HANG_GUARD;
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::time::{Duration, timeout};
 
@@ -36,6 +36,10 @@ async fn several_downloads_run_side_by_side() {
     let dir = tempfile::tempdir().unwrap();
     let store = open_durable_store(dir.path()).unwrap();
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .source_lookup(PendingSourceLookup)
         .peer_transfer(UnreachablePeerTransfer)
         .build();
@@ -43,12 +47,9 @@ async fn several_downloads_run_side_by_side() {
     let mut ids = Vec::new();
     for seed in [0x21, 0x22, 0x23] {
         let name = format!("file-{seed:02x}.bin");
-        core.send(start_command(
-            stub_link(&name, 3, seed),
-            dir.path().join(&name),
-        ))
-        .await
-        .unwrap();
+        core.send(start_command(stub_link(&name, 3, seed), &name))
+            .await
+            .unwrap();
         match next_start_verdict(&mut core).await {
             CoreEvent::Download(DownloadEvent::DownloadQueued { download_id, .. }) => {
                 ids.push(download_id);
@@ -85,15 +86,19 @@ async fn starting_a_file_already_downloading_is_refused_as_a_duplicate() {
     let dir = tempfile::tempdir().unwrap();
     let store = open_durable_store(dir.path()).unwrap();
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .source_lookup(PendingSourceLookup)
         .peer_transfer(UnreachablePeerTransfer)
         .build();
 
-    core.send(start_command(file_link(), dir.path().join("a.bin")))
+    core.send(start_command(file_link(), "a.bin"))
         .await
         .unwrap();
     next_queued_id(&mut core).await;
-    core.send(start_command(file_link(), dir.path().join("b.bin")))
+    core.send(start_command(file_link(), "b.bin"))
         .await
         .unwrap();
     let verdict = next_start_verdict(&mut core).await;
@@ -108,12 +113,12 @@ async fn starting_a_file_already_downloading_is_refused_as_a_duplicate() {
     );
 }
 
-fn start_command(file: Ed2kFileLink, output_path: std::path::PathBuf) -> CoreCommand {
+fn start_command(file: Ed2kFileLink, name: &str) -> CoreCommand {
     CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path,
+        name: rmule_testkit::file_name(name),
+        if_taken: rmule_core::NameTaken::Refuse,
     })
 }
 
@@ -150,8 +155,15 @@ fn seeded_row(
     }
 }
 
-fn idle_core(store: &Arc<rmule_core::DurableStore>) -> Core {
+fn idle_core(
+    store: &Arc<rmule_core::DurableStore>,
+    download_dir: Option<&std::path::Path>,
+) -> Core {
     Core::builder(CoreConfig::default(), Arc::clone(store))
+        .settings(rmule_core::CoreSettings {
+            download_dir: download_dir.map(std::path::Path::to_path_buf),
+            ..rmule_core::CoreSettings::default()
+        })
         .source_lookup(PendingSourceLookup)
         .peer_transfer(UnreachablePeerTransfer)
         .build()
@@ -171,48 +183,9 @@ async fn a_file_cancelled_before_starts_again_at_the_same_place() {
         path.clone(),
         &[DownloadLifecycle::Cancelled],
     );
-    let mut core = idle_core(&store);
+    let mut core = idle_core(&store, Some(dir.path()));
 
-    core.send(start_command(file_link(), path)).await.unwrap();
-    let verdict = next_start_verdict(&mut core).await;
-    assert!(
-        matches!(
-            verdict,
-            CoreEvent::Download(DownloadEvent::DownloadQueued { .. })
-        ),
-        "a cancelled file is started again, got {verdict:?}",
-    );
-}
-
-/// ADR-0100, re-adding a **Have** file: its completed copy still lies at the
-/// old path, which a new download must not overwrite — refused there, started
-/// at a free name beside it.
-#[tokio::test]
-async fn a_file_on_disk_is_started_again_only_at_a_free_path() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = open_durable_store(dir.path()).unwrap();
-    let path = dir.path().join("have.bin");
-    seeded_row(
-        &store,
-        &file_link(),
-        path.clone(),
-        &[DownloadLifecycle::Active, DownloadLifecycle::Completed],
-    );
-    std::fs::write(&path, b"abc").unwrap();
-    let mut core = idle_core(&store);
-
-    core.send(start_command(file_link(), path)).await.unwrap();
-    let verdict = next_start_verdict(&mut core).await;
-    assert!(
-        matches!(
-            verdict,
-            CoreEvent::CommandRejected {
-                reason: CoreCommandRejectReason::DownloadPathConflict
-            }
-        ),
-        "the file on disk is never overwritten, got {verdict:?}",
-    );
-    core.send(start_command(file_link(), dir.path().join("have (1).bin")))
+    core.send(start_command(file_link(), "again.bin"))
         .await
         .unwrap();
     let verdict = next_start_verdict(&mut core).await;
@@ -221,7 +194,7 @@ async fn a_file_on_disk_is_started_again_only_at_a_free_path() {
             verdict,
             CoreEvent::Download(DownloadEvent::DownloadQueued { .. })
         ),
-        "a completed file is started again at a free path, got {verdict:?}",
+        "a cancelled file is started again, got {verdict:?}",
     );
 }
 
@@ -268,7 +241,7 @@ async fn the_file_history_names_the_shared_files_and_the_cancelled_downloads() {
     );
     // The shared file is on disk, so no look can withhold it.
     std::fs::write(dir.path().join("shared.bin"), [0_u8; 7]).unwrap();
-    let mut core = idle_core(&store);
+    let mut core = idle_core(&store, None);
 
     core.send(CoreCommand::DumpFileHistory).await.unwrap();
     let CoreEvent::FileHistory { history } = next_matching(&mut core, |event| {
@@ -310,8 +283,8 @@ async fn the_file_history_names_the_shared_files_and_the_cancelled_downloads() {
 #[tokio::test]
 async fn cancel_unknown_download_is_rejected() {
     // A host with no IPv6 would open with each pair's missing-family fact
-    // Bound v4-only there, the rejection is still the first
-    // thing this core says.
+    // Bound v4-only there, the rejection is still the first thing this core
+    // says after its obfuscation posture, which every core states first.
     let config = if host_binds_ipv6() {
         CoreConfig::default()
     } else {
@@ -320,13 +293,19 @@ async fn cancel_unknown_download_is_rejected() {
             ..CoreConfig::default()
         }
     };
-    let mut core = Core::new(config, rmule_testkit::memory_store());
+    let mut core = Core::builder(config, rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     core.send(CoreCommand::Download(DownloadCommand::CancelDownload {
         download_id: DownloadId::from_u64(99),
     }))
     .await
     .unwrap();
 
+    assert!(matches!(
+        core.next_event().await,
+        Some(CoreEvent::ObfuscationPolicyAtStart { policy: None })
+    ));
     let event = core.next_event().await.expect("core emitted next event");
     assert!(
         matches!(
@@ -345,6 +324,10 @@ async fn durable_start_creates_record_before_fake_protocol_adapter_completes() {
     let store = open_durable_store(dir.path()).unwrap();
     let output_path = dir.path().join("download.bin");
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .source_lookup(PendingSourceLookup)
         .peer_transfer(UnreachablePeerTransfer)
         .build();
@@ -352,14 +335,14 @@ async fn durable_start_creates_record_before_fake_protocol_adapter_completes() {
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: file_link(),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: output_path.clone(),
+        name: rmule_testkit::file_name("download.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
 
     let download_id = loop {
-        let event = timeout(Duration::from_secs(2), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted queued event")
             .expect("core event stream stayed open");
@@ -379,6 +362,10 @@ async fn pause_download_persists_paused_and_emits_event() {
     let dir = tempfile::tempdir().unwrap();
     let store = open_durable_store(dir.path()).unwrap();
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .source_lookup(PendingSourceLookup)
         .peer_transfer(UnreachablePeerTransfer)
         .build();
@@ -386,8 +373,8 @@ async fn pause_download_persists_paused_and_emits_event() {
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: file_link(),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: dir.path().join("download.bin"),
+        name: rmule_testkit::file_name("download.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -433,6 +420,7 @@ async fn startup_recovery_emits_recovered_without_source_lookup() {
         .unwrap();
     let lookups = Arc::new(StdMutex::new(Vec::new()));
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_core::CoreSettings::default())
         .source_lookup(RecordingSourceLookup::new(Arc::clone(&lookups)))
         .peer_transfer(UnreachablePeerTransfer)
         .build();
@@ -472,6 +460,10 @@ async fn start_surfaces_the_stored_name_and_exact_size_on_both_paths() {
     let dir = tempfile::tempdir().unwrap();
     let store = open_durable_store(dir.path()).unwrap();
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .source_lookup(PendingSourceLookup)
         .peer_transfer(UnreachablePeerTransfer)
         .build();
@@ -479,8 +471,8 @@ async fn start_surfaces_the_stored_name_and_exact_size_on_both_paths() {
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: file_link(),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: dir.path().join("download.bin"),
+        name: rmule_testkit::file_name("download.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -531,13 +523,13 @@ async fn resume_performs_a_fresh_source_lookup() {
         .unwrap();
     let lookups = Arc::new(StdMutex::new(Vec::new()));
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_core::CoreSettings::default())
         .source_lookup(RecordingSourceLookup::new(Arc::clone(&lookups)))
         .peer_transfer(PendingPeerTransfer)
         .build();
 
     core.send(CoreCommand::Download(DownloadCommand::ResumeDownload {
         download_id: created.id(),
-        credentials: identity().into(),
     }))
     .await
     .unwrap();
@@ -597,6 +589,10 @@ async fn a_server_failure_persists_failed_not_paused() {
     let dir = tempfile::tempdir().unwrap();
     let store = open_durable_store(dir.path()).unwrap();
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .source_lookup(FailingSourceLookup)
         .peer_transfer(UnreachablePeerTransfer)
         .build();
@@ -604,8 +600,8 @@ async fn a_server_failure_persists_failed_not_paused() {
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: file_link(),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: dir.path().join("download.bin"),
+        name: rmule_testkit::file_name("download.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -650,6 +646,10 @@ async fn sourceless_lookup_terminates_by_default_instead_of_hanging_forever() {
         ..CoreConfig::default()
     };
     let mut core = Core::builder(config, Arc::clone(&store))
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .source_lookup(PendingSourceLookup)
         .peer_transfer(UnreachablePeerTransfer)
         .build();
@@ -657,8 +657,8 @@ async fn sourceless_lookup_terminates_by_default_instead_of_hanging_forever() {
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: file_link(),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: dir.path().join("download.bin"),
+        name: rmule_testkit::file_name("download.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -733,7 +733,7 @@ impl SourceLookupService for RecordingSourceLookup {
         self.calls.lock().unwrap().push(target);
         Ok(SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![ExchangedSource::plain(PeerSource::new(
+            sources: vec![SourceSighting::plain(PeerSource::new(
                 ClientId::from_u32(0x0100_007F),
                 4663,
             ))],

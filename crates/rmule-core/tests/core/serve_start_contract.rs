@@ -11,16 +11,17 @@
 //! the whole claim is about what a listener does while a server is doing
 //! nothing. The fake-adapter lifecycle legs live in `serve_lifecycle`.
 
+use rmule_testkit::HANG_GUARD;
 use std::net::{Ipv4Addr, SocketAddrV4};
 
-use crate::fixture::{identity_with_port, mute_server, next_expected, serving_started};
+use crate::fixture::{mute_server, next_expected, serving_started};
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, ServeCommand, ServeEvent, ServeStartFailure,
     ServeStopReason, ServerConnectFailure, ServerConnectionEvent,
 };
 use rmule_net::peer::{ConnectOptions, Connection};
-use rmule_peer::{PeerEvent, PeerIdentity};
-use rmule_primitives::{ClientIdentity, Ipv4Endpoint, PeerEndpoint};
+use rmule_peer::{ConnectionEvent, PeerEvent, PeerIdentity};
+use rmule_primitives::{Ipv4Endpoint, PeerEndpoint};
 use rmule_testkit::test_handshake_ctx;
 use tokio::net::TcpListener;
 use tokio::time::{Duration, timeout};
@@ -36,15 +37,8 @@ fn quick_login() -> CoreConfig {
 }
 
 async fn start_serving(core: &Core, listen_addr: SocketAddrV4) {
-    start_serving_as(core, listen_addr, identity_with_port(listen_addr.port())).await;
-}
-
-/// The same, under an identity the caller names — the fact a restart must
-/// carry into its rebuilt handshake context.
-async fn start_serving_as(core: &Core, listen_addr: SocketAddrV4, identity: ClientIdentity) {
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr,
-        credentials: identity.into(),
     }))
     .await
     .expect("core accepts the command");
@@ -80,16 +74,16 @@ async fn identify_against(bound: SocketAddrV4) -> PeerIdentity {
     )
     .await
     .expect("the serve listener accepts a dial");
-    timeout(Duration::from_secs(5), async {
+    timeout(HANG_GUARD, async {
         while let Some(event) = conn.next_event().await {
-            if let PeerEvent::PeerIdentified { identity } = event {
+            if let PeerEvent::Connection(ConnectionEvent::Identified { identity }) = event {
                 return identity;
             }
         }
         panic!("the connection ended before the serve side answered the hello");
     })
     .await
-    .expect("an inbound peer is identified within 5s")
+    .expect("an inbound peer is identified")
 }
 
 /// A serve start binds and dials nothing (ADR-0095): the bind is announced, an
@@ -97,7 +91,9 @@ async fn identify_against(bound: SocketAddrV4) -> PeerIdentity {
 /// the operator's to make.
 #[tokio::test]
 async fn a_serve_start_binds_and_dials_no_server() {
-    let mut core = Core::new(quick_login(), rmule_testkit::memory_store());
+    let mut core = Core::builder(quick_login(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     start_serving(&core, SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).await;
     let bound = serving_started(&mut core).await;
     identify_against(bound).await;
@@ -120,10 +116,12 @@ async fn a_serve_start_binds_and_dials_no_server() {
 #[tokio::test]
 async fn an_operator_login_that_is_never_answered_times_out_without_stopping_the_serve() {
     let (mute, _held) = mute_server().await;
-    let mut core = Core::new(quick_login(), rmule_testkit::memory_store());
+    let mut core = Core::builder(quick_login(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     start_serving(&core, SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).await;
     let bound = serving_started(&mut core).await;
-    rmule_testkit::connect_to(&core, &mute, identity_with_port(bound.port()).into()).await;
+    rmule_testkit::connect_to(&core, &mute).await;
 
     let settled = next_expected(&mut core, "the login's own verdict", |e| {
         matches!(
@@ -156,7 +154,9 @@ async fn an_operator_login_that_is_never_answered_times_out_without_stopping_the
 async fn a_held_port_fails_the_start_by_name_until_it_is_freed() {
     let holder = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let held = holder.local_addr().expect("local addr").port();
-    let mut core = Core::new(quick_login(), rmule_testkit::memory_store());
+    let mut core = Core::builder(quick_login(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     let listen_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, held);
 
     for attempt in 1..=2 {
@@ -192,7 +192,9 @@ async fn a_held_port_fails_the_start_by_name_until_it_is_freed() {
 /// and serves an inbound peer on it.
 #[tokio::test]
 async fn a_stopped_serve_starts_again_on_the_port_it_released() {
-    let mut core = Core::new(quick_login(), rmule_testkit::memory_store());
+    let mut core = Core::builder(quick_login(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     start_serving(&core, SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).await;
     let bound = serving_started(&mut core).await;
     identify_against(bound).await;
@@ -212,57 +214,28 @@ async fn a_stopped_serve_starts_again_on_the_port_it_released() {
     identify_against(bound).await;
 }
 
-/// The restart's handshake context is rebuilt from the credentials the *second*
-/// start carried: the peer that dials the new listener is answered
-/// under the restart's presentation, so a stale context could not have been
-/// reused. The user hash is the node's and stays.
-#[tokio::test]
-async fn a_restart_answers_hellos_under_the_identity_its_own_start_named() {
-    let mut core = Core::new(quick_login(), rmule_testkit::memory_store());
-    let first_identity = identity_with_port(0);
-    start_serving_as(
-        &core,
-        SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
-        first_identity.clone(),
-    )
-    .await;
-    let bound = serving_started(&mut core).await;
-    identify_against(bound).await;
-
-    stop_serving(&mut core).await;
-
-    let second_identity = rmule_testkit::test_identity(0x42, "rmule-serve-restart", bound.port());
-    assert_eq!(second_identity.user_hash(), first_identity.user_hash());
-    start_serving_as(&core, bound, second_identity.clone()).await;
-    let rebound = serving_started(&mut core).await;
-    assert_eq!(
-        identify_against(rebound).await.nickname(),
-        Some(second_identity.nickname()),
-        "the rebuilt handshake context carries the restart's identity, not the first start's",
-    );
-}
-
 /// The node's User Hash is fixed at build time (ADR-0048 "Identity ownership"):
-/// credentials carry only a nickname, a port and a
-/// version — there is no field a command could name another hash in (the
+/// credentials carry only a nickname, a port and a version — there is no
+/// field a command or a setting could name another hash in (the
 /// `ClientCredentials` doc's `compile_fail` block) — and the hello a peer
-/// reads carries the hash the builder was given, whatever identity the
-/// front-end projected its credentials from. Before, the first credentialed
-/// command claimed the hash and a later one naming another was refused.
+/// reads carries the hash the builder was given, under the Core Settings'
+/// nickname.
 #[tokio::test]
 async fn a_started_node_s_hello_carries_the_build_time_user_hash() {
     let node_hash = rmule_primitives::UserHash::from_bytes([0x5E; 16]);
     let mut core = Core::builder(quick_login(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings {
+            nickname: "rmule-projected".to_owned(),
+            ..rmule_core::CoreSettings::default()
+        })
         .user_hash(node_hash)
         .build();
-    let projected_from = rmule_testkit::test_identity(0x43, "rmule-projected", 0);
-    assert_ne!(projected_from.user_hash(), node_hash);
-    start_serving_as(
-        &core,
-        SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
-        projected_from,
-    )
-    .await;
+    start_serving(&core, SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).await;
     let bound = serving_started(&mut core).await;
-    assert_eq!(identify_against(bound).await.user_hash(), node_hash);
+    let hello = identify_against(bound).await;
+    assert_eq!(hello.user_hash(), node_hash);
+    assert_eq!(
+        hello.nickname(),
+        Some(&rmule_primitives::Ed2kText::from_utf8("rmule-projected"))
+    );
 }

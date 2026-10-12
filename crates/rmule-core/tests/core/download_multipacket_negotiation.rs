@@ -4,10 +4,8 @@
 //! with no standalone probes, and toward a pre-MultiPacket uploader as exactly
 //! the standalone `0x58` + `0x4F` pair — completing identically either way.
 
-use crate::fixture::identity_with_port;
-use std::time::Duration;
+use rmule_testkit::HANG_GUARD;
 
-use crate::fixture::identity;
 use rmule_core::{Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent};
 use rmule_peer::PartBitmap;
 use rmule_primitives::ED2K_PART_SIZE;
@@ -47,19 +45,24 @@ async fn the_live_download_folds_its_file_request_into_an_0xa4_bundle_for_an_ext
     });
 
     let out = tempfile::tempdir().unwrap();
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
-    rmule_testkit::connect_to(&core, &server.endpoint(), identity_with_port(0).into()).await;
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            out.path(),
+        ))
+        .build();
+    rmule_testkit::connect_to(&core, &server.endpoint()).await;
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(server.endpoint()),
-        credentials: identity().into(),
-        output_path: out.path().join("bundled-negotiation.bin"),
+        name: rmule_testkit::file_name("bundled-negotiation.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
 
     loop {
-        let event = timeout(Duration::from_secs(10), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted event")
             .expect("core event stream stayed open");
@@ -78,7 +81,7 @@ async fn the_live_download_folds_its_file_request_into_an_0xa4_bundle_for_an_ext
 
     core.shutdown().await;
 
-    let stats = timeout(Duration::from_secs(5), peer_task)
+    let stats = timeout(HANG_GUARD, peer_task)
         .await
         .expect("peer script finished after the download wound down")
         .unwrap();
@@ -124,19 +127,24 @@ async fn a_multi_part_download_against_a_pre_multipacket_peer_keeps_the_standalo
     });
 
     let out = tempfile::tempdir().unwrap();
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
-    rmule_testkit::connect_to(&core, &server.endpoint(), identity_with_port(0).into()).await;
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            out.path(),
+        ))
+        .build();
+    rmule_testkit::connect_to(&core, &server.endpoint()).await;
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(server.endpoint()),
-        credentials: identity().into(),
-        output_path: out.path().join("standalone-negotiation.bin"),
+        name: rmule_testkit::file_name("standalone-negotiation.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
 
     loop {
-        let event = timeout(Duration::from_secs(10), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted event")
             .expect("core event stream stayed open");
@@ -155,7 +163,7 @@ async fn a_multi_part_download_against_a_pre_multipacket_peer_keeps_the_standalo
 
     core.shutdown().await;
 
-    let stats = timeout(Duration::from_secs(5), peer_task)
+    let stats = timeout(HANG_GUARD, peer_task)
         .await
         .expect("peer script finished after the download wound down")
         .unwrap();

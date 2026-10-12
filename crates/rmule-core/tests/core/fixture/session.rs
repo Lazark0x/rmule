@@ -9,7 +9,7 @@ use rmule_primitives::{
     ClientId, Ed2kText, FileHash, PeerSource, SearchQuery, SearchResult, ServerEndpoint,
 };
 
-use super::{connect_credentials, next_expected};
+use super::next_expected;
 
 /// A result row of `size` bytes named `name`, one loopback source.
 pub fn search_result(hash_byte: u8, size: u64, name: &str) -> SearchResult {
@@ -31,20 +31,11 @@ pub async fn list_server(core: &Core, server: &ServerEndpoint) {
     .expect("core accepts the command");
 }
 
-/// Ask to connect to `server` under a login of a port of this leg's own.
+/// Ask to connect to `server`; the login presents the core's Core Settings'
+/// credentials.
 pub async fn connect_server(core: &Core, server: &ServerEndpoint) {
-    connect_server_as(core, server, connect_credentials().await).await;
-}
-
-/// Ask to connect to `server` under `credentials`.
-pub async fn connect_server_as(
-    core: &Core,
-    server: &ServerEndpoint,
-    credentials: rmule_core::ClientCredentials,
-) {
     core.send(CoreCommand::ConnectToServer {
         server: server.clone(),
-        credentials,
     })
     .await
     .expect("core accepts the command");

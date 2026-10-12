@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use crate::fixture::{bound_v4, peer_endpoint};
 use rmule_net::peer::{CaptureMode, ConnectOptions, Connection, ELISION_MARKER};
-use rmule_peer::PeerEvent;
+use rmule_peer::{ConnectionEvent, PeerEvent, RequesterEvent};
 use rmule_primitives::{FileHash, UserHash};
 use rmule_testkit::peer_session::loopback_ctx;
 use rmule_testkit::wire;
@@ -68,11 +68,13 @@ async fn run_session_with_mode(mode: CaptureMode, capture_dir: Option<TempDir>) 
     let mut deadline = std::time::Instant::now() + Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(100), conn.next_event()).await {
-            Ok(Some(PeerEvent::PartReceived { .. })) => {
+            Ok(Some(PeerEvent::Requester(RequesterEvent::PartReceived { .. }))) => {
                 got_part = true;
                 deadline = std::time::Instant::now() + Duration::from_millis(200);
             }
-            Ok(Some(PeerEvent::Disconnected { .. })) | Ok(None) => break,
+            Ok(Some(PeerEvent::Connection(ConnectionEvent::Disconnected { .. }))) | Ok(None) => {
+                break;
+            }
             Ok(Some(_)) => {}
             Err(_) => {}
         }

@@ -25,7 +25,7 @@
 
 use std::future::Future;
 
-use rmule_kad::KadId;
+use rmule_kad::{KadId, KadProtocol};
 use std::time::Instant;
 
 use rmule_peer::natt::{EndpointHint, RendezvousBody};
@@ -40,15 +40,10 @@ use crate::diagnostics::DiagnosticsState;
 use crate::firewalled::front::{
     SharedFirewalledFront, route_direct_callback, route_standalone_rendezvous,
 };
+use crate::mailbox::DropReason;
 
 #[cfg(test)]
 mod tests;
-
-/// eMule `OP_KADEMLIAHEADER` (`0xE4`): a plaintext Kad2 datagram.
-const KAD_PROTOCOL: u8 = 0xE4;
-
-/// eMule `OP_KADEMLIAPACKEDPROT` (`0xE5`): a zlib-packed Kad2 datagram.
-const KAD_PACKED_PROTOCOL: u8 = 0xE5;
 
 /// How certain the front is that a datagram is Kad — which is what decides
 /// whether an IPv6 one is *counted* as a dialect gap or merely dropped.
@@ -122,9 +117,11 @@ pub(crate) fn demux_protocol(datagram: &[u8]) -> ClientUdpRoute {
     match datagram[0] {
         b if b == PacketProtocol::Emule.as_byte() => ClientUdpRoute::PeerUdp,
         rmule_peer::natt::NATT_PROTOCOL => ClientUdpRoute::Natt,
-        KAD_PROTOCOL => ClientUdpRoute::Kad,
-        KAD_PACKED_PROTOCOL => ClientUdpRoute::KadPacked,
-        _ => ClientUdpRoute::Unclaimed,
+        byte => match KadProtocol::from_byte(byte) {
+            Some(KadProtocol::Plain) => ClientUdpRoute::Kad,
+            Some(KadProtocol::Packed) => ClientUdpRoute::KadPacked,
+            None => ClientUdpRoute::Unclaimed,
+        },
     }
 }
 
@@ -155,8 +152,8 @@ pub(crate) struct ClientUdpInboxes {
     /// `OP_REASKACK` / `OP_FILENOTFOUND` / `OP_QUEUEFULL` (`0x91`/`0x92`/`0x93`)
     /// → the downloader's **Remote-Queued Pool** (ADR-0057 downloader side).
     /// Tagged with the source's UDP endpoint, the reply-routing key the
-    /// pool matches a pooled source on (aMule `FindClientByIP_UDP`); the pool
-    /// decodes and consumes it via `RemoteQueuedPool::on_reply_datagram`.
+    /// download brain matches a pooled source on (aMule `FindClientByIP_UDP`)
+    /// when it reads the reply.
     pub(crate) reask_reply: mpsc::Receiver<ClientUdpDatagram>,
     /// Everything the **NAT-T Front** (`crate::natt::front`) drives: every
     /// `0xB2` transport frame, plus the `0xC5` `0xA1` holepunch trigger and the
@@ -186,10 +183,10 @@ pub(crate) struct ClientUdpInboxes {
 /// server-UDP engine's shape.
 pub(crate) struct ClientUdpEngine<T> {
     transport: T,
-    /// The armed peer-UDP crypt layer for the dual-path receive (ADR-0046), or
-    /// `None` — the default, with no `CoreConfig::peer_crypt` policy —
-    /// to leave every datagram plaintext.
-    crypt: Option<PeerUdpCrypt>,
+    /// The peer-UDP crypt layer for the dual-path receive (ADR-0046), armed
+    /// per datagram by the one obfuscation policy: disarmed, every datagram
+    /// is the plaintext it already is.
+    crypt: PeerUdpCrypt,
     /// `OP_REASKFILEPING` (`0x90`) → the serve reply matrix.
     reask_tx: mpsc::Sender<ClientUdpDatagram>,
     /// `OP_REASKACK` / `OP_FILENOTFOUND` / `OP_QUEUEFULL` (`0x91`/`0x92`/`0x93`)
@@ -227,7 +224,7 @@ pub(crate) struct ClientUdpEngine<T> {
 impl<T: ClientUdpTransport> ClientUdpEngine<T> {
     pub(crate) fn new(
         transport: T,
-        crypt: Option<PeerUdpCrypt>,
+        crypt: PeerUdpCrypt,
         buddy_slot: SharedBuddySlot,
         firewalled: SharedFirewalledFront,
         diagnostics: DiagnosticsState,
@@ -277,26 +274,25 @@ impl<T: ClientUdpTransport> ClientUdpEngine<T> {
     /// by its opcode.
     async fn demux(&self, udp_src: PeerEndpoint, datagram: Vec<u8>) {
         // Crypt receive-transform (ADR-0046), the plaintext-under-crypt split
-        // the server-UDP front and the Kad node also run:
-        // when the peer-UDP crypt layer is armed, dual-path decrypt keyed on our
+        // the Kad node also runs: under every policy, `off` included (aMule
+        // trial-decrypts whatever its setting), dual-path decrypt keyed on our
         // own user hash + this datagram's UDP source IP before the demux. A
         // plaintext-marker first byte bypasses and a miss (garbage / another
         // peer's key) falls through — both leave the datagram as the plaintext
-        // the demux then diagnoses. Disarmed ⇒ the datagram is the plaintext it
-        // already is.
+        // the demux then diagnoses. Before an identity exists there is no key, so
+        // the datagram is the plaintext it already is.
         //
         // The decrypt runs *before* the per-opcode family ruling, and must:
         // the opcode is inside the ciphertext, so an obfuscated `0x94` is not
         // an opcode at all until the key has been tried. This is also the one
         // place the 23-byte / 35-byte key layouts diverge on the wire.
-        let datagram = match &self.crypt {
-            // The key layout follows the datagram's *actual* source family and
-            // is never probed (ADR-0087). The Family Pair reports that family
-            // (`IPV6_V6ONLY`, so never a mapped address), so the selection is
-            // a read, not a guess.
-            Some(crypt) => crypt.receive(DatagramSenderAddress::from_ip(udp_src.ip()), datagram),
-            None => datagram,
-        };
+        // The key layout follows the datagram's *actual* source family and
+        // is never probed (ADR-0087). The Family Pair reports that family
+        // (`IPV6_V6ONLY`, so never a mapped address), so the selection is a
+        // read, not a guess.
+        let datagram = self
+            .crypt
+            .receive(DatagramSenderAddress::from_ip(udp_src.ip()), datagram);
         match demux_protocol(&datagram) {
             ClientUdpRoute::PeerUdp => self.route_peer_udp(udp_src, datagram).await,
             ClientUdpRoute::Natt => self.route_natt(udp_src, datagram),
@@ -351,7 +347,7 @@ impl<T: ClientUdpTransport> ClientUdpEngine<T> {
                     %udp_src,
                     "Kad datagram on the IPv6 half of the client-UDP pair; dropped (Kad is IPv4-only)"
                 );
-            } else if self.crypt.is_some() && bears_crypt_header(&datagram) {
+            } else if bears_crypt_header(&datagram) {
                 self.diagnostics.count_ipv6_undecryptable_datagram();
                 tracing::debug!(
                     %udp_src,
@@ -360,23 +356,19 @@ impl<T: ClientUdpTransport> ClientUdpEngine<T> {
             }
             return;
         };
-        let installed = self
-            .kad_inlet
-            .lock()
-            .expect("kad inlet mutex poisoned")
-            .clone();
-        let Some(inlet) = installed else {
+        match self.kad_inlet.send((from, datagram)) {
+            Ok(()) => {}
             // No node running: there is nothing this could be handed to, and
             // a stopped Kad node is not a drop worth counting.
-            tracing::trace!(%udp_src, "Kad datagram with no Kad node running; dropped");
-            return;
-        };
-        if inlet.try_send((from, datagram)).is_err() {
-            // Full, or the node stopped between the read above and this send.
-            // Both are a Kad datagram this node will not act on, which is the
-            // fact the count is about.
-            self.diagnostics.count_kad_inlet_drop();
-            tracing::debug!(%udp_src, "Kad inlet full or gone; datagram dropped");
+            Err(DropReason::NoNode) => {
+                tracing::trace!(%udp_src, "Kad datagram with no Kad node running; dropped");
+            }
+            // A Kad datagram this node will not act on, which is the fact the
+            // count is about.
+            Err(DropReason::Full) => {
+                self.diagnostics.count_kad_inlet_drop();
+                tracing::debug!(%udp_src, "Kad inlet full; datagram dropped");
+            }
         }
     }
 
@@ -475,8 +467,8 @@ impl<T: ClientUdpTransport> ClientUdpEngine<T> {
                 | ClientUdpOpcode::QueueFull,
             ) => {
                 // Downloader-consumed reask replies (ADR-0057): route to the
-                // Remote-Queued Pool, which matches the source by this UDP endpoint
-                // and consumes it. Never awaited: a full or dropped receiver
+                // download whose ping they answer; its brain matches the source
+                // by this UDP endpoint and consumes it. Never awaited: a full or dropped receiver
                 // costs this reply, not the front.
                 if self.reask_reply_tx.try_send((udp_src, datagram)).is_err() {
                     self.diagnostics.count_peer_udp_inbox_drop();

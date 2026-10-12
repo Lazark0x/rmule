@@ -38,10 +38,10 @@ Hash a dial is keyed on (`PeerCrypt`), one stance for TCP and UDP alike.
 
 | Source | Attaches to | Rank |
 | --- | --- | --- |
-| The peer's own hello (`MiscOptions2` crypt bits, hello User Hash) | the download's `hello_crypts`, per endpoint, until the next hello or the worker ends | outranks every record |
+| The peer's own hello (`MiscOptions2` crypt bits, hello User Hash) | the `PeerIdentity` its worker's Source Book record holds in its Worker stage, replaced whole at each revision, until the worker ends; a queue standing the worker earns keeps its peer-UDP crypt target for the standing's life | outranks every record |
 | `OP_FOUNDSOURCES_OBFU`, source exchange v4, a Kad row's `TAG_ENCRYPTION` | High ID: `peer_crypts` per endpoint; Low ID: its `LowIdCandidate` | newest statement wins |
 | `KADEMLIA_FIREWALLED2_REQ`, `OP_DIRECTCALLBACKREQ`, a buddy's `KADEMLIA_FINDBUDDY_RES` | the one dial-back or buddy link it authorizes | never merged |
-| An accepted peer's hello (serve side) | the serve state's `crypt_targets` | only source on that road |
+| An accepted peer's hello (serve side) | the `PeerIdentity` the serve state keeps for its connection | only source on that road |
 
 - **Silence is not a statement.** A record with no crypt byte (a plain source row,
   source exchange v1–v3, a Kad row without the tag) reads dark at the dial but never

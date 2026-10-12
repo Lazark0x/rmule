@@ -14,7 +14,7 @@ When a hello fails to read, the reader looks for a point where the tags read so 
 exactly at the 6-byte connected-server field (optionally plus the 4-byte trailer). If a
 count below the declared one ends there, the error is
 `PeerHelloDecodeError::TagCountShort { declared, written }`; otherwise it stays the tag
-or truncation error it was. The session raises `PeerEvent::HelloRefused` before closing,
+or truncation error it was. The session raises `ConnectionEvent::HelloRefused` before closing,
 carrying the code and the name and mod the peer supplied, as peer-supplied text. Core
 counts `peer_hellos_refused_total` and raises `CoreEvent::PeerHelloRefused`, which
 carries no peer address. rmule never reads the short list as if the count were right:

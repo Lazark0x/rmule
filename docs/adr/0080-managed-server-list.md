@@ -49,6 +49,41 @@ pub struct ManagedServer {
   `OP_IDCHANGE`, with when. The raw word is stored so unknown bits survive; a front end
   words each bit it knows.
 
+### Aux ports
+
+A server can be dialed on a port other than the standard one it lists. aMule keeps both
+on its `CServer` (`port`, the one it connects to, and `realport`, the "official" one the
+list keys on and advertises, `Server.h:69-73`). `ManagedServer.aux_ports`
+(`Option<ServerAuxPorts>`: the standard port and the aux-ports list) is rmule's form of
+that pair, present only while they differ — aMule's own condition for writing
+`ST_AUXPORTSLIST` (`ServerList.cpp:763-765`). The row's `endpoint` stays the **dialed**
+endpoint and the key, so a running session, its events and its facts keep one name; the
+standard endpoint is `standard_endpoint()`.
+
+- **An aux-port login re-ports the row.** The `OP_IDCHANGE` that names a standard port
+  (`ServerSocket.cpp:337-355`) records it on the dialed row and starts the list at the dialed
+  port when it was empty. A port of zero, or the dialed port itself, changes nothing, and
+  so does a slot equal to the assigned id: a captured Lugdunum answer fills the slot with
+  the id (id 936, "port" 936), which aMule would still write into the row.
+- **A server.met row's header port is the standard port**, and its `ST_AUXPORTSLIST` starts
+  with the port to dial (`Server.cpp:222-231`): the imported row is dialed there.
+- **One row per server.** aMule's `AddServer` refuses a second row for one `(address, port)`
+  of the standard kind (`ServerList.cpp:223-237`). A downloaded row therefore finds a row
+  by its dialed endpoint first and its standard endpoint second; and when a login reveals
+  that the standard endpoint is a row of its own, that row is absorbed into the dialed one
+  (name, priority, pin and any figures, grants or UDP crypt it lacks), which keeps the key
+  the session runs on. The merge's `(ip, port)` reconciliation against a downloaded list
+  projects a row at its standard endpoint.
+- A downloaded row's own list is taken only for a row dialed on the very port it lists.
+- **A server.met row's UDP crypt tags land in the row's UDP crypt record** (ADR-0052): the
+  obfuscation TCP and UDP ports and the `ServerUDPKey` with the address it was learned
+  under. A downloaded row only fills what the row lacks, except the TCP port, which is the
+  server's own word; a key a status answer taught is not replaced. The key still keys UDP
+  only while it was learned under the address we hold now.
+- **The UDP flags word an imported row names is kept even when the file dates no answer**
+  (`listed_udp_flags`): aMule holds it per server whether or not it was pinged. The last
+  status answer's flags, when there are any, outrank it.
+
 ### One merge rule
 
 `ManagedServer::fold` is the whole reconciliation policy, aMule's `LoadServerMet`
@@ -107,7 +142,7 @@ two calls.
 
 ### Connecting is a separate command
 
-`CoreCommand::ConnectToServer { server, credentials }` connects to a **listed** server
+`CoreCommand::ConnectToServer { server }` connects to a **listed** server
 (`UnknownServer` otherwise), one at a time (`ServerConnectInFlight`). It is not a
 `ServerListCommand`, because no list command reaches the session. It is the only login
 (ADR-0095): activities ride the session the operator made and dial nothing themselves.

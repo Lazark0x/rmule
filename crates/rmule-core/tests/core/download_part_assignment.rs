@@ -4,7 +4,6 @@
 //! front at spawn (ADR-0030), and a single-part file's race survives one
 //! racer's disconnect because the part stays covered by the other.
 
-use crate::fixture::identity;
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent, DownloadFailure,
     DownloadedPart, PartReleaseReason, PeerDownloadOutcome, PeerRetirementReason,
@@ -80,6 +79,7 @@ async fn scheduler_assignment_events_are_emitted_before_part_verification() {
 
 #[tokio::test]
 async fn fake_multi_peer_happy_path_assigns_one_part_per_high_id_peer_by_default() {
+    let out_dir = tempfile::tempdir().unwrap();
     let mut bytes = vec![0xAB; ED2K_PART_SIZE as usize];
     bytes.push(0xCD);
     let link = file_link("example.bin", &bytes);
@@ -90,6 +90,10 @@ async fn fake_multi_peer_happy_path_assigns_one_part_per_high_id_peer_by_default
     let second_peer = loopback_peer(2);
     let assignments = Arc::new(StdMutex::new(HashMap::new()));
     let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            out_dir.path(),
+        ))
         .source_lookup(StaticSourceLookup {
             outcome: SourceLookupOutcome {
                 client_id: ClientId::from_u32(0x0100_007F),
@@ -107,12 +111,11 @@ async fn fake_multi_peer_happy_path_assigns_one_part_per_high_id_peer_by_default
         })
         .build();
 
-    let out_dir = tempfile::tempdir().unwrap();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: link,
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: out_dir.path().join("multi-peer-happy-path.bin"),
+        name: rmule_testkit::file_name("multi-peer-happy-path.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -176,6 +179,7 @@ async fn fake_multi_peer_happy_path_assigns_one_part_per_high_id_peer_by_default
 
 #[tokio::test]
 async fn worker_is_assigned_a_part_only_after_connected() {
+    let out_dir = tempfile::tempdir().unwrap();
     // ADR-0030: identification is event-driven. The runner must not assign a
     // part to a worker before that worker reports `Connected`; assignment is
     // driven by the `Connected` event, not done up front at spawn. The gated
@@ -184,18 +188,21 @@ async fn worker_is_assigned_a_part_only_after_connected() {
     let bytes = b"hello world".to_vec();
     let gate = Arc::new(tokio::sync::Notify::new());
     let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            out_dir.path(),
+        ))
         .source_lookup(source_with_high_id())
         .peer_transfer(GatedConnectTransfer {
             gate: Arc::clone(&gate),
             bytes: bytes.clone(),
         })
         .build();
-    let out_dir = tempfile::tempdir().unwrap();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: file_link_without_part_hash_set("example.bin", &bytes),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: out_dir.path().join("gated-connect.bin"),
+        name: rmule_testkit::file_name("gated-connect.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();

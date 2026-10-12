@@ -4,7 +4,7 @@
 //! port.
 //!
 //! The datagram is read off a real socket, so this exercises the whole live path
-//! the capture bench drives — command → chooser → `direct_callback_datagram` →
+//! the capture bench drives — command → chooser → the `0x95` framing →
 //! the one client-UDP send drain → `send_to` — rather than the chooser alone
 //! (which `callback.rs`'s own tests already pin).
 //!
@@ -13,6 +13,7 @@
 //! socket, demuxed on the leading protocol byte, which is why the direct callback
 //! is addressed to the Kad port and still lands in the eMule-protocol handler.
 
+use rmule_testkit::HANG_GUARD;
 use std::net::{Ipv4Addr, SocketAddrV4};
 
 use crate::fixture::{VerdictOnlyKad, identity_with_port};
@@ -107,17 +108,18 @@ fn firewalled_peer(kad_udp: Ipv4Endpoint) -> PeerReach {
     }
 }
 
-async fn serving_core(kad: VerdictOnlyKad) -> Core {
+async fn serving_core(tcp_open: bool) -> Core {
     let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(crate::fixture::settings_on(OUR_LISTEN_PORT))
         .user_hash(our_identity().user_hash())
         .source_lookup(UnusedSourceLookup)
         .peer_transfer(UnusedPeerTransfer)
         .serve_runtime(QuietServeRuntime)
-        .kad(kad)
+        .kad(VerdictOnlyKad)
+        .kad_reach(rmule_core::KadReachLevel::fixed(tcp_open))
         .build();
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, OUR_LISTEN_PORT),
-        credentials: our_identity().into(),
     }))
     .await
     .expect("start serving");
@@ -131,7 +133,7 @@ async fn serving_core(kad: VerdictOnlyKad) -> Core {
 
 /// Drain events until the reach verdict arrives (serving emits its own first).
 async fn next_reach_route(core: &mut Core) -> PeerReachRoute {
-    timeout(Duration::from_secs(5), async {
+    timeout(HANG_GUARD, async {
         loop {
             match core.next_event().await.expect("core still running") {
                 CoreEvent::PeerReachRouted { route, .. } => return route,
@@ -153,7 +155,7 @@ async fn reaching_a_direct_callback_peer_emits_a_0x95_to_its_kad_udp_port() {
     let peer_kad_addr = peer_kad_socket.local_addr().expect("peer kad addr");
     let peer_kad_udp = Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, peer_kad_addr.port());
 
-    let mut core = serving_core(VerdictOnlyKad { open: true }).await;
+    let mut core = serving_core(true).await;
     core.send(CoreCommand::ReachPeer(firewalled_peer(peer_kad_udp)))
         .await
         .expect("reach the peer");
@@ -166,13 +168,10 @@ async fn reaching_a_direct_callback_peer_emits_a_0x95_to_its_kad_udp_port() {
     );
 
     let mut datagram = [0u8; 64];
-    let (len, _from) = timeout(
-        Duration::from_secs(5),
-        peer_kad_socket.recv_from(&mut datagram),
-    )
-    .await
-    .expect("the 0x95 arrives on the peer's Kad UDP port")
-    .expect("recv");
+    let (len, _from) = timeout(HANG_GUARD, peer_kad_socket.recv_from(&mut datagram))
+        .await
+        .expect("the 0x95 arrives on the peer's Kad UDP port")
+        .expect("recv");
 
     // Byte-decoded, not shape-checked: the body must invite the peer to dial the
     // port we actually listen on, under the identity it will match the dial-back
@@ -182,7 +181,7 @@ async fn reaching_a_direct_callback_peer_emits_a_0x95_to_its_kad_udp_port() {
         Ok(DirectCallbackReq {
             our_tcp_port: OUR_LISTEN_PORT,
             our_user_hash: our_identity().user_hash(),
-            // No `peer_crypt` policy: every crypt bit dark, and aMule never sets
+            // No obfuscation policy: every crypt bit dark, and aMule never sets
             // the direct-callback bit on its own outbound callback either.
             connect_options: 0x00,
         })
@@ -202,7 +201,7 @@ async fn a_firewalled_us_drops_the_same_peer_low_to_low_and_emits_nothing() {
         peer_kad_socket.local_addr().expect("addr").port(),
     );
 
-    let mut core = serving_core(VerdictOnlyKad { open: false }).await;
+    let mut core = serving_core(false).await;
     core.send(CoreCommand::ReachPeer(firewalled_peer(peer_kad_udp)))
         .await
         .expect("reach the peer");
@@ -247,14 +246,15 @@ async fn the_0x95_invites_the_actually_bound_port_when_the_os_chose_it() {
     let _unreachable_server = dead_port().await;
 
     let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
         .user_hash(our_identity().user_hash())
         .source_lookup(UnusedSourceLookup)
         .peer_transfer(UnusedPeerTransfer)
-        .kad(VerdictOnlyKad { open: true })
+        .kad(VerdictOnlyKad)
+        .kad_reach(rmule_core::KadReachLevel::fixed(true))
         .build();
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
-        credentials: our_identity().into(),
     }))
     .await
     .expect("start serving");
@@ -272,13 +272,10 @@ async fn the_0x95_invites_the_actually_bound_port_when_the_os_chose_it() {
     );
 
     let mut datagram = [0u8; 64];
-    let (len, _from) = timeout(
-        Duration::from_secs(5),
-        peer_kad_socket.recv_from(&mut datagram),
-    )
-    .await
-    .expect("the 0x95 arrives on the peer's Kad UDP port")
-    .expect("recv");
+    let (len, _from) = timeout(HANG_GUARD, peer_kad_socket.recv_from(&mut datagram))
+        .await
+        .expect("the 0x95 arrives on the peer's Kad UDP port")
+        .expect("recv");
     let req = DirectCallbackReq::decode_udp(&datagram[..len]).expect("OP_DIRECTCALLBACKREQ");
     assert_eq!(
         req.our_tcp_port,
@@ -308,28 +305,40 @@ async fn a_server_high_id_opens_route_2_while_kad_is_unproven() {
     let server_ep =
         ServerEndpoint::parse_host_port(&server.local_addr().to_string()).expect("server endpoint");
 
-    // Serve on a KNOWN port with identity.tcp_port == listen port, so the
-    // probe's back-connect hello is answered during the login.
+    // Serve on a KNOWN port the Core Settings name, so the probe's
+    // back-connect hello is answered during the login.
     let p = free_port().await;
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(crate::fixture::settings_on(p))
+        .build();
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, p),
-        credentials: identity_with_port(p).into(),
     }))
     .await
     .expect("start serving");
     serving_started(&mut core).await;
-    rmule_testkit::connect_to(&core, &server_ep, identity_with_port(p).into()).await;
+    rmule_testkit::connect_to(&core, &server_ep).await;
     // Premise guard, not the assertion: the probe granted High-ID, so a
-    // failure below is the route wiring, not a Low-ID login. Awaited, because
-    // `ServingStarted` is the *bind* fact — the login it causes lands later
-    // and on its own trail.
-    let ids = timeout(Duration::from_secs(10), server.assigned_ids_after(1))
-        .await
-        .expect("the serve start's login reaches the server");
+    // failure below is the route wiring, not a Low-ID login. Awaited on core's
+    // own trail, because `ServingStarted` is the *bind* fact and the server
+    // assigning an id is not core having read it: a reach reads Self Reach
+    // at once and waits on no login in flight.
+    let client_id = timeout(HANG_GUARD, async {
+        loop {
+            if let CoreEvent::ServerConnection(rmule_core::ServerConnectionEvent::Connected {
+                client_id,
+                ..
+            }) = core.next_event().await.expect("core still running")
+            {
+                return client_id;
+            }
+        }
+    })
+    .await
+    .expect("the serve start's login lands");
     assert!(
-        ids.first().is_some_and(|id| id.is_high_id()),
-        "the serve login must earn High-ID, got {ids:?}"
+        client_id.is_high_id(),
+        "the serve login must earn High-ID, got {client_id:?}"
     );
 
     core.send(CoreCommand::ReachPeer(firewalled_peer(peer_kad_udp)))
@@ -345,13 +354,10 @@ async fn a_server_high_id_opens_route_2_while_kad_is_unproven() {
 
     // The invitation is real and names the port we serve on.
     let mut datagram = [0u8; 64];
-    let (len, _from) = timeout(
-        Duration::from_secs(5),
-        peer_kad_socket.recv_from(&mut datagram),
-    )
-    .await
-    .expect("the 0x95 arrives on the peer's Kad UDP port")
-    .expect("recv");
+    let (len, _from) = timeout(HANG_GUARD, peer_kad_socket.recv_from(&mut datagram))
+        .await
+        .expect("the 0x95 arrives on the peer's Kad UDP port")
+        .expect("recv");
     let req = DirectCallbackReq::decode_udp(&datagram[..len]).expect("OP_DIRECTCALLBACKREQ");
     assert_eq!(req.our_tcp_port, p, "the invitation names the serving port");
 }

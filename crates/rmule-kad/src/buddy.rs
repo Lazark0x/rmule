@@ -72,10 +72,11 @@
 //! [`reachability`]: crate::reachability
 //! [`kad_wire_id`]: crate::lookup::kad_wire_id
 
-use rmule_primitives::{FileHash, UserHash};
+use rmule_primitives::{FileHash, UserHash, WireReader, WireTruncated};
 
 use crate::envelope::KadEnvelope;
 use crate::id::KadId;
+use crate::wire_fields::KadWireFields;
 
 /// `KADEMLIA_FINDBUDDY_REQ` (`0x51`): a firewalled node asks the found node to be
 /// its buddy — `<buddyID 16><requesterHash 16><requesterTcpPort 2>`.
@@ -168,30 +169,30 @@ impl BuddyMessage {
             });
         }
         // Field cuts shared by all three layouts: <id 16><id/hash 16><port 2>.
-        let first = read_id16(&payload[0..KadId::BYTE_LEN]);
-        let second_off = KadId::BYTE_LEN;
-        let port_off = second_off + UserHash::BYTE_LEN;
-        let tcp_port = u16::from_le_bytes([payload[port_off], payload[port_off + 1]]);
+        let malformed = |truncated: WireTruncated| BuddyDecodeError::Malformed {
+            opcode,
+            reason: truncated.field,
+        };
+        let mut reader = WireReader::new(payload);
+        let first = reader.read_kad_id("buddy ID").map_err(malformed)?;
+        let second = reader.read_array("requester hash").map_err(malformed)?;
+        let tcp_port = reader.read_u16_le("TCP port").map_err(malformed)?;
         match opcode {
             KADEMLIA_FINDBUDDY_REQ => Ok(Self::FindBuddyReq {
-                buddy_id: KadId::from_bytes(first),
-                requester_hash: read_user_hash(
-                    &payload[second_off..second_off + UserHash::BYTE_LEN],
-                ),
+                buddy_id: first,
+                requester_hash: read_user_hash(second),
                 requester_tcp_port: tcp_port,
             }),
             KADEMLIA_FINDBUDDY_RES => Ok(Self::FindBuddyRes {
-                buddy_id: KadId::from_bytes(first),
-                responder_hash: read_user_hash(
-                    &payload[second_off..second_off + UserHash::BYTE_LEN],
-                ),
+                buddy_id: first,
+                responder_hash: read_user_hash(second),
                 responder_tcp_port: tcp_port,
                 // aMule's `if (lenPacket > 34)` connect-options read.
-                connect_options: payload.get(port_off + 2).copied(),
+                connect_options: reader.read_u8("connect options").ok(),
             }),
             KADEMLIA_CALLBACK_REQ => Ok(Self::CallbackReq {
-                buddy_id: KadId::from_bytes(first),
-                file_hash: read_file_hash(&payload[second_off..second_off + FileHash::BYTE_LEN]),
+                buddy_id: first,
+                file_hash: read_file_hash(second),
                 requester_tcp_port: tcp_port,
             }),
             _ => unreachable!("is_buddy_opcode admits only the three rows"),
@@ -280,18 +281,10 @@ fn buddy_body(id: &KadId, second: &[u8; 16], tcp_port: u16, extra: Option<u8>) -
     payload
 }
 
-/// Copy a 16-byte field out of a payload slice (length pre-checked by the caller).
-fn read_id16(slice: &[u8]) -> [u8; 16] {
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&slice[..16]);
-    out
-}
-
 /// The user-hash field, read out of aMule's `WriteUInt128` word order into the
-/// raw MD4 form the eD2k hello reports (see the module doc). Length
-/// pre-checked by the caller.
-fn read_user_hash(slice: &[u8]) -> UserHash {
-    UserHash::from_bytes(crate::lookup::kad_wire_id(read_id16(slice)))
+/// raw MD4 form the eD2k hello reports (see the module doc).
+fn read_user_hash(wire: [u8; 16]) -> UserHash {
+    UserHash::from_bytes(crate::lookup::kad_wire_id(wire))
 }
 
 /// The inverse of [`read_user_hash`] — the swap is its own inverse, so this is
@@ -302,9 +295,9 @@ fn user_hash_wire(hash: UserHash) -> [u8; 16] {
 
 /// The `0x52` file-hash field, read out of aMule's `WriteUInt128` word order
 /// into the raw MD4 form every other rmule surface holds a [`FileHash`] in
-/// (see the module doc). Length pre-checked by the caller.
-fn read_file_hash(slice: &[u8]) -> FileHash {
-    FileHash::from_bytes(crate::lookup::kad_wire_id(read_id16(slice)))
+/// (see the module doc).
+fn read_file_hash(wire: [u8; 16]) -> FileHash {
+    FileHash::from_bytes(crate::lookup::kad_wire_id(wire))
 }
 
 /// The inverse of [`read_file_hash`], under the name that says which direction
@@ -519,5 +512,39 @@ mod tests {
         assert!(is_buddy_opcode(KADEMLIA_FINDBUDDY_RES));
         assert!(is_buddy_opcode(KADEMLIA_CALLBACK_REQ));
         assert!(!is_buddy_opcode(0x40));
+    }
+
+    /// Every layout cut at every byte below its 34-byte minimum is rejected;
+    /// the bytes past the minimum are the optional connect-options byte only.
+    #[test]
+    fn a_buddy_envelope_cut_at_every_byte_below_its_minimum_is_rejected() {
+        let id = kad_id(0x11);
+        let messages = [
+            BuddyMessage::FindBuddyReq {
+                buddy_id: id,
+                requester_hash: UserHash::from_bytes([0x22; 16]),
+                requester_tcp_port: 4662,
+            },
+            BuddyMessage::FindBuddyRes {
+                buddy_id: id,
+                responder_hash: UserHash::from_bytes([0x33; 16]),
+                responder_tcp_port: 4662,
+                connect_options: Some(0x03),
+            },
+            captured_callback_message(),
+        ];
+        for message in messages {
+            let whole = message.encode();
+            assert_eq!(BuddyMessage::decode(&whole), Ok(message));
+            for cut in 0..BUDDY_MIN_LEN {
+                let cut_envelope =
+                    KadEnvelope::plain(whole.opcode(), whole.payload()[..cut].to_vec());
+                assert!(
+                    BuddyMessage::decode(&cut_envelope).is_err(),
+                    "opcode 0x{:02X} cut to {cut} bytes decoded",
+                    whole.opcode()
+                );
+            }
+        }
     }
 }

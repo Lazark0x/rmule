@@ -6,12 +6,12 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreError, DownloadFailure, PeerTransferService, PeerWorker,
-    ServeCommand, ServeConnCommand, ServeConnEvent, ServeConnection, ServeRuntimeService,
-    SourceLookupOutcome, SourceLookupService, serve_command_to_peer, serve_event_from_peer,
+    ServeCommand, ServeConnection, ServeInput, ServeOutput, ServeRuntimeService,
+    SourceLookupOutcome, SourceLookupService,
 };
 use rmule_ed2k::OfferedFile;
 use rmule_net::peer::{ConnectOptions, Connection, PeerListener};
-use rmule_peer::PeerHandshakeContext;
+use rmule_peer::{PeerEvent, PeerHandshakeContext};
 use rmule_primitives::{
     ClientId, ClientIdentity, Ed2kFileLink, Ed2kText, PeerEndpoint, PeerSource, SourceLookupTarget,
     UserHash,
@@ -61,6 +61,8 @@ pub fn test_handshake_ctx(seed: u8, name: &str) -> PeerHandshakeContext {
     PeerHandshakeContext {
         identity: test_identity(seed, name, 4662),
         client_id: ClientId::from_u32(0x0100_007F),
+        ed2k_client_id: ClientId::from_u32(0x0100_007F),
+        public_ip: None,
         connected_server: None,
     }
 }
@@ -140,33 +142,35 @@ impl ServeRuntimeService for LoopbackServeRuntime {
     }
 }
 
-// Bridge one accepted connection to the serve vocabulary through the
-// production translator pair (rmule-core's `test-support` feature), so the
-// testkit cannot drift from what core actually serves.
+// Bridge one accepted connection to the serve task in the session's own
+// vocabulary, as production does: `Server` requests and `Connection` facts up,
+// `Server` commands down.
 async fn bridge(
     mut conn: Connection,
-    mut cmd_rx: mpsc::Receiver<ServeConnCommand>,
-    evt_tx: mpsc::Sender<ServeConnEvent>,
+    mut cmd_rx: mpsc::Receiver<ServeOutput>,
+    evt_tx: mpsc::Sender<ServeInput>,
 ) {
     loop {
         tokio::select! {
             command = cmd_rx.recv() => {
                 let Some(command) = command else { break };
-                if conn.send(serve_command_to_peer(command)).await.is_err() {
+                if conn.send(command.into()).await.is_err() {
                     break;
                 }
             }
             event = conn.next_event() => {
-                let Some(event) = event else {
-                    let _ = evt_tx.send(ServeConnEvent::Disconnected).await;
-                    break;
-                };
-                if let Some(serve) = serve_event_from_peer(event) {
-                    let done = matches!(serve, ServeConnEvent::Disconnected);
-                    let _ = evt_tx.send(serve).await;
-                    if done {
-                        break;
+                let input = match event {
+                    None => ServeInput::closed_here(),
+                    Some(PeerEvent::Server(request)) => ServeInput::Server(request),
+                    Some(PeerEvent::Connection(fact)) => ServeInput::Connection(fact),
+                    Some(PeerEvent::Requester(_) | PeerEvent::Side(_) | PeerEvent::Notice(_)) => {
+                        continue;
                     }
+                };
+                let done = input.is_disconnect();
+                let _ = evt_tx.send(input).await;
+                if done {
+                    break;
                 }
             }
         }
@@ -195,6 +199,7 @@ impl ServingCore {
         let ctx = test_handshake_ctx(identity_seed, "rmule-testkit-serving-core");
         let (runtime, bound_rx) = LoopbackServeRuntime::new(ctx.clone());
         let mut core = Core::builder(CoreConfig::default(), crate::memory_store())
+            .settings(rmule_core::CoreSettings::default())
             .user_hash(ctx.identity.user_hash())
             .source_lookup(PendingSourceLookup)
             .peer_transfer(RefusingPeerTransfer)
@@ -204,7 +209,6 @@ impl ServingCore {
         assert_eq!(shared.len(), 1, "serving core shared its one file");
         core.send(CoreCommand::Serve(ServeCommand::StartServing {
             listen_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
-            credentials: ctx.identity.into(),
         }))
         .await
         .unwrap();

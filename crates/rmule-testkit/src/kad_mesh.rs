@@ -8,6 +8,7 @@
 //! identical [`trace`](KadMeshSim::trace)s, which the acceptance tests assert
 //! literally.
 
+use rmule_kad::KadNodeStart;
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
@@ -218,7 +219,7 @@ impl KadMeshSim {
         self.nodes.push(SimNode {
             label,
             endpoint,
-            node: KadNode::new(config),
+            node: KadNode::new(KadNodeStart::new(config, KadInstant::EPOCH)),
         });
         self
     }

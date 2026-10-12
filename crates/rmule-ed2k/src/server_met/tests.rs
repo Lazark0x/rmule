@@ -90,10 +90,17 @@ fn empty_input_is_missing_header() {
 }
 
 #[test]
-fn truncated_count_field_yields_empty_list() {
-    let bytes = vec![HEADER_AMULE, 0x00, 0x00]; // only 2 of the 4 count bytes
-    let file = ServerMet::decode(&bytes).expect("valid header, short count");
-    assert!(file.entries().is_empty());
+fn a_file_cut_inside_the_count_is_truncated_not_empty() {
+    let full = [HEADER_AMULE, 0x00, 0x00, 0x00, 0x00];
+    for cut in 1..full.len() {
+        let file = ServerMet::decode(&full[..cut]).expect("valid header, short count");
+        assert!(file.entries().is_empty());
+        assert!(
+            file.is_truncated(),
+            "cut at {cut} bytes must read as truncated"
+        );
+    }
+    assert!(!ServerMet::decode(&full).expect("empty list").is_truncated());
 }
 
 #[test]
@@ -350,6 +357,8 @@ fn sample_entry(name: &str, description: &str, priority: ServerPriority) -> Serv
         description: Ed2kText::from_utf8(description),
         priority,
         figures: ServerMetFigures::NONE,
+        obfuscation: ServerMetObfuscation::NONE,
+        aux_ports: Vec::new(),
     }
 }
 
@@ -394,6 +403,147 @@ fn a_rows_figures_decode_from_their_tags_and_round_trip() {
     );
     let again = ServerMet::decode(&decoded.encode()).expect("re-decode");
     assert_eq!(again.entries()[0].figures(), &figures);
+}
+
+/// aMule's `AddTagFromFile` reads `ST_UDPFLAGS` and `ST_TCPPORTOBFUSCATION`
+/// (`Server.cpp:239-258`); a merge keeps a fact a fresh row is silent about,
+/// and takes one it states even from a never-pinged row.
+#[test]
+fn a_rows_obfuscation_tags_decode_round_trip_and_merge() {
+    let row = encode_row(
+        Ipv4Addr::new(1, 2, 3, 4),
+        4661,
+        &[
+            name_tag("obf"),
+            Tag::new(TagName::compact_id(0x92), TagValue::U32(0x400)),
+            Tag::new(TagName::compact_id(0x97), TagValue::U16(4674)),
+        ],
+    );
+    let decoded = ServerMet::decode(&encode_file(HEADER_AMULE, 1, &[row])).expect("decode");
+    let entry = decoded.entries()[0].clone();
+    assert_eq!(
+        entry.obfuscation(),
+        ServerMetObfuscation {
+            udp_flags: Some(0x400),
+            tcp_port: Some(4674),
+            ..ServerMetObfuscation::NONE
+        }
+    );
+    let again = ServerMet::decode(&decoded.encode()).expect("re-decode");
+    assert_eq!(again.entries()[0].obfuscation(), entry.obfuscation());
+
+    let silent = entry.clone().with_obfuscation(ServerMetObfuscation::NONE);
+    assert_eq!(
+        entry.clone().merge(silent.clone()).obfuscation(),
+        entry.obfuscation(),
+        "a silent fresh row does not unlearn the port"
+    );
+    assert_eq!(
+        silent.merge(entry.clone()).obfuscation(),
+        entry.obfuscation(),
+        "a stated port lands even without a last-ping time"
+    );
+}
+
+/// aMule's `AddTagFromFile` reads the UDP half of the crypt facts too
+/// (`Server.cpp:236-251`): the obfuscation UDP port, the `ServerUDPKey` and
+/// the IPv4 it was learned under. The key IP is in the file's address byte
+/// order, a zero key or address is "none", and the facts round-trip.
+#[test]
+fn a_rows_udp_crypt_tags_decode_round_trip_and_merge() {
+    let row = encode_row(
+        Ipv4Addr::new(1, 2, 3, 4),
+        4661,
+        &[
+            name_tag("crypt"),
+            Tag::new(TagName::compact_id(0x95), TagValue::U32(0xABCD_1234)),
+            Tag::new(
+                TagName::compact_id(0x96),
+                TagValue::U32(u32::from_le_bytes([198, 51, 100, 7])),
+            ),
+            Tag::new(TagName::compact_id(0x98), TagValue::U16(4673)),
+        ],
+    );
+    let decoded = ServerMet::decode(&encode_file(HEADER_AMULE, 1, &[row])).expect("decode");
+    let entry = decoded.entries()[0].clone();
+    let facts = entry.obfuscation();
+    assert_eq!(facts.udp_key, Some(0xABCD_1234));
+    assert_eq!(facts.udp_key_ip, Some(Ipv4Addr::new(198, 51, 100, 7)));
+    assert_eq!(facts.udp_port, Some(4673));
+    let again = ServerMet::decode(&decoded.encode()).expect("re-decode");
+    assert_eq!(again.entries()[0].obfuscation(), facts);
+
+    let zeroed = encode_row(
+        Ipv4Addr::new(1, 2, 3, 4),
+        4661,
+        &[
+            Tag::new(TagName::compact_id(0x95), TagValue::U32(0)),
+            Tag::new(TagName::compact_id(0x96), TagValue::U32(0)),
+        ],
+    );
+    let zeroed = ServerMet::decode(&encode_file(HEADER_AMULE, 1, &[zeroed])).expect("decode");
+    assert_eq!(
+        zeroed.entries()[0].obfuscation(),
+        ServerMetObfuscation::NONE
+    );
+
+    let silent = entry.clone().with_obfuscation(ServerMetObfuscation::NONE);
+    assert_eq!(
+        entry.clone().merge(silent).obfuscation(),
+        facts,
+        "a silent fresh row does not unlearn the key"
+    );
+}
+
+/// `ST_AUXPORTSLIST` (`Server.cpp:222-231`): the header port is the standard
+/// port and the list starts with the port to dial. An empty tag, which some
+/// server.mets carry, says nothing; the list round-trips; a row that holds
+/// one keeps it against a mirror's.
+#[test]
+fn a_rows_aux_ports_list_decodes_round_trips_and_is_not_a_mirrors_to_change() {
+    let aux = |list: &str| {
+        Tag::new(
+            TagName::compact_id(0x93),
+            TagValue::String(Ed2kText::from_utf8(list)),
+        )
+    };
+    let file = encode_file(
+        HEADER_AMULE,
+        2,
+        &[
+            encode_row(
+                Ipv4Addr::new(1, 2, 3, 4),
+                4661,
+                &[name_tag("aux"), aux("4232, 4242")],
+            ),
+            encode_row(
+                Ipv4Addr::new(5, 6, 7, 8),
+                4661,
+                &[name_tag("empty"), aux("")],
+            ),
+        ],
+    );
+    let decoded = ServerMet::decode(&file).expect("decode");
+    assert_eq!(
+        decoded.entries()[0].endpoint().port,
+        4661,
+        "the standard port"
+    );
+    assert_eq!(decoded.entries()[0].aux_ports(), &[4232, 4242]);
+    assert!(decoded.entries()[1].aux_ports().is_empty());
+
+    let again = ServerMet::decode(&decoded.encode()).expect("re-decode");
+    assert_eq!(again.entries()[0].aux_ports(), &[4232, 4242]);
+    assert!(again.entries()[1].aux_ports().is_empty());
+
+    let held = decoded.entries()[0].clone();
+    let mirror = held.clone().with_aux_ports(vec![9999]);
+    assert_eq!(
+        held.clone().merge(mirror.clone()).aux_ports(),
+        &[4232, 4242]
+    );
+    let bare = held.clone().with_aux_ports(Vec::new());
+    assert_eq!(bare.merge(mirror).aux_ports(), &[9999]);
 }
 
 /// A fresher row's figures replace older ones on a merge; an older or

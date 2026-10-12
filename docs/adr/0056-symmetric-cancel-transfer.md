@@ -32,7 +32,7 @@ and nothing left to request from this source
 **Consume (rmule as uploader), as aMule does.**
 
 - `PeerPacket::CancelTransfer` is a modelled packet. The session raises
-  `PeerEvent::TransferCancelled` only when the peer holds a served slot; a slotless
+  `ServerEvent::TransferCancelled` only when the peer holds a served slot; a slotless
   `0x56` is a no-op. A body on the packet is ignored and the link kept.
 - Serve state runs the release it runs for a disconnect, minus the teardown: the slot is
   released, the next queued peer is promoted and ranks are re-broadcast in the same

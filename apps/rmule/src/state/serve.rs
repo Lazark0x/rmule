@@ -110,7 +110,8 @@ fn seed_shared(state: &mut UiState, history: &FileHistory) {
 /// A row's place in the State column's order: offered first, then the
 /// withheld ones from the likeliest to come back by itself (a moved file, a
 /// changed one being hashed again) to the least (an unplugged volume, a file
-/// that will not open). A rank, never the order of the words.
+/// that will not open, a folder the guards refuse). A rank, never the order
+/// of the words.
 #[must_use]
 pub const fn withheld_rank(withheld: Option<WithheldReason>) -> u64 {
     match withheld {
@@ -119,6 +120,7 @@ pub const fn withheld_rank(withheld: Option<WithheldReason>) -> u64 {
         Some(WithheldReason::Changed) => 2,
         Some(WithheldReason::FolderMissing) => 3,
         Some(WithheldReason::Unreadable(_)) => 4,
+        Some(WithheldReason::Refused) => 5,
     }
 }
 
@@ -221,6 +223,7 @@ fn scan_dir(event: &ScanEvent) -> &Path {
         | S::Unlistable { dir }
         | S::DirectoryAdded { dir, .. }
         | S::DirectoryRefused { dir, .. }
+        | S::DownloadDirectoryRefused { dir, .. }
         | S::DirectoryRemoved { dir, .. }
         | S::DirectoryMissing { dir, .. }
         | S::DirectoryReturned { dir } => dir,

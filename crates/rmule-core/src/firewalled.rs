@@ -15,7 +15,8 @@
 //!
 //! - [`recruit`] — the FINDBUDDY walk toward `~ourKadID`, run only while
 //!   **both** our surfaces are firewalled, and the verified `0x5A` answer that
-//!   fills the slot.
+//!   fills the slot. The rule that starts the walk is the Kad pump's; it
+//!   reads the slot through the snapshot [`link`] publishes.
 //! - [`relayed_callback`] — the `OP_CALLBACK` (`0x99`) our buddy forwards over
 //!   its TCP link. Its twin `OP_REASKCALLBACKTCP` (`0x9A`) is answered over UDP
 //!   through the ADR-0057 reask reply matrix and needs no gate here — beyond
@@ -35,9 +36,9 @@
 //! holds the decisions together with the buddy TCP link *we* dialed — aMule's
 //! `m_pBuddy` seen from the firewalled side — and [`front`] is the one task
 //! that dials it, keeps it alive, and answers everything that arrives on it or
-//! on the client-UDP socket. Explicit `Instant` only, here and in [`link`].
-
-use std::time::Instant;
+//! on the client-UDP socket — the slot's one owner, whose published snapshot
+//! every other reader goes through. Explicit `Instant` only, here and in
+//! [`link`].
 
 use rmule_kad::KadId;
 use rmule_primitives::Ipv4Endpoint;
@@ -52,8 +53,9 @@ use direct_callback::{DIRECT_CALLBACK_MIN_INTERVAL, DIRECT_CALLBACK_TRACKED_MAX}
 
 use crate::interval_limiter::IntervalLimiter;
 
-/// The firewalled-node operation: our buddy slot, the recruitment pacing clock,
-/// and the per-IP direct-callback rate-limit tracker.
+/// The firewalled-node operation: our buddy slot and the per-IP
+/// direct-callback rate-limit tracker. The recruitment pacing is the Kad
+/// pump's ([`recruit::Recruiter`]).
 pub(crate) struct FirewalledNode {
     /// Our own Kad ID — the walk target basis (`~ourKadID`) and the anchor every
     /// buddy-ID XOR check (`0x5A`, `0x99`) verifies against.
@@ -68,11 +70,6 @@ pub(crate) struct FirewalledNode {
     /// link's close arrives and calls
     /// [`on_buddy_lost`](FirewalledNode::on_buddy_lost).
     buddy: Option<Ipv4Endpoint>,
-    /// When we last kicked off a FINDBUDDY walk; `None` means never — or **armed
-    /// for an instant recruit** after a buddy loss (the 20-minute leg is then
-    /// satisfied at once, the recheck guard still applying). Coupled to the slot
-    /// above: losing a buddy clears both.
-    last_find_buddy: Option<Instant>,
     /// The `0x95` per-source-IP rate limit.
     direct_callbacks: IntervalLimiter,
 }
@@ -84,8 +81,8 @@ pub(crate) struct FirewalledNode {
 ///
 /// The IPv6 is the **held link's** fact, not this pure tier's: a `0x5A` carries
 /// no IPv6, so [`FirewalledNode::publish_buddy_info`] always leaves it `None`
-/// and [`link::FirewalledSlot::publish_buddy_info`] fills it from the link it
-/// holds (see `link::buddy_ipv6` for which address wins).
+/// and the enacted slot's [`BuddySnapshot`](link::BuddySnapshot) fills it from
+/// the link it holds (see `link::buddy_ipv6` for which address wins).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct BuddyPublish {
     pub(crate) buddy_udp: Ipv4Endpoint,
@@ -110,7 +107,6 @@ impl FirewalledNode {
         Self {
             our_kad_id,
             buddy: None,
-            last_find_buddy: None,
             direct_callbacks: IntervalLimiter::new(
                 DIRECT_CALLBACK_MIN_INTERVAL,
                 DIRECT_CALLBACK_TRACKED_MAX,

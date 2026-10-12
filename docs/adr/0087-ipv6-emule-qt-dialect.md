@@ -83,7 +83,7 @@ verdict and the Advertised Endpoints chooser).**
   no route reaches still yields its usable IPv6 (emule-qt writes `htonl(userIDHybrid)`, so
   every server-less peer it hands out is Low ID `0` beside its IPv6). Admission keeps the
   **IPv6 Half** on the source it admits, so a dual-stack record reaches core as one
-  `ExchangedSource` — never two candidates, which would dial one peer twice into two worker
+  `SourceSighting` — never two candidates, which would dial one peer twice into two worker
   slots. On emit, a source carries its IPv6 Half (its hello's `CT_MOD_IP_V6`, past
   `IsUsableTagIdentity`) beside a High ID, and the ExtSX writer emits `CT_MOD_IP_V6` beside
   the IPv4 id, as emule-qt's writer does for any source with a public open IPv6

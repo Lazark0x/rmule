@@ -3,7 +3,10 @@
 //! (ADR-0025), and the hash-set cache that keeps a second download from
 //! re-asking.
 
-use rmule_peer::{FileProbeStatus, PartBitmap, PartRanges, PeerCommand, PeerEvent};
+use rmule_peer::{
+    FileProbeStatus, PartBitmap, PartRanges, PeerCommand, PeerEvent, RequesterCommand,
+    RequesterEvent,
+};
 use rmule_primitives::session::drain;
 use rmule_primitives::{FileHash, Packet, PartHash};
 use rmule_testkit::peer_session::*;
@@ -12,11 +15,11 @@ use rmule_testkit::peer_session::*;
 fn probe_happy_path_emits_writes_and_available_status() {
     let h = file_hash(0xAA);
     let mut session = identified_session();
-    session.handle_command(PeerCommand::ProbeFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: h,
         file_size: 20_000_000,
         own_status: PartBitmap::downloader_empty(20_000_000),
-    });
+    }));
     let out1 = drain(|| session.poll_output());
     let probe_writes = writes(&out1);
     assert_eq!(probe_writes.len(), 2);
@@ -29,7 +32,11 @@ fn probe_happy_path_emits_writes_and_available_status() {
     let probed = events(&out2)
         .into_iter()
         .find_map(|e| match e {
-            PeerEvent::FileProbed { file_hash, status } if *file_hash == h => Some(status),
+            PeerEvent::Requester(RequesterEvent::FileProbed { file_hash, status })
+                if *file_hash == h =>
+            {
+                Some(status)
+            }
             _ => None,
         })
         .expect("FileProbed emitted");
@@ -55,29 +62,29 @@ fn probe_happy_path_emits_writes_and_available_status() {
 fn probe_not_available_caches_and_replays_on_reprobe() {
     let h = file_hash(0xBB);
     let mut session = identified_session();
-    session.handle_command(PeerCommand::ProbeFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: h,
         file_size: 20_000_000,
         own_status: PartBitmap::downloader_empty(20_000_000),
-    });
+    }));
     let _ = drain(|| session.poll_output());
     session.handle_bytes(&filereqansnofil(h));
     let first = drain(|| session.poll_output());
     assert!(events(&first).iter().any(|e| matches!(
         e,
-        PeerEvent::FileProbed {
+        PeerEvent::Requester(RequesterEvent::FileProbed {
             status: FileProbeStatus::NotAvailable,
             ..
-        }
+        })
     )));
 
     // Re-probing the same hash hits the cache: no new wire writes,
     // event replayed immediately.
-    session.handle_command(PeerCommand::ProbeFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: h,
         file_size: 20_000_000,
         own_status: PartBitmap::downloader_empty(20_000_000),
-    });
+    }));
     let second = drain(|| session.poll_output());
     assert!(
         writes(&second).is_empty(),
@@ -85,10 +92,10 @@ fn probe_not_available_caches_and_replays_on_reprobe() {
     );
     assert!(events(&second).iter().any(|e| matches!(
         e,
-        PeerEvent::FileProbed {
+        PeerEvent::Requester(RequesterEvent::FileProbed {
             status: FileProbeStatus::NotAvailable,
             ..
-        }
+        })
     )));
 }
 
@@ -97,16 +104,16 @@ fn interleaved_probes_demux_by_file_hash() {
     let a = file_hash(0xA1);
     let b = file_hash(0xB1);
     let mut session = identified_session();
-    session.handle_command(PeerCommand::ProbeFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: a,
         file_size: 20_000_000,
         own_status: PartBitmap::downloader_empty(20_000_000),
-    });
-    session.handle_command(PeerCommand::ProbeFile {
+    }));
+    session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: b,
         file_size: 20_000_000,
         own_status: PartBitmap::downloader_empty(20_000_000),
-    });
+    }));
     let _ = drain(|| session.poll_output());
 
     // Responses arrive in B-then-A order.
@@ -119,7 +126,7 @@ fn interleaved_probes_demux_by_file_hash() {
     let probed: Vec<FileHash> = events(&out)
         .into_iter()
         .filter_map(|e| match e {
-            PeerEvent::FileProbed { file_hash, .. } => Some(*file_hash),
+            PeerEvent::Requester(RequesterEvent::FileProbed { file_hash, .. }) => Some(*file_hash),
             _ => None,
         })
         .collect();
@@ -133,11 +140,11 @@ fn hashset_caching_skips_rerequest_on_second_download() {
     let d = file_hash(0xDD);
     let mut session = identified_session();
     let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
-    session.handle_command(PeerCommand::RequestParts {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: d,
         file_size: 1_000_000,
         ranges,
-    });
+    }));
     // One-part file: the fallback probe is the name ask alone, so
     // no OP_FILESTATUS answer is solicited or expected — the name answer
     // alone completes the probe (bitmap prefilled complete). aMule can
@@ -156,15 +163,17 @@ fn hashset_caching_skips_rerequest_on_second_download() {
     // The slot is now held; the worker releases it once it has the part.
     // The cached hash set must survive the release so the next download
     // skips OP_HASHSETREQUEST.
-    session.handle_command(PeerCommand::ReleaseSlot { file_hash: d });
+    session.handle_command(PeerCommand::Requester(RequesterCommand::ReleaseSlot {
+        file_hash: d,
+    }));
     let _ = drain(|| session.poll_output());
 
     // Second RequestParts for the same file.
-    session.handle_command(PeerCommand::RequestParts {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: d,
         file_size: 1_000_000,
         ranges,
-    });
+    }));
     let out = drain(|| session.poll_output());
     let opcodes: Vec<u8> = writes(&out).iter().map(Packet::opcode).collect();
     assert!(
@@ -185,11 +194,11 @@ fn a_complete_source_sentinel_status_expands_to_a_full_bitmap_of_the_files_real_
     let h = file_hash(0xEE);
     let mut session = identified_session();
     let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
-    session.handle_command(PeerCommand::RequestParts {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 20_000_000,
         ranges,
-    });
+    }));
     let _ = drain(|| session.poll_output());
 
     session.handle_bytes(&reqfilename_answer(h, "shared.bin"));
@@ -198,7 +207,11 @@ fn a_complete_source_sentinel_status_expands_to_a_full_bitmap_of_the_files_real_
     let probed = events(&out)
         .into_iter()
         .find_map(|e| match e {
-            PeerEvent::FileProbed { file_hash, status } if *file_hash == h => Some(status),
+            PeerEvent::Requester(RequesterEvent::FileProbed { file_hash, status })
+                if *file_hash == h =>
+            {
+                Some(status)
+            }
             _ => None,
         })
         .expect("FileProbed emitted");
@@ -221,11 +234,11 @@ fn a_complete_source_sentinel_status_expands_to_a_full_bitmap_on_a_bare_probe_to
     // that opened through those commands: 20,000,000 bytes is 3 ED2K parts.
     let h = file_hash(0xEF);
     let mut session = identified_session();
-    session.handle_command(PeerCommand::ProbeFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: h,
         file_size: 20_000_000,
         own_status: PartBitmap::downloader_empty(20_000_000),
-    });
+    }));
     let _ = drain(|| session.poll_output());
 
     session.handle_bytes(&reqfilename_answer(h, "shared.bin"));
@@ -234,7 +247,11 @@ fn a_complete_source_sentinel_status_expands_to_a_full_bitmap_on_a_bare_probe_to
     let probed = events(&out)
         .into_iter()
         .find_map(|e| match e {
-            PeerEvent::FileProbed { file_hash, status } if *file_hash == h => Some(status),
+            PeerEvent::Requester(RequesterEvent::FileProbed { file_hash, status })
+                if *file_hash == h =>
+            {
+                Some(status)
+            }
             _ => None,
         })
         .expect("FileProbed emitted");

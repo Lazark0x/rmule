@@ -12,9 +12,10 @@ use std::net::Ipv4Addr;
 
 use rmule_peer::multipacket::{AnswerItem, MultiPacketAnswer, MultiPacketRequest, RequestItem};
 use rmule_peer::{
-    BundledAsk, FileProbeStatus, FileStatus, Hello, HelloAnswer, MiscOptions1, PartBitmap,
-    PeerCommand, PeerEvent, PeerHelloBody, PeerOpcode, PeerOutput, PeerPacket, PeerSession,
-    ReqFileNameAnswer, RequestFileName, SetReqFileId,
+    BundledAsk, FileProbeStatus, FileStatus, Hello, HelloAnswer, MiscOptions1, NoticeEvent,
+    PartBitmap, PeerCommand, PeerEvent, PeerHelloBody, PeerOpcode, PeerOutput, PeerPacket,
+    PeerSession, ReqFileNameAnswer, RequestFileName, RequesterCommand, RequesterEvent,
+    ServerCommand, ServerEvent, SetReqFileId,
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{
@@ -27,9 +28,9 @@ fn bundle_asks(outputs: &[PeerOutput], fh: FileHash) -> Vec<BundledAsk> {
     events(outputs)
         .into_iter()
         .find_map(|e| match e {
-            PeerEvent::FileBundleRequested {
+            PeerEvent::Server(ServerEvent::FileBundleRequested {
                 file_hash, asks, ..
-            } if *file_hash == fh => Some(asks.clone()),
+            }) if *file_hash == fh => Some(asks.clone()),
             _ => None,
         })
         .expect("the bundle reaches core as one event")
@@ -88,22 +89,20 @@ fn bundled_serve_request_fans_in_identically_to_the_standalone_sequence() {
     assert!(
         events(&standalone_request_out)
             .iter()
-            .any(|e| matches!(e, PeerEvent::FileRequested { file_hash, .. } if *file_hash == fh))
+            .any(|e| matches!(e, PeerEvent::Server(ServerEvent::FileRequested { file_hash, .. }) if *file_hash == fh))
     );
-    assert!(
-        events(&standalone_request_out)
-            .iter()
-            .any(|e| matches!(e, PeerEvent::FileIdSet { file_hash } if *file_hash == fh))
-    );
+    assert!(events(&standalone_request_out).iter().any(
+        |e| matches!(e, PeerEvent::Server(ServerEvent::FileIdSet { file_hash }) if *file_hash == fh)
+    ));
 
-    standalone.handle_command(PeerCommand::AnswerFileName {
+    standalone.handle_command(PeerCommand::Server(ServerCommand::AnswerFileName {
         file_hash: fh,
         file_name: name.clone(),
-    });
-    standalone.handle_command(PeerCommand::AnswerFileStatus {
+    }));
+    standalone.handle_command(PeerCommand::Server(ServerCommand::AnswerFileStatus {
         file_hash: fh,
         bitmap: bitmap.clone(),
-    });
+    }));
     let standalone_answer_out = drain(|| standalone.poll_output());
     let standalone_writes = writes(&standalone_answer_out);
     assert_eq!(
@@ -138,20 +137,20 @@ fn bundled_serve_request_fans_in_identically_to_the_standalone_sequence() {
         "consuming a bundled request writes nothing by itself"
     );
 
-    bundled.handle_command(PeerCommand::AnswerFileName {
+    bundled.handle_command(PeerCommand::Server(ServerCommand::AnswerFileName {
         file_hash: fh,
         file_name: name.clone(),
-    });
+    }));
     let after_name = drain(|| bundled.poll_output());
     assert!(
         writes(&after_name).is_empty(),
         "the bundle waits for SetReqId's answer too before composing"
     );
 
-    bundled.handle_command(PeerCommand::AnswerFileStatus {
+    bundled.handle_command(PeerCommand::Server(ServerCommand::AnswerFileStatus {
         file_hash: fh,
         bitmap: bitmap.clone(),
-    });
+    }));
     let bundled_answer_out = drain(|| bundled.poll_output());
     let bundled_writes = writes(&bundled_answer_out);
     assert_eq!(
@@ -187,11 +186,11 @@ fn bundled_answer_fans_in_identically_to_the_standalone_sequence() {
     // ADR-0054's fan-in equivalence.
     // Standalone: two separate answer packets.
     let mut standalone = identified_outbound_session();
-    standalone.handle_command(PeerCommand::ProbeFile {
+    standalone.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: fh,
         file_size: 20_000_000,
         own_status: PartBitmap::downloader_empty(20_000_000),
-    });
+    }));
     let _ = drain(|| standalone.poll_output());
     standalone.handle_bytes(
         &ReqFileNameAnswer {
@@ -213,7 +212,11 @@ fn bundled_answer_fans_in_identically_to_the_standalone_sequence() {
     let standalone_probed = events(&standalone_out)
         .into_iter()
         .find_map(|e| match e {
-            PeerEvent::FileProbed { file_hash, status } if *file_hash == fh => Some(status.clone()),
+            PeerEvent::Requester(RequesterEvent::FileProbed { file_hash, status })
+                if *file_hash == fh =>
+            {
+                Some(status.clone())
+            }
             _ => None,
         })
         .expect("standalone sequence probes the file available");
@@ -221,11 +224,11 @@ fn bundled_answer_fans_in_identically_to_the_standalone_sequence() {
     // Bundled: one MultiPacketAnswer carrying both sub-items, upgrading the
     // solicited probe state exactly as the standalone pair does.
     let mut bundled = identified_outbound_session();
-    bundled.handle_command(PeerCommand::ProbeFile {
+    bundled.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: fh,
         file_size: 20_000_000,
         own_status: PartBitmap::downloader_empty(20_000_000),
-    });
+    }));
     let _ = drain(|| bundled.poll_output());
     let answer = MultiPacketAnswer {
         file_hash: fh,
@@ -237,7 +240,11 @@ fn bundled_answer_fans_in_identically_to_the_standalone_sequence() {
     let bundled_probed = events(&bundled_out)
         .into_iter()
         .find_map(|e| match e {
-            PeerEvent::FileProbed { file_hash, status } if *file_hash == fh => Some(status.clone()),
+            PeerEvent::Requester(RequesterEvent::FileProbed { file_hash, status })
+                if *file_hash == fh =>
+            {
+                Some(status.clone())
+            }
             _ => None,
         })
         .expect("bundled answer probes the file available identically");
@@ -267,7 +274,9 @@ fn not_shared_answers_plain_file_req_ans_no_fil_and_sends_no_bundle() {
     session.handle_bytes(&request.encode_packet().encode());
     let _ = drain(|| session.poll_output());
 
-    session.handle_command(PeerCommand::AnswerFileNotFound { file_hash: fh });
+    session.handle_command(PeerCommand::Server(ServerCommand::AnswerFileNotFound {
+        file_hash: fh,
+    }));
     let out = drain(|| session.poll_output());
     let sent = writes(&out);
     assert_eq!(
@@ -298,14 +307,14 @@ fn aich_omitted_from_the_composed_answer_when_it_has_not_arrived_by_flush() {
     session.handle_bytes(&request.encode_packet().encode());
     let _ = drain(|| session.poll_output());
 
-    session.handle_command(PeerCommand::AnswerFileName {
+    session.handle_command(PeerCommand::Server(ServerCommand::AnswerFileName {
         file_hash: fh,
         file_name: name.clone(),
-    });
-    session.handle_command(PeerCommand::AnswerFileStatus {
+    }));
+    session.handle_command(PeerCommand::Server(ServerCommand::AnswerFileStatus {
         file_hash: fh,
         bitmap: bitmap.clone(),
-    });
+    }));
     let out = drain(|| session.poll_output());
     let sent = writes(&out);
     assert_eq!(
@@ -338,7 +347,9 @@ fn aich_omitted_from_the_composed_answer_when_it_has_not_arrived_by_flush() {
     // source. The bundled sub-item omits the hash; the standalone
     // packet does not.
     let root = AichRootHash::from_bytes([0x77; AichRootHash::BYTE_LEN]);
-    session.handle_command(PeerCommand::AnswerAichFileHash { root });
+    session.handle_command(PeerCommand::Server(ServerCommand::AnswerAichFileHash {
+        root,
+    }));
     let late = drain(|| session.poll_output());
     let late_writes = writes(&late);
     assert_eq!(late_writes.len(), 1);
@@ -370,7 +381,9 @@ fn aich_only_bundle_flushes_once_its_answer_arrives() {
     assert_eq!(bundle_asks(&request_out, fh), vec![BundledAsk::AichRoot]);
     assert!(writes(&request_out).is_empty());
 
-    session.handle_command(PeerCommand::AnswerAichFileHash { root });
+    session.handle_command(PeerCommand::Server(ServerCommand::AnswerAichFileHash {
+        root,
+    }));
     let out = drain(|| session.poll_output());
     let sent = writes(&out);
     assert_eq!(
@@ -413,9 +426,9 @@ fn bundle_with_only_source_items_never_sends_an_answer() {
     assert!(
         !events(&out).iter().any(|e| matches!(
             e,
-            PeerEvent::FileRequested { .. }
-                | PeerEvent::FileIdSet { .. }
-                | PeerEvent::AichFileHashRequested { .. }
+            PeerEvent::Server(ServerEvent::FileRequested { .. })
+                | PeerEvent::Server(ServerEvent::FileIdSet { .. })
+                | PeerEvent::Server(ServerEvent::AichFileHashRequested { .. })
         )),
         "source subs alone fan into no served-file event either — ADR-0055 owns serving them"
     );
@@ -446,7 +459,7 @@ fn unknown_sub_in_a_bundled_request_keeps_the_valid_prefix_and_stays_open() {
     );
     assert!(events(&out).iter().any(|e| matches!(
         e,
-        PeerEvent::MultiPacketUnknownSub { file_hash, opcode, remaining }
+        PeerEvent::Notice(NoticeEvent::MultiPacketUnknownSub { file_hash, opcode, remaining })
             if *file_hash == fh && *opcode == 0xFF && *remaining == 2
     )));
     assert!(!out.iter().any(|o| matches!(o, PeerOutput::Close(_))));
@@ -475,7 +488,7 @@ fn unknown_sub_in_a_bundled_answer_keeps_the_valid_prefix_and_stays_open() {
 
     assert!(events(&out).iter().any(|e| matches!(
         e,
-        PeerEvent::MultiPacketUnknownSub { file_hash, opcode, remaining }
+        PeerEvent::Notice(NoticeEvent::MultiPacketUnknownSub { file_hash, opcode, remaining })
             if *file_hash == fh && *opcode == 0xEE && *remaining == 1
     )));
     assert!(!out.iter().any(|o| matches!(o, PeerOutput::Close(_))));
@@ -498,12 +511,12 @@ fn bundled_request_before_hello_is_unknown_preserved_and_stays_open() {
     assert!(
         events(&out)
             .iter()
-            .any(|e| matches!(e, PeerEvent::UnknownPeerPacket { .. }))
+            .any(|e| matches!(e, PeerEvent::Notice(NoticeEvent::UnknownPacket { .. })))
     );
     assert!(
         !events(&out)
             .iter()
-            .any(|e| matches!(e, PeerEvent::FileRequested { .. }))
+            .any(|e| matches!(e, PeerEvent::Server(ServerEvent::FileRequested { .. })))
     );
     assert!(!out.iter().any(|o| matches!(o, PeerOutput::Close(_))));
 }

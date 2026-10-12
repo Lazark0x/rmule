@@ -353,6 +353,8 @@ pub(super) async fn spawn_hello_answering_listener(
     let ctx = rmule_peer::PeerHandshakeContext {
         identity,
         client_id: ClientId::from_u32(0),
+        ed2k_client_id: ClientId::from_u32(0),
+        public_ip: None,
         connected_server,
     };
     Ok(tokio::spawn(async move {
@@ -384,6 +386,7 @@ async fn probe_login(
         connect_timeout: per_step,
         login_timeout: per_step,
         obfuscation: None,
+        obfuscated_port: None,
         advertised_ipv6: None,
         udp_ports: args
             .udp_ports_advert

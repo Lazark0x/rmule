@@ -16,7 +16,7 @@ use std::time::Duration;
 use rmule_ed2k::{GlobServStatReq, crypt_ping_challenge, crypt_ping_padding_len};
 use rmule_primitives::{Ipv4Endpoint, ServerEndpoint};
 
-use super::StatusChallenges;
+use super::{ServerUdpSeal, StatusChallenges};
 use crate::adapters::ServerUdpTransport;
 use crate::name_resolver::SharedNameResolver;
 use crate::own_identity::SharedOwnIdentity;
@@ -38,12 +38,6 @@ pub(crate) const ANSWER_GRACE: Duration = Duration::from_secs(20);
 /// network carried the other (ADR-0052, the offline guard): a minute holds a
 /// dozen refreshes at the steady pace and the whole of a small list's pass.
 pub(crate) const EVIDENCE_WINDOW: Duration = Duration::from_secs(60);
-
-/// The address a probe is sent to, spelled as the transport takes it: the
-/// resolved endpoint, never the name, so the send needs no lookup of its own.
-fn wire_endpoint(key: Ipv4Endpoint) -> Option<ServerEndpoint> {
-    ServerEndpoint::new(key.ip.to_string(), key.port).ok()
-}
 
 /// The randomness one obfuscated crypt-ping draws (ADR-0046), injected so
 /// the raw-packet construction stays deterministic under test (the entropy-seam
@@ -169,10 +163,11 @@ impl SweepState {
 /// crypt-capable eserver ratifies the scheme (ADR-0046 — Lugdunum 17.15 crypt
 /// support unverified).
 pub(crate) struct CryptPingArm {
-    /// The server-UDP crypt policy master switch (`CoreConfig::server_udp_crypt()`
-    /// — derived from `peer_crypt` — aMule
-    /// `IsServerCryptLayerUDPEnabled`).
-    pub(crate) enabled: bool,
+    /// The one obfuscation policy, the server-UDP crypt layer's master
+    /// switch (ADR-0046; aMule `IsServerCryptLayerUDPEnabled` reads the same
+    /// preference): any set policy arms the probe, read at every sweep tick
+    /// so a live change reaches the next one.
+    pub(crate) policy: crate::obfuscation_policy::SharedObfuscationPolicy,
     /// Our own wire self-facts — this arm reads only `public_ip_known()`, aMule's
     /// `theApp->GetPublicIP()` gate on the probe. Raised by the live session on a
     /// High-ID login (the ADR-0047 IDCHANGE `public_ip` projection); the probe stays
@@ -218,7 +213,9 @@ pub(crate) struct CryptPingArm {
 /// verdict and the figures to the row. A name that gives no address is one
 /// silence for that pass, judged under the same offline guard as a ping.
 pub(crate) struct StatusPingSweep<T> {
-    pub(crate) transport: T,
+    /// Where every probe leaves: the crypt-ping raw, every `0x96` through
+    /// the seal rule.
+    pub(crate) seal: ServerUdpSeal<T>,
     /// The managed list plus the two writes a probe makes — re-read each tick,
     /// so a server added since the last one joins the sweep and a removed one
     /// leaves it.
@@ -288,7 +285,7 @@ impl<T: ServerUdpTransport> StatusPingSweep<T> {
                 return;
             }
         };
-        let crypt_active = self.crypt.enabled && self.crypt.own.public_ip_known();
+        let crypt_active = self.crypt.policy.armed() && self.crypt.own.public_ip_known();
         let refresh_spendable = state
             .last_refresh
             .is_none_or(|at| at.elapsed() >= self.tick);
@@ -298,7 +295,7 @@ impl<T: ServerUdpTransport> StatusPingSweep<T> {
                 None => state.verdicts.unvouched(),
                 Some(row) if refresh_spendable => {
                     state.last_refresh = Some(tokio::time::Instant::now());
-                    match self.reached_at(&row.endpoint).await {
+                    match self.reached_at(row).await {
                         Some(key) => {
                             self.send_plain(&row.endpoint, key, Stake::Vouch, state)
                                 .await
@@ -355,7 +352,7 @@ impl<T: ServerUdpTransport> StatusPingSweep<T> {
                     if schedule.is_some() || dead {
                         state.last_refresh = Some(tokio::time::Instant::now());
                     }
-                    let Some(key) = self.reached_at(&server).await else {
+                    let Some(key) = self.reached_at(row).await else {
                         // A name with no address: this pass's silence.
                         state.schedule.insert(
                             server.clone(),
@@ -375,13 +372,16 @@ impl<T: ServerUdpTransport> StatusPingSweep<T> {
         }
     }
 
-    /// The endpoint `server` is pinged at: its own address, or — for a row
+    /// The endpoint `row` is pinged at: its own address, or — for a row
     /// listed by name — the address it resolves to, reused while fresh and
     /// asked of the Name Resolver otherwise, the answer recorded on the row
-    /// either way. `None` for a name that gives no address.
-    async fn reached_at(&self, server: &ServerEndpoint) -> Option<Ipv4Endpoint> {
+    /// either way; the port is the row's standard one, which every server-UDP
+    /// port derives from. `None` for a name that gives no address.
+    async fn reached_at(&self, row: &ManagedServer) -> Option<Ipv4Endpoint> {
+        let server = &row.endpoint;
+        let port = row.standard_endpoint().port();
         if let Some(key) = server_tcp_key(server) {
-            return Some(key);
+            return Some(Ipv4Endpoint::new(key.ip, port));
         }
         let ip = match self.facts.fresh_address(server) {
             Some(ip) => ip,
@@ -394,12 +394,12 @@ impl<T: ServerUdpTransport> StatusPingSweep<T> {
                 answer?
             }
         };
-        Some(Ipv4Endpoint::new(ip, server.port()))
+        Some(Ipv4Endpoint::new(ip, port))
     }
 
-    /// Fire a plain `0x96` status ping: register the challenge with the
-    /// engine's gate *before* the send, stamp the re-ask clock, note the probe
-    /// for its verdict, send to TCP + 4 of `key`, the address `server` is
+    /// Fire a `0x96` status ping: register the challenge with the engine's
+    /// gate *before* the send, stamp the re-ask clock, note the probe for its
+    /// verdict, and hand it to the seal for `key`, the address `server` is
     /// reached at.
     async fn send_plain(
         &self,
@@ -417,12 +417,7 @@ impl<T: ServerUdpTransport> StatusPingSweep<T> {
         state
             .verdicts
             .sent(server, key, ping.challenge(), ProbeKind::Plain, stake);
-        let Some(to) = wire_endpoint(key) else {
-            return;
-        };
-        self.transport
-            .send_to(to, ping.encode_packet().encode_udp())
-            .await;
+        self.seal.send(key, ping.encode_packet().encode_udp()).await;
     }
 
     /// Fire a raw obfuscated crypt-ping to the server's obfuscation UDP port
@@ -444,11 +439,8 @@ impl<T: ServerUdpTransport> StatusPingSweep<T> {
         state
             .verdicts
             .sent(server, key, nonce.challenge, ProbeKind::Crypt, stake);
-        let Some(to) = wire_endpoint(key) else {
-            return;
-        };
-        self.transport
-            .send_crypt_ping(to, encode_crypt_ping(&nonce))
+        self.seal
+            .send_crypt_ping(key, encode_crypt_ping(&nonce))
             .await;
     }
 

@@ -10,6 +10,7 @@
 //! recorded where it happens, and that the snapshot reads the store rather
 //! than a copy that could drift from it.
 
+use rmule_testkit::HANG_GUARD;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV4};
 
 use rmule_core::{
@@ -18,8 +19,6 @@ use rmule_core::{
 use rmule_primitives::AddressFamily;
 use rmule_testkit::FakeInterfaces;
 use tokio::time::{Duration, timeout};
-
-use crate::fixture::identity;
 
 /// A routable IPv4 this host "holds" — the no-NAT case the interface tier is
 /// for.
@@ -36,6 +35,7 @@ async fn a_serving_core_reports_the_endpoint_its_interfaces_and_its_bind_agree_o
         IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
     ]);
     let core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
         .interface_source(interfaces)
         .build();
 
@@ -49,12 +49,11 @@ async fn a_serving_core_reports_the_endpoint_its_interfaces_and_its_bind_agree_o
         listen_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
         // Nothing answers there; the serve binds regardless, which is the
         // point — the listener is what makes an endpoint real.
-        credentials: identity().into(),
     }))
     .await
     .expect("serve accepted");
 
-    let rows = timeout(Duration::from_secs(5), async {
+    let rows = timeout(HANG_GUARD, async {
         loop {
             let rows = core.diagnostics_snapshot().addresses;
             if rows.iter().any(|row| row.role == SocketRole::Tcp) {
@@ -66,7 +65,7 @@ async fn a_serving_core_reports_the_endpoint_its_interfaces_and_its_bind_agree_o
         }
     })
     .await
-    .expect("the listener's bind reached the rows within 5s");
+    .expect("the listener's bind reached the rows");
 
     // A literal loopback listen address binds that address's family alone
     // (ADR-0085), so IPv6 never appears for this role however much the host

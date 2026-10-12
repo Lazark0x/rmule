@@ -4,10 +4,9 @@
 //! then delivers nothing (the slot-wait budget covers the wait for bytes), and
 //! the `OP_CANCELTRANSFER` a cancel owes the peer whose slot we hold (ADR-0056).
 
-use crate::fixture::identity_with_port;
+use rmule_testkit::HANG_GUARD;
 use std::time::Duration;
 
-use crate::fixture::identity;
 use rmule_core::{Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent};
 use rmule_testkit::{FakeEd2kServer, FakePeer, PeerScript, ServePolicy, SlotPolicy, file_link};
 use tokio::time::timeout;
@@ -33,20 +32,25 @@ async fn core_download_completes_through_queue_ranking() {
     });
 
     let out = tempfile::tempdir().unwrap();
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
-    rmule_testkit::connect_to(&core, &server.endpoint(), identity_with_port(0).into()).await;
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            out.path(),
+        ))
+        .build();
+    rmule_testkit::connect_to(&core, &server.endpoint()).await;
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(server.endpoint()),
-        credentials: identity().into(),
-        output_path: out.path().join("queued.bin"),
+        name: rmule_testkit::file_name("queued.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
 
     let mut saw_queued = false;
     loop {
-        let event = timeout(Duration::from_secs(5), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted event")
             .expect("core event stream stayed open");
@@ -106,13 +110,18 @@ async fn core_keeps_remote_queue_standing_when_a_slot_is_never_granted() {
         ..CoreConfig::default()
     };
     let out = tempfile::tempdir().unwrap();
-    let mut core = Core::new(config, rmule_testkit::memory_store());
-    rmule_testkit::connect_to(&core, &server.endpoint(), identity_with_port(0).into()).await;
+    let mut core = Core::builder(config, rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            out.path(),
+        ))
+        .build();
+    rmule_testkit::connect_to(&core, &server.endpoint()).await;
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(server.endpoint()),
-        credentials: identity().into(),
-        output_path: out.path().join("slot-timeout.bin"),
+        name: rmule_testkit::file_name("slot-timeout.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -183,13 +192,18 @@ async fn core_times_out_when_peer_stalls_after_granting_a_slot() {
         ..CoreConfig::default()
     };
     let out = tempfile::tempdir().unwrap();
-    let mut core = Core::new(config, rmule_testkit::memory_store());
-    rmule_testkit::connect_to(&core, &server.endpoint(), identity_with_port(0).into()).await;
+    let mut core = Core::builder(config, rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            out.path(),
+        ))
+        .build();
+    rmule_testkit::connect_to(&core, &server.endpoint()).await;
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(server.endpoint()),
-        credentials: identity().into(),
-        output_path: out.path().join("stall-after-grant.bin"),
+        name: rmule_testkit::file_name("stall-after-grant.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -254,13 +268,18 @@ async fn core_cancel_emits_op_canceltransfer_to_the_slot_holding_peer() {
         ..CoreConfig::default()
     };
     let out = tempfile::tempdir().unwrap();
-    let mut core = Core::new(config, rmule_testkit::memory_store());
-    rmule_testkit::connect_to(&core, &server.endpoint(), identity_with_port(0).into()).await;
+    let mut core = Core::builder(config, rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            out.path(),
+        ))
+        .build();
+    rmule_testkit::connect_to(&core, &server.endpoint()).await;
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(server.endpoint()),
-        credentials: identity().into(),
-        output_path: out.path().join("cancel-before-teardown.bin"),
+        name: rmule_testkit::file_name("cancel-before-teardown.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();

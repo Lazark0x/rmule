@@ -1,6 +1,6 @@
 [package]
 name = "rmule-core"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -9,6 +9,8 @@ homepage.workspace = true
 publish.workspace = true
 
 [dependencies]
+# A peer's Kad ID in a Run Log record, in upper-case hex.
+data-encoding.workspace = true
 ed2k.workspace = true
 getrandom.workspace = true
 # The Download Directory Scan's watch, confined to `adapters/directory_watch.rs`
@@ -30,6 +32,8 @@ serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+# The Run Log (`run_log`): the file every `tracing` event of a run lands in.
+tracing-subscriber.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 # The filesystem type behind a File Identity (ADR-0100, "What the scan
@@ -62,14 +66,6 @@ tempfile.workspace = true
 # runtime it would wedge the whole test, which is a hang rather than a verdict.
 # Dev-only: core's own runtime requirement stays `rt`.
 tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
-
-[features]
-# Exports the serve translator pair (`serve_command_to_peer` /
-# `serve_event_from_peer`) for rmule-testkit's loopback bridge, so
-# serve-vocabulary changes land once. Off by default: a default build's
-# public surface is unchanged. Only rmule-testkit (dev-only everywhere)
-# may enable it.
-test-support = []
 
 [lints]
 workspace = true

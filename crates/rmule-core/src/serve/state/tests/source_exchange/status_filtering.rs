@@ -5,40 +5,30 @@ use super::*;
 
 #[test]
 fn a_source_holding_only_parts_the_asker_has_is_left_out_of_its_answer() {
-    use rmule_peer::ExtSxEmission;
-
     let file = hash(0x55);
     let size = 2 * ED2K_PART_SIZE + 1_000;
     let t = Instant::now();
     let (mut state, [_a, b, c, _d]) = pool_with_known_unknown_and_empty_status(file, size, t);
 
-    // Two askers holding part 0, one answered in each record form: `a` holds
-    // only part 0 and `d` nothing, so both are left out; `b` holds part 1 the
-    // askers lack; `c`'s parts are unknown and it is sent (aMule's "send it
-    // and hope").
-    let ext = ServedSourcesVersion::Ext {
-        sx2: true,
-        emission: ExtSxEmission { skip_tags: true },
-    };
-    let classic = ServedSourcesVersion::Sx1(rmule_peer::SourceExchangeVersion::V1);
-    for (octets, version) in [([8, 8, 8, 8], classic), ([9, 9, 9, 9], ext)] {
-        let asker = peer_at(octets, 4000);
-        identify_source(
-            &mut state,
-            asker,
-            user(0xD4),
-            high_id_client(octets),
-            4662,
-            t,
-        );
-        let holds_part_0 = PartBitmap::downloader(size, |i| i.value() == 0);
-        name_ask(&mut state, asker, file, Some(holds_part_0), t);
-        assert_eq!(
-            answered(&mut state, asker, file, version, t),
-            vec![b, c],
-            "{version:?}: only the sources offering a part the asker lacks",
-        );
-    }
+    // An asker holding part 0: `a` holds only part 0 and `d` nothing, so
+    // both are left out; `b` holds part 1 the asker lacks; `c`'s parts are
+    // unknown and it is sent (aMule's "send it and hope").
+    let asker = peer_at([8, 8, 8, 8], 4000);
+    identify_source(
+        &mut state,
+        asker,
+        user(0xD4),
+        high_id_client([8, 8, 8, 8]),
+        4662,
+        t,
+    );
+    let holds_part_0 = PartBitmap::downloader(size, |i| i.value() == 0);
+    name_ask(&mut state, asker, file, Some(holds_part_0), t);
+    assert_eq!(
+        answered(&mut state, asker, file, t),
+        vec![b, c],
+        "only the sources offering a part the asker lacks",
+    );
 }
 
 #[test]
@@ -67,16 +57,7 @@ fn an_asker_without_a_readable_status_is_sent_sources_holding_a_part_and_the_unk
             t,
         );
         name_ask(&mut state, asker, file, status, t);
-        assert_eq!(
-            answered(
-                &mut state,
-                asker,
-                file,
-                ServedSourcesVersion::Sx1(rmule_peer::SourceExchangeVersion::V1),
-                t,
-            ),
-            vec![a, b, c],
-        );
+        assert_eq!(answered(&mut state, asker, file, t,), vec![a, b, c],);
     }
 }
 
@@ -102,7 +83,7 @@ fn a_waiters_udp_reask_restates_the_parts_its_source_answer_is_filtered_by() {
         );
         name_ask(&mut state, p, file, Some(holding(&[part])), t);
         let _ = slot_request(&mut state, p, file, t);
-        granted.push(rmule_primitives::ExchangedSource::new(
+        granted.push(rmule_primitives::SourceSighting::new(
             PeerSource::new(high_id_client(octets), 4662),
             Some(user(hash_byte)),
             None,
@@ -114,18 +95,13 @@ fn a_waiters_udp_reask_restates_the_parts_its_source_answer_is_filtered_by() {
     let _ = state.on_conn_event(
         t,
         waiter,
-        ServeConnEvent::Identified {
-            user_hash: user(0x0A),
+        HelloFacts {
             client_id: high_id_client([10, 0, 0, 2]),
-            connected_server: None,
-            tcp_port: 4662,
             udp_port: 6000,
             udp_version: 4,
-            extended_requests_version: 2,
-            crypt: crypt_advert(),
-            ipv6: None,
-            software: nameless_software(),
-        },
+            ..HelloFacts::of(user(0x0A))
+        }
+        .identified(),
         &no_modifiers(),
     );
     name_ask(&mut state, waiter, file, Some(holding(&[])), t);
@@ -148,14 +124,5 @@ fn a_waiters_udp_reask_restates_the_parts_its_source_answer_is_filtered_by() {
 
     // Its own source answer now leaves out the part-1 source; on its name
     // ask's status alone it would have been sent both.
-    assert_eq!(
-        answered(
-            &mut state,
-            waiter,
-            file,
-            ServedSourcesVersion::Sx1(rmule_peer::SourceExchangeVersion::V1),
-            t,
-        ),
-        vec![granted[1]],
-    );
+    assert_eq!(answered(&mut state, waiter, file, t,), vec![granted[1]],);
 }

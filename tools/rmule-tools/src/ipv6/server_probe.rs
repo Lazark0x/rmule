@@ -176,6 +176,7 @@ pub(crate) async fn run_server_probe(args: Ipv6ServerProbeArgs) -> Result<()> {
         connect_timeout: Duration::from_secs(args.connect_timeout),
         login_timeout: Duration::from_secs(args.connect_timeout),
         obfuscation: None,
+        obfuscated_port: None,
         advertised_ipv6: args.advertise_ipv6,
         udp_ports: None,
     };
@@ -314,7 +315,7 @@ async fn listen(
                 row.sentinel_tail_malformed = tail.is_malformed();
                 row.ipv6_sources = sources
                     .iter()
-                    .filter_map(|source| match source.peer_source() {
+                    .filter_map(|source| match source.peer_source()? {
                         PeerSource::Ipv6(endpoint) => Some(endpoint.to_string()),
                         PeerSource::HighId(_) | PeerSource::LowId { .. } => None,
                     })

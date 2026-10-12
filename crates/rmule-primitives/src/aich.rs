@@ -20,7 +20,7 @@
 //! never ported (ADR-0004/0013). SHA-1 comes from the `sha1` crate wrapped
 //! behind rmule types (ADR-0012).
 
-use crate::{AichRootHash, ED2K_PART_SIZE};
+use crate::{AichRootHash, ED2K_PART_SIZE, WireReader, WireTruncated};
 use sha1::{Digest, Sha1};
 
 /// Size in bytes of one SHA-1 hash (`HASHSIZE` in aMule).
@@ -49,6 +49,12 @@ pub enum AichRecoveryError {
     IncompletePart,
 }
 
+impl From<WireTruncated> for AichRecoveryError {
+    fn from(_: WireTruncated) -> Self {
+        Self::Malformed
+    }
+}
+
 /// SHA-1 of a byte run — one AICH leaf hash.
 fn sha1_bytes(data: &[u8]) -> [u8; HASHSIZE] {
     let mut hasher = Sha1::new();
@@ -64,47 +70,6 @@ fn sha1_pair(left: &[u8; HASHSIZE], right: &[u8; HASHSIZE]) -> [u8; HASHSIZE] {
     hasher.update(left);
     hasher.update(right);
     hasher.finalize().into()
-}
-
-/// A little-endian cursor over recovery-data bytes; every read is bounds-checked
-/// and maps an underflow to [`AichRecoveryError::Malformed`].
-struct Reader<'a> {
-    buf: &'a [u8],
-    pos: usize,
-}
-
-impl Reader<'_> {
-    fn take(&mut self, n: usize) -> Result<&[u8], AichRecoveryError> {
-        let end = self
-            .pos
-            .checked_add(n)
-            .ok_or(AichRecoveryError::Malformed)?;
-        let slice = self
-            .buf
-            .get(self.pos..end)
-            .ok_or(AichRecoveryError::Malformed)?;
-        self.pos = end;
-        Ok(slice)
-    }
-
-    fn read_u16(&mut self) -> Result<u16, AichRecoveryError> {
-        let b = self.take(2)?;
-        Ok(u16::from_le_bytes([b[0], b[1]]))
-    }
-
-    fn read_u32(&mut self) -> Result<u32, AichRecoveryError> {
-        let b = self.take(4)?;
-        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-    }
-
-    fn read_hash(&mut self) -> Result<[u8; HASHSIZE], AichRecoveryError> {
-        let b = self.take(HASHSIZE)?;
-        Ok(b.try_into().expect("take(HASHSIZE) yields HASHSIZE bytes"))
-    }
-
-    fn remaining(&self) -> usize {
-        self.buf.len() - self.pos
-    }
 }
 
 /// One node of the AICH binary hash tree (aMule `CAICHHashTree`). A node is
@@ -471,24 +436,21 @@ impl AichHashSet {
         // Load the recovery hashes into the skeleton by their identifiers. The
         // master identifier (1) is never accepted, so a sender cannot overwrite
         // the trusted root (aMule rejects ident 1 / ident > 0x400000).
-        let mut reader = Reader {
-            buf: recovery_data,
-            pos: 0,
-        };
-        let count16 = reader.read_u16()?;
+        let mut reader = WireReader::new(recovery_data);
+        let count16 = reader.read_u16_le("recovery hash count")?;
         for _ in 0..count16 {
-            let ident = u32::from(reader.read_u16()?);
-            let hash = reader.read_hash()?;
+            let ident = u32::from(reader.read_u16_le("recovery hash ident")?);
+            let hash = reader.read_array("recovery hash")?;
             if ident <= 1 {
                 return Err(AichRecoveryError::Malformed);
             }
             tree.set_hash(ident, hash)?;
         }
         if count16 == 0 && reader.remaining() >= 2 {
-            let count32 = reader.read_u16()?;
+            let count32 = reader.read_u16_le("recovery hash count")?;
             for _ in 0..count32 {
-                let ident = reader.read_u32()?;
-                let hash = reader.read_hash()?;
+                let ident = reader.read_u32_le("recovery hash ident")?;
+                let hash = reader.read_array("recovery hash")?;
                 if ident <= 1 || ident > 0x0040_0000 {
                     return Err(AichRecoveryError::Malformed);
                 }
@@ -634,5 +596,36 @@ mod tests {
         let err = AichHashSet::verify_part(file_size, 0, &bytes, &rec, full.master_root())
             .expect_err("tampered recovery data must be rejected");
         assert_eq!(err, AichRecoveryError::Untrusted);
+    }
+
+    #[test]
+    fn recovery_data_cut_at_any_byte_is_rejected() {
+        let part1_blocks = 3u64;
+        let file_size = ED2K_PART_SIZE + part1_blocks * EMBLOCKSIZE;
+        let bytes: Vec<u8> = (0..file_size).map(|i| (i % 251) as u8).collect();
+        let full = AichHashSet::from_bytes(&bytes);
+        let part_start = ED2K_PART_SIZE;
+        let rec = full
+            .create_part_recovery_data(part_start)
+            .expect("recovery data for part 1");
+        // The trailing 32-bit-ident count is read only when the 16-bit count is
+        // zero (aMule), so the cuts that matter end inside the 16-bit section.
+        let count16 = usize::from(u16::from_le_bytes([rec[0], rec[1]]));
+        let section_end = 2 + count16 * (2 + HASHSIZE);
+        assert!(count16 > 0 && section_end <= rec.len());
+        for cut in 0..section_end {
+            assert!(
+                AichHashSet::verify_part(
+                    file_size,
+                    part_start,
+                    &bytes[part_start as usize..],
+                    &rec[..cut],
+                    full.master_root()
+                )
+                .is_err(),
+                "recovery data cut to {cut} of {} bytes verified",
+                rec.len()
+            );
+        }
     }
 }

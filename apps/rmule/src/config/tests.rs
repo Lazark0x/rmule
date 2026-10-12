@@ -1,11 +1,9 @@
 //! Unit tests for the front-end-owned configuration: the app-config seam, the preference snapshot and the edit vocabulary.
 
-use rmule_core::DurableAppConfig;
-
 use super::*;
 
 fn store() -> SharedConfig {
-    SharedConfig::new(DurableAppConfig::new(rmule_testkit::memory_store()))
+    SharedConfig::open(rmule_testkit::memory_store())
 }
 
 #[test]
@@ -23,7 +21,7 @@ fn a_loaded_snapshot_defaults_to_the_mirrors_and_the_kad_opt_in() {
     assert_eq!(prefs.theme, ThemeChoice::Auto);
     assert_eq!(
         prefs.obfuscation.policy(),
-        rmule_core::CoreConfig::default().peer_crypt,
+        rmule_core::CoreSettings::default().obfuscation,
         "unset obfuscation starts core on the library's ADR-0046 default"
     );
     assert!(!prefs.run_log_full, "the Run Log is lean until asked");
@@ -37,7 +35,7 @@ fn a_loaded_snapshot_defaults_to_the_mirrors_and_the_kad_opt_in() {
 fn every_edit_persists_and_reloads_as_itself() {
     let config = store();
     let edits = [
-        PrefEdit::DownloadDir(PathBuf::from("/tmp/dl")),
+        PrefEdit::DownloadDir(rmule_testkit::absolute_path("tmp/dl")),
         PrefEdit::Nickname("bunny".to_string()),
         PrefEdit::TcpPort(4711),
         PrefEdit::UdpPort(4722),
@@ -88,24 +86,65 @@ fn every_edit_persists_and_reloads_as_itself() {
     );
 }
 
+/// The receipt reads when the commit says the edit takes effect: the app's
+/// own keys apply at once, connect at start waits for a start, and with no
+/// core running every core key waits for the next one.
 #[test]
-fn a_restart_shaped_edit_says_so_and_a_live_one_does_not() {
-    let receipt = crate::words::app::receipt;
-    assert!(
-        receipt(&PrefEdit::Theme(ThemeChoice::Dark))
-            .as_str()
-            .ends_with("dark")
-    );
+fn a_receipt_names_the_restart_exactly_when_the_edit_waits_for_one() {
+    let config = store();
+    let receipt = |edit: PrefEdit| {
+        let effect = config.commit(&edit).expect("commit");
+        crate::words::app::receipt(&edit, effect)
+    };
     assert_eq!(
-        receipt(&PrefEdit::RunLogFull(true)).as_str(),
+        receipt(PrefEdit::RunLogFull(true)).as_str(),
         "saved: full run log → on",
         "the level is read at every line written, so it needs no restart"
     );
     assert!(
-        receipt(&PrefEdit::TcpPort(4662))
+        receipt(PrefEdit::Theme(ThemeChoice::Dark))
             .as_str()
-            .ends_with("(takes effect on restart)")
+            .ends_with("dark")
     );
+    for waits in [
+        PrefEdit::ConnectAtStart(true),
+        PrefEdit::TcpPort(4662),
+        PrefEdit::RememberPeers(rmule_core::RememberPeers::DEFAULT),
+    ] {
+        assert!(
+            receipt(waits)
+                .as_str()
+                .ends_with("(takes effect on restart)")
+        );
+    }
+    assert_eq!(
+        receipt(PrefEdit::ServerMetUrl(
+            "http://mirror.example/server.met".into()
+        ))
+        .as_str(),
+        "saved: server.met URL → http://mirror.example/server.met \
+         (the next server list update uses it)",
+        "the update form opens on the stored URL, so no restart stands between"
+    );
+}
+
+/// On a running core the obfuscation policy is live (ADR-0046): the commit
+/// answers that it took effect at once, and the receipt names no restart.
+#[tokio::test]
+async fn an_obfuscation_edit_on_a_running_core_takes_effect_at_once() {
+    let store = rmule_testkit::memory_store();
+    let core = rmule_core::Core::builder(rmule_core::CoreConfig::default(), store.clone())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
+    let config = SharedConfig::new(core.settings(), DurableAppConfig::new(store));
+    let edit = PrefEdit::Obfuscation(ObfuscationChoice::Requested);
+    let effect = config.commit(&edit).expect("commit");
+    assert_eq!(effect, TakesEffect::Now);
+    assert_eq!(
+        crate::words::app::receipt(&edit, effect).as_str(),
+        "saved: obfuscation → requested"
+    );
+    core.shutdown().await;
 }
 
 #[test]

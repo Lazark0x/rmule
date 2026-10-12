@@ -1,19 +1,21 @@
 //! How a serve activity ends: a requested stop and a dead listener each close every open upload row.
-use crate::fixture::{identity, sized_file};
+use crate::fixture::sized_file;
 use rmule_core::DurableSharedFileRegistry;
 use rmule_core::{
-    Core, CoreCommand, CoreConfig, ServeCommand, ServeConnCommand, ServeConnEvent, ServeEvent,
+    Core, CoreCommand, CoreConfig, ServeCommand, ServeEvent, ServeInput, ServeOutput,
     ServeStopReason, ShareSource, SharedFileEntry, SharedFileRegistry,
 };
 use rmule_primitives::FileHash;
+use rmule_testkit::HANG_GUARD;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
-use tokio::time::{Duration, timeout};
+use tokio::time::timeout;
 
 use super::{
     FakeServeRuntime, RestartableServeRuntime, UnusedPeerTransfer, UnusedSourceLookup, conn_pair,
     next_matching_serve_event, next_serve_event, peer,
 };
+use rmule_peer::{ServerCommand, ServerEvent};
 
 /// `close_upload` only fires on `UploadSlotReleased`, and a
 /// `StopServing` never emits one for the connections a live activity was
@@ -55,6 +57,7 @@ async fn stopping_serve_closes_every_open_upload_row() {
         ..CoreConfig::default()
     };
     let mut core = Core::builder(config, store)
+        .settings(rmule_core::CoreSettings::default())
         .source_lookup(UnusedSourceLookup)
         .peer_transfer(UnusedPeerTransfer)
         .serve_runtime(serve_runtime)
@@ -62,7 +65,6 @@ async fn stopping_serve_closes_every_open_upload_row() {
 
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: "0.0.0.0:0".parse().unwrap(),
-        credentials: identity().into(),
     }))
     .await
     .unwrap();
@@ -76,12 +78,12 @@ async fn stopping_serve_closes_every_open_upload_row() {
     );
 
     evt_a
-        .send(ServeConnEvent::SlotRequested { file_hash })
+        .send(ServeInput::Server(ServerEvent::SlotRequested { file_hash }))
         .await
         .unwrap();
     assert_eq!(
         cmd_a.recv().await.unwrap(),
-        ServeConnCommand::GrantSlot { file_hash }
+        ServeOutput::Server(ServerCommand::GrantSlot { file_hash })
     );
     assert_eq!(
         next_serve_event(&mut core).await,
@@ -93,12 +95,12 @@ async fn stopping_serve_closes_every_open_upload_row() {
     );
 
     evt_b
-        .send(ServeConnEvent::SlotRequested { file_hash })
+        .send(ServeInput::Server(ServerEvent::SlotRequested { file_hash }))
         .await
         .unwrap();
     assert_eq!(
         cmd_b.recv().await.unwrap(),
-        ServeConnCommand::GrantSlot { file_hash }
+        ServeOutput::Server(ServerCommand::GrantSlot { file_hash })
     );
     assert_eq!(
         next_serve_event(&mut core).await,
@@ -160,6 +162,7 @@ async fn a_dead_listener_ends_the_activity_and_a_later_start_serves_again() {
     let (doomed_tx, doomed_rx) = mpsc::channel(1);
     let (live_tx, live_rx) = mpsc::channel(1);
     let mut core = Core::builder(CoreConfig::default(), store)
+        .settings(rmule_core::CoreSettings::default())
         .source_lookup(UnusedSourceLookup)
         .peer_transfer(UnusedPeerTransfer)
         .serve_runtime(RestartableServeRuntime {
@@ -170,7 +173,6 @@ async fn a_dead_listener_ends_the_activity_and_a_later_start_serves_again() {
 
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: "0.0.0.0:0".parse().unwrap(),
-        credentials: identity().into(),
     }))
     .await
     .unwrap();
@@ -195,7 +197,6 @@ async fn a_dead_listener_ends_the_activity_and_a_later_start_serves_again() {
 
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: "0.0.0.0:0".parse().unwrap(),
-        credentials: identity().into(),
     }))
     .await
     .unwrap();
@@ -225,15 +226,15 @@ async fn a_dead_listener_ends_the_activity_and_a_later_start_serves_again() {
     // second listener is queued and granted like any other.
     let (conn, evt, mut cmd) = conn_pair(peer(11));
     live_tx.send(conn).await.unwrap();
-    evt.send(ServeConnEvent::SlotRequested { file_hash })
+    evt.send(ServeInput::Server(ServerEvent::SlotRequested { file_hash }))
         .await
         .unwrap();
     assert_eq!(
-        timeout(Duration::from_secs(2), cmd.recv())
+        timeout(HANG_GUARD, cmd.recv())
             .await
             .expect("the restarted serve answers its new listener's peer")
             .unwrap(),
-        ServeConnCommand::GrantSlot { file_hash }
+        ServeOutput::Server(ServerCommand::GrantSlot { file_hash })
     );
 }
 
@@ -261,6 +262,7 @@ async fn a_dead_listener_closes_every_open_upload_row_too() {
     let (doomed_tx, doomed_rx) = mpsc::channel(1);
     let (_live_tx, live_rx) = mpsc::channel(1);
     let mut core = Core::builder(CoreConfig::default(), store)
+        .settings(rmule_core::CoreSettings::default())
         .source_lookup(UnusedSourceLookup)
         .peer_transfer(UnusedPeerTransfer)
         .serve_runtime(RestartableServeRuntime {
@@ -271,7 +273,6 @@ async fn a_dead_listener_closes_every_open_upload_row_too() {
 
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: "0.0.0.0:0".parse().unwrap(),
-        credentials: identity().into(),
     }))
     .await
     .unwrap();
@@ -286,12 +287,12 @@ async fn a_dead_listener_closes_every_open_upload_row_too() {
 
     let (conn, evt, mut cmd) = conn_pair(peer(21));
     doomed_tx.send(conn).await.unwrap();
-    evt.send(ServeConnEvent::SlotRequested { file_hash })
+    evt.send(ServeInput::Server(ServerEvent::SlotRequested { file_hash }))
         .await
         .unwrap();
     assert_eq!(
         cmd.recv().await.unwrap(),
-        ServeConnCommand::GrantSlot { file_hash }
+        ServeOutput::Server(ServerCommand::GrantSlot { file_hash })
     );
     assert_eq!(
         next_serve_event(&mut core).await,

@@ -7,9 +7,10 @@
 //! ADR-0068) run in-engine. The [`StatusPingSweep`] paces the `0x96` pings
 //! that solicit it all (ADR-0052 breakdown 3) and, with that gate, is where
 //! the managed list's dynamic facts come from — ping, users, files and the
-//! failure tally (ADR-0080 §Dynamic server facts). Sends need no such owner: they
-//! are fire-and-forget datagrams each consumer fires over the shared
-//! transport (`Arc<T>`, the global-callback-relay precedent). Receive is what
+//! failure tally (ADR-0080 §Dynamic server facts). Every send leaves through
+//! the [`ServerUdpSeal`], which alone decides where a datagram goes and
+//! whether it is sealed under the server's UDP key (ADR-0046); each sender
+//! holds a clone. Receive is what
 //! must be owned once, because eD2k UDP packets carry no length prefix —
 //! only a datagram's leading `[protocol][opcode]` header is layout-known, and
 //! the packet boundaries inside it are the consuming concern's decode. Wire
@@ -19,22 +20,26 @@
 use rmule_primitives::Ipv4Endpoint;
 
 mod engine;
+mod seal;
 mod status_challenge;
 mod status_ping_sweep;
 
 pub(crate) use engine::ServerUdpEngine;
+pub(crate) use seal::ServerUdpSeal;
 pub(crate) use status_challenge::{StatusChallenges, os_rand16};
 pub(crate) use status_ping_sweep::{CryptPingArm, StatusPingSweep, os_crypt_ping_nonce};
 
-/// One received server-UDP datagram, tagged with the answering server's UDP
-/// source endpoint — the engine's demuxed hand-off unit.
+/// One received server-UDP datagram, tagged with the answering server's
+/// standard endpoint (the engine maps the UDP source back, ADR-0046) — the
+/// engine's demuxed hand-off unit.
 pub(crate) type ServerUdpDatagram = (Vec<u8>, Ipv4Endpoint);
 
-/// Shared fixtures for the submodules' tests — the scripted transport both
-/// halves drive, the golden `0x97` builder, fixed entropy — plus the
-/// round-trip tests that need a sweep and an engine wired to one gate.
+/// Shared fixtures for the server-UDP tests — the scripted transport every
+/// sender drives, the seals over it, the golden `0x97` builder, fixed
+/// entropy — plus the round-trip tests that need a sweep and an engine wired
+/// to one gate.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -53,13 +58,14 @@ mod tests {
     use std::net::Ipv4Addr;
 
     /// A transport preloaded with a datagram script; `recv` drains it in
-    /// order, then reports the transport closed. Plain sends and obfuscated
-    /// crypt-pings are recorded separately so tests can tell the +4 and +12
-    /// paths apart.
+    /// order, then reports the transport closed. Each send is recorded with
+    /// the address it went to, split by its first byte: plain eD2k frames
+    /// (`0xE3`) in `sends`, everything else — crypt-pings and sealed
+    /// datagrams — in `obfuscated`.
     pub(crate) struct ScriptedTransport {
         pub(crate) script: tokio::sync::Mutex<mpsc::Receiver<ServerUdpDatagram>>,
-        pub(crate) sends: Mutex<Vec<(ServerEndpoint, Vec<u8>)>>,
-        pub(crate) crypt_pings: Mutex<Vec<(ServerEndpoint, Vec<u8>)>>,
+        pub(crate) sends: Mutex<Vec<(Ipv4Endpoint, Vec<u8>)>>,
+        pub(crate) obfuscated: Mutex<Vec<(Ipv4Endpoint, Vec<u8>)>>,
     }
 
     pub(crate) fn scripted(datagrams: Vec<ServerUdpDatagram>) -> ScriptedTransport {
@@ -71,7 +77,7 @@ mod tests {
         ScriptedTransport {
             script: tokio::sync::Mutex::new(rx),
             sends: Mutex::default(),
-            crypt_pings: Mutex::default(),
+            obfuscated: Mutex::default(),
         }
     }
 
@@ -89,12 +95,13 @@ mod tests {
     }
 
     impl ServerUdpTransport for ScriptedTransport {
-        async fn send_to(&self, server: ServerEndpoint, datagram: Vec<u8>) {
-            self.sends.lock().unwrap().push((server, datagram));
-        }
-
-        async fn send_crypt_ping(&self, server: ServerEndpoint, datagram: Vec<u8>) {
-            self.crypt_pings.lock().unwrap().push((server, datagram));
+        async fn send_to(&self, to: Ipv4Endpoint, datagram: Vec<u8>) {
+            let list = if datagram.first() == Some(&PacketProtocol::Edonkey.as_byte()) {
+                &self.sends
+            } else {
+                &self.obfuscated
+            };
+            list.lock().unwrap().push((to, datagram));
         }
 
         async fn recv(&self) -> Option<ServerUdpDatagram> {
@@ -102,11 +109,58 @@ mod tests {
         }
     }
 
+    /// A seal over `transport` under `policy`, keying under the public IPv4
+    /// `own` holds, reading each server's crypt facts from `capabilities`
+    /// then `facts`, with fixed seal entropy.
+    pub(crate) fn seal_over<T: ServerUdpTransport>(
+        transport: T,
+        policy: crate::obfuscation_policy::SharedObfuscationPolicy,
+        own: SharedOwnIdentity,
+        capabilities: SharedServerCapabilities,
+        facts: crate::server_list::ServerFacts,
+    ) -> ServerUdpSeal<T> {
+        ServerUdpSeal::new(
+            transport,
+            policy,
+            own,
+            capabilities,
+            facts,
+            fixed_datagram_nonce,
+        )
+    }
+
+    /// A seal under policy `off`: every datagram plain.
+    pub(crate) fn plain_seal<T: ServerUdpTransport>(transport: T) -> ServerUdpSeal<T> {
+        seal_over(
+            transport,
+            crate::obfuscation_policy::SharedObfuscationPolicy::default(),
+            SharedOwnIdentity::default(),
+            SharedServerCapabilities::default(),
+            crate::server_list::ServerFacts::default(),
+        )
+    }
+
+    /// Deterministic seal entropy: marker `0x00`, key seed `0x1234`, no
+    /// padding (aMule pads no UDP datagram).
+    pub(crate) fn fixed_datagram_nonce() -> rmule_primitives::DatagramNonce {
+        rmule_primitives::DatagramNonce {
+            marker_byte: 0x00,
+            random_key: 0x1234,
+            padding: Vec::new(),
+        }
+    }
+
+    /// `server`'s address on its standard port + `offset`: where a datagram
+    /// to it lands.
+    pub(crate) fn udp(server: &ServerEndpoint, offset: u16) -> Ipv4Endpoint {
+        Ipv4Endpoint::new(server.host().parse().unwrap(), server.port() + offset)
+    }
+
     /// A disabled crypt-ping arm — the shipped plain-only sweep. Fixed
     /// entropy keeps the golden datagrams deterministic.
     pub(crate) fn plain_arm() -> CryptPingArm {
         CryptPingArm {
-            enabled: false,
+            policy: crate::obfuscation_policy::SharedObfuscationPolicy::default(),
             own: SharedOwnIdentity::default(),
             grace: Duration::from_secs(20),
             nonce: fixed_crypt_ping_nonce,
@@ -171,11 +225,23 @@ mod tests {
         ServerUdpEngine<Arc<ScriptedTransport>>,
         DiagnosticsState,
     ) {
-        let (facts, diagnostics) = test_facts(listed);
+        harness_over(test_facts(listed), resolver)
+    }
+
+    /// [`resolving_harness`] over a facts seam the test already seeded.
+    pub(crate) fn harness_over(
+        (facts, diagnostics): (crate::server_list::ServerFacts, DiagnosticsState),
+        resolver: Arc<FakeNameResolver>,
+    ) -> (
+        StatusPingSweep<Arc<ScriptedTransport>>,
+        ServerUdpEngine<Arc<ScriptedTransport>>,
+        DiagnosticsState,
+    ) {
         let challenges = StatusChallenges::default();
         let transport = Arc::new(scripted(vec![]));
+        let seal = plain_seal(Arc::clone(&transport));
         let sweep = StatusPingSweep {
-            transport: Arc::clone(&transport),
+            seal: seal.clone(),
             facts: facts.clone(),
             challenges: challenges.clone(),
             entropy: fixed_entropy,
@@ -187,11 +253,11 @@ mod tests {
         };
         let (engine, _inboxes) = ServerUdpEngine::new(
             transport,
+            seal,
             challenges,
             SharedServerCapabilities::default(),
             facts,
             fixed_entropy,
-            false,
             diagnostics.clone(),
         );
         (sweep, engine, diagnostics)
@@ -238,6 +304,34 @@ mod tests {
         assert!(answered.ping.is_some(), "the gate timed the round trip");
         assert_eq!(answered.users, Some(1000));
         assert_eq!(answered.files, Some(2000));
+    }
+
+    /// A server an aux-port login re-ported answers from its standard port
+    /// + 4 (aMule `GetPort() + 4`), and the answer lands on the row dialed on
+    /// the other port.
+    #[tokio::test]
+    async fn an_aux_port_rows_answer_from_standard_plus_four_lands_on_the_row() {
+        let mut listed = crate::server_list::ManagedServer::listed(server("127.0.0.1", 5000));
+        listed.aux_ports = Some(crate::server_list::ServerAuxPorts {
+            standard_port: 4661,
+            ports: vec![5000],
+        });
+        let dialed = listed.endpoint.clone();
+        let (sweep, engine, diagnostics) = harness_over(
+            crate::server_list::test_facts_rows(vec![listed]),
+            FakeNameResolver::knowing(&[]),
+        );
+
+        sweep.ping_next(&mut SweepState::default()).await;
+        engine
+            .demux(
+                stat_res_datagram(0x55AA_ABCD, 1000),
+                udp_source(&server("127.0.0.1", 4661)),
+            )
+            .await;
+
+        let answered = row(&diagnostics, &dialed);
+        assert_eq!(answered.users, Some(1000), "the answer found its row");
     }
 
     /// A silence counts against its server when a ping sent near it was
@@ -318,7 +412,8 @@ mod tests {
         assert!(!diagnostics.snapshot().status_sweep_unheard);
         assert_eq!(row(&diagnostics, &dead).server.fail_count, tally);
         let pings = sweep
-            .transport
+            .seal
+            .transport()
             .sends
             .lock()
             .unwrap()
@@ -362,11 +457,11 @@ mod tests {
 
         sweep.ping_next(&mut SweepState::default()).await;
 
-        let sends = sweep.transport.sends.lock().unwrap().clone();
+        let sends = sweep.seal.transport().sends.lock().unwrap().clone();
         assert_eq!(sends.len(), 1);
         assert_eq!(
             sends[0].0,
-            server("127.0.0.9", 4661),
+            udp(&server("127.0.0.9", 4661), 4),
             "the ping goes to the address"
         );
         assert_eq!(
@@ -421,12 +516,13 @@ mod tests {
         assert_eq!(row(&diagnostics, &answers).server.fail_count, 0);
         assert!(
             sweep
-                .transport
+                .seal
+                .transport()
                 .sends
                 .lock()
                 .unwrap()
                 .iter()
-                .all(|(to, _)| to == &answers),
+                .all(|(to, _)| to == &udp(&answers, 4)),
             "nothing is sent for a name without an address"
         );
     }
@@ -473,19 +569,20 @@ mod tests {
         sweep.ping_next(&mut state).await;
 
         let sent_to = sweep
-            .transport
+            .seal
+            .transport()
             .sends
             .lock()
             .unwrap()
             .iter()
-            .map(|(to, _)| to.clone())
+            .map(|(to, _)| *to)
             .collect::<Vec<_>>();
         assert_eq!(
             sent_to,
             [
-                server("127.0.0.9", 4661),
-                server("127.0.0.9", 4661),
-                server("127.0.0.10", 4661)
+                udp(&server("127.0.0.9", 4661), 4),
+                udp(&server("127.0.0.9", 4661), 4),
+                udp(&server("127.0.0.10", 4661), 4)
             ]
         );
         assert_eq!(resolver.asked().len(), 2);

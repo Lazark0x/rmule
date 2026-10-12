@@ -6,21 +6,23 @@
 //! in-memory backend and on a real file — because only the file proves what a
 //! restart re-offers.
 use rmule_core::SharedFileRegistry;
+use rmule_testkit::HANG_GUARD;
 use std::net::SocketAddrV4;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreError, CoreEvent, DurableSharedFileRegistry, ServeCommand,
-    ServeConnCommand, ServeConnEvent, ServeConnection, ServeEvent, ServeRuntimeService,
-    ShareSource, SharedFileEntry, open_durable_store,
+    ServeConnection, ServeEvent, ServeInput, ServeOutput, ServeRuntimeService, ShareSource,
+    SharedFileEntry, open_durable_store,
 };
 use rmule_ed2k::OfferedFile;
 use rmule_primitives::{ClientId, ED2K_PART_SIZE, FileHash, PartHash, PeerSource};
 use tokio::sync::mpsc;
-use tokio::time::{Duration, timeout};
+use tokio::time::timeout;
 
-use crate::fixture::{durable_shared_file_registry, identity};
+use crate::fixture::durable_shared_file_registry;
+use rmule_peer::{ServerCommand, ServerEvent};
 
 fn entry(hash: u8, path: &str, source: ShareSource) -> SharedFileEntry {
     SharedFileEntry {
@@ -270,6 +272,7 @@ async fn a_file_shared_before_a_restart_answers_a_hash_set_probe_after_it() {
         CoreConfig::default(),
         open_durable_store(dir.path()).unwrap(),
     )
+    .settings(rmule_core::CoreSettings::default())
     .source_lookup(rmule_testkit::PendingSourceLookup)
     .peer_transfer(rmule_testkit::RefusingPeerTransfer)
     .serve_runtime(ScriptedServeRuntime {
@@ -279,14 +282,13 @@ async fn a_file_shared_before_a_restart_answers_a_hash_set_probe_after_it() {
 
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: "0.0.0.0:0".parse().unwrap(),
-        credentials: identity().into(),
     }))
     .await
     .unwrap();
     // The re-offer of the pre-restart share: the snapshot the probe is
     // answered from is now seeded.
     loop {
-        let event = timeout(Duration::from_secs(2), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted the announce")
             .expect("core event stream stayed open");
@@ -297,18 +299,20 @@ async fn a_file_shared_before_a_restart_answers_a_hash_set_probe_after_it() {
     }
 
     evt_tx
-        .send(ServeConnEvent::HashSetRequested { file_hash })
+        .send(ServeInput::Server(ServerEvent::HashSetRequested {
+            file_hash,
+        }))
         .await
         .unwrap();
     assert_eq!(
-        timeout(Duration::from_secs(2), cmd_rx.recv())
+        timeout(HANG_GUARD, cmd_rx.recv())
             .await
             .expect("the probe was answered")
             .expect("the connection stayed open"),
-        ServeConnCommand::AnswerHashSet {
+        ServeOutput::Server(ServerCommand::AnswerHashSet {
             file_hash,
             part_hashes: part_hashes(),
-        },
+        }),
         "the set the file was shared with, not an empty one",
     );
 }

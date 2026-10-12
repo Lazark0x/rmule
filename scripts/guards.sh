@@ -2,7 +2,7 @@
 # Machine-checkable subset of the repository's code and docs conventions.
 #
 # Walks crates/ apps/ tools/ docs/ (and, for the two text checks, every public
-# tracked file) and reports every violation of the thirteen
+# tracked file) and reports every violation of the fourteen
 # guards below. A violation is suppressed when its exact `<check>:<path>` line appears
 # in scripts/guards-allow.txt (the ratchet — debt drained over time, never
 # grown without justification in the PR).
@@ -21,9 +21,9 @@
 #   doctree    docs/ top-level entry outside the live-only tree (adr,
 #              architecture, protocol, reference)
 #   uidebug    a Debug format (`{:?}`, `{:#?}`, `{name:?}`) in text an operator
-#              can read: rmule's and rmule-cli's source outside test code and
-#              `tracing::` macros, and the `#[error(...)]` texts of every crate
-#              under crates/; the Run Log may hold one
+#              can read: rmule's, rmule-cli's and rmule-words' source outside
+#              test code and `tracing::` macros, and the `#[error(...)]` texts
+#              of every other crate under crates/; the Run Log may hold one
 #   unsafe     `unsafe` code or an `unsafe_code` waiver outside
 #              crates/rmule-winsock, another manifest setting `unsafe_code`,
 #              rmule-winsock's lint table drifting from [workspace.lints], or
@@ -34,6 +34,8 @@
 #   vocab      private workflow vocabulary, a plan label or coordinate, a
 #              private branch, worktree or image-tag name, or a path into the
 #              private tree, in any public tracked file
+#   sentence   a `Sentence` made outside a words module: rmule-words, or the
+#              TUI's own words (apps/rmule/src/words.rs and words/)
 #
 # Exit 0 when every violation is suppressed, 1 otherwise.
 
@@ -213,7 +215,8 @@ if [ -d docs ]; then
 fi
 
 # 9. uidebug — no Debug format reaches what an operator reads. Reach:
-#   - every `.rs` under apps/rmule/src and apps/rmule-cli/src, minus test
+#   - every `.rs` under apps/rmule/src, apps/rmule-cli/src and
+#     crates/rmule-words/src (the words both front ends speak), minus test
 #     code (`tests.rs`, `tests/`, the cfg(test) `fixture.rs` and `golden.rs`,
 #     any `#[cfg(test)]` item), comments, and `tracing::` macro calls, whose
 #     free-form lines reach the Run Log at its full level only. The Run Log's
@@ -231,6 +234,7 @@ fi
 # break is missed.
 UI_SRC="apps/rmule/src"
 CLI_SRC="apps/rmule-cli/src"
+WORDS_SRC="crates/rmule-words/src"
 uidebug_lines() {
     awk '
         function count(s, c,   n, i) { n = 0; for (i = 1; i <= length(s); i++) if (substr(s, i, 1) == c) n++; return n }
@@ -298,12 +302,12 @@ uidebug_error_lines() {
 while IFS= read -r f; do
     [ -n "$f" ] || continue
     case "$f" in
-    "$UI_SRC"/* | "$CLI_SRC"/*)
+    "$UI_SRC"/* | "$CLI_SRC"/* | "$WORDS_SRC"/*)
         case "$f" in
         */tests.rs | */tests/* | "$UI_SRC"/fixture.rs | "$UI_SRC"/golden.rs) continue ;;
         esac
         hits="$(uidebug_lines "$f" | tr '\n' ' ' | sed 's/ $//')"
-        message="word it in crate::words or render the value"
+        message="word it in a words module or render the value"
         ;;
     crates/*/src/*)
         hits="$(uidebug_error_lines "$f" | tr '\n' ' ' | sed 's/ $//')"
@@ -548,6 +552,28 @@ EOF
 if [ -n "$adrcite_last" ]; then
     report adrcite "$adrcite_last" "cites no existing ADR:$adrcite_names"
 fi
+
+# 14. sentence — a Sentence is made only in a words module. Its constructors
+# are public because the TUI's own words, which word the TUI's own types, live
+# in another crate than the type; this keeps every other module from making
+# one out of any String. Reach: every `.rs` under the guarded roots outside
+# rmule-words and the TUI's words, comment lines dropped. A test's
+# layout-only sentence goes through `Sentence::for_test`, which only a build
+# with rmule-words' `test-support` feature has.
+SENTENCE_NEW='Sentence::(fixed|owned)[[:space:]]*\('
+while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in
+    "$WORDS_SRC"/* | "$UI_SRC"/words.rs | "$UI_SRC"/words/*) continue ;;
+    esac
+    hits="$(grep -nE "$SENTENCE_NEW" "$f" | grep -vE '^[0-9]+:[[:space:]]*//' \
+        | cut -d: -f1 | tr '\n' ' ' | sed 's/ $//')"
+    if [ -n "$hits" ]; then
+        report sentence "$f" "Sentence made at line(s) $hits — word it in a words module"
+    fi
+done <<EOF
+$(rs_files)
+EOF
 
 echo
 if [ "$suppressed" -gt 0 ]; then

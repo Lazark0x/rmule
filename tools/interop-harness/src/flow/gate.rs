@@ -144,7 +144,7 @@ pub(crate) fn wait_for_amule_ready(
 }
 
 /// Hold until the serving rmule's log carries `files_announced` — the
-/// `serve files_announced file_count=N` line rmule-tools emits once the
+/// `serve.files_announced file_count=N` line rmule-tools emits once the
 /// offered files are announced to the server.
 pub(crate) fn wait_for_rmule_ready(
     docker: &Docker,
@@ -200,6 +200,12 @@ pub fn start_rmule_serve_with_login_retry(
     knobs: ServeKnobs<'_>,
     timeout: Duration,
 ) -> Result<String> {
+    // One compile into the host-persisted cache, foreground and warm after the
+    // first run, so the serve container starts a binary instead of building.
+    run_checked(
+        serve_container.prebuild_command(staging.docker)?,
+        "prebuild rmule-tools for the serve container",
+    )?;
     retry_with_backoff(
         RMULE_SERVE_LOGIN_ATTEMPTS,
         RMULE_SERVE_LOGIN_BACKOFF,
@@ -214,7 +220,7 @@ pub fn start_rmule_serve_with_login_retry(
                 let _ = staging.docker.remove_container(name).to_command().output();
             }
             let container_id = run_checked(
-                serve_container.start_command_with_knobs(staging, name, server_endpoint, knobs),
+                serve_container.start_command_with_knobs(staging, name, server_endpoint, knobs)?,
                 "run rmule serve container",
             )?;
             wait_for_rmule_ready(staging.docker, staging.layout, name, timeout)?;

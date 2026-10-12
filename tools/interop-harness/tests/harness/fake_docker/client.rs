@@ -99,9 +99,11 @@ fn default_rmule_client_runs_inside_interop_network() {
         &[
             "run --detach --name rmule-interop-amule-".to_owned(),
             "logs rmule-interop-amule-".to_owned(),
+            "cargo build -p rmule-tools".to_owned(),
             "run --rm --network rmule-interop-".to_owned(),
             "-w /workspace".to_owned(),
-            "rust:1.94.0-bookworm cargo run -p rmule-tools -- ed2k download start".to_owned(),
+            "rust:1.94.0-bookworm /tmp/rmule-target/debug/rmule-tools ed2k download start"
+                .to_owned(),
             "--server rmule-interop-server-".to_owned(),
             ":4661".to_owned(),
             "rm -f rmule-interop-amule-".to_owned(),

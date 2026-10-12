@@ -18,6 +18,7 @@ mod opcode;
 mod node_messages;
 mod publish_messages;
 mod search_tree_codec;
+mod truncation;
 
 // The routing table: admission, eviction, census, the small-timer aging pass,
 // and what a contact must do to become servable.

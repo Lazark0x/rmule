@@ -65,16 +65,16 @@ fn harness(
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let run = run_driver(
         transport,
-        some_node_config(),
+        node_start(some_node_config(), false, None, None),
         command_rx,
         event_tx,
         shutdown_rx,
         RunRecord {
             bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+            node_id_hex: String::new(),
             capture: None,
             nodes_dat_path,
         },
-        NodeArming::default(),
     );
     (command_tx, shutdown_tx, run)
 }

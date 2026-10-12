@@ -25,15 +25,18 @@ A node has one identity for its lifetime, owned by the core:
   builder, starts every connection's options: `CT_EMULE_UDPPORTS` with its Kad-version
   nibble, `CT_MOD_IP_V6` from the Address Learning verdict (ADR-0084, ADR-0087), the
   serving buddy while a buddy link is held (ADR-0061), the crypt stance from
-  `CoreConfig::peer_crypt` (ADR-0049), and the SUI nibble with a challenge minted per
+  `CoreSettings::obfuscation` (ADR-0049), and the SUI nibble with a challenge minted per
   connection. A road that omits one says so at its site.
 - Every builder-owned shared cell lives in one `AdapterCells`, and every adapter, the
   builder's own or one injected for tests, adopts it through `adopt_cells`, so no adapter
   holds a private copy of the session, ban store, IP filter, Address Learning, Kad
   handoff, Peer Roster (ADR-0059) or Hello Adverts.
 
-Presentation fields (nickname, TCP port) come from each command's credentials and apply
-to the next hello, as aMule's preferences do.
+Presentation fields (nickname, TCP port) come from the Core Settings
+(`CoreSettings::credentials`, ADR-0069), as aMule's come from its preferences; no command
+carries them. The node's **Kad ID** is fixed at build like the user hash — the store's
+generate-once row, or `CoreBuilder::kad_id` for a tool or test — and `EnableKad` carries
+none.
 
 ## Consequences
 

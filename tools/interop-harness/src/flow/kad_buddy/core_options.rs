@@ -121,6 +121,13 @@ pub struct KadCoreBuddyOptions<'a> {
     /// together) and `AMULE_KAD_CRYPT=1` on the firewalled aMule. Off by
     /// default, matching every other Kad flow's plain-`0xE4` evidence.
     pub kad_crypt: bool,
+    /// `--peer-crypt-flip <secs>:<policy>` for the stimulus, one per entry:
+    /// its obfuscation policy changes mid-run, live (ADR-0046), and the
+    /// verdict lists each change the stimulus marked. With
+    /// [`kad_crypt`](Self::kad_crypt) the run starts `requested` and the
+    /// firewalled aMule's Kad crypt is up throughout, so a flip off and back
+    /// is the leg that shows the running node re-armed both ways.
+    pub peer_crypt_flip: &'a [String],
     /// Add the **third party**: a High-ID rmule downloader handed
     /// only the ed2k link, whose download reaches the firewalled aMule through
     /// ADR-0061 route 4 — the `0x52` to the buddy, the relayed `0x99`, aMule's

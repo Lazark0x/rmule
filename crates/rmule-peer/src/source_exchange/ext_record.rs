@@ -32,8 +32,9 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rmule_primitives::{
-    CT_MOD_IP_V6, ClientId, ExchangedSource, Ipv4Endpoint, Ipv6Endpoint, PeerSource,
-    PrimitiveError, SourceCryptOptions, Tag, TagName, TagValue, UserHash, is_usable_tag_identity,
+    CT_MOD_IP_V6, ClientId, Ipv4Endpoint, Ipv6Endpoint, PeerSource, PrimitiveError,
+    SourceCryptOptions, SourceSighting, Tag, TagName, TagValue, UserHash, WireReader,
+    WireTruncated, is_usable_tag_identity,
 };
 use thiserror::Error;
 
@@ -112,8 +113,8 @@ pub(crate) fn encode_ext_record(
     // is fixed-width and must hold something, and `0` would read as a Low ID
     // with no server to broker it (`HasEd2kWireForm`).
     let wire_id = match source.peer_source() {
-        PeerSource::Ipv6(_) => ClientId::IPV6_ONLY_PLACEHOLDER.as_u32(),
-        other => other.wire_id(),
+        None | Some(PeerSource::Ipv6(_)) => ClientId::IPV6_ONLY_PLACEHOLDER.as_u32(),
+        Some(record) => record.wire_id(),
     };
     out.extend_from_slice(&wire_id.to_le_bytes());
     out.extend_from_slice(&entry.tcp_port().to_le_bytes());
@@ -171,34 +172,33 @@ pub(crate) fn decode_ext_records(
     // The count is untrusted, so the reservation is bounded by what the body
     // could actually hold rather than by what it claims.
     let mut records = Vec::with_capacity((count as usize).min(body.len() / RECORD_HEAD_LEN));
-    let mut cursor = 0usize;
+    let mut reader = WireReader::new(body);
     for _ in 0..count {
-        records.push(decode_ext_record(body, &mut cursor)?);
+        records.push(decode_ext_record(&mut reader)?);
     }
-    if cursor != body.len() {
+    if !reader.is_exhausted() {
         return Err(ExtSourceRecordError::TrailingBytes {
             count,
-            remaining: body.len() - cursor,
+            remaining: reader.remaining(),
         });
     }
     Ok(records)
 }
 
-/// Read one record, advancing `cursor`.
+/// Read one record, advancing `reader`.
 fn decode_ext_record(
-    body: &[u8],
-    cursor: &mut usize,
+    reader: &mut WireReader<'_>,
 ) -> Result<SourceExchangeEntry, ExtSourceRecordError> {
-    let head = take(body, cursor, RECORD_HEAD_LEN)?;
-    let raw_id = u32::from_le_bytes([head[0], head[1], head[2], head[3]]);
-    let tcp_port = u16::from_le_bytes([head[4], head[5]]);
-    let tag_count = head[6];
+    let mut head = WireReader::new(reader.take(RECORD_HEAD_LEN, "record head")?);
+    let raw_id = head.read_u32_le("record client id")?;
+    let tcp_port = head.read_u16_le("record port")?;
+    let tag_count = head.read_u8("record tag count")?;
 
     let mut read = RecordTags::default();
     for _ in 0..tag_count {
-        let remaining = &body[*cursor..];
+        let remaining = reader.remaining_bytes();
         if let Ok((tag, consumed)) = Tag::decode_prefix(remaining) {
-            *cursor += consumed;
+            reader.advance_clamped(consumed);
             read.apply(&tag);
             continue;
         }
@@ -210,30 +210,22 @@ fn decode_ext_record(
                 ExtSourceRecordError::UnknownTagType { tag_type }
             }
             _ => ExtSourceRecordError::Truncated {
-                needed: *cursor + remaining.len() + 1,
-                actual: body.len(),
+                needed: reader.position() + remaining.len() + 1,
+                actual: reader.position() + remaining.len(),
             },
         })?;
-        *cursor += consumed;
+        reader.advance_clamped(consumed);
     }
     Ok(read.project(ClientId::from_u32(raw_id), tcp_port))
 }
 
-fn take<'a>(
-    body: &'a [u8],
-    cursor: &mut usize,
-    len: usize,
-) -> Result<&'a [u8], ExtSourceRecordError> {
-    let end = cursor
-        .checked_add(len)
-        .filter(|end| *end <= body.len())
-        .ok_or(ExtSourceRecordError::Truncated {
-            needed: cursor.saturating_add(len),
-            actual: body.len(),
-        })?;
-    let slice = &body[*cursor..end];
-    *cursor = end;
-    Ok(slice)
+impl From<WireTruncated> for ExtSourceRecordError {
+    fn from(truncated: WireTruncated) -> Self {
+        Self::Truncated {
+            needed: truncated.needed,
+            actual: truncated.available,
+        }
+    }
 }
 
 /// The tags one record carried, projected to scalars. A tag this list has no
@@ -311,7 +303,7 @@ impl RecordTags {
             _ => None,
         };
         SourceExchangeEntry::new(
-            ExchangedSource::new(source, self.user_hash, self.crypt_options).with_ipv6_half(half),
+            SourceSighting::new(source, self.user_hash, self.crypt_options).with_ipv6_half(half),
             server,
         )
     }

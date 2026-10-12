@@ -22,8 +22,8 @@ pub struct KadRuntimeDiagnostics {
     /// The `(keyword, file)` rows the node's keyword index stores for other
     /// publishers (ADR-0062) — aMule's indexed-keywords figure.
     pub keywords_stored: usize,
-    /// The node's own Kad ID — the durable keyspace identity the front-end
-    /// minted (`AppConfigStore::ensure_kad_identity`) and `EnableKad` carried.
+    /// The node's own Kad ID — the durable keyspace identity core read from
+    /// its store at build (`AppConfigStore::ensure_kad_identity`).
     pub node_id: crate::KadId,
     /// The ADR-0058 TCP-reachability verdict as the Kad runtime currently
     /// publishes it — the same cell the ADR-0061 callback chooser reads.
@@ -119,4 +119,40 @@ pub enum KadState {
     /// A stop is under way: the node's lever is pulled and its tasks are
     /// being joined.
     Stopping,
+}
+
+/// How the shared diagnostics state reads the running Kad Activity's facts:
+/// a live reader the activity installs at start and takes back at retire, so
+/// the sync [`crate::Core::diagnostics_snapshot`] and the `DumpDiagnostics`
+/// echo return the same value (ADR-0028). A reader, not a copy: every fact
+/// here is a level other tasks keep moving.
+#[derive(Clone)]
+pub(crate) struct KadFactsSource {
+    read: std::sync::Arc<dyn Fn() -> KadRuntimeDiagnostics + Send + Sync>,
+    /// How many tasks the activity holds (`kad_tasks_live`).
+    pub(crate) tasks_live: usize,
+}
+
+impl KadFactsSource {
+    pub(crate) fn new(
+        tasks_live: usize,
+        read: impl Fn() -> KadRuntimeDiagnostics + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            read: std::sync::Arc::new(read),
+            tasks_live,
+        }
+    }
+
+    pub(crate) fn read(&self) -> KadRuntimeDiagnostics {
+        (self.read)()
+    }
+}
+
+impl std::fmt::Debug for KadFactsSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KadFactsSource")
+            .field("tasks_live", &self.tasks_live)
+            .finish_non_exhaustive()
+    }
 }

@@ -10,13 +10,11 @@
 //! `JoinHandle` for — go 3 → 0 → 3, proving no task from the first activity
 //! survives the stop.
 
-use std::time::Duration;
+use rmule_testkit::HANG_GUARD;
 
 use rmule_core::diagnostics::DiagnosticsSnapshot;
 use rmule_core::{Core, CoreCommand, CoreConfig, CoreEvent, KadEnableConfig, KadId, KadStopReason};
 use tokio::time::timeout;
-
-use crate::fixture::identity;
 
 fn reserve_tcp_port() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -27,9 +25,9 @@ fn reserve_tcp_port() -> u16 {
 
 async fn until(core: &mut Core, wanted: impl Fn(&CoreEvent) -> bool) -> CoreEvent {
     loop {
-        let event = timeout(Duration::from_secs(10), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
-            .expect("core emitted the awaited event within 10s")
+            .expect("core emitted the awaited event")
             .expect("core event stream stayed open");
         if wanted(&event) {
             return event;
@@ -56,19 +54,12 @@ async fn kad_stopped_reason(core: &mut Core) -> KadStopReason {
     }
 }
 
-fn kad_config(kad_id: [u8; 16], tcp_port: u16) -> KadEnableConfig {
+fn kad_config() -> KadEnableConfig {
     KadEnableConfig {
-        kad_id: KadId::from_bytes(kad_id),
-        peer_credentials: rmule_core::ClientCredentials::new(
-            identity().nickname().clone(),
-            tcp_port,
-            identity().protocol_version(),
-        ),
         bootstrap: Vec::new(),
         contacts: Vec::new(),
         nodes_dat_path: None,
         assume_open_reachability: true,
-        kad_udp_key: 0,
         kad_capture_dir: None,
         // Left empty: this activity installs its own lever.
         kad_shutdown: None,
@@ -78,9 +69,15 @@ fn kad_config(kad_id: [u8; 16], tcp_port: u16) -> KadEnableConfig {
 #[tokio::test]
 async fn disable_kad_joins_every_task_and_a_later_enable_restarts_clean() {
     let tcp = reserve_tcp_port();
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings {
+            tcp_port: tcp,
+            ..rmule_core::CoreSettings::default()
+        })
+        .kad_id(KadId::from_bytes([0x22; 16]))
+        .build();
 
-    core.send(CoreCommand::EnableKad(kad_config([0x11; 16], tcp)))
+    core.send(CoreCommand::EnableKad(kad_config()))
         .await
         .unwrap();
     let up = diagnostics(&mut core).await;
@@ -109,17 +106,17 @@ async fn disable_kad_joins_every_task_and_a_later_enable_restarts_clean() {
         "no task from the first activity survives DisableKad"
     );
 
-    // A later EnableKad starts a second activity clean: a fresh node id,
-    // and every one of the three tasks tracked again — nothing left over
-    // from the first activity to collide with or crowd out.
-    core.send(CoreCommand::EnableKad(kad_config([0x22; 16], tcp)))
+    // A later EnableKad starts a second activity clean, under the node's one
+    // Kad ID, and every one of the three tasks tracked again — nothing left
+    // over from the first activity to collide with or crowd out.
+    core.send(CoreCommand::EnableKad(kad_config()))
         .await
         .unwrap();
     let restarted = diagnostics(&mut core).await;
     assert_eq!(
         restarted.kad.map(|kad| kad.node_id),
         Some(KadId::from_bytes([0x22; 16])),
-        "the restart's own id is the one now running"
+        "the restart runs under the node's Kad ID"
     );
     assert_eq!(restarted.kad_tasks_live, 3);
 
@@ -128,7 +125,9 @@ async fn disable_kad_joins_every_task_and_a_later_enable_restarts_clean() {
 
 #[tokio::test]
 async fn disable_kad_before_any_enable_is_a_no_op() {
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     core.send(CoreCommand::DisableKad).await.unwrap();
 
     // Nothing to observe from a no-op: prove it by getting a diagnostics

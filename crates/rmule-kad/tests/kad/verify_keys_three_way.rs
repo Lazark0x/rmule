@@ -9,7 +9,7 @@ use std::time::Duration;
 use rmule_kad::KadNode;
 use rmule_testkit::kad_node::{
     NODE_ID, T0, crypt_node, crypt_to_node, datagrams, diagnostics, drain_outputs, endpoint,
-    events, fixed_nonce, hello, id, keyed_node, opened_messages, our_key_for, solicit_hello_res,
+    events, hello, id, opened_messages, our_key_for, solicit_hello_res,
 };
 
 #[test]
@@ -110,8 +110,7 @@ fn our_own_0x22_answers_a_keyed_ack_request_and_echoes_the_peers_key() {
     // and hands us its sender key. We must emit the 0x22 — and, with send
     // obfuscation on, key it so the responder reads `validReceiverKey`: the
     // trailer's receiver slot carries THEIR key, the sender slot ours.
-    let mut node = keyed_node();
-    node.enable_datagram_obfuscation(fixed_nonce);
+    let mut node = crypt_node();
     let responder = endpoint(3, 4700);
     let responder_key = 0xC0FF_EE01;
     solicit_hello_res(&mut node, responder, id(0xB0));

@@ -140,7 +140,7 @@ const DOWNLOADER_WINDOW_SECS: u64 = 180;
 const DOWNLOADER_ABSENT_SERVER: &str = "192.0.2.1:4661";
 /// `ed2k download start --serve` prints this once the listener bound both
 /// families — the bind the downloader's Known IPv6 needs.
-const DOWNLOADER_READY_MARKER: &str = "serve serving_started";
+const DOWNLOADER_READY_MARKER: &str = "serve.serving_started";
 /// And this once the file verified and landed.
 const DOWNLOADER_DONE_MARKER: &str = "download finalized";
 
@@ -708,7 +708,7 @@ fn download_claims(
     let selected: Vec<&str> = leg
         .log
         .lines()
-        .filter(|line| line.contains("download peer_selected"))
+        .filter(|line| line.contains("download.peer_selected"))
         .map(str::trim)
         .collect();
     let dialled_v4 = selected
@@ -738,7 +738,7 @@ fn download_claims(
     let named = leg
         .log
         .lines()
-        .find(|line| line.contains("peer_hello_refused code=tag_count_short"))
+        .find(|line| line.contains("peer.hello_refused code=tag_count_short"))
         .map(str::trim);
     let downloader_v4 = stage.v4(HOST_KAD_DOWNLOADER);
     let served = storer_log

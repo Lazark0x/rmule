@@ -1,5 +1,6 @@
-//! Inbound-path tests: a recruited buddy's relays riding the held link, and
-//! the slot freeing when either a recruited or an adopted link closes.
+//! Inbound-path tests: a recruited buddy's relays riding the held link, the
+//! slot freeing when either a recruited or an adopted link closes, and (in
+//! `verdicts`) each registry verdict carried out on a real connection.
 
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
@@ -14,7 +15,7 @@ use tokio::time::timeout;
 use crate::adapters::dialed_serve::SharedDialedServeSink;
 use crate::adapters::kad_runtime::SharedKadBootstrap;
 use crate::adapters::peer_transfer::PeerWorkerCommand;
-use crate::adapters::serve_runtime::{ServeConnCommand, ServeConnEvent};
+use crate::adapters::serve_runtime::{ServeInput, ServeOutput};
 use crate::buddy::{BuddyIdentity, BuddyServePosture, FindBuddyOutcome, FindBuddyReq};
 use crate::buddy_link::{RelayDisposition, SharedBuddySlot};
 
@@ -32,8 +33,8 @@ async fn held_buddy_link(
 ) -> (
     SharedBuddySlot,
     rmule_testkit::FakeBuddy,
-    mpsc::Sender<ServeConnCommand>,
-    mpsc::Receiver<ServeConnEvent>,
+    mpsc::Sender<ServeOutput>,
+    mpsc::Receiver<ServeInput>,
     crate::diagnostics::DiagnosticsState,
 ) {
     dial_a_buddy(buddy_id, buddy_hash, buddy_hash).await
@@ -48,8 +49,8 @@ async fn dial_a_buddy(
 ) -> (
     SharedBuddySlot,
     rmule_testkit::FakeBuddy,
-    mpsc::Sender<ServeConnCommand>,
-    mpsc::Receiver<ServeConnEvent>,
+    mpsc::Sender<ServeOutput>,
+    mpsc::Receiver<ServeInput>,
     crate::diagnostics::DiagnosticsState,
 ) {
     use rmule_testkit::FakeBuddy;
@@ -95,6 +96,8 @@ async fn dial_a_buddy(
     let ctx = PeerHandshakeContext {
         identity: rmule_testkit::test_identity(0x11, "rmule", 4662),
         client_id: ClientId::from_u32(0),
+        ed2k_client_id: ClientId::from_u32(0),
+        public_ip: None,
         connected_server: None,
     };
     let (accepted, buddy) = tokio::join!(
@@ -112,8 +115,7 @@ async fn dial_a_buddy(
         None,
         cmd_rx,
         evt_tx,
-        SharedCallbackTable::default(),
-        SharedTunnelClaims::default(),
+        AwaitedInbound::default(),
         InboundPeerDeps {
             slot_wait_timeout: Duration::from_secs(5),
             dialed_serve_sink: SharedDialedServeSink::default(),
@@ -133,8 +135,12 @@ async fn dial_a_buddy(
             .await
             .expect("the buddy identifies within 2s")
         {
-            Some(ServeConnEvent::Identified { user_hash, .. }) => {
-                assert_eq!(user_hash, dialer_hash, "the dialer identified as itself");
+            Some(ServeInput::Connection(ConnectionEvent::Identified { identity })) => {
+                assert_eq!(
+                    identity.user_hash(),
+                    dialer_hash,
+                    "the dialer identified as itself"
+                );
                 break;
             }
             Some(_) => continue,
@@ -403,17 +409,19 @@ async fn the_adopted_buddy_links_close_frees_the_buddy_slot() {
         "the recruit fills the slot"
     );
 
-    // The same client is a pending-callback source: register the entry the
+    // The same client is a pending-callback source: file the road the
     // triage will match. The testkit hello reports server `0.0.0.0:0` (→
     // `None`) and client id `0x2000_0002`, so that pair is the key.
-    let callbacks = SharedCallbackTable::default();
+    let awaited = AwaitedInbound::default();
     let (adopt_tx, mut adopt_rx) = mpsc::channel(1);
-    callbacks.lock().await.register(
-        CallbackKey {
-            server: None,
-            low_id: ClientId::from_u32(0x2000_0002),
-        },
-        PendingCallbackEntry {
+    let key = CallbackKey {
+        server: None,
+        low_id: ClientId::from_u32(0x2000_0002),
+    };
+    let registration = awaited.register(key, adopt_tx, mpsc::channel(1).0);
+    registration.await_callback(
+        key,
+        AdoptionBrief {
             own_status: rmule_peer::PartBitmap::downloader_empty(0),
             want_sources: true,
             file: Ed2kFileLink {
@@ -425,13 +433,14 @@ async fn the_adopted_buddy_links_close_frees_the_buddy_slot() {
                 ipv6_sources: Vec::new(),
                 sources: Default::default(),
             },
-            adopt_tx,
         },
     );
 
     let ctx = PeerHandshakeContext {
         identity: rmule_testkit::test_identity(0x11, "rmule", 4662),
         client_id: ClientId::from_u32(0),
+        ed2k_client_id: ClientId::from_u32(0),
+        public_ip: None,
         connected_server: None,
     };
     let (accepted, mut buddy) = tokio::join!(
@@ -447,8 +456,7 @@ async fn the_adopted_buddy_links_close_frees_the_buddy_slot() {
         None,
         cmd_rx,
         evt_tx,
-        Arc::clone(&callbacks),
-        SharedTunnelClaims::default(),
+        awaited.clone(),
         InboundPeerDeps {
             slot_wait_timeout: Duration::from_secs(5),
             dialed_serve_sink: SharedDialedServeSink::default(),
@@ -505,4 +513,7 @@ async fn the_adopted_buddy_links_close_frees_the_buddy_slot() {
         RelayDisposition::Rejected(crate::buddy::RelayReject::NoBuddy),
         "the adopted link's close released the buddy slot, not just the socket"
     );
+    drop(registration);
 }
+
+mod verdicts;

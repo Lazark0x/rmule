@@ -2,9 +2,9 @@
 //! event trail, a streamed part verified before its worker finishes, a
 //! crypt-capable source dialed obfuscated, and the peer hello dropping the
 //! tags that belong only to a server login.
+use rmule_testkit::HANG_GUARD;
 use std::sync::{Arc, Mutex};
 
-use crate::fixture::identity;
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent, DownloadFailure,
     DownloadedPart, PeerDownloadOutcome, PeerTransferService, PeerWorker, PeerWorkerCommand,
@@ -12,9 +12,8 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, ClientIdentity, ED2K_PART_SIZE, Ed2kFileLink, ExchangedSource, PeerCrypt,
-    PeerEndpoint, PeerSource, ServerEndpoint, SourceCryptOptions, SourceLookupTarget, Tag, TagName,
-    TagValue, UserHash,
+    ClientId, ED2K_PART_SIZE, Ed2kFileLink, PeerCrypt, PeerEndpoint, PeerSource, ServerEndpoint,
+    SourceCryptOptions, SourceLookupTarget, SourceSighting, UserHash,
 };
 use rmule_testkit::file_link;
 use rmule_testkit::file_link_without_part_hash_set;
@@ -45,6 +44,7 @@ async fn emit_streamed_part(
 
 #[tokio::test]
 async fn fake_adapters_drive_happy_path_download_events() {
+    let out_dir = tempfile::tempdir().unwrap();
     let bytes = b"hello world".to_vec();
     let client_id = ClientId::from_u32(0x0100_007F);
     let low = PeerSource::new(ClientId::from_u32(42), 4662);
@@ -53,7 +53,7 @@ async fn fake_adapters_drive_happy_path_download_events() {
     let source = ScriptedSourceLookup {
         outcome: SourceLookupOutcome {
             client_id,
-            sources: vec![ExchangedSource::plain(low), ExchangedSource::plain(high)],
+            sources: vec![SourceSighting::plain(low), SourceSighting::plain(high)],
         },
     };
     let transfer = ScriptedPeerTransfer {
@@ -68,23 +68,26 @@ async fn fake_adapters_drive_happy_path_download_events() {
         },
     };
     let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            out_dir.path(),
+        ))
         .source_lookup(source)
         .peer_transfer(transfer)
         .build();
 
-    let out_dir = tempfile::tempdir().unwrap();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: file_link_without_part_hash_set("example.bin", &bytes),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: out_dir.path().join("fake-orchestration.bin"),
+        name: rmule_testkit::file_name("fake-orchestration.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
 
     let mut events = Vec::new();
     loop {
-        let event = timeout(Duration::from_secs(2), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted next event")
             .expect("core event stream stayed open");
@@ -119,6 +122,7 @@ async fn fake_adapters_drive_happy_path_download_events() {
 
 #[tokio::test]
 async fn streamed_worker_fact_verifies_first_part_before_worker_finishes() {
+    let out_dir = tempfile::tempdir().unwrap();
     let mut bytes = vec![0xAB; ED2K_PART_SIZE as usize];
     bytes.push(0xCD);
     let link = file_link("example.bin", &bytes);
@@ -127,7 +131,7 @@ async fn streamed_worker_fact_verifies_first_part_before_worker_finishes() {
     let source = ScriptedSourceLookup {
         outcome: SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![ExchangedSource::plain(high)],
+            sources: vec![SourceSighting::plain(high)],
         },
     };
     let transfer = FirstPartThenBlocked {
@@ -135,22 +139,25 @@ async fn streamed_worker_fact_verifies_first_part_before_worker_finishes() {
         first_part,
     };
     let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            out_dir.path(),
+        ))
         .source_lookup(source)
         .peer_transfer(transfer)
         .build();
 
-    let out_dir = tempfile::tempdir().unwrap();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: link,
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: out_dir.path().join("fake-orchestration-streamed.bin"),
+        name: rmule_testkit::file_name("fake-orchestration-streamed.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
 
     loop {
-        let event = timeout(Duration::from_secs(2), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted streamed event")
             .expect("core event stream stayed open");
@@ -372,43 +379,6 @@ impl PeerTransferService for FirstPartThenBlocked {
     }
 }
 
-struct CaptureCtxIdentity {
-    captured: Arc<Mutex<Option<ClientIdentity>>>,
-    part: DownloadedPart,
-}
-
-impl PeerTransferService for CaptureCtxIdentity {
-    async fn start_peer_worker(
-        &mut self,
-        peer: PeerEndpoint,
-        ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
-    ) -> Result<PeerWorker, DownloadFailure> {
-        *self.captured.lock().unwrap() = Some(ctx.identity.clone());
-        let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
-        let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
-        let part = self.part.clone();
-        tokio::spawn(async move {
-            let _ = event_tx.send(PeerWorkerEvent::Connected).await;
-            while let Some(command) = command_rx.recv().await {
-                match command {
-                    PeerWorkerCommand::RequestPart {
-                        plan,
-                        resume_offset,
-                    } if plan.part_index == part.part_index => {
-                        emit_streamed_part(&event_tx, &part, resume_offset).await;
-                    }
-                    PeerWorkerCommand::RequestPart { .. } => {}
-                    PeerWorkerCommand::RequestAich { .. } => {}
-                    PeerWorkerCommand::RequestAichFileHash => {}
-                    PeerWorkerCommand::Shutdown { .. } => break,
-                }
-            }
-        });
-        Ok(PeerWorker::new(peer, command_tx, event_rx))
-    }
-}
-
 /// Spawn a worker that connects, streams `part` on request, and stops — the
 /// minimal delivery a one-part download needs to complete.
 fn spawn_delivering_worker(peer: PeerEndpoint, part: DownloadedPart) -> PeerWorker {
@@ -470,6 +440,7 @@ impl PeerTransferService for CapturePeerCrypt {
 
 #[tokio::test]
 async fn server_lookup_crypt_capable_source_is_obfuscate_dialed() {
+    let out_dir = tempfile::tempdir().unwrap();
     // ADR-0046: a server-lookup source that the obfuscation-aware `0x44`
     // reply gave a User Hash *and* crypt support is dialed with that hash as the
     // peer obfuscation key — amending ADR-0042's rule that server-lookup sources
@@ -477,7 +448,7 @@ async fn server_lookup_crypt_capable_source_is_obfuscate_dialed() {
     let bytes = b"obfu-dialed payload".to_vec();
     let client_id = ClientId::from_u32(0x0100_007F);
     let dial_hash = UserHash::from_bytes([0x5A; UserHash::BYTE_LEN]);
-    let crypt_capable = ExchangedSource::new(
+    let crypt_capable = SourceSighting::new(
         PeerSource::new(client_id, 4663),
         Some(dial_hash),
         Some(SourceCryptOptions::from_byte(0x01)),
@@ -499,21 +470,24 @@ async fn server_lookup_crypt_capable_source_is_obfuscate_dialed() {
     };
 
     let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            out_dir.path(),
+        ))
         .source_lookup(source)
         .peer_transfer(transfer)
         .build();
-    let out_dir = tempfile::tempdir().unwrap();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: file_link_without_part_hash_set("example.bin", &bytes),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: out_dir.path().join("obfu-dial.bin"),
+        name: rmule_testkit::file_name("obfu-dial.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
 
     loop {
-        let event = timeout(Duration::from_secs(2), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted next event")
             .expect("core event stream stayed open");
@@ -533,75 +507,5 @@ async fn server_lookup_crypt_capable_source_is_obfuscate_dialed() {
             Some(dial_hash)
         ))),
         "a crypt-capable server-lookup source's stance and hash must reach the dial",
-    );
-}
-
-#[tokio::test]
-async fn peer_hello_identity_drops_server_login_capability_tags() {
-    // The download identity carries the server-login capability tags
-    // (CT_SERVER_FLAGS) the CLI now advertises so production servers
-    // accept the login. Those tags are server-only and must not leak
-    // into the peer hello (ADR-0047), so core builds a minimal
-    // peer-hello identity for the PeerHandshakeContext.
-    let bytes = b"hello world".to_vec();
-    let client_id = ClientId::from_u32(0x0100_007F);
-    let high = PeerSource::new(client_id, 4663);
-    let source = ScriptedSourceLookup {
-        outcome: SourceLookupOutcome {
-            client_id,
-            sources: vec![ExchangedSource::plain(high)],
-        },
-    };
-    let captured = Arc::new(Mutex::new(None));
-    let transfer = CaptureCtxIdentity {
-        captured: captured.clone(),
-        part: DownloadedPart {
-            part_index: 0,
-            offset: 0,
-            bytes: bytes.clone(),
-        },
-    };
-    let server_identity = identity().with_extra_tags(vec![Tag::new(
-        TagName::length_prefixed_id(0x20),
-        TagValue::U32(0x119),
-    )]);
-
-    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
-        .source_lookup(source)
-        .peer_transfer(transfer)
-        .build();
-    let out_dir = tempfile::tempdir().unwrap();
-    core.send(CoreCommand::Download(DownloadCommand::StartDownload {
-        file: file_link_without_part_hash_set("example.bin", &bytes),
-        source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: server_identity.into(),
-        output_path: out_dir.path().join("peer-hello-identity.bin"),
-    }))
-    .await
-    .unwrap();
-
-    loop {
-        let event = timeout(Duration::from_secs(2), core.next_event())
-            .await
-            .expect("core emitted next event")
-            .expect("core event stream stayed open");
-        match event {
-            CoreEvent::Download(DownloadEvent::DownloadCompleted { .. }) => break,
-            CoreEvent::Download(DownloadEvent::DownloadFailed { reason, .. }) => {
-                panic!("download failed: {reason:?}")
-            }
-            _ => {}
-        }
-    }
-
-    let ctx_identity = captured
-        .lock()
-        .unwrap()
-        .clone()
-        .expect("peer worker was started");
-    assert!(
-        ctx_identity.extra_tags().is_empty(),
-        "peer hello identity must not carry server-login capability tags, got {:?}",
-        ctx_identity.extra_tags()
     );
 }

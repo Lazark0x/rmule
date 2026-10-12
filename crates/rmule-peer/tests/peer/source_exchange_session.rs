@@ -9,12 +9,13 @@ use std::net::Ipv4Addr;
 
 use rmule_peer::{
     AnswerSources, Hello, HelloAnswer, MiscOptions1, MiscOptions2, ModMiscOptions, PeerCommand,
-    PeerEvent, PeerHelloBody, PeerOutput, PeerSession, SourceExchangeEntry, SourceExchangeVersion,
+    PeerEvent, PeerHelloBody, PeerOutput, PeerSession, RequesterCommand, RequesterEvent,
+    SourceExchangeEntry, SourceExchangeVersion,
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{
-    ClientId, CryptStance, Ed2kText, ExchangedSource, FileHash, Ipv4Endpoint, OutboundCrypt,
-    Packet, PacketProtocol, PeerSource, SourceCryptOptions, Tag, TagName, TagValue, UserHash,
+    ClientId, CryptStance, Ed2kText, FileHash, Ipv4Endpoint, OutboundCrypt, Packet, PacketProtocol,
+    PeerSource, SourceCryptOptions, SourceSighting, Tag, TagName, TagValue, UserHash,
 };
 use rmule_testkit::peer_session::{ctx, events, file_hash, last_write_bytes, peer_at, writes};
 
@@ -62,20 +63,22 @@ fn identified_session(source_exchange_nibble: u8) -> PeerSession {
 /// geometry is still read.
 fn solicited_session(source_exchange_nibble: u8, hash: FileHash) -> PeerSession {
     let mut session = identified_session(source_exchange_nibble);
-    session.handle_command(PeerCommand::RequestFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash,
         file_size: 4096,
         own_status: rmule_peer::PartBitmap::downloader_empty(4096),
         want_sources: false,
         want_aich_root: false,
-    });
+    }));
     drain(|| session.poll_output());
     session
 }
 
-fn sources_received(outputs: &[PeerOutput], hash: FileHash) -> Option<&[ExchangedSource]> {
+fn sources_received(outputs: &[PeerOutput], hash: FileHash) -> Option<&[SourceSighting]> {
     events(outputs).into_iter().find_map(|e| match e {
-        PeerEvent::SourcesReceived { file_hash, sources } if *file_hash == hash => {
+        PeerEvent::Requester(RequesterEvent::SourcesReceived { file_hash, sources })
+            if *file_hash == hash =>
+        {
             Some(sources.as_slice())
         }
         _ => None,
@@ -109,7 +112,7 @@ fn peer_claimed_nibble_resolves_a_v3_answer_a_nibble_of_one_would_reject() {
     let h = file_hash(0x10);
     let mut session = solicited_session(3, h);
     let id = u32::from_le_bytes([1, 2, 3, 4]); // High-ID 1.2.3.4, ed2k order
-    let source = ExchangedSource::plain(PeerSource::new(ClientId::from_u32(id), 4662));
+    let source = SourceSighting::plain(PeerSource::new(ClientId::from_u32(id), 4662));
     let packet = AnswerSources {
         file_hash: h,
         sources: vec![SourceExchangeEntry::plain(source)],
@@ -153,9 +156,10 @@ fn a_malformed_answer_sources_is_dropped_without_closing_the_session() {
         "a malformed source answer never closes the session"
     );
     assert!(
-        events(&out)
-            .iter()
-            .any(|e| matches!(e, PeerEvent::SourceExchangeAnswerSkipped { .. })),
+        events(&out).iter().any(|e| matches!(
+            e,
+            PeerEvent::Requester(RequesterEvent::SourceExchangeAnswerSkipped { .. })
+        )),
         "the drop surfaces a diagnostic instead of a silent close: {:?}",
         events(&out)
     );
@@ -163,7 +167,7 @@ fn a_malformed_answer_sources_is_dropped_without_closing_the_session() {
 
 /// Provenance threading (ADR-0046 model): a v4 source that both carries a User
 /// Hash and advertises crypt support survives the consume-side filter with
-/// that provenance intact, landing in the same `ExchangedSource::peer_crypt`
+/// that provenance intact, landing in the same `SourceSighting::peer_crypt`
 /// model the server `0x44` path feeds (ADR-0046/ADR-0049).
 #[test]
 fn crypt_capable_v4_source_keeps_its_obfuscation_dial_hash_after_the_filter() {
@@ -172,7 +176,7 @@ fn crypt_capable_v4_source_keeps_its_obfuscation_dial_hash_after_the_filter() {
     let id = u32::from_le_bytes([9, 8, 7, 6]); // High-ID, ed2k order
     let hash = UserHash::from_bytes([0xAB; UserHash::BYTE_LEN]);
     let crypt = SourceCryptOptions::from_byte(0b001); // supports_crypt
-    let source = ExchangedSource::new(
+    let source = SourceSighting::new(
         PeerSource::new(ClientId::from_u32(id), 4662),
         Some(hash),
         Some(crypt),
@@ -224,7 +228,7 @@ fn sanity_filter_drops_zero_ip_loopback_and_own_endpoint_high_ids() {
         sources
             .iter()
             .copied()
-            .map(ExchangedSource::client_id)
+            .map(SourceSighting::client_id)
             .collect::<Vec<_>>(),
         vec![Some(ClientId::from_u32(sane))],
         "only the sane High-ID survives; 0-IP/loopback/own-endpoint are dropped"
@@ -258,7 +262,7 @@ fn low_id_routing_keeps_matching_server_and_parks_the_rest() {
         sources
             .iter()
             .copied()
-            .map(ExchangedSource::client_id)
+            .map(SourceSighting::client_id)
             .collect::<Vec<_>>(),
         vec![Some(ClientId::from_u32(5000))],
         "only the Low-ID declaring our connected server is kept"
@@ -296,13 +300,13 @@ fn per_file_cap_is_honored_cumulatively_across_answers() {
     // A distinct file is entirely unaffected by the first file's running
     // count — the cap is per file, not global.
     let other_hash = file_hash(0x15);
-    session.handle_command(PeerCommand::RequestFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: other_hash,
         file_size: 4096,
         own_status: rmule_peer::PartBitmap::downloader_empty(4096),
         want_sources: false,
         want_aich_root: false,
-    });
+    }));
     drain(|| session.poll_output());
     let other_id = u32::from_le_bytes([9, 9, 9, 9]);
     let other_payload = {
@@ -405,7 +409,9 @@ fn identified_sx2_session(source_exchange_nibble: u8) -> PeerSession {
 
 fn solicited_sx2_session(source_exchange_nibble: u8, hash: FileHash) -> PeerSession {
     let mut session = identified_sx2_session(source_exchange_nibble);
-    session.handle_command(PeerCommand::RequestSources { file_hash: hash });
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestSources {
+        file_hash: hash,
+    }));
     drain(|| session.poll_output());
     session
 }
@@ -436,7 +442,9 @@ fn v4_answersources2(hash: FileHash, sources: &[(u32, u16, [u8; 16], u8)]) -> Ve
 fn request_sources_asks_a_non_sx2_peer_with_op_requestsources() {
     let h = file_hash(0x31);
     let mut session = identified_session(3); // MiscOptions1 nibble only, no SX2 bit
-    session.handle_command(PeerCommand::RequestSources { file_hash: h });
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestSources {
+        file_hash: h,
+    }));
     let out = drain(|| session.poll_output());
 
     let (packet, _) = Packet::decode(&last_write_bytes(&out)).expect("request frames");
@@ -505,9 +513,10 @@ fn a_malformed_answersources2_is_dropped_without_closing_the_session() {
         "a malformed 0x84 never closes the session"
     );
     assert!(
-        events(&out)
-            .iter()
-            .any(|e| matches!(e, PeerEvent::SourceExchangeAnswerSkipped { .. })),
+        events(&out).iter().any(|e| matches!(
+            e,
+            PeerEvent::Requester(RequesterEvent::SourceExchangeAnswerSkipped { .. })
+        )),
         "the drop surfaces a diagnostic instead of a silent close: {:?}",
         events(&out)
     );
@@ -522,7 +531,9 @@ fn request_sources_frames_op_requestsources_and_answer_projects_sources_received
     let h = file_hash(0x5E);
     let mut session = identified_session(2);
 
-    session.handle_command(PeerCommand::RequestSources { file_hash: h });
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestSources {
+        file_hash: h,
+    }));
     let out = drain(|| session.poll_output());
     assert!(
         writes(&out)
@@ -535,7 +546,7 @@ fn request_sources_frames_op_requestsources_and_answer_projects_sources_received
     let id = u32::from_le_bytes([1, 2, 3, 4]);
     let answer = AnswerSources {
         file_hash: h,
-        sources: vec![SourceExchangeEntry::plain(ExchangedSource::plain(
+        sources: vec![SourceExchangeEntry::plain(SourceSighting::plain(
             PeerSource::new(ClientId::from_u32(id), 4662),
         ))],
     }
@@ -544,7 +555,7 @@ fn request_sources_frames_op_requestsources_and_answer_projects_sources_received
     let out2 = drain(|| session.poll_output());
     assert!(events(&out2).iter().any(|e| matches!(
         e,
-        PeerEvent::SourcesReceived { file_hash, sources }
+        PeerEvent::Requester(RequesterEvent::SourcesReceived { file_hash, sources })
             if *file_hash == h && sources.len() == 1 && sources[0].tcp_port() == 4662
     )));
 }
@@ -572,7 +583,9 @@ fn an_extsx_low_id_record_with_a_usable_ipv6_surfaces_as_its_ipv6() {
     body.tags.push(ModMiscOptions::rmule_claim().to_tag());
     session.handle_bytes(&HelloAnswer::new(body).encode_packet().encode());
     drain(|| session.poll_output());
-    session.handle_command(PeerCommand::RequestSources { file_hash: hash });
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestSources {
+        file_hash: hash,
+    }));
     drain(|| session.poll_output());
 
     session.handle_bytes(EMULEQT_EXTSX);
@@ -605,12 +618,14 @@ fn an_extsx_dual_stack_record_surfaces_as_one_source_with_both_addresses() {
     body.tags.push(ModMiscOptions::rmule_claim().to_tag());
     session.handle_bytes(&HelloAnswer::new(body).encode_packet().encode());
     drain(|| session.poll_output());
-    session.handle_command(PeerCommand::RequestSources { file_hash: hash });
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestSources {
+        file_hash: hash,
+    }));
     drain(|| session.poll_output());
 
     let v4 = Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 7), 4662);
     let v6 = rmule_primitives::Ipv6Endpoint::new("3fff:ed2:1::7".parse().unwrap(), 4662);
-    let dual = ExchangedSource::plain(PeerSource::HighId(v4)).with_ipv6_half(Some(v6));
+    let dual = SourceSighting::plain(PeerSource::HighId(v4)).with_ipv6_half(Some(v6));
     let answer = rmule_peer::AnswerSources2 {
         version: SourceExchangeVersion::V1,
         file_hash: hash,
@@ -624,7 +639,7 @@ fn an_extsx_dual_stack_record_surfaces_as_one_source_with_both_addresses() {
     let [source] = sources else {
         panic!("one peer, one source: {sources:?}");
     };
-    assert_eq!(source.peer_source(), PeerSource::HighId(v4));
+    assert_eq!(source.peer_source(), Some(PeerSource::HighId(v4)));
     assert_eq!(source.ipv6(), Some(v6));
 }
 
@@ -636,14 +651,16 @@ fn a_peer_below_source_exchange_version_two_is_never_asked_for_sources() {
     let h = file_hash(0x6D);
     for (nibble, asked) in [(0, false), (1, false), (2, true), (3, true)] {
         let mut session = identified_session(nibble);
-        session.handle_command(PeerCommand::RequestSources { file_hash: h });
-        session.handle_command(PeerCommand::RequestFile {
+        session.handle_command(PeerCommand::Requester(RequesterCommand::RequestSources {
+            file_hash: h,
+        }));
+        session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
             file_hash: h,
             file_size: 4096,
             own_status: rmule_peer::PartBitmap::downloader_empty(4096),
             want_sources: true,
             want_aich_root: false,
-        });
+        }));
         let out = drain(|| session.poll_output());
         let asks = writes(&out).iter().filter(|p| p.opcode() == 0x81).count();
         assert_eq!(asks > 0, asked, "nibble {nibble}: asked {asks} times");

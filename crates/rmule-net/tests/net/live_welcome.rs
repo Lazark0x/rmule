@@ -71,6 +71,7 @@ async fn live_welcome_burst() {
         login_timeout: Duration::from_secs(15),
         capture_dir: std::env::var(ENV_CAPTURE).ok().map(PathBuf::from),
         obfuscation: None,
+        obfuscated_port: None,
         // A live bench login stays classic: no IPv6 advert, so no
         // `CT_MOD_IP_V6` and no `SRVCAP_IPV6` on the wire.
         advertised_ipv6: None,

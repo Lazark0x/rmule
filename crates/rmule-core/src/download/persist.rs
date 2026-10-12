@@ -49,10 +49,12 @@ pub(super) async fn hold_part_file<S, P>(
     }
     let store_failed = |_| DownloadFailure::StoreFailed;
     let record = runner
+        .rt
         .store
         .load_download(download_id)
         .map_err(store_failed)?;
     let parts = runner
+        .rt
         .store
         .verified_parts(download_id)
         .map_err(store_failed)?;
@@ -177,6 +179,7 @@ async fn write_through_held<S, P>(
     let file = held.as_mut().ok_or_else(rejected)?;
     match file.write_part(record.offset, bytes).await {
         Ok(()) => runner
+            .rt
             .store
             .record_verified_part(download_id, record)
             .map_err(|error| {
@@ -205,6 +208,7 @@ pub(super) async fn part_file_changed<S, P>(
     change: PartFileChange,
 ) -> DownloadFailure {
     let dropped = runner
+        .rt
         .store
         .verified_parts(download_id)
         .and_then(|recorded| {
@@ -216,8 +220,8 @@ pub(super) async fn part_file_changed<S, P>(
                 })
                 .map(|part| part.part_index)
                 .collect();
-            let dropped = runner.store.drop_verified_parts(download_id, &lost)?;
-            runner.diagnostics.parts_lost(download_id, &lost);
+            let dropped = runner.rt.store.drop_verified_parts(download_id, &lost)?;
+            runner.rt.diagnostics.parts_lost(download_id, &lost);
             Ok(dropped)
         });
     let lost = match &dropped {
@@ -245,7 +249,7 @@ pub(super) async fn part_file_changed<S, P>(
         );
     }
     send_download_event(
-        &runner.evt_tx,
+        &runner.rt.evt_tx,
         DownloadEvent::PartFileLost {
             download_id,
             found: change,
@@ -258,7 +262,7 @@ pub(super) async fn part_file_changed<S, P>(
     }
     match change {
         PartFileChange::Truncated { .. } => {
-            let still = match runner.store.verified_parts(download_id) {
+            let still = match runner.rt.store.verified_parts(download_id) {
                 Ok(still) => still,
                 Err(error) => {
                     tracing::warn!(
@@ -301,13 +305,15 @@ where
         // Released before the rename: the completed file is the registry's.
         *held = None;
     }
-    if let Err(error) = runner
+    let final_path = match runner
+        .rt
         .store
         .finalize(download_id, file.file_hash, file.size)
         .await
     {
-        return Err(finalize_refused(runner, download_id, error).await);
-    }
+        Ok(final_path) => final_path,
+        Err(error) => return Err(finalize_refused(runner, download_id, error).await),
+    };
     // Parts written under file-hash-only authority become verified the moment
     // the repository's whole-file check passes at finalize.
     for part_index in file_hash_only_parts {
@@ -322,7 +328,14 @@ where
     }
 
     tracing::info!(download_id = download_id.as_u64(), "download completed",);
-    send_download_event(evt_tx, DownloadEvent::DownloadCompleted { download_id }).await;
+    send_download_event(
+        evt_tx,
+        DownloadEvent::DownloadCompleted {
+            download_id,
+            final_path,
+        },
+    )
+    .await;
     Ok(())
 }
 
@@ -362,13 +375,13 @@ async fn repair_at_finalize<S, P>(
     runner: &RunnerContext<S, P>,
     download_id: DownloadId,
 ) -> DownloadFailure {
-    match runner.store.revalidate(download_id).await {
+    match runner.rt.store.revalidate(download_id).await {
         Ok(Revalidation::Condemned(fault)) => DownloadFailure::StorageIntegrityFailed(fault),
         Ok(Revalidation::Restored { damaged, .. }) if !damaged.is_empty() => {
             let lost: Vec<u32> = damaged.iter().map(crate::PartFault::part_index).collect();
-            runner.diagnostics.parts_lost(download_id, &lost);
+            runner.rt.diagnostics.parts_lost(download_id, &lost);
             send_download_event(
-                &runner.evt_tx,
+                &runner.rt.evt_tx,
                 DownloadEvent::DamagedPartsDropped {
                     download_id,
                     damaged,
@@ -383,13 +396,13 @@ async fn repair_at_finalize<S, P>(
             // the records themselves are wrong (a file-hash-only download, or a
             // peer's hash set that lied consistently). Nothing can be named,
             // so every part and the peer's hash set go.
-            let Ok(dropped) = runner.store.drop_every_part(download_id) else {
+            let Ok(dropped) = runner.rt.store.drop_every_part(download_id) else {
                 return DownloadFailure::StoreFailed;
             };
             let lost: Vec<u32> = dropped.iter().map(|part| part.part_index).collect();
-            runner.diagnostics.parts_lost(download_id, &lost);
+            runner.rt.diagnostics.parts_lost(download_id, &lost);
             send_download_event(
-                &runner.evt_tx,
+                &runner.rt.evt_tx,
                 DownloadEvent::FinishedFileRejected {
                     download_id,
                     parts_dropped: u32::try_from(dropped.len()).unwrap_or(u32::MAX),

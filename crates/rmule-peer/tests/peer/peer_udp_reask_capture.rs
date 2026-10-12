@@ -36,12 +36,6 @@ fn amule_reask_ping_is_a_v4_on_file_ping_and_roundtrips() {
 
     // Byte-exact re-encode: our codec reproduces aMule's own datagram.
     assert_eq!(ping.encode_udp(), bytes);
-    // The reply-matrix consume path reads the hash without knowing the sender's
-    // version — it recovers the same hash off the raw datagram.
-    assert_eq!(
-        ReaskFilePing::file_hash_of(&bytes),
-        Some(FileHash::from_bytes(FILE_HASH)),
-    );
 }
 
 /// rmule's egress `OP_REASKACK`, captured 2.4 ms after the inbound ping —

@@ -4,6 +4,8 @@
 //! under.
 
 use super::*;
+use rmule_primitives::ServerEndpoint;
+
 use crate::server_list::{ManagedServer, ServerFigures, ServerListStore};
 
 const OBF_PORT: u16 = 4675;

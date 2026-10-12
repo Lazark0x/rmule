@@ -8,7 +8,7 @@ use rmule_kad::{
 use rmule_primitives::{ClientDecryptKeys, decrypt_datagram_client};
 use rmule_testkit::kad_node::{
     T0, crypt_node, crypt_to_node, datagrams, diagnostics, drain_outputs, endpoint, hello, id,
-    keyed_node, node, opened_messages, our_key_for, sent_messages, solicit_hello_res,
+    node, opened_messages, our_key_for, sent_messages, solicit_hello_res,
 };
 
 #[test]
@@ -63,15 +63,15 @@ fn a_v7_ack_request_is_not_honored() {
 #[test]
 fn an_ack_request_and_its_0x22_ride_only_keyed_datagrams() {
     // ADR-0064: the ACK's whole proof is a key in the crypt trailer, so
-    // neither leg may go out plaintext. `keyed_node` is the IPv6 bench's
-    // posture — verify keys armed, send-obfuscation not.
+    // neither leg may go out plaintext. A node without send-obfuscation has no
+    // verify keys either, so it never asks for or answers a `0x22`.
     let peer = endpoint(7, 5000);
     let hello_req = Kad2Message::HelloReq(hello(id(0xC1), peer, 8, 0))
         .encode()
         .encode();
 
     // Role A, plaintext: no sender key to carry, so no bit.
-    let mut plain = keyed_node();
+    let mut plain = node();
     plain.handle_datagram(T0, peer, &hello_req);
     let sent = sent_messages(&drain_outputs(&mut plain));
     let [(_, Kad2Message::HelloRes(res))] = sent.as_slice() else {
@@ -107,9 +107,9 @@ fn an_ack_request_and_its_0x22_ride_only_keyed_datagrams() {
         MISC_OPTIONS_ACK_REQUEST
     );
 
-    // Role B, plaintext: a keyed ack-request draws no 0x22 — a plaintext one
-    // could not echo the key and is dropped as "invalid receiver key".
-    let mut plain = keyed_node();
+    // Role B, plaintext: a keyed ack-request draws no 0x22 from a node with
+    // no keys to echo.
+    let mut plain = node();
     let responder = endpoint(3, 4700);
     solicit_hello_res(&mut plain, responder, id(0xB0));
     let request = Kad2Message::HelloRes(hello(id(0xB0), responder, 8, MISC_OPTIONS_ACK_REQUEST))

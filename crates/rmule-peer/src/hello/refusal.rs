@@ -5,7 +5,7 @@
 //! next tag's header. Both references refuse such a frame (ADR-0050); rmule
 //! refuses it too, and says so rather than calling it malformed.
 
-use rmule_primitives::{Ed2kText, Ipv4Endpoint, PrimitiveError, Tag};
+use rmule_primitives::{Ed2kText, Ipv4Endpoint, PrimitiveError, Tag, WireReader};
 
 use super::{TRAILER_LEN, hello_text};
 use crate::error::PeerHelloDecodeError;
@@ -13,7 +13,6 @@ use crate::hello_tag::{CT_MOD_VERSION, CT_NAME};
 
 /// Why rmule refused a peer's hello, as a code a consumer matches on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub enum HelloRefusalCode {
     /// The hello counted `declared` tags and carried `written`: the tags it
     /// wrote end exactly at the connected server (and the optional four-byte
@@ -78,21 +77,21 @@ pub(super) fn classify_short_count(block: &[u8], declared: u32) -> Option<PeerHe
         })
     };
     let mut tags = Vec::new();
-    let mut cursor = 0;
+    let mut reader = WireReader::new(block);
     let mut short: Option<(u32, usize)> = tail_fits(0).then_some((0, 0));
     for written in 1..declared {
-        let rest = &block[cursor..];
+        let rest = reader.remaining_bytes();
         match Tag::decode_prefix(rest) {
             Ok((tag, used)) => {
                 tags.push(tag);
-                cursor += used;
+                reader.advance_clamped(used);
             }
             Err(PrimitiveError::UnsupportedTagType { .. } | PrimitiveError::InvalidTag { .. }) => {
-                cursor += Tag::skip_prefix(rest).ok()?;
+                reader.advance_clamped(Tag::skip_prefix(rest).ok()?);
             }
             Err(_) => break,
         }
-        if tail_fits(cursor) {
+        if tail_fits(reader.position()) {
             short = Some((written, tags.len()));
         }
     }

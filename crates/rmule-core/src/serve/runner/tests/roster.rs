@@ -3,6 +3,7 @@
 //! release, the leave or the activity's own end that closes it.
 
 use super::*;
+use rmule_peer::ServerEvent;
 
 /// The enactor's own Peer Roster feed (ADR-0059): a granted or
 /// queued upload slot marks the peer's IP known, and only its release
@@ -143,7 +144,7 @@ async fn a_waiter_leaving_forgets_the_peer_roster_mark(cause: crate::WaiterLeave
         .on_conn_event(
             t0,
             holder,
-            ServeConnEvent::SlotRequested { file_hash: file },
+            ServeInput::Server(ServerEvent::SlotRequested { file_hash: file }),
             &no_modifiers,
         )
         .into();
@@ -159,7 +160,7 @@ async fn a_waiter_leaving_forgets_the_peer_roster_mark(cause: crate::WaiterLeave
         .on_conn_event(
             t0,
             waiter,
-            ServeConnEvent::SlotRequested { file_hash: file },
+            ServeInput::Server(ServerEvent::SlotRequested { file_hash: file }),
             &no_modifiers,
         )
         .into();
@@ -186,7 +187,7 @@ async fn a_waiter_leaving_forgets_the_peer_roster_mark(cause: crate::WaiterLeave
         crate::WaiterLeaveCause::Cancelled => state.on_conn_event(
             t0,
             waiter,
-            ServeConnEvent::TransferCancelled { file_hash: file },
+            ServeInput::Server(ServerEvent::TransferCancelled { file_hash: file }),
             &no_modifiers,
         ),
     }
@@ -274,7 +275,9 @@ async fn a_stopped_serve_forgets_its_holder_and_its_waiter() {
             .await
             .unwrap();
         conn_evt_tx
-            .send(ServeConnEvent::SlotRequested { file_hash: file })
+            .send(ServeInput::Server(ServerEvent::SlotRequested {
+                file_hash: file,
+            }))
             .await
             .unwrap();
         halves.push((cmd_rx, conn_evt_tx));

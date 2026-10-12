@@ -10,12 +10,10 @@ use std::future::Future;
 use std::time::{Duration, Instant};
 
 use rmule_net::peer::{Connection as PeerConnection, ObfuscationPolicy, PeerNetError};
-use rmule_peer::{
-    ClientSoftware, PartBitmap, PeerCommand, PeerHandshakeContext, SourceExchangeSupport,
-};
+use rmule_peer::{PartBitmap, PeerCommand, PeerHandshakeContext, PeerIdentity, SideCommand};
 use rmule_primitives::{
-    AichRootHash, CryptStance, Ed2kFileLink, ExchangedSource, Ipv4Endpoint, PartHash, PeerCrypt,
-    PeerEndpoint, UserHash,
+    AichRootHash, Ed2kFileLink, Ipv4Endpoint, PartHash, PeerCrypt, PeerEndpoint, SourceSighting,
+    UserHash,
 };
 use tokio::sync::mpsc;
 
@@ -28,8 +26,10 @@ use crate::{DownloadFailure, PartPlan};
 
 use super::HelloAdverts;
 use super::dialed_serve::SharedDialedServeSink;
-use super::kad_runtime::SharedKadBootstrap;
+use super::kad_runtime::{KadPresenceView, SharedKadBootstrap, SharedKadPump};
 use super::peer_transfer::worker::drive_peer_worker;
+use super::{InboundPeerDeps, SharedTunnelAdmit};
+use crate::buddy_link::SharedBuddySlot;
 
 /// One contiguous run of bytes a peer served, tagged with where it belongs.
 /// Never a whole part on its own: cross-peer assembly (ADR-0029) may stitch
@@ -109,74 +109,24 @@ pub enum PeerWorkerEvent {
     /// The handshake finished and the peer is usable. Core assigns the worker
     /// its first part here, not at spawn, so a failed handshake strands nothing.
     Connected,
-    /// The peer advertised a **client-UDP reask contact** in its hello — its
-    /// `CT_EMULE_UDPPORTS` client-half port + `MiscOptions1` UDP-version nibble
-    /// (ADR-0057). Emitted once, right after `Connected`, only when the peer
-    /// advertised a non-zero client-UDP port. The download runner records it so
-    /// a source that hangs up while queued can be UDP-reasked
-    /// (`OP_REASKFILEPING`, `0x90`) at this endpoint instead of forfeiting its
-    /// earned queue standing. Reask plumbing only — the scheduling brain ignores
-    /// it.
-    UdpContact {
-        /// The peer's client-UDP port — where an `OP_REASKFILEPING` goes.
-        udp_port: u16,
-        /// The UDP protocol version behind it, which decides what the peer's
-        /// reask answer may carry.
-        udp_version: u8,
-    },
-    /// What the peer says about source exchange (ADR-0108): the extended
-    /// protocol, its SX1 nibble, SourceExchange2 — off its hello, again when
-    /// the session frames the file request, and whenever a legacy
-    /// `OP_EMULEINFO` revises it; the latest stands. The connection's router
-    /// sends every one of them, in the session's order, so the first may
-    /// arrive before `Identified`. The download's **Source Ask Clock** keeps it, so the reask sweep can tell
-    /// whether a source ask is due for this peer after its connection is
-    /// gone. Reask plumbing — the scheduling brain ignores it.
-    SourceExchange {
-        /// The peer-side facts of the source-ask gate.
-        support: SourceExchangeSupport,
-    },
-    /// The peer's hello named its **serving buddy** (`CT_EMULE_BUDDYIP` + `CT_EMULE_BUDDYUDP`,
-    /// ADR-0061) — where a buddy callback
-    /// reaches it once this connection is gone. Emitted once, right after
-    /// `Connected`, only when the hello named a usable one. The brain keeps it
-    /// under the peer's User Hash for the source's next buddy callback.
-    ServingBuddy {
-        /// The buddy's UDP endpoint.
-        buddy_udp: rmule_primitives::Ipv4Endpoint,
-    },
-    /// The peer identified itself; `user_hash` keys its credit ledger.
-    /// Emitted once, immediately before `Connected`. `crypt` is the peer's
-    /// advertised obfuscation stance (`MiscOptions2`), which the reask
-    /// scheduler pairs with the hash into a peer-UDP crypt target (ADR-0046)
-    /// — aMule gates its own `0x90` on exactly those two facts — and the
-    /// download brain keeps as the stance every later dial of this peer meets
-    /// (ADR-0049).
-    Identified {
-        /// The peer's claimed identity and its credit ledger key.
-        user_hash: UserHash,
-        /// Its advertised obfuscation stance — read off the hello for a
-        /// dialed worker, or carried through from the accept-side identity
-        /// for an adopted one, which read the same hello on the
-        /// serve side.
-        crypt: Option<CryptStance>,
-        /// Which client the peer runs, read off the same hello — the
-        /// source row's Software.
-        software: ClientSoftware,
-    },
-    /// The peer's `OP_EMULEINFO` named its software after `Identified` — the
-    /// only version a pre-0.42 mule sends. The source row's Software is
-    /// replaced; nothing else moves. Forwarded by the router directly, like
-    /// `IdentityVerified`.
-    SoftwareRevised {
-        /// Which client the peer runs, hello and block read together.
-        software: ClientSoftware,
-    },
+    /// The peer's identity, as its session keeps it: sent once its hello is
+    /// read — immediately before `Connected` — and again whole each time the
+    /// session revises it (a legacy `OP_EMULEINFO`, an `OP_CHANGE_CLIENT_IP`),
+    /// in the session's order. Its User Hash keys the credit ledger, its
+    /// stance is what every later dial of the peer meets while the worker
+    /// lives (ADR-0049), its client-UDP contact and crypt target are what a
+    /// queue standing it earns reasks with (ADR-0057, ADR-0046), its
+    /// source-exchange facts feed the download's **Source Ask Clock**
+    /// (ADR-0108), its serving buddy is kept under its hash for the source's
+    /// next buddy callback (ADR-0061), and its software names the source row.
+    /// A dialed worker's comes off its hello; an adopted inbound worker's is
+    /// the one the accept side read off the same hello.
+    Identity(PeerIdentity),
     /// Secure User Identification proved the peer owns the `user_hash` it
     /// claimed; `public_key` is its RSA public key DER (ADR-0041). Core binds
     /// it as a **Secured Identity**. A connection-lifecycle fact, not a
     /// transfer step: it may arrive at any point relative to the transfer
-    /// events (including before `Identified` — the router forwards it
+    /// events (including before `Identity` — the router forwards it
     /// directly, off the transfer flow).
     IdentityVerified {
         /// The hash the proof was for.
@@ -242,7 +192,7 @@ pub enum PeerWorkerEvent {
     SourcesReceived {
         /// The sources it named, each with the optional User Hash and crypt
         /// options a v≥2 answer adds.
-        sources: Vec<ExchangedSource>,
+        sources: Vec<SourceSighting>,
     },
     /// The peer answered our `OP_AICHREQUEST` with the AICH recovery data for
     /// `part` (ADR-0038). `recovery_data` is the opaque tree branch; the runner
@@ -385,6 +335,12 @@ pub trait PeerTransferService: Send + 'static {
     /// private copy of any. Default no-op: a fake that dials nothing holds no
     /// cell.
     fn adopt_cells(&mut self, _cells: &super::AdapterCells) {}
+
+    /// Re-point a dialed link's `0x99` Kad gate at `kad_presence`, the way
+    /// [`ServeRuntimeService::set_kad_presence`](crate::adapters::ServeRuntimeService::set_kad_presence)
+    /// does for a served one. Default no-op: a fake that dials nothing gates
+    /// on nothing.
+    fn set_kad_presence(&mut self, _kad_presence: KadPresenceView) {}
 }
 
 /// What the download runner tells a worker beyond the file it downloads.
@@ -463,6 +419,42 @@ pub struct RuntimePeerTransferService {
     /// Where a dialed peer's refused hello is reported (ADR-0050). Default
     /// (never installed, reports go nowhere) off `Core::builder`.
     hello_refusals: crate::hello_refusals::SharedHelloRefusals,
+    /// The node-wide services a dialed link's side-channel frames are carried
+    /// to, as an accepted link's are. Default (never installed) off
+    /// `Core::builder`: the frames reach nothing.
+    side: SideServices,
+}
+
+/// The cells only a link's side-channel frames reach (Kad firewall checks, the
+/// buddy keepalive, `0x99`); the rest of what that carrying needs the service
+/// already holds.
+#[derive(Clone, Default)]
+struct SideServices {
+    kad_pump: SharedKadPump,
+    buddy_slot: SharedBuddySlot,
+    peer_roster: crate::peer_roster::SharedPeerRoster,
+    kad_presence: KadPresenceView,
+    file_known: crate::known_files::SharedFileKnown,
+    tunnel_admit: SharedTunnelAdmit,
+}
+
+impl RuntimePeerTransferService {
+    /// What a link this service drives hands its frames and hello facts to.
+    fn link_deps(&self) -> InboundPeerDeps {
+        InboundPeerDeps {
+            slot_wait_timeout: self.slot_wait_timeout,
+            dialed_serve_sink: self.dialed_serve_sink.clone(),
+            kad_bootstrap: self.kad_bootstrap.clone(),
+            kad_pump: self.side.kad_pump.clone(),
+            buddy_slot: self.side.buddy_slot.clone(),
+            addresses: self.addresses.clone(),
+            peer_roster: self.side.peer_roster.clone(),
+            kad_presence: self.side.kad_presence.clone(),
+            file_known: self.side.file_known.clone(),
+            tunnel_admit: self.side.tunnel_admit.clone(),
+            hello_refusals: self.hello_refusals.clone(),
+        }
+    }
 }
 
 impl RuntimePeerTransferService {
@@ -478,6 +470,7 @@ impl RuntimePeerTransferService {
             addresses: crate::address_learning::SharedAddressLearning::new(),
             ip_filter: SharedIpFilter::default(),
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
+            side: SideServices::default(),
         }
     }
 
@@ -500,6 +493,7 @@ impl RuntimePeerTransferService {
             addresses: crate::address_learning::SharedAddressLearning::new(),
             ip_filter: SharedIpFilter::default(),
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
+            side: SideServices::default(),
         }
     }
 
@@ -553,6 +547,15 @@ impl PeerTransferService for RuntimePeerTransferService {
         self.addresses = cells.addresses().clone();
         self.ip_filter = cells.ip_filter.clone();
         self.hello_refusals = cells.hello_refusals.clone();
+        self.side.kad_pump = cells.kad_pump.clone();
+        self.side.buddy_slot = cells.buddy_slot.clone();
+        self.side.peer_roster = cells.peer_roster.clone();
+        self.side.file_known = cells.file_known.clone();
+        self.side.tunnel_admit = cells.tunnel_admit.clone();
+    }
+
+    fn set_kad_presence(&mut self, kad_presence: KadPresenceView) {
+        self.side.kad_presence = kad_presence;
     }
 
     async fn start_peer_worker(
@@ -577,13 +580,9 @@ impl PeerTransferService for RuntimePeerTransferService {
             own_status,
             want_sources,
         } = brief;
-        let slot_wait_timeout = self.slot_wait_timeout;
-        let dialed_serve_sink = self.dialed_serve_sink.clone();
         let ban_store = self.ban_store.clone();
         let ip_filter = self.ip_filter.clone();
-        let kad_bootstrap = self.kad_bootstrap.clone();
-        let addresses = self.addresses.clone();
-        let hello_refusals = self.hello_refusals.clone();
+        let deps = self.link_deps();
         // Every advert read now, per dial: what is true when the
         // peer is met is what the hello says — the SUI keypair included, with
         // a challenge minted for this dial alone (ADR-0041 anti-replay), so a
@@ -652,11 +651,7 @@ impl PeerTransferService for RuntimePeerTransferService {
                 None,
                 command_rx,
                 event_tx,
-                slot_wait_timeout,
-                dialed_serve_sink,
-                kad_bootstrap,
-                addresses,
-                hello_refusals,
+                deps,
             )
             .await;
         });
@@ -702,7 +697,9 @@ pub(crate) async fn enact_tcp_dial_back(
     let options = adverts.connect_options(requester_crypt);
     match PeerConnection::connect_identified(peer, ctx, options).await {
         Ok((conn, _identity)) => {
-            let _ = conn.send(PeerCommand::SendKadFirewallAck).await;
+            let _ = conn
+                .send(PeerCommand::Side(SideCommand::SendKadFirewallAck))
+                .await;
             // `shutdown` drains the queued ack onto the socket before it closes
             // (the driver frames each command in order), then ends the session —
             // aMule's `KS_CONNECTED_FWCHECK` → `KS_NONE`.

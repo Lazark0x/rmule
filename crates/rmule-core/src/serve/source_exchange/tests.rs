@@ -6,15 +6,15 @@ use rmule_primitives::{ClientId, Ipv4Endpoint, PeerSource};
 
 use super::*;
 
-fn high_id(octets: [u8; 4], port: u16) -> ExchangedSource {
-    ExchangedSource::plain(PeerSource::new(
+fn high_id(octets: [u8; 4], port: u16) -> SourceSighting {
+    SourceSighting::plain(PeerSource::new(
         ClientId::from_u32(u32::from_le_bytes(octets)),
         port,
     ))
 }
 
-fn low_id(id: u32) -> ExchangedSource {
-    ExchangedSource::plain(PeerSource::new(ClientId::from_u32(id), 4662))
+fn low_id(id: u32) -> SourceSighting {
+    SourceSighting::plain(PeerSource::new(ClientId::from_u32(id), 4662))
 }
 
 fn endpoint(octets: [u8; 4], port: u16) -> PeerEndpoint {
@@ -54,7 +54,11 @@ fn low_id_candidates_and_the_requester_itself_are_skipped() {
         &requester([9, 9, 9, 9], None),
         &candidates,
     );
-    let ids: Vec<u32> = out.iter().map(|s| s.peer_source().wire_id()).collect();
+    let ids: Vec<u32> = out
+        .iter()
+        .filter_map(|s| s.peer_source())
+        .map(PeerSource::wire_id)
+        .collect();
     assert_eq!(
         ids,
         vec![u32::from_le_bytes([1, 2, 3, 4])],
@@ -97,7 +101,11 @@ fn the_needed_chunk_filter_keeps_only_sources_offering_a_missing_part() {
         &requester,
         &[has_part0, has_part1],
     );
-    let ids: Vec<u32> = out.iter().map(|s| s.peer_source().wire_id()).collect();
+    let ids: Vec<u32> = out
+        .iter()
+        .filter_map(|s| s.peer_source())
+        .map(PeerSource::wire_id)
+        .collect();
     assert_eq!(
         ids,
         vec![u32::from_le_bytes([5, 6, 7, 8])],

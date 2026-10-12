@@ -5,7 +5,8 @@
 
 use crate::fixture::plain_hello_body;
 use rmule_peer::{
-    Hello, HelloAnswer, PeerCloseReason, PeerCommand, PeerEvent, PeerOutput, PeerSession,
+    ConnectionCommand, ConnectionEvent, Hello, HelloAnswer, NoticeEvent, PeerCloseReason,
+    PeerCommand, PeerEvent, PeerOutput, PeerSession,
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{Ed2kText, Packet, PacketProtocol, UserHash};
@@ -18,7 +19,7 @@ fn start_emits_hello_event_then_write() {
     let outputs = drain(|| session.poll_output());
     assert!(matches!(
         outputs[0],
-        PeerOutput::Event(PeerEvent::PeerHelloSent)
+        PeerOutput::Event(PeerEvent::Connection(ConnectionEvent::HelloSent))
     ));
     match &outputs[1] {
         PeerOutput::Write(bytes) => {
@@ -47,10 +48,12 @@ fn hello_answer_identifies_peer() {
     let identified = outputs
         .iter()
         .find_map(|o| match o {
-            PeerOutput::Event(PeerEvent::PeerIdentified { identity }) => Some(identity),
+            PeerOutput::Event(PeerEvent::Connection(ConnectionEvent::Identified { identity })) => {
+                Some(identity)
+            }
             _ => None,
         })
-        .expect("PeerIdentified emitted");
+        .expect("Identified emitted");
     assert_eq!(identified.user_hash(), user_hash);
     assert_eq!(
         identified.nickname().map(Ed2kText::to_display_string),
@@ -72,14 +75,14 @@ fn unknown_opcode_emits_event_without_closing() {
     let unknown = outputs
         .iter()
         .find_map(|o| match o {
-            PeerOutput::Event(PeerEvent::UnknownPeerPacket {
+            PeerOutput::Event(PeerEvent::Notice(NoticeEvent::UnknownPacket {
                 protocol: _,
                 opcode,
                 payload_len,
-            }) => Some((*opcode, *payload_len)),
+            })) => Some((*opcode, *payload_len)),
             _ => None,
         })
-        .expect("UnknownPeerPacket emitted");
+        .expect("UnknownPacket emitted");
     assert_eq!(unknown, (0x77, 3));
     assert!(!outputs.iter().any(|o| matches!(o, PeerOutput::Close(_))));
 }
@@ -104,9 +107,11 @@ fn malformed_hello_answer_closes_with_protocol_violation() {
     // immediately before Close, so the terminal pair is the last two outputs.
     assert!(matches!(
         outputs.iter().rev().nth(1),
-        Some(PeerOutput::Event(PeerEvent::Disconnected {
-            reason: PeerCloseReason::ProtocolViolation,
-        }))
+        Some(PeerOutput::Event(PeerEvent::Connection(
+            ConnectionEvent::Disconnected {
+                reason: PeerCloseReason::ProtocolViolation,
+            }
+        )))
     ));
     assert!(matches!(
         outputs.last(),
@@ -119,14 +124,14 @@ fn disconnect_command_closes_locally() {
     let mut session = PeerSession::new_outbound(peer(), ctx());
     session.start();
     let _ = drain(|| session.poll_output());
-    session.handle_command(PeerCommand::Disconnect);
+    session.handle_command(PeerCommand::Connection(ConnectionCommand::Disconnect));
 
     let outputs = drain(|| session.poll_output());
     assert!(outputs.iter().any(|o| matches!(
         o,
-        PeerOutput::Event(PeerEvent::Disconnected {
+        PeerOutput::Event(PeerEvent::Connection(ConnectionEvent::Disconnected {
             reason: PeerCloseReason::Local,
-        })
+        }))
     )));
     assert!(matches!(
         outputs.last(),
@@ -181,7 +186,7 @@ fn truncated_bytes_buffer_across_calls_until_complete() {
     // The session accumulates partial frames in its in-buffer and only
     // dispatches once `Packet::decode` returns a full frame. Splitting
     // an OP_HELLOANSWER across two `handle_bytes` calls must yield a
-    // single PeerIdentified, not a protocol violation or duplicate
+    // single Identified, not a protocol violation or duplicate
     // event.
     let user_hash = UserHash::from_bytes([0x88; UserHash::BYTE_LEN]);
     let answer = HelloAnswer::new(plain_hello_body(user_hash))
@@ -196,9 +201,10 @@ fn truncated_bytes_buffer_across_calls_until_complete() {
     session.handle_bytes(&answer[..split_at]);
     let mid = drain(|| session.poll_output());
     assert!(
-        mid.iter()
-            .all(|o| !matches!(o, PeerOutput::Event(PeerEvent::PeerIdentified { .. })))
-            && mid.iter().all(|o| !matches!(o, PeerOutput::Close(_))),
+        mid.iter().all(|o| !matches!(
+            o,
+            PeerOutput::Event(PeerEvent::Connection(ConnectionEvent::Identified { .. }))
+        )) && mid.iter().all(|o| !matches!(o, PeerOutput::Close(_))),
         "no premature identify or close on partial frame"
     );
 
@@ -206,9 +212,14 @@ fn truncated_bytes_buffer_across_calls_until_complete() {
     let outputs = drain(|| session.poll_output());
     let identified_count = outputs
         .iter()
-        .filter(|o| matches!(o, PeerOutput::Event(PeerEvent::PeerIdentified { .. })))
+        .filter(|o| {
+            matches!(
+                o,
+                PeerOutput::Event(PeerEvent::Connection(ConnectionEvent::Identified { .. }))
+            )
+        })
         .count();
-    assert_eq!(identified_count, 1, "PeerIdentified emitted exactly once");
+    assert_eq!(identified_count, 1, "Identified emitted exactly once");
     assert!(!outputs.iter().any(|o| matches!(o, PeerOutput::Close(_))));
 }
 
@@ -229,7 +240,10 @@ fn unexpected_op_hello_after_we_dialed_is_logged_as_unknown() {
     let outputs = drain(|| session.poll_output());
     assert!(outputs.iter().any(|o| matches!(
         o,
-        PeerOutput::Event(PeerEvent::UnknownPeerPacket { opcode: 0x01, .. })
+        PeerOutput::Event(PeerEvent::Notice(NoticeEvent::UnknownPacket {
+            opcode: 0x01,
+            ..
+        }))
     )));
     assert!(!outputs.iter().any(|o| matches!(o, PeerOutput::Close(_))));
 }
@@ -237,7 +251,7 @@ fn unexpected_op_hello_after_we_dialed_is_logged_as_unknown() {
 #[test]
 fn second_hello_answer_after_identified_is_logged_as_unknown() {
     // After Identified, a second OP_HELLOANSWER is no longer a state
-    // transition; the session must not re-emit PeerIdentified and must
+    // transition; the session must not re-emit Identified and must
     // not close. Logging as Unknown matches the "preserve well-formed
     // unknown packets" discipline (ADR-0018) and keeps the session
     // available for whatever the peer wants to send next.
@@ -256,12 +270,14 @@ fn second_hello_answer_after_identified_is_logged_as_unknown() {
     let outputs = drain(|| session.poll_output());
     assert!(outputs.iter().any(|o| matches!(
         o,
-        PeerOutput::Event(PeerEvent::UnknownPeerPacket { opcode: 0x4C, .. })
+        PeerOutput::Event(PeerEvent::Notice(NoticeEvent::UnknownPacket {
+            opcode: 0x4C,
+            ..
+        }))
     )));
-    assert!(
-        !outputs
-            .iter()
-            .any(|o| matches!(o, PeerOutput::Event(PeerEvent::PeerIdentified { .. })))
-    );
+    assert!(!outputs.iter().any(|o| matches!(
+        o,
+        PeerOutput::Event(PeerEvent::Connection(ConnectionEvent::Identified { .. }))
+    )));
     assert!(!outputs.iter().any(|o| matches!(o, PeerOutput::Close(_))));
 }

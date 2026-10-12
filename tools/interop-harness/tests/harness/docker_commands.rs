@@ -234,9 +234,9 @@ fn exec_command_uses_container_name_and_command_args() {
 }
 
 #[test]
-fn is_retriable_build_export_failure_matches_the_three_signatures_only() {
-    // The three containerd content-store races observed twice in one bench
-    // window (paraphrased; digests/refs elided as "…").
+fn is_retriable_build_export_failure_matches_the_containerd_races_only() {
+    // The containerd content-store races seen on bench windows (paraphrased;
+    // digests/refs elided as "…").
     assert!(is_retriable_build_export_failure(
         "failed to export layer sha256:abc123: content digest sha256:def456: not found"
     ));
@@ -245,6 +245,28 @@ fn is_retriable_build_export_failure_matches_the_three_signatures_only() {
     ));
     assert!(is_retriable_build_export_failure(
         "failed to prepare extraction snapshot sha256:abc123: not found"
+    ));
+    // The ingest rename race in full, as colima's legacy builder printed it
+    // on 2026-10-12 after the rmule-tools release compile.
+    assert!(is_retriable_build_export_failure(
+        "failed to export layer: CreateDiff: mount callback failed on \
+         /var/lib/containerd/tmpmounts/containerd-mount2671156897: mount callback failed on \
+         /var/lib/containerd/tmpmounts/containerd-mount1948191227: failed to commit: rename \
+         /var/lib/containerd/io.containerd.content.v1.content/ingest/3b89bd78e36235f1fababb2c963d531b716e33247f151a8167c4fe4a810ce402/data \
+         /var/lib/containerd/io.containerd.content.v1.content/blobs/sha256/45ad7249cb3e01c423486a60b29445eb190f07e624dd5c872b594aa2817f2e3b: \
+         no such file or directory"
+    ));
+    // The colima/containerd lease race, as the harness's error carried it
+    // (mount suffix elided as "…"): the build died after a full release
+    // compile, and a bare rebuild of the same tree went through.
+    assert!(is_retriable_build_export_failure(
+        "build rmule-tools driver image: container runtime exited unsuccessfully: \
+         failed to export layer: CreateDiff: NotFound: mount callback failed on \
+         /var/lib/containerd/tmpmounts/containerd-mount…: failed to commit: lease does not exist"
+    ));
+    // A full disk fails the same export step but a retry cannot clear it.
+    assert!(!is_retriable_build_export_failure(
+        "failed to export layer: write /var/lib/docker/tmp/layer: no space left on device"
     ));
     // A real compile error must never be retried.
     assert!(!is_retriable_build_export_failure(

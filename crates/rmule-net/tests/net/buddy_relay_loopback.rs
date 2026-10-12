@@ -13,7 +13,7 @@ use std::net::Ipv4Addr;
 
 use crate::fixture::{options, peer_endpoint};
 use rmule_net::peer::Connection;
-use rmule_peer::{Callback, PeerCommand};
+use rmule_peer::{Callback, PeerCommand, SideCommand};
 use rmule_primitives::{FileHash, Ipv4Endpoint, UserHash};
 use rmule_testkit::peer_session::serverless_ctx;
 use rmule_testkit::{FakePeer, PeerScript};
@@ -39,7 +39,7 @@ async fn buddy_relay_delivers_the_0x99_callback_over_the_dial_surface() {
         file_hash: FileHash::from_bytes([0xCD; 16]),
         requester: Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 5), 4662),
     };
-    conn.send(PeerCommand::SendBuddyCallback(callback))
+    conn.send(PeerCommand::Side(SideCommand::SendBuddyCallback(callback)))
         .await
         .expect("queue the buddy callback relay");
     conn.shutdown()

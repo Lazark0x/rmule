@@ -49,6 +49,7 @@ async fn the_welcome_burst_lands_the_connected_servers_load_on_its_row() {
             over_ipv6: false,
             punch: Default::default(),
             grants: rmule_ed2k::ServerGrants::default(),
+            reach: None,
             server: connected(),
             facts,
         },
@@ -92,6 +93,7 @@ async fn a_server_ident_folds_the_servers_own_name_into_the_list() {
             over_ipv6: false,
             punch: Default::default(),
             grants: rmule_ed2k::ServerGrants::default(),
+            reach: None,
             server: connected(),
             facts,
         },
@@ -155,6 +157,7 @@ async fn the_servers_ipv6_verdict_is_published_kept_across_a_silent_ident_and_cl
             over_ipv6: false,
             punch: Default::default(),
             grants: rmule_ed2k::ServerGrants::default(),
+            reach: None,
             server: connected(),
             facts,
         },
@@ -252,6 +255,7 @@ async fn an_ipv6_reflection_is_adopted_only_from_an_ipv6_session() {
                 over_ipv6,
                 punch: Default::default(),
                 grants: rmule_ed2k::ServerGrants::default(),
+                reach: None,
                 server: connected(),
                 facts,
             },
@@ -300,7 +304,6 @@ async fn a_refused_and_an_ignored_introduction_both_reach_the_natt_front() {
     let (front_tx, mut front_rx) = mpsc::channel(8);
     front.install(front_tx);
     punch.install_natt_front(front);
-    punch.set_live(true);
 
     let (evt_tx, evt_rx) = mpsc::channel(8);
     let (cmd_tx, mut cmd_rx) = mpsc::channel(8);
@@ -317,10 +320,17 @@ async fn a_refused_and_an_ignored_introduction_both_reach_the_natt_front() {
         },
     );
 
+    // Establishment's write: the keepalive started on this session.
+    punch.go_live(&handle);
+
     let refused = ClientId::from_u32(1337);
     let ignored = ClientId::from_u32(1338);
     for target in [refused, ignored] {
-        handle.request_holepunch(target, 4665).await;
+        assert!(
+            punch
+                .coordinator_session()
+                .request_introduction(target, 4665)
+        );
         assert!(matches!(
             cmd_rx.recv().await.unwrap(),
             Ed2kCommand::RequestHolepunch { .. }

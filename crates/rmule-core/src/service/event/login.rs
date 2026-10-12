@@ -27,7 +27,15 @@ pub enum LoginStep {
         /// Whether the row settled inside the bound.
         settled: bool,
     },
-    /// The TCP dial to the server did not come up; a
+    /// How the link to the server is about to be opened — plain or
+    /// obfuscated, and why plain (ADR-0042). Stated before every dial, so a
+    /// fallback after a failed obfuscated attempt is a second one.
+    LinkChosen {
+        /// The link.
+        link: LoginLink,
+    },
+    /// The TCP dial to the server did not come up, or an obfuscated one did
+    /// and its crypt handshake did not complete; a plain fallback or a
     /// [`ServerConnectFailure::Unreachable`](super::ServerConnectFailure::Unreachable)
     /// follows.
     DialFailed {
@@ -218,6 +226,38 @@ pub struct LoginClaim {
     pub advertised_ipv6: Option<Ipv6Addr>,
 }
 
+/// How a login's link to the server is opened (ADR-0042): aMule's dial gate
+/// (`ServerSocket.cpp:786-795`) read against our policy and what the server
+/// has said of itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoginLink {
+    /// The server's own port, plain.
+    Plain {
+        /// Why not obfuscated.
+        why: PlainLinkReason,
+    },
+    /// The server's obfuscation TCP port, with the server form of the crypt
+    /// handshake before the login.
+    Obfuscated {
+        /// The port dialed.
+        port: u16,
+    },
+}
+
+/// Why a login's link is plain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlainLinkReason {
+    /// Our policy does not initiate obfuscation: it is off, or `Supported`.
+    PolicyDoesNotInitiate,
+    /// Our policy initiates, but the server has not said it takes obfuscation
+    /// over TCP: no obfuscation TCP port is known for it, or neither its UDP
+    /// nor its TCP flags carry `TCPOBFUSCATION`.
+    ServerNotKnownToObfuscate,
+    /// The obfuscated attempt failed and the policy is `Requested`, which
+    /// falls back to plain where `Required` does not.
+    ObfuscatedAttemptFailed,
+}
+
 /// Why a dial to a server did not come up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DialFailure {
@@ -232,6 +272,14 @@ pub enum DialFailure {
     },
     /// The connection's driver ended before the dial settled.
     DriverEnded,
+    /// The obfuscated link came up, but the server form of the crypt
+    /// handshake did not complete (ADR-0042).
+    CryptHandshake {
+        /// How it failed: the socket's error, `TimedOut` for a server that
+        /// said nothing within the connect timeout, `InvalidData` for an
+        /// answer that did not decrypt to the sync magic.
+        kind: std::io::ErrorKind,
+    },
 }
 
 /// How a link ended before its login was answered.

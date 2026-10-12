@@ -44,6 +44,10 @@ pub(crate) struct AddressLearning {
     /// up and the port they share. The truth an advert derives from — never
     /// the configured selection, which says only what was *attempted*.
     binds: BTreeMap<SocketRole, RoleBind>,
+    /// The port each role first bound in this process, kept after its socket
+    /// closed: a socket the settings leave to the OS (port `0`) binds it
+    /// again, as aMule changes its ports only on a restart of the program.
+    held_ports: BTreeMap<SocketRole, u16>,
     /// The addresses this host currently holds, newest refresh wins. Both a
     /// tier of its own and the corroboration filter's evidence.
     interfaces: Vec<IpAddr>,
@@ -230,6 +234,7 @@ impl AddressLearning {
     /// verdict falls back to: with no NAT in the path, the port the world
     /// reaches us on *is* the bound one.
     pub(crate) fn record_bind(&mut self, role: SocketRole, binds: &FamilyBinds, port: u16) {
+        self.held_ports.entry(role).or_insert(port);
         self.binds.insert(
             role,
             RoleBind {
@@ -277,6 +282,12 @@ impl AddressLearning {
         self.binds
             .get(&role)
             .map(|bind| (bind.families.clone(), bind.port))
+    }
+
+    /// The port `role` first bound in this process, whether or not its socket
+    /// is open now; `None` before it ever bound.
+    pub(crate) fn held_port(&self, role: SocketRole) -> Option<u16> {
+        self.held_ports.get(&role).copied()
     }
 
     /// Our external address in `family` **only while a fresh tier holds it** —
@@ -394,8 +405,10 @@ impl AddressLearning {
     /// The **Own Address** at `now`: everything a reader of our own address
     /// can project — per family the fresh-or-stale address and the fresh one,
     /// per (family, role) the External Endpoint verdict, and each role's
-    /// learned port. Two equal projections mean no reader can tell the store
-    /// moved, which is what the **Own Address Generation** compares.
+    /// learned port — with the NAT facts read beside it, each family's **NAT
+    /// Hint** and each role's **Own Mapping**. Two equal projections mean no
+    /// reader can tell the store moved, which is what the **Own Address
+    /// Generation** compares.
     fn own_address(&self, now: Instant) -> OwnAddress {
         let families = [AddressFamily::V4, AddressFamily::V6];
         OwnAddress {
@@ -404,7 +417,24 @@ impl AddressLearning {
             endpoints: families
                 .map(|family| SocketRole::ALL.map(|role| self.endpoint(family, role, now))),
             learned_ports: SocketRole::ALL.map(|role| self.learned_port(role, now)),
+            hints: families.map(|family| self.nat_hint(family, now)),
+            own_mappings: SocketRole::ALL.map(|role| self.own_mapping(role, now)),
         }
+    }
+
+    /// The earliest instant after `now` at which the projection can move with
+    /// nobody writing — the edge the **Own Address Generation** never
+    /// announces. `None` while nothing remembered can lapse.
+    pub(crate) fn next_lapse(&self, now: Instant) -> Option<Instant> {
+        let addresses = self
+            .addresses
+            .values()
+            .filter_map(|ladder| ladder.next_lapse(now));
+        let ports = self
+            .ports
+            .values()
+            .filter_map(|ladder| ladder.next_lapse(now));
+        addresses.chain(ports).min()
     }
 
     /// The **Extern Kad Port** when `role` is UDP: the best fresh port tier
@@ -633,6 +663,8 @@ struct OwnAddress {
     addresses: [(Option<IpAddr>, Option<IpAddr>); 2],
     endpoints: [[EndpointVerdict; SocketRole::ALL.len()]; 2],
     learned_ports: [Option<u16>; SocketRole::ALL.len()],
+    hints: [Option<NatHint>; 2],
+    own_mappings: [OwnMapping; SocketRole::ALL.len()],
 }
 
 /// An address and a port as the endpoint the two name together.
@@ -668,7 +700,7 @@ pub(crate) struct SharedAddressLearning {
     /// The **Own Address Generation**: a counter bumped by every
     /// write that moved the [`OwnAddress`] projection — the one change event
     /// every reader of our own address that caches (the Kad node, the port
-    /// mapper) subscribes to. A write that moved nothing a reader can see
+    /// mapper, the reachability trail) subscribes to. A write that moved nothing a reader can see
     /// bumps nothing, so an unchanged re-observation costs no wake.
     own_address: Arc<watch::Sender<u64>>,
 }
@@ -698,11 +730,12 @@ impl SharedAddressLearning {
     }
 
     /// A receiver that wakes on every **Own Address Generation** — any write
-    /// that moved our own address, in either family, or a learned port
-    /// The value is immaterial; the wake is the fact, and the
-    /// subscriber re-reads the store. Time alone never wakes it: a freshness
-    /// window that lapses with nobody writing is the one edge a subscriber
-    /// that caches must still catch on a clock of its own.
+    /// that moved our own address, in either family, a learned port, a NAT
+    /// Hint or an Own Mapping. The value is immaterial; the wake is the fact,
+    /// and the subscriber re-reads the store. Time alone never wakes it: a
+    /// freshness window that lapses with nobody writing is the one edge a
+    /// subscriber that caches must still catch, at
+    /// [`next_lapse`](Self::next_lapse) or on a clock of its own.
     pub(crate) fn own_address_changed(&self) -> watch::Receiver<u64> {
         self.own_address.subscribe()
     }
@@ -769,6 +802,13 @@ impl SharedAddressLearning {
         self.with(|store, now| store.own_mapping(role, now))
     }
 
+    /// When the projection can next move with nobody writing (see
+    /// [`AddressLearning::next_lapse`]): where a reader that caches it reads
+    /// again, instead of on a clock of its own.
+    pub(crate) fn next_lapse(&self) -> Option<Instant> {
+        self.with(|store, now| store.next_lapse(now))
+    }
+
     /// See [`AddressLearning::forget_kad_port_round`].
     pub(crate) fn forget_kad_port_round(&self, role: SocketRole) {
         self.write(|store, _| store.forget_kad_port_round(role));
@@ -794,6 +834,11 @@ impl SharedAddressLearning {
     /// What `role`'s **Family Pair** bound (see [`AddressLearning::bind`]).
     pub(crate) fn bind(&self, role: SocketRole) -> Option<(Vec<AddressFamily>, u16)> {
         self.with(|store, _| store.bind(role))
+    }
+
+    /// The port `role` first bound (see [`AddressLearning::held_port`]).
+    pub(crate) fn held_port(&self, role: SocketRole) -> Option<u16> {
+        self.with(|store, _| store.held_port(role))
     }
 
     /// See [`AddressLearning::holds_interface`].

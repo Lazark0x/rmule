@@ -1,13 +1,13 @@
-//! Server obfuscation connect wiring (ADR-0042): rmule dials a
-//! server with an obfuscation policy, completes the DH handshake, and its login
-//! flows through the crypt layer — plus the `Requested` plaintext fallback when
-//! the server does not speak obfuscation. The counterparty is the testkit
-//! [`FakeEd2kServer`], whose obfuscated accept byte-0-discriminates exactly
-//! like a real crypt-capable server.
+//! Server obfuscation connect wiring (ADR-0042): rmule dials a server's
+//! obfuscation port, completes the DH handshake, and its login flows through
+//! the crypt layer — and a server that does not take obfuscation there fails
+//! the one attempt, leaving the plaintext fallback to the caller's policy.
+//! The counterparty is the testkit [`FakeEd2kServer`], whose obfuscated
+//! accept byte-0-discriminates exactly like a real crypt-capable server.
 
 use rmule_ed2k::Ed2kEvent;
 use rmule_net::driver::{ObfuscationConfig, ObfuscationPolicy};
-use rmule_net::ed2k::{ConnectOptions, Connection};
+use rmule_net::ed2k::{ConnectOptions, Connection, Ed2kNetError};
 use rmule_primitives::{ClientIdentity, Ed2kText, UserHash};
 use rmule_testkit::FakeEd2kServer;
 
@@ -20,11 +20,13 @@ fn identity() -> ClientIdentity {
     )
 }
 
-fn requested() -> ConnectOptions {
+/// A `Requested` dial of the obfuscation port `port`.
+fn obfuscated_at(port: u16) -> ConnectOptions {
     ConnectOptions {
         obfuscation: Some(ObfuscationConfig {
             policy: ObfuscationPolicy::Requested,
         }),
+        obfuscated_port: Some(port),
         ..Default::default()
     }
 }
@@ -46,10 +48,12 @@ async fn login_accepted(conn: &mut Connection) -> bool {
 #[tokio::test]
 async fn obfuscated_connect_completes_and_login_flows_through_crypt() {
     let server = FakeEd2kServer::start_obfuscated().await;
+    let port = server.local_addr().port();
 
-    let mut conn = Connection::connect_with_options(server.endpoint(), identity(), requested())
-        .await
-        .expect("obfuscated connect completes the DH handshake");
+    let mut conn =
+        Connection::connect_with_options(server.endpoint(), identity(), obfuscated_at(port))
+            .await
+            .expect("obfuscated connect completes the DH handshake");
 
     // The fake only sees the login if the crypt layer decrypted it, and rmule
     // only sees the id-change reply if it decrypts the encrypted response:
@@ -62,21 +66,21 @@ async fn obfuscated_connect_completes_and_login_flows_through_crypt() {
 }
 
 #[tokio::test]
-async fn requested_falls_back_to_plaintext_when_server_is_not_obfs() {
+async fn an_obfuscated_dial_to_a_plain_server_fails_its_one_attempt() {
     // A fake without obfuscated accept: rmule's opening `[marker][G^A]` is not
-    // eD2k framing, so the fake drops that connection, failing the crypt
-    // handshake; `Requested` then reconnects in plaintext.
+    // eD2k framing, so the fake drops the connection and the handshake fails.
+    // The dial does not fall back on its own — the policy that might allow it
+    // is the caller's.
     let server = FakeEd2kServer::start_scripted().await;
+    let port = server.local_addr().port();
 
-    let mut conn = Connection::connect_with_options(server.endpoint(), identity(), requested())
-        .await
-        .expect("Requested falls back to a plaintext connect");
+    let failed =
+        Connection::connect_with_options(server.endpoint(), identity(), obfuscated_at(port)).await;
 
     assert!(
-        login_accepted(&mut conn).await,
-        "the fallback connection carried a working plaintext login"
+        matches!(failed, Err(Ed2kNetError::CryptHandshake(_))),
+        "a server that does not take obfuscation fails the handshake, not the login"
     );
-    conn.shutdown().await.ok();
 }
 
 #[tokio::test]

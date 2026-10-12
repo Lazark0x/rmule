@@ -44,7 +44,7 @@ fn symmetric_gateway(wan: &str) -> GatewayProof {
 fn punch_row(dialed: i64, accepted: i64) -> DriverRow {
     DriverRow::parse(&format!(
         "connected = true\nlow_id = true\ntunnels_dialed = {dialed}\n\
-         tunnels_accepted = {accepted}\nrouted = \"ServerPunch\"\n"
+         tunnels_accepted = {accepted}\nrouted = \"server_punch\"\n"
     ))
     .expect("a hand-built row parses")
 }

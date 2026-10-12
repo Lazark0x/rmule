@@ -6,7 +6,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use rmule_net::peer::{ConnectOptions as PeerConnectOptions, Connection as PeerConnection};
-use rmule_peer::{PartBitmap, PeerCommand, PeerEvent, PeerHandshakeContext};
+use rmule_peer::{
+    ConnectionEvent, PartBitmap, PeerCommand, PeerEvent, PeerHandshakeContext, RequesterCommand,
+    RequesterEvent,
+};
 
 use crate::peer::transfer::PeerTransferCaptureArgs;
 
@@ -50,50 +53,50 @@ pub(super) async fn source_exchange_capture(
                 break;
             }
             event = conn.next_event() => match event {
-                Some(event @ PeerEvent::PeerIdentified { .. }) => {
+                Some(event @ PeerEvent::Connection(ConnectionEvent::Identified { .. })) => {
                     println!("{event}");
                     if !sent_probe {
                         if args.multipacket {
                             // One 0xA4 bundle carrying name + status + the SX
                             // ask, aMule's own connect-time shape.
-                            let _ = conn.send(PeerCommand::RequestFile {
+                            let _ = conn.send(PeerCommand::Requester(RequesterCommand::RequestFile {
                                 file_hash: file.file_hash,
                                 file_size: file.size,
                                 own_status: PartBitmap::downloader_empty(file.size),
                                 want_sources: true,
                                 want_aich_root: false,
-                            }).await;
+                            })).await;
                             sent_request = true;
                         } else {
                             let _ = conn
-                                .send(PeerCommand::ProbeFile {
+                                .send(PeerCommand::Requester(RequesterCommand::ProbeFile {
                                     file_hash: file.file_hash,
                                     file_size: file.size,
                                     own_status: PartBitmap::downloader_empty(file.size),
-                                })
+                                }))
                                 .await;
                         }
                         sent_probe = true;
                     }
                 }
-                Some(PeerEvent::FileProbed { status, .. }) => {
+                Some(PeerEvent::Requester(RequesterEvent::FileProbed { status, .. })) => {
                     println!("file_probed: {status:?}");
                     if !sent_request {
-                        let _ = conn.send(PeerCommand::RequestSources { file_hash: file.file_hash }).await;
+                        let _ = conn.send(PeerCommand::Requester(RequesterCommand::RequestSources { file_hash: file.file_hash })).await;
                         sent_request = true;
                     }
                 }
-                Some(PeerEvent::SourcesReceived { sources, .. }) => {
+                Some(PeerEvent::Requester(RequesterEvent::SourcesReceived { sources, .. })) => {
                     source_count = Some(sources.len());
                     println!("sources_received: {}", sources.len());
                     break;
                 }
-                Some(PeerEvent::SourceExchangeAnswerSkipped { reason }) => {
+                Some(PeerEvent::Requester(RequesterEvent::SourceExchangeAnswerSkipped { reason })) => {
                     answer_skipped = Some(reason.to_string());
                     println!("source_exchange_answer_skipped: {reason}");
                     break;
                 }
-                Some(PeerEvent::Disconnected { reason }) => {
+                Some(PeerEvent::Connection(ConnectionEvent::Disconnected { reason })) => {
                     println!("disconnected: {reason:?}");
                     break;
                 }

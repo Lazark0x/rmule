@@ -34,7 +34,7 @@ use clap::Args;
 use rmule_net::ed2k::ClientUdpSocket;
 use rmule_net::family::FamilySelection;
 use rmule_net::natt::{
-    ClientUdpNattSink, NattDemux, NattIdentity, NattOwnHash, NattSender, TunnelRegistry,
+    ClientUdpNattSink, NattCrypt, NattDemux, NattIdentity, NattOwnHash, NattSender, TunnelRegistry,
 };
 use rmule_peer::natt::{
     CapsFrame, HelloNattClaim, NattConnectOptions, NattFrame, NattFrameType, NattTransport,
@@ -135,10 +135,7 @@ pub(crate) async fn run_caps_utp(args: NattCapsUtpArgs) -> Result<()> {
     ));
     let demux = Arc::new(
         NattDemux::start(
-            NattIdentity {
-                local: local_claim,
-                crypt_options: 0,
-            },
+            NattIdentity { local: local_claim },
             Arc::clone(&identity) as Arc<dyn NattOwnHash>,
             Arc::clone(&sender),
             Arc::new(Mutex::new(TunnelRegistry::new())),
@@ -150,9 +147,14 @@ pub(crate) async fn run_caps_utp(args: NattCapsUtpArgs) -> Result<()> {
     spawn_pump(Arc::clone(&socket), Arc::clone(&demux), arrivals.clone());
 
     // 1. The CAPS probe. Its recipient is the counterparty's own hash, which
-    //    is the only form any conforming reader will answer.
+    //    is the only form any conforming reader will answer; its crypt bits
+    //    are the ones the driver's CAPS answers state.
     let probe = NattFrame::Caps(CapsFrame {
-        connect_options: NattConnectOptions::advertise(0, true, args.claim_quic),
+        connect_options: NattConnectOptions::advertise(
+            identity.crypt_options(),
+            true,
+            args.claim_quic,
+        ),
         sender: our_hash,
         expected_recipient: peer_hash,
         file_hash: FileHash::from_bytes([0; FileHash::BYTE_LEN]),

@@ -35,8 +35,8 @@ point-in-time `DiagnosticsSnapshot`.
   `Core::diagnostics_snapshot()`, a lock-and-clone for holders of a `Core`; and
   `CoreCommand::DumpDiagnostics`, answered by `CoreEvent::DiagnosticsSnapshot`, for
   consumers that hold only the command channel. The command reads state and
-  schedules no work; it also fills the fields that only the actor can see, such as
-  the Kad runtime's state.
+  schedules no work; the Kad Activity writes its facts into the shared state, so the
+  two shapes agree on them too.
 
 ## Consequences
 

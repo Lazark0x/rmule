@@ -32,8 +32,13 @@ use crate::cli::kad_capture::{
     kad_distance_ordering_capture, kad_fake_public_source, kad_source_capture,
     kad_source_lookup_capture,
 };
+use crate::cli::kad_dialed_link::{KadDialedLinkArgs, kad_dialed_link};
 use crate::cli::kad_network::{
     KadInvertedKeywordArgs, KadJoinArgs, KadSmokeArgs, kad_inverted_keyword, kad_join, kad_smoke,
+};
+use crate::cli::lowid_callback_reask::{
+    PeerLowIdCallbackReaskArgs, PeerLowIdCallbackReaskScoreArgs, peer_lowid_callback_reask,
+    peer_lowid_callback_reask_score,
 };
 use crate::cli::nat::{
     Ipv6DialectArgs, Ipv6NetAcceptArgs, NatgwSelfProofArgs, NattArgs, PortMapArgs,
@@ -42,8 +47,9 @@ use crate::cli::nat::{
 };
 use crate::cli::packed_source_exchange::{PackedSourceExchangeArgs, packed_source_exchange};
 use crate::cli::peer::{
-    AmuleDirectSuiArgs, PeerUdpReaskArgs, PeerUdpReaskEmitArgs, amule_direct_sui, peer_udp_reask,
-    peer_udp_reask_emit,
+    AmuleDirectSuiArgs, PeerUdpReaskArgs, PeerUdpReaskEmitArgs, PeerUdpReaskEmitScoreArgs,
+    PeerUdpReaskScoreArgs, amule_direct_sui, peer_udp_reask, peer_udp_reask_emit,
+    peer_udp_reask_emit_score, peer_udp_reask_score,
 };
 
 #[derive(Debug, Parser)]
@@ -88,6 +94,12 @@ enum HarnessCommand {
     /// reads the answer (no plain fallback inside the grace).
     #[command(name = "crypt-ping-port")]
     CryptPingPort(crate::cli::ed2k_server::CryptPingPortArgs),
+    /// Server login crypt: rmule's server login under an obfuscation policy
+    /// against stock Lugdunum — the link each dial chose, the port and first
+    /// byte a tap in the server's namespace saw, and whether the login was
+    /// answered over it.
+    #[command(name = "server-login-crypt")]
+    ServerLoginCrypt(crate::cli::ed2k_server::ServerLoginCryptArgs),
     /// Sweep follows the list: rmule searches on Lugdunum, lists ed2k-server
     /// mid-run and searches again; a tap on ed2k-server's UDP port (TCP+4)
     /// says whether the second search's Global Search Sweep reached it.
@@ -183,6 +195,12 @@ enum HarnessCommand {
     /// obfuscated.
     #[command(name = "kad-required-check")]
     KadRequiredCheck(KadRequiredCheckArgs),
+    /// A Kad TCP check concluding through a link rmule dialed (flow S): a Core
+    /// downloading from one stock aMule helper asks that helper for the check,
+    /// and the helper acks on the live link instead of connecting back; a
+    /// second, plain helper connects back, and rmule's TCP verdict needs both.
+    #[command(name = "kad-dialed-link")]
+    KadDialedLink(KadDialedLinkArgs),
     /// Author the aMule-written server.met golden + assemble the HTTP-fixture
     /// payload for the cold-start bootstrap pipeline (flow H). Reports the v2 nodes.dat
     /// hole and the rmule HTTP-consumption gap.
@@ -218,6 +236,11 @@ enum HarnessCommand {
     /// records the window. CLI/sweep-only (~25-min wall clock, not RMULE_BENCH).
     #[command(name = "peer-udp-reask")]
     PeerUdpReask(PeerUdpReaskArgs),
+
+    /// Score a finished (or archived) `peer-udp-reask` run dir from its own
+    /// tap and write its verdict file, without driving the ~25-min flow again.
+    #[command(name = "peer-udp-reask-score")]
+    PeerUdpReaskScore(PeerUdpReaskScoreArgs),
 
     /// Bench baseline (ADR-0092): stand every `NAT_TYPE` gateway up in turn and have
     /// the RFC 5780 reflector probe measure, from inside its LAN, the mapping
@@ -279,6 +302,22 @@ enum HarnessCommand {
     /// records the window. CLI/sweep-only (~25-min wall clock, not RMULE_BENCH).
     #[command(name = "peer-udp-reask-emit")]
     PeerUdpReaskEmit(PeerUdpReaskEmitArgs),
+    /// The Low-ID callback re-ask flow: ed2ksrv, a Low-ID stock aMule sharer
+    /// whose two upload slots two stock aMules hold, and rmule downloading
+    /// through the sharer's callback. Queued, rmule must re-ask at
+    /// FILEREASKTIME through the callback road — a second OP_CALLBACKREQUEST,
+    /// no dial at the sharer. Taps in the server's and rmule's namespaces.
+    /// CLI-only (~30-min wall clock).
+    #[command(name = "peer-lowid-callback-reask")]
+    PeerLowIdCallbackReask(PeerLowIdCallbackReaskArgs),
+    /// Score a finished or archived `peer-lowid-callback-reask` run dir from
+    /// its own taps and logs, without driving the flow again.
+    #[command(name = "peer-lowid-callback-reask-score")]
+    PeerLowIdCallbackReaskScore(PeerLowIdCallbackReaskScoreArgs),
+    /// Score a finished (or archived) `peer-udp-reask-emit` run dir from its
+    /// own tap and write its verdict file, without driving the flow again.
+    #[command(name = "peer-udp-reask-emit-score")]
+    PeerUdpReaskEmitScore(PeerUdpReaskEmitScoreArgs),
     /// Two hellos, one client: from one address, two peer-TCP connections say
     /// the same user hash and listen port to a High-ID aMule (and, as the
     /// control, two different ports); records whether aMule closed the first
@@ -338,6 +377,9 @@ fn dispatch(command: HarnessCommand) -> Result<()> {
         }
         HarnessCommand::CryptPingPort(args) => {
             crate::cli::ed2k_server::crypt_ping_port(args)?;
+        }
+        HarnessCommand::ServerLoginCrypt(args) => {
+            crate::cli::ed2k_server::server_login_crypt(args)?;
         }
         HarnessCommand::SweepFollowsList(args) => {
             crate::cli::sweep_follows_list::sweep_follows_list(args)?;
@@ -402,6 +444,9 @@ fn dispatch(command: HarnessCommand) -> Result<()> {
         HarnessCommand::KadRequiredCheck(args) => {
             kad_required_check(args)?;
         }
+        HarnessCommand::KadDialedLink(args) => {
+            kad_dialed_link(args)?;
+        }
         HarnessCommand::HttpBootstrapGoldens(args) => {
             http_bootstrap_goldens(args)?;
         }
@@ -420,8 +465,20 @@ fn dispatch(command: HarnessCommand) -> Result<()> {
         HarnessCommand::PeerUdpReask(args) => {
             peer_udp_reask(args)?;
         }
+        HarnessCommand::PeerUdpReaskScore(args) => {
+            peer_udp_reask_score(args)?;
+        }
         HarnessCommand::PeerUdpReaskEmit(args) => {
             peer_udp_reask_emit(args)?;
+        }
+        HarnessCommand::PeerLowIdCallbackReask(args) => {
+            peer_lowid_callback_reask(args)?;
+        }
+        HarnessCommand::PeerLowIdCallbackReaskScore(args) => {
+            peer_lowid_callback_reask_score(args)?;
+        }
+        HarnessCommand::PeerUdpReaskEmitScore(args) => {
+            peer_udp_reask_emit_score(args)?;
         }
         HarnessCommand::Sx1Gate(args) => {
             crate::cli::peer::sx1_gate(args)?;

@@ -31,9 +31,7 @@ mod buddy;
 mod buddy_link;
 // The core-side callback route chooser (ADR-0061): one sans-I/O selector every
 // dial path asks to reach a peer, so route precedence is decided in exactly one
-// place. `CoreCommand::ReachPeer` drives it; route 2 enacts here by emitting
-// the `0x95` on the bound client-UDP send half, while routes 3/4 report their
-// verdict and enact where they live.
+// place. **Peer Reach** (`peer_reach`) asks it and carries its verdict out.
 mod callback;
 // The one client-UDP demux front (ADR-0057): the single place an inbound
 // datagram on the bound UDP port is sorted into its protocol surface — the
@@ -60,7 +58,10 @@ mod file_key;
 mod firewalled;
 mod global_sources;
 mod hashing;
+#[cfg(test)]
+mod hello_facts;
 mod interval_limiter;
+mod mailbox;
 // The core-owned IP filter: aMule 2.3.3 `CIPFilter` parity —
 // the two-format dat parser with malformed tolerance, the access-level
 // threshold applied at build time, the last-write-wins range store behind the
@@ -84,14 +85,13 @@ pub mod file_history;
 // address projected from `address_learning` — the self-facts both UDP crypt
 // surfaces key on (ADR-0046 as amended by ADR-0084).
 // The core-owned NAT traversal citizen (ADR-0091): the rendezvous emit, the
-// acting path, and the relay service with its direction-split limiters. The
-// allow covers what no production path reaches yet — the `select_natt_fallback`
-// chooser, which waits on a download candidate record wide enough to build a
-// `CallbackTarget` from (ADR-0091) — not the acting path, which
-// the firewalled front drives.
-#[cfg_attr(not(test), allow(dead_code))]
+// acting path, and the relay service with its direction-split limiters.
 mod natt;
+mod obfuscation_policy;
 mod own_identity;
+// **Peer Reach** (ADR-0061, ADR-0091): the one module that reaches a peer —
+// our route position read, the road chosen, carried out and reported.
+mod peer_reach;
 mod peer_roster;
 mod planning;
 // The core-owned **Port Mapping** brain (ADR-0086): the sans-I/O mapper that
@@ -102,10 +102,13 @@ mod planning;
 // lease vocabulary that only the deterministic tier reads back.
 #[cfg_attr(not(test), allow(dead_code))]
 pub mod port_mapping;
+// The Run Log (ADR-0075): the record vocabulary every core event projects
+// into, its two levels, and the file a front end writes them to.
+pub mod run_log;
 // The core-owned Reachability verdict store, its Kad-event projection, and the
 // firewall-check dial-back broker (ADR-0058). The single answer to "can a peer
 // reach us" — `server-High-ID or Kad-open` — which the ADR-0057 reask gate in
-// `download::remote_queue` reads rather than guessing.
+// the download brain reads rather than guessing.
 mod reachability;
 mod registry;
 mod registry_check;
@@ -119,31 +122,24 @@ mod server_list;
 mod server_session;
 mod server_udp;
 mod service;
+mod settings;
 mod source_discovery;
 mod storage;
 mod store;
 mod upload_queue;
 
 pub use adapters::{
-    AnnounceOutcome, ClientUdpBind, DownloadedPart, KadEnableConfig, KadRuntimeFactory,
-    KadShutdownHandle, KadShutdownSlot, KadSourceChannel, PeerDownloadOutcome, PeerTransferService,
-    PeerWorker, PeerWorkerCommand, PeerWorkerEvent, RuntimeKadChannel, RuntimeKadFactory,
-    RuntimePeerTransferService, RuntimeServeRuntimeService, RuntimeSourceLookupService,
-    ServeConnCommand, ServeConnEvent, ServeConnection, ServeRuntimeService, SourceLookupOutcome,
-    SourceLookupService, WorkerBrief,
+    AnnounceOutcome, ClientUdpBind, DownloadedPart, KadCells, KadEnableConfig, KadNodeIdentity,
+    KadRuntimeFactory, KadShutdownHandle, KadShutdownSlot, KadSourceChannel, PeerDownloadOutcome,
+    PeerTransferService, PeerWorker, PeerWorkerCommand, PeerWorkerEvent, RuntimeKadChannel,
+    RuntimeKadFactory, RuntimePeerTransferService, RuntimeServeRuntimeService,
+    RuntimeSourceLookupService, ServeConnection, ServeInput, ServeOutput, ServeRuntimeService,
+    SourceLookupOutcome, SourceLookupService, WorkerBrief,
 };
 pub use address_learning::{
     AddressObservation, AssignedAddress, ConfidenceTier, EndpointVerdict, ExternalAddressOverride,
     NatHint, ObservationOutcome, ObservationSource, SocketRole,
 };
-pub use kad_sources::{KadAnswer, KadSource};
-pub use reachability::KadReachLevel;
-/// Why a search row was skipped: the code a `SearchResultSkipped` event carries.
-pub use rmule_ed2k::SearchResultSkipReason;
-// The serve translator pair, exported for rmule-testkit's loopback bridge
-// only — serve-vocabulary changes land once, with no testkit copy to drift.
-#[cfg(feature = "test-support")]
-pub use adapters::{serve_command_to_peer, serve_event_from_peer};
 pub use app_config::{
     AppConfigStore, DEFAULT_NICKNAME, DEFAULT_PROTOCOL_VERSION, DEFAULT_TCP_PORT, DEFAULT_UDP_PORT,
     KadIdentity, Preference,
@@ -169,13 +165,20 @@ pub use join::{
     FirstRunFetch, JoinCommandSink, JoinConfig, JoinOutcome, KadSeedOutcome, SeedReadFault,
     acquire_kad_seeds, run_join_sequence,
 };
+pub use kad_sources::KadAnswer;
 pub use planning::PartPlan;
+pub use reachability::KadReachLevel;
+/// Why a search row was skipped: the code a `SearchResultSkipped` event carries.
+pub use rmule_ed2k::SearchResultSkipReason;
 pub use server_list::{
     DEFAULT_DEAD_AFTER, DeadSince, ManagedServer, ResolvedAddress, ServerFigures,
     ServerGrantsReport, ServerHealth, ServerListFetcher, ServerListStore, ServerListUpdate,
     ServerListUpdateError, ServerListUpdateFailure, ServerMerge, ServerPolicy,
 };
-// The one obfuscation policy `CoreConfig::peer_crypt` carries across the peer
+pub use settings::{
+    CoreSettings, CoreSettingsHandle, Setting, SettingError, SettingRefusal, TakesEffect,
+};
+// The one obfuscation policy `CoreSettings::obfuscation` carries across the peer
 // stream + datagram surfaces (ADR-0042/0046), re-exported so an application can
 // set it without depending on `rmule_net::peer` directly.
 pub use registry::{ShareSource, SharedFileEntry, SharedFileRegistry};
@@ -216,13 +219,14 @@ pub use service::{
     BuddyDialFailure, ClientCredentials, Core, CoreBuilder, CoreCommand, CoreCommandRejectReason,
     CoreConfig, CoreEvent, DEFAULT_SLOT_WAIT_TIMEOUT, DialEnd, DialFailure, DownloadCommand,
     DownloadEvent, DownloadId, IdAssignment, IgnoredReaskReply, Ipv6Probe, KadStopReason,
-    KadUnavailableReason, LegNotSent, LoginClaim, LoginCloseCause, LoginStep,
+    KadUnavailableReason, LegNotSent, LoginClaim, LoginCloseCause, LoginLink, LoginStep, NameTaken,
     NatTraversalUnavailableReason, NattConfig, PartReleaseReason, PartsLost, PeerBuddy, PeerReach,
-    PeerReachDropReason, PeerReachRoute, PeerRetirementReason, PortTestAdmission, PortTestClosedBy,
-    PortTestEnd, PortTestLateAdmission, QuitStep, RECONNECT_ATTEMPTS, ReconnectEnd, RestartOutcome,
-    ScanCommand, ScanEvent, SearchCommand, SearchEvent, SearchFailure, SearchId, SearchLegState,
-    SearchLegs, ServeCommand, ServeEvent, ServeStartFailure, ServeStopReason, ServerConnectFailure,
-    ServerConnectionEvent, ServerListCommand, ServerListEvent, ShareRejectReason, SharesWithheld,
+    PeerReachDropReason, PeerReachRoute, PeerRetirementReason, PlainLinkReason, PortTestAdmission,
+    PortTestClosedBy, PortTestEnd, PortTestLateAdmission, PurgedSource, QuitStep,
+    RECONNECT_ATTEMPTS, ReconnectEnd, RestartOutcome, ScanCommand, ScanEvent, SearchCommand,
+    SearchEvent, SearchFailure, SearchId, SearchLegState, SearchLegs, ServeCommand, ServeEvent,
+    ServeStartFailure, ServeStopReason, ServerConnectFailure, ServerConnectionEvent,
+    ServerListCommand, ServerListEvent, ShareRejectReason, SharesWithheld, SourcePurgeReason,
     SourceWait, SweepTally, VerificationAuthority,
 };
 pub use storage::{DownloadRepository, ResolvedAuthority};
@@ -242,6 +246,6 @@ pub use upload_queue::{
 /// [`KadEnableConfig::contacts`] a decoded nodes.dat's "v1/v2-merge" seeds
 /// without depending on `rmule-kad` directly (ADR-0065).
 pub use rmule_kad::KadContact;
-/// The Kad node ID type, re-exported for [`KadIdentity`] and
-/// [`KadEnableConfig`] construction (ADR-0043).
+/// The Kad node ID type, re-exported for [`KadIdentity`],
+/// [`KadNodeIdentity`] and [`CoreBuilder::kad_id`] (ADR-0043).
 pub use rmule_kad::KadId;

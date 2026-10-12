@@ -30,9 +30,9 @@ attach. aMule likewise persists only a part file's paused bit (`PartFile.cpp:105
 
 - Core starts restored downloads; front ends send nothing. The store's restart read writes
   nothing and returns every row that still holds its file's place.
-- A run presents the node's credentials (nickname, TCP port, protocol version), which core
-  does not hold (ADR-0069), so a front end that wants its downloads restored gives them once
-  (`CoreBuilder::restore_credentials`). A core built without them (a one-shot tool) reports its
+- A run presents the node's credentials (nickname, TCP port, protocol version), composed from
+  its Core Settings (ADR-0069). A front end that wants its downloads restored says so once
+  (`CoreBuilder::restore_at_attach`). A core built without it (a one-shot tool) reports its
   `Active` rows and starts none.
 - Restored downloads start one per `CoreConfig::download_restore_pace` (1 s), in store order.
 - A download waiting its turn is still the operator's: pause, cancel and resume reach it; a

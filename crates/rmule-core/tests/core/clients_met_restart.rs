@@ -118,6 +118,7 @@ async fn the_daemon_lifecycle_seeds_and_flushes_the_credit_ring() {
     save_clients_met(dir.path(), &prior.snapshot().unwrap(), now).unwrap();
 
     let core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
         .persist_credit_in(dir.path().to_path_buf())
         .build();
     core.shutdown().await;

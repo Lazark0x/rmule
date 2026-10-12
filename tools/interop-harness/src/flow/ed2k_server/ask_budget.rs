@@ -27,6 +27,8 @@ use crate::flow::pcap;
 
 /// rmule's static address on the bench network.
 const RMULE_IP: &str = "203.0.113.71";
+/// The fake sharer's static address, the one its listener binds.
+const SHARER_IP: &str = "203.0.113.72";
 const PCAP: &str = "lugdunum.pcap";
 /// The fake sharer, shared with the sx1-gate leg.
 const FAKE_SOURCE: &str = include_str!("../peer/sx1_gate/fake_source.py");
@@ -113,13 +115,15 @@ pub fn run_ask_budget(options: AskBudgetOptions<'_>) -> Result<()> {
             .detach()
             .name(&fake)
             .network(bench.names.network_name.clone())
+            .ip(SHARER_IP)
             .volume(&root, "/w")
             .entrypoint("python3")
             .arg("/w/fake_source.py")
             .arg("3")
             .arg(FAKE_SECS.to_string())
             .arg(bench.names.server_endpoint())
-            .arg(hashes.join(","));
+            .arg(hashes.join(","))
+            .arg(SHARER_IP);
         bench.start_extra(&fake, container, "run the fake sharer")?;
         // The offer reaches the server before rmule asks it.
         std::thread::sleep(Duration::from_secs(5));
@@ -149,7 +153,7 @@ pub fn run_ask_budget(options: AskBudgetOptions<'_>) -> Result<()> {
         }
         for i in 0..hashes.len() {
             args.push("--out".into());
-            args.push(format!("/w/out-{i:02}.bin"));
+            args.push(format!("/w/dl/out-{i:02}.bin"));
         }
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let rmule = format!("{server}-rmule16");

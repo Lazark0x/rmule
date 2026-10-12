@@ -7,6 +7,8 @@
 //! node vocabulary (`kad_node`), the mesh labels (`kad_mesh`), and the source
 //! and keyword fixtures (`kad_source`, `kad_keyword`) are all there.
 
+use rmule_kad::KadInstant;
+use rmule_kad::KadNodeStart;
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
@@ -69,14 +71,28 @@ pub const PUBLISHED_FILE_ID: [u8; 16] = [
 /// The Kad ID a joining node runs with.
 pub const OWN_ID: [u8; 16] = [0x0F; 16];
 
+/// The start both joining fixtures build their node from.
+fn join_start() -> KadNodeStart {
+    KadNodeStart::new(
+        KadNodeConfig {
+            id: KadId::from_bytes(OWN_ID),
+            tcp_port: 4662,
+            udp_port: 4672,
+            user_hash: rmule_kad::UserHash::from_bytes([0xEE; 16]),
+        },
+        KadInstant::EPOCH,
+    )
+}
+
 /// A cold node: no contacts, nothing outstanding, ready to be told to join.
 pub fn join_node() -> KadNode {
-    KadNode::new(KadNodeConfig {
-        id: KadId::from_bytes(OWN_ID),
-        tcp_port: 4662,
-        udp_port: 4672,
-        user_hash: rmule_kad::UserHash::from_bytes([0xEE; 16]),
-    })
+    KadNode::new(join_start())
+}
+
+/// A [`join_node`] already running its forced self-lookup schedule from the
+/// epoch.
+pub fn joining_node() -> KadNode {
+    KadNode::new(join_start().self_lookup())
 }
 
 /// A candidate's endpoint, by last octet, on the default Kad UDP port.

@@ -356,7 +356,10 @@ impl Ed2kSession {
                 .encode();
                 self.core.push_write(Arc::from(bytes));
             }
-            Ed2kCommand::OfferFiles { files } => {
+            Ed2kCommand::OfferFiles {
+                files,
+                presented_id,
+            } => {
                 if !matches!(self.state, State::LoggedIn) {
                     self.reject_command(
                         Ed2kCommandKind::OfferFiles,
@@ -377,8 +380,14 @@ impl Ed2kSession {
                 let client_id = self
                     .client_id
                     .expect("client_id is set at OP_IDCHANGE before reaching LoggedIn");
-                let packet = OfferFiles::announce(client_id, self.identity.tcp_port(), &files)
-                    .encode_packet();
+                let packet = OfferFiles::announce(
+                    self.grants,
+                    client_id,
+                    presented_id.unwrap_or(client_id),
+                    self.identity.tcp_port(),
+                    &files,
+                )
+                .encode_packet();
                 let packet = if self.grants.compression {
                     pack_if_smaller(packet)
                 } else {

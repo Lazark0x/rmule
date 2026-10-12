@@ -58,10 +58,12 @@ fn malformed_known_client_packet_rejects() {
 
 #[test]
 fn offer_files_round_trips_via_client_packet_umbrella() {
-    use rmule_ed2k::{OfferFiles, OfferedFile};
+    use rmule_ed2k::{OfferFiles, OfferedFile, ServerGrants};
     use rmule_primitives::{ClientId, Ed2kText, FileHash};
 
     let announce = OfferFiles::announce(
+        ServerGrants::default(),
+        ClientId::from_u32(0x0403_0201),
         ClientId::from_u32(0x0403_0201),
         4662,
         &[OfferedFile::new(

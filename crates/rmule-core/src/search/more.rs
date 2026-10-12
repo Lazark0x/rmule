@@ -4,12 +4,13 @@
 //! request — so at most one search on a session can ask: the **pager**, named
 //! by the session and published here for the front ends to read.
 
+use std::ops::ControlFlow;
 use std::time::Duration;
 
 use rmule_primitives::SearchQuery;
 use tokio::sync::{mpsc, watch};
 
-use super::{LiveSearches, SearchTask};
+use super::{LiveSearches, SearchEnd, SearchTask};
 use crate::server_session::ServerSessionHandle;
 use crate::service::{SearchEvent, SearchId};
 
@@ -71,33 +72,34 @@ impl SearchTask {
     }
 
     /// Completed, with its server holding more rows: wait for the operator to
-    /// ask for them. `true` once the request is on its way and the search runs
-    /// again; `false` once nobody can ask any more — another search request
-    /// went out, the session ended, the search was cancelled.
-    pub(super) async fn park(&mut self) -> bool {
+    /// ask for them. `Continue` once the request is on its way and the search
+    /// runs again; [`SearchEnd::Ended`] once nobody can ask any more — another
+    /// search request went out, the session ended — and
+    /// [`SearchEnd::Stopped`] at its stop.
+    pub(super) async fn park(&mut self) -> ControlFlow<SearchEnd> {
         loop {
             if !self.may_ask_more() {
-                return false;
+                return ControlFlow::Break(SearchEnd::Ended);
             }
             tokio::select! {
                 changed = self.cancel_rx.changed() => {
                     if changed.is_err() || *self.cancel_rx.borrow() {
-                        return false;
+                        return ControlFlow::Break(SearchEnd::Stopped);
                     }
                 }
                 request = self.paging.requests.recv() => {
                     if request.is_none() {
-                        return false;
+                        return ControlFlow::Break(SearchEnd::Ended);
                     }
                     self.rows.renew(self.paging.query.clone());
                     if self.ask_more().await {
-                        return true;
+                        return ControlFlow::Continue(());
                     }
                     self.rows.lapse();
                 }
                 changed = self.paging.pager.changed() => {
                     if changed.is_err() {
-                        return false;
+                        return ControlFlow::Break(SearchEnd::Ended);
                     }
                 }
             }

@@ -122,8 +122,17 @@ in no server's namespace, so the server road is refused for it.
   after a firewall recheck, at once on losing a buddy), and the crypt policy is not
   `Required` (`RecruitRefusal::CryptRequired`): callback requests cannot be obfuscated,
   aMule's own limitation. A TCP-firewalled, UDP-open node needs no buddy; it advertises
-  direct callback and consumes `0x95`. The trigger lives with the Kad pump, beside the
-  verdict store it reads.
+  direct callback and consumes `0x95`. The trigger lives with the Kad pump, because the
+  pump's brain holds the inputs it decides on: the recheck clock is its own, the verdicts
+  are its reads of Self Reach, and the walk it starts and hears end is its own state. It
+  is a pure rule over those and over the buddy slot's published snapshot (whether a buddy
+  is held, and when the last one was lost); it never reads or writes the slot itself.
+- **The Firewalled Front owns the slot.** It is the slot's only writer: it adopts, dials,
+  holds, pings and releases. A verified `0x5A` reaches it as an `AdoptBuddy` command from
+  the pump, and the front answers with its verdict, which the pump takes as an input. The
+  front publishes a snapshot of the slot on every change, and every other reader goes
+  through it: the hello's buddy tags, the buddy row of a Kad source publish, the Run Log
+  trail and the recruit rule.
 - **The FINDBUDDY walk** targets `~ourKadID` and at convergence asks the single closest
   responded contact inside `SEARCHTOLERANCE` of the target or on a LAN
   (`Search.cpp:624-628`). A walk that finds nobody does not re-arm. The `0x5A` is verified
@@ -141,7 +150,7 @@ in no server's namespace, so the server road is refused for it.
   reply matrix of ADR-0057.
 - **`0x95`:** rate-limited per source Accounting Key (a `/64` for IPv6), accepted only
   while Kad TCP reads firewalled and Kad runs, then dialed back. The `0x95`'s stance meets
-  `CoreConfig::peer_crypt` by the outbound rule, after the rate limiter; an incompatible
+  `CoreSettings::obfuscation` by the outbound rule, after the rate limiter; an incompatible
   pair is refused before a socket and counted apart, and there is no plaintext re-dial.
   The body names no address, so the requester is the datagram's source, and an IPv6
   requester is dialed back directly.

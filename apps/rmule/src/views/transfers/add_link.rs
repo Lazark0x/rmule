@@ -13,7 +13,7 @@ use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use rmule_core::{CoreCommand, DownloadCommand};
+use rmule_core::{CoreCommand, DownloadCommand, NameTaken};
 use rmule_primitives::{Ed2kFileLink, Ed2kLink, PrimitiveError, SafeFileName};
 
 use super::TransfersView;
@@ -95,20 +95,16 @@ fn start(
     {
         return Err(LinkRefusal::AlreadyDownloading { name: name.clone() });
     }
-    let Some(session) = state.session.as_ref() else {
+    if state.session.is_none() {
         return Ok(ViewOutcome::Emit(Action::Flash(
-            words::START_NEEDS_CREDENTIALS,
+            crate::words::app::CORE_NOT_ATTACHED,
         )));
-    };
-    let Some(dir) = &session.download_dir else {
-        return Ok(ViewOutcome::Emit(Action::Flash(words::NO_DOWNLOAD_DIR)));
-    };
-    let output_path = SafeFileName::of_link(&file).path_in(dir);
+    }
     let command = Action::Command(CoreCommand::Download(DownloadCommand::StartDownload {
+        name: SafeFileName::of_link(&file),
         file,
         source_hint: state.active_server(),
-        credentials: session.credentials.clone(),
-        output_path,
+        if_taken: NameTaken::Refuse,
     }));
     Ok(ViewOutcome::Emit(
         match words::link_fields_skipped(skipped) {

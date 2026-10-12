@@ -21,11 +21,9 @@
 use std::time::Duration;
 
 use rmule_net::peer::Connection as PeerConnection;
-use rmule_peer::PeerEvent;
+use rmule_peer::{ConnectionEvent, PeerEvent, ServerEvent, SideEvent};
 
-use super::ServeConnEvent;
 use crate::adapters::kad_runtime::{SharedKadPump, report_kad_firewall_ack};
-use crate::adapters::serve_projection::serve_event_from_peer;
 use crate::service::PortTestEnd;
 
 /// How long a Test Connection is held at most. Every tester closes, or acks,
@@ -41,17 +39,20 @@ pub(crate) async fn answer_test_connection(
     let end = tokio::time::timeout(TEST_CONNECTION_LIFETIME, async {
         while let Some(event) = conn.next_event().await {
             match event {
-                PeerEvent::Disconnected { .. } => return PortTestEnd::TesterClosed,
+                PeerEvent::Connection(ConnectionEvent::Disconnected { .. }) => {
+                    return PortTestEnd::TesterClosed;
+                }
                 // The session answered the tester's hello on its own; being
                 // identified is the test, not a request.
-                PeerEvent::PeerIdentified { .. } => {}
-                PeerEvent::KadFirewallCheckAck => report_kad_firewall_ack(&kad_pump, peer),
-                other => {
-                    if serve_event_from_peer(other).is_some_and(|event| asks_to_be_served(&event)) {
-                        tracing::debug!(%peer, "a test connection asked to be served; closed");
-                        return PortTestEnd::AskedToBeServed;
-                    }
+                PeerEvent::Connection(ConnectionEvent::Identified { .. }) => {}
+                PeerEvent::Side(SideEvent::KadFirewallCheckAck) => {
+                    report_kad_firewall_ack(&kad_pump, peer)
                 }
+                PeerEvent::Server(request) if asks_to_be_served(&request) => {
+                    tracing::debug!(%peer, "a test connection asked to be served; closed");
+                    return PortTestEnd::AskedToBeServed;
+                }
+                _ => {}
             }
         }
         PortTestEnd::TesterClosed
@@ -62,27 +63,23 @@ pub(crate) async fn answer_test_connection(
     end
 }
 
-/// Whether `event` asks us to serve something — the one thing a Test
-/// Connection may not have. Exhaustive, so a new serve event is decided here.
-/// Being identified, proving an identity (Secure User Identification), and
-/// stating software or a reask contact ask for nothing.
-const fn asks_to_be_served(event: &ServeConnEvent) -> bool {
-    match event {
-        ServeConnEvent::FileRequested { .. }
-        | ServeConnEvent::FileBundleRequested { .. }
-        | ServeConnEvent::FileIdSet { .. }
-        | ServeConnEvent::HashSetRequested { .. }
-        | ServeConnEvent::SlotRequested { .. }
-        | ServeConnEvent::PartsRequested { .. }
-        | ServeConnEvent::SourcesRequested { .. }
-        | ServeConnEvent::AichRequested { .. }
-        | ServeConnEvent::AichFileHashRequested { .. } => true,
-        ServeConnEvent::TransferCancelled { .. }
-        | ServeConnEvent::Disconnected
-        | ServeConnEvent::Identified { .. }
-        | ServeConnEvent::IdentityVerified { .. }
-        | ServeConnEvent::SoftwareRevised { .. }
-        | ServeConnEvent::ReaskContactRevised { .. }
-        | ServeConnEvent::Readopted => false,
+/// Whether `request` asks us to serve something — the one thing a Test
+/// Connection may not have. Exhaustive, so a new Server request is decided
+/// here. Giving up a slot asks for nothing, and neither does a part ask
+/// without one, which the session reports and frames nothing for.
+const fn asks_to_be_served(request: &ServerEvent) -> bool {
+    match request {
+        ServerEvent::FileRequested { .. }
+        | ServerEvent::FileBundleRequested { .. }
+        | ServerEvent::FileIdSet { .. }
+        | ServerEvent::HashSetRequested { .. }
+        | ServerEvent::SlotRequested { .. }
+        | ServerEvent::PartsRequested { .. }
+        | ServerEvent::SourcesRequested { .. }
+        | ServerEvent::AichRequested { .. }
+        | ServerEvent::AichFileHashRequested { .. } => true,
+        ServerEvent::TransferCancelled { .. }
+        | ServerEvent::PartsWithoutSlot { .. }
+        | ServerEvent::SourcesAnswered { .. } => false,
     }
 }

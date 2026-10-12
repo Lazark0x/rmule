@@ -420,6 +420,7 @@ fn run_leg(
             .parse()
             .context("sharer 0's address")?;
         wait_for_offers(
+            "search-wire",
             &leg_dir.join("server.pcap"),
             first_sharer,
             &shares[0],
@@ -544,7 +545,14 @@ fn run_leg(
 /// Hold until the tap shows `sharer` has offered the server every file in
 /// `share`: aMule offers at most 200 a minute, so a large share reaches the
 /// server over minutes, and a search sent before then is answered short.
-fn wait_for_offers(pcap: &Path, sharer: Ipv4Addr, share: &Path, timeout: Duration) -> Result<()> {
+/// `flow` prefixes the progress line.
+pub(crate) fn wait_for_offers(
+    flow: &str,
+    pcap: &Path,
+    sharer: Ipv4Addr,
+    share: &Path,
+    timeout: Duration,
+) -> Result<()> {
     let held = fs::read_dir(share)
         .with_context(|| format!("list {}", share.display()))?
         .count() as u64;
@@ -552,7 +560,7 @@ fn wait_for_offers(pcap: &Path, sharer: Ipv4Addr, share: &Path, timeout: Duratio
     loop {
         let offered = server_tap::offered_files(pcap, sharer)?;
         if offered >= held {
-            println!("search-wire: sharer {sharer} offered {offered} of {held} files");
+            println!("{flow}: sharer {sharer} offered {offered} of {held} files");
             return Ok(());
         }
         if Instant::now() >= deadline {

@@ -5,11 +5,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rmule_primitives::ServerEndpoint;
+use rmule_primitives::{Ipv4Endpoint, ServerEndpoint};
 
 use super::super::super::ServerUdpEngine;
 use super::super::super::tests::{
-    ScriptedTransport, VERDICTS_DUE, round_trip_harness, row, server, stat_res_datagram, udp_source,
+    ScriptedTransport, VERDICTS_DUE, round_trip_harness, row, server, stat_res_datagram, udp,
+    udp_source,
 };
 use super::super::{StatusPingSweep, SweepState};
 use crate::diagnostics::DiagnosticsState;
@@ -43,12 +44,12 @@ async fn a_new_row_silent_while_nobody_else_is_due() -> (
 
 /// Where each status ping so far went, in order (the engine's own sends,
 /// such as a description request after an answer, left out).
-fn sent_to(sweep: &StatusPingSweep<Arc<ScriptedTransport>>) -> Vec<ServerEndpoint> {
-    let sends = sweep.transport.sends.lock().unwrap();
+fn sent_to(sweep: &StatusPingSweep<Arc<ScriptedTransport>>) -> Vec<Ipv4Endpoint> {
+    let sends = sweep.seal.transport().sends.lock().unwrap();
     sends
         .iter()
         .filter(|(_, datagram)| datagram.get(1) == Some(&0x96))
-        .map(|(to, _)| to.clone())
+        .map(|(to, _)| *to)
         .collect()
 }
 
@@ -60,7 +61,7 @@ async fn a_lone_silence_counts_once_the_last_answerer_vouches() {
         a_new_row_silent_while_nobody_else_is_due().await;
     assert_eq!(
         sent_to(&sweep),
-        vec![live.clone(), fresh.clone(), live.clone()],
+        vec![udp(&live, 4), udp(&fresh, 4), udp(&live, 4)],
         "the vouch goes to the server that answered last"
     );
     assert!(!diagnostics.snapshot().status_sweep_unheard);
@@ -106,7 +107,7 @@ async fn a_list_of_one_sends_no_vouch_and_counts_nothing() {
     tokio::time::advance(VERDICTS_DUE).await;
     sweep.ping_next(&mut state).await;
 
-    assert_eq!(sent_to(&sweep), vec![only.clone()]);
+    assert_eq!(sent_to(&sweep), vec![udp(&only, 4)]);
     assert_eq!(row(&diagnostics, &only).server.fail_count, 0);
     assert!(!diagnostics.snapshot().status_sweep_unheard);
 }

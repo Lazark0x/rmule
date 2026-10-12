@@ -24,7 +24,7 @@ use rmule_core::{DownloadId, DownloadMetadata, DownloadMetadataOrigin, SourceWai
 use rmule_primitives::{ED2K_PART_SIZE, FileHash};
 
 use super::chunks::chunk_bar;
-use super::sort::DownloadsTable;
+use super::sort::{DownloadLine, DownloadsTable};
 use super::{COL_SPACING, Pane, SYMBOL_W, TransfersView, draw_centered, pane_block, table_widths};
 use crate::row_selection::{MARKER, selection_style};
 use crate::state::{DownloadRow, DownloadStatus, UiState};
@@ -92,16 +92,6 @@ pub(super) fn source_counts(diag: Option<&DownloadDiagnostics>) -> Option<(u32, 
     ))
 }
 
-/// The Src cell: the known sources, then the sending ones in parentheses
-/// when any are (aMule's `12 (3)`); `—` for a download that is not running.
-fn sources_cell(diag: Option<&DownloadDiagnostics>) -> String {
-    match source_counts(diag) {
-        None => "—".to_string(),
-        Some((known, 0)) => known.to_string(),
-        Some((known, sending)) => format!("{known} ({sending})"),
-    }
-}
-
 /// Verified bytes in a positional part map (ADR-0079): every verified part's
 /// length — each [`ED2K_PART_SIZE`], the last only as long as `size` leaves
 /// it. Exact, never the part count times the part size.
@@ -151,17 +141,6 @@ pub(super) fn done_fraction(
     }
 }
 
-/// The Done cell: [`done_fraction`] as a whole percent, `—` without one.
-pub(super) fn done_percent(
-    row: Option<&DownloadRow>,
-    diag: Option<&DownloadDiagnostics>,
-) -> String {
-    done_fraction(row, diag).map_or_else(
-        || "—".to_string(),
-        |(part, whole)| format!("{}%", part * 100 / whole.max(1)),
-    )
-}
-
 /// Bytes still to verify: the exact size less the verified bytes, when the
 /// size is known; else the unverified parts' nominal size, the one estimate
 /// left before metadata lands.
@@ -202,22 +181,6 @@ pub(super) fn origin_label(origin: DownloadMetadataOrigin) -> &'static str {
         DownloadMetadataOrigin::Link => "link",
         DownloadMetadataOrigin::RecoveredLink => "recovered link",
         DownloadMetadataOrigin::Unknown => "unknown",
-    }
-}
-
-/// Exact size when metadata supplies one (ADR-0078) — even an
-/// `Unknown`-origin row (name not known) still carries an exact size, so
-/// this does not gate on the name. Falls back to the
-/// `≈ part_count × ED2K_PART_SIZE` estimate only when metadata itself has
-/// not landed yet, the one case where the part count is the best available
-/// fact.
-pub(super) fn size_cell(metadata: Option<&DownloadMetadata>, part_count: Option<usize>) -> String {
-    match metadata {
-        Some(metadata) => human_size(metadata.size),
-        None => match part_count {
-            Some(parts) => format!("≈ {}", human_size(parts as u64 * ED2K_PART_SIZE)),
-            None => "—".to_string(),
-        },
     }
 }
 
@@ -315,8 +278,10 @@ impl TransfersView {
         area: Rect,
         state: &UiState,
         theme: &Theme,
-        ids: &[DownloadId],
+        lines: &[DownloadLine],
     ) {
+        let ids: Vec<DownloadId> = lines.iter().map(|line| line.id).collect();
+        let ids = ids.as_slice();
         let focused = self.focus == Pane::Table;
         let title = format!(" Downloads ({}) ", ids.len());
         // Nothing to click until a table is drawn.
@@ -351,10 +316,7 @@ impl TransfersView {
         // instead of collapsing the name column to nothing.
         // The sorted column's floor holds its label and the arrow, so the
         // header stays one line; the name column pays for the arrow.
-        let values: Vec<Vec<String>> = ids
-            .iter()
-            .map(|id| download_values(*id, state, theme))
-            .collect();
+        let values: Vec<Vec<String>> = lines.iter().map(|line| line.values(theme)).collect();
         let mut wants = [0; 8];
         for (index, cap) in DOWNLOAD_CAPS.into_iter().enumerate() {
             if let Some(cap) = cap {
@@ -390,9 +352,9 @@ impl TransfersView {
         let header = Row::new(header_cells)
             .style(theme.dim_text())
             .height(header_h);
-        let (rows, heights): (Vec<_>, Vec<u16>) = ids
+        let (rows, heights): (Vec<_>, Vec<u16>) = lines
             .iter()
-            .map(|id| self.download_row(*id, state, theme, &cols))
+            .map(|line| self.download_row(line, state, theme, &cols))
             .unzip();
         let widths = cols
             .iter()
@@ -407,13 +369,17 @@ impl TransfersView {
             .highlight_spacing(HighlightSpacing::Always);
         frame.render_widget(block, area);
         // The selected download's values in the columns that gave way.
-        let off_screen = super::selected_id(ids, &self.table_state).map_or_else(Vec::new, |id| {
-            crate::views::off_screen::hidden(
-                DownloadsTable::COLUMNS.iter().map(|c| c.label),
-                &download_values(id, state, theme),
-                &cols,
-            )
-        });
+        let off_screen = self
+            .table_state
+            .selected()
+            .and_then(|at| values.get(at))
+            .map_or_else(Vec::new, |values| {
+                crate::views::off_screen::hidden(
+                    DownloadsTable::COLUMNS.iter().map(|c| c.label),
+                    values,
+                    &cols,
+                )
+            });
         let inner = crate::views::off_screen::draw(frame, inner, &off_screen, theme);
         frame.render_stateful_widget(table, inner, &mut self.table_state);
         say_gave_way(
@@ -445,46 +411,32 @@ impl TransfersView {
 
     fn download_row(
         &self,
-        id: DownloadId,
+        line: &DownloadLine,
         state: &UiState,
         theme: &Theme,
         cols: &[usize],
     ) -> (Row<'static>, u16) {
-        let row = state.downloads.get(&id);
-        let diag = state.diagnostics.downloads.get(&id);
-        let hash = row.and_then(|r| r.file_hash);
-        let metadata = row.and_then(|r| r.metadata.as_ref());
-        let part_count = row.and_then(|r| r.part_count);
-        let status = row.map_or(DownloadStatus::Waiting, |r| r.status);
-        let bps = state.download_speed(id);
-        let avg_bps = state.download_eta_speed(id);
-
-        let (name, name_is_real) = display_name(metadata, hash);
-        let size = size_cell(metadata, part_count);
-        let done = done_percent(row, diag);
-        let eta = eta_cell(row_eta(row, diag, avg_bps));
-        let src = sources_cell(diag);
-
+        let diag = state.diagnostics.downloads.get(&line.id);
         let plain = Style::new().fg(theme.fg);
-        let name_style = if name_is_real {
+        let name_style = if line.name_real {
             plain
         } else {
             theme.dim_text()
         };
-        let (speed_text, speed_style) = rate_cell(bps, theme);
+        let (speed_text, speed_style) = rate_cell(line.bps, theme);
         // Every cell wraps at its column instead of clipping; the row grows to
         // the tallest of them.
         let cells = [
-            (name, cols[0], name_style, false),
-            (size, cols[1], plain, false),
-            (done, cols[2], plain, false),
+            (line.name.clone(), cols[0], name_style, false),
+            (line.size_cell(), cols[1], plain, false),
+            (line.done_cell(), cols[2], plain, false),
             (speed_text, cols[4], speed_style, false),
-            (eta, cols[5], plain, false),
-            (src, cols[6], plain, false),
+            (eta_cell(line.eta), cols[5], plain, false),
+            (line.sources_cell(), cols[6], plain, false),
             (
-                status_text(row, state).to_string(),
+                line.status_text.to_string(),
                 cols[7],
-                status_style(status, theme),
+                status_style(line.status, theme),
                 false,
             ),
         ];
@@ -509,37 +461,69 @@ impl TransfersView {
     }
 }
 
-/// A download's status cell: a download with no network while core re-makes
-/// the operator's session waits for that, not for nothing; one waiting with
-/// no server session while Kad runs says Kad is who asks.
-fn status_text(row: Option<&DownloadRow>, state: &UiState) -> &'static str {
-    let status = row.map_or(DownloadStatus::Waiting, |r| r.status);
-    match (status, row.and_then(|r| r.source_wait)) {
+/// A download's status as its cell words it: a download with no network
+/// while core re-makes the operator's session waits for that, not for
+/// nothing; one waiting with no server session while Kad runs says Kad is
+/// who asks. Each wording keeps the rank of the status it words.
+pub(super) fn status_text(
+    status: DownloadStatus,
+    wait: Option<SourceWait>,
+    state: &UiState,
+) -> &'static str {
+    match (status, wait) {
         (DownloadStatus::NoConnection, _) if state.reconnect.is_some() => "Reconnecting",
         (DownloadStatus::Waiting, Some(SourceWait::KadAlone)) => "Asking Kad",
         _ => status_label(status),
     }
 }
 
-/// A download's cell texts, in [`DownloadsTable::COLUMNS`]' order — what the
-/// `Off-screen:` line says of a column that gave way. The Progress bar has
-/// no text of its own; it reads as the Done figure it draws.
-fn download_values(id: DownloadId, state: &UiState, theme: &Theme) -> Vec<String> {
-    let row = state.downloads.get(&id);
-    let diag = state.diagnostics.downloads.get(&id);
-    let metadata = row.and_then(|r| r.metadata.as_ref());
-    let bps = state.download_speed(id);
-    let done = done_percent(row, diag);
-    vec![
-        display_name(metadata, row.and_then(|r| r.file_hash)).0,
-        size_cell(metadata, row.and_then(|r| r.part_count)),
-        done.clone(),
-        done,
-        crate::views::rate_cell(bps, theme).0,
-        eta_cell(row_eta(row, diag, state.download_eta_speed(id))),
-        sources_cell(diag),
-        status_text(row, state).to_string(),
-    ]
+impl DownloadLine {
+    /// The Size cell: the exact size when metadata supplies one (ADR-0078) —
+    /// even an `Unknown`-origin row, which has no name yet — else the
+    /// part-count estimate with `≈`, the best fact before metadata lands.
+    pub(super) fn size_cell(&self) -> String {
+        match (self.size, self.size_exact) {
+            (Some(bytes), true) => human_size(bytes),
+            (Some(bytes), false) => format!("≈ {}", human_size(bytes)),
+            (None, _) => "—".to_string(),
+        }
+    }
+
+    /// The Done cell: [`done_fraction`] as a whole percent, `—` without one.
+    pub(super) fn done_cell(&self) -> String {
+        self.done.map_or_else(
+            || "—".to_string(),
+            |(part, whole)| format!("{}%", part * 100 / whole.max(1)),
+        )
+    }
+
+    /// The Src cell: the known sources, then the sending ones in parentheses
+    /// when any are (aMule's `12 (3)`); `—` for a download that is not
+    /// running.
+    pub(super) fn sources_cell(&self) -> String {
+        match self.sources {
+            None => "—".to_string(),
+            Some((known, 0)) => known.to_string(),
+            Some((known, sending)) => format!("{known} ({sending})"),
+        }
+    }
+
+    /// The cell texts, in [`DownloadsTable::COLUMNS`]' order — what the
+    /// `Off-screen:` line says of a column that gave way. The Progress bar
+    /// has no text of its own; it reads as the Done figure it draws.
+    pub(super) fn values(&self, theme: &Theme) -> Vec<String> {
+        let done = self.done_cell();
+        vec![
+            self.name.clone(),
+            self.size_cell(),
+            done.clone(),
+            done,
+            rate_cell(self.bps, theme).0,
+            eta_cell(self.eta),
+            self.sources_cell(),
+            self.status_text.to_string(),
+        ]
+    }
 }
 
 #[cfg(test)]

@@ -4,23 +4,24 @@
 //! server, then connect to it; and nothing is shared but a directory the
 //! operator added and confirmed (ADR-0101, "Shared Directories").
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rmule_core::{
-    ClientCredentials, Core, CoreCommand, CoreEvent, ManagedServer, ScanCommand, ScanEvent,
-    ServeEvent, ServerListCommand,
+    Core, CoreCommand, CoreEvent, ManagedServer, ScanCommand, ScanEvent, ServeEvent,
+    ServerListCommand,
 };
 use rmule_primitives::{FileHash, ServerEndpoint};
 use tokio::time::{Duration, timeout};
 
 /// List `server` and send the operator's `ConnectToServer` to it, as the
-/// TUI's `c` does. Returns once core has both commands; the connect's trail
+/// TUI's `c` does; the login presents the core's Core Settings'
+/// credentials. Returns once core has both commands; the connect's trail
 /// (`Connecting` → `Connected` / `ConnectFailed`) follows on the event stream,
 /// and every download or search already waiting rides the session it makes.
 ///
 /// # Panics
 /// Core refused a command (it has stopped).
-pub async fn connect_to(core: &Core, server: &ServerEndpoint, credentials: ClientCredentials) {
+pub async fn connect_to(core: &Core, server: &ServerEndpoint) {
     core.send(CoreCommand::ServerList(ServerListCommand::AddServer {
         server: ManagedServer::listed(server.clone()),
     }))
@@ -28,7 +29,6 @@ pub async fn connect_to(core: &Core, server: &ServerEndpoint, credentials: Clien
     .expect("core accepts the server");
     core.send(CoreCommand::ConnectToServer {
         server: server.clone(),
-        credentials,
     })
     .await
     .expect("core accepts the connect");
@@ -67,4 +67,15 @@ pub async fn share_directory(core: &mut Core, dir: &Path) -> Vec<FileHash> {
     .await
     .expect("the shared directory's pass ended within 10 s");
     shared
+}
+
+/// An absolute path on the platform under test, as an operator would type
+/// one: `/srv/dl` on Unix, `C:\\srv\\dl` on Windows. `rest` names the
+/// components below the root, separated by `/`. Front ends and core refuse a
+/// download directory that is not absolute, and `/srv/dl` has no drive on
+/// Windows.
+pub fn absolute_path(rest: &str) -> PathBuf {
+    let mut path = PathBuf::from(if cfg!(windows) { r"C:\" } else { "/" });
+    path.extend(rest.split('/').filter(|part| !part.is_empty()));
+    path
 }

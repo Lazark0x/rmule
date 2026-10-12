@@ -41,7 +41,9 @@
 //! an unmatched sub-opcode's payload bytes silently get reinterpreted as
 //! further opcodes on the next iteration).
 
-use rmule_primitives::{AichRootHash, Ed2kText, FileHash, MAX_ED2K_FILE_SIZE, Packet};
+use rmule_primitives::{
+    AichRootHash, Ed2kText, FileHash, MAX_ED2K_FILE_SIZE, Packet, WireReader, WireTruncated,
+};
 use thiserror::Error;
 
 use crate::file::PartBitmap;
@@ -49,7 +51,6 @@ use crate::file_request::{
     ExtendedRequests, FileSizedStatus, read_file_sized_status, write_part_status,
 };
 use crate::opcode::PeerOpcode;
-use crate::source_exchange::ServedSourcesVersion;
 
 /// `OP_REQUESTSOURCES2` (SX2) sub-opcode byte. Kept as a local const rather
 /// than reusing [`PeerOpcode::RequestSources2`] (the standalone frame's
@@ -89,8 +90,9 @@ pub enum RequestItem {
 }
 
 /// One sub-ask of a bundle as the serving side answers it: a [`RequestItem`]
-/// with the source ask's answer form already picked from the asker's advert.
-/// The session hands a bundle's asks to core in one piece, so core can gate
+/// with what the server side reads of it. The session keeps the source ask's
+/// answer form, picked from the asker's advert, to frame core's answer. The
+/// session hands a bundle's asks to core in one piece, so core can gate
 /// the whole bundle on the file first, as aMule does before its sub-opcode
 /// loop (stock 2.3.3 `4e8f2b3c` `ClientTCPSocket.cpp:1061-1085`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,8 +108,8 @@ pub enum BundledAsk {
     /// `OP_AICHFILEHASHREQ` (`0x9E`).
     AichRoot,
     /// `OP_REQUESTSOURCES` / `OP_REQUESTSOURCES2` (`0x81` / `0x83`), answered
-    /// out of band in this wire form.
-    Sources(ServedSourcesVersion),
+    /// out of band.
+    Sources,
 }
 
 /// One item inside an unframed `OP_MULTIPACKETANSWER` reply stream — the
@@ -210,15 +212,10 @@ impl MultiPacketRequest {
                 actual: payload.len(),
             });
         }
-        let file_hash = read_file_hash(&payload[..FileHash::BYTE_LEN]);
-        let mut cursor = FileHash::BYTE_LEN;
+        let mut reader = WireReader::new(payload);
+        let file_hash = reader.read_file_hash("file hash")?;
         let file_size = if has_size {
-            let size = u64::from_le_bytes(
-                payload[cursor..cursor + 8]
-                    .try_into()
-                    .expect("validated length"),
-            );
-            cursor += 8;
+            let size = reader.read_u64_le("file size")?;
             // The size is the peer's claim and sizes every status read below,
             // so a claim no eD2k file can have ends the bundle here.
             if size > MAX_ED2K_FILE_SIZE {
@@ -232,18 +229,16 @@ impl MultiPacketRequest {
         let mut items = Vec::new();
         let mut unknown_sub = None;
         let mut cut = None;
-        while cursor < payload.len() {
-            let sub_opcode = payload[cursor];
-            cursor += 1;
+        while let Ok(sub_opcode) = reader.read_u8("sub-opcode") {
             match PeerOpcode::try_from_u8(sub_opcode) {
                 Some(PeerOpcode::RequestFileName) => {
                     if !level.carries_part_status() {
                         items.push(RequestItem::Name { part_status: None });
                         continue;
                     }
-                    match read_name_status(&payload[cursor..], file_size) {
+                    match read_name_status(reader.remaining_bytes(), file_size) {
                         NameStatus::Read { status, len } => {
-                            cursor += len;
+                            reader.advance_clamped(len);
                             items.push(RequestItem::Name {
                                 part_status: status,
                             });
@@ -258,14 +253,13 @@ impl MultiPacketRequest {
                 Some(PeerOpcode::RequestSources) => items.push(RequestItem::Sources),
                 Some(PeerOpcode::AichFileHashReq) => items.push(RequestItem::AichRoot),
                 _ if sub_opcode == OP_REQUESTSOURCES2 => {
-                    let needed = cursor + 3;
-                    if payload.len() < needed {
+                    let (Ok(version), Ok(options)) = (
+                        reader.read_u8("sources2 version"),
+                        reader.read_u16_le("sources2 options"),
+                    ) else {
                         cut = Some(BundleCut::Sources2);
                         break;
-                    }
-                    let version = payload[cursor];
-                    let options = u16::from_le_bytes([payload[cursor + 1], payload[cursor + 2]]);
-                    cursor = needed;
+                    };
                     items.push(RequestItem::Sources2 { version, options });
                 }
                 // Unknown sub-opcode: stop, keep the prefix, report it — the
@@ -273,7 +267,7 @@ impl MultiPacketRequest {
                 _ => {
                     unknown_sub = Some(UnknownSub {
                         opcode: sub_opcode,
-                        remaining: payload.len() - cursor,
+                        remaining: reader.remaining(),
                     });
                     break;
                 }
@@ -334,42 +328,31 @@ impl MultiPacketAnswer {
                 actual: payload.len(),
             });
         }
-        let file_hash = read_file_hash(&payload[..FileHash::BYTE_LEN]);
-        let mut cursor = FileHash::BYTE_LEN;
+        let mut reader = WireReader::new(payload);
+        let file_hash = reader.read_file_hash("file hash")?;
 
         let mut items = Vec::new();
         let mut unknown_sub = None;
-        while cursor < payload.len() {
-            let sub_opcode = payload[cursor];
-            cursor += 1;
+        while let Ok(sub_opcode) = reader.read_u8("sub-opcode") {
             match PeerOpcode::try_from_u8(sub_opcode) {
                 Some(PeerOpcode::ReqFileNameAnswer) => {
-                    let name = decode_name(payload, &mut cursor)?;
+                    let name = decode_name(&mut reader)?;
                     items.push(AnswerItem::Name(name));
                 }
                 Some(PeerOpcode::FileStatus) => {
-                    let status = decode_status(payload, &mut cursor)?;
+                    let status = decode_status(&mut reader)?;
                     items.push(AnswerItem::Status(status));
                 }
                 Some(PeerOpcode::AichFileHashAns) => {
-                    let needed = cursor + AichRootHash::BYTE_LEN;
-                    if payload.len() < needed {
-                        return Err(MultiPacketDecodeError::Truncated {
-                            needed,
-                            actual: payload.len(),
-                        });
-                    }
-                    let mut buf = [0u8; AichRootHash::BYTE_LEN];
-                    buf.copy_from_slice(&payload[cursor..needed]);
-                    cursor = needed;
-                    items.push(AnswerItem::AichRoot(AichRootHash::from_bytes(buf)));
+                    let root = reader.read_array("aich master hash")?;
+                    items.push(AnswerItem::AichRoot(AichRootHash::from_bytes(root)));
                 }
                 // Unknown sub-opcode: stop, keep the prefix, report it — the
                 // remainder has no length framing to skip past (ADR-0054).
                 _ => {
                     unknown_sub = Some(UnknownSub {
                         opcode: sub_opcode,
-                        remaining: payload.len() - cursor,
+                        remaining: reader.remaining(),
                     });
                     break;
                 }
@@ -418,58 +401,21 @@ impl MultiPacketAnswer {
     }
 }
 
-/// Read the `0x59` sub-item body — `<u16 name_len><name>` — advancing
-/// `cursor` past exactly what it consumed (more items may follow).
-fn decode_name(payload: &[u8], cursor: &mut usize) -> Result<Ed2kText, MultiPacketDecodeError> {
-    let len_end = *cursor + 2;
-    if payload.len() < len_end {
-        return Err(MultiPacketDecodeError::Truncated {
-            needed: len_end,
-            actual: payload.len(),
-        });
-    }
-    let name_len = u16::from_le_bytes([payload[*cursor], payload[*cursor + 1]]) as usize;
-    let name_start = len_end;
-    let name_end = name_start
-        .checked_add(name_len)
-        .ok_or(MultiPacketDecodeError::Truncated {
-            needed: usize::MAX,
-            actual: payload.len(),
-        })?;
-    if payload.len() < name_end {
-        return Err(MultiPacketDecodeError::Truncated {
-            needed: name_end,
-            actual: payload.len(),
-        });
-    }
-    *cursor = name_end;
-    Ok(Ed2kText::from_bytes(payload[name_start..name_end].to_vec()))
+/// Read the `0x59` sub-item body — `<u16 name_len><name>` — leaving the
+/// reader past exactly what it consumed (more items may follow).
+fn decode_name(reader: &mut WireReader<'_>) -> Result<Ed2kText, MultiPacketDecodeError> {
+    Ok(Ed2kText::from_bytes(
+        reader.read_len16_bytes("file name")?.to_vec(),
+    ))
 }
 
-/// Read the `0x50` sub-item body — `<u16 part_count><bitmap>` — advancing
-/// `cursor` past exactly what it consumed (more items may follow).
-fn decode_status(payload: &[u8], cursor: &mut usize) -> Result<PartBitmap, MultiPacketDecodeError> {
-    let count_end = *cursor + 2;
-    if payload.len() < count_end {
-        return Err(MultiPacketDecodeError::Truncated {
-            needed: count_end,
-            actual: payload.len(),
-        });
-    }
-    let part_count = u16::from_le_bytes([payload[*cursor], payload[*cursor + 1]]) as u32;
-    let bitmap_start = count_end;
-    let bitmap_len = (part_count as usize).div_ceil(8);
-    let bitmap_end = bitmap_start + bitmap_len;
-    if payload.len() < bitmap_end {
-        return Err(MultiPacketDecodeError::Truncated {
-            needed: bitmap_end,
-            actual: payload.len(),
-        });
-    }
-    let bitmap = PartBitmap::decode(part_count, &payload[bitmap_start..bitmap_end])
-        .expect("slice length matches part_count by construction");
-    *cursor = bitmap_end;
-    Ok(bitmap)
+/// Read the `0x50` sub-item body — `<u16 part_count><bitmap>` — leaving the
+/// reader past exactly what it consumed (more items may follow).
+fn decode_status(reader: &mut WireReader<'_>) -> Result<PartBitmap, MultiPacketDecodeError> {
+    let part_count = u32::from(reader.read_u16_le("part count")?);
+    let bitmap = reader.take((part_count as usize).div_ceil(8), "part bitmap")?;
+    Ok(PartBitmap::decode(part_count, bitmap)
+        .expect("slice length matches part_count by construction"))
 }
 
 /// What a name sub's status took of the stream.
@@ -507,11 +453,11 @@ fn read_name_status(rest: &[u8], file_size: Option<u64>) -> NameStatus {
             FileSizedStatus::Cut(status) => NameStatus::Cut(status),
         },
         None => {
-            let mut cursor = 0;
-            match decode_status(rest, &mut cursor) {
+            let mut reader = WireReader::new(rest);
+            match decode_status(&mut reader) {
                 Ok(status) => NameStatus::Read {
                     status: Some(status),
-                    len: cursor,
+                    len: reader.position(),
                 },
                 Err(_) => NameStatus::Cut(None),
             }
@@ -519,10 +465,13 @@ fn read_name_status(rest: &[u8], file_size: Option<u64>) -> NameStatus {
     }
 }
 
-fn read_file_hash(bytes: &[u8]) -> FileHash {
-    let mut buf = [0u8; FileHash::BYTE_LEN];
-    buf.copy_from_slice(&bytes[..FileHash::BYTE_LEN]);
-    FileHash::from_bytes(buf)
+impl From<WireTruncated> for MultiPacketDecodeError {
+    fn from(truncated: WireTruncated) -> Self {
+        Self::Truncated {
+            needed: truncated.needed,
+            actual: truncated.available,
+        }
+    }
 }
 
 /// Why a bundle could not be read. An unmodelled sub-opcode is not here:

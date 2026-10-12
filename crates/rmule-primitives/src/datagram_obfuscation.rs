@@ -30,8 +30,8 @@
 
 use md5::{Digest, Md5};
 
-use crate::UserHash;
 use crate::obfuscation::Rc4;
+use crate::{PacketProtocol, UserHash};
 
 /// Key-derivation magic mixed into the ed2k client UDP key (`0x5B`).
 /// `[pending]` (aMule `EncryptedDatagramSocket.cpp` @`4e8f2b3c`).
@@ -529,9 +529,15 @@ pub fn encrypt_datagram_server(
 ) -> Vec<u8> {
     // The server pair is dispatched by socket, not marker bits, so the marker
     // carries no family index — nudge it off plaintext markers by a bare step.
+    // A server takes a datagram that leads with `OP_EDONKEYPROT` as plaintext,
+    // so the marker clears that byte too (aMule `EncryptSendServer`).
+    let mut marker = nonce.marker_byte;
+    while marker == PacketProtocol::Edonkey.as_byte() || is_udp_plaintext_marker(marker) {
+        marker = marker.wrapping_add(1);
+    }
     frame_datagram(
         &DatagramFrame {
-            marker: nonce.marker_byte,
+            marker,
             marker_step: 1,
             random_key: nonce.random_key,
             sync: MAGICVALUE_UDP_SYNC_SERVER,

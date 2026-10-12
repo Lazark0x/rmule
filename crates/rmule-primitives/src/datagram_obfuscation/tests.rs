@@ -370,6 +370,24 @@ fn encrypt_never_emits_a_plaintext_marker_first_byte() {
     }
 }
 
+/// A server reads a datagram that leads with `OP_EDONKEYPROT` as plaintext
+/// and never decrypts it, so the server seal must not lead with `0xE3`
+/// either: aMule `EncryptSendServer` redraws that marker
+/// (`EncryptedDatagramSocket.cpp:450-456`).
+#[test]
+fn a_sealed_server_datagram_never_leads_with_the_edonkey_protocol_byte() {
+    for raw in 0u8..=255 {
+        let sealed =
+            encrypt_datagram_server(b"x", 1, ServerCryptDirection::ToServer, &nonce(raw, 0, &[]));
+        assert_ne!(sealed[0], 0xE3, "server marker from {raw:#04x}");
+        assert_eq!(
+            decrypt_datagram_server(&sealed, 1, ServerCryptDirection::ToServer),
+            Some(b"x".to_vec()),
+            "and it still opens, from {raw:#04x}"
+        );
+    }
+}
+
 #[test]
 fn pad_length_byte_stays_in_lockstep_with_the_encrypted_padding() {
     // The pad-length is one wire byte; the framer must emit a count that

@@ -397,8 +397,8 @@ fn the_broker_silently_refuses_the_two_engagement_guards() {
 }
 
 /// The ADR-0058 self-connect guard's own value follows Address Learning's
-/// live IPv4, the same `SharedOwnIdentity` fixture the verify-key
-/// `PublicIpFeed` test flips: with no public IPv4 known yet it falls back to
+/// live IPv4, the same `SharedOwnIdentity` read the Kad pump samples for the
+/// node's verify-key level: with no public IPv4 known yet it falls back to
 /// matching on port alone (aMule has no finer signal before that settles); a
 /// requester at the old IP + our port stops being a self-connect the moment
 /// the level moves, and one at the new IP starts being one.

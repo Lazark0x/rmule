@@ -47,8 +47,8 @@ struct Live {
     rows: mpsc::UnboundedSender<Share>,
 }
 
-/// One answer's rows for one search, and the server-UDP address a `0x99`
-/// came from; `None` for a TCP answer.
+/// One answer's rows for one search, and the standard endpoint of the server
+/// whose `0x99` brought them; `None` for a TCP answer.
 struct Share {
     rows: Vec<SearchResult>,
     from: Option<Ipv4Endpoint>,
@@ -59,7 +59,7 @@ struct Share {
 pub(crate) struct AttributedRows {
     rows: mpsc::UnboundedReceiver<Share>,
     live: Registration,
-    /// The server-UDP addresses whose answers brought this search a row
+    /// The servers (by standard endpoint) whose answers brought this search a row
     /// (ADR-0034's amendment).
     answered_by: HashSet<Ipv4Endpoint>,
 }
@@ -189,7 +189,7 @@ impl LiveSearches {
     }
 
     /// Hand each row of a server's `0x99` answer to every live search it
-    /// proves, naming the server-UDP address it came from so each search can
+    /// proves, naming the server it came from so each search can
     /// count the servers that answered it.
     pub(crate) fn deliver_udp_answer(&self, batch: Vec<SearchResult>, from: Ipv4Endpoint) {
         self.hand_out(batch, None, Some(from));

@@ -5,7 +5,7 @@
 use super::*;
 
 #[test]
-fn on_global_sources_dials_high_id_and_holds_low_id_for_a_per_server_callback() {
+fn global_sightings_dial_high_id_and_holds_low_id_for_a_per_server_callback() {
     use rmule_primitives::{ClientId, PeerSource};
     // Callback-capable, empty pools, room for two workers.
     let server = source_server(9);
@@ -13,7 +13,7 @@ fn on_global_sources_dials_high_id_and_holds_low_id_for_a_per_server_callback() 
     let high = PeerSource::new(ClientId::from_u32(u32::from_le_bytes([10, 0, 0, 5])), 4662);
     let low_src = PeerSource::new(low(7), 4662);
 
-    let decisions = state.on_global_sources(server, vec![high, low_src]);
+    let decisions = via_global(&mut state, server, vec![high, low_src]);
 
     // The High-ID global source is pooled and dialed.
     assert!(
@@ -27,17 +27,12 @@ fn on_global_sources_dials_high_id_and_holds_low_id_for_a_per_server_callback() 
     // (not the connected-server `RequestCallback`, which would mis-route).
     assert!(
         decisions.iter().any(|d| matches!(d,
-            Decision::RequestGlobalCallback { low_id, source_server }
+            Decision::RequestGlobalCallback { low_id, source_server, .. }
                 if *low_id == low(7) && *source_server == server)),
         "Low-ID global source must request a per-server callback: {decisions:?}"
     );
-    // Paired with an ArmCallbackTimeout keyed by the source-server (the global form).
-    assert!(
-        decisions.iter().any(|d| matches!(d,
-            Decision::ArmCallbackTimeout { key, .. }
-                if *key == CallbackKey { server: Some(server), low_id: low(7) })),
-        "RequestGlobalCallback is paired with ArmCallbackTimeout for the same key: {decisions:?}"
-    );
+    // Its slot-release deadline is the brain's next wake.
+    assert_eq!(state.next_wake(), Some(t0() + CALLBACK_TIMEOUT));
     assert!(
         !decisions
             .iter()
@@ -47,12 +42,12 @@ fn on_global_sources_dials_high_id_and_holds_low_id_for_a_per_server_callback() 
 }
 
 #[test]
-fn on_kad_sources_dials_direct_high_id_sources() {
+fn kad_sightings_dial_direct_high_id_sources() {
     use rmule_primitives::{ClientId, PeerSource};
     let mut state = callback_state(Vec::new(), Vec::new(), true, 2);
     let direct = PeerSource::new(ClientId::from_u32(u32::from_le_bytes([10, 0, 0, 5])), 4662);
 
-    let decisions = state.on_kad_sources(vec![crate::KadSource::dialable(direct)]);
+    let decisions = via_kad(&mut state, vec![SourceSighting::plain(direct)]);
 
     assert!(
         decisions
@@ -72,13 +67,13 @@ fn a_direct_kad_rows_crypt_side_reaches_its_dial() {
     };
     let mut state = callback_state(Vec::new(), Vec::new(), true, 2);
     let direct = PeerSource::new(ClientId::from_u32(u32::from_le_bytes([10, 0, 0, 5])), 4662);
-    let row = crate::KadSource {
-        user_hash: Some(UserHash::from_bytes([0x5A; 16])),
-        connect_options: Some(SourceCryptOptions::from_byte(0x07)),
-        ..crate::KadSource::dialable(direct)
-    };
+    let row = SourceSighting::new(
+        direct,
+        Some(UserHash::from_bytes([0x5A; 16])),
+        Some(SourceCryptOptions::from_byte(0x07)),
+    );
 
-    let _ = state.on_kad_sources(vec![row]);
+    let _ = via_kad(&mut state, vec![row]);
 
     assert_eq!(
         state.peer_crypt(peer(5)).outbound(CryptStance::disabled()),
@@ -89,7 +84,7 @@ fn a_direct_kad_rows_crypt_side_reaches_its_dial() {
 /// The peer's own hello outranks its record while its worker lives
 /// (ADR-0049) — but the hello rides that worker, not the
 /// endpoint forever (ADR-0049, ADR-0090 "Attachments"):
-/// once the worker retires, `hello_crypts` is pruned with it, so a
+/// once the worker retires, its hello attachment is pruned with it, so a
 /// source whose Kad row said "supports" and whose hello said "requires" is
 /// met on the bare record again the next time it is sighted, until a fresh
 /// hello restates a stance.
@@ -102,28 +97,27 @@ fn a_retired_hellos_required_crypt_does_not_outlive_its_worker() {
     let hello_hash = UserHash::from_bytes([0x6B; 16]);
     let mut state = callback_state(Vec::new(), Vec::new(), true, 2);
     let direct = PeerSource::new(ClientId::from_u32(u32::from_le_bytes([10, 0, 0, 5])), 4662);
-    let supports_only_row = || crate::KadSource {
-        user_hash: Some(UserHash::from_bytes([0x5A; 16])),
-        connect_options: Some(SourceCryptOptions::from_byte(0x01)),
-        ..crate::KadSource::dialable(direct)
+    let supports_only_row = || {
+        SourceSighting::new(
+            direct,
+            Some(UserHash::from_bytes([0x5A; 16])),
+            Some(SourceCryptOptions::from_byte(0x01)),
+        )
     };
 
-    let _ = state.on_kad_sources(vec![supports_only_row()]);
+    let _ = via_kad(&mut state, vec![supports_only_row()]);
     assert_eq!(
         state.peer_crypt(peer(5)).outbound(ours),
         OutboundCrypt::Plaintext,
         "the record alone: support met by support dials clear"
     );
     let _ = state.on_worker_event(
+        t0(),
         peer(5),
-        PeerWorkerEvent::Identified {
-            user_hash: hello_hash,
-            crypt: Some(CryptStance::new(true, true, true)),
-            software: hello_software(),
-        },
+        identified_with(hello_hash, CryptStance::new(true, true, true)),
     );
-    let _ = state.on_worker_event(peer(5), PeerWorkerEvent::Disconnected);
-    let _ = state.on_kad_sources(vec![supports_only_row()]);
+    let _ = state.on_worker_event(t0(), peer(5), PeerWorkerEvent::Disconnected);
+    let _ = via_kad(&mut state, vec![supports_only_row()]);
 
     assert_eq!(
         state.peer_crypt(peer(5)).outbound(ours),
@@ -145,27 +139,24 @@ fn a_retired_hellos_disabled_crypt_does_not_outlive_its_worker() {
     let hash = UserHash::from_bytes([0x5A; 16]);
     let mut state = callback_state(Vec::new(), Vec::new(), true, 2);
     let direct = PeerSource::new(ClientId::from_u32(u32::from_le_bytes([10, 0, 0, 5])), 4662);
-    let requesting_row = crate::KadSource {
-        user_hash: Some(hash),
-        connect_options: Some(SourceCryptOptions::from_byte(0x03)),
-        ..crate::KadSource::dialable(direct)
-    };
+    let requesting_row = SourceSighting::new(
+        direct,
+        Some(hash),
+        Some(SourceCryptOptions::from_byte(0x03)),
+    );
 
-    let _ = state.on_kad_sources(vec![requesting_row]);
+    let _ = via_kad(&mut state, vec![requesting_row]);
     assert_eq!(
         state.peer_crypt(peer(5)).outbound(ours),
         OutboundCrypt::Obfuscated { toward: hash },
         "the record alone asks, so the first dial is obfuscated"
     );
     let _ = state.on_worker_event(
+        t0(),
         peer(5),
-        PeerWorkerEvent::Identified {
-            user_hash: hash,
-            crypt: Some(CryptStance::disabled()),
-            software: hello_software(),
-        },
+        identified_with(hash, CryptStance::disabled()),
     );
-    let _ = state.on_worker_event(peer(5), PeerWorkerEvent::Disconnected);
+    let _ = state.on_worker_event(t0(), peer(5), PeerWorkerEvent::Disconnected);
 
     assert_eq!(
         state.peer_crypt(peer(5)).outbound(ours),
@@ -189,21 +180,18 @@ fn an_adopted_callback_peer_is_dialed_per_its_hello_stance() {
     let hello_hash = UserHash::from_bytes([0x6B; 16]);
     let mut state = callback_state(Vec::new(), vec![low_candidate(7)], true, 2);
 
-    let _ = state.start();
+    let _ = state.start(t0());
     assert_eq!(
         state.peer_crypt(peer(9)).outbound(ours),
         OutboundCrypt::Plaintext,
         "a callback candidate carries no record, so nothing has stated a stance yet"
     );
 
-    let _ = state.on_callback_connected(connected_key(low(7)), peer(9));
+    let _ = state.on_callback_connected(t0(), connected_key(low(7)), peer(9));
     let _ = state.on_worker_event(
+        t0(),
         peer(9),
-        PeerWorkerEvent::Identified {
-            user_hash: hello_hash,
-            crypt: Some(CryptStance::new(true, true, true)),
-            software: hello_software(),
-        },
+        identified_with(hello_hash, CryptStance::new(true, true, true)),
     );
 
     assert_eq!(
@@ -214,16 +202,18 @@ fn an_adopted_callback_peer_is_dialed_per_its_hello_stance() {
 }
 
 #[test]
-fn on_kad_sources_drops_a_low_id_row_entirely() {
-    use rmule_primitives::PeerSource;
+fn kad_sightings_drop_a_low_id_row_entirely() {
+    use rmule_kad::{KadSourceCandidate, KadSourceDiagnostic};
     // Even callback-capable: a bare Low-ID Kad row names no buddy, and Kad has
-    // no source-server to relay a callback through (ADR-0043).
+    // no source-server to relay a callback through (ADR-0043). The projection
+    // makes it no sighting at all.
     let mut state = callback_state(Vec::new(), Vec::new(), true, 2);
+    let row = KadSourceCandidate::diagnostic(KadSourceDiagnostic::LowId {
+        client_id: low(7),
+        tcp_port: 4662,
+    });
 
-    let decisions = state.on_kad_sources(vec![crate::KadSource::dialable(PeerSource::new(
-        low(7),
-        4662,
-    ))]);
+    let decisions = via_kad(&mut state, row.sighting().into_iter().collect());
 
     assert!(
         decisions.is_empty(),
@@ -241,7 +231,7 @@ fn a_kad_buddy_row_becomes_a_punchable_candidate_and_never_a_server_callback() {
     let mut state = callback_state(Vec::new(), Vec::new(), false, 2);
 
     // eMuleAI's connect-options byte: bit 7 is CONNECT_OPT_NAT_TRAVERSAL_UTP.
-    let decisions = state.on_kad_sources(vec![kad_buddy_row(0x81)]);
+    let decisions = via_kad(&mut state, vec![kad_buddy_row(0x81)]);
 
     assert!(
         !decisions.iter().any(|d| matches!(
@@ -268,7 +258,7 @@ fn a_kad_buddy_row_without_the_natt_bit_opens_no_road_for_a_low_id_downloader() 
     let mut state = callback_state(Vec::new(), Vec::new(), false, 2);
 
     // aMule's byte: crypt supported/requested, no 0x80.
-    let decisions = state.on_kad_sources(vec![kad_buddy_row(0x03)]);
+    let decisions = via_kad(&mut state, vec![kad_buddy_row(0x03)]);
 
     assert!(
         !decisions.iter().any(|d| matches!(
@@ -284,41 +274,28 @@ fn a_kad_buddy_row_without_the_natt_bit_opens_no_road_for_a_low_id_downloader() 
 
 /// One decoded type-3 row: a firewalled publisher behind a buddy, with
 /// `connect_options` left to the caller.
-pub(super) fn kad_buddy_row(connect_options: u8) -> crate::KadSource {
-    use rmule_primitives::{Ipv4Endpoint, SourceCryptOptions, UserHash};
-    crate::KadSource {
-        direct: None,
-        user_hash: Some(UserHash::from_bytes([0xAB; UserHash::BYTE_LEN])),
-        kad_udp: Some(Ipv4Endpoint::new(
-            std::net::Ipv4Addr::new(198, 51, 100, 77),
-            4672,
+pub(super) fn kad_buddy_row(connect_options: u8) -> SourceSighting {
+    super::kad_buddy_sighting(
+        Some(UserHash::from_bytes([0xAB; UserHash::BYTE_LEN])),
+        rmule_kad::KadId::from_bytes([0x7A; rmule_kad::KadId::BYTE_LEN]),
+        Some(Ipv4Endpoint::new(
+            std::net::Ipv4Addr::new(45, 55, 200, 9),
+            9000,
         )),
-        connect_options: Some(SourceCryptOptions::from_byte(connect_options)),
-        buddy: Some(rmule_kad::KadBuddyContact {
-            buddy_id: rmule_kad::KadId::from_bytes([0x7A; rmule_kad::KadId::BYTE_LEN]),
-            buddy_udp: Some(Ipv4Endpoint::new(
-                std::net::Ipv4Addr::new(45, 55, 200, 9),
-                9000,
-            )),
-            buddy_ipv6: None,
-            buddy_udp_ipv6: None,
-        }),
-        direct_udp_callback: false,
-        tcp_port: 4662,
-        ipv6: None,
-    }
+        connect_options,
+    )
 }
 
 /// A bare Low-ID global source is the one shape neither road of the admission
 /// rule reaches (ADR-0091): we cannot be called back for it, and
 /// its own server is not ours to ask for an introduction.
 #[test]
-fn on_global_sources_opens_no_road_for_a_bare_low_id_global_without_callback_capability() {
+fn global_sightings_open_no_road_for_a_bare_low_id_global_without_callback_capability() {
     use rmule_primitives::PeerSource;
     let server = source_server(9);
     let mut state = callback_state(Vec::new(), Vec::new(), false, 2);
 
-    let decisions = state.on_global_sources(server, vec![PeerSource::new(low(7), 4662)]);
+    let decisions = via_global(&mut state, server, vec![PeerSource::new(low(7), 4662)]);
 
     assert!(
         !decisions.iter().any(|d| matches!(
@@ -339,9 +316,26 @@ fn on_global_sources_opens_no_road_for_a_bare_low_id_global_without_callback_cap
 fn a_sentinel_ipv6_source_is_pooled_and_dialed_rather_than_called_back() {
     use rmule_primitives::{Ipv6Endpoint, PeerSource};
     let endpoint = Ipv6Endpoint::new("2a01:4f8::7".parse().unwrap(), 4662);
-    let mut state = callback_state(Vec::new(), Vec::new(), true, 2);
+    let mut state = state_from(
+        file_hash_only_content(ONE_PART),
+        SourcingPosture {
+            callback_capability: CallbackCapability::server_high_id(),
+            dial: DialPosition {
+                known_ipv6: Some("2001:db8::1".parse().unwrap()),
+            },
+            ..QUIET_POSTURE
+        },
+        2,
+        no_facts(),
+        Vec::new(),
+        Vec::new(),
+    );
 
-    let decisions = state.on_global_sources(source_server(9), vec![PeerSource::Ipv6(endpoint)]);
+    let decisions = via_global(
+        &mut state,
+        source_server(9),
+        vec![PeerSource::Ipv6(endpoint)],
+    );
 
     assert!(
         decisions.iter().any(|d| matches!(
@@ -364,54 +358,54 @@ fn a_sentinel_ipv6_source_is_pooled_and_dialed_rather_than_called_back() {
 mod crypt_stance {
     use super::*;
     use rmule_primitives::{
-        ClientId, CryptStance, ExchangedSource, OutboundCrypt, PeerSource, SourceCryptOptions,
+        ClientId, CryptStance, OutboundCrypt, PeerSource, SourceCryptOptions, SourceSighting,
         UserHash,
     };
 
     const HASH: UserHash = UserHash::from_bytes([0x5A; 16]);
     const SUPPORTS: CryptStance = CryptStance::new(true, false, false);
 
-    fn kad_row(hash: UserHash, options: Option<u8>) -> crate::KadSource {
+    fn kad_row(hash: UserHash, options: Option<u8>) -> SourceSighting {
         let direct = PeerSource::new(ClientId::from_u32(u32::from_le_bytes([10, 0, 0, 5])), 4662);
-        crate::KadSource {
-            user_hash: Some(hash),
-            connect_options: options.map(SourceCryptOptions::from_byte),
-            ..crate::KadSource::dialable(direct)
-        }
+        SourceSighting::new(
+            direct,
+            Some(hash),
+            options.map(SourceCryptOptions::from_byte),
+        )
     }
 
     fn exchanged(state: &mut DownloadState, hash: UserHash, options: Option<u8>) {
         let PeerEndpoint::V4(v4) = peer(5) else {
             unreachable!()
         };
-        let source = ExchangedSource::new(
+        let source = SourceSighting::new(
             PeerSource::HighId(v4),
             Some(hash),
             options.map(SourceCryptOptions::from_byte),
         );
-        let _ = state.on_worker_event(
-            peer(1),
-            PeerWorkerEvent::SourcesReceived {
-                sources: vec![source],
-            },
-        );
+        let _ = via_exchange(state, peer(1), vec![source]);
     }
 
-    /// Hello vs Kad row: a Kad row arriving *after* the hello — even one
-    /// stating "no crypt" — never displaces what the peer said itself.
+    /// Hello vs Kad row: a Kad row arriving *after* the hello, while the
+    /// worker that read it lives — even one stating "no crypt" — never
+    /// displaces what the peer said itself. The hello rides that worker's
+    /// record; a hello for an endpoint no worker holds states nothing.
     #[test]
     fn a_later_kad_row_never_outranks_the_peers_own_hello() {
         let mut state = callback_state(Vec::new(), Vec::new(), true, 2);
-        let _ = state.on_worker_event(
-            peer(5),
-            PeerWorkerEvent::Identified {
-                user_hash: HASH,
-                crypt: Some(CryptStance::new(true, true, true)),
-                software: hello_software(),
-            },
+        let dialed = via_kad(&mut state, vec![kad_row(HASH, None)]);
+        assert!(
+            dialed
+                .iter()
+                .any(|d| matches!(d, Decision::Spawn { peer: p, .. } if *p == peer(5))),
+            "the first row is dialed: {dialed:?}"
         );
-        let _ = state.on_worker_event(peer(5), PeerWorkerEvent::Disconnected);
-        let _ = state.on_kad_sources(vec![kad_row(HASH, Some(0x00))]);
+        let _ = state.on_worker_event(
+            t0(),
+            peer(5),
+            identified_with(HASH, CryptStance::new(true, true, true)),
+        );
+        let _ = via_kad(&mut state, vec![kad_row(HASH, Some(0x00))]);
 
         assert_eq!(
             state.peer_crypt(peer(5)).outbound(SUPPORTS),
@@ -424,7 +418,7 @@ mod crypt_stance {
     #[test]
     fn a_newer_exchanged_stance_replaces_an_older_kad_rows() {
         let mut state = callback_state(Vec::new(), Vec::new(), true, 2);
-        let _ = state.on_kad_sources(vec![kad_row(HASH, Some(0x07))]);
+        let _ = via_kad(&mut state, vec![kad_row(HASH, Some(0x07))]);
         exchanged(&mut state, HASH, Some(0x01));
 
         assert_eq!(
@@ -442,7 +436,7 @@ mod crypt_stance {
         let other = UserHash::from_bytes([0x6B; 16]);
         let mut state = callback_state(Vec::new(), Vec::new(), true, 2);
         exchanged(&mut state, HASH, Some(0x07));
-        let _ = state.on_kad_sources(vec![kad_row(other, None)]);
+        let _ = via_kad(&mut state, vec![kad_row(other, None)]);
 
         assert_eq!(
             state.peer_crypt(peer(5)).outbound(CryptStance::disabled()),
@@ -458,7 +452,7 @@ mod crypt_stance {
     #[test]
     fn a_record_with_no_crypt_byte_invents_no_stance_over_a_stated_one() {
         let mut state = callback_state(Vec::new(), Vec::new(), true, 2);
-        let _ = state.on_kad_sources(vec![kad_row(HASH, Some(0x07))]);
+        let _ = via_kad(&mut state, vec![kad_row(HASH, Some(0x07))]);
         exchanged(&mut state, HASH, None);
 
         assert_eq!(
@@ -480,7 +474,7 @@ fn known_sources_count_the_slots_and_the_pools_and_drop_a_retired_source() {
         1,
     );
     assert_eq!(state.known_sources(), 4);
-    let started = state.start();
+    let started = state.start(t0());
     assert_eq!(spawned(&started), [peer(1)]);
     assert_eq!(
         state.known_sources(),
@@ -488,7 +482,7 @@ fn known_sources_count_the_slots_and_the_pools_and_drop_a_retired_source() {
         "a dial moves a source, it does not add one"
     );
 
-    let backfill = state.on_worker_event(peer(1), PeerWorkerEvent::Disconnected);
+    let backfill = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
     assert_eq!(spawned(&backfill), [peer(2)]);
     assert_eq!(state.known_sources(), 3, "the failed source left");
 }
@@ -499,12 +493,12 @@ fn known_sources_count_the_slots_and_the_pools_and_drop_a_retired_source() {
 #[test]
 fn known_sources_count_a_source_that_queued_us_once() {
     let mut state = callback_state(vec![peer(1)], Vec::new(), true, 1);
-    let _ = state.start();
-    let _ = state.on_worker_event(peer(1), PeerWorkerEvent::Connected);
-    state.enter_remote_queue(peer(1));
+    let _ = state.start(t0());
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Queued { rank: 3 });
     assert_eq!(state.known_sources(), 1, "held by its worker and the queue");
 
-    let _ = state.on_worker_event(peer(1), PeerWorkerEvent::Disconnected);
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
     assert_eq!(state.known_sources(), 1, "queued with us, hung up");
 }
 
@@ -513,14 +507,17 @@ fn known_sources_count_a_source_that_queued_us_once() {
 #[test]
 fn a_hello_names_its_client_on_the_workers_own_slot() {
     let mut state = two_peer_state();
-    let software = hello_software();
+    let software = crate::hello_facts::nameless_software();
     let decisions = state.on_worker_event(
+        t0(),
         peer(2),
-        PeerWorkerEvent::Identified {
-            user_hash: rmule_primitives::UserHash::from_bytes([0x22; 16]),
-            crypt: None,
-            software: software.clone(),
-        },
+        PeerWorkerEvent::Identity(
+            HelloFacts {
+                software: software.clone(),
+                ..HelloFacts::of(rmule_primitives::UserHash::from_bytes([0x22; 16]))
+            }
+            .identity(),
+        ),
     );
     let identified: Vec<_> = decisions
         .iter()
@@ -538,12 +535,9 @@ fn a_hello_names_its_client_on_the_workers_own_slot() {
 fn a_software_revision_renames_the_workers_own_slot() {
     let mut state = two_peer_state();
     let _ = state.on_worker_event(
+        t0(),
         peer(2),
-        PeerWorkerEvent::Identified {
-            user_hash: rmule_primitives::UserHash::from_bytes([0x22; 16]),
-            crypt: None,
-            software: hello_software(),
-        },
+        identified(rmule_primitives::UserHash::from_bytes([0x22; 16])),
     );
     let mut evidence = rmule_peer::SoftwareEvidence::default();
     evidence.hello(
@@ -563,12 +557,16 @@ fn a_software_revision_renames_the_workers_own_slot() {
         rmule_peer::HelloTrailer::Absent,
     );
     let revised = evidence.software();
-    let decisions = state.on_worker_event(
-        peer(2),
-        PeerWorkerEvent::SoftwareRevised {
-            software: revised.clone(),
-        },
-    );
+    let revision = |software| {
+        PeerWorkerEvent::Identity(
+            HelloFacts {
+                software,
+                ..HelloFacts::of(rmule_primitives::UserHash::from_bytes([0x22; 16]))
+            }
+            .identity(),
+        )
+    };
+    let decisions = state.on_worker_event(t0(), peer(2), revision(revised.clone()));
     let identified: Vec<_> = decisions
         .iter()
         .filter_map(|d| match d {
@@ -576,15 +574,10 @@ fn a_software_revision_renames_the_workers_own_slot() {
             _ => None,
         })
         .collect();
-    assert_eq!(identified, vec![(slot(1), revised)]);
+    assert_eq!(identified, vec![(slot(1), revised.clone())]);
     assert!(
         state
-            .on_worker_event(
-                peer(9),
-                PeerWorkerEvent::SoftwareRevised {
-                    software: hello_software()
-                }
-            )
+            .on_worker_event(t0(), peer(9), revision(revised.clone()))
             .is_empty(),
         "no worker, no row to rename"
     );

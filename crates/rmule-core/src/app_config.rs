@@ -17,7 +17,7 @@
 //! production and on the engine's in-memory backend by a test, so there is no
 //! twin (ADR-0083).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use rmule_kad::KadId;
 use rmule_primitives::{ClientIdentity, Ed2kText, SecureIdentKey, UserHash};
@@ -57,15 +57,19 @@ pub struct KadIdentity {
     pub udp_port: u16,
 }
 
-/// A named front-end preference — the closed set of keys the durable
-/// key/value `preferences` table holds (ADR-0069: config is the front-end's,
-/// core is storage-agnostic).
+/// A core-owned preference — the closed set of keys core keeps in the
+/// durable key/value `preferences` table.
+///
+/// Core owns the preferences that change what core does and reaches them
+/// through **Core Settings** (ADR-0069), which parses each key's text into
+/// its typed value in one place. A front end's own keys — the TUI's theme,
+/// table sorts, Run Log level, connect at start and last server — share the
+/// table under keys the front end names, through
+/// [`CoreSettingsHandle::front_end_value`](crate::CoreSettingsHandle::front_end_value);
+/// core never interprets them, and refuses one that names a key of its own.
 ///
 /// The **key** is typed and the **value** is text, because text is what the
-/// column is. Core stores preferences; it does not interpret them. Each key's
-/// meaning — a path, a URL, a boolean, a theme name — is parsed where its one
-/// consumer lives, so no second copy of that meaning can drift out of step
-/// with the first.
+/// column is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Preference {
     /// Directory finished downloads are written to.
@@ -85,16 +89,12 @@ pub enum Preference {
     /// (`"true"`/`"false"`; ADR-0067 amendment — an opt-in the TUI takes and
     /// no library caller does).
     AutoFetchNodesDat,
-    /// The terminal theme name a front-end starts in (`dark`/`light`/`256`,
-    /// or unset for environment detection).
-    Theme,
     /// The per-install secret mixed into the PCP Mapping Nonce (ADR-0086),
     /// as a decimal `u32`.
     PortMapSecret,
     /// Whether rmule maps its own ports on the router — PCP, NAT-PMP and
-    /// UPnP-IGD raced (ADR-0086) — as `"true"`/`"false"`, on when unset. The
-    /// front end hands it to `CoreConfig::port_mapping` as the mode, so it
-    /// takes effect at the next start.
+    /// UPnP-IGD raced (ADR-0086) — as `"true"`/`"false"`, on when unset:
+    /// [`CoreSettings::port_mapping`](crate::CoreSettings::port_mapping).
     PortMapping,
     /// The port-mapping method that last won a race (ADR-0086), so the next
     /// run opens with one short probe instead of a full three-protocol race.
@@ -102,43 +102,46 @@ pub enum Preference {
     /// The per-install **Kad UDP Key** the node's verify keys derive from
     /// (aMule `/Obfuscation/CryptoKadUDPKey`), as a decimal `u32`.
     KadUdpKey,
-    /// The one protocol-obfuscation policy a front-end hands
-    /// `CoreConfig::peer_crypt` (ADR-0046; aMule's `/Obfuscation/` trio):
-    /// `supported`/`requested`/`required`, or unset for none.
+    /// The one protocol-obfuscation policy,
+    /// [`CoreSettings::obfuscation`](crate::CoreSettings::obfuscation)
+    /// (ADR-0046; aMule's `/Obfuscation/` trio):
+    /// `supported`/`requested`/`required`, or `off` or unset for none.
     Obfuscation,
-    /// Every TUI table's **Table Sort** (ADR-0070), one entry
-    /// per table in a single value, so a table that gains a sort adds an entry
-    /// rather than a key. The front-end owns the format.
-    TableSorts,
-    /// Whether the front end performs the operator's connect at attach
-    /// (`"true"`/`"false"`, off when unset — ADR-0093, "Connecting is the
-    /// operator's act"; aMule's `Autoconnect`, which rmule keeps off by
-    /// default).
-    ConnectAtStart,
-    /// The server the operator last connected to, as `host:port`: what a
-    /// connect at start dials. Written by the front end on every `Connected`.
-    LastServer,
-    /// Whether the front end's Run Log is written at its full level
-    /// (`"true"`/`"false"`, off when unset): lean holds reachability evidence
-    /// only, full adds peer addresses, file names, paths and hashes.
-    RunLogFull,
     /// The **Dead Server Limit** (ADR-0052): the failure tally at which a
     /// listed server is dead, a whole number of at least 1 (aMule's
-    /// `/eMule/DeadServerRetry`, default 3). One of the two preferences core
-    /// itself reads, at the actor's start ([`ServerPolicy`](crate::ServerPolicy)).
+    /// `/eMule/DeadServerRetry`, default 3): half of
+    /// [`CoreSettings::server_policy`](crate::CoreSettings::server_policy).
     DeadServerRetries,
     /// The **Announce Policy** (ADR-0099): whether the share set is withheld
     /// from servers that grant related search (`"true"`/`"false"`, off when
-    /// unset). The other preference core reads at the actor's start.
+    /// unset): the other half of
+    /// [`CoreSettings::server_policy`](crate::CoreSettings::server_policy).
     WithholdSharesFromRelatedSearch,
     /// `Remember peers` (ADR-0109, "Source Seeds"): how many peers each
     /// running download keeps for a restart to dial first, a whole number
-    /// from 1 to 255 (default 10). The front end hands it to
-    /// `CoreConfig::remember_peers` and changes it live.
+    /// from 1 to 255 (default 10):
+    /// [`CoreSettings::remember_peers`](crate::CoreSettings::remember_peers).
     RememberPeers,
 }
 
 impl Preference {
+    /// Every core-owned key, so the front end's raw surface can refuse them.
+    pub const ALL: [Self; 13] = [
+        Self::DownloadDir,
+        Self::ServerMetUrl,
+        Self::AutoFetchServerMet,
+        Self::NodesDatUrl,
+        Self::AutoFetchNodesDat,
+        Self::PortMapSecret,
+        Self::PortMapping,
+        Self::PortMapMethod,
+        Self::KadUdpKey,
+        Self::Obfuscation,
+        Self::DeadServerRetries,
+        Self::WithholdSharesFromRelatedSearch,
+        Self::RememberPeers,
+    ];
+
     /// The `preferences.key` this entry is stored under. Stable: renaming one
     /// would orphan an installed value.
     #[must_use]
@@ -149,16 +152,11 @@ impl Preference {
             Self::AutoFetchServerMet => "auto_fetch_server_met",
             Self::NodesDatUrl => "nodes_dat_url",
             Self::AutoFetchNodesDat => "auto_fetch_nodes_dat",
-            Self::Theme => "theme",
             Self::PortMapSecret => "port_map_secret",
             Self::PortMapping => "port_mapping",
             Self::PortMapMethod => "port_map_method",
             Self::KadUdpKey => "kad_udp_key",
             Self::Obfuscation => "obfuscation",
-            Self::TableSorts => "table_sorts",
-            Self::ConnectAtStart => "connect_at_start",
-            Self::LastServer => "last_server",
-            Self::RunLogFull => "run_log_full",
             Self::DeadServerRetries => "dead_server_retries",
             Self::WithholdSharesFromRelatedSearch => "withhold_shares_related_search",
             Self::RememberPeers => "remember_peers",
@@ -167,7 +165,7 @@ impl Preference {
 }
 
 /// Durable owner of the app's Client Identity, managed server list, and the
-/// front-end [`Preference`] table. `ensure_identity` is generate-once:
+/// core-owned [`Preference`] keys. `ensure_identity` is generate-once:
 /// the first call mints and persists a random identity; later calls return it.
 ///
 /// The server list half is [`ServerListStore`], the narrower seam the core
@@ -176,12 +174,17 @@ impl Preference {
 /// # What is editable and what is minted once
 ///
 /// The **identity material** — the User Hash, the Secure User Identification
-/// keypair, the Kad ID — has no setter anywhere in this trait and never will:
-/// it is generated from OS entropy on first use and keys the credit and
-/// reputation this client has earned. What a front-end's preferences editor
-/// may change is the *presentation* half of the same rows — the advertised
-/// nickname and the two listen ports — which are aMule preferences that happen
-/// to travel with identity on the wire.
+/// keypair, the Kad ID — has no setter anywhere and never will: it is
+/// generated from OS entropy on first use and keys the credit and reputation
+/// this client has earned. What a front end's preferences editor may change
+/// is the *presentation* half of the same rows — the advertised nickname and
+/// the two listen ports — which are aMule preferences that happen to travel
+/// with identity on the wire.
+///
+/// This seam writes none of them. Every change to a core-owned key goes
+/// through [`CoreSettingsHandle::set`](crate::CoreSettingsHandle::set), which
+/// validates it and hands a live key to a running core (ADR-0069); a raw
+/// setter here would be a second door around both.
 pub trait AppConfigStore: ServerListStore {
     /// Generate-once the eD2k [`ClientIdentity`] — User Hash, nickname and the
     /// two listen ports. The first call mints and persists it from OS entropy;
@@ -205,22 +208,6 @@ pub trait AppConfigStore: ServerListStore {
     /// same string my default happens to be".
     fn preference(&self, preference: Preference) -> Result<Option<String>, CoreError>;
 
-    /// Persist `value` under `preference`, replacing any installed one.
-    fn set_preference(&self, preference: Preference, value: &str) -> Result<(), CoreError>;
-
-    /// Replace the advertised nickname. Mints the identity first when none
-    /// exists, so the edit can never land on a row that is not there.
-    fn set_nickname(&self, nickname: &Ed2kText) -> Result<(), CoreError>;
-
-    /// Replace the advertised eD2k listen port (the one a server's login
-    /// answer grades into a High/Low ID).
-    fn set_tcp_port(&self, port: u16) -> Result<(), CoreError>;
-
-    /// Replace the UDP listen port — the one socket reask, NAT-T and Kad
-    /// share. The Kad **ID** is untouched: a node that moves ports keeps its
-    /// place in the keyspace.
-    fn set_udp_port(&self, port: u16) -> Result<(), CoreError>;
-
     /// Generate-once the per-install **port-mapping secret** (ADR-0086): the
     /// value mixed into the PCP Mapping Nonce.
     ///
@@ -236,13 +223,12 @@ pub trait AppConfigStore: ServerListStore {
     /// A store that cannot persist one answers `0`, which still derives a
     /// *stable* nonce — the property renewal and deletion need — and gives up
     /// only the unguessability.
-    fn ensure_port_map_secret(&self) -> Result<u32, CoreError> {
-        ensure_secret(self, Preference::PortMapSecret)
-    }
+    fn ensure_port_map_secret(&self) -> Result<u32, CoreError>;
 
     /// Generate-once the per-install **Kad UDP Key**: the seed
     /// every Kad UDP verify key rmule hands a counterparty derives from,
-    /// carried to the node as [`KadEnableConfig::kad_udp_key`].
+    /// read by core at build and handed to the node as
+    /// [`KadNodeIdentity::kad_udp_key`].
     ///
     /// Persisted where aMule persists it — a preference minted from
     /// `GetRandomUint32()` on first read (`/Obfuscation/CryptoKadUDPKey`,
@@ -251,24 +237,12 @@ pub trait AppConfigStore: ServerListStore {
     /// restart turns every key the network learned for this node into a
     /// mismatch.
     ///
-    /// [`KadEnableConfig::kad_udp_key`]: crate::KadEnableConfig::kad_udp_key
-    fn ensure_kad_udp_key(&self) -> Result<u32, CoreError> {
-        ensure_secret(self, Preference::KadUdpKey)
-    }
+    /// [`KadNodeIdentity::kad_udp_key`]: crate::KadNodeIdentity::kad_udp_key
+    fn ensure_kad_udp_key(&self) -> Result<u32, CoreError>;
 
     /// The configured download directory, if one has been set.
     fn download_dir(&self) -> Result<Option<PathBuf>, CoreError> {
         Ok(self.preference(Preference::DownloadDir)?.map(PathBuf::from))
-    }
-
-    /// Persist the download directory. Fails with
-    /// [`CoreError::Repository`] on a path that is not valid UTF-8, since the
-    /// preferences column is text.
-    fn set_download_dir(&self, dir: &Path) -> Result<(), CoreError> {
-        let value = dir
-            .to_str()
-            .ok_or_else(|| CoreError::Repository("download dir is not valid UTF-8".to_owned()))?;
-        self.set_preference(Preference::DownloadDir, value)
     }
 }
 
@@ -305,23 +279,4 @@ pub(crate) fn default_identity(user_hash: UserHash) -> ClientIdentity {
         DEFAULT_TCP_PORT,
         DEFAULT_PROTOCOL_VERSION,
     )
-}
-
-/// Read the decimal `u32` stored under `preference`, or mint one from OS
-/// entropy and persist it — the generate-once shape both per-install secrets
-/// share.
-fn ensure_secret<S: AppConfigStore + ?Sized>(
-    store: &S,
-    preference: Preference,
-) -> Result<u32, CoreError> {
-    if let Some(stored) = store.preference(preference)?
-        && let Ok(secret) = stored.parse::<u32>()
-    {
-        return Ok(secret);
-    }
-    let mut bytes = [0_u8; 4];
-    getrandom::fill(&mut bytes).expect("OS entropy for a per-install secret");
-    let secret = u32::from_le_bytes(bytes);
-    store.set_preference(preference, &secret.to_string())?;
-    Ok(secret)
 }

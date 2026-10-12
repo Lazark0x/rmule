@@ -9,11 +9,12 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rmule_primitives::{PeerEndpoint, UserHash};
+use rmule_peer::{PeerIdentity, ServerCommand};
+use rmule_primitives::PeerEndpoint;
 use tokio::sync::{mpsc, watch};
 
 use crate::adapters::{
-    AnnounceOutcome, ServeConnCommand, ServeConnEvent, ServeConnection, ServeRuntimeService,
+    AnnounceOutcome, ServeConnection, ServeInput, ServeOutput, ServeRuntimeService,
 };
 use crate::client_udp::{ClientUdpDatagram, ClientUdpSend};
 use crate::content::ContentFileStore;
@@ -159,7 +160,7 @@ where
         // owner of `Upload`, so ending the relation whole ends only its own.
         let _upload_relations = RelationLease::new(peer_roster.clone(), PeerRelation::Upload);
         // Per-connection command senders, keyed by requester endpoint.
-        let mut conns: HashMap<PeerEndpoint, mpsc::Sender<ServeConnCommand>> = HashMap::new();
+        let mut conns: HashMap<PeerEndpoint, mpsc::Sender<ServeOutput>> = HashMap::new();
         // The sans-I/O serving brain (**Serve State**): it owns the share-set
         // snapshot, the upload slot queue, the served ranges, the peer
         // identities, and the AICH cache, and turns each input into an ordered
@@ -167,7 +168,7 @@ where
         let mut state = ServeState::new(queue);
         // Every connection's events funnel into one stream the task selects on
         // (cf. the download runner's `fact_rx`).
-        let (fact_tx, mut fact_rx) = mpsc::channel::<(PeerEndpoint, ServeConnEvent)>(64);
+        let (fact_tx, mut fact_rx) = mpsc::channel::<(PeerEndpoint, ServeInput)>(64);
         // What each session made after an announce was told of the set.
         let mut session_told_rx = serve_runtime.take_session_told();
 
@@ -240,7 +241,7 @@ where
                     if changed.is_none() {
                         break;
                     }
-                    let modifiers = current_modifiers(&credit, state.identified_peers()).await;
+                    let modifiers = current_modifiers(&credit, state.identities()).await;
                     let mut decisions: VecDeque<ServeDecision> = state
                         .on_share_set(read_share_set(&registry, &withheld), Instant::now(), &modifiers)
                         .into();
@@ -290,11 +291,8 @@ where
                 }
                 fact = fact_rx.recv() => {
                     let Some((peer, event)) = fact else { continue };
-                    let closing = matches!(
-                        event,
-                        ServeConnEvent::Disconnected | ServeConnEvent::Readopted
-                    );
-                    let modifiers = current_modifiers(&credit, state.identified_peers()).await;
+                    let closing = event.is_disconnect() || event == ServeInput::Readopted;
+                    let modifiers = current_modifiers(&credit, state.identities()).await;
                     // Our own position, read fresh from the session's
                     // self-facts. A synchronous cell read, not a round
                     // trip: it must be current at the decision, because a
@@ -317,7 +315,7 @@ where
                     }
                 }
                 _ = rerank_tick.tick() => {
-                    let modifiers = current_modifiers(&credit, state.identified_peers()).await;
+                    let modifiers = current_modifiers(&credit, state.identities()).await;
                     let mut decisions: VecDeque<ServeDecision> =
                         state.on_rerank_tick(Instant::now(), &modifiers).into();
                     enact(
@@ -332,7 +330,7 @@ where
                 _ = purge_tick.tick() => {
                     // Reap waiters silent past the reask deadline or whose file
                     // stopped being shared (ADR-0057 disconnected standing).
-                    let modifiers = current_modifiers(&credit, state.identified_peers()).await;
+                    let modifiers = current_modifiers(&credit, state.identities()).await;
                     let mut decisions: VecDeque<ServeDecision> = state
                         .on_purge(Instant::now(), purge_after, &modifiers)
                         .into();
@@ -413,7 +411,7 @@ struct ServeSinks<'a> {
 async fn enact<L: ServeRuntimeService>(
     decisions: &mut VecDeque<ServeDecision>,
     state: &mut ServeState,
-    conns: &HashMap<PeerEndpoint, mpsc::Sender<ServeConnCommand>>,
+    conns: &HashMap<PeerEndpoint, mpsc::Sender<ServeOutput>>,
     serve_runtime: &mut L,
     sinks: ServeSinks<'_>,
 ) {
@@ -432,15 +430,18 @@ async fn enact<L: ServeRuntimeService>(
                 // once the connection task actually took it, so bytes a dead
                 // connection never wrote are never claimed as uploaded.
                 let block = match &command {
-                    ServeConnCommand::SendBlock {
+                    ServerCommand::SendBlock {
                         file_hash, bytes, ..
                     } => Some((*file_hash, bytes.len() as u64)),
                     _ => None,
                 };
-                let delivered = send_conn(conns, peer, command).await;
+                let delivered = send_conn(conns, peer, ServeOutput::Server(command)).await;
                 if delivered && let Some((file_hash, len)) = block {
                     diagnostics.add_sent_bytes(peer, file_hash, len);
                 }
+            }
+            ServeDecision::Disconnect { peer } => {
+                send_conn(conns, peer, ServeOutput::Disconnect).await;
             }
             ServeDecision::Emit(event) => {
                 match event {
@@ -519,7 +520,7 @@ async fn enact<L: ServeRuntimeService>(
                 Ok(bytes) => decisions.extend(state.on_read_result(peer, purpose, bytes)),
                 Err(error) => {
                     tracing::warn!(%error, ?purpose, path = %path.display(), "serve read failed; the file is no longer offered");
-                    let modifiers = current_modifiers(credit, state.identified_peers()).await;
+                    let modifiers = current_modifiers(credit, state.identities()).await;
                     decisions.extend(state.on_read_failed(
                         Instant::now(),
                         peer,
@@ -596,11 +597,11 @@ fn read_share_set(
 /// (dialed) requester identically to an accepted one.
 fn register_serve_connection(
     mut conn: ServeConnection,
-    conns: &mut HashMap<PeerEndpoint, mpsc::Sender<ServeConnCommand>>,
-    fact_tx: &mpsc::Sender<(PeerEndpoint, ServeConnEvent)>,
+    conns: &mut HashMap<PeerEndpoint, mpsc::Sender<ServeOutput>>,
+    fact_tx: &mpsc::Sender<(PeerEndpoint, ServeInput)>,
 ) {
     let peer = conn.peer();
-    let (cmd_tx, mut cmd_rx) = mpsc::channel::<ServeConnCommand>(16);
+    let (cmd_tx, mut cmd_rx) = mpsc::channel::<ServeOutput>(16);
     conns.insert(peer, cmd_tx);
     let fact_tx = fact_tx.clone();
     tokio::spawn(async move {
@@ -612,10 +613,10 @@ fn register_serve_connection(
                 }
                 event = conn.next_event() => {
                     let Some(event) = event else {
-                        let _ = fact_tx.send((peer, ServeConnEvent::Disconnected)).await;
+                        let _ = fact_tx.send((peer, ServeInput::closed_here())).await;
                         break;
                     };
-                    let disconnected = matches!(event, ServeConnEvent::Disconnected);
+                    let disconnected = event.is_disconnect();
                     if fact_tx.send((peer, event)).await.is_err() || disconnected {
                         break;
                     }
@@ -661,9 +662,9 @@ async fn recv_reask(
 /// `false` when the peer has no live connection or its task already ended
 /// (the command is dropped — its `Disconnected` will clean the peer up).
 async fn send_conn(
-    conns: &HashMap<PeerEndpoint, mpsc::Sender<ServeConnCommand>>,
+    conns: &HashMap<PeerEndpoint, mpsc::Sender<ServeOutput>>,
     peer: PeerEndpoint,
-    command: ServeConnCommand,
+    command: ServeOutput,
 ) -> bool {
     match conns.get(&peer) {
         Some(tx) => tx.send(command).await.is_ok(),
@@ -694,12 +695,15 @@ async fn send_serve_event(evt_tx: &mpsc::Sender<CoreEvent>, event: ServeEvent) {
 /// needs.
 async fn current_modifiers(
     credit: &SharedCreditStore,
-    peer_user_hash: &HashMap<PeerEndpoint, UserHash>,
+    identities: &HashMap<PeerEndpoint, PeerIdentity>,
 ) -> HashMap<PeerEndpoint, f64> {
     let store = &**credit;
-    peer_user_hash
+    identities
         .iter()
-        .map(|(peer, user_hash)| (*peer, store.modifier(*user_hash).unwrap_or(1.0)))
+        .map(|(peer, identity)| {
+            let modifier = store.modifier(identity.user_hash()).unwrap_or(1.0);
+            (*peer, modifier)
+        })
         .collect()
 }
 

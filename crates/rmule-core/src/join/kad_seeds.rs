@@ -102,17 +102,20 @@ pub enum SeedReadFault {
 /// route 0: they suppress the acquisition, exactly as a persisted server list
 /// suppresses the server.met fetch.
 ///
+/// `own_id` is the node's Kad ID ([`Core::kad_id`](crate::Core::kad_id)): a
+/// bootstrap-edition file's closest-50 are closest to it.
+///
 /// Never fails: every route's failure is reported in the returned
 /// [`KadSeedOutcome`] and the Kad join proceeds regardless.
 pub async fn acquire_kad_seeds<F>(
     kad_enable: &mut KadEnableConfig,
+    own_id: rmule_kad::KadId,
     bootstrap: &BootstrapConfig,
     fetcher: &F,
 ) -> KadSeedOutcome
 where
     F: Fetcher + Sync,
 {
-    let own_id = kad_enable.kad_id;
     let mut read_error = None;
 
     // 1. The persisted routing table.

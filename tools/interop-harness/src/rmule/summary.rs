@@ -94,21 +94,21 @@ pub fn parse_search_output(output: &str, query: &str) -> Result<SearchSummary> {
     Ok(SearchSummary { completed, matched })
 }
 
-/// Parse a download run: it must have printed `download completed`.
+/// Parse a download run: it must have printed `download.completed`.
 pub fn parse_download_output(output: &str) -> Result<DownloadSummary> {
     let completed = output
         .lines()
-        .any(|line| line.starts_with("download completed "));
+        .any(|line| line.starts_with("download.completed "));
     let part_verified = output
         .lines()
-        .any(|line| line.starts_with("download part_verified "));
+        .any(|line| line.starts_with("download.part_verified "));
     let usable_high_id = output
         .lines()
-        .find(|line| line.starts_with("download sources_found "))
+        .find(|line| line.starts_with("download.sources_found "))
         .and_then(parse_usable_high_id);
 
     if !completed {
-        bail!("rmule download output did not contain download completed");
+        bail!("rmule download output did not contain download.completed");
     }
 
     Ok(DownloadSummary {

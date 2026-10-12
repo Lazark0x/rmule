@@ -1,6 +1,6 @@
 [package]
 name = "rmule-testkit"
-version = "0.1.0"
+version.workspace = true
 publish.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,7 +12,7 @@ homepage.workspace = true
 ed2k.workspace = true
 # The compressed-part fixtures deflate their own payloads.
 flate2.workspace = true
-rmule-core = { path = "../rmule-core", features = ["test-support"] }
+rmule-core = { path = "../rmule-core" }
 rmule-ed2k = { path = "../rmule-ed2k" }
 rmule-kad = { path = "../rmule-kad" }
 rmule-net = { path = "../rmule-net" }

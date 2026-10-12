@@ -24,8 +24,19 @@ scheduling is (ADR-0026).
 - After the hello, a Requester Capability (our pull, the slot we chase) and a Server
   Capability (the remote's pull from us) run concurrently on the same session. The
   serve verbs live in the same `PeerCommand`, `PeerEvent` and `PeerError` enums and
-  are reachable on every session. Packet-to-event projection is
-  `PeerEvent::from_peer_packet`.
+  are reachable on every session. Both enums group their variants by the side of the
+  conversation aMule's handler for them serves: `Connection` (the hello, identity,
+  revisions, the close and our `Disconnect`), `Requester`, `Server`, `Side` (Kad
+  firewall checks, the buddy relay, the public-IP ask) and, for events only, `Notice`
+  (what the session counted or dropped and no capability acts on). Each direction of
+  `OP_CANCELTRANSFER` sits with its side (ADR-0056): our cancel is a `Requester`
+  command, the peer's is a `Server` event. The events stay one ordered stream, because
+  a request is keyed by the identification that precedes it. Packet-to-event
+  projection is `PeerEvent::from_peer_packet`.
+- The session keeps the wire facts it negotiated: the source-exchange version an
+  answer is framed in, and the framing limit that leaves an IPv6-only source out of a
+  classic entry list (ADR-0087). Core's `Server` vocabulary names files and sources,
+  never a wire form.
 
 **Core owns the upload queue; the session holds none.**
 
@@ -33,11 +44,15 @@ scheduling is (ADR-0026).
   requesters across all connections. Rank is aMule's credit-weighted score
   (ADR-0041); the serve activity re-ranks idle waiters every
   `CoreConfig::queue_rerank_interval` and sends `OP_QUEUERANKING`.
-- Core pushes part bytes down with `PeerCommand::SendBlock`, read from the
+- Core pushes part bytes down with `ServerCommand::SendBlock`, read from the
   content store's `read_range`. The session compresses a block only when the peer
   advertised compression and the result is smaller, as eMule does. The Server
-  Capability reports requests as events and obeys grant, queue and refuse commands,
-  so the session stays sans-I/O and storage-free.
+  Capability reports requests as `Server` events and obeys `Server` commands (answers,
+  grant, queue rank, blocks), so the session stays sans-I/O and storage-free.
+- The serve activity speaks those groups directly: its input is a connection's
+  `Server` events, its `Connection` events, and `Readopted`, the one fact that exists
+  only in core (ADR-0039); its output is `Server` commands and the connection's
+  `Disconnect`. No core-side mirror of the peer vocabulary sits between them.
 - Every route into the queue reaches the one `UploadSlotQueue::admit`, which applies
   every admission limit: the slot budget (`CoreConfig::upload_slot_budget`), the
   wait-list cap (`max_upload_queue_len`), the per-address cap of

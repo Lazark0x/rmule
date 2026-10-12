@@ -10,7 +10,7 @@
 //! field and no extension mechanism, so a "shorter is fine" reader would parse
 //! whatever followed a truncated frame as a file hash.
 
-use rmule_primitives::{FileHash, UserHash};
+use rmule_primitives::{FileHash, UserHash, WireReader, WireTruncated};
 use thiserror::Error;
 
 /// The CAPS body's leading magic as it appears on the wire: ASCII `EAQC`.
@@ -203,23 +203,30 @@ impl CapsFrame {
     /// # Errors
     /// [`CapsDecodeError`] on the wrong width, magic or version — each a drop.
     pub fn decode(body: &[u8]) -> Result<Self, CapsDecodeError> {
-        let body: &[u8; CAPS_FRAME_LEN] = body
-            .try_into()
-            .map_err(|_| CapsDecodeError::BodyWidth { actual: body.len() })?;
-        let magic: [u8; 4] = body[0..4].try_into().expect("four bytes of a fixed body");
+        if body.len() != CAPS_FRAME_LEN {
+            return Err(CapsDecodeError::BodyWidth { actual: body.len() });
+        }
+        let mut reader = WireReader::new(body);
+        let width = |truncated: WireTruncated| CapsDecodeError::BodyWidth {
+            actual: truncated.available,
+        };
+        let magic = reader.read_array::<4>("caps magic").map_err(width)?;
         if magic != CAPS_MAGIC {
             return Err(CapsDecodeError::UnknownMagic { actual: magic });
         }
-        if body[4] != CAPS_VERSION {
-            return Err(CapsDecodeError::UnsupportedVersion { actual: body[4] });
+        let version = reader.read_u8("caps version").map_err(width)?;
+        if version != CAPS_VERSION {
+            return Err(CapsDecodeError::UnsupportedVersion { actual: version });
         }
         Ok(Self {
-            connect_options: NattConnectOptions::from_byte(body[5]),
-            sender: UserHash::from_bytes(body[6..22].try_into().expect("16 of a fixed body")),
-            expected_recipient: UserHash::from_bytes(
-                body[22..38].try_into().expect("16 of a fixed body"),
+            connect_options: NattConnectOptions::from_byte(
+                reader.read_u8("connect options").map_err(width)?,
             ),
-            file_hash: FileHash::from_bytes(body[38..54].try_into().expect("16 of a fixed body")),
+            sender: UserHash::from_bytes(reader.read_array("caps sender").map_err(width)?),
+            expected_recipient: UserHash::from_bytes(
+                reader.read_array("caps recipient").map_err(width)?,
+            ),
+            file_hash: FileHash::from_bytes(reader.read_array("caps file hash").map_err(width)?),
         })
     }
 

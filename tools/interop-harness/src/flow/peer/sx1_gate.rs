@@ -18,21 +18,25 @@ use anyhow::{Context, Result, bail};
 use crate::artifacts::RunLayout;
 use crate::docker::RunContainer;
 use crate::flow::bench::{Bench, run_checked};
+use crate::flow::ed2k_server::search_wire::SUBNET;
 
 /// The fake, written into the run dir and mounted.
 const FAKE_SOURCE: &str = include_str!("sx1_gate/fake_source.py");
-/// Per leg: the SX1 version the fake states, its file hash, and rmule's
-/// user hash (all asymmetric).
-const LEGS: [(u8, &str, &str); 2] = [
+/// Per leg: the SX1 version the fake states, its file hash, rmule's user
+/// hash (all asymmetric), and the fake's static address on the bench network,
+/// the one its listener binds.
+const LEGS: [(u8, &str, &str, &str); 2] = [
     (
         1,
         "4B6E1A2C93D0578FE6A1B2C3D4E5F607",
         "2A7F4C91E03B58D6A1C4E7F0923B5D61",
+        "203.0.113.81",
     ),
     (
         3,
         "9C2D7E4B1A0F58C3D6E9B2A57F4C1D83",
         "2A7F4C91E03B58D6A1C4E7F0923B5D63",
+        "203.0.113.83",
     ),
 ];
 /// How long the fake stays up; rmule's download runs inside it.
@@ -72,7 +76,7 @@ pub fn run_sx1_gate(options: Sx1GateOptions<'_>) -> Result<()> {
     fs::write(root.join("fake_source.py"), FAKE_SOURCE).context("write fake_source.py")?;
 
     let result = (|| -> Result<Vec<String>> {
-        bench.create_network(options.layout, None)?;
+        bench.create_network(options.layout, Some(SUBNET))?;
         bench.start_eserver_in_network(
             options.layout,
             options.server_image,
@@ -83,25 +87,27 @@ pub fn run_sx1_gate(options: Sx1GateOptions<'_>) -> Result<()> {
         let prefix = bench.names.server_container_name.clone();
         let network = bench.names.network_name.clone();
         let mut fakes = Vec::new();
-        for (version, file_hash, _) in LEGS {
+        for (version, file_hash, _, address) in LEGS {
             let fake = format!("{prefix}-sx1fake{version}");
             let container = RunContainer::new(options.probe_image.to_owned())
                 .detach()
                 .name(&fake)
                 .network(network.clone())
+                .ip(address)
                 .volume(&root, "/w")
                 .entrypoint("python3")
                 .arg("/w/fake_source.py")
                 .arg(version.to_string())
                 .arg(FAKE_SECS.to_string())
                 .arg(&server)
-                .arg(file_hash);
+                .arg(file_hash)
+                .arg(address);
             bench.start_extra(&fake, container, "run the fake source")?;
             fakes.push((version, fake));
         }
         // The fakes' offers reach the server before rmule asks it.
         std::thread::sleep(Duration::from_secs(5));
-        for (version, file_hash, user_hash) in LEGS {
+        for (version, file_hash, user_hash, _) in LEGS {
             let rmule = format!("{prefix}-sx1rmule{version}");
             let link = format!("ed2k://|file|sx1-gate.bin|9728000|{file_hash}|/");
             let args = [
@@ -115,7 +121,7 @@ pub fn run_sx1_gate(options: Sx1GateOptions<'_>) -> Result<()> {
                 "--file",
                 &link,
                 "--out",
-                &format!("/w/out-{version}.bin"),
+                &format!("/w/dl/out-{version}.bin"),
                 "--user-hash",
                 user_hash,
                 "--max-seconds",

@@ -12,6 +12,10 @@
 //! answer is per candidate, not per download: the carve-out turns on the
 //! candidate's server namespace.
 //!
+//! The same sample carries the one fact beside it that the source loop reads
+//! of us, aMule's `IsConnected()`: logged into a server, or a Kad node that
+//! has heard a contact — no source is asked while neither holds.
+//!
 //! The value is **Self Reach**'s answer (`SharedSelfReach::callback_capability`, ADR-0060),
 //! the only place it is built outside tests. The
 //! runner re-reads it on every Reach Generation and on its tick and hands the
@@ -32,6 +36,9 @@ pub(crate) struct CallbackCapability {
     server: ServerStanding,
     /// The ADR-0058 Kad TCP verdict reads reachable.
     kad_open: bool,
+    /// A Kad node runs and has heard a contact — aMule's
+    /// `CKademlia::IsConnected()`, firewalled or not.
+    kad_connected: bool,
 }
 
 /// Our standing on the eD2k server, as far as a callback cares.
@@ -43,8 +50,9 @@ enum ServerStanding {
     /// Logged in with a Low ID, on `server` (`None` when its host is not an
     /// IPv4 literal — then no candidate can be proven to share it by address).
     LowId { server: Option<Ipv4Endpoint> },
-    /// Logged in with a High ID: the server dialled our TCP port and reached it.
-    HighId,
+    /// Logged in with a High ID on `server`: it dialled our TCP port and
+    /// reached it.
+    HighId { server: Option<Ipv4Endpoint> },
 }
 
 impl CallbackCapability {
@@ -54,6 +62,7 @@ impl CallbackCapability {
         listener_bound: false,
         server: ServerStanding::Disconnected,
         kad_open: false,
+        kad_connected: false,
     };
 
     /// Sample the three facts: whether the listener is bound, the live
@@ -65,7 +74,9 @@ impl CallbackCapability {
     ) -> Self {
         let server = match session {
             None => ServerStanding::Disconnected,
-            Some(live) if live.client_id.is_high_id() => ServerStanding::HighId,
+            Some(live) if live.client_id.is_high_id() => ServerStanding::HighId {
+                server: live.server,
+            },
             Some(live) => ServerStanding::LowId {
                 server: live.server,
             },
@@ -74,7 +85,23 @@ impl CallbackCapability {
             listener_bound,
             server,
             kad_open,
+            kad_connected: false,
         }
+    }
+
+    /// The same sample with whether a Kad node runs and has heard a contact.
+    #[must_use]
+    pub(crate) const fn with_kad_connected(mut self, connected: bool) -> Self {
+        self.kad_connected = connected;
+        self
+    }
+
+    /// aMule's `IsConnected()`: logged into a server, or a Kad node that has
+    /// heard a contact (an open Kad TCP verdict implies one). A queued source
+    /// is asked again, by UDP or TCP, only while this holds (stock 2.3.3
+    /// `PartFile.cpp:1460`, `:1475`).
+    pub(crate) const fn connected(&self) -> bool {
+        !matches!(self.server, ServerStanding::Disconnected) || self.kad_connected || self.kad_open
     }
 
     /// aMule's `CanDoCallback(candidate's server)`: may we ask for a callback
@@ -84,11 +111,11 @@ impl CallbackCapability {
             return false;
         }
         match self.server {
-            ServerStanding::HighId => true,
+            ServerStanding::HighId { .. } => true,
             ServerStanding::Disconnected => self.kad_open,
             // The carve-out: Kad-open saves a Low-ID node everywhere except on
             // its own server, where a callback would be relayed for a Low ID.
-            ServerStanding::LowId { server } => self.kad_open && !on_server(candidate, server),
+            ServerStanding::LowId { server } => self.kad_open && !candidate.on_server(server),
         }
     }
 
@@ -101,7 +128,25 @@ impl CallbackCapability {
     /// removes it, `BaseClient.cpp:2114-2121`), so this is never wider than
     /// aMule.
     pub(crate) fn server_relays(&self) -> bool {
-        self.listener_bound && self.server == ServerStanding::HighId
+        self.listener_bound && matches!(self.server, ServerStanding::HighId { .. })
+    }
+
+    /// aMule's `!IsFirewalled()`: a server High ID or an open Kad TCP verdict
+    /// — Self Reach's `!firewalled()`, read off this sample. The reask gate
+    /// reads it: a source cannot answer by UDP a downloader no route reaches
+    /// (ADR-0057).
+    pub(crate) fn reachable(&self) -> bool {
+        matches!(self.server, ServerStanding::HighId { .. }) || self.kad_open
+    }
+
+    /// The server our live session is on, when its host is an IPv4 literal:
+    /// the namespace a Low ID it names is minted in, and the one
+    /// [`LowIdCandidate::on_server`] asks a candidate about.
+    pub(crate) const fn server(&self) -> Option<Ipv4Endpoint> {
+        match self.server {
+            ServerStanding::LowId { server } | ServerStanding::HighId { server } => server,
+            ServerStanding::Disconnected => None,
+        }
     }
 
     /// A server High ID with a bound listener: the capability before a Kad
@@ -111,22 +156,10 @@ impl CallbackCapability {
     pub(crate) fn server_high_id() -> Self {
         Self {
             listener_bound: true,
-            server: ServerStanding::HighId,
+            server: ServerStanding::HighId { server: None },
             kad_open: false,
+            kad_connected: false,
         }
-    }
-}
-
-/// Whether `candidate` is on the server we are logged into: its id is in that
-/// server's namespace (a connected-server record, or a global one the same
-/// server answered for). A Kad row is on no server.
-fn on_server(candidate: &LowIdCandidate, ours: Option<Ipv4Endpoint>) -> bool {
-    if candidate.from_kad {
-        return false;
-    }
-    match candidate.source_server {
-        None => true,
-        Some(source_server) => ours == Some(source_server),
     }
 }
 
@@ -134,7 +167,7 @@ fn on_server(candidate: &LowIdCandidate, ours: Option<Ipv4Endpoint>) -> bool {
 mod tests {
     use std::net::Ipv4Addr;
 
-    use rmule_primitives::{ClientId, ExchangedSource, PeerSource};
+    use rmule_primitives::{ClientId, PeerSource, SourceSighting};
 
     use super::*;
 
@@ -152,8 +185,8 @@ mod tests {
     const LOW: u32 = 7;
 
     fn server_candidate(source_server: Option<Ipv4Endpoint>) -> LowIdCandidate {
-        LowIdCandidate::from_source(
-            ExchangedSource::plain(PeerSource::new(ClientId::from_u32(9), 4662)),
+        LowIdCandidate::from_sighting(
+            SourceSighting::plain(PeerSource::new(ClientId::from_u32(9), 4662)),
             source_server,
         )
         .expect("a Low-ID source is a candidate")

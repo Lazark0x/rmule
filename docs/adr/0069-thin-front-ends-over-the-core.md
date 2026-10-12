@@ -19,9 +19,10 @@ would need an IPC surface invented for it alone.
 ### The front-end layer
 
 - **Durable application state lives in the core**, in the one store of ADR-0083:
-  identity, the managed server list (ADR-0080), and preferences. A front end edits them
-  through core commands and reads them through queries. No front end keeps a config
-  file of its own as a source of truth.
+  identity, the managed server list (ADR-0080), and preferences. A front end changes a
+  preference through **Core Settings** (below) and the rest through core commands, and
+  reads them back the same way. No front end keeps a config file of its own as a
+  source of truth.
 - **`apps/rmule-cli` is the headless client**: a thin command router. Each subcommand
   opens the store in the data directory, issues one core command and prints what the
   core reports (`add <ed2k link>`, `server add|list`, `config`); the Kad node runner is
@@ -35,6 +36,64 @@ would need an IPC surface invented for it alone.
   durable state, front ends share only the core API, and a middle crate would be a
   pass-through. One is extracted only when a second consumer proves shared non-core
   logic.
+
+### Core Settings
+
+Core owns every preference that changes what core does, and one door reaches them:
+the `CoreSettings` value and a synchronous handle on it — `Core::settings()` on a
+running core, or opened on the store alone where no core runs (the CLI's `config`
+subcommands).
+
+- **The key split.** Core's keys are the download directory, obfuscation, port mapping
+  (with the learned method and the PCP secret), the Kad UDP Key, `Remember peers`, the
+  Dead Server Limit, the Announce Policy, both mirror URLs with their fetch switches,
+  the nickname and both ports. The nickname and the ports stay in the identity rows;
+  the handle hides where each value is kept. `CoreSettings::credentials` turns the
+  nickname and the TCP port into what every login, hello and Kad dial presents. Core
+  reads them itself, so no command carries credentials and a front end never composes
+  them from the rows; `StartServing` names only where to listen. A test or a tool
+  injects its own `CoreSettings` per core, where a TCP port of `0` takes one the OS
+  assigns and presents the port bound — each hello reads the listener's port as it is
+  sent, so a download begun before the bind, or before the listener restarted on another
+  port, presents the one bound now, as does its global callback request, and a Kad start
+  binds the listener first (ADR-0095); the store refuses `0`. The Kad UDP Key and the
+  Kad ID are read from core's store at build, so `EnableKad` carries neither. Likewise
+  `StartDownload` names the file only: core places it in the download directory its
+  settings name, judged by the share guards at the start (ADR-0101), and refuses the
+  start when there is none or the guards refuse it, so no front end composes a path and
+  no download finishes where core would not share it. `DownloadCompleted` names the
+  final path core placed the file at, so a front end shows where it landed without
+  composing one. Five keys are the front end's: the theme,
+  the table sorts, the Run Log level, connect at start and the last server — the last
+  two because connecting is the operator's act (ADR-0095). They stay in the one
+  `preferences` table under the same key strings. Core keeps them through a raw
+  key/value surface that refuses a key of core's own, and never interprets one; each
+  front end names its keys in an enum of its own.
+- **The change path.** `set(Setting)` validates the value, persists it, and answers
+  when it takes effect: `Now` or `NextStart`. A download directory is validated against
+  the Shared Directory List's guards too (ADR-0101) — the running core's, or those the
+  front end names on a handle opened on the store alone — and a refusal carries the
+  guard's reason, so a refused directory is never stored. A handle taken from a running core
+  applies a live key itself; one opened on the store alone answers `NextStart`. No core
+  command changes a preference, and the store seam reads core's keys but writes none,
+  so no front end can go around the handle.
+- **One queue.** A live key travels to the actor on the same inbox as the commands, so
+  the actor takes both in the order they were sent: a command sent after `Now` runs
+  under the change. The handle stays synchronous — the queue is unbounded, and commands
+  alone wait for room.
+- **The build.** `Core::builder(config, store)` reads `CoreSettings` from the store it
+  is given, so every front end starts its core under the operator's choices without
+  copying them. A test and `rmule-tools` inject one with `.settings(…)`, so nothing
+  reads the store behind them. `CoreConfig` keeps only engineering knobs: timeouts,
+  concurrency, cadences.
+
+| Setting | Takes effect |
+| --- | --- |
+| `Remember peers` | now: the next seed write keeps that many |
+| Dead Server Limit, Announce Policy | now: every server is judged again, and the live session follows |
+| Download directory | now: core starts its scan, with the answer the front end's confirm gave (ADR-0101); a core scans the one its settings name from attach, asking from the answer recorded for it |
+| Obfuscation | now: every surface reads the one policy as it decides, and the Kad node is re-armed (ADR-0046) |
+| every other key | at the next start |
 
 ### The TUI's attachment
 
@@ -83,5 +142,9 @@ would need an IPC surface invented for it alone.
   alone, against the single-consumer event stream.
 - **A front-end config file (TOML) as the source of truth.** Rejected: a second
   persistence path every other front end would have to share or duplicate.
+- **Front ends write preferences and apply them.** A front end wrote the store, copied
+  start-time values into `CoreConfig` and sent a command per live key. Rejected: two
+  doors, and a front end that copied nothing started its core under defaults the
+  operator had changed.
 - **Growing `rmule-tools` into the product CLI.** Rejected: the diagnostic tool and the
   product stay separate members.

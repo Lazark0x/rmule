@@ -43,7 +43,7 @@ impl RmuleServeContainer {
         staging: BenchStaging<'_>,
         name: &str,
         server_endpoint: &str,
-    ) -> DockerCommand {
+    ) -> Result<DockerCommand> {
         self.start_command_with_knobs(staging, name, server_endpoint, ServeKnobs::default())
     }
 
@@ -54,16 +54,23 @@ impl RmuleServeContainer {
     /// byte-for-byte the plain one. The serve peer driver logs each PeerEvent
     /// at debug, so `RMULE_SERVE_LOG=debug` lets a reverse-download diagnosis
     /// watch the inbound handshake progress.
+    ///
+    /// Like the stimulus, it executes the **pre-built binary**
+    /// [`prebuild_command`](Self::prebuild_command) left in the host-persisted
+    /// cache, never a cold `cargo run` per container: under load that build
+    /// overran the flow's `--timeout`. The caller prebuilds once first
+    /// ([`start_rmule_serve_with_login_retry`](crate::flow::start_rmule_serve_with_login_retry)
+    /// does).
     pub fn start_command_with_knobs(
         &self,
         staging: BenchStaging<'_>,
         name: &str,
         server_endpoint: &str,
         knobs: ServeKnobs<'_>,
-    ) -> DockerCommand {
+    ) -> Result<DockerCommand> {
         let mut container = self
             .workspace
-            .cargo_run(staging.layout)
+            .prebuilt(staging.layout)?
             .detach()
             .name(name)
             .network(staging.network)
@@ -83,10 +90,13 @@ impl RmuleServeContainer {
         if let Some(policy) = knobs.peer_crypt {
             container = container.arg("--peer-crypt").arg(policy);
         }
+        for flip in knobs.peer_crypt_flip {
+            container = container.arg("--peer-crypt-flip").arg(flip);
+        }
         if let Some(dir) = knobs.identity_dir {
             container = container.arg("--identity-dir").arg(dir);
         }
-        staging.docker.run_container(container)
+        Ok(staging.docker.run_container(container))
     }
 
     /// Run the **Core-Pumped Stimulus Node**: `ed2k serve start --kad …` on a
@@ -156,13 +166,18 @@ impl RmuleServeContainer {
                 .arg("--direct-callback-every-secs")
                 .arg(kad.direct_callback_every_secs.to_string());
         }
+        if let Some(seed) = kad.kad_udp_key_seed {
+            container = container.arg("--kad-udp-key-seed").arg(seed.to_string());
+        }
         if let Some(policy) = kad.peer_crypt {
             // The Core leg of Kad-UDP crypt: a policy here
-            // arms `CoreConfig::peer_crypt`, which the Kad runtime's crypt
+            // arms `CoreSettings::obfuscation`, which the Kad runtime's crypt
             // gate reads for BOTH the peer and Kad layers (ADR-0046 — one
-            // setting), and prints `rmule-kad-crypt-armed verify_key_secret=…`
-            // at start.
+            // setting), and prints `rmule-kad-crypt-armed` at start.
             container = container.arg("--peer-crypt").arg(policy);
+        }
+        for flip in kad.peer_crypt_flip {
+            container = container.arg("--peer-crypt-flip").arg(flip);
         }
         if let Some(dir) = kad.kad_capture_dir {
             container = container.arg("--kad-capture-dir").arg(dir);
@@ -208,10 +223,18 @@ pub struct KadStimulusKnobs<'a> {
     pub direct_callback: Option<&'a str>,
     /// The `--direct-callback-every-secs` cadence. Ignored without a target.
     pub direct_callback_every_secs: u64,
+    /// `--kad-udp-key-seed <u32>`: the **Kad UDP Key** the stimulus's verify
+    /// keys derive from, chosen by the flow so its verdict can open what a
+    /// counterparty keys on it. `None` keeps the run's own minted one.
+    pub kad_udp_key_seed: Option<u32>,
     /// `--peer-crypt <policy>`: arms Kad-UDP crypt on the
-    /// Core side, keyed on this run's minted seed. `None` leaves the stimulus
-    /// byte-for-byte the plaintext one.
+    /// Core side, keyed on the stimulus's Kad UDP Key. `None` leaves the
+    /// stimulus byte-for-byte the plaintext one.
     pub peer_crypt: Option<&'a str>,
+    /// `--peer-crypt-flip <secs>:<policy>`, one per entry: the stimulus
+    /// changes its policy mid-run, live, and marks each change with an
+    /// `rmule-obfuscation-flip` line. Empty flips nothing.
+    pub peer_crypt_flip: &'a [String],
     /// `--kad-capture-dir <path>`: writes the node's per-frame
     /// tap — the same format `kad join-node --capture-dir` writes — so flow
     /// M's crypt verdict can decode the exchange frame-by-frame instead of
@@ -246,8 +269,47 @@ pub struct ServeKnobs<'a> {
     /// crypt capture needs this set on rmule *and*
     /// `AMULE_CRYPT_SUPPORTED`/`_REQUESTED` on the counterparty.
     pub peer_crypt: Option<&'a str>,
+    /// `--peer-crypt-flip <secs>:<policy>`, one per entry: rmule changes its
+    /// policy mid-run, live, and marks each change with an
+    /// `rmule-obfuscation-flip` line a verdict splits its taps on. Empty
+    /// flips nothing.
+    pub peer_crypt_flip: &'a [String],
     /// `--identity-dir <DIR>` (container path): the SUI key for the serve
     /// body's User Hash lives in `<DIR>/<HASH>`, created on the first run and
     /// reused after, so the hash proves with one key across runs.
     pub identity_dir: Option<&'a str>,
+}
+
+/// A `--peer-crypt-flip` value as the serve tool takes it: `<secs>:<policy>`,
+/// the policy one of `off`, `supported`, `requested`, `required` — checked
+/// here so a mistyped flip fails the command line rather than the container.
+///
+/// # Errors
+/// The text is not of that shape.
+pub fn crypt_flip_arg(text: &str) -> std::result::Result<String, String> {
+    let shaped = text.split_once(':').is_some_and(|(secs, policy)| {
+        secs.parse::<u64>().is_ok()
+            && ["off", "supported", "requested", "required"].contains(&policy)
+    });
+    if shaped {
+        Ok(text.to_owned())
+    } else {
+        Err(format!(
+            "expected <secs>:<off|supported|requested|required>, got {text:?}"
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::crypt_flip_arg;
+
+    #[test]
+    fn a_flip_is_seconds_and_one_of_the_four_policy_words() {
+        assert!(crypt_flip_arg("120:off").is_ok());
+        assert!(crypt_flip_arg("0:required").is_ok());
+        for bad in ["120", "x:off", "120:on", "-5:off"] {
+            assert!(crypt_flip_arg(bad).is_err(), "{bad:?} refused");
+        }
+    }
 }

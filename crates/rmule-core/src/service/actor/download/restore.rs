@@ -26,7 +26,7 @@ use super::super::CoreActor;
 /// never clears a row the operator was not shown — open its resting
 /// diagnostics row, and return the ones to start again, in store order: those
 /// the operator left running (`Active`) or never saw start (`Queued`) — when
-/// `can_restore`, since a run needs the credentials the builder was given —
+/// `can_restore`, since only a core built to restore at attach runs them —
 /// each with its **Source Seeds** under a day old (ADR-0109), the older ones
 /// dropped, said once for all of them.
 pub(in crate::service::actor) async fn attach_downloads(
@@ -135,22 +135,14 @@ where
 {
     /// Start the next download attach found running — one per restore tick.
     pub(in crate::service::actor) async fn restore_next(&mut self) {
-        let Some(download_id) = self.activities.restoring.pop_front() else {
-            return;
-        };
-        let Some(credentials) = self.wiring.restore_credentials.clone() else {
+        let Some((download_id, remembered)) = self.activities.next_restoring() else {
             return;
         };
         tracing::info!(download_id = download_id.as_u64(), "download restored");
-        let remembered = self
-            .activities
-            .remembered
-            .remove(&download_id)
-            .unwrap_or_default();
         // Every refusal here is the store's: attach just listed the row, and
         // no other run holds it. The download is failed by that cause, so
         // no row reads as running with no run behind it.
-        if let Err(refusal) = self.resume(download_id, &credentials, remembered).await {
+        if let Err(refusal) = self.resume(download_id, remembered).await {
             tracing::warn!(
                 download_id = download_id.as_u64(),
                 ?refusal,
@@ -183,17 +175,5 @@ where
                 Vec::new()
             }
         }
-    }
-
-    /// Take `download_id` out of the restore queue, with the seeds attach
-    /// loaded for it; `None` when it was not there.
-    pub(in crate::service::actor) fn take_restoring(
-        &mut self,
-        download_id: DownloadId,
-    ) -> Option<Vec<SourceSeed>> {
-        let before = self.activities.restoring.len();
-        self.activities.restoring.retain(|id| *id != download_id);
-        let seeds = self.activities.remembered.remove(&download_id);
-        (self.activities.restoring.len() != before).then(|| seeds.unwrap_or_default())
     }
 }

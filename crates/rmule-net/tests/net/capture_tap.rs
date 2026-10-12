@@ -2,8 +2,8 @@
 //! remote endpoint, and opcode meta (ADR-0022: capture is a first-class
 //! library feature, not a debugging bolt-on).
 
+use rmule_testkit::HANG_GUARD;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::time::Duration;
 
 use rmule_kad::{KadCommand, KadEvent, KadId, KadNodeConfig, KadNodeEndpoint};
 use rmule_net::kad::{KadNetConfig, spawn};
@@ -24,8 +24,7 @@ async fn capture_records_datagram_frames_with_direction_and_opcode_meta() {
             capture_dir: Some(a_dir.clone()),
             nodes_dat_path: None,
             firewall_self_check: false,
-            datagram_obfuscation: false,
-            verify_keys: None,
+            obfuscation: None,
             contact_admission: None,
         },
         SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
@@ -43,8 +42,7 @@ async fn capture_records_datagram_frames_with_direction_and_opcode_meta() {
             capture_dir: None,
             nodes_dat_path: None,
             firewall_self_check: false,
-            datagram_obfuscation: false,
-            verify_keys: None,
+            obfuscation: None,
             contact_admission: None,
         },
         SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
@@ -57,7 +55,7 @@ async fn capture_records_datagram_frames_with_direction_and_opcode_meta() {
     })
     .await
     .expect("driver accepts commands");
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(HANG_GUARD, async {
         loop {
             if a.next_event().await.expect("driver alive")
                 == (KadEvent::ContactResponded {

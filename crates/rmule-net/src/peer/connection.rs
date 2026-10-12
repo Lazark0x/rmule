@@ -4,7 +4,9 @@
 //! grace period, abort on drop — is the harness's
 //! [`SpawnHandles`].
 
-use rmule_peer::{PeerCommand, PeerEvent, PeerHandshakeContext, PeerIdentity, PeerSession};
+use rmule_peer::{
+    ConnectionEvent, PeerCommand, PeerEvent, PeerHandshakeContext, PeerIdentity, PeerSession,
+};
 use rmule_primitives::{OutboundCrypt, PeerEndpoint, UserHash};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
@@ -62,7 +64,7 @@ impl Connection {
     /// Open a TCP connection to `peer`, drive the sans-I/O peer session,
     /// and surface events through `next_event`. Returns once TCP is up
     /// (or `connect_timeout` elapsed); hello timeout fires as a
-    /// `PeerEvent::Disconnected { reason: HelloTimeout }`.
+    /// `ConnectionEvent::Disconnected { reason: HelloTimeout }`.
     ///
     /// Whether the dial is obfuscated is aMule's outbound rule
     /// ([`PeerCrypt::outbound`](rmule_primitives::PeerCrypt::outbound),
@@ -166,7 +168,7 @@ impl Connection {
     /// The reusable **peer-TCP dial surface** (ADR-0058 firewall dial-back;
     /// ADR-0061 buddy / callback relays): dial `peer`, drive the eD2k handshake,
     /// and hand back the live connection the moment the peer identifies — paired
-    /// with its proven [`PeerIdentity`]. Handshake events up to `PeerIdentified`
+    /// with its proven [`PeerIdentity`]. Handshake events up to `Identified`
     /// are consumed here; everything after flows through [`Self::next_event`] as
     /// usual, so a caller either delivers a one-shot packet and
     /// [`shuts down`](Self::shutdown) (the firewall-check ack) or keeps driving
@@ -186,11 +188,13 @@ impl Connection {
         let mut conn = Self::connect(peer, ctx, options).await?;
         loop {
             match conn.next_event().await {
-                Some(PeerEvent::PeerIdentified { identity }) => return Ok((conn, identity)),
-                Some(PeerEvent::Disconnected { reason }) => {
+                Some(PeerEvent::Connection(ConnectionEvent::Identified { identity })) => {
+                    return Ok((conn, identity));
+                }
+                Some(PeerEvent::Connection(ConnectionEvent::Disconnected { reason })) => {
                     return Err(PeerNetError::HandshakeIncomplete(reason));
                 }
-                // Pre-identification chatter (our `PeerHelloSent`, etc.): keep
+                // Pre-identification chatter (our `HelloSent`, etc.): keep
                 // draining until the peer proves who it is or the link drops.
                 Some(_) => continue,
                 // The driver task ended without ever surfacing a terminal event.

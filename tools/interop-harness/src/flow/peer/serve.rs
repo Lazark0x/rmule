@@ -39,7 +39,17 @@ pub fn run_rmule_serves_amule_downloads(options: ServerSkeletonOptions<'_>) -> R
     let timeout = Duration::from_secs(options.timeout_secs);
 
     let result = (|| -> Result<()> {
-        bench.create_network(options.layout, None)?;
+        // A run whose flips arm a policy puts the net on the first
+        // fake-public /24: the server crypt-ping is gated on our public IP,
+        // and rmule takes no RFC 1918 address as one (ADR-0084).
+        let subnet = options
+            .rmule_peer_crypt_flip
+            .iter()
+            .any(|flip| !flip.ends_with(":off"))
+            .then(|| crate::fake_public::fake_public_address(0))
+            .transpose()?
+            .map(|address| address.subnet);
+        bench.create_network(options.layout, subnet.as_deref())?;
         bench.start_eserver(
             options.layout,
             &Eserver {
@@ -56,6 +66,7 @@ pub fn run_rmule_serves_amule_downloads(options: ServerSkeletonOptions<'_>) -> R
             ServeKnobs {
                 identity_dir: Some(SERVE_IDENTITY_DIR),
                 peer_crypt: options.rmule_peer_crypt,
+                peer_crypt_flip: options.rmule_peer_crypt_flip,
                 ..ServeKnobs::default()
             },
             timeout,
@@ -101,13 +112,27 @@ pub fn run_rmule_serves_amule_downloads(options: ServerSkeletonOptions<'_>) -> R
             timeout,
         )?;
         verify_bytes(options.layout, &options.layout.amule_output_file(), "aMule")?;
-        if options.rmule_peer_crypt == Some("required") {
+        if options.rmule_peer_crypt == Some("required") || !options.rmule_peer_crypt_flip.is_empty()
+        {
             let log = collect_rmule_logs(
                 &bench.docker,
                 options.layout,
                 &bench.names.rmule_container_name,
             )?;
-            require_high_id_login(&log)?;
+            if options.rmule_peer_crypt == Some("required") {
+                require_high_id_login(&log)?;
+            }
+            if !options.rmule_peer_crypt_flip.is_empty() {
+                // What crossed the taps before each marker ran under the old
+                // policy, and every connection, datagram and crypt-ping
+                // after it under the new one (ADR-0046).
+                println!(
+                    "rmule_serves_amule obfuscation_flips={}",
+                    crate::flow::evidence::toml_strings(&crate::flow::evidence::obfuscation_flips(
+                        &log
+                    ))
+                );
+            }
         }
         Ok(())
     })();
@@ -121,15 +146,15 @@ pub fn run_rmule_serves_amule_downloads(options: ServerSkeletonOptions<'_>) -> R
 
 /// Under `Required`, the eserver's High-ID port test dials plain and must be
 /// admitted as a Test Connection (ADR-0046): the serving rmule's
-/// last `server connected` line must carry a High ID (`>= 2^24`).
+/// last `server.connected` line must carry a High ID (`>= 2^24`).
 fn require_high_id_login(log: &str) -> Result<()> {
     let client_id = log
         .lines()
         .rev()
-        .filter(|line| line.contains("server connected"))
+        .filter(|line| line.contains("server.connected"))
         .filter_map(|line| line.split("client_id=").nth(1))
         .find_map(|rest| rest.split_whitespace().next()?.parse::<u32>().ok())
-        .context("the serving rmule never logged `server connected`")?;
+        .context("the serving rmule never logged `server.connected`")?;
     anyhow::ensure!(
         client_id >= 1 << 24,
         "under --peer-crypt required the login landed Low ID {client_id}: \

@@ -8,54 +8,34 @@ use std::sync::{Arc, Mutex};
 
 use rmule_ed2k::GlobCallbackRequest;
 use rmule_net::family::{RECEIVE_ERROR_BACKOFF, ReceiveErrorBudget, ReceiveErrorOutcome};
-use rmule_primitives::{Ipv4Endpoint, ServerEndpoint};
+use rmule_primitives::Ipv4Endpoint;
 use tokio::sync::mpsc;
 
 use crate::global_sources::GlobCallbackSend;
+use crate::server_udp::ServerUdpSeal;
 
-/// Datagram transport for server-UDP global source discovery (ADR-0051). `&self`
-/// (not `&mut`) so the discovery task can send and receive on one socket from the
-/// two arms of its `select!`. Sending is fire-and-forget; a non-answering server
-/// is harmless over UDP.
+/// Datagram transport for the server-UDP socket (ADR-0051). `&self` (not
+/// `&mut`) so the engine can receive while every sender sends on the one
+/// socket. Sending is fire-and-forget; a non-answering server is harmless over
+/// UDP. The transport knows no server-UDP port rule: the
+/// [`ServerUdpSeal`] names every
+/// destination.
 pub(crate) trait ServerUdpTransport: Send + Sync + 'static {
-    /// Send one plain datagram to the server's UDP port (its TCP port + 4).
-    fn send_to(&self, server: ServerEndpoint, datagram: Vec<u8>)
-    -> impl Future<Output = ()> + Send;
-
-    /// Send a raw obfuscated crypt-ping to the server's obfuscation UDP port
-    /// (TCP + 12; ADR-0046), contrasting `send_to`'s plain TCP + 4. The
-    /// datagram is sent **unencrypted** — the server keys its encrypted `0x97`
-    /// reply's RC4 on the crypt-ping challenge the datagram carries.
-    fn send_crypt_ping(
-        &self,
-        server: ServerEndpoint,
-        datagram: Vec<u8>,
-    ) -> impl Future<Output = ()> + Send;
+    /// Send one datagram, as given, to `to`.
+    fn send_to(&self, to: Ipv4Endpoint, datagram: Vec<u8>) -> impl Future<Output = ()> + Send;
 
     /// Await the next datagram and the address it came from. `None` means the
-    /// socket is closed, which ends the discovery task.
+    /// socket is closed, which ends the engine.
     fn recv(&self) -> impl Future<Output = Option<(Vec<u8>, Ipv4Endpoint)>> + Send;
 }
 
-/// One server-UDP socket, two readers: the discovery engine's global channel
-/// (`ask` + `recv`) and the global-callback relay both drive it through an `Arc`.
-/// The trait's `&self` sends and receives are already `Sync`, so sharing needs
-/// no extra synchronization.
+/// One server-UDP socket, many holders: the engine receives on it and every
+/// sender's seal sends on it, each through an `Arc`. The trait's `&self`
+/// sends and receives are already `Sync`, so sharing needs no extra
+/// synchronization.
 impl<T: ServerUdpTransport> ServerUdpTransport for Arc<T> {
-    fn send_to(
-        &self,
-        server: ServerEndpoint,
-        datagram: Vec<u8>,
-    ) -> impl Future<Output = ()> + Send {
-        (**self).send_to(server, datagram)
-    }
-
-    fn send_crypt_ping(
-        &self,
-        server: ServerEndpoint,
-        datagram: Vec<u8>,
-    ) -> impl Future<Output = ()> + Send {
-        (**self).send_crypt_ping(server, datagram)
+    fn send_to(&self, to: Ipv4Endpoint, datagram: Vec<u8>) -> impl Future<Output = ()> + Send {
+        (**self).send_to(to, datagram)
     }
 
     fn recv(&self) -> impl Future<Output = Option<(Vec<u8>, Ipv4Endpoint)>> + Send {
@@ -64,34 +44,24 @@ impl<T: ServerUdpTransport> ServerUdpTransport for Arc<T> {
 }
 
 /// The global-callback relay (ADR-0051): the socket-side consumer
-/// of the runner's per-server callback channel. It rides the server-UDP
-/// transport that owns the socket, not the discovery engine's global channel —
-/// which is now purely ask + receive (this arm moved off it). Each
-/// [`GlobCallbackSend`] a download's runner emits becomes an
-/// `OP_GLOBCALLBACKREQUEST` UDP-sent to the source-server, carrying rmule's own
-/// contact and the target Low-ID; the send adapter maps the server's TCP
-/// endpoint to its UDP port (TCP + 4). Ends when every callback sender drops
-/// (Core shutting down).
+/// of the runner's per-server callback channel. Each [`GlobCallbackSend`] a
+/// download's runner emits becomes an `OP_GLOBCALLBACKREQUEST` sent to the
+/// source-server through the seal, carrying rmule's own contact and the target
+/// Low-ID. Ends when every callback sender drops (Core shutting down).
 pub(crate) async fn relay_global_callbacks<T: ServerUdpTransport>(
-    transport: T,
+    seal: ServerUdpSeal<T>,
     mut callback_rx: mpsc::Receiver<GlobCallbackSend>,
 ) {
     while let Some(send) = callback_rx.recv().await {
         let datagram = GlobCallbackRequest::new(send.requester, send.low_id)
             .encode_packet()
             .encode_udp();
-        if let Ok(server) =
-            ServerEndpoint::new(send.source_server.ip.to_string(), send.source_server.port)
-        {
-            transport.send_to(server, datagram).await;
-        }
+        seal.send(send.source_server, datagram).await;
     }
 }
 
 /// Production `ServerUdpTransport` over a bound UDP socket (ADR-0051). Sends are
-/// fire-and-forget to IPv4-literal servers; a DNS-host server is skipped (no
-/// resolved address yet), consistent with the connected-server limitation
-/// (ADR-0039).
+/// fire-and-forget to the IPv4 address the seal names.
 pub(crate) struct RuntimeServerUdpTransport {
     socket: rmule_net::ed2k::ServerUdpSocket,
     /// Consecutive-error budget for this transport's `recv`:
@@ -122,16 +92,11 @@ impl RuntimeServerUdpTransport {
 }
 
 impl ServerUdpTransport for RuntimeServerUdpTransport {
-    async fn send_to(&self, server: ServerEndpoint, datagram: Vec<u8>) {
-        if let Some(addr) = ipv4_server_addr(&server, SERVER_UDP_PORT_OFFSET) {
-            let _ = self.socket.send_to(addr, &datagram).await;
-        }
-    }
-
-    async fn send_crypt_ping(&self, server: ServerEndpoint, datagram: Vec<u8>) {
-        if let Some(addr) = ipv4_server_addr(&server, SERVER_UDP_OBFUSCATION_PORT_OFFSET) {
-            let _ = self.socket.send_to(addr, &datagram).await;
-        }
+    async fn send_to(&self, to: Ipv4Endpoint, datagram: Vec<u8>) {
+        let _ = self
+            .socket
+            .send_to(SocketAddrV4::new(to.ip, to.port), &datagram)
+            .await;
     }
 
     /// Narrow every inbound datagram to IPv4 — the **server-UDP family
@@ -287,9 +252,9 @@ impl crate::client_udp::ClientUdpTransport for RuntimeClientUdpTransport {
 /// eD2k convention: a server's client-facing UDP port is its **TCP port + 4**
 /// (aMule `ServerUDPSocket.cpp` — `SendPacket` targets `host->GetPort() + 4`, and
 /// the receive side reads each answer's source as `port - 4`). The managed server
-/// list holds TCP ports, so every plain server-UDP datagram (source queries and
-/// per-server callbacks alike) is sent to that port + 4. Cite-and-rewrite only
-/// (ADR-0004).
+/// list holds TCP ports, so the **Server-UDP Seal** sends every plain server-UDP
+/// datagram (source queries and per-server callbacks alike) to that port + 4.
+/// Cite-and-rewrite only (ADR-0004).
 pub(crate) const SERVER_UDP_PORT_OFFSET: u16 = 4;
 
 /// The **obfuscation** UDP port offset: a server's crypt datagrams target its
@@ -297,17 +262,6 @@ pub(crate) const SERVER_UDP_PORT_OFFSET: u16 = 4;
 /// `port_offset = 12`, and `GetServerByIPUDP` maps such a reply back via
 /// `nUDPPort - 12`), contrasting the plain `+ 4` (ADR-0046).
 pub(crate) const SERVER_UDP_OBFUSCATION_PORT_OFFSET: u16 = 12;
-
-/// An IPv4-literal server's UDP address (its TCP port + `offset`), or `None`
-/// for a DNS host or a port too high to offset.
-fn ipv4_server_addr(server: &ServerEndpoint, offset: u16) -> Option<SocketAddrV4> {
-    let udp_port = server.port().checked_add(offset)?;
-    server
-        .host()
-        .parse::<std::net::Ipv4Addr>()
-        .ok()
-        .map(|ip| SocketAddrV4::new(ip, udp_port))
-}
 
 #[cfg(test)]
 mod tests;

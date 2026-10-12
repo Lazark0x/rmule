@@ -86,8 +86,7 @@ pub(crate) fn listed_servers() -> UiState {
     }
 }
 
-/// [`listed_servers`] whose Kad node is running, as the bridge's
-/// `DumpDiagnostics` poll reports it.
+/// [`listed_servers`] whose Kad node is running, as the snapshot reports it.
 pub(crate) fn with_kad(contact_responded: bool) -> UiState {
     let mut state = listed_servers();
     state.diagnostics.kad_state = rmule_core::diagnostics::KadState::Running;

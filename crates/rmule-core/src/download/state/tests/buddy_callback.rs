@@ -5,14 +5,12 @@
 //! `BaseClient.cpp:2114-2172` at the pinned tree), with no connect-options bit
 //! consulted. The punch is the fallback beside it, never ahead of it.
 
-use rmule_kad::{KadBuddyContact, KadId};
+use rmule_kad::KadId;
 use rmule_peer::natt::CALLBACK_SILENCE_FALLBACK;
-use rmule_primitives::{SourceCryptOptions, UserHash};
+use rmule_primitives::UserHash;
 
-use crate::callback::{
-    CallbackRoute, CallbackSilence, NattCoordinator, SelfReach, callback_target,
-    select_natt_for_download,
-};
+use crate::callback::{CallbackSilence, RoutePosition, callback_target, select_natt_for_download};
+use crate::service::PeerReachRoute;
 
 use super::*;
 
@@ -25,42 +23,45 @@ fn buddy_udp() -> Ipv4Endpoint {
 
 /// A decoded type-3 row. `0x00` is what the captured aMule `0x44` carried in
 /// its `TAG_ENCRYPTION`; `0x81` is eMuleAI's, NAT-T bit set.
-pub(super) fn row(connect_options: u8) -> crate::KadSource {
-    crate::KadSource {
-        direct: None,
-        user_hash: Some(TARGET),
-        kad_udp: Some(Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 77), 4672)),
-        connect_options: Some(SourceCryptOptions::from_byte(connect_options)),
-        buddy: Some(KadBuddyContact {
-            buddy_id: BUDDY_ID,
-            buddy_udp: Some(buddy_udp()),
-            buddy_ipv6: None,
-            buddy_udp_ipv6: None,
-        }),
-        direct_udp_callback: false,
-        tcp_port: 4662,
-        ipv6: None,
-    }
+pub(super) fn row(connect_options: u8) -> SourceSighting {
+    kad_buddy_sighting(Some(TARGET), BUDDY_ID, Some(buddy_udp()), connect_options)
 }
 
-/// A synthetic row that states the type-6 fact *and* still carries a buddy —
-/// no real aMule row does both, since a type-6 row is never a buddy row
-/// (aMule keeps the observed IP for the `0x95` only on a type-6
-/// row, `DownloadQueue.cpp:1797`). The combination exists here only to prove
-/// the admission rule's *order* — the direct-UDP road is checked ahead of the
-/// buddy's — independent of which fact opens it.
-fn row_with_direct_callback_and_buddy(connect_options: u8) -> crate::KadSource {
-    crate::KadSource {
-        direct_udp_callback: true,
-        ..row(connect_options)
-    }
+/// A type-6 row for the target [`row`] names, observed at the address
+/// [`kad_buddy_sighting`] names: the publisher's direct-UDP callback.
+fn direct_row(connect_options: u8) -> SourceSighting {
+    SourceSighting::by_road(
+        rmule_primitives::SourceRoad::DirectUdpCallback {
+            kad_udp: Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 77), 4672),
+            tcp_port: 4662,
+        },
+        Some(TARGET),
+        Some(rmule_primitives::SourceCryptOptions::from_byte(
+            connect_options,
+        )),
+    )
+}
+
+/// A capable downloader that has seen one publisher in a buddy row and in a
+/// type-6 row: the two rows name one record, which states the type-6 fact and
+/// still carries the buddy. Answers the record the type-6 row makes.
+fn direct_and_buddy_state(connect_options: u8) -> (DownloadState, LowIdCandidate) {
+    let state = callback_state(
+        Vec::new(),
+        vec![row(connect_options), direct_row(connect_options)],
+        true,
+        1,
+    );
+    let candidate = LowIdCandidate::from_sighting(direct_row(connect_options), None)
+        .expect("a type-6 row is a candidate");
+    (state, candidate)
 }
 
 pub(super) fn buddy_key(decisions: &[Decision]) -> CallbackKey {
     decisions
         .iter()
         .find_map(|d| match d {
-            Decision::RequestBuddyCallback { candidate } => Some(candidate.key()),
+            Decision::RequestBuddyCallback { candidate, .. } => Some(candidate.key()),
             _ => None,
         })
         .unwrap_or_else(|| panic!("a buddy callback was requested: {decisions:?}"))
@@ -74,10 +75,10 @@ pub(super) fn buddy_key(decisions: &[Decision]) -> CallbackKey {
 fn a_capable_downloader_asks_an_amule_rows_buddy_for_a_callback() {
     let mut state = callback_state(Vec::new(), Vec::new(), true, 2);
 
-    let decisions = state.on_kad_sources(vec![row(0x00)]);
+    let decisions = via_kad(&mut state, vec![row(0x00)]);
 
     let key = buddy_key(&decisions);
-    let Some(Decision::RequestBuddyCallback { candidate }) = decisions
+    let Some(Decision::RequestBuddyCallback { candidate, .. }) = decisions
         .iter()
         .find(|d| matches!(d, Decision::RequestBuddyCallback { .. }))
     else {
@@ -95,18 +96,18 @@ fn a_capable_downloader_asks_an_amule_rows_buddy_for_a_callback() {
         Some((BUDDY_ID, Some(buddy_udp())))
     );
     assert!(
-        decisions.iter().any(|d| matches!(
-            d,
-            Decision::ArmCallbackTimeout { key: held, after }
-                if *held == key && *after == CALLBACK_TIMEOUT
-        )),
-        "the slot is held for the dial-back: {decisions:?}"
+        state.match_inbound_callback(key).is_some(),
+        "the slot is held"
+    );
+    assert_eq!(
+        state.next_wake(),
+        Some(t0() + CALLBACK_TIMEOUT),
+        "held for the dial-back, with no silence to fall back from"
     );
     assert!(
         !decisions.iter().any(|d| matches!(
             d,
-            Decision::ArmCallbackSilenceFallback { .. }
-                | Decision::FallToNatTraversal { .. }
+            Decision::FallToNatTraversal { .. }
                 | Decision::RequestCallback { .. }
                 | Decision::RequestGlobalCallback { .. }
         )),
@@ -121,15 +122,12 @@ fn a_capable_downloader_asks_an_amule_rows_buddy_for_a_callback() {
 #[test]
 fn an_emuleai_rows_buddy_callback_falls_to_the_punch_after_twelve_silent_seconds() {
     let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
-    let decisions = state.on_kad_sources(vec![row(0x81)]);
-    let key = buddy_key(&decisions);
-    assert!(
-        decisions.iter().any(|d| matches!(
-            d,
-            Decision::ArmCallbackSilenceFallback { key: held, after }
-                if *held == key && *after == CALLBACK_SILENCE_FALLBACK
-        )),
-        "a NAT-T row arms the fallback beside its 30 s: {decisions:?}"
+    let decisions = via_kad(&mut state, vec![row(0x81)]);
+    let _ = buddy_key(&decisions);
+    assert_eq!(
+        state.next_wake(),
+        Some(t0() + CALLBACK_SILENCE_FALLBACK),
+        "a NAT-T row's fallback falls before its 30 s"
     );
     assert!(
         !decisions
@@ -138,10 +136,11 @@ fn an_emuleai_rows_buddy_callback_falls_to_the_punch_after_twelve_silent_seconds
         "the punch is not the first road for a capable downloader: {decisions:?}"
     );
 
-    let fell = state.on_callback_silence(key);
+    let fell = state.on_tick(t0() + CALLBACK_SILENCE_FALLBACK);
     let [
-        Decision::FallToNatTraversal { candidate, silence },
-        Decision::ArmTraversalBound { .. },
+        Decision::FallToNatTraversal {
+            candidate, silence, ..
+        },
     ] = fell.as_slice()
     else {
         panic!("the silence raises exactly one fall decision: {fell:?}");
@@ -149,14 +148,14 @@ fn an_emuleai_rows_buddy_callback_falls_to_the_punch_after_twelve_silent_seconds
     assert_eq!(
         *silence,
         CallbackSilence::After {
-            taken: CallbackRoute::Buddy {
+            taken: PeerReachRoute::Buddy {
                 buddy_id: BUDDY_ID,
-                buddy_udp: Some(buddy_udp()),
+                emitted_to: Some(buddy_udp()),
             },
             elapsed: CALLBACK_SILENCE_FALLBACK,
         }
     );
-    let ours = SelfReach {
+    let ours = RoutePosition {
         reachable: true,
         udp_on: true,
         kad_running: true,
@@ -164,12 +163,10 @@ fn an_emuleai_rows_buddy_callback_falls_to_the_punch_after_twelve_silent_seconds
         server_punch: false,
     };
     assert_eq!(
-        select_natt_for_download(&callback_target(&candidate.reach()), &ours, silence),
-        Some(CallbackRoute::NatTraversal {
-            coordinator: NattCoordinator::Buddy {
-                buddy_id: BUDDY_ID,
-                buddy_udp: Some(buddy_udp()),
-            }
+        select_natt_for_download(&callback_target(&candidate.reach(None)), &ours, silence),
+        Some(PeerReachRoute::NatTraversal {
+            buddy_id: BUDDY_ID,
+            buddy_udp: buddy_udp(),
         })
     );
 }
@@ -181,24 +178,24 @@ fn an_emuleai_rows_buddy_callback_falls_to_the_punch_after_twelve_silent_seconds
 #[test]
 fn a_retired_punch_beside_a_buddy_callback_leaves_the_dial_back_standing() {
     let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
-    let key = buddy_key(&state.on_kad_sources(vec![row(0x81)]));
-    assert!(!state.on_callback_silence(key).is_empty());
+    let key = buddy_key(&via_kad(&mut state, vec![row(0x81)]));
+    assert!(!state.on_tick(t0() + CALLBACK_SILENCE_FALLBACK).is_empty());
 
     let retired =
-        state.on_traversal_retired(key, crate::diagnostics::NattRetirement::NoCoordinator);
+        state.on_traversal_retired(t0(), key, crate::diagnostics::NattRetirement::NoCoordinator);
     assert!(
         retired.is_empty(),
         "the dial-back's claim stays: {retired:?}"
     );
     assert!(
-        state.on_callback_silence(key).is_empty(),
+        state.on_tick(t0() + CALLBACK_SILENCE_FALLBACK).is_empty(),
         "no second punch after the first retired"
     );
     assert!(
         state
-            .on_callback_timeout(key)
+            .on_tick(t0() + CALLBACK_TIMEOUT)
             .iter()
-            .any(|d| matches!(d, Decision::CancelCallbackTimeout { key: held } if *held == key)),
+            .any(|d| matches!(d, Decision::EndCallback { key: held } if *held == key)),
         "the slot-release deadline still ends it"
     );
 }
@@ -210,15 +207,15 @@ fn a_retired_punch_beside_a_buddy_callback_leaves_the_dial_back_standing() {
 fn a_buddy_callback_needs_a_callable_downloader_and_a_user_hash() {
     let mut firewalled = callback_state(Vec::new(), Vec::new(), false, 2);
     assert!(
-        firewalled.on_kad_sources(vec![row(0x00)]).is_empty(),
+        via_kad(&mut firewalled, vec![row(0x00)]).is_empty(),
         "a Low-ID downloader cannot be called back"
     );
 
     let mut anonymous = callback_state(Vec::new(), Vec::new(), true, 2);
-    let decisions = anonymous.on_kad_sources(vec![crate::KadSource {
-        user_hash: None,
-        ..row(0x00)
-    }]);
+    let decisions = via_kad(
+        &mut anonymous,
+        vec![kad_buddy_sighting(None, BUDDY_ID, Some(buddy_udp()), 0x00)],
+    );
     assert!(
         decisions.is_empty(),
         "a dial-back from an unnamed publisher could never be adopted: {decisions:?}"
@@ -233,13 +230,12 @@ fn a_buddy_callback_needs_a_callable_downloader_and_a_user_hash() {
 /// covers that row falling to the buddy instead.
 #[test]
 fn a_row_with_the_direct_callback_bit_takes_it_ahead_of_its_own_buddy() {
-    let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
-    let target_row = row_with_direct_callback_and_buddy(0x89);
+    let (mut state, target_row) = direct_and_buddy_state(0x89);
 
-    let decisions = state.on_kad_sources(vec![target_row]);
+    let decisions = state.start(t0());
 
     let Some(candidate) = decisions.iter().find_map(|d| match d {
-        Decision::RequestDirectUdpCallback { candidate } => Some(candidate),
+        Decision::RequestDirectUdpCallback { candidate, .. } => Some(candidate),
         _ => None,
     }) else {
         panic!("the direct-UDP road is taken, not the buddy's: {decisions:?}");
@@ -261,29 +257,25 @@ fn a_row_with_the_direct_callback_bit_takes_it_ahead_of_its_own_buddy() {
 /// not a coordinator of its own.
 #[test]
 fn a_direct_udp_callback_falls_to_the_punch_after_twelve_silent_seconds() {
-    let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
-    let target_row = row_with_direct_callback_and_buddy(0x89);
-    let decisions = state.on_kad_sources(vec![target_row]);
-    let key = decisions
-        .iter()
-        .find_map(|d| match d {
-            Decision::RequestDirectUdpCallback { candidate } => Some(candidate.key()),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("a direct-UDP callback was requested: {decisions:?}"));
+    let (mut state, target_row) = direct_and_buddy_state(0x89);
+    let decisions = state.start(t0());
     assert!(
-        decisions.iter().any(|d| matches!(
-            d,
-            Decision::ArmCallbackSilenceFallback { key: held, after }
-                if *held == key && *after == CALLBACK_SILENCE_FALLBACK
-        )),
-        "a NAT-T row arms the fallback beside its 30 s: {decisions:?}"
+        decisions
+            .iter()
+            .any(|d| matches!(d, Decision::RequestDirectUdpCallback { .. })),
+        "a direct-UDP callback was requested: {decisions:?}"
+    );
+    assert_eq!(
+        state.next_wake(),
+        Some(t0() + CALLBACK_SILENCE_FALLBACK),
+        "a NAT-T row's fallback falls before its 30 s"
     );
 
-    let fell = state.on_callback_silence(key);
+    let fell = state.on_tick(t0() + CALLBACK_SILENCE_FALLBACK);
     let [
-        Decision::FallToNatTraversal { candidate, silence },
-        Decision::ArmTraversalBound { .. },
+        Decision::FallToNatTraversal {
+            candidate, silence, ..
+        },
     ] = fell.as_slice()
     else {
         panic!("the silence raises exactly one fall decision: {fell:?}");
@@ -291,13 +283,13 @@ fn a_direct_udp_callback_falls_to_the_punch_after_twelve_silent_seconds() {
     assert_eq!(
         *silence,
         CallbackSilence::After {
-            taken: CallbackRoute::DirectUdp {
+            taken: PeerReachRoute::DirectUdp {
                 target_kad_udp: target_row.kad_udp.expect("the row names one"),
             },
             elapsed: CALLBACK_SILENCE_FALLBACK,
         }
     );
-    let ours = SelfReach {
+    let ours = RoutePosition {
         reachable: true,
         udp_on: true,
         kad_running: true,
@@ -305,12 +297,10 @@ fn a_direct_udp_callback_falls_to_the_punch_after_twelve_silent_seconds() {
         server_punch: false,
     };
     assert_eq!(
-        select_natt_for_download(&callback_target(&candidate.reach()), &ours, silence),
-        Some(CallbackRoute::NatTraversal {
-            coordinator: NattCoordinator::Buddy {
-                buddy_id: BUDDY_ID,
-                buddy_udp: Some(buddy_udp()),
-            }
+        select_natt_for_download(&callback_target(&candidate.reach(None)), &ours, silence),
+        Some(PeerReachRoute::NatTraversal {
+            buddy_id: BUDDY_ID,
+            buddy_udp: buddy_udp(),
         })
     );
 }
@@ -321,19 +311,19 @@ fn a_direct_udp_callback_falls_to_the_punch_after_twelve_silent_seconds() {
 /// the candidate from here.
 #[test]
 fn a_retired_punch_beside_a_direct_udp_callback_leaves_the_dial_back_standing() {
-    let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
+    let (mut state, _) = direct_and_buddy_state(0x89);
     let key = state
-        .on_kad_sources(vec![row_with_direct_callback_and_buddy(0x89)])
+        .start(t0())
         .iter()
         .find_map(|d| match d {
-            Decision::RequestDirectUdpCallback { candidate } => Some(candidate.key()),
+            Decision::RequestDirectUdpCallback { candidate, .. } => Some(candidate.key()),
             _ => None,
         })
         .expect("a direct-UDP callback was requested");
-    assert!(!state.on_callback_silence(key).is_empty());
+    assert!(!state.on_tick(t0() + CALLBACK_SILENCE_FALLBACK).is_empty());
 
     let retired =
-        state.on_traversal_retired(key, crate::diagnostics::NattRetirement::NoCoordinator);
+        state.on_traversal_retired(t0(), key, crate::diagnostics::NattRetirement::NoCoordinator);
     assert!(
         retired.is_empty(),
         "the dial-back's claim stays: {retired:?}"
@@ -346,28 +336,28 @@ fn a_retired_punch_beside_a_direct_udp_callback_leaves_the_dial_back_standing() 
 /// from a target that was never invited.
 #[test]
 fn a_direct_udp_callback_that_never_left_falls_to_the_punch_now() {
-    let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
+    let (mut state, _) = direct_and_buddy_state(0x89);
     let key = state
-        .on_kad_sources(vec![row_with_direct_callback_and_buddy(0x89)])
+        .start(t0())
         .iter()
         .find_map(|d| match d {
-            Decision::RequestDirectUdpCallback { candidate } => Some(candidate.key()),
+            Decision::RequestDirectUdpCallback { candidate, .. } => Some(candidate.key()),
             _ => None,
         })
         .expect("a direct-UDP callback was requested");
 
-    let retired =
-        state.on_traversal_retired(key, crate::diagnostics::NattRetirement::CallbackNotSent);
+    let retired = state.on_traversal_retired(
+        t0(),
+        key,
+        crate::diagnostics::NattRetirement::CallbackNotSent,
+    );
     assert!(
         matches!(
             retired.as_slice(),
-            [
-                Decision::FallToNatTraversal {
-                    silence: CallbackSilence::NoCallbackPossible,
-                    ..
-                },
-                Decision::ArmTraversalBound { .. },
-            ]
+            [Decision::FallToNatTraversal {
+                silence: CallbackSilence::NoCallbackPossible,
+                ..
+            },]
         ),
         "the unsent invitation's road ends and the punch is the road now: {retired:?}"
     );

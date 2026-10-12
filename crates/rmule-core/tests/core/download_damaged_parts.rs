@@ -17,7 +17,7 @@ use rmule_core::{
 use rmule_primitives::{ED2K_PART_SIZE, Ed2kFileLink, ServerEndpoint};
 use rmule_testkit::{PendingPeerTransfer, file_link, two_high_id_sources};
 
-use crate::fixture::{identity, next_expected};
+use crate::fixture::next_expected;
 
 const PART: usize = ED2K_PART_SIZE as usize;
 
@@ -69,6 +69,7 @@ fn row_with_three_verified(
 
 fn core_on(store: &Arc<rmule_core::DurableStore>) -> Core {
     Core::builder(CoreConfig::default(), Arc::clone(store))
+        .settings(rmule_core::CoreSettings::default())
         .source_lookup(two_high_id_sources())
         .peer_transfer(PendingPeerTransfer)
         .build()
@@ -77,7 +78,6 @@ fn core_on(store: &Arc<rmule_core::DurableStore>) -> Core {
 async fn resume(core: &mut Core, id: DownloadId) {
     core.send(CoreCommand::Download(DownloadCommand::ResumeDownload {
         download_id: id,
-        credentials: identity().into(),
     }))
     .await
     .unwrap();

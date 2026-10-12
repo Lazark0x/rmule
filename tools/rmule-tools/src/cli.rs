@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
-use rmule_primitives::{ClientIdentity, Ed2kFileClass, Ed2kText, UserHash};
+use rmule_primitives::{Ed2kFileClass, UserHash};
 
 use crate::bootstrap_fetch::BootstrapFetchArgs;
 use crate::download::{
@@ -351,8 +351,8 @@ pub(crate) enum LoginCommand {
 
 /// Identity operands shared by the core-orchestration commands (download,
 /// search, serve). Flattened into each command's args and projected onto the
-/// [`ClientIdentity`] the command logs in with by
-/// [`client_identity`](Self::client_identity).
+/// Core Settings the command's core presents by [`settings`](Self::settings);
+/// the protocol version is core's own.
 #[derive(Debug, Args)]
 pub(crate) struct DownloadIdentityArgs {
     /// Local nickname tag.
@@ -364,9 +364,6 @@ pub(crate) struct DownloadIdentityArgs {
     /// Local TCP port advertised to the server and peer.
     #[arg(long, default_value_t = 4662)]
     pub(crate) tcp_port: u16,
-    /// CT_VERSION value.
-    #[arg(long, default_value_t = 60)]
-    pub(crate) protocol_version: u32,
     /// Where the node's Secure User Identification key lives, one store per
     /// `--user-hash` (created on first use, reused after): a fixed hash then
     /// proves with the same key every run, as a counterparty's `clients.met`
@@ -384,11 +381,23 @@ impl DownloadIdentityArgs {
         )?))
     }
 
+    /// `settings` presenting the nickname and TCP port these operands name:
+    /// every login and hello the tool's core sends presents them.
+    pub(crate) fn settings(&self, settings: rmule_core::CoreSettings) -> rmule_core::CoreSettings {
+        rmule_core::CoreSettings {
+            nickname: self.nickname.clone(),
+            tcp_port: self.tcp_port,
+            ..settings
+        }
+    }
+
     /// The default production builder over `store`, as the node these
-    /// operands name, proving with the key `--identity-dir` keeps for it.
+    /// operands name, under `settings`, proving with the key
+    /// `--identity-dir` keeps for it.
     pub(crate) fn core_builder(
         &self,
         config: rmule_core::CoreConfig,
+        settings: rmule_core::CoreSettings,
         store: std::sync::Arc<rmule_core::DurableStore>,
     ) -> Result<
         rmule_core::CoreBuilder<
@@ -400,22 +409,11 @@ impl DownloadIdentityArgs {
     > {
         crate::node::core_builder(
             config,
+            settings,
             store,
             self.user_hash()?,
             self.identity_dir.as_deref(),
         )
-    }
-
-    /// The identity these operands name. Capability tags are not attached
-    /// here: `LoginRequest::from_identity` emits `CT_SERVER_FLAGS` and
-    /// `CT_EMULE_VERSION` from the capability registry (ADR-0047).
-    pub(crate) fn client_identity(&self) -> Result<ClientIdentity> {
-        Ok(ClientIdentity::new(
-            self.user_hash()?,
-            Ed2kText::from_utf8(&self.nickname),
-            self.tcp_port,
-            self.protocol_version,
-        ))
     }
 }
 

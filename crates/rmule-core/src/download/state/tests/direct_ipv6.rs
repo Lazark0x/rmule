@@ -3,7 +3,7 @@
 //! connects hands the candidate to the callback roads, once.
 
 use rmule_primitives::{
-    CryptStance, ExchangedSource, Ipv6Endpoint, OutboundCrypt, PeerSource, SourceCryptOptions,
+    CryptStance, Ipv6Endpoint, OutboundCrypt, PeerSource, SourceCryptOptions, SourceSighting,
     UserHash,
 };
 
@@ -23,17 +23,13 @@ const TARGET_HASH: UserHash = UserHash::from_bytes([0x5A; UserHash::BYTE_LEN]);
 
 /// An ExtSX Low-ID record at `half` whose crypt byte is `crypt` and which
 /// carried the target's User Hash, as a v≥2 answer does.
-fn low_with_crypt(n: u32, half: Ipv6Endpoint, crypt: u8) -> LowIdCandidate {
-    LowIdCandidate::from_source(
-        ExchangedSource::new(
-            PeerSource::new(low(n), 4662),
-            Some(TARGET_HASH),
-            Some(SourceCryptOptions::from_byte(crypt)),
-        )
-        .with_ipv6_half(Some(half)),
-        None,
+fn low_with_crypt(n: u32, half: Ipv6Endpoint, crypt: u8) -> SourceSighting {
+    SourceSighting::new(
+        PeerSource::new(low(n), 4662),
+        Some(TARGET_HASH),
+        Some(SourceCryptOptions::from_byte(crypt)),
     )
-    .expect("a Low-ID source is a candidate")
+    .with_ipv6_half(Some(half))
 }
 
 fn known_ipv6() -> DialPosition {
@@ -44,11 +40,8 @@ fn known_ipv6() -> DialPosition {
 
 /// An ExtSX Low-ID record with a `CT_MOD_IP_V6` half, as the
 /// connected-server namespace pools it.
-fn low_with_half(n: u32) -> ConnectedServerCandidate {
-    LowIdCandidate::from_connected_server(
-        ExchangedSource::plain(PeerSource::new(low(n), 4662)).with_ipv6_half(Some(half())),
-    )
-    .expect("a Low-ID source is a candidate")
+fn low_with_half(n: u32) -> SourceSighting {
+    SourceSighting::plain(PeerSource::new(low(n), 4662)).with_ipv6_half(Some(half()))
 }
 
 fn state(capability: CallbackCapability, dial: DialPosition) -> DownloadState {
@@ -56,40 +49,34 @@ fn state(capability: CallbackCapability, dial: DialPosition) -> DownloadState {
 }
 
 fn state_with(
-    low_id: Vec<ConnectedServerCandidate>,
+    low_id: Vec<SourceSighting>,
     capability: CallbackCapability,
     dial: DialPosition,
 ) -> DownloadState {
-    DownloadState::new(
-        DownloadId::from_u64(1),
+    state_from(
         file_hash_only_content(ONE_PART),
-        StartingCandidates {
-            high_id: Vec::new(),
-            peer_crypts: HashMap::new(),
-            low_id,
-            distrusted: HashSet::new(),
-            remembered: RememberedSeeds::default(),
-        },
         SourcingPosture {
             callback_capability: capability,
             dial,
             ..QUIET_POSTURE
         },
-        CALLBACK_TIMEOUT,
         1,
+        no_facts(),
+        Vec::new(),
+        low_id,
     )
 }
 
 fn requested_callback(decisions: &[Decision]) -> bool {
     decisions
         .iter()
-        .any(|d| matches!(d, Decision::RequestCallback { low_id } if *low_id == low(7)))
+        .any(|d| matches!(d, Decision::RequestCallback { low_id, .. } if *low_id == low(7)))
 }
 
 #[test]
 fn a_low_id_candidate_with_an_ipv6_half_is_dialled_there_before_any_callback() {
     let mut state = state(CallbackCapability::server_high_id(), known_ipv6());
-    let decisions = state.start();
+    let decisions = state.start(t0());
     assert_eq!(spawned(&decisions), vec![PeerEndpoint::V6(half())]);
     assert!(
         decisions.iter().any(|d| matches!(
@@ -110,16 +97,20 @@ fn a_low_id_candidate_with_an_ipv6_half_is_dialled_there_before_any_callback() {
 #[test]
 fn a_failed_ipv6_dial_falls_to_the_callback_road_once() {
     let mut state = state(CallbackCapability::server_high_id(), known_ipv6());
-    let _ = state.start();
+    let _ = state.start(t0());
 
-    let fell = state.on_worker_event(PeerEndpoint::V6(half()), PeerWorkerEvent::Disconnected);
+    let fell = state.on_worker_event(
+        t0(),
+        PeerEndpoint::V6(half()),
+        PeerWorkerEvent::Disconnected,
+    );
     assert!(
         requested_callback(&fell),
         "the callback road follows: {fell:?}"
     );
     assert!(spawned(&fell).is_empty(), "no second IPv6 dial: {fell:?}");
 
-    let lapsed = state.on_callback_timeout(connected_key(low(7)));
+    let lapsed = until_road_ends(&mut state, connected_key(low(7)));
     assert!(
         spawned(&lapsed).is_empty() && !requested_callback(&lapsed),
         "a spent half is not re-dialed, and a lapsed callback is not re-asked: {lapsed:?}"
@@ -131,9 +122,13 @@ fn a_failed_ipv6_dial_falls_to_the_callback_road_once() {
 #[test]
 fn a_connected_ipv6_dial_does_not_fall_to_a_callback() {
     let mut state = state(CallbackCapability::server_high_id(), known_ipv6());
-    let _ = state.start();
-    let _ = state.on_worker_event(PeerEndpoint::V6(half()), PeerWorkerEvent::Connected);
-    let ended = state.on_worker_event(PeerEndpoint::V6(half()), PeerWorkerEvent::Disconnected);
+    let _ = state.start(t0());
+    let _ = state.on_worker_event(t0(), PeerEndpoint::V6(half()), PeerWorkerEvent::Connected);
+    let ended = state.on_worker_event(
+        t0(),
+        PeerEndpoint::V6(half()),
+        PeerWorkerEvent::Disconnected,
+    );
     assert!(!requested_callback(&ended), "{ended:?}");
 }
 
@@ -145,7 +140,7 @@ fn without_a_known_ipv6_rung_0_is_skipped() {
         CallbackCapability::server_high_id(),
         DialPosition::default(),
     );
-    let decisions = state.start();
+    let decisions = state.start(t0());
     assert!(requested_callback(&decisions), "{decisions:?}");
     assert!(spawned(&decisions).is_empty(), "{decisions:?}");
 }
@@ -156,28 +151,22 @@ fn without_a_known_ipv6_rung_0_is_skipped() {
 /// starvation is honest — no road is invented after it.
 #[test]
 fn a_half_is_the_only_road_left_and_its_failure_is_honest_starvation() {
-    let mut state = DownloadState::new(
-        DownloadId::from_u64(1),
-        file_hash_only_content(ONE_PART),
-        high_id_candidates(Vec::new()),
-        QUIET_POSTURE,
-        CALLBACK_TIMEOUT,
-        1,
+    let mut state = pooled_state(file_hash_only_content(ONE_PART), &[], QUIET_POSTURE, 1);
+    let global = SourceSighting::plain(PeerSource::new(low(7), 4662)).with_ipv6_half(Some(half()));
+    let _ = take(&mut state, Channel::Global(source_server(3)), [global]);
+    assert!(
+        state.start(t0()).is_empty(),
+        "no route while we hold no IPv6"
     );
-    state.admit_low_id(LowIdCandidate {
-        ipv6: Some(half()),
-        ..LowIdCandidate::from_source(
-            ExchangedSource::plain(PeerSource::new(low(7), 4662)),
-            Some(source_server(3)),
-        )
-        .expect("a Low-ID source is a candidate")
-    });
-    assert!(state.start().is_empty(), "no route while we hold no IPv6");
 
-    let admitted = state.on_dial_position(known_ipv6());
+    let admitted = state.on_dial_position(t0(), known_ipv6());
     assert_eq!(spawned(&admitted), vec![PeerEndpoint::V6(half())]);
 
-    let fell = state.on_worker_event(PeerEndpoint::V6(half()), PeerWorkerEvent::Disconnected);
+    let fell = state.on_worker_event(
+        t0(),
+        PeerEndpoint::V6(half()),
+        PeerWorkerEvent::Disconnected,
+    );
     assert!(spawned(&fell).is_empty(), "{fell:?}");
     assert!(
         matches!(
@@ -196,15 +185,11 @@ fn a_half_is_the_only_road_left_and_its_failure_is_honest_starvation() {
 #[test]
 fn a_rung_0_dial_meets_the_candidates_stated_crypt_side_by_the_high_id_rule() {
     let mut state = state_with(
-        vec![ConnectedServerCandidate::from_record(low_with_crypt(
-            7,
-            half(),
-            0x07,
-        ))],
+        vec![low_with_crypt(7, half(), 0x07)],
         CallbackCapability::server_high_id(),
         known_ipv6(),
     );
-    let decisions = state.start();
+    let decisions = state.start(t0());
     assert_eq!(spawned(&decisions), vec![PeerEndpoint::V6(half())]);
     assert_eq!(
         state
@@ -221,15 +206,11 @@ fn a_rung_0_dial_meets_the_candidates_stated_crypt_side_by_the_high_id_rule() {
 #[test]
 fn a_candidate_without_crypt_support_is_dialled_at_its_half_in_plaintext() {
     let mut state = state_with(
-        vec![ConnectedServerCandidate::from_record(low_with_crypt(
-            7,
-            half(),
-            0x00,
-        ))],
+        vec![low_with_crypt(7, half(), 0x00)],
         CallbackCapability::server_high_id(),
         known_ipv6(),
     );
-    let decisions = state.start();
+    let decisions = state.start(t0());
     assert_eq!(spawned(&decisions), vec![PeerEndpoint::V6(half())]);
     assert_eq!(
         state
@@ -246,18 +227,17 @@ fn a_candidate_without_crypt_support_is_dialled_at_its_half_in_plaintext() {
 #[test]
 fn a_crypt_incompatible_rung_0_dial_retires_the_candidate_off_every_road() {
     let mut state = state_with(
-        vec![ConnectedServerCandidate::from_record(low_with_crypt(
-            7,
-            half(),
-            0x07,
-        ))],
+        vec![low_with_crypt(7, half(), 0x07)],
         CallbackCapability::server_high_id(),
         known_ipv6(),
     );
-    let _ = state.start();
+    let _ = state.start(t0());
 
-    let refused =
-        state.on_worker_event(PeerEndpoint::V6(half()), PeerWorkerEvent::CryptIncompatible);
+    let refused = state.on_worker_event(
+        t0(),
+        PeerEndpoint::V6(half()),
+        PeerWorkerEvent::CryptIncompatible,
+    );
     assert!(
         refused.iter().any(|d| matches!(
             d,
@@ -288,48 +268,40 @@ fn a_crypt_incompatible_rung_0_dial_retires_the_candidate_off_every_road() {
 /// arrive while that candidate is on any of its roads.
 fn exchanging_state() -> (DownloadState, PeerEndpoint) {
     let high = peer(1);
-    let mut state = DownloadState::new(
-        DownloadId::from_u64(1),
+    let mut state = state_from(
         file_hash_only_content(ONE_PART),
-        StartingCandidates {
-            high_id: vec![high],
-            peer_crypts: HashMap::new(),
-            low_id: vec![low_with_half(7)],
-            distrusted: HashSet::new(),
-            remembered: RememberedSeeds::default(),
-        },
         SourcingPosture {
             callback_capability: CallbackCapability::server_high_id(),
             dial: known_ipv6(),
             ..QUIET_POSTURE
         },
-        CALLBACK_TIMEOUT,
         2,
+        no_facts(),
+        vec![(Channel::Server, plain_sightings(&[high]))],
+        vec![low_with_half(7)],
     );
-    let started = state.start();
+    let started = state.start(t0());
     assert!(
         spawned(&started).contains(&PeerEndpoint::V6(half())),
         "{started:?}"
     );
-    let _ = state.on_worker_event(high, PeerWorkerEvent::Connected);
+    let _ = state.on_worker_event(t0(), high, PeerWorkerEvent::Connected);
     (state, high)
 }
 
 /// `high`'s source exchange names the candidate at `at`; what it spawned.
 fn sight(state: &mut DownloadState, high: PeerEndpoint, at: Ipv6Endpoint) -> Vec<PeerEndpoint> {
-    let source = ExchangedSource::plain(PeerSource::new(low(7), 4662)).with_ipv6_half(Some(at));
-    let decisions = state.on_worker_event(
-        high,
-        PeerWorkerEvent::SourcesReceived {
-            sources: vec![source],
-        },
-    );
-    spawned(&decisions)
+    let source = SourceSighting::plain(PeerSource::new(low(7), 4662)).with_ipv6_half(Some(at));
+    spawned(&via_exchange(state, high, vec![source]))
 }
 
 /// The dial at `dialed` fails; the candidate falls to its callback road.
 fn fail_dial(state: &mut DownloadState, dialed: Ipv6Endpoint) {
-    let fell = state.on_worker_event(PeerEndpoint::V6(dialed), PeerWorkerEvent::Disconnected);
+    let fell = state.on_worker_event(
+        t0(),
+        PeerEndpoint::V6(dialed),
+        PeerWorkerEvent::Disconnected,
+    );
     assert!(requested_callback(&fell), "{fell:?}");
 }
 
@@ -344,7 +316,7 @@ fn a_new_half_reopens_rung_0_once_and_a_spent_half_stays_spent() {
     // the next sighting is admitted afresh.
     let fail_and_lapse = |state: &mut DownloadState, dialed: Ipv6Endpoint| {
         fail_dial(state, dialed);
-        let _ = state.on_callback_timeout(connected_key(low(7)));
+        let _ = until_road_ends(state, connected_key(low(7)));
     };
 
     fail_and_lapse(&mut state, half());
@@ -352,7 +324,7 @@ fn a_new_half_reopens_rung_0_once_and_a_spent_half_stays_spent() {
     assert!(same.is_empty(), "a spent half is not re-dialed: {same:?}");
 
     // That sighting took the callback road; let it lapse too.
-    let _ = state.on_callback_timeout(connected_key(low(7)));
+    let _ = until_road_ends(&mut state, connected_key(low(7)));
     let moved = sight(&mut state, high, moved_half());
     assert_eq!(moved, vec![PeerEndpoint::V6(moved_half())]);
 
@@ -368,18 +340,17 @@ fn a_new_half_reopens_rung_0_once_and_a_spent_half_stays_spent() {
 fn a_spent_half_is_redialled_after_it_sits_out_a_reask_period() {
     let (mut state, high) = exchanging_state();
     fail_dial(&mut state, half());
-    let _ = state.on_callback_timeout(connected_key(low(7)));
+    let _ = until_road_ends(&mut state, connected_key(low(7)));
 
-    state.on_reask_period();
-    let _ = state.on_callback_timeout(connected_key(low(7)));
+    let _ = state.on_tick(t0() + FILE_REASK_TIME);
     let within = sight(&mut state, high, half());
     assert!(
         within.is_empty(),
         "spent in the period that just ended: {within:?}"
     );
-    let _ = state.on_callback_timeout(connected_key(low(7)));
+    let _ = until_road_ends(&mut state, connected_key(low(7)));
 
-    state.on_reask_period();
+    let _ = state.on_tick(t0() + FILE_REASK_TIME * 2);
     assert_eq!(
         sight(&mut state, high, half()),
         vec![PeerEndpoint::V6(half())]
@@ -401,7 +372,7 @@ fn a_half_sighted_while_a_callback_is_pending_is_dialled_when_the_callback_lapse
         "the pending callback is not preempted: {during:?}"
     );
 
-    let lapsed = state.on_callback_timeout(connected_key(low(7)));
+    let lapsed = until_road_ends(&mut state, connected_key(low(7)));
     assert_eq!(spawned(&lapsed), vec![PeerEndpoint::V6(moved_half())]);
     assert!(!requested_callback(&lapsed), "{lapsed:?}");
 
@@ -419,7 +390,7 @@ fn a_spent_half_sighted_while_a_callback_is_pending_stays_spent() {
     let during = sight(&mut state, high, half());
     assert!(during.is_empty(), "{during:?}");
 
-    let lapsed = state.on_callback_timeout(connected_key(low(7)));
+    let lapsed = until_road_ends(&mut state, connected_key(low(7)));
     assert!(
         spawned(&lapsed).is_empty() && !requested_callback(&lapsed),
         "a lapsed road with only a spent half ends the candidate: {lapsed:?}"
@@ -432,31 +403,28 @@ fn a_spent_half_sighted_while_a_callback_is_pending_stays_spent() {
 /// its callback road at once.
 #[test]
 fn an_ip_filtered_rung_0_half_never_reaches_the_route_choice() {
-    use crate::dialable::{admit_exchanged_halves, admit_kad_halves};
+    use crate::dialable::admit_halves;
     let admits = |endpoint| endpoint != PeerEndpoint::V6(half());
     let capability = CallbackCapability::server_high_id();
 
-    let exchanged = admit_exchanged_halves(
-        ExchangedSource::plain(PeerSource::new(low(7), 4662)).with_ipv6_half(Some(half())),
+    let exchanged = admit_halves(
+        SourceSighting::plain(PeerSource::new(low(7), 4662)).with_ipv6_half(Some(half())),
         admits,
     )
     .expect("a Low ID names no address of its own to refuse");
     let candidate =
-        LowIdCandidate::from_source(exchanged, None).expect("a Low-ID source is a candidate");
+        LowIdCandidate::from_sighting(exchanged, None).expect("a Low-ID source is a candidate");
     assert_eq!(
         LowIdRoute::of(&capability, known_ipv6(), &candidate),
         Some(LowIdRoute::Road(LowIdRoad::Callback))
     );
 
-    let row = admit_kad_halves(
-        crate::KadSource {
-            ipv6: Some(half()),
-            ..super::sources::kad_buddy_row(0)
-        },
+    let row = admit_halves(
+        super::sources::kad_buddy_row(0).with_ipv6_half(Some(half())),
         admits,
     )
     .expect("a buddy row names no address of its own to refuse");
-    let candidate = LowIdCandidate::from_kad_row(&row).expect("a buddy row is a candidate");
+    let candidate = LowIdCandidate::from_sighting(row, None).expect("a buddy row is a candidate");
     assert_eq!(
         LowIdRoute::of(&capability, known_ipv6(), &candidate),
         Some(LowIdRoute::Road(LowIdRoad::BuddyCallback))

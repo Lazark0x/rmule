@@ -39,7 +39,7 @@ use crate::flow::identity::{hex_lower, ipv4_string, parse_ipv4_octets};
 use crate::flow::kad_buddy::firewalled_verdict::{
     assert_kad_buddy_recruit, assert_kad_firewall_selfcheck, assert_kad_firewalled_buddy,
 };
-use crate::flow::kad_buddy::verify_keys::assert_kad_verify_keys;
+use crate::flow::kad_buddy::verify_keys::{KAD_UDP_KEY_SEED, assert_kad_verify_keys};
 use crate::flow::logs::{collect_kad_logs, collect_kad_node_logs};
 use crate::flow::mesh::{
     KAD_CONTACT_VERSION, KAD_RMULE_UDP_PORT, KAD_TCP_PORT, KadCaptureOptions, KadNodeSpec,
@@ -261,11 +261,14 @@ pub fn run_kad_firewalled_buddy(options: KadFirewalledBuddyOptions<'_>) -> Resul
             // Both are needed: the sender key aMule demands before it
             // will answer `0x22` lives inside the crypt trailer. `--public-ip`
             // is passed explicitly — it is the container's own fake-public
-            // address from the harness address plan, never a derived guess.
+            // address from the harness address plan, never a derived guess —
+            // and so is the seed the verdict opens aMule's answer with.
             rmule = rmule
                 .arg("--kad-crypt")
                 .arg("--public-ip")
                 .arg(ipv4_string(rmule_ip))
+                .arg("--kad-udp-key-seed")
+                .arg(KAD_UDP_KEY_SEED.to_string())
                 // …and stay silent long enough for the aMule to hello US. rmule
                 // is already in its routing zone (the seed), and aMule's own
                 // maintenance hello is the ONLY way into `Process2HelloResponse`

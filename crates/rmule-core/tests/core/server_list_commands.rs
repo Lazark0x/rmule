@@ -7,6 +7,7 @@
 //! contract under test is the actor's, not the store's (the store's own fold
 //! is pinned in `server_list.rs` and `app_config.rs`).
 
+use rmule_testkit::HANG_GUARD;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
@@ -124,8 +125,7 @@ async fn send(core: &Core, command: ServerListCommand) {
 /// The next server-list edge or rejection, whichever comes first. Any other
 /// cross-activity chatter is walked past.
 async fn next_answer(core: &mut Core) -> CoreEvent {
-    let deadline = Duration::from_secs(5);
-    timeout(deadline, async {
+    timeout(HANG_GUARD, async {
         loop {
             match core.next_event().await.expect("core is alive") {
                 event @ (CoreEvent::ServerList(_) | CoreEvent::CommandRejected { .. }) => {
@@ -168,7 +168,9 @@ fn listed(core: &Core) -> Vec<ManagedServer> {
 /// edge, and each visible on the level immediately after.
 #[tokio::test]
 async fn the_crud_arc_reports_edges_and_moves_the_level() {
-    let mut core = Core::builder(list_only(), rmule_testkit::memory_store()).build();
+    let mut core = Core::builder(list_only(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     let server = endpoint("1.2.3.4", 4661);
 
     send(
@@ -184,6 +186,8 @@ async fn the_crud_arc_reports_edges_and_moves_the_level() {
                 figures: None,
                 grants: None,
                 udp_crypt: None,
+                aux_ports: None,
+                listed_udp_flags: None,
             },
         },
     )
@@ -214,6 +218,8 @@ async fn the_crud_arc_reports_edges_and_moves_the_level() {
                 figures: None,
                 grants: None,
                 udp_crypt: None,
+                aux_ports: None,
+                listed_udp_flags: None,
             },
         },
     )
@@ -282,7 +288,9 @@ async fn the_crud_arc_reports_edges_and_moves_the_level() {
 /// is refused by name rather than silently doing nothing.
 #[tokio::test]
 async fn commands_naming_an_unlisted_server_are_refused() {
-    let mut core = Core::builder(list_only(), rmule_testkit::memory_store()).build();
+    let mut core = Core::builder(list_only(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     let absent = endpoint("9.9.9.9", 4661);
 
     for command in [
@@ -348,6 +356,7 @@ async fn the_search_sweep_follows_the_list_through_add_import_and_remove() {
         },
         rmule_testkit::memory_store(),
     )
+    .settings(rmule_core::CoreSettings::default())
     .server_list_fetcher(FakeFetcher::serving(met_bytes(&[(
         Ipv4Addr::LOCALHOST,
         imported.port(),
@@ -404,6 +413,7 @@ async fn the_search_sweep_follows_the_list_through_add_import_and_remove() {
 #[tokio::test]
 async fn an_update_merges_the_mirror_into_the_list() {
     let mut core = Core::builder(list_only(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
         .server_list_fetcher(FakeFetcher::serving(met_bytes(&[
             (Ipv4Addr::new(1, 2, 3, 4), 4661, "Renamed", "Fresh blurb"),
             (Ipv4Addr::new(5, 6, 7, 8), 4662, "Brand New", ""),
@@ -424,6 +434,8 @@ async fn an_update_merges_the_mirror_into_the_list() {
                 figures: None,
                 grants: None,
                 udp_crypt: None,
+                aux_ports: None,
+                listed_udp_flags: None,
             },
         },
     )
@@ -472,6 +484,7 @@ async fn an_update_merges_the_mirror_into_the_list() {
 #[tokio::test]
 async fn a_failed_update_leaves_the_list_untouched() {
     let mut core = Core::builder(list_only(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
         .server_list_fetcher(FakeFetcher::failing())
         .build();
     let known = endpoint("1.2.3.4", 4661);
@@ -515,7 +528,9 @@ async fn a_failed_update_leaves_the_list_untouched() {
 /// without a fetcher refuses the update instead of quietly ignoring it.
 #[tokio::test]
 async fn an_update_without_a_fetch_capability_is_refused() {
-    let mut core = Core::builder(list_only(), rmule_testkit::memory_store()).build();
+    let mut core = Core::builder(list_only(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
 
     send(
         &core,
@@ -538,6 +553,7 @@ async fn an_update_without_a_fetch_capability_is_refused() {
 async fn a_second_update_is_refused_while_the_first_is_still_fetching() {
     let park = Arc::new(Notify::new());
     let mut core = Core::builder(list_only(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
         .server_list_fetcher(FakeFetcher::parked(Arc::clone(&park)))
         .build();
 
@@ -618,13 +634,17 @@ async fn a_handed_over_list_is_on_the_level_before_any_command() {
             figures: None,
             grants: None,
             udp_crypt: None,
+            aux_ports: None,
+            listed_udp_flags: None,
         })
         .unwrap();
 
-    let core = Core::builder(list_only(), store).build();
+    let core = Core::builder(list_only(), store)
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     // The actor publishes before it takes its first command, so the very next
     // snapshot carries the list.
-    let snapshot = timeout(Duration::from_secs(5), async {
+    let snapshot = timeout(HANG_GUARD, async {
         loop {
             let snapshot = core.diagnostics_snapshot();
             if !snapshot.servers.is_empty() {
@@ -664,7 +684,9 @@ async fn crud_lands_in_the_durable_store() {
     let server = endpoint("1.2.3.4", 4661);
 
     {
-        let mut core = Core::builder(list_only(), Arc::clone(&store)).build();
+        let mut core = Core::builder(list_only(), Arc::clone(&store))
+            .settings(rmule_core::CoreSettings::default())
+            .build();
         send(
             &core,
             ServerListCommand::AddServer {
@@ -678,6 +700,8 @@ async fn crud_lands_in_the_durable_store() {
                     figures: None,
                     grants: None,
                     udp_crypt: None,
+                    aux_ports: None,
+                    listed_udp_flags: None,
                 },
             },
         )

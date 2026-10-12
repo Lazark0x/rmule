@@ -11,6 +11,7 @@ members = [
     "crates/rmule-store",
     "crates/rmule-testkit",
     "crates/rmule-winsock",
+    "crates/rmule-words",
     "tools/interop-harness",
     "tools/rmule-tools",
     "apps/rmule-cli",
@@ -23,6 +24,7 @@ members = [
 exclude = ["tools/ed2ksrv-differ"]
 
 [workspace.package]
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.94.0"
 license = "GPL-3.0-or-later"

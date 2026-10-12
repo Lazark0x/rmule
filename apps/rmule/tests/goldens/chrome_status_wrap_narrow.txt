@@ -7,6 +7,6 @@
 │                                          │
 │                                          │
 │                                          │
-│✱ no session config — resume needs        │
-│credentials (rmule-cli identity)          │
+│✱ no download dir — set one with rmule-cli│
+│config set-download-dir                   │
 └ ●eD2k HighID ●Kad off ───────────────────┘

@@ -1,20 +1,44 @@
 //! `OP_OFFERFILES` (0x15): announcing the files this node shares.
 //!
 //! The serve side hands over files in domain terms — hash, name, size, and
-//! the complete-source hint — and this module turns them into the tagged wire
-//! entries, including the high-half size tag a file past 4 GiB needs.
+//! whether the file is complete — and this module turns them into the tagged
+//! wire entries, including the high-half size tag a file past 4 GiB needs.
+//! It also owns the rule for the ID and port each entry carries
+//! (aMule `CKnownFile::CreateOfferedFilePacket`, `KnownFile.cpp:1097-1124`).
 
 use rmule_primitives::{
-    ClientId, Ed2kText, FileHash, Packet, PacketProtocol, Tag, TagName, TagValue,
+    ClientId, Ed2kText, FileHash, Packet, PacketProtocol, Tag, TagName, TagValue, WireReader,
+    WireTruncated,
 };
 
-use crate::{Ed2kError, Opcode, Result};
+use crate::{Ed2kError, Opcode, Result, ServerGrants};
 
 /// aMule file-announce tag IDs (per `docs/reference/notes/tags.md` and the
 /// pinned aMule source `377ec8d9`: `src/KnownFile.cpp` / `opcodes.h`).
 const FT_FILENAME: u8 = 0x01;
 const FT_FILESIZE: u8 = 0x02;
 const FT_FILESIZE_HI: u8 = 0x3A;
+
+/// The ID a compression-flag server reads as "this file is complete"
+/// (`FILE_COMPLETE_ID`, `KnownFile.cpp:1100`): not a client at all.
+pub const COMPLETE_FILE_ID: u32 = 0xFBFB_FBFB;
+/// The port that goes with [`COMPLETE_FILE_ID`] (`FILE_COMPLETE_PORT`).
+pub const COMPLETE_FILE_PORT: u16 = 0xFBFB;
+/// The ID a compression-flag server reads as "this file is incomplete"
+/// (`FILE_INCOMPLETE_ID`, `KnownFile.cpp:1102`).
+pub const INCOMPLETE_FILE_ID: u32 = 0xFCFC_FCFC;
+/// The port that goes with [`INCOMPLETE_FILE_ID`] (`FILE_INCOMPLETE_PORT`).
+pub const INCOMPLETE_FILE_PORT: u16 = 0xFCFC;
+
+/// Whether an offered file is whole on disk, which a compression-flag server
+/// reads off the entry's ID and port.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileCompleteness {
+    /// Every part is held and verified.
+    Complete,
+    /// A part-file still downloading.
+    Incomplete,
+}
 
 /// One file to announce, in domain terms. The serve side hands these to
 /// `Ed2kCommand::OfferFiles`; the session turns them into wire entries.
@@ -23,17 +47,32 @@ pub struct OfferedFile {
     file_hash: FileHash,
     file_size: u64,
     name: Ed2kText,
+    completeness: FileCompleteness,
 }
 
 impl OfferedFile {
-    /// A file to offer, from the three facts a server indexes it by.
+    /// A complete file to offer, from the three facts a server indexes it by.
     #[must_use]
     pub const fn new(file_hash: FileHash, file_size: u64, name: Ed2kText) -> Self {
         Self {
             file_hash,
             file_size,
             name,
+            completeness: FileCompleteness::Complete,
         }
+    }
+
+    /// The same file, marked `completeness`.
+    #[must_use]
+    pub const fn with_completeness(mut self, completeness: FileCompleteness) -> Self {
+        self.completeness = completeness;
+        self
+    }
+
+    /// Whether the file is whole.
+    #[must_use]
+    pub const fn completeness(&self) -> FileCompleteness {
+        self.completeness
     }
 
     /// The file's hash.
@@ -102,16 +141,33 @@ pub struct OfferFiles {
 }
 
 impl OfferFiles {
-    /// Build an announce for `files`, presenting `client_id`/`client_port`
-    /// as the complete-source hint on every entry (the High-ID complete
-    /// source we are). Files larger than `u32::MAX` split their size into
-    /// `FT_FILESIZE` (low 32 bits) + `FT_FILESIZE_HI` (high bits), matching
-    /// aMule's large-file wire form.
+    /// Build an announce for `files` to the server `grants` describes, which
+    /// holds `ed2k_id` for us; we present `presented_id` and reach at
+    /// `client_port`. Each entry's ID and port follow aMule: a
+    /// compression-flag server reads [`COMPLETE_FILE_ID`] or
+    /// [`INCOMPLETE_FILE_ID`] off the file's completeness; any other server
+    /// gets `presented_id` and `client_port` only while `ed2k_id` is High
+    /// (`KnownFile.cpp:1113-1115`), and `0:0` otherwise. Files larger than
+    /// `u32::MAX` split their size into `FT_FILESIZE` (low 32 bits) +
+    /// `FT_FILESIZE_HI` (high bits), matching aMule's large-file wire form.
     #[must_use]
-    pub fn announce(client_id: ClientId, client_port: u16, files: &[OfferedFile]) -> Self {
+    pub fn announce(
+        grants: ServerGrants,
+        ed2k_id: ClientId,
+        presented_id: ClientId,
+        client_port: u16,
+        files: &[OfferedFile],
+    ) -> Self {
         let entries = files
             .iter()
             .map(|file| {
+                let (client_id, client_port) = entry_origin(
+                    grants,
+                    ed2k_id,
+                    presented_id,
+                    client_port,
+                    file.completeness,
+                );
                 let mut tags = Vec::with_capacity(3);
                 tags.push(Tag::new(
                     TagName::compact_id(FT_FILENAME),
@@ -164,24 +220,36 @@ impl OfferFiles {
                 reason: "wrong opcode for OP_OFFERFILES",
             });
         }
-        let payload = packet.payload();
-        let mut pos = 0usize;
-        let file_count = read_u32(payload, &mut pos, opcode)?;
+        let mut reader = WireReader::new(packet.payload());
+        let truncated = |error: WireTruncated| Ed2kError::InvalidPayload {
+            opcode,
+            reason: error.field,
+        };
+        let file_count = reader
+            .read_u32_le("OP_OFFERFILES file count")
+            .map_err(truncated)?;
         let mut entries = Vec::new();
         for _ in 0..file_count {
-            let mut hash_bytes = [0u8; FileHash::BYTE_LEN];
-            hash_bytes.copy_from_slice(take(payload, &mut pos, FileHash::BYTE_LEN, opcode)?);
-            let file_hash = FileHash::from_bytes(hash_bytes);
-            let client_id = ClientId::from_u32(read_u32(payload, &mut pos, opcode)?);
-            let client_port = read_u16(payload, &mut pos, opcode)?;
-            let tag_count = read_u32(payload, &mut pos, opcode)?;
+            let file_hash = reader
+                .read_file_hash("OP_OFFERFILES file hash")
+                .map_err(truncated)?;
+            let client_id = ClientId::from_u32(
+                reader
+                    .read_u32_le("OP_OFFERFILES client id")
+                    .map_err(truncated)?,
+            );
+            let client_port = reader
+                .read_u16_le("OP_OFFERFILES client port")
+                .map_err(truncated)?;
+            let tag_count = reader
+                .read_u32_le("OP_OFFERFILES tag count")
+                .map_err(truncated)?;
             let mut tags = Vec::new();
             for _ in 0..tag_count {
-                let (tag, consumed) = Tag::decode_prefix(&payload[pos..])?;
-                pos = pos.checked_add(consumed).ok_or(Ed2kError::InvalidPayload {
-                    opcode,
-                    reason: "offer tag length overflow",
-                })?;
+                let (tag, consumed) = Tag::decode_prefix(reader.remaining_bytes())?;
+                reader
+                    .skip(consumed, "OP_OFFERFILES tag")
+                    .map_err(truncated)?;
                 tags.push(tag);
             }
             entries.push(OfferEntry {
@@ -191,7 +259,7 @@ impl OfferFiles {
                 tags,
             });
         }
-        if pos != payload.len() {
+        if !reader.is_exhausted() {
             return Err(Ed2kError::InvalidPayload {
                 opcode,
                 reason: "trailing OP_OFFERFILES bytes",
@@ -220,31 +288,27 @@ impl OfferFiles {
     }
 }
 
-/// Read `len` bytes at `*pos`, advancing `*pos`. Bounds-checked: a claimed
-/// count that runs past the payload becomes an `InvalidPayload`, never a
-/// panic.
-fn take<'a>(payload: &'a [u8], pos: &mut usize, len: usize, opcode: u8) -> Result<&'a [u8]> {
-    let end = pos.checked_add(len).ok_or(Ed2kError::InvalidPayload {
-        opcode,
-        reason: "OP_OFFERFILES length overflow",
-    })?;
-    if end > payload.len() {
-        return Err(Ed2kError::InvalidPayload {
-            opcode,
-            reason: "truncated OP_OFFERFILES payload",
-        });
+/// The ID and port one entry carries (`KnownFile.cpp:1097-1124`): the gate
+/// reads the eD2k ID, the bytes carry the Presented Client ID.
+fn entry_origin(
+    grants: ServerGrants,
+    ed2k_id: ClientId,
+    presented_id: ClientId,
+    client_port: u16,
+    completeness: FileCompleteness,
+) -> (ClientId, u16) {
+    if grants.compression {
+        match completeness {
+            FileCompleteness::Complete => {
+                (ClientId::from_u32(COMPLETE_FILE_ID), COMPLETE_FILE_PORT)
+            }
+            FileCompleteness::Incomplete => {
+                (ClientId::from_u32(INCOMPLETE_FILE_ID), INCOMPLETE_FILE_PORT)
+            }
+        }
+    } else if ed2k_id.is_high_id() {
+        (presented_id, client_port)
+    } else {
+        (ClientId::from_u32(0), 0)
     }
-    let slice = &payload[*pos..end];
-    *pos = end;
-    Ok(slice)
-}
-
-fn read_u32(payload: &[u8], pos: &mut usize, opcode: u8) -> Result<u32> {
-    let bytes = take(payload, pos, 4, opcode)?;
-    Ok(u32::from_le_bytes(bytes.try_into().expect("4-byte slice")))
-}
-
-fn read_u16(payload: &[u8], pos: &mut usize, opcode: u8) -> Result<u16> {
-    let bytes = take(payload, pos, 2, opcode)?;
-    Ok(u16::from_le_bytes(bytes.try_into().expect("2-byte slice")))
 }

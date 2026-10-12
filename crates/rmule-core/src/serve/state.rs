@@ -27,14 +27,11 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use rmule_ed2k::OfferedFile;
-use rmule_peer::{PartBitmap, ServedSourcesVersion};
-use rmule_primitives::{
-    AichHashSet, Ed2kText, ExchangedSource, FileHash, PeerEndpoint, PeerSource, UserHash,
-};
+use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
+use rmule_peer::{ClientSoftware, PartBitmap, PeerIdentity, ServerCommand};
+use rmule_primitives::{AichHashSet, Ed2kText, FileHash, PeerEndpoint, UserHash};
 
 use crate::WaiterLeaveCause;
-use crate::adapters::ServeConnCommand;
-use crate::client_udp::PeerUdpCryptTarget;
 use crate::registry::SharedFileEntry;
 use crate::serve::source_exchange::{
     ServedFileKind, SourceExchangeThrottle, SxCandidate, SxRequester, held_parts, select_sources,
@@ -48,11 +45,13 @@ use crate::upload_queue::{Promotion, UploadSlotQueue};
 /// inline `await`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ServeDecision {
-    /// Send a command down `peer`'s live connection.
+    /// Send a Server Capability command down `peer`'s live connection.
     Send {
         peer: PeerEndpoint,
-        command: ServeConnCommand,
+        command: ServerCommand,
     },
+    /// Close `peer`'s connection.
+    Disconnect { peer: PeerEndpoint },
     /// Forward a serve fact to the core event stream.
     Emit(ServeEvent),
     /// Credit `user_hash` for serving `bytes`; the enactor holds the
@@ -165,12 +164,16 @@ pub(super) struct ServeState {
     /// — no per-probe registry round trips.
     shared: HashMap<FileHash, SharedFileEntry>,
     queue: UploadSlotQueue,
-    /// `user_hash` per identified peer: keys credit recording and tells the
-    /// enactor whose modifiers to supply.
-    identified: HashMap<PeerEndpoint, UserHash>,
-    /// The client each identified peer's hello named, kept exactly as long as
-    /// `identified` so a waiter's row names its client across its hang-up.
-    software: HashMap<PeerEndpoint, rmule_peer::ClientSoftware>,
+    /// The identity each connected peer's session read off its hello and
+    /// keeps current (ADR-0055 §Serving): its User Hash keys credit
+    /// recording and names whose modifiers the enactor supplies, its software
+    /// names its rows, and its reask contact, extended-requests claim, crypt
+    /// target, own source coordinate and "on our server" claim are read off
+    /// it where they are needed. Taken whole at `Identified` and at every
+    /// `IdentityRevised`; kept across a waiter's hang-up while it holds its
+    /// queue standing, and shed in one place ([`Self::forget`]) when it
+    /// holds none.
+    identities: HashMap<PeerEndpoint, PeerIdentity>,
     /// Ranges already decided for a granted flow, so a re-request serves only
     /// the missing subranges.
     served_ranges: HashMap<(PeerEndpoint, FileHash), Vec<(u64, u64)>>,
@@ -179,42 +182,16 @@ pub(super) struct ServeState {
     /// answers with no [`ServeDecision::ReadRange`]. Durable persistence
     /// (known2.met) is deferred.
     aich_cache: HashMap<FileHash, AichHashSet>,
-    /// Each identified peer's advertised UDP contact `(client udp port, udp
-    /// version)` from its hello, stamped onto its wait-list entry when it
-    /// queues so an inbound `OP_REASKFILEPING` matches by IP + UDP port
-    /// (ADR-0057). A `0` port means the peer advertised none.
-    udp_contacts: HashMap<PeerEndpoint, (u16, u8)>,
-    /// Each identified peer's claimed extended-requests version, from its
-    /// hello (aMule `m_byExtendedRequestsVer`). A peer absent here claimed
-    /// none — aMule's default `0` — and the part status it writes is
-    /// discarded (`record_part_status`).
-    extended_requests: HashMap<PeerEndpoint, u8>,
-    /// Each identified peer's own source coordinate — its advertised
-    /// `(client id, listen port)` as an [`ExchangedSource`] (ADR-0055 §Serving).
-    /// The source-exchange serve pool for a complete shared file is built from
-    /// these: a peer engaged in an upload relationship for a file is a live
-    /// source for it.
-    sx_sources: HashMap<PeerEndpoint, ExchangedSource>,
     /// The parts each peer holds of a file we share, from the part status its
     /// last name ask or UDP reask wrote (read through `held_parts`, ADR-0055 §Serving)
     /// — aMule's per-client `m_upPartStatus`. Read twice
     /// by a source-exchange answer: the asker's own entry is the needed-part
     /// filter's reference, and each pooled source's entry is what it offers. A peer or file absent
-    /// here is of unknown status. Shed with `sx_sources`.
+    /// here is of unknown status. Shed with the peer's identity.
     sx_part_status: HashMap<(PeerEndpoint, FileHash), PartBitmap>,
-    /// Each identified peer's **peer-UDP crypt target** — its user hash plus the
-    /// crypt stance its hello advertised (ADR-0046). The reask reply matrix
-    /// attaches it to a datagram addressed at that peer so the socket boundary
-    /// can obfuscate it; a peer absent here is a stranger, answered plaintext
-    /// (aMule's `GetWaitingClientByIP_UDP` returning NULL).
-    crypt_targets: HashMap<PeerEndpoint, PeerUdpCryptTarget>,
     /// The per-peer source-exchange serve throttle (40/160-minute reask gate,
     /// ADR-0055) — shared by standalone and multipacket-sub asks.
     sx_throttle: SourceExchangeThrottle,
-    /// Each identified peer's claimed connected server, from its hello — the
-    /// "is it on *our* server" half of the **Low-ID abuse guard**. `None` for
-    /// a peer whose hello encoded `0.0.0.0:0`, which can never match ours.
-    peer_servers: HashMap<PeerEndpoint, Option<rmule_primitives::Ipv4Endpoint>>,
     /// Our own position, refreshed by the enactor (see [`ServeSelfPosition`]).
     ours: ServeSelfPosition,
 }
@@ -224,17 +201,11 @@ impl ServeState {
         Self {
             shared: HashMap::new(),
             queue,
-            identified: HashMap::new(),
-            software: HashMap::new(),
+            identities: HashMap::new(),
             served_ranges: HashMap::new(),
             aich_cache: HashMap::new(),
-            udp_contacts: HashMap::new(),
-            extended_requests: HashMap::new(),
-            sx_sources: HashMap::new(),
             sx_part_status: HashMap::new(),
-            crypt_targets: HashMap::new(),
             sx_throttle: SourceExchangeThrottle::default(),
-            peer_servers: HashMap::new(),
             ours: ServeSelfPosition::default(),
         }
     }
@@ -248,9 +219,22 @@ impl ServeState {
 
     /// The peers whose credit modifiers the entry points expect: every
     /// identified peer — a superset of the waiting set, which is all the
-    /// queue needs.
-    pub(super) fn identified_peers(&self) -> &HashMap<PeerEndpoint, UserHash> {
-        &self.identified
+    /// queue needs — by the identity its session keeps.
+    pub(super) fn identities(&self) -> &HashMap<PeerEndpoint, PeerIdentity> {
+        &self.identities
+    }
+
+    /// The software `peer`'s identity names, for the row it earns.
+    fn software_of(&self, peer: PeerEndpoint) -> Option<ClientSoftware> {
+        software_of(&self.identities, peer)
+    }
+
+    /// Shed everything kept about `peer` once it holds no queue standing: its
+    /// identity and the part statuses it wrote.
+    fn forget(&mut self, peer: PeerEndpoint) {
+        self.identities.remove(&peer);
+        self.sx_part_status
+            .retain(|(held_by, _), _| *held_by != peer);
     }
 
     /// Replace the share-set snapshot and announce it. Fed the offered
@@ -305,7 +289,10 @@ impl ServeState {
         file_size: u64,
         wire: Option<PartBitmap>,
     ) {
-        let claims_status = self.extended_requests.get(&peer).is_some_and(|&v| v > 0);
+        let claims_status = self
+            .identities
+            .get(&peer)
+            .is_some_and(|identity| identity.extended_requests_version() > 0);
         match wire
             .filter(|_| claims_status)
             .and_then(|wire| held_parts(file_size, &wire))
@@ -332,7 +319,6 @@ impl ServeState {
         now: Instant,
         peer: PeerEndpoint,
         file_hash: FileHash,
-        version: ServedSourcesVersion,
     ) -> Vec<ServeDecision> {
         if !self.shared.contains_key(&file_hash) {
             return Vec::new();
@@ -342,7 +328,7 @@ impl ServeState {
             .engaged_peers(file_hash)
             .into_iter()
             .filter_map(|engaged| {
-                let source = *self.sx_sources.get(&engaged)?;
+                let source = self.identities.get(&engaged)?.source_coordinate();
                 Some(SxCandidate {
                     source,
                     part_status: self.sx_part_status.get(&(engaged, file_hash)).cloned(),
@@ -361,39 +347,22 @@ impl ServeState {
         // ephemeral socket) is what we exclude.
         let requester = SxRequester {
             endpoint: self
-                .sx_sources
+                .identities
                 .get(&peer)
-                .and_then(|source| source.as_peer_endpoint()),
+                .and_then(|identity| identity.source_coordinate().as_peer_endpoint()),
             part_status: self.sx_part_status.get(&(peer, file_hash)).cloned(),
         };
-        let mut sources = select_sources(ServedFileKind::Complete, &requester, &candidates);
-        // A classic entry has one 32-bit id field and no address block, so an
-        // IPv6-only source reaches only a requester answered in ExtSX
-        // (ADR-0087's `HasEd2kWireForm`). Dropped here rather than at framing,
-        // so a pool of nothing else answers nothing — aMule's `NULL` reply —
-        // instead of an empty list.
-        if !matches!(version, ServedSourcesVersion::Ext { .. }) {
-            sources.retain(|source| !matches!(source.peer_source(), PeerSource::Ipv6(_)));
-        }
+        // Which of these the answer's wire form can carry is the peer
+        // session's call: a classic answer leaves an IPv6-only source out, and
+        // one left empty sends nothing (ADR-0087).
+        let sources = select_sources(ServedFileKind::Complete, &requester, &candidates);
         if sources.is_empty() {
             return Vec::new();
         }
-        let count = sources.len();
-        vec![
-            ServeDecision::Send {
-                peer,
-                command: ServeConnCommand::AnswerSources {
-                    file_hash,
-                    sources,
-                    version,
-                },
-            },
-            ServeDecision::Emit(ServeEvent::SourcesServed {
-                peer,
-                file_hash,
-                count,
-            }),
-        ]
+        vec![ServeDecision::Send {
+            peer,
+            command: ServerCommand::AnswerSources { file_hash, sources },
+        }]
     }
 
     /// Re-rank idle waiters by live credit and report the changed positions.
@@ -403,7 +372,7 @@ impl ServeState {
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
         let reranked = self.queue.rerank(now, modifiers);
-        rank_updates(&self.queue, &self.software, reranked)
+        rank_updates(&self.queue, &self.identities, reranked)
     }
 
     /// Purge waiters whose reask heartbeat is silent past `purge_after` (aMule
@@ -423,17 +392,9 @@ impl ServeState {
             |hash| shared.contains_key(&hash),
             modifiers,
         );
-        for peer in &purge.removed {
-            self.identified.remove(peer);
-            self.software.remove(peer);
-            self.udp_contacts.remove(peer);
-            self.extended_requests.remove(peer);
-            self.sx_sources.remove(peer);
-            self.sx_part_status
-                .retain(|(held_by, _), _| held_by != peer);
-            self.crypt_targets.remove(peer);
-            self.peer_servers.remove(peer);
-            self.sx_throttle.forget(*peer);
+        for &peer in &purge.removed {
+            self.forget(peer);
+            self.sx_throttle.forget(peer);
         }
         let mut decisions = Vec::new();
         // A dropped wait-list entry never held a slot, so it gets the purge's
@@ -472,18 +433,18 @@ impl ServeState {
             } else {
                 ServeDecision::Send {
                     peer: promoted,
-                    command: ServeConnCommand::GrantSlot { file_hash },
+                    command: ServerCommand::GrantSlot { file_hash },
                 }
             });
             decisions.push(ServeDecision::Emit(ServeEvent::UploadSlotGranted {
                 peer: promoted,
                 file_hash,
-                software: self.software.get(&promoted).cloned(),
+                software: self.software_of(promoted),
             }));
         }
         decisions.extend(rank_updates(
             &self.queue,
-            &self.software,
+            &self.identities,
             promotion.reranked,
         ));
         decisions
@@ -494,7 +455,7 @@ impl ServeState {
 /// pair each carries (shared by the rerank tick, purge, and promotion).
 fn rank_updates(
     queue: &UploadSlotQueue,
-    software: &HashMap<PeerEndpoint, rmule_peer::ClientSoftware>,
+    identities: &HashMap<PeerEndpoint, PeerIdentity>,
     reranked: Vec<(PeerEndpoint, u16)>,
 ) -> Vec<ServeDecision> {
     reranked
@@ -502,17 +463,27 @@ fn rank_updates(
         .flat_map(|(queued, rank)| {
             let send = ServeDecision::Send {
                 peer: queued,
-                command: ServeConnCommand::SetQueueRank { rank },
+                command: ServerCommand::SetQueueRank { rank },
             };
             let emit = queue.waiting_file(queued).map(|file_hash| {
                 ServeDecision::Emit(ServeEvent::PeerQueued {
                     peer: queued,
                     rank,
                     file_hash,
-                    software: software.get(&queued).cloned(),
+                    software: software_of(identities, queued),
                 })
             });
             std::iter::once(send).chain(emit)
         })
         .collect()
+}
+
+/// The software `peer`'s identity names, if the serve side holds one.
+fn software_of(
+    identities: &HashMap<PeerEndpoint, PeerIdentity>,
+    peer: PeerEndpoint,
+) -> Option<ClientSoftware> {
+    identities
+        .get(&peer)
+        .map(|identity| identity.software().clone())
 }

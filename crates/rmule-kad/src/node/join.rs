@@ -50,18 +50,6 @@ impl KadNode {
     /// timestamp, so this rate-couples peer hints with list dials.
     pub const BOOTSTRAP_THROTTLE: Duration = Duration::from_secs(10);
 
-    /// Arm the forced self-lookup schedule (ADR-0067), anchored at `now` — the
-    /// driver calls this once when it begins joining Kad (aMule's
-    /// `CKademlia::Start`). The first self-lookup fires
-    /// [`SELF_LOOKUP_INITIAL`](Self::SELF_LOOKUP_INITIAL) (3 min) later, then
-    /// every [`SELF_LOOKUP_REFRESH`](Self::SELF_LOOKUP_REFRESH) (4 h). Left
-    /// un-armed, a node runs no self-lookup at all — the routing-only mesh-sim
-    /// posture, which must still quiesce (no perpetual join wake). Idempotent
-    /// re-anchoring: a later call just resets the schedule to `now + 3 min`.
-    pub fn arm_self_lookup(&mut self, now: KadInstant) {
-        self.next_self_lookup = Some(now + Self::SELF_LOOKUP_INITIAL);
-    }
-
     /// Whether the node has **joined** the Kad network — aMule's
     /// `CKademlia::IsConnected` = `HasHadContact`: a Kad datagram was received
     /// within the last [`KadRoutingTable::HAD_CONTACT_WINDOW`](crate::KadRoutingTable::HAD_CONTACT_WINDOW) (20 min, ADR-0067).

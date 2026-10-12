@@ -5,6 +5,7 @@
 //! listener, and downloads the file. **No eD2k server exists anywhere** —
 //! both Cores are given a dead server endpoint and must run entirely on Kad.
 
+use rmule_testkit::HANG_GUARD;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::time::Duration;
 
@@ -13,8 +14,7 @@ use rmule_core::{
     KadId, ServeCommand, ServeEvent,
 };
 use rmule_primitives::{
-    ClientIdentity, Ed2kFileLink, Ed2kText, FileHashSummary, ServerEndpoint, SourceLookupTarget,
-    UserHash,
+    Ed2kFileLink, Ed2kText, FileHashSummary, ServerEndpoint, SourceLookupTarget, UserHash,
 };
 use tokio::time::timeout;
 
@@ -28,9 +28,9 @@ fn reserve_tcp_port() -> u16 {
 }
 
 async fn next_event(core: &mut Core) -> CoreEvent {
-    timeout(Duration::from_secs(10), core.next_event())
+    timeout(HANG_GUARD, core.next_event())
         .await
-        .expect("core emitted next event within 10s")
+        .expect("core emitted next event")
         .expect("core event stream stayed open")
 }
 
@@ -55,8 +55,7 @@ async fn rmule_b_discovers_and_downloads_rmule_a_via_kad_with_no_server() {
             capture_dir: None,
             nodes_dat_path: None,
             firewall_self_check: false,
-            datagram_obfuscation: false,
-            verify_keys: None,
+            obfuscation: None,
             contact_admission: None,
         },
         SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
@@ -80,17 +79,17 @@ async fn rmule_b_discovers_and_downloads_rmule_a_via_kad_with_no_server() {
     let dir_a = tempfile::tempdir().unwrap();
     std::fs::write(dir_a.path().join("payload.bin"), &bytes).unwrap();
     let tcp_a = reserve_tcp_port();
-    let identity_a = ClientIdentity::new(
-        UserHash::from_bytes([0xAA; UserHash::BYTE_LEN]),
-        Ed2kText::from_utf8("rmule-a"),
-        tcp_a,
-        60,
-    );
-    let mut core_a = Core::new(config.clone(), rmule_testkit::memory_store());
+    let mut core_a = Core::builder(config.clone(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings {
+            nickname: "rmule-a".to_owned(),
+            tcp_port: tcp_a,
+            ..rmule_core::CoreSettings::default()
+        })
+        .kad_id(KadId::from_bytes([0xAA; KadId::BYTE_LEN]))
+        .build();
     core_a
         .send(CoreCommand::Serve(ServeCommand::StartServing {
             listen_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, tcp_a),
-            credentials: identity_a.clone().into(),
         }))
         .await
         .unwrap();
@@ -104,8 +103,6 @@ async fn rmule_b_discovers_and_downloads_rmule_a_via_kad_with_no_server() {
     }
     core_a
         .send(CoreCommand::EnableKad(KadEnableConfig {
-            kad_id: KadId::from_bytes([0xAA; KadId::BYTE_LEN]),
-            peer_credentials: identity_a.clone().into(),
             bootstrap: bootstrap.clone(),
             contacts: Vec::new(),
             nodes_dat_path: None,
@@ -113,7 +110,6 @@ async fn rmule_b_discovers_and_downloads_rmule_a_via_kad_with_no_server() {
             // no buddy publishes no source row (aMule's `PrepareToStop`),
             // and a one-storer swarm cannot prove it open.
             assume_open_reachability: true,
-            kad_udp_key: 0,
             kad_capture_dir: None,
             kad_shutdown: None,
         }))
@@ -133,23 +129,21 @@ async fn rmule_b_discovers_and_downloads_rmule_a_via_kad_with_no_server() {
     // --- rmule-B: bootstrap, search, download. The durable repository lands
     // the completed file on disk for the byte-for-byte assert.
     let dir_b = tempfile::tempdir().unwrap();
-    let mut core_b = Core::new(config, rmule_testkit::memory_store());
-    let user_hash_b = UserHash::from_bytes([0xBB; UserHash::BYTE_LEN]);
+    let mut core_b = Core::builder(config, rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings {
+            nickname: "rmule-b".to_owned(),
+            tcp_port: 4664,
+            download_dir: Some(dir_b.path().to_path_buf()),
+            ..rmule_core::CoreSettings::default()
+        })
+        .kad_id(KadId::from_bytes([0xBB; KadId::BYTE_LEN]))
+        .build();
     core_b
         .send(CoreCommand::EnableKad(KadEnableConfig {
-            kad_id: KadId::from_bytes([0xBB; KadId::BYTE_LEN]),
-            peer_credentials: ClientIdentity::new(
-                user_hash_b,
-                Ed2kText::from_utf8("rmule-b"),
-                4664,
-                60,
-            )
-            .into(),
             bootstrap,
             contacts: Vec::new(),
             nodes_dat_path: None,
             assume_open_reachability: false,
-            kad_udp_key: 0,
             kad_capture_dir: None,
             kad_shutdown: None,
         }))
@@ -157,7 +151,6 @@ async fn rmule_b_discovers_and_downloads_rmule_a_via_kad_with_no_server() {
         .unwrap();
 
     let output_path = dir_b.path().join("downloaded.bin");
-    let identity_b = ClientIdentity::new(user_hash_b, Ed2kText::from_utf8("rmule-b"), 4664, 60);
     core_b
         .send(CoreCommand::Download(DownloadCommand::StartDownload {
             file: Ed2kFileLink {
@@ -170,8 +163,8 @@ async fn rmule_b_discovers_and_downloads_rmule_a_via_kad_with_no_server() {
                 sources: Default::default(),
             },
             source_hint: Some(dead_server),
-            credentials: identity_b.into(),
-            output_path: output_path.clone(),
+            name: rmule_testkit::file_name("downloaded.bin"),
+            if_taken: rmule_core::NameTaken::Refuse,
         }))
         .await
         .unwrap();

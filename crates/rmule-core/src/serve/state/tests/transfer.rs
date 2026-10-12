@@ -3,6 +3,7 @@
 //! answer, and the AICH hash tree built once then answered from the cache.
 
 use super::*;
+use rmule_peer::{ServerCommand, ServerEvent};
 
 #[test]
 fn parts_requests_read_only_unserved_ranges_and_serve_blocks_with_credit() {
@@ -23,8 +24,9 @@ fn parts_requests_read_only_unserved_ranges_and_serve_blocks_with_credit() {
             end,
         },
     };
-    let parts_requested = |ranges| ServeConnEvent::PartsRequested { file_hash, ranges };
-    let slot = ServeConnEvent::SlotRequested { file_hash };
+    let parts_requested =
+        |ranges| ServeInput::Server(ServerEvent::PartsRequested { file_hash, ranges });
+    let slot = ServeInput::Server(ServerEvent::SlotRequested { file_hash });
     let _ = state.on_conn_event(t, p, slot.clone(), &no_modifiers());
 
     let first = PartRanges::new([(0, 100), (100, 200), (200, 300)]).unwrap();
@@ -52,7 +54,7 @@ fn parts_requests_read_only_unserved_ranges_and_serve_blocks_with_credit() {
             },
             send(
                 p,
-                ServeConnCommand::SendBlock {
+                ServerCommand::SendBlock {
                     file_hash,
                     start: 0,
                     end: 100,
@@ -75,10 +77,10 @@ fn parts_requests_read_only_unserved_ranges_and_serve_blocks_with_credit() {
         state.on_conn_event(
             t,
             p,
-            ServeConnEvent::PartsRequested {
+            ServeInput::Server(ServerEvent::PartsRequested {
                 file_hash: hash(0x99),
                 ranges: unshared,
-            },
+            }),
             &no_modifiers(),
         ),
         Vec::new(),
@@ -86,7 +88,7 @@ fn parts_requests_read_only_unserved_ranges_and_serve_blocks_with_credit() {
 
     // Disconnecting wipes the flow: on a new slot the same range reads again,
     // and the forgotten identity earns no credit.
-    let _ = state.on_conn_event(t, p, ServeConnEvent::Disconnected, &no_modifiers());
+    let _ = state.on_conn_event(t, p, disconnected(), &no_modifiers());
     let _ = state.on_conn_event(t, p, slot, &no_modifiers());
     let again = PartRanges::new([(0, 100), (0, 0), (0, 0)]).unwrap();
     assert_eq!(
@@ -105,7 +107,7 @@ fn parts_requests_read_only_unserved_ranges_and_serve_blocks_with_credit() {
         ),
         vec![send(
             p,
-            ServeConnCommand::SendBlock {
+            ServerCommand::SendBlock {
                 file_hash,
                 start: 0,
                 end: 100,
@@ -126,7 +128,7 @@ fn a_failed_block_read_stops_serving_the_file_and_tells_its_peers() {
         ],
     );
     let t = Instant::now();
-    let slot = |file_hash| ServeConnEvent::SlotRequested { file_hash };
+    let slot = |file_hash| ServeInput::Server(ServerEvent::SlotRequested { file_hash });
     let _ = state.on_conn_event(t, peer(1), slot(file_hash), &no_modifiers());
     let _ = state.on_conn_event(t, peer(2), slot(file_hash), &no_modifiers());
     let _ = state.on_conn_event(t, peer(3), slot(other), &no_modifiers());
@@ -141,12 +143,7 @@ fn a_failed_block_read_stops_serving_the_file_and_tells_its_peers() {
         },
         &no_modifiers(),
     );
-    let not_found = |port| {
-        send(
-            peer(port),
-            ServeConnCommand::AnswerFileNotFound { file_hash },
-        )
-    };
+    let not_found = |port| send(peer(port), ServerCommand::AnswerFileNotFound { file_hash });
     assert_eq!(
         decisions,
         vec![
@@ -157,7 +154,7 @@ fn a_failed_block_read_stops_serving_the_file_and_tells_its_peers() {
             }),
             not_found(1),
             ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer: peer(1) }),
-            send(peer(3), ServeConnCommand::GrantSlot { file_hash: other }),
+            send(peer(3), ServerCommand::GrantSlot { file_hash: other }),
             ServeDecision::Emit(ServeEvent::UploadSlotGranted {
                 peer: peer(3),
                 file_hash: other,
@@ -173,7 +170,7 @@ fn a_failed_block_read_stops_serving_the_file_and_tells_its_peers() {
         state.on_conn_event(
             t,
             peer(4),
-            ServeConnEvent::FileIdSet { file_hash },
+            ServeInput::Server(ServerEvent::FileIdSet { file_hash }),
             &no_modifiers(),
         ),
         vec![not_found(4)],
@@ -193,7 +190,7 @@ fn a_failed_aich_build_stops_serving_the_file_for_a_peer_holding_no_slot() {
     assert_eq!(
         decisions,
         vec![
-            send(peer(7), ServeConnCommand::AnswerFileNotFound { file_hash }),
+            send(peer(7), ServerCommand::AnswerFileNotFound { file_hash }),
             ServeDecision::ReadFailed(file_hash),
         ],
     );
@@ -213,14 +210,14 @@ fn a_file_that_leaves_the_offer_releases_the_slot_holding_it() {
     let _ = state.on_conn_event(
         t,
         peer(1),
-        ServeConnEvent::SlotRequested { file_hash },
+        ServeInput::Server(ServerEvent::SlotRequested { file_hash }),
         &no_modifiers(),
     );
     let decisions = state.on_share_set(vec![entry(kept, 512, "kept.bin")], t, &no_modifiers());
     assert_eq!(
         &decisions[..2],
         &[
-            send(peer(1), ServeConnCommand::AnswerFileNotFound { file_hash }),
+            send(peer(1), ServerCommand::AnswerFileNotFound { file_hash }),
             ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer: peer(1) }),
         ],
     );
@@ -241,22 +238,22 @@ fn aich_recovery_builds_the_tree_once_and_answers_from_the_cache() {
     let mut state = serving_state(1, vec![entry(file_hash, file_size, "shared.bin")]);
     let t = Instant::now();
     let p = peer(1);
-    let request = ServeConnEvent::AichRequested {
+    let request = ServeInput::Server(ServerEvent::AichRequested {
         file_hash,
         part: 0,
         root: true_root,
-    };
+    });
 
     // Not shared: silent, the requester falls back.
     assert_eq!(
         state.on_conn_event(
             t,
             p,
-            ServeConnEvent::AichRequested {
+            ServeInput::Server(ServerEvent::AichRequested {
                 file_hash: hash(0x99),
                 part: 0,
                 root: true_root,
-            },
+            }),
             &no_modifiers(),
         ),
         Vec::new(),
@@ -281,7 +278,7 @@ fn aich_recovery_builds_the_tree_once_and_answers_from_the_cache() {
     let [
         ServeDecision::Send {
             command:
-                ServeConnCommand::AnswerAich {
+                ServerCommand::AnswerAich {
                     file_hash: answered_hash,
                     part,
                     root,
@@ -315,7 +312,7 @@ fn aich_recovery_builds_the_tree_once_and_answers_from_the_cache() {
     assert!(matches!(
         cached.as_slice(),
         [ServeDecision::Send {
-            command: ServeConnCommand::AnswerAich { .. },
+            command: ServerCommand::AnswerAich { .. },
             ..
         }]
     ));
@@ -325,12 +322,12 @@ fn aich_recovery_builds_the_tree_once_and_answers_from_the_cache() {
         state.on_conn_event(
             t,
             p,
-            ServeConnEvent::AichFileHashRequested { file_hash },
+            ServeInput::Server(ServerEvent::AichFileHashRequested { file_hash }),
             &no_modifiers(),
         ),
         vec![send(
             p,
-            ServeConnCommand::AnswerAichFileHash { root: true_root }
+            ServerCommand::AnswerAichFileHash { root: true_root }
         )],
     );
 }
@@ -347,7 +344,7 @@ fn aich_master_root_answers_share_the_cache() {
     let mut state = serving_state(1, vec![entry(file_hash, file_size, "shared.bin")]);
     let t = Instant::now();
     let p = peer(1);
-    let request = ServeConnEvent::AichFileHashRequested { file_hash };
+    let request = ServeInput::Server(ServerEvent::AichFileHashRequested { file_hash });
     let expected_read = ServeDecision::ReadRange {
         peer: p,
         path: "/shared/shared.bin".into(),
@@ -369,24 +366,24 @@ fn aich_master_root_answers_share_the_cache() {
         state.on_read_result(p, ReadPurpose::AichMasterRoot { file_hash }, bytes),
         vec![send(
             p,
-            ServeConnCommand::AnswerAichFileHash { root: true_root }
+            ServerCommand::AnswerAichFileHash { root: true_root }
         )],
     );
     // The recovery path shares the tree built for the master root.
     let cached = state.on_conn_event(
         t,
         p,
-        ServeConnEvent::AichRequested {
+        ServeInput::Server(ServerEvent::AichRequested {
             file_hash,
             part: 0,
             root: true_root,
-        },
+        }),
         &no_modifiers(),
     );
     assert!(matches!(
         cached.as_slice(),
         [ServeDecision::Send {
-            command: ServeConnCommand::AnswerAich { .. },
+            command: ServerCommand::AnswerAich { .. },
             ..
         }]
     ));
@@ -406,14 +403,14 @@ fn a_read_that_lands_after_the_offer_ended_sends_nothing() {
     let _ = state.on_conn_event(
         t,
         p,
-        ServeConnEvent::SlotRequested { file_hash },
+        ServeInput::Server(ServerEvent::SlotRequested { file_hash }),
         &no_modifiers(),
     );
     let ranges = PartRanges::new([(0, 100), (100, 250), (250, 300)]).unwrap();
     let reads = state.on_conn_event(
         t,
         p,
-        ServeConnEvent::PartsRequested { file_hash, ranges },
+        ServeInput::Server(ServerEvent::PartsRequested { file_hash, ranges }),
         &no_modifiers(),
     );
     assert_eq!(reads.len(), 3);
@@ -452,17 +449,17 @@ fn a_read_that_lands_after_the_slot_ended_sends_nothing() {
     let _ = state.on_conn_event(
         t,
         p,
-        ServeConnEvent::SlotRequested { file_hash },
+        ServeInput::Server(ServerEvent::SlotRequested { file_hash }),
         &no_modifiers(),
     );
     let ranges = PartRanges::new([(0, 100), (0, 0), (0, 0)]).unwrap();
     let _ = state.on_conn_event(
         t,
         p,
-        ServeConnEvent::PartsRequested { file_hash, ranges },
+        ServeInput::Server(ServerEvent::PartsRequested { file_hash, ranges }),
         &no_modifiers(),
     );
-    let _ = state.on_conn_event(t, p, ServeConnEvent::Disconnected, &no_modifiers());
+    let _ = state.on_conn_event(t, p, disconnected(), &no_modifiers());
 
     let block = ReadPurpose::Block {
         file_hash,
@@ -482,7 +479,7 @@ fn a_withdrawn_files_waiters_leaving_move_the_rest_up_at_once() {
         vec![entry(gone, 512, "gone.bin"), entry(kept, 512, "kept.bin")],
     );
     let t = Instant::now();
-    let slot = |file_hash| ServeConnEvent::SlotRequested { file_hash };
+    let slot = |file_hash| ServeInput::Server(ServerEvent::SlotRequested { file_hash });
     let _ = state.on_conn_event(t, peer(1), slot(kept), &no_modifiers());
     let _ = state.on_conn_event(t, peer(2), slot(gone), &no_modifiers());
     let later = t + Duration::from_secs(5);
@@ -494,7 +491,7 @@ fn a_withdrawn_files_waiters_leaving_move_the_rest_up_at_once() {
         &no_modifiers(),
     );
     assert!(
-        decisions.contains(&send(peer(3), ServeConnCommand::SetQueueRank { rank: 1 })),
+        decisions.contains(&send(peer(3), ServerCommand::SetQueueRank { rank: 1 })),
         "{decisions:?}"
     );
     assert!(decisions.iter().any(|d| matches!(

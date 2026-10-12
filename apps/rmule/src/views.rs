@@ -22,7 +22,9 @@ pub mod settings;
 pub mod shared_files;
 mod software;
 
-pub(crate) use software::software_label;
+pub(crate) use crate::words::software::label as software_label;
+// A byte quantity has one spelling, the words' own, on every surface.
+pub(crate) use crate::words::units::human_size;
 pub mod statistics;
 pub(crate) mod title;
 pub mod transfers;
@@ -40,18 +42,14 @@ use crate::theme::Theme;
 /// The one way anything in this crate asks core to connect to a server
 /// (ADR-0080 amendment).
 ///
-/// `ConnectToServer` carries credentials for the same reason every other
-/// session-establishing command does, and the UI's only source of those is the
-/// startup [`SessionConfig`](crate::state::SessionConfig). Shared by the
-/// Networks row menu and the Networks `c` key (selected row) so the two
-/// cannot degrade differently.
+/// The login presents core's own Core Settings' credentials; a UI-only run
+/// (no [`SessionConfig`](crate::state::SessionConfig), no core) cannot
+/// connect. Shared by the Networks row menu and the Networks `c` key (selected
+/// row) so the two cannot degrade differently.
 pub(crate) fn connect_action(state: &UiState, server: rmule_primitives::ServerEndpoint) -> Action {
     match &state.session {
-        Some(session) => Action::Command(rmule_core::CoreCommand::ConnectToServer {
-            server,
-            credentials: session.credentials.clone(),
-        }),
-        None => Action::Flash(crate::words::app::NO_CREDENTIALS),
+        Some(_) => Action::Command(rmule_core::CoreCommand::ConnectToServer { server }),
+        None => Action::Flash(crate::words::app::CORE_NOT_ATTACHED),
     }
 }
 
@@ -111,27 +109,6 @@ pub(crate) fn day(at: std::time::SystemTime) -> String {
     chrono::DateTime::<chrono::Local>::from(at)
         .format("%Y-%m-%d")
         .to_string()
-}
-
-/// Bytes → a compact binary-unit size (KB/MB/GB, 1 decimal), matching the
-/// status bar's `KB/s` convention (÷1024).
-///
-/// Shared by every surface that renders a byte quantity — a download's size,
-/// the Statistics session totals — for the same reason [`rate_cell`] is
-/// shared: two renderers of the same quantity must not disagree about unit or
-/// precision.
-pub(crate) fn human_size(bytes: u64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-    const GB: f64 = MB * 1024.0;
-    let value = bytes as f64;
-    if value >= GB {
-        format!("{:.1} GB", value / GB)
-    } else if value >= MB {
-        format!("{:.1} MB", value / MB)
-    } else {
-        format!("{:.1} KB", value / KB)
-    }
 }
 
 /// Relative age of an observation (spec §3.4): seconds under a minute, then
@@ -296,14 +273,6 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-
-    #[test]
-    fn sizes_step_through_the_binary_units_at_one_decimal() {
-        assert_eq!(human_size(0), "0.0 KB");
-        assert_eq!(human_size(1536), "1.5 KB");
-        assert_eq!(human_size(5 * 1024 * 1024), "5.0 MB");
-        assert_eq!(human_size(3 * 1024 * 1024 * 1024), "3.0 GB");
-    }
 
     #[test]
     fn relative_age_switches_from_seconds_to_minutes_at_sixty() {

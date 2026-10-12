@@ -13,6 +13,7 @@ use crate::ban_store::SharedBanStore;
 use crate::ip_filter::SharedIpFilter;
 
 use super::*;
+use rmule_peer::{ConnectionEvent, SideCommand};
 
 /// Found on the interop bench: a peer that has completed the TCP
 /// handshake but not yet sent its hello must survive `accept()` being
@@ -37,7 +38,9 @@ async fn a_cancelled_accept_does_not_drop_a_peer_that_is_mid_handshake() {
     // Crypt armed: this is what puts the byte-0 peek on the accept path.
     let mut serve =
         RuntimeServeRuntimeService::new().with_hello_adverts(crate::adapters::HelloAdverts {
-            crypt_policy: Some(ObfuscationPolicy::Supported),
+            obfuscation: crate::obfuscation_policy::SharedObfuscationPolicy::new(Some(
+                ObfuscationPolicy::Supported,
+            )),
             ..crate::adapters::HelloAdverts::default()
         });
     let credentials = dialed_serve_ctx().identity;
@@ -288,6 +291,7 @@ fn plaintext_hello_bytes() -> Vec<u8> {
 #[test]
 fn an_injected_serve_runtime_shares_the_builder_s_peer_roster() {
     let builder = crate::Core::builder(crate::CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(crate::CoreSettings::default())
         .serve_runtime(RuntimeServeRuntimeService::new());
     let peer = rmule_primitives::Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 7), 4662);
     builder
@@ -304,7 +308,9 @@ fn an_injected_serve_runtime_shares_the_builder_s_peer_roster() {
 async fn required_serve() -> (RuntimeServeRuntimeService, SocketAddrV4) {
     let mut serve =
         RuntimeServeRuntimeService::new().with_hello_adverts(crate::adapters::HelloAdverts {
-            crypt_policy: Some(ObfuscationPolicy::Required),
+            obfuscation: crate::obfuscation_policy::SharedObfuscationPolicy::new(Some(
+                ObfuscationPolicy::Required,
+            )),
             ..crate::adapters::HelloAdverts::default()
         });
     let bound = serve
@@ -455,6 +461,44 @@ async fn under_required_a_plain_dial_after_the_login_was_answered_is_refused_and
     assert!(late_by < crate::awaited_testers::LATE_TEST_MEMORY);
 }
 
+/// The obfuscation policy changes live (ADR-0046): the accept reads it as
+/// each connection arrives, so a change to `Required` refuses the very next
+/// plain dial before any hello is answered, while the plain link admitted
+/// before the change keeps what it agreed and stays up.
+#[tokio::test]
+async fn a_live_policy_change_reaches_the_next_accept_and_spares_the_link_already_in() {
+    let policy = crate::obfuscation_policy::SharedObfuscationPolicy::default();
+    let mut serve =
+        RuntimeServeRuntimeService::new().with_hello_adverts(crate::adapters::HelloAdverts {
+            obfuscation: policy.clone(),
+            ..crate::adapters::HelloAdverts::default()
+        });
+    let bound = serve
+        .start(
+            dialed_serve_ctx().identity,
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
+        )
+        .await
+        .unwrap();
+
+    let before = tokio::spawn(plain_test_dial(bound));
+    let served = timeout(Duration::from_secs(2), serve.accept())
+        .await
+        .expect("the plain dial reaches the serve pipeline")
+        .expect("as a serve connection");
+    let (mut before, answer) = before.await.unwrap();
+    assert_eq!(answer, Some(rmule_peer::PeerOpcode::HelloAnswer.as_u8()));
+
+    policy.set(Some(ObfuscationPolicy::Required));
+    let (_after, refused) = plain_test_dial(bound).await;
+    assert_eq!(refused, None, "the next plain dial meets Required");
+    assert!(
+        !closed_by_us(&mut before).await,
+        "the plain link admitted before the change stays up"
+    );
+    drop(served);
+}
+
 /// Outside `Required` the server's plain test is let in like any peer, so
 /// nothing tells it from one — but its arrival is the login's step, and the
 /// end of its peer connection is reported too, naming the peer as the side
@@ -544,11 +588,12 @@ async fn under_required_a_kad_helpers_plain_connect_back_after_its_window_is_ref
     let (events_tx, mut events) = mpsc::channel(8);
     let awaited = serve.session.own_identity().awaited_testers();
     awaited.install_events(events_tx.downgrade());
-    awaited.kad_check_asked(
+    let window = (
         Ipv4Addr::LOCALHOST,
         Instant::now() + Duration::from_secs(180),
     );
-    awaited.kad_checks_dropped("a recheck started");
+    awaited.kad_check_asked(window.0, window.1);
+    awaited.kad_checks_dropped(&[window]);
 
     let (_helper, answer) = plain_test_dial(bound).await;
     assert_eq!(answer, None, "no test is awaited: plain is refused");
@@ -573,7 +618,7 @@ async fn under_required_an_asked_kad_helpers_plain_connect_back_delivers_its_ack
     use tokio::io::AsyncWriteExt;
     let (mut serve, bound) = required_serve().await;
     let (pump_tx, mut pump_rx) = mpsc::channel(4);
-    *serve.kad_pump.lock().unwrap() = Some(pump_tx);
+    serve.kad_pump.install_for_good(pump_tx);
     serve
         .session
         .own_identity()
@@ -624,7 +669,9 @@ async fn under_required_a_helper_that_proves_its_identity_before_its_ack_is_stil
     use rmule_peer::{PeerCommand, PeerEvent};
     let mut serve =
         RuntimeServeRuntimeService::new().with_hello_adverts(crate::adapters::HelloAdverts {
-            crypt_policy: Some(ObfuscationPolicy::Required),
+            obfuscation: crate::obfuscation_policy::SharedObfuscationPolicy::new(Some(
+                ObfuscationPolicy::Required,
+            )),
             secure_ident: Some(std::sync::Arc::new(
                 rmule_primitives::SecureIdentKey::generate().expect("a SUI keypair"),
             )),
@@ -638,7 +685,7 @@ async fn under_required_a_helper_that_proves_its_identity_before_its_ack_is_stil
         .await
         .unwrap();
     let (pump_tx, mut pump_rx) = mpsc::channel(4);
-    *serve.kad_pump.lock().unwrap() = Some(pump_tx);
+    serve.kad_pump.install_for_good(pump_tx);
     serve
         .session
         .own_identity()
@@ -677,7 +724,10 @@ async fn under_required_a_helper_that_proves_its_identity_before_its_ack_is_stil
     );
     timeout(Duration::from_secs(2), async {
         while let Some(event) = helper.next_event().await {
-            if matches!(event, PeerEvent::PeerIdentityVerified { .. }) {
+            if matches!(
+                event,
+                PeerEvent::Connection(ConnectionEvent::IdentityVerified { .. })
+            ) {
                 return;
             }
         }
@@ -686,7 +736,7 @@ async fn under_required_a_helper_that_proves_its_identity_before_its_ack_is_stil
     .await
     .expect("Secure User Identification completes within 2s");
     helper
-        .send(PeerCommand::SendKadFirewallAck)
+        .send(PeerCommand::Side(SideCommand::SendKadFirewallAck))
         .await
         .expect("the ack goes out");
     let delivered = timeout(Duration::from_secs(2), pump_rx.recv())

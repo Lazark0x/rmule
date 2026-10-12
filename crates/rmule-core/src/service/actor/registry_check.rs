@@ -19,12 +19,14 @@ use crate::adapters::{
     SourceLookupService,
 };
 use crate::directory_scan::FsDirectorySource;
-use crate::registry::{SharedFileEntry, SharedFileRegistry};
+use crate::registry::{
+    AutoShared, SharedFileEntry, SharedFileRegistry, auto_share_completed_download,
+};
 use crate::registry_check::{
     CheckInput, CheckReport, CheckSeams, WithheldReason, WithheldRows, run_check,
 };
-use crate::service::ServeEvent;
 use crate::service::activity::ScanStop;
+use crate::service::{DownloadId, ServeEvent};
 
 use super::scan::ScanMessage;
 use super::{CoreActor, notify_kad_publisher, send_event};
@@ -211,26 +213,34 @@ where
     }
 
     /// Nothing is to be offered for `file_hash`'s row, if the registry still
-    /// holds it (at `path`, when given).
+    /// holds it (at `path`, when given). A row under a refused entry is
+    /// withheld as refused, whatever its file looks like.
     pub(super) async fn withhold(
         &mut self,
         file_hash: FileHash,
         path: Option<&std::path::Path>,
         reason: WithheldReason,
     ) {
-        let holds = self
+        let Some(row) = self
             .wiring
             .registry
             .get(file_hash)
             .ok()
             .flatten()
-            .is_some_and(|row| path.is_none_or(|path| row.path == path));
+            .filter(|row| path.is_none_or(|path| row.path == path))
+        else {
+            return;
+        };
+        let reason = if self.directories.refuses(&row.path) {
+            WithheldReason::Refused
+        } else {
+            reason
+        };
         let since = SystemTime::now();
-        if !holds
-            || !self
-                .registry_check
-                .withheld
-                .withhold(file_hash, reason, since)
+        if !self
+            .registry_check
+            .withheld
+            .withhold(file_hash, reason, since)
         {
             return;
         }
@@ -253,14 +263,45 @@ where
         .await;
     }
 
+    /// A withheld row's file opens again: it is offered, unless it lies
+    /// under a refused entry, where nothing is offered however readable, or
+    /// the registry no longer holds it.
     async fn offer_again(&mut self, file_hash: FileHash) {
-        if !self.registry_check.withheld.lift(file_hash) {
+        let Ok(Some(row)) = self.wiring.registry.get(file_hash) else {
+            return;
+        };
+        if self.directories.refuses(&row.path) || !self.registry_check.withheld.lift(file_hash) {
             return;
         }
         tracing::info!(file_hash = %file_hash.to_hex_upper(), "shared file offered again");
         self.wiring.file_known.share(file_hash);
         self.share_set_changed();
         send_event(&self.evt_tx, ServeEvent::FileOffered { file_hash }.into()).await;
+    }
+
+    /// A finished download's file joins the registry if it completed
+    /// (ADR-0031): offered, or withheld as refused when it lies under an
+    /// entry the guards refuse (ADR-0101) — a share-set change either way.
+    pub(super) async fn share_completed(&mut self, download_id: DownloadId) {
+        let shared = auto_share_completed_download(
+            download_id,
+            &*self.wiring.store,
+            &*self.wiring.registry,
+            |path| self.directories.refuses(path),
+            &self.registry_check.withheld,
+            &self.evt_tx,
+        )
+        .await;
+        match shared {
+            Some(AutoShared::Offered(file_hash)) => self.row_shared(file_hash),
+            Some(AutoShared::Refused(file_hash)) => {
+                // Whatever row it replaced is no longer offered either.
+                self.wiring.file_known.unshare(file_hash);
+                self.share_set_changed();
+                self.registry_check.tell(CheckInput::RowsChanged);
+            }
+            None => {}
+        }
     }
 
     /// A row was written for `file_hash`: its content is on disk now and
@@ -294,8 +335,8 @@ where
     /// The share set moved: the serve task re-snapshots and re-announces, and
     /// the Kad publisher re-sweeps.
     pub(super) fn share_set_changed(&self) {
-        if let Some(serve) = self.activities.serve.as_ref() {
-            let _ = serve.share_changed_tx.try_send(());
+        if let Some(serve) = self.activities.serving() {
+            serve.share_changed();
         }
         notify_kad_publisher(&self.kad);
     }

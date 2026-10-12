@@ -17,7 +17,10 @@
 use std::net::Ipv4Addr;
 
 use crate::fixture::identified_session;
-use rmule_peer::{Callback, PeerCommand, PeerEvent, PeerSession, ReaskCallbackTcp};
+use rmule_peer::{
+    Callback, ConnectionEvent, NoticeEvent, PeerCommand, PeerEvent, PeerSession, ReaskCallbackTcp,
+    SideCommand, SideEvent,
+};
 use rmule_primitives::session::drain;
 use rmule_primitives::{FileHash, Ipv4Endpoint, Packet, PacketProtocol, PeerEndpoint};
 use rmule_testkit::peer_session::{ctx, events, peer_at, writes};
@@ -38,7 +41,9 @@ fn the_buddy_relays_and_pong_frame_over_the_link_only_once_identified() {
     let mut fresh = PeerSession::new_outbound(peer_at(55), ctx());
     fresh.start();
     let _ = drain(|| fresh.poll_output());
-    fresh.handle_command(PeerCommand::SendBuddyCallback(a_callback()));
+    fresh.handle_command(PeerCommand::Side(SideCommand::SendBuddyCallback(
+        a_callback(),
+    )));
     assert!(
         writes(&drain(|| fresh.poll_output()))
             .iter()
@@ -50,7 +55,9 @@ fn the_buddy_relays_and_pong_frame_over_the_link_only_once_identified() {
     // from the `crate::buddy` codec (never round-tripped through the umbrella).
     let mut session = identified_session();
 
-    session.handle_command(PeerCommand::SendBuddyCallback(a_callback()));
+    session.handle_command(PeerCommand::Side(SideCommand::SendBuddyCallback(
+        a_callback(),
+    )));
     let sent = writes(&drain(|| session.poll_output()));
     let expected = a_callback().encode_packet();
     assert_eq!(sent.len(), 1);
@@ -62,13 +69,15 @@ fn the_buddy_relays_and_pong_frame_over_the_link_only_once_identified() {
         requester: PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 9), 4662)),
         forwarded: vec![0xDE, 0xAD],
     };
-    session.handle_command(PeerCommand::SendReaskCallbackTcp(reask.clone()));
+    session.handle_command(PeerCommand::Side(SideCommand::SendReaskCallbackTcp(
+        reask.clone(),
+    )));
     let sent = writes(&drain(|| session.poll_output()));
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].opcode(), 0x9A);
     assert_eq!(sent[0].payload(), reask.encode_packet().payload());
 
-    session.handle_command(PeerCommand::SendBuddyPong);
+    session.handle_command(PeerCommand::Side(SideCommand::SendBuddyPong));
     let pong = writes(&drain(|| session.poll_output()));
     assert_eq!(pong.len(), 1);
     assert_eq!(pong[0].opcode(), 0xA0, "OP_BUDDYPONG");
@@ -86,7 +95,7 @@ fn an_inbound_buddy_ping_surfaces_as_the_core_decided_event() {
     session.handle_bytes(&ping);
     let out = drain(|| session.poll_output());
     assert!(
-        events(&out).contains(&&PeerEvent::BuddyPingReceived),
+        events(&out).contains(&&PeerEvent::Side(SideEvent::BuddyPingReceived)),
         "the ping surfaces as BuddyPingReceived"
     );
     assert!(
@@ -114,15 +123,15 @@ fn the_relays_our_own_buddy_forwards_surface_decoded_and_wire_silent() {
     let out = drain(|| session.poll_output());
     let seen = events(&out);
     assert!(
-        seen.contains(&&PeerEvent::BuddyCallbackReceived {
+        seen.contains(&&PeerEvent::Side(SideEvent::BuddyCallbackReceived {
             callback: callback.clone()
-        }),
+        })),
         "the 0x99 surfaces decoded: {seen:?}"
     );
     assert!(
-        seen.contains(&&PeerEvent::BuddyReaskCallbackReceived {
+        seen.contains(&&PeerEvent::Side(SideEvent::BuddyReaskCallbackReceived {
             relay: relay.clone()
-        }),
+        })),
         "the 0x9A surfaces decoded: {seen:?}"
     );
     assert!(
@@ -140,16 +149,18 @@ fn a_malformed_relay_parks_as_unknown_rather_than_tearing_the_buddy_link_down() 
     session.handle_bytes(&Packet::new(PacketProtocol::Emule, 0x99, vec![0x01, 0x02]).encode());
     let out = drain(|| session.poll_output());
     assert!(
-        events(&out)
-            .iter()
-            .any(|event| matches!(event, PeerEvent::UnknownPeerPacket { opcode: 0x99, .. })),
+        events(&out).iter().any(|event| matches!(
+            event,
+            PeerEvent::Notice(NoticeEvent::UnknownPacket { opcode: 0x99, .. })
+        )),
         "a short 0x99 is preserved, not fatal: {:?}",
         events(&out)
     );
     assert!(
-        !events(&out)
-            .iter()
-            .any(|event| matches!(event, PeerEvent::Disconnected { .. })),
+        !events(&out).iter().any(|event| matches!(
+            event,
+            PeerEvent::Connection(ConnectionEvent::Disconnected { .. })
+        )),
         "the buddy link stays open"
     );
 }
@@ -162,7 +173,7 @@ fn our_own_buddy_link_is_kept_alive_by_the_ping_we_send() {
     let mut fresh = PeerSession::new_outbound(peer_at(55), ctx());
     fresh.start();
     let _ = drain(|| fresh.poll_output());
-    fresh.handle_command(PeerCommand::SendBuddyPing);
+    fresh.handle_command(PeerCommand::Side(SideCommand::SendBuddyPing));
     assert!(
         writes(&drain(|| fresh.poll_output()))
             .iter()
@@ -171,7 +182,7 @@ fn our_own_buddy_link_is_kept_alive_by_the_ping_we_send() {
     );
 
     let mut session = identified_session();
-    session.handle_command(PeerCommand::SendBuddyPing);
+    session.handle_command(PeerCommand::Side(SideCommand::SendBuddyPing));
     let sent = writes(&drain(|| session.poll_output()));
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].opcode(), 0x9F, "OP_BUDDYPING");

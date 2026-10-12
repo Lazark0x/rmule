@@ -22,7 +22,7 @@
 //! down the serve road and no download adopts it.
 //!
 //! So the harness supplies the record its server cannot, through the shipped
-//! [`SourceLookupService`] seam: one Low-ID [`ExchangedSource`] carrying the
+//! [`SourceLookupService`] seam: one Low-ID [`SourceSighting`] carrying the
 //! target's id and hash. That is **Stimulus** of the same standing as
 //! `ed2k serve start --direct-callback` (it *declares* two facts a source row
 //! would otherwise carry, and nothing else), it is declared in the row as
@@ -38,14 +38,15 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Args, ValueEnum};
+use rmule_core::run_log::Level;
 use rmule_core::{
-    Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand as CoreDownloadCommand,
-    DownloadEvent, DownloadFailure, ServeCommand as CoreServeCommand, SourceLookupOutcome,
-    SourceLookupService, open_durable_store_in_memory,
+    Core, CoreCommand, CoreConfig, CoreEvent, CoreSettings, DownloadEvent, DownloadFailure,
+    ServeCommand as CoreServeCommand, SourceLookupOutcome, SourceLookupService,
+    open_durable_store_in_memory,
 };
 use rmule_primitives::{
-    ClientId, ClientIdentity, Ed2kLink, Ed2kText, ExchangedSource, PeerSource, ServerEndpoint,
-    SourceLookupTarget, UserHash,
+    ClientId, ClientIdentity, Ed2kLink, Ed2kText, PeerSource, ServerEndpoint, SourceLookupTarget,
+    SourceSighting, UserHash,
 };
 
 use crate::driver_row::Row;
@@ -179,11 +180,11 @@ struct InjectedSource(std::sync::Arc<std::sync::Mutex<Option<Injected>>>);
 #[derive(Clone, Copy)]
 struct Injected {
     client_id: ClientId,
-    source: ExchangedSource,
+    source: SourceSighting,
 }
 
 impl InjectedSource {
-    fn fill(&self, client_id: ClientId, source: ExchangedSource) {
+    fn fill(&self, client_id: ClientId, source: SourceSighting) {
         *self
             .0
             .lock()
@@ -232,9 +233,11 @@ pub(crate) async fn run_tunnel_transfer(args: NattTunnelTransferArgs) -> Result<
         args.listen.port(),
         60,
     );
-    let config = CoreConfig {
+    let settings = CoreSettings {
+        nickname: args.nickname.clone(),
+        tcp_port: args.listen.port(),
         udp_port: args.udp_port,
-        ..CoreConfig::default()
+        ..CoreSettings::default()
     };
 
     let mut row = TransferRow {
@@ -246,8 +249,8 @@ pub(crate) async fn run_tunnel_transfer(args: NattTunnelTransferArgs) -> Result<
     };
 
     match args.role {
-        TransferRole::Target => target(args, server, identity, config, &mut row).await,
-        TransferRole::Requester => requester(args, server, identity, config, &mut row).await,
+        TransferRole::Target => target(args, server, identity, settings, &mut row).await,
+        TransferRole::Requester => requester(args, server, identity, settings, &mut row).await,
     }
 }
 
@@ -258,23 +261,23 @@ async fn target(
     args: NattTunnelTransferArgs,
     server: ServerEndpoint,
     identity: ClientIdentity,
-    config: CoreConfig,
+    settings: CoreSettings,
     row: &mut TransferRow,
 ) -> Result<()> {
     let share = args
         .share
         .clone()
         .context("--role target needs --share <file>")?;
-    let mut core = Core::builder(config, open_durable_store_in_memory()?)
+    let mut core = Core::builder(CoreConfig::default(), open_durable_store_in_memory()?)
+        .settings(settings)
         .user_hash(identity.user_hash())
         .build();
     let _share = crate::share::share_files(&mut core, &[share], |_| {}).await?;
     core.send(CoreCommand::Serve(CoreServeCommand::StartServing {
         listen_addr: args.listen,
-        credentials: identity.clone().into(),
     }))
     .await?;
-    crate::node::connect(&core, &server, identity.into()).await?;
+    crate::node::connect(&core, &server).await?;
     if !await_login(&mut core, Duration::from_secs(args.login_timeout), row).await? {
         return write(&args.out, row);
     }
@@ -294,7 +297,7 @@ async fn requester(
     args: NattTunnelTransferArgs,
     server: ServerEndpoint,
     identity: ClientIdentity,
-    config: CoreConfig,
+    settings: CoreSettings,
     row: &mut TransferRow,
 ) -> Result<()> {
     let link = args
@@ -319,16 +322,20 @@ async fn requester(
     // front and the download. Two would give the server two observed ports to
     // key on and its `0x61` would name whichever keepalive landed last.
     let injected = InjectedSource::default();
-    let mut core = Core::builder(config, open_durable_store_in_memory()?)
+    let settings = CoreSettings {
+        download_dir: Some(crate::output::download_dir(std::slice::from_ref(&output))?),
+        ..settings
+    };
+    let mut core = Core::builder(CoreConfig::default(), open_durable_store_in_memory()?)
+        .settings(settings)
         .user_hash(identity.user_hash())
         .source_lookup(injected.clone())
         .build();
     core.send(CoreCommand::Serve(CoreServeCommand::StartServing {
         listen_addr: args.listen,
-        credentials: identity.clone().into(),
     }))
     .await?;
-    crate::node::connect(&core, &server, identity.clone().into()).await?;
+    crate::node::connect(&core, &server).await?;
     // `StartServing` binds the listener the server's back-connect probe will
     // fail to reach, which is what earns the Low ID the whole row depends on.
     // The gate is the session's own `Connected`, never the bind (the
@@ -361,7 +368,7 @@ async fn requester(
     row.source_injected = true;
     injected.fill(
         ClientId::from_u32(row.client_id),
-        ExchangedSource::new(
+        SourceSighting::new(
             PeerSource::LowId {
                 id: ClientId::from_u32(target.id),
                 port: args.listen.port(),
@@ -371,13 +378,8 @@ async fn requester(
         ),
     );
 
-    core.send(CoreCommand::Download(CoreDownloadCommand::StartDownload {
-        file,
-        source_hint: Some(server),
-        credentials: identity.into(),
-        output_path: output.clone(),
-    }))
-    .await?;
+    core.send(crate::output::start(file, Some(server), &output)?)
+        .await?;
     row.download_started = true;
     println!("rmule-natt-transfer-download source_id={}", target.id);
 
@@ -409,9 +411,11 @@ async fn drain(core: &mut Core, budget: Duration, row: &mut TransferRow) -> Resu
             event = core.next_event() => event,
         };
         let Some(event) = event else { break };
-        println!("{event}");
+        println!("{}", event.record().render(Level::Full));
         match event {
-            CoreEvent::PeerReachRouted { route, .. } => row.routed = format!("{route:?}"),
+            CoreEvent::PeerReachRouted { route, .. } => {
+                row.routed = crate::natt::route_code(&route).to_owned()
+            }
             CoreEvent::Download(DownloadEvent::DownloadCompleted { .. }) => {
                 row.download_completed = true;
                 break;
@@ -448,7 +452,7 @@ async fn await_login(core: &mut Core, budget: Duration, row: &mut TransferRow) -
             row.login_failure = "the core event stream ended".to_owned();
             return Ok(false);
         };
-        println!("{event}");
+        println!("{}", event.record().render(Level::Full));
         match event {
             CoreEvent::ServerConnection(rmule_core::ServerConnectionEvent::Connected {
                 client_id,
@@ -483,7 +487,7 @@ async fn await_source(core: &mut Core, path: &Path, budget: Duration) -> Result<
             () = tokio::time::sleep(SOURCE_POLL) => {}
             event = core.next_event() => {
                 let Some(event) = event else { return Ok(None) };
-                println!("{event}");
+                println!("{}", event.record().render(Level::Full));
             }
         }
     }

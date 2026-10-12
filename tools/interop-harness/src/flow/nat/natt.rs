@@ -86,11 +86,16 @@ pub enum NattFlow {
     /// a sidecar in the storer's netns — the aMule-authored tier of
     /// ADR-0061's type-6 row.
     UdpSelfCheckAmule,
+    /// ADR-0061's firewalled half against stock aMule 2.3.3 as the open
+    /// buddy: a Core rmule behind a **port-restricted** gateway, holding a
+    /// server Low ID, recruits aMule over Kad, holds and pings the link, and
+    /// dials back the requester of a callback aMule relays over it.
+    BuddyRecruitAmule,
 }
 
 impl NattFlow {
     /// Every flow this harness carries, in ADR-0092's order.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::CapsUtp,
         Self::ServerPunchCone,
         Self::ServerPunchSymmetric,
@@ -103,6 +108,7 @@ impl NattFlow {
         Self::UdpSelfCheckCone,
         Self::UdpSelfCheckRemapped,
         Self::UdpSelfCheckAmule,
+        Self::BuddyRecruitAmule,
     ];
 
     /// The flow's name in every artifact it writes.
@@ -121,6 +127,7 @@ impl NattFlow {
             Self::UdpSelfCheckCone => "natt-udp-selfcheck-cone",
             Self::UdpSelfCheckRemapped => "natt-udp-selfcheck-remapped",
             Self::UdpSelfCheckAmule => "natt-udp-selfcheck-amule",
+            Self::BuddyRecruitAmule => "natt-buddy-recruit-amule",
         }
     }
 
@@ -163,6 +170,7 @@ impl NattFlow {
             | Self::UdpSelfCheckRemapped
             | Self::UdpSelfCheckAmule => Some(crate::nat::NatType::FullConePinned),
             Self::BuddyRendezvousRestricted => Some(crate::nat::NatType::Restricted),
+            Self::BuddyRecruitAmule => Some(crate::nat::NatType::PortRestricted),
             Self::ServerPunchSymmetric
             | Self::ServerPunchOneSymmetric
             | Self::BuddyRendezvousSymmetric => Some(crate::nat::NatType::Symmetric),
@@ -188,14 +196,16 @@ impl NattFlow {
     /// release package under the debug tag, so the image is pre-built by hand.
     #[must_use]
     pub const fn needs_amule_debug(self) -> bool {
-        matches!(self, Self::UdpSelfCheckAmule)
+        matches!(self, Self::UdpSelfCheckAmule | Self::BuddyRecruitAmule)
     }
 
     /// Whether the flow needs the `ed2ksrv` coordinator.
     ///
-    /// The buddy rows deliberately need none: their coordinator *is* the
+    /// The rendezvous rows deliberately need none: their coordinator *is* the
     /// buddy, and a server on the path would put ADR-0091's preferred
-    /// coordinator ahead of the rung being measured.
+    /// coordinator ahead of the rung being measured. `natt-buddy-recruit-amule`
+    /// needs one for another reason: it gives the target the Low ID an open
+    /// aMule keeps a buddy for, and coordinates nothing — no punch is asked.
     #[must_use]
     pub const fn needs_ed2ksrv(self) -> bool {
         matches!(
@@ -204,6 +214,7 @@ impl NattFlow {
                 | Self::ServerPunchSymmetric
                 | Self::ServerPunchOneSymmetric
                 | Self::TunnelTransfer
+                | Self::BuddyRecruitAmule
         )
     }
 

@@ -2,76 +2,62 @@
 //! stored contact table and the bootstrap list, and pump its events onto the
 //! core-facing source, keyword, reachability, and buddy channels.
 
-use rmule_peer::PeerHandshakeContext;
-use rmule_primitives::ClientId;
 use tokio::sync::{Mutex, mpsc};
 
 use crate::CoreError;
-use crate::adapters::kad_runtime::connect_options::ConnectOptionsFeed;
+use crate::adapters::kad_runtime::pump_state::{KadPumpConfig, KadPumpState};
 use crate::adapters::kad_runtime::{
-    ClientUdpBind, KadEnableConfig, KadPumpCommand, KadRuntimeFactory, RuntimeKadChannel,
+    ClientUdpBind, KadCells, KadEnableConfig, KadNodeIdentity, KadPumpCommand, KadRuntimeFactory,
+    RuntimeKadChannel,
 };
 use crate::buddy::BuddyIdentity;
 
-mod factory;
 mod pump;
 
-pub use factory::RuntimeKadFactory;
+/// How many of the Firewalled Front's adopt verdicts wait for the pump. One
+/// per `0x5A` a walk drew — a handful at most, since one walk asks one node.
+const VERDICT_QUEUE_LEN: usize = 8;
+
+/// Starts the real `rmule_net::kad` driver on `EnableKad`. It holds nothing:
+/// everything a node publishes into or shares with the peer surfaces arrives
+/// in the [`KadCells`] core lends each `start`, so no runtime holds a private
+/// copy of a cell the node owns.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RuntimeKadFactory;
+
+/// The wire identity this node's Kad dials present: the credentials as the
+/// node's hash, fixed at build (ADR-0048 "Identity ownership") — also the Kad
+/// source ID and the buddy identity's hash. Its port is the one peers dial;
+/// aMule's `RequestTCP` self-connect guard compares a requester against it
+/// together with the live public IPv4 — Address Learning's projection,
+/// re-read at every guard check — and matches on port alone while no IPv4 is
+/// known yet.
+fn node_identity(
+    own: &crate::own_identity::SharedOwnIdentity,
+    node: &KadNodeIdentity,
+) -> Result<rmule_primitives::ClientIdentity, CoreError> {
+    let user_hash = own.user_hash().ok_or_else(|| {
+        CoreError::KadUnavailable("no node user hash: never adopted by a builder".into())
+    })?;
+    Ok(node.peer_credentials.identity(user_hash))
+}
 
 impl KadRuntimeFactory for RuntimeKadFactory {
     type Channel = RuntimeKadChannel;
 
-    fn adopt_cells(&mut self, cells: &crate::adapters::AdapterCells) {
-        self.adopt(cells);
-    }
-
-    fn kad_reach(&self) -> crate::KadReachLevel {
-        crate::KadReachLevel::published(self.kad_verdicts.clone())
-    }
-
-    fn has_had_contact(&self) -> bool {
-        self.had_contact.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    fn contact_count(&self) -> usize {
-        self.contact_count
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    fn keywords_stored(&self) -> usize {
-        self.keywords_stored
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    fn kad_traffic(&self) -> crate::diagnostics::KadTraffic {
-        self.kad_traffic.totals()
-    }
-
-    fn install_diagnostics(&mut self, diagnostics: crate::diagnostics::DiagnosticsState) {
-        self.diagnostics = diagnostics;
-    }
-
-    fn take_handoff_handle(&mut self) -> Option<tokio::task::JoinHandle<()>> {
-        self.handoff_handle.take()
-    }
-
-    /// The **Kad Presence** cell this runtime's surfaces read:
-    /// handed to every surface that must answer "is Kad running, as whom"
-    /// from a task of its own — the serve bridge's and the firewalled
-    /// front's `0x99` consumes — and leased by the actor's Kad Activity.
-    fn kad_presence(&self) -> crate::adapters::kad_runtime::KadPresenceView {
-        self.kad_presence.clone()
-    }
-
     async fn start(
         &mut self,
         config: &KadEnableConfig,
+        node: &KadNodeIdentity,
         bind: ClientUdpBind,
+        cells: &KadCells,
     ) -> Result<RuntimeKadChannel, CoreError> {
+        let adapters = &cells.adapters;
+        let own = adapters.own_identity();
         // The one UDP port (ADR-0057): the node advertises, and is reached at,
         // the port the core already bound — never a second number of its own.
         let kad_udp_port = bind.socket.local_port();
-        let identity = self.node_identity(config)?;
+        let identity = node_identity(own, node)?;
         let (user_hash, own_tcp_port) = (identity.user_hash(), identity.tcp_port());
         // The inbound half the demux front fills. Installed *after* the node
         // is up, so the front can never hand a datagram to a driver that has
@@ -80,11 +66,10 @@ impl KadRuntimeFactory for RuntimeKadFactory {
         // The external Kad Shutdown Lever, split for the pump task below.
         let (kad_stop_rx, kad_stopped_tx) =
             crate::adapters::kad_runtime::split_kad_shutdown(config);
-        let verify_keys = config.verify_keys(self.hello.crypt_policy, self.own.public_ip());
         let handle = rmule_net::kad::spawn_over(
             rmule_net::kad::KadNetConfig {
                 node: rmule_kad::KadNodeConfig {
-                    id: config.kad_id,
+                    id: node.kad_id,
                     tcp_port: own_tcp_port,
                     udp_port: kad_udp_port,
                     user_hash,
@@ -110,17 +95,20 @@ impl KadRuntimeFactory for RuntimeKadFactory {
                 // conclude would only walk the declaration back to firewalled.
                 firewall_self_check: !config.assume_open_reachability,
                 // Kad-UDP crypt under the core's one obfuscation policy
-                // The keys ride inside the crypt header, so the
-                // two arm together.
-                datagram_obfuscation: verify_keys.is_some(),
-                verify_keys,
+                // The keys are held under every policy; the policy decides
+                // only whether datagrams leave obfuscated.
+                // Armed from the first datagram as the policy stands now;
+                // the pump re-arms the node whenever it changes.
+                obfuscation: Some(
+                    node.kad_crypt(adapters.hello_adverts.obfuscation.get(), own.public_ip()),
+                ),
                 // The Kad half of the IP filter (aMule's four `kademlia/` `IsFiltered` sites):
                 // the node consults the live
                 // core-owned table at every contact intake, so a filter reload
                 // will reach Kad with no re-arm. Uses the *client* gate — aMule's
                 // Kad checks call `IsFiltered(ip)` with `isServer` defaulted false.
                 contact_admission: Some(rmule_kad::KadContactAdmission::new({
-                    let ip_filter = self.ip_filter.clone();
+                    let ip_filter = adapters.ip_filter.clone();
                     move |ip| {
                         !ip_filter
                             .read()
@@ -132,16 +120,14 @@ impl KadRuntimeFactory for RuntimeKadFactory {
             rmule_net::kad::KadInlet {
                 datagrams: inlet_rx,
                 socket: std::sync::Arc::clone(&bind.socket),
-                traffic: self.kad_traffic.clone(),
+                traffic: cells.facts.traffic.clone(),
             },
         )
         .await
         .map_err(|error| CoreError::KadUnavailable(error.to_string()))?;
         // The front's gate opens here: from now on a `0xE4`/`0xE5` — or an
         // unclaimed byte that may be obfuscated Kad — reaches this node.
-        if let Ok(mut slot) = bind.kad_inlet.lock() {
-            *slot = Some(inlet_tx);
-        }
+        let inlet_lease = bind.kad_inlet.install(inlet_tx);
 
         // The published Kad verdicts start fresh and reset at the node's end
         // through the Kad Activity's one lease (ADR-0093), taken
@@ -152,12 +138,6 @@ impl KadRuntimeFactory for RuntimeKadFactory {
         // asks — the direct-callback bit, the buddy row, the recruit gate,
         // the FINDBUDDY posture — goes to the one owner.
         let reach = bind.reach.clone();
-        // What every source publish states in `TAG_ENCRYPTION`,
-        // set before any publish can be issued: the NAT-T bit is what
-        // gives a Low-ID downloader a road to this node's buddy row. The pump
-        // re-derives it on every Reach Generation from here on.
-        let mut options_feed = ConnectOptionsFeed::new(self.hello.crypt_policy);
-        options_feed.start(&reach, &handle).await;
 
         // Contacts that already carry an earned Kad ID go straight into the
         // routing table (ADR-0065 "v1/v2-merge"): this is the reload half
@@ -196,119 +176,65 @@ impl KadRuntimeFactory for RuntimeKadFactory {
         let (commands_tx, commands_rx) = mpsc::channel::<KadPumpCommand>(32);
         let (sources_tx, sources_rx) = mpsc::channel(32);
 
-        self.handoff_handle =
-            Some(super::handoff::spawn(&self.kad_bootstrap, commands_tx.clone()).await);
+        let (handoff, bootstrap_lease) =
+            super::handoff::spawn(&adapters.kad_bootstrap, commands_tx.clone()).await;
+        cells.handoff.put(handoff);
         // The out-of-band signal sink (ADR-0086's recheck, ADR-0058's `0xA8`
         // ack): filling it is what opens the gate — a grant or an ack that lands
         // while Kad is off answers nothing, and an empty sink says so with no
         // "is Kad running" question.
-        if let Ok(mut slot) = self.kad_pump.lock() {
-            *slot = Some(commands_tx.clone());
-        }
+        let pump_lease = adapters.kad_pump.install(commands_tx.clone());
 
-        let ban_store = self.ban_store.clone();
         // ADR-0046 "Test Connections": the helpers asked, mirrored for the
         // listener; this pump is the helper half's one writer.
-        let awaited_testers = self.own.awaited_testers().clone();
-        // The ADR-0058 dial-back's eD2k hello context: the identity rmule presents
-        // when it connects back to a firewalled requester to prove its TCP port.
-        // Kad is serverless, so there is no High-ID and no connected server.
-        let dial_back_ctx = PeerHandshakeContext {
-            identity,
-            client_id: ClientId::from_u32(0),
-            connected_server: None,
-        };
-        // Our open-node buddy identity (ADR-0061): the client hash + advertised TCP
-        // port a `0x5A` accept carries back.
-        let our_buddy_identity = BuddyIdentity {
-            our_hash: user_hash,
-            our_tcp_port: own_tcp_port,
-        };
+        let awaited_testers = own.awaited_testers().clone();
+        // The hello this node's dials present — the ADR-0058 dial-back to a
+        // requester proving its TCP port, and the buddy dial: our identity
+        // under Self Reach's Presented Client ID and the live session's
+        // server, read at each dial.
+        let presents = crate::server_session::HelloSource::live(identity, reach.clone());
         // The shared enacted buddy slot (ADR-0061): recruit decisions and the
         // 0x52 relay run through it; a fresh Kad start begins with an empty slot.
-        let buddy_slot = self.buddy_slot.clone();
+        let buddy_slot = adapters.buddy_slot.clone();
         buddy_slot.reset();
-        // And its firewalled mirror, re-seated with *this* node's
-        // Kad ID: every `0x5A` and `0x99` check inverts the echoed ID against
-        // it, so a slot carrying a previous node's ID could verify nothing.
-        let firewalled_slot = self.hello.firewalled_slot.clone();
-        firewalled_slot.reset(config.kad_id);
-        let firewalled_front = self.firewalled_front.clone();
-        // The dial identity the firewalled front presents to the buddy it
-        // dials, read live at the dial as every other dial reads it:
-        // the live session's id and server, or none between sessions.
-        firewalled_front.send(crate::firewalled::front::FirewalledCommand::KadStarted(
-            Box::new(crate::server_session::HelloSource::live(
-                dial_back_ctx.identity.clone(),
-                self.own.clone(),
-            )),
-        ));
-        // Our own recruitment posture beyond the two verdicts (ADR-0061):
-        // `Required` forecloses the whole buddy mechanism —
-        // aMule's own limitation, callback requests are not obfuscatable —
-        // `Supported`/`Requested`/unset leave the gate unchanged, since a
-        // node that only *prefers* crypt still falls back to plaintext for a
-        // callback the same way it does for everything else.
-        let crypt_required =
-            self.hello.crypt_policy == Some(rmule_net::peer::ObfuscationPolicy::Required);
-        // The ADR-0058 dial-back broker's own two-reading input:
-        // our policy, read fresh per request the same way the recruit gate
-        // above reads it, and the diagnostics handle that counts its
-        // incompatible leg.
-        let dial_back_crypt_policy = self.hello.crypt_policy;
-        let dial_back_diagnostics = self.diagnostics.clone();
-        // Where `KadEvent::Diagnostic` lands: a hostile or
-        // malformed datagram is never a panic — the node's own diagnostic and
-        // carries on — but until this handle existed the adapter dropped the
-        // event in its catch-all arm, leaving a crypt-armed run's decode
-        // failures unfalsifiable in either direction.
-        let envelope_diagnostics = self.diagnostics.clone();
-        // A restart is a new start (ADR-0067: `HasHadContact` is "since the
-        // node started"): the latch resets with the buddy slot, as the
-        // published verdicts do at the Kad Activity's lease.
-        self.had_contact
-            .store(false, std::sync::atomic::Ordering::Relaxed);
-        let published = self.kad_verdicts.clone();
-        let assume_open_reachability = config.assume_open_reachability;
-        // The `HasHadContact` latch (ADR-0067): the pump is its sole writer,
-        // `RuntimeKadFactory::has_had_contact` its reader. The contact count
-        // keeps the same discipline, reset with it — a restart's table
-        // starts empty.
-        let had_contact = std::sync::Arc::clone(&self.had_contact);
-        self.contact_count
+        // And its firewalled mirror, which the Firewalled Front owns: it
+        // re-seats its slot with *this* node's Kad ID — every `0x5A` and
+        // `0x99` check inverts the echoed ID against it, so a slot carrying a
+        // previous node's ID could verify nothing — and reads the hello it
+        // presents to the buddy live at the dial, as every other dial reads
+        // it. A cell rather than a command, so a full front inbox
+        // cannot lose it; published before this node's pump exists, and the
+        // front applies an unseen start before any command it takes, so no
+        // adopt this pump asks for can overtake it.
+        adapters
+            .firewalled_front
+            .kad_started(crate::firewalled::front::KadStart {
+                hello: presents.clone(),
+                kad_id: node.kad_id,
+            });
+        // The front's verdicts on the buddies this node's walks draw.
+        let (verdicts, verdicts_rx) = mpsc::channel(VERDICT_QUEUE_LEN);
+        // A restart is a new start: the contact count and the keyword index
+        // size reset with the buddy slot, as the published verdicts — the
+        // join latch among them (ADR-0067: `HasHadContact` is "since the node
+        // started") — do at the Kad Activity's lease. The pump is their sole
+        // writer, the diagnostics state their reader.
+        cells
+            .facts
+            .contact_count
             .store(0, std::sync::atomic::Ordering::Relaxed);
-        let contact_count = std::sync::Arc::clone(&self.contact_count);
-        self.keywords_stored
+        cells
+            .facts
+            .keywords_stored
             .store(0, std::sync::atomic::Ordering::Relaxed);
-        let keywords_stored = std::sync::Arc::clone(&self.keywords_stored);
-        // No bind is recorded here any more (ADR-0084/0057): Kad took no
-        // socket of its own, so the one **Address Learning** bind row is the
-        // core's client-UDP one, written where that socket actually came up.
-        // A Kad `0x58`/`0x61` observation is therefore a vote about the *same*
-        // External Endpoint the server's `0x9F` observation and a mapping
-        // grant are about — which is the whole point of unifying them.
-        let addresses = self.addresses.clone();
-        let ipv6_advert = self.hello.ipv6.clone();
-        // Every hello this pump's own dials send — the firewall-check
-        // dial-back and the UDP-check helper dial — starts from the one read
-        // every other hello does.
-        let hello = self.hello.clone();
-        // Cleared when this node's pump ends: the socket outlives the node, so
-        // a stale sender would hand datagrams to a driver that has stopped.
-        let kad_inlet = bind.kad_inlet.clone();
-        let kad_pump_slot = self.kad_pump.clone();
-        let kad_bootstrap = self.kad_bootstrap.clone();
-        // The ADR-0058 requester gate: consulted before ever
-        // dialling an engaged helper candidate.
-        let peer_roster = self.peer_roster.clone();
+        // The three leases clear their cells when this node's pump ends, and
+        // only while the cells still hold this node's senders: the socket
+        // outlives the node, so a stale sender would hand datagrams to a
+        // driver that has stopped, but a successor's must stay.
         // The **Reach Generation**: one wake for any family's
         // move — this pump's own verdict writes, a login or re-assignment, the
-        // NAT-T front's end — on which the byte and the buddy row re-derive.
+        // NAT-T front's end — on which the brain re-samples the owner.
         let reach_generation = reach.changes();
-        // The self-facts cell the own-IPv4 level reads: cloned
-        // rather than watched, because Address Learning's IPv4 verdict has no
-        // dedicated change watch (see `PublicIpFeed`'s module docs).
-        let own = self.own.clone();
         // The dial-back broker's guard feed (aMule `RequestTCP`): the busy
         // guard is LIVE — the registry tracks every enactment in flight
         // (per-endpoint dedupe + the concurrent budget), each task's entry
@@ -316,51 +242,70 @@ impl KadRuntimeFactory for RuntimeKadFactory {
         // the node applies it before it ever raises `DialBackRequested`.
         let dial_back = pump::DialBack {
             registry: crate::reachability::DialBackRegistry::default(),
-            ctx: dial_back_ctx,
-            crypt_policy: dial_back_crypt_policy,
-            diagnostics: dial_back_diagnostics,
+            presents,
+            diagnostics: cells.diagnostics.clone(),
             own: own.clone(),
             own_tcp_port,
-            hello: hello.clone(),
+            hello: adapters.hello_adverts.clone(),
         };
+        // Our open-node buddy identity (ADR-0061): the client hash + advertised
+        // TCP port a `0x5A` accept carries back.
         let buddy_service = pump::BuddyService {
             slot: buddy_slot,
-            identity: our_buddy_identity,
+            identity: BuddyIdentity {
+                our_hash: user_hash,
+                our_tcp_port: own_tcp_port,
+            },
             own: own.clone(),
             own_tcp_port,
         };
+        let enactor = pump::Enactor {
+            sources_tx,
+            dial_back,
+            buddy_service,
+            ban_store: adapters.ban_store.clone(),
+            awaited_testers,
+            firewalled_front: adapters.firewalled_front.clone(),
+            verdicts,
+            diagnostics: cells.diagnostics.clone(),
+            published: cells.verdicts.writer(),
+            contact_count: std::sync::Arc::clone(&cells.facts.contact_count),
+            keywords_stored: std::sync::Arc::clone(&cells.facts.keywords_stored),
+            // No bind is recorded here (ADR-0084/0057): Kad took no socket of
+            // its own, so a Kad `0x58`/`0x61` observation is a vote about the
+            // *same* External Endpoint the server's `0x9F` observation and a
+            // mapping grant are about.
+            addresses: adapters.addresses().clone(),
+            own: own.clone(),
+            reach,
+            hello: adapters.hello_adverts.clone(),
+            peer_roster: adapters.peer_roster.clone(),
+            hello_refusals: adapters.hello_refusals.clone(),
+            pump_sink: pump_lease.weak(),
+        };
+        // The brain: the obfuscation policy, sampled live, arms the node's datagram
+        // crypt and fixes the publish byte's ladder, the buddy dial's side of
+        // the crypt rule and the recruit gate's `Required` refusal — aMule's
+        // own limitation, callback requests are not obfuscatable.
+        let state = KadPumpState::new(KadPumpConfig {
+            kad_udp_key: node.kad_udp_key,
+            kad_udp_port,
+            assume_open_reachability: config.assume_open_reachability,
+            kad_id: node.kad_id,
+        });
         tokio::spawn(
             pump::Pump {
-                dial_back,
-                buddy_service,
-                kad_udp_port,
+                handle,
+                state,
+                enactor,
+                commands_rx,
+                verdicts_rx,
                 kad_stop_rx,
                 kad_stopped_tx,
-                handle,
-                commands_rx,
-                sources_tx,
-                ban_store,
-                awaited_testers,
-                firewalled_slot,
-                firewalled_front,
-                crypt_required,
-                envelope_diagnostics,
-                published,
-                assume_open_reachability,
-                had_contact,
-                contact_count,
-                keywords_stored,
-                addresses,
-                ipv6_advert,
-                hello,
-                kad_inlet,
-                kad_pump_slot,
-                kad_bootstrap,
-                peer_roster,
                 reach_generation,
-                own,
-                options_feed,
-                reach,
+                inlet_lease,
+                pump_lease,
+                bootstrap_lease,
             }
             .run(),
         );

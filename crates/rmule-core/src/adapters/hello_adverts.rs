@@ -13,15 +13,17 @@
 //! [`HelloAdverts::connect_options`] is the one place a connection's options
 //! are started from, so no road can.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-use rmule_net::peer::{ConnectOptions, ObfuscationConfig, ObfuscationPolicy};
+use rmule_net::peer::{ConnectOptions, ObfuscationConfig};
 use rmule_peer::SecureIdentConfig;
 use rmule_primitives::{PeerCrypt, SecureIdentKey};
 
 use super::ipv6_advert::SharedIpv6Advert;
 use super::udp_ports_advert::SharedUdpPortsAdvert;
-use crate::firewalled::link::SharedFirewalledSlot;
+use crate::firewalled::front::BuddyView;
+use crate::obfuscation_policy::SharedObfuscationPolicy;
+use crate::reachability::SharedSelfReach;
 
 /// The live facts a hello states about this node, each read per connection
 /// from its one owner rather than cached when a road was wired:
@@ -37,14 +39,22 @@ pub struct HelloAdverts {
     pub(crate) udp_ports: SharedUdpPortsAdvert,
     /// `CT_MOD_IP_V6` (ADR-0087): the Advertised Endpoints chooser's verdict.
     pub(crate) ipv6: SharedIpv6Advert,
-    /// `CT_EMULE_BUDDYIP` / `BUDDYUDP` / `SERVINGBUDDYIPV6`:
-    /// the enacted firewalled slot, which names the buddy our source
-    /// publishes carry.
-    pub(crate) firewalled_slot: SharedFirewalledSlot,
-    /// Our obfuscation policy (`CoreConfig::peer_crypt`, ADR-0042/0046):
-    /// the `MiscOptions2` crypt bits, and the side of the outbound crypt rule
-    /// that is ours. `None` advertises no crypt and dials plaintext.
-    pub(crate) crypt_policy: Option<ObfuscationPolicy>,
+    /// `CT_EMULE_BUDDYIP` / `BUDDYUDP` / `SERVINGBUDDYIPV6`: the
+    /// **Buddy Snapshot** the Firewalled Front publishes of its slot — the
+    /// held link's advert, the same fact our source publishes name — and,
+    /// beside it, the Kad pump's Recruit Status.
+    pub(crate) buddy: BuddyView,
+    /// **Self Reach** (ADR-0060), installed once by the core actor that
+    /// weaves it: the buddy tags' `IsFirewalled()` gate and the
+    /// `MiscOptions2` direct-callback bit, asked per hello. Empty — no tags,
+    /// no bit — until then, as an unstarted core claims nothing.
+    pub(crate) reach: Arc<OnceLock<SharedSelfReach>>,
+    /// Our obfuscation policy (`CoreSettings::obfuscation`, ADR-0042/0046),
+    /// the one cell a live change writes: the `MiscOptions2` crypt bits, the
+    /// side of the outbound crypt rule that is ours, and the accept's byte-0
+    /// rule, each read when its connection starts. `None` advertises no crypt,
+    /// dials plaintext and accepts plain alone.
+    pub(crate) obfuscation: SharedObfuscationPolicy,
     /// Our Secure User Identification keypair (ADR-0041): the `MiscOptions1`
     /// SUI nibble, and the key the `OP_SECIDENTSTATE` exchange signs with
     /// The Core's, loaded once by `Core::builder` from the store
@@ -70,6 +80,22 @@ pub(crate) fn mint_sui_challenge() -> u32 {
 }
 
 impl HelloAdverts {
+    /// Install **Self Reach**, once: the owner the hello's buddy tags and
+    /// direct-callback bit ask. A second install is ignored — one owner per
+    /// core.
+    pub(crate) fn install_reach(&self, reach: SharedSelfReach) {
+        let _ = self.reach.set(reach);
+    }
+
+    /// The buddy our hello names: the snapshot's held-link advert under
+    /// aMule's `GetBuddy() && IsFirewalled()` (`BaseClient.cpp:1031`,
+    /// `4e8f2b3c`), the owner's union read now. A link held or lost on the
+    /// front's task shows in the very next hello.
+    fn serving_buddy(&self) -> Option<rmule_peer::ServingBuddyAdvert> {
+        let firewalled = self.reach.get().is_some_and(SharedSelfReach::firewalled);
+        firewalled.then(|| self.buddy.snapshot().serving).flatten()
+    }
+
     /// The options one connection starts from: every advert read now, and our
     /// crypt policy met with `peer_crypt` — the peer's own stance and key, as
     /// far as the road knows them (ADR-0049's outbound rule; the accept side,
@@ -87,10 +113,18 @@ impl HelloAdverts {
             ipv6: self.ipv6.get(),
             // The buddy link is held and lost on the firewalled front's task,
             // and the tag must not outlive it.
-            serving_buddy: self.firewalled_slot.serving_buddy(),
+            serving_buddy: self.serving_buddy(),
             // `MiscOptions2` bit 12: Self Reach at this hello.
-            direct_udp_callback: self.firewalled_slot.hello_direct_udp_callback(),
-            obfuscation: self.crypt_policy.map(|policy| ObfuscationConfig { policy }),
+            direct_udp_callback: self
+                .reach
+                .get()
+                .is_some_and(SharedSelfReach::hello_direct_udp_callback),
+            // The policy in force at this connection's start: a live change
+            // reaches the next one, and this one keeps what it negotiates.
+            obfuscation: self
+                .obfuscation
+                .get()
+                .map(|policy| ObfuscationConfig { policy }),
             peer_crypt,
             secure_ident: self.secure_ident.clone().map(|key| SecureIdentConfig {
                 key,

@@ -10,7 +10,9 @@ use rmule_kad::{
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{Ipv4Endpoint, UserHash};
-use rmule_testkit::kad_node::{T0, datagrams, deliver, diagnostics, endpoint, events, id, node};
+use rmule_testkit::kad_node::{
+    T0, datagrams, deliver, diagnostics, endpoint, events, id, node, self_checking_node,
+};
 
 #[test]
 fn a_legacy_firewall_check_answers_0x58_and_requests_a_udp_acked_dial_back() {
@@ -76,7 +78,7 @@ fn a_v7_firewall_check_forwards_connect_options_for_the_tcp_link_ack() {
 
 // ---- Reachability requester cycle (ADR-0058 execution breakdown 2) ----
 //
-// The requester is dormant unless armed with `enable_firewall_self_check`, so
+// The requester is dormant unless armed with the self-check start-up, so
 // the routing-only tests above are untouched. Once armed, it piggybacks
 // version-gated `0x50`/`0x53` checks on hello traffic, tracks their 180 s
 // windows, consumes `0x58`/`0x59` (and, via core, `OP_KAD_FWTCPCHECK_ACK`), and
@@ -125,8 +127,7 @@ fn hello_from(node: &mut KadNode, now: KadInstant, host: u8, version: u8) {
 
 #[test]
 fn an_armed_node_piggybacks_a_version_gated_check_on_hello_traffic() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
 
     // A modern (v8) peer: we answer its hello, then piggyback the extended 0x53
     // check advertising our port, User Hash, and (zero) connect-options.
@@ -150,8 +151,7 @@ fn an_armed_node_piggybacks_a_version_gated_check_on_hello_traffic() {
 /// crypt bits of the publish byte, never its direct-callback or NAT-T bits.
 #[test]
 fn a_check_names_the_crypt_bits_of_the_stated_connect_options() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     // Required (0x07), plus a direct-callback bit (0x08) and uTP (0x80) the
     // check must not carry.
     node.handle_command(
@@ -189,8 +189,7 @@ fn a_dormant_firewall_neither_checks_nor_consumes_and_adds_no_timer() {
 
 #[test]
 fn the_emission_budget_caps_piggybacked_checks_at_four() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     // Four peers hello us; each check is counted by a 0x58 (its observed-IP body
     // is immaterial). After the fourth, the budget is spent.
     for host in 1..=4u8 {
@@ -216,8 +215,7 @@ fn the_emission_budget_caps_piggybacked_checks_at_four() {
 
 #[test]
 fn a_windowed_0x58_counts_but_an_unrequested_one_is_diagnosed() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     hello_from(&mut node, T0, 1, 8);
     drain(|| node.poll_output());
 
@@ -253,8 +251,7 @@ fn a_windowed_0x58_counts_but_an_unrequested_one_is_diagnosed() {
 
 #[test]
 fn a_0x59_ack_proves_a_connect_back_leg_unguarded() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     // aMule's `ProcessFirewalledAckResponse` counts the legacy UDP ack with no
     // window guard — any well-formed 0x59 proves a reachability leg.
     node.handle_datagram(T0, endpoint(3, 5000), &[0xE4, 0x59]);
@@ -271,8 +268,7 @@ fn a_0x59_ack_proves_a_connect_back_leg_unguarded() {
 
 #[test]
 fn a_tcp_ack_is_counted_only_within_its_check_window() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     hello_from(&mut node, T0, 1, 8);
     drain(|| node.poll_output());
 
@@ -307,8 +303,7 @@ fn a_tcp_ack_is_counted_only_within_its_check_window() {
 
 #[test]
 fn an_armed_node_wakes_for_the_recheck_and_a_window_precedes_it() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     // A known extern port closes the Extern Port Round and its 15 s cadence.
     node.handle_command(T0, rmule_kad::KadCommand::SetExternalUdpPort { port: 4672 });
     // With no outstanding TCP checks and TCP not yet firewalled, the UDP tester's
@@ -327,8 +322,7 @@ fn an_armed_node_wakes_for_the_recheck_and_a_window_precedes_it() {
 
 #[test]
 fn the_hourly_recheck_reopens_emission() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     // Spend the budget (four hellos, each 0x58-answered) at boot.
     for host in 1..=4u8 {
         hello_from(&mut node, T0, host, 8);
@@ -357,8 +351,7 @@ fn the_hourly_recheck_reopens_emission() {
 
 #[test]
 fn an_unmet_recheck_concludes_when_its_last_window_lapses() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     let recheck_at = T0 + KadNode::FIREWALL_RECHECK_INTERVAL;
     node.tick(recheck_at);
     assert_eq!(
@@ -382,8 +375,7 @@ fn an_unmet_recheck_concludes_when_its_last_window_lapses() {
 
 #[test]
 fn a_recheck_concludes_when_four_responses_spend_its_budget() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     let recheck_at = T0 + KadNode::FIREWALL_RECHECK_INTERVAL;
     node.tick(recheck_at);
     drain(|| node.poll_output()); // RecheckStarted
@@ -429,7 +421,7 @@ fn a_malformed_firewall_check_is_diagnosed_and_answers_nothing() {
 }
 
 // The UDP firewall self-check (ADR-0058 requester, breakdown 3) arms alongside
-// the TCP check with the same `enable_firewall_self_check`. It engages up to two
+// the TCP check with the same the self-check start-up. It engages up to two
 // FRESH helpers over peer-TCP (`OP_FWCHECKUDPREQ`), consumes their `0x62`
 // results, concludes open on one positive / firewalled on both failing, and
 // firewalled-by-timeout after six minutes only when the TCP verdict is also
@@ -440,8 +432,7 @@ fn an_external_recheck_reopens_emission_and_pushes_the_scheduled_one_an_hour_out
     // ADR-0086's amendment: a port-mapping grant that lands on the exact ports
     // means the firewalled verdict is stale *now*, not in an hour. Neither
     // reference implementation has this entry point at all.
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     for host in 1..=4u8 {
         hello_from(&mut node, T0, host, 8);
         node.handle_datagram(
@@ -486,8 +477,7 @@ fn external_rechecks_are_one_at_a_time_and_at_most_one_per_five_minutes() {
     // within seconds; each recheck spends four helper lookups, and repeating
     // that makes this node look like a flood source to the peers whose answers
     // it needs.
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     assert!(node.recheck_reachability(T0));
     drain(|| node.poll_output());
     assert!(
@@ -521,8 +511,7 @@ fn external_rechecks_are_one_at_a_time_and_at_most_one_per_five_minutes() {
 /// so the node runs it once the spacing ends instead of waiting out the hour.
 #[test]
 fn an_external_trigger_refused_inside_the_spacing_runs_when_the_spacing_ends() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     assert!(node.recheck_reachability(T0));
     drain(|| node.poll_output());
     for host in 1..=4u8 {
@@ -565,8 +554,7 @@ fn a_recheck_hello_probes_contacts_so_its_reopened_budget_is_actually_spent() {
     // ride hello exchanges. aMule's zone small timer supplies that traffic
     // continuously; this node's hello cadence is join-scoped and silent
     // exactly when a recheck matters, so the recheck makes its own.
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     // Two strangers hello in and become contacts.
     hello_from(&mut node, T0, 1, 8);
     hello_from(&mut node, T0, 2, 8);
@@ -600,8 +588,7 @@ fn a_recheck_hello_probes_contacts_so_its_reopened_budget_is_actually_spent() {
 fn a_rechecks_probe_round_never_exceeds_the_emission_budget() {
     // A probe past the budget could not carry a check, so a big routing table
     // must not turn one recheck into a table-wide hello burst.
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     for host in 1..=8u8 {
         hello_from(&mut node, T0, host, 8);
     }
@@ -647,8 +634,7 @@ fn a_recheck_refused_as_already_in_flight_still_feeds_the_unfinished_round() {
     // "one at a time" guard still refuses to restart the round, but the round
     // gets the traffic its unspent budget is waiting for — and only for the
     // contacts that are not already being probed.
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     hello_from(&mut node, T0, 1, 8);
     hello_from(&mut node, T0, 2, 8);
     drain(|| node.poll_output());
@@ -673,8 +659,7 @@ fn a_spent_budget_probes_nothing_because_no_hello_could_carry_a_check() {
     // The spacing guard refuses a trigger whose predecessor already concluded by
     // spending its budget. Probing then would emit hellos that carry no check at
     // all, so it emits none.
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     for host in 1..=4u8 {
         hello_from(&mut node, T0, host, 8);
     }
@@ -703,8 +688,7 @@ fn a_mutual_firewall_check_earns_the_0x58_but_no_dial_back() {
     // responder adopts instead of dialing, and our close tears that client down
     // before it can ack — so both checks end proving nothing. Answer `0x58`
     // (which costs nothing and counts the peer's recheck), refuse the dial.
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     // Our own check goes out first, on the hello this peer answered.
     hello_from(&mut node, T0, 7, 8);
     assert_eq!(firewall_emissions(&drain(|| node.poll_output())).len(), 1);
@@ -748,8 +732,7 @@ fn a_mutual_firewall_check_earns_the_0x58_but_no_dial_back() {
 /// by — aMule's `AddKadFirewallRequest`, 180 s.
 #[test]
 fn every_emitted_check_names_its_helper_and_window() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     hello_from(&mut node, T0, 1, 8);
     let asked: Vec<KadEvent> = events(&drain(|| node.poll_output()))
         .into_iter()

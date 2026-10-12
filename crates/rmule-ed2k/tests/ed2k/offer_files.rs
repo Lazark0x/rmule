@@ -2,7 +2,10 @@
 //! file's announcement carries, and the u32-low/u16-high split a file above
 //! 4 GiB needs.
 
-use rmule_ed2k::{OfferFiles, OfferedFile, Opcode};
+use rmule_ed2k::{
+    COMPLETE_FILE_ID, COMPLETE_FILE_PORT, FileCompleteness, INCOMPLETE_FILE_ID,
+    INCOMPLETE_FILE_PORT, OfferFiles, OfferedFile, Opcode, ServerGrants,
+};
 use rmule_primitives::{ClientId, Ed2kText, FileHash, Packet, PacketProtocol};
 
 fn file_hash() -> FileHash {
@@ -11,6 +14,8 @@ fn file_hash() -> FileHash {
 
 fn announce(size: u64) -> OfferFiles {
     OfferFiles::announce(
+        ServerGrants::default(),
+        ClientId::from_u32(0x0403_0201),
         ClientId::from_u32(0x0403_0201),
         4662,
         &[OfferedFile::new(
@@ -21,6 +26,24 @@ fn announce(size: u64) -> OfferFiles {
     )
 }
 
+fn compression_grants() -> ServerGrants {
+    ServerGrants {
+        compression: true,
+        ..ServerGrants::default()
+    }
+}
+
+fn offer_to(grants: ServerGrants, id: u32, completeness: FileCompleteness) -> OfferFiles {
+    OfferFiles::announce(
+        grants,
+        ClientId::from_u32(id),
+        ClientId::from_u32(id),
+        4662,
+        &[OfferedFile::new(file_hash(), 42, Ed2kText::from_utf8("ab"))
+            .with_completeness(completeness)],
+    )
+}
+
 #[test]
 fn offerfiles_opcode_byte() {
     assert_eq!(Opcode::OfferFiles.as_u8(), 0x15);
@@ -28,7 +51,14 @@ fn offerfiles_opcode_byte() {
 
 #[test]
 fn empty_announce_is_a_zero_count_keepalive() {
-    let packet = OfferFiles::announce(ClientId::from_u32(7), 4662, &[]).encode_packet();
+    let packet = OfferFiles::announce(
+        ServerGrants::default(),
+        ClientId::from_u32(7),
+        ClientId::from_u32(7),
+        4662,
+        &[],
+    )
+    .encode_packet();
     assert_eq!(packet.protocol(), PacketProtocol::Edonkey);
     assert_eq!(packet.opcode(), 0x15);
     assert_eq!(packet.payload(), &[0x00, 0x00, 0x00, 0x00]);
@@ -66,6 +96,76 @@ fn large_file_announce_splits_size_into_u32_low_and_u16_high() {
     // u32::MAX + 1 = 0x1_0000_0000: low 32 = 0, high = 1.
     let packet = announce(u64::from(u32::MAX) + 1).encode_packet();
     assert_eq!(packet.payload(), expected);
+}
+
+/// A compression-flag server reads completeness off the entry's ID and port:
+/// `251.251.251.251:0xFBFB` complete, `252.252.252.252:0xFCFC` incomplete,
+/// whatever ID we hold (`KnownFile.cpp:1097-1107`).
+#[test]
+fn a_compression_server_gets_the_completeness_markers_for_any_id() {
+    let complete_bytes: &[u8] = &[0xFB, 0xFB, 0xFB, 0xFB, 0xFB, 0xFB];
+    let incomplete_bytes: &[u8] = &[0xFC, 0xFC, 0xFC, 0xFC, 0xFC, 0xFC];
+    for id in [0x0403_0201, 7, 0] {
+        let complete = offer_to(compression_grants(), id, FileCompleteness::Complete);
+        let payload = complete.encode_packet().payload().to_vec();
+        assert_eq!(&payload[20..26], complete_bytes, "id {id:#x}");
+        let incomplete = offer_to(compression_grants(), id, FileCompleteness::Incomplete);
+        let payload = incomplete.encode_packet().payload().to_vec();
+        assert_eq!(&payload[20..26], incomplete_bytes, "id {id:#x}");
+    }
+    let entry = offer_to(compression_grants(), 7, FileCompleteness::Incomplete);
+    assert_eq!(entry.entries()[0].client_id().as_u32(), INCOMPLETE_FILE_ID);
+    assert_eq!(entry.entries()[0].client_port(), INCOMPLETE_FILE_PORT);
+    let entry = offer_to(compression_grants(), 7, FileCompleteness::Complete);
+    assert_eq!(entry.entries()[0].client_id().as_u32(), COMPLETE_FILE_ID);
+    assert_eq!(entry.entries()[0].client_port(), COMPLETE_FILE_PORT);
+}
+
+/// Any other server gets the ID and port only while the ID is High, and
+/// `0:0` for a Low ID — an incomplete file is no different there
+/// (`KnownFile.cpp:1108-1112`).
+#[test]
+fn a_plain_server_gets_the_id_and_port_only_for_a_high_id() {
+    let high = offer_to(
+        ServerGrants::default(),
+        0x0403_0201,
+        FileCompleteness::Incomplete,
+    );
+    assert_eq!(
+        &high.encode_packet().payload()[20..26],
+        &[0x01, 0x02, 0x03, 0x04, 0x36, 0x12]
+    );
+    let low = offer_to(ServerGrants::default(), 4242, FileCompleteness::Complete);
+    assert_eq!(&low.encode_packet().payload()[20..26], &[0; 6]);
+}
+
+/// aMule gates on the eD2k ID but writes the Presented Client ID
+/// (`KnownFile.cpp:1113-1115`): a High eD2k ID with a Kad-derived presented
+/// one carries the presented bytes; a Low eD2k ID carries `0:0` whatever is
+/// presented.
+#[test]
+fn the_gate_reads_the_ed2k_id_and_the_bytes_carry_the_presented_one() {
+    let file = [OfferedFile::new(file_hash(), 42, Ed2kText::from_utf8("ab"))];
+    let presented = ClientId::from_u32(0x0A0B_0C0D);
+    let high = OfferFiles::announce(
+        ServerGrants::default(),
+        ClientId::from_u32(0x0403_0201),
+        presented,
+        4662,
+        &file,
+    );
+    assert_eq!(
+        &high.encode_packet().payload()[20..26],
+        &[0x0D, 0x0C, 0x0B, 0x0A, 0x36, 0x12]
+    );
+    let low = OfferFiles::announce(
+        ServerGrants::default(),
+        ClientId::from_u32(4242),
+        presented,
+        4662,
+        &file,
+    );
+    assert_eq!(&low.encode_packet().payload()[20..26], &[0; 6]);
 }
 
 #[test]

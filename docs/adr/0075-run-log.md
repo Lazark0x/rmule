@@ -25,11 +25,25 @@ in an ordinary session. It is written at one of two levels, chosen by the prefer
   output.
 - **Every core event is projected by an exhaustive match** with no wildcard arm, so a new
   variant fails to compile until it is classed.
+- **The vocabulary and the sink live in core** (`rmule_core::run_log`), beside the events
+  they project: `Record`, `Kind` and its class, `Level`, each event's `record()` and each
+  reason's code table, and the file, opened as `RunLog::open(data_dir, level)` beside the
+  other durable files of the data directory. A front end writes the records of the events
+  it receives and owns only its own words for the operator. Core writes the reachability
+  trail itself: each level is read from its one owner when that owner's change notice
+  wakes, and a level that moved is written once, a wake that moved nothing never. Core's
+  events have no `Display`: where core's own `tracing` names an event, it writes the
+  event's record rendered at the full level, a free-form line like any other.
 - **Never written at either level:** search query text, the names in search results
   (only counts are written), and File History paths (only its size). No `Record` method
   accepts them.
 - **Lean writes only records.** Free-form `tracing` lines reach the file at the full level
   alone, under the `RMULE_LOG` filter; at lean `RMULE_LOG` still filters records.
+- **The CLI's stderr follows `--verbose`.** Without it stderr shows only the command's own
+  presentation lines. With it stderr also carries everything `RMULE_LOG` admits, records and
+  free-form lines alike, at either level (`kad join`, the long-lived diagnostic
+  command, relies on it). The file layer is unchanged:
+  lean still holds records alone.
 - **A step a reachability diagnosis needs is an event, never a free-form line.** Each
   answer to "what did rmule claim, what did the network do with it, where did it stop"
   reaches the lean log by one of four paths: a **level** the core already holds (connected
@@ -46,7 +60,8 @@ in an ordinary session. It is written at one of two levels, chosen by the prefer
 | Step | When the core emits it | Lean fields |
 |---|---|---|
 | Mapping wait | the Login Mapping Wait ends, only with a mapping runtime | own listen port, settled or not |
-| Dial failed | the TCP dial to the server does not come up | server endpoint, cause code, OS error kind and number |
+| Link chosen | before each dial: plain, or obfuscated to the server's obfuscation port (ADR-0042) | server endpoint, link code, port dialed obfuscated, why plain |
+| Dial failed | the TCP dial to the server does not come up, or an obfuscated one's crypt handshake does not complete | server endpoint, cause code, OS error kind and number |
 | Login sent | the link is up and the login has left | server endpoint, transport family, own TCP port, own client-UDP and Kad UDP ports as advertised, own IPv6 as advertised |
 | Closed before answer | the server ends the link before answering | server endpoint, close cause code, OS error kind |
 | Port test awaited | the link is up and the server's High-ID test may dial in plain until the login is answered | server endpoint |
@@ -113,6 +128,7 @@ so a late test is reported rather than lost.
 | Client UDP bind failed, socket bound without a family | port, family, role, OS error kind | none |
 | File history | entry count | none |
 | Kad stopped, quitting | reason and step codes | none |
+| Obfuscation policy: at start, changed live | policy code (our own posture) | none |
 | Reachability level change | own addresses, ports, statuses, protocols, verdicts, lease seconds, buddy state code | none (the buddy's address is never written from the level) |
 
 - The level is one shared handle read by every writer and by the subscriber's filter, so a

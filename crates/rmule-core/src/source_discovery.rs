@@ -304,4 +304,58 @@ mod tests {
 
         task.abort();
     }
+
+    /// A channel that only answers: it hands out whatever `answers` carries and
+    /// asks nothing, so the engine's routing is the whole subject.
+    struct AnsweringChannel {
+        answers: tokio::sync::Mutex<mpsc::Receiver<(FileHash, u8)>>,
+    }
+
+    impl DiscoveryChannel for AnsweringChannel {
+        type Answer = u8;
+
+        async fn ask(&self, _targets: &[SourceLookupTarget]) {}
+
+        async fn next_answer(&self) -> Option<(FileHash, u8)> {
+            self.answers.lock().await.recv().await
+        }
+    }
+
+    /// A late answer for a file no download wants any more resolves nowhere:
+    /// the registry is the only table, so a retired download leaves nothing
+    /// behind to route a straggler to, and the engine keeps serving the
+    /// downloads that are still registered.
+    #[tokio::test]
+    async fn a_late_answer_for_a_file_no_download_wants_resolves_nowhere() {
+        let wanted = FileHash::from_bytes([0x71; FileHash::BYTE_LEN]);
+        let retired = FileHash::from_bytes([0x72; FileHash::BYTE_LEN]);
+        let registry: DiscoveryRegistry<u8> = Arc::new(Mutex::new(HashMap::new()));
+        let (sink_tx, mut sink_rx) = mpsc::channel(4);
+        registry.lock().unwrap().insert(wanted, (4096, sink_tx));
+
+        let (answers_tx, answers_rx) = mpsc::channel(4);
+        let task = tokio::spawn(
+            SourceDiscovery::new(
+                AnsweringChannel {
+                    answers: tokio::sync::Mutex::new(answers_rx),
+                },
+                registry,
+                Duration::from_secs(3600),
+                Duration::from_secs(3600),
+            )
+            .run(),
+        );
+
+        answers_tx.send((retired, 1)).await.unwrap();
+        answers_tx.send((wanted, 2)).await.unwrap();
+
+        let routed = tokio::time::timeout(Duration::from_secs(2), sink_rx.recv())
+            .await
+            .expect("the wanted download is still served")
+            .expect("sink open");
+        assert_eq!(routed, 2, "the retired file's answer reached no sink");
+        assert!(sink_rx.try_recv().is_err(), "nothing else was routed");
+
+        task.abort();
+    }
 }

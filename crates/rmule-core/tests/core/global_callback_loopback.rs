@@ -15,10 +15,10 @@
 //! Correctness Tier exercises the full `(source_server, low_id)` correlation without
 //! the real-server UDP-vs-TCP port split (a Compatibility-Tier concern).
 
+use rmule_testkit::HANG_GUARD;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::time::Duration;
 
-use crate::fixture::identity_with_port;
 use crate::fixture::{dead_port, free_port, serving_started};
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent, ServeCommand,
@@ -49,9 +49,9 @@ async fn b_global_low_id_peer(
     dial_rx: oneshot::Receiver<Ipv4Endpoint>,
     file_bytes: Vec<u8>,
 ) {
-    let a_endpoint = timeout(Duration::from_secs(10), dial_rx)
+    let a_endpoint = timeout(HANG_GUARD, dial_rx)
         .await
-        .expect("G relays rmule's contact within 10s")
+        .expect("G relays rmule's contact")
         .expect("relay channel stayed open");
 
     let b_identity = ClientIdentity::new(
@@ -63,6 +63,8 @@ async fn b_global_low_id_peer(
     let ctx = PeerHandshakeContext {
         identity: b_identity,
         client_id: ClientId::from_u32(B_LOW_ID),
+        ed2k_client_id: ClientId::from_u32(B_LOW_ID),
+        public_ip: None,
         // B reports G's TCP endpoint (where it "logged in") — the key rmule derives
         // from the answer's UDP source (− the +4 server-UDP offset).
         connected_server: Some(g_tcp),
@@ -76,6 +78,7 @@ async fn b_global_low_id_peer(
 
 #[tokio::test]
 async fn per_server_global_callback_adopts_low_id_peer_and_downloads_a_part() {
+    let out = tempfile::tempdir().unwrap();
     let bytes = vec![0x5A_u8; 4096];
     let file = file_link("global-callback.bin", &bytes);
     let file_hash = file.file_hash;
@@ -153,15 +156,19 @@ async fn per_server_global_callback_adopts_low_id_peer_and_downloads_a_part() {
         global_source_interval: Duration::from_millis(50),
         ..CoreConfig::default()
     };
-    let mut core = Core::new(config, rmule_testkit::memory_store());
+    let mut core = Core::builder(config, rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            crate::fixture::settings_on(p),
+            out.path(),
+        ))
+        .build();
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, p),
-        credentials: identity_with_port(p).into(),
     }))
     .await
     .unwrap();
     serving_started(&mut core).await;
-    rmule_testkit::connect_to(&core, &server_ep, identity_with_port(p).into()).await;
+    rmule_testkit::connect_to(&core, &server_ep).await;
 
     // Arm global discovery with G, then start the armed download against C.
     crate::fixture::list_server(
@@ -170,12 +177,11 @@ async fn per_server_global_callback_adopts_low_id_peer_and_downloads_a_part() {
     )
     .await;
 
-    let out = tempfile::tempdir().unwrap();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(server_ep),
-        credentials: identity_with_port(p).into(),
-        output_path: out.path().join("global-callback.bin"),
+        name: rmule_testkit::file_name("global-callback.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -185,7 +191,7 @@ async fn per_server_global_callback_adopts_low_id_peer_and_downloads_a_part() {
     let mut saw_waiting = false;
     let mut saw_peer = false;
     loop {
-        let event = timeout(Duration::from_secs(20), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted event")
             .expect("core event stream stayed open");

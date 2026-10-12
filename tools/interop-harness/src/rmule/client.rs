@@ -7,7 +7,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::artifacts::RunLayout;
 use crate::docker::{Docker, DockerCommand};
@@ -41,6 +41,33 @@ pub struct Registrant<'a> {
     pub index: u16,
 }
 
+/// The run-dir file whose appearance starts a held download container's
+/// `rmule-tools` ([`release_held_download`]).
+pub(crate) const DOWNLOAD_START_GATE: &str = "download-start-gate";
+
+/// Start the `rmule-tools` a held download container
+/// ([`RmuleClientContainer::download_start_detached_command`]) is waiting
+/// to run.
+///
+/// # Errors
+/// If the gate file cannot be written.
+pub fn release_held_download(layout: &RunLayout) -> Result<()> {
+    let gate = layout.root().join(DOWNLOAD_START_GATE);
+    std::fs::write(&gate, b"").with_context(|| format!("write {}", gate.display()))
+}
+
+/// The obfuscation knobs of a detached download (`ed2k download start
+/// --peer-crypt` and `--peer-crypt-flip`): the policy it starts under and the
+/// timed flips, each `<secs>:<policy>` counted from the download's login.
+/// `DownloadCrypt::default()` passes neither, so the run is the plain one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DownloadCrypt<'a> {
+    /// The policy the download starts under; `None` leaves obfuscation off.
+    pub peer_crypt: Option<&'a str>,
+    /// The flips the downloading rmule applies mid-run.
+    pub peer_crypt_flip: &'a [String],
+}
+
 /// The rust image plus mounted workspace an rmule client container runs in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RmuleClientContainer {
@@ -70,6 +97,13 @@ impl RmuleClientContainer {
     /// Low-ID peer as a source (ADR-0040), so it runs with an overall deadline
     /// after which rmule prints its callback-capability summary and exits 0;
     /// the forward/reverse flows leave it unbounded.
+    ///
+    /// Like every download container it runs the binary
+    /// [`prebuild_command`](Self::prebuild_command) left in the
+    /// host-persisted cache; the caller prebuilds first.
+    ///
+    /// # Errors
+    /// If the cache directory cannot be created.
     pub fn download_start_command(
         &self,
         staging: BenchStaging<'_>,
@@ -77,15 +111,22 @@ impl RmuleClientContainer {
         ed2k_link: &str,
         serve: bool,
         max_seconds: Option<u64>,
-    ) -> DockerCommand {
+    ) -> Result<DockerCommand> {
         let mut container = self
-            .download_start_body(staging.layout, server_endpoint, &[ed2k_link], serve)
+            .download_start_body(
+                staging.layout,
+                server_endpoint,
+                &[ed2k_link],
+                serve,
+                DownloadCrypt::default(),
+                false,
+            )?
             .remove_after_exit()
             .network(staging.network);
         if let Some(secs) = max_seconds {
             container = container.arg("--max-seconds").arg(secs.to_string());
         }
-        staging.docker.run_container(container)
+        Ok(staging.docker.run_container(container))
     }
 
     /// [`Self::download_start_command`], but **detached** under a stable `name`
@@ -100,6 +141,14 @@ impl RmuleClientContainer {
     /// `serve` binds the inbound listener so the eserver's in-network dial-back
     /// makes rmule **High-ID**, the ADR-0057 gate that opens UDP-first reask (a
     /// Low-ID downloader falls back to the TCP full ask instead).
+    ///
+    /// The container is **held**: `rmule-tools` starts only once the flow
+    /// calls [`release_held_download`] — after the tap on its namespace
+    /// listens — so the tap holds rmule's login and its first dial, the
+    /// plaintext a verdict reads keys off.
+    ///
+    /// # Errors
+    /// If the cache directory cannot be created.
     pub fn download_start_detached_command(
         &self,
         staging: BenchStaging<'_>,
@@ -107,13 +156,21 @@ impl RmuleClientContainer {
         server_endpoint: &str,
         ed2k_links: &[&str],
         serve: bool,
-    ) -> DockerCommand {
-        staging.docker.run_container(
-            self.download_start_body(staging.layout, server_endpoint, ed2k_links, serve)
-                .detach()
-                .name(name)
-                .network(staging.network),
-        )
+        crypt: DownloadCrypt<'_>,
+    ) -> Result<DockerCommand> {
+        Ok(staging.docker.run_container(
+            self.download_start_body(
+                staging.layout,
+                server_endpoint,
+                ed2k_links,
+                serve,
+                crypt,
+                true,
+            )?
+            .detach()
+            .name(name)
+            .network(staging.network),
+        ))
     }
 
     /// The shared `ed2k download start …` body for both dispositions: the
@@ -123,16 +180,28 @@ impl RmuleClientContainer {
     /// process both asks the server to relay (`OP_CALLBACKREQUEST 0x1C`) and
     /// serves the inbound dial-back, so `RMULE_SERVE_LOG=trace` surfaces the
     /// callback frame and the adopt.
+    ///
+    /// It executes the prebuilt binary, never a `cargo run` per container: a
+    /// cold in-container build took minutes a flow's readiness budget had to
+    /// absorb.
     fn download_start_body(
         &self,
         layout: &RunLayout,
         server_endpoint: &str,
         ed2k_links: &[&str],
         serve: bool,
-    ) -> crate::docker::RunContainer {
-        let mut container = self
-            .workspace
-            .cargo_run(layout)
+        crypt: DownloadCrypt<'_>,
+        held: bool,
+    ) -> Result<crate::docker::RunContainer> {
+        let binary = if held {
+            self.workspace.prebuilt_held(
+                layout,
+                &format!("{CONTAINER_RUN_ROOT}/{DOWNLOAD_START_GATE}"),
+            )?
+        } else {
+            self.workspace.prebuilt(layout)?
+        };
+        let mut container = binary
             .env("RMULE_LOG", rmule_log_level("info"))
             .arg("ed2k")
             .arg("download")
@@ -155,17 +224,23 @@ impl RmuleClientContainer {
                 .arg("--out")
                 .arg(format!("{CONTAINER_RUN_ROOT}/rmule/{out}"));
         }
-        let container = container
+        let mut container = container
             .arg("--tcp-port")
             .arg(RMULE_SERVE_TCP_PORT.to_string());
+        if let Some(policy) = crypt.peer_crypt {
+            container = container.arg("--peer-crypt").arg(policy);
+        }
+        for flip in crypt.peer_crypt_flip {
+            container = container.arg("--peer-crypt-flip").arg(flip);
+        }
         // Serve while downloading so rmule is High-ID and callback-capable
         // (ADR-0039) — required to adopt a Low-ID source and (ADR-0057) to open
         // the UDP-first reask gate.
-        if serve {
+        Ok(if serve {
             container.arg("--serve")
         } else {
             container
-        }
+        })
     }
 
     /// Run `rmule-tools ed2k server probe` inside the interop network,

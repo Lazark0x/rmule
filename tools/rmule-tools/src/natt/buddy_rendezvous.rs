@@ -19,8 +19,13 @@
 //! Each body still issues `StartServing`, because the bind is
 //! what it needs — the serve listener is the buddy link's accept surface and
 //! the port the hello advertises — and the bind is its own fact, taken on the
-//! actor before any login is awaited (the bind-is-not-login contract). The login named by
-//! `--server` cannot complete and the row says so by name.
+//! actor before any login is awaited (the bind-is-not-login contract). No
+//! login is sent unless `--login` asks for one.
+//!
+//! `natt-buddy-recruit-amule` is the exception: its target recruits a stock
+//! aMule, which keeps a buddy only while the hello reads a Low ID, so its
+//! server variant passes `--login` and the target stands on the Low ID its
+//! gateway earns it before Kad starts.
 //!
 //! # What the requester is told out of band, and why
 //!
@@ -51,15 +56,13 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::{Args, ValueEnum};
+use rmule_core::run_log::Level;
 use rmule_core::{
-    AppConfigStore, Core, CoreCommand, CoreConfig, CoreEvent, DurableAppConfig,
-    ExternalAddressOverride, KadEnableConfig, PeerBuddy, PeerReach,
-    ServeCommand as CoreServeCommand, open_durable_store_in_memory,
+    Core, CoreCommand, CoreConfig, CoreEvent, ExternalAddressOverride, KadEnableConfig, PeerBuddy,
+    PeerReach, ServeCommand as CoreServeCommand, open_durable_store_in_memory,
 };
 use rmule_kad::KadId;
-use rmule_primitives::{
-    ClientId, ClientIdentity, Ed2kText, Ipv4Endpoint, PeerEndpoint, ServerEndpoint, UserHash,
-};
+use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint, ServerEndpoint, UserHash};
 
 use crate::operand::{parse_hex16, parse_seeded_kad_contacts, parse_user_hash};
 
@@ -100,11 +103,22 @@ pub(crate) struct NattBuddyRendezvousArgs {
     /// Which body to be.
     #[arg(long, value_enum)]
     role: BuddyRole,
-    /// The eD2k endpoint a download names. Nothing listens on it in this flow
-    /// and nothing dials it (ADR-0095): the bind is what the body needs, and
-    /// a download with no session and Kad running starts serverless.
+    /// The eD2k endpoint a download names. Nothing dials it (ADR-0095) unless
+    /// `--login` asks for the operator's connect: the bind is what the body
+    /// needs, and a download with no session and Kad running starts
+    /// serverless.
     #[arg(long)]
     server: String,
+    /// Log in to `--server` before Kad starts, as the operator's connect
+    /// (`natt-buddy-recruit-amule`'s server variant): a firewalled home node
+    /// stands on its server Low ID when it recruits, and the id its hello
+    /// presents is the one an open aMule keeps a buddy by.
+    #[arg(long)]
+    login: bool,
+    /// Seconds to wait for the `--login` session; a login that never lands is
+    /// a row, not an error.
+    #[arg(long, default_value_t = 60)]
+    login_timeout: u64,
     /// The serve listener: the buddy link's accept surface.
     #[arg(long, default_value = "0.0.0.0:4662")]
     listen: SocketAddrV4,
@@ -187,9 +201,9 @@ pub(crate) struct NattBuddyRendezvousArgs {
     #[arg(long)]
     file: Option<String>,
     /// Where the downloaded file lands (with `--file`).
-    #[arg(long, default_value = "/out/download.bin")]
+    #[arg(long, default_value = "/out/dl/download.bin")]
     download_out: PathBuf,
-    /// Arm this body's peer obfuscation policy (`CoreConfig::peer_crypt`),
+    /// Arm this body's peer obfuscation policy (`CoreSettings::obfuscation`),
     /// which also arms its Kad-UDP crypt — so a UDP Firewall
     /// Helper keys its `0x62` on the verify key an `0xA7` carried.
     /// Off unless passed: an unflagged body stays plaintext.
@@ -213,18 +227,17 @@ pub(crate) async fn run_buddy_rendezvous(args: NattBuddyRendezvousArgs) -> Resul
     let server = ServerEndpoint::parse_host_port(&args.server)
         .with_context(|| format!("parse server endpoint {}", args.server))?;
     let our_hash = UserHash::from_bytes(parse_user_hash(&args.user_hash)?);
-    let identity = ClientIdentity::new(
-        our_hash,
-        Ed2kText::from_utf8(&args.nickname),
-        args.listen.port(),
-        60,
-    );
+    let kad_id = args
+        .kad_id
+        .as_deref()
+        .map(|hex| parse_hex16("--kad-id", hex))
+        .transpose()?
+        .map(KadId::from_bytes);
     let contacts = parse_seeded_kad_contacts(&args.kad_contacts)?;
     let download_plan = args.file.clone().map(|link| transfer::DownloadPlan {
         link,
         output: args.download_out.clone(),
         server: server.clone(),
-        identity: identity.clone(),
         window: Duration::from_secs(args.window),
     });
 
@@ -234,21 +247,34 @@ pub(crate) async fn run_buddy_rendezvous(args: NattBuddyRendezvousArgs) -> Resul
         ..BuddyRow::default()
     };
 
-    let mut core = Core::builder(
+    let builder = Core::builder(
         CoreConfig {
-            udp_port: args.udp_port,
             // The Address Learning Override tier (ADR-0084); `--own-ip` is
             // its one CLI surface.
             external_address: ExternalAddressOverride {
                 v4: args.own_ip,
                 ..ExternalAddressOverride::default()
             },
-            peer_crypt: args.peer_crypt.map(rmule_core::ObfuscationPolicy::from),
             ..CoreConfig::default()
         },
         open_durable_store_in_memory()?,
     )
-    .user_hash(our_hash)
+    .settings(rmule_core::CoreSettings {
+        nickname: args.nickname.clone(),
+        tcp_port: args.listen.port(),
+        udp_port: args.udp_port,
+        obfuscation: args.peer_crypt.map(rmule_core::ObfuscationPolicy::from),
+        download_dir: download_plan
+            .as_ref()
+            .map(|plan| crate::output::download_dir(std::slice::from_ref(&plan.output)))
+            .transpose()?,
+        ..rmule_core::CoreSettings::default()
+    })
+    .user_hash(our_hash);
+    let mut core = match kad_id {
+        Some(kad_id) => builder.kad_id(kad_id),
+        None => builder,
+    }
     .build();
     let _share = crate::share::share_files(&mut core, std::slice::from_ref(&args.share), |event| {
         row::observe(event, &mut row);
@@ -256,25 +282,29 @@ pub(crate) async fn run_buddy_rendezvous(args: NattBuddyRendezvousArgs) -> Resul
     .await?;
     core.send(CoreCommand::Serve(CoreServeCommand::StartServing {
         listen_addr: args.listen,
-        credentials: identity.clone().into(),
     }))
     .await?;
-    // The bind, not the login: nothing on this WAN can answer a login, and the
-    // buddy link rides the listener the bind produced.
+    // The bind, not the login: the buddy link rides the listener the bind
+    // produced, and only `--login` asks for a session on top of it.
     drain_until_serving(&mut core, Duration::from_secs(30), &mut row).await?;
+    if args.login {
+        // Before Kad, so every hello the recruit sends presents the id the
+        // server granted rather than a serverless one.
+        crate::node::connect(&core, &server).await?;
+        await_login(&mut core, Duration::from_secs(args.login_timeout), &mut row).await?;
+        println!(
+            "rmule-natt-buddy-login connected={} id={} failure={:?}",
+            row.connected, row.client_id, row.login_failure
+        );
+    }
 
-    if let Some(kad_id) = args.kad_id.as_deref() {
-        let kad_id = KadId::from_bytes(parse_hex16("--kad-id", kad_id)?);
+    if let Some(kad_id) = kad_id {
         row.kad_id = hex_lower(kad_id.as_bytes());
         core.send(CoreCommand::EnableKad(KadEnableConfig {
-            kad_id,
-            peer_credentials: identity.into(),
             bootstrap: args.kad_bootstrap.clone(),
             contacts,
             nodes_dat_path: None,
             assume_open_reachability: args.assume_open,
-            kad_udp_key: DurableAppConfig::new(open_durable_store_in_memory()?)
-                .ensure_kad_udp_key()?,
             kad_capture_dir: None,
             kad_shutdown: None,
         }))
@@ -487,7 +517,7 @@ async fn drain_until(
     row: &mut BuddyRow,
 ) -> Result<()> {
     while let Some(event) = first_dial::next_event(core, deadline, first_dial, row).await? {
-        println!("{event}");
+        println!("{}", event.record().render(Level::Full));
         row::observe(&event, row);
     }
     Ok(())
@@ -504,7 +534,26 @@ async fn drain_until_serving(core: &mut Core, budget: Duration, row: &mut BuddyR
             event = core.next_event() => event,
         };
         let Some(event) = event else { break };
-        println!("{event}");
+        println!("{}", event.record().render(Level::Full));
+        row::observe(&event, row);
+    }
+    Ok(())
+}
+
+/// Drain until the session says it logged in or failed, recording either on
+/// the row; a session that never answers inside `budget` is named there too.
+async fn await_login(core: &mut Core, budget: Duration, row: &mut BuddyRow) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + budget;
+    while !row.connected && row.login_failure.is_empty() {
+        let event = tokio::select! {
+            () = tokio::time::sleep_until(deadline) => {
+                row.login_failure = format!("no session within {budget:?}");
+                break;
+            }
+            event = core.next_event() => event,
+        };
+        let Some(event) = event else { break };
+        println!("{}", event.record().render(Level::Full));
         row::observe(&event, row);
     }
     Ok(())
@@ -532,7 +581,7 @@ async fn await_buddy(core: &mut Core, budget: Duration, row: &mut BuddyRow) -> R
                 event = core.next_event() => event,
             };
             let Some(event) = event else { return Ok(false) };
-            println!("{event}");
+            println!("{}", event.record().render(Level::Full));
             row::observe(&event, row);
         }
     }
@@ -569,7 +618,7 @@ async fn target_udp_open(
                 event = core.next_event() => event,
             };
             let Some(event) = event else { break };
-            println!("{event}");
+            println!("{}", event.record().render(Level::Full));
             row::observe(&event, row);
         }
     };
@@ -603,7 +652,7 @@ async fn await_target(core: &mut Core, path: &Path, budget: Duration) -> Result<
             () = tokio::time::sleep(Duration::from_millis(500)) => {}
             event = core.next_event() => {
                 let Some(event) = event else { return Ok(None) };
-                println!("{event}");
+                println!("{}", event.record().render(Level::Full));
             }
         }
     }
@@ -669,7 +718,7 @@ async fn await_snapshot(
         if let CoreEvent::DiagnosticsSnapshot { snapshot } = event {
             return Ok(Some(snapshot));
         }
-        println!("{event}");
+        println!("{}", event.record().render(Level::Full));
         row::observe(&event, row);
     }
 }

@@ -18,8 +18,11 @@ impl KadProtocol {
     const PLAIN_BYTE: u8 = 0xE4;
     const PACKED_BYTE: u8 = 0xE5;
 
+    /// The Kad protocol a datagram's leading byte declares, or `None` when it
+    /// declares none — how a shared UDP socket's demux tells Kad from the
+    /// other protocols on it.
     #[must_use]
-    const fn from_byte(byte: u8) -> Option<Self> {
+    pub const fn from_byte(byte: u8) -> Option<Self> {
         match byte {
             Self::PLAIN_BYTE => Some(Self::Plain),
             Self::PACKED_BYTE => Some(Self::Packed),
@@ -27,8 +30,9 @@ impl KadProtocol {
         }
     }
 
+    /// The protocol's leading byte.
     #[must_use]
-    const fn byte(self) -> u8 {
+    pub const fn byte(self) -> u8 {
         match self {
             Self::Plain => Self::PLAIN_BYTE,
             Self::Packed => Self::PACKED_BYTE,

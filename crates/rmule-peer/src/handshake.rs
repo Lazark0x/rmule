@@ -113,8 +113,16 @@ pub struct ServingBuddyAdvert {
 pub struct PeerHandshakeContext {
     /// Who we say we are: nickname, versions, and any extra tags.
     pub identity: ClientIdentity,
-    /// The Client ID our server assigned, which tells a peer whether it can dial us back.
+    /// The Client ID the hello presents, which tells a peer whether it can dial us back.
     pub client_id: ClientId,
+    /// The eD2k ID the server session holds, or the Low ID `0` with none: aMule's
+    /// `GetED2KID`, the one fact the Secure User Identification V2 challenge IP
+    /// keys on (`BaseClient.cpp:2096-2104`), whatever `client_id` presents.
+    pub ed2k_client_id: ClientId,
+    /// Our public IPv4 as we know it, or `None`: aMule's `GetPublicIP(true)`,
+    /// which a kind-10 Secure User Identification verification reads before
+    /// the eD2k ID (`ClientCreditsList.cpp:405-413`).
+    pub public_ip: Option<std::net::Ipv4Addr>,
     /// The server we are logged in to, or `None`, which a hello carries as the zero endpoint.
     pub connected_server: Option<Ipv4Endpoint>,
 }

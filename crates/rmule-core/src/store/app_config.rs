@@ -1,5 +1,5 @@
 //! The durable [`AppConfigStore`] on `rmule-store` (ADR-0083): the three
-//! generate-once identity singletons, the front-end preference table, and —
+//! generate-once identity singletons, the preference table, and —
 //! beside it in `app_config/servers.rs` — the managed server list that makes
 //! up the narrower [`ServerListStore`](crate::ServerListStore) half.
 //!
@@ -14,8 +14,9 @@
 
 mod servers;
 
-pub(crate) use servers::{grow_from_v8, grow_from_v9, grow_from_v11};
+pub(crate) use servers::{grow_from_v8, grow_from_v9, grow_from_v11, grow_from_v13};
 
+use std::path::Path;
 use std::sync::Arc;
 
 use rmule_kad::KadId;
@@ -35,8 +36,9 @@ use super::Schema;
 /// this one record, so the key is a constant rather than a mint.
 const SINGLETON: u8 = 0;
 
-/// The preference table: a [`Preference::key`] to the text a front-end set.
-/// Not a record kind — the value is the column, and core never interprets it.
+/// The preference table: a key to its text — a [`Preference::key`] core
+/// parses through Core Settings, or a front end's own key core never
+/// interprets. Not a record kind: the value is the column.
 const PREFERENCES: TableDefinition<'static, &str, &str> =
     TableDefinition::new("app_config.preference");
 
@@ -140,6 +142,18 @@ pub(crate) fn schema() -> Schema {
         .merge(servers::schema())
 }
 
+/// The seam's tables as store versions 12 and 13 declared them: today's, the
+/// server list in its shape before the aux-ports list.
+#[cfg(test)]
+pub(crate) fn schema_v13() -> Schema {
+    Schema::new()
+        .indexed(&CLIENT_IDENTITY)
+        .indexed(&KAD_IDENTITY)
+        .indexed(&SECURE_IDENT_KEY)
+        .table(PREFERENCES)
+        .merge(servers::schema_v13())
+}
+
 /// The seam's tables as store versions 1 to 8 declared them, the server list
 /// in its old shape with its endpoint index, for a test that builds an older
 /// store.
@@ -168,8 +182,8 @@ pub(crate) fn add_server_v1(
 }
 
 /// The durable owner of the app's Client Identity, Secure User Identification
-/// keypair, Kad identity, managed server list and front-end preferences, on
-/// the one `rmule-store` database.
+/// keypair, Kad identity, managed server list and preferences, on the one
+/// `rmule-store` database.
 ///
 /// Cloneable-by-`Arc` and `Sync`: every method takes `&self` and does its own
 /// transaction, so a front-end and the core actor share one handle.
@@ -247,6 +261,87 @@ impl DurableAppConfig {
     pub fn new(store: Arc<Store>) -> Self {
         Self { store }
     }
+
+    /// The text stored under `key`, or `None` when nothing has set it.
+    pub(crate) fn value(&self, key: &str) -> Result<Option<String>, CoreError> {
+        self.store.read(|txn| {
+            let table = txn.table(PREFERENCES)?;
+            let found = table.get(key).map_err(StoreError::from)?;
+            Ok(found.map(|value| value.value().to_owned()))
+        })
+    }
+
+    /// Persist `value` under `key`, replacing any installed one.
+    pub(crate) fn set_value(&self, key: &str, value: &str) -> Result<(), CoreError> {
+        self.store.write::<_, CoreError>(|txn| {
+            txn.open_table(PREFERENCES)
+                .map_err(StoreError::from)?
+                .insert(key, value)
+                .map_err(StoreError::from)?;
+            Ok(())
+        })
+    }
+
+    // The writers of core's own keys. Crate-private: a front end changes one
+    // through `CoreSettingsHandle::set`, which validates it and hands a live
+    // key to a running core (ADR-0069); core writes the rest itself — the
+    // learned mapping method and the two minted secrets.
+
+    /// Persist `value` under `preference`, replacing any installed one.
+    pub(crate) fn set_preference(
+        &self,
+        preference: Preference,
+        value: &str,
+    ) -> Result<(), CoreError> {
+        self.set_value(preference.key(), value)
+    }
+
+    /// Replace the advertised nickname. Mints the identity first when none
+    /// exists, so the edit can never land on a row that is not there.
+    pub(crate) fn set_nickname(&self, nickname: &Ed2kText) -> Result<(), CoreError> {
+        IDENTITY.edit(&self.store, |record| {
+            record.nickname = nickname.clone();
+        })
+    }
+
+    /// Replace the advertised eD2k listen port (the one a server's login
+    /// answer grades into a High/Low ID).
+    pub(crate) fn set_tcp_port(&self, port: u16) -> Result<(), CoreError> {
+        IDENTITY.edit(&self.store, |record| record.tcp_port = port)
+    }
+
+    /// Replace the UDP listen port — the one socket reask, NAT-T and Kad
+    /// share. The Kad **ID** is untouched: a node that moves ports keeps its
+    /// place in the keyspace.
+    pub(crate) fn set_udp_port(&self, port: u16) -> Result<(), CoreError> {
+        KAD_IDENTITY_SINGLETON.edit(&self.store, |record| record.udp_port = port)
+    }
+
+    /// Persist the download directory. Fails with
+    /// [`CoreError::Repository`] on a path that is not valid UTF-8, since the
+    /// preferences column is text.
+    pub(crate) fn set_download_dir(&self, dir: &Path) -> Result<(), CoreError> {
+        let value = dir
+            .to_str()
+            .ok_or_else(|| CoreError::Repository("download dir is not valid UTF-8".to_owned()))?;
+        self.set_preference(Preference::DownloadDir, value)
+    }
+
+    /// Read the decimal `u32` stored under `preference`, or mint one from OS
+    /// entropy and persist it — the generate-once shape both per-install
+    /// secrets share.
+    fn ensure_secret(&self, preference: Preference) -> Result<u32, CoreError> {
+        if let Some(stored) = self.preference(preference)?
+            && let Ok(secret) = stored.parse::<u32>()
+        {
+            return Ok(secret);
+        }
+        let mut bytes = [0_u8; 4];
+        getrandom::fill(&mut bytes).expect("OS entropy for a per-install secret");
+        let secret = u32::from_le_bytes(bytes);
+        self.set_preference(preference, &secret.to_string())?;
+        Ok(secret)
+    }
 }
 
 impl AppConfigStore for DurableAppConfig {
@@ -267,34 +362,14 @@ impl AppConfigStore for DurableAppConfig {
     }
 
     fn preference(&self, preference: Preference) -> Result<Option<String>, CoreError> {
-        self.store.read(|txn| {
-            let table = txn.table(PREFERENCES)?;
-            let found = table.get(preference.key()).map_err(StoreError::from)?;
-            Ok(found.map(|value| value.value().to_owned()))
-        })
+        self.value(preference.key())
     }
 
-    fn set_preference(&self, preference: Preference, value: &str) -> Result<(), CoreError> {
-        self.store.write::<_, CoreError>(|txn| {
-            txn.open_table(PREFERENCES)
-                .map_err(StoreError::from)?
-                .insert(preference.key(), value)
-                .map_err(StoreError::from)?;
-            Ok(())
-        })
+    fn ensure_port_map_secret(&self) -> Result<u32, CoreError> {
+        self.ensure_secret(Preference::PortMapSecret)
     }
 
-    fn set_nickname(&self, nickname: &Ed2kText) -> Result<(), CoreError> {
-        IDENTITY.edit(&self.store, |record| {
-            record.nickname = nickname.clone();
-        })
-    }
-
-    fn set_tcp_port(&self, port: u16) -> Result<(), CoreError> {
-        IDENTITY.edit(&self.store, |record| record.tcp_port = port)
-    }
-
-    fn set_udp_port(&self, port: u16) -> Result<(), CoreError> {
-        KAD_IDENTITY_SINGLETON.edit(&self.store, |record| record.udp_port = port)
+    fn ensure_kad_udp_key(&self) -> Result<u32, CoreError> {
+        self.ensure_secret(Preference::KadUdpKey)
     }
 }

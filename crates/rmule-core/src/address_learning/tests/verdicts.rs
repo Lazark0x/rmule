@@ -209,7 +209,66 @@ fn a_mapping_grant_lives_exactly_as_long_as_its_lease() {
     );
 }
 
+/// The instant `next_lapse` names is the one the lease ages the verdict at,
+/// so a reader that caches the verdict and reads again then sees it move.
+#[test]
+fn the_next_lapse_is_where_a_lease_turns_the_verdict_stale() {
+    let mut store = bound_store();
+    let start = Instant::now();
+    let lease = Duration::from_secs(600);
+    let endpoint = PeerEndpoint::V4(Ipv4Endpoint::new(ipv4(v4(9)), TCP_PORT));
+    store.observe(
+        AddressObservation::mapping_grant(SocketRole::Tcp, endpoint, lease),
+        start,
+    );
+    let lapse = store.next_lapse(start).expect("a lease lapses");
+    assert_eq!(lapse, start + lease);
+    let before = lapse - Duration::from_millis(1);
+    assert_eq!(
+        store.endpoint(AddressFamily::V4, SocketRole::Tcp, before),
+        EndpointVerdict::Known {
+            endpoint,
+            tier: ConfidenceTier::MappingGrant,
+        }
+    );
+    assert_eq!(
+        store.endpoint(AddressFamily::V4, SocketRole::Tcp, lapse),
+        EndpointVerdict::Stale {
+            endpoint,
+            since: lapse,
+        }
+    );
+}
+
 // ------------------------------------------------------------- NAT hints
+
+/// Two Kad observers naming two ports learn no port, but say the NAT maps
+/// per destination: the Own Mapping moves alone, and the Own Address
+/// Generation wakes for it.
+#[test]
+fn an_own_mapping_moved_alone_wakes_the_own_address_generation() {
+    let store = SharedAddressLearning::new();
+    let mut generation = store.own_address_changed();
+    store.observe(AddressObservation::kad_observed_port(
+        ipv4(observer(1)),
+        KAD_PORT,
+    ));
+    generation.borrow_and_update();
+    store.observe(AddressObservation::kad_observed_port(
+        ipv4(observer(2)),
+        KAD_PORT + 1,
+    ));
+    assert_eq!(store.learned_port(SocketRole::Udp), None);
+    assert_eq!(
+        store.own_mapping(SocketRole::Udp),
+        OwnMapping::EndpointDependent
+    );
+    assert!(
+        generation
+            .has_changed()
+            .expect("the store holds the sender")
+    );
+}
 
 #[test]
 fn two_fresh_tiers_that_disagree_publish_a_hint_without_losing_the_verdict() {

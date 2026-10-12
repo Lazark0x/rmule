@@ -22,7 +22,6 @@ async fn a_held_keyword_ends_the_kad_leg_not_sent_and_a_put_off_publish_is_told(
     let live = LiveSearches::default();
     let (evt_tx, mut evt_rx) = mpsc::channel(16);
     let (_cancel_tx, cancel_rx) = watch::channel(false);
-    let (finished_tx, _finished_rx) = mpsc::channel(4);
     let (sink, kad_rx) = kad_keyword_leg();
     let query = KeywordQuery::new(Ed2kText::from_utf8("song")).expect("a query");
     let search_id = SearchId::from_u64(692);
@@ -39,7 +38,6 @@ async fn a_held_keyword_ends_the_kad_leg_not_sent_and_a_put_off_publish_is_told(
             },
             evt_tx,
             cancel_rx,
-            finished_tx,
             paging: crate::search::Paging::inert(query.into()),
             legs: crate::service::SearchLegs::SENT,
             late: crate::search::LateLegs::default(),
@@ -84,7 +82,6 @@ async fn a_dropped_kad_row_is_told_as_a_skipped_row() {
     let live = LiveSearches::default();
     let (evt_tx, mut evt_rx) = mpsc::channel(16);
     let (_cancel_tx, cancel_rx) = watch::channel(false);
-    let (finished_tx, _finished_rx) = mpsc::channel(4);
     let (sink, kad_rx) = kad_keyword_leg();
     let query = KeywordQuery::new(Ed2kText::from_utf8("film")).expect("a query");
     let search_id = SearchId::from_u64(700);
@@ -101,7 +98,6 @@ async fn a_dropped_kad_row_is_told_as_a_skipped_row() {
             },
             evt_tx,
             cancel_rx,
-            finished_tx,
             paging: crate::search::Paging::inert(query.into()),
             legs: crate::service::SearchLegs::SENT,
             late: crate::search::LateLegs::default(),

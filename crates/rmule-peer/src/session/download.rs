@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use rmule_primitives::{ED2K_PART_SIZE, Ed2kText, FileHash, part_count};
 
 use super::{FileProbeStatus, PeerError, PeerEvent, PeerSession, SlotReleaseReason, State};
+use crate::RequesterEvent;
 use crate::capability::{MiscOptions1, MiscOptions2};
 use crate::compress::InflateFailed;
 use crate::file::PartBitmap;
@@ -147,24 +148,28 @@ impl PeerSession {
             if flow.compressed_blocks.remove(&cp.start).is_some() {
                 self.compressed_blocks_in_flight.0 -= 1;
             }
-            self.core.push_event(PeerEvent::CompressedPartSkipped {
-                file_hash: cp.file_hash,
-                offset: cp.start,
-                reason: InflateFailed::DeclaredTooLarge {
-                    declared: cp.compressed_block_len,
-                    ceiling: COMPRESSED_INPUT_CEILING,
+            self.core.push_event(PeerEvent::Requester(
+                RequesterEvent::CompressedPartSkipped {
+                    file_hash: cp.file_hash,
+                    offset: cp.start,
+                    reason: InflateFailed::DeclaredTooLarge {
+                        declared: cp.compressed_block_len,
+                        ceiling: COMPRESSED_INPUT_CEILING,
+                    },
                 },
-            });
+            ));
             return;
         }
         let starts_new_block = !flow.compressed_blocks.contains_key(&cp.start);
         if starts_new_block && self.compressed_blocks_in_flight.0 >= MAX_INFLIGHT_COMPRESSED_BLOCKS
         {
-            self.core.push_event(PeerEvent::CompressedPartSkipped {
-                file_hash: cp.file_hash,
-                offset: cp.start,
-                reason: InflateFailed::TooManyInFlight,
-            });
+            self.core.push_event(PeerEvent::Requester(
+                RequesterEvent::CompressedPartSkipped {
+                    file_hash: cp.file_hash,
+                    offset: cp.start,
+                    reason: InflateFailed::TooManyInFlight,
+                },
+            ));
             return;
         }
         if starts_new_block {
@@ -181,16 +186,16 @@ impl PeerSession {
             .expect("entry just inserted");
         self.compressed_blocks_in_flight.0 -= 1;
         let event = match crate::compress::inflate(&compressed, COMPRESSED_BLOCK_CEILING) {
-            Ok(bytes) => PeerEvent::PartReceived {
+            Ok(bytes) => PeerEvent::Requester(RequesterEvent::PartReceived {
                 file_hash: cp.file_hash,
                 offset: cp.start,
                 bytes,
-            },
-            Err(reason) => PeerEvent::CompressedPartSkipped {
+            }),
+            Err(reason) => PeerEvent::Requester(RequesterEvent::CompressedPartSkipped {
                 file_hash: cp.file_hash,
                 offset: cp.start,
                 reason,
-            },
+            }),
         };
         self.core.push_event(event);
     }
@@ -221,21 +226,21 @@ impl PeerSession {
                 bitmap,
                 complete,
             } => {
-                let event = PeerEvent::FileProbed {
+                let event = PeerEvent::Requester(RequesterEvent::FileProbed {
                     file_hash,
                     status: FileProbeStatus::Available {
                         file_name: file_name.clone(),
                         bitmap: bitmap.clone(),
                         complete: *complete,
                     },
-                };
+                });
                 self.core.push_event(event);
             }
             ProbeState::NotAvailable => {
-                let event = PeerEvent::FileProbed {
+                let event = PeerEvent::Requester(RequesterEvent::FileProbed {
                     file_hash,
                     status: FileProbeStatus::NotAvailable,
-                };
+                });
                 self.core.push_event(event);
             }
             ProbeState::Pending { .. } => {
@@ -368,18 +373,18 @@ impl PeerSession {
         } else {
             self.emit_standalone_file_request(file_hash, &items);
         }
-        self.core.push_event(PeerEvent::FileRequestSent {
-            file_hash,
-            support,
-            sources_asked,
-        });
+        self.core
+            .push_event(PeerEvent::Requester(RequesterEvent::FileRequestSent {
+                file_hash,
+                sources_asked,
+            }));
     }
 
     /// The standalone wire shape of a [`RequestItem`] set — each item as the
     /// separate packet whose hash-stripped payload the bundle sub-item
     /// mirrors, in the same order, except the source ask, which is always SX1. Serves both [`Self::handle_request_file`]'s
     /// non-multipacket fallback and the granular
-    /// [`crate::PeerCommand::RequestSources`] command.
+    /// [`crate::RequesterCommand::RequestSources`] command.
     pub(super) fn emit_standalone_file_request(
         &mut self,
         file_hash: FileHash,
@@ -687,14 +692,15 @@ impl PeerSession {
             bitmap: bitmap.clone(),
             complete,
         };
-        self.core.push_event(PeerEvent::FileProbed {
-            file_hash,
-            status: FileProbeStatus::Available {
-                file_name,
-                bitmap,
-                complete,
-            },
-        });
+        self.core
+            .push_event(PeerEvent::Requester(RequesterEvent::FileProbed {
+                file_hash,
+                status: FileProbeStatus::Available {
+                    file_name,
+                    bitmap,
+                    complete,
+                },
+            }));
 
         // Advance the active-slot flow if this file owns it.
         if self.active_slot == Some(file_hash) {
@@ -727,7 +733,9 @@ impl PeerSession {
             .expect("active_slot entry must exist");
         flow.slot = SlotState::Downloading;
         self.core
-            .push_event(PeerEvent::SlotGranted { file_hash: active });
+            .push_event(PeerEvent::Requester(RequesterEvent::SlotGranted {
+                file_hash: active,
+            }));
         // Send REQUESTPARTS for the pending request.
         if let Some(pending) = &mut flow.pending_request
             && !pending.requestparts_sent
@@ -755,7 +763,9 @@ impl PeerSession {
             return;
         };
         self.core
-            .push_event(PeerEvent::QueueRejected { file_hash: active });
+            .push_event(PeerEvent::Requester(RequesterEvent::QueueRejected {
+                file_hash: active,
+            }));
         self.release_slot(active, SlotReleaseReason::QueueRejected);
     }
 
@@ -770,21 +780,23 @@ impl PeerSession {
         match flow.last_rank {
             None => {
                 flow.last_rank = Some(rank);
-                self.core.push_event(PeerEvent::QueueRanked {
-                    file_hash: active,
-                    rank,
-                });
+                self.core
+                    .push_event(PeerEvent::Requester(RequesterEvent::QueueRanked {
+                        file_hash: active,
+                        rank,
+                    }));
             }
             Some(prev) if prev == rank => {
                 // Dedup identical observation per ADR-0025.
             }
             Some(prev) => {
                 flow.last_rank = Some(rank);
-                self.core.push_event(PeerEvent::QueueProgress {
-                    file_hash: active,
-                    previous_rank: prev,
-                    new_rank: rank,
-                });
+                self.core
+                    .push_event(PeerEvent::Requester(RequesterEvent::QueueProgress {
+                        file_hash: active,
+                        previous_rank: prev,
+                        new_rank: rank,
+                    }));
             }
         }
     }
@@ -818,7 +830,10 @@ impl PeerSession {
         flow.pending_request = None;
         self.active_slot = None;
         self.core
-            .push_event(PeerEvent::SlotReleased { file_hash, reason });
+            .push_event(PeerEvent::Requester(RequesterEvent::SlotReleased {
+                file_hash,
+                reason,
+            }));
     }
 
     fn advance_active_slot(&mut self, file_hash: FileHash) {

@@ -4,16 +4,13 @@
 //! side (ADR-0107).
 
 pub(crate) mod persist;
-// The Remote-Queued Pool + reask scheduler (ADR-0057), wired live by the
-// download `runner`: a ranked-then-hung-up source is pooled (its earned queue
-// standing kept without a socket), the reask sweep ticks it out the shared
-// client-UDP send as `OP_REASKFILEPING` (`0x90`), and the demux front's
-// `0x91`/`0x92`/`0x93` replies feed back through `on_reply_datagram`.
 mod reask_routes;
-mod remote_queue;
 mod runner;
+mod runtime;
+pub(crate) use runtime::SharedRuntime;
 pub(crate) mod source_ask_clock;
 pub(crate) mod source_asks;
+mod source_book;
 pub(crate) mod source_seeds;
 mod state;
 mod worker_pool;

@@ -10,7 +10,9 @@ use std::time::Duration;
 
 use crate::fixture::peer_endpoint;
 use rmule_net::peer::{ConnectOptions, Connection};
-use rmule_peer::{FileProbeStatus, PeerCommand, PeerEvent};
+use rmule_peer::{
+    ConnectionEvent, FileProbeStatus, PeerCommand, PeerEvent, RequesterCommand, RequesterEvent,
+};
 use rmule_primitives::{ED2K_PART_SIZE, FileHash, UserHash};
 use rmule_testkit::peer_session::loopback_ctx;
 use rmule_testkit::{FakePeer, MultiPacketPolicy, PeerScript};
@@ -45,28 +47,28 @@ async fn request_file_bundles_against_a_multipacket_uploader_and_probes_availabl
     // the emit gate reads `peer_misc_options`/`peer_misc_options2`.
     loop {
         match conn.next_event().await {
-            Some(PeerEvent::PeerIdentified { .. }) => break,
+            Some(PeerEvent::Connection(ConnectionEvent::Identified { .. })) => break,
             Some(_) => {}
             None => panic!("connection closed before identify"),
         }
     }
 
-    conn.send(PeerCommand::RequestFile {
+    conn.send(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash,
         file_size: ED2K_PART_SIZE + 1,
         own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE + 1), // multi-part → the bundle carries Name + SetReqId
         want_sources: false,
         want_aich_root: false,
-    })
+    }))
     .await
     .expect("send RequestFile");
 
     let mut probed = None;
     while let Some(event) = conn.next_event().await {
-        if let PeerEvent::FileProbed {
+        if let PeerEvent::Requester(RequesterEvent::FileProbed {
             file_hash: fh,
             status,
-        } = event
+        }) = event
             && fh == file_hash
         {
             probed = Some(status);

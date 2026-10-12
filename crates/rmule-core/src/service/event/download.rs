@@ -1,6 +1,8 @@
 //! The download activity's event vocabulary (ADR-0030): what a download's run,
 //! its sources and its part file did, one fact per event.
 
+use std::path::PathBuf;
+
 use rmule_primitives::FileHash;
 
 use crate::{DownloadFailure, DownloadLifecycle, DownloadMetadata, StorageIntegrityFault};
@@ -241,13 +243,34 @@ pub enum DownloadEvent {
         rank: u16,
     },
     /// A pooled source answered `OP_QUEUEFULL` (`0x93`): its queue is (near) full,
-    /// so it is kept but deprioritized (rank cleared) and reasked next cycle
-    /// (ADR-0057 backoff).
+    /// so its rank is cleared; it is reasked on the same cadence, and is the
+    /// first let go when the file nears its source limit (ADR-0057).
     SourceReaskQueueFull {
         /// The download the deprioritized source belongs to.
         download_id: DownloadId,
         /// The source whose queue is (near) full.
         peer: rmule_primitives::PeerEndpoint,
+    },
+    /// A pooled source's `FILEREASKTIME` came with no answer to its ping, or no
+    /// ping could reach it: its standing is re-asked by the **TCP full ask**
+    /// (ADR-0057), and it leaves the pool for the road that first reached it —
+    /// a dial at its endpoint, or a called-back source's callback road.
+    SourceReaskedOverTcp {
+        /// The download re-asking the source.
+        download_id: DownloadId,
+        /// The endpoint the source stood at.
+        peer: rmule_primitives::PeerEndpoint,
+    },
+    /// A source was let go to make room: the file holds as many sources as
+    /// aMule purges at, and one source goes at a time, on one clock per file
+    /// (ADR-0057).
+    SourcePurged {
+        /// The download that let the source go.
+        download_id: DownloadId,
+        /// Which source went.
+        source: super::PurgedSource,
+        /// Why it was the one let go.
+        reason: super::SourcePurgeReason,
     },
     /// A pooled source answered `OP_FILENOTFOUND` (`0x92`): it no longer shares
     /// the file, so it was dropped from the pool (ADR-0057 dead-source).
@@ -334,6 +357,10 @@ pub enum DownloadEvent {
     DownloadCompleted {
         /// The download that finished.
         download_id: DownloadId,
+        /// Where the finished file now lies: the path core resolved in the
+        /// download directory when the download started, the `.part` renamed
+        /// onto it.
+        final_path: PathBuf,
     },
     /// A `CancelDownload` was honoured: the run stopped and the store row is
     /// gone. Terminal.

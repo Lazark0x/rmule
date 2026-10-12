@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rmule_kad::{
     DatagramNonce, KadCommand, KadEvent, KadInstant, KadNode, KadNodeConfig, KadNodeEndpoint,
-    KadOutput,
+    KadNodeStart, KadObfuscation, KadOutput, KadSelfCheck,
 };
 use rmule_primitives::Ipv4Endpoint;
 use tokio::sync::{mpsc, oneshot};
@@ -22,7 +22,7 @@ use crate::kad::transport::{KadInlet, KadReceive, KadTransport};
 mod tests;
 
 /// Everything one live Kad node needs **beyond its transport**: who it is,
-/// what it records, and which optional capabilities are armed.
+/// what it records, and which optional capabilities it starts with.
 ///
 /// Transport-free on purpose (ADR-0057): the same config starts a node that
 /// owns its socket ([`spawn`]) and one that rides the core's unified
@@ -42,31 +42,24 @@ pub struct KadNetConfig {
     /// public-network smoke path keeps it `None` so it writes no bytes to disk
     /// (`rmule-cli kad join` doctrine).
     pub nodes_dat_path: Option<PathBuf>,
-    /// Arm the node's own Kad firewall self-check (ADR-0058 requester cycle): on
+    /// Start the node with its own Kad firewall self-check (ADR-0058 requester cycle): on
     /// join the node piggybacks version-gated `0x50`/`0x53` checks on hello
     /// traffic, consumes `0x58`/`0x59`, and rechecks hourly, emitting the
     /// `Reachability*` events the core store projects. Off by default — the same
-    /// capture-gating the node's [`enable_firewall_self_check`] carries — so the
+    /// capture-gating the node's [`KadSelfCheck`] carries — so the
     /// routing-only mesh sim runs no firewall cadence; a requester-capture driver
     /// arms it.
-    ///
-    /// [`enable_firewall_self_check`]: rmule_kad::KadNode::enable_firewall_self_check
     pub firewall_self_check: bool,
-    /// Obfuscate outbound datagrams (ADR-0046), drawing the per-packet marker
-    /// byte and key seed from OS entropy. Off by default, the same capture
-    /// gating [`firewall_self_check`](Self::firewall_self_check) carries.
+    /// Obfuscate outbound datagrams (ADR-0046), with the Kad UDP verify keys
+    /// inside when the value carries them — the one start value the node
+    /// itself takes, so verify keys without obfuscation cannot be written
+    /// here either: the trailer rides inside the crypt header. `None` (the
+    /// default posture) leaves the node plaintext-faithful to a keyless
+    /// aMule: nothing verifies and no `0x22` is answered. A running node is
+    /// re-armed with [`KadCommand::SetObfuscation`].
     ///
-    /// [`verify_keys`](Self::verify_keys) needs this on to reach the wire: the
-    /// verify-key trailer lives *inside* the crypt header, so an armed key with
-    /// obfuscation off is derived, stored, and never sent.
-    pub datagram_obfuscation: bool,
-    /// Arm the Kad UDP verify-key state as `(secret, own_public_ip)` — the
-    /// ADR-0046 key derivation that ADR-0064's verification cluster activates on.
-    /// `secret` is the private per-installation derivation seed (aMule
-    /// `thePrefs::GetKadUDPKey()`); it is never transmitted, only its per-IP
-    /// derivations are. `None` leaves the node plaintext-faithful to a keyless
-    /// aMule: nothing verifies and no `0x22` is answered.
-    pub verify_keys: Option<(u32, std::net::Ipv4Addr)>,
+    /// A live node draws its per-packet entropy from [`os_datagram_nonce`].
+    pub obfuscation: Option<KadObfuscation>,
     /// Arm the node's contact-admission verdict: the IP-filter
     /// consult aMule runs at every Kad contact intake (`CRoutingZone::Add`,
     /// the nodes.dat / bootstrap loads, lookup-response rows). `None` admits
@@ -133,6 +126,18 @@ impl KadNetHandle {
         }
     }
 
+    /// Room in the node's command inbox, awaited apart from this handle: the
+    /// caller that drains this handle's events polls
+    /// [`KadCommandRoom::ready`] beside [`next_event`](Self::next_event)
+    /// and sends again with [`try_command`](Self::try_command) once it
+    /// resolves, so a full inbox never stops it draining.
+    #[must_use]
+    pub fn command_room(&self) -> KadCommandRoom {
+        KadCommandRoom {
+            commands: self.commands.downgrade(),
+        }
+    }
+
     /// The next node event, or `None` once the driver has stopped.
     pub async fn next_event(&mut self) -> Option<KadEvent> {
         self.events.recv().await
@@ -151,6 +156,23 @@ impl KadNetHandle {
             let _ = shutdown.send(());
         }
         self.task.await.map_err(|_| KadNetError::Join)?
+    }
+}
+
+/// Room in one node's command inbox ([`KadNetHandle::command_room`]). It
+/// holds the inbox weakly, so it never keeps a node running.
+pub struct KadCommandRoom {
+    commands: mpsc::WeakSender<KadCommand>,
+}
+
+impl KadCommandRoom {
+    /// Resolves once the inbox has room for one command, or at once when the
+    /// node is gone. It takes no slot: while the handle is the inbox's one
+    /// sender, the room is the handle's next command's. Cancel-safe.
+    pub async fn ready(&self) {
+        if let Some(commands) = self.commands.upgrade() {
+            let _ = commands.reserve().await;
+        }
     }
 }
 
@@ -207,35 +229,49 @@ async fn start(
     transport: KadTransport,
     local_addr: SocketAddr,
 ) -> Result<KadNetHandle, KadNetError> {
-    let mut node_config = config.node;
+    let KadNetConfig {
+        node: mut node_config,
+        capture_dir,
+        nodes_dat_path,
+        firewall_self_check,
+        obfuscation,
+        contact_admission,
+    } = config;
     if node_config.udp_port == 0 {
         node_config.udp_port = transport.local_port();
     }
 
-    let capture = match config.capture_dir {
+    let capture = match capture_dir {
         Some(dir) => Some(CaptureTap::start(dir).await.map_err(KadNetError::Capture)?),
         None => None,
     };
+    let node_id_hex = node_config
+        .id
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let node_start = node_start(
+        node_config,
+        firewall_self_check,
+        obfuscation,
+        contact_admission,
+    );
 
     let (command_tx, command_rx) = mpsc::channel(64);
     let (event_tx, event_rx) = mpsc::channel(1024);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let task = tokio::spawn(run_driver(
         transport,
-        node_config,
+        node_start,
         command_rx,
         event_tx,
         shutdown_rx,
         RunRecord {
             bind: local_addr,
+            node_id_hex,
             capture,
-            nodes_dat_path: config.nodes_dat_path,
-        },
-        NodeArming {
-            firewall_self_check: config.firewall_self_check,
-            datagram_obfuscation: config.datagram_obfuscation,
-            verify_keys: config.verify_keys,
-            contact_admission: config.contact_admission,
+            nodes_dat_path,
         },
     ));
 
@@ -282,23 +318,47 @@ async fn persist_routing(path: Option<&std::path::Path>, node: &KadNode) {
     }
 }
 
-/// The optional node capabilities a driver arms at start. Each is default-off
-/// and capture-gated; bundling them keeps `run_driver`'s signature from growing
-/// a boolean per knob.
-#[derive(Clone, Debug, Default)]
-struct NodeArming {
+/// The **Kad Node Start** a live node is built from, at the driver's epoch
+/// (the driver maps its clock so that its start is `KadInstant::EPOCH`): the
+/// join cadence every live node runs, and the optional capabilities its
+/// [`KadNetConfig`] names. The node orders it itself (admission before any
+/// traffic, obfuscation before its verify keys).
+fn node_start(
+    node: KadNodeConfig,
     firewall_self_check: bool,
-    datagram_obfuscation: bool,
-    verify_keys: Option<(u32, std::net::Ipv4Addr)>,
+    obfuscation: Option<KadObfuscation>,
     contact_admission: Option<rmule_kad::KadContactAdmission>,
+) -> KadNodeStart {
+    // Join: the forced self-lookup fires 3 min after start, then every 4 h;
+    // the small-timer hello pass reaches a *merged* table (a v1/v2 nodes.dat
+    // seeds contacts, not dial candidates). The bootstrap dial loop arms
+    // itself separately, when the driver seeds the dial list.
+    let mut start = KadNodeStart::new(node, KadInstant::EPOCH)
+        .self_lookup()
+        .small_timer();
+    if let Some(admission) = contact_admission {
+        start = start.admission(admission);
+    }
+    // The ADR-0058 requester (a requester-capture run); its UDP half finds its
+    // own helpers through a lookup toward a random target.
+    if firewall_self_check {
+        start = start.self_check(KadSelfCheck::new().with_udp_helper_lookup(os_random_kad_id));
+    }
+    // ADR-0046. Verify keys exist only inside the obfuscation: the trailer
+    // rides inside the crypt header.
+    if let Some(obfuscation) = obfuscation {
+        start = start.obfuscation(obfuscation);
+    }
+    start
 }
 
 /// What one run leaves on disk: the datagram tap (ADR-0022) and the
-/// routing-table persistence path, plus the bound address the
+/// routing-table persistence path, plus the bound address and node ID the
 /// capture meta names. Both outputs are optional and neither may stall the
 /// node.
 struct RunRecord {
     bind: SocketAddr,
+    node_id_hex: String,
     capture: Option<CaptureTap>,
     nodes_dat_path: Option<PathBuf>,
 }
@@ -309,7 +369,7 @@ struct RunRecord {
 /// (`EncryptSendClient`: "padding disabled for UDP currently"), so rmule emits
 /// none either — padding would still decode, but it would not be byte-shaped
 /// like aMule's.
-fn os_datagram_nonce() -> DatagramNonce {
+pub fn os_datagram_nonce() -> DatagramNonce {
     let mut raw = [0u8; 3];
     getrandom::fill(&mut raw).expect("OS entropy for the Kad-UDP crypt nonce");
     DatagramNonce {
@@ -330,73 +390,26 @@ fn os_random_kad_id() -> rmule_kad::KadId {
 
 async fn run_driver(
     mut transport: KadTransport,
-    node_config: KadNodeConfig,
+    node_start: KadNodeStart,
     mut commands: mpsc::Receiver<KadCommand>,
     events: mpsc::Sender<KadEvent>,
     mut shutdown: oneshot::Receiver<()>,
     run_record: RunRecord,
-    arming: NodeArming,
 ) -> Result<KadNetSummary, KadNetError> {
     let RunRecord {
         bind: local_addr,
+        node_id_hex,
         capture,
         nodes_dat_path,
     } = run_record;
+    // The driver's epoch: the node is built now, at the `KadInstant::EPOCH`
+    // its start names.
     let start = Instant::now();
     let started_unix_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|since| since.as_secs())
         .unwrap_or(0);
-    let node_id_hex = node_config
-        .id
-        .as_bytes()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-
-    let mut node = KadNode::new(node_config);
-    // Contact admission first: armed before the node handles any
-    // datagram, command, or tick, so no contact intake can ever precede the
-    // IP filter — the same pre-start discipline the core's synchronous
-    // filter load gives the TCP surfaces.
-    if let Some(admission) = arming.contact_admission.clone() {
-        node.arm_contact_admission(admission);
-    }
-    // Begin the Kad join cadence (ADR-0067): the forced self-lookup fires
-    // 3 min after start, then every 4 h. The bootstrap dial loop arms itself
-    // separately, when the driver seeds the dial list. The small-timer hello
-    // pass is what reaches a *merged* table — a v1/v2 nodes.dat
-    // seeds contacts, not dial candidates, and without the pass such a node
-    // would stay silent until the self-lookup and could never earn a probe
-    // answer; joined or not, it greets each merged contact once it fronts its
-    // bucket.
-    node.arm_self_lookup(instant_at(start));
-    node.arm_small_timer(instant_at(start));
-    // Arm the ADR-0058 firewall self-check requester when the driver requests it
-    // (a requester-capture run): from here the node emits its own `0x50`/`0x53`
-    // checks on hello traffic and projects the reachability lifecycle. Left
-    // dormant otherwise, exactly as the sans-I/O node defaults.
-    if arming.firewall_self_check {
-        node.enable_firewall_self_check(instant_at(start));
-        // The UDP half finds its own helpers (ADR-0058): a lookup toward a
-        // random target, drawn here because the node draws no entropy.
-        node.arm_udp_firewall_helper_lookup(os_random_kad_id);
-    }
-    // ADR-0046. Obfuscation first: the verify-key trailer rides inside the
-    // crypt header, so arming keys over a plaintext sender derives keys that
-    // can never reach the wire.
-    if arming.datagram_obfuscation {
-        node.enable_datagram_obfuscation(os_datagram_nonce);
-    }
-    if let Some((secret, public_ip)) = arming.verify_keys {
-        if !arming.datagram_obfuscation {
-            tracing::warn!(
-                "verify keys armed without datagram obfuscation: no key will be sent, \
-                 since the trailer only exists inside the crypt header"
-            );
-        }
-        node.enable_verify_keys(secret, public_ip);
-    }
+    let mut node = KadNode::new(node_start);
     let mut summary = KadNetSummary::default();
     // One UDP datagram can never exceed 64 KiB.
     let mut buf = vec![0u8; 64 * 1024];

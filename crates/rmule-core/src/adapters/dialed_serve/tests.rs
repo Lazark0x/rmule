@@ -2,18 +2,20 @@
 //! very connection and is served from it.
 
 use std::net::{Ipv4Addr, SocketAddrV4};
-use std::sync::Arc;
 use std::time::Duration;
 
 use rmule_net::peer::{ConnectOptions as PeerConnectOptions, PeerListener};
-use rmule_peer::{PartBitmap, PartRanges, PeerCommand, PeerEvent};
+use rmule_peer::{
+    ConnectionEvent, PartBitmap, PartRanges, PeerCommand, PeerEvent, RequesterCommand,
+    RequesterEvent, ServerCommand, ServerEvent,
+};
 use rmule_primitives::{Ed2kFileLink, Ed2kText, Ipv4Endpoint, PeerEndpoint, UserHash};
 use rmule_primitives::{FileHashSummary, part_count};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 use crate::adapters::peer_transfer::{PeerTransferService, RuntimePeerTransferService};
-use crate::adapters::serve_runtime::{ServeConnCommand, ServeConnEvent};
+use crate::adapters::serve_runtime::{ServeInput, ServeOutput};
 use crate::adapters::tests::dialed_serve_ctx;
 
 use super::*;
@@ -42,22 +44,24 @@ async fn a_dialed_connection_serves_the_peer_it_dialed_on_the_same_socket() {
             .unwrap();
         loop {
             match conn.next_event().await {
-                Some(PeerEvent::PeerIdentified { .. }) => break,
-                Some(PeerEvent::Disconnected { .. }) | None => return Vec::new(),
+                Some(PeerEvent::Connection(ConnectionEvent::Identified { .. })) => break,
+                Some(PeerEvent::Connection(ConnectionEvent::Disconnected { .. })) | None => {
+                    return Vec::new();
+                }
                 _ => {}
             }
         }
         let ranges = PartRanges::new([(0, 4096), (0, 0), (0, 0)]).unwrap();
         let _ = conn
-            .send(PeerCommand::RequestParts {
+            .send(PeerCommand::Requester(RequesterCommand::RequestParts {
                 file_hash,
                 file_size: 4096,
                 ranges,
-            })
+            }))
             .await;
         let mut got = Vec::new();
         while let Some(event) = conn.next_event().await {
-            if let PeerEvent::PartReceived { bytes, .. } = event {
+            if let PeerEvent::Requester(RequesterEvent::PartReceived { bytes, .. }) = event {
                 got.extend_from_slice(&bytes);
                 if got.len() >= 4096 {
                     break;
@@ -69,7 +73,8 @@ async fn a_dialed_connection_serves_the_peer_it_dialed_on_the_same_socket() {
 
     // Our side: a peer-transfer adapter whose dialed connections serve.
     let (dialed_tx, mut dialed_rx) = mpsc::channel(4);
-    let sink: SharedDialedServeSink = Arc::new(Mutex::new(Some(dialed_tx)));
+    let sink = SharedDialedServeSink::default();
+    sink.install_for_good(dialed_tx);
     let mut transfer =
         RuntimePeerTransferService::with_dialed_serve_sink(crate::DEFAULT_SLOT_WAIT_TIMEOUT, sink);
     let peer = PeerEndpoint::V4(Ipv4Endpoint::new(*bound.ip(), bound.port()));
@@ -100,83 +105,88 @@ async fn a_dialed_connection_serves_the_peer_it_dialed_on_the_same_socket() {
     timeout(Duration::from_secs(5), async {
         while let Some(event) = serve_conn.next_event().await {
             match event {
-                ServeConnEvent::FileRequested { file_hash, .. } => serve_conn
-                    .send(ServeConnCommand::AnswerFileName {
+                ServeInput::Server(ServerEvent::FileRequested { file_hash, .. }) => serve_conn
+                    .send(ServeOutput::Server(ServerCommand::AnswerFileName {
                         file_hash,
                         file_name: Ed2kText::from_utf8("dummy"),
-                    })
+                    }))
                     .await
                     .unwrap(),
-                ServeConnEvent::FileBundleRequested {
+                ServeInput::Server(ServerEvent::FileBundleRequested {
                     file_hash, asks, ..
-                } => {
+                }) => {
                     for ask in asks {
                         let command = match ask {
                             rmule_peer::BundledAsk::Name { .. } => {
-                                ServeConnCommand::AnswerFileName {
+                                ServeOutput::Server(ServerCommand::AnswerFileName {
                                     file_hash,
                                     file_name: Ed2kText::from_utf8("dummy"),
-                                }
+                                })
                             }
                             rmule_peer::BundledAsk::SetReqId => {
-                                ServeConnCommand::AnswerFileStatus {
+                                ServeOutput::Server(ServerCommand::AnswerFileStatus {
                                     file_hash,
                                     bitmap: PartBitmap::decode(part_count(4096), &[0xFF]).unwrap(),
-                                }
+                                })
                             }
                             _ => continue,
                         };
                         serve_conn.send(command).await.unwrap();
                     }
                 }
-                ServeConnEvent::FileIdSet { file_hash } => serve_conn
-                    .send(ServeConnCommand::AnswerFileStatus {
+                ServeInput::Server(ServerEvent::FileIdSet { file_hash }) => serve_conn
+                    .send(ServeOutput::Server(ServerCommand::AnswerFileStatus {
                         file_hash,
                         bitmap: PartBitmap::decode(part_count(4096), &[0xFF]).unwrap(),
-                    })
+                    }))
                     .await
                     .unwrap(),
-                ServeConnEvent::HashSetRequested { file_hash } => serve_conn
-                    .send(ServeConnCommand::AnswerHashSet {
+                ServeInput::Server(ServerEvent::HashSetRequested { file_hash }) => serve_conn
+                    .send(ServeOutput::Server(ServerCommand::AnswerHashSet {
                         file_hash,
                         part_hashes: Vec::new(),
-                    })
+                    }))
                     .await
                     .unwrap(),
-                ServeConnEvent::SlotRequested { file_hash } => serve_conn
-                    .send(ServeConnCommand::GrantSlot { file_hash })
+                ServeInput::Server(ServerEvent::SlotRequested { file_hash }) => serve_conn
+                    .send(ServeOutput::Server(ServerCommand::GrantSlot { file_hash }))
                     .await
                     .unwrap(),
-                ServeConnEvent::PartsRequested { file_hash, ranges } => {
+                ServeInput::Server(ServerEvent::PartsRequested { file_hash, ranges }) => {
                     for &(start, end) in ranges.as_array().iter().filter(|(s, e)| e > s) {
                         serve_conn
-                            .send(ServeConnCommand::SendBlock {
+                            .send(ServeOutput::Server(ServerCommand::SendBlock {
                                 file_hash,
                                 start,
                                 end,
                                 bytes: bytes[start as usize..end as usize].to_vec(),
-                            })
+                            }))
                             .await
                             .unwrap();
                     }
                     break;
                 }
-                ServeConnEvent::AichRequested { .. } => {}
-                ServeConnEvent::AichFileHashRequested { .. } => {}
+                ServeInput::Server(ServerEvent::AichRequested { .. }) => {}
+                ServeInput::Server(ServerEvent::AichFileHashRequested { .. }) => {}
                 // Not exercised: this dialed download never asks us for sources.
-                ServeConnEvent::SourcesRequested { .. } => {}
+                ServeInput::Server(
+                    ServerEvent::SourcesRequested { .. } | ServerEvent::SourcesAnswered { .. },
+                ) => {}
                 // Not exercised: this test never cancels mid-transfer.
-                ServeConnEvent::TransferCancelled { .. } => {}
-                ServeConnEvent::Disconnected => break,
+                ServeInput::Server(ServerEvent::TransferCancelled { .. }) => {}
+                ServeInput::Connection(ConnectionEvent::Disconnected { .. }) => break,
                 // Not exercised on a dialed serve half (no callback routing).
-                ServeConnEvent::Readopted => break,
-                // No SUI on this test's connections.
-                ServeConnEvent::IdentityVerified { .. }
-                | ServeConnEvent::SoftwareRevised { .. }
-                | ServeConnEvent::ReaskContactRevised { .. } => {}
-                ServeConnEvent::Identified { user_hash, .. } => {
-                    assert_eq!(user_hash, UserHash::from_bytes([0x09; UserHash::BYTE_LEN]));
+                ServeInput::Readopted => break,
+                // No part ask without a slot from this mock.
+                ServeInput::Server(ServerEvent::PartsWithoutSlot { .. }) => {}
+                ServeInput::Connection(ConnectionEvent::Identified { identity }) => {
+                    assert_eq!(
+                        identity.user_hash(),
+                        UserHash::from_bytes([0x09; UserHash::BYTE_LEN])
+                    );
                 }
+                // No SUI, no revisions on this test's connections.
+                ServeInput::Connection(_) => {}
             }
         }
     })
@@ -191,4 +201,61 @@ async fn a_dialed_connection_serves_the_peer_it_dialed_on_the_same_socket() {
         served, bytes,
         "the peer rmule dialed received the file rmule serves, over the same socket"
     );
+}
+
+/// aMule's `OP_KAD_FWTCPCHECK_ACK` handler (`ClientTCPSocket.cpp:1950-1962`)
+/// runs on whichever socket the frame arrives on, so an ack read on a link
+/// rmule dialed reaches the Kad node as an accepted link's does.
+#[tokio::test]
+async fn a_side_frame_read_on_a_dialed_link_reaches_the_node_wide_service() {
+    use crate::adapters::AdapterCells;
+    use crate::adapters::kad_runtime::KadPumpCommand;
+    use rmule_peer::SideCommand;
+
+    let listener = PeerListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let bound = SocketAddrV4::new(Ipv4Addr::LOCALHOST, listener.local_port());
+    let mock = tokio::spawn(async move {
+        let mut conn = listener
+            .accept(dialed_serve_ctx(), PeerConnectOptions::default())
+            .await
+            .unwrap();
+        while let Some(event) = conn.next_event().await {
+            if let PeerEvent::Connection(ConnectionEvent::Identified { .. }) = event {
+                conn.send(PeerCommand::Side(SideCommand::SendKadFirewallAck))
+                    .await
+                    .unwrap();
+                break;
+            }
+        }
+        // Keep the link open until the test has read its fact.
+        std::future::pending::<()>().await;
+    });
+
+    let (pump_tx, mut pump_rx) = mpsc::channel(4);
+    let cells = AdapterCells::detached();
+    cells.kad_pump.install_for_good(pump_tx);
+    let mut transfer = RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT);
+    transfer.adopt_cells(&cells);
+    let file = Ed2kFileLink {
+        name: Ed2kText::from_utf8("dummy"),
+        size: 4096,
+        file_hash: FileHashSummary::digest_bytes(&[0xAB; 4096]).file_hash(),
+        part_hash_set: None,
+        aich_root: None,
+        ipv6_sources: Vec::new(),
+        sources: Default::default(),
+    };
+    let peer = PeerEndpoint::V4(Ipv4Endpoint::new(*bound.ip(), bound.port()));
+    let _worker = transfer
+        .start_peer_worker(peer, dialed_serve_ctx(), file)
+        .await
+        .unwrap();
+    let command = timeout(Duration::from_secs(5), pump_rx.recv())
+        .await
+        .expect("the ack reaches the Kad node within 5s")
+        .expect("the pump is open");
+    assert!(matches!(command, KadPumpCommand::TcpFirewallAck(ip) if ip == *bound.ip()));
+    mock.abort();
 }

@@ -30,7 +30,7 @@ end.
   outbound. `rmule-net` has no swarm, no peer selection, no storage and no store
   dependency.
 - `PeerSession` hashes nothing and writes nothing. Part bytes leave it as
-  `PeerEvent::PartReceived` and a peer's hash set as `PeerEvent::HashSetReceived`;
+  `RequesterEvent::PartReceived` and a peer's hash set as `RequesterEvent::HashSetReceived`;
   the serve side is the mirror image, with core reading shared bytes and pushing
   them down (ADR-0031).
 - Core accepts an eD2k file link, drives source discovery, runs one peer worker per
@@ -40,6 +40,12 @@ end.
 **Scheduling.** The per-download brain is `DownloadState`, a sans-I/O state machine
 that returns ordered `Decision`s for an async runner to enact; the part bookkeeping
 is `DownloadScheduler`.
+
+- **Time is an argument.** Every entry that can move a clock takes `now: Instant`, as
+  the serving brain's do. One `on_tick(now)` runs the reask sweep (ADR-0057), turns the
+  spent period and expires the callback roads' deadlines (ADR-0090), and `next_wake()`
+  names the earliest instant anything falls due, so the runner sleeps until then. The
+  brain reads no clock and holds no timer, so receiving time keeps it sans-I/O.
 
 - `CoreConfig::peer_concurrency_per_download` (default 2; `0` reads as 1) caps a
   download's workers — active, connecting, and waiting on a callback together.
@@ -90,8 +96,9 @@ is `DownloadScheduler`.
 - Transport stays one-conversation-per-connection; the conversation graph, trust
   and disk policy live in one place that sees every peer.
 - Scheduler behaviour — assignment, racing, release, retirement, backfill,
-  persistence, pause, cancel and source exhaustion — is asserted on
-  `DownloadState`'s decisions without sockets or clocks.
+  persistence, pause, cancel, source exhaustion, the reask cadence and every callback
+  deadline — is asserted on `DownloadState`'s decisions without sockets, driven by the
+  instants a test hands in.
 - Racing spends some redundant bandwidth on scarce parts in exchange for a live
   backup when a busy peer stalls.
 

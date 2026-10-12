@@ -45,7 +45,7 @@
 
 use std::net::Ipv4Addr;
 
-use rmule_primitives::{ClientId, Ed2kText, Packet, PacketProtocol};
+use rmule_primitives::{ClientId, Ed2kText, Packet, PacketProtocol, WireReader, WireTruncated};
 use thiserror::Error;
 
 use crate::opcode::PeerOpcode;
@@ -93,13 +93,8 @@ impl Message {
     /// `MAX_CLIENT_MSG_LEN` bytes.
     pub fn decode_packet(packet: &Packet) -> Result<Self, HumanLayerDecodeError> {
         let payload = packet.payload();
-        if payload.len() < 2 {
-            return Err(HumanLayerDecodeError::Truncated {
-                needed: 2,
-                actual: payload.len(),
-            });
-        }
-        let declared_len = usize::from(u16::from_le_bytes([payload[0], payload[1]]));
+        let mut reader = WireReader::new(payload);
+        let declared_len = usize::from(reader.read_u16_le("message length")?);
         if declared_len + 2 != payload.len() {
             return Err(HumanLayerDecodeError::SizeMismatch {
                 declared: declared_len,
@@ -107,7 +102,7 @@ impl Message {
             });
         }
         let read_len = declared_len.min(MAX_CLIENT_MSG_LEN);
-        let text = Ed2kText::from_bytes(payload[2..2 + read_len].to_vec());
+        let text = Ed2kText::from_bytes(reader.take(read_len, "message text")?.to_vec());
         Ok(Self { text })
     }
 
@@ -156,20 +151,14 @@ impl FileDesc {
                 opcode: packet.opcode(),
             });
         }
-        let payload = packet.payload();
-        const HEADER_LEN: usize = 5;
-        if payload.len() < HEADER_LEN {
-            return Err(HumanLayerDecodeError::Truncated {
-                needed: HEADER_LEN,
-                actual: payload.len(),
-            });
-        }
-        let rating = payload[0];
-        let declared_len = u32::from_le_bytes([payload[1], payload[2], payload[3], payload[4]]);
-        let declared_len = usize::try_from(declared_len).unwrap_or(usize::MAX);
-        let available = payload.len() - HEADER_LEN;
-        let read_len = declared_len.min(available).min(MAX_FILE_COMMENT_LEN);
-        let comment = Ed2kText::from_bytes(payload[HEADER_LEN..HEADER_LEN + read_len].to_vec());
+        let mut reader = WireReader::new(packet.payload());
+        let rating = reader.read_u8("rating")?;
+        let declared_len =
+            usize::try_from(reader.read_u32_le("comment length")?).unwrap_or(usize::MAX);
+        let read_len = declared_len
+            .min(reader.remaining())
+            .min(MAX_FILE_COMMENT_LEN);
+        let comment = Ed2kText::from_bytes(reader.take(read_len, "comment")?.to_vec());
         Ok(Self { rating, comment })
     }
 
@@ -187,9 +176,8 @@ impl FileDesc {
 }
 
 /// `OP_CHANGE_CLIENT_ID` (`0x4D`): a peer's ID (and, when Low-ID, its server)
-/// changed (ADR-0068 surface-as-event). Wire-silent either way — aMule marks
-/// it "Unused for sending" and rmule never emits it — but core applies it to
-/// keep source records fresh (per the ADR).
+/// changed. Wire-silent either way — aMule marks it "Unused for sending" and
+/// rmule never emits it — but the session applies it to the identity it keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChangeClientId {
     /// The id the peer now answers to.
@@ -210,10 +198,9 @@ impl ChangeClientId {
                 actual: payload.len(),
             });
         }
-        let new_id = ClientId::from_u32(u32::from_le_bytes([
-            payload[0], payload[1], payload[2], payload[3],
-        ]));
-        let new_server_ip = Ipv4Addr::new(payload[4], payload[5], payload[6], payload[7]);
+        let mut reader = WireReader::new(payload);
+        let new_id = ClientId::from_u32(reader.read_u32_le("new client id")?);
+        let new_server_ip = Ipv4Addr::from(reader.read_array::<4>("new server address")?);
         Ok(Self {
             new_id,
             new_server_ip,
@@ -256,8 +243,9 @@ impl PublicIpAnswer {
                 actual: payload.len(),
             });
         }
+        let mut reader = WireReader::new(payload);
         Ok(Self {
-            ip: Ipv4Addr::new(payload[0], payload[1], payload[2], payload[3]),
+            ip: Ipv4Addr::from(reader.read_array::<4>("public address")?),
         })
     }
 
@@ -269,6 +257,15 @@ impl PublicIpAnswer {
             PeerOpcode::PublicIpAnswer.as_u8(),
             self.ip.octets().to_vec(),
         )
+    }
+}
+
+impl From<WireTruncated> for HumanLayerDecodeError {
+    fn from(truncated: WireTruncated) -> Self {
+        Self::Truncated {
+            needed: truncated.needed,
+            actual: truncated.available,
+        }
     }
 }
 

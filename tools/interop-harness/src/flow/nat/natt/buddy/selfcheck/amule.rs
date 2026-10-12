@@ -28,7 +28,7 @@
 //! then released, then the file shared.
 
 mod claims;
-mod evidence;
+pub(in crate::flow::nat::natt::buddy) mod evidence;
 mod lowid;
 
 use std::ffi::OsString;
@@ -103,7 +103,8 @@ const LOW_ID_RUN_SECS: u64 = lowid::RECIPE_SECS + 300;
 
 /// The verdict lines `CUDPFirewallTester::SetUDPFWCheckResult` and
 /// `IsFirewalledUDP` write (`UDPFirewallTester.cpp:65, 148, 151, 158`).
-const UDP_OPEN_LINE: &str = "New Kad Firewallstate (UDP): Open";
+pub(in crate::flow::nat::natt::buddy) const UDP_OPEN_LINE: &str =
+    "New Kad Firewallstate (UDP): Open";
 const UDP_VERDICT_LINES: [&str; 3] = [
     "New Kad Firewallstate (UDP)",
     "New KAD Firewallstate (UDP)",

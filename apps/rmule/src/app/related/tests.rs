@@ -20,6 +20,7 @@ fn attached(state: UiState) -> App {
         rmule_core::CoreConfig::default(),
         rmule_testkit::memory_store(),
     )
+    .settings(rmule_core::CoreSettings::default())
     .build();
     let (actions_tx, _actions_rx) = mpsc::channel(64);
     let handle = crate::bridge::spawn(core, actions_tx, crate::bridge::BridgeConfig::default());

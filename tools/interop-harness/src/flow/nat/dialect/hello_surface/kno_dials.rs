@@ -8,7 +8,7 @@
 //! (`adapters/inbound_triage.rs`). A fresh serving rmule offers file `E`,
 //! kno is told to download it and learns rmule from the server; kno's
 //! `OP_HELLO` to rmule is cut from kno's own tap and read with rmule's hello
-//! reader, and the serving rmule's `peer_hello_refused` line is its own half.
+//! reader, and the serving rmule's `peer.hello_refused` line is its own half.
 
 use std::time::Duration;
 
@@ -85,7 +85,7 @@ pub(super) fn kno_dials_rmule(
         SERVE_E_ROLE,
         SERVE_E_HOST,
         &args,
-        "serve files_announced",
+        "serve.files_announced",
     )?;
     if !announced {
         let log = keep_log(bench, stage, &serve, "rmule-serve-e");
@@ -100,7 +100,7 @@ pub(super) fn kno_dials_rmule(
     let refused = wait_for_container_log(
         &bench.docker,
         &serve,
-        "peer_hello_refused",
+        "peer.hello_refused",
         Duration::from_secs(KNO_DIAL_WAIT_SECS),
     )
     .is_ok();
@@ -141,7 +141,7 @@ pub(super) fn kno_dials_rmule(
         .count();
     let named = serve_log
         .lines()
-        .find(|line| line.contains("peer_hello_refused"))
+        .find(|line| line.contains("peer.hello_refused"))
         .map(str::trim)
         .unwrap_or_default()
         .to_owned();

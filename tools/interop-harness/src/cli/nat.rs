@@ -687,8 +687,9 @@ pub(crate) struct NattArgs {
     /// Build context for kno's aMule image.
     #[arg(long, default_value = DEFAULT_AMULE_KNO_BUILD_CONTEXT)]
     pub(crate) amule_kno_build_context: PathBuf,
-    /// Stock aMule on the debug image, for `natt-udp-selfcheck-amule`. Built
-    /// by hand (`--build-arg AMULE_DEBUG=1`); this subcommand never builds it.
+    /// Stock aMule on the debug image, for `natt-udp-selfcheck-amule` and
+    /// `natt-buddy-recruit-amule`. Built by hand (`--build-arg AMULE_DEBUG=1`);
+    /// this subcommand never builds it.
     #[arg(long, default_value = DEFAULT_AMULE_DEBUG_IMAGE)]
     pub(crate) amule_image: String,
     /// Arm Kad-UDP crypt on that aMule (`AMULE_KAD_CRYPT=1`).
@@ -699,6 +700,11 @@ pub(crate) struct NattArgs {
     /// hello carries a server-assigned Low ID, then release it and share.
     #[arg(long)]
     pub(crate) low_id_buddy: bool,
+    /// `natt-buddy-recruit-amule` only: stand no `ed2ksrv` on the WAN, so the
+    /// target recruits aMule serverless and firewalled on Kad alone, and its
+    /// hello must name the Kad-firewalled id `1`.
+    #[arg(long)]
+    pub(crate) no_server: bool,
     /// `natt-server-punch-symmetric` only: run both peers with
     /// `natt.port_prediction = birthday` and the Kad observers that tell each
     /// its own mapping. `natt-server-punch-one-symmetric` always does.
@@ -802,6 +808,7 @@ pub(crate) fn natt(args: NattArgs) -> Result<()> {
         amule_image: &args.amule_image,
         kad_crypt: args.kad_crypt,
         low_id_buddy: args.low_id_buddy,
+        no_server: args.no_server,
         port_prediction: args.port_prediction,
         capture_image: &args.capture.capture_image,
         capture_build_context: &args.capture.capture_build_context,

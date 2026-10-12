@@ -19,10 +19,10 @@
 //! only far enough to hand off, deliberately leaving open whether this
 //! reader would re-parse the full bytes or resume from an offset. Decided
 //! here: **this reader re-parses the full nodes.dat byte buffer from the
-//! leading marker on**, independent of how far the normal reader's cursor
+//! leading marker on**, independent of how far the normal reader
 //! got. A pipeline can therefore try the normal reader first
 //! and, on `BootstrapEdition`, hand the *identical, unmodified* bytes to
-//! [`decode`] — no shared cursor state, no offset bookkeeping between the
+//! [`decode`] — no shared position, no offset bookkeeping between the
 //! two readers.
 //!
 //! ## Provenance
@@ -50,8 +50,11 @@
 //!   reader (`crate::nodes_dat`'s module doc). The `IsGoodIPPort`
 //!   reserved/LAN-range filter *is* applied, identically to that reader.
 
+use rmule_primitives::WireReader;
+
 use crate::net::is_good_ip_port;
-use crate::nodes_dat::{Cursor, DNS_PORT, PORT_53_VERSION_CEILING};
+use crate::nodes_dat::{DNS_PORT, PORT_53_VERSION_CEILING};
+use crate::wire_fields::KadWireFields;
 use crate::{KadBootstrapNode, KadContact, KadId, KadNodeEndpoint};
 
 /// How many of the closest contacts (by XOR distance to the own Kad ID) are
@@ -101,35 +104,35 @@ pub(crate) fn decode(
     bytes: &[u8],
     own_id: KadId,
 ) -> Result<Vec<KadBootstrapNode>, BootstrapEditionError> {
-    let mut cursor = Cursor::new(bytes);
+    let mut reader = WireReader::new(bytes);
 
-    let Some(leading) = cursor.read_u32() else {
+    let Ok(leading) = reader.read_u32_le("leading word") else {
         return Err(BootstrapEditionError::NotBootstrapEdition);
     };
-    let Some(file_version) = cursor.read_u32() else {
+    let Ok(file_version) = reader.read_u32_le("file version") else {
         return Err(BootstrapEditionError::NotBootstrapEdition);
     };
-    let Some(bootstrap_edition) = cursor.read_u32() else {
+    let Ok(bootstrap_edition) = reader.read_u32_le("bootstrap edition") else {
         return Err(BootstrapEditionError::NotBootstrapEdition);
     };
     if leading != 0 || file_version != 3 || bootstrap_edition != 1 {
         return Err(BootstrapEditionError::NotBootstrapEdition);
     }
 
-    let Some(declared_count) = cursor.read_u32() else {
+    let Ok(declared_count) = reader.read_u32_le("contact count") else {
         return Err(BootstrapEditionError::NotBootstrapEdition);
     };
 
     let expected_row_bytes = usize::try_from(declared_count)
         .ok()
         .and_then(|count| count.checked_mul(25));
-    if expected_row_bytes != Some(cursor.remaining()) {
+    if expected_row_bytes != Some(reader.remaining()) {
         return Err(BootstrapEditionError::LengthMismatch);
     }
 
     let mut contacts = Vec::with_capacity(declared_count as usize);
     for _ in 0..declared_count {
-        let Some(contact) = decode_row(&mut cursor) else {
+        let Some(contact) = decode_row(&mut reader) else {
             // Unreachable given the exact length check above; a broken
             // Cursor invariant would land here rather than panic.
             return Err(BootstrapEditionError::LengthMismatch);
@@ -162,12 +165,12 @@ pub(crate) fn decode(
 /// One decoded row: the pure v1 shape (`id16/ip4/udp2/tcp2/ver1`), no UDP-key
 /// or verified-bit extension — the bootstrap-edition format uses this row
 /// shape unconditionally, unlike the normal reader's version-gated rows.
-fn decode_row(cursor: &mut Cursor<'_>) -> Option<KadContact> {
-    let id = cursor.read_kad_id()?;
-    let ip = cursor.read_ipv4_low_octet_first()?;
-    let udp_port = cursor.read_u16()?;
-    let tcp_port = cursor.read_u16()?;
-    let version = cursor.read_u8()?;
+fn decode_row(reader: &mut WireReader<'_>) -> Option<KadContact> {
+    let id = reader.read_kad_id("contact ID").ok()?;
+    let ip = reader.read_ipv4_low_octet_first("contact IP").ok()?;
+    let udp_port = reader.read_u16_le("contact UDP port").ok()?;
+    let tcp_port = reader.read_u16_le("contact TCP port").ok()?;
+    let version = reader.read_u8("contact version").ok()?;
     Some(KadContact::new(
         id,
         KadNodeEndpoint::new(ip, udp_port),

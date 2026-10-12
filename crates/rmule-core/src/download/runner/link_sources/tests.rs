@@ -5,11 +5,11 @@
 use std::net::Ipv4Addr;
 
 use rmule_primitives::{
-    Ed2kFileLink, Ed2kLink, ExchangedSource, Ipv4Endpoint, PeerEndpoint, PeerSource,
-    SourceCryptOptions, UserHash,
+    Ed2kFileLink, Ed2kLink, Ipv4Endpoint, PeerEndpoint, PeerSource, SourceCryptOptions,
+    SourceSighting, UserHash,
 };
 
-use super::{ahead_of, link_sources};
+use super::link_sources;
 use crate::name_resolver::{FakeNameResolver, SharedNameResolver};
 
 const HASH: &str = "AA010FBC1D14C795D86EF98C95479D17";
@@ -21,7 +21,7 @@ fn file(link: &str) -> Ed2kFileLink {
     }
 }
 
-fn endpoints(sources: &[ExchangedSource]) -> Vec<PeerEndpoint> {
+fn endpoints(sources: &[SourceSighting]) -> Vec<PeerEndpoint> {
     sources
         .iter()
         .filter_map(|source| source.as_peer_endpoint())
@@ -74,7 +74,7 @@ async fn a_sources_crypt_byte_and_user_hash_ride_its_candidate() {
 
     let sources = link_sources(&link, &shared, 0).await;
 
-    let expected = ExchangedSource::new(
+    let expected = SourceSighting::new(
         PeerSource::HighId(Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 7), 4662)),
         Some(UserHash::from_hex("31D6CFE0D16AE931B73C59D7E0C089C0").unwrap()),
         Some(SourceCryptOptions::from_byte(129)),
@@ -100,35 +100,4 @@ async fn a_dated_source_past_its_day_is_not_a_candidate() {
         [v4(192, 0, 2, 10, 4662), v4(192, 0, 2, 11, 4662)]
     );
     assert_eq!(endpoints(&after), [v4(192, 0, 2, 11, 4662)]);
-}
-
-/// The link's sources lead the pool; a peer the server also names keeps the
-/// link's place but the server's record, and is pooled once.
-#[test]
-fn the_links_sources_lead_and_a_source_both_name_is_pooled_once() {
-    let plain = |a, d| {
-        ExchangedSource::plain(PeerSource::HighId(Ipv4Endpoint::new(
-            Ipv4Addr::new(a, 0, 2, d),
-            4662,
-        )))
-    };
-    let answered = ExchangedSource::new(
-        PeerSource::HighId(Ipv4Endpoint::new(Ipv4Addr::new(192, 0, 2, 20), 4662)),
-        Some(UserHash::from_hex("5F3E9A0C71B2D4E6880A1C3E5F7092B4").unwrap()),
-        Some(SourceCryptOptions::from_byte(0x03)),
-    );
-    let link = vec![plain(192, 20), plain(192, 21), plain(192, 20)];
-    let server = vec![plain(192, 30), answered];
-
-    let pool = ahead_of(link, server);
-
-    assert_eq!(
-        endpoints(&pool),
-        [
-            v4(192, 0, 2, 20, 4662),
-            v4(192, 0, 2, 21, 4662),
-            v4(192, 0, 2, 30, 4662)
-        ]
-    );
-    assert_eq!(pool[0], answered);
 }

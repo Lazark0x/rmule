@@ -27,6 +27,7 @@ mod peer_opcode;
 mod peer_packet_umbrella;
 mod slot;
 mod source_exchange;
+mod truncation;
 
 // The session's own state: reaching `Identified` from either side, and what it
 // does with frames that arrive out of turn.
@@ -69,4 +70,6 @@ mod peer_udp_reask_answers_capture;
 mod peer_udp_reask_capture;
 mod peer_udp_reask_crypt_capture;
 mod peer_udp_reask_crypt_mirror_capture;
+mod reask_requester_capture;
+mod reask_responder_capture;
 mod reverse_serve_capture;

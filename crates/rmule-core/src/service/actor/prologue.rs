@@ -26,16 +26,17 @@ use crate::server_session::SharedServerSession;
 use super::client_udp::{ClientUdpSinks, NattFrontWiring, spawn_client_udp_front};
 use super::download::DownloadRuntime;
 use super::server_udp_front::spawn_server_udp_front;
+use crate::download::SharedRuntime;
 use crate::service::activity::{Activities, unix_now};
-use crate::service::{CoreCommand, CoreEvent, SharedReaskReplySink};
+use crate::service::{CoreEvent, SharedReaskReplySink};
 
 use super::{CoreActor, CoreWiring, download, registry_check, send_event, share_flush};
 
 /// Run the prologue over `wiring`, then the actor it builds, until the
-/// command channel closes and Quit has run.
+/// inbox closes and Quit has run.
 pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     mut wiring: CoreWiring<S, P, L, K>,
-    cmd_rx: mpsc::Receiver<CoreCommand>,
+    inbox: crate::service::inbox::Inbox,
     evt_tx: mpsc::Sender<CoreEvent>,
     diagnostics: crate::diagnostics::DiagnosticsState,
 ) where
@@ -44,6 +45,15 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     L: ServeRuntimeService,
     K: KadRuntimeFactory,
 {
+    // Our obfuscation posture first (ADR-0046, ADR-0075): every crypt
+    // decision after reads this cell, so the Run Log states it before any.
+    send_event(
+        &evt_tx,
+        CoreEvent::ObfuscationPolicyAtStart {
+            policy: wiring.hello_adverts.obfuscation.get(),
+        },
+    )
+    .await;
     // Credit-ring restart continuity: the ring is seeded before
     // any activity can touch it.
     if let Some(dir) = wiring.clients_met_dir.as_deref() {
@@ -61,17 +71,11 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     // The operator's server policy before anything is judged under it
     // (ADR-0052): the sweep's first verdict and the swept list's first
     // projection already know the limit they chose.
-    match wiring.server_list.server_policy() {
-        Ok(policy) => {
-            diagnostics.set_server_policy(policy);
-            wiring
-                .shared_server_session
-                .set_withhold_shares(policy.withhold_from_related_search);
-        }
-        Err(error) => {
-            tracing::warn!(%error, "server policy unreadable at start; judging by the defaults");
-        }
-    }
+    let policy = wiring.settings.server_policy;
+    diagnostics.set_server_policy(policy);
+    wiring
+        .shared_server_session
+        .set_withhold_shares(policy.withhold_from_related_search);
     // The write side of what happened with a server (ADR-0080 §Dynamic server
     // facts): one seam over the same store, level and event bus, held by the
     // four surfaces that reach a server — the status-ping sweep, the `0x97`
@@ -163,11 +167,11 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     // the store, never copied into the diagnostics state: one writer, one
     // truth, and a row that cannot drift from the verdict it describes.
     diagnostics.install_addresses(own_identity.addresses().clone());
-    // The claim table is woven before this actor exists (the serve adapter
-    // that consults it is), so the counters for the two outcomes only its
-    // triage sees are handed over here (ADR-0091).
+    // The Awaited Inbound registry is woven before this actor exists (the
+    // serve adapter that asks it is), so the counters for the outcomes only
+    // it sees are handed over here (ADR-0091).
     wiring
-        .tunnel_claims
+        .awaited_inbound
         .install_diagnostics(diagnostics.clone());
     // The open-node buddy slot is woven before this actor too, and it is the
     // single writer of the held-link/pong facts the snapshot reports
@@ -178,7 +182,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     // writer: it decides the two-reading crypt verdict inside its
     // pump, so it is the one that can count an incompatible refusal without a
     // second copy of that decision reaching the actor.
-    wiring.kad_factory.install_diagnostics(diagnostics.clone());
+    wiring.kad_cells.diagnostics = diagnostics.clone();
     // Every running search, for **Search Attribution** (ADR-0034): the session
     // loop and the `0x99` forwarder deliver through it.
     let live_searches = LiveSearches::new(diagnostics.clone());
@@ -203,6 +207,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
             Some(spawn_server_udp_front(
                 Arc::new(transport),
                 &wiring.config,
+                &wiring.hello_adverts.obfuscation,
                 &server_facts,
                 &own_identity,
                 global_callback_rx,
@@ -230,35 +235,49 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     // Where a running Kad node installs its inbound half for the front to find
     // (ADR-0057). Woven before the bind because the front is spawned by it,
     // and filled far later — `EnableKad` may never arrive at all.
-    let kad_inlet: crate::client_udp::SharedKadInlet = Arc::new(std::sync::Mutex::new(None));
+    let kad_inlet = crate::client_udp::SharedKadInlet::default();
     // The NAT-T front's two late-bound cells (ADR-0091): its command half,
-    // which the reach arm and the server coordinator both address, and where
+    // which Peer Reach, the firewalled front and the server coordinator
+    // address, and where
     // a punched path asks the port mapper for its PCP `PEER` pin. Both are
     // woven before the socket binds and filled after, because the front is
     // spawned by the bind and the mapping runtime starts after it.
     let natt_front = crate::natt::front::SharedNattFront::default();
+    // The client-UDP send half's family of Self Reach: written by the bind
+    // below and by Quit, and by nothing else.
+    let client_udp_bound = crate::reachability::ClientUdpBound::default();
     // **Self Reach** (ADR-0060): the one owner of our own
     // reachability, woven from its families' writers — the Kad runtime's
-    // published verdicts, the session self-facts, the NAT-T front — and
-    // cloned into every reader.
+    // published verdicts, the session self-facts, the NAT-T front's
+    // liveness, the client-UDP bind and the server session's coordinator —
+    // and cloned into every reader.
     let self_reach = crate::reachability::SharedSelfReach::new(
-        wiring.kad_factory.kad_reach(),
+        wiring.kad_reach.clone(),
         own_identity.clone(),
         natt_front.clone(),
     )
     // "Kad running" is the Kad runtime's Presence cell, which the Kad
     // Activity alone leases (ADR-0093): read once here, so this
     // owner and the firewalled front below read the same cell.
-    .with_kad_presence(wiring.kad_factory.kad_presence());
+    .with_kad_presence(wiring.kad_cells.presence.clone())
+    .with_client_udp(client_udp_bound.clone())
+    .with_server_coordinator(
+        wiring
+            .shared_server_session
+            .server_punch()
+            .coordinator_session(),
+    )
+    .with_ipv6_advert(wiring.ipv6_advert.clone());
     // The hello's buddy tags ask the owner per hello.
+    wiring.hello_adverts.install_reach(self_reach.clone());
+    // And the session's offer names the same Presented Client ID.
     wiring
-        .hello_adverts
-        .firewalled_slot
+        .shared_server_session
         .install_reach(self_reach.clone());
     let peer_pin = crate::adapters::SharedPeerPin::default();
     let (client_udp_reask_rx, client_udp_reply_tx, client_udp_bind) =
         match rmule_net::ed2k::ClientUdpSocket::bind_with(
-            wiring.config.udp_port,
+            wiring.settings.udp_port,
             wiring.config.address_families,
         )
         .await
@@ -305,8 +324,13 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
                     &diagnostics,
                     NattFrontWiring {
                         reach: &self_reach,
+                        natt_front: natt_front.clone(),
+                        server: wiring
+                            .shared_server_session
+                            .server_punch()
+                            .coordinator_session(),
                         admit: wiring.tunnel_admit.clone(),
-                        claims: wiring.tunnel_claims.clone(),
+                        claims: wiring.awaited_inbound.clone(),
                         peer_pin: peer_pin.clone(),
                         events: evt_tx.downgrade(),
                         hello_adverts: wiring.hello_adverts.clone(),
@@ -319,6 +343,8 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
                         kad_presence: self_reach.kad_presence().clone(),
                     },
                 );
+                // The send half is up: the family's one set.
+                client_udp_bound.set();
                 (
                     reask_rx,
                     reply_tx,
@@ -339,11 +365,11 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
                 // and a start event a consumer sees exactly once. There is no
                 // retry (ADR-0057 amendment) — this is the whole session's
                 // answer to "why is Kad off" until an operator restarts.
-                diagnostics.record_client_udp_bind_failure(wiring.config.udp_port, error.kind());
+                diagnostics.record_client_udp_bind_failure(wiring.settings.udp_port, error.kind());
                 send_event(
                     &evt_tx,
                     CoreEvent::ClientUdpBindFailed {
-                        port: wiring.config.udp_port,
+                        port: wiring.settings.udp_port,
                         kind: error.kind(),
                     },
                 )
@@ -372,6 +398,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     // runtime learns each from the bind table itself rather than
     // from a notice their starters would have to remember to send.
     let port_mapping = crate::adapters::spawn_port_mapping(
+        wiring.settings.port_mapping,
         wiring.config.port_mapping,
         own_identity.addresses().clone(),
         wiring.gateway_source.clone(),
@@ -387,12 +414,24 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     if let Some(handle) = &port_mapping {
         peer_pin.install(handle.pin_sender());
     }
-    let remember_peers = wiring.config.remember_peers;
+    // The **Reachability Trail** (ADR-0075): each of core's own levels into
+    // the Run Log when its owner moves it. Started before the listener binds
+    // at attach, so that bind is a move it writes.
+    let trail = crate::run_log::trail::spawn(crate::run_log::trail::TrailSources {
+        diagnostics: diagnostics.clone(),
+        mapping_rows: port_mapping
+            .as_ref()
+            .map(crate::adapters::PortMappingHandle::rows),
+        addresses: own_identity.addresses().clone(),
+        reach: self_reach.clone(),
+        buddy: wiring.hello_adverts.buddy.clone(),
+    });
+    let remember_peers = wiring.settings.remember_peers;
     let (restoring, remembered) = download::attach_downloads(
         &wiring.store,
         &diagnostics,
         &evt_tx,
-        wiring.restore_credentials.is_some(),
+        wiring.restore_at_attach,
     )
     .await;
 
@@ -407,33 +446,34 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     // — a full inbox costs a punch attempt, not a download.
     let (download_reach_tx, download_reach_rx) = mpsc::channel(16);
     let download_runtime = DownloadRuntime {
-        download_reach_tx,
+        shared: Arc::new(SharedRuntime {
+            download_reach_tx,
+            source_lookup_timeout: wiring.config.source_lookup_timeout,
+            callback_timeout: wiring.config.callback_timeout,
+            store: Arc::clone(&wiring.store),
+            source_lookup: Arc::clone(&wiring.source_lookup),
+            source_asks: Arc::default(),
+            peer_transfer: Arc::clone(&wiring.peer_transfer),
+            credit: Arc::clone(&wiring.credit),
+            evt_tx: evt_tx.clone(),
+            diagnostics: diagnostics.clone(),
+            server_session: wiring.shared_server_session.clone(),
+            awaited_inbound: wiring.awaited_inbound.clone(),
+            global_source_registry,
+            global_callback_tx,
+            kad_source_registry: kad_source_registry.clone(),
+            reask_reply_sink,
+            client_udp_tx: client_udp_reply_tx.clone(),
+            ip_filter: wiring.ip_filter.clone(),
+            ipv6_advert: wiring.ipv6_advert.clone(),
+            // Also the one serve-listener cell, bound and cleared by
+            // `on_serve_command` exactly where the serve activity is.
+            reach: self_reach.clone(),
+            peer_roster: wiring.peer_roster.clone(),
+            resolver: crate::name_resolver::system_resolver(),
+        }),
         peer_concurrency: wiring.config.effective_peer_concurrency_per_download(),
-        source_lookup_timeout: wiring.config.source_lookup_timeout,
-        callback_timeout: wiring.config.callback_timeout,
-        store: Arc::clone(&wiring.store),
-        source_lookup: Arc::clone(&wiring.source_lookup),
-        source_asks: Arc::default(),
-        peer_transfer: Arc::clone(&wiring.peer_transfer),
-        credit: Arc::clone(&wiring.credit),
-        evt_tx: evt_tx.clone(),
-        diagnostics: diagnostics.clone(),
-        server_session: wiring.shared_server_session.clone(),
-        pending_callbacks: wiring.callbacks.clone(),
-        tunnel_claims: wiring.tunnel_claims.clone(),
-        global_source_registry,
-        global_callback_tx,
-        kad_source_registry: kad_source_registry.clone(),
         finished_tx: finished_tx.clone(),
-        reask_reply_sink,
-        client_udp_tx: client_udp_reply_tx.clone(),
-        ip_filter: wiring.ip_filter.clone(),
-        ipv6_advert: wiring.ipv6_advert.clone(),
-        // Also the one serve-listener cell, bound and cleared by
-        // `on_serve_command` exactly where `activities.serve` is.
-        reach: self_reach.clone(),
-        peer_roster: wiring.peer_roster.clone(),
-        resolver: crate::name_resolver::system_resolver(),
         discovery: crate::download::DiscoveryLiveness {
             global_servers: Arc::clone(&global_source_servers),
             reach: self_reach.clone(),
@@ -444,6 +484,18 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     // Read before the actor takes a command: the Registry Check's start look.
     let registry_at_start = crate::registry::SharedFileRegistry::list(&*wiring.registry).ok();
     let share_guards = wiring.share_guards.clone();
+    // **Peer Reach** (ADR-0061, ADR-0091): both reach arms end in it, over
+    // the handles woven above.
+    let peer_reach = crate::peer_reach::PeerReacher::new(crate::peer_reach::PeerReachWiring {
+        reach: self_reach.clone(),
+        client_udp: client_udp_reply_tx.clone(),
+        natt: natt_front,
+        kad_pump: wiring.kad_pump.clone(),
+        own: own_identity.clone(),
+        obfuscation: wiring.hello_adverts.obfuscation.clone(),
+        diagnostics: diagnostics.clone(),
+        events: evt_tx.clone(),
+    });
     let mut actor = CoreActor {
         wiring,
         evt_tx,
@@ -459,11 +511,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
         scan_tx,
         serve_ended_tx,
         kad_ended_tx,
-        activities: Activities {
-            restoring,
-            remembered,
-            ..Activities::default()
-        },
+        activities: Activities::restoring(restoring, remembered),
         live_searches,
         global_source_servers,
         kad_source_registry,
@@ -477,21 +525,25 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
         client_udp_reply_tx,
         client_udp_bind,
         self_reach,
+        client_udp_bound,
+        peer_reach,
         interface_refresh,
         share_flush,
         port_mapping,
+        trail,
         intent: super::server_intent::IntentLedger::default(),
         remember_peers,
     };
     // The listener is up from attach (ADR-0095): before any download
     // restored below starts, and before any connect.
     actor.listen_at_attach().await;
-    // Every directory the operator added is scanned from the start; the
-    // download directory follows the front end's `ScanCommand::Start`.
+    // Every directory on the Shared Directory List is scanned from the
+    // start: the download directory the Core Settings name, and every one the
+    // operator added (ADR-0101).
     actor.start_shared_directories().await;
     actor
         .run(
-            cmd_rx,
+            inbox,
             finished_rx,
             scan_rx,
             download_reach_rx,

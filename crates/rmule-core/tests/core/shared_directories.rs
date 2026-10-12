@@ -5,6 +5,7 @@
 //! nothing; the list scanned again after a restart; and a directory taken
 //! away while watched, whose files are withheld rather than Had.
 
+use rmule_testkit::HANG_GUARD;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -46,7 +47,21 @@ impl Machine {
     }
 
     fn core(&self, store: Arc<DurableStore>) -> Core {
-        Core::builder(CoreConfig::default(), store)
+        self.core_with(
+            store,
+            CoreConfig::default(),
+            rmule_core::CoreSettings::default(),
+        )
+    }
+
+    fn core_with(
+        &self,
+        store: Arc<DurableStore>,
+        config: CoreConfig,
+        settings: rmule_core::CoreSettings,
+    ) -> Core {
+        Core::builder(config, store)
+            .settings(settings)
             .share_guards(ShareGuards {
                 home: Some(self.home.clone()),
                 data_dir: Some(self.home.join("rmule-data")),
@@ -57,7 +72,7 @@ impl Machine {
 
 async fn next_scan_event(core: &mut Core) -> ScanEvent {
     loop {
-        let event = timeout(Duration::from_secs(10), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted a scan event")
             .expect("core event stream stayed open");
@@ -71,7 +86,7 @@ async fn next_scan_event(core: &mut Core) -> ScanEvent {
 async fn serve_events_until_scan(core: &mut Core) -> (Vec<ServeEvent>, ScanEvent) {
     let mut serve = Vec::new();
     loop {
-        let event = timeout(Duration::from_secs(10), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted a scan event")
             .expect("core event stream stayed open");
@@ -92,7 +107,7 @@ async fn diagnostics(core: &mut Core) -> DiagnosticsSnapshot {
     loop {
         // A retire joins a worker whose watch may still be starting, which
         // can take the operating system seconds.
-        let event = timeout(Duration::from_secs(10), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("a snapshot")
             .expect("stream open");
@@ -131,6 +146,44 @@ async fn add(core: &mut Core, dir: &Path, share: bool) -> (DirectoryOffer, Vec<P
     )
     .await;
     (offer, replaces)
+}
+
+/// Wait until the scan of every entry of the list watches its directory.
+async fn watch_holds(core: &mut Core) {
+    timeout(HANG_GUARD, async {
+        loop {
+            let listed = diagnostics(core).await.shared_directories;
+            let watching = !listed.is_empty()
+                && listed.iter().all(|entry| {
+                    matches!(
+                        entry.state,
+                        DirectoryState::Scan(ScanPhase::Watching { .. })
+                    )
+                });
+            if watching {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("the watch holds");
+}
+
+/// Take `dir` away and wait until core finds it missing; the serve events
+/// on the way.
+async fn take_away(core: &mut Core, dir: &Path, to: &Path) -> Vec<ServeEvent> {
+    std::fs::rename(dir, to).unwrap();
+    timeout(HANG_GUARD, async {
+        loop {
+            let (serve, scan) = serve_events_until_scan(core).await;
+            if matches!(&scan, ScanEvent::DirectoryMissing { dir: missing, .. } if missing == dir) {
+                return serve;
+            }
+        }
+    })
+    .await
+    .expect("the directory is found missing")
 }
 
 async fn refused(core: &mut Core, path: &Path) -> DirectoryRefusal {
@@ -214,6 +267,82 @@ async fn an_add_is_guarded_counted_confirmed_and_shared() {
         refused(&mut core, &media.join("films")).await,
         DirectoryRefusal::InsideShared { parent: media }
     );
+    core.shutdown().await;
+}
+
+/// A download directory the guards refuse — the operator's home, named where
+/// no guard was asked — is refused at attach like an add of it: listed as
+/// refused, never scanned, and covering nothing — a directory added inside it
+/// is its own entry, scanned, and its remove unshares its files. Moving it on
+/// the running core onto rmule's data directory is refused at the set, with
+/// the guard's reason.
+#[tokio::test]
+async fn a_refused_download_directory_is_not_scanned_and_covers_nothing() {
+    let machine = Machine::new();
+    let music = machine.directory("home/music", &[("song.ogg", b"song")]);
+    let store = rmule_testkit::memory_store();
+    let registry = DurableSharedFileRegistry::new(store.clone());
+    let mut core = machine.core_with(
+        store,
+        CoreConfig::default(),
+        rmule_core::CoreSettings {
+            download_dir: Some(machine.home.clone()),
+            ..rmule_core::CoreSettings::default()
+        },
+    );
+    assert_eq!(
+        next_scan_event(&mut core).await,
+        ScanEvent::DownloadDirectoryRefused {
+            dir: machine.home.clone(),
+            reason: DirectoryRefusal::HomeDirectory
+        }
+    );
+    assert_eq!(
+        core.settings().set(rmule_core::Setting::DownloadDir {
+            dir: machine.home.join("rmule-data"),
+            share_confirmed: true,
+        }),
+        Err(rmule_core::SettingError::Refused(
+            rmule_core::SettingRefusal::DownloadDirRefused(DirectoryRefusal::DataDirectory)
+        ))
+    );
+
+    add(&mut core, &music, true).await;
+    assert!(matches!(
+        next_scan_event(&mut core).await,
+        ScanEvent::DirectoryAdded { dir, .. } if dir == music
+    ));
+    assert!(matches!(
+        next_scan_event(&mut core).await,
+        ScanEvent::Finished { dir, summary } if dir == music && summary.hashed == 1
+    ));
+    let listed = diagnostics(&mut core).await.shared_directories;
+    assert_eq!(
+        (&listed[0].dir, &listed[0].state),
+        (
+            &machine.home,
+            &DirectoryState::Refused(DirectoryRefusal::HomeDirectory)
+        )
+    );
+    assert_eq!(listed[1].dir, music);
+    assert!(matches!(listed[1].state, DirectoryState::Scan(_)));
+
+    send(
+        &core,
+        ScanCommand::RemoveSharedDirectory {
+            path: music.clone(),
+        },
+    )
+    .await;
+    let (_, removed) = serve_events_until_scan(&mut core).await;
+    assert_eq!(
+        removed,
+        ScanEvent::DirectoryRemoved {
+            dir: music,
+            files: 1
+        }
+    );
+    assert!(registry.list().unwrap().is_empty());
     core.shutdown().await;
 }
 
@@ -345,13 +474,12 @@ async fn the_download_directory_under_an_added_one_is_covered_and_cannot_be_remo
     let files = machine.root.join("files");
     let store = rmule_testkit::memory_store();
     let mut core = machine.core(store);
-    send(
-        &core,
-        ScanCommand::Start {
+    core.settings()
+        .set(rmule_core::Setting::DownloadDir {
             dir: downloads.clone(),
-        },
-    )
-    .await;
+            share_confirmed: false,
+        })
+        .unwrap();
     // The empty download directory needs no question; its pass finishes.
     assert!(
         matches!(next_scan_event(&mut core).await, ScanEvent::Finished { dir, .. } if dir == downloads)
@@ -406,39 +534,8 @@ async fn a_directory_taken_away_while_watched_is_missing_and_its_files_withheld(
         ScanEvent::Finished { .. }
     ));
     // Let the watch hold before the directory goes.
-    timeout(Duration::from_secs(10), async {
-        loop {
-            let watching = diagnostics(&mut core)
-                .await
-                .shared_directories
-                .iter()
-                .any(|entry| {
-                    matches!(
-                        entry.state,
-                        DirectoryState::Scan(ScanPhase::Watching { .. })
-                    )
-                });
-            if watching {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .expect("the watch holds");
-
-    std::fs::rename(&media, machine.root.join("media, moved away")).unwrap();
-    let (serve, missing) = timeout(Duration::from_secs(20), async {
-        loop {
-            let (serve, scan) = serve_events_until_scan(&mut core).await;
-            if matches!(scan, ScanEvent::DirectoryMissing { .. }) {
-                return (serve, scan);
-            }
-        }
-    })
-    .await
-    .expect("the directory is found missing");
-    assert!(matches!(missing, ScanEvent::DirectoryMissing { dir, .. } if dir == media));
+    watch_holds(&mut core).await;
+    let serve = take_away(&mut core, &media, &machine.root.join("media, moved away")).await;
     assert!(
         serve
             .iter()
@@ -452,5 +549,181 @@ async fn a_directory_taken_away_while_watched_is_missing_and_its_files_withheld(
         listed[0].state,
         DirectoryState::Scan(ScanPhase::Missing { .. })
     ));
+    core.shutdown().await;
+}
+
+/// An added directory that comes back where the guards refuse it — a link
+/// to the operator's home where the directory was — is judged as it appears,
+/// before its pass reads anything: refused, said, listed as refused, and never
+/// scanned, so nothing in the home is shared. The next start judges it again
+/// and refuses it at attach.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_added_directory_that_returns_where_the_guards_refuse_it_is_not_scanned() {
+    let machine = Machine::new();
+    let media = machine.directory("media", &[("film.mkv", b"film bytes")]);
+    std::fs::write(machine.home.join("letter.txt"), b"private").unwrap();
+    let store = rmule_testkit::memory_store();
+    let registry = DurableSharedFileRegistry::new(store.clone());
+    let config = CoreConfig {
+        missing_directory_look: Duration::from_millis(100),
+        ..CoreConfig::default()
+    };
+    let mut core = machine.core_with(store.clone(), config, rmule_core::CoreSettings::default());
+    add(&mut core, &media, true).await;
+    assert!(matches!(
+        next_scan_event(&mut core).await,
+        ScanEvent::DirectoryAdded { .. }
+    ));
+    assert!(matches!(
+        next_scan_event(&mut core).await,
+        ScanEvent::Finished { .. }
+    ));
+    watch_holds(&mut core).await;
+    take_away(&mut core, &media, &machine.root.join("media, moved away")).await;
+
+    std::os::unix::fs::symlink(&machine.home, &media).unwrap();
+    let refusal = ScanEvent::DirectoryRefused {
+        dir: media.clone(),
+        reason: DirectoryRefusal::HomeDirectory,
+    };
+    timeout(HANG_GUARD, async {
+        loop {
+            match next_scan_event(&mut core).await {
+                event if event == refusal => return,
+                event @ (ScanEvent::DirectoryReturned { .. }
+                | ScanEvent::Finished { .. }
+                | ScanEvent::ConsentRequested { .. }) => panic!("scanned: {event:?}"),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("the refusal is said as the directory appears");
+    let listed = diagnostics(&mut core).await.shared_directories;
+    assert_eq!(
+        (&listed[0].dir, listed[0].role, &listed[0].state),
+        (
+            &media,
+            DirectoryRole::Added,
+            &DirectoryState::Refused(DirectoryRefusal::HomeDirectory)
+        )
+    );
+    assert!(
+        registry
+            .list()
+            .unwrap()
+            .iter()
+            .all(|row| row.path.file_name() != Some("letter.txt".as_ref())),
+        "nothing in the home is shared"
+    );
+    core.shutdown().await;
+
+    let mut again = machine.core(store);
+    assert_eq!(next_scan_event(&mut again).await, refusal);
+    let listed = diagnostics(&mut again).await.shared_directories;
+    assert_eq!(
+        listed[0].state,
+        DirectoryState::Refused(DirectoryRefusal::HomeDirectory)
+    );
+    again.shutdown().await;
+}
+
+/// A withheld file under an added directory that returns where the guards
+/// refuse it is withheld as refused, and stays so though it opens again: a
+/// recheck of the withheld rows — the one another directory's return asks
+/// for — offers that directory's file and not this one.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_withheld_file_under_a_refused_directory_is_not_offered_when_it_opens_again() {
+    let machine = Machine::new();
+    let media = machine.directory("media", &[("film.mkv", b"film bytes")]);
+    let music = machine.directory("music", &[("song.mp3", b"song bytes")]);
+    let store = rmule_testkit::memory_store();
+    let registry = DurableSharedFileRegistry::new(store.clone());
+    let config = CoreConfig {
+        missing_directory_look: Duration::from_millis(100),
+        ..CoreConfig::default()
+    };
+    let mut core = machine.core_with(store, config, rmule_core::CoreSettings::default());
+    for dir in [&media, &music] {
+        add(&mut core, dir, true).await;
+        assert!(matches!(
+            next_scan_event(&mut core).await,
+            ScanEvent::DirectoryAdded { .. }
+        ));
+        assert!(matches!(
+            next_scan_event(&mut core).await,
+            ScanEvent::Finished { .. }
+        ));
+    }
+    let hash_of = |name: &str| {
+        registry
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|row| row.path.file_name() == Some(name.as_ref()))
+            .expect("the file is shared")
+            .file_hash
+    };
+    let (film, song) = (hash_of("film.mkv"), hash_of("song.mp3"));
+    watch_holds(&mut core).await;
+    let moved = machine.root.join("media, moved away");
+    take_away(&mut core, &media, &moved).await;
+
+    // The file lands in the home with its stamp, and the directory returns
+    // as a link to it: the row's path opens again, through the home.
+    std::fs::rename(moved.join("film.mkv"), machine.home.join("film.mkv")).unwrap();
+    std::os::unix::fs::symlink(&machine.home, &media).unwrap();
+    timeout(HANG_GUARD, async {
+        loop {
+            match core.next_event().await.expect("stream open") {
+                CoreEvent::Serve(ServeEvent::FileWithheld {
+                    file_hash,
+                    reason: rmule_core::WithheldReason::Refused,
+                    ..
+                }) if file_hash == film => return,
+                CoreEvent::Serve(ServeEvent::FileOffered { file_hash }) if file_hash == film => {
+                    panic!("offered under a refused directory")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("the refusal withholds the row as refused");
+
+    let music_moved = machine.root.join("music, moved away");
+    take_away(&mut core, &music, &music_moved).await;
+    std::fs::rename(&music_moved, &music).unwrap();
+    timeout(HANG_GUARD, async {
+        loop {
+            match core.next_event().await.expect("stream open") {
+                CoreEvent::Serve(ServeEvent::FileOffered { file_hash }) if file_hash == song => {
+                    return;
+                }
+                CoreEvent::Serve(ServeEvent::FileOffered { file_hash }) if file_hash == film => {
+                    panic!("offered under a refused directory")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("the recheck the return asks for offers the returned file");
+    // The recheck ruled on both rows in one pass: a ruling on the refused
+    // one would land within moments of the other's.
+    let late = timeout(Duration::from_secs(1), async {
+        loop {
+            if let CoreEvent::Serve(ServeEvent::FileOffered { file_hash }) =
+                core.next_event().await.expect("stream open")
+                && file_hash == film
+            {
+                return;
+            }
+        }
+    })
+    .await;
+    assert!(late.is_err(), "offered under a refused directory");
     core.shutdown().await;
 }

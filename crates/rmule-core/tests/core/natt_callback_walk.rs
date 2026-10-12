@@ -15,6 +15,7 @@
 //! its adoption are the endpoint-known leg's (`natt_buddy_download`), through
 //! the same Dial-Back Claim.
 
+use rmule_testkit::HANG_GUARD;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::time::Duration;
 
@@ -60,8 +61,7 @@ async fn kad_node(id: KadId) -> (rmule_net::kad::KadNetHandle, SocketAddrV4) {
             capture_dir: None,
             nodes_dat_path: None,
             firewall_self_check: false,
-            datagram_obfuscation: false,
-            verify_keys: None,
+            obfuscation: None,
             contact_admission: None,
         },
         SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
@@ -76,6 +76,7 @@ async fn kad_node(id: KadId) -> (rmule_net::kad::KadNetHandle, SocketAddrV4) {
 
 #[tokio::test]
 async fn a_buddy_named_by_id_alone_is_walked_to_and_sent_the_0x52() {
+    let out = tempfile::tempdir().unwrap();
     let bytes = vec![0x5A_u8; 4096];
     let file = rmule_testkit::file_link("walked-buddy.bin", &bytes);
     let key = KadSourceLookupRequest::new(SourceLookupTarget::new(file.file_hash, file.size))
@@ -93,7 +94,7 @@ async fn a_buddy_named_by_id_alone_is_walked_to_and_sent_the_0x52() {
         })
         .await
         .unwrap();
-    timeout(Duration::from_secs(10), async {
+    timeout(HANG_GUARD, async {
         while !matches!(
             buddy.next_event().await,
             Some(KadEvent::ContactResponded { id }) if id == key
@@ -131,6 +132,7 @@ async fn a_buddy_named_by_id_alone_is_walked_to_and_sent_the_0x52() {
     // walk, not handed over.
     let server = rmule_testkit::FakeEd2kServer::start().await;
     let server_ep = ServerEndpoint::parse_host_port(&server.local_addr().to_string()).unwrap();
+    let port = crate::fixture::free_port().await;
     let mut core = Core::builder(
         CoreConfig {
             kad_sweep_interval: Duration::from_millis(100),
@@ -138,35 +140,30 @@ async fn a_buddy_named_by_id_alone_is_walked_to_and_sent_the_0x52() {
         },
         rmule_testkit::memory_store(),
     )
+    .settings(rmule_testkit::in_download_dir(
+        crate::fixture::settings_on(port),
+        out.path(),
+    ))
     .peer_transfer(NeverDials)
     .build();
-    let port = crate::fixture::free_port().await;
     core.send(CoreCommand::Serve(rmule_core::ServeCommand::StartServing {
         listen_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, port),
-        credentials: crate::fixture::identity_with_port(port).into(),
     }))
     .await
     .unwrap();
     crate::fixture::serving_started(&mut core).await;
-    rmule_testkit::connect_to(
-        &core,
-        &server_ep,
-        crate::fixture::identity_with_port(port).into(),
-    )
-    .await;
+    rmule_testkit::connect_to(&core, &server_ep).await;
     core.send(CoreCommand::EnableKad(KadEnableConfig {
-        peer_credentials: crate::fixture::identity_with_port(port).into(),
         bootstrap: vec![storer_addr],
         ..crate::fixture::kad_enable_config()
     }))
     .await
     .unwrap();
-    let out = tempfile::tempdir().unwrap();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(server_ep),
-        credentials: crate::fixture::identity_with_port(port).into(),
-        output_path: out.path().join("walked-buddy.bin"),
+        name: rmule_testkit::file_name("walked-buddy.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -191,7 +188,7 @@ async fn a_buddy_named_by_id_alone_is_walked_to_and_sent_the_0x52() {
 
     // The buddy decodes a real `0x52` naming itself, the file, and the port
     // the publisher is to dial.
-    let relayed = timeout(Duration::from_secs(15), async {
+    let relayed = timeout(HANG_GUARD, async {
         loop {
             match buddy.next_event().await.expect("buddy node runs") {
                 KadEvent::CallbackRelayRequested {
@@ -205,7 +202,7 @@ async fn a_buddy_named_by_id_alone_is_walked_to_and_sent_the_0x52() {
         }
     })
     .await
-    .expect("the walk's 0x52 reaches the buddy within 15s");
+    .expect("the walk's 0x52 reaches the buddy");
     let file_hash = rmule_testkit::file_link("walked-buddy.bin", &bytes).file_hash;
     assert_eq!(relayed, (BUDDY_ID, file_hash, port));
 

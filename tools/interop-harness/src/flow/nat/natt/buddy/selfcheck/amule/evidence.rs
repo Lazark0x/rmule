@@ -21,7 +21,7 @@ use crate::flow::taps::PerAttachmentTaps;
 use crate::flow::wire_filter::{OP_EMULEPROT, WireFilter, capture_ed2k_frames};
 
 /// aMule's debug logfile as it stands, or empty when it cannot be read.
-pub(super) fn amule_logfile(bench: &Bench, container: &str) -> String {
+pub(in crate::flow::nat::natt::buddy) fn amule_logfile(bench: &Bench, container: &str) -> String {
     run_checked(
         bench.docker.exec(
             container.to_owned(),
@@ -37,7 +37,7 @@ pub(super) fn amule_logfile(bench: &Bench, container: &str) -> String {
 }
 
 /// `amulecmd status`: aMule's own statement of its Kad state.
-pub(super) fn amule_status(bench: &Bench, container: &str) -> String {
+pub(in crate::flow::nat::natt::buddy) fn amule_status(bench: &Bench, container: &str) -> String {
     run_checked(
         bench.docker.exec(
             container.to_owned(),
@@ -67,7 +67,7 @@ pub(super) fn wait_for_udp_verdict(bench: &Bench, container: &str) -> Option<Str
 
 /// Wait for the first line of aMule's logfile carrying any of `needles`,
 /// reading it every few seconds; `None` when `budget` runs out first.
-pub(super) fn wait_for_log_line(
+pub(in crate::flow::nat::natt::buddy) fn wait_for_log_line(
     bench: &Bench,
     container: &str,
     needles: &[&str],

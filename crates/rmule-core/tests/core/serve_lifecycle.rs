@@ -1,21 +1,24 @@
 //! Serve activity lifecycle + queue policy, driven by a fake serve runtime.
-use crate::fixture::{identity, sized_file};
+use crate::fixture::sized_file;
 use rmule_core::DurableSharedFileRegistry;
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, DownloadFailure, PeerTransferService, PeerWorker,
-    ServeCommand, ServeConnCommand, ServeConnEvent, ServeConnection, ServeEvent,
-    ServeRuntimeService, ServeStartFailure, ShareSource, SharedFileEntry, SharedFileRegistry,
-    SourceLookupOutcome, SourceLookupService,
+    ServeCommand, ServeConnection, ServeEvent, ServeInput, ServeOutput, ServeRuntimeService,
+    ServeStartFailure, ShareSource, SharedFileEntry, SharedFileRegistry, SourceLookupOutcome,
+    SourceLookupService,
 };
 use rmule_ed2k::OfferedFile;
-use rmule_peer::{PartRanges, PeerHandshakeContext};
+use rmule_peer::{
+    ConnectionEvent, PartRanges, PeerCloseReason, PeerHandshakeContext, ServerCommand, ServerEvent,
+};
 use rmule_primitives::{
     ClientId, Ed2kFileLink, FileHash, FileHashSummary, PeerEndpoint, PeerSource, SourceLookupTarget,
 };
+use rmule_testkit::HANG_GUARD;
 use std::net::SocketAddrV4;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
-use tokio::time::{Duration, timeout};
+use tokio::time::timeout;
 
 mod retire;
 
@@ -130,8 +133,8 @@ fn conn_pair(
     peer: PeerEndpoint,
 ) -> (
     ServeConnection,
-    mpsc::Sender<ServeConnEvent>,
-    mpsc::Receiver<ServeConnCommand>,
+    mpsc::Sender<ServeInput>,
+    mpsc::Receiver<ServeOutput>,
 ) {
     let (cmd_tx, cmd_rx) = mpsc::channel(16);
     let (evt_tx, evt_rx) = mpsc::channel(16);
@@ -146,7 +149,7 @@ fn peer(port: u16) -> PeerEndpoint {
 
 async fn next_serve_event(core: &mut Core) -> ServeEvent {
     loop {
-        let event = timeout(Duration::from_secs(2), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted a serve event")
             .expect("event stream open");
@@ -205,6 +208,7 @@ async fn serve_grants_within_budget_then_queues_and_promotes_on_disconnect() {
         ..CoreConfig::default()
     };
     let mut core = Core::builder(config, store)
+        .settings(rmule_core::CoreSettings::default())
         .source_lookup(UnusedSourceLookup)
         .peer_transfer(UnusedPeerTransfer)
         .serve_runtime(serve_runtime)
@@ -212,7 +216,6 @@ async fn serve_grants_within_budget_then_queues_and_promotes_on_disconnect() {
 
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: "0.0.0.0:0".parse().unwrap(),
-        credentials: identity().into(),
     }))
     .await
     .unwrap();
@@ -229,12 +232,12 @@ async fn serve_grants_within_budget_then_queues_and_promotes_on_disconnect() {
 
     // Peer A requests a slot → granted (budget 1).
     evt_a
-        .send(ServeConnEvent::SlotRequested { file_hash })
+        .send(ServeInput::Server(ServerEvent::SlotRequested { file_hash }))
         .await
         .unwrap();
     assert_eq!(
         cmd_a.recv().await.unwrap(),
-        ServeConnCommand::GrantSlot { file_hash }
+        ServeOutput::Server(ServerCommand::GrantSlot { file_hash })
     );
     assert_eq!(
         next_serve_event(&mut core).await,
@@ -247,12 +250,12 @@ async fn serve_grants_within_budget_then_queues_and_promotes_on_disconnect() {
 
     // Peer B requests a slot → queued at rank 1.
     evt_b
-        .send(ServeConnEvent::SlotRequested { file_hash })
+        .send(ServeInput::Server(ServerEvent::SlotRequested { file_hash }))
         .await
         .unwrap();
     assert_eq!(
         cmd_b.recv().await.unwrap(),
-        ServeConnCommand::SetQueueRank { rank: 1 }
+        ServeOutput::Server(ServerCommand::SetQueueRank { rank: 1 })
     );
     assert_eq!(
         next_serve_event(&mut core).await,
@@ -265,10 +268,15 @@ async fn serve_grants_within_budget_then_queues_and_promotes_on_disconnect() {
     );
 
     // Peer A disconnects → peer B promoted (granted), slot released event.
-    evt_a.send(ServeConnEvent::Disconnected).await.unwrap();
+    evt_a
+        .send(ServeInput::Connection(ConnectionEvent::Disconnected {
+            reason: PeerCloseReason::PeerClosed,
+        }))
+        .await
+        .unwrap();
     assert_eq!(
         cmd_b.recv().await.unwrap(),
-        ServeConnCommand::GrantSlot { file_hash }
+        ServeOutput::Server(ServerCommand::GrantSlot { file_hash })
     );
     assert_eq!(
         next_serve_event(&mut core).await,
@@ -325,6 +333,7 @@ async fn serve_transfer_cancel_frees_the_slot_keeps_the_connection_and_promotes_
         ..CoreConfig::default()
     };
     let mut core = Core::builder(config, store)
+        .settings(rmule_core::CoreSettings::default())
         .source_lookup(UnusedSourceLookup)
         .peer_transfer(UnusedPeerTransfer)
         .serve_runtime(serve_runtime)
@@ -332,7 +341,6 @@ async fn serve_transfer_cancel_frees_the_slot_keeps_the_connection_and_promotes_
 
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: "0.0.0.0:0".parse().unwrap(),
-        credentials: identity().into(),
     }))
     .await
     .unwrap();
@@ -349,12 +357,12 @@ async fn serve_transfer_cancel_frees_the_slot_keeps_the_connection_and_promotes_
 
     // A granted, B queued.
     evt_a
-        .send(ServeConnEvent::SlotRequested { file_hash })
+        .send(ServeInput::Server(ServerEvent::SlotRequested { file_hash }))
         .await
         .unwrap();
     assert_eq!(
         cmd_a.recv().await.unwrap(),
-        ServeConnCommand::GrantSlot { file_hash }
+        ServeOutput::Server(ServerCommand::GrantSlot { file_hash })
     );
     assert_eq!(
         next_serve_event(&mut core).await,
@@ -365,12 +373,12 @@ async fn serve_transfer_cancel_frees_the_slot_keeps_the_connection_and_promotes_
         }
     );
     evt_b
-        .send(ServeConnEvent::SlotRequested { file_hash })
+        .send(ServeInput::Server(ServerEvent::SlotRequested { file_hash }))
         .await
         .unwrap();
     assert_eq!(
         cmd_b.recv().await.unwrap(),
-        ServeConnCommand::SetQueueRank { rank: 1 }
+        ServeOutput::Server(ServerCommand::SetQueueRank { rank: 1 })
     );
     assert_eq!(
         next_serve_event(&mut core).await,
@@ -385,12 +393,14 @@ async fn serve_transfer_cancel_frees_the_slot_keeps_the_connection_and_promotes_
     // A cancels (OP_CANCELTRANSFER) instead of disconnecting: B is promoted
     // exactly as on a disconnect...
     evt_a
-        .send(ServeConnEvent::TransferCancelled { file_hash })
+        .send(ServeInput::Server(ServerEvent::TransferCancelled {
+            file_hash,
+        }))
         .await
         .unwrap();
     assert_eq!(
         cmd_b.recv().await.unwrap(),
-        ServeConnCommand::GrantSlot { file_hash }
+        ServeOutput::Server(ServerCommand::GrantSlot { file_hash })
     );
     assert_eq!(
         next_serve_event(&mut core).await,
@@ -410,15 +420,15 @@ async fn serve_transfer_cancel_frees_the_slot_keeps_the_connection_and_promotes_
     // position B just vacated) instead of being silently dropped by a runner
     // that no longer recognizes the peer.
     evt_a
-        .send(ServeConnEvent::SlotRequested { file_hash })
+        .send(ServeInput::Server(ServerEvent::SlotRequested { file_hash }))
         .await
         .unwrap();
     assert_eq!(
-        timeout(Duration::from_secs(2), cmd_a.recv())
+        timeout(HANG_GUARD, cmd_a.recv())
             .await
             .expect("A's connection must stay registered across a cancel")
             .unwrap(),
-        ServeConnCommand::SetQueueRank { rank: 1 }
+        ServeOutput::Server(ServerCommand::SetQueueRank { rank: 1 })
     );
 }
 
@@ -435,6 +445,7 @@ async fn serve_start_failure_emits_serving_failed_not_a_hang() {
         start_fails: true,
     };
     let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
         .source_lookup(UnusedSourceLookup)
         .peer_transfer(UnusedPeerTransfer)
         .serve_runtime(serve_runtime)
@@ -442,14 +453,13 @@ async fn serve_start_failure_emits_serving_failed_not_a_hang() {
 
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: "0.0.0.0:0".parse().unwrap(),
-        credentials: identity().into(),
     }))
     .await
     .unwrap();
 
-    let event = timeout(Duration::from_secs(2), next_serve_event(&mut core))
+    let event = timeout(HANG_GUARD, next_serve_event(&mut core))
         .await
-        .expect("serve-start failure must surface within 2s, not hang");
+        .expect("serve-start failure must surface, not hang");
     assert_eq!(
         event,
         ServeEvent::ServingFailed {
@@ -461,12 +471,11 @@ async fn serve_start_failure_emits_serving_failed_not_a_hang() {
     // start, so the same command is answered again rather than swallowed.
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: "0.0.0.0:0".parse().unwrap(),
-        credentials: identity().into(),
     }))
     .await
     .unwrap();
     assert_eq!(
-        timeout(Duration::from_secs(2), next_serve_event(&mut core))
+        timeout(HANG_GUARD, next_serve_event(&mut core))
             .await
             .expect("a retry after a failed start is answered, never ignored"),
         ServeEvent::ServingFailed {
@@ -506,6 +515,7 @@ async fn serve_skips_ranges_already_sent_on_a_granted_slot() {
         start_fails: false,
     };
     let mut core = Core::builder(CoreConfig::default(), store)
+        .settings(rmule_core::CoreSettings::default())
         .source_lookup(UnusedSourceLookup)
         .peer_transfer(UnusedPeerTransfer)
         .serve_runtime(serve_runtime)
@@ -513,7 +523,6 @@ async fn serve_skips_ranges_already_sent_on_a_granted_slot() {
 
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: "0.0.0.0:0".parse().unwrap(),
-        credentials: identity().into(),
     }))
     .await
     .unwrap();
@@ -526,12 +535,12 @@ async fn serve_skips_ranges_already_sent_on_a_granted_slot() {
         ServeEvent::FilesAnnounced { file_count: 1 }
     );
 
-    evt.send(ServeConnEvent::SlotRequested { file_hash })
+    evt.send(ServeInput::Server(ServerEvent::SlotRequested { file_hash }))
         .await
         .unwrap();
     assert_eq!(
         cmd.recv().await.unwrap(),
-        ServeConnCommand::GrantSlot { file_hash }
+        ServeOutput::Server(ServerCommand::GrantSlot { file_hash })
     );
     assert_eq!(
         next_serve_event(&mut core).await,
@@ -543,10 +552,10 @@ async fn serve_skips_ranges_already_sent_on_a_granted_slot() {
     );
 
     let first = PartRanges::new([(0, 100), (100, 200), (200, 300)]).unwrap();
-    evt.send(ServeConnEvent::PartsRequested {
+    evt.send(ServeInput::Server(ServerEvent::PartsRequested {
         file_hash,
         ranges: first,
-    })
+    }))
     .await
     .unwrap();
     assert_send_block(&mut cmd, file_hash, 0, 100, &bytes).await;
@@ -554,32 +563,32 @@ async fn serve_skips_ranges_already_sent_on_a_granted_slot() {
     assert_send_block(&mut cmd, file_hash, 200, 300, &bytes).await;
 
     let overlapping = PartRanges::new([(100, 200), (200, 300), (300, 400)]).unwrap();
-    evt.send(ServeConnEvent::PartsRequested {
+    evt.send(ServeInput::Server(ServerEvent::PartsRequested {
         file_hash,
         ranges: overlapping,
-    })
+    }))
     .await
     .unwrap();
     assert_send_block(&mut cmd, file_hash, 300, 400, &bytes).await;
 }
 
 async fn assert_send_block(
-    cmd: &mut mpsc::Receiver<ServeConnCommand>,
+    cmd: &mut mpsc::Receiver<ServeOutput>,
     file_hash: FileHash,
     start: u64,
     end: u64,
     file_bytes: &[u8],
 ) {
-    let command = timeout(Duration::from_secs(2), cmd.recv())
+    let command = timeout(HANG_GUARD, cmd.recv())
         .await
         .expect("serve command emitted")
         .expect("serve command stream open");
-    let ServeConnCommand::SendBlock {
+    let ServeOutput::Server(ServerCommand::SendBlock {
         file_hash: actual_hash,
         start: actual_start,
         end: actual_end,
         bytes,
-    } = command
+    }) = command
     else {
         panic!("expected SendBlock, got {command:?}");
     };
@@ -610,6 +619,7 @@ async fn builder_mixed_override_over_default_registry_and_credit_serves() {
         start_fails: false,
     };
     let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
         .source_lookup(UnusedSourceLookup)
         .peer_transfer(UnusedPeerTransfer)
         .serve_runtime(serve_runtime)
@@ -622,7 +632,6 @@ async fn builder_mixed_override_over_default_registry_and_credit_serves() {
 
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: "0.0.0.0:0".parse().unwrap(),
-        credentials: identity().into(),
     }))
     .await
     .unwrap();
@@ -635,12 +644,12 @@ async fn builder_mixed_override_over_default_registry_and_credit_serves() {
         ServeEvent::FilesAnnounced { file_count: 1 }
     );
 
-    evt.send(ServeConnEvent::SlotRequested { file_hash })
+    evt.send(ServeInput::Server(ServerEvent::SlotRequested { file_hash }))
         .await
         .unwrap();
     assert_eq!(
         cmd.recv().await.unwrap(),
-        ServeConnCommand::GrantSlot { file_hash }
+        ServeOutput::Server(ServerCommand::GrantSlot { file_hash })
     );
     assert_eq!(
         next_serve_event(&mut core).await,
@@ -669,6 +678,7 @@ async fn shutdown_returns_after_a_serving_session() {
         start_fails: false,
     };
     let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
         .source_lookup(UnusedSourceLookup)
         .peer_transfer(UnusedPeerTransfer)
         .serve_runtime(serve_runtime)
@@ -676,7 +686,6 @@ async fn shutdown_returns_after_a_serving_session() {
 
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: "0.0.0.0:0".parse().unwrap(),
-        credentials: identity().into(),
     }))
     .await
     .unwrap();
@@ -685,7 +694,7 @@ async fn shutdown_returns_after_a_serving_session() {
         ServeEvent::ServingStarted { .. }
     ));
 
-    timeout(Duration::from_secs(10), core.shutdown())
+    timeout(HANG_GUARD, core.shutdown())
         .await
         .expect("Core::shutdown returns after a serving session");
 }

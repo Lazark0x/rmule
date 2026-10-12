@@ -6,9 +6,12 @@
 use std::net::Ipv4Addr;
 
 use crate::fixture::identified_session;
-use rmule_peer::{PartRanges, PeerCommand, PeerEvent, PeerSession, SlotReleaseReason};
+use rmule_peer::{
+    ChangeClientIpV6, ConnectionEvent, IdentityChange, NoticeEvent, PartRanges, PeerCommand,
+    PeerEvent, PeerSession, RequesterCommand, RequesterEvent, SideEvent, SlotReleaseReason,
+};
 use rmule_primitives::session::drain;
-use rmule_primitives::{Ed2kText, FileHash, Packet, PacketProtocol, PartHash};
+use rmule_primitives::{Ed2kText, FileHash, Ipv4Endpoint, Packet, PacketProtocol, PartHash};
 use rmule_testkit::peer_session::{ctx, events, file_hash, peer_at, writes};
 
 // --- Wire helpers -----------------------------------------------
@@ -136,7 +139,7 @@ fn every_browse_request_is_denied_and_counted() {
         assert!(
             events(&out)
                 .iter()
-                .any(|e| matches!(e, PeerEvent::BrowseDenied)),
+                .any(|e| matches!(e, PeerEvent::Notice(NoticeEvent::BrowseDenied))),
             "expected BrowseDenied, got {out:?}"
         );
     }
@@ -159,7 +162,7 @@ fn public_ip_req_is_answered_with_the_peers_own_observed_ip() {
     assert!(
         events(&out)
             .iter()
-            .any(|e| matches!(e, PeerEvent::PublicIpAnswered)),
+            .any(|e| matches!(e, PeerEvent::Side(SideEvent::PublicIpAnswered))),
         "expected PublicIpAnswered, got {out:?}"
     );
 }
@@ -180,9 +183,10 @@ fn unsolicited_browse_answers_are_silently_dropped() {
 
         assert!(writes(&out).is_empty(), "no reply expected, got {out:?}");
         assert!(
-            events(&out)
-                .iter()
-                .any(|e| matches!(e, PeerEvent::UnsolicitedBrowseAnswerDropped)),
+            events(&out).iter().any(|e| matches!(
+                e,
+                PeerEvent::Notice(NoticeEvent::UnsolicitedBrowseAnswerDropped)
+            )),
             "expected UnsolicitedBrowseAnswerDropped, got {out:?}"
         );
     }
@@ -196,9 +200,10 @@ fn unsolicited_public_ip_answer_is_silently_dropped() {
 
     assert!(writes(&out).is_empty(), "no reply expected, got {out:?}");
     assert!(
-        events(&out)
-            .iter()
-            .any(|e| matches!(e, PeerEvent::UnsolicitedPublicIpAnswerDropped)),
+        events(&out).iter().any(|e| matches!(
+            e,
+            PeerEvent::Notice(NoticeEvent::UnsolicitedPublicIpAnswerDropped)
+        )),
         "expected UnsolicitedPublicIpAnswerDropped, got {out:?}"
     );
 }
@@ -214,7 +219,7 @@ fn chat_captcha_challenge_and_answer_are_silently_dropped() {
         assert!(
             events(&out)
                 .iter()
-                .any(|e| matches!(e, PeerEvent::ChatCaptchaDropped)),
+                .any(|e| matches!(e, PeerEvent::Notice(NoticeEvent::ChatCaptchaDropped))),
             "expected ChatCaptchaDropped, got {out:?}"
         );
     }
@@ -232,7 +237,7 @@ fn chat_message_is_surfaced_with_no_reply() {
     assert!(
         events(&out).iter().any(|e| matches!(
             e,
-            PeerEvent::ChatMessageReceived { text } if text == &Ed2kText::from_utf8("hello there")
+            PeerEvent::Notice(NoticeEvent::ChatMessageReceived { text }) if text == &Ed2kText::from_utf8("hello there")
         )),
         "expected ChatMessageReceived, got {out:?}"
     );
@@ -249,7 +254,7 @@ fn oversize_chat_message_is_surfaced_capped_at_450_not_dropped() {
     assert!(
         events(&out).iter().any(|e| matches!(
             e,
-            PeerEvent::ChatMessageReceived { text } if text.as_bytes().len() == 450
+            PeerEvent::Notice(NoticeEvent::ChatMessageReceived { text }) if text.as_bytes().len() == 450
         )),
         "expected a 450-byte-capped ChatMessageReceived, got {out:?}"
     );
@@ -265,29 +270,96 @@ fn file_comment_is_surfaced_with_no_reply() {
     assert!(
         events(&out).iter().any(|e| matches!(
             e,
-            PeerEvent::FileCommentReceived { rating, comment }
+            PeerEvent::Requester(RequesterEvent::FileCommentReceived { rating, comment })
                 if *rating == 4 && comment == &Ed2kText::from_utf8("nice rip")
         )),
         "expected FileCommentReceived, got {out:?}"
     );
 }
 
+/// `OP_CHANGE_CLIENT_ID` moves the identity the session keeps, with no reply:
+/// a High ID that is the address the peer connected from replaces the hello's
+/// ID (aMule `ClientTCPSocket.cpp:751`), a High ID that is some other address
+/// changes nothing, and a Low ID is taken.
 #[test]
-fn change_client_id_is_surfaced_with_no_reply() {
-    let new_server = Ipv4Addr::new(198, 51, 100, 200);
+fn a_changed_client_id_revises_the_identity() {
+    let server = Ipv4Addr::new(198, 51, 100, 200);
     let mut session = identified_session();
-    session.handle_bytes(&change_client_id(0x0102_0304, new_server));
-    let out = drain(|| session.poll_output());
+    let own = u32::from_le_bytes(peer_at(55).as_v4().expect("v4 peer").ip.octets());
 
-    assert!(writes(&out).is_empty(), "no reply expected, got {out:?}");
-    assert!(
-        events(&out).iter().any(|e| matches!(
-            e,
-            PeerEvent::ClientIdChanged { new_id, new_server_ip }
-                if new_id.as_u32() == 0x0102_0304 && *new_server_ip == new_server
-        )),
-        "expected ClientIdChanged, got {out:?}"
+    let revisions = |session: &mut PeerSession, id: u32| {
+        session.handle_bytes(&change_client_id(id, server));
+        let out = drain(|| session.poll_output());
+        assert!(writes(&out).is_empty(), "no reply expected, got {out:?}");
+        events(&out)
+            .into_iter()
+            .filter_map(|e| match e {
+                PeerEvent::Connection(ConnectionEvent::IdentityRevised { identity, what }) => {
+                    Some((*what, identity.client_id().as_u32()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    assert!(revisions(&mut session, 0x0102_0304).is_empty());
+    assert_eq!(
+        revisions(&mut session, own),
+        vec![(IdentityChange::ClientId, own)]
     );
+    assert!(revisions(&mut session, own).is_empty());
+    assert_eq!(
+        revisions(&mut session, 77),
+        vec![(IdentityChange::ClientId, 77)]
+    );
+}
+
+/// The server an `OP_CHANGE_CLIENT_ID` names stands as the server the peer is
+/// on: the "on our server" claim reads it, not the hello's.
+#[test]
+fn a_changed_client_id_moves_the_on_our_server_claim() {
+    let ours = Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 200), 4661);
+    let mut session = identified_session();
+    session.handle_bytes(&change_client_id(77, ours.ip));
+    let out = drain(|| session.poll_output());
+    let identity = events(&out)
+        .into_iter()
+        .find_map(|e| match e {
+            PeerEvent::Connection(ConnectionEvent::IdentityRevised { identity, .. }) => {
+                Some(identity.clone())
+            }
+            _ => None,
+        })
+        .expect("the revision is reported");
+    assert!(identity.is_on_server(ours));
+    assert!(!identity.is_on_server(Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 201), 4661)));
+}
+
+/// `OP_CHANGE_CLIENT_IP` moves the identity the session keeps: the one
+/// revision it reports carries the whole identity with the new IPv6, and a
+/// restatement of the address it already holds says nothing.
+#[test]
+fn a_changed_ipv6_revises_the_identity_once() {
+    let address: std::net::Ipv6Addr = "2001:db8::7".parse().expect("an address");
+    let change = ChangeClientIpV6::new(address).expect("a usable address");
+    let mut session = identified_session();
+
+    session.handle_bytes(&change.encode_packet().encode());
+    let out = drain(|| session.poll_output());
+    let revisions: Vec<_> = events(&out)
+        .into_iter()
+        .filter_map(|e| match e {
+            PeerEvent::Connection(ConnectionEvent::IdentityRevised { identity, what }) => {
+                Some((*what, identity.peer_ipv6()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(revisions, vec![(IdentityChange::Ipv6, Some(address))]);
+
+    session.handle_bytes(&change.encode_packet().encode());
+    let out = drain(|| session.poll_output());
+    assert!(events(&out).is_empty(), "{out:?}");
 }
 
 // --- Pre-Identified guard ------------------------------------------
@@ -305,15 +377,15 @@ fn human_layer_packets_before_identified_are_unknown_not_acted_on() {
         assert!(
             events(&out)
                 .iter()
-                .any(|e| matches!(e, PeerEvent::UnknownPeerPacket { .. })),
-            "expected UnknownPeerPacket pre-Identified, got {out:?}"
+                .any(|e| matches!(e, PeerEvent::Notice(NoticeEvent::UnknownPacket { .. }))),
+            "expected UnknownPacket pre-Identified, got {out:?}"
         );
         assert!(
             !events(&out).iter().any(|e| matches!(
                 e,
-                PeerEvent::BrowseDenied
-                    | PeerEvent::PublicIpAnswered
-                    | PeerEvent::ChatMessageReceived { .. }
+                PeerEvent::Notice(NoticeEvent::BrowseDenied)
+                    | PeerEvent::Side(SideEvent::PublicIpAnswered)
+                    | PeerEvent::Notice(NoticeEvent::ChatMessageReceived { .. })
             )),
             "a human-layer classification must not fire before Identified, got {out:?}"
         );
@@ -330,11 +402,11 @@ fn the_full_human_layer_volley_mid_transfer_leaves_the_active_slot_unbroken() {
     // Open a real requester-capability transfer: request parts, satisfy the
     // probe + hash-set gate, get the slot granted.
     let ranges = PartRanges::new([(0, 16), (0, 0), (0, 0)]).unwrap();
-    session.handle_command(PeerCommand::RequestParts {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 1_000_000,
         ranges,
-    });
+    }));
     session.handle_bytes(&reqfilename_answer(h, "volley.bin"));
     session.handle_bytes(&file_status(h, 1, &[0x01]));
     session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
@@ -343,7 +415,7 @@ fn the_full_human_layer_volley_mid_transfer_leaves_the_active_slot_unbroken() {
     assert!(
         events(&setup)
             .iter()
-            .any(|e| matches!(e, PeerEvent::SlotGranted { file_hash } if *file_hash == h)),
+            .any(|e| matches!(e, PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash }) if *file_hash == h)),
         "setup must reach a granted slot, got {setup:?}"
     );
 
@@ -370,16 +442,17 @@ fn the_full_human_layer_volley_mid_transfer_leaves_the_active_slot_unbroken() {
     let volley_out = drain(|| session.poll_output());
     // No protocol violation: the connection must still be open afterward.
     assert!(
-        !events(&volley_out)
-            .iter()
-            .any(|e| matches!(e, PeerEvent::Disconnected { .. })),
+        !events(&volley_out).iter().any(|e| matches!(
+            e,
+            PeerEvent::Connection(ConnectionEvent::Disconnected { .. })
+        )),
         "the volley must not close the session, got {volley_out:?}"
     );
     // The active slot must not have been touched by any of it.
     assert!(
         !events(&volley_out)
             .iter()
-            .any(|e| matches!(e, PeerEvent::SlotReleased { .. })),
+            .any(|e| matches!(e, PeerEvent::Requester(RequesterEvent::SlotReleased { .. }))),
         "the volley must not release the active slot, got {volley_out:?}"
     );
 
@@ -391,17 +464,19 @@ fn the_full_human_layer_volley_mid_transfer_leaves_the_active_slot_unbroken() {
     assert!(
         events(&part_out).iter().any(|e| matches!(
             e,
-            PeerEvent::PartReceived { file_hash, offset: 0, bytes } if *file_hash == h && bytes == &data
+            PeerEvent::Requester(RequesterEvent::PartReceived { file_hash, offset: 0, bytes }) if *file_hash == h && bytes == &data
         )),
         "expected PartReceived after the volley, got {part_out:?}"
     );
 
-    session.handle_command(PeerCommand::ReleaseSlot { file_hash: h });
+    session.handle_command(PeerCommand::Requester(RequesterCommand::ReleaseSlot {
+        file_hash: h,
+    }));
     let released = drain(|| session.poll_output());
     assert!(
         events(&released).iter().any(|e| matches!(
             e,
-            PeerEvent::SlotReleased { file_hash, reason: SlotReleaseReason::DownloadComplete } if *file_hash == h
+            PeerEvent::Requester(RequesterEvent::SlotReleased { file_hash, reason: SlotReleaseReason::DownloadComplete }) if *file_hash == h
         )),
         "expected a normal DownloadComplete release after the volley, got {released:?}"
     );

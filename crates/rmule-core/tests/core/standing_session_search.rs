@@ -26,7 +26,9 @@ async fn a_search_on_the_standing_session_streams_results_and_completes() {
     let batch = vec![result(0xAA, 1024, "linux.iso")];
     server.set_search_results(batch.clone()).await;
     let endpoint = server.endpoint();
-    let mut core = Core::builder(search_config(), rmule_testkit::memory_store()).build();
+    let mut core = Core::builder(search_config(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
 
     connect_and_settle(&mut core, &endpoint).await;
     let first = start_search_confirmed(&mut core, "first search", search_query("linux")).await;
@@ -96,7 +98,9 @@ async fn a_search_that_hears_nothing_completes_with_zero_results() {
     // set, which merges nothing and must not arm-reset anything.
     let server = FakeEd2kServer::start_scripted().await;
     let endpoint = server.endpoint();
-    let mut core = Core::builder(search_config(), rmule_testkit::memory_store()).build();
+    let mut core = Core::builder(search_config(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
 
     connect_and_settle(&mut core, &endpoint).await;
     let search_id = start_search_confirmed(
@@ -154,6 +158,7 @@ async fn a_second_search_runs_beside_a_running_one() {
         },
         rmule_testkit::memory_store(),
     )
+    .settings(rmule_core::CoreSettings::default())
     .build();
 
     connect_and_settle(&mut core, &endpoint).await;
@@ -225,7 +230,9 @@ async fn a_search_result_reaches_the_app_with_its_source_counts_and_type() {
         .with_file_type(Ed2kText::from_utf8("Pro"));
     server.set_search_results(vec![scripted]).await;
     let endpoint = server.endpoint();
-    let mut core = Core::builder(search_config(), rmule_testkit::memory_store()).build();
+    let mut core = Core::builder(search_config(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
 
     connect_and_settle(&mut core, &endpoint).await;
     start_search_confirmed(&mut core, "metadata search", search_query("linux")).await;

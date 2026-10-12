@@ -11,9 +11,9 @@ use std::sync::Arc;
 
 use crate::fixture::{CT_EMULE_MISCOPTIONS1, hello_body};
 use rmule_peer::{
-    Hello, HelloAnswer, PeerEvent, PeerHandshakeContext, PeerHelloBody, PeerOutput, PeerSession,
-    PublicKeyPacket, SecIdentState, SecIdentStatePacket, SecureIdentConfig, SecureIdentFailure,
-    SignaturePacket,
+    ConnectionEvent, Hello, HelloAnswer, PeerEvent, PeerHandshakeContext, PeerHelloBody,
+    PeerOutput, PeerSession, PublicKeyPacket, SecIdentState, SecIdentStatePacket,
+    SecureIdentConfig, SecureIdentFailure, SignaturePacket,
 };
 use rmule_primitives::{
     ClientId, ClientIdentity, Ed2kText, Packet, SecureIdentKey, SecureIdentPublicKey, Tag, TagName,
@@ -32,6 +32,8 @@ fn plain_ctx() -> PeerHandshakeContext {
             0x3C,
         ),
         client_id: ClientId::from_u32(0x10000001),
+        ed2k_client_id: ClientId::from_u32(0x10000001),
+        public_ip: None,
         connected_server: None,
     }
 }
@@ -168,6 +170,8 @@ const CRYPT_CIP_LOCALCLIENT: u8 = 20;
 fn low_id_ctx() -> PeerHandshakeContext {
     PeerHandshakeContext {
         client_id: ClientId::from_u32(4242),
+        ed2k_client_id: ClientId::from_u32(4242),
+        public_ip: None,
         ..plain_ctx()
     }
 }
@@ -341,6 +345,56 @@ fn a_low_id_v2_signature_binds_the_remote_ip_with_kind_remote() {
     );
 }
 
+/// The challenge IP keys on the eD2k ID, not the id the hello presents: an
+/// open Kad verdict presents a High ID, yet a Low eD2k ID (or none) still
+/// signs the remote peer's IP with kind 10 (`BaseClient.cpp:2096-2104`).
+#[test]
+fn a_kad_presented_high_id_with_a_low_ed2k_id_still_signs_the_remote_ip() {
+    let our_key = Arc::new(SecureIdentKey::generate().expect("our key"));
+    let peer_key = SecureIdentKey::generate().expect("peer key");
+    let peer_user_hash = UserHash::from_bytes([0x55; UserHash::BYTE_LEN]);
+    let ctx = PeerHandshakeContext {
+        client_id: ClientId::from_u32(0x0A00_0001), // presented: Kad-open High ID
+        ed2k_client_id: ClientId::from_u32(0),      // no server
+        ..plain_ctx()
+    };
+
+    let (_session, packet) = drive_v2_to_our_signature(ctx, &our_key, &peer_key, peer_user_hash);
+
+    assert_eq!(packet.ip_kind, Some(CRYPT_CIP_REMOTECLIENT));
+    let our_public = SecureIdentPublicKey::from_der(&our_key.public_key_der()).expect("our pub");
+    let mut expected_input = peer_key.public_key_der();
+    expected_input.extend_from_slice(&PEER_CHALLENGE.to_le_bytes());
+    expected_input.extend_from_slice(&[203, 0, 113, 1]);
+    expected_input.push(CRYPT_CIP_REMOTECLIENT);
+    assert!(our_public.verify(&expected_input, &packet.signature));
+}
+
+/// The converse: a Low presented id (Kad firewalled, `1`) with a High eD2k ID
+/// from the server signs that eD2k ID with kind 20.
+#[test]
+fn a_presented_low_id_with_a_high_ed2k_id_signs_the_ed2k_id() {
+    let our_key = Arc::new(SecureIdentKey::generate().expect("our key"));
+    let peer_key = SecureIdentKey::generate().expect("peer key");
+    let peer_user_hash = UserHash::from_bytes([0x55; UserHash::BYTE_LEN]);
+    let ctx = PeerHandshakeContext {
+        client_id: ClientId::from_u32(1),
+        ed2k_client_id: ClientId::from_u32(0x1000_0001),
+        public_ip: None,
+        ..plain_ctx()
+    };
+
+    let (_session, packet) = drive_v2_to_our_signature(ctx, &our_key, &peer_key, peer_user_hash);
+
+    assert_eq!(packet.ip_kind, Some(CRYPT_CIP_LOCALCLIENT));
+    let our_public = SecureIdentPublicKey::from_der(&our_key.public_key_der()).expect("our pub");
+    let mut expected_input = peer_key.public_key_der();
+    expected_input.extend_from_slice(&PEER_CHALLENGE.to_le_bytes());
+    expected_input.extend_from_slice(&0x1000_0001_u32.to_le_bytes());
+    expected_input.push(CRYPT_CIP_LOCALCLIENT);
+    assert!(our_public.verify(&expected_input, &packet.signature));
+}
+
 /// V2 verify, kind 20: the peer signed its *own* address, so we verify with
 /// the IP we observe for it (the session's peer endpoint).
 #[test]
@@ -370,7 +424,7 @@ fn a_v2_peer_signature_over_its_own_ip_yields_identity_verified() {
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, PeerEvent::PeerIdentityVerified { user_hash, .. } if *user_hash == peer_user_hash)),
+            .any(|e| matches!(e, PeerEvent::Connection(ConnectionEvent::IdentityVerified { user_hash, .. }) if *user_hash == peer_user_hash)),
         "a V2 kind-20 signature over the peer's observed IP verifies"
     );
 }
@@ -404,8 +458,77 @@ fn a_v2_peer_signature_over_our_high_id_yields_identity_verified() {
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, PeerEvent::PeerIdentityVerified { user_hash, .. } if *user_hash == peer_user_hash)),
+            .any(|e| matches!(e, PeerEvent::Connection(ConnectionEvent::IdentityVerified { user_hash, .. }) if *user_hash == peer_user_hash)),
         "a V2 kind-10 signature over our own High-ID verifies"
+    );
+}
+
+/// Whether a kind-10 V2 signature over `signed_ip` verifies in a session
+/// holding `ctx`.
+fn kind_10_verifies(ctx: PeerHandshakeContext, signed_ip: [u8; 4]) -> bool {
+    let our_key = Arc::new(SecureIdentKey::generate().expect("our key"));
+    let peer_key = SecureIdentKey::generate().expect("peer key");
+    let peer_user_hash = UserHash::from_bytes([0x55; UserHash::BYTE_LEN]);
+    let (mut session, _packet) =
+        drive_v2_to_our_signature(ctx, &our_key, &peer_key, peer_user_hash);
+    let mut peer_input = our_key.public_key_der();
+    peer_input.extend_from_slice(&OUR_CHALLENGE.to_le_bytes());
+    peer_input.extend_from_slice(&signed_ip);
+    peer_input.push(CRYPT_CIP_REMOTECLIENT);
+    let signature = peer_key.sign(&peer_input);
+    feed(
+        &mut session,
+        SignaturePacket {
+            signature,
+            ip_kind: Some(CRYPT_CIP_REMOTECLIENT),
+        }
+        .encode_packet(),
+    );
+    let (_, events) = drain(&mut session);
+    events.iter().any(|e| {
+        matches!(
+            e,
+            PeerEvent::Connection(ConnectionEvent::IdentityVerified { .. })
+        )
+    })
+}
+
+/// aMule verifies a kind-10 signature against our public IP first and the
+/// eD2k ID second (`ClientCreditsList.cpp:405-413`), never the presented id.
+#[test]
+fn a_kind_10_signature_verifies_against_the_public_ip_before_the_ed2k_id() {
+    let ctx = || PeerHandshakeContext {
+        client_id: ClientId::from_u32(0x0A00_0001), // presented: Kad address
+        ed2k_client_id: ClientId::from_u32(0x1000_0001),
+        public_ip: Some(std::net::Ipv4Addr::new(5, 6, 7, 8)),
+        ..plain_ctx()
+    };
+    assert!(kind_10_verifies(ctx(), [5, 6, 7, 8]), "the public IP");
+    assert!(
+        !kind_10_verifies(ctx(), [0x01, 0x00, 0x00, 0x10]),
+        "the eD2k ID is the fallback, not a second key"
+    );
+    assert!(
+        !kind_10_verifies(ctx(), [0x01, 0x00, 0x00, 0x0A]),
+        "the presented id is no key at all"
+    );
+}
+
+#[test]
+fn a_kind_10_signature_falls_to_a_high_ed2k_id_and_fails_with_neither() {
+    let no_public = |ed2k: u32| PeerHandshakeContext {
+        client_id: ClientId::from_u32(0x0A00_0001),
+        ed2k_client_id: ClientId::from_u32(ed2k),
+        public_ip: None,
+        ..plain_ctx()
+    };
+    assert!(kind_10_verifies(
+        no_public(0x1000_0001),
+        [0x01, 0x00, 0x00, 0x10]
+    ));
+    assert!(
+        !kind_10_verifies(no_public(0), [0x01, 0x00, 0x00, 0x0A]),
+        "a presented High ID alone verifies nothing"
     );
 }
 
@@ -438,17 +561,16 @@ fn a_v2_signature_over_the_wrong_ip_fails_non_terminally() {
     assert!(
         events.iter().any(|e| matches!(
             e,
-            PeerEvent::PeerSecureIdentFailed {
+            PeerEvent::Connection(ConnectionEvent::SecureIdentFailed {
                 reason: SecureIdentFailure::BadSignature
-            }
+            })
         )),
         "an IP-mismatched V2 signature is rejected"
     );
-    assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, PeerEvent::PeerIdentityVerified { .. })),
-    );
+    assert!(!events.iter().any(|e| matches!(
+        e,
+        PeerEvent::Connection(ConnectionEvent::IdentityVerified { .. })
+    )),);
 }
 
 /// An unknown `byIPUsed` kind byte fails verification non-terminally — a
@@ -478,9 +600,9 @@ fn an_unknown_v2_ip_kind_fails_non_terminally() {
     assert!(
         events.iter().any(|e| matches!(
             e,
-            PeerEvent::PeerSecureIdentFailed {
+            PeerEvent::Connection(ConnectionEvent::SecureIdentFailed {
                 reason: SecureIdentFailure::BadSignature
-            }
+            })
         )),
         "an unknown kind byte is a failed verification, not a protocol violation"
     );
@@ -568,13 +690,13 @@ fn a_valid_peer_signature_yields_identity_verified() {
     let verified = events
         .iter()
         .find_map(|e| match e {
-            PeerEvent::PeerIdentityVerified {
+            PeerEvent::Connection(ConnectionEvent::IdentityVerified {
                 user_hash,
                 public_key,
-            } => Some((*user_hash, public_key.clone())),
+            }) => Some((*user_hash, public_key.clone())),
             _ => None,
         })
-        .expect("PeerIdentityVerified emitted");
+        .expect("IdentityVerified emitted");
     assert_eq!(verified.0, peer_user_hash, "verified the peer's User Hash");
     assert_eq!(
         verified.1,
@@ -610,16 +732,17 @@ fn a_forged_peer_signature_fails_non_terminally() {
     assert!(
         events.iter().any(|e| matches!(
             e,
-            PeerEvent::PeerSecureIdentFailed {
+            PeerEvent::Connection(ConnectionEvent::SecureIdentFailed {
                 reason: SecureIdentFailure::BadSignature
-            }
+            })
         )),
         "a signature under the wrong key is rejected"
     );
     assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, PeerEvent::PeerIdentityVerified { .. })),
+        !events.iter().any(|e| matches!(
+            e,
+            PeerEvent::Connection(ConnectionEvent::IdentityVerified { .. })
+        )),
         "a forged signature must not verify"
     );
     // Non-terminal: no Close was drained (drain panics on Close), so the session

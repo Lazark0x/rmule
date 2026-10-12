@@ -33,7 +33,6 @@ async fn the_sweep_leg_counts_the_servers_asked_and_each_server_that_answered_on
     let (sweep_tx, sweep_rx) = oneshot::channel::<u32>();
     let (evt_tx, mut evt_rx) = mpsc::channel(32);
     let (_cancel_tx, cancel_rx) = watch::channel(false);
-    let (finished_tx, _finished_rx) = mpsc::channel(4);
     let search_id = SearchId::from_u64(730);
     let task = tokio::spawn(
         SearchTask {
@@ -48,7 +47,6 @@ async fn the_sweep_leg_counts_the_servers_asked_and_each_server_that_answered_on
             },
             evt_tx,
             cancel_rx,
-            finished_tx,
             paging: crate::search::Paging::inert(query().into()),
             legs: SearchLegs {
                 kad: SearchLegState::NotRun,

@@ -13,8 +13,10 @@ The fake logs in to the eD2k server itself and offers the file, High ID (it
 answers the server's port test with the same hello answer), because rmule's
 link reader takes no `sources` field: the server is where rmule finds it.
 
-Run as `fake_source.py <sx1 version> <seconds> <server host:port> <file hash>[,<file hash>...]`;
-several hashes are offered in the one `OP_OFFERFILES`. One JSON object per line on
+Run as `fake_source.py <sx1 version> <seconds> <server host:port> <file hash>[,<file hash>...]
+<address>`; several hashes are offered in the one `OP_OFFERFILES`, and the
+listener binds `<address>`, the one the harness gave the container, and no
+other interface. One JSON object per line on
 stdout, closing with `sx1-gate-summary sx1=<v> requestsources=<n>
 requestsources2=<n> connections=<n>`.
 """
@@ -137,9 +139,10 @@ def main():
     host, port = sys.argv[3].rsplit(":", 1)
     server = (socket.gethostbyname(host), int(port))
     file_hashes = [bytes.fromhex(h) for h in sys.argv[4].split(",")]
+    address = sys.argv[5]
     listener = socket.socket()
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    listener.bind(("0.0.0.0", 4662))
+    listener.bind((address, 4662))
     listener.listen(8)
     listener.settimeout(1)
     emit(event="listening", sx1=sx1)

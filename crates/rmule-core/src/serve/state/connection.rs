@@ -6,14 +6,14 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use rmule_peer::{BundleCut, BundledAsk, FileSizedStatus, PartStatusTail};
-use rmule_primitives::{
-    Ed2kText, ExchangedSource, FileHash, Ipv6Endpoint, PeerEndpoint, PeerSource,
+use rmule_peer::{
+    BundleCut, BundledAsk, ConnectionEvent, FileSizedStatus, IdentityChange, PartStatusTail,
+    ServerCommand, ServerEvent,
 };
+use rmule_primitives::{Ed2kText, FileHash, PeerEndpoint};
 
 use crate::WaiterLeaveCause;
-use crate::adapters::{ServeConnCommand, ServeConnEvent};
-use crate::client_udp::PeerUdpCryptTarget;
+use crate::adapters::ServeInput;
 use crate::service::ServeEvent;
 use crate::upload_queue::{Admission, LowIdAbuseFacts, refuses_as_low_id_abuse};
 
@@ -38,13 +38,16 @@ impl ServeState {
         let Some(entry) = self.shared.get(&file_hash) else {
             return Vec::new();
         };
-        let command = ServeConnCommand::AnswerFileName {
+        let command = ServerCommand::AnswerFileName {
             file_hash,
             file_name: Ed2kText::from_utf8(entry.name.as_str()),
         };
         let file_size = entry.file_size;
         let moved = self.follow_asked_file(peer, file_hash);
-        let claims_status = self.extended_requests.get(&peer).is_some_and(|&v| v > 0);
+        let claims_status = self
+            .identities
+            .get(&peer)
+            .is_some_and(|identity| identity.extended_requests_version() > 0);
         let part_status = if claims_status {
             // Read by the asked file (`UploadClient.cpp:408-446`, the reader a
             // UDPv4 reask shares): a count that is not the file's clears the
@@ -83,7 +86,7 @@ impl ServeState {
             peer,
             rank,
             file_hash,
-            software: self.software.get(&peer).cloned(),
+            software: self.software_of(peer),
         }))
     }
 
@@ -110,7 +113,7 @@ impl ServeState {
             .get(&file_hash)
             .filter(|entry| file_size.is_none_or(|size| size == entry.file_size));
         let Some(entry) = entry else {
-            let command = ServeConnCommand::AnswerFileNotFound { file_hash };
+            let command = ServerCommand::AnswerFileNotFound { file_hash };
             return vec![ServeDecision::Send { peer, command }];
         };
         let (name, size) = (Ed2kText::from_utf8(entry.name.as_str()), entry.file_size);
@@ -139,7 +142,7 @@ impl ServeState {
                     self.record_part_status(peer, file_hash, size, part_status);
                     decisions.push(ServeDecision::Send {
                         peer,
-                        command: ServeConnCommand::AnswerFileName {
+                        command: ServerCommand::AnswerFileName {
                             file_hash,
                             file_name: name.clone(),
                         },
@@ -147,8 +150,8 @@ impl ServeState {
                 }
                 BundledAsk::SetReqId => decisions.extend(self.answer_file_status(peer, file_hash)),
                 BundledAsk::AichRoot => decisions.extend(self.answer_aich_root(peer, file_hash)),
-                BundledAsk::Sources(version) => {
-                    decisions.extend(self.answer_source_exchange(now, peer, file_hash, version));
+                BundledAsk::Sources => {
+                    decisions.extend(self.answer_source_exchange(now, peer, file_hash));
                 }
             }
         }
@@ -159,10 +162,7 @@ impl ServeState {
     fn malformed_name_ask(&self, peer: PeerEndpoint) -> Vec<ServeDecision> {
         vec![
             ServeDecision::Emit(ServeEvent::NameAskMalformed { peer }),
-            ServeDecision::Send {
-                peer,
-                command: ServeConnCommand::Disconnect,
-            },
+            ServeDecision::Disconnect { peer },
         ]
     }
 
@@ -178,12 +178,9 @@ impl ServeState {
             Some(entry) => {
                 let bitmap = full_bitmap(entry.file_size);
                 let moved = self.follow_asked_file(peer, file_hash);
-                (
-                    ServeConnCommand::AnswerFileStatus { file_hash, bitmap },
-                    moved,
-                )
+                (ServerCommand::AnswerFileStatus { file_hash, bitmap }, moved)
             }
-            None => (ServeConnCommand::AnswerFileNotFound { file_hash }, None),
+            None => (ServerCommand::AnswerFileNotFound { file_hash }, None),
         };
         std::iter::once(ServeDecision::Send { peer, command })
             .chain(moved)
@@ -199,7 +196,7 @@ impl ServeState {
         match self.aich_cache.get(&file_hash) {
             Some(tree) => vec![ServeDecision::Send {
                 peer,
-                command: ServeConnCommand::AnswerAichFileHash {
+                command: ServerCommand::AnswerAichFileHash {
                     root: tree.master_root(),
                 },
             }],
@@ -213,41 +210,67 @@ impl ServeState {
         }
     }
 
-    /// Turn one connection event into the decisions it warrants. `modifiers`
-    /// carries the identified peers' current credit modifiers (read by the
-    /// enactor from the shared ledger), used when a freed slot promotes a
-    /// waiter.
+    /// Turn one connection's input into the decisions it warrants.
+    /// `modifiers` carries the identified peers' current credit modifiers
+    /// (read by the enactor from the shared ledger), used when a freed slot
+    /// promotes a waiter.
     pub(crate) fn on_conn_event(
         &mut self,
         now: Instant,
         peer: PeerEndpoint,
-        event: ServeConnEvent,
+        input: ServeInput,
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
-        match event {
-            ServeConnEvent::FileRequested { file_hash, status } => {
+        match input {
+            ServeInput::Server(request) => self.on_server_request(now, peer, request, modifiers),
+            ServeInput::Connection(fact) => self.on_connection_fact(now, peer, fact, modifiers),
+            ServeInput::Readopted => {
+                // The accept-router handed this inbound peer to a download as
+                // an adopted worker (ADR-0039). It never requested an upload
+                // slot, so there is nothing in the queue to release and no
+                // slot-released event to emit — just drop the serve-side
+                // bookkeeping (the task removes its connection).
+                self.served_ranges
+                    .retain(|(range_peer, _), _| *range_peer != peer);
+                self.forget(peer);
+                self.sx_throttle.forget(peer);
+                Vec::new()
+            }
+        }
+    }
+
+    /// Answer one Server Capability request.
+    fn on_server_request(
+        &mut self,
+        now: Instant,
+        peer: PeerEndpoint,
+        request: ServerEvent,
+        modifiers: &HashMap<PeerEndpoint, f64>,
+    ) -> Vec<ServeDecision> {
+        match request {
+            ServerEvent::FileRequested { file_hash, status } => {
                 self.answer_name_ask(peer, file_hash, &status)
             }
-            ServeConnEvent::FileBundleRequested {
+            ServerEvent::FileBundleRequested {
                 file_hash,
                 file_size,
                 asks,
                 cut,
             } => self.answer_bundle(now, peer, file_hash, file_size, asks, cut),
-            ServeConnEvent::FileIdSet { file_hash } => self.answer_file_status(peer, file_hash),
-            ServeConnEvent::HashSetRequested { file_hash } => {
+            ServerEvent::FileIdSet { file_hash } => self.answer_file_status(peer, file_hash),
+            ServerEvent::HashSetRequested { file_hash } => {
                 // Not shared (e.g. unshared mid-probe): answer "no such file"
                 // rather than silently dropping the request (design §5).
                 let command = match self.shared.get(&file_hash) {
-                    Some(entry) => ServeConnCommand::AnswerHashSet {
+                    Some(entry) => ServerCommand::AnswerHashSet {
                         file_hash,
                         part_hashes: entry.part_hashes.clone(),
                     },
-                    None => ServeConnCommand::AnswerFileNotFound { file_hash },
+                    None => ServerCommand::AnswerFileNotFound { file_hash },
                 };
                 vec![ServeDecision::Send { peer, command }]
             }
-            ServeConnEvent::SlotRequested { file_hash } => {
+            ServerEvent::SlotRequested { file_hash } => {
                 if !self.shared.contains_key(&file_hash) {
                     // We do not share it: nothing is sent, as aMule queues and
                     // answers only a file it finds (stock 2.3.3 `4e8f2b3c`
@@ -268,8 +291,11 @@ impl ServeState {
                     // rmule keeps no friend list; the input is named so that
                     // adding one later fills a hole instead of finding one.
                     is_friend: false,
-                    on_our_server: self.ours.server.is_some()
-                        && self.peer_servers.get(&peer).copied().flatten() == self.ours.server,
+                    on_our_server: self.ours.server.is_some_and(|ours| {
+                        self.identities
+                            .get(&peer)
+                            .is_some_and(|identity| identity.is_on_server(ours))
+                    }),
                     waiting: self.queue.waiting_len(),
                 };
                 if refuses_as_low_id_abuse(&facts) {
@@ -287,35 +313,29 @@ impl ServeState {
                     Admission::Granted => vec![
                         ServeDecision::Send {
                             peer,
-                            command: ServeConnCommand::GrantSlot { file_hash },
+                            command: ServerCommand::GrantSlot { file_hash },
                         },
                         ServeDecision::Emit(ServeEvent::UploadSlotGranted {
                             peer,
                             file_hash,
-                            software: self.software.get(&peer).cloned(),
+                            software: self.software_of(peer),
                         }),
                     ],
                     Admission::Queued { rank } => {
                         // Stamp the waiter's advertised UDP contact so its
                         // reask heartbeat matches by IP + port (ADR-0057); an
-                        // absent (0) port keeps it TCP-reask-only.
-                        if let Some(&(udp_port, udp_version)) = self.udp_contacts.get(&peer) {
-                            self.queue.set_udp_contact(
-                                peer,
-                                (udp_port != 0).then_some(udp_port),
-                                udp_version,
-                            );
-                        }
+                        // absent one keeps it TCP-reask-only.
+                        self.stamp_udp_contact(peer);
                         vec![
                             ServeDecision::Send {
                                 peer,
-                                command: ServeConnCommand::SetQueueRank { rank },
+                                command: ServerCommand::SetQueueRank { rank },
                             },
                             ServeDecision::Emit(ServeEvent::PeerQueued {
                                 peer,
                                 rank,
                                 file_hash,
-                                software: self.software.get(&peer).cloned(),
+                                software: self.software_of(peer),
                             }),
                         ]
                     }
@@ -345,7 +365,7 @@ impl ServeState {
                 }
                 decisions
             }
-            ServeConnEvent::PartsRequested { file_hash, ranges } => {
+            ServerEvent::PartsRequested { file_hash, ranges } => {
                 let Some(entry) = self.shared.get(&file_hash) else {
                     return Vec::new();
                 };
@@ -377,7 +397,7 @@ impl ServeState {
                 }
                 decisions
             }
-            ServeConnEvent::AichRequested {
+            ServerEvent::AichRequested {
                 file_hash,
                 part,
                 root: _,
@@ -400,98 +420,23 @@ impl ServeState {
                     }],
                 }
             }
-            ServeConnEvent::AichFileHashRequested { file_hash } => {
+            ServerEvent::AichFileHashRequested { file_hash } => {
                 // Same lazily-built tree cache as the recovery path; we answer
                 // our master root so the peer can count it toward its
                 // trusted-set vote (ADR-0038).
                 self.answer_aich_root(peer, file_hash)
             }
-            ServeConnEvent::SourcesRequested { file_hash, version } => {
-                self.answer_source_exchange(now, peer, file_hash, version)
+            ServerEvent::SourcesRequested { file_hash } => {
+                self.answer_source_exchange(now, peer, file_hash)
             }
-            ServeConnEvent::Identified {
-                user_hash,
-                client_id,
-                connected_server,
-                tcp_port,
-                udp_port,
-                udp_version,
-                extended_requests_version,
-                crypt,
-                ipv6,
-                software,
-            } => {
-                self.identified.insert(peer, user_hash);
-                self.software.insert(peer, software);
-                // The "on our server" half of the Low-ID abuse guard:
-                // what the peer *claims*, kept verbatim — a claim that cannot
-                // be proven (`0.0.0.0:0` → `None`) never matches ours.
-                self.peer_servers.insert(peer, connected_server);
-                self.udp_contacts.insert(peer, (udp_port, udp_version));
-                self.extended_requests
-                    .insert(peer, extended_requests_version);
-                // The peer's peer-UDP crypt target (ADR-0046): its hash keys
-                // an obfuscated reask reply, its advertised stance says whether
-                // it accepts one at all.
-                self.crypt_targets
-                    .insert(peer, PeerUdpCryptTarget::new(user_hash, crypt));
-                // The peer's own source coordinate for source-exchange serving
-                // (ADR-0055 §Serving): its advertised (client id, listen port),
-                // with the user hash a v>=2 answer entry carries, and the
-                // usable IPv6 its hello named as the source's IPv6 half —
-                // emule-qt writes `CT_MOD_IP_V6` for any source with one,
-                // High ID included (`KnownFile.cpp:937`), and only an ExtSX
-                // record can carry it (ADR-0087). A Low-ID client with an
-                // IPv6 is a source over that IPv6 alone, the client emule-qt's
-                // writer keeps (`KnownFile.cpp:846-854`); any other Low-ID
-                // client is stored too but filtered out at answer time.
-                let classic = PeerSource::new(client_id, tcp_port);
-                let ipv6 = ipv6.map(|address| Ipv6Endpoint::new(address, tcp_port));
-                let source = match ipv6 {
-                    Some(endpoint) if !classic.is_high_id() => PeerSource::Ipv6(endpoint),
-                    _ => classic,
-                };
-                self.sx_sources.insert(
+            // The session's report of what the framed answer carried; the
+            // brain's own list may hold sources the wire form omits.
+            ServerEvent::SourcesAnswered { file_hash, count } => {
+                vec![ServeDecision::Emit(ServeEvent::SourcesServed {
                     peer,
-                    ExchangedSource::new(source, Some(user_hash), None).with_ipv6_half(ipv6),
-                );
-                Vec::new()
-            }
-            ServeConnEvent::ReaskContactRevised {
-                udp_port,
-                udp_version,
-            } => {
-                if self.identified.contains_key(&peer) {
-                    self.udp_contacts.insert(peer, (udp_port, udp_version));
-                    // A waiter already on the list is stamped now; one that
-                    // queues later is stamped from the map, as the hello's is.
-                    self.queue.set_udp_contact(
-                        peer,
-                        (udp_port != 0).then_some(udp_port),
-                        udp_version,
-                    );
-                }
-                Vec::new()
-            }
-            ServeConnEvent::SoftwareRevised { software } => {
-                // Only a peer the serve side already holds a hello for: the
-                // map is keyed by live identified connections.
-                if self.identified.contains_key(&peer) {
-                    self.software.insert(peer, software);
-                }
-                Vec::new()
-            }
-            ServeConnEvent::IdentityVerified {
-                user_hash,
-                public_key,
-            } => {
-                // Every proof is forwarded — including a thief's under a
-                // different key — because only the ledger knows the stored
-                // key; its compare-and-set arbitrates at enactment (ADR-0041).
-                vec![ServeDecision::BindIdentity {
-                    user_hash,
-                    public_key,
-                }]
+                    file_hash,
+                    count,
+                })]
             }
             // `OP_CANCELTRANSFER` (ADR-0056): the same release/promote batch
             // `Disconnected` runs, minus teardown. The canceller's served
@@ -504,7 +449,7 @@ impl ServeState {
             // `Readopted`) and — unlike a disconnected *waiter* — the
             // canceller keeps no queue standing: a later re-ask is a fresh
             // `admit()` at the tail.
-            ServeConnEvent::TransferCancelled { file_hash: _ } => {
+            ServerEvent::TransferCancelled { file_hash: _ } => {
                 self.served_ranges
                     .retain(|(range_peer, _), _| *range_peer != peer);
                 let was_granted = self.queue.is_granted(peer);
@@ -524,26 +469,61 @@ impl ServeState {
                 }
                 decisions
             }
-            ServeConnEvent::Disconnected => {
+            // A part ask without a granted slot frames nothing: the session
+            // reported it and kept the link, and core has no answer for it.
+            ServerEvent::PartsWithoutSlot { .. } => Vec::new(),
+        }
+    }
+
+    /// Fold one fact about the link into the serve-side bookkeeping.
+    fn on_connection_fact(
+        &mut self,
+        now: Instant,
+        peer: PeerEndpoint,
+        fact: ConnectionEvent,
+        modifiers: &HashMap<PeerEndpoint, f64>,
+    ) -> Vec<ServeDecision> {
+        match fact {
+            ConnectionEvent::Identified { identity } => {
+                self.identities.insert(peer, identity);
+                Vec::new()
+            }
+            // Only a peer the serve side already holds a hello for: the map is
+            // keyed by live identified connections. A waiter already on the
+            // list takes a revised reask contact now; one that queues later
+            // is stamped from the identity, as the hello's is.
+            ConnectionEvent::IdentityRevised { identity, what } => {
+                if let Some(held) = self.identities.get_mut(&peer) {
+                    *held = identity;
+                    if what == IdentityChange::ReaskContact {
+                        self.stamp_udp_contact(peer);
+                    }
+                }
+                Vec::new()
+            }
+            ConnectionEvent::IdentityVerified {
+                user_hash,
+                public_key,
+            } => {
+                // Every proof is forwarded — including a thief's under a
+                // different key — because only the ledger knows the stored
+                // key; its compare-and-set arbitrates at enactment (ADR-0041).
+                vec![ServeDecision::BindIdentity {
+                    user_hash,
+                    public_key,
+                }]
+            }
+            ConnectionEvent::Disconnected { .. } => {
                 self.served_ranges
                     .retain(|(range_peer, _), _| *range_peer != peer);
                 // A waiting peer keeps its queue position across disconnect —
                 // disconnected standing (ADR-0057); only a granted peer frees
                 // a slot. The transfer flow is wiped either way.
                 let disconnect = self.queue.on_disconnect(peer, now, modifiers);
-                // A waiter that retains standing keeps its identity + UDP
-                // contact for reask matching; a released or fully-gone peer
-                // sheds them.
+                // A waiter that retains standing keeps its identity for reask
+                // matching; a released or fully-gone peer sheds it.
                 if !self.queue.contains(peer) {
-                    self.identified.remove(&peer);
-                    self.software.remove(&peer);
-                    self.udp_contacts.remove(&peer);
-                    self.extended_requests.remove(&peer);
-                    self.sx_sources.remove(&peer);
-                    self.sx_part_status
-                        .retain(|(held_by, _), _| *held_by != peer);
-                    self.crypt_targets.remove(&peer);
-                    self.peer_servers.remove(&peer);
+                    self.forget(peer);
                 }
                 // The source-exchange throttle is per connection: a disconnect
                 // ends it, so the peer's next ask (over a fresh connection) is
@@ -555,25 +535,21 @@ impl ServeState {
                 }
                 decisions
             }
-            ServeConnEvent::Readopted => {
-                // The accept-router handed this inbound peer to a download as
-                // an adopted worker (ADR-0039). It never requested an upload
-                // slot, so there is nothing in the queue to release and no
-                // slot-released event to emit — just drop the serve-side
-                // bookkeeping (the task removes its connection).
-                self.served_ranges
-                    .retain(|(range_peer, _), _| *range_peer != peer);
-                self.identified.remove(&peer);
-                self.software.remove(&peer);
-                self.extended_requests.remove(&peer);
-                self.sx_sources.remove(&peer);
-                self.sx_part_status
-                    .retain(|(held_by, _), _| *held_by != peer);
-                self.crypt_targets.remove(&peer);
-                self.peer_servers.remove(&peer);
-                self.sx_throttle.forget(peer);
-                Vec::new()
-            }
+            // Facts the serve side keeps nothing of.
+            ConnectionEvent::HelloSent
+            | ConnectionEvent::HelloRefused { .. }
+            | ConnectionEvent::SecureIdentFailed { .. } => Vec::new(),
+        }
+    }
+
+    /// Stamp the client-UDP reask contact `peer`'s identity names on its
+    /// wait-list entry (ADR-0057), so an inbound `OP_REASKFILEPING` matches by
+    /// IP + UDP port; a peer that named none stays TCP-reask-only.
+    fn stamp_udp_contact(&mut self, peer: PeerEndpoint) {
+        if let Some(identity) = self.identities.get(&peer) {
+            let (udp_port, udp_version) = identity.client_udp_reask().unwrap_or_default();
+            self.queue
+                .set_udp_contact(peer, (udp_port != 0).then_some(udp_port), udp_version);
         }
     }
 }

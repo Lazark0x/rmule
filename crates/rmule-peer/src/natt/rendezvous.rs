@@ -37,11 +37,13 @@
 
 use std::net::Ipv4Addr;
 
-use rmule_primitives::{FileHash, Ipv4Endpoint, PacketProtocol, UserHash};
+use rmule_primitives::{
+    FileHash, Ipv4Endpoint, PacketProtocol, UserHash, WireReader, WireTruncated,
+};
 use thiserror::Error;
 
 use super::caps::{NattConnectOptions, NattTransport};
-use crate::reask::{BUDDY_ID_LEN, ClientUdpOpcode, ReaskCallbackUdp};
+use crate::peer_udp::{BUDDY_ID_LEN, ClientUdpOpcode, ReaskCallbackUdp};
 
 /// The null hash standing where an ordinary reask carries its file hash — the
 /// "custom rendezvous payload" marker of the embedded forms.
@@ -120,36 +122,26 @@ impl RendezvousBody {
     /// and rejecting a longer body would refuse a future revision that a
     /// stock eMuleAI accepts.
     fn read(body: &[u8]) -> Result<Self, RendezvousDecodeError> {
-        if body.len() < BODY_MIN_LEN {
-            return Err(RendezvousDecodeError::Truncated {
-                needed: BODY_MIN_LEN,
-                actual: body.len(),
-            });
-        }
-        let (hash, mut rest) = body.split_at(UserHash::BYTE_LEN);
-        let requester = UserHash::from_bytes(hash.try_into().expect("split at hash width"));
+        let mut reader = WireReader::new(body);
+        let requester = UserHash::from_bytes(reader.read_array("requester hash")?);
         if requester.as_bytes() == &[0; UserHash::BYTE_LEN] {
             return Err(RendezvousDecodeError::NullRequester);
         }
-        let options = NattConnectOptions::from_byte(rest[0]);
-        rest = &rest[1..];
+        let options = NattConnectOptions::from_byte(reader.read_u8("connect options")?);
 
         let mut file_hash = None;
-        if rest.len() >= FileHash::BYTE_LEN {
-            let (slot, tail) = rest.split_at(FileHash::BYTE_LEN);
-            let slot: [u8; FileHash::BYTE_LEN] = slot.try_into().expect("split at hash width");
+        if reader.remaining() >= FileHash::BYTE_LEN {
+            let slot = reader.read_array::<{ FileHash::BYTE_LEN }>("file hash")?;
             file_hash = (slot != [0; FileHash::BYTE_LEN]).then(|| FileHash::from_bytes(slot));
-            rest = tail;
         }
         let mut claimed_endpoint = None;
-        if rest.len() >= ENDPOINT_LEN {
-            let ip = Ipv4Addr::new(rest[0], rest[1], rest[2], rest[3]);
-            let port = u16::from_le_bytes([rest[4], rest[5]]);
+        if reader.remaining() >= ENDPOINT_LEN {
+            let ip = Ipv4Addr::from(reader.read_array::<4>("claimed address")?);
+            let port = reader.read_u16_le("claimed port")?;
             claimed_endpoint =
                 (!ip.is_unspecified() && port != 0).then(|| Ipv4Endpoint::new(ip, port));
-            rest = &rest[ENDPOINT_LEN..];
         }
-        let transport_hint = match rest.first() {
+        let transport_hint = match reader.remaining_bytes().first() {
             Some(&HINT_UTP) => Some(NattTransport::Utp),
             Some(&HINT_QUIC) => Some(NattTransport::Quic),
             _ => None,
@@ -285,14 +277,18 @@ impl EndpointHint {
         if body.len() != ENDPOINT_HINT_LEN {
             return Err(RendezvousDecodeError::HintWidth { actual: body.len() });
         }
-        if body[0] != ENDPOINT_HINT_VERSION {
-            return Err(RendezvousDecodeError::HintVersion { actual: body[0] });
+        // The width is exact, so no read below can run short; the mapping
+        // keeps the reader's failure in this decoder's own error regardless.
+        let mut reader = WireReader::new(body);
+        let version = reader.read_u8("hint version")?;
+        if version != ENDPOINT_HINT_VERSION {
+            return Err(RendezvousDecodeError::HintVersion { actual: version });
         }
-        let target: [u8; 16] = body[1..17].try_into().expect("fixed width");
-        let buddy_id: [u8; BUDDY_ID_LEN] = body[17..33].try_into().expect("fixed width");
-        let file: [u8; 16] = body[33..49].try_into().expect("fixed width");
-        let ip = Ipv4Addr::new(body[49], body[50], body[51], body[52]);
-        let port = u16::from_le_bytes([body[53], body[54]]);
+        let target = reader.read_array::<16>("hint target")?;
+        let buddy_id = reader.read_array::<BUDDY_ID_LEN>("hint buddy id")?;
+        let file = reader.read_array::<16>("hint file hash")?;
+        let ip = Ipv4Addr::from(reader.read_array::<4>("hint address")?);
+        let port = reader.read_u16_le("hint port")?;
         if target == [0; 16] || buddy_id == [0; BUDDY_ID_LEN] || ip.is_unspecified() || port == 0 {
             return Err(RendezvousDecodeError::NullHintField);
         }
@@ -301,7 +297,7 @@ impl EndpointHint {
             buddy_id,
             file_hash: (file != [0; 16]).then(|| FileHash::from_bytes(file)),
             target_endpoint: Ipv4Endpoint::new(ip, port),
-            options: NattConnectOptions::from_byte(body[55]),
+            options: NattConnectOptions::from_byte(reader.read_u8("hint options")?),
         })
     }
 
@@ -340,6 +336,15 @@ fn strip_signalling_header(
             Ok(body)
         }
         _ => Err(RendezvousDecodeError::WrongFrame),
+    }
+}
+
+impl From<WireTruncated> for RendezvousDecodeError {
+    fn from(truncated: WireTruncated) -> Self {
+        Self::Truncated {
+            needed: BODY_MIN_LEN,
+            actual: truncated.available,
+        }
     }
 }
 

@@ -11,26 +11,28 @@ mod builder;
 mod command;
 mod config;
 mod event;
+mod inbox;
 
 pub(crate) use self::activity::FinishedActivity;
+pub(crate) use self::inbox::SettingsDoor;
 
 use self::actor::{CoreWiring, run_core_with_adapters};
 
 pub use self::builder::CoreBuilder;
 pub use self::command::{
-    CoreCommand, CoreCommandRejectReason, DownloadCommand, KadUnavailableReason, ScanCommand,
-    SearchCommand, ServeCommand, ServerListCommand,
+    CoreCommand, CoreCommandRejectReason, DownloadCommand, KadUnavailableReason, NameTaken,
+    ScanCommand, SearchCommand, ServeCommand, ServerListCommand,
 };
 pub use self::config::{CoreConfig, DEFAULT_SLOT_WAIT_TIMEOUT, NattConfig, VerificationAuthority};
 pub use self::event::{
     BuddyDialFailure, CoreEvent, DialEnd, DialFailure, DownloadEvent, IdAssignment,
     IgnoredReaskReply, Ipv6Probe, KadStopReason, LegNotSent, LoginClaim, LoginCloseCause,
-    LoginStep, NatTraversalUnavailableReason, PartsLost, PeerBuddy, PeerReach, PeerReachDropReason,
-    PeerReachRoute, PortTestAdmission, PortTestClosedBy, PortTestEnd, PortTestLateAdmission,
-    QuitStep, ReconnectEnd, RestartOutcome, ScanEvent, SearchEvent, SearchFailure, SearchLegState,
-    SearchLegs, ServeEvent, ServeStartFailure, ServeStopReason, ServerConnectFailure,
-    ServerConnectionEvent, ServerListEvent, ShareRejectReason, SharesWithheld, SourceWait,
-    SweepTally,
+    LoginLink, LoginStep, NatTraversalUnavailableReason, PartsLost, PeerBuddy, PeerReach,
+    PeerReachDropReason, PeerReachRoute, PlainLinkReason, PortTestAdmission, PortTestClosedBy,
+    PortTestEnd, PortTestLateAdmission, PurgedSource, QuitStep, ReconnectEnd, RestartOutcome,
+    ScanEvent, SearchEvent, SearchFailure, SearchLegState, SearchLegs, ServeEvent,
+    ServeStartFailure, ServeStopReason, ServerConnectFailure, ServerConnectionEvent,
+    ServerListEvent, ShareRejectReason, SharesWithheld, SourcePurgeReason, SourceWait, SweepTally,
 };
 
 use std::sync::Arc;
@@ -98,9 +100,11 @@ impl SearchId {
 /// [`Core::shutdown`] or drop. It is not `Clone` — the event stream has exactly
 /// one reader, so every fact is delivered once.
 pub struct Core {
-    cmd_tx: mpsc::Sender<CoreCommand>,
+    commands: inbox::CommandDoor,
     evt_rx: mpsc::Receiver<CoreEvent>,
     diagnostics: crate::diagnostics::DiagnosticsState,
+    settings: crate::CoreSettingsHandle,
+    kad_id: crate::KadId,
 }
 
 impl Core {
@@ -114,14 +118,15 @@ impl Core {
         Self::builder(config, store).build()
     }
 
-    /// Queue a command for the actor. Returns once it is on the channel, not
-    /// once it is carried out — the answer arrives as events. Fails with
+    /// Queue a command for the actor. Returns once it is queued, not once it
+    /// is carried out — the answer arrives as events. The actor takes it after
+    /// everything queued before it, live settings included: a command sent
+    /// after [`settings`](Self::settings) answered
+    /// [`TakesEffect::Now`](crate::TakesEffect::Now) runs under that setting.
+    /// Waits while the actor is behind on earlier commands. Fails with
     /// [`CoreError::ServiceStopped`] when the actor is gone.
     pub async fn send(&self, command: CoreCommand) -> Result<(), CoreError> {
-        self.cmd_tx
-            .send(command)
-            .await
-            .map_err(|_| CoreError::ServiceStopped)
+        self.commands.send(command).await
     }
 
     /// Await the next fact from the session. `None` means the actor stopped and
@@ -150,35 +155,68 @@ impl Core {
     #[must_use = "the stream's end is quit's completion"]
     pub fn quit(self) -> mpsc::Receiver<CoreEvent> {
         let Self {
-            cmd_tx,
+            commands,
             evt_rx,
             diagnostics: _,
+            settings: _,
+            kad_id: _,
         } = self;
-        drop(cmd_tx);
+        drop(commands);
         evt_rx
     }
 
-    fn spawn_with_dialed_serve<S, P, L, K>(wiring: CoreWiring<S, P, L, K>) -> Self
+    fn spawn_with_dialed_serve<S, P, L, K>(
+        wiring: CoreWiring<S, P, L, K>,
+        store: Arc<crate::DurableStore>,
+    ) -> Self
     where
         S: SourceLookupService,
         P: PeerTransferService,
         L: ServeRuntimeService,
         K: KadRuntimeFactory,
     {
-        let (cmd_tx, cmd_rx) = mpsc::channel(32);
+        let (commands, inbox) = inbox::inbox();
         let (evt_tx, evt_rx) = mpsc::channel(32);
         let diagnostics = crate::diagnostics::DiagnosticsState::new();
+        let settings = crate::CoreSettingsHandle::running(
+            store,
+            commands.settings_door(),
+            wiring.share_guards.clone(),
+        );
+        let kad_id = wiring.kad_id;
         tokio::spawn(run_core_with_adapters(
             wiring,
-            cmd_rx,
+            inbox,
             evt_tx,
             diagnostics.clone(),
         ));
         Self {
-            cmd_tx,
+            commands,
             evt_rx,
             diagnostics,
+            settings,
+            kad_id,
         }
+    }
+
+    /// This node's **Kad ID** (ADR-0043): the one its Kad node starts under,
+    /// read from the store at build or named by a tool with
+    /// [`CoreBuilder::kad_id`]. A front end that resolves Kad seeds measures
+    /// distance from it ([`acquire_kad_seeds`](crate::acquire_kad_seeds)).
+    #[must_use]
+    pub fn kad_id(&self) -> crate::KadId {
+        self.kad_id
+    }
+
+    /// The **Core Settings** handle of this running core (ADR-0069): a set
+    /// through it persists, and a live key — `Remember peers`, the server
+    /// policy, the download directory — is queued for the actor with the
+    /// commands, so every command sent after the set runs under it. The
+    /// handle outlives the core; once the core has stopped, every set answers
+    /// [`TakesEffect::NextStart`](crate::TakesEffect::NextStart).
+    #[must_use]
+    pub fn settings(&self) -> crate::CoreSettingsHandle {
+        self.settings.clone()
     }
 
     /// Atomic snapshot of the current **Worker Phase** map and per-download
@@ -260,6 +298,14 @@ impl ClientCredentials {
         self.protocol_version
     }
 
+    /// These credentials presenting `tcp_port` in place of their own: the
+    /// port a bound listener holds, which is the one a peer is told to dial.
+    #[must_use]
+    pub(crate) fn on_port(mut self, tcp_port: u16) -> Self {
+        self.tcp_port = tcp_port;
+        self
+    }
+
     /// The full wire identity these credentials present as the node whose
     /// hash is `user_hash` — composed by core, never by a caller.
     pub(crate) fn identity(&self, user_hash: rmule_primitives::UserHash) -> ClientIdentity {
@@ -326,4 +372,8 @@ pub enum PeerRetirementReason {
     /// The peer's hello named a User Hash this download distrusts: it served
     /// this file bad data before (ADR-0090 "Source ownership").
     Distrusted,
+    /// A sighting proved this worker's peer the same source another worker
+    /// already reaches, and this one, the newer, gave way (ADR-0090's merge
+    /// rule). The peer is alive, so its endpoint is not spent.
+    SameSource,
 }

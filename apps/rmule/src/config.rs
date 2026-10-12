@@ -1,60 +1,74 @@
-//! Front-end-owned configuration (ADR-0069): the app-config seam over
-//! the one Durable Store, the preference snapshot the Settings tab renders,
-//! and the one edit vocabulary that writes both.
+//! The Settings tab's configuration (ADR-0069): the door its edits go
+//! through, the preference snapshot it renders, and the one edit vocabulary
+//! that writes both.
 //!
-//! # Why the front-end writes config and core does not
+//! # Core's keys and the front end's
 //!
-//! ADR-0069 puts config on this side of the seam: core is storage-agnostic and
-//! is *told* what it needs (`ConnectToServer` carries credentials,
-//! `EnableKad` carries the Kad identity). A `SetDownloadDir` core command
-//! would invert that — and would have to widen core's store seam from
-//! [`ServerListStore`] to the whole [`AppConfigStore`], which ADR-0080 narrowed
-//! on purpose: the actor owns the server list and has no business holding
-//! identity or keypairs.
+//! Core owns every preference that changes what core does — the download
+//! directory, the ports, obfuscation, port mapping, the server policy,
+//! `Remember peers`, the mirrors — and an edit to one goes through **Core
+//! Settings**: the handle validates it, persists it, takes up a live key in
+//! the running core, and answers when it takes effect. The receipt reads that
+//! answer; this side never decides it for a core key. The handle a running
+//! core gave reaches it; one opened on the store alone, before attach or
+//! without a core, answers that every key waits for the next start.
 //!
-//! The **managed server list** is the one config fact core does own, because
-//! core mutates it in the course of its own work. So one store has two
-//! readers — and since every seam method is `&self` on a `Sync` handle
-//! (ADR-0083), that needs no lock: `main` opens the store once, hands one
-//! [`DurableAppConfig`] clone to [`Core::builder`] as the narrow
-//! `ServerListStore` it asks for, and keeps another here as the full
-//! `AppConfigStore` startup already had.
-//!
-//! [`ServerListStore`]: rmule_core::ServerListStore
-//! [`DurableAppConfig`]: rmule_core::DurableAppConfig
-//! [`Core::builder`]: rmule_core::Core::builder
+//! The front end keeps five keys of its own — the theme, the table sorts, the
+//! Run Log level, connect at start and the last server — in the same store,
+//! and applies them itself.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rmule_core::{AppConfigStore, CoreError, KadId, ObfuscationPolicy, Preference};
-use rmule_primitives::{Ed2kText, ServerEndpoint, UserHash};
+use rmule_core::port_mapping::PortMappingMode;
+use rmule_core::{
+    AppConfigStore, CoreError, CoreSettingsHandle, DurableAppConfig, DurableStore, KadId,
+    ObfuscationPolicy, Setting, SettingError, TakesEffect,
+};
+use rmule_primitives::{ServerEndpoint, UserHash};
 
 use crate::table_sort::{Direction, TableSorts};
 use crate::theme::Theme;
 
-/// This front-end's handle on the app-config seam: the preference editor's
-/// view of the same store the core actor's server-list seam writes. Cloneable;
-/// every clone reaches the same store, and nothing locks around it — every
-/// seam method is `&self` (ADR-0083).
+mod front_end_key;
+
+pub use front_end_key::FrontEndKey;
+
+/// This front end's door to its preferences: the Core Settings handle for
+/// core's keys and, through its raw surface, for this app's own
+/// ([`FrontEndKey`]); the store itself only for the identity it displays.
+/// Cloneable; every clone reaches the same store, and nothing locks around
+/// it — every seam method is `&self` (ADR-0083).
 #[derive(Clone)]
 pub struct SharedConfig {
-    store: Arc<dyn AppConfigStore>,
+    settings: CoreSettingsHandle,
+    store: Arc<DurableAppConfig>,
     /// Makes every commit fail as a store that refuses writes would.
     #[cfg(test)]
     refuse_commits: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl SharedConfig {
-    /// Wrap the app-config seam. `main` hands a clone of the same seam to the
-    /// core builder, so both readers sit on one open store.
+    /// The door through `settings` — a running core's, so its live keys are
+    /// taken up at once — over `store`, the same open store.
     #[must_use]
-    pub fn new(store: impl AppConfigStore + 'static) -> Self {
+    pub fn new(settings: CoreSettingsHandle, store: DurableAppConfig) -> Self {
         Self {
+            settings,
             store: Arc::new(store),
             #[cfg(test)]
             refuse_commits: Arc::default(),
         }
+    }
+
+    /// The door over `store` alone, where no core runs: every core key waits
+    /// for the next start.
+    #[must_use]
+    pub fn open(store: Arc<DurableStore>) -> Self {
+        Self::new(
+            CoreSettingsHandle::open(Arc::clone(&store)),
+            DurableAppConfig::new(store),
+        )
     }
 
     /// From now on every commit fails with the store's refusal.
@@ -64,130 +78,109 @@ impl SharedConfig {
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Run one store call.
-    fn with<T>(
-        &self,
-        call: impl FnOnce(&dyn AppConfigStore) -> Result<T, CoreError>,
-    ) -> Result<T, CoreError> {
-        call(&*self.store)
+    /// What [`commit`](Self::commit) would refuse `edit` for, writing
+    /// nothing: core's own check of one of its keys (ADR-0069). A front end's
+    /// own key is never refused.
+    ///
+    /// # Errors
+    /// The refusal core's `set` would answer.
+    pub fn check(&self, edit: &PrefEdit) -> Result<(), rmule_core::SettingRefusal> {
+        match edit.keeper() {
+            Keeper::Core(setting) => self.settings.check(&setting),
+            Keeper::FrontEnd(_) => Ok(()),
+        }
     }
 
-    /// Persist one edit, reporting the store's own refusal verbatim.
-    pub fn commit(&self, edit: &PrefEdit) -> Result<(), CoreError> {
+    /// Persist one edit and answer when it takes effect, reporting the store's
+    /// own refusal verbatim. A core key's answer is core's; a front-end key's
+    /// is this app's own: the theme, the Run Log level, a sort and the last
+    /// server apply at once, connect at start only at a start.
+    pub fn commit(&self, edit: &PrefEdit) -> Result<TakesEffect, SettingError> {
         #[cfg(test)]
         if self
             .refuse_commits
             .load(std::sync::atomic::Ordering::Relaxed)
         {
-            return Err(CoreError::Repository("the store refused the write".into()));
+            return Err(CoreError::Repository("the store refused the write".into()).into());
         }
-        self.with(|store| match edit {
-            PrefEdit::DownloadDir(dir) => store.set_download_dir(dir),
-            PrefEdit::Nickname(name) => store.set_nickname(&Ed2kText::from_utf8(name)),
-            PrefEdit::TcpPort(port) => store.set_tcp_port(*port),
-            PrefEdit::UdpPort(port) => store.set_udp_port(*port),
-            PrefEdit::ServerMetUrl(url) => store.set_preference(Preference::ServerMetUrl, url),
-            PrefEdit::AutoFetchServerMet(on) => {
-                store.set_preference(Preference::AutoFetchServerMet, &on.to_string())
+        let edit = match edit.keeper() {
+            Keeper::Core(setting) => return self.settings.set(setting),
+            Keeper::FrontEnd(edit) => edit,
+        };
+        let set =
+            |key: FrontEndKey, value: &str| self.settings.set_front_end_value(key.key(), value);
+        match edit {
+            FrontEndEdit::Theme(choice) => set(FrontEndKey::Theme, choice.name())?,
+            FrontEndEdit::ConnectAtStart(on) => {
+                set(FrontEndKey::ConnectAtStart, &on.to_string())?;
+                return Ok(TakesEffect::NextStart);
             }
-            PrefEdit::NodesDatUrl(url) => store.set_preference(Preference::NodesDatUrl, url),
-            PrefEdit::AutoFetchNodesDat(on) => {
-                store.set_preference(Preference::AutoFetchNodesDat, &on.to_string())
-            }
-            PrefEdit::Theme(choice) => store.set_preference(Preference::Theme, choice.name()),
-            PrefEdit::Obfuscation(choice) => {
-                store.set_preference(Preference::Obfuscation, choice.name())
-            }
-            PrefEdit::PortMapping(on) => {
-                store.set_preference(Preference::PortMapping, &on.to_string())
-            }
+            FrontEndEdit::RunLogFull(on) => set(
+                FrontEndKey::RunLogFull,
+                rmule_core::run_log::Level::from_full(on).preference(),
+            )?,
+            FrontEndEdit::LastServer(server) => set(
+                FrontEndKey::LastServer,
+                &format!("{}:{}", server.host(), server.port()),
+            )?,
             // Every table shares one value: re-read it so the write keeps the
             // other tables' entries as the store has them.
-            PrefEdit::ConnectAtStart(on) => {
-                store.set_preference(Preference::ConnectAtStart, &on.to_string())
-            }
-            PrefEdit::RunLogFull(on) => {
-                store.set_preference(Preference::RunLogFull, &on.to_string())
-            }
-            PrefEdit::DeadServerRetries(limit) => {
-                store.set_preference(Preference::DeadServerRetries, &limit.to_string())
-            }
-            PrefEdit::WithholdShares(on) => {
-                store.set_preference(Preference::WithholdSharesFromRelatedSearch, &on.to_string())
-            }
-            PrefEdit::RememberPeers(peers) => {
-                store.set_preference(Preference::RememberPeers, &peers.get().to_string())
-            }
-            PrefEdit::LastServer(server) => store.set_preference(
-                Preference::LastServer,
-                &format!("{}:{}", server.host(), server.port()),
-            ),
-            PrefEdit::TableSort {
+            FrontEndEdit::TableSort {
                 table,
                 column,
                 direction,
             } => {
-                let mut sorts =
-                    TableSorts::parse(store.preference(Preference::TableSorts)?.as_deref());
-                sorts.set(table, column, *direction);
-                store.set_preference(Preference::TableSorts, &sorts.text())
+                let mut sorts = TableSorts::parse(
+                    self.settings
+                        .front_end_value(FrontEndKey::TableSorts.key())?
+                        .as_deref(),
+                );
+                sorts.set(table, column, direction);
+                set(FrontEndKey::TableSorts, &sorts.text())?;
             }
-        })
+        }
+        Ok(TakesEffect::Now)
     }
 
     /// Read every preference the Settings tab shows.
     ///
-    /// The identity rows are read here rather than passed in: `ensure_*` is
-    /// generate-once, so asking the store is idempotent — and it means a
-    /// reload after a nickname or port edit sees the edit, which a caller
-    /// holding the identity it loaded at startup would not.
+    /// Read from the store rather than passed in, so a reload after an edit
+    /// sees the edit, which a caller holding what it loaded at startup would
+    /// not.
     pub fn load(&self, data_dir: Option<crate::args::DataDir>) -> Result<Preferences, CoreError> {
-        self.with(|store| {
-            let identity = store.ensure_identity()?;
-            let kad = store.ensure_kad_identity()?;
-            let text = |preference| store.preference(preference);
-            Ok(Preferences {
-                download_dir: store.download_dir()?,
-                data_dir,
-                nickname: identity.nickname().to_display_string(),
-                tcp_port: identity.tcp_port(),
-                udp_port: kad.udp_port,
-                server_met_url: text(Preference::ServerMetUrl)?
-                    .unwrap_or_else(|| rmule_bootstrap::DEFAULT_SERVER_MET_URL.to_string()),
-                // ADR-0065's first-run fetch, on unless the operator turned
-                // it off.
-                auto_fetch_server_met: text(Preference::AutoFetchServerMet)?
-                    .is_none_or(|value| value == "true"),
-                nodes_dat_url: text(Preference::NodesDatUrl)?
-                    .unwrap_or_else(|| rmule_bootstrap::DEFAULT_NODES_DAT_URL.to_string()),
-                // The TUI's ADR-0067 amendment opt-in as its *default*
-                // rather than a hardcode, so it is finally something an
-                // operator can turn back off.
-                auto_fetch_nodes_dat: text(Preference::AutoFetchNodesDat)?
-                    .is_none_or(|value| value == "true"),
-                theme: ThemeChoice::parse(text(Preference::Theme)?.as_deref()),
-                obfuscation: ObfuscationChoice::parse(text(Preference::Obfuscation)?.as_deref()),
-                // ADR-0086's Auto, unless the operator turned it off.
-                port_mapping: text(Preference::PortMapping)?.is_none_or(|value| value == "true"),
-                table_sorts: TableSorts::parse(text(Preference::TableSorts)?.as_deref()),
-                // Off unless the operator turned it on (ADR-0095).
-                connect_at_start: text(Preference::ConnectAtStart)?
-                    .is_some_and(|value| value == "true"),
-                // Lean unless the operator turned the full level on.
-                run_log_full: text(Preference::RunLogFull)?.is_some_and(|value| value == "true"),
-                dead_server_retries: rmule_core::ServerPolicy::parse_dead_after(
-                    text(Preference::DeadServerRetries)?.as_deref(),
-                ),
-                withhold_shares: text(Preference::WithholdSharesFromRelatedSearch)?
-                    .is_some_and(|value| value == "true"),
-                remember_peers: rmule_core::RememberPeers::parse(
-                    text(Preference::RememberPeers)?.as_deref(),
-                ),
-                last_server: text(Preference::LastServer)?
-                    .and_then(|value| ServerEndpoint::parse_host_port(&value).ok()),
-                user_hash: Some(identity.user_hash()),
-                kad_node_id: Some(kad.id),
-            })
+        let core = self.settings.read()?;
+        let store = &*self.store;
+        let identity = store.ensure_identity()?;
+        let kad = store.ensure_kad_identity()?;
+        let text = |key: FrontEndKey| self.settings.front_end_value(key.key());
+        Ok(Preferences {
+            download_dir: core.download_dir,
+            data_dir,
+            nickname: core.nickname,
+            tcp_port: core.tcp_port,
+            udp_port: core.udp_port,
+            server_met_url: core.server_met_url,
+            auto_fetch_server_met: core.auto_fetch_server_met,
+            nodes_dat_url: core.nodes_dat_url,
+            auto_fetch_nodes_dat: core.auto_fetch_nodes_dat,
+            theme: ThemeChoice::parse(text(FrontEndKey::Theme)?.as_deref()),
+            obfuscation: ObfuscationChoice::of(core.obfuscation),
+            port_mapping: core.port_mapping == PortMappingMode::Auto,
+            table_sorts: TableSorts::parse(text(FrontEndKey::TableSorts)?.as_deref()),
+            // Off unless the operator turned it on (ADR-0095).
+            connect_at_start: text(FrontEndKey::ConnectAtStart)?
+                .is_some_and(|value| value == "true"),
+            // Lean unless the operator turned the full level on.
+            run_log_full: rmule_core::run_log::Level::from_preference(
+                text(FrontEndKey::RunLogFull)?.as_deref(),
+            ) == rmule_core::run_log::Level::Full,
+            dead_server_retries: core.server_policy.dead_after,
+            withhold_shares: core.server_policy.withhold_from_related_search,
+            remember_peers: core.remember_peers,
+            last_server: text(FrontEndKey::LastServer)?
+                .and_then(|value| ServerEndpoint::parse_host_port(&value).ok()),
+            user_hash: Some(identity.user_hash()),
+            kad_node_id: Some(kad.id),
         })
     }
 }
@@ -254,11 +247,12 @@ impl ThemeChoice {
 /// say every combination they can hold.
 ///
 /// One setting for every surface, because ADR-0046 keeps one policy across
-/// stream and datagram: it becomes `CoreConfig::peer_crypt`, which lights the
-/// hello's crypt bits, makes peer TCP and peer UDP obfuscation-aware, arms the
-/// Kad node's datagram crypt and verify keys, and arms the
-/// server-UDP crypt-ping arm (`CoreConfig::server_udp_crypt()`) —
-/// aMule gates Kad and server-UDP obfuscation on the same
+/// stream and datagram: it becomes `CoreSettings::obfuscation`, which lights
+/// the hello's crypt bits, makes peer TCP and peer UDP obfuscation-aware, arms
+/// the Kad node's datagram crypt and verify keys, and arms the
+/// server-UDP crypt-ping arm — a running core takes a change up at once,
+/// every surface reading the policy as it decides. aMule gates Kad and
+/// server-UDP obfuscation on the same
 /// `IsClientCryptLayerSupported()` / `IsServerCryptLayerUDPEnabled()` pair
 /// (`MuleUDPSocket.cpp:282-284`, `Preferences.h:883`).
 ///
@@ -282,7 +276,7 @@ impl ObfuscationChoice {
     /// Every choice, in the order the Settings field cycles them.
     pub const ALL: [Self; 4] = [Self::Off, Self::Supported, Self::Requested, Self::Required];
 
-    /// The stored spelling, and what [`parse`](Self::parse) reads back.
+    /// The choice's stable name.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -293,16 +287,16 @@ impl ObfuscationChoice {
         }
     }
 
-    /// Read a stored name; anything unrecognised (or absent) is `Off`.
+    /// The choice that names `policy`.
     #[must_use]
-    pub fn parse(name: Option<&str>) -> Self {
+    pub fn of(policy: Option<ObfuscationPolicy>) -> Self {
         Self::ALL
             .into_iter()
-            .find(|choice| Some(choice.name()) == name)
+            .find(|choice| choice.policy() == policy)
             .unwrap_or(Self::Off)
     }
 
-    /// The policy core is started with (`CoreConfig::peer_crypt`).
+    /// The policy core runs under (`CoreSettings::obfuscation`).
     #[must_use]
     pub const fn policy(self) -> Option<ObfuscationPolicy> {
         match self {
@@ -349,7 +343,8 @@ pub struct Preferences {
     pub auto_fetch_nodes_dat: bool,
     /// Which palette to run.
     pub theme: ThemeChoice,
-    /// The one obfuscation policy core starts with.
+    /// The one obfuscation policy core runs under; a running core takes a
+    /// change up at once.
     pub obfuscation: ObfuscationChoice,
     /// Whether core maps its ports on the router (ADR-0086). On by default;
     /// read at start.
@@ -419,7 +414,7 @@ impl Default for Preferences {
 }
 
 impl Preferences {
-    /// The **Server Policy** these preferences hold, as core takes it up.
+    /// The **Server Policy** these preferences hold, as core judges by it.
     #[must_use]
     pub fn server_policy(&self) -> rmule_core::ServerPolicy {
         rmule_core::ServerPolicy {
@@ -481,7 +476,8 @@ pub enum PrefEdit {
     AutoFetchNodesDat(bool),
     /// The next frame paints in it.
     Theme(ThemeChoice),
-    /// Takes effect at the next start: core took its policy when it was built.
+    /// A running core takes it up at once: every surface reads the policy as
+    /// it decides, and a connection already negotiated keeps its own.
     Obfuscation(ObfuscationChoice),
     /// Takes effect at the next start: core starts its port-mapping runtime,
     /// or does not, once, when it is built.
@@ -512,50 +508,83 @@ pub enum PrefEdit {
     },
 }
 
+/// Who keeps one edit's key: core, as a Core Setting (ADR-0069), or the
+/// front end itself.
+pub enum Keeper<'a> {
+    /// A key core owns, changed through its settings handle.
+    Core(Setting),
+    /// A key the front end keeps in its own namespace.
+    FrontEnd(FrontEndEdit<'a>),
+}
+
+/// An edit of a key the front end keeps itself.
+pub enum FrontEndEdit<'a> {
+    /// See [`PrefEdit::Theme`].
+    Theme(ThemeChoice),
+    /// See [`PrefEdit::ConnectAtStart`].
+    ConnectAtStart(bool),
+    /// See [`PrefEdit::RunLogFull`].
+    RunLogFull(bool),
+    /// See [`PrefEdit::LastServer`].
+    LastServer(&'a ServerEndpoint),
+    /// See [`PrefEdit::TableSort`].
+    TableSort {
+        /// The table's stored key.
+        table: &'static str,
+        /// The column's stored key.
+        column: &'static str,
+        /// Its direction.
+        direction: Direction,
+    },
+}
+
 impl PrefEdit {
-    /// Does this edit change what the *running* session does, or only what the
-    /// next start will do?
+    /// Who keeps this edit's key, and the edit in that keeper's terms.
     ///
-    /// The distinction is the whole honesty of the tab: a live knob is applied
-    /// where it is read, and a restart-shaped one says so instead of pretending
-    /// (ADR-0069 keeps config out of the session commands core has already been
-    /// given, so there is nothing to re-push at).
+    /// A download directory is chosen in Settings, whose commit carried the
+    /// warning that everything under it is offered (ADR-0101), so the answer
+    /// rides the setting and the scan core starts asks nothing more.
     #[must_use]
-    pub const fn is_live(&self) -> bool {
-        match self {
-            // Read fresh out of `SessionConfig` by the next download…
-            Self::DownloadDir(_)
-            // …out of `Preferences` by the next Networks list update…
-            | Self::ServerMetUrl(_)
-            // …and off `App::theme` by the next frame; a sort is the view's
-            // own state before it is ever stored.
-            | Self::Theme(_)
-            | Self::TableSort { .. }
-            // …and the Run Log's level handle is read at every line written.
-            | Self::RunLogFull(_)
-            // …and the next start reads the server the connect just reached…
-            | Self::LastServer(_)
-            // …and core re-judges every server under a new policy at once.
-            | Self::DeadServerRetries(_)
-            | Self::WithholdShares(_)
-            // …and core's next seed write reads the count it was told.
-            | Self::RememberPeers(_) => true,
-            // The identity in every session command, the Kad bind, and the
-            // bootstrap config were all read once at startup.
-            Self::Nickname(_)
-            | Self::TcpPort(_)
-            | Self::UdpPort(_)
-            | Self::NodesDatUrl(_)
-            | Self::AutoFetchNodesDat(_)
-            // …the first-run fetch is decided once, at attach…
-            | Self::AutoFetchServerMet(_)
-            // …the connect at start happens only at a start…
-            | Self::ConnectAtStart(_)
-            // …and the obfuscation policy and port-mapping mode core was
-            // built with.
-            | Self::Obfuscation(_)
-            | Self::PortMapping(_) => false,
-        }
+    pub fn keeper(&self) -> Keeper<'_> {
+        Keeper::Core(match self {
+            Self::DownloadDir(dir) => Setting::DownloadDir {
+                dir: dir.clone(),
+                share_confirmed: true,
+            },
+            Self::Nickname(name) => Setting::Nickname(name.clone()),
+            Self::TcpPort(port) => Setting::TcpPort(*port),
+            Self::UdpPort(port) => Setting::UdpPort(*port),
+            Self::ServerMetUrl(url) => Setting::ServerMetUrl(url.clone()),
+            Self::AutoFetchServerMet(on) => Setting::AutoFetchServerMet(*on),
+            Self::NodesDatUrl(url) => Setting::NodesDatUrl(url.clone()),
+            Self::AutoFetchNodesDat(on) => Setting::AutoFetchNodesDat(*on),
+            Self::Obfuscation(choice) => Setting::Obfuscation(choice.policy()),
+            Self::PortMapping(on) => Setting::PortMapping(if *on {
+                PortMappingMode::Auto
+            } else {
+                PortMappingMode::Off
+            }),
+            Self::DeadServerRetries(limit) => Setting::DeadServerRetries(*limit),
+            Self::WithholdShares(on) => Setting::WithholdShares(*on),
+            Self::RememberPeers(peers) => Setting::RememberPeers(*peers),
+            Self::Theme(choice) => return Keeper::FrontEnd(FrontEndEdit::Theme(*choice)),
+            Self::ConnectAtStart(on) => {
+                return Keeper::FrontEnd(FrontEndEdit::ConnectAtStart(*on));
+            }
+            Self::RunLogFull(on) => return Keeper::FrontEnd(FrontEndEdit::RunLogFull(*on)),
+            Self::LastServer(server) => return Keeper::FrontEnd(FrontEndEdit::LastServer(server)),
+            Self::TableSort {
+                table,
+                column,
+                direction,
+            } => {
+                return Keeper::FrontEnd(FrontEndEdit::TableSort {
+                    table,
+                    column,
+                    direction: *direction,
+                });
+            }
+        })
     }
 }
 

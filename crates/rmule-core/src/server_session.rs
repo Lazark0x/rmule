@@ -12,14 +12,17 @@
 
 mod establishment;
 mod hello;
+mod link;
 mod multiplexer;
 mod slot;
 
 pub use establishment::build_peer_handshake_context;
 pub(crate) use establishment::connect_to_server;
-pub(crate) use hello::{HelloSource, live_peer_handshake_context};
+pub(crate) use hello::{
+    HelloSource, listen_tcp_port, live_peer_handshake_context, presented_tcp_port,
+};
 pub(crate) use multiplexer::{
-    SearchStream, ServerSearchEvent, ServerSearchStartError, ServerSessionHandle,
+    SearchStream, ServerSearchEvent, ServerSearchStartError, ServerSessionHandle, SessionLink,
 };
 pub(crate) use slot::SharedServerSession;
 
@@ -82,6 +85,7 @@ pub(crate) mod tests {
             ipv6_probe: crate::reachability::SharedIpv6Probe::default(),
             over_ipv6: false,
             punch: Default::default(),
+            reach: None,
             // Granted, so a related search goes out unless a test withdraws it.
             grants: rmule_ed2k::ServerGrants {
                 related_search: true,

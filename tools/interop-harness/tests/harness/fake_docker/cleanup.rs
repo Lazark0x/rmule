@@ -56,7 +56,7 @@ fn keep_containers_skips_cleanup_and_prints_retained_resources() {
 }
 
 #[test]
-fn failed_server_run_cleans_up_created_network() {
+fn failed_server_run_removes_the_server_container_and_the_network() {
     let run_root = tempfile::tempdir().unwrap();
     let fake_bin = tempfile::tempdir().unwrap();
     let docker_log = run_root.path().join("docker.log");
@@ -74,6 +74,8 @@ fn failed_server_run_cleans_up_created_network() {
         &[
             "network create rmule-interop-".to_owned(),
             "run --detach --name rmule-interop-server-".to_owned(),
+            // A refused `run` can still have created the container.
+            "rm -f rmule-interop-server-".to_owned(),
             "network rm rmule-interop-".to_owned(),
         ],
     );
@@ -180,6 +182,7 @@ fn failed_network_id_write_cleans_up_created_network() {
         amule_low_id: false,
         rmule_serve: false,
         rmule_peer_crypt: None,
+        rmule_peer_crypt_flip: &[],
         rmule_client_action: RmuleClientAction::Download,
     });
 

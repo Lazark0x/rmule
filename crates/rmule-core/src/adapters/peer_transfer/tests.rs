@@ -8,20 +8,19 @@ use std::time::Duration;
 use rmule_net::peer::{
     ConnectOptions as PeerConnectOptions, ObfuscationConfig, ObfuscationPolicy, PeerListener,
 };
-use rmule_peer::{PeerEvent, PeerHandshakeContext, SecureIdentConfig};
+use rmule_peer::{ConnectionEvent, PeerEvent, PeerHandshakeContext, SecureIdentConfig, SideEvent};
 use rmule_primitives::{
     ClientId, ClientIdentity, CryptStance, Ed2kFileLink, Ed2kText, FileHash, Ipv4Endpoint,
     PeerEndpoint, SecureIdentKey, UserHash,
 };
 use tokio::time::timeout;
 
-use crate::adapters::tests::held_buddy::{BuddyTags, hold};
+use crate::adapters::tests::held_buddy::{BuddyTags, firewalled, hold, slot};
 use crate::adapters::tests::hello_wire::{
     assert_states_live_adverts, live_adverts, read_hello_body,
 };
 use crate::adapters::tests::{dialed_serve_ctx, loopback_blocking_ip_filter};
 use crate::ban_store::SharedBanStore;
-use crate::firewalled::link::{FirewalledSlot, SharedFirewalledSlot};
 use crate::ip_filter::SharedIpFilter;
 
 use super::*;
@@ -54,6 +53,8 @@ async fn the_dial_back_enactment_connects_and_delivers_the_firewall_ack() {
             0x3C,
         ),
         client_id: ClientId::from_u32(0),
+        ed2k_client_id: ClientId::from_u32(0),
+        public_ip: None,
         connected_server: None,
     };
 
@@ -91,17 +92,11 @@ async fn a_firewalled_node_s_dial_back_hello_states_every_advert_and_names_its_b
         .await
         .expect("bind the requester");
     let port = requester.local_addr().expect("bound").port();
-    let slot: SharedFirewalledSlot = Arc::new(FirewalledSlot::new(rmule_kad::KadId::from_bytes(
-        [0xAA; rmule_kad::KadId::BYTE_LEN],
-    )));
+    let (mut slot, buddy) = slot();
+    let _link = hold(&mut slot, None);
     // Firewalled: Self Reach with no High ID and Kad unproven.
-    slot.install_reach(crate::reachability::SharedSelfReach::new(
-        crate::KadReachLevel::fixed(false),
-        crate::own_identity::SharedOwnIdentity::default(),
-        crate::natt::front::SharedNattFront::default(),
-    ));
-    let _link = hold(&slot, None);
-    let adverts = live_adverts(slot);
+    let adverts = live_adverts(buddy);
+    adverts.install_reach(firewalled(crate::own_identity::SharedOwnIdentity::default()));
 
     let dial = tokio::spawn(async move {
         let endpoint = Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, port);
@@ -130,18 +125,13 @@ async fn a_download_dial_s_hello_states_every_advert() {
         .await
         .expect("bind the source");
     let port = source.local_addr().expect("bound").port();
-    let slot: SharedFirewalledSlot = Arc::new(FirewalledSlot::new(rmule_kad::KadId::from_bytes(
-        [0xAA; rmule_kad::KadId::BYTE_LEN],
-    )));
+    let (mut slot, buddy) = slot();
+    let _link = hold(&mut slot, None);
     // Firewalled: Self Reach with no High ID and Kad unproven.
-    slot.install_reach(crate::reachability::SharedSelfReach::new(
-        crate::KadReachLevel::fixed(false),
-        crate::own_identity::SharedOwnIdentity::default(),
-        crate::natt::front::SharedNattFront::default(),
-    ));
-    let _link = hold(&slot, None);
+    let adverts = live_adverts(buddy);
+    adverts.install_reach(firewalled(crate::own_identity::SharedOwnIdentity::default()));
     let mut transfer = RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT)
-        .with_hello_adverts(live_adverts(slot));
+        .with_hello_adverts(adverts);
     let peer = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, port));
     let _worker = transfer
         .start_peer_worker(peer, dialed_serve_ctx(), a_file())
@@ -207,6 +197,8 @@ async fn an_obfuscated_dial_back_reaches_a_responder_that_requires_it() {
                 0x3C,
             ),
             client_id: ClientId::from_u32(0),
+            ed2k_client_id: ClientId::from_u32(0),
+            public_ip: None,
             connected_server: None,
         };
         let opts = PeerConnectOptions {
@@ -221,8 +213,10 @@ async fn an_obfuscated_dial_back_reaches_a_responder_that_requires_it() {
             .expect("the dial-back arrives obfuscated");
         loop {
             match conn.next_event().await {
-                Some(PeerEvent::KadFirewallCheckAck) => return true,
-                Some(PeerEvent::Disconnected { .. }) | None => return false,
+                Some(PeerEvent::Side(SideEvent::KadFirewallCheckAck)) => return true,
+                Some(PeerEvent::Connection(ConnectionEvent::Disconnected { .. })) | None => {
+                    return false;
+                }
                 Some(_) => {}
             }
         }
@@ -236,6 +230,8 @@ async fn an_obfuscated_dial_back_reaches_a_responder_that_requires_it() {
             0x3C,
         ),
         client_id: ClientId::from_u32(0),
+        ed2k_client_id: ClientId::from_u32(0),
+        public_ip: None,
         connected_server: None,
     };
     // The verdict carries the requester's own stance (its `0x53` options
@@ -244,7 +240,9 @@ async fn an_obfuscated_dial_back_reaches_a_responder_that_requires_it() {
     // the initiator always keys on the target's hash, never ours.
     let requester_crypt = PeerCrypt::new(CryptStance::new(true, true, true), Some(requester_hash));
     let ours = HelloAdverts {
-        crypt_policy: Some(ObfuscationPolicy::Supported),
+        obfuscation: crate::obfuscation_policy::SharedObfuscationPolicy::new(Some(
+            ObfuscationPolicy::Supported,
+        )),
         ..HelloAdverts::default()
     };
     enact_tcp_dial_back(endpoint, requester_crypt, &ours, ctx).await;
@@ -314,7 +312,10 @@ async fn dialed_worker_reports_the_peer_user_hash_before_connected() {
             .await
             .unwrap();
         while let Some(event) = conn.next_event().await {
-            if matches!(event, PeerEvent::Disconnected { .. }) {
+            if matches!(
+                event,
+                PeerEvent::Connection(ConnectionEvent::Disconnected { .. })
+            ) {
                 break;
             }
         }
@@ -336,28 +337,21 @@ async fn dialed_worker_reports_the_peer_user_hash_before_connected() {
         .await
         .unwrap();
 
-    // `dialed_serve_ctx` identifies with user_hash 0x09. The router hands up
-    // the hello's source-exchange facts on its own, so they may come first.
-    let first = loop {
-        let event = timeout(Duration::from_secs(5), worker.next_event())
-            .await
-            .expect("identified within 5s");
-        if !matches!(event, Some(PeerWorkerEvent::SourceExchange { .. })) {
-            break event;
-        }
+    // `dialed_serve_ctx` identifies with user_hash 0x09.
+    let first = timeout(Duration::from_secs(5), worker.next_event())
+        .await
+        .expect("identified within 5s");
+    let Some(PeerWorkerEvent::Identity(identity)) = first else {
+        panic!("the first worker event is the peer's identity: {first:?}");
     };
-    let Some(PeerWorkerEvent::Identified {
-        user_hash,
-        crypt,
-        software,
-    }) = first
-    else {
-        panic!("the first worker event of its own is Identified");
-    };
-    assert_eq!(user_hash, UserHash::from_bytes([0x09; UserHash::BYTE_LEN]));
+    assert_eq!(
+        identity.user_hash(),
+        UserHash::from_bytes([0x09; UserHash::BYTE_LEN])
+    );
     // The loopback peer's hello carries no crypt policy, so the stance it
     // advertises — and this worker reports — is empty.
-    assert_eq!(crypt, Some(CryptStance::disabled()));
+    assert_eq!(identity.crypt_stance(), CryptStance::disabled());
+    let software = identity.software();
     // The loopback peer is rmule: its hello carries aMule 2.3.3's
     // CT_EMULE_VERSION word (ADR-0047) and rmule's own mod name,
     // which is what names it — read off that hello.
@@ -375,7 +369,7 @@ async fn dialed_worker_reports_the_peer_user_hash_before_connected() {
 /// Identification keypair the Hello Adverts hold (ADR-0041) — the
 /// one every other hello proves with, never a key of the download's own: the
 /// accept side — a distinct keypair and user hash — challenges the dial and
-/// observes `PeerIdentityVerified` carrying the *dialer's* hash and the
+/// observes `IdentityVerified` carrying the *dialer's* hash and the
 /// published public key. Asymmetric on purpose: a flipped signing direction
 /// would fail this assert, while a symmetric rmule↔rmule check would not.
 #[tokio::test]
@@ -397,6 +391,8 @@ async fn a_download_dial_proves_with_the_published_sui_key() {
                 60,
             ),
             client_id: ClientId::from_u32(0x0100_007F),
+            ed2k_client_id: ClientId::from_u32(0x0100_007F),
+            public_ip: None,
             connected_server: None,
         };
         let options = PeerConnectOptions {
@@ -409,11 +405,11 @@ async fn a_download_dial_proves_with_the_published_sui_key() {
         let mut conn = listener.accept(ctx, options).await.unwrap();
         while let Some(event) = conn.next_event().await {
             match event {
-                PeerEvent::PeerIdentityVerified {
+                PeerEvent::Connection(ConnectionEvent::IdentityVerified {
                     user_hash,
                     public_key,
-                } => return Some((user_hash, public_key)),
-                PeerEvent::Disconnected { .. } => return None,
+                }) => return Some((user_hash, public_key)),
+                PeerEvent::Connection(ConnectionEvent::Disconnected { .. }) => return None,
                 _ => {}
             }
         }
@@ -462,6 +458,8 @@ async fn a_dialed_worker_reports_the_peers_verified_identity() {
                 60,
             ),
             client_id: ClientId::from_u32(0x0100_007F),
+            ed2k_client_id: ClientId::from_u32(0x0100_007F),
+            public_ip: None,
             connected_server: None,
         };
         let options = PeerConnectOptions {
@@ -474,7 +472,10 @@ async fn a_dialed_worker_reports_the_peers_verified_identity() {
         let mut conn = listener.accept(ctx, options).await.unwrap();
         // Stay alive so the dial side's exchange completes.
         while let Some(event) = conn.next_event().await {
-            if matches!(event, PeerEvent::Disconnected { .. }) {
+            if matches!(
+                event,
+                PeerEvent::Connection(ConnectionEvent::Disconnected { .. })
+            ) {
                 break;
             }
         }

@@ -14,6 +14,7 @@
 //! request has made the server let the rows go.
 
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -23,8 +24,7 @@ use tokio::time::{Instant, Sleep, sleep_until};
 
 use crate::server_session::{SearchStream, ServerSearchEvent, ServerSessionHandle};
 use crate::service::{
-    CoreEvent, FinishedActivity, LegNotSent, SearchEvent, SearchFailure, SearchId, SearchLegState,
-    SearchLegs,
+    CoreEvent, LegNotSent, SearchEvent, SearchFailure, SearchId, SearchLegState, SearchLegs,
 };
 
 mod attribution;
@@ -68,8 +68,9 @@ pub(crate) struct SearchTask {
     pub(crate) global_sweep: SweepDone,
     pub(crate) windows: SearchWindows,
     pub(crate) evt_tx: mpsc::Sender<CoreEvent>,
+    /// The search's stop: raised, or its sender dropped, the task ends at
+    /// once and says nothing — its retire says `SearchCancelled`.
     pub(crate) cancel_rx: watch::Receiver<bool>,
-    pub(crate) finished_tx: mpsc::Sender<FinishedActivity>,
     /// How the search asks its server for the next page of its answer.
     pub(crate) paging: Paging,
     /// Where each leg stands as the task starts (ADR-0034). A leg that
@@ -117,12 +118,28 @@ impl SearchLegs {
     }
 }
 
+/// How a search task ended, as its retire reads it (ADR-0093).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SearchEnd {
+    /// On its own, its terminal event out: it failed, or it completed and no
+    /// one can ask its server for more.
+    Ended,
+    /// At its stop, saying nothing: the retire that stopped it says
+    /// `SearchCancelled`.
+    Stopped,
+    /// By a panic in the task, which could say nothing: the retire says
+    /// [`SearchFailure::TaskPanicked`].
+    Panicked,
+}
+
 /// How one run of the search's loop ended.
 enum Phase {
     /// Every leg settled and the quiet window passed; `SearchCompleted` is out.
     Completed,
-    /// Cancelled or failed; its terminal event is out.
-    Ended,
+    /// Failed; its terminal event is out.
+    Failed,
+    /// Its stop came; nothing is said.
+    Stopped,
 }
 
 /// The windows one **Search Activity** runs on. Completion is
@@ -142,31 +159,28 @@ pub(crate) struct SearchWindows {
 }
 
 impl SearchTask {
-    pub(crate) async fn run(mut self) {
+    /// Run the search until it ends on its own or its stop comes.
+    pub(crate) async fn run(mut self) -> SearchEnd {
         let mut results = SearchResultSet::default();
         self.emit_legs().await;
         let kad_lifetime = tokio::time::sleep(self.windows.kad_lifetime);
         tokio::pin!(kad_lifetime);
         loop {
             match self.run_phase(&mut results, kad_lifetime.as_mut()).await {
-                Phase::Ended => break,
+                Phase::Failed => return SearchEnd::Ended,
+                Phase::Stopped => return SearchEnd::Stopped,
                 // Its server may hold more rows: it waits for the operator to
                 // ask, and runs again on the page.
                 Phase::Completed => {
                     self.rows.lapse();
-                    if !self.park().await {
-                        break;
+                    if let ControlFlow::Break(end) = self.park().await {
+                        return end;
                     }
                     self.move_leg(|legs| legs.server = SearchLegState::Sent)
                         .await;
                 }
             }
         }
-
-        let _ = self
-            .finished_tx
-            .send(FinishedActivity::Search(self.search_id))
-            .await;
     }
 
     /// Merge every leg until the search completes or ends.
@@ -203,19 +217,14 @@ impl SearchTask {
             let kad_sent = self.legs.kad == SearchLegState::Sent;
             tokio::select! {
                 changed = self.cancel_rx.changed() => {
-                    // A cancel, or a dropped sender — the same ruling the
-                    // serve loop makes. `changed()` answers
-                    // `Err` immediately and forever once the actor dropped
-                    // this search's `ActiveSearch`, so treating that as a
-                    // spurious wakeup spins the loop at full speed and never
-                    // ends the task. The owner being gone is stronger than a
-                    // cancel, and reads as one.
+                    // A stop, or a dropped sender — the same ruling the
+                    // serve loop makes. `changed()` answers `Err` immediately
+                    // and forever once the sender is gone, so treating that
+                    // as a spurious wakeup spins the loop at full speed and
+                    // never ends the task. The owner being gone is stronger
+                    // than a stop, and reads as one.
                     if changed.is_err() || *self.cancel_rx.borrow() {
-                        self.emit(SearchEvent::SearchCancelled {
-                            search_id: self.search_id,
-                        })
-                        .await;
-                        return Phase::Ended;
+                        return Phase::Stopped;
                     }
                 }
                 Some(batch) = self.rows.recv() => {
@@ -345,7 +354,7 @@ impl SearchTask {
                             reason,
                         })
                         .await;
-                        return Phase::Ended;
+                        return Phase::Failed;
                     }
                 }
                 // The operator asks for the next page while the search still

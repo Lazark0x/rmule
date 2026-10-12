@@ -8,7 +8,10 @@ use std::sync::Arc;
 use crate::driver::{
     CaptureFormat, FinalizeVerdict, FrameWrite, RowsFile, StreamTap, toml_basic_string,
 };
-use rmule_peer::{FileProbeStatus, PeerEvent, SlotReleaseReason};
+use rmule_peer::{
+    ConnectionEvent, FileProbeStatus, IdentityChange, NoticeEvent, PeerEvent, RequesterEvent,
+    ServerEvent, SideEvent, SlotReleaseReason,
+};
 use rmule_primitives::PacketProtocol;
 
 use crate::peer::options::CaptureMode;
@@ -191,10 +194,23 @@ fn support_toml(support: rmule_peer::SourceExchangeSupport) -> String {
     )
 }
 
+/// One event as the TOML table a capture's `events.toml` carries. Each group
+/// renders on its own; the `type` labels are the capture format's and stay put
+/// when a variant is renamed.
 pub(crate) fn event_to_toml(event: &PeerEvent) -> String {
     match event {
-        PeerEvent::PeerHelloSent => "type = \"PeerHelloSent\"\n".to_owned(),
-        PeerEvent::PeerIdentified { identity } => {
+        PeerEvent::Connection(event) => connection_toml(event),
+        PeerEvent::Requester(event) => requester_toml(event),
+        PeerEvent::Server(event) => server_toml(event),
+        PeerEvent::Side(event) => side_toml(event),
+        PeerEvent::Notice(event) => notice_toml(event),
+    }
+}
+
+fn connection_toml(event: &ConnectionEvent) -> String {
+    match event {
+        ConnectionEvent::HelloSent => "type = \"PeerHelloSent\"\n".to_owned(),
+        ConnectionEvent::Identified { identity } => {
             format!(
                 "type = \"PeerIdentified\"\nuser_hash = \"{}\"\nclient_id = {}\ntcp_port = {}\nnickname = {}\n",
                 identity.user_hash().to_hex_upper(),
@@ -208,170 +224,37 @@ pub(crate) fn event_to_toml(event: &PeerEvent) -> String {
                 )
             )
         }
-        PeerEvent::PeerReaskContactRevised {
-            udp_port,
-            udp_version,
-        } => format!(
-            "type = \"PeerReaskContactRevised\"\nudp_port = {udp_port}\nudp_version = {udp_version}\n"
-        ),
-        PeerEvent::PeerSourceExchangeRevised { support } => format!(
-            "type = \"PeerSourceExchangeRevised\"\n{}",
-            support_toml(*support)
-        ),
-        PeerEvent::FileRequestSent {
-            file_hash,
-            support,
-            sources_asked,
-        } => format!(
-            "type = \"FileRequestSent\"\nfile_hash = \"{}\"\n{}sources_asked = {sources_asked}\n",
-            file_hash.to_hex_upper(),
-            support_toml(*support)
-        ),
-        PeerEvent::PeerSoftwareRevised { software } => format!(
-            "type = \"PeerSoftwareRevised\"\nsoftware = {}\n",
-            toml_basic_string(&format!("{software:?}"))
-        ),
-        PeerEvent::UnknownPeerPacket {
-            protocol,
-            opcode,
-            payload_len,
-        } => format!(
-            "type = \"UnknownPeerPacket\"\nprotocol = \"{}\"\nopcode = {opcode}\npayload_len = {payload_len}\n",
-            packet_protocol_label(*protocol),
-        ),
-        PeerEvent::MultiPacketUnknownSub {
-            file_hash,
-            opcode,
-            remaining,
-        } => format!(
-            "type = \"MultiPacketUnknownSub\"\nfile_hash = \"{}\"\nopcode = {opcode}\nremaining = {remaining}\n",
-            file_hash.to_hex_upper(),
-        ),
-        PeerEvent::FileProbed { file_hash, status } => {
-            let status_label = match status {
-                FileProbeStatus::Available {
-                    file_name, bitmap, ..
-                } => format!(
-                    "Available\"\nfile_name = {}\npart_count = {}",
-                    toml_basic_string(&file_name.to_display_string()),
-                    bitmap.part_count(),
-                ),
-                FileProbeStatus::NotAvailable => "NotAvailable\"".to_owned(),
-            };
-            format!(
-                "type = \"FileProbed\"\nfile_hash = \"{}\"\nstatus = \"{status_label}\n",
-                file_hash.to_hex_upper(),
-            )
-        }
-        PeerEvent::HashSetReceived {
-            file_hash,
-            part_hashes,
-        } => format!(
-            "type = \"HashSetReceived\"\nfile_hash = \"{}\"\npart_hash_count = {}\n",
-            file_hash.to_hex_upper(),
-            part_hashes.len(),
-        ),
-        PeerEvent::QueueRanked { file_hash, rank } => format!(
-            "type = \"QueueRanked\"\nfile_hash = \"{}\"\nrank = {rank}\n",
-            file_hash.to_hex_upper(),
-        ),
-        PeerEvent::QueueProgress {
-            file_hash,
-            previous_rank,
-            new_rank,
-        } => format!(
-            "type = \"QueueProgress\"\nfile_hash = \"{}\"\nprevious_rank = {previous_rank}\nnew_rank = {new_rank}\n",
-            file_hash.to_hex_upper(),
-        ),
-        PeerEvent::QueueRejected { file_hash } => format!(
-            "type = \"QueueRejected\"\nfile_hash = \"{}\"\n",
-            file_hash.to_hex_upper(),
-        ),
-        PeerEvent::SlotGranted { file_hash } => format!(
-            "type = \"SlotGranted\"\nfile_hash = \"{}\"\n",
-            file_hash.to_hex_upper(),
-        ),
-        PeerEvent::PartReceived {
-            file_hash,
-            offset,
-            bytes,
-        } => format!(
-            "type = \"PartReceived\"\nfile_hash = \"{}\"\noffset = {offset}\ndata_len = {}\n",
-            file_hash.to_hex_upper(),
-            bytes.len(),
-        ),
-        PeerEvent::SourcesReceived { file_hash, sources } => format!(
-            "type = \"SourcesReceived\"\nfile_hash = \"{}\"\nsource_count = {}\n",
-            file_hash.to_hex_upper(),
-            sources.len(),
-        ),
-        PeerEvent::SourceExchangeAnswerSkipped { reason } => {
-            format!("type = \"SourceExchangeAnswerSkipped\"\nreason = \"{reason}\"\n")
-        }
-        PeerEvent::AichAnswerReceived {
-            file_hash,
-            part,
-            recovery_data,
-            ..
-        } => format!(
-            "type = \"AichAnswerReceived\"\nfile_hash = \"{}\"\npart = {part}\nrecovery_len = {}\n",
-            file_hash.to_hex_upper(),
-            recovery_data.len(),
-        ),
-        PeerEvent::AichFileHashReceived { root } => {
-            format!(
-                "type = \"AichFileHashReceived\"\nroot = \"{}\"\n",
-                root.to_base32_upper()
-            )
-        }
-        PeerEvent::CompressedPartSkipped {
-            file_hash,
-            offset,
-            reason,
-        } => format!(
-            "type = \"CompressedPartSkipped\"\nfile_hash = \"{}\"\noffset = {offset}\nreason = \"{reason}\"\n",
-            file_hash.to_hex_upper(),
-        ),
-        PeerEvent::CompressedFrameSkipped {
-            opcode,
-            compressed_len,
-            reason,
-        } => format!(
-            "type = \"CompressedFrameSkipped\"\nopcode = {opcode}\ncompressed_len = {compressed_len}\nreason = \"{reason:?}\"\n",
-        ),
-        PeerEvent::SlotReleased { file_hash, reason } => format!(
-            "type = \"SlotReleased\"\nfile_hash = \"{}\"\nreason = \"{}\"\n",
-            file_hash.to_hex_upper(),
-            slot_release_reason_label(*reason),
-        ),
-        PeerEvent::CommandRejected { reason } => format!(
-            "type = \"CommandRejected\"\nreason = {}\n",
-            toml_basic_string(&reason.to_string()),
-        ),
-        PeerEvent::KadFirewallCheckAck => "type = \"KadFirewallCheckAck\"\n".to_owned(),
-        PeerEvent::KadUdpFirewallCheckRequested { request } => format!(
-            "type = \"KadUdpFirewallCheckRequested\"\nrequest_len = {}\n",
-            request.len()
-        ),
-        PeerEvent::PeerIpv6Changed { address } => {
-            format!("type = \"PeerIpv6Changed\"\naddress = \"{address}\"\n")
-        }
-        PeerEvent::BuddyPingReceived => "type = \"BuddyPingReceived\"\n".to_owned(),
-        PeerEvent::BuddyCallbackReceived { callback } => format!(
-            "type = \"BuddyCallbackReceived\"\nfile_hash = \"{}\"\nrequester = \"{}\"\n",
-            callback.file_hash.to_hex_upper(),
-            callback.requester
-        ),
-        PeerEvent::BuddyReaskCallbackReceived { relay } => format!(
-            "type = \"BuddyReaskCallbackReceived\"\nrequester = \"{}\"\nforwarded_len = {}\n",
-            relay.requester,
-            relay.forwarded.len()
-        ),
-        PeerEvent::HelloRefused { refusal } => {
-            let rmule_peer::HelloRefusalCode::TagCountShort { declared, written } = refusal.code
-            else {
-                return "type = \"HelloRefused\"\n".to_owned();
-            };
+        // One label per change, the capture format's from before the
+        // revisions were one event, each with the facts that change moved.
+        ConnectionEvent::IdentityRevised { identity, what } => match what {
+            IdentityChange::ReaskContact => {
+                let (udp_port, udp_version) = identity.client_udp_reask().unwrap_or_default();
+                format!(
+                    "type = \"PeerReaskContactRevised\"\nudp_port = {udp_port}\nudp_version = {udp_version}\n"
+                )
+            }
+            IdentityChange::SourceExchange => format!(
+                "type = \"PeerSourceExchangeRevised\"\n{}",
+                support_toml(identity.source_exchange())
+            ),
+            IdentityChange::Software => format!(
+                "type = \"PeerSoftwareRevised\"\nsoftware = {}\n",
+                toml_basic_string(&format!("{:?}", identity.software()))
+            ),
+            IdentityChange::Ipv6 => format!(
+                "type = \"PeerIpv6Changed\"\naddress = \"{}\"\n",
+                identity
+                    .peer_ipv6()
+                    .map(|address| address.to_string())
+                    .unwrap_or_default()
+            ),
+            IdentityChange::ClientId => format!(
+                "type = \"PeerClientIdChanged\"\nclient_id = {}\n",
+                identity.client_id().as_u32()
+            ),
+        },
+        ConnectionEvent::HelloRefused { refusal } => {
+            let rmule_peer::HelloRefusalCode::TagCountShort { declared, written } = refusal.code;
             format!(
                 "type = \"HelloRefused\"\ncode = \"tag_count_short\"\ndeclared = {declared}\nwritten = {written}\nname = {}\nclient_mod = {}\n",
                 toml_basic_string(
@@ -390,15 +273,137 @@ pub(crate) fn event_to_toml(event: &PeerEvent) -> String {
                 ),
             )
         }
-        PeerEvent::Disconnected { reason } => {
+        ConnectionEvent::Disconnected { reason } => {
             format!("type = \"Disconnected\"\nreason = \"{}\"\n", reason.label())
         }
-        PeerEvent::FileRequested { file_hash, status } => format!(
+        ConnectionEvent::IdentityVerified {
+            user_hash,
+            public_key,
+        } => format!(
+            "type = \"PeerIdentityVerified\"\nuser_hash = \"{}\"\npublic_key_len = {}\n",
+            user_hash.to_hex_upper(),
+            public_key.len(),
+        ),
+        ConnectionEvent::SecureIdentFailed { reason } => {
+            format!("type = \"PeerSecureIdentFailed\"\nreason = \"{reason:?}\"\n")
+        }
+    }
+}
+
+fn requester_toml(event: &RequesterEvent) -> String {
+    match event {
+        RequesterEvent::FileRequestSent {
+            file_hash,
+            sources_asked,
+        } => format!(
+            "type = \"FileRequestSent\"\nfile_hash = \"{}\"\nsources_asked = {sources_asked}\n",
+            file_hash.to_hex_upper(),
+        ),
+        RequesterEvent::FileProbed { file_hash, status } => {
+            let status_label = match status {
+                FileProbeStatus::Available {
+                    file_name, bitmap, ..
+                } => format!(
+                    "Available\"\nfile_name = {}\npart_count = {}",
+                    toml_basic_string(&file_name.to_display_string()),
+                    bitmap.part_count(),
+                ),
+                FileProbeStatus::NotAvailable => "NotAvailable\"".to_owned(),
+            };
+            format!(
+                "type = \"FileProbed\"\nfile_hash = \"{}\"\nstatus = \"{status_label}\n",
+                file_hash.to_hex_upper(),
+            )
+        }
+        RequesterEvent::HashSetReceived {
+            file_hash,
+            part_hashes,
+        } => format!(
+            "type = \"HashSetReceived\"\nfile_hash = \"{}\"\npart_hash_count = {}\n",
+            file_hash.to_hex_upper(),
+            part_hashes.len(),
+        ),
+        RequesterEvent::QueueRanked { file_hash, rank } => format!(
+            "type = \"QueueRanked\"\nfile_hash = \"{}\"\nrank = {rank}\n",
+            file_hash.to_hex_upper(),
+        ),
+        RequesterEvent::QueueProgress {
+            file_hash,
+            previous_rank,
+            new_rank,
+        } => format!(
+            "type = \"QueueProgress\"\nfile_hash = \"{}\"\nprevious_rank = {previous_rank}\nnew_rank = {new_rank}\n",
+            file_hash.to_hex_upper(),
+        ),
+        RequesterEvent::QueueRejected { file_hash } => format!(
+            "type = \"QueueRejected\"\nfile_hash = \"{}\"\n",
+            file_hash.to_hex_upper(),
+        ),
+        RequesterEvent::SlotGranted { file_hash } => format!(
+            "type = \"SlotGranted\"\nfile_hash = \"{}\"\n",
+            file_hash.to_hex_upper(),
+        ),
+        RequesterEvent::PartReceived {
+            file_hash,
+            offset,
+            bytes,
+        } => format!(
+            "type = \"PartReceived\"\nfile_hash = \"{}\"\noffset = {offset}\ndata_len = {}\n",
+            file_hash.to_hex_upper(),
+            bytes.len(),
+        ),
+        RequesterEvent::SourcesReceived { file_hash, sources } => format!(
+            "type = \"SourcesReceived\"\nfile_hash = \"{}\"\nsource_count = {}\n",
+            file_hash.to_hex_upper(),
+            sources.len(),
+        ),
+        RequesterEvent::SourceExchangeAnswerSkipped { reason } => {
+            format!("type = \"SourceExchangeAnswerSkipped\"\nreason = \"{reason}\"\n")
+        }
+        RequesterEvent::AichAnswerReceived {
+            file_hash,
+            part,
+            recovery_data,
+            ..
+        } => format!(
+            "type = \"AichAnswerReceived\"\nfile_hash = \"{}\"\npart = {part}\nrecovery_len = {}\n",
+            file_hash.to_hex_upper(),
+            recovery_data.len(),
+        ),
+        RequesterEvent::AichFileHashReceived { root } => {
+            format!(
+                "type = \"AichFileHashReceived\"\nroot = \"{}\"\n",
+                root.to_base32_upper()
+            )
+        }
+        RequesterEvent::CompressedPartSkipped {
+            file_hash,
+            offset,
+            reason,
+        } => format!(
+            "type = \"CompressedPartSkipped\"\nfile_hash = \"{}\"\noffset = {offset}\nreason = \"{reason}\"\n",
+            file_hash.to_hex_upper(),
+        ),
+        RequesterEvent::SlotReleased { file_hash, reason } => format!(
+            "type = \"SlotReleased\"\nfile_hash = \"{}\"\nreason = \"{}\"\n",
+            file_hash.to_hex_upper(),
+            slot_release_reason_label(*reason),
+        ),
+        RequesterEvent::FileCommentReceived { rating, comment } => format!(
+            "type = \"FileCommentReceived\"\nrating = {rating}\ncomment = {}\n",
+            toml_basic_string(&comment.to_display_string()),
+        ),
+    }
+}
+
+fn server_toml(event: &ServerEvent) -> String {
+    match event {
+        ServerEvent::FileRequested { file_hash, status } => format!(
             "type = \"FileRequested\"\nfile_hash = \"{}\"\nstatus_bytes = {}\n",
             file_hash.to_hex_upper(),
             status.as_bytes().len(),
         ),
-        PeerEvent::FileBundleRequested {
+        ServerEvent::FileBundleRequested {
             file_hash,
             file_size,
             asks,
@@ -410,85 +415,120 @@ pub(crate) fn event_to_toml(event: &PeerEvent) -> String {
             asks.len(),
             cut.is_some(),
         ),
-        PeerEvent::FileIdSet { file_hash } => format!(
+        ServerEvent::FileIdSet { file_hash } => format!(
             "type = \"FileIdSet\"\nfile_hash = \"{}\"\n",
             file_hash.to_hex_upper(),
         ),
-        PeerEvent::HashSetRequested { file_hash } => format!(
+        ServerEvent::HashSetRequested { file_hash } => format!(
             "type = \"HashSetRequested\"\nfile_hash = \"{}\"\n",
             file_hash.to_hex_upper(),
         ),
-        PeerEvent::SlotRequested { file_hash } => format!(
+        ServerEvent::SlotRequested { file_hash } => format!(
             "type = \"SlotRequested\"\nfile_hash = \"{}\"\n",
             file_hash.to_hex_upper(),
         ),
-        PeerEvent::PartsRequested { file_hash, ranges } => {
+        ServerEvent::PartsRequested { file_hash, ranges } => {
             let (start, end) = ranges.as_array()[0];
             format!(
                 "type = \"PartsRequested\"\nfile_hash = \"{}\"\nstart = {start}\nend = {end}\n",
                 file_hash.to_hex_upper(),
             )
         }
-        PeerEvent::ServePartsWithoutSlot { file_hash } => format!(
+        ServerEvent::PartsWithoutSlot { file_hash } => format!(
             "type = \"ServePartsWithoutSlot\"\nfile_hash = \"{}\"\n",
             file_hash.to_hex_upper(),
         ),
-        PeerEvent::TransferCancelled { file_hash } => format!(
+        ServerEvent::TransferCancelled { file_hash } => format!(
             "type = \"TransferCancelled\"\nfile_hash = \"{}\"\n",
             file_hash.to_hex_upper(),
         ),
-        PeerEvent::SourcesRequested { file_hash, version } => format!(
-            "type = \"SourcesRequested\"\nfile_hash = \"{}\"\nversion = \"{version:?}\"\n",
+        ServerEvent::SourcesRequested { file_hash } => format!(
+            "type = \"SourcesRequested\"\nfile_hash = \"{}\"\n",
             file_hash.to_hex_upper(),
         ),
-        PeerEvent::AichRequested {
+        ServerEvent::SourcesAnswered { file_hash, count } => format!(
+            "type = \"SourcesAnswered\"\nfile_hash = \"{}\"\ncount = {count}\n",
+            file_hash.to_hex_upper(),
+        ),
+        ServerEvent::AichRequested {
             file_hash, part, ..
         } => format!(
             "type = \"AichRequested\"\nfile_hash = \"{}\"\npart = {part}\n",
             file_hash.to_hex_upper(),
         ),
-        PeerEvent::AichFileHashRequested { file_hash } => format!(
+        ServerEvent::AichFileHashRequested { file_hash } => format!(
             "type = \"AichFileHashRequested\"\nfile_hash = \"{}\"\n",
             file_hash.to_hex_upper(),
         ),
-        PeerEvent::PeerIdentityVerified {
-            user_hash,
-            public_key,
-        } => format!(
-            "type = \"PeerIdentityVerified\"\nuser_hash = \"{}\"\npublic_key_len = {}\n",
-            user_hash.to_hex_upper(),
-            public_key.len(),
+    }
+}
+
+fn side_toml(event: &SideEvent) -> String {
+    match event {
+        SideEvent::KadFirewallCheckAck => "type = \"KadFirewallCheckAck\"\n".to_owned(),
+        SideEvent::KadUdpFirewallCheckRequested { request } => format!(
+            "type = \"KadUdpFirewallCheckRequested\"\nrequest_len = {}\n",
+            request.len()
         ),
-        PeerEvent::PeerSecureIdentFailed { reason } => {
-            format!("type = \"PeerSecureIdentFailed\"\nreason = \"{reason:?}\"\n")
-        }
-        PeerEvent::BrowseDenied => "type = \"BrowseDenied\"\n".to_owned(),
-        PeerEvent::UnsolicitedBrowseAnswerDropped => {
-            "type = \"UnsolicitedBrowseAnswerDropped\"\n".to_owned()
-        }
-        PeerEvent::PublicIpAnswered => "type = \"PublicIpAnswered\"\n".to_owned(),
-        PeerEvent::PublicIpRequestUnanswerable => {
+        SideEvent::BuddyPingReceived => "type = \"BuddyPingReceived\"\n".to_owned(),
+        SideEvent::BuddyCallbackReceived { callback } => format!(
+            "type = \"BuddyCallbackReceived\"\nfile_hash = \"{}\"\nrequester = \"{}\"\n",
+            callback.file_hash.to_hex_upper(),
+            callback.requester
+        ),
+        SideEvent::BuddyReaskCallbackReceived { relay } => format!(
+            "type = \"BuddyReaskCallbackReceived\"\nrequester = \"{}\"\nforwarded_len = {}\n",
+            relay.requester,
+            relay.forwarded.len()
+        ),
+        SideEvent::PublicIpAnswered => "type = \"PublicIpAnswered\"\n".to_owned(),
+        SideEvent::PublicIpRequestUnanswerable => {
             "type = \"PublicIpRequestUnanswerable\"\n".to_owned()
         }
-        PeerEvent::UnsolicitedPublicIpAnswerDropped => {
+    }
+}
+
+fn notice_toml(event: &NoticeEvent) -> String {
+    match event {
+        NoticeEvent::UnknownPacket {
+            protocol,
+            opcode,
+            payload_len,
+        } => format!(
+            "type = \"UnknownPeerPacket\"\nprotocol = \"{}\"\nopcode = {opcode}\npayload_len = {payload_len}\n",
+            packet_protocol_label(*protocol),
+        ),
+        NoticeEvent::MultiPacketUnknownSub {
+            file_hash,
+            opcode,
+            remaining,
+        } => format!(
+            "type = \"MultiPacketUnknownSub\"\nfile_hash = \"{}\"\nopcode = {opcode}\nremaining = {remaining}\n",
+            file_hash.to_hex_upper(),
+        ),
+        NoticeEvent::CompressedFrameSkipped {
+            opcode,
+            compressed_len,
+            reason,
+        } => format!(
+            "type = \"CompressedFrameSkipped\"\nopcode = {opcode}\ncompressed_len = {compressed_len}\nreason = \"{reason:?}\"\n",
+        ),
+        NoticeEvent::CommandRejected { reason } => format!(
+            "type = \"CommandRejected\"\nreason = {}\n",
+            toml_basic_string(&reason.to_string()),
+        ),
+        NoticeEvent::BrowseDenied => "type = \"BrowseDenied\"\n".to_owned(),
+        NoticeEvent::UnsolicitedBrowseAnswerDropped => {
+            "type = \"UnsolicitedBrowseAnswerDropped\"\n".to_owned()
+        }
+        NoticeEvent::UnsolicitedPublicIpAnswerDropped => {
             "type = \"UnsolicitedPublicIpAnswerDropped\"\n".to_owned()
         }
-        PeerEvent::ChatMessageReceived { text } => format!(
+        NoticeEvent::ChatMessageReceived { text } => format!(
             "type = \"ChatMessageReceived\"\ntext = {}\n",
             toml_basic_string(&text.to_display_string()),
         ),
-        PeerEvent::FileCommentReceived { rating, comment } => format!(
-            "type = \"FileCommentReceived\"\nrating = {rating}\ncomment = {}\n",
-            toml_basic_string(&comment.to_display_string()),
-        ),
-        PeerEvent::ClientIdChanged {
-            new_id,
-            new_server_ip,
-        } => format!(
-            "type = \"ClientIdChanged\"\nnew_id = {}\nnew_server_ip = \"{new_server_ip}\"\n",
-            new_id.as_u32(),
-        ),
-        PeerEvent::ChatCaptchaDropped => "type = \"ChatCaptchaDropped\"\n".to_owned(),
+        NoticeEvent::ChatCaptchaDropped => "type = \"ChatCaptchaDropped\"\n".to_owned(),
     }
 }
 

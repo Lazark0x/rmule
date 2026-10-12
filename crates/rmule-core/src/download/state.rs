@@ -1,11 +1,14 @@
 //! The synchronous, sans-I/O core of the multi-peer download runner.
 //!
-//! [`DownloadState`] owns every clock-free, channel-free scheduling decision
-//! for one in-flight download: which part a peer works, how cross-peer blocks
+//! [`DownloadState`] owns every channel-free scheduling decision for one
+//! in-flight download: which part a peer works, how cross-peer blocks
 //! assemble (ADR-0029), when a raced part completes and clears its losers
-//! (ADR-0026), and which candidate backfills a retired worker (ADR-0030). It
-//! never touches a socket, a clock, the store, or an `mpsc` channel; instead
-//! each entry point returns an ordered `Vec<`[`Decision`]`>` that the async
+//! (ADR-0026), which candidate backfills a retired worker (ADR-0030), and
+//! when a source's ask or reask falls due. It never touches a socket, the
+//! store, or an `mpsc` channel, and reads no clock: time arrives as the `now`
+//! every entry takes, [`DownloadState::on_tick`] runs what has fallen due, and
+//! [`DownloadState::next_wake`] names when the runner should call it next (ADR-0026).
+//! Each entry point returns an ordered `Vec<`[`Decision`]`>` that the async
 //! runner *enacts*. Persistence is a fallible effect, so it round-trips:
 //! the state emits [`Decision::PersistPart`] and resumes on
 //! [`DownloadState::on_persist_result`].
@@ -22,18 +25,17 @@ mod candidate;
 mod candidates;
 mod capability;
 mod direct_ipv6;
-mod distrust;
-mod dual_stack;
 mod remote_queued;
 mod seeds;
+mod sightings;
 mod slots;
-mod spent;
 #[cfg(test)]
 mod tests;
+mod tick;
 mod worker_event;
 
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
-use std::time::Duration;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use rmule_peer::PartBitmap;
 use rmule_primitives::{
@@ -41,12 +43,11 @@ use rmule_primitives::{
     UserHash,
 };
 
-pub(crate) use candidate::{ConnectedServerCandidate, LowIdCandidate};
+pub(crate) use candidate::LowIdCandidate;
 pub(crate) use capability::CallbackCapability;
 pub(super) use direct_ipv6::LowIdRoute;
-pub(crate) use seeds::RememberedSeeds;
 use seeds::SeedDials;
-use spent::SpentEndpoints;
+pub(crate) use sightings::{Channel, Taken, Tally};
 
 use crate::DownloadFailure;
 use crate::adapters::{CallbackKey, PeerWorkerCommand};
@@ -54,6 +55,7 @@ use crate::assembly::PartAssembly;
 use crate::callback::CallbackSilence;
 use crate::diagnostics::{PartState, WorkerPhase, WorkerSlot};
 use crate::dialable::DialPosition;
+use crate::download::source_book::SourceBook;
 use crate::download::source_seeds::SeedLedger;
 use crate::hashing::ResolvedHashSet;
 use crate::scheduler::DownloadScheduler;
@@ -117,73 +119,81 @@ pub(crate) enum Decision {
     Spawn {
         peer: PeerEndpoint,
         slot: WorkerSlot,
+        /// Whether the connection carries a source ask (ADR-0108): the
+        /// peer's ask facts, read at the decision.
+        want_sources: bool,
     },
-    /// Ask the connected server to call back a Low-ID source (ADR-0039). The
-    /// runner enacts it via the server session and registers the routing index
-    /// under this download's connected server (the brain's `CallbackKey.server`
-    /// is `None` — the connected-server form — and the runner resolves it); the
-    /// called-back peer dials in and is adopted by the accept-router. Paired with
-    /// an [`Decision::ArmCallbackTimeout`] for the held slot.
-    RequestCallback { low_id: ClientId },
+    /// Ask the connected server to call back a Low-ID source it assigned
+    /// (ADR-0039). The runner enacts it via the server session and files the
+    /// server-relayed road under `{ server, low_id }` — the candidate's key; a
+    /// `None` server is resolved to the live connected server, a runtime fact
+    /// the brain does not hold. The called-back peer dials in and is adopted
+    /// by the accept-router. The held slot's deadline sits on the candidate's
+    /// record (ADR-0090).
+    RequestCallback {
+        low_id: ClientId,
+        /// The server that assigned `low_id`, when the brain knew it: ours.
+        server: Option<Ipv4Endpoint>,
+        /// Whether the connection carries a source ask (ADR-0108): the
+        /// peer's ask facts, read at the decision.
+        want_sources: bool,
+    },
     /// Ask a Low-ID **global** source's own `source_server` — over UDP, with no
     /// TCP session — to relay a callback (ADR-0051, ADR-0039 generalized
     /// per-server). The runner enacts it via the discovery UDP socket and
-    /// registers the routing index keyed `{ server: Some(source_server), low_id }`;
+    /// files the server-relayed road under `{ server: Some(source_server), low_id }`;
     /// the called-back peer dials in (`connected_server = source_server`) and is
-    /// adopted. Paired with an [`Decision::ArmCallbackTimeout`] for the held slot.
+    /// adopted. The held slot's deadline sits on the candidate's record.
     RequestGlobalCallback {
         low_id: ClientId,
         source_server: Ipv4Endpoint,
+        /// Whether the connection carries a source ask (ADR-0108): the
+        /// peer's ask facts, read at the decision.
+        want_sources: bool,
     },
     /// Ask `candidate`'s Kad buddy to relay a callback (ADR-0061 route 4).
     /// The runner registers a **dial-back** claim under the
     /// candidate's User Hash — the one name the target's hello will report,
     /// since a Kad candidate's [`CallbackKey`] is not an id any hello carries
-    /// — and asks the core actor to emit the `0x52`. Paired with an
-    /// [`Decision::ArmCallbackTimeout`] for the held slot.
-    RequestBuddyCallback { candidate: LowIdCandidate },
+    /// — and asks the core actor to emit the `0x52`. The held slot's deadline
+    /// sits on the candidate's record.
+    RequestBuddyCallback {
+        candidate: LowIdCandidate,
+        /// Whether the connection carries a source ask (ADR-0108): the
+        /// peer's ask facts, read at the decision.
+        want_sources: bool,
+    },
     /// Ask `candidate`'s Kad buddy once more, under the **other spelling** of
     /// its `TAG_BUDDYHASH`: `candidate.buddy` already names the
     /// fallback ID. Enacted exactly as [`Self::RequestBuddyCallback`] — the
     /// same dial-back claim, the same `0x52` to the same buddy, file and port —
     /// and counted apart, because it is the one leg built on a source reading
     /// (eMule 0.70b / eMuleAI `GetData()`) rather than a capture.
-    RequestFallbackBuddyCallback { candidate: LowIdCandidate },
+    RequestFallbackBuddyCallback {
+        candidate: LowIdCandidate,
+        /// Whether the connection carries a source ask (ADR-0108): the
+        /// peer's ask facts, read at the decision.
+        want_sources: bool,
+    },
     /// Ask `candidate` itself for a direct-UDP callback (ADR-0061 route 2):
     /// the `0x95` to the Kad UDP endpoint its own row carried —
     /// no server and no buddy involved. The runner claims the same
     /// **dial-back** entry a buddy callback claims, keyed by the candidate's
     /// User Hash, because a Kad candidate's [`CallbackKey`] is a synthetic id
     /// (its own address read as one) that no hello will ever report — and
-    /// asks the core actor to emit the `0x95`. Paired with an
-    /// [`Decision::ArmCallbackTimeout`] for the held slot.
-    RequestDirectUdpCallback { candidate: LowIdCandidate },
-    /// Arm the per-callback slot-release deadline for `key` (ADR-0039 / ADR-0051). The
-    /// brain owns the *policy* (which key, the `after` span from its injected
-    /// callback timeout); the runner's heap is a dumb enactor that resolves
-    /// `after` against the clock (`now + after`) and, on fire, calls back
-    /// [`DownloadState::on_callback_timeout`] with this same `key`. Emitted right
-    /// after the matching `RequestCallback` / `RequestGlobalCallback`.
-    ArmCallbackTimeout { key: CallbackKey, after: Duration },
-    /// Arm the **callback-silence fallback** deadline for `key` (ADR-0091): the
-    /// shorter, 12 s one, armed *beside* the slot-release deadline and only for
-    /// a candidate whose own facts admit a Rendezvous coordinator. On fire the
-    /// runner calls [`DownloadState::on_callback_silence`] with this `key`; a
-    /// `CancelCallbackTimeout` for the key drops both deadlines, because
-    /// adoption and lapse end both.
-    ArmCallbackSilenceFallback { key: CallbackKey, after: Duration },
-    /// Arm the **traversal bound** for `key` (ADR-0091 "Attempt lifecycle"):
-    /// the latest the **Traversal Attempt** a
-    /// [`Decision::FallToNatTraversal`] begins can still be running, so a slot
-    /// that waits on the attempt is released even if its end is never
-    /// reported. On fire the runner calls [`DownloadState::on_traversal_bound`];
-    /// a `CancelCallbackTimeout` for the key drops it with the others.
-    ArmTraversalBound { key: CallbackKey, after: Duration },
+    /// asks the core actor to emit the `0x95`. The held slot's deadline sits on
+    /// the candidate's record.
+    RequestDirectUdpCallback {
+        candidate: LowIdCandidate,
+        /// Whether the connection carries a source ask (ADR-0108): the
+        /// peer's ask facts, read at the decision.
+        want_sources: bool,
+    },
     /// Ask the one ADR-0061 selector to reach `candidate` by a punch (ADR-0091
     /// rung 1). The slot stays held, and now waits on the attempt: the 30 s
     /// slot release does not end a traversal still running — its
-    /// retirement, its Tunnel, or the paired [`Decision::ArmTraversalBound`]
-    /// does. NAT traversal is an attempt *beside* whatever else is
+    /// retirement, its Tunnel, or the traversal bound set on the candidate's
+    /// record with it does. NAT traversal is an attempt *beside* whatever else is
     /// outstanding, so whichever connection arrives first wins.
     ///
     /// Raised on either of the candidate's two roads, and `silence` is which:
@@ -196,35 +206,41 @@ pub(crate) enum Decision {
         /// road). The selector reads it to refuse falling back from something
         /// that was never a callback.
         silence: CallbackSilence,
+        /// Whether the connection carries a source ask (ADR-0108): the
+        /// peer's ask facts, read at the decision.
+        want_sources: bool,
     },
     /// Retract `key`'s **Pending Tunnel Claim** and leave everything else
     /// standing (ADR-0091). The punch road is over for this
     /// callback — its **Traversal Attempt** retired — but the callback itself
     /// is not: the server may still relay it, so its slot, its 30 s deadline
     /// and its routing-index entry are untouched. Distinct from
-    /// [`Decision::CancelCallbackTimeout`] for exactly that reason; ending the
-    /// whole callback here would forfeit a slot the peer may still dial into.
+    /// [`Decision::EndCallback`] for exactly that reason; ending the whole
+    /// callback here would forfeit a slot the peer may still dial into.
     RetractTunnelClaim { key: CallbackKey },
-    /// Cancel `key`'s armed deadline and retract its routing-index entry — the
-    /// callback is over (adopted or lapsed). Idempotent by design: on adoption the
-    /// accept-router already claimed the routing entry (only the deadline remains);
-    /// on timeout the deadline already fired (only the entry remains). Resolving a
-    /// connected-server `None` to the live server for the routing index is the
-    /// runner's concern.
-    CancelCallbackTimeout { key: CallbackKey },
+    /// Release `key`'s **Awaited Inbound** registration — the callback is over
+    /// (adopted, lapsed or merged away), and its deadlines went with its
+    /// record's road. Idempotent by design: on adoption the accept-router
+    /// already spent the registration's roads and only the handle remains.
+    /// Resolving a connected-server `None` to the live server it was filed
+    /// under is the runner's concern.
+    EndCallback { key: CallbackKey },
+    /// Send `ping`, a source's `OP_REASKFILEPING` (`0x90`), out the shared
+    /// client-UDP socket (ADR-0057). The brain framed it for the source
+    /// standing at `peer` and set its one-in-flight latch; the runner claims
+    /// the endpoint in the **Reask Routes** first (ADR-0107) and, when another
+    /// download's ping holds it, hands it back through
+    /// [`DownloadState::on_ping_held`].
+    SendReaskPing {
+        /// The endpoint the source's record stands at.
+        peer: PeerEndpoint,
+        /// The datagram, its client-UDP destination and crypt target.
+        ping: crate::client_udp::ClientUdpSend,
+    },
     /// Every part is verified — assemble and finalize the file.
     Finalize,
     /// The download cannot proceed; fail it with `reason`.
     Fail(DownloadFailure),
-}
-
-/// A worker's runner-independent identity: the diagnostics slot it occupies
-/// and whether it has reported `Connected` (only connected workers are
-/// eligible for the reassign-on-retirement path, ADR-0030).
-#[derive(Clone, Copy, Debug)]
-struct Worker {
-    slot: WorkerSlot,
-    connected: bool,
 }
 
 /// What the brain knows about the content before any peer speaks: the file's
@@ -248,44 +264,9 @@ pub(crate) struct ContentFacts {
     pub(crate) verified_parts: Vec<u32>,
 }
 
-/// One outstanding callback: the diagnostics slot it holds until adoption or
-/// lapse, and the candidate record it was requested for — kept because rung 1's
-/// fallback (ADR-0091) needs the candidate's facts twelve seconds later, and
-/// nothing can recover them by then.
-#[derive(Clone, Copy, Debug)]
-struct PendingCallback {
-    slot: WorkerSlot,
-    candidate: LowIdCandidate,
-    /// Which road the candidate was admitted by — and therefore what a retired
-    /// traversal costs it. On the callback road the punch ran *beside* a
-    /// relayed invitation that is still outstanding, so its end retracts only
-    /// the claim; on the punch road it was the candidate's **only** road, so
-    /// its end is the candidate's.
-    road: LowIdRoad,
-    /// Why the punch running beside this callback ended, once it has
-    /// (ADR-0091). `None` while a **Traversal Attempt** is still
-    /// open — or was never begun. Set, it means the source is *temporarily
-    /// unreachable by NAT traversal*: no coordinator is left to ask, so a
-    /// second silence must not start a second punch, and the callback's own
-    /// deadline is the only clock still running for it.
-    traversal_retired: Option<crate::diagnostics::NattRetirement>,
-    /// Whether a punch was ever asked for this candidate — at admission on the
-    /// punch road, or by the 12 s fallback. A road that ends under a punch
-    /// already begun must not begin a second one.
-    traversal_begun: bool,
-    /// Whether the slot-release deadline came due while a traversal was still
-    /// running: the slot waited on the attempt, so the attempt's
-    /// end is the callback's lapse.
-    slot_lapsed: bool,
-    /// Whether the buddy callback's one fallback-spelling `0x52` has gone out
-    /// So a second lapse ends the road rather than trying a
-    /// third time.
-    fallback_spelling_sent: bool,
-}
-
 /// How a Low-ID candidate is to be reached — the three callback roads and the
 /// punch ADR-0091 leaves open, and the vocabulary of the admission rule
-/// ([`DownloadState::low_id_route`]).
+/// ([`LowIdRoute::of`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum LowIdRoad {
     /// Ask the candidate itself for a direct-UDP callback (`0x95`, ADR-0061 route 2):
@@ -370,7 +351,10 @@ impl LowIdRoad {
             Some(Self::Callback)
         } else if callable && candidate.buddy.is_some() && candidate.user_hash.is_some() {
             Some(Self::BuddyCallback)
-        } else if candidate.natt_facts().admits_coordinator() {
+        } else if candidate
+            .natt_facts(capability.server())
+            .admits_coordinator()
+        {
             Some(Self::Punch)
         } else {
             None
@@ -378,30 +362,15 @@ impl LowIdRoad {
     }
 }
 
-/// The candidate sources one run starts from: the single server-lookup snapshot
-/// (ADR-0030), already split by what the runner can do with each.
-pub(crate) struct StartingCandidates {
-    /// Usable High-ID sources in dial order. The runner spawns up to
-    /// `peer_concurrency` workers off the front and backfills from the rest
-    /// rather than discarding what it did not use.
-    pub(crate) high_id: Vec<PeerEndpoint>,
-    /// The crypt side each source's obfuscation-aware `0x44` reply stated — its
-    /// crypt byte and User Hash (ADR-0046), met with our policy at the dial
-    /// (ADR-0049). Empty for a plain `0x42` reply: those sources stated
-    /// nothing and read as [`PeerCrypt::unknown`].
-    pub(crate) peer_crypts: HashMap<PeerEndpoint, PeerCrypt>,
-    /// Low-ID sources: no dialable endpoint, reachable only if the connected
-    /// server relays a callback (ADR-0039). Ids of 0 are never in here, and
-    /// each carries whatever the lookup answer said about it. The type is what
-    /// holds the namespace invariant — every record here is in the connected
-    /// server's, because that is the only kind that can be constructed.
-    pub(crate) low_id: Vec<ConnectedServerCandidate>,
+/// What one run starts with besides its sources, which all arrive as
+/// sightings ([`DownloadState::on_sightings`]).
+pub(crate) struct StartingFacts {
     /// The peers this download distrusts, as its durable record holds them
     /// A source whose record names one of these is not pooled.
     pub(crate) distrusted: HashSet<UserHash>,
-    /// The download's **Source Seeds** this run dials (ADR-0109): a worker
-    /// dialed at one is marked `remembered`.
-    pub(crate) remembered: RememberedSeeds,
+    /// How many **Source Seeds** the last run wrote that were under a day old
+    /// (ADR-0109): the seeds this run dials are reported against it.
+    pub(crate) seeds_written: usize,
 }
 
 /// What rmule's own network position lets this run attempt — the gates that turn
@@ -420,6 +389,10 @@ pub(crate) struct SourcingPosture {
     /// Any background source-discovery channel armed: server-UDP global sweep
     /// (ADR-0051) and/or Kad (ADR-0043). Starvation then waits, never fails.
     pub(crate) discovery_active: bool,
+    /// A client-UDP socket is bound for the run (ADR-0057): our UDP advert is
+    /// live, so a remote-queued source may be pinged rather than only
+    /// re-asked over TCP.
+    pub(crate) client_udp: bool,
 }
 
 /// The sans-I/O scheduling brain for one download. See the module docs.
@@ -440,42 +413,10 @@ pub(crate) struct DownloadState {
     /// (ADR-0038). Held here (with their per-block provenance) between the
     /// `OP_AICHREQUEST` and `on_aich_answer`, where the corruption is localized.
     awaiting_recovery: HashMap<u32, PartAssembly>,
-    /// Peer → diagnostics slot + connected flag. The live command channel for
-    /// each peer stays in the runner; the state owns only this identity.
-    workers: HashMap<PeerEndpoint, Worker>,
-    /// Peer → its `UserHash` once `Identified`, used to key credit. Never
-    /// pruned across a re-dial that lands before its worker ends. `release`
-    /// drops this entry with the `Worker` it rides (`Decision::EndWorker`):
-    /// the attachment is the endpoint's known hash, and once
-    /// nothing holds that endpoint the hash is not this run's to keep
-    /// (ADR-0049, ADR-0090 "Attachments") — a later re-dial
-    /// simply re-learns it off the next hello. `hello_crypts` is pruned the
-    /// same way, at the same site.
-    peer_user_hashes: HashMap<PeerEndpoint, UserHash>,
-    /// High-ID peer → the crypt side its record stated (stance + User Hash).
-    /// Seeded from the server-lookup reply (`OP_FOUNDSOURCES_OBFU`, ADR-0046)
-    /// and extended by source-exchange answers (ADR-0042) and Kad rows'
-    /// `TAG_ENCRYPTION`. The runner reads it when spawning a
-    /// worker, and the dial meets it with our policy by aMule's outbound rule
-    /// (ADR-0049); a peer absent here stated nothing.
-    peer_crypts: HashMap<PeerEndpoint, PeerCrypt>,
-    /// Peer → the crypt side its own hello stated (`CT_EMULE_MISCOPTIONS2`'s
-    /// crypt bits and the hello's User Hash), written on a worker's
-    /// `Identified`. Outranks `peer_crypts` at every later dial
-    /// of that peer — a re-dial after a drop or its next appearance as a
-    /// source — because the peer said it itself, on a connection, where a
-    /// record only relays what someone else heard (ADR-0049). Pruned with
-    /// `peer_user_hashes`, at the same site (`release`): the
-    /// stance never outlives the endpoint's worker.
-    hello_crypts: HashMap<PeerEndpoint, PeerCrypt>,
-    /// Source User Hash → the serving-buddy endpoint its own hello named
-    /// (`CT_EMULE_BUDDYIP`/`BUDDYUDP`). A Low-ID source's later
-    /// sighting that names its buddy by ID alone takes this endpoint
-    /// ([`Self::admit_low_id`]), so its buddy callback goes straight to the
-    /// buddy rather than walking toward it. Keyed on the source's User Hash,
-    /// not its endpoint, so it is unaffected by `hello_crypts`' pruning
-    /// and — like `peer_crypts` below — stays for the run.
-    hello_buddies: HashMap<UserHash, Ipv4Endpoint>,
+    /// Peer → the diagnostics slot its worker occupies. The live command
+    /// channel for each peer stays in the runner, whether it has completed its
+    /// handshake in the **Source Book**; the brain owns only the slot number.
+    worker_slots: HashMap<PeerEndpoint, WorkerSlot>,
     /// The link's own part hash set, if the ed2k link carried one. Held so a
     /// peer-supplied hash set can be re-resolved against it (ADR-0027).
     link_part_hash_set: Option<PartHashSet>,
@@ -494,39 +435,24 @@ pub(crate) struct DownloadState {
     /// the agreement thresholds. Empty (and unused) when the link carried `h=`.
     aich_root_votes: HashMap<AichRootHash, HashSet<aich::AichVoter>>,
     retired_peers: u32,
-    /// Unused candidate sources, in snapshot order; a fill pops the front
-    /// (ADR-0030). Owning the pool lets the same path serve the initial fill
-    /// and the on-retirement backfill, and lets the state decide the terminal
-    /// "pool exhausted" failure itself.
-    pool: VecDeque<PeerEndpoint>,
+    /// The download's sources, one record per source, and who owns each
+    /// (ADR-0090). Every pooling seam, every slot fill and every worker's end
+    /// asks it; the brain keeps what the book does not — slot numbers, the
+    /// callbacks' deadlines and the part scheduler.
+    sources: SourceBook,
     /// Free diagnostics slots (`0..peer_concurrency`); a backfilled worker
     /// reuses a slot freed by a retired one.
     free_slots: BTreeSet<usize>,
     /// Caps active + connecting workers (one socket-use knob, ADR-0030).
     peer_concurrency: usize,
-    /// Unused Low-ID candidates in the connected server's namespace, in
-    /// discovery order (ADR-0039) — every record here has `source_server:
-    /// None`. Drained by `fill` after the High-ID `pool` — dialing a reachable
-    /// source is preferred over a callback's round-trip + timeout — and only
-    /// for the records the admission rule ([`Self::low_id_route`]) says are
-    /// reachable at all. An inadmissible record is skipped, not dropped: it
-    /// costs a queue entry and states, honestly, a source this run cannot use.
-    low_id_pool: VecDeque<LowIdCandidate>,
-    /// Unused Low-ID **global** candidates (ADR-0051 + ADR-0039),
-    /// discovered over server-UDP from a server rmule is *not* logged into. Each
-    /// carries its own `source_server` because its callback must be relayed by
-    /// that server, never the connected one. Drained by `fill` after both the
-    /// High-ID `pool` and the connected-server `low_id_pool`.
-    low_id_global_pool: VecDeque<LowIdCandidate>,
-    /// The one pending-callback set (ADR-0039 / ADR-0051): every Low-ID candidate a
-    /// callback has been requested for — connected-server (`CallbackKey.server` =
-    /// `None`) and per-server global (`Some(source_server)`) alike — mapped to the
-    /// slot it holds and the record it was requested for, until the inbound peer
-    /// is adopted ([`Self::on_callback_connected`]) or the callback lapses
-    /// ([`Self::on_callback_timeout`]). Each entry counts toward the concurrency
-    /// cap. The single [`CallbackKey`] is what the runner's deadline heap and the
-    /// shared routing index key on too, so all three stay in lockstep.
-    pending_callbacks: HashMap<CallbackKey, PendingCallback>,
+    /// The diagnostics slot every callback in flight holds (ADR-0039 /
+    /// ADR-0051) — connected-server (`CallbackKey.server` = `None`) and
+    /// per-server global alike — until the inbound peer is adopted
+    /// ([`Self::on_callback_connected`]) or its road ends. How far the road has
+    /// run and its deadlines ride the candidate's **Source Book** record; the
+    /// runner's **Awaited Inbound** registrations key on the same
+    /// [`CallbackKey`].
+    callback_slots: HashMap<CallbackKey, WorkerSlot>,
     /// Whether, and for whom, rmule can be called back — the latest sample the
     /// runner handed in. Where it admits nobody, no callback is
     /// ever requested — every one of them asks the target to dial a node
@@ -537,26 +463,9 @@ pub(crate) struct DownloadState {
     /// Our Known IPv6, if any — the latest sample the runner handed in
     /// (ADR-0087). Rung 0 of a Low-ID candidate's route reads it.
     dial: DialPosition,
-    /// Rung-0 dials in flight: the IPv6 endpoint a worker is dialing → the
-    /// Low-ID candidate it belongs to, kept so a dial that never connects can
-    /// hand the candidate to its callback roads.
-    direct_ipv6_dials: HashMap<PeerEndpoint, LowIdCandidate>,
-    /// Dual-stack High-ID sources pooled or being dialed: the half being
-    /// dialed → the same peer's other half, which a dial that never connects
-    /// falls to once unless it is spent (ADR-0090). The second dial
-    /// keeps its spent first half here too, so its own failure spends it.
-    dual_stack_fallbacks: HashMap<PeerEndpoint, PeerEndpoint>,
-    /// Endpoints whose dial ended short of a completed handshake — High-ID
-    /// single-address sources, dual-stack halves of either family, and Low-ID
-    /// rung-0 IPv6 halves: not pooled, kept as a fallback nor dialed at rung 0
-    /// until they sit out a re-ask period (ADR-0090).
-    /// Keyed by the endpoint, not the source: a Low-ID candidate later
-    /// seen at a different half re-opens rung 0 there.
-    spent: SpentEndpoints,
     /// How long a requested callback holds its slot before it lapses (ADR-0039,
-    /// `CoreConfig::callback_timeout`). A pure span, not a clock read, so the brain
-    /// stays clock-free: it emits it as [`Decision::ArmCallbackTimeout`]'s `after`
-    /// and the runner resolves it against `Instant::now()`.
+    /// `CoreConfig::callback_timeout`): set on the road's record from the
+    /// instant the road opens.
     callback_timeout: Duration,
     /// Whether any background source-discovery channel is armed for this
     /// download: the server-UDP global sweep (ADR-0051) and/or Kad (ADR-0043).
@@ -564,31 +473,23 @@ pub(crate) struct DownloadState {
     /// channel may backfill), not a terminal failure — so
     /// `no_usable_candidate` never reports true.
     discovery_active: bool,
-    /// The sources the runner's **Remote-Queued Pool** holds (ADR-0057): each
-    /// queued us and hung up, and its earned standing rides the reask
-    /// heartbeat, runner-side with its clock. The brain keeps the membership
-    /// because it is the owner check every pooling seam reads (ADR-0090 "Source ownership"):
-    /// a source held here is not pooled again by a
-    /// sighting. The runner moves a source in with
-    /// [`enter_remote_queue`](Self::enter_remote_queue) and out with
-    /// [`leave_remote_queue`](Self::leave_remote_queue) or
-    /// [`readd_source`](Self::readd_source). Like `discovery_active`, a
-    /// non-empty set is a live path back to a slot (its `FILEREASKTIME` TCP
-    /// full ask re-dials), so the download waits rather than failing
-    /// `NoUsableSources`.
-    remote_queued: HashSet<PeerEndpoint>,
-    /// The peers this download distrusts (ADR-0090 "Source ownership"):
-    /// each served this file bad data. Keyed by User Hash, so the distrust
-    /// follows a peer to a new address; kept for the download's life,
-    /// durably ([`distrust`]).
-    distrusted: HashSet<UserHash>,
-    /// Who earned which **Source Seeds** class this run (ADR-0109).
+    /// Who earned which **Source Seeds** class this run (ADR-0109), fed from
+    /// the **Source Book**'s outcomes.
     seeds: SeedLedger,
-    /// The pooled endpoints that came from a seed.
-    remembered: HashSet<PeerEndpoint>,
     /// The seeds' dials not yet reported, `None` once reported or when the
     /// run had no seeds.
     seed_dials: Option<SeedDials>,
+    /// Whether [`Self::start`] has run: until then sightings only pool, so the
+    /// run's snapshot is in the book before its first slot is filled.
+    started: bool,
+    /// A client-UDP socket is bound: every reask ping's first gate (ADR-0057).
+    our_udp_enabled: bool,
+    /// The UDP version our hello advertised — what a source read when it
+    /// decided whether to ride its part status in the `0x91` reply, so the
+    /// reply is read by it (aMule writes its status only to a UDPv4 waiter,
+    /// stock 2.3.3 `ClientUDPSocket.cpp:213-219`). Read from the registry
+    /// value every hello states, never passed in.
+    our_udp_version: u8,
 }
 
 impl DownloadState {
@@ -599,7 +500,7 @@ impl DownloadState {
     pub(crate) fn new(
         download_id: DownloadId,
         content: ContentFacts,
-        candidates: StartingCandidates,
+        facts: StartingFacts,
         posture: SourcingPosture,
         callback_timeout: Duration,
         peer_concurrency: usize,
@@ -612,23 +513,19 @@ impl DownloadState {
             trusted_aich_root,
             verified_parts,
         } = content;
-        let StartingCandidates {
-            high_id,
-            peer_crypts,
-            low_id,
+        let StartingFacts {
             distrusted,
-            remembered,
-        } = candidates;
-        let distrusts =
-            |hash: Option<UserHash>| hash.is_some_and(|hash| distrusted.contains(&hash));
-        let high_id: Vec<_> = high_id
-            .into_iter()
-            .filter(|peer| !distrusts(peer_crypts.get(peer).and_then(|c| c.user_hash())))
-            .collect();
-        let mut seeds = SeedLedger::default();
-        for &peer in &high_id {
-            seeds.dialable(peer);
-        }
+            seeds_written,
+        } = facts;
+        let mut sources = SourceBook::new(distrusted);
+        sources.logged_into(posture.callback_capability.server());
+        let seeds = SeedLedger::default();
+        let our_udp_version = if posture.client_udp {
+            rmule_primitives::Capabilities::shipped(rmule_primitives::CryptStance::disabled())
+                .peer_udp_version()
+        } else {
+            0
+        };
         Self {
             download_id,
             file_hash,
@@ -637,38 +534,25 @@ impl DownloadState {
             assembly: HashMap::new(),
             pending_persist: HashMap::new(),
             awaiting_recovery: HashMap::new(),
-            workers: HashMap::new(),
-            peer_user_hashes: HashMap::new(),
-            peer_crypts,
-            hello_crypts: HashMap::new(),
-            hello_buddies: HashMap::new(),
+            worker_slots: HashMap::new(),
             link_part_hash_set,
             resolved,
             trusted_aich_root,
             aich_root_votes: HashMap::new(),
             retired_peers: 0,
-            pool: high_id.into_iter().collect(),
+            sources,
             free_slots: (0..peer_concurrency).collect(),
             peer_concurrency,
-            low_id_pool: low_id
-                .into_iter()
-                .map(ConnectedServerCandidate::into_inner)
-                .filter(|candidate| !distrusts(candidate.user_hash))
-                .collect(),
-            low_id_global_pool: VecDeque::new(),
-            pending_callbacks: HashMap::new(),
+            callback_slots: HashMap::new(),
             callback_capability: posture.callback_capability,
             dial: posture.dial,
-            direct_ipv6_dials: HashMap::new(),
-            dual_stack_fallbacks: HashMap::new(),
-            spent: SpentEndpoints::default(),
             callback_timeout,
             discovery_active: posture.discovery_active,
-            remote_queued: HashSet::new(),
-            distrusted,
             seeds,
-            seed_dials: SeedDials::new(&remembered),
-            remembered: remembered.endpoints,
+            seed_dials: SeedDials::new(seeds_written),
+            started: false,
+            our_udp_enabled: posture.client_udp,
+            our_udp_version,
         }
     }
 
@@ -676,34 +560,32 @@ impl DownloadState {
     /// `peer_concurrency`. The runner enacts each [`Decision::Spawn`] by
     /// putting that peer on the wire; the worker is assigned its first part on
     /// its own `Connected` event (ADR-0030).
-    pub(crate) fn start(&mut self) -> Vec<Decision> {
+    pub(crate) fn start(&mut self, now: Instant) -> Vec<Decision> {
+        self.started = true;
+        self.sources.turn_spent(now);
+        let _ = self
+            .sources
+            .purge(now, &self.callback_capability, self.dial);
         let mut out = Vec::new();
-        self.fill(&mut out);
+        self.fill(now, &mut out);
         self.settle_seed_dials(&mut out);
         out
     }
 
-    /// No source we can still reach: the High-ID pool is empty and no Low-ID
-    /// candidate is admissible (ADR-0039 / ADR-0091). When true with no live
-    /// workers or pending callbacks, the download fails `NoUsableSources`.
-    fn no_usable_candidate(&self) -> bool {
-        // When global discovery is armed (ADR-0051), a future UDP sweep may
-        // backfill, so we are never *out* of candidates — the download waits.
-        self.pool.is_empty()
-            && self.next_low_id_route().is_none()
-            && !self.discovery_active
-            && self.remote_queued.is_empty()
+    /// No source we can still reach: nothing the **Source Book** holds can
+    /// reach a slot (ADR-0039 / ADR-0091), and no discovery channel is armed —
+    /// when one is (ADR-0051), a future sweep may backfill, so the download
+    /// waits rather than being *out* of candidates.
+    pub(crate) fn no_usable_candidate(&self) -> bool {
+        self.sources.starved(&self.callback_capability, self.dial) && !self.discovery_active
     }
 
-    /// The first admissible Low-ID candidate's route, in drain order:
-    /// connected-server candidates (ADR-0039) before per-server global ones
-    /// (ADR-0051), because the connected server is already logged in. Reads
-    /// only — [`Self::take_low_id`] is the taking half.
-    fn next_low_id_route(&self) -> Option<LowIdRoute> {
-        self.low_id_pool
-            .iter()
-            .chain(self.low_id_global_pool.iter())
-            .find_map(|candidate| self.low_id_route(candidate))
+    /// ADR-0026's terminal condition (ADR-0030): nothing holds a slot,
+    /// nothing can reach one, and the file is not complete.
+    fn out_of_sources(&self) -> bool {
+        self.sources.slots_in_use() == 0
+            && self.no_usable_candidate()
+            && !self.scheduler.is_complete()
     }
 
     /// The crypt side `peer` stated — its stance and User Hash — by the
@@ -714,36 +596,7 @@ impl DownloadState {
     /// — else [`PeerCrypt::unknown`]. The runner hands it to the
     /// worker's brief; the dial meets it with our policy (ADR-0049).
     pub(crate) fn peer_crypt(&self, peer: PeerEndpoint) -> PeerCrypt {
-        self.hello_crypts
-            .get(&peer)
-            .or_else(|| self.peer_crypts.get(&peer))
-            .copied()
-            .or_else(|| {
-                self.direct_ipv6_dials
-                    .get(&peer)
-                    .map(LowIdCandidate::peer_crypt)
-            })
-            .unwrap_or_default()
-    }
-
-    /// The crypt side `peer`'s own hello stated, when a worker read one — the
-    /// one attachment both the TCP re-dial ([`Self::peer_crypt`]) and the
-    /// `0x90` reask's UDP crypt target read (ADR-0049).
-    pub(crate) fn hello_crypt(&self, peer: PeerEndpoint) -> Option<PeerCrypt> {
-        self.hello_crypts.get(&peer).copied()
-    }
-
-    /// Remember the crypt side a High-ID source's record stated, for the dial
-    /// that spawns against `endpoint`, folded into what earlier records said
-    /// ([`PeerCrypt::fold_newer`], ADR-0049): the newer statement wins,
-    /// silence — a record with no crypt byte — keeps the stated stance, and a
-    /// record naming another User Hash replaces the record whole.
-    fn note_peer_crypt(&mut self, endpoint: PeerEndpoint, crypt: PeerCrypt) {
-        if crypt.is_unknown() {
-            return;
-        }
-        let held = self.peer_crypts.get(&endpoint).copied().unwrap_or_default();
-        self.peer_crypts.insert(endpoint, held.fold_newer(crypt));
+        self.sources.peer_crypt(peer)
     }
 
     /// Our current availability for the file as aMule's `WritePartStatus` writes
@@ -758,7 +611,8 @@ impl DownloadState {
     }
 
     /// The live facts behind our **Callback Capability** moved:
-    /// a login or re-assignment, a session's end, the Kad TCP verdict flipping.
+    /// a login — to another server, whose namespace a Low ID is now read in —
+    /// or re-assignment, a session's end, the Kad TCP verdict flipping.
     ///
     /// Only *admission* reads the new sample — aMule's `TryToConnect` asks
     /// `CanDoCallback` per attempt (`BaseClient.cpp:1991-2004`) and its
@@ -771,14 +625,21 @@ impl DownloadState {
     /// deadline, as a callback nobody answers always did.
     pub(crate) fn on_callback_capability(
         &mut self,
+        now: Instant,
         capability: CallbackCapability,
     ) -> Vec<Decision> {
         if capability == self.callback_capability {
             return Vec::new();
         }
         self.callback_capability = capability;
+        self.sources.logged_into(capability.server());
         let mut out = Vec::new();
-        self.fill(&mut out);
+        // A standing that fell due while we were connected to no network is
+        // asked the moment we are (stock 2.3.3 `PartFile.cpp:1460`, `:1475`).
+        if capability.connected() {
+            self.reask_sweep(now, &mut out);
+        }
+        self.fill(now, &mut out);
         out
     }
 
@@ -786,20 +647,16 @@ impl DownloadState {
     /// (ADR-0093), the `on_callback_capability` shape: a no-op when nothing
     /// moved; otherwise a refill, which is also where a starved download
     /// whose last channel just died fails `NoUsableSources`.
-    pub(crate) fn on_discovery_active(&mut self, active: bool) -> Vec<Decision> {
+    pub(crate) fn on_discovery_active(&mut self, now: Instant, active: bool) -> Vec<Decision> {
         if active == self.discovery_active {
             return Vec::new();
         }
         self.discovery_active = active;
         let mut out = Vec::new();
-        self.fill(&mut out);
+        self.fill(now, &mut out);
         // ADR-0026's terminal condition, as every other refill states it: the
         // last channel that made an empty pool a wait is gone.
-        if self.workers.is_empty()
-            && self.pending_callbacks.is_empty()
-            && self.no_usable_candidate()
-            && !self.scheduler.is_complete()
-        {
+        if self.out_of_sources() {
             out.push(Decision::Fail(DownloadFailure::NoUsableSources));
         }
         out
@@ -859,7 +716,7 @@ impl DownloadState {
                 reason: release_reason,
             }));
         }
-        let mut slots: Vec<usize> = self.workers.values().map(|w| w.slot.as_usize()).collect();
+        let mut slots: Vec<usize> = self.worker_slots.values().map(|s| s.as_usize()).collect();
         slots.sort_unstable();
         for slot_idx in slots {
             out.push(Decision::Phase {

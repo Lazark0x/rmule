@@ -57,19 +57,25 @@ pub use holepunch::{
 pub use id_change::IdChange;
 pub use login::{LoginAdvert, LoginRequest, UdpPortsAdvert, server_capability_flags};
 pub use obfuscation::{ServerObfuscation, ServerObfuscationStep};
-pub use offer_files::{OfferEntry, OfferFiles, OfferedFile};
+pub use offer_files::{
+    COMPLETE_FILE_ID, COMPLETE_FILE_PORT, FileCompleteness, INCOMPLETE_FILE_ID,
+    INCOMPLETE_FILE_PORT, OfferEntry, OfferFiles, OfferedFile,
+};
 pub use opcode::Opcode;
 pub use peer_callback::{PeerCallback, PeerCallbackCrypt, PeerCallbackIpv6};
 pub use reject::Reject;
 pub use related_search_request::RelatedSearchRequest;
 pub use rmule_primitives::{ServerTcpFlags, ServerUdpFlags};
 pub use search_more_request::QueryMoreResults;
-pub use search_request::SearchRequest;
+pub use search_request::{MAX_EXPRESSION_DEPTH, SearchRequest};
 pub use search_result::{SearchResultSkipReason, SearchResults};
 pub use server_ident::ServerIdent;
 pub use server_list::{ServerList, ServerListTail};
 pub use server_message::ServerMessage;
-pub use server_met::{ServerMet, ServerMetEntry, ServerMetError, ServerMetFigures, ServerPriority};
+pub use server_met::{
+    ServerMet, ServerMetEntry, ServerMetError, ServerMetFigures, ServerMetObfuscation,
+    ServerPriority,
+};
 pub use server_packet::ServerPacket;
 pub use server_status::ServerStatus;
 pub use server_tcp_flags::ServerGrants;

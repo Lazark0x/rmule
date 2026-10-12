@@ -26,8 +26,9 @@ pub(super) fn os_punch_jitter() -> PunchJitter {
 }
 
 /// The **NAT-T Front**'s crypt half over rmule's own identity (ADR-0046's
-/// key family, ADR-0087's per-family layout): armed exactly when
-/// `CoreConfig::peer_crypt` is, like [`PeerUdpCrypt`](crate::client_udp).
+/// key family, ADR-0087's per-family layout): armed exactly when the one
+/// obfuscation policy is, read per frame like [`PeerUdpCrypt`](crate::client_udp),
+/// so a live change reaches the next frame, its KEY frame and its CAPS bits.
 ///
 /// The address is the *key* cell rather than the advert cell, and deliberately
 /// An advert is a claim about where we can be reached and is
@@ -35,21 +36,34 @@ pub(super) fn os_punch_jitter() -> PunchJitter {
 /// derive from the source address it observes. Keying on an address we held a
 /// minute ago costs at worst a frame the peer reads as plaintext; refusing to
 /// key because an advert gate said no would cost every frame.
-pub(crate) struct OwnIdentityNattCrypt(pub(crate) crate::own_identity::SharedOwnIdentity);
+pub(crate) struct OwnIdentityNattCrypt {
+    pub(crate) own: crate::own_identity::SharedOwnIdentity,
+    pub(crate) policy: crate::obfuscation_policy::SharedObfuscationPolicy,
+}
 
 impl NattCrypt for OwnIdentityNattCrypt {
+    fn armed(&self) -> bool {
+        self.policy.armed()
+    }
+
+    fn crypt_options(&self) -> u8 {
+        rmule_peer::peer_udp::crypt::connect_options_from_stance(self.policy.stance())
+    }
+
     fn own_user_hash(&self) -> UserHash {
-        self.0.user_hash().unwrap_or(UserHash::from_bytes([0; 16]))
+        self.own
+            .user_hash()
+            .unwrap_or(UserHash::from_bytes([0; 16]))
     }
 
     fn sender_address(&self, family: AddressFamily) -> Option<DatagramSenderAddress> {
         match family {
             AddressFamily::V4 => self
-                .0
+                .own
                 .public_ip()
                 .map(|ip| DatagramSenderAddress::V4(ip.octets())),
             AddressFamily::V6 => self
-                .0
+                .own
                 .public_ipv6()
                 .map(|ip| DatagramSenderAddress::V6(ip.octets())),
         }

@@ -21,9 +21,10 @@ that download's worker.
 - **One pool, one fill loop.** The candidate pool (ADR-0030) holds Low-ID candidates
   beside dialable ones. Filling a worker slot with a Low-ID candidate emits
   `Decision::RequestCallback` and holds the slot pending until adoption or timeout.
-- **The candidate is a record.** `LowIdCandidate` carries the Low ID; its server
-  namespace (`None` for the connected server, `Some` for a global source whose own server
-  must relay, ADR-0051); and, when the channel said so, the facts the other roads of the
+- **The candidate is a record.** `LowIdCandidate` carries the Low ID; the server that
+  assigned it — the one we were logged into when a server answer or a source exchange
+  named it, or the server that answered a global lookup (ADR-0051), `None` only when no
+  server was known by address; and, when the channel said so, the facts the other roads of the
   route tree need — User Hash, buddy contact, direct-UDP-callback support, Kad UDP
   endpoint, crypt options and the NAT-T bit (ADR-0061, ADR-0091). Every field is what a
   channel's bytes said or nothing; a source learned twice merges, newer facts winning, and
@@ -37,31 +38,42 @@ that download's worker.
   Generation, never a login-time copy. Whether the listener is bound is read live
   (ADR-0031). A candidate we may not call back stays parked in the pool rather than spent,
   or takes another road of the route tree (ADR-0061, ADR-0091).
+- **A low id means something only beside its server.** aMule keeps the server on every
+  source and matches a Low-ID client by id only when that server is known and equal
+  (stock 2.3.3 `ClientList.cpp:283-297`). So the candidate's server is fixed when it is
+  sighted, and whether it is *ours* is asked at each decision, as aMule's
+  `IsLocalServer` is (`BaseClient.cpp:1530`): after we move to another server, a candidate
+  our former server assigned is relayed by that server (ADR-0051), and the same id the new
+  server names is another source. A candidate minted with no server known is read against
+  whichever server we are on when its callback is asked, and its ask facts never outlive
+  its record under that id (ADR-0108).
 - **Correlation by namespaced Low ID.** A pending callback is keyed by `CallbackKey`
   `(server, low_id)`, where the server is the one that relays the callback and that the
-  called-back peer reports as its connected server. The callback table holds, per key, an
-  ordered list with one entry per requesting download, each carrying the file to request
-  and the adoption channel. An inbound adoption spends the oldest entry; the others stay
-  pending to their own deadlines, and only an entry's owner removes it (ADR-0107).
+  called-back peer reports as its connected server. The **Awaited Inbound** registry holds,
+  per key, an ordered list with one registration per requesting download, each carrying the
+  file to request and the adoption channel. An inbound adoption spends the oldest
+  registration; the others stay pending to their own deadlines, and only a registration's
+  owner removes it (ADR-0107).
 - **Triage decides late, per connection, in the adapter.** Accepting does not wait for
   the hello, so the routing key is known only once the connection identifies. Each
   accepted connection's adapter task pumps its events; on the first identification it
-  consults the callback table. No match: the connection continues as a serve connection,
+  asks the Awaited Inbound registry. No match: the connection continues as a serve connection,
   unchanged. A match: bridging stops, the owned connection is driven as a download worker
   (`drive_peer_worker`) with the identity already known, and the worker goes to the
   registering download over its adoption channel. The serve side is told with
-  `ServeConnEvent::Readopted`, never a false `Disconnected`. Triage sits after the IP
+  `Readopted` on its serve input, never a false `Disconnected`. Triage sits after the IP
   filter and the ban gate, so adoption cannot skip them, and it is also where a dialer
-  tunnel raised for a silent callback is adopted (ADR-0091). Core owns the table's policy;
+  tunnel raised for a silent callback is adopted (ADR-0091). Core owns the registry's policy;
   the adapter owns only the mechanism, keeping `rmule-peer` types out of core scheduling.
-- **Two deadlines, both runner-owned.** The sans-I/O brain exposes only
-  `on_callback_timeout`; the runner keeps a deadline heap. The slot-release deadline
-  (`CoreConfig::callback_timeout`, 30 s) releases the slot, retires the candidate and lets
-  the loop try the next. A candidate whose facts admit a rendezvous coordinator also arms
-  `CALLBACK_SILENCE_FALLBACK` (12 s); when it fires the brain emits
+- **Two deadlines, both on the callback's record.** The road's deadlines sit on its
+  Source Book record (ADR-0090); the brain's `on_tick(now)` expires those that are due,
+  and `next_wake()` tells the runner when the earliest falls (ADR-0026). The slot-release
+  deadline (`CoreConfig::callback_timeout`, 30 s) releases the slot, retires the candidate
+  and lets the loop try the next. A candidate whose facts admit a rendezvous coordinator
+  also gets `CALLBACK_SILENCE_FALLBACK` (12 s); when it fires the brain emits
   `Decision::FallToNatTraversal` and retracts nothing — the slot stays held and the
-  callback may still land. Both share the one `CallbackKey`, so a single cancel ends the
-  whole callback.
+  callback may still land. Both end with the road, so an adoption or a lapse ends the
+  whole callback, and `Decision::EndCallback` releases its registration.
 - **`OP_CALLBACK_FAIL` is diagnostic.** It carries no id and cannot be attributed to a
   pending callback, so the session only logs it and the deadline releases the slot.
 - **`NoUsableSources`.** The terminal failure means no reachable source of any kind, not

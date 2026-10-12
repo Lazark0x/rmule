@@ -15,11 +15,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use rmule_kad::KadBuddyContact;
-use rmule_primitives::{
-    FileHash, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, PeerSource, SourceCryptOptions,
-    SourceLookupTarget, UserHash,
-};
+use rmule_primitives::{FileHash, SourceLookupTarget, SourceSighting};
 use tokio::sync::mpsc;
 
 use crate::adapters::KadSourceChannel;
@@ -27,94 +23,10 @@ use crate::registry::SharedFileRegistry;
 use crate::registry_check::WithheldRows;
 use crate::source_discovery::{DiscoveryChannel, DiscoveryRegistry};
 
-/// One Kad source row as the download brain reads it — the core-side face of
-/// `rmule_kad::KadSourceCandidate`.
-///
-/// It exists so the brain keeps its own vocabulary while still seeing every
-/// rung-1 fact a row carries: the channel was once a bare
-/// `Vec<PeerSource>`, which could say only "dialable" and therefore dropped
-/// every firewalled row along with its buddy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct KadSource {
-    /// The dialable endpoint, when the row projected to one (a direct High-ID
-    /// row, or an `ip6`-rescued one). `None` for a buddy-reachable row.
-    pub direct: Option<PeerSource>,
-    /// The publisher's User Hash — always present on a decoded row, because
-    /// the row's 16-byte source ID *is* the hash (ADR-0043).
-    pub user_hash: Option<UserHash>,
-    /// Where a `0x95` direct callback would go: the storer's observation of
-    /// the publish sender, paired with the published `SOURCEUPORT`.
-    pub kad_udp: Option<Ipv4Endpoint>,
-    /// The row's `TAG_ENCRYPTION` connect-options byte.
-    pub connect_options: Option<SourceCryptOptions>,
-    /// The publisher's serving buddy, from a type-3/5 row.
-    pub buddy: Option<KadBuddyContact>,
-    /// The row is a type-6 **Direct UDP Callback** source: firewalled, bit 3
-    /// stated, and [`Self::kad_udp`] observed — the sealed projection's
-    /// verdict ([`rmule_kad::KadSourceCandidate::direct_udp_callback`]), never
-    /// re-derived from the byte, because only type 6 makes aMule keep the
-    /// address a `0x95` needs.
-    pub direct_udp_callback: bool,
-    /// The published eD2k TCP port.
-    pub tcp_port: u16,
-    /// The row's `ip6` endpoint (ADR-0087), wherever the row holds it — the
-    /// shape [`ExchangedSource::ipv6`](rmule_primitives::ExchangedSource::ipv6)
-    /// reads: the **IPv6 Half** beside a High-ID [`Self::direct`] (the Dial
-    /// Chooser picks between the two, `dialable::resolve_kad_family`) or beside
-    /// a callback road (rung 0 dials it), or the address of an `ip6`-rescued
-    /// row, whose [`Self::direct`] it already is.
-    pub ipv6: Option<Ipv6Endpoint>,
-}
-
-impl KadSource {
-    /// Project a decoded candidate into the brain's vocabulary.
-    #[must_use]
-    pub fn from_candidate(candidate: &rmule_kad::KadSourceCandidate) -> Self {
-        let facts = candidate.facts();
-        Self {
-            direct: candidate.peer_source(),
-            user_hash: facts.map(|facts| facts.user_hash),
-            kad_udp: facts.and_then(|facts| facts.kad_udp),
-            connect_options: facts.and_then(|facts| facts.connect_options),
-            buddy: candidate.buddy(),
-            direct_udp_callback: candidate.direct_udp_callback().is_some(),
-            tcp_port: facts.map_or(0, |facts| facts.tcp_port),
-            ipv6: facts.and_then(|facts| facts.ipv6),
-        }
-    }
-
-    /// A bare dialable row — the shape a test drives the brain with, and what
-    /// every Kad row once was.
-    #[must_use]
-    pub const fn dialable(source: PeerSource) -> Self {
-        Self {
-            direct: Some(source),
-            user_hash: None,
-            kad_udp: None,
-            connect_options: None,
-            buddy: None,
-            direct_udp_callback: false,
-            tcp_port: 0,
-            ipv6: None,
-        }
-    }
-
-    /// The endpoint an IP filter judges this row by: the dialable one when
-    /// there is one, else the publisher's observed Kad UDP address. aMule
-    /// filters on the row's `SOURCEIP` before it branches on source type
-    /// (`CDownloadQueue::KademliaSearchFile`, `src/DownloadQueue.cpp:1713`), so
-    /// a firewalled row is filtered on the same address a direct one is.
-    #[must_use]
-    pub fn filter_endpoint(&self) -> Option<PeerEndpoint> {
-        self.direct
-            .and_then(PeerSource::as_peer_endpoint)
-            .or_else(|| self.kad_udp.map(PeerEndpoint::V4))
-    }
-}
-
-/// A Kad answer routed to a download: a projected source batch. The runner
-/// feeds it to `DownloadState::on_kad_sources`.
-pub type KadAnswer = Vec<KadSource>;
+/// A Kad answer routed to a download: each row's **Source Sighting**, as the
+/// sealed projection made it ([`rmule_kad::KadSourceCandidate::sighting`]). The
+/// runner feeds it to `DownloadState::on_sightings` (`Channel::Kad`).
+pub type KadAnswer = Vec<SourceSighting>;
 
 /// The active-download registry, in the shared engine's shape: file hash →
 /// (file size, sink). The size rides along because a Kad source search carries

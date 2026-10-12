@@ -16,7 +16,7 @@
 //! A classic list with no sentinel that runs short is a broken frame, exactly
 //! as before sentinels existed.
 
-use rmule_primitives::{ClientId, PeerSource, SourceListTail, UserHash};
+use rmule_primitives::{ClientId, PeerSource, SourceListTail, UserHash, WireReader};
 
 /// The classic part of every record: `[id 4][tcp port 2]`.
 pub(crate) const RECORD_LEN: usize = 6;
@@ -67,7 +67,7 @@ pub(crate) struct SourceRecords {
 /// truncated frame.
 pub(crate) fn read_exact(body: &[u8], count: usize, form: RecordForm) -> Option<SourceRecords> {
     let walk = walk(body, count, form);
-    if walk.short || walk.cursor != body.len() {
+    if walk.short || walk.consumed != body.len() {
         return malformed(walk, body.len());
     }
     Some(read(walk))
@@ -90,7 +90,8 @@ struct Walk {
     /// How many records were read before the first sentinel.
     before_first_sentinel: usize,
     sentinels: usize,
-    cursor: usize,
+    /// Bytes the walk read.
+    consumed: usize,
     short: bool,
 }
 
@@ -101,11 +102,12 @@ fn walk(body: &[u8], count: usize, form: RecordForm) -> Walk {
         records: Vec::with_capacity(count.min(body.len() / RECORD_LEN)),
         before_first_sentinel: 0,
         sentinels: 0,
-        cursor: 0,
+        consumed: 0,
         short: false,
     };
+    let mut reader = WireReader::new(body);
     for _ in 0..count {
-        let Some(record) = read_record(body, &mut walk.cursor, form, &mut walk.sentinels) else {
+        let Some(record) = read_record(&mut reader, form, &mut walk.sentinels) else {
             walk.short = true;
             break;
         };
@@ -114,20 +116,20 @@ fn walk(body: &[u8], count: usize, form: RecordForm) -> Walk {
         }
         walk.records.push(record);
     }
+    walk.consumed = reader.position();
     walk
 }
 
-/// One record at `cursor`, advancing it; `None` on a short read. Counts the
+/// One record at the reader, advancing it; `None` on a short read. Counts the
 /// sentinel as soon as its id is read, so a sentinel cut short still marks the
 /// list as sentinel-bearing.
 fn read_record(
-    body: &[u8],
-    cursor: &mut usize,
+    reader: &mut WireReader<'_>,
     form: RecordForm,
     sentinels: &mut usize,
 ) -> Option<Record> {
-    let id = u32::from_le_bytes(take::<4>(body, cursor)?);
-    let port = u16::from_le_bytes(take::<2>(body, cursor)?);
+    let id = reader.read_u32_le("source id").ok()?;
+    let port = reader.read_u16_le("source port").ok()?;
     let is_sentinel = id == PeerSource::IPV6_SENTINEL;
     if is_sentinel {
         *sentinels += 1;
@@ -135,19 +137,23 @@ fn read_record(
     let (crypt_byte, user_hash) = match form {
         RecordForm::Plain => (None, None),
         RecordForm::Obfuscated => {
-            let [crypt] = take::<1>(body, cursor)?;
+            let crypt = reader.read_u8("source crypt options").ok()?;
             let hash = if crypt & HAS_USER_HASH == 0 {
                 None
             } else {
-                Some(UserHash::from_bytes(take::<{ UserHash::BYTE_LEN }>(
-                    body, cursor,
-                )?))
+                Some(UserHash::from_bytes(
+                    reader
+                        .read_array::<{ UserHash::BYTE_LEN }>("source user hash")
+                        .ok()?,
+                ))
             };
             (Some(crypt), hash)
         }
     };
     let source = if is_sentinel {
-        let address = take::<{ PeerSource::SENTINEL_ADDRESS_LEN }>(body, cursor)?;
+        let address = reader
+            .read_array::<{ PeerSource::SENTINEL_ADDRESS_LEN }>("sentinel address")
+            .ok()?;
         PeerSource::from_sentinel_address(address, port)
     } else {
         PeerSource::from_record(ClientId::from_u32(id), port)
@@ -159,19 +165,12 @@ fn read_record(
     })
 }
 
-fn take<const N: usize>(body: &[u8], cursor: &mut usize) -> Option<[u8; N]> {
-    let end = cursor.checked_add(N)?;
-    let bytes: [u8; N] = body.get(*cursor..end)?.try_into().ok()?;
-    *cursor = end;
-    Some(bytes)
-}
-
 fn read(walk: Walk) -> SourceRecords {
     SourceRecords {
         tail: SourceListTail::Read {
             sentinels: walk.sentinels,
         },
-        consumed: walk.cursor,
+        consumed: walk.consumed,
         records: walk.records,
     }
 }
@@ -184,7 +183,7 @@ fn malformed(mut walk: Walk, body_len: usize) -> Option<SourceRecords> {
     Some(SourceRecords {
         tail: SourceListTail::Malformed {
             sentinels: walk.sentinels,
-            tail_len: body_len - walk.cursor,
+            tail_len: body_len - walk.consumed,
         },
         consumed: body_len,
         records: walk.records,

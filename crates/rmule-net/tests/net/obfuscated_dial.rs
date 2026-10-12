@@ -12,7 +12,7 @@ use crate::fixture::{RESPONDER_HASH, bound_v4, peer_endpoint};
 use rmule_net::peer::{
     ConnectOptions, Connection, ObfuscationConfig, ObfuscationPolicy, PeerListener, PeerNetError,
 };
-use rmule_peer::{PeerEvent, PeerHandshakeContext};
+use rmule_peer::{ConnectionEvent, PeerEvent, PeerHandshakeContext};
 use rmule_primitives::{
     ClientId, ClientIdentity, Ed2kText, Ipv4Endpoint, PeerCrypt, SourceCryptOptions, UserHash,
     is_plaintext_marker,
@@ -31,6 +31,8 @@ fn ctx(user_hash: [u8; 16], nick: &str, client_id: u32) -> PeerHandshakeContext 
             0x3C,
         ),
         client_id: ClientId::from_u32(client_id),
+        ed2k_client_id: ClientId::from_u32(client_id),
+        public_ip: None,
         connected_server: Some(Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, 4661)),
     }
 }
@@ -43,8 +45,10 @@ fn dialer_ctx() -> PeerHandshakeContext {
 async fn identified_hash(conn: &mut Connection) -> Option<UserHash> {
     while let Some(event) = conn.next_event().await {
         match event {
-            PeerEvent::PeerIdentified { identity } => return Some(identity.user_hash()),
-            PeerEvent::Disconnected { .. } => return None,
+            PeerEvent::Connection(ConnectionEvent::Identified { identity }) => {
+                return Some(identity.user_hash());
+            }
+            PeerEvent::Connection(ConnectionEvent::Disconnected { .. }) => return None,
             _ => {}
         }
     }

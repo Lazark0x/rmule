@@ -24,8 +24,8 @@ use rmule_primitives::AddressFamily;
 use socket2::Type;
 
 use crate::fixture::{
-    host_binds_ipv6, identity, identity_with_port, kad_enable_config, next_expected,
-    reserve_dual_stack_port, reserve_dual_stack_port_from, serving_started, skip_without_ipv6,
+    host_binds_ipv6, kad_enable_config, next_expected, reserve_dual_stack_port,
+    reserve_dual_stack_port_from, serving_started, skip_without_ipv6,
 };
 
 /// A core configured to bind IPv4 only, so a test that holds one IPv4 UDP
@@ -35,9 +35,8 @@ use crate::fixture::{
 /// wholly-refused bind. This is a deployment choice the test makes for
 /// determinism (no IPv6 route required in CI), not a change to Family Pair
 /// binding itself.
-fn v4_only(udp_port: u16) -> CoreConfig {
+fn v4_only() -> CoreConfig {
     CoreConfig {
-        udp_port,
         address_families: FamilySelection::v4_only(),
         ..CoreConfig::default()
     }
@@ -55,7 +54,12 @@ async fn a_totally_refused_bind_is_named_in_diagnostics_the_start_event_and_the_
     let held = UdpSocket::bind("0.0.0.0:0").expect("hold a v4 UDP port for the test's own life");
     let port = held.local_addr().expect("local addr").port();
 
-    let mut core = Core::new(v4_only(port), rmule_testkit::memory_store());
+    let mut core = Core::builder(v4_only(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings {
+            udp_port: port,
+            ..rmule_core::CoreSettings::default()
+        })
+        .build();
 
     // The start event: emitted once, unprompted, before any command.
     let start = next_expected(&mut core, "the client-UDP bind's start fact", |e| {
@@ -128,11 +132,12 @@ async fn a_totally_refused_bind_is_named_in_diagnostics_the_start_event_and_the_
 /// say about any of the three roles.
 #[tokio::test]
 async fn a_bound_socket_reports_no_bind_failure() {
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
 
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0),
-        credentials: identity().into(),
     }))
     .await
     .expect("core accepts the command");
@@ -200,13 +205,12 @@ async fn a_pair_that_came_up_without_ipv4_names_it_and_refuses_kad() {
 
     // The default selects both families; v4 is held, v6 is free, so the pair
     // comes up on `::` alone — the half-bound case, not the total one.
-    let mut core = Core::new(
-        CoreConfig {
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings {
             udp_port: port,
-            ..CoreConfig::default()
-        },
-        rmule_testkit::memory_store(),
-    );
+            ..rmule_core::CoreSettings::default()
+        })
+        .build();
 
     // Only the client-UDP pair's own fact: another pair's half-bound fact
     // (server-UDP binds at the same start) may land first.
@@ -296,13 +300,12 @@ async fn a_pair_that_came_up_without_ipv6_keeps_kad_and_every_ipv4_advert() {
     let held = reserve_dual_stack_port(Ipv6Addr::UNSPECIFIED.into(), Type::DGRAM);
     let port = held.port;
 
-    let mut core = Core::new(
-        CoreConfig {
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings {
             udp_port: port,
-            ..CoreConfig::default()
-        },
-        rmule_testkit::memory_store(),
-    );
+            ..rmule_core::CoreSettings::default()
+        })
+        .build();
 
     let start = next_expected(&mut core, "the client-UDP bind's start fact", |e| {
         matches!(
@@ -380,10 +383,11 @@ async fn a_listener_that_comes_up_without_ipv4_names_it_and_the_row_appears() {
     let held = reserve_dual_stack_port(Ipv4Addr::UNSPECIFIED.into(), Type::STREAM);
     let port = held.port;
 
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port),
-        credentials: identity_with_port(port).into(),
     }))
     .await
     .expect("core accepts the command");
@@ -458,13 +462,15 @@ async fn a_server_udp_pair_that_comes_up_without_ipv4_names_it_and_the_row_appea
     let held = reserve_dual_stack_port(Ipv4Addr::UNSPECIFIED.into(), Type::DGRAM);
     let port = held.port;
 
-    let mut core = Core::new(
+    let mut core = Core::builder(
         CoreConfig {
             server_udp_port: port,
             ..CoreConfig::default()
         },
         rmule_testkit::memory_store(),
-    );
+    )
+    .settings(rmule_core::CoreSettings::default())
+    .build();
 
     let start = next_expected(&mut core, "the server-UDP bind's half-bound fact", |e| {
         matches!(e, CoreEvent::SocketBoundWithoutFamily { .. })

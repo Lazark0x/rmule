@@ -41,8 +41,10 @@ use crate::{DownloadId, DownloadMetadata, PeerRetirementReason};
 mod counters;
 mod download;
 mod kad;
+pub(crate) use kad::KadFactsSource;
 mod server;
 mod shared_files;
+mod software;
 mod state;
 
 /// Why an `OP_NATT_ENDPOINT_HINT` was dropped instead of punched at — the
@@ -78,7 +80,11 @@ pub use kad::{
 };
 pub use server::{ServerDiagnostics, ShareAnnouncement, SharesToServer};
 pub use shared_files::{ShareTotals, SharedFileCounters};
+#[cfg(test)]
+pub(crate) use software::client_software;
+pub use software::{SoftwareName, SoftwareParts, software_parts};
 pub use state::{BuddyHashSpellingCounters, DiagnosticsState};
+pub(crate) use state::{ServerHalf, address_rows};
 
 /// One **Address Learning** row (ADR-0084): what rmule believes about where
 /// one of its own sockets is, in one **Address Family**.
@@ -187,12 +193,10 @@ pub struct DiagnosticsSnapshot {
     pub mappings: Vec<crate::port_mapping::MappingDiagnostics>,
     /// The Kad runtime's cold-start state (ADR-0067): `None` until
     /// `CoreCommand::EnableKad` started the node, `Some` thereafter. Populated
-    /// by the actor when answering `DumpDiagnostics` — the Kad factory lives
-    /// with the actor — so the sync [`crate::Core::diagnostics_snapshot`]
-    /// accessor (which reads only the shared state) leaves it `None`.
+    /// by the Kad Activity through the shared state like `uploads`, so the sync
+    /// [`crate::Core::diagnostics_snapshot`] accessor reports it in full.
     pub kad: Option<KadRuntimeDiagnostics>,
-    /// Where the Kad activity stands: off, running or stopping. Unlike
-    /// [`Self::kad`] it rides the shared state, so the sync accessor has it.
+    /// Where the Kad activity stands: off, running or stopping.
     pub kad_state: KadState,
     /// The **Shared Directory List** (ADR-0101, "Shared Directories"), in
     /// list order, with each entry's state and its scan's progress; a
@@ -205,11 +209,8 @@ pub struct DiagnosticsSnapshot {
     pub natt_own_mapping: Option<rmule_peer::natt::OwnMapping>,
     /// How many **Kad Activity** tasks the actor currently holds a
     /// `JoinHandle` for: the discovery pump, the publisher, and
-    /// the ed2k→Kad handoff forwarder, so `0..=3`. Populated the same way
-    /// `kad` is, and not gated on it: the one instant this can read nonzero
-    /// while `kad` is already `None` is mid-`DisableKad`, never observable
-    /// across a `DumpDiagnostics` round trip since the actor answers one
-    /// command at a time. `0` on the `Default` value and again once
+    /// the ed2k→Kad handoff forwarder, so `0..=3`. Installed and
+    /// cleared with `kad`: `0` on the `Default` value and again once
     /// `retire_kad` has joined every one back.
     pub kad_tasks_live: usize,
     /// The one client-UDP socket's total bind failure (ADR-0057),
@@ -257,7 +258,7 @@ pub struct DiagnosticsSnapshot {
 /// carries them again for whichever `EnableKad` a caller sends afterward.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClientUdpBindFailure {
-    /// The port core asked the OS for — [`CoreConfig::udp_port`](crate::CoreConfig::udp_port).
+    /// The port core asked the OS for — [`CoreSettings::udp_port`](crate::CoreSettings::udp_port).
     pub port: u16,
     /// The OS's reason. When every selected **Address Family** refused the
     /// bind, `UdpFamilyPair::bind` (ADR-0085) joins their reasons into one

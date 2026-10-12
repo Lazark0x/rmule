@@ -19,7 +19,7 @@
 //! every one; none park as `Unknown`.
 //!
 //! Each decoded answer entry retains its declaring server endpoint alongside
-//! its [`ExchangedSource`](rmule_primitives::ExchangedSource) provenance (the
+//! its [`SourceSighting`](rmule_primitives::SourceSighting) provenance (the
 //! ADR-0046 model — see [`SourceExchangeEntry`]); the aMule-mirrored sanity
 //! filter, Low-ID routing rule and per-file cap that decide which entries the
 //! session surfaces live in `admission` ([`sanitize_and_route`]).
@@ -37,7 +37,7 @@ mod ext_record;
 #[cfg(test)]
 mod tests;
 
-use rmule_primitives::{FileHash, Packet};
+use rmule_primitives::{FileHash, Packet, WireReader, WireTruncated};
 use thiserror::Error;
 
 pub(crate) use self::admission::sanitize_and_route;
@@ -199,11 +199,23 @@ impl RequestSources {
                 actual: payload.len(),
             });
         }
-        let mut hash = [0u8; FileHash::BYTE_LEN];
-        hash.copy_from_slice(&payload[..FileHash::BYTE_LEN]);
-        Ok(Self {
-            file_hash: FileHash::from_bytes(hash),
-        })
+        let mut reader = WireReader::new(payload);
+        let file_hash = reader.read_file_hash("file hash").map_err(|truncated| {
+            RequestSourcesDecodeError::WrongSize {
+                expected: FileHash::BYTE_LEN,
+                actual: truncated.available,
+            }
+        })?;
+        Ok(Self { file_hash })
+    }
+}
+
+impl From<WireTruncated> for AnswerSourcesDecodeError {
+    fn from(truncated: WireTruncated) -> Self {
+        Self::Truncated {
+            needed: truncated.needed,
+            actual: truncated.available,
+        }
     }
 }
 
@@ -245,7 +257,7 @@ pub enum AnswerSourcesDecodeError {
 /// `[file_hash 16][count u16]` then `count` sources at whichever version the
 /// answer resolves to (see [`AnswerSources::decode_packet`]). Each source is
 /// a [`SourceExchangeEntry`] — the
-/// [`ExchangedSource`](rmule_primitives::ExchangedSource) provenance plus the
+/// [`SourceSighting`](rmule_primitives::SourceSighting) provenance plus the
 /// declaring server the consume-side Low-ID routing rule reads (ADR-0055).
 /// Low-ID sources survive here; the High-ID filter is the caller's
 /// `as_peer_endpoint` projection (the session's consume path, ADR-0055).
@@ -338,23 +350,12 @@ impl AnswerSources {
     /// [`AnswerSourcesDecodeError::ExtRecord`] for anything the record walk
     /// refuses.
     pub fn decode_ext_packet(packet: &Packet) -> Result<Self, AnswerSourcesDecodeError> {
-        let payload = packet.payload();
-        let header = FileHash::BYTE_LEN + 2;
-        if payload.len() < header {
-            return Err(AnswerSourcesDecodeError::Truncated {
-                needed: header,
-                actual: payload.len(),
-            });
-        }
-        let mut hash = [0u8; FileHash::BYTE_LEN];
-        hash.copy_from_slice(&payload[..FileHash::BYTE_LEN]);
-        let count = u16::from_le_bytes([payload[16], payload[17]]);
-        let sources = decode_ext_records(&payload[header..], count)
+        let mut reader = WireReader::new(packet.payload());
+        let file_hash = reader.read_file_hash("file hash")?;
+        let count = reader.read_u16_le("source count")?;
+        let sources = decode_ext_records(reader.remaining_bytes(), count)
             .map_err(|source| AnswerSourcesDecodeError::ExtRecord { source })?;
-        Ok(Self {
-            file_hash: FileHash::from_bytes(hash),
-            sources,
-        })
+        Ok(Self { file_hash, sources })
     }
 }
 
@@ -365,19 +366,10 @@ fn decode_answer_sources_entries(
     packet: &Packet,
     advertised_version: u8,
 ) -> Result<(FileHash, Vec<SourceExchangeEntry>), AnswerSourcesDecodeError> {
-    let payload = packet.payload();
-    let header = FileHash::BYTE_LEN + 2;
-    if payload.len() < header {
-        return Err(AnswerSourcesDecodeError::Truncated {
-            needed: header,
-            actual: payload.len(),
-        });
-    }
-    let mut hash = [0u8; FileHash::BYTE_LEN];
-    hash.copy_from_slice(&payload[..FileHash::BYTE_LEN]);
-    let file_hash = FileHash::from_bytes(hash);
-    let count = u16::from_le_bytes([payload[16], payload[17]]);
-    let body = &payload[header..];
+    let mut reader = WireReader::new(packet.payload());
+    let file_hash = reader.read_file_hash("file hash")?;
+    let count = reader.read_u16_le("source count")?;
+    let body = reader.remaining_bytes();
 
     let version = resolve_sx1_version(count, body.len(), advertised_version).ok_or(
         AnswerSourcesDecodeError::AdvertisedVersionMismatch {
@@ -386,7 +378,7 @@ fn decode_answer_sources_entries(
             body_len: body.len(),
         },
     )?;
-    Ok((file_hash, decode_source_entries(body, count, version)))
+    Ok((file_hash, decode_source_entries(body, count, version)?))
 }
 
 /// aMule-exact SX1 version resolution (`CPartFile::AddClientSources`'s
@@ -421,6 +413,15 @@ fn resolve_sx1_version(
         (advertised_version == 4).then_some(SourceExchangeVersion::V4)
     } else {
         None
+    }
+}
+
+impl From<WireTruncated> for AnswerSources2DecodeError {
+    fn from(truncated: WireTruncated) -> Self {
+        Self::Truncated {
+            needed: truncated.needed,
+            actual: truncated.available,
+        }
     }
 }
 
@@ -465,7 +466,7 @@ pub enum AnswerSources2DecodeError {
 }
 
 /// Why an inbound source *answer* was dropped without closing — the reason
-/// [`crate::PeerEvent::SourceExchangeAnswerSkipped`] carries. aMule's
+/// [`crate::RequesterEvent::SourceExchangeAnswerSkipped`] carries. aMule's
 /// `CPartFile::AddClientSources` silently `return`s on a malformed answer for
 /// both wire forms (`PartFile.cpp` @4e8f2b3c), so a bad `0x82`
 /// ([`AnswerSourcesDecodeError`]) or `0x84` ([`AnswerSources2DecodeError`]) is
@@ -491,7 +492,7 @@ pub enum AnswerSourcesSkip {
 /// a different version on a size mismatch.
 ///
 /// Each source is a [`SourceExchangeEntry`] — the
-/// [`ExchangedSource`](rmule_primitives::ExchangedSource) provenance plus the
+/// [`SourceSighting`](rmule_primitives::SourceSighting) provenance plus the
 /// declaring server every version's entry carries, exactly
 /// as [`AnswerSources`] (`0x82`) holds it. aMule reads the same
 /// `[srvIP4][srvPort2]` for SX2 as SX1 (`CPartFile::AddClientSources`,
@@ -541,6 +542,7 @@ impl AnswerSources2 {
     /// the record walk refuses.
     pub fn decode_ext_packet(packet: &Packet) -> Result<Self, AnswerSources2DecodeError> {
         let payload = packet.payload();
+        // Header truncation outranks a wrong version byte, as it always has.
         let header = 1 + FileHash::BYTE_LEN + 2;
         if payload.len() < header {
             return Err(AnswerSources2DecodeError::Truncated {
@@ -548,20 +550,18 @@ impl AnswerSources2 {
                 actual: payload.len(),
             });
         }
-        if payload[0] != EXT_SX_VERSION {
-            return Err(AnswerSources2DecodeError::UnsupportedVersion {
-                version: payload[0],
-            });
+        let mut reader = WireReader::new(payload);
+        let version = reader.read_u8("version")?;
+        if version != EXT_SX_VERSION {
+            return Err(AnswerSources2DecodeError::UnsupportedVersion { version });
         }
-        let mut hash = [0u8; FileHash::BYTE_LEN];
-        hash.copy_from_slice(&payload[1..1 + FileHash::BYTE_LEN]);
-        let count_at = 1 + FileHash::BYTE_LEN;
-        let count = u16::from_le_bytes([payload[count_at], payload[count_at + 1]]);
-        let sources = decode_ext_records(&payload[header..], count)
+        let file_hash = reader.read_file_hash("file hash")?;
+        let count = reader.read_u16_le("source count")?;
+        let sources = decode_ext_records(reader.remaining_bytes(), count)
             .map_err(|source| AnswerSources2DecodeError::ExtRecord { source })?;
         Ok(Self {
             version: SourceExchangeVersion::V1,
-            file_hash: FileHash::from_bytes(hash),
+            file_hash,
             sources,
         })
     }
@@ -569,31 +569,16 @@ impl AnswerSources2 {
     /// Read a peer's `0x84`: bound the declared version first, then require
     /// its exact geometry.
     pub fn decode_packet(packet: &Packet) -> Result<Self, AnswerSources2DecodeError> {
-        let payload = packet.payload();
-        if payload.is_empty() {
-            return Err(AnswerSources2DecodeError::Truncated {
-                needed: 1,
-                actual: 0,
-            });
-        }
-        let version = SourceExchangeVersion::from_u8(payload[0]).ok_or(
+        let mut reader = WireReader::new(packet.payload());
+        let raw_version = reader.read_u8("version")?;
+        let version = SourceExchangeVersion::from_u8(raw_version).ok_or(
             AnswerSources2DecodeError::UnsupportedVersion {
-                version: payload[0],
+                version: raw_version,
             },
         )?;
-        let header = 1 + FileHash::BYTE_LEN + 2;
-        if payload.len() < header {
-            return Err(AnswerSources2DecodeError::Truncated {
-                needed: header,
-                actual: payload.len(),
-            });
-        }
-        let mut hash = [0u8; FileHash::BYTE_LEN];
-        hash.copy_from_slice(&payload[1..1 + FileHash::BYTE_LEN]);
-        let file_hash = FileHash::from_bytes(hash);
-        let count_at = 1 + FileHash::BYTE_LEN;
-        let count = u16::from_le_bytes([payload[count_at], payload[count_at + 1]]);
-        let body = &payload[header..];
+        let file_hash = reader.read_file_hash("file hash")?;
+        let count = reader.read_u16_le("source count")?;
+        let body = reader.remaining_bytes();
         let expected = count as usize * version.entry_stride();
         if expected != body.len() {
             return Err(AnswerSources2DecodeError::WrongGeometry {
@@ -602,7 +587,7 @@ impl AnswerSources2 {
                 body_len: body.len(),
             });
         }
-        let sources = decode_source_entries(body, count, version);
+        let sources = decode_source_entries(body, count, version)?;
         Ok(Self {
             version,
             file_hash,
@@ -719,14 +704,18 @@ impl RequestSources2 {
                 actual: payload.len(),
             });
         }
-        let version = payload[0];
-        let options = u16::from_le_bytes([payload[1], payload[2]]);
-        let mut hash = [0u8; FileHash::BYTE_LEN];
-        hash.copy_from_slice(&payload[3..3 + FileHash::BYTE_LEN]);
+        let wrong_size = |truncated: WireTruncated| RequestSources2DecodeError::WrongSize {
+            expected: Self::WIRE_LEN,
+            actual: truncated.available,
+        };
+        let mut reader = WireReader::new(payload);
+        let version = reader.read_u8("version").map_err(wrong_size)?;
+        let options = reader.read_u16_le("options").map_err(wrong_size)?;
+        let file_hash = reader.read_file_hash("file hash").map_err(wrong_size)?;
         Ok(Self {
             version,
             options,
-            file_hash: FileHash::from_bytes(hash),
+            file_hash,
         })
     }
 }

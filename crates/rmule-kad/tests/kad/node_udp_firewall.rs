@@ -6,15 +6,16 @@ use std::net::Ipv4Addr;
 use std::time::Duration;
 
 use rmule_kad::{
-    Kad2Message, KadCommand, KadContact, KadEvent, KadId, KadNode, KadNodeConfig,
-    KadNodeDiagnostic, KadNodeEndpoint, KadOutput, UdpFirewallHelper, UserHash,
+    Kad2Message, KadCommand, KadContact, KadEvent, KadId, KadInstant, KadNode, KadNodeConfig,
+    KadNodeDiagnostic, KadNodeEndpoint, KadNodeStart, KadObfuscation, KadOutput, KadSelfCheck,
+    UdpFirewallHelper, UserHash,
 };
 use rmule_primitives::Ipv4Endpoint;
 use rmule_primitives::session::drain;
 use rmule_primitives::{ClientEncryptKey, encrypt_datagram_client};
 use rmule_testkit::kad_node::{
-    OUR_INTERN_UDP, OWN_IP, T0, datagrams, deliver, diagnostics, endpoint, events, fixed_nonce, id,
-    keyed_node, node, our_key_for, sent_messages,
+    OUR_INTERN_UDP, OWN_IP, T0, crypt_node, crypt_start, datagrams, deliver, diagnostics, endpoint,
+    events, fixed_nonce, id, node, our_key_for, self_checking_node, sent_messages, start,
 };
 
 /// End the **Extern Port Round** the way core's verdict does, so the helper
@@ -65,10 +66,10 @@ fn engaged(outputs: &[KadOutput]) -> Vec<Ipv4Endpoint> {
 
 #[test]
 fn the_helper_lookup_offers_its_answer_rows_to_the_udp_check_and_walks_no_further() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = KadNode::new(
+        start().self_check(KadSelfCheck::new().with_udp_helper_lookup(helper_lookup_target)),
+    );
     settle_extern_port(&mut node);
-    node.arm_udp_firewall_helper_lookup(helper_lookup_target);
     let responder = endpoint(9, 4672);
     node.handle_command(
         T0,
@@ -149,10 +150,10 @@ fn the_helper_lookup_offers_its_answer_rows_to_the_udp_check_and_walks_no_furthe
 
 #[test]
 fn a_recheck_launches_a_fresh_helper_lookup() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = KadNode::new(
+        start().self_check(KadSelfCheck::new().with_udp_helper_lookup(helper_lookup_target)),
+    );
     settle_extern_port(&mut node);
-    node.arm_udp_firewall_helper_lookup(helper_lookup_target);
     let responder = endpoint(9, 4672);
     node.handle_command(
         T0,
@@ -180,10 +181,10 @@ fn a_recheck_launches_a_fresh_helper_lookup() {
 
 #[test]
 fn the_hourly_recheck_launches_a_fresh_helper_lookup() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = KadNode::new(
+        start().self_check(KadSelfCheck::new().with_udp_helper_lookup(helper_lookup_target)),
+    );
     settle_extern_port(&mut node);
-    node.arm_udp_firewall_helper_lookup(helper_lookup_target);
     let responder = endpoint(9, 4672);
     node.handle_command(
         T0,
@@ -214,8 +215,7 @@ fn the_hourly_recheck_launches_a_fresh_helper_lookup() {
 
 #[test]
 fn helpers_used_before_the_recheck_stay_ineligible_but_fresh_ones_are_engaged() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     settle_extern_port(&mut node);
     node.offer_udp_firewall_helper(udp_helper(1, 8));
     drain(|| node.poll_output());
@@ -246,8 +246,7 @@ fn helpers_used_before_the_recheck_stay_ineligible_but_fresh_ones_are_engaged() 
 
 #[test]
 fn a_recheck_mid_test_aborts_it_and_a_late_result_from_before_lands_stale() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     settle_extern_port(&mut node);
     node.offer_udp_firewall_helper(udp_helper(1, 8));
     drain(|| node.poll_output());
@@ -277,8 +276,7 @@ fn a_recheck_mid_test_aborts_it_and_a_late_result_from_before_lands_stale() {
 
 #[test]
 fn a_cancelled_helper_check_counts_neither_way_and_the_next_candidate_is_engaged() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     settle_extern_port(&mut node);
     for host in 1..=3u8 {
         node.offer_udp_firewall_helper(udp_helper(host, 8));
@@ -330,8 +328,7 @@ fn a_biased_0x62_answer_counts_neither_way_and_the_next_candidate_is_engaged() {
     // routing-zone bias — therefore reads to the requester's tester as a
     // cancellation, not a failure: no verdict, and the waiting candidate is
     // engaged in its place.
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     settle_extern_port(&mut node);
     for host in 1..=3u8 {
         node.offer_udp_firewall_helper(udp_helper(host, 8));
@@ -374,8 +371,7 @@ fn a_biased_0x62_answer_counts_neither_way_and_the_next_candidate_is_engaged() {
 
 #[test]
 fn the_request_carries_our_verify_key_for_the_helper_once_keys_are_armed() {
-    let mut node = keyed_node();
-    node.enable_firewall_self_check(T0);
+    let mut node = KadNode::new(crypt_start().self_check(KadSelfCheck::new()));
     settle_extern_port(&mut node);
     node.offer_udp_firewall_helper(udp_helper(1, 8));
     let key = our_key_for(endpoint(1, 0));
@@ -390,8 +386,7 @@ fn the_request_carries_our_verify_key_for_the_helper_once_keys_are_armed() {
 
 #[test]
 fn the_udp_check_requests_only_fresh_helpers() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     settle_extern_port(&mut node);
     // Core's Address Learning verdict rides in as a command; the node holds
     // no rule of its own about the extern port (ADR-0084).
@@ -438,8 +433,7 @@ fn the_udp_check_requests_only_fresh_helpers() {
 /// verify keys exist.
 #[test]
 fn the_udp_check_never_engages_a_helper_at_our_own_ip_with_crypt_unarmed() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     settle_extern_port(&mut node);
     let own = udp_helper(7, 8);
     node.handle_command(
@@ -461,8 +455,7 @@ fn the_udp_check_never_engages_a_helper_at_our_own_ip_with_crypt_unarmed() {
 
 #[test]
 fn the_udp_check_engages_at_most_two_helpers() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     settle_extern_port(&mut node);
     // Three fresh helpers offered; only two are engaged (CLIENTSTOASK = 2).
     for host in 1..=3u8 {
@@ -477,8 +470,7 @@ fn the_udp_check_engages_at_most_two_helpers() {
 
 #[test]
 fn one_positive_0x62_opens_the_udp_verdict() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     settle_extern_port(&mut node);
     node.offer_udp_firewall_helper(udp_helper(1, 8));
     drain(|| node.poll_output());
@@ -500,8 +492,7 @@ fn one_positive_0x62_opens_the_udp_verdict() {
 
 #[test]
 fn both_helper_failures_firewall_the_udp_verdict() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     settle_extern_port(&mut node);
     node.offer_udp_firewall_helper(udp_helper(1, 8));
     node.offer_udp_firewall_helper(udp_helper(2, 8));
@@ -522,8 +513,7 @@ fn both_helper_failures_firewall_the_udp_verdict() {
 
 #[test]
 fn the_udp_timeout_concludes_firewalled_only_with_a_firewalled_tcp_verdict() {
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     settle_extern_port(&mut node);
     node.offer_udp_firewall_helper(udp_helper(1, 8));
     drain(|| node.poll_output());
@@ -560,8 +550,7 @@ fn the_tcp_verdict_feedback_command_gates_the_udp_timeout_live() {
     // command channel, so the sans-I/O node's six-minute UDP timeout gate sees the
     // live verdict — not the injected assume-open default. This is the pump's
     // `SetTcpReachability` round-trip, exercised through `handle_command`.
-    let mut node = node();
-    node.enable_firewall_self_check(T0);
+    let mut node = self_checking_node();
     settle_extern_port(&mut node);
     node.offer_udp_firewall_helper(udp_helper(1, 8));
     drain(|| node.poll_output());
@@ -736,8 +725,7 @@ fn a_keyed_udp_firewall_request_draws_a_keyed_0x62() {
     // `CMuleUDPSocket::SendPacket` turns into the KadVerifyKey family
     // (`MuleUDPSocket.cpp:271-274`). The sync word is little-endian per
     // `7a438aa`.
-    let mut node = keyed_node();
-    node.enable_datagram_obfuscation(fixed_nonce);
+    let mut node = crypt_node();
     let requester = Ipv4Addr::new(203, 0, 113, 9);
     let sender_key = 0xC0FF_EE11u32;
     // Intern 6000 (0x1770), extern == intern (a single result packet).
@@ -773,8 +761,7 @@ fn a_keyless_udp_firewall_request_stays_plaintext_even_with_obfuscation_armed() 
     // `bKad && nReceiverVerifyKey != 0` encrypt gate
     // (`MuleUDPSocket.cpp:271-274`) never fires on a zero key, regardless of
     // our own obfuscation being armed.
-    let mut node = keyed_node();
-    node.enable_datagram_obfuscation(fixed_nonce);
+    let mut node = crypt_node();
     let requester = Ipv4Addr::new(203, 0, 113, 9);
     let request = [0x70, 0x17, 0x70, 0x17, 0x00, 0x00, 0x00, 0x00];
     node.consume_udp_firewall_request(requester, &request, false);
@@ -798,9 +785,7 @@ fn a_crypt_requiring_requester_decodes_the_keyed_0x62_and_its_tester_counts_it()
     // (`BaseClient.cpp:4008-4013`), and the requester's `handle_datagram`
     // decrypts it via the KadVerifyKey family and folds it into its own
     // tester's verdict — proving the wire round-trips, not just the encode.
-    let mut requester = keyed_node();
-    requester.enable_datagram_obfuscation(fixed_nonce);
-    requester.enable_firewall_self_check(T0);
+    let mut requester = KadNode::new(crypt_start().self_check(KadSelfCheck::new()));
     settle_extern_port(&mut requester);
 
     let helper_ip = Ipv4Addr::new(203, 0, 113, 1);
@@ -818,14 +803,18 @@ fn a_crypt_requiring_requester_decodes_the_keyed_0x62_and_its_tester_counts_it()
     // The helper: a second real node, verify-key-armed, obfuscation on,
     // consuming the peer-TCP-bridged request exactly as core bridges it —
     // opaque bytes, the requester's IP, nothing else.
-    let mut helper = KadNode::new(KadNodeConfig {
-        id: id(1),
-        tcp_port: 4761,
-        udp_port: 4672,
-        user_hash: UserHash::from_bytes([0x11; UserHash::BYTE_LEN]),
-    });
-    helper.enable_verify_keys(0x1EE7_5EED, helper_ip);
-    helper.enable_datagram_obfuscation(fixed_nonce);
+    let mut helper = KadNode::new(
+        KadNodeStart::new(
+            KadNodeConfig {
+                id: id(1),
+                tcp_port: 4761,
+                udp_port: 4672,
+                user_hash: UserHash::from_bytes([0x11; UserHash::BYTE_LEN]),
+            },
+            KadInstant::EPOCH,
+        )
+        .obfuscation(KadObfuscation::new(fixed_nonce).with_verify_keys(0x1EE7_5EED, helper_ip)),
+    );
     helper.consume_udp_firewall_request(OWN_IP, &request_bytes, false);
     let helper_out = drain(|| helper.poll_output());
     let helper_datagrams = datagrams(&helper_out);

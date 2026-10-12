@@ -52,7 +52,6 @@ pub(crate) struct SearchArgs {
 pub(crate) async fn run(args: SearchArgs) -> Result<()> {
     let server = ServerEndpoint::parse_host_port(&args.server)
         .with_context(|| format!("parse server endpoint {}", args.server))?;
-    let identity = args.identity.client_identity()?;
     let query = search_query_from_args(&args)?;
     let mut also_server = args
         .also_server
@@ -69,12 +68,16 @@ pub(crate) async fn run(args: SearchArgs) -> Result<()> {
     };
     let mut core = args
         .identity
-        .core_builder(config, open_durable_store_in_memory()?)?
+        .core_builder(
+            config,
+            args.identity.settings(rmule_core::CoreSettings::default()),
+            open_durable_store_in_memory()?,
+        )?
         .build();
 
     // The operator's word, given on the command line (ADR-0095): the search
     // waits for the session this connect makes.
-    crate::node::connect(&core, &server, identity.clone().into()).await?;
+    crate::node::connect(&core, &server).await?;
     core.send(CoreCommand::Search(CoreSearchCommand::StartSearch {
         search_id: rmule_core::SearchId::mint(),
         query: query.clone().into(),

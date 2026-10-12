@@ -6,7 +6,7 @@
 
 use std::net::Ipv4Addr;
 
-use rmule_primitives::{ExchangedSource, Ipv4Endpoint, Ipv6Endpoint, PeerSource};
+use rmule_primitives::{Ipv4Endpoint, Ipv6Endpoint, PeerSource, SourceSighting};
 
 use super::*;
 
@@ -28,35 +28,28 @@ fn known_ipv6() -> DialPosition {
 /// A download already working `peer(1)`, with a free slot for whatever it
 /// exchanges.
 fn exchanging_state(dial: DialPosition) -> DownloadState {
-    let mut state = DownloadState::new(
-        DownloadId::from_u64(1),
+    let mut state = pooled_state(
         file_hash_only_content(ONE_PART),
-        high_id_candidates(vec![peer(1)]),
+        &[peer(1)],
         SourcingPosture {
             dial,
             ..QUIET_POSTURE
         },
-        CALLBACK_TIMEOUT,
         2,
     );
-    assert_eq!(spawned(&state.start()), vec![peer(1)]);
+    assert_eq!(spawned(&state.start(t0())), vec![peer(1)]);
     state
 }
 
 /// `peer(1)` hands over the dual-stack record ([`v4`] with [`v6`] beside it,
 /// as an ExtSX `CT_MOD_IP_V6` names it); what gets dialed.
 fn sight(state: &mut DownloadState) -> Vec<PeerEndpoint> {
-    let source = ExchangedSource::plain(PeerSource::HighId(v4())).with_ipv6_half(Some(v6()));
-    spawned(&state.on_worker_event(
-        peer(1),
-        PeerWorkerEvent::SourcesReceived {
-            sources: vec![source],
-        },
-    ))
+    let source = SourceSighting::plain(PeerSource::HighId(v4())).with_ipv6_half(Some(v6()));
+    spawned(&via_exchange(state, peer(1), vec![source]))
 }
 
 fn end(state: &mut DownloadState, at: PeerEndpoint, event: PeerWorkerEvent) -> Vec<PeerEndpoint> {
-    spawned(&state.on_worker_event(at, event))
+    spawned(&state.on_worker_event(t0(), at, event))
 }
 
 #[test]
@@ -80,7 +73,7 @@ fn a_failed_ipv6_first_dial_falls_to_the_ipv4_half() {
 fn a_failed_ipv4_first_dial_falls_to_the_ipv6_half_once_we_can_dial_it() {
     let mut state = exchanging_state(DialPosition::default());
     assert_eq!(sight(&mut state), vec![PeerEndpoint::V4(v4())]);
-    let _ = state.on_dial_position(known_ipv6());
+    let _ = state.on_dial_position(t0(), known_ipv6());
 
     assert_eq!(
         end(
@@ -180,19 +173,17 @@ fn a_crypt_incompatible_first_dial_does_not_fall_to_the_other_family() {
 /// in hand, so the IPv4 dial's failure falls to it — once.
 #[test]
 fn a_peer_pooled_as_ipv4_gains_the_ipv6_half_a_later_sighting_names() {
-    let mut state = DownloadState::new(
-        DownloadId::from_u64(1),
+    let mut state = pooled_state(
         file_hash_only_content(ONE_PART),
-        high_id_candidates(vec![peer(1), PeerEndpoint::V4(v4())]),
+        &[peer(1), PeerEndpoint::V4(v4())],
         SourcingPosture {
             dial: known_ipv6(),
             ..QUIET_POSTURE
         },
-        CALLBACK_TIMEOUT,
         2,
     );
     assert_eq!(
-        spawned(&state.start()),
+        spawned(&state.start(t0())),
         vec![peer(1), PeerEndpoint::V4(v4())]
     );
     assert!(sight(&mut state).is_empty(), "the peer is in hand already");
@@ -245,26 +236,19 @@ fn a_dual_stack_dial_that_fails_to_start_falls_to_its_other_family() {
     assert_eq!(sight(&mut state), vec![PeerEndpoint::V6(v6())]);
 
     assert_eq!(
-        spawned(&state.on_spawn_failed(PeerEndpoint::V6(v6()))),
+        spawned(&state.on_spawn_failed(t0(), PeerEndpoint::V6(v6()))),
         vec![PeerEndpoint::V4(v4())]
     );
     assert!(
-        !state
-            .dual_stack_fallbacks
-            .contains_key(&PeerEndpoint::V6(v6())),
-        "no stale fallback entry for the failed half"
+        spawned(&state.on_spawn_failed(t0(), PeerEndpoint::V4(v4()))).is_empty(),
+        "the failed half is no fallback left behind"
     );
 }
 
 /// `peer(1)` hands over a plain IPv4 record; what gets dialed.
 fn sight_single(state: &mut DownloadState) -> Vec<PeerEndpoint> {
-    let source = ExchangedSource::plain(PeerSource::HighId(v4()));
-    spawned(&state.on_worker_event(
-        peer(1),
-        PeerWorkerEvent::SourcesReceived {
-            sources: vec![source],
-        },
-    ))
+    let source = SourceSighting::plain(PeerSource::HighId(v4()));
+    spawned(&via_exchange(state, peer(1), vec![source]))
 }
 
 /// A single-address source is one half with no other: its failed dial spends
@@ -314,11 +298,11 @@ fn a_spent_endpoint_is_redialled_after_it_sits_out_a_reask_period() {
         PeerWorkerEvent::Disconnected,
     );
 
-    state.on_reask_period();
+    let _ = state.on_tick(t0() + FILE_REASK_TIME);
     assert!(
         sight_single(&mut state).is_empty(),
         "spent in the period that just ended"
     );
-    state.on_reask_period();
+    let _ = state.on_tick(t0() + FILE_REASK_TIME * 2);
     assert_eq!(sight_single(&mut state), vec![PeerEndpoint::V4(v4())]);
 }

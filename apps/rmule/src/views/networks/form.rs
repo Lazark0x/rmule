@@ -29,8 +29,8 @@ use crate::wrap::clamp_u16;
 /// Floor width of a modal form; a longer entry grows it (see [`draw_form`]).
 pub(super) const FORM_W: u16 = 58;
 
-/// Greyed-menu reason: the run has no credentials to log in with.
-pub(super) const NO_CREDENTIALS: &str = "(no credentials — UI-only run)";
+/// Greyed-menu reason: the run has no core to log in with.
+pub(super) const NOT_ATTACHED: &str = "(core not attached — UI-only run)";
 
 /// Which form is up. Both are the same machine — labelled text fields, one
 /// focused, `Enter` commits — so the add form and the update-URL prompt cannot

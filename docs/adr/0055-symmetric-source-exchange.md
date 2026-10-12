@@ -40,8 +40,9 @@ sources enter the download's one candidate pool mid-download (ADR-0030), where b
 picks them up; there is no separate pool and no single source snapshot. High-ID sources
 not already known are pooled, dialed in the family the Dial Chooser picks (ADR-0087), with
 the crypt stance the record stated (ADR-0049). Low-ID sources become Low-ID Candidate
-records in the connected server's namespace, for whichever road the admission rule leaves
-open (ADR-0039, ADR-0061, ADR-0091).
+records in the namespace of the server each row names — aMule keeps every row's own
+server with the source (stock 2.3.3 `PartFile.cpp:2771`, `:2815`) — for whichever road the
+admission rule leaves open (ADR-0039, ADR-0061, ADR-0091).
 
 **rmule serves and requests, SX2-grade, with aMule's mechanics.**
 
@@ -136,7 +137,7 @@ place (`uq:401-431`), and its UDP reask is answered only for that file (`cus:197
 rmule's waiter standing follows the file it last asked about
 (`UploadSlotQueue::follow_asked_file`); the asker's part status stays per peer and file.
 
-**The bundle gate.** A bundle reaches core whole (`PeerEvent::FileBundleRequested`) and
+**The bundle gate.** A bundle reaches core whole (`ServerEvent::FileBundleRequested`) and
 core gates it once on its file, as aMule does before its sub loop (`cts:1061-1085`). A
 file rmule does not share, or an `_EXT` size that is not the file's, draws one
 `OP_FILEREQANSNOFIL` and nothing else. A sub cut short is reported by the walker

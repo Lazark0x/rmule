@@ -1,8 +1,8 @@
 //! The **Shared Directory List**'s rules that need no scan (ADR-0101,
-//! "Shared Directories"): the guards an added directory must pass, and which
-//! entries are scanned and which are covered by another. Pure but for the
-//! looks the guards take at the path itself: its canonical form, whether it
-//! is a directory, and whether it is a mount point.
+//! "Shared Directories"): the guards an added directory and the download
+//! directory must pass, and which entries are scanned and which are covered
+//! by another. Pure but for the looks the guards take at the path itself: its
+//! canonical form, whether it is a directory, and whether it is a mount point.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -22,7 +22,7 @@ pub struct ShareGuards {
 
 /// Why a directory was not added to, or removed from, the list. A code: the
 /// front end words it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum DirectoryRefusal {
     /// Nothing is there, or it is not a directory.
     NotADirectory,
@@ -77,23 +77,7 @@ pub(crate) fn admit(
         Ok(_) => return Err(DirectoryRefusal::NotADirectory),
         Err(error) => return Err(DirectoryRefusal::Unreachable(error.kind())),
     }
-    if dir.to_str().is_none() {
-        return Err(DirectoryRefusal::NotUtf8);
-    }
-    if guards.home.as_deref().map(canonical).as_deref() == Some(dir.as_path()) {
-        return Err(DirectoryRefusal::HomeDirectory);
-    }
-    if mount_point(&dir) {
-        return Err(DirectoryRefusal::FilesystemRoot);
-    }
-    if let Some(data) = guards.data_dir.as_deref().map(canonical) {
-        if dir.starts_with(&data) {
-            return Err(DirectoryRefusal::DataDirectory);
-        }
-        if data.starts_with(&dir) {
-            return Err(DirectoryRefusal::HoldsDataDirectory);
-        }
-    }
+    guard(&dir, guards)?;
     if listed.contains(&dir) {
         return Err(DirectoryRefusal::AlreadyShared);
     }
@@ -103,6 +87,116 @@ pub(crate) fn admit(
         });
     }
     Ok(dir)
+}
+
+/// Check a directory where it is now with the add's guards on what a
+/// directory is: valid UTF-8, not the home, not a filesystem root, not rmule's
+/// data directory, inside it or holding it. The download directory is judged
+/// so at its set and before each of its scans, and every listed entry when its
+/// scan starts and again when it appears after missing, since what a path
+/// leads to can change after the add. Unlike an add it need not be there
+/// yet — aMule makes its incoming directory, a download makes rmule's, and a
+/// listed directory can be missing — so a directory not there is judged where
+/// it would be, and its scan judges it again when it appears.
+///
+/// # Errors
+/// The first guard it fails, in the order ADR-0101 lists them.
+pub(crate) fn guard_in_place(dir: &Path, guards: &ShareGuards) -> Result<(), DirectoryRefusal> {
+    guard(&resolved(dir), guards)
+}
+
+/// The guards on what the canonical directory `dir` is, whatever the list
+/// holds.
+fn guard(dir: &Path, guards: &ShareGuards) -> Result<(), DirectoryRefusal> {
+    if dir.to_str().is_none() {
+        return Err(DirectoryRefusal::NotUtf8);
+    }
+    if guards.home.as_deref().map(canonical).as_deref() == Some(dir) {
+        return Err(DirectoryRefusal::HomeDirectory);
+    }
+    if mount_point(dir) {
+        return Err(DirectoryRefusal::FilesystemRoot);
+    }
+    if let Some(data) = guards.data_dir.as_deref().map(canonical) {
+        if dir.starts_with(&data) {
+            return Err(DirectoryRefusal::DataDirectory);
+        }
+        if data.starts_with(dir) {
+            return Err(DirectoryRefusal::HoldsDataDirectory);
+        }
+    }
+    Ok(())
+}
+
+/// The list's entries as the refused-folder rule reads them: each as the
+/// list names it and where it leads now, symlinks resolved, with whether the
+/// guards refuse it. Resolved once, when read, so one reading rules on every
+/// row a pass looks at.
+pub(crate) struct RefusedFolders {
+    entries: Vec<RefusalEntry>,
+}
+
+struct RefusalEntry {
+    named: PathBuf,
+    real: PathBuf,
+    refused: bool,
+}
+
+impl RefusedFolders {
+    /// Read `listed`: each entry's path with whether the guards refuse it.
+    pub(crate) fn read<'a>(listed: impl IntoIterator<Item = (&'a Path, bool)>) -> Self {
+        let entries = listed
+            .into_iter()
+            .map(|(dir, refused)| RefusalEntry {
+                named: dir.to_path_buf(),
+                real: resolved(dir),
+                refused,
+            })
+            .collect();
+        Self { entries }
+    }
+
+    /// Whether a file at `path` lies under a refused entry. The entry nearest
+    /// to it decides, so a passing entry inside a refused one shares its own
+    /// files; of two entries equally near, a refused one decides. The rule is
+    /// read twice, by the paths as spelt and by where they lead now, and
+    /// either reading refusing the file refuses it: no other spelling of a
+    /// refused folder — a link into it, or the folder named through a link —
+    /// lets a file out.
+    pub(crate) fn refuses(&self, path: &Path) -> bool {
+        let real = resolved(path);
+        nearest_refuses(path, self.entries.iter().map(|e| (&e.named, e.refused)))
+            || nearest_refuses(&real, self.entries.iter().map(|e| (&e.real, e.refused)))
+    }
+}
+
+/// Whether the entry of `entries` nearest to `path` — the deepest one it lies
+/// under, a refused one on a tie — is refused.
+fn nearest_refuses<'a>(path: &Path, entries: impl Iterator<Item = (&'a PathBuf, bool)>) -> bool {
+    entries
+        .filter(|(dir, _)| path.starts_with(dir))
+        .max_by_key(|(dir, refused)| (dir.components().count(), *refused))
+        .is_some_and(|(_, refused)| refused)
+}
+
+/// `path` with its longest existing ancestor resolved and the rest appended:
+/// where a directory not made yet would be. As given when no ancestor
+/// resolves, or a component is `..`.
+fn resolved(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut head = path;
+    loop {
+        if let Ok(real) = std::fs::canonicalize(head) {
+            return rest.iter().rev().fold(real, |dir, name| dir.join(name));
+        }
+        match (head.parent(), head.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name);
+                head = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
 }
 
 /// `path` resolved, or as given when it cannot be: a guard over a path that

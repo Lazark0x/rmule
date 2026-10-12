@@ -1,6 +1,6 @@
 [package]
 name = "rmule-cli"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -23,13 +23,16 @@ rmule-core = { path = "../../crates/rmule-core" }
 rmule-kad = { path = "../../crates/rmule-kad" }
 rmule-net = { path = "../../crates/rmule-net" }
 rmule-primitives = { path = "../../crates/rmule-primitives" }
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs"] }
+# The front ends' words for core's codes: the CLI says the Run Log's absence,
+# a refused directory and a completed download as the TUI does.
+rmule-words = { path = "../../crates/rmule-words" }
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs"] }
 
 [dev-dependencies]
 assert_cmd.workspace = true
 predicates.workspace = true
+rmule-testkit = { path = "../../crates/rmule-testkit" }
 tempfile.workspace = true
 
 [lints]

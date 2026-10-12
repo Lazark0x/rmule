@@ -99,7 +99,7 @@ fn assert_sources_are_a(founds: &[KadEvent]) {
         let KadEvent::SourcesFound { target, candidates } = event else {
             unreachable!()
         };
-        assert_eq!(*target, key());
+        assert_eq!(*target, search_request().target());
         assert_eq!(candidates.len(), 1);
         assert_eq!(
             candidates[0]

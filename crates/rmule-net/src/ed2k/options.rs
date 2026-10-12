@@ -1,6 +1,6 @@
 //! The knobs a caller sets before dialing an eD2k server: the two timeouts the
-//! runtime distinguishes, where captures land, and the obfuscation policy for
-//! the connection.
+//! runtime distinguishes, where captures land, the crypt stance the login
+//! states and whether the link is opened obfuscated.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -25,10 +25,20 @@ pub struct ConnectOptions {
     /// If set, the driver writes per-session capture artifacts to this
     /// directory (see ADR-0022); `None` runs without a capture task at all.
     pub capture_dir: Option<PathBuf>,
-    /// Protocol obfuscation policy for this server connection (ADR-0042), or
-    /// `None` to connect plaintext. `Requested`/`Required` attempt an obfuscated
-    /// DH handshake first; `Requested` falls back to plaintext on failure.
+    /// Our obfuscation policy (ADR-0042), or `None` for none: the crypt
+    /// stance the login's `CT_SERVER_FLAGS` states (ADR-0047), whether or not
+    /// this link is obfuscated — aMule writes its preference there either
+    /// way (`ServerConnect.cpp:273-288`). It opens no obfuscated link by
+    /// itself; [`obfuscated_port`](Self::obfuscated_port) does.
     pub obfuscation: Option<ObfuscationConfig>,
+    /// Dial this port, the server's obfuscation TCP port, and run the server
+    /// form of the crypt handshake (768-bit DH, ADR-0042) before the login;
+    /// `None` dials the endpoint's own port plain. Set by a caller whose policy
+    /// initiates obfuscation toward a server known to take it there (aMule's
+    /// dial gate, `ServerSocket.cpp:786-795`). One attempt: a failed dial or
+    /// handshake is returned, and falling back to a plain link is the
+    /// caller's call, because only the caller knows its policy allows one.
+    pub obfuscated_port: Option<u16>,
     /// Our Known IPv6, when the Advertised Endpoints chooser settled one
     /// (ADR-0084/0087): the login carries `CT_MOD_IP_V6` and the coupled
     /// `SRVCAP_IPV6` bit. `None` sends neither — which is the honest state for
@@ -47,6 +57,7 @@ impl Default for ConnectOptions {
             login_timeout: Duration::from_secs(15),
             capture_dir: None,
             obfuscation: None,
+            obfuscated_port: None,
             advertised_ipv6: None,
             udp_ports: None,
         }

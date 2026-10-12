@@ -62,6 +62,11 @@ pub enum Action {
     /// [`crate::state::UiState::preferences`], and applies the live half of it
     /// (the theme, the session's download directory).
     Preference(crate::config::PrefEdit),
+    /// A download directory the Settings form would commit (ADR-0101): the
+    /// app asks core's share guards first, and only a directory they pass
+    /// gets the form's warning that everything under it is offered — a
+    /// refused one is said at once, before anything is confirmed.
+    ConfirmDownloadDir(std::path::PathBuf),
     /// The operator closed a held search (ADR-0073, Held Searches): its
     /// results leave memory with it. Core has already ended the search.
     ForgetSearch(rmule_core::SearchId),

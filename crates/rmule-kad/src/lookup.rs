@@ -3,8 +3,8 @@
 //! sources and diagnostics a finished walk reports.
 
 use rmule_primitives::{
-    ClientId, Ipv4Endpoint, Ipv6Endpoint, PeerSource, SourceCryptOptions, SourceLookupTarget,
-    UserHash,
+    ClientId, Ipv4Endpoint, Ipv6Endpoint, PeerSource, SightedBuddy, SourceCryptOptions,
+    SourceLookupTarget, SourceRoad, SourceSighting, UserHash,
 };
 
 use crate::KadId;
@@ -159,7 +159,7 @@ pub enum KadPublishPosture {
     Reachable,
     /// Firewalled, with the buddy the slot holds, if any.
     Firewalled {
-        /// The held buddy — core's `FirewalledSlot::publish_buddy_info`.
+        /// The held buddy — the buddy row of core's Buddy Snapshot.
         buddy: Option<KadBuddyContact>,
     },
 }
@@ -365,6 +365,55 @@ impl KadSourceCandidate {
         match (self.repr, self.facts) {
             (Repr::Buddy, Some(facts)) => facts.buddy,
             _ => None,
+        }
+    }
+
+    /// The **Source Sighting** this row is to a download: its one road and every
+    /// fact beside it — the publisher's User Hash, its `TAG_ENCRYPTION` byte and
+    /// its `ip6`. The road is the seal's verdict carried over, never re-derived
+    /// from the bytes: a direct row is its record, a buddy row reaches its
+    /// buddy, a type-6 row takes the `0x95` at its observed endpoint.
+    ///
+    /// `None` for a refusal, and for a buddy row whose publisher's Kad UDP
+    /// endpoint the storer did not observe: that address is the one value that
+    /// tells two firewalled publishers apart, so nothing could hold the row.
+    #[must_use]
+    pub fn sighting(self) -> Option<SourceSighting> {
+        let facts = self.facts;
+        let road = match self.repr {
+            Repr::Direct(source) => SourceRoad::Record(source),
+            Repr::Buddy => {
+                let facts = facts?;
+                SourceRoad::Buddy {
+                    buddy: facts.buddy?.into(),
+                    kad_udp: facts.kad_udp?,
+                    tcp_port: facts.tcp_port,
+                }
+            }
+            Repr::DirectUdp => SourceRoad::DirectUdpCallback {
+                kad_udp: self.direct_udp_callback()?,
+                tcp_port: facts?.tcp_port,
+            },
+            Repr::Diagnostic(_) => return None,
+        };
+        Some(
+            SourceSighting::by_road(
+                road,
+                facts.map(|facts| facts.user_hash),
+                facts.and_then(|facts| facts.connect_options),
+            )
+            .with_ipv6_half(facts.and_then(|facts| facts.ipv6)),
+        )
+    }
+}
+
+impl From<KadBuddyContact> for SightedBuddy {
+    /// The contact as a sighting carries it: the ID's wire bytes and the IPv4
+    /// endpoint, the one family a buddy road dials (ADR-0087).
+    fn from(contact: KadBuddyContact) -> Self {
+        Self {
+            buddy_id: *contact.buddy_id.as_bytes(),
+            buddy_udp: contact.buddy_udp,
         }
     }
 }

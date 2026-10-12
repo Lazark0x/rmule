@@ -5,6 +5,7 @@
 //! Deterministic (in-memory stores, tempfile content); the interop-bench /
 //! Ghostty half is a hands-on checklist run in a real terminal.
 
+use rmule_testkit::HANG_GUARD;
 use std::time::{Duration, Instant};
 
 use rmule::action::Action;
@@ -12,8 +13,8 @@ use rmule::bridge::{self, BridgeConfig};
 use rmule::client::CoreClient;
 use rmule::state::UiState;
 use rmule_core::{
-    Core, CoreCommand, CoreConfig, CoreEvent, DurableAppConfig, KadIdentity, KadSeedOutcome,
-    ManagedServer, ScanCommand, ScanEvent, ServeEvent, ServerListCommand, ServerListStore,
+    Core, CoreCommand, CoreConfig, CoreEvent, DurableAppConfig, KadSeedOutcome, ManagedServer,
+    ScanCommand, ScanEvent, ServeEvent, ServerListCommand, ServerListStore,
 };
 use rmule_primitives::ServerEndpoint;
 
@@ -24,7 +25,9 @@ async fn a_real_core_share_round_trips_through_seam_bridge_and_fold() {
 
     // Production wiring on the engine's in-memory backend: `Core::builder`
     // defaults over one throwaway Durable Store.
-    let core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store()).build();
+    let core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     let (actions_tx, mut actions_rx) = tokio::sync::mpsc::channel(64);
     let handle = bridge::spawn(core, actions_tx, BridgeConfig::default());
 
@@ -36,16 +39,9 @@ async fn a_real_core_share_round_trips_through_seam_bridge_and_fold() {
         .expect("command lands through the seam");
 
     let mut state = UiState::default();
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(HANG_GUARD, async {
         loop {
             let action = actions_rx.recv().await.expect("bus open");
-            // The real actor answers the bridge's own `DumpDiagnostics` poll
-            // while this runs; that echo is a level the bridge lifts
-            // `kad` off, never a UI event — it must not reach the bus.
-            assert!(
-                !matches!(&action, Action::Core(CoreEvent::DiagnosticsSnapshot { .. })),
-                "the bridge's poll answer leaked onto the UI bus"
-            );
             if let Action::Core(CoreEvent::Scan(ScanEvent::ConsentRequested { dir, .. })) = &action
             {
                 handle
@@ -67,7 +63,7 @@ async fn a_real_core_share_round_trips_through_seam_bridge_and_fold() {
         }
     })
     .await
-    .expect("FileShared must arrive within 10s");
+    .expect("FileShared must arrive");
 
     assert_eq!(state.shared.len(), 1, "the fold projected the share row");
     assert_eq!(state.notable.as_deref(), Some("file shared"));
@@ -97,7 +93,9 @@ async fn the_injected_server_list_store_is_what_the_servers_tab_renders() {
         .expect("seed the store before the core takes it");
     // The core's own server-list seam is the default one on this same store,
     // so the row seeded above is already there when the actor starts.
-    let core = Core::builder(CoreConfig::default(), handle_store).build();
+    let core = Core::builder(CoreConfig::default(), handle_store)
+        .settings(rmule_core::CoreSettings::default())
+        .build();
 
     let (actions_tx, mut actions_rx) = tokio::sync::mpsc::channel(64);
     let handle = bridge::spawn(core, actions_tx, BridgeConfig::default());
@@ -112,7 +110,7 @@ async fn the_injected_server_list_store_is_what_the_servers_tab_renders() {
     // ordering between them, so wait for both rather than for whichever wins.
     let logged = format!("server added: {}:{}", added.host(), added.port());
     let mut state = UiState::default();
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(HANG_GUARD, async {
         loop {
             let action = actions_rx.recv().await.expect("bus open");
             state.apply(action, Instant::now());
@@ -124,7 +122,7 @@ async fn the_injected_server_list_store_is_what_the_servers_tab_renders() {
         }
     })
     .await
-    .expect("both rows on the level and the add edge in the log within 10s");
+    .expect("both rows on the level and the add edge in the log");
 
     let hosts: Vec<&str> = state
         .diagnostics
@@ -152,30 +150,22 @@ async fn the_injected_server_list_store_is_what_the_servers_tab_renders() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_armed_kad_join_starts_a_real_node_and_the_panel_fact_goes_live() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let credentials = rmule_primitives::ClientIdentity::new(
-        rmule_primitives::UserHash::from_bytes([0x42; rmule_primitives::UserHash::BYTE_LEN]),
-        rmule_primitives::Ed2kText::from_utf8("rmule"),
-        4662,
-        60,
-    )
-    .into();
-    let kad = KadIdentity {
-        id: rmule_core::KadId::from_bytes([0x11; rmule_core::KadId::BYTE_LEN]),
-        udp_port: 0, // ephemeral: the app's fixed 4672 is not a test's to take
-    };
-    let config = rmule::kad::enable_config(dir.path(), kad, 0, &credentials);
+    let config = rmule::kad::enable_config(dir.path());
 
-    let core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store()).build();
+    // The UDP port is left ephemeral: the app's fixed 4672 is not a test's
+    // to take.
+    let core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
+    let own_id = core.kad_id();
     let (actions_tx, mut actions_rx) = tokio::sync::mpsc::channel(64);
     let handle = bridge::spawn(
         core,
         actions_tx,
         BridgeConfig {
-            // The default 5 s Kad poll is right for a running app and far too
-            // slow for a test that is waiting on exactly one of its answers.
-            kad_poll_interval: Duration::from_millis(20),
-            // Likewise the 1 Hz data tick: the unarmed window below is counted
-            // in ticks, and each one carries several Kad poll answers.
+            // The 1 Hz data tick is far too slow for a test that waits on
+            // the Kad facts: they ride the tick, and the unarmed window below
+            // is counted in ticks.
             snapshot_interval: Duration::from_millis(50),
             ..BridgeConfig::default()
         },
@@ -190,6 +180,7 @@ async fn the_armed_kad_join_starts_a_real_node_and_the_panel_fact_goes_live() {
                 &mut armed,
                 &client,
                 &config,
+                own_id,
                 &rmule_bootstrap::BootstrapConfig::default(),
                 &NeverFetches,
             )
@@ -201,7 +192,7 @@ async fn the_armed_kad_join_starts_a_real_node_and_the_panel_fact_goes_live() {
     // the fact the panel reads is `None` because no node was ever started.
     let mut state = UiState::default();
     let mut polls = 0;
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(HANG_GUARD, async {
         while polls < 3 {
             let action = actions_rx.recv().await.expect("bus open");
             polls += usize::from(matches!(action, Action::Snapshot(_)));
@@ -209,7 +200,7 @@ async fn the_armed_kad_join_starts_a_real_node_and_the_panel_fact_goes_live() {
         }
     })
     .await
-    .expect("three data ticks within 10s");
+    .expect("three data ticks");
     assert!(
         state.diagnostics.kad.is_none(),
         "no eD2k login yet — the join must not have fired"
@@ -245,7 +236,7 @@ async fn the_armed_kad_join_starts_a_real_node_and_the_panel_fact_goes_live() {
         "the reason must survive in the log, not just flash past"
     );
 
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(HANG_GUARD, async {
         loop {
             state.apply(actions_rx.recv().await.expect("bus open"), Instant::now());
             if let Some(kad) = state.diagnostics.kad {
@@ -258,7 +249,7 @@ async fn the_armed_kad_join_starts_a_real_node_and_the_panel_fact_goes_live() {
         }
     })
     .await
-    .expect("the Kad panel must go live within 10s");
+    .expect("the Kad panel must go live");
 }
 
 /// The search-options row's whole path, with nothing faked between the
@@ -277,7 +268,7 @@ async fn the_options_row_constraints_arrive_as_a_decodable_expression_tree() {
     use rmule::state::SessionConfig;
     use rmule::views::ViewOutcome;
     use rmule::views::searches::SearchesView;
-    use rmule_core::{AppConfigStore, SearchCommand, SearchEvent};
+    use rmule_core::{SearchCommand, SearchEvent};
     use rmule_primitives::Ed2kFileClass;
     use rmule_testkit::FakeEd2kServer;
 
@@ -297,13 +288,9 @@ async fn the_options_row_constraints_arrive_as_a_decodable_expression_tree() {
     )
     .expect("a loopback endpoint");
 
-    let identity = DurableAppConfig::new(rmule_testkit::memory_store())
-        .ensure_identity()
-        .expect("identity");
     let mut state = UiState {
         session: Some(SessionConfig {
             server: Some(endpoint.clone()),
-            credentials: rmule_core::ClientCredentials::from(identity),
             download_dir: None,
         }),
         ..UiState::default()
@@ -344,6 +331,7 @@ async fn the_options_row_constraints_arrive_as_a_decodable_expression_tree() {
         },
         rmule_testkit::memory_store(),
     )
+    .settings(rmule_core::CoreSettings::default())
     .build();
     let (actions_tx, mut actions_rx) = tokio::sync::mpsc::channel(64);
     let handle = bridge::spawn(core, actions_tx, BridgeConfig::default());
@@ -354,7 +342,6 @@ async fn the_options_row_constraints_arrive_as_a_decodable_expression_tree() {
         }),
         CoreCommand::ConnectToServer {
             server: server.endpoint(),
-            credentials: rmule_testkit::test_identity(0x42, "rmule", 0).into(),
         },
     ] {
         handle.send(connect).await.expect("the connect lands");
@@ -364,7 +351,7 @@ async fn the_options_row_constraints_arrive_as_a_decodable_expression_tree() {
         .await
         .expect("command lands through the seam");
 
-    tokio::time::timeout(Duration::from_secs(15), async {
+    tokio::time::timeout(HANG_GUARD, async {
         loop {
             let action = actions_rx.recv().await.expect("bus open");
             let settled = matches!(
@@ -380,7 +367,7 @@ async fn the_options_row_constraints_arrive_as_a_decodable_expression_tree() {
         }
     })
     .await
-    .expect("the search settles within 15s");
+    .expect("the search settles");
 
     let queries = server.search_queries().await;
     assert_eq!(

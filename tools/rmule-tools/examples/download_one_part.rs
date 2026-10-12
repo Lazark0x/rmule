@@ -19,7 +19,10 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use ed2k::digest::Digest;
 use rmule_net::peer::{ConnectOptions, Connection};
-use rmule_peer::{PartRanges, PeerCommand, PeerEvent, PeerHandshakeContext, SlotReleaseReason};
+use rmule_peer::{
+    ConnectionEvent, PartRanges, PeerCommand, PeerEvent, PeerHandshakeContext, RequesterCommand,
+    RequesterEvent, SlotReleaseReason,
+};
 use rmule_primitives::{
     ClientId, ClientIdentity, ED2K_PART_SIZE, Ed2kLink, Ed2kText, PartHash, PeerEndpoint, UserHash,
 };
@@ -47,6 +50,8 @@ async fn main() -> Result<()> {
     let ctx = PeerHandshakeContext {
         identity,
         client_id: ClientId::from_u32(0x10000001),
+        ed2k_client_id: ClientId::from_u32(0x10000001),
+        public_ip: None,
         connected_server: None,
     };
     let options = ConnectOptions {
@@ -64,40 +69,40 @@ async fn main() -> Result<()> {
 
     while let Some(event) = conn.next_event().await {
         match event {
-            PeerEvent::PeerIdentified { .. } => {
-                conn.send(PeerCommand::RequestParts {
+            PeerEvent::Connection(ConnectionEvent::Identified { .. }) => {
+                conn.send(PeerCommand::Requester(RequesterCommand::RequestParts {
                     file_hash: file.file_hash,
                     file_size: file.size,
                     ranges,
-                })
+                }))
                 .await
                 .ok();
             }
-            PeerEvent::HashSetReceived {
+            PeerEvent::Requester(RequesterEvent::HashSetReceived {
                 part_hashes: hashes,
                 ..
-            } => {
+            }) => {
                 part_hashes = Some(hashes);
             }
-            PeerEvent::PartReceived { bytes, .. } => {
+            PeerEvent::Requester(RequesterEvent::PartReceived { bytes, .. }) => {
                 accumulated.extend_from_slice(&bytes);
                 // Held slot (ADR-0025, amended): the session does not
                 // auto-release per request, so the consumer releases
                 // explicitly once the whole requested part has arrived.
                 if accumulated.len() as u64 >= part0_len {
-                    conn.send(PeerCommand::ReleaseSlot {
+                    conn.send(PeerCommand::Requester(RequesterCommand::ReleaseSlot {
                         file_hash: file.file_hash,
-                    })
+                    }))
                     .await
                     .ok();
                 }
             }
-            PeerEvent::SlotReleased { reason, .. } => {
+            PeerEvent::Requester(RequesterEvent::SlotReleased { reason, .. }) => {
                 released = true;
                 released_reason = Some(reason);
                 break;
             }
-            PeerEvent::Disconnected { reason } => {
+            PeerEvent::Connection(ConnectionEvent::Disconnected { reason }) => {
                 anyhow::bail!("peer disconnected before download complete: {reason:?}");
             }
             _ => {}

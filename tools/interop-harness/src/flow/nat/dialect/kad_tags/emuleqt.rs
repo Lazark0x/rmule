@@ -162,7 +162,7 @@ const DIAL_BACK_SHARED_BYTES: u64 = 1 << 16;
 /// non-fatal, and a local refusal fails at once.
 const DIAL_BACK_CLOSED_SERVER: &str = "127.0.0.1:4661";
 const DIAL_BACK_WINDOW_SECS: u64 = 900;
-const DIAL_BACK_READY_MARKER: &str = "serve serving_started";
+const DIAL_BACK_READY_MARKER: &str = "serve.serving_started";
 
 /// The rmule downloader of emule-qt's file.
 const QT_DOWNLOADER_ROLE: &str = "v6kad-qt-downloader";
@@ -446,7 +446,7 @@ fn start_dial_back(
     .map(str::to_owned)
     .into_iter()
     // `supported` arms the Core's Kad datagram crypt and its verify keys
-    // (`CoreConfig::peer_crypt`) without initiating peer-TCP
+    // (`CoreSettings::obfuscation`) without initiating peer-TCP
     // obfuscation.
     .chain(
         options
@@ -527,7 +527,7 @@ fn claims(leg: &EmuleQtLeg<'_>, emuleqt_v4: &str, emuleqt_v6: Ipv6Addr) -> Vec<C
         .download
         .log
         .lines()
-        .filter(|line| line.contains("download peer_selected"))
+        .filter(|line| line.contains("download.peer_selected"))
         .map(str::trim)
         .collect();
     let dialled_v6 = selected
@@ -663,7 +663,7 @@ mod tests {
             ran: true,
             log: peers
                 .iter()
-                .map(|peer| format!("download peer_selected id=1 peer={peer}\n"))
+                .map(|peer| format!("download.peer_selected id=1 peer={peer}\n"))
                 .collect(),
             output_hash: Some(FILE_HASH.to_owned()),
         }

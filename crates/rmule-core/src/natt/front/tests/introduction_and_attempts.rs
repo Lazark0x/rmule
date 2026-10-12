@@ -129,8 +129,8 @@ async fn the_attempt_ends_at_the_budget_with_its_dial_count() {
 
 /// Both ways a server introduction dies reach the buddy, and each puts a real
 /// rendezvous on the client-UDP send half addressed to the buddy the
-/// candidate named — the `0x60` left through the session, so until now
-/// nothing on this node had emitted a thing.
+/// candidate named — the `0x60` left on the session, so until now nothing had
+/// left the client-UDP half.
 ///
 /// The arming is the schedule's `RouteChosen` trigger, not a fresh budget: a
 /// first attempt is unjittered, so the datagram is out on the same call.
@@ -153,11 +153,11 @@ async fn a_refused_and_a_silent_introduction_each_fall_to_the_buddy_rendezvous()
         let low_id = ClientId::from_u32(low);
 
         harness
-            .asked_our_server(target, low_id, Some(known_buddy()), t0)
+            .asked_our_server(target, low_id, Some(super::known_buddy()), t0)
             .await;
         assert!(
             harness.drained().is_empty(),
-            "the server's introduction is the session's to send, not the front's"
+            "the 0x60 leaves on the session, not the client-UDP half"
         );
 
         harness
@@ -183,7 +183,11 @@ async fn a_refused_and_a_silent_introduction_each_fall_to_the_buddy_rendezvous()
         let session = harness.diagnostics.snapshot().session;
         assert_eq!(session.natt_attempts_server_total, 1);
         assert_eq!(session.natt_attempt_fallthroughs_total, 1);
-        assert_eq!(session.natt_rendezvous_emitted_total, 1);
+        assert_eq!(session.natt_server_requests_emitted_total, 1, "the 0x60");
+        assert_eq!(
+            session.natt_rendezvous_emitted_total, 1,
+            "the fall-through's rendezvous"
+        );
         assert_eq!(session.natt_retirements_total, 0, "the attempt lives on");
 
         // The attempt no longer answers to the Low-ID: the buddy leg's
@@ -220,34 +224,7 @@ async fn a_candidate_with_no_buddy_retires_with_the_servers_reason_and_tells_its
     let t0 = Instant::now();
     let target = hash(0x44);
     let low_id = ClientId::from_u32(42);
-    let callback = crate::adapters::CallbackKey {
-        server: None,
-        low_id,
-    };
-    let (retire_tx, mut retire_rx) = mpsc::channel(4);
-    harness
-        .claims
-        .register(
-            target,
-            crate::adapters::PendingTunnelEntry {
-                own_status: rmule_peer::PartBitmap::downloader_empty(0),
-                want_sources: true,
-                file: rmule_primitives::Ed2kFileLink {
-                    file_hash: FileHash::from_bytes([0x22; FileHash::BYTE_LEN]),
-                    size: 9_728_000,
-                    name: rmule_primitives::Ed2kText::from_utf8("claimed"),
-                    part_hash_set: None,
-                    aich_root: None,
-                    ipv6_sources: Vec::new(),
-                    sources: Default::default(),
-                },
-                callback,
-                adopt_tx: mpsc::channel(1).0,
-                retire_tx,
-                dial_back: false,
-            },
-        )
-        .await;
+    let (callback, mut retire_rx, _claim) = harness.claim(target, low_id);
 
     harness.asked_our_server(target, low_id, None, t0).await;
     harness
@@ -292,6 +269,106 @@ async fn a_candidate_with_no_buddy_retires_with_the_servers_reason_and_tells_its
     );
 }
 
+/// The front is rung 1's one emitter: the server leg's `0x60` leaves on
+/// the Server Coordinator's live session, naming the client-UDP port as
+/// bound, and the attempt it opens answers to the Low-ID it named. A target
+/// with no User Hash is introduced all the same — the server needs only the
+/// id — and no attempt is keyed for it.
+#[tokio::test]
+async fn the_server_leg_puts_its_0x60_on_the_session_and_opens_the_attempt() {
+    let mut harness = Harness::new();
+    let now = Instant::now();
+    let (target, low_id) = (hash(0x44), ClientId::from_u32(42));
+
+    harness.asked_our_server(target, low_id, None, now).await;
+    assert_eq!(
+        harness.around.next_introduction().await,
+        (low_id, OUR_UDP_PORT)
+    );
+    assert_eq!(harness.front.attempts.target_of(low_id), Some(target));
+
+    let hashless = ClientId::from_u32(43);
+    harness
+        .front
+        .on_command(
+            NattCommand::Traverse {
+                coordinator: AttemptCoordinator::Server { low_id: hashless },
+                owner: None,
+            },
+            now,
+        )
+        .await;
+    assert_eq!(
+        harness.around.next_introduction().await,
+        (hashless, OUR_UDP_PORT)
+    );
+    assert_eq!(harness.front.attempts.target_of(hashless), None);
+
+    let session = harness.diagnostics.snapshot().session;
+    assert_eq!(session.natt_attempts_server_total, 1);
+}
+
+/// A `0x60` that cannot leave — the session is gone — went nowhere, so
+/// nothing could ever settle it: no attempt opens, and the download that
+/// claimed the target hears `NoCoordinator` at once rather than holding its
+/// slot to the traversal bound.
+#[tokio::test]
+async fn a_server_introduction_that_cannot_leave_retires_its_claimant_at_once() {
+    let mut harness = Harness::new();
+    let (target, low_id) = (hash(0x44), ClientId::from_u32(42));
+    let (callback, mut retire_rx, _claim) = harness.claim(target, low_id);
+    harness.around.end_session().await;
+
+    harness
+        .asked_our_server(target, low_id, None, Instant::now())
+        .await;
+
+    assert_eq!(
+        retire_rx.try_recv(),
+        Ok((callback, AttemptRetirement::NoCoordinator))
+    );
+    assert!(!harness.front.attempts.contains(&target));
+}
+
+/// The attempt keeps no snapshot of our position: the fall-through reads
+/// Self Reach when the server fails. A client-UDP half that went dark since
+/// the attempt began (Quit) leaves the buddy's rendezvous nothing to ride,
+/// so the attempt retires on the server's silence rather than falling.
+#[tokio::test]
+async fn the_fall_through_reads_self_reach_when_the_server_fails() {
+    let mut harness = Harness::new();
+    let t0 = Instant::now();
+    let (target, low_id) = (hash(0x44), ClientId::from_u32(42));
+    harness
+        .asked_our_server(target, low_id, Some(super::known_buddy()), t0)
+        .await;
+    harness.around.client_udp.clear();
+
+    harness
+        .front
+        .on_command(
+            NattCommand::IntroductionFailed {
+                target: low_id,
+                failure: IntroductionFailure::Silence,
+            },
+            t0 + crate::natt::server_punch::INTRODUCTION_TIMEOUT,
+        )
+        .await;
+
+    assert!(
+        harness.drained().is_empty(),
+        "no rendezvous rides a dark half"
+    );
+    assert_eq!(
+        harness
+            .diagnostics
+            .snapshot()
+            .session
+            .natt_last_retire_reason,
+        Some(AttemptRetirement::ServerSilent)
+    );
+}
+
 /// `SharedNattFront::is_live` reads the installed command
 /// sender's own `is_closed`, never a cached "was a front ever installed"
 /// flag: this proves the fact that reading rests on — `run` drops its
@@ -306,15 +383,20 @@ async fn run_returning_on_a_closed_inbox_closes_the_installed_sender() {
         NullSink,
         NattIdentity {
             local: RMULE_NATT_CLAIM,
-            crypt_options: 0,
         },
         Arc::new(own_identity) as Arc<dyn NattOwnHash>,
         None,
         NattWiring {
             client_udp,
+            server: crate::natt::server_punch::CoordinatorSession::default(),
+            reach: crate::reachability::SharedSelfReach::new(
+                crate::KadReachLevel::fixed(false),
+                crate::own_identity::SharedOwnIdentity::default(),
+                SharedNattFront::default(),
+            ),
             addresses: crate::address_learning::SharedAddressLearning::default(),
             admit: crate::adapters::SharedTunnelAdmit::default(),
-            claims: crate::adapters::SharedTunnelClaims::default(),
+            claims: crate::adapters::AwaitedInbound::default(),
             peer_pin: crate::adapters::SharedPeerPin::default(),
             diagnostics: DiagnosticsState::default(),
             events: None,
@@ -327,7 +409,8 @@ async fn run_returning_on_a_closed_inbox_closes_the_installed_sender() {
     let (commands, command_rx) = mpsc::channel::<NattCommand>(1);
     let shared = SharedNattFront::default();
     shared.install(commands);
-    assert!(shared.is_live(), "installed with its receiver still held");
+    let liveness = shared.liveness();
+    assert!(liveness.is_live(), "installed with its receiver still held");
 
     let run = tokio::spawn(assembled.front.run(inbox_rx, command_rx, assembled.risen));
     // The client-UDP front closed: dropping the datagram sender is the exact
@@ -339,7 +422,7 @@ async fn run_returning_on_a_closed_inbox_closes_the_installed_sender() {
         .expect("run does not panic");
 
     assert!(
-        !shared.is_live(),
+        !liveness.is_live(),
         "run returning drops its commands receiver, so the installed sender reads closed"
     );
 }

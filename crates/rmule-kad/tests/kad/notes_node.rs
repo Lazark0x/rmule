@@ -11,6 +11,7 @@
 //! property) through the real dispatch; a mesh-sim walk proves a notes
 //! request mid-walk never disturbs an unrelated source search.
 
+use rmule_kad::KadNodeStart;
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
@@ -273,7 +274,7 @@ fn classify_publish_falls_through_to_capacity_when_every_gate_clears() {
 // ===========================================================================
 
 fn far_node() -> KadNode {
-    KadNode::new(config(0x0F, 4672))
+    KadNode::new(KadNodeStart::new(config(0x0F, 4672), KadInstant::EPOCH))
 }
 
 #[test]

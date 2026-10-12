@@ -39,9 +39,10 @@
 
 use std::net::Ipv4Addr;
 
-use rmule_primitives::Tag;
+use rmule_primitives::{Tag, WireReader, WireTruncated};
 
 use crate::net::{PUBLISH_TOLERANCE, distance_top_word, is_lan_ip};
+use crate::wire_fields::KadWireFields;
 use crate::{KadEnvelope, KadId};
 
 // `0x35`/`0x45` are deliberately not added to `opcode::Kad2Opcode`: like
@@ -132,10 +133,10 @@ pub fn decode_search_notes_req(envelope: &KadEnvelope) -> Result<(KadId, u64), N
             opcode: envelope.opcode(),
         });
     }
-    let mut cursor = Cursor::new(envelope.payload());
-    let target = cursor.read_kad_id("notes search target")?;
-    let file_size = cursor.read_u64_le("notes search file size")?;
-    if !cursor.is_exhausted() {
+    let mut reader = WireReader::new(envelope.payload());
+    let target = reader.read_kad_id("notes search target")?;
+    let file_size = reader.read_u64_le("notes search file size")?;
+    if !reader.is_exhausted() {
         return Err(NotesDecodeError::Malformed {
             reason: "trailing bytes after the notes search payload",
         });
@@ -157,18 +158,19 @@ pub fn decode_publish_notes_req(envelope: &KadEnvelope) -> Result<KadId, NotesDe
             opcode: envelope.opcode(),
         });
     }
-    let mut cursor = Cursor::new(envelope.payload());
-    let key = cursor.read_kad_id("notes publish key")?;
-    cursor.take(KadId::BYTE_LEN, "notes publish source ID")?;
-    let tag_count = cursor.read_u8("notes publish tag count")?;
+    let mut reader = WireReader::new(envelope.payload());
+    let key = reader.read_kad_id("notes publish key")?;
+    reader.take(KadId::BYTE_LEN, "notes publish source ID")?;
+    let tag_count = reader.read_u8("notes publish tag count")?;
     for _ in 0..tag_count {
-        let (_, consumed) =
-            Tag::decode_prefix(cursor.remaining()).map_err(|_| NotesDecodeError::Malformed {
+        let (_, consumed) = Tag::decode_prefix(reader.remaining_bytes()).map_err(|_| {
+            NotesDecodeError::Malformed {
                 reason: "notes publish tag is truncated or malformed",
-            })?;
-        cursor.advance(consumed);
+            }
+        })?;
+        reader.advance_clamped(consumed);
     }
-    if !cursor.is_exhausted() {
+    if !reader.is_exhausted() {
         return Err(NotesDecodeError::Malformed {
             reason: "trailing bytes after the notes publish tag list",
         });
@@ -176,57 +178,10 @@ pub fn decode_publish_notes_req(envelope: &KadEnvelope) -> Result<KadId, NotesDe
     Ok(key)
 }
 
-/// A forward-only byte reader whose errors carry the static field name — the
-/// per-module idiom (`messages`, `source_result`, `search_tree`,
-/// `keyword_store`).
-struct Cursor<'a> {
-    bytes: &'a [u8],
-    position: usize,
-}
-
-impl<'a> Cursor<'a> {
-    const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, position: 0 }
-    }
-
-    fn take(&mut self, len: usize, field: &'static str) -> Result<&'a [u8], NotesDecodeError> {
-        let end = self
-            .position
-            .checked_add(len)
-            .filter(|&end| end <= self.bytes.len())
-            .ok_or(NotesDecodeError::Malformed { reason: field })?;
-        let slice = &self.bytes[self.position..end];
-        self.position = end;
-        Ok(slice)
-    }
-
-    fn read_u8(&mut self, field: &'static str) -> Result<u8, NotesDecodeError> {
-        Ok(self.take(1, field)?[0])
-    }
-
-    fn read_u64_le(&mut self, field: &'static str) -> Result<u64, NotesDecodeError> {
-        let bytes = self.take(8, field)?;
-        let mut array = [0u8; 8];
-        array.copy_from_slice(bytes);
-        Ok(u64::from_le_bytes(array))
-    }
-
-    fn read_kad_id(&mut self, field: &'static str) -> Result<KadId, NotesDecodeError> {
-        let bytes = self.take(KadId::BYTE_LEN, field)?;
-        let mut id = [0u8; KadId::BYTE_LEN];
-        id.copy_from_slice(bytes);
-        Ok(KadId::from_bytes(id))
-    }
-
-    fn remaining(&self) -> &'a [u8] {
-        &self.bytes[self.position..]
-    }
-
-    fn advance(&mut self, len: usize) {
-        self.position = (self.position + len).min(self.bytes.len());
-    }
-
-    const fn is_exhausted(&self) -> bool {
-        self.position >= self.bytes.len()
+impl From<WireTruncated> for NotesDecodeError {
+    fn from(truncated: WireTruncated) -> Self {
+        NotesDecodeError::Malformed {
+            reason: truncated.field,
+        }
     }
 }

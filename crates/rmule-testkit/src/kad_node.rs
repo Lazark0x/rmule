@@ -12,7 +12,8 @@ use rmule_primitives::{
 
 use rmule_kad::{
     Kad2Message, Kad2NodeInfo, KadCommand, KadEvent, KadId, KadInstant, KadNode, KadNodeConfig,
-    KadNodeDiagnostic, KadNodeEndpoint, KadOutput, udp_verify_key,
+    KadNodeDiagnostic, KadNodeEndpoint, KadNodeStart, KadObfuscation, KadOutput, KadSelfCheck,
+    udp_verify_key,
 };
 use rmule_primitives::session::drain;
 
@@ -34,15 +35,31 @@ pub fn endpoint(host: u8, port: u16) -> KadNodeEndpoint {
     KadNodeEndpoint::new(Ipv4Addr::new(203, 0, 113, host), port)
 }
 
-/// The node under test: ID `0xAA…`, the default eD2k/Kad port pair, verify
-/// keys **not** armed (see [`keyed_node`]).
-pub fn node() -> KadNode {
-    KadNode::new(KadNodeConfig {
+/// The default config of the node under test: ID `0xAA…`, the default eD2k/Kad
+/// port pair.
+pub fn node_config() -> KadNodeConfig {
+    KadNodeConfig {
         id: id(0xAA),
         tcp_port: 4662,
         udp_port: 4672,
         user_hash: rmule_kad::UserHash::from_bytes([0xEE; 16]),
-    })
+    }
+}
+
+/// The node under test: [`node_config`], routing-only and plaintext (see
+/// [`crypt_node`] for the keyed posture).
+pub fn node() -> KadNode {
+    KadNode::new(start())
+}
+
+/// The start-up value of [`node`], for a test that adds to it.
+pub fn start() -> KadNodeStart {
+    KadNodeStart::new(node_config(), T0)
+}
+
+/// A [`node`] running its own firewall self-check (ADR-0058) from [`T0`].
+pub fn self_checking_node() -> KadNode {
+    KadNode::new(start().self_check(KadSelfCheck::new()))
 }
 
 /// A v8 contact record for `id_byte`. `udp_port_tag` present means the peer
@@ -166,29 +183,24 @@ pub const NODE_ID: KadId = KadId::from_bytes([0xAA; KadId::BYTE_LEN]);
 
 /// The node's verify-key derivation secret — aMule's
 /// `thePrefs::GetKadUDPKey()`. Half of the state
-/// [`KadNode::enable_verify_keys`] arms; [`OWN_IP`] is the other half.
+/// [`KadObfuscation::with_verify_keys`] arms; [`OWN_IP`] is the other half.
 pub const SECRET: u32 = 0x5EED_1234;
 /// The public IP the node believes it has. A verify key is derived from the
 /// *peer's* IP and this secret, so the pair must be fixed for a key to be
 /// reproducible across a test.
 pub const OWN_IP: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 4);
 
-/// A node with verify-key checking armed, as [`KadNode::enable_verify_keys`]
-/// leaves it: every request it sends carries a key, and every reply it accepts
-/// must echo one back.
-pub fn keyed_node() -> KadNode {
-    let mut node = node();
-    node.enable_verify_keys(SECRET, OWN_IP);
-    node
+/// A node that obfuscates its sends under [`fixed_nonce`] with verify-key
+/// checking armed ([`SECRET`], [`OWN_IP`]): every request it sends carries a
+/// key, every reply it accepts must echo one back, and it asks for and answers
+/// a `0x22` (ADR-0064) — the ACK's proof is a key carried in the crypt trailer.
+pub fn crypt_node() -> KadNode {
+    KadNode::new(crypt_start())
 }
 
-/// A [`keyed_node`] that also obfuscates its sends under [`fixed_nonce`] — the
-/// only posture in which it asks for, or answers, a `0x22` (ADR-0064):
-/// the ACK's proof is a key carried in the crypt trailer.
-pub fn crypt_node() -> KadNode {
-    let mut node = keyed_node();
-    node.enable_datagram_obfuscation(fixed_nonce);
-    node
+/// The start-up value of [`crypt_node`], for a test that adds to it.
+pub fn crypt_start() -> KadNodeStart {
+    start().obfuscation(KadObfuscation::new(fixed_nonce).with_verify_keys(SECRET, OWN_IP))
 }
 
 /// [`sent_messages`] for a [`crypt_node`]: every datagram opened the way the

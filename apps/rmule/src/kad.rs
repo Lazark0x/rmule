@@ -42,9 +42,7 @@
 //! [`ServerConnectionEvent::Connected`]: rmule_core::ServerConnectionEvent::Connected
 
 use rmule_bootstrap::{BootstrapConfig, Fetcher};
-use rmule_core::{
-    ClientCredentials, CoreCommand, KadEnableConfig, KadIdentity, KadSeedOutcome, acquire_kad_seeds,
-};
+use rmule_core::{CoreCommand, KadEnableConfig, KadId, KadSeedOutcome, acquire_kad_seeds};
 
 use crate::client::{CoreClient, CoreClientError};
 
@@ -72,23 +70,14 @@ pub fn start_lane() -> (KadStarter, KadStarts) {
 /// so `kad_shutdown` stays `None` here, unlike `ed2k serve start`'s `--kad`
 /// flag, whose lever confirms the tap finalized.
 ///
-/// Front-end-owned config (ADR-0069): the durable [`KadIdentity`], the
-/// **Kad UDP Key** and the Client Identity come from the app's store, the
-/// persisted routing table from its data dir. Seeds are left empty — [`join`]
-/// resolves them.
+/// The node's identity is core's own (ADR-0069): its Kad ID and **Kad UDP
+/// Key** are read from the store by core, and its dials present the Core
+/// Settings' nickname and port. What the app supplies is the persisted
+/// routing table in its data dir. Seeds are left empty — [`join`] resolves
+/// them.
 #[must_use]
-pub fn enable_config(
-    data_dir: &std::path::Path,
-    kad: KadIdentity,
-    kad_udp_key: u32,
-    credentials: &ClientCredentials,
-) -> KadEnableConfig {
+pub fn enable_config(data_dir: &std::path::Path) -> KadEnableConfig {
     KadEnableConfig {
-        kad_id: kad.id,
-        // Their port is the one peers are told to dial for the eD2k half of a
-        // Kad answer — the same one the Client Identity advertises everywhere
-        // else, carried once.
-        peer_credentials: credentials.clone(),
         bootstrap: Vec::new(),
         contacts: Vec::new(),
         // Beside `rmule.redb` / `clients.met` (ADR-0069, ADR-0083): the
@@ -98,9 +87,6 @@ pub fn enable_config(
         // A deployment keeps the live ADR-0058 verdicts: a genuinely firewalled
         // node must not claim openness it has not proven.
         assume_open_reachability: false,
-        // Generate-once (`AppConfigStore::ensure_kad_udp_key`): the verify
-        // keys the network learned for this node hold across a restart.
-        kad_udp_key,
         // No TUI knob: the per-frame tap is a bench diagnostic
         // opt-in (`ed2k serve start --kad-capture-dir`), not a deployment one.
         kad_capture_dir: None,
@@ -109,7 +95,8 @@ pub fn enable_config(
     }
 }
 
-/// Resolve `config`'s seeds and join Kad.
+/// Resolve `config`'s seeds about the node's Kad ID `own_id`
+/// ([`Core::kad_id`](rmule_core::Core::kad_id)) and join Kad.
 ///
 /// Returns what the seed resolution found — the caller's honest trail line. The
 /// join is sent **whatever** that outcome is, including a stranded one: an
@@ -123,6 +110,7 @@ pub fn enable_config(
 pub async fn join<C, F>(
     client: &C,
     mut config: KadEnableConfig,
+    own_id: KadId,
     bootstrap: &BootstrapConfig,
     fetcher: &F,
 ) -> Result<KadSeedOutcome, CoreClientError>
@@ -130,7 +118,7 @@ where
     C: CoreClient,
     F: Fetcher + Sync,
 {
-    let outcome = acquire_kad_seeds(&mut config, bootstrap, fetcher).await;
+    let outcome = acquire_kad_seeds(&mut config, own_id, bootstrap, fetcher).await;
     client.send(CoreCommand::EnableKad(config)).await?;
     Ok(outcome)
 }
@@ -141,6 +129,7 @@ pub async fn join_on_next_start<C, F>(
     starts: &mut KadStarts,
     client: &C,
     config: &KadEnableConfig,
+    own_id: KadId,
     bootstrap: &BootstrapConfig,
     fetcher: &F,
 ) -> Option<Result<KadSeedOutcome, CoreClientError>>
@@ -149,7 +138,7 @@ where
     F: Fetcher + Sync,
 {
     starts.recv().await?;
-    Some(join(client, config.clone(), bootstrap, fetcher).await)
+    Some(join(client, config.clone(), own_id, bootstrap, fetcher).await)
 }
 
 #[cfg(test)]
@@ -158,8 +147,6 @@ mod tests {
     use std::sync::Mutex;
 
     use rmule_bootstrap::FetchError;
-    use rmule_core::KadId;
-    use rmule_primitives::{ClientIdentity, Ed2kText, UserHash};
 
     use super::*;
 
@@ -219,21 +206,8 @@ mod tests {
         }
     }
 
-    fn credentials() -> ClientCredentials {
-        ClientIdentity::new(
-            UserHash::from_bytes([0x42; UserHash::BYTE_LEN]),
-            Ed2kText::from_utf8("rmule"),
-            4662,
-            0x3C,
-        )
-        .into()
-    }
-
-    fn kad_identity() -> KadIdentity {
-        KadIdentity {
-            id: KadId::from_bytes([0x11; KadId::BYTE_LEN]),
-            udp_port: 4672,
-        }
+    fn own_id() -> KadId {
+        KadId::from_bytes([0x11; KadId::BYTE_LEN])
     }
 
     fn nodes_dat_v2(count: u8) -> Vec<u8> {
@@ -250,33 +224,6 @@ mod tests {
         rmule_kad::NodesDat::encode_v2(&contacts)
     }
 
-    /// The startup config the app hands core: the durable Kad identity, the
-    /// Client Identity's advertised port and hash, and the data-dir file the
-    /// running node persists its table to.
-    #[test]
-    fn the_start_config_carries_the_durable_identity_and_the_data_dir_file() {
-        let config = enable_config(
-            std::path::Path::new("/data/rmule"),
-            kad_identity(),
-            0,
-            &credentials(),
-        );
-        assert_eq!(config.kad_id, kad_identity().id);
-        assert_eq!(
-            config.peer_credentials.tcp_port(),
-            4662,
-            "the advertised eD2k port peers dial"
-        );
-        assert_eq!(
-            config.nodes_dat_path.as_deref(),
-            Some(std::path::Path::new("/data/rmule/nodes.dat"))
-        );
-        assert!(
-            !config.assume_open_reachability,
-            "a deployment proves openness"
-        );
-    }
-
     /// The warm restart the app is meant to give a returning user: the table
     /// the last run persisted rides the join, and nothing is fetched.
     #[tokio::test]
@@ -288,7 +235,8 @@ mod tests {
 
         let outcome = join(
             &client,
-            enable_config(dir.path(), kad_identity(), 0, &credentials()),
+            enable_config(dir.path()),
+            own_id(),
             &BootstrapConfig {
                 auto_fetch_nodes_dat: true,
                 ..BootstrapConfig::default()
@@ -319,7 +267,8 @@ mod tests {
 
         let outcome = join(
             &client,
-            enable_config(dir.path(), kad_identity(), 0, &credentials()),
+            enable_config(dir.path()),
+            own_id(),
             &BootstrapConfig {
                 auto_fetch_nodes_dat: true,
                 ..BootstrapConfig::default()
@@ -356,16 +305,23 @@ mod tests {
             auto_fetch_nodes_dat: true,
             ..BootstrapConfig::default()
         };
-        let config = enable_config(dir.path(), kad_identity(), 0, &credentials());
+        let config = enable_config(dir.path());
         let (start, mut starts) = start_lane();
 
         start.send(()).unwrap();
         start.send(()).unwrap();
         for _ in 0..2 {
             assert!(
-                join_on_next_start(&mut starts, &client, &config, &bootstrap, &fetcher)
-                    .await
-                    .is_some_and(|joined| joined.is_ok())
+                join_on_next_start(
+                    &mut starts,
+                    &client,
+                    &config,
+                    own_id(),
+                    &bootstrap,
+                    &fetcher
+                )
+                .await
+                .is_some_and(|joined| joined.is_ok())
             );
         }
         assert_eq!(
@@ -376,9 +332,16 @@ mod tests {
 
         drop(start); // the app quit
         assert!(
-            join_on_next_start(&mut starts, &client, &config, &bootstrap, &fetcher)
-                .await
-                .is_none(),
+            join_on_next_start(
+                &mut starts,
+                &client,
+                &config,
+                own_id(),
+                &bootstrap,
+                &fetcher
+            )
+            .await
+            .is_none(),
             "no start, no join"
         );
         assert_eq!(*fetcher.calls.lock().unwrap(), 0);

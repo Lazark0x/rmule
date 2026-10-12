@@ -87,6 +87,11 @@ impl KadNode {
             return;
         }
 
+        // Only a source search reaches here: the keyword walk returned above,
+        // and no other purpose consumes result rows.
+        let KadWalkPurpose::SearchSources(request) = purpose else {
+            return;
+        };
         let candidates = match decode_source_result(envelope) {
             Ok(candidates) => candidates,
             Err(error) => {
@@ -98,7 +103,10 @@ impl KadNode {
         if accepted > 0 {
             let mut candidates = candidates;
             candidates.truncate(accepted);
-            self.emit_event(KadEvent::SourcesFound { target, candidates });
+            self.emit_event(KadEvent::SourcesFound {
+                target: request.target(),
+                candidates,
+            });
         }
         self.apply_walk_actions(now, purpose, actions);
     }

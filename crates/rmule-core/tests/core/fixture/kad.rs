@@ -6,13 +6,12 @@
 use std::sync::{Arc, Mutex};
 
 use rmule_core::{
-    ClientUdpBind, CoreError, KadEnableConfig, KadKeywordSink, KadRuntimeFactory, KadSource,
-    KadSourceChannel,
+    ClientUdpBind, CoreError, KadEnableConfig, KadKeywordSink, KadRuntimeFactory, KadSourceChannel,
 };
-use rmule_primitives::{FileHash, KeywordQuery, SearchResult, SourceLookupTarget};
+use rmule_primitives::{FileHash, KeywordQuery, SearchResult, SourceLookupTarget, SourceSighting};
 use tokio::sync::mpsc;
 
-type SourceAnswer = (FileHash, Vec<KadSource>);
+type SourceAnswer = (FileHash, Vec<SourceSighting>);
 
 /// A Kad node that is both the factory and the channel it starts. A keyword
 /// walk with no scripted rows ends without sending; a source lookup with no
@@ -21,7 +20,7 @@ type SourceAnswer = (FileHash, Vec<KadSource>);
 pub struct StubKad {
     walks: Arc<Mutex<Vec<String>>>,
     keyword_rows: Option<Vec<SearchResult>>,
-    sources: Option<Vec<KadSource>>,
+    sources: Option<Vec<SourceSighting>>,
     answers_tx: mpsc::Sender<SourceAnswer>,
     answers_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<SourceAnswer>>>,
 }
@@ -46,7 +45,7 @@ impl StubKad {
     }
 
     /// Answer every source lookup with `sources`.
-    pub fn answering_sources(mut self, sources: Vec<KadSource>) -> Self {
+    pub fn answering_sources(mut self, sources: Vec<SourceSighting>) -> Self {
         self.sources = Some(sources);
         self
     }
@@ -90,7 +89,9 @@ impl KadRuntimeFactory for StubKad {
     async fn start(
         &mut self,
         _config: &KadEnableConfig,
+        _node: &rmule_core::KadNodeIdentity,
         _bind: ClientUdpBind,
+        _cells: &rmule_core::KadCells,
     ) -> Result<Self, CoreError> {
         Ok(self.clone())
     }

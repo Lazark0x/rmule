@@ -54,10 +54,10 @@ async fn concurrent_lookups_are_demuxed_by_file_hash() {
     assert!(requested.contains(&a.file_hash()) && requested.contains(&b.file_hash()));
 
     // Answer out of order: each waiter gets ITS own sources (no stealing).
-    let src_b = vec![ExchangedSource::plain(PeerSource::new(client_id(), 7001))];
+    let src_b = vec![SourceSighting::plain(PeerSource::new(client_id(), 7001))];
     let src_a = vec![
-        ExchangedSource::plain(PeerSource::new(client_id(), 7002)),
-        ExchangedSource::plain(PeerSource::new(client_id(), 7003)),
+        SourceSighting::plain(PeerSource::new(client_id(), 7002)),
+        SourceSighting::plain(PeerSource::new(client_id(), 7003)),
     ];
     evt_tx
         .send(Ed2kEvent::SourcesFound {
@@ -135,7 +135,7 @@ async fn a_second_lookup_for_the_same_file_joins_the_ask_in_flight() {
     for _ in 0..8 {
         tokio::task::yield_now().await;
     }
-    let answer = vec![ExchangedSource::plain(PeerSource::new(client_id(), 7104))];
+    let answer = vec![SourceSighting::plain(PeerSource::new(client_id(), 7104))];
     evt_tx
         .send(Ed2kEvent::SourcesFound {
             file_hash: file.file_hash(),
@@ -170,7 +170,6 @@ async fn the_server_coordinator_asks_punches_and_ends_with_its_session() {
     punch.install_diagnostics(diagnostics.clone());
     let (udp_tx, mut udp_rx) = mpsc::channel(64);
     punch.install_client_udp(udp_tx);
-    punch.set_live(true);
 
     let (evt_tx, evt_rx) = mpsc::channel(8);
     let (cmd_tx, mut cmd_rx) = mpsc::channel(8);
@@ -187,8 +186,16 @@ async fn the_server_coordinator_asks_punches_and_ends_with_its_session() {
         },
     );
 
+    // Establishment's write: the keepalive started on this session.
+    punch.go_live(&handle);
+
     let target = ClientId::from_u32(1337);
-    handle.request_holepunch(target, 4665).await;
+    assert!(
+        punch
+            .coordinator_session()
+            .request_introduction(target, 4665),
+        "the live session takes the 0x60"
+    );
     match cmd_rx.recv().await.unwrap() {
         Ed2kCommand::RequestHolepunch {
             target: got,
@@ -340,7 +347,58 @@ async fn announce_rides_the_session_as_offer_files() {
     )];
     handle.announce(files.clone()).await.unwrap();
     match cmd_rx.recv().await.unwrap() {
-        Ed2kCommand::OfferFiles { files: sent } => assert_eq!(sent, files),
+        Ed2kCommand::OfferFiles { files: sent, .. } => assert_eq!(sent, files),
+        other => panic!("unexpected command {other:?}"),
+    }
+}
+
+/// An offer carries the Presented Client ID as Self Reach answers it when the
+/// offer is sent: an open Kad node names its confirmed address, not the id its
+/// server assigned.
+#[tokio::test]
+async fn an_offer_names_the_presented_id_self_reach_answers() {
+    use crate::address_learning::AddressObservation;
+    use crate::natt::front::SharedNattFront;
+    use crate::reachability::{SharedKadVerdicts, SharedSelfReach, TcpReachability};
+    use crate::{KadId, KadReachLevel};
+
+    let own = SharedOwnIdentity::default();
+    let kad = SharedKadVerdicts::default();
+    let reach = SharedSelfReach::new(
+        KadReachLevel::published(kad.clone()),
+        own.clone(),
+        SharedNattFront::default(),
+    );
+    let _lease = reach.lease_kad(KadId::from_bytes([3; 16]));
+    kad.writer().set_joined();
+    kad.set_tcp(TcpReachability::Open);
+    let ours = Ipv4Addr::new(45, 55, 200, 9);
+    for observer in [Ipv4Addr::new(80, 1, 1, 1), Ipv4Addr::new(81, 2, 2, 2)] {
+        own.addresses()
+            .observe(AddressObservation::kad_observed_address(observer, ours));
+    }
+    let (evt_tx, evt_rx) = mpsc::channel(8);
+    let (cmd_tx, mut cmd_rx) = mpsc::channel(8);
+    let _keep = evt_tx;
+    let handle = ServerSession::spawn(
+        FakeLink {
+            events: evt_rx,
+            sent: cmd_tx,
+        },
+        client_id(),
+        SessionSinks {
+            reach: Some(reach),
+            ..test_sinks(own)
+        },
+    );
+
+    handle.announce(Vec::new()).await.unwrap();
+
+    match cmd_rx.recv().await.unwrap() {
+        Ed2kCommand::OfferFiles { presented_id, .. } => assert_eq!(
+            presented_id,
+            Some(ClientId::from_u32(u32::from_le_bytes(ours.octets())))
+        ),
         other => panic!("unexpected command {other:?}"),
     }
 }
@@ -432,7 +490,11 @@ async fn the_listeners_hello_names_the_id_a_mid_session_idchange_assigned() {
     }));
     let hello = crate::server_session::HelloSource::live(
         rmule_testkit::peer_session::serverless_ctx().identity,
-        own.clone(),
+        crate::reachability::SharedSelfReach::new(
+            crate::KadReachLevel::fixed(false),
+            own.clone(),
+            crate::natt::front::SharedNattFront::default(),
+        ),
     );
     assert_eq!(hello.now().client_id, client_id(), "the login's id");
 

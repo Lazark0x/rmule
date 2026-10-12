@@ -52,7 +52,7 @@
 //! send-gates an outbound one. It keys the **ed2k user-hash family**
 //! (`MAGICVALUE_UDP`), this surface's own — distinct from the Kad NodeID /
 //! verify-key families the Kad socket keys on. Off by default (the
-//! `CoreConfig::peer_crypt` policy is unset), so nothing changes on the wire
+//! `CoreSettings::obfuscation` policy is unset), so nothing changes on the wire
 //! until an operator — or the capture bench — arms it.
 //!
 //! # The family ruling, opcode by opcode (ADR-0087)
@@ -118,10 +118,7 @@
 //!
 //! [`SessionCounters::unanswerable_family_datagrams_total`]: crate::diagnostics::SessionCounters::unanswerable_family_datagrams_total
 
-use std::sync::{Arc, Mutex};
-
 use rmule_primitives::PeerEndpoint;
-use tokio::sync::mpsc;
 
 mod engine;
 #[cfg(test)]
@@ -132,9 +129,7 @@ mod peer_crypt;
 
 pub(crate) use engine::{ClientUdpEngine, ClientUdpTransport};
 pub(crate) use peer_crypt::{
-    ClientUdpSend, PeerUdpCrypt, PeerUdpCryptTarget, crypt_stance_from_connect_options,
-    direct_callback_connect_options, direct_callback_datagram, encrypt_client_udp_send,
-    os_datagram_nonce,
+    ClientUdpSend, PeerUdpCrypt, encrypt_client_udp_send, os_datagram_nonce,
 };
 
 /// One datagram received on the client-UDP socket, tagged with its UDP source
@@ -161,7 +156,7 @@ pub(crate) type ClientUdpDatagram = (PeerEndpoint, Vec<u8>);
 ///
 /// A `std::sync::Mutex` because every use is a `try_send` that never crosses
 /// an `.await` — the front must not be able to block on a Kad lock.
-pub(crate) type SharedKadInlet = Arc<Mutex<Option<mpsc::Sender<rmule_net::kad::KadDatagram>>>>;
+pub(crate) type SharedKadInlet = crate::mailbox::Mailbox<rmule_net::kad::KadDatagram>;
 
 /// Shared fixtures for the submodules' tests: the crypt-armed identities,
 /// target builders, and per-packet nonce both the front's receive tests and
@@ -173,7 +168,9 @@ mod tests {
     use rmule_peer::ReaskFilePing;
     use rmule_primitives::{CryptStance, DatagramNonce, FileHash, UserHash};
 
-    use super::{PeerUdpCrypt, PeerUdpCryptTarget};
+    use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
+
+    use super::PeerUdpCrypt;
     use crate::own_identity::SharedOwnIdentity;
 
     // --- Per-datagram crypt (ADR-0046): the ed2k user-hash family ---
@@ -230,7 +227,23 @@ mod tests {
     /// An armed layer for a node that accepts obfuscation and asks for it —
     /// aMule's `IsClientCryptLayerRequested()` true, the bench posture.
     pub(crate) fn armed_requesting(hash: UserHash, ip: [u8; 4]) -> PeerUdpCrypt {
-        PeerUdpCrypt::new(own(hash, ip), CryptStance::new(true, true, false))
+        PeerUdpCrypt::new(own(hash, ip), requesting())
+    }
+
+    /// A layer under policy `off` that holds an identity: it sends plaintext
+    /// and must still open what a peer obfuscated toward it.
+    pub(crate) fn off_with_identity(hash: UserHash, ip: [u8; 4]) -> PeerUdpCrypt {
+        PeerUdpCrypt::new(
+            own(hash, ip),
+            crate::obfuscation_policy::SharedObfuscationPolicy::default(),
+        )
+    }
+
+    /// A policy cell holding `Requested`.
+    pub(crate) fn requesting() -> crate::obfuscation_policy::SharedObfuscationPolicy {
+        crate::obfuscation_policy::SharedObfuscationPolicy::new(Some(
+            rmule_net::peer::ObfuscationPolicy::Requested,
+        ))
     }
 
     /// [`armed_requesting`] for a dual-stack node: it can key a send in either
@@ -240,10 +253,7 @@ mod tests {
         ip: [u8; 4],
         ipv6: std::net::Ipv6Addr,
     ) -> PeerUdpCrypt {
-        PeerUdpCrypt::new(
-            own_dual_stack(hash, ip, ipv6),
-            CryptStance::new(true, true, false),
-        )
+        PeerUdpCrypt::new(own_dual_stack(hash, ip, ipv6), requesting())
     }
 
     /// A target peer that advertised `SupportsCryptLayer` only.

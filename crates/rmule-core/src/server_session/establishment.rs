@@ -3,9 +3,11 @@
 //! act"). It ends the live session and reports the `Disconnected(old)` →
 //! `Connecting(new)` → `Connected`/`ConnectFailed` trail; no activity dials,
 //! each rides [`SharedServerSession::live_session`] or waits for one. The IP-filter gate refuses a filtered
-//! (or filtered-after-resolve) server before any dial, and the
-//! login's products are projected into the peer handshake context peers are
-//! dialed with.
+//! (or filtered-after-resolve) server before any dial; each dial's link,
+//! plain or obfuscated, is chosen by the Obfuscation Policy as it starts,
+//! and a failed obfuscated attempt earns one plain one under `Requested`
+//! (`link`). The login's products are projected into the peer handshake
+//! context peers are dialed with.
 
 use std::net::Ipv4Addr;
 
@@ -24,7 +26,8 @@ use crate::ip_filter::SharedIpFilter;
 use crate::own_identity::SharedOwnIdentity;
 use crate::server_list::ServerFacts;
 use crate::service::{
-    DialFailure, IdAssignment, LoginClaim, LoginCloseCause, LoginStep, ServerConnectFailure,
+    DialFailure, IdAssignment, LoginClaim, LoginCloseCause, LoginLink, LoginStep,
+    ServerConnectFailure,
 };
 
 /// Establish the session at `server` now — aMule's "connect to
@@ -139,21 +142,40 @@ async fn establish_into(
         )
     });
     let our_hash = identity.user_hash();
-    let (conn, client_id, grants, resolved) = match establish(
-        server.clone(),
-        identity,
-        advertised_ipv6,
-        udp_ports,
-        shared.login_timeout(),
-        &own,
-        &facts,
-    )
-    .await
-    {
-        Ok(established) => established,
-        Err(reason) => {
-            report_connect_failure(&facts, &server, reason).await;
-            return Err(DownloadFailure::ServerDisconnected);
+    // The policy is read at each dial (ADR-0046), so a fallback dial follows
+    // a change made while the first one failed.
+    let mut policy = shared.obfuscation().get();
+    let mut link = LoginLink::choose(policy, facts.obfuscation_tcp_port(&server));
+    let (conn, client_id, grants, resolved) = loop {
+        facts
+            .login_step(&server, LoginStep::LinkChosen { link })
+            .await;
+        let plan = LoginPlan {
+            link,
+            policy,
+            advertised_ipv6,
+            udp_ports,
+        };
+        let reason = match establish(
+            server.clone(),
+            identity.clone(),
+            plan,
+            shared.login_timeout(),
+            &own,
+            &facts,
+        )
+        .await
+        {
+            Ok(established) => break established,
+            Err(reason) => reason,
+        };
+        policy = shared.obfuscation().get();
+        match link.after_failure(policy, reason) {
+            Some(fallback) => link = fallback,
+            None => {
+                report_connect_failure(&facts, &server, reason).await;
+                return Err(DownloadFailure::ServerDisconnected);
+            }
         }
     };
     let server_ip = resolved.map(|addr| addr.ip());
@@ -176,6 +198,7 @@ async fn establish_into(
             over_ipv6,
             punch: punch.clone(),
             grants,
+            reach: shared.reach(),
         },
     );
     *slot = Some(handle.clone());
@@ -183,6 +206,10 @@ async fn establish_into(
     // whether we are Low-ID, the server says whose hello names *ours*. Both
     // are published the moment the session exists and cleared as it ends, so
     // a reader never judges itself by a session that is gone.
+    // The standard port, as the hello writes it: an aux-port login has just
+    // re-ported the row, and aMule reports the port it lists, not the one it
+    // dialed.
+    let standard = facts.standard_endpoint_of(&server);
     shared
         .own_identity()
         .set_connected_session(Some(crate::own_identity::ConnectedSession {
@@ -191,9 +218,9 @@ async fn establish_into(
             // server does not read 0.0.0.0 in our hellos.
             server: match resolved {
                 Some(std::net::SocketAddr::V4(addr)) => {
-                    Some(Ipv4Endpoint::new(*addr.ip(), server.port()))
+                    Some(Ipv4Endpoint::new(*addr.ip(), standard.port()))
                 }
-                _ => connected_server_endpoint(&server),
+                _ => connected_server_endpoint(&standard),
             },
             client_id,
         }));
@@ -206,7 +233,10 @@ async fn establish_into(
     if udp_ports.is_some()
         && let Some(std::net::SocketAddr::V4(server_addr)) = resolved
     {
-        let server = Ipv4Endpoint::new(*server_addr.ip(), server_addr.port());
+        // The server's own port, not the one dialed: an obfuscated link
+        // reached its obfuscation port, and the keepalive goes to the main
+        // port's UDP sibling.
+        let server = Ipv4Endpoint::new(*server_addr.ip(), server.port());
         spawn_natt_keepalive(punch, handle.clone(), PeerEndpoint::V4(server), our_hash);
     }
     // Last, and only once the session task exists: a consumer that reacts to
@@ -243,7 +273,7 @@ fn spawn_natt_keepalive(
         // alive, so nothing to claim either.
         return;
     }
-    punch.set_live(true);
+    punch.go_live(&session);
     tokio::spawn(async move {
         let mut ticks = tokio::time::interval(crate::natt::server_punch::SERVER_KEEPALIVE_INTERVAL);
         while session.is_alive() {
@@ -268,6 +298,20 @@ async fn report_connect_failure(
     }
 }
 
+/// What one dial's login states and how its link is opened.
+#[derive(Clone, Copy)]
+struct LoginPlan {
+    /// Plain, or obfuscated to the server's obfuscation port.
+    link: LoginLink,
+    /// Our policy at this dial: the crypt flags the login states, whichever
+    /// the link.
+    policy: Option<rmule_net::peer::ObfuscationPolicy>,
+    /// Our Known IPv6, when the Advertised Endpoints chooser settled one.
+    advertised_ipv6: Option<std::net::Ipv6Addr>,
+    /// The `0xF9` ports, when a punch could land.
+    udp_ports: Option<rmule_ed2k::UdpPortsAdvert>,
+}
+
 /// Connect and log in once, returning the live connection plus what the login
 /// assigned: the `client_id`, the whole `OP_IDCHANGE` extension projection
 /// (ADR-0047) whose `public_ip` the caller publishes as a self-fact, and
@@ -285,8 +329,7 @@ async fn report_connect_failure(
 async fn establish(
     server: ServerEndpoint,
     identity: ClientIdentity,
-    advertised_ipv6: Option<std::net::Ipv6Addr>,
-    udp_ports: Option<rmule_ed2k::UdpPortsAdvert>,
+    plan: LoginPlan,
     login_timeout: std::time::Duration,
     own: &SharedOwnIdentity,
     facts: &ServerFacts,
@@ -299,7 +342,15 @@ async fn establish(
     ),
     ServerConnectFailure,
 > {
+    let LoginPlan {
+        link,
+        policy,
+        advertised_ipv6,
+        udp_ports,
+    } = plan;
     let options = Ed2kConnectOptions {
+        obfuscation: policy.map(|policy| rmule_net::peer::ObfuscationConfig { policy }),
+        obfuscated_port: link.obfuscated_port(),
         advertised_ipv6,
         udp_ports,
         login_timeout,
@@ -390,7 +441,7 @@ async fn await_answer(
                     server_ip,
                 );
                 let grants = tcp_flags.map(ServerGrants::from).unwrap_or_default();
-                facts.granted(server, tcp_flags);
+                facts.granted(server, client_id, tcp_flags, &assigned);
                 let assignment = IdAssignment {
                     client_id,
                     address,
@@ -436,20 +487,23 @@ fn dial_failure(error: &rmule_net::ed2k::Ed2kNetError) -> DialFailure {
             kind: error.kind(),
             os_code: error.raw_os_error(),
         },
+        rmule_net::ed2k::Ed2kNetError::CryptHandshake(error) => {
+            DialFailure::CryptHandshake { kind: error.kind() }
+        }
         _ => DialFailure::DriverEnded,
     }
 }
 
-/// Build the [`PeerHandshakeContext`] for dialing peers over a live server
-/// session: strip the server-only login tags from `identity` so the peer
-/// hello stays minimum-honest (ADR-0047), and pair it with the `client_id`
-/// the login produced plus the resolved connected-server endpoint.
+/// The [`PeerHandshakeContext`] a peer dial presents over one lone server
+/// session — a tool's, outside any core: the hello as **Self Reach** answers
+/// it with that session live and nothing else known (ADR-0098), so its
+/// **Presented Client ID** comes from the one owner every core hello reads.
+/// The identity keeps none of the server-only login tags (ADR-0047).
 ///
 /// `connected_server` is `Some` only when the server host is an IPv4 literal;
 /// a DNS host resolves to `None`, which `PeerHelloBody` encodes as `0.0.0.0:0`
-/// on the wire. The eD2k connection layer does not yet hand back the socket
-/// address it actually resolved, so the unresolved case is logged once here
-/// rather than silently swallowed at each call site.
+/// on the wire. The eD2k connection layer does not hand back the socket
+/// address it resolved, so the unresolved case is logged here.
 pub fn build_peer_handshake_context(
     client_id: ClientId,
     server: &ServerEndpoint,
@@ -463,11 +517,17 @@ pub fn build_peer_handshake_context(
             "connected-server host is not an IPv4 literal; peer hello will encode connected_server as 0.0.0.0:0",
         );
     }
-    PeerHandshakeContext {
-        identity: identity.clone().with_extra_tags(Vec::new()),
+    let own = SharedOwnIdentity::default();
+    own.set_connected_session(Some(crate::own_identity::ConnectedSession {
+        server: connected_server,
         client_id,
-        connected_server,
-    }
+    }));
+    let reach = crate::reachability::SharedSelfReach::new(
+        crate::KadReachLevel::published(crate::reachability::SharedKadVerdicts::default()),
+        own,
+        crate::natt::front::SharedNattFront::default(),
+    );
+    super::hello::live_peer_handshake_context(identity, &reach)
 }
 
 /// The literal-vs-DNS connected-server decision, owned in one place — replaces
@@ -520,310 +580,5 @@ fn effective_client_udp_port(
         .map(|bound| addresses.advertised_v4_port(role).unwrap_or(bound))
 }
 
-/// Establishment-path unit tests: riding the live session, the
-/// operator-connect wait, the IP-filter refusals (literal and post-resolve), and the peer
-/// handshake context's literal-vs-DNS connected-server projection.
 #[cfg(test)]
-mod tests {
-
-    use tokio::sync::mpsc;
-
-    use super::super::tests::{FakeLink, client_id, identity, test_sinks};
-    use super::*;
-    use crate::own_identity::SharedOwnIdentity;
-    use crate::server_session::multiplexer::ServerSession;
-
-    /// No activity dials (ADR-0095, "Connecting is the operator's act"): the
-    /// live handle is ridden when there is one, and an empty slot answers
-    /// nothing rather than a login.
-    #[tokio::test]
-    async fn live_session_rides_the_live_handle_and_never_dials() {
-        let shared = SharedServerSession::default();
-        assert!(
-            shared.live_session().await.is_none(),
-            "no session: nothing to ride, and nothing is dialed"
-        );
-        let (_evt_tx, evt_rx) = mpsc::channel(8);
-        let (cmd_tx, _cmd_rx) = mpsc::channel(8);
-        let handle = ServerSession::spawn(
-            FakeLink {
-                events: evt_rx,
-                sent: cmd_tx,
-            },
-            client_id(),
-            test_sinks(SharedOwnIdentity::default()),
-        );
-        *shared.slot().lock().await = Some(handle);
-        let ridden = shared.live_session().await.expect("the live handle");
-        assert_eq!(ridden.client_id(), client_id());
-    }
-
-    /// The connect/search race, the switch-flavored variant: while an operator connect is
-    /// in flight, `live_session` waits for it even when a live handle sits
-    /// in the slot — that handle is the session the connect is about to kill,
-    /// and riding it would hand the activity a doomed stream. The claim drop
-    /// is the release, whereupon the activity reads the slot as usual.
-    #[tokio::test]
-    async fn live_session_waits_out_an_operator_connect_before_reading_the_slot() {
-        let (_evt_tx, evt_rx) = mpsc::channel(8);
-        let (cmd_tx, _cmd_rx) = mpsc::channel(8);
-        let handle = ServerSession::spawn(
-            FakeLink {
-                events: evt_rx,
-                sent: cmd_tx,
-            },
-            client_id(),
-            test_sinks(SharedOwnIdentity::default()),
-        );
-        let shared = SharedServerSession::default();
-        *shared.slot().lock().await = Some(handle);
-
-        let claim = shared.claim_connect();
-        let waiting = {
-            let shared = shared.clone();
-            tokio::spawn(async move { shared.live_session().await })
-        };
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        assert!(
-            !waiting.is_finished(),
-            "the activity parks while the operator connect holds the claim"
-        );
-
-        drop(claim);
-        let reused = tokio::time::timeout(std::time::Duration::from_secs(2), waiting)
-            .await
-            .expect("the claim drop releases the waiter")
-            .expect("the waiter task did not panic")
-            .expect("the live slot handle is reused");
-        assert_eq!(reused.client_id(), client_id());
-    }
-
-    #[tokio::test]
-    async fn connect_refuses_a_filtered_server_without_dialing() {
-        // The IP filter, aMule `CServerSocket::OnHostnameResolved`: a filtered
-        // server IP is never connected to. The distinct `ServerFiltered`
-        // failure is the proof the *gate* fired — a dial to unbindable port 1
-        // would fail as `ServerDisconnected` instead.
-        let (filter, _) = crate::ip_filter::IpFilter::from_texts(
-            &[b"127.0.0.0-127.0.0.255,0,loopback blocked\n".as_slice()],
-            127,
-            true,
-            true,
-        );
-        let shared_filter = SharedIpFilter::default();
-        *shared_filter.write().expect("ip filter lock") = filter;
-
-        let refused = connect_to_server(
-            &SharedServerSession::default(),
-            ServerEndpoint::new("127.0.0.1", 1).unwrap(),
-            identity(),
-            &shared_filter,
-        )
-        .await;
-        assert!(
-            matches!(refused, Err(DownloadFailure::ServerFiltered)),
-            "the filter gate refuses before any dial"
-        );
-
-        // The same dial with server filtering off reaches the connect and
-        // fails as a plain disconnect — the gate honors its config switch.
-        let (servers_off, _) = crate::ip_filter::IpFilter::from_texts(
-            &[b"127.0.0.0-127.0.0.255,0,loopback blocked\n".as_slice()],
-            127,
-            true,
-            false,
-        );
-        *shared_filter.write().expect("ip filter lock") = servers_off;
-        let dialed = connect_to_server(
-            &SharedServerSession::default(),
-            ServerEndpoint::new("127.0.0.1", 1).unwrap(),
-            identity(),
-            &shared_filter,
-        )
-        .await;
-        assert!(
-            matches!(dialed, Err(DownloadFailure::ServerDisconnected)),
-            "with the server gate off the dial proceeds and fails as a plain disconnect"
-        );
-    }
-
-    #[tokio::test]
-    async fn connect_refuses_a_dns_named_server_whose_resolved_ip_is_filtered() {
-        // aMule's check is post-resolve (`CServerSocket::OnHostnameResolved`,
-        // ServerSocket.cpp:737) and DynIP names are exempt only at add time:
-        // a *named* server whose A record lands in a blocked range is refused
-        // too. `localhost` resolves to 127.0.0.1 everywhere this suite runs.
-        let (filter, _) = crate::ip_filter::IpFilter::from_texts(
-            &[b"127.0.0.0-127.0.0.255,0,loopback blocked\n".as_slice()],
-            127,
-            true,
-            true,
-        );
-        let shared_filter = SharedIpFilter::default();
-        *shared_filter.write().expect("ip filter lock") = filter;
-
-        let refused = connect_to_server(
-            &SharedServerSession::default(),
-            ServerEndpoint::new("localhost", 1).unwrap(),
-            identity(),
-            &shared_filter,
-        )
-        .await;
-        assert!(
-            matches!(refused, Err(DownloadFailure::ServerFiltered)),
-            "the resolved address is checked, not just a literal host"
-        );
-    }
-
-    #[test]
-    fn handshake_context_resolves_an_ipv4_literal_server() {
-        let server = ServerEndpoint::new("198.51.100.7", 4661).unwrap();
-        let ctx = build_peer_handshake_context(client_id(), &server, &identity());
-        assert_eq!(
-            ctx.connected_server,
-            Some(Ipv4Endpoint::new("198.51.100.7".parse().unwrap(), 4661)),
-        );
-        assert_eq!(ctx.client_id, client_id());
-    }
-
-    #[test]
-    fn handshake_context_leaves_a_dns_host_server_unresolved() {
-        let server = ServerEndpoint::new("ed2k.example.invalid", 4661).unwrap();
-        let ctx = build_peer_handshake_context(client_id(), &server, &identity());
-        assert_eq!(ctx.connected_server, None);
-    }
-
-    /// A **Half-Bound Pair** advertises no port it cannot back:
-    /// the login's `0xF9` claims we can be punched, and a punch is IPv4 end
-    /// to end, so a client-UDP pair that came up on `::` alone contributes
-    /// nothing here and the tag is omitted rather than sent with a port no
-    /// IPv4 datagram can reach.
-    #[test]
-    fn the_login_advert_names_no_ipv4_udp_port_a_half_bound_pair_does_not_hold() {
-        let addresses = crate::address_learning::SharedAddressLearning::new();
-        addresses.record_bind(
-            SocketRole::Udp,
-            &rmule_net::family::FamilyBinds {
-                bound: vec![AddressFamily::V6],
-                refused: vec![(
-                    AddressFamily::V4,
-                    std::io::ErrorKind::AddrInUse,
-                    "in use".to_owned(),
-                )],
-            },
-            4672,
-        );
-        assert_eq!(bound_ipv4_port(&addresses, SocketRole::Udp), None);
-        assert_eq!(
-            crate::natt::server_punch::udp_ports_advert(
-                bound_ipv4_port(&addresses, SocketRole::Udp),
-                None
-            ),
-            None,
-            "no IPv4 client-UDP port means no 0xF9 tag at all — its presence is the flag"
-        );
-    }
-
-    /// The mirror: a pair that holds IPv4 and lost only IPv6 advertises
-    /// exactly as it always did.
-    #[test]
-    fn the_login_advert_is_untouched_when_only_ipv6_refused() {
-        let addresses = crate::address_learning::SharedAddressLearning::new();
-        addresses.record_bind(
-            SocketRole::Udp,
-            &rmule_net::family::FamilyBinds {
-                bound: vec![AddressFamily::V4],
-                refused: vec![(
-                    AddressFamily::V6,
-                    std::io::ErrorKind::AddrInUse,
-                    "in use".to_owned(),
-                )],
-            },
-            4672,
-        );
-        assert_eq!(bound_ipv4_port(&addresses, SocketRole::Udp), Some(4672));
-    }
-
-    /// The login's `0xF9` client-UDP half names the owner's current external
-    /// port, exactly like every hello's (ADR-0084): a
-    /// mapping grant learned after the bind reaches the very next login
-    /// frame, not just the next hello — `establish`'s own expression, not a
-    /// re-derivation of it.
-    #[test]
-    fn a_mapping_grant_after_the_bind_reaches_the_next_login_frame() {
-        use std::time::Duration;
-
-        use rmule_primitives::{Ipv4Endpoint, PeerEndpoint};
-
-        use crate::address_learning::AddressObservation;
-
-        let addresses = crate::address_learning::SharedAddressLearning::new();
-        addresses.record_bind(
-            SocketRole::Udp,
-            &rmule_net::family::FamilyBinds {
-                bound: vec![AddressFamily::V4],
-                refused: Vec::new(),
-            },
-            4672,
-        );
-        assert_eq!(
-            effective_client_udp_port(&addresses, SocketRole::Udp),
-            Some(4672),
-            "nothing learned: the bound port, same as before login-config build"
-        );
-
-        let ours: Ipv4Addr = "203.0.113.50".parse().unwrap();
-        addresses.observe(AddressObservation::mapping_grant(
-            SocketRole::Udp,
-            PeerEndpoint::V4(Ipv4Endpoint::new(ours, 24672)),
-            Duration::from_secs(3600),
-        ));
-
-        assert_eq!(
-            effective_client_udp_port(&addresses, SocketRole::Udp),
-            Some(24672),
-            "a grant learned after the bind rides the login's 0xF9, not the bound port"
-        );
-        assert_eq!(
-            crate::natt::server_punch::udp_ports_advert(
-                effective_client_udp_port(&addresses, SocketRole::Udp),
-                None
-            ),
-            Some(rmule_ed2k::UdpPortsAdvert {
-                kad_udp: 0,
-                client_udp: 24672,
-            }),
-            "the login frame itself carries the external port"
-        );
-    }
-
-    /// The login's `0xF9` Kad half reads the same cell `retire_kad` clears
-    /// The exact expression `establish` feeds
-    /// `server_punch::udp_ports_advert` sees `None` once the pump has died,
-    /// not the stale port — the login omits the Kad half exactly as if Kad
-    /// had never run.
-    #[test]
-    fn the_login_advert_reads_a_cleared_kad_half_as_not_running() {
-        let advert = crate::adapters::SharedUdpPortsAdvert::default();
-        advert.set_serving(4672);
-        advert.set_kad(4672);
-        advert.clear_kad();
-
-        let kad_udp_port = advert
-            .get()
-            .map(|ports| ports.kad_udp())
-            .filter(|port| *port != 0);
-        assert_eq!(
-            kad_udp_port, None,
-            "a cleared Kad half must not survive into the login advert"
-        );
-        assert_eq!(
-            crate::natt::server_punch::udp_ports_advert(Some(4672), kad_udp_port),
-            Some(rmule_ed2k::UdpPortsAdvert {
-                kad_udp: 0,
-                client_udp: 4672,
-            }),
-            "the 0xF9 tag carries the serving port and a dead Kad's zero"
-        );
-    }
-}
+mod tests;

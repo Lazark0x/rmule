@@ -65,8 +65,8 @@ async fn wait_for_connection<S, P>(
     let mut stop_rx = runner.stop_rx.clone();
     // Subscribed before the first look, so a connection that comes up in
     // between is a wake, not a miss.
-    let mut changes = runner.reach.changes();
-    let connected = || runner.reach.session().is_some() || runner.reach.kad_running();
+    let mut changes = runner.rt.reach.changes();
+    let connected = || runner.rt.reach.session().is_some() || runner.rt.reach.kad_running();
     if connected() {
         tokio::select! {
             biased;
@@ -78,7 +78,7 @@ async fn wait_for_connection<S, P>(
     }
     tracing::info!("no server session and no Kad: waiting for a connection");
     send_download_event(
-        &runner.evt_tx,
+        &runner.rt.evt_tx,
         DownloadEvent::WaitingForConnection {
             download_id: request.download_id,
         },
@@ -124,7 +124,7 @@ where
     let source_lookup_span = tracing::info_span!(
         "source_lookup",
         server = ?runner
-            .server_session
+            .rt.server_session
             .own_identity()
             .connected_session()
             .and_then(|session| session.server),
@@ -163,7 +163,7 @@ where
         }
         generation = budget_admits(runner) => leg.rode(generation),
     }
-    let mut source_lookup = runner.source_lookup.lock().await.clone();
+    let mut source_lookup = runner.rt.source_lookup.lock().await.clone();
     let lookup = source_lookup.lookup_sources(target);
     let outcome = tokio::select! {
         biased;
@@ -177,7 +177,7 @@ where
         // future above has no bound of its own. `--max-seconds` on the
         // CLI bounds the *whole run*; this default bounds just this one
         // RPC, so a plain `download start` always terminates.
-        () = tokio::time::sleep(runner.source_lookup_timeout) => {
+        () = tokio::time::sleep(runner.rt.source_lookup_timeout) => {
             let error = DownloadFailure::SourceLookupTimedOut;
             // Same serverless tolerance as the Err(error) arm below
             // (ADR-0043): Kad can still feed the download, so a timed-out
@@ -219,11 +219,12 @@ where
 /// (`live_session`). Counted on the generation before it, the ask would be
 /// forgotten when that login starts the count over.
 pub(super) async fn budget_admits<S, P>(runner: &RunnerContext<S, P>) -> u64 {
-    runner.server_session.wait_for_operator_connect().await;
-    let mut sessions = runner.server_session.session_changes();
+    runner.rt.server_session.wait_for_operator_connect().await;
+    let mut sessions = runner.rt.server_session.session_changes();
     loop {
         let generation = *sessions.borrow_and_update();
         let verdict = runner
+            .rt
             .source_asks
             .lock()
             .expect("source ask budget mutex")

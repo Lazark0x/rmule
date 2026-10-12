@@ -137,6 +137,24 @@ pub fn run_rmule_download(
     parse_download_output(&stdout)
 }
 
+/// Compile the download container's `rmule-tools` into the host-persisted
+/// cache — once cold, seconds warm — so the container starts a binary.
+fn prebuild(staging: BenchStaging<'_>, client: &RmuleClientContainer) -> Result<()> {
+    let output = client
+        .prebuild_command(staging.docker)?
+        .to_command()
+        .stdin(Stdio::null())
+        .output()
+        .context("run the rmule-tools prebuild")?;
+    if !output.status.success() {
+        bail!(
+            "the rmule-tools prebuild failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
 /// [`run_rmule_download`], but inside the bench network.
 pub fn run_rmule_download_in_container(
     staging: BenchStaging<'_>,
@@ -147,8 +165,9 @@ pub fn run_rmule_download_in_container(
     let layout = staging.layout;
     let ed2k_link = fs::read_to_string(layout.synthetic_ed2k_file())
         .with_context(|| format!("read {}", layout.synthetic_ed2k_file().display()))?;
+    prebuild(staging, client)?;
     let output = client
-        .download_start_command(staging, server_endpoint, ed2k_link.trim(), serve, None)
+        .download_start_command(staging, server_endpoint, ed2k_link.trim(), serve, None)?
         .to_command()
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -183,6 +202,7 @@ pub fn run_rmule_callback_capability_in_container(
     let layout = staging.layout;
     let ed2k_link = fs::read_to_string(layout.synthetic_ed2k_file())
         .with_context(|| format!("read {}", layout.synthetic_ed2k_file().display()))?;
+    prebuild(staging, client)?;
     let output = client
         .download_start_command(
             staging,
@@ -190,7 +210,7 @@ pub fn run_rmule_callback_capability_in_container(
             ed2k_link.trim(),
             true,
             Some(max_seconds),
-        )
+        )?
         .to_command()
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

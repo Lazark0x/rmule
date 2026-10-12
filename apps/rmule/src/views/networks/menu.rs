@@ -15,7 +15,7 @@ use rmule_core::{CoreCommand, ServerListCommand};
 use rmule_primitives::ServerEndpoint;
 
 use super::NetworksView;
-use super::form::{FORM_W, NO_CREDENTIALS, ServerForm};
+use super::form::{FORM_W, NOT_ATTACHED, ServerForm};
 use super::servers::{next_priority, priority_word, row_name};
 use crate::action::Action;
 use crate::state::{UiState, server_label};
@@ -232,7 +232,7 @@ impl NetworksView {
         } else if crate::views::is_ours(state, &row.server.endpoint) {
             MenuItem::enabled("Disconnect (c)", MenuAction::Disconnect)
         } else if state.session.is_none() {
-            MenuItem::greyed("Connect (c)", MenuAction::Connect, NO_CREDENTIALS)
+            MenuItem::greyed("Connect (c)", MenuAction::Connect, NOT_ATTACHED)
         } else {
             MenuItem::enabled("Connect (c)", MenuAction::Connect)
         };

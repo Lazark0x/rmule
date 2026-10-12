@@ -36,14 +36,16 @@ flight and then answers the live handle or nothing. It never dials.
   or one no longer listed, nothing is dialed and the status bar says why. An unreachable server
   gets one attempt; rmule does not walk the list as aMule's `ConnectToAnyServer` does
   (`ServerConnect.cpp:55-70`), because each step would dial a server the operator never picked.
-- **The listener is up from attach.** A core built with credentials starts the Serve activity at
-  attach, before it restores any download, on `0.0.0.0:<the credentials' TCP port>`; its TCP
+- **The listener is up from attach.** A core built to restore at attach starts the Serve activity at
+  attach, before it restores any download, on `0.0.0.0:<the Core Settings' TCP port>`; its TCP
   bind joins the Desired Mapping Set, so mapping starts at attach too. A Kad-only run therefore
   accepts peers, and the Kad TCP self-check has a port to reach before any login, as aMule listens
   from `OnInit` (`amule.cpp:917`, `:1631`). A failed bind is reported as
   `ServingFailed { Bind(..) }`; the operator's connect retries it, and the login still goes out
-  Low ID if it fails again. A core built without credentials binds on its first
-  `ConnectToServer` or `StartServing`.
+  Low ID if it fails again. A core built without it binds on its first
+  `ConnectToServer` or `StartServing`, or on an `EnableKad` whose Core Settings' TCP port is `0`:
+  the node presents its port for its whole life, so it waits for the port bound, and is refused
+  (`KadUnavailableReason::TcpPortUnbound`) when the listener cannot bind.
 - **The serve follows the session.** With no session a serve answers hellos with client id 0 and
   no connected server, because that is true. Each session the operator establishes refreshes the
   hello context and is told the share set, as aMule re-sends its list on every connect

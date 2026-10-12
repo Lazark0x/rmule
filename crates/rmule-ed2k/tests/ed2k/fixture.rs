@@ -131,7 +131,12 @@ pub fn logged_in_session(user_hash_byte: u8) -> Ed2kSession {
 /// Log a started session in with a synthetic `OP_IDCHANGE` carrying client id
 /// 1 and, optionally, the server's TCP flags extension.
 pub fn login_with_flags(session: &mut Ed2kSession, flags: Option<ServerTcpFlags>) {
-    let mut payload = 1_u32.to_le_bytes().to_vec();
+    login_as(session, 1, flags);
+}
+
+/// Log in holding the server-assigned `client_id`.
+pub fn login_as(session: &mut Ed2kSession, client_id: u32, flags: Option<ServerTcpFlags>) {
+    let mut payload = client_id.to_le_bytes().to_vec();
     if let Some(flags) = flags {
         payload.extend_from_slice(&flags.bits().to_le_bytes());
     }

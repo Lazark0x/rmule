@@ -14,13 +14,15 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
-use rmule_peer::{ReaskFilePing, file_not_found_datagram, queue_full_datagram};
+use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
+use rmule_peer::{ReaskFilePing, SideCommand, file_not_found_datagram, queue_full_datagram};
 use rmule_primitives::{FileHash, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, UserHash};
 
 use super::super::tests::{
-    a_nonce, a_reask_ping, armed_requesting, armed_requesting_dual_stack, supporting_target,
+    a_nonce, a_reask_ping, armed_requesting, armed_requesting_dual_stack, off_with_identity,
+    supporting_target,
 };
-use super::super::{ClientUdpSend, PeerUdpCryptTarget, encrypt_client_udp_send};
+use super::super::{ClientUdpSend, encrypt_client_udp_send};
 use super::*;
 use crate::firewalled::front::FirewalledCommand;
 
@@ -86,7 +88,7 @@ fn front_without_kad<T: ClientUdpTransport>(
     let firewalled = SharedFirewalledFront::default();
     ClientUdpEngine::new(
         transport,
-        crypt,
+        crypt.unwrap_or_else(PeerUdpCrypt::disarmed),
         buddy_slot,
         firewalled,
         diagnostics,
@@ -107,11 +109,11 @@ fn front_with_kad<T: ClientUdpTransport>(
     mpsc::Receiver<rmule_net::kad::KadDatagram>,
 ) {
     let (kad_tx, kad_rx) = mpsc::channel(capacity);
-    let inlet: SharedKadInlet = SharedKadInlet::default();
-    *inlet.lock().expect("kad inlet mutex") = Some(kad_tx);
+    let inlet = SharedKadInlet::default();
+    inlet.install_for_good(kad_tx);
     let (engine, inboxes) = ClientUdpEngine::new(
         transport,
-        crypt,
+        crypt.unwrap_or_else(PeerUdpCrypt::disarmed),
         SharedBuddySlot::default(),
         SharedFirewalledFront::default(),
         diagnostics,
@@ -279,10 +281,10 @@ async fn an_inbound_0x94_relays_as_0x9a_over_the_held_buddy_link() {
     // reask tail forwarded verbatim; the spoofed 0x94 sent nothing.
     assert_eq!(
         link_rx.try_recv().expect("the verified 0x94 relayed"),
-        PeerCommand::SendReaskCallbackTcp(ReaskCallbackTcp {
+        PeerCommand::Side(SideCommand::SendReaskCallbackTcp(ReaskCallbackTcp {
             requester: PeerEndpoint::V4(requester),
             forwarded,
-        })
+        }))
     );
     assert!(
         link_rx.try_recv().is_err(),
@@ -373,10 +375,10 @@ async fn an_embedded_rendezvous_is_relayed_admitted_and_answered_with_a_hint() {
 
     assert_eq!(
         link_rx.try_recv().expect("the rendezvous was forwarded"),
-        PeerCommand::SendReaskCallbackTcp(ReaskCallbackTcp {
+        PeerCommand::Side(SideCommand::SendReaskCallbackTcp(ReaskCallbackTcp {
             requester: PeerEndpoint::V4(requester),
             forwarded: rendezvous.forwarded,
-        })
+        }))
     );
     assert!(link_rx.try_recv().is_err(), "the second was not admitted");
 
@@ -426,12 +428,42 @@ fn sealed_to(
     payload: &[u8],
 ) -> Vec<u8> {
     let (_, datagram) = encrypt_client_udp_send(
-        Some(crypt),
+        crypt,
         ClientUdpSend::to_peer(to, payload.to_vec(), Some(target)),
         a_nonce,
     );
     assert_ne!(datagram, payload, "the gate must have obfuscated this");
     datagram
+}
+
+/// Policy `off` gates what rmule sends and requires, never whether it can
+/// open an obfuscated datagram: aMule's `DecryptReceivedClient` trial-decrypts
+/// whatever its own setting (`EncryptedDatagramSocket.cpp:136`, the
+/// `IsClientCryptLayerSupported()` guard commented out), so a stock reasker's
+/// obfuscated `0x90` is answered after the policy flips to `off`.
+#[tokio::test]
+async fn an_off_front_still_opens_an_obfuscated_peer_datagram() {
+    let our_hash = UserHash::from_bytes([0x11; 16]);
+    let their_ip = [198u8, 51, 100, 7];
+    let their_ep = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::from(their_ip), 4662));
+    let their_crypt = armed_requesting(UserHash::from_bytes([0x99; 16]), their_ip);
+    let plain_ping = a_reask_ping(0x11);
+    let crypt_ping = sealed(&their_crypt, supporting_target(our_hash), &plain_ping);
+
+    let (engine, mut inboxes) = front_without_kad(
+        scripted(vec![(their_ep, crypt_ping)]),
+        Some(off_with_identity(our_hash, [203, 0, 113, 9])),
+        SharedBuddySlot::default(),
+        DiagnosticsState::default(),
+        mpsc::channel(4).0,
+    );
+    engine.run().await;
+
+    assert_eq!(
+        inboxes.reask_ping.try_recv(),
+        Ok((their_ep, plain_ping)),
+        "the obfuscated ping routed as its recovered plaintext"
+    );
 }
 
 #[tokio::test]

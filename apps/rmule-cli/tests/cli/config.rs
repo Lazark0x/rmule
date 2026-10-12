@@ -37,13 +37,15 @@ fn identity_show_prints_a_32_hex_char_user_hash() {
 #[test]
 fn config_download_dir_round_trips_in_one_process_group() {
     let dir = tempdir().unwrap();
+    let download_dir = rmule_testkit::absolute_path("tmp/dl");
     cli(dir.path())
-        .args(["config", "set-download-dir", "/tmp/dl"])
+        .args(["config", "set-download-dir"])
+        .arg(&download_dir)
         .assert()
         .success();
     cli(dir.path())
         .args(["config", "show"])
         .assert()
         .success()
-        .stdout(contains("/tmp/dl"));
+        .stdout(contains(download_dir.display().to_string()));
 }

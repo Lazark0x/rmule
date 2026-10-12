@@ -20,6 +20,9 @@
 //! recipe"); a mesh-sim / FakeKadPeer vector is rmule-authored and can never
 //! prove the gate, so no captured vector is fabricated here.
 
+use rmule_kad::KadInstant;
+use rmule_kad::KadNodeStart;
+use rmule_kad::KadObfuscation;
 use rmule_kad::{
     Kad2Message, Kad2NodeInfo, KadEvent, KadId, KadNode, KadNodeConfig, KadNodeDiagnostic,
     KadNodeEndpoint, KadOutput, decode_exact,
@@ -30,13 +33,25 @@ use rmule_primitives::{
 };
 use rmule_testkit::kad_node::{T0, datagrams, endpoint, fixed_nonce, id};
 
+fn start_with_id(node_id: KadId) -> KadNodeStart {
+    KadNodeStart::new(
+        KadNodeConfig {
+            id: node_id,
+            tcp_port: 4662,
+            udp_port: 4672,
+            user_hash: UserHash::from_bytes([0xEE; 16]),
+        },
+        KadInstant::EPOCH,
+    )
+}
+
 fn node_with_id(node_id: KadId) -> KadNode {
-    KadNode::new(KadNodeConfig {
-        id: node_id,
-        tcp_port: 4662,
-        udp_port: 4672,
-        user_hash: UserHash::from_bytes([0xEE; 16]),
-    })
+    KadNode::new(start_with_id(node_id))
+}
+
+/// A node that obfuscates its sends, without verify keys.
+fn obfuscating_node_with_id(node_id: KadId) -> KadNode {
+    KadNode::new(start_with_id(node_id).obfuscation(KadObfuscation::new(fixed_nonce)))
 }
 
 /// Encrypt a plaintext Kad datagram for `recipient_id` under the KadNodeId
@@ -217,8 +232,7 @@ fn send_encrypt_keys_on_the_recipient_kad_id_and_round_trips_to_the_plaintext() 
     // Send-crypt on: the node stores the requester (Responded) then replies; the
     // requester is now a known contact, so the res is encrypted keyed on its
     // Kad ID (aMule keys the send on the target's client ID).
-    let mut node = node_with_id(node_id);
-    node.enable_datagram_obfuscation(fixed_nonce);
+    let mut node = obfuscating_node_with_id(node_id);
     node.handle_datagram(T0, peer, &hello_req);
     let sent = datagrams(&drain(&mut node));
     let [(to, crypt_res)] = sent.as_slice() else {
@@ -264,8 +278,7 @@ fn send_encrypt_leaves_datagrams_to_strangers_plaintext() {
     // A ping from an unknown endpoint draws a pong, but the endpoint is not a
     // stored contact, so there is no key to obfuscate toward — plaintext, like
     // aMule, which only obfuscates toward a contact whose key it holds.
-    let mut node = node_with_id(id(0xAA));
-    node.enable_datagram_obfuscation(fixed_nonce);
+    let mut node = obfuscating_node_with_id(id(0xAA));
 
     node.handle_datagram(T0, endpoint(7, 5000), &Kad2Message::Ping.encode().encode());
     let sent = drain(&mut node);
@@ -303,8 +316,7 @@ fn send_encrypt_stays_plaintext_toward_a_pre_crypt_contact() {
     .encode()
     .encode();
 
-    let mut node = node_with_id(id(0xAA));
-    node.enable_datagram_obfuscation(fixed_nonce);
+    let mut node = obfuscating_node_with_id(id(0xAA));
     node.handle_datagram(T0, peer, &hello_req);
     let sent = datagrams(&drain(&mut node));
     let [(to, res)] = sent.as_slice() else {
@@ -342,8 +354,67 @@ fn send_crypt_is_off_by_default_so_the_node_stays_byte_for_byte_plaintext() {
     };
     assert_eq!(
         res[0], 0xE4,
-        "no obfuscation without enable_datagram_obfuscation"
+        "no obfuscation unless the start-up value carries it"
     );
+}
+
+/// The policy changes live (ADR-0046): a node started plaintext and re-armed
+/// obfuscates its very next reply toward a crypt-capable contact, and
+/// disarmed answers the next one in plaintext again — while the dual-path
+/// receive keeps decrypting either way.
+#[test]
+fn a_live_re_arm_takes_effect_at_the_next_send_and_a_disarm_at_the_one_after() {
+    let peer = endpoint(7, 5000);
+    let peer_id = id(0xC1);
+    let hello_req = Kad2Message::HelloReq(Kad2NodeInfo {
+        id: peer_id,
+        tcp_port: 4662,
+        version: 8,
+        udp_port_tag: Some(peer.udp_port()),
+        misc_options: 0,
+    })
+    .encode()
+    .encode();
+    let mut node = node_with_id(id(0xAA));
+    let answer = |node: &mut KadNode, request: &[u8]| {
+        node.handle_datagram(T0, peer, request);
+        let sent = datagrams(&drain(node));
+        let [(to, res)] = sent.as_slice() else {
+            panic!("exactly one hello res");
+        };
+        assert_eq!(*to, peer);
+        res.clone()
+    };
+    assert_eq!(answer(&mut node, &hello_req)[0], 0xE4, "started plaintext");
+
+    node.handle_command(
+        T0,
+        rmule_kad::KadCommand::SetObfuscation {
+            obfuscation: Some(KadObfuscation::new(fixed_nonce)),
+        },
+    );
+    let armed = answer(&mut node, &hello_req);
+    assert!(
+        !is_udp_plaintext_marker(armed[0]),
+        "the re-armed node obfuscates its next reply"
+    );
+    let recovered = decrypt_datagram_client(
+        &armed,
+        &ClientDecryptKeys {
+            kad_id: Some(peer_id.as_bytes()),
+            ..Default::default()
+        },
+    )
+    .expect("the contact opens it with its own Kad ID");
+    assert_eq!(recovered.payload[0], 0xE4);
+
+    node.handle_command(
+        T0,
+        rmule_kad::KadCommand::SetObfuscation { obfuscation: None },
+    );
+    // An obfuscated request still opens: receive never depended on the arming.
+    let disarmed = answer(&mut node, &crypt_to(id(0xAA), &hello_req));
+    assert_eq!(disarmed[0], 0xE4, "the disarmed node answers in plaintext");
 }
 
 /// Genuine stock aMule 2.3.3 obfuscated Kad datagram (interop flow K

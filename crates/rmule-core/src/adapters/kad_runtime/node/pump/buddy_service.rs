@@ -24,16 +24,17 @@ pub(crate) struct BuddyService {
 }
 
 impl BuddyService {
-    /// A firewalled peer asked this node to be its buddy.
-    pub(super) async fn find_buddy_requested(
+    /// A firewalled peer asked this node to be its buddy. The accept is the
+    /// `0x5A` answer the brain sends the node, never sent from here: the
+    /// answer takes the pump's one non-blocking path to the node's inbox.
+    pub(super) fn find_buddy_requested(
         &self,
         requester: Ipv4Endpoint,
         buddy_id: KadId,
         requester_hash: UserHash,
         requester_tcp_port: u16,
         reach: &crate::reachability::SharedSelfReach,
-        handle: &rmule_net::kad::KadNetHandle,
-    ) {
+    ) -> Option<(Ipv4Endpoint, KadId)> {
         let Self {
             slot: buddy_slot,
             identity: our_buddy_identity,
@@ -72,17 +73,11 @@ impl BuddyService {
                 // stance; it is not threaded into this pump yet, so we
                 // send the plain form (aMule tolerates its absence).
                 // `[pending]` the `0x5A` connect-options byte.
-                let _ = handle
-                    .command(rmule_kad::KadCommand::AnswerFindBuddy {
-                        requester: rmule_kad::KadNodeEndpoint::new(requester.ip, requester.port),
-                        buddy_id,
-                        connect_options: None,
-                    })
-                    .await;
                 tracing::debug!(
                     ?buddy_tcp,
                     "kad buddy service: accepted recruit, answering 0x5A (ADR-0061)"
                 );
+                Some((requester, buddy_id))
             }
             FindBuddyOutcome::Refuse { reason } => {
                 tracing::debug!(
@@ -90,6 +85,7 @@ impl BuddyService {
                     ?reason,
                     "kad buddy service: silently refused FINDBUDDY_REQ (ADR-0061)"
                 );
+                None
             }
         }
     }

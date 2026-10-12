@@ -19,6 +19,7 @@ pub(crate) use row::{schema_v1, seed_v1};
 pub use seeds::LoadedSeeds;
 pub(crate) use seeds::UPGRADE_FROM_V12;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use rmule_primitives::{Ed2kFileLink, FileHash, PartHash, ServerEndpoint, UserHash};
@@ -151,7 +152,7 @@ impl DurableDownloadRepository {
     ///
     /// # Errors
     /// [`CoreError::Repository`] when the store read fails.
-    pub fn part_files(&self) -> Result<Vec<(std::path::PathBuf, bool)>, CoreError> {
+    pub fn part_files(&self) -> Result<Vec<(PathBuf, bool)>, CoreError> {
         self.store.read(|txn| {
             Ok(DOWNLOADS
                 .iter(txn)?
@@ -532,13 +533,14 @@ impl DownloadRepository for DurableDownloadRepository {
         id: DownloadId,
         expected: FileHash,
         file_size: u64,
-    ) -> Result<(), FinalizeError> {
+    ) -> Result<PathBuf, FinalizeError> {
         let paths = self.paths(id)?;
         if ContentFileStore::hash_for_finalize(&paths, file_size).await? != expected {
             return Err(FinalizeError::Mismatch);
         }
         ContentFileStore::finalize(&paths).await?;
-        Ok(self.set_lifecycle(id, DownloadLifecycle::Completed)?)
+        self.set_lifecycle(id, DownloadLifecycle::Completed)?;
+        Ok(paths.final_path().to_path_buf())
     }
 
     async fn revalidate(&self, id: DownloadId) -> Result<Revalidation, CoreError> {

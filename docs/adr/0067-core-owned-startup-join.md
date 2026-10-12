@@ -70,8 +70,8 @@ event — aMule's "please bootstrap, or download a nodes.dat file"
   the observable the diagnostics snapshot reads.
 - **Small-timer hello pass with per-contact aging.** aMule's `CRoutingZone::OnSmallTimer`
   runs every minute for every zone with no `IsConnected` gate
-  (`Kademlia.cpp:187,277-280`). rmule's driver arms the pass at join start
-  (`arm_small_timer`): it fires 1 s after start, then every minute. Per non-empty
+  (`Kademlia.cpp:187,277-280`). rmule's node arms the pass at join start
+  (`KadNodeStart::small_timer`): it fires 1 s after start, then every minute. Per non-empty
   bucket it looks once at the oldest entry: a due contact gets one hello and a
   2-minute check window and stays at the front; a contact not due moves to the back.
   The routing-table entry (not `KadContact`, which is also a wire row) carries two of

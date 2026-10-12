@@ -6,7 +6,6 @@
 use rmule_core::DownloadRepository;
 use std::sync::Arc;
 
-use crate::fixture::identity;
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent, DownloadFailure,
     DownloadLifecycle, DownloadPaths, DownloadedPart, DurableDownloadRepository, PartReleaseReason,
@@ -27,9 +26,12 @@ async fn pause_releases_in_flight_parts_and_persists_paused_state() {
     let hashes = link.part_hash_set.as_ref().unwrap().hashes().to_vec();
     let dir = tempfile::tempdir().unwrap();
     let store = open_durable_store(dir.path()).unwrap();
-    let output_path = dir.path().join("download.bin");
 
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .source_lookup(two_high_id_sources())
         .peer_transfer(HoldingPeerTransfer {
             part_hashes: hashes,
@@ -38,8 +40,8 @@ async fn pause_releases_in_flight_parts_and_persists_paused_state() {
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: link,
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: output_path.clone(),
+        name: rmule_testkit::file_name("download.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -106,9 +108,12 @@ async fn pause_preserves_verified_parts_and_releases_only_in_flight() {
     let hashes = link.part_hash_set.as_ref().unwrap().hashes().to_vec();
     let dir = tempfile::tempdir().unwrap();
     let store = open_durable_store(dir.path()).unwrap();
-    let output_path = dir.path().join("download.bin");
 
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .source_lookup(two_high_id_sources())
         .peer_transfer(PartialSuccessThenHold {
             part_hashes: hashes,
@@ -123,8 +128,8 @@ async fn pause_preserves_verified_parts_and_releases_only_in_flight() {
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: link,
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: output_path.clone(),
+        name: rmule_testkit::file_name("download.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -194,6 +199,10 @@ async fn cancel_deletes_part_file_and_keeps_cancelled_terminal_state() {
     let paths = DownloadPaths::from_final_path(output_path.clone());
 
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .source_lookup(two_high_id_sources())
         .peer_transfer(PartialSuccessThenHold {
             part_hashes: hashes,
@@ -208,8 +217,8 @@ async fn cancel_deletes_part_file_and_keeps_cancelled_terminal_state() {
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: link,
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: output_path.clone(),
+        name: rmule_testkit::file_name("download.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -273,9 +282,12 @@ async fn cancelled_download_cannot_be_resumed() {
     let hashes = link.part_hash_set.as_ref().unwrap().hashes().to_vec();
     let dir = tempfile::tempdir().unwrap();
     let store = open_durable_store(dir.path()).unwrap();
-    let output_path = dir.path().join("download.bin");
 
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .source_lookup(two_high_id_sources())
         .peer_transfer(HoldingPeerTransfer {
             part_hashes: hashes,
@@ -284,8 +296,8 @@ async fn cancelled_download_cannot_be_resumed() {
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: link,
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: output_path.clone(),
+        name: rmule_testkit::file_name("download.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -324,7 +336,6 @@ async fn cancelled_download_cannot_be_resumed() {
 
     core.send(CoreCommand::Download(DownloadCommand::ResumeDownload {
         download_id,
-        credentials: identity().into(),
     }))
     .await
     .unwrap();
@@ -346,17 +357,21 @@ async fn cancelled_download_cannot_be_resumed() {
 
 #[tokio::test]
 async fn cancel_during_active_workflow_emits_cancelled_without_completion() {
+    let out_dir = tempfile::tempdir().unwrap();
     let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            out_dir.path(),
+        ))
         .source_lookup(source_with_high_id())
         .peer_transfer(PendingPeerTransfer)
         .build();
 
-    let out_dir = tempfile::tempdir().unwrap();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: file_link_without_part_hash_set("example.bin", b"hello world"),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: out_dir.path().join("cancel-download.bin"),
+        name: rmule_testkit::file_name("cancel-download.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();

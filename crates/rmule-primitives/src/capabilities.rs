@@ -73,7 +73,7 @@ impl CryptStance {
 }
 
 /// The `CT_EMULE_VERSION` word rmule advertises is aMule 2.3.3's own, not
-/// rmule's real 0.1.0. Wire-citizen doctrine: rmule presents as a
+/// rmule's own version. Wire-citizen doctrine: rmule presents as a
 /// byte-faithful aMule 2.3.3 peer, and Lugdunum-family eservers gate login on a
 /// minimum client version — a 0.x major is rejected "your client is too old".
 /// aMule builds the identical word on BOTH surfaces this registry feeds — the
@@ -146,11 +146,15 @@ impl Capabilities {
         true
     }
 
-    /// Dark: the `OP_IDCHANGE` extension (aux port et al.) is not yet
-    /// projected — flips when ADR-0047 ships.
+    /// `CAPABLE_AUXPORT` tells a server this client acts on an "aux port
+    /// login": when the login came through an auxiliary port, the server's
+    /// `OP_IDCHANGE` names its standard port, and aMule replaces the row's
+    /// port with it and keeps the dialed one in the row's aux-ports list
+    /// (`ServerSocket.cpp:289-311`, `Server.cpp:233-241`). The managed server
+    /// list does the same (ADR-0080, "Aux ports"), so the claim is true.
     #[must_use]
     pub const fn supports_aux_port(self) -> bool {
-        false
+        true
     }
 
     /// eMule extended-protocol data-compression version (peer transfer,
@@ -286,7 +290,7 @@ mod tests {
         // the identical expression on server login (ServerConnect.cpp#L253)
         // and peer hello (BaseClient.cpp#L1077). rmule advertises the same
         // word so a min-version-gating eserver (Lugdunum) accepts the login
-        // instead of rejecting rmule's real 0.1.0 as "too old".
+        // instead of rejecting rmule's own version as "too old".
         let caps = Capabilities::shipped(CryptStance::disabled());
         assert_eq!(caps.emule_version_word(), 0x0304_0D80);
     }

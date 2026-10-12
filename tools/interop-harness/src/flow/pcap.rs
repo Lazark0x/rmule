@@ -27,7 +27,8 @@ mod tcp_streams;
 
 pub use self::tcp_streams::ed2k_frame_listing;
 pub(crate) use self::tcp_streams::{
-    Ed2kFrame, TcpCapture, TcpStream, tcp_capture, tcp_streams, tcp_streams_in,
+    ED2K_PROTOCOLS, Ed2kFrame, TcpCapture, TcpOpen, TcpStream, tcp_capture, tcp_streams,
+    tcp_streams_in,
 };
 
 /// Classic pcap magic, both byte orders (and their nanosecond variants).

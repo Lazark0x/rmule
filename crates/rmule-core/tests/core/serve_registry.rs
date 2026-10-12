@@ -1,24 +1,30 @@
 //! Sharing a file: what the unshare command accepts and rejects, and
 //! the auto-share a completed download triggers — including the part hash
-//! set the link's authority carries into the registry, and the Had Set an
-//! unshare of a gone file joins and a completed download leaves.
+//! set the link's authority carries into the registry, the Had Set an
+//! unshare of a gone file joins and a completed download leaves, and the
+//! refusal that withholds a download completed under a refused folder until
+//! the refusal lifts.
+use rmule_testkit::HANG_GUARD;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::fixture::identity;
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent, DownloadFailure,
     DownloadedPart, PeerDownloadOutcome, PeerTransferService, PeerWorker, PeerWorkerCommand,
-    PeerWorkerEvent, ServeCommand, ServeEvent, ShareRejectReason, ShareSource, SharedFileRegistry,
-    SourceLookupOutcome, SourceLookupService,
+    PeerWorkerEvent, ServeCommand, ServeEvent, ShareGuards, ShareRejectReason, ShareSource,
+    SharedFileRegistry, SourceLookupOutcome, SourceLookupService, WithheldReason,
 };
-use rmule_core::{DurableSharedFileRegistry, DurableStore};
+use rmule_core::{
+    DownloadLifecycle, DownloadPaths, DownloadRepository, DurableDownloadRepository,
+    DurableSharedFileRegistry, DurableStore,
+};
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, Ed2kText, ExchangedSource, FileHashSummary, PeerEndpoint, PeerSource,
-    ServerEndpoint, SourceLookupTarget,
+    ClientId, Ed2kFileLink, Ed2kText, FileHashSummary, PeerEndpoint, PeerSource, ServerEndpoint,
+    SourceLookupTarget, SourceSighting,
 };
-use rmule_testkit::file_link_without_part_hash_set;
-use tokio::time::{Duration, timeout};
+use rmule_testkit::{StaticPeerTransfer, file_link_without_part_hash_set, source_with_high_id};
+use tokio::time::timeout;
 
 // Adapters that are never invoked in serve-only tests (no StartDownload).
 #[derive(Clone)]
@@ -48,6 +54,7 @@ impl PeerTransferService for UnusedPeerTransfer {
 /// [`DurableSharedFileRegistry`] on the same store sees exactly what core wrote.
 fn serve_core(store: Arc<DurableStore>) -> Core {
     Core::builder(CoreConfig::default(), store)
+        .settings(rmule_core::CoreSettings::default())
         .source_lookup(UnusedSourceLookup)
         .peer_transfer(UnusedPeerTransfer)
         .build()
@@ -55,7 +62,7 @@ fn serve_core(store: Arc<DurableStore>) -> Core {
 
 async fn next_serve_event(core: &mut Core) -> ServeEvent {
     loop {
-        let event = timeout(Duration::from_secs(2), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted a serve event")
             .expect("core event stream stayed open");
@@ -242,6 +249,7 @@ impl PeerTransferService for ScriptedPeerTransfer {
 
 #[tokio::test]
 async fn completed_download_auto_registers_into_the_shared_file_registry() {
+    let output_dir = tempfile::tempdir().expect("temp dir");
     let bytes = b"hello world".to_vec();
     let link = file_link_without_part_hash_set("example.bin", &bytes);
     let high = PeerSource::new(ClientId::from_u32(0x0100_007F), 4663);
@@ -249,7 +257,7 @@ async fn completed_download_auto_registers_into_the_shared_file_registry() {
     let source = ScriptedSourceLookup {
         outcome: SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![ExchangedSource::plain(high)],
+            sources: vec![SourceSighting::plain(high)],
         },
     };
     let transfer = ScriptedPeerTransfer {
@@ -266,16 +274,19 @@ async fn completed_download_auto_registers_into_the_shared_file_registry() {
     let store = rmule_testkit::memory_store();
     let registry = DurableSharedFileRegistry::new(store.clone());
     let mut core = Core::builder(CoreConfig::default(), store)
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            output_dir.path(),
+        ))
         .source_lookup(source)
         .peer_transfer(transfer)
         .build();
 
-    let output_dir = tempfile::tempdir().expect("temp dir");
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: link.clone(),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: output_dir.path().join("autoshare.bin"),
+        name: rmule_testkit::file_name("autoshare.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
@@ -283,7 +294,7 @@ async fn completed_download_auto_registers_into_the_shared_file_registry() {
     // The auto-share fact is emitted by the actor after the download
     // completes (DownloadCompleted -> task-finished signal -> register).
     let shared = loop {
-        let event = timeout(Duration::from_secs(2), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted next event")
             .expect("core event stream stayed open");
@@ -334,7 +345,7 @@ async fn auto_share_persists_the_link_authority_part_hash_set() {
     let source = ScriptedSourceLookup {
         outcome: SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![ExchangedSource::plain(high)],
+            sources: vec![SourceSighting::plain(high)],
         },
     };
     let transfer = ScriptedPeerTransfer {
@@ -359,6 +370,10 @@ async fn auto_share_persists_the_link_authority_part_hash_set() {
     let registry = DurableSharedFileRegistry::new(store.clone());
     let dir = tempfile::tempdir().unwrap();
     let mut core = Core::builder(CoreConfig::default(), store)
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
         .source_lookup(source)
         .peer_transfer(transfer)
         .build();
@@ -366,14 +381,14 @@ async fn auto_share_persists_the_link_authority_part_hash_set() {
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: link.clone(),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: dir.path().join("auto-share-link-authority.bin"),
+        name: rmule_testkit::file_name("auto-share-link-authority.bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
 
     let shared = loop {
-        let event = timeout(Duration::from_secs(5), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted next event")
             .expect("core event stream stayed open");
@@ -428,7 +443,7 @@ async fn a_had_file_downloaded_again_leaves_the_had_set_when_it_is_whole() {
     let source = ScriptedSourceLookup {
         outcome: SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![ExchangedSource::plain(high)],
+            sources: vec![SourceSighting::plain(high)],
         },
     };
     let transfer = ScriptedPeerTransfer {
@@ -462,19 +477,23 @@ async fn a_had_file_downloaded_again_leaves_the_had_set_when_it_is_whole() {
     assert_eq!(registry.had_set().list().unwrap().len(), 1);
 
     let mut core = Core::builder(CoreConfig::default(), store)
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            output_dir.path(),
+        ))
         .source_lookup(source)
         .peer_transfer(transfer)
         .build();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: link.clone(),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        credentials: identity().into(),
-        output_path: output_dir.path().join("had (1).bin"),
+        name: rmule_testkit::file_name("had (1).bin"),
+        if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
     .unwrap();
     loop {
-        let event = timeout(Duration::from_secs(2), core.next_event())
+        let event = timeout(HANG_GUARD, core.next_event())
             .await
             .expect("core emitted next event")
             .expect("core event stream stayed open");
@@ -490,4 +509,192 @@ async fn a_had_file_downloaded_again_leaves_the_had_set_when_it_is_whole() {
         }
     }
     assert!(registry.had_set().list().unwrap().is_empty());
+}
+
+/// A core over `store` whose download directory, named `download_dir`, leads
+/// to the home the guards refuse (ADR-0101), with one peer serving `bytes`
+/// whole.
+fn refused_home_core(
+    store: Arc<DurableStore>,
+    download_dir: &std::path::Path,
+    home: &std::path::Path,
+    bytes: &[u8],
+) -> Core {
+    Core::builder(CoreConfig::default(), store)
+        .settings(rmule_core::CoreSettings {
+            download_dir: Some(download_dir.to_path_buf()),
+            ..rmule_core::CoreSettings::default()
+        })
+        .share_guards(ShareGuards {
+            home: Some(home.to_path_buf()),
+            data_dir: None,
+        })
+        .source_lookup(source_with_high_id())
+        .peer_transfer(StaticPeerTransfer {
+            expected_plan_count: 1,
+            outcome: PeerDownloadOutcome {
+                peer_hashes: Vec::new(),
+                parts: vec![DownloadedPart {
+                    part_index: 0,
+                    offset: 0,
+                    bytes: bytes.to_vec(),
+                }],
+            },
+        })
+        .build()
+}
+
+/// A download of `link` an earlier run started into `output`, when the
+/// guards passed its folder, resumed by a [`refused_home_core`] — the guards
+/// changed between the runs — and completed: answers the core and why the
+/// finished file is withheld. A share of it fails the test.
+async fn complete_withheld(
+    download_dir: &std::path::Path,
+    home: &std::path::Path,
+    link: &Ed2kFileLink,
+    output: PathBuf,
+    bytes: &[u8],
+) -> (Core, WithheldReason) {
+    let store = rmule_testkit::memory_store();
+    let repo = DurableDownloadRepository::new(Arc::clone(&store));
+    let record = repo
+        .create_download(link, None, &DownloadPaths::from_final_path(output))
+        .unwrap();
+    repo.set_lifecycle(record.id(), DownloadLifecycle::Paused)
+        .unwrap();
+    let mut core = refused_home_core(store, download_dir, home, bytes);
+    core.send(CoreCommand::Download(DownloadCommand::ResumeDownload {
+        download_id: record.id(),
+    }))
+    .await
+    .unwrap();
+    let reason = withheld_on_completion(&mut core, link).await;
+    (core, reason)
+}
+
+/// Why `link`'s completed file is withheld; a share of it fails the test.
+async fn withheld_on_completion(core: &mut Core, link: &Ed2kFileLink) -> WithheldReason {
+    loop {
+        let event = timeout(HANG_GUARD, core.next_event())
+            .await
+            .expect("core emitted next event")
+            .expect("core event stream stayed open");
+        match event {
+            CoreEvent::Serve(ServeEvent::FileShared { file_hash })
+                if file_hash == link.file_hash =>
+            {
+                panic!("a download completed into a refused download directory was shared")
+            }
+            CoreEvent::Serve(ServeEvent::FileWithheld {
+                file_hash, reason, ..
+            }) if file_hash == link.file_hash => return reason,
+            CoreEvent::Download(DownloadEvent::DownloadFailed { reason, .. }) => {
+                panic!("download failed: {reason:?}")
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A download that completes into a download directory the guards refuse
+/// (ADR-0101) — one an earlier run started there, since a start into a
+/// refused directory is refused — is recorded, withheld as refused, and never
+/// offered: the mark every offer reads — the serve snapshot, the Kad
+/// publisher, the File History — holds it from the moment its row is written.
+#[tokio::test]
+async fn a_download_completing_into_a_refused_download_directory_is_withheld_never_shared() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let home = std::fs::canonicalize(tmp.path()).expect("canonical home");
+    let bytes = b"finished in the home".to_vec();
+    let link = file_link_without_part_hash_set("home.bin", &bytes);
+
+    let (mut core, reason) =
+        complete_withheld(&home, &home, &link, home.join("home.bin"), &bytes).await;
+    assert_eq!(reason, WithheldReason::Refused);
+
+    core.send(CoreCommand::DumpFileHistory).await.unwrap();
+    let history = loop {
+        let event = timeout(HANG_GUARD, core.next_event())
+            .await
+            .expect("core answered the history")
+            .expect("core event stream stayed open");
+        if let CoreEvent::FileHistory { history } = event {
+            break history;
+        }
+    };
+    let fact = history
+        .shared
+        .iter()
+        .find(|fact| fact.identity.file_hash == link.file_hash)
+        .expect("the completed file is recorded in the registry");
+    assert_eq!(
+        fact.withheld.map(|held| held.reason),
+        Some(WithheldReason::Refused),
+        "recorded, but withheld: never offered"
+    );
+    core.shutdown().await;
+}
+
+/// The refusal is judged where a path leads, not how it is spelt: a
+/// download whose output reaches the refused download directory through a
+/// link, or completes into it by its real path while the directory is named
+/// through a link, is withheld all the same.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_download_completing_into_a_refused_directory_by_another_spelling_is_withheld() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let root = std::fs::canonicalize(tmp.path()).expect("canonical root");
+    let home = root.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let alias = root.join("alias");
+    std::os::unix::fs::symlink(&home, &alias).unwrap();
+
+    for (download_dir, output) in [
+        (&home, alias.join("through-the-link.bin")),
+        (&alias, home.join("by-the-real-path.bin")),
+    ] {
+        let bytes = output.to_str().unwrap().as_bytes().to_vec();
+        let name = output.file_name().unwrap().to_str().unwrap();
+        let link = file_link_without_part_hash_set(name, &bytes);
+        let (core, reason) =
+            complete_withheld(download_dir, &home, &link, output.clone(), &bytes).await;
+        assert_eq!(reason, WithheldReason::Refused, "{}", output.display());
+        core.shutdown().await;
+    }
+}
+
+/// The Registry Check leaves a row withheld as refused alone, so the lift
+/// is the actor's to say: once the download directory moves off the refused
+/// one, the file finished there lies under no refused entry and is offered
+/// at once, not at the next start.
+#[tokio::test]
+async fn a_refused_completed_download_is_offered_once_the_download_directory_moves_away() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let root = std::fs::canonicalize(tmp.path()).expect("canonical root");
+    let home = root.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let bytes = b"finished before the move".to_vec();
+    let link = file_link_without_part_hash_set("moved.bin", &bytes);
+    let (mut core, _) =
+        complete_withheld(&home, &home, &link, home.join("moved.bin"), &bytes).await;
+
+    core.settings()
+        .set(rmule_core::Setting::DownloadDir {
+            dir: root.join("downloads"),
+            share_confirmed: true,
+        })
+        .expect("a passing download directory is set");
+    timeout(HANG_GUARD, async {
+        loop {
+            if let CoreEvent::Serve(ServeEvent::FileOffered { file_hash }) =
+                core.next_event().await.expect("stream open")
+                && file_hash == link.file_hash
+            {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("offered once the refusal lifted, well before a recheck");
+    core.shutdown().await;
 }

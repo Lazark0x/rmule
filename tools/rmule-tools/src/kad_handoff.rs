@@ -25,7 +25,7 @@ use rmule_kad::{KadCommand, KadEvent, KadId, KadNodeConfig, KadNodeEndpoint};
 use rmule_net::ed2k::{ConnectOptions, Connection};
 use rmule_net::kad::{KadNetConfig, KadNetHandle};
 use rmule_net::peer::{ConnectOptions as PeerConnectOptions, Connection as PeerConnection};
-use rmule_peer::{PeerEvent, PeerHandshakeContext, PeerIdentity, UdpPortsAdvert};
+use rmule_peer::{ConnectionEvent, PeerEvent, PeerHandshakeContext, PeerIdentity, UdpPortsAdvert};
 use rmule_primitives::{ClientId, ClientIdentity, Ed2kText, ServerEndpoint, TagValue, UserHash};
 
 use crate::operand::{parse_peer_endpoint, parse_user_hash};
@@ -190,8 +190,7 @@ pub(crate) async fn run(args: KadHandoffArgs) -> Result<()> {
             capture_dir: args.out.as_ref().map(|dir| dir.join("kad-tap")),
             nodes_dat_path: None,
             firewall_self_check: false,
-            datagram_obfuscation: false,
-            verify_keys: None,
+            obfuscation: None,
             contact_admission: None,
         },
         kad_bind,
@@ -294,6 +293,8 @@ async fn build_handshake_context(
         return Ok(PeerHandshakeContext {
             identity: identity.clone(),
             client_id: ClientId::from_u32(0x1000_0001),
+            ed2k_client_id: ClientId::from_u32(0x1000_0001),
+            public_ip: None,
             connected_server: None,
         });
     };
@@ -305,6 +306,7 @@ async fn build_handshake_context(
         connect_timeout: Duration::from_secs(args.connect_timeout),
         login_timeout: response_timeout,
         obfuscation: None,
+        obfuscated_port: None,
         advertised_ipv6: None,
         udp_ports: None,
     };
@@ -336,14 +338,14 @@ async fn build_handshake_context(
 async fn wait_for_peer_identity(conn: &mut PeerConnection) -> Result<PeerIdentity> {
     while let Some(event) = conn.next_event().await {
         match event {
-            PeerEvent::PeerIdentified { identity } => return Ok(identity),
-            PeerEvent::Disconnected { reason } => {
+            PeerEvent::Connection(ConnectionEvent::Identified { identity }) => return Ok(identity),
+            PeerEvent::Connection(ConnectionEvent::Disconnected { reason }) => {
                 bail!("peer disconnected before identifying: {reason:?}");
             }
             other => println!("kad-handoff peer_event={other}"),
         }
     }
-    bail!("peer session ended before PeerIdentified")
+    bail!("peer session ended before Identified")
 }
 
 /// Wait (bounded) for the node to reach Kad contact after the handoff dial.

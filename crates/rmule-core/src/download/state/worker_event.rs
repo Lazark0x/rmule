@@ -3,47 +3,47 @@
 //! the scheduler, the assembly, and the fleet. Every entry point returns the
 //! ordered decisions the runner enacts — nothing here awaits.
 
-use rmule_primitives::{PartHash, PeerCrypt, PeerEndpoint};
+use std::time::Instant;
+
+use rmule_peer::PeerIdentity;
+use rmule_primitives::{PartHash, PeerEndpoint};
 
 use crate::DownloadFailure;
 use crate::adapters::{PeerWorkerCommand, PeerWorkerEvent};
 use crate::assembly::PartAssembly;
 use crate::diagnostics::WorkerPhase;
-use crate::dialable::resolve_family;
 use crate::hashing::{hash_set_proves_file, resolve_hash_set_authority};
 use crate::service::{DownloadEvent, PeerRetirementReason, VerificationAuthority};
 
-use super::{Decision, DownloadState, LowIdCandidate};
+use super::{Decision, DownloadState};
 
 impl DownloadState {
     /// Resume after the runner could not put a spawned candidate on the wire
     /// (its `start_peer_worker` failed). Free the claimed slot, drop the
     /// candidate, and try the next; a never-connected worker is not a
     /// retirement, so the retired count is unchanged (ADR-0030).
-    pub(crate) fn on_spawn_failed(&mut self, peer: PeerEndpoint) -> Vec<Decision> {
+    pub(crate) fn on_spawn_failed(&mut self, now: Instant, peer: PeerEndpoint) -> Vec<Decision> {
         let mut out = Vec::new();
-        if let Some(worker) = self.workers.remove(&peer) {
-            self.free_slots.insert(worker.slot.as_usize());
+        if let Some(slot) = self.worker_slots.remove(&peer) {
+            self.free_slots.insert(slot.as_usize());
             // A dial that could not even start is a failed dial: a rung-0
             // Low-ID candidate falls to its callback roads, and a
             // High-ID endpoint is spent and a dual-stack half falls to its
             // other family.
-            self.on_dial_ended(peer, true);
+            let end = self.sources.end_worker(peer, true, self.dial);
+            self.note_worker_end(end);
         }
-        self.fill(&mut out);
-        if self.workers.is_empty()
-            && self.pending_callbacks.is_empty()
-            && self.no_usable_candidate()
-            && !self.scheduler.is_complete()
-        {
+        self.fill(now, &mut out);
+        if self.out_of_sources() {
             out.push(Decision::Fail(DownloadFailure::NoUsableSources));
         }
         self.settle_seed_dials(&mut out);
         out
     }
-    /// Drive one worker event to its scheduling decisions.
+    /// Drive one worker event at `now` to its scheduling decisions.
     pub(crate) fn on_worker_event(
         &mut self,
+        now: Instant,
         peer: PeerEndpoint,
         event: PeerWorkerEvent,
     ) -> Vec<Decision> {
@@ -51,9 +51,7 @@ impl DownloadState {
         self.note_seed_fact(peer, &event);
         match event {
             PeerWorkerEvent::Connected => {
-                if let Some(worker) = self.workers.get_mut(&peer) {
-                    worker.connected = true;
-                }
+                self.sources.connected(peer);
                 self.assign(peer, &mut out);
                 // No trusted AICH root yet (link carried no `h=`): ask this peer
                 // for the file's master hash to feed the trusted-set vote
@@ -65,41 +63,36 @@ impl DownloadState {
                     });
                 }
             }
-            PeerWorkerEvent::Identified {
-                user_hash,
-                crypt,
-                software,
-            } => {
-                if let Some(slot) = self.workers.get(&peer).map(|w| w.slot) {
-                    out.push(Decision::Identify { slot, software });
+            // The peer's identity, at its hello and at every revision: it
+            // rides the worker's record and dies with that worker (ADR-0049);
+            // what the run keeps past the worker is derived on arrival. A
+            // distrusted peer reached through a record that named no hash — a
+            // server answer, an address it moved to — is retired here, before
+            // any part is assigned to it.
+            PeerWorkerEvent::Identity(identity) => {
+                if let Some(slot) = self.worker_slots.get(&peer).copied() {
+                    out.push(Decision::Identify {
+                        slot,
+                        software: identity.software().clone(),
+                    });
                 }
-                self.on_hello_hash(peer, user_hash, &mut out);
-                // The peer's own hello outranks its record at every later dial
-                // (ADR-0049) — an adopted inbound worker's own
-                // identity carries its hello stance through adoption too
-                // So it seeds `hello_crypts` exactly as a
-                // dialed worker's hello does.
-                if let Some(stance) = crypt {
-                    self.hello_crypts
-                        .insert(peer, PeerCrypt::new(stance, Some(user_hash)));
+                if self.sources.identify(peer, identity) {
+                    out.push(Decision::Emit(DownloadEvent::PeerRetired {
+                        download_id: self.download_id,
+                        peer,
+                        reason: PeerRetirementReason::Distrusted,
+                    }));
+                    self.release(now, peer, PeerRetirementReason::Distrusted, &mut out);
                 }
             }
-            PeerWorkerEvent::ServingBuddy { buddy_udp } => self.on_hello_buddy(peer, buddy_udp),
-            PeerWorkerEvent::UdpContact { .. }
-            | PeerWorkerEvent::SourceExchange { .. }
-            | PeerWorkerEvent::SourcesAsked
-            | PeerWorkerEvent::PartsAdvertised { .. } => {
-                // The peer's client-UDP reask contact (ADR-0057), its
-                // source-exchange facts and the source ask going out
-                // (ADR-0108) are runner-owned plumbing, not scheduling inputs —
-                // the runner observes them off the same event stream to pool a
-                // queued-then-hung-up source and to keep its Source Ask Clock.
-                // The brain ignores them.
-            }
-            PeerWorkerEvent::SoftwareRevised { software } => {
-                if let Some(slot) = self.workers.get(&peer).map(|w| w.slot) {
-                    out.push(Decision::Identify { slot, software });
-                }
+            // The source-ask gate's stamps (ADR-0108), on the peer's record:
+            // the ask going out — not when the download decided it wanted
+            // sources, aMule stamps inside `SendFileRequest` (stock 2.3.3
+            // `DownloadClient.cpp:260-261`) — and its complete-or-not
+            // advertisement.
+            PeerWorkerEvent::SourcesAsked => self.sources.asked(peer, now),
+            PeerWorkerEvent::PartsAdvertised { complete } => {
+                self.sources.advertised(peer, complete, now);
             }
             PeerWorkerEvent::IdentityVerified {
                 user_hash,
@@ -125,7 +118,7 @@ impl DownloadState {
                 }));
             }
             PeerWorkerEvent::Disconnected => {
-                self.release(peer, PeerRetirementReason::PeerDisconnected, &mut out);
+                self.release(now, peer, PeerRetirementReason::PeerDisconnected, &mut out);
             }
             PeerWorkerEvent::CryptIncompatible => {
                 // The dial was refused before any socket. aMule
@@ -135,22 +128,26 @@ impl DownloadState {
                 // meets the same two stances, so its candidate is dropped here
                 // rather than handed back to those roads — and a dual-stack
                 // source's other family, which meets the same two stances, is
-                // no family failure to retry.
-                self.direct_ipv6_dials.remove(&peer);
-                self.dual_stack_fallbacks.remove(&peer);
-                self.release(peer, PeerRetirementReason::CryptIncompatible, &mut out);
+                // no family failure to retry. The worker never completed a
+                // handshake but dialed nothing, so its end is not a failed
+                // dial: the record leaves the book unspent.
+                self.release(now, peer, PeerRetirementReason::CryptIncompatible, &mut out);
             }
             PeerWorkerEvent::SlotRejected => {
-                self.release(peer, PeerRetirementReason::SlotRejected, &mut out);
+                self.release(now, peer, PeerRetirementReason::SlotRejected, &mut out);
             }
             PeerWorkerEvent::SlotTimeout => {
                 out.push(Decision::Emit(DownloadEvent::PeerSlotTimeout {
                     download_id: self.download_id,
                     peer,
                 }));
-                self.release(peer, PeerRetirementReason::SlotTimeout, &mut out);
+                self.release(now, peer, PeerRetirementReason::SlotTimeout, &mut out);
             }
             PeerWorkerEvent::Queued { rank } => {
+                // The rank earns or refreshes the record's standing, its clock
+                // started at ask time as aMule dates it, so a source that
+                // hangs up later reasks on schedule (ADR-0057).
+                self.sources.queued(peer, rank, now);
                 out.push(Decision::Emit(DownloadEvent::PeerQueued {
                     download_id: self.download_id,
                     peer,
@@ -158,12 +155,15 @@ impl DownloadState {
                 }));
             }
             PeerWorkerEvent::SlotGranted => {
+                // A grant ends the standing: the source is live, not queued.
+                self.sources.end_standing(peer);
                 out.push(Decision::Emit(DownloadEvent::PeerSlotGranted {
                     download_id: self.download_id,
                     peer,
                 }));
             }
             PeerWorkerEvent::PartStreamed { .. } => {
+                self.sources.end_standing(peer);
                 // The worker delivered its whole assigned range. If a co-racer
                 // already finished the part (it no longer holds one) give it the
                 // next; otherwise its completing block reassigned it, so leave
@@ -173,42 +173,15 @@ impl DownloadState {
                 }
             }
             PeerWorkerEvent::HashSetReceived { part_hashes } => {
-                self.on_hash_set(peer, &part_hashes, &mut out);
+                self.on_hash_set(now, peer, &part_hashes, &mut out);
             }
-            PeerWorkerEvent::SourcesReceived { sources } => {
-                // ADR-0055: peer-exchanged sources refill the candidate pool,
-                // superseding ADR-0026's single snapshot. Add the High-ID
-                // sources not already known (a live worker or already pooled),
-                // and queue the Low-ID ones for whichever road the admission
-                // rule leaves open (ADR-0039 / ADR-0091); then fill any free
-                // slots.
-                for source in sources {
-                    // A dual-stack record is dialed first in the family the
-                    // Dial Chooser picks, its other half kept (ADR-0087).
-                    if let Some(order) = resolve_family(source, self.dial) {
-                        // Remember the crypt side the record stated (ADR-0042,
-                        // ADR-0049) at both halves; the runner reads it at spawn.
-                        for half in order.halves() {
-                            self.note_peer_crypt(half, source.peer_crypt());
-                        }
-                        self.pool_high_id(order, source.peer_crypt().user_hash());
-                    } else if let Some(candidate) = LowIdCandidate::from_source(source, None) {
-                        // A peer-exchanged Low-ID source is on the connected
-                        // server, so its record is minted in that namespace
-                        // (`source_server: None`) — which is also what lets the
-                        // server introduce us to it when we cannot be called
-                        // back (ADR-0091 rung 1). A v≥2 answer carried the
-                        // target's User Hash (ADR-0042), the one rung-1 fact
-                        // this channel names.
-                        self.admit_low_id(candidate);
-                    }
-                }
-                self.fill(&mut out);
-            }
+            // The runner takes a source-exchange answer at the wire boundary,
+            // through the gate, as a sighting batch (`on_sightings`).
+            PeerWorkerEvent::SourcesReceived { .. } => {}
             PeerWorkerEvent::AichAnswerReceived {
                 part,
                 recovery_data,
-            } => self.on_aich_answer(u32::from(part), &recovery_data, &mut out),
+            } => self.on_aich_answer(now, u32::from(part), &recovery_data, &mut out),
             PeerWorkerEvent::AichFileHashReceived { root } => {
                 self.on_aich_file_hash_proposal(peer, root);
             }
@@ -220,6 +193,7 @@ impl DownloadState {
     /// assembled bytes of `part_index` that `peer` completed.
     pub(crate) fn on_persist_result(
         &mut self,
+        now: Instant,
         part_index: u32,
         peer: PeerEndpoint,
         result: Result<(), DownloadFailure>,
@@ -245,7 +219,7 @@ impl DownloadState {
                 // (with its provenance) until `on_aich_answer`. Without a root,
                 // fall back to ADR-0029's retire-all.
                 match self.trusted_aich_root {
-                    Some(root) if self.workers.contains_key(&peer) => {
+                    Some(root) if self.worker_slots.contains_key(&peer) => {
                         self.awaiting_recovery.insert(part_index, assembled);
                         out.push(Decision::Send {
                             peer,
@@ -255,7 +229,7 @@ impl DownloadState {
                             },
                         });
                     }
-                    _ => self.retire_all_contributors(&assembled, &mut out),
+                    _ => self.retire_all_contributors(now, &assembled, &mut out),
                 }
             }
         }
@@ -267,13 +241,14 @@ impl DownloadState {
     /// by slot so the decisions are deterministic.
     pub(super) fn retire_all_contributors(
         &mut self,
+        now: Instant,
         assembled: &PartAssembly,
         out: &mut Vec<Decision>,
     ) {
         let mut contributors: Vec<(usize, PeerEndpoint)> = assembled
             .contributors()
             .iter()
-            .filter_map(|c| self.workers.get(c).map(|w| (w.slot.as_usize(), *c)))
+            .filter_map(|c| self.worker_slots.get(c).map(|slot| (slot.as_usize(), *c)))
             .collect();
         contributors.sort_unstable_by_key(|&(slot, _)| slot);
         // A sole contributor is the proven sender of the bad bytes.
@@ -287,6 +262,7 @@ impl DownloadState {
                 reason: PeerRetirementReason::PartVerificationFailed,
             }));
             self.release(
+                now,
                 contributor,
                 PeerRetirementReason::PartVerificationFailed,
                 out,
@@ -304,7 +280,9 @@ impl DownloadState {
         bytes: &[u8],
         out: &mut Vec<Decision>,
     ) {
-        if let Some(&user_hash) = self.peer_user_hashes.get(&peer) {
+        // Bytes flowing end the standing: the source is live, not queued.
+        self.sources.end_standing(peer);
+        if let Some(user_hash) = self.sources.identity(peer).map(PeerIdentity::user_hash) {
             out.push(Decision::RecordCredit {
                 user_hash,
                 bytes: bytes.len() as u64,
@@ -315,7 +293,7 @@ impl DownloadState {
         assembled.merge_block(peer, offset.saturating_sub(part.offset), bytes);
         let prefix_len = assembled.prefix_len();
         let complete = assembled.is_complete(part.len);
-        if let Some(slot) = self.workers.get(&peer).map(|w| w.slot) {
+        if let Some(slot) = self.worker_slots.get(&peer).copied() {
             out.push(Decision::Phase {
                 slot,
                 phase: WorkerPhase::ReceivingPart {
@@ -334,7 +312,7 @@ impl DownloadState {
             .assembly
             .remove(&part_index)
             .expect("a just-completed part has an assembly entry");
-        if let Some(slot) = self.workers.get(&peer).map(|w| w.slot) {
+        if let Some(slot) = self.worker_slots.get(&peer).copied() {
             out.push(Decision::Phase {
                 slot,
                 phase: WorkerPhase::VerifyingPart { part_index },
@@ -358,6 +336,7 @@ impl DownloadState {
     /// announced; one proven set can never contradict another.
     fn on_hash_set(
         &mut self,
+        now: Instant,
         peer: PeerEndpoint,
         part_hashes: &[PartHash],
         out: &mut Vec<Decision>,
@@ -370,6 +349,7 @@ impl DownloadState {
                 reason: PeerRetirementReason::VerificationAuthorityMismatch,
             }));
             self.release(
+                now,
                 peer,
                 PeerRetirementReason::VerificationAuthorityMismatch,
                 out,
@@ -392,6 +372,19 @@ impl DownloadState {
             }
             // A link hash set that disagrees with the peer's is unrecoverable.
             Err(failure) => out.push(Decision::Fail(failure)),
+        }
+    }
+    /// `peer` is proven to have served this file bad data (ADR-0090
+    /// invariant 4): the **Source Book** distrusts the User Hash its hello
+    /// named, and a new distrust is persisted by the runner. *Proven* is the
+    /// rule's whole weight — the AICH recovery pins corrupt blocks on their
+    /// senders, a part's sole contributor has nobody else to blame, a hash set
+    /// that is not the file's own convicts its sender — and a peer whose hello
+    /// named no hash leaves nothing to key the distrust by.
+    pub(super) fn distrust(&mut self, peer: PeerEndpoint, out: &mut Vec<Decision>) {
+        if let Some(user_hash) = self.sources.distrust(peer) {
+            tracing::info!(%peer, "a peer that served bad data is distrusted for this download");
+            out.push(Decision::DistrustPeer { user_hash });
         }
     }
 }

@@ -12,7 +12,7 @@
 //! here and parsed/built by `rmule_primitives::AichHashSet`. The file-hash
 //! discovery pair (`0x9D`/`0x9E`) lands with the trusted-set work.
 
-use rmule_primitives::{AichRootHash, FileHash, Packet};
+use rmule_primitives::{AichRootHash, FileHash, Packet, WireReader, WireTruncated};
 use thiserror::Error;
 
 use crate::opcode::PeerOpcode;
@@ -42,16 +42,28 @@ pub enum AichDecodeError {
     },
 }
 
-fn read_file_hash(bytes: &[u8]) -> FileHash {
-    let mut hash = [0u8; FileHash::BYTE_LEN];
-    hash.copy_from_slice(bytes);
-    FileHash::from_bytes(hash)
+impl From<WireTruncated> for AichDecodeError {
+    fn from(truncated: WireTruncated) -> Self {
+        Self::TooShort {
+            needed: truncated.needed,
+            actual: truncated.available,
+        }
+    }
 }
 
-fn read_root(bytes: &[u8]) -> AichRootHash {
-    let mut hash = [0u8; AichRootHash::BYTE_LEN];
-    hash.copy_from_slice(bytes);
-    AichRootHash::from_bytes(hash)
+/// The fixed header both packets open with.
+fn read_header(
+    reader: &mut WireReader<'_>,
+) -> Result<(FileHash, u16, AichRootHash), AichDecodeError> {
+    Ok((
+        reader.read_file_hash("file hash")?,
+        reader.read_u16_le("part")?,
+        read_root(reader)?,
+    ))
+}
+
+fn read_root(reader: &mut WireReader<'_>) -> Result<AichRootHash, AichDecodeError> {
+    Ok(AichRootHash::from_bytes(reader.read_array("master hash")?))
 }
 
 /// `OP_AICHREQUEST` — ask a peer for the AICH recovery data of one part,
@@ -76,10 +88,11 @@ impl AichRequest {
                 actual: payload.len(),
             });
         }
+        let (file_hash, part, root) = read_header(&mut WireReader::new(payload))?;
         Ok(Self {
-            file_hash: read_file_hash(&payload[..FileHash::BYTE_LEN]),
-            part: u16::from_le_bytes([payload[16], payload[17]]),
-            root: read_root(&payload[18..HEADER_LEN]),
+            file_hash,
+            part,
+            root,
         })
     }
 
@@ -123,11 +136,13 @@ impl AichAnswer {
                 actual: payload.len(),
             });
         }
+        let mut reader = WireReader::new(payload);
+        let (file_hash, part, root) = read_header(&mut reader)?;
         Ok(Self {
-            file_hash: read_file_hash(&payload[..FileHash::BYTE_LEN]),
-            part: u16::from_le_bytes([payload[16], payload[17]]),
-            root: read_root(&payload[18..HEADER_LEN]),
-            recovery_data: payload[HEADER_LEN..].to_vec(),
+            file_hash,
+            part,
+            root,
+            recovery_data: reader.remaining_bytes().to_vec(),
         })
     }
 
@@ -167,7 +182,7 @@ impl AichFileHashReq {
             });
         }
         Ok(Self {
-            file_hash: read_file_hash(payload),
+            file_hash: WireReader::new(payload).read_file_hash("file hash")?,
         })
     }
 
@@ -211,9 +226,10 @@ impl AichFileHashAns {
                 actual: payload.len(),
             });
         }
+        let mut reader = WireReader::new(payload);
         Ok(Self {
-            file_hash: read_file_hash(&payload[..FileHash::BYTE_LEN]),
-            root: read_root(&payload[FileHash::BYTE_LEN..]),
+            file_hash: reader.read_file_hash("file hash")?,
+            root: read_root(&mut reader)?,
         })
     }
 

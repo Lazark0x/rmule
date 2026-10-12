@@ -37,6 +37,11 @@ pub(crate) struct AnnounceSwitchArgs {
     /// Skip the offer probes (their result stands); run rmule's legs only.
     #[arg(long, default_value_t = false, requires = "rmule_legs")]
     pub(crate) skip_probes: bool,
+    /// Also run the markers probe against each server: one whole file and
+    /// one part-file offered the way aMule marks them, and the ID, port and
+    /// counters each result row carries for either.
+    #[arg(long, default_value_t = false)]
+    pub(crate) markers: bool,
     /// After the probes, run rmule's own legs against both servers: two files
     /// on Lugdunum, a third added, a switch to ed2k-server; then the same
     /// withholding from a server that grants related search.
@@ -62,6 +67,7 @@ struct AnnounceSwitchResolvedConfig {
     ed2ksrv_config: PathBuf,
     probe_image: String,
     probes: bool,
+    markers: bool,
     rmule_tools_image: Option<String>,
     capture_image: String,
     container_runtime: String,
@@ -81,6 +87,7 @@ pub(crate) fn announce_switch(args: AnnounceSwitchArgs) -> Result<()> {
             ed2ksrv_config: args.ed2ksrv_config.clone(),
             probe_image: args.probe_image.clone(),
             probes: !args.skip_probes,
+            markers: args.markers,
             rmule_tools_image: args.rmule_legs.then(|| args.rmule_tools_image.clone()),
             capture_image: args.capture.capture_image.clone(),
             container_runtime: args.bench.container_runtime.clone(),
@@ -99,6 +106,7 @@ pub(crate) fn announce_switch(args: AnnounceSwitchArgs) -> Result<()> {
         ed2ksrv_config: &args.ed2ksrv_config,
         probe_image: &args.probe_image,
         probes: !args.skip_probes,
+        markers: args.markers,
         rmule_tools_image: args.rmule_legs.then_some(args.rmule_tools_image.as_str()),
         capture_image: &args.capture.capture_image,
     })

@@ -25,14 +25,15 @@ use crate::artifacts::RunLayout;
 use crate::docker::{Docker, DockerCommand, RunContainer};
 
 pub use client::{
-    REGISTRANT_ANNOUNCE_TIMEOUT_SECS, REGISTRANT_PORT_BASE, Registrant, RmuleClientContainer,
+    DownloadCrypt, REGISTRANT_ANNOUNCE_TIMEOUT_SECS, REGISTRANT_PORT_BASE, Registrant,
+    RmuleClientContainer, release_held_download,
 };
 pub use run::{
     run_rmule_callback_capability_in_container, run_rmule_download,
     run_rmule_download_in_container, run_rmule_search, run_rmule_search_in_container,
     run_rmule_sui_capture,
 };
-pub use serve::{KadStimulusKnobs, RmuleServeContainer, ServeKnobs};
+pub use serve::{KadStimulusKnobs, RmuleServeContainer, ServeKnobs, crypt_flip_arg};
 pub use summary::{
     CallbackCapabilityReport, DownloadSummary, SearchSummary, parse_download_output,
     parse_search_output,
@@ -92,6 +93,32 @@ fn rmule_log_level(default: &str) -> String {
 struct RmuleWorkspace {
     image: OsString,
     root: PathBuf,
+}
+
+/// The `sh -c` script a held container runs: wait for the file its `$0`
+/// names, then exec the rest of its arguments untouched (an ed2k link's
+/// `|` included).
+const HOLD_UNTIL_GATE: &str = r#"while [ ! -e "$0" ]; do sleep 0.1; done; exec "$@""#;
+
+/// The `rmule-tools` image's own entrypoint (`images/rmule-tools/entrypoint.sh`).
+const RMULE_TOOLS_IMAGE_ENTRYPOINT: &str = "/entrypoint.sh";
+
+/// Hold an `rmule-tools` image container until [`release_held_download`]
+/// writes its gate, then run the image's own entrypoint (so its env knobs
+/// still apply) with the `rmule-tools` arguments appended after this call.
+/// `run_root_mount` is where the container mounts the run dir. A flow whose
+/// tap must hold rmule's first login and dial starts the container, starts
+/// the tap, and only then releases it.
+pub(crate) fn hold_image_until_released(
+    container: RunContainer,
+    run_root_mount: &str,
+) -> RunContainer {
+    container
+        .entrypoint("sh")
+        .arg("-c")
+        .arg(HOLD_UNTIL_GATE)
+        .arg(format!("{run_root_mount}/{}", client::DOWNLOAD_START_GATE))
+        .arg(RMULE_TOOLS_IMAGE_ENTRYPOINT)
 }
 
 impl RmuleWorkspace {
@@ -159,6 +186,21 @@ impl RmuleWorkspace {
             .arg(format!("{CONTAINER_TARGET_DIR}/debug/rmule-tools")))
     }
 
+    /// [`Self::prebuilt`], held until the file `gate` names inside the
+    /// container exists. The prebuilt binary logs in and dials within a second
+    /// of starting, so a flow whose tap must hold that first exchange starts
+    /// the container, starts the tap, and only then writes the gate.
+    fn prebuilt_held(&self, layout: &RunLayout, gate: &str) -> Result<RunContainer> {
+        Ok(self
+            .container(layout)
+            .volume(self.target_cache()?, CONTAINER_TARGET_DIR)
+            .arg("sh")
+            .arg("-c")
+            .arg(HOLD_UNTIL_GATE)
+            .arg(gate)
+            .arg(format!("{CONTAINER_TARGET_DIR}/debug/rmule-tools")))
+    }
+
     /// Compile `rmule-tools` for the container's platform into the
     /// host-persisted cache, on the runtime's DEFAULT network so cargo and
     /// rustup reach the registry. Foreground and cached: a warm run returns in
@@ -195,5 +237,39 @@ impl RmuleWorkspace {
         let dir = self.root.join(relative);
         fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
         Ok(dir)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    use super::HOLD_UNTIL_GATE;
+
+    /// The held command runs nothing until the gate exists, then runs with
+    /// its arguments exactly as given.
+    #[test]
+    fn a_held_command_waits_for_its_gate_then_runs_its_arguments_verbatim() {
+        let dir = tempfile::tempdir().unwrap();
+        let gate = dir.path().join("gate");
+        let link = "ed2k://|file|a b.bin|1|00112233445566778899AABBCCDDEEFF|/";
+        let mut held = Command::new("sh")
+            .args(["-c", HOLD_UNTIL_GATE])
+            .arg(&gate)
+            .args(["printf", "%s"])
+            .arg(link)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let until = Instant::now() + Duration::from_millis(400);
+        while Instant::now() < until {
+            assert!(held.try_wait().unwrap().is_none(), "ran before its gate");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::fs::write(&gate, b"").unwrap();
+        let output = held.wait_with_output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), link);
     }
 }

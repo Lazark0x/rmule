@@ -7,9 +7,9 @@
 //! transports — if the unified path ever diverged from the standalone one, the
 //! bootstrap would stop converging here rather than in a live session.
 
+use rmule_testkit::HANG_GUARD;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use std::time::Duration;
 
 use rmule_kad::{KadCommand, KadEvent, KadId, KadNodeConfig, KadNodeEndpoint};
 use rmule_net::ed2k::ClientUdpSocket;
@@ -36,8 +36,7 @@ fn config(id_byte: u8) -> KadNetConfig {
         capture_dir: None,
         nodes_dat_path: None,
         firewall_self_check: false,
-        datagram_obfuscation: false,
-        verify_keys: None,
+        obfuscation: None,
         contact_admission: None,
     }
 }
@@ -98,7 +97,7 @@ async fn wait_for(
     mut predicate: impl FnMut(&KadEvent) -> bool,
 ) -> Vec<KadEvent> {
     let mut seen = Vec::new();
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(HANG_GUARD, async {
         loop {
             let event = handle
                 .next_event()
@@ -206,7 +205,7 @@ async fn a_closed_inlet_ends_the_unified_driver() {
     .expect("node starts over the shared socket");
     drop(tx);
 
-    let summary = tokio::time::timeout(Duration::from_secs(5), handle.shutdown())
+    let summary = tokio::time::timeout(HANG_GUARD, handle.shutdown())
         .await
         .expect("the driver ends on its own when the inlet closes")
         .expect("clean shutdown");
@@ -250,7 +249,7 @@ async fn an_injected_datagram_reaches_the_node_unaltered() {
         })
         .await
         .expect("driver accepts commands");
-    let (bytes, _) = tokio::time::timeout(Duration::from_secs(5), probe.recv())
+    let (bytes, _) = tokio::time::timeout(HANG_GUARD, probe.recv())
         .await
         .expect("the speaker emits its bootstrap request")
         .expect("receive succeeds");
@@ -267,7 +266,7 @@ async fn an_injected_datagram_reaches_the_node_unaltered() {
 
     // The node answered the injected datagram — on the shared socket, to the
     // endpoint the inlet named.
-    let (answer, answered_to) = tokio::time::timeout(Duration::from_secs(5), probe.recv())
+    let (answer, answered_to) = tokio::time::timeout(HANG_GUARD, probe.recv())
         .await
         .expect("the unified node answers the injected bootstrap")
         .expect("receive succeeds");

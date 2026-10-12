@@ -10,45 +10,55 @@
 use rmule_primitives::{Ed2kText, FileHash};
 
 use super::{PeerError, PeerEvent, PeerSession};
+use crate::ServerEvent;
 use crate::file::PartBitmap;
 use crate::file_request::{FileReqAnsNoFil, FileStatus, PartStatusTail, ReqFileNameAnswer};
 use crate::parts::RequestParts as RequestPartsPacket;
 use crate::parts::{CompressedPart, PartOffsetWidth, SendingPart};
-use crate::slot::{AcceptUploadReq, OutOfPartReqs, QueueRanking};
+use crate::slot::{AcceptUploadReq, QueueRanking};
 
 impl PeerSession {
     pub(super) fn on_file_requested(&mut self, file_hash: FileHash, status: PartStatusTail) {
         self.core
-            .push_event(PeerEvent::FileRequested { file_hash, status });
+            .push_event(PeerEvent::Server(ServerEvent::FileRequested {
+                file_hash,
+                status,
+            }));
     }
 
     pub(super) fn on_file_id_set(&mut self, file_hash: FileHash) {
-        self.core.push_event(PeerEvent::FileIdSet { file_hash });
+        self.core
+            .push_event(PeerEvent::Server(ServerEvent::FileIdSet { file_hash }));
     }
 
     pub(super) fn on_hash_set_requested(&mut self, file_hash: FileHash) {
         self.core
-            .push_event(PeerEvent::HashSetRequested { file_hash });
+            .push_event(PeerEvent::Server(ServerEvent::HashSetRequested {
+                file_hash,
+            }));
     }
 
     pub(super) fn on_slot_requested(&mut self, file_hash: FileHash) {
-        self.core.push_event(PeerEvent::SlotRequested { file_hash });
+        self.core
+            .push_event(PeerEvent::Server(ServerEvent::SlotRequested { file_hash }));
     }
 
     /// Server Capability — the remote peer canceled its held upload slot
     /// (`OP_CANCELTRANSFER`, ADR-0056). aMule's `RemoveFromUploadQueue`
     /// silently returns `false` for a peer holding no slot: a slotless
     /// cancel clears nothing and emits no event. A held slot clears
-    /// `served_slot` here (so a late `SendBlock`/`RefuseSlot` for it is
-    /// harmless) and surfaces `TransferCancelled` so core runs the
-    /// release/promote batch; the connection itself is untouched.
+    /// `served_slot` here (so a late `SendBlock` for it is harmless) and
+    /// surfaces `TransferCancelled` so core runs the release/promote batch;
+    /// the connection itself is untouched.
     pub(super) fn on_cancel_transfer(&mut self) {
         let Some(file_hash) = self.served_slot else {
             return;
         };
         self.served_slot = None;
         self.core
-            .push_event(PeerEvent::TransferCancelled { file_hash });
+            .push_event(PeerEvent::Server(ServerEvent::TransferCancelled {
+                file_hash,
+            }));
     }
 
     /// Server Capability — answer an inbound `RequestFileName` with the file's
@@ -114,19 +124,6 @@ impl PeerSession {
         self.write_packet(AcceptUploadReq.encode_packet());
     }
 
-    /// Server Capability — core withdrew the slot. `OP_OUTOFPARTREQS` goes out
-    /// whether or not `file_hash` is the one currently held, so a stale refusal
-    /// still re-queues the peer without disturbing a slot granted since.
-    pub(super) fn refuse_slot(&mut self, file_hash: FileHash) {
-        if !self.require_identified() {
-            return;
-        }
-        if self.served_slot == Some(file_hash) {
-            self.served_slot = None;
-        }
-        self.write_packet(OutOfPartReqs.encode_packet());
-    }
-
     /// Server Capability — the waiting peer's place in core's cross-connection
     /// queue (`OP_QUEUERANKING`). The ranking is core's; this only frames it,
     /// and only toward a peer that speaks the extended protocol, as aMule's
@@ -140,14 +137,16 @@ impl PeerSession {
 
     pub(super) fn on_parts_requested(&mut self, req: RequestPartsPacket) {
         if self.served_slot == Some(req.file_hash) {
-            self.core.push_event(PeerEvent::PartsRequested {
-                file_hash: req.file_hash,
-                ranges: req.ranges,
-            });
+            self.core
+                .push_event(PeerEvent::Server(ServerEvent::PartsRequested {
+                    file_hash: req.file_hash,
+                    ranges: req.ranges,
+                }));
         } else {
-            self.core.push_event(PeerEvent::ServePartsWithoutSlot {
-                file_hash: req.file_hash,
-            });
+            self.core
+                .push_event(PeerEvent::Server(ServerEvent::PartsWithoutSlot {
+                    file_hash: req.file_hash,
+                }));
         }
     }
 

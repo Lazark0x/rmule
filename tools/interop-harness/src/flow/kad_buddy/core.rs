@@ -74,6 +74,7 @@ use crate::flow::kad_buddy::core_wire::{
 use crate::flow::kad_buddy::harvest_wire_rows;
 use crate::flow::kad_buddy::id_only_row::IdOnlyRowPlan;
 use crate::flow::kad_buddy::third_party::{self, ThirdParty};
+use crate::flow::kad_buddy::verify_keys::KAD_UDP_KEY_SEED;
 use crate::flow::logs::{collect_kad_logs, collect_kad_node_logs};
 use crate::flow::mesh::{
     KAD_RMULE_UDP_PORT, KAD_TCP_PORT, KadCaptureOptions, KadNodeSpec, start_kad_node,
@@ -327,7 +328,11 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
                     // emit is flow N's stimulus.
                     direct_callback: None,
                     direct_callback_every_secs: 0,
+                    // Every crypt arming, at start or at a flip, keys on the
+                    // seed the verdict opens the tap with.
+                    kad_udp_key_seed: Some(KAD_UDP_KEY_SEED),
                     peer_crypt: options.kad_crypt.then_some("requested"),
+                    peer_crypt_flip: options.peer_crypt_flip,
                     kad_capture_dir: stimulus_tap_host_dir
                         .is_some()
                         .then_some(stimulus_tap_container_path.as_str()),
@@ -347,7 +352,7 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
             base.layout,
             "rmule",
             &names.rmule,
-            "serve serving_started",
+            "serve.serving_started",
             timeout,
         )?;
         println!("kad-core-buddy: stimulus serve listener bound on {subnet}");

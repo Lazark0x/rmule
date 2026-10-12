@@ -2,6 +2,8 @@
 //! every suite publishes, the storer and publisher endpoints it talks to, and
 //! the datagram builders and readers that drive one publish or search leg.
 
+use rmule_kad::KadInstant;
+use rmule_kad::KadNodeStart;
 use std::net::Ipv4Addr;
 
 use rmule_kad::{
@@ -23,7 +25,10 @@ pub fn key() -> KadId {
 /// A storer whose own ID is far from every test key: LAN senders must pass
 /// through the LAN bypass, WAN senders sit outside the tolerance gate.
 pub fn far_storer() -> KadNode {
-    KadNode::new(storer_config(KadId::from_bytes([0x0F; 16])))
+    KadNode::new(KadNodeStart::new(
+        storer_config(KadId::from_bytes([0x0F; 16])),
+        KadInstant::EPOCH,
+    ))
 }
 
 /// A storer node's config at the default port pair, with only its ID — the

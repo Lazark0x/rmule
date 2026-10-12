@@ -10,11 +10,35 @@ use std::time::Duration;
 use rmule_ed2k::ServerUdpFlags;
 use rmule_primitives::{DatagramNonce, Packet, encrypt_datagram_server};
 
-use super::super::tests::{ScriptedTransport, fixed_entropy, scripted, stat_res_datagram};
+use super::super::tests::{
+    ScriptedTransport, fixed_entropy, plain_seal, scripted, seal_over, stat_res_datagram,
+};
 use super::*;
 use crate::server_list::test_facts;
 
 mod saved_crypt;
+mod sealed;
+
+/// The engine over `transport`, sending through a plain seal on the same
+/// socket.
+fn plain_engine(
+    transport: ScriptedTransport,
+    challenges: StatusChallenges,
+    capabilities: SharedServerCapabilities,
+    facts: ServerFacts,
+    diagnostics: DiagnosticsState,
+) -> (ServerUdpEngine<Arc<ScriptedTransport>>, ServerUdpInboxes) {
+    let transport = Arc::new(transport);
+    ServerUdpEngine::new(
+        Arc::clone(&transport),
+        plain_seal(transport),
+        challenges,
+        capabilities,
+        facts,
+        fixed_entropy,
+        diagnostics,
+    )
+}
 
 #[tokio::test]
 async fn routes_by_opcode_and_drops_what_has_no_consumer() {
@@ -31,7 +55,7 @@ async fn routes_by_opcode_and_drops_what_has_no_consumer() {
         vec![0x01],
     )
     .encode_udp();
-    let (engine, mut inboxes) = ServerUdpEngine::new(
+    let (engine, mut inboxes) = plain_engine(
         scripted(vec![
             // Shorter than the two-byte UDP header.
             (vec![PacketProtocol::Edonkey.as_byte()], src),
@@ -49,8 +73,6 @@ async fn routes_by_opcode_and_drops_what_has_no_consumer() {
         StatusChallenges::default(),
         SharedServerCapabilities::default(),
         test_facts(&[]).0,
-        fixed_entropy,
-        false,
         crate::diagnostics::DiagnosticsState::new(),
     );
     let engine_task = tokio::spawn(engine.run());
@@ -59,11 +81,14 @@ async fn routes_by_opcode_and_drops_what_has_no_consumer() {
     let routed = tokio::time::timeout(Duration::from_secs(2), inboxes.sources.recv())
         .await
         .expect("the sources datagram routed within 2s");
-    assert_eq!(routed, Some((sources_datagram, src)));
+    // Tagged with the answering server's standard endpoint, the UDP source
+    // mapped back (4665 - 4).
+    let server = Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, 4661);
+    assert_eq!(routed, Some((sources_datagram, server)));
     let routed = tokio::time::timeout(Duration::from_secs(2), inboxes.search.recv())
         .await
         .expect("the search datagram routed within 2s");
-    assert_eq!(routed, Some((search_datagram, src)));
+    assert_eq!(routed, Some((search_datagram, server)));
 
     // The exhausted script closes the transport; the engine ends and its
     // dropped senders wind every consumer down.
@@ -84,13 +109,11 @@ async fn a_challenge_gated_status_reply_populates_the_capability_store() {
     challenges.expect(server, 0x55AA_0007);
     let capabilities = SharedServerCapabilities::default();
 
-    let (engine, _inboxes) = ServerUdpEngine::new(
+    let (engine, _inboxes) = plain_engine(
         scripted(vec![(stat_res_datagram(0x55AA_0007, 1000), udp_src)]),
         challenges.clone(),
         Arc::clone(&capabilities),
         test_facts(&[]).0,
-        fixed_entropy,
-        false,
         crate::diagnostics::DiagnosticsState::new(),
     );
     // The scripted transport closes after its last datagram, so the run
@@ -129,7 +152,7 @@ async fn a_forged_challenge_neither_mutates_the_store_nor_burns_the_ping() {
     // A forged reply (wrong challenge) first, then the genuine one: the
     // forgery must not inject its record (users 666) nor consume the
     // outstanding challenge — the genuine reply still lands after it.
-    let (engine, _inboxes) = ServerUdpEngine::new(
+    let (engine, _inboxes) = plain_engine(
         scripted(vec![
             (stat_res_datagram(0x55AA_0BAD, 666), udp_src),
             (stat_res_datagram(0x55AA_0007, 1000), udp_src),
@@ -137,8 +160,6 @@ async fn a_forged_challenge_neither_mutates_the_store_nor_burns_the_ping() {
         challenges,
         Arc::clone(&capabilities),
         test_facts(&[]).0,
-        fixed_entropy,
-        false,
         crate::diagnostics::DiagnosticsState::new(),
     );
     engine.run().await;
@@ -158,7 +179,7 @@ async fn a_status_reply_with_no_outstanding_ping_is_dropped() {
     let capabilities = SharedServerCapabilities::default();
     // No `expect` was registered — an unknown/unpinged server's reply
     // (or one from a source below the UDP offset) must not enter.
-    let (engine, _inboxes) = ServerUdpEngine::new(
+    let (engine, _inboxes) = plain_engine(
         scripted(vec![
             (stat_res_datagram(0x55AA_0007, 1000), udp_src),
             (
@@ -169,8 +190,6 @@ async fn a_status_reply_with_no_outstanding_ping_is_dropped() {
         StatusChallenges::default(),
         Arc::clone(&capabilities),
         test_facts(&[]).0,
-        fixed_entropy,
-        false,
         crate::diagnostics::DiagnosticsState::new(),
     );
     engine.run().await;
@@ -192,11 +211,11 @@ fn stepping_engine() -> (
     let capabilities = SharedServerCapabilities::default();
     let (engine, _inboxes) = ServerUdpEngine::new(
         Arc::clone(&transport),
+        plain_seal(Arc::clone(&transport)),
         challenges.clone(),
         Arc::clone(&capabilities),
         test_facts(&[]).0,
         fixed_entropy,
-        false,
         crate::diagnostics::DiagnosticsState::new(),
     );
     (engine, transport, challenges, capabilities)
@@ -243,9 +262,8 @@ async fn a_valid_status_reply_fires_the_desc_request_on_every_other_ping() {
     assert_eq!(sends.len(), 2, "pings 1 and 3 fire, ping 2 skips");
     for (endpoint, datagram) in &sends {
         assert_eq!(
-            (endpoint.host(), endpoint.port()),
-            ("127.0.0.1", 4661),
-            "the desc-req targets the server's TCP endpoint (transport owns the UDP offset)"
+            *endpoint, udp_src,
+            "the desc-req goes to the server's UDP port, its standard port + 4"
         );
         assert_eq!(
             datagram,
@@ -404,16 +422,25 @@ fn crypt_engine_over(
                 ip,
             ));
     }
+    let seal = seal_over(
+        Arc::clone(&transport),
+        crate::obfuscation_policy::SharedObfuscationPolicy::new(Some(
+            rmule_net::peer::ObfuscationPolicy::Requested,
+        )),
+        identity,
+        Arc::clone(&capabilities),
+        facts.clone(),
+    );
     let (engine, _inboxes) = ServerUdpEngine::new(
         transport,
+        seal,
         challenges.clone(),
         Arc::clone(&capabilities),
         facts,
         fixed_entropy,
-        true,
         crate::diagnostics::DiagnosticsState::new(),
     );
-    (engine.keyed_under(identity), challenges, capabilities)
+    (engine, challenges, capabilities)
 }
 
 /// The crypt facts of a status answer advertising `obf_port` and key
@@ -560,13 +587,11 @@ async fn a_closed_transport_counts_the_engine_going_dark() {
     // ending, not only log it: otherwise a dead socket takes
     // global search, get-sources and the status/desc chain down silently.
     let diagnostics = crate::diagnostics::DiagnosticsState::new();
-    let (engine, _inboxes) = ServerUdpEngine::new(
+    let (engine, _inboxes) = plain_engine(
         scripted(vec![]),
         StatusChallenges::default(),
         SharedServerCapabilities::default(),
         test_facts(&[]).0,
-        fixed_entropy,
-        false,
         diagnostics.clone(),
     );
 

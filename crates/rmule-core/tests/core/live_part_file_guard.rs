@@ -12,14 +12,14 @@ use std::time::Duration;
 use rmule_core::{
     ContentFileStore, Core, CoreCommand, CoreCommandRejectReason, CoreConfig, CoreEvent,
     DownloadCommand, DownloadEvent, DownloadId, DownloadLifecycle, DownloadPaths,
-    DownloadRepository, DurableDownloadRepository, DurableStore, ScanCommand, ScanEvent,
-    ServeEvent, VerifiedPartRecord, open_durable_store,
+    DownloadRepository, DurableDownloadRepository, DurableStore, ScanEvent, ServeEvent,
+    VerifiedPartRecord, open_durable_store,
 };
 use rmule_primitives::FileHashSummary;
 use rmule_testkit::file_link;
 use tokio::time::timeout;
 
-use crate::fixture::{connect_credentials, next_expected, stub_server};
+use crate::fixture::{next_expected, stub_server};
 
 const LIVE_BYTES: &[u8] = b"the live download's verified part";
 
@@ -73,7 +73,8 @@ impl LiveDownload {
             },
             Arc::clone(&store),
         )
-        .restore_credentials(connect_credentials().await)
+        .settings(crate::fixture::attach_settings().await)
+        .restore_at_attach()
         .build();
         next_expected(&mut core, "the live run holding its part file", |event| {
             matches!(
@@ -167,7 +168,6 @@ async fn a_restart_refuses_a_running_download_and_touches_nothing() {
     live.core
         .send(CoreCommand::Download(DownloadCommand::ResumeDownload {
             download_id: id,
-            credentials: connect_credentials().await,
         }))
         .await
         .unwrap();
@@ -228,15 +228,13 @@ async fn the_download_directory_scan_and_its_watch_leave_the_live_part_file() {
     })
     .await;
     let dir = live.dir.clone();
-    for command in [
-        ScanCommand::Answer {
+    live.core
+        .settings()
+        .set(rmule_core::Setting::DownloadDir {
             dir: dir.clone(),
-            share: true,
-        },
-        ScanCommand::Start { dir: dir.clone() },
-    ] {
-        live.core.send(CoreCommand::Scan(command)).await.unwrap();
-    }
+            share_confirmed: true,
+        })
+        .unwrap();
     let finished = next_expected(&mut live.core, "the scan's first pass", |event| {
         matches!(event, CoreEvent::Scan(ScanEvent::Finished { .. }))
     })

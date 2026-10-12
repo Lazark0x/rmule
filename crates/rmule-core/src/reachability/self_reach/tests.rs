@@ -126,7 +126,7 @@ async fn a_listener_bind_and_clear_wake_the_reach_generation() {
     let dark = reach.callback_capability();
 
     let serve = tokio::spawn(std::future::pending::<()>());
-    reach.listener().bind(&serve);
+    reach.listener().bind(&serve, 4662);
     tokio::time::timeout(wake, generation.changed())
         .await
         .expect("a bind wakes the generation");
@@ -142,4 +142,58 @@ async fn a_listener_bind_and_clear_wake_the_reach_generation() {
         .await
         .expect("a clear wakes the generation");
     assert_eq!(reach.callback_capability(), dark);
+}
+
+/// The route position reads its two newest families at the call — the
+/// client-UDP bind and Quit's clear, a session that went live with the punch
+/// and one that ended — and each move wakes the generation. A session whose
+/// task ended without clearing the cell reads dark at the next read all the
+/// same: the cell holds that session's request half weakly.
+#[tokio::test]
+async fn the_route_position_follows_the_client_udp_bind_and_the_server_coordinator() {
+    let bound = crate::reachability::ClientUdpBound::default();
+    let punch = crate::natt::server_punch::SharedServerPunch::default();
+    let reach = owner()
+        .0
+        .with_client_udp(bound.clone())
+        .with_server_coordinator(punch.coordinator_session());
+    let mut generation = reach.changes();
+    let wake = Duration::from_millis(50);
+    let position = reach.route_position();
+    assert!(!position.udp_on && !position.server_punch);
+
+    bound.set();
+    tokio::time::timeout(wake, generation.changed())
+        .await
+        .expect("the bind wakes the generation");
+    assert!(reach.route_position().udp_on);
+
+    let (session, link, _sent) = crate::server_session::tests::fake_session(
+        crate::server_session::tests::connected(),
+        rmule_ed2k::ServerGrants::default(),
+    );
+    punch.go_live(&session);
+    tokio::time::timeout(wake, generation.changed())
+        .await
+        .expect("a session going live wakes the generation");
+    assert!(reach.route_position().server_punch);
+
+    // The fake session's own exit writes its own cell, not this one: only the
+    // weak link can say it is gone.
+    drop(link);
+    session.closed().await;
+    assert!(
+        !reach.route_position().server_punch,
+        "a session that ended is no coordinator, cleared or not"
+    );
+
+    punch.go_dark(&session.coordinator_link());
+    tokio::time::timeout(wake, generation.changed())
+        .await
+        .expect("going dark wakes the generation");
+    bound.clear();
+    tokio::time::timeout(wake, generation.changed())
+        .await
+        .expect("Quit's clear wakes the generation");
+    assert!(!reach.route_position().udp_on);
 }

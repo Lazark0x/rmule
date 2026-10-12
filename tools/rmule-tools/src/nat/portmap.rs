@@ -32,13 +32,12 @@ use clap::{ArgAction, Args, ValueEnum};
 use rmule_core::diagnostics::DiagnosticsSnapshot;
 use rmule_core::port_mapping::{PortMappingConfig, PortMappingMode};
 use rmule_core::{
-    AppConfigStore, Core, CoreCommand, CoreConfig, CoreEvent, DurableAppConfig,
-    ExternalAddressOverride, KadEnableConfig, KadId, ServeCommand, live_mapping_backends,
-    open_durable_store_in_memory,
+    Core, CoreCommand, CoreConfig, CoreEvent, CoreSettings, ExternalAddressOverride,
+    KadEnableConfig, KadId, ServeCommand, live_mapping_backends, open_durable_store_in_memory,
 };
 use rmule_net::family::FamilySelection;
 use rmule_net::portmap::{Gateway, GatewaySource, MappingProtocol};
-use rmule_primitives::{ClientIdentity, ServerEndpoint};
+use rmule_primitives::ServerEndpoint;
 
 use crate::cli::DownloadIdentityArgs;
 use crate::operand::parse_hex16;
@@ -256,19 +255,13 @@ impl GatewaySource for PinnedGateways {
 pub(crate) async fn run_nat_portmap(args: NatPortMapArgs) -> Result<()> {
     let gateways = pinned_gateways(&args)?;
     let mask = protocol_mask(&args.protocols);
-    let identity = serving_identity(&args)?;
-
     let config = CoreConfig {
         external_address: ExternalAddressOverride {
             v4: None,
             v6: args.external_v6,
         },
         address_families: args.families.into(),
-        // One socket for reask, NAT-T and Kad (ADR-0057): the mapping set this
-        // command measures holds one UDP mapping, at this port.
-        udp_port: args.udp_port,
         port_mapping: PortMappingConfig {
-            mode: PortMappingMode::Auto,
             protocols: mask,
             lease: Duration::from_secs(args.lease_secs),
             release_on_exit: args.release_on_exit,
@@ -289,23 +282,40 @@ pub(crate) async fn run_nat_portmap(args: NatPortMapArgs) -> Result<()> {
         );
     }
 
-    let mut core = args
+    let builder = args
         .identity
-        .core_builder(config, open_durable_store_in_memory()?)?
+        .core_builder(
+            config,
+            CoreSettings {
+                // One socket for reask, NAT-T and Kad (ADR-0057): the mapping
+                // set this command measures holds one UDP mapping, at this port.
+                udp_port: args.udp_port,
+                port_mapping: PortMappingMode::Auto,
+                // The listener's own port is the advertised one (the same
+                // rule `ed2k serve start` follows), so a helper's
+                // connect-back reaches the listener the mapping forwards to.
+                tcp_port: args.listen.port(),
+                ..args.identity.settings(CoreSettings::default())
+            },
+            open_durable_store_in_memory()?,
+        )?
         .gateway_source(PinnedGateways(gateways.clone()))
-        .mapping_backends(live_mapping_backends(args.secret))
-        .build();
+        .mapping_backends(live_mapping_backends(args.secret));
+    let mut core = match args.kad_id_hex.as_deref() {
+        Some(hex) => builder.kad_id(KadId::from_bytes(parse_hex16("--kad-id-hex", hex)?)),
+        None => builder,
+    }
+    .build();
 
     let server = ServerEndpoint::parse_host_port(&args.server)
         .with_context(|| format!("parse server endpoint {}", args.server))?;
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: args.listen,
-        credentials: identity.clone().into(),
     }))
     .await?;
-    crate::node::connect(&core, &server, identity.clone().into()).await?;
+    crate::node::connect(&core, &server).await?;
     if args.kad {
-        core.send(CoreCommand::EnableKad(kad_enable_config(&args, &identity)?))
+        core.send(CoreCommand::EnableKad(kad_enable_config(&args)?))
             .await?;
     }
 
@@ -465,18 +475,6 @@ const fn is_link_local_v6(address: Ipv6Addr) -> bool {
     octets[0] == 0xfe && (octets[1] & 0xc0) == 0x80
 }
 
-/// The identity the serve listener presents, with the listener's own port as
-/// the advertised one (the same rule `ed2k serve start` follows).
-fn serving_identity(args: &NatPortMapArgs) -> Result<ClientIdentity> {
-    let identity = args.identity.client_identity()?;
-    Ok(ClientIdentity::new(
-        identity.user_hash(),
-        identity.nickname().clone(),
-        args.listen.port(),
-        args.identity.protocol_version,
-    ))
-}
-
 /// Parse one `--kad-contact ip:udp_port:tcp_port:kad_id_hex` into a contact the
 /// node can merge straight into its routing table.
 ///
@@ -510,20 +508,10 @@ fn parse_kad_contact(spec: &str) -> Result<rmule_core::KadContact> {
 /// stock aMule.
 const KAD_CONTACT_VERSION: u8 = 8;
 
-/// The Kad half. `tcp_port` is the serve listener's own port so a helper's
-/// connect-back reaches the listener the mapping forwards to.
-fn kad_enable_config(args: &NatPortMapArgs, identity: &ClientIdentity) -> Result<KadEnableConfig> {
-    let id = match args.kad_id_hex.as_deref() {
-        Some(hex) => KadId::from_bytes(parse_hex16("--kad-id-hex", hex)?),
-        None => {
-            DurableAppConfig::new(open_durable_store_in_memory()?)
-                .ensure_kad_identity()?
-                .id
-        }
-    };
+/// The Kad half; its identity is the core's, the Kad ID `--kad-id-hex`
+/// pinned at build or the store minted.
+fn kad_enable_config(args: &NatPortMapArgs) -> Result<KadEnableConfig> {
     Ok(KadEnableConfig {
-        kad_id: id,
-        peer_credentials: identity.clone().into(),
         bootstrap: args.kad_bootstrap.clone(),
         contacts: args
             .kad_contacts
@@ -535,7 +523,6 @@ fn kad_enable_config(args: &NatPortMapArgs, identity: &ClientIdentity) -> Result
         // because a mapping made the node genuinely reachable, and a declared
         // posture would fabricate exactly that.
         assume_open_reachability: false,
-        kad_udp_key: DurableAppConfig::new(open_durable_store_in_memory()?).ensure_kad_udp_key()?,
         kad_capture_dir: None,
         kad_shutdown: None,
     })

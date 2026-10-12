@@ -9,9 +9,9 @@ use std::fmt;
 use std::net::Ipv4Addr;
 
 use rmule_primitives::{
-    ClientId, Ed2kText, ExchangedSource, FileHash, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint,
-    SearchQuery, SearchResult, ServerEndpoint, ServerIdentity, ServerStatusReport, SourceListTail,
-    SourceLookupTarget,
+    ClientId, Ed2kText, FileHash, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, SearchQuery,
+    SearchResult, ServerEndpoint, ServerIdentity, ServerStatusReport, SourceListTail,
+    SourceLookupTarget, SourceSighting,
 };
 
 use crate::{
@@ -72,6 +72,10 @@ pub enum Ed2kCommand {
     OfferFiles {
         /// The files to offer, with the metadata the server indexes them by.
         files: Vec<OfferedFile>,
+        /// The Presented Client ID the entries carry when the server holds us
+        /// at a High ID (aMule writes `GetID`, not the server's id), or `None`
+        /// where nothing presents anything but the session's own id.
+        presented_id: Option<ClientId>,
     },
     /// Leave the server: send the goodbye and close.
     Disconnect,
@@ -231,13 +235,13 @@ pub enum Ed2kEvent {
     /// Sources for `file_hash`, as candidates carrying the optional
     /// `(user_hash, crypt_options)` provenance the obfuscation-aware `0x44`
     /// reply delivers (ADR-0046). A plain `0x42` reply projects each source
-    /// as [`ExchangedSource::plain`] — no crypt material, dialed plaintext.
+    /// as [`SourceSighting::plain`] — no crypt material, dialed plaintext.
     SourcesFound {
         /// The file the sources are for.
         file_hash: FileHash,
         /// The sources, each carrying whatever crypt provenance the reply
         /// form delivered.
-        sources: Vec<ExchangedSource>,
+        sources: Vec<SourceSighting>,
         /// How the list's records measured (ADR-0085). A
         /// [`SourceListTail::Malformed`] list cost the records from its first
         /// **Sentinel Source** on and nothing before it — a counted
@@ -355,7 +359,7 @@ impl Ed2kEvent {
                     .sources()
                     .iter()
                     .copied()
-                    .map(ExchangedSource::plain)
+                    .map(SourceSighting::plain)
                     .collect(),
                 tail: found.tail(),
             },

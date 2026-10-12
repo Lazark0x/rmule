@@ -7,10 +7,7 @@
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
-use super::{
-    AwaitingAck, KadContactAdmission, KadEvent, KadNode, KadNodeDiagnostic, PendingProbe,
-    ReceivedKey,
-};
+use super::{AwaitingAck, KadEvent, KadNode, KadNodeDiagnostic, PendingProbe, ReceivedKey};
 use crate::messages::{Kad2Message, Kad2NodeInfo, MISC_OPTIONS_ACK_REQUEST};
 use crate::opcode::{KADEMLIA2_HELLO_RES, KADEMLIA2_HELLO_RES_ACK};
 use crate::udp_key::{KadUdpKey, udp_verify_key};
@@ -38,14 +35,6 @@ impl KadNode {
     /// and the misc-options tag; below it aMule uses the (unimplemented) legacy
     /// challenge / v7 ping, so rmule sets no ack-request toward it (ADR-0064).
     const ACK_REQUEST_MIN_VERSION: u8 = 8;
-
-    /// Arm the contact-admission verdict — the driver installs
-    /// the production IP-filter closure here before the node handles any
-    /// traffic, the same pre-start discipline as the other arming calls. The
-    /// un-armed default admits everything.
-    pub fn arm_contact_admission(&mut self, admission: KadContactAdmission) {
-        self.contact_admission = admission;
-    }
 
     /// The routing table, for driver observability and tests.
     #[must_use]

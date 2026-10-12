@@ -25,12 +25,12 @@ the time since this peer last answered sources and `file` the time since any pee
 | the peer speaks the extended protocol | `DownloadClient.cpp:191` | `PeerSession::source_request_allowed` |
 | SX2, or an SX1 nibble above 1 | `DownloadClient.cpp:191` | `PeerSession::source_request_allowed` |
 | fewer sources than 90 % of `MaxSourcesPerFile` (default 300), at most 1000 | `DownloadClient.cpp:193`, `Preferences.h:270-273`, `Preferences.cpp:1027` | `SOURCE_ASK_SOFT_CAP` = 270 |
-| very rare: not complete, never asked or `client` > 40 min, `uSources` ≤ 10 | `DownloadClient.cpp:196-199` | `SourceAskClock::wants` |
-| rare: not complete, never asked or `client` > 40 min, `uSources` ≤ 50 or `uSources − valid` ≤ 25, `file` > 5 min | `DownloadClient.cpp:201-205` | `SourceAskClock::wants` |
-| common: never asked or `client` > 160 min, and `file` > 20 min | `DownloadClient.cpp:207-209` | `SourceAskClock::wants` |
-| an ask stamps the peer and the file clock to "answered 40 min − 44.1 s ago", inside `SendFileRequest`, only when the ask goes out | `DownloadClient.cpp:249-262`, `PartFile.cpp:2520-2523` | `SourceAskClock::asked`, on the session's `FileRequestSent` saying the request carried the ask |
-| an answer stamps both clocks now | `ClientTCPSocket.cpp:1513-1515`, `:1538-1540` | `SourceAskClock::answered` |
-| a UDP reask is skipped while a source ask is due, so the TCP ask can carry it | `DownloadClient.cpp:1269-1273` | every sweep sets each pooled source's `sx_due` from `SourceAskClock::due` |
+| very rare: not complete, never asked or `client` > 40 min, `uSources` ≤ 10 | `DownloadClient.cpp:196-199` | `source_ask_clock::wants` |
+| rare: not complete, never asked or `client` > 40 min, `uSources` ≤ 50 or `uSources − valid` ≤ 25, `file` > 5 min | `DownloadClient.cpp:201-205` | `source_ask_clock::wants` |
+| common: never asked or `client` > 160 min, and `file` > 20 min | `DownloadClient.cpp:207-209` | `source_ask_clock::wants` |
+| an ask stamps the peer and the file clock to "answered 40 min − 44.1 s ago", inside `SendFileRequest`, only when the ask goes out | `DownloadClient.cpp:249-262`, `PartFile.cpp:2520-2523` | the record's asked stamp, on the session's `FileRequestSent` saying the request carried the ask |
+| an answer stamps both clocks now | `ClientTCPSocket.cpp:1513-1515`, `:1538-1540` | the record's answered stamp |
+| a UDP reask is skipped while a source ask is due, so the TCP ask can carry it | `DownloadClient.cpp:1269-1273` | every sweep reads `source_ask_clock::due` off each RemoteQueued record's facts |
 
 The constants match both references: `SOURCECLIENTREASKS` 40 minutes (`Constants.h:38`; eMule
 `Opcodes.h:68`), `SOURCECLIENTREASKF` 5 minutes, `MINCOMMONPENALTY` 4, `CONNECTION_LATENCY`
@@ -41,30 +41,37 @@ so a peer asked and silent is asked again on its next connection.
 
 aMule finds its one client object by whatever identifies the peer — a High ID by IP and port, a Low
 ID by IP and port or `(low id, server IP, server port)`, any one by User Hash last
-(`FindMatchingClient`, `ClientList.cpp:264-297`, `:334-343`). rmule has no client object; the clock
-holds the same facts per **Ask Name**, inside one download:
+(`FindMatchingClient`, `ClientList.cpp:264-297`, `:334-343`). rmule has no client object; the facts
+ride the peer's **Source Book** record (ADR-0090), inside one download, and its **Ask Names** are the
+book's aliases and the User Hashes the record knows:
 
-| Ask Name | Known | Bound to a connection |
+| Ask Name | Known | On the record |
 |---|---|---|
-| the peer's TCP endpoint | a High-ID source before its dial; any connection's remote end | always — the worker's key |
-| `(server, low_id)` | a Low-ID candidate before its callback or punch | at adoption, to the connection's endpoint |
-| the peer's User Hash | a candidate record that carried it (`0x44`, SX v ≥ 2, Kad); any hello | at `Identified`, to the connection's endpoint |
+| the peer's TCP endpoint | a High-ID source before its dial; any connection's remote end | an endpoint alias — the worker's key |
+| `(server, low_id)` | a Low-ID candidate before its callback or punch | its `CallbackKey` alias, joined at adoption by the connection's endpoint |
+| the peer's User Hash | a candidate record that carried it (`0x44`, SX v ≥ 2, Kad); any hello | the candidate's, the one a record stated with its crypt, or the live worker's hello |
 
-Reads merge every name a connection is known by; every stamp lands on all of them, and a name bound
-later is given the connection's current facts at its binding. A binding ends with its worker; what
-was stamped stays under each name for the run. A decision made before any connection reads the
-names the candidate carries. Each entry holds four facts:
+A stamp lands on the record. A read merges the record's facts with those of every live record
+sharing one of its User Hashes, and with what the book kept under each of its names: a name the
+record stops answering to — its worker's hello hash at the worker's end, an endpoint or key it
+drops, every name when it leaves the book — keeps the facts stamped so far in the book's run
+tier, until aMule would have deleted the client object holding them: its client-list cleanup, a
+pass every 34 minutes (`ClientList.cpp:975-1003`, `CLIENTLIST_CLEANUP_TIME`), forgets a name no
+record answers to at that pass. A decision made before any connection reads the names the record
+already holds.
+Each record holds four facts:
 
 1. **Asked** — stamped on `FileRequestSent` when the request the session wrote carried a source ask:
    the stamp is what was sent, not what was expected.
 2. **Answered** — stamped on `SourcesReceived`, empty or not.
 3. **Source Exchange Support** — the extended protocol, the SX1 nibble, SX2, as the session reads
    them off the hello and any legacy `OP_EMULEINFO` (aMule `ProcessMuleInfoPacket`,
-   `BaseClient.cpp:843`, `:893`, `:918-921`, `:973-975`, `:986-988`). One sender, in the session's
-   order: the connection's router hands up the hello's value with `PeerIdentified`, the value a file
-   request was framed under (`FileRequestSent`), and every `OP_EMULEINFO` revision
-   (`PeerSourceExchangeRevised`); the later value wins, and the router forwards events already read
-   before it closes the socket. `SourceAskClock::due` = support known and askable, and `wants`; a name
+   `BaseClient.cpp:843`, `:893`, `:918-921`, `:973-975`, `:986-988`), carried by the peer's
+   `PeerIdentity`. One sender, in the session's order: the connection's router hands the identity up
+   whole with `ConnectionEvent::Identified` and again at every revision
+   (`ConnectionEvent::IdentityRevised`) — an adopted worker's own, read at accept, goes before the
+   router starts; the later value wins, and the router forwards events already read before it closes
+   the socket. `source_ask_clock::due` = support known and askable, and `wants`; a record
    whose facts the run never read is not due.
 4. **Complete** — the peer's last advertisement for this file, from a probe (`FileProbed`) or a `0x91`
    status, false on a probe or `0x92` saying the peer lacks the file. **A peer is complete only when it

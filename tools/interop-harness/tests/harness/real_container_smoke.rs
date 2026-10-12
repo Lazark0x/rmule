@@ -33,7 +33,7 @@ fn amule_serves_rmule_downloads_large_file_real_containers() {
     );
     let stdout = std::fs::read_to_string(run_dir.join("rmule/stdout.log")).unwrap();
     assert!(
-        stdout.contains("download part_verified "),
+        stdout.contains("download.part_verified "),
         "large file should use part hashes and emit part_verified:\n{stdout}"
     );
 }

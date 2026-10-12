@@ -45,7 +45,7 @@ use super::renewal::{
 };
 use super::{
     DesiredMapping, GrantAnswer, MappingCommand, MappingDiagnostics, MappingGrade, MappingLease,
-    MappingResult, MappingStatus, PortMappingConfig, PortMappingMode,
+    MappingResult, MappingStatus, PortMappingConfig,
 };
 
 mod probe;
@@ -213,14 +213,13 @@ impl PortMapper {
     /// Kad is enabled. A set that has not changed while a race or a set of
     /// leases is already live is left alone — re-racing on every bind would
     /// throw away working mappings to ask the same questions again. A no-op
-    /// while the mode is [`Off`](PortMappingMode::Off) or nothing bound: with
-    /// no socket up there is no port to forward.
+    /// while nothing bound: with no socket up there is no port to forward.
     pub(crate) fn start(&mut self, now: Instant) {
         let derived = DesiredMappingSet::derive(&self.addresses);
         let unchanged = derived == self.desired;
         self.release_departed(&derived);
         self.desired = derived;
-        if self.config.mode == PortMappingMode::Off || self.desired.is_empty() {
+        if self.desired.is_empty() {
             self.phase = Phase::Idle;
             return;
         }
@@ -268,7 +267,7 @@ impl PortMapper {
     /// ladder's retry, which must keep climbing rather than restart at 30 s.
     fn race(&mut self, now: Instant) {
         self.desired = DesiredMappingSet::derive(&self.addresses);
-        if self.config.mode == PortMappingMode::Off || self.desired.is_empty() {
+        if self.desired.is_empty() {
             self.phase = Phase::Idle;
             return;
         }

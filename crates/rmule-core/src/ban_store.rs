@@ -157,16 +157,20 @@ mod tests {
         // demonstrates the property directly: banning an IP here changes
         // nothing about how a live `KadNode` treats datagrams from it.
         use rmule_kad::{
-            Kad2Message, KadId, KadInstant, KadNode, KadNodeConfig, KadNodeEndpoint, KadOutput,
+            Kad2Message, KadId, KadInstant, KadNode, KadNodeConfig, KadNodeEndpoint, KadNodeStart,
+            KadOutput,
         };
         use rmule_primitives::session::drain;
 
-        let mut node = KadNode::new(KadNodeConfig {
-            id: KadId::from_bytes([0xAA; KadId::BYTE_LEN]),
-            tcp_port: 4662,
-            udp_port: 4672,
-            user_hash: rmule_kad::UserHash::from_bytes([0xEE; 16]),
-        });
+        let mut node = KadNode::new(KadNodeStart::new(
+            KadNodeConfig {
+                id: KadId::from_bytes([0xAA; KadId::BYTE_LEN]),
+                tcp_port: 4662,
+                udp_port: 4672,
+                user_hash: rmule_kad::UserHash::from_bytes([0xEE; 16]),
+            },
+            KadInstant::EPOCH,
+        ));
         let from = KadNodeEndpoint::new(std::net::Ipv4Addr::new(203, 0, 113, 9), 4909);
 
         let mut store = BanStore::default();

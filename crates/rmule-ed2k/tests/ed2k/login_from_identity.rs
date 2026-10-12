@@ -48,7 +48,7 @@ fn from_identity_emits_amule_exact_tag_shape() {
         // aMule 2.3.3's own version word (SO_AMULE<<24 |
         // make_full_ed2k_version(2,3,3) = 0x0304_0D80, ServerConnect.cpp#L253);
         // rmule masquerades as this so Lugdunum's min-version gate accepts the
-        // login rather than rejecting rmule's real 0.1.0.
+        // login rather than rejecting rmule's own version.
         TagValue::U32(v) => assert_eq!(*v, 0x0304_0D80),
         _ => panic!("emule-version tag must be u32"),
     }
@@ -57,14 +57,15 @@ fn from_identity_emits_amule_exact_tag_shape() {
 /// Registry derivation is never aspirational (ADR-0047): with crypt policy
 /// off, the flags word lights exactly the shipped set — ZLIB (0xD4 inflate
 /// ships), NEWTAGS (compact tag decode ships), UNICODE (byte-preserving
-/// text), LARGEFILES (64-bit dispatch) — and keeps AUXPORT dark (the IDCHANGE
-/// extension is unprojected) along with every crypt bit.
+/// text), LARGEFILES (64-bit dispatch) and AUXPORT (the managed server list
+/// re-ports a row to the standard port an aux-port login names) — and keeps
+/// every crypt bit dark. That is aMule's own `0x11D`.
 #[test]
 fn server_flags_light_exactly_the_shipped_set() {
     assert_eq!(
         server_capability_flags(&shipped_no_crypt()),
-        0x0001 | 0x0008 | 0x0010 | 0x0100,
-        "ZLIB | NEWTAGS | UNICODE | LARGEFILES, nothing else"
+        0x0001 | 0x0004 | 0x0008 | 0x0010 | 0x0100,
+        "ZLIB | AUXPORT | NEWTAGS | UNICODE | LARGEFILES, nothing else"
     );
 }
 
@@ -116,8 +117,8 @@ fn login_packet_golden_vector() {
         b"rmule-test",
         // CT_VERSION: u32 tag, id 0x11, EDONKEYVERSION 60
         &[0x03, 0x01, 0x00, 0x11, 0x3C, 0x00, 0x00, 0x00],
-        // CT_SERVER_FLAGS: u32 tag, id 0x20, ZLIB|NEWTAGS|UNICODE|LARGEFILES
-        &[0x03, 0x01, 0x00, 0x20, 0x19, 0x01, 0x00, 0x00],
+        // CT_SERVER_FLAGS: u32 tag, id 0x20, ZLIB|AUXPORT|NEWTAGS|UNICODE|LARGEFILES
+        &[0x03, 0x01, 0x00, 0x20, 0x1D, 0x01, 0x00, 0x00],
         // CT_EMULE_VERSION: u32 tag, id 0xFB, aMule 2.3.3 parity word
         // 0x0304_0D80 (SO_AMULE<<24 | make_full_ed2k_version(2,3,3)), LE
         &[0x03, 0x01, 0x00, 0xFB, 0x80, 0x0D, 0x04, 0x03],

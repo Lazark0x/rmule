@@ -17,7 +17,7 @@ use crate::fixture::load;
 use rmule_peer::{
     AnswerSources2, HelloAnswer, MiscOptions1, MiscOptions2, PEER_COMPRESSED_FRAME_LIMIT,
     PEER_PACK_THRESHOLD, PeerCommand, PeerEvent, PeerHandshakeContext, PeerHelloBody, PeerOutput,
-    PeerSession, SourceExchangeVersion,
+    PeerSession, RequesterCommand, RequesterEvent, SourceExchangeVersion,
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{
@@ -102,7 +102,6 @@ fn the_packed_answer_carries_all_fifteen_v4_source_rows() {
         .map(|entry| {
             entry
                 .source()
-                .peer_source()
                 .as_peer_endpoint()
                 .expect("aMule only exchanges High-ID sources")
         })
@@ -137,6 +136,8 @@ fn a_soliciting_session_inflates_the_packed_answer_into_sources_received() {
             0x3C,
         ),
         client_id: ClientId::from_u32(0x1000_0001),
+        ed2k_client_id: ClientId::from_u32(0x1000_0001),
+        public_ip: None,
         connected_server: None,
     };
     let mut session = PeerSession::new_outbound(peer, ctx);
@@ -160,23 +161,23 @@ fn a_soliciting_session_inflates_the_packed_answer_into_sources_received() {
     let _ = drain(|| session.poll_output());
 
     let file_hash = FileHash::from_bytes(FILE_HASH);
-    session.handle_command(PeerCommand::RequestFile {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash,
         file_size: FILE_SIZE,
         own_status: rmule_peer::PartBitmap::downloader_empty(FILE_SIZE),
         want_sources: true,
         want_aich_root: false,
-    });
+    }));
     let _ = drain(|| session.poll_output());
 
     session.handle_bytes(&load(FIXTURE_DIR, FIXTURE));
     let sources = drain(|| session.poll_output())
         .iter()
         .find_map(|o| match o {
-            PeerOutput::Event(PeerEvent::SourcesReceived {
+            PeerOutput::Event(PeerEvent::Requester(RequesterEvent::SourcesReceived {
                 file_hash: fh,
                 sources,
-            }) if *fh == file_hash => Some(sources.clone()),
+            })) if *fh == file_hash => Some(sources.clone()),
             _ => None,
         })
         .expect("the packed 0xD4 answer reaches the consume core");

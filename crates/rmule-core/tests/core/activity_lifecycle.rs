@@ -3,6 +3,7 @@
 //! activity started after it, and quit stops everything — the listener
 //! closed and every mapping released — before `Core::shutdown` returns.
 
+use rmule_testkit::HANG_GUARD;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 
@@ -12,10 +13,11 @@ use rmule_net::portmap::{MappedTransport, MappingProtocol};
 use rmule_testkit::{FakeGateways, ScriptedBackend};
 use tokio::time::{Duration, timeout};
 
-use crate::fixture::{identity, next_expected};
+use crate::fixture::next_expected;
 
 fn mapped_core(pcp: &Arc<ScriptedBackend>) -> Core {
     Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
         .gateway_source(FakeGateways::home_lan())
         .mapping_backends(vec![pcp.clone()])
         .build()
@@ -24,7 +26,6 @@ fn mapped_core(pcp: &Arc<ScriptedBackend>) -> Core {
 async fn start_serving(core: &mut Core) -> SocketAddrV4 {
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
-        credentials: identity().into(),
     }))
     .await
     .expect("serve accepted");
@@ -39,7 +40,7 @@ async fn start_serving(core: &mut Core) -> SocketAddrV4 {
 }
 
 async fn mapped_row(core: &Core, role: SocketRole, wanted: bool) {
-    timeout(Duration::from_secs(10), async {
+    timeout(HANG_GUARD, async {
         loop {
             let mapped = core
                 .diagnostics_snapshot()
@@ -96,7 +97,9 @@ async fn stopping_serve_releases_the_listener_mapping() {
 /// answering.
 #[tokio::test]
 async fn a_stale_serve_end_never_retires_the_next_activity() {
-    let mut core = Core::new(CoreConfig::default(), rmule_testkit::memory_store());
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
     start_serving(&mut core).await;
     for _ in 0..6 {
         core.send(CoreCommand::Serve(ServeCommand::StopServing))

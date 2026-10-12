@@ -13,7 +13,7 @@
 
 use rmule_primitives::{
     ClientId, Ed2kText, Ipv4Endpoint, Packet, PacketProtocol, PrimitiveError, Tag, TagValue,
-    UserHash,
+    UserHash, WireReader,
 };
 
 use crate::error::PeerHelloDecodeError;
@@ -145,22 +145,17 @@ impl Hello {
                 opcode: packet.opcode(),
             });
         }
-        let payload = packet.payload();
-        if payload.is_empty() {
-            return Err(PeerHelloDecodeError::Truncated {
-                needed: 1,
-                actual: 0,
-            });
-        }
+        let mut reader = WireReader::new(packet.payload());
+        let hash_size = reader.read_u8("hash size")?;
         // aMule refuses any other size (`BaseClient.cpp:386-394`): the answer
         // has no size field to echo one with.
-        if payload[0] != HASH_SIZE_BYTE {
+        if hash_size != HASH_SIZE_BYTE {
             return Err(PeerHelloDecodeError::InvalidHashSize {
                 expected: HASH_SIZE_BYTE,
-                actual: payload[0],
+                actual: hash_size,
             });
         }
-        let (body, trailer) = decode_body(&payload[1..])?;
+        let (body, trailer) = decode_body(reader.remaining_bytes())?;
         Ok(Self { body, trailer })
     }
 
@@ -265,57 +260,29 @@ fn encode_body_into(payload: &mut Vec<u8>, body: &PeerHelloBody, trailer: HelloT
 }
 
 fn decode_body(payload: &[u8]) -> Result<(PeerHelloBody, HelloTrailer), PeerHelloDecodeError> {
-    if payload.len() < FIXED_BODY_LEN {
-        return Err(PeerHelloDecodeError::Truncated {
-            needed: FIXED_BODY_LEN,
-            actual: payload.len(),
-        });
-    }
-    let mut hash_bytes = [0u8; UserHash::BYTE_LEN];
-    hash_bytes.copy_from_slice(&payload[..UserHash::BYTE_LEN]);
-    let user_hash = UserHash::from_bytes(hash_bytes);
-
-    let mut cursor = UserHash::BYTE_LEN;
-    let client_id = ClientId::from_u32(u32::from_le_bytes(
-        payload[cursor..cursor + 4]
-            .try_into()
-            .expect("validated client id length"),
-    ));
-    cursor += 4;
-    let tcp_port = u16::from_le_bytes(
-        payload[cursor..cursor + 2]
-            .try_into()
-            .expect("validated tcp port length"),
-    );
-    cursor += 2;
-    let tag_count = u32::from_le_bytes(
-        payload[cursor..cursor + 4]
-            .try_into()
-            .expect("validated tag count length"),
-    );
-    cursor += 4;
+    let mut reader = WireReader::new(payload);
+    let user_hash = UserHash::from_bytes(reader.read_array("user hash")?);
+    let client_id = ClientId::from_u32(reader.read_u32_le("client id")?);
+    let tcp_port = reader.read_u16_le("tcp port")?;
+    let tag_count = reader.read_u32_le("tag count")?;
     let tag_count = usize::try_from(tag_count)
         .map_err(|_| PeerHelloDecodeError::TagCountOverflow { count: tag_count })?;
 
-    let block = &payload[cursor..];
+    let block = reader.remaining_bytes();
     let declared = u32::try_from(tag_count).unwrap_or(u32::MAX);
     let (tags, consumed) = decode_tags(block, tag_count).map_err(|source| {
         refusal::classify_short_count(block, declared).unwrap_or(source.into())
     })?;
-    cursor += consumed;
+    reader.advance_clamped(consumed);
 
-    if payload.len() < cursor + Ipv4Endpoint::WIRE_LEN {
-        return Err(refusal::classify_short_count(block, declared).unwrap_or(
-            PeerHelloDecodeError::Truncated {
-                needed: cursor + Ipv4Endpoint::WIRE_LEN,
-                actual: payload.len(),
-            },
-        ));
-    }
-    let mut endpoint_bytes = [0u8; Ipv4Endpoint::WIRE_LEN];
-    endpoint_bytes.copy_from_slice(&payload[cursor..cursor + Ipv4Endpoint::WIRE_LEN]);
-    let connected_server = Ipv4Endpoint::decode(&endpoint_bytes);
-    cursor += Ipv4Endpoint::WIRE_LEN;
+    let connected_server = match reader.read_array::<{ Ipv4Endpoint::WIRE_LEN }>("connected server")
+    {
+        Ok(bytes) => Ipv4Endpoint::decode(&bytes),
+        Err(truncated) => {
+            return Err(refusal::classify_short_count(block, declared)
+                .unwrap_or(PeerHelloDecodeError::from(truncated)));
+        }
+    };
 
     let body = PeerHelloBody {
         user_hash,
@@ -324,7 +291,7 @@ fn decode_body(payload: &[u8]) -> Result<(PeerHelloBody, HelloTrailer), PeerHell
         tags,
         connected_server,
     };
-    Ok((body, HelloTrailer::read(&payload[cursor..])))
+    Ok((body, HelloTrailer::read(reader.remaining_bytes())))
 }
 
 /// Read `count` tags off the front of `bytes`, returning them and the bytes
@@ -335,21 +302,21 @@ fn decode_body(payload: &[u8]) -> Result<(PeerHelloBody, HelloTrailer), PeerHell
 pub(crate) fn decode_tags(bytes: &[u8], count: usize) -> Result<(Vec<Tag>, usize), PrimitiveError> {
     // The frame, not the peer's word, bounds what is reserved.
     let mut tags = Vec::with_capacity(Tag::block_capacity(count, bytes));
-    let mut cursor = 0;
+    let mut reader = WireReader::new(bytes);
     for _ in 0..count {
-        let rest = &bytes[cursor..];
+        let rest = reader.remaining_bytes();
         match Tag::decode_prefix(rest) {
             Ok((tag, used)) => {
                 tags.push(tag);
-                cursor += used;
+                reader.advance_clamped(used);
             }
             Err(PrimitiveError::UnsupportedTagType { .. } | PrimitiveError::InvalidTag { .. }) => {
-                cursor += Tag::skip_prefix(rest)?;
+                reader.advance_clamped(Tag::skip_prefix(rest)?);
             }
             Err(other) => return Err(other),
         }
     }
-    Ok((tags, cursor))
+    Ok((tags, reader.position()))
 }
 
 /// The last integer-valued tag named `id` — both references assign per tag,

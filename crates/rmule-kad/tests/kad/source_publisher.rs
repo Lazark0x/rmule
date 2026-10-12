@@ -2,6 +2,7 @@
 //! ack window that completes a round, the republish it schedules, and the
 //! paging a search walks through.
 
+use rmule_kad::KadNodeStart;
 use std::net::Ipv4Addr;
 
 use rmule_kad::{
@@ -27,12 +28,15 @@ const PUBLISHER_SOURCE_ID_WIRE: [u8; 16] = [
 ];
 
 fn publisher_node() -> KadNode {
-    KadNode::new(KadNodeConfig {
-        id: KadId::from_bytes([0x0F; 16]),
-        tcp_port: 4662,
-        udp_port: 4672,
-        user_hash: UserHash::from_bytes(PUBLISHER_USER_HASH),
-    })
+    KadNode::new(KadNodeStart::new(
+        KadNodeConfig {
+            id: KadId::from_bytes([0x0F; 16]),
+            tcp_port: 4662,
+            udp_port: 4672,
+            user_hash: UserHash::from_bytes(PUBLISHER_USER_HASH),
+        },
+        KadInstant::EPOCH,
+    ))
 }
 
 fn publish_res_bytes(file: KadId, load: u8) -> Vec<u8> {

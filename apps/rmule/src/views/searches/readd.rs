@@ -7,15 +7,13 @@
 //! failed is asked about the same way, and a yes restarts that download in
 //! place (ADR-0094, "Failed").
 
-use std::path::{Path, PathBuf};
-
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use rmule_core::{CoreCommand, DownloadCommand, DownloadId};
+use rmule_core::{CoreCommand, DownloadCommand, DownloadId, NameTaken};
 use rmule_primitives::{SafeFileName, SearchResult};
 
 use super::{SearchesView, ViewOutcome};
@@ -180,34 +178,27 @@ impl SearchesView {
     }
 }
 
-/// `StartDownload` for `result` into the session's download directory. A
-/// re-add (`again`) takes a free name beside a copy already there, so the
-/// file on disk is never the one written over.
+/// `StartDownload` for `result`: core places it in its download directory.
+/// A re-add (`again`) takes a free name beside a copy already there, so the
+/// file on disk is never the one written over. The source hint is
+/// [`UiState::active_server`] (live connection first), none at all for a
+/// Kad-only operator: core finds the sources over Kad and asks any server
+/// session that comes up later.
 fn start_download(result: &SearchResult, state: &UiState, again: bool) -> ViewOutcome {
-    // Real wiring: credentials + download dir from the session config;
-    // the source hint via [`UiState::active_server`] (live connection first),
-    // and none at all for a Kad-only operator: core finds the sources
-    // over Kad and asks any server session that comes up later.
-    let Some(session) = state.session.as_ref() else {
-        return ViewOutcome::Emit(Action::Flash(download_words::START_NEEDS_CREDENTIALS));
-    };
-    let server = state.active_server();
-    let Some(dir) = &session.download_dir else {
-        return ViewOutcome::Emit(Action::Flash(download_words::NO_DOWNLOAD_DIR));
-    };
+    if state.session.is_none() {
+        return ViewOutcome::Emit(Action::Flash(crate::words::app::CORE_NOT_ATTACHED));
+    }
     let file = result.to_file_link();
-    let name = SafeFileName::of_link(&file);
-    let output_path = if again {
-        free_output_path(dir, &name)
-    } else {
-        name.path_in(dir)
-    };
     ViewOutcome::Emit(Action::Command(CoreCommand::Download(
         DownloadCommand::StartDownload {
+            name: SafeFileName::of_link(&file),
             file,
-            source_hint: server,
-            credentials: session.credentials.clone(),
-            output_path,
+            source_hint: state.active_server(),
+            if_taken: if again {
+                NameTaken::Number
+            } else {
+                NameTaken::Refuse
+            },
         },
     )))
 }
@@ -216,44 +207,12 @@ fn start_download(result: &SearchResult, state: &UiState, again: bool) -> ViewOu
 /// "Restart"): the same row, which core continues from what is on disk
 /// or starts over in its place; the store would refuse a new one for the file.
 fn restart_download(download_id: DownloadId, state: &UiState) -> ViewOutcome {
-    let Some(session) = state.session.as_ref() else {
-        return ViewOutcome::Emit(Action::Flash(download_words::RESTART_NEEDS_CREDENTIALS));
-    };
-    ViewOutcome::Emit(Action::Command(CoreCommand::Download(
-        DownloadCommand::ResumeDownload {
-            download_id,
-            credentials: session.credentials.clone(),
-        },
-    )))
-}
-
-/// `dir/name`, or the first `dir/stem (n).ext` for which neither the file nor
-/// its `.part` exists. The numbered form adds only a space, parentheses and
-/// digits to a cleaned name, so it stays one component inside `dir`.
-fn free_output_path(dir: &Path, name: &SafeFileName) -> PathBuf {
-    let taken = |path: &Path| {
-        let mut part = path.as_os_str().to_owned();
-        part.push(".part");
-        path.exists() || Path::new(&part).exists()
-    };
-    let plain = name.path_in(dir);
-    let name = name.as_str();
-    if !taken(&plain) {
-        return plain;
+    if state.session.is_none() {
+        return ViewOutcome::Emit(Action::Flash(crate::words::app::CORE_NOT_ATTACHED));
     }
-    let (stem, ext) = match name.rsplit_once('.') {
-        Some((stem, ext)) if !stem.is_empty() => (stem, Some(ext)),
-        _ => (name, None),
-    };
-    (1..)
-        .map(|n| {
-            dir.join(match ext {
-                Some(ext) => format!("{stem} ({n}).{ext}"),
-                None => format!("{stem} ({n})"),
-            })
-        })
-        .find(|path| !taken(path))
-        .expect("an unbounded range finds a free name")
+    ViewOutcome::Emit(Action::Command(CoreCommand::Download(
+        DownloadCommand::ResumeDownload { download_id },
+    )))
 }
 
 #[cfg(test)]

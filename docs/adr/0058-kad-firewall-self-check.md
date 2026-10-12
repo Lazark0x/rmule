@@ -73,10 +73,11 @@ socket-free.
 ### The injected TCP verdict is a level
 
 The node derives no TCP verdict of its own; the UDP tester's firewalled-by-timeout
-conclusion composes on the one it is told. `TcpVerdictFeed` holds the published verdict
-and what the node was told as one object and syncs it at every Kad start (the node is
-constructed assume-open), on every verdict change and on the 30-second recruit tick, so a
-level dropped by a full inbox is restated rather than lost.
+conclusion composes on the one it is told. The Kad pump's brain (**Kad Pump State**)
+publishes the verdict at every Kad start, on every change and on the 30-second recruit
+tick, and its one reconciler tells the node the level whenever the node does not hold it:
+at start (the node is constructed assume-open), after a change, and on the next input after
+a full inbox turned it away, so a dropped level is restated rather than lost.
 
 ### UDP check, requester
 

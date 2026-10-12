@@ -362,17 +362,14 @@ fn a_start_of_kad_after_the_join_ended_says_so_once() {
 #[test]
 fn a_settings_edit_reaches_the_store_and_the_live_half_lands_at_once() {
     use crate::config::{PrefEdit, SharedConfig, ThemeChoice};
-    use rmule_core::{AppConfigStore, DurableAppConfig};
 
-    let backing = DurableAppConfig::new(rmule_testkit::memory_store());
-    let identity = backing.ensure_identity().expect("identity");
-    let config = SharedConfig::new(backing);
+    let store = rmule_testkit::memory_store();
+    let config = SharedConfig::open(store);
     let preferences = config.load(None).expect("load");
 
     let mut app = App::new(Theme::default_dark())
         .with_session(crate::state::SessionConfig {
             server: None,
-            credentials: rmule_core::ClientCredentials::from(identity.clone()),
             download_dir: None,
         })
         .with_config(config.clone(), preferences);
@@ -382,7 +379,7 @@ fn a_settings_edit_reaches_the_store_and_the_live_half_lands_at_once() {
     assert_eq!(app.theme.bg, Theme::light().bg, "the palette swaps at once");
     assert_eq!(app.state.preferences.theme, ThemeChoice::Light);
 
-    let dir = std::path::PathBuf::from("/tmp/rmule-dl");
+    let dir = rmule_testkit::absolute_path("tmp/rmule-dl");
     app.reduce(Action::Preference(PrefEdit::DownloadDir(dir.clone())), now);
     assert_eq!(
         app.state
@@ -412,9 +409,8 @@ fn two_tables_keep_their_own_sorts_across_a_restart() {
     use crate::config::SharedConfig;
     use crate::fixture::{listed_servers, three_downloads};
     use crate::table_sort::Direction;
-    use rmule_core::DurableAppConfig;
 
-    let config = SharedConfig::new(DurableAppConfig::new(rmule_testkit::memory_store()));
+    let config = SharedConfig::open(rmule_testkit::memory_store());
     let with_rows = |app: &mut App| {
         app.state.downloads = three_downloads().downloads;
         app.state.diagnostics = three_downloads().diagnostics;
@@ -498,15 +494,114 @@ fn a_settings_edit_on_a_ui_only_run_degrades_to_the_honest_flash() {
     );
 }
 
+/// A value Core Settings refuses is told by why it was refused, not as a
+/// store failure, and nothing is applied.
+#[test]
+fn a_refused_value_says_why() {
+    use crate::config::SharedConfig;
+
+    let config = SharedConfig::open(rmule_testkit::memory_store());
+    let preferences = config.load(None).expect("load");
+    let mut app = App::new(Theme::default_dark()).with_config(config, preferences);
+    let now = Instant::now();
+    let limit = app.state.preferences.dead_server_retries;
+
+    app.reduce(
+        Action::Preference(crate::config::PrefEdit::DeadServerRetries(0)),
+        now,
+    );
+    assert_eq!(
+        app.chrome.flash_text(now),
+        Some("not saved: the dead server limit must be at least 1")
+    );
+    assert_eq!(app.state.preferences.dead_server_retries, limit);
+}
+
+/// A download dir the share guards refuse is told by the guard's reason, and
+/// the next download still reads the directory it read before.
+#[test]
+fn a_download_dir_the_share_guards_refuse_says_why_and_is_not_applied() {
+    use crate::config::SharedConfig;
+
+    let store = rmule_testkit::memory_store();
+    let home = tempfile::tempdir().expect("a home");
+    let handle =
+        rmule_core::CoreSettingsHandle::open(store.clone()).share_guards(rmule_core::ShareGuards {
+            home: Some(home.path().to_path_buf()),
+            data_dir: None,
+        });
+    let config = SharedConfig::new(handle, rmule_core::DurableAppConfig::new(store));
+    let preferences = config.load(None).expect("load");
+    let before = rmule_testkit::absolute_path("srv/rmule-dl");
+    let mut app = App::new(Theme::default_dark())
+        .with_session(crate::state::SessionConfig {
+            server: None,
+            download_dir: Some(before.clone()),
+        })
+        .with_config(config, preferences);
+    let now = Instant::now();
+
+    app.reduce(
+        Action::Preference(crate::config::PrefEdit::DownloadDir(
+            home.path().to_path_buf(),
+        )),
+        now,
+    );
+    assert_eq!(
+        app.chrome.flash_text(now),
+        Some(
+            "not saved: everything under the download dir is shared, and it is your home directory"
+        )
+    );
+    assert_eq!(
+        app.state.session.and_then(|session| session.download_dir),
+        Some(before)
+    );
+}
+
+/// A download directory the share guards refuse is refused as the form
+/// asks to confirm it, before the warning that everything under it would be
+/// offered (ADR-0101); one they pass gets the warning.
+#[test]
+fn a_refused_download_dir_is_said_before_the_share_warning() {
+    use crate::config::SharedConfig;
+
+    let store = rmule_testkit::memory_store();
+    let home = tempfile::tempdir().expect("a home");
+    let handle =
+        rmule_core::CoreSettingsHandle::open(store.clone()).share_guards(rmule_core::ShareGuards {
+            home: Some(home.path().to_path_buf()),
+            data_dir: None,
+        });
+    let config = SharedConfig::new(handle, rmule_core::DurableAppConfig::new(store));
+    let preferences = config.load(None).expect("load");
+    let mut app = App::new(Theme::default_dark()).with_config(config, preferences);
+    let now = Instant::now();
+
+    app.reduce(Action::ConfirmDownloadDir(home.path().to_path_buf()), now);
+    assert_eq!(
+        app.chrome.flash_text(now),
+        Some(
+            "not saved: everything under the download dir is shared, and it is your home directory"
+        )
+    );
+    assert_eq!(app.views.settings.warned_dir(), None, "no share warning");
+
+    let elsewhere = tempfile::tempdir().expect("a directory");
+    app.reduce(
+        Action::ConfirmDownloadDir(elsewhere.path().to_path_buf()),
+        now,
+    );
+    assert_eq!(app.views.settings.warned_dir(), Some(elsewhere.path()));
+}
+
 /// The server a connect at start dials is kept on each login; when the store
 /// refuses the write the operator is told once, not on every login.
 #[test]
 fn a_refused_write_of_the_last_server_is_told_once() {
     use crate::config::SharedConfig;
-    use rmule_core::DurableAppConfig;
 
-    let backing = DurableAppConfig::new(rmule_testkit::memory_store());
-    let config = SharedConfig::new(backing);
+    let config = SharedConfig::open(rmule_testkit::memory_store());
     let preferences = config.load(None).expect("load");
     config.refuse_commits();
     let mut app = App::new(Theme::default_dark()).with_config(config, preferences);
@@ -542,10 +637,9 @@ fn a_refused_write_of_the_last_server_is_told_once() {
 #[test]
 fn the_full_run_log_preference_changes_the_level_the_writers_read() {
     use crate::config::{PrefEdit, SharedConfig};
-    use crate::run_log::{Level, LevelHandle};
-    use rmule_core::DurableAppConfig;
+    use rmule_core::run_log::{Level, LevelHandle};
 
-    let config = SharedConfig::new(DurableAppConfig::new(rmule_testkit::memory_store()));
+    let config = SharedConfig::open(rmule_testkit::memory_store());
     let preferences = config.load(None).expect("load");
     let writers = LevelHandle::default();
     let mut app = App::new(Theme::default_dark())

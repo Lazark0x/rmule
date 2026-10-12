@@ -33,13 +33,16 @@ use crate::flow::bench::{
     AMULE_PEER_TCP_PORT, Bench, CaptureSidecar, DEFAULT_TAP_INTERFACE, Eserver, run_checked,
 };
 use crate::flow::gate::{sit_tap_window, wait_for_amule_ready, wait_for_container_log};
-use crate::flow::identity::ed2k_link_with_source;
+use crate::flow::identity::{ed2k_link_with_source, parse_ed2k_file_hash};
 use crate::flow::logs::{
     collect_amule_logfile, collect_amule_logs, collect_rmule_logs, collect_server_logs,
 };
-use crate::rmule::RmuleClientContainer;
+use crate::rmule::{DownloadCrypt, RmuleClientContainer, release_held_download};
 
 mod known_sources;
+mod verdict;
+
+pub use self::verdict::score_run_dir;
 
 /// The sharer's upload-rate cap (KiB/s). Under 10 KB/s aMule keeps
 /// `MIN_UP_CLIENTS_ALLOWED` = 2 upload slots whatever the cap, so the flow
@@ -122,6 +125,12 @@ pub struct PeerUdpReaskEmitOptions<'a> {
     /// sharer (with `two_downloads`, one holder per file). Needs the debug
     /// aMule image.
     pub known_sources: bool,
+    /// The policy the downloading rmule starts under (`ed2k download start
+    /// --peer-crypt`); `None` leaves obfuscation off.
+    pub peer_crypt: Option<&'a str>,
+    /// Timed policy flips the downloading rmule applies mid-run, each
+    /// `<secs>:<policy>` from its login (`--peer-crypt-flip`).
+    pub peer_crypt_flip: &'a [String],
 }
 
 /// The peer-UDP **reask EMIT** flow (flow L emit-leg, ADR-0057).
@@ -206,7 +215,8 @@ pub fn run_peer_udp_reask_emit(options: PeerUdpReaskEmitOptions<'_>) -> Result<(
         .with_context(|| format!("create {}", capture_dir.display()))?;
 
     let result = (|| -> Result<()> {
-        bench.create_network(options.layout, None)?;
+        let subnet = super::udp_reask::crypt_subnet(options.peer_crypt, options.peer_crypt_flip)?;
+        bench.create_network(options.layout, subnet.as_deref())?;
         // eserver (published so readiness is a host TCP probe, as in flow C).
         bench.start_eserver(
             options.layout,
@@ -347,6 +357,12 @@ pub fn run_peer_udp_reask_emit(options: PeerUdpReaskEmitOptions<'_>) -> Result<(
         // whole window; with two downloads, for both files.
         let link_refs: Vec<&str> = links.iter().map(String::as_str).collect();
         let rmule_name = bench.names.rmule_container_name.clone();
+        run_checked(
+            options
+                .rmule_client_container
+                .prebuild_command(&bench.docker)?,
+            "prebuild rmule-tools for the download container",
+        )?;
         let download = options
             .rmule_client_container
             .download_start_detached_command(
@@ -355,7 +371,11 @@ pub fn run_peer_udp_reask_emit(options: PeerUdpReaskEmitOptions<'_>) -> Result<(
                 &bench.names.server_endpoint(),
                 &link_refs,
                 true,
-            );
+                DownloadCrypt {
+                    peer_crypt: options.peer_crypt,
+                    peer_crypt_flip: options.peer_crypt_flip,
+                },
+            )?;
         bench.start_rmule_container(download, "run rmule download container")?;
 
         // Passive tap on rmule's own netns: every serve-TCP + UDP datagram, AND
@@ -372,6 +392,11 @@ pub fn run_peer_udp_reask_emit(options: PeerUdpReaskEmitOptions<'_>) -> Result<(
             bpf: "tcp or udp",
         };
         bench.start_extra(&capture, tap.container(), "run emit-reask tcpdump sidecar")?;
+        // The download container holds rmule-tools until now: the prebuilt
+        // binary logs in and dials within a second, and the verdict's keys
+        // are read off that first plaintext.
+        wait_for_container_log(&bench.docker, &capture, "listening on", timeout)?;
+        release_held_download(options.layout)?;
 
         let rmule_ip = run_checked(
             bench
@@ -383,12 +408,10 @@ pub fn run_peer_udp_reask_emit(options: PeerUdpReaskEmitOptions<'_>) -> Result<(
         // Anchor the window at rmule's own OP_QUEUERANKING receipt: `download
         // peer_queued` means the sharer queued rmule, so the reask clock has
         // started and the ~21.4-min FILEREASKTIME 0x90 lands inside the wait.
-        // (Timeout must outlast a cold rmule-tools build in the container, ~5 min
-        // — pass `--timeout ≥600`.)
         wait_for_container_log(
             &bench.docker,
             &bench.names.rmule_container_name,
-            "download peer_queued",
+            "download.peer_queued",
             timeout,
         )?;
         println!(
@@ -453,6 +476,14 @@ pub fn run_peer_udp_reask_emit(options: PeerUdpReaskEmitOptions<'_>) -> Result<(
         )?;
         let remote_queued = rmule_log.contains("source_remote_queued");
         let reask_acked = rmule_log.contains("source_reask_acked");
+        if !options.peer_crypt_flip.is_empty() {
+            println!(
+                "peer_udp_reask_emit obfuscation_flips={}",
+                crate::flow::evidence::toml_strings(&crate::flow::evidence::obfuscation_flips(
+                    &rmule_log
+                ))
+            );
+        }
         println!(
             "peer_udp_reask_emit result reask_udp_datagrams={} answer_udp_datagrams={} \
              source_remote_queued={remote_queued} source_reask_acked={reask_acked} \
@@ -498,6 +529,22 @@ pub fn run_peer_udp_reask_emit(options: PeerUdpReaskEmitOptions<'_>) -> Result<(
             &bench.docker,
             options.layout,
             &bench.names.server_container_name,
+        )?;
+
+        // Score the retained tap: the verdict file is what a re-score reads.
+        verdict::write(
+            options.layout.root(),
+            &verdict::EmitRun {
+                pcap: &capture_dir.join("emit-reask.pcap"),
+                rmule: rmule_ip.trim().parse().context("rmule address")?,
+                sharer: sharer_ip.trim().parse().context("sharer address")?,
+                file_hash: parse_ed2k_file_hash(&links[0])?,
+                file_size: fs::metadata(options.layout.synthetic_shared_file())
+                    .context("stat the shared file")?
+                    .len(),
+                crypt: options.peer_crypt.is_some(),
+                flips: super::udp_reask::tap::Flip::read_run_dir(options.layout.root()),
+            },
         )?;
         Ok(())
     })();

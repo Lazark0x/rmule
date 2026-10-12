@@ -3,7 +3,7 @@
 //! `OP_SEARCHRESULT` only when the leg says so — the stand-in for a server
 //! whose answers name no search (ADR-0034).
 
-use std::time::Duration;
+use rmule_testkit::HANG_GUARD;
 
 use rmule_ed2k::{IdChange, LoginRequest, Opcode, SearchResults};
 use rmule_primitives::{ClientId, Packet, PacketProtocol, SearchResult, ServerEndpoint};
@@ -51,7 +51,7 @@ impl LoopbackSearchServer {
     /// Wait for the client to send `opcode`; its payload. The wait outlasts
     /// the session's two-second search spacing, which a held request waits out.
     pub async fn wait_for_client_opcode(&mut self, opcode: Opcode) -> Vec<u8> {
-        timeout(Duration::from_secs(5), async {
+        timeout(HANG_GUARD, async {
             loop {
                 let (seen, payload) = self
                     .packet_rx

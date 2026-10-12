@@ -32,6 +32,7 @@ pub mod session;
 mod source;
 mod tag;
 mod text;
+mod wire_reader;
 
 pub use aich::{AichHashSet, EMBLOCKSIZE};
 pub use capabilities::{Capabilities, CryptStance};
@@ -81,7 +82,9 @@ pub use server::{
 };
 pub use session::{SessionCore, SessionOutput};
 pub use source::{
-    ExchangedSource, PeerSource, SourceCryptOptions, SourceListTail, SourceLookupTarget,
+    PeerSource, SightedBuddy, SourceCryptOptions, SourceListTail, SourceLookupTarget, SourceRoad,
+    SourceSighting,
 };
 pub use tag::{HASH_TAG_LEN, Tag, TagName, TagNameEncoding, TagValue};
 pub use text::Ed2kText;
+pub use wire_reader::{WireReader, WireTruncated};

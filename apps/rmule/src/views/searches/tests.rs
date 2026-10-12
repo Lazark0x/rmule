@@ -108,7 +108,7 @@ fn enter_without_a_session_degrades_to_a_flash_and_keeps_the_typed_query() {
     match view.handle_key(press(KeyCode::Enter), &state) {
         ViewOutcome::Emit(Action::Flash(text)) => {
             assert!(
-                text.contains("no credentials"),
+                text.contains("core not attached"),
                 "degrade names what is missing: {text}"
             );
         }

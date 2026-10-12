@@ -8,9 +8,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use rmule_core::{
-    ClientCredentials, Core, CoreCommand, CoreEvent, ServeEvent, ServerConnectionEvent,
-};
+use rmule_core::run_log::Level;
+use rmule_core::{Core, CoreCommand, CoreEvent, ServeEvent, ServerConnectionEvent};
 use rmule_primitives::ServerEndpoint;
 
 use crate::share::ScratchShare;
@@ -37,12 +36,7 @@ pub(super) struct Switch {
 /// # Errors
 /// A file cannot be placed or is not shared in time, the hang-up is not
 /// seen in time, the stream ends, or a command cannot be sent.
-pub(super) async fn run(
-    core: &mut Core,
-    share: &ScratchShare,
-    switch: &Switch,
-    credentials: ClientCredentials,
-) -> Result<()> {
+pub(super) async fn run(core: &mut Core, share: &ScratchShare, switch: &Switch) -> Result<()> {
     for file in &switch.add {
         share.add(file)?;
     }
@@ -66,7 +60,7 @@ pub(super) async fn run(
     })
     .await?;
     println!("rmule-serve-switch disconnected");
-    crate::node::connect(core, &switch.to, credentials)
+    crate::node::connect(core, &switch.to)
         .await
         .with_context(|| format!("connect to {}", switch.to_text))?;
     println!("rmule-serve-switch connecting to={}", switch.to_text);
@@ -87,7 +81,7 @@ async fn until(
         let Some(event) = event else {
             bail!("the event stream ended before {what}");
         };
-        println!("{event}");
+        println!("{}", event.record().render(Level::Full));
         if done(&event) {
             return Ok(());
         }
