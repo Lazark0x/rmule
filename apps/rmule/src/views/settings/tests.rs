@@ -291,7 +291,7 @@ fn a_player_command_is_refused_unless_its_words_split_into_a_player() {
         );
         assert_eq!(
             refusal.as_deref(),
-            Some(crate::words::player::refusal_words(why))
+            Some(crate::words::player::field_refusal(why).as_str())
         );
     }
     let (outcome, _) = typed("  mpv --fs  ");

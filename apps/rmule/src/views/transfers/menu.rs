@@ -5,6 +5,8 @@
 //! core, which a UI-only run lacks, so without one it flashes an honest note
 //! instead of emitting. *Search related* asks the connected
 //! server about the download's file, dimmed with its reason while it cannot.
+//! *Preview* hands the download's file to the operator's player once it is
+//! Preview Ready (ADR-0114), dimmed with the first reason it is not.
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -16,7 +18,7 @@ use rmule_core::{CoreCommand, DownloadCommand, DownloadId};
 use super::link::{copy_link_for, copy_link_reason};
 use super::{Overlay, TransfersView};
 use crate::action::Action;
-use crate::state::{DownloadRow, DownloadStatus, UiState};
+use crate::state::{DownloadStatus, UiState};
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
 use crate::views::modal::Modal;
@@ -33,6 +35,8 @@ pub(super) enum MenuAction {
     Clear,
     Cancel,
     Details,
+    /// Hand the file to the operator's player (ADR-0114).
+    Preview,
     CopyLink,
     SearchRelated,
     /// A greyed, deferred item: rendered with a reason tag, never actioned
@@ -50,11 +54,8 @@ pub(super) struct MenuItem {
 /// The row menu (spec §3.2 plus the degrade set). Order is stable, *Search
 /// related* directly under *Copy eD2k link* as in every row menu; `menu_step`
 /// skips whatever is greyed.
-pub(super) fn menu_items(
-    status: DownloadStatus,
-    row: Option<&DownloadRow>,
-    state: &UiState,
-) -> Vec<MenuItem> {
+pub(super) fn menu_items(status: DownloadStatus, id: DownloadId, state: &UiState) -> Vec<MenuItem> {
+    let row = state.downloads.get(&id);
     // A failed download holds its place with no run (ADR-0094, "Failed"):
     // what it offers is one Restart, and core picks whether that continues
     // from what is on disk or starts over (ADR-0094, "Restart").
@@ -70,6 +71,9 @@ pub(super) fn menu_items(
     let cancel_reason =
         (status == DownloadStatus::Completed).then_some("completed: the file is kept and shared");
     let copy_reason = copy_link_reason(row);
+    let preview_reason = crate::player::preview_target(state, id)
+        .err()
+        .map(crate::words::player::block_words);
     // The hash is all the wire needs; a row that has not learned it yet has
     // nothing to ask about.
     let related_reason = match row.and_then(|row| row.file_hash) {
@@ -95,6 +99,15 @@ pub(super) fn menu_items(
             label: "Show file details".to_string(),
             action: MenuAction::Details,
             reason: None,
+        },
+        MenuItem {
+            label: "Preview".to_string(),
+            action: if preview_reason.is_none() {
+                MenuAction::Preview
+            } else {
+                MenuAction::Inert
+            },
+            reason: preview_reason,
         },
         MenuItem {
             label: "Copy eD2k link".to_string(),
@@ -203,7 +216,7 @@ impl TransfersView {
             self.overlay = Overlay::None;
             return ViewOutcome::Redraw;
         };
-        let items = menu_items(status, state.downloads.get(&id), state);
+        let items = menu_items(status, id, state);
         if menu_index(&items, cursor).is_none() {
             self.overlay = Overlay::None;
             return ViewOutcome::Redraw;
@@ -239,6 +252,10 @@ impl TransfersView {
                 MenuAction::Details => {
                     self.overlay = Overlay::Details;
                     ViewOutcome::Redraw
+                }
+                MenuAction::Preview => {
+                    self.overlay = Overlay::None;
+                    ViewOutcome::Emit(Action::Preview(id))
                 }
                 MenuAction::CopyLink => {
                     self.overlay = Overlay::None;
@@ -287,7 +304,7 @@ impl TransfersView {
         let Some((id, status)) = self.selected_row_status(state, ids) else {
             return;
         };
-        let items = menu_items(status, state.downloads.get(&id), state);
+        let items = menu_items(status, id, state);
         let short = short_hash_or_dash(state.downloads.get(&id).and_then(|r| r.file_hash));
         let title = format!(" Actions — {short} ");
         // Greedy modal width: wide enough for every item whole, clamped to the

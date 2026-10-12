@@ -110,6 +110,7 @@ impl App {
                     None => self.reduce(Action::Flash(app_words::CORE_NOT_ATTACHED), now),
                 }
             }
+            Action::Preview(download_id) => self.preview(download_id, now),
             Action::SearchRelated(query) => self.search_related(query, now),
             Action::Command(command) => {
                 if matches!(command, rmule_core::CoreCommand::DisableKad) {

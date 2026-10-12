@@ -298,3 +298,25 @@ pub(crate) fn waiting_downloads() -> UiState {
     }
     state
 }
+
+/// One Preview Ready download (ADR-0114): download_id(1), `film.mkv` over
+/// two parts, running with part 0 verified on its diagnostics row, its
+/// `.part` published, and the Player Command `mpv --fs` set. A test breaks
+/// one fact to reach each block.
+pub(crate) fn preview_ready() -> UiState {
+    let mut row = download_row(DownloadStatus::Downloading, 0x4D, 2);
+    row.metadata = Some(metadata(
+        "film.mkv",
+        ED2K_PART_SIZE + 1,
+        DownloadMetadataOrigin::Link,
+    ));
+    row.file_path = Some(super::rooted("films/film.mkv.part"));
+    let mut state = UiState::default();
+    state.downloads.insert(download_id(1), row);
+    state
+        .diagnostics
+        .downloads
+        .insert(download_id(1), diag(download_id(1), 0x4D, "VM", 0, vec![]));
+    state.preferences.player_command = Some("mpv --fs".to_string());
+    state
+}

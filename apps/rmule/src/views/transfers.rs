@@ -58,6 +58,7 @@ use ratatui::widgets::{Block, Paragraph, TableState};
 use rmule_core::DownloadId;
 use rmule_core::diagnostics::DownloadDiagnostics;
 
+use crate::action::Action;
 use crate::state::{DownloadStatus, UiState};
 use crate::table_sort::{RowCursor, RowMove, TableSort};
 use crate::theme::Theme;
@@ -283,6 +284,19 @@ impl TransfersView {
                 Some((id, status)) => ViewOutcome::Emit(pause_toggle_action(status, id, state)),
                 None => ViewOutcome::Ignored,
             },
+            // The menu's Preview, by the same reading (ADR-0114): a blocked
+            // row flashes the reason the menu greys it with.
+            KeyCode::Char('v') if self.focus == Pane::Table => {
+                match self.selected_row_status(state, ids) {
+                    Some((id, _)) => {
+                        ViewOutcome::Emit(match crate::player::preview_target(state, id) {
+                            Ok(_) => Action::Preview(id),
+                            Err(block) => Action::Flash(crate::words::player::blocked(block)),
+                        })
+                    }
+                    None => ViewOutcome::Ignored,
+                }
+            }
             _ => ViewOutcome::Ignored,
         }
     }

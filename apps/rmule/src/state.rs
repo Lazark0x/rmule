@@ -244,6 +244,7 @@ impl UiState {
             | Action::ConfirmDownloadDir(_)
             | Action::SearchRelated(_)
             | Action::StartKad
+            | Action::Preview(_)
             | Action::Quit => false,
         }
     }

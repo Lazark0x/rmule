@@ -1,0 +1,14 @@
+┌ Downloads (1) ──── s sort  S reverse  L add link ┐
+│  File ▲ Size  Done Progress Speed  ETA Src Status│
+┌ Actions — 4D4D4D4D4D… ───────────────────────────┐
+│▸ Pause                                           │
+│  Cancel…                                         │
+│  Show file details                               │
+│  Preview  first part not verified yet            │
+│  Copy eD2k link                                  │
+│  Search related  not connected                   │
+│  Priority ▸  needs core priority model           │
+│  Category ▸  needs core categories               │
+└──────────────────────────────────────────────────┘
+│                                                  │
+└──────────────────────────────────────────────────┘

@@ -159,7 +159,7 @@ fn player_command(text: &str) -> Result<Option<String>, String> {
     }
     crate::player::split(text)
         .map(|_| Some(text.to_string()))
-        .map_err(|refusal| crate::words::player::refusal_words(refusal).to_string())
+        .map_err(crate::words::player::field_refusal)
 }
 
 /// Where a restart-shaped row says so.

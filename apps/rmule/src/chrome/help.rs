@@ -129,6 +129,10 @@ pub(super) fn draw_help(
             "pause/resume selected download / clear all completed",
         ),
         ("L", "Transfers: add a download from a pasted eD2k link"),
+        (
+            "v",
+            "Transfers: preview the selected download in the player set in Settings",
+        ),
         ("?", "this help; j/k, PgUp/PgDn scroll it when it is long"),
         ("q / Esc", "quit (top level) / dismiss (modal)"),
         (

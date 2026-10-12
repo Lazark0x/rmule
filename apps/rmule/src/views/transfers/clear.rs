@@ -214,11 +214,7 @@ mod tests {
             .unwrap();
         view.select_row(&state, at);
         view.handle_key(press(KeyCode::Char('m')), &state);
-        let items = super::super::menu::menu_items(
-            DownloadStatus::Completed,
-            state.downloads.get(&completed),
-            &state,
-        );
+        let items = super::super::menu::menu_items(DownloadStatus::Completed, completed, &state);
         assert_eq!(items[0].label, "Clear from list");
         assert!(
             items[1].reason.is_some(),

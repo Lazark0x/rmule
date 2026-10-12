@@ -20,5 +20,5 @@
 │ 5 / 6           Statistics (display-only) / Settings                         │
 │ Enter  ← / →    Settings: edit a field / step a selector                     │
 │ x               Settings: stop sharing the selected directory                │
-└──────────────────────────────────────────────────────────── 1–20 of 28 · j/k ┘
+└──────────────────────────────────────────────────────────── 1–20 of 30 · j/k ┘
 └ — │ Users: — · Files: — │ ▼ 0.0 KB/s ▲ 0.0 KB/s │ ●eD2k off ●Kad off ────────┘
