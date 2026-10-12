@@ -27,6 +27,7 @@ pub(crate) fn download_row(
         part_count: Some(part_count),
         verified_bytes: 0,
         metadata: None,
+        file_path: None,
         failure: None,
         source_wait: None,
     }

@@ -144,6 +144,7 @@ mod tests {
                     u8::try_from(at * 13).unwrap() ^ u8::try_from(id.as_u64()).unwrap()
                 })),
                 metadata: rmule_core::DownloadMetadata::unnamed(9_728_000),
+                file_path: std::path::PathBuf::from("/downloads/file.bin.part"),
             };
             assert_eq!(endings.observe(&queued), Noted::Nothing);
         }

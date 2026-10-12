@@ -15,6 +15,7 @@ fn a_queued_download_appears_waiting_with_its_hash() {
             download_id: download_id(1),
             file_hash: file_hash(7),
             metadata: unnamed_metadata(),
+            file_path: crate::fixture::part_file(),
         }),
     );
     assert!(dirty);
@@ -38,6 +39,7 @@ fn a_queued_downloads_metadata_lands_on_its_row() {
             download_id: download_id(1),
             file_hash: file_hash(7),
             metadata: metadata.clone(),
+            file_path: crate::fixture::part_file(),
         }),
     );
     assert_eq!(
@@ -66,6 +68,7 @@ fn a_recovered_downloads_hash_and_metadata_ride_the_edge_not_a_levels_join() {
             failure: None,
             file_hash: file_hash(7),
             metadata: metadata.clone(),
+            file_path: crate::fixture::part_file(),
         }),
     );
     let row = &state.downloads[&download_id(1)];
@@ -90,6 +93,7 @@ fn a_queued_downloads_name_matches_the_search_result_it_came_from() {
             download_id: download_id(1),
             file_hash: file_hash(7),
             metadata,
+            file_path: crate::fixture::part_file(),
         }),
     );
 
@@ -113,6 +117,7 @@ fn slot_grant_marks_the_row_downloading() {
             download_id: download_id(1),
             file_hash: file_hash(7),
             metadata: unnamed_metadata(),
+            file_path: crate::fixture::part_file(),
         }),
     );
     let peer = rmule_primitives::PeerEndpoint::V4(rmule_primitives::Ipv4Endpoint::new(
@@ -144,6 +149,7 @@ fn a_download_waiting_for_a_connection_reads_so_until_a_lookup_answers() {
             download_id: download_id(1),
             file_hash: file_hash(7),
             metadata: unnamed_metadata(),
+            file_path: crate::fixture::part_file(),
         }),
     );
     fold(
@@ -179,6 +185,7 @@ fn pause_and_resume_round_trip_through_the_status_column() {
             download_id: download_id(1),
             file_hash: file_hash(7),
             metadata: unnamed_metadata(),
+            file_path: crate::fixture::part_file(),
         }),
     );
     fold(
@@ -213,6 +220,7 @@ fn completion_keeps_the_row_and_cancellation_removes_it() {
                 download_id: download_id(n),
                 file_hash: file_hash(7),
                 metadata: unnamed_metadata(),
+                file_path: crate::fixture::part_file(),
             }),
         );
     }
@@ -254,6 +262,7 @@ fn recovered_rows_map_the_persisted_lifecycle() {
                 failure: None,
                 file_hash: file_hash(7),
                 metadata: unnamed_metadata(),
+                file_path: crate::fixture::part_file(),
             }),
         );
         assert_eq!(state.downloads[&download_id(n)].status, expected);
@@ -267,6 +276,7 @@ fn recovered_rows_map_the_persisted_lifecycle() {
             failure: None,
             file_hash: file_hash(7),
             metadata: unnamed_metadata(),
+            file_path: crate::fixture::part_file(),
         }),
     );
     assert!(!dirty);
@@ -342,4 +352,50 @@ fn a_second_links_sources_are_told_by_the_downloads_name() {
         state.notable.as_deref(),
         Some("already downloading bunny.mp4; 0 new sources from the link")
     );
+}
+
+/// The row holds where core said the bytes lie: the `.part` the queued edge
+/// named, then the finished file the completion edge named.
+#[test]
+fn a_queued_rows_file_path_is_its_part_until_completion_names_the_file() {
+    let mut state = UiState::default();
+    let part = crate::fixture::rooted("films/bunny.mp4.part");
+    let finished = crate::fixture::rooted("films/bunny.mp4");
+    fold(
+        &mut state,
+        download_event(DownloadEvent::DownloadQueued {
+            download_id: download_id(1),
+            file_hash: file_hash(7),
+            metadata: unnamed_metadata(),
+            file_path: part.clone(),
+        }),
+    );
+    assert_eq!(state.downloads[&download_id(1)].file_path, Some(part));
+    fold(
+        &mut state,
+        download_event(DownloadEvent::DownloadCompleted {
+            download_id: download_id(1),
+            final_path: finished.clone(),
+        }),
+    );
+    assert_eq!(state.downloads[&download_id(1)].file_path, Some(finished));
+}
+
+/// A recovered row holds the path its edge named, whatever the lifecycle.
+#[test]
+fn a_recovered_rows_file_path_is_the_one_its_edge_named() {
+    let mut state = UiState::default();
+    let finished = crate::fixture::rooted("films/done.mkv");
+    fold(
+        &mut state,
+        download_event(DownloadEvent::DownloadRecovered {
+            download_id: download_id(2),
+            state: DownloadLifecycle::Completed,
+            failure: None,
+            file_hash: file_hash(9),
+            metadata: unnamed_metadata(),
+            file_path: finished.clone(),
+        }),
+    );
+    assert_eq!(state.downloads[&download_id(2)].file_path, Some(finished));
 }

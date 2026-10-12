@@ -253,10 +253,9 @@ pub struct DownloadDiagnostics {
     /// A row at rest carries the durable picture instead: `Verified` where a
     /// part is held, `Missing` elsewhere, never `InFlight` (ADR-0094).
     ///
-    /// **Empty until the first settle of a new download's first run** — a
-    /// freshly opened row (the window between `StartDownload` and the first
-    /// drain) knows no part yet. Empty means *unknown*, not *zero parts*, and
-    /// a consumer renders it as such rather than as a 0%-complete file.
+    /// A freshly opened row (the window between `StartDownload` and the
+    /// first drain) holds every part `Missing`: the vector's length is the
+    /// file's part count from the row's first snapshot on.
     pub parts: Vec<PartState>,
     /// How many workers have left the fleet over the row's life. Monotonic —
     /// the rows themselves are reused, so this is the only trace of churn.

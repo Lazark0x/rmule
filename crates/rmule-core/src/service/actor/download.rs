@@ -111,6 +111,7 @@ where
                         download_id,
                         file_hash: file.file_hash,
                         metadata,
+                        file_path: record.file_path().to_path_buf(),
                     },
                 )
                 .await;

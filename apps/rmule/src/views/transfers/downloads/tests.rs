@@ -144,6 +144,7 @@ fn done_and_eta_read_exact_bytes_with_or_without_a_live_part_map() {
             failure: None,
             file_hash: file_hash(0x08),
             metadata: metadata("song.mp3", size, Link),
+            file_path: crate::fixture::part_file(),
         },
         DownloadEvent::DownloadProgressRestored {
             download_id: id,

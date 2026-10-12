@@ -15,24 +15,28 @@ impl DownloadEvent {
                 download_id,
                 file_hash,
                 metadata,
+                file_path,
             } => Record::new("download.queued")
                 .count("id", download_id.as_u64())
                 .file_hash("file_hash", file_hash)
                 .file_name("name", &metadata.name.to_display_string())
-                .file_size("size", metadata.size),
+                .file_size("size", metadata.size)
+                .path("file_path", file_path),
             D::DownloadRecovered {
                 download_id,
                 state,
                 failure,
                 file_hash,
                 metadata,
+                file_path,
             } => {
                 let record = Record::new("download.recovered")
                     .count("id", download_id.as_u64())
                     .code("state", codes::lifecycle(*state))
                     .file_hash("file_hash", file_hash)
                     .file_name("name", &metadata.name.to_display_string())
-                    .file_size("size", metadata.size);
+                    .file_size("size", metadata.size)
+                    .path("file_path", file_path);
                 match failure {
                     Some(failure) => codes::failure(record, failure),
                     None => record,

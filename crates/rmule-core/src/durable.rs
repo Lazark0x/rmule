@@ -97,7 +97,7 @@ impl DownloadPaths {
     }
 }
 
-/// Where core learned a download's [`DownloadMetadata`] (ADR-0077).
+/// Where core learned a download's [`DownloadMetadata`] (ADR-0078).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DownloadMetadataOrigin {
     /// Recorded at creation from the `Ed2kFileLink` the `StartDownload`
@@ -115,7 +115,7 @@ pub enum DownloadMetadataOrigin {
 }
 
 /// The file facts core holds for one download: the name to show a human and
-/// the exact byte size, plus where they came from (ADR-0077). Recorded at
+/// the exact byte size, plus where they came from (ADR-0078). Recorded at
 /// creation, persisted with the download row, and replayed on recovery — so a
 /// front-end never has to re-derive a name from the canonical link or
 /// approximate a size from the part count.
@@ -256,7 +256,7 @@ impl DurableDownloadRecord {
         self.metadata.size
     }
 
-    /// The stored name + exact size and their origin (ADR-0077).
+    /// The stored name + exact size and their origin (ADR-0078).
     #[must_use]
     pub const fn metadata(&self) -> &DownloadMetadata {
         &self.metadata
@@ -282,6 +282,18 @@ impl DurableDownloadRecord {
     #[must_use]
     pub const fn paths(&self) -> &DownloadPaths {
         &self.paths
+    }
+
+    /// Where the download's bytes lie now (ADR-0114): the finished file of a
+    /// `Completed` download, the `.part` of any other. A completed row's
+    /// `.part` slot may have been released to a newer row and is then not a
+    /// path, so it is never read for one.
+    #[must_use]
+    pub fn file_path(&self) -> &Path {
+        match self.lifecycle {
+            DownloadLifecycle::Completed => self.paths.final_path(),
+            _ => self.paths.part_path(),
+        }
     }
 
     /// The row's current state, read straight from the store: what the

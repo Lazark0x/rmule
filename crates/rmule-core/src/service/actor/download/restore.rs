@@ -62,6 +62,7 @@ pub(in crate::service::actor) async fn attach_downloads(
                 failure: record.failure().cloned(),
                 file_hash: record.file_hash(),
                 metadata: record.metadata().clone(),
+                file_path: record.file_path().to_path_buf(),
             },
         )
         .await;

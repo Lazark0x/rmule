@@ -179,6 +179,7 @@ mod tests {
                     size,
                     origin: DownloadMetadataOrigin::Link,
                 },
+                file_path: crate::fixture::part_file(),
             }),
         );
     }

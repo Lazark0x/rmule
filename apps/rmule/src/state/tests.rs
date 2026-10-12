@@ -56,6 +56,7 @@ fn a_core_event_is_logged_before_it_folds() {
             download_id: download_id(1),
             file_hash: file_hash(7),
             metadata: unnamed_metadata(),
+            file_path: crate::fixture::part_file(),
         })),
         Instant::now(),
     );

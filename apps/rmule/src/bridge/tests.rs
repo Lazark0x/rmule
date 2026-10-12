@@ -91,6 +91,7 @@ fn queued(id: u64) -> CoreEvent {
         download_id: DownloadId::from_u64(id),
         file_hash: FileHash::from_bytes([0; 16]),
         metadata: rmule_core::DownloadMetadata::unnamed(0),
+        file_path: crate::fixture::part_file(),
     })
 }
 

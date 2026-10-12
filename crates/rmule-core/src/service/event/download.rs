@@ -24,10 +24,12 @@ pub enum DownloadEvent {
         /// on every wire surface.
         file_hash: FileHash,
         /// The name + exact size core just recorded for this download
-        /// (ADR-0077). Carried on the edge so a consumer that folds events
+        /// (ADR-0078). Carried on the edge so a consumer that folds events
         /// into its own row has the file's identity in one message, without
         /// waiting for a diagnostics snapshot to join against.
         metadata: DownloadMetadata,
+        /// Where the download's bytes lie now: its `.part` (ADR-0114).
+        file_path: PathBuf,
     },
     /// A download the store held from an earlier run was re-admitted at
     /// startup. No task is running for it yet; `state` says what it was doing.
@@ -40,12 +42,16 @@ pub enum DownloadEvent {
         /// kept it (ADR-0094, "Failed"); `None` otherwise, and for a row
         /// failed before the store kept reasons.
         failure: Option<DownloadFailure>,
-        /// Restart replays what the store holds: a recovered download has no
-        /// live task, so its diagnostics row does not exist yet and these two
-        /// facts have no other path to a consumer.
+        /// The file's ED2K content identity, as the store recorded it.
+        /// Carried with the name and size so a consumer folding events has
+        /// the file's identity in this one message; the resting diagnostics
+        /// row opened just before it carries the same facts.
         file_hash: FileHash,
         /// The name and exact size the store recorded for it.
         metadata: DownloadMetadata,
+        /// Where the download's bytes lie now (ADR-0114): the finished file
+        /// of a `Completed` download, the `.part` of any other.
+        file_path: PathBuf,
     },
     /// Verified on-disk progress was read back for a recovered download, so a
     /// consumer can show it as partly complete before a single peer is dialed.

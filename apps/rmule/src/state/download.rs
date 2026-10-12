@@ -7,6 +7,8 @@
 //! by [`DownloadId`] at render time, so the edge path and the level path can
 //! never drift apart.
 
+use std::path::PathBuf;
+
 use rmule_core::{
     DownloadEvent, DownloadFailure, DownloadId, DownloadLifecycle, DownloadMetadata, SourceWait,
 };
@@ -62,6 +64,11 @@ pub struct DownloadRow {
     /// window where some other edge created the row (edge-order tolerance)
     /// before either of those landed.
     pub metadata: Option<DownloadMetadata>,
+    /// Where the download's bytes lie now, as core published it (ADR-0114):
+    /// the `.part` from `DownloadQueued` or `DownloadRecovered`, the finished
+    /// file once `DownloadCompleted` names it. Never composed from the
+    /// download directory and the name. `None` until one of those edges.
+    pub file_path: Option<PathBuf>,
     /// Why the last run failed, as the `DownloadFailed` edge said, or as the
     /// store kept it across a restart (`DownloadRecovered`). `None` for a row
     /// not failed, and for one failed before the store kept reasons.
@@ -79,6 +86,7 @@ impl DownloadRow {
             part_count: None,
             verified_bytes: 0,
             metadata: None,
+            file_path: None,
             failure: None,
             source_wait: None,
         }
@@ -127,10 +135,12 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
             download_id,
             file_hash,
             metadata,
+            file_path,
         } => {
             let row = row_mut(state, download_id);
             row.file_hash = Some(file_hash);
             row.metadata = Some(metadata);
+            row.file_path = Some(file_path);
             row.status = DownloadStatus::Waiting;
             note(state, words::QUEUED)
         }
@@ -140,6 +150,7 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
             failure,
             file_hash,
             metadata,
+            file_path,
         } => {
             let status = match lifecycle {
                 // No run exists yet: core starts one at its pace (ADR-0093),
@@ -156,6 +167,7 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
             row.failure = failure;
             row.file_hash = Some(file_hash);
             row.metadata = Some(metadata);
+            row.file_path = Some(file_path);
             note(state, words::RECOVERED)
         }
         E::DownloadProgressRestored {
@@ -213,7 +225,11 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
             row_mut(state, download_id).part_count = Some(part_count);
             true
         }
-        E::DownloadCompleted { download_id, .. } => {
+        E::DownloadCompleted {
+            download_id,
+            final_path,
+        } => {
+            row_mut(state, download_id).file_path = Some(final_path);
             let changed = set_status(state, download_id, DownloadStatus::Completed);
             note(state, words::COMPLETED) || changed
         }

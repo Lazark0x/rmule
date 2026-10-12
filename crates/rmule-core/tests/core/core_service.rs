@@ -442,6 +442,7 @@ async fn startup_recovery_emits_recovered_without_source_lookup() {
                 failure: None,
                 file_hash,
                 metadata,
+                ..
             }) if *download_id == expected_id
                 && *file_hash == file_link().file_hash
                 && metadata.name == file_link().name

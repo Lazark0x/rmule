@@ -96,6 +96,7 @@ fn queue_clip(state: &mut UiState) {
                 size: CLIP_SIZE,
                 origin: DownloadMetadataOrigin::Link,
             },
+            file_path: crate::fixture::part_file(),
         }),
     );
 }
@@ -392,6 +393,7 @@ fn a_failed_download_from_before_reasons_were_kept_says_so() {
                 size: CLIP_SIZE,
                 origin: DownloadMetadataOrigin::Link,
             },
+            file_path: crate::fixture::part_file(),
         }),
     );
 
