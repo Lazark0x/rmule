@@ -32,7 +32,7 @@ fn a_cold_store_reads_as_a_fresh_install_runs() {
 #[test]
 fn every_setting_set_on_the_store_alone_persists_for_the_next_start() {
     let (settings, _store) = handle();
-    let dir = PathBuf::from("/srv/rmule/incoming");
+    let dir = rmule_testkit::absolute_path("srv/rmule/incoming");
     let policy = ServerPolicy {
         dead_after: 7,
         withhold_from_related_search: true,
@@ -167,7 +167,10 @@ fn a_download_dir_the_share_guards_refuse_is_refused_with_their_reason() {
 fn a_confirmed_download_dir_records_the_share_answer() {
     let (settings, store) = handle();
     let registry = DurableSharedFileRegistry::new(store);
-    let (confirmed, unconfirmed) = (PathBuf::from("/srv/a"), PathBuf::from("/srv/b"));
+    let (confirmed, unconfirmed) = (
+        rmule_testkit::absolute_path("srv/a"),
+        rmule_testkit::absolute_path("srv/b"),
+    );
     settings
         .set(Setting::DownloadDir {
             dir: confirmed.clone(),

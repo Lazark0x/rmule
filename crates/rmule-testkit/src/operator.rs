@@ -4,7 +4,7 @@
 //! server, then connect to it; and nothing is shared but a directory the
 //! operator added and confirmed (ADR-0101, "Shared Directories").
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rmule_core::{
     Core, CoreCommand, CoreEvent, ManagedServer, ScanCommand, ScanEvent, ServeEvent,
@@ -67,4 +67,15 @@ pub async fn share_directory(core: &mut Core, dir: &Path) -> Vec<FileHash> {
     .await
     .expect("the shared directory's pass ended within 10 s");
     shared
+}
+
+/// An absolute path on the platform under test, as an operator would type
+/// one: `/srv/dl` on Unix, `C:\\srv\\dl` on Windows. `rest` names the
+/// components below the root, separated by `/`. Front ends and core refuse a
+/// download directory that is not absolute, and `/srv/dl` has no drive on
+/// Windows.
+pub fn absolute_path(rest: &str) -> PathBuf {
+    let mut path = PathBuf::from(if cfg!(windows) { r"C:\" } else { "/" });
+    path.extend(rest.split('/').filter(|part| !part.is_empty()));
+    path
 }

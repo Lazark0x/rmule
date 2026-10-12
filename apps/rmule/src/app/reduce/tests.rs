@@ -379,7 +379,7 @@ fn a_settings_edit_reaches_the_store_and_the_live_half_lands_at_once() {
     assert_eq!(app.theme.bg, Theme::light().bg, "the palette swaps at once");
     assert_eq!(app.state.preferences.theme, ThemeChoice::Light);
 
-    let dir = std::path::PathBuf::from("/tmp/rmule-dl");
+    let dir = rmule_testkit::absolute_path("tmp/rmule-dl");
     app.reduce(Action::Preference(PrefEdit::DownloadDir(dir.clone())), now);
     assert_eq!(
         app.state
@@ -532,7 +532,7 @@ fn a_download_dir_the_share_guards_refuse_says_why_and_is_not_applied() {
         });
     let config = SharedConfig::new(handle, rmule_core::DurableAppConfig::new(store));
     let preferences = config.load(None).expect("load");
-    let before = std::path::PathBuf::from("/srv/rmule-dl");
+    let before = rmule_testkit::absolute_path("srv/rmule-dl");
     let mut app = App::new(Theme::default_dark())
         .with_session(crate::state::SessionConfig {
             server: None,

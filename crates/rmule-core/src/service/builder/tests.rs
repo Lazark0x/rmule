@@ -155,7 +155,13 @@ async fn a_served_link_reads_the_kad_presence_the_kad_activity_leases() {
     // factory's leased Kad ID, naming the file just shared. TCP orders the
     // two frames regardless of when the server's bridge starts reading —
     // no synchronization with the accept/triage race is needed.
-    let mut peer = TcpStream::connect(SocketAddrV4::new(*listen_addr.ip(), listen_addr.port()))
+    // Windows refuses a dial to the unspecified address a wildcard bind reports.
+    let dial_ip = if listen_addr.ip().is_unspecified() {
+        Ipv4Addr::LOCALHOST
+    } else {
+        *listen_addr.ip()
+    };
+    let mut peer = TcpStream::connect(SocketAddrV4::new(dial_ip, listen_addr.port()))
         .await
         .expect("dial the bound listener");
     peer.write_all(&rmule_testkit::wire::hello_bytes(

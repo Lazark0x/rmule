@@ -35,7 +35,7 @@ fn a_loaded_snapshot_defaults_to_the_mirrors_and_the_kad_opt_in() {
 fn every_edit_persists_and_reloads_as_itself() {
     let config = store();
     let edits = [
-        PrefEdit::DownloadDir(PathBuf::from("/tmp/dl")),
+        PrefEdit::DownloadDir(rmule_testkit::absolute_path("tmp/dl")),
         PrefEdit::Nickname("bunny".to_string()),
         PrefEdit::TcpPort(4711),
         PrefEdit::UdpPort(4722),

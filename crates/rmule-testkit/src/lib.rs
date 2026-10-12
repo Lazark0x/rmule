@@ -59,7 +59,7 @@ pub use fake_peer::{
 pub use hang_guard::HANG_GUARD;
 pub use interfaces::FakeInterfaces;
 pub use kad_mesh::{FakeKadPeer, KadMeshSim, LinkPolicy, TraceEntry, drain_split};
-pub use operator::{connect_to, share_directory};
+pub use operator::{absolute_path, connect_to, share_directory};
 pub use portmap::{FakeGateways, GrantPolicy, ScriptedBackend};
 pub use serve::{
     LoopbackServeRuntime, PendingSourceLookup, RefusingPeerTransfer, ServingCore,

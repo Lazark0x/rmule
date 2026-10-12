@@ -72,15 +72,10 @@ mod tests {
 
     #[test]
     fn outputs_in_one_folder_name_it_and_two_folders_are_refused() {
-        let one = [
-            PathBuf::from("/srv/dl/a.bin"),
-            PathBuf::from("/srv/dl/b.bin"),
-        ];
-        assert_eq!(download_dir(&one).unwrap(), PathBuf::from("/srv/dl"));
-        let two = [
-            PathBuf::from("/srv/dl/a.bin"),
-            PathBuf::from("/srv/other/b.bin"),
-        ];
+        let path = rmule_testkit::absolute_path;
+        let one = [path("srv/dl/a.bin"), path("srv/dl/b.bin")];
+        assert_eq!(download_dir(&one).unwrap(), path("srv/dl"));
+        let two = [path("srv/dl/a.bin"), path("srv/other/b.bin")];
         assert!(download_dir(&two).is_err());
     }
 
