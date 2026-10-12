@@ -22,9 +22,9 @@
 │                                                                            │
 │Downloads                                                                   │
 │ Remember peers 10  per download, dialled first after a restart             │
+│ Player       unset — Preview is off                                        │
 │                                                                            │
 │Kad                                                                         │
 │ nodes.dat    http://upd.emule-security.org/nodes.dat  (on restart)         │
-│ Fetch seeds  on  nodes.dat on first Kad start  (on restart)                │
 │ ✗ nickname is required                                                     │
 └────────────────────────────────────────────────────────────────────────────┘

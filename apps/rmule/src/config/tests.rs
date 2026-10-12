@@ -128,6 +128,32 @@ fn a_receipt_names_the_restart_exactly_when_the_edit_waits_for_one() {
     );
 }
 
+/// The Player Command is the app's own key (ADR-0114): a commit takes effect
+/// at once with no core running, reads back from the store, and empty text
+/// reads back as unset.
+#[test]
+fn a_player_command_commits_at_once_and_an_empty_one_reads_back_unset() {
+    let config = store();
+    let set = PrefEdit::PlayerCommand(Some("mpv --fs %PARTFILE".to_string()));
+    assert_eq!(config.commit(&set).expect("commit"), TakesEffect::Now);
+    assert_eq!(
+        config.load(None).expect("load").player_command.as_deref(),
+        Some("mpv --fs %PARTFILE")
+    );
+    assert_eq!(
+        crate::words::app::receipt(&set, TakesEffect::Now).as_str(),
+        "saved: player → mpv --fs %PARTFILE"
+    );
+
+    let cleared = PrefEdit::PlayerCommand(None);
+    assert_eq!(config.commit(&cleared).expect("commit"), TakesEffect::Now);
+    assert_eq!(config.load(None).expect("load").player_command, None);
+    assert_eq!(
+        crate::words::app::receipt(&cleared, TakesEffect::Now).as_str(),
+        "saved: player → none"
+    );
+}
+
 /// On a running core the obfuscation policy is live (ADR-0046): the commit
 /// answers that it took effect at once, and the receipt names no restart.
 #[tokio::test]

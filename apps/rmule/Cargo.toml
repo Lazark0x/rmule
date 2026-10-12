@@ -36,6 +36,8 @@ rmule-bootstrap = { path = "../../crates/rmule-bootstrap", features = ["reqwest-
 rmule-core = { path = "../../crates/rmule-core" }
 rmule-primitives = { path = "../../crates/rmule-primitives" }
 rmule-words = { path = "../../crates/rmule-words" }
+# The Player Command splits into words by POSIX rules (ADR-0114).
+shlex.workspace = true
 thiserror.workspace = true
 # `rt-multi-thread` on top of the workspace set: one multi-thread runtime for
 # UI loop, bridge, and core tasks alike (ADR-0069 §Runtime).

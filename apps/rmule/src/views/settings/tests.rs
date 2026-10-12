@@ -26,6 +26,7 @@ fn state() -> UiState {
             connect_at_start: false,
             run_log_full: false,
             last_server: None,
+            player_command: None,
             dead_server_retries: 3,
             withhold_shares: false,
             remember_peers: rmule_core::RememberPeers::DEFAULT,
@@ -259,6 +260,67 @@ fn remember_peers_takes_one_to_255() {
             Some(crate::words::download::REMEMBER_PEERS_REFUSED)
         );
     }
+}
+
+/// The Player Command is split as it is typed (ADR-0114): an open quote and a
+/// first word holding the file are refused under the field with nothing
+/// emitted, empty text clears it, and a command that splits is kept as typed.
+#[test]
+fn a_player_command_is_refused_unless_its_words_split_into_a_player() {
+    let mut view = SettingsView::new();
+    let state = state();
+    let mut typed = |text: &str| {
+        focus_on(&mut view, Row::PlayerCommand);
+        view.handle_key(press(KeyCode::Enter), &state);
+        for c in text.chars() {
+            view.handle_key(press(KeyCode::Char(c)), &state);
+        }
+        let outcome = view.handle_key(press(KeyCode::Enter), &state);
+        let refusal = view.form.error.clone();
+        view.handle_key(press(KeyCode::Esc), &state);
+        (outcome, refusal)
+    };
+    for (refused, why) in [
+        ("mpv '--title=a b", crate::player::Unsplittable::OpenQuote),
+        ("%PARTFILE --fs", crate::player::Unsplittable::NoProgram),
+    ] {
+        let (outcome, refusal) = typed(refused);
+        assert!(
+            matches!(outcome, ViewOutcome::Redraw),
+            "{refused} was taken"
+        );
+        assert_eq!(
+            refusal.as_deref(),
+            Some(crate::words::player::refusal_words(why))
+        );
+    }
+    let (outcome, _) = typed("  mpv --fs  ");
+    assert!(matches!(
+        outcome,
+        ViewOutcome::Emit(Action::Preference(PrefEdit::PlayerCommand(Some(command))))
+            if command == "mpv --fs"
+    ));
+    let (outcome, _) = typed("   ");
+    assert!(matches!(
+        outcome,
+        ViewOutcome::Emit(Action::Preference(PrefEdit::PlayerCommand(None)))
+    ));
+}
+
+#[test]
+fn golden_settings_an_unset_player_says_preview_is_off() {
+    let mut view = SettingsView::new();
+    let state = state();
+    focus_on(&mut view, Row::PlayerCommand);
+    assert_golden("settings_player_unset", 78, 8, |frame| {
+        view.draw(
+            frame,
+            frame.area(),
+            &state,
+            &Theme::default_dark(),
+            Instant::now(),
+        );
+    });
 }
 
 /// The minted identity is on screen and out of reach: focus steps straight

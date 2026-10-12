@@ -67,6 +67,11 @@ winapi-util = "0.1.11"
 windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock", "Win32_System_IO"] }
 data-encoding = "2"
 ed2k = "1"
+# Confined to rmule (the app): the Player Command splits into words by POSIX
+# rules, so Preview hands its player arguments and never a shell line
+# (ADR-0114). MIT OR Apache-2.0, already in the graph through `cc`: no crate
+# added.
+shlex = "1.3"
 flate2 = "1"
 getrandom = "0.4"
 # Confined to rmule (the app) and rmule-primitives: the accent fold in a Table Sort's

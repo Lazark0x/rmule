@@ -42,6 +42,7 @@ pub fn receipt(edit: &PrefEdit, effect: rmule_core::TakesEffect) -> Sentence {
             super::server::policy_receipt(edit)
         }
         PrefEdit::RememberPeers(peers) => super::download::remember_peers_receipt(*peers),
+        PrefEdit::PlayerCommand(command) => super::player::receipt(command.as_deref()),
     };
     let when = match (edit, effect) {
         (PrefEdit::ServerMetUrl(_), _) => Some("the next server list update uses it"),

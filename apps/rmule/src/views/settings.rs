@@ -80,6 +80,7 @@ pub(super) enum Row {
     DeadServerRetries,
     WithholdShares,
     RememberPeers,
+    PlayerCommand,
     NodesDatUrl,
     AutoFetchNodesDat,
     Theme,
@@ -89,7 +90,7 @@ pub(super) enum Row {
 }
 
 impl Row {
-    const ALL: [Row; 19] = [
+    const ALL: [Row; 20] = [
         Row::DownloadDir,
         Row::DataDir,
         Row::Nickname,
@@ -103,6 +104,7 @@ impl Row {
         Row::DeadServerRetries,
         Row::WithholdShares,
         Row::RememberPeers,
+        Row::PlayerCommand,
         Row::NodesDatUrl,
         Row::AutoFetchNodesDat,
         Row::Theme,
@@ -146,6 +148,18 @@ fn validate_remember_peers(text: &str) -> Result<rmule_core::RememberPeers, Stri
         .parse::<std::num::NonZeroU8>()
         .map(rmule_core::RememberPeers::new)
         .map_err(|_| crate::words::download::REMEMBER_PEERS_REFUSED.to_string())
+}
+
+/// The **Player Command** as an operator types it (ADR-0114): empty clears
+/// it; any other text must split into a player's words.
+fn player_command(text: &str) -> Result<Option<String>, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    crate::player::split(text)
+        .map(|_| Some(text.to_string()))
+        .map_err(|refusal| crate::words::player::refusal_words(refusal).to_string())
 }
 
 /// Where a restart-shaped row says so.
@@ -288,6 +302,10 @@ fn build(prefs: &Preferences, state: &UiState) -> (Form, Vec<Slot>) {
                 Field::text("Remember peers", prefs.remember_peers.get().to_string())
                     .with_note(crate::words::download::REMEMBER_PEERS_NOTE)
             }
+            Row::PlayerCommand => {
+                Field::text("Player", prefs.player_command.clone().unwrap_or_default())
+                    .with_placeholder(crate::words::player::UNSET)
+            }
             Row::NodesDatUrl => {
                 Field::text("nodes.dat", prefs.nodes_dat_url.clone()).with_note(ON_RESTART)
             }
@@ -391,6 +409,7 @@ impl SettingsView {
             Some(Row::ServerMetUrl) => PrefEdit::ServerMetUrl(validate_url(text)?.to_string()),
             Some(Row::DeadServerRetries) => PrefEdit::DeadServerRetries(validate_dead_after(text)?),
             Some(Row::RememberPeers) => PrefEdit::RememberPeers(validate_remember_peers(text)?),
+            Some(Row::PlayerCommand) => PrefEdit::PlayerCommand(player_command(text)?),
             Some(Row::NodesDatUrl) => PrefEdit::NodesDatUrl(validate_url(text)?.to_string()),
             Some(Row::ConnectAtStart) => PrefEdit::ConnectAtStart(self.form.choice(index) == 1),
             Some(Row::PortMapping) => PrefEdit::PortMapping(self.form.choice(index) == 1),

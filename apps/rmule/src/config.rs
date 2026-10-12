@@ -13,9 +13,9 @@
 //! core gave reaches it; one opened on the store alone, before attach or
 //! without a core, answers that every key waits for the next start.
 //!
-//! The front end keeps five keys of its own — the theme, the table sorts, the
-//! Run Log level, connect at start and the last server — in the same store,
-//! and applies them itself.
+//! The front end keeps six keys of its own — the theme, the table sorts, the
+//! Run Log level, connect at start, the last server and the Player Command —
+//! in the same store, and applies them itself.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -93,8 +93,9 @@ impl SharedConfig {
 
     /// Persist one edit and answer when it takes effect, reporting the store's
     /// own refusal verbatim. A core key's answer is core's; a front-end key's
-    /// is this app's own: the theme, the Run Log level, a sort and the last
-    /// server apply at once, connect at start only at a start.
+    /// is this app's own: the theme, the Run Log level, a sort, the last
+    /// server and the Player Command apply at once, connect at start only at
+    /// a start.
     pub fn commit(&self, edit: &PrefEdit) -> Result<TakesEffect, SettingError> {
         #[cfg(test)]
         if self
@@ -123,6 +124,10 @@ impl SharedConfig {
                 FrontEndKey::LastServer,
                 &format!("{}:{}", server.host(), server.port()),
             )?,
+            // Empty text is the stored unset: every launch reads the key.
+            FrontEndEdit::PlayerCommand(command) => {
+                set(FrontEndKey::PlayerCommand, command.unwrap_or(""))?;
+            }
             // Every table shares one value: re-read it so the write keeps the
             // other tables' entries as the store has them.
             FrontEndEdit::TableSort {
@@ -179,6 +184,7 @@ impl SharedConfig {
             remember_peers: core.remember_peers,
             last_server: text(FrontEndKey::LastServer)?
                 .and_then(|value| ServerEndpoint::parse_host_port(&value).ok()),
+            player_command: text(FrontEndKey::PlayerCommand)?.filter(|text| !text.is_empty()),
             user_hash: Some(identity.user_hash()),
             kad_node_id: Some(kad.id),
         })
@@ -358,6 +364,10 @@ pub struct Preferences {
     pub run_log_full: bool,
     /// The server the operator last connected to, if any.
     pub last_server: Option<ServerEndpoint>,
+    /// The **Player Command** (ADR-0114): the text Preview splits into the
+    /// player's words. `None` until the operator sets one — there is no
+    /// default player, and Preview is off.
+    pub player_command: Option<String>,
     /// The **Dead Server Limit** (ADR-0052): failed tries in a row after
     /// which a listed server is dead. Live — core takes it up at once.
     pub dead_server_retries: u32,
@@ -404,6 +414,7 @@ impl Default for Preferences {
             connect_at_start: false,
             run_log_full: false,
             last_server: None,
+            player_command: None,
             dead_server_retries: rmule_core::DEFAULT_DEAD_AFTER,
             withhold_shares: false,
             remember_peers: rmule_core::RememberPeers::DEFAULT,
@@ -440,6 +451,7 @@ impl Preferences {
             PrefEdit::ConnectAtStart(on) => self.connect_at_start = *on,
             PrefEdit::RunLogFull(on) => self.run_log_full = *on,
             PrefEdit::LastServer(server) => self.last_server = Some(server.clone()),
+            PrefEdit::PlayerCommand(command) => self.player_command = command.clone(),
             PrefEdit::DeadServerRetries(limit) => self.dead_server_retries = *limit,
             PrefEdit::WithholdShares(on) => self.withhold_shares = *on,
             PrefEdit::RememberPeers(peers) => self.remember_peers = *peers,
@@ -493,6 +505,9 @@ pub enum PrefEdit {
     WithholdShares(bool),
     /// `Remember peers`; core's next seed write keeps that many.
     RememberPeers(rmule_core::RememberPeers),
+    /// The **Player Command**, its text already split once
+    /// ([`crate::player::split`]); `None` clears it. The next launch reads it.
+    PlayerCommand(Option<String>),
     /// The server the operator just connected to, written by the app on the
     /// `Connected` edge rather than by the Settings form.
     LastServer(ServerEndpoint),
@@ -527,6 +542,8 @@ pub enum FrontEndEdit<'a> {
     RunLogFull(bool),
     /// See [`PrefEdit::LastServer`].
     LastServer(&'a ServerEndpoint),
+    /// See [`PrefEdit::PlayerCommand`].
+    PlayerCommand(Option<&'a str>),
     /// See [`PrefEdit::TableSort`].
     TableSort {
         /// The table's stored key.
@@ -573,6 +590,9 @@ impl PrefEdit {
             }
             Self::RunLogFull(on) => return Keeper::FrontEnd(FrontEndEdit::RunLogFull(*on)),
             Self::LastServer(server) => return Keeper::FrontEnd(FrontEndEdit::LastServer(server)),
+            Self::PlayerCommand(command) => {
+                return Keeper::FrontEnd(FrontEndEdit::PlayerCommand(command.as_deref()));
+            }
             Self::TableSort {
                 table,
                 column,
