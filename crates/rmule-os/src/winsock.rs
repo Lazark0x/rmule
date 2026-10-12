@@ -6,12 +6,9 @@
 //! macOS never report an ICMP error on an unconnected UDP socket, so switching
 //! both reports off makes Windows receive as they do.
 //!
-//! The one crate that relaxes the workspace's `unsafe_code` ban, to `deny`,
-//! for the one `WSAIoctl` no safe wrapper offers: std, socket2, mio and
-//! quinn-udp all lack it. `scripts/guards.sh` holds the crate to that single
-//! `unsafe` block.
-
-#![warn(missing_docs)]
+//! The switch is one `WSAIoctl` no safe wrapper offers: std, socket2, mio and
+//! quinn-udp all lack it, so it is one of the functions `scripts/guards.sh`
+//! pins to a single `unsafe` block.
 
 use std::io;
 

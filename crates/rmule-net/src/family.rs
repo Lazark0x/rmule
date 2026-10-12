@@ -94,7 +94,7 @@ impl FamilyBinds {
 /// lossy" noise every UDP consumer here already tolerates — never trips it
 /// (Windows, the one platform that reports a long run of them on an
 /// unconnected socket, has them switched off at the bind by
-/// [`rmule_winsock`]); small enough that a genuinely
+/// [`rmule_os::winsock`]); small enough that a genuinely
 /// dead socket ends its pump within `RECEIVE_ERROR_BUDGET *
 /// RECEIVE_ERROR_BACKOFF` — a few hundred milliseconds, well under the "well
 /// under a second" bar, rather than spinning forever.
@@ -492,11 +492,11 @@ fn dominant_refusal_kind(refused: &[(AddressFamily, io::ErrorKind, String)]) -> 
 
 /// Bind one unconnected UDP socket, the way every one rmule receives on is
 /// bound: [`open`]'s options, plus the Windows ICMP-reset switch
-/// ([`rmule_winsock`]), so a datagram to a dead port never fails the next
+/// ([`rmule_os::winsock`]), so a datagram to a dead port never fails the next
 /// receive.
 pub(crate) fn bind_udp(addr: SocketAddr) -> io::Result<(std::net::UdpSocket, u16)> {
     let socket = open(addr, Type::DGRAM, Protocol::UDP)?;
-    rmule_winsock::disable_udp_connection_reset(&socket)?;
+    rmule_os::winsock::disable_udp_connection_reset(&socket)?;
     let port = bound_port(&socket)?;
     Ok((socket.into(), port))
 }

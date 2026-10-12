@@ -276,7 +276,10 @@ mechanical ones; review enforces the rest.
 - **Text people read.** Anything printed for a user, front-end output and error
   messages alike, is written in words, never with `{:?}` Debug formatting. The
   guard checks this.
-- **`unsafe`** is forbidden across the workspace.
+- **`unsafe`** is forbidden across the workspace but in `crates/rmule-os`,
+  which holds every operating-system call std does not expose (ADR-0111): only
+  the functions `scripts/guards.sh` pins may hold an `unsafe` block, each under
+  a `// SAFETY:` comment.
 
 ## Docs
 
