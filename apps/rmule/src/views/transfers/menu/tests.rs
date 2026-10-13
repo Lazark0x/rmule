@@ -334,3 +334,18 @@ fn golden_menu_with_preview_greyed_by_its_longest_reason() {
         view.draw(frame, area, &state, &Theme::default_dark(), now());
     });
 }
+
+/// A frame too short for the menu: its rows scroll under the cursor, the
+/// panel grows a column for the bar, and the border counts the cursor's row.
+#[test]
+fn golden_menu_overflows_a_short_frame() {
+    let mut view = TransfersView::new();
+    view.overlay = Overlay::Menu {
+        cursor: MenuAction::CopyLink,
+    };
+    let state = three_downloads();
+    assert_golden("transfers_menu_overflow", GOLDEN_W, 8, |frame| {
+        let area = frame.area();
+        view.draw(frame, area, &state, &Theme::default_dark(), now());
+    });
+}

@@ -405,3 +405,32 @@ fn the_detail_pane_collapses_where_the_table_would_lose_half_its_rows() {
         "{tall}"
     );
 }
+
+/// A server list longer than its pane: the bar runs down the header and the
+/// rows, and the border counts the cursor's row of the forty.
+#[test]
+fn golden_networks_servers_overflow() {
+    let servers: Vec<ServerDiagnostics> = (0..40u8)
+        .map(|n| listed(&format!("10.0.0.{n}"), 4661, &format!("Server {n}")))
+        .collect();
+    let state = UiState {
+        diagnostics: DiagnosticsSnapshot {
+            servers,
+            ..DiagnosticsSnapshot::default()
+        },
+        ..UiState::default()
+    };
+    let mut view = NetworksView::new();
+    for _ in 0..25 {
+        view.handle_key(press(KeyCode::Char('j')), &state);
+    }
+    assert_golden("networks_servers_overflow", 78, 24, |frame| {
+        view.draw(
+            frame,
+            frame.area(),
+            &state,
+            &Theme::default_dark(),
+            Instant::now(),
+        );
+    });
+}

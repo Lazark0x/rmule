@@ -321,6 +321,29 @@ mod tests {
         }
     }
 
+    /// A frame too short for the details: `j` scrolls them, and the border
+    /// counts the last line on screen.
+    #[test]
+    fn golden_details_overflow_a_short_frame() {
+        let mut view = TransfersView::new();
+        view.overlay = Overlay::Details;
+        let state = three_downloads();
+        let draw = |view: &mut TransfersView| {
+            crate::golden::render_to_lines(GOLDEN_W, 9, |frame| {
+                let area = frame.area();
+                view.draw(frame, area, &state, &Theme::default_dark(), now());
+            })
+        };
+        draw(&mut view);
+        for _ in 0..3 {
+            view.handle_key(press(KeyCode::Char('j')), &state);
+        }
+        assert_golden("transfers_details_overflow", GOLDEN_W, 9, |frame| {
+            let area = frame.area();
+            view.draw(frame, area, &state, &Theme::default_dark(), now());
+        });
+    }
+
     #[test]
     fn golden_details_modal() {
         let mut view = TransfersView::new();

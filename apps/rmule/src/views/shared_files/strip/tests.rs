@@ -55,6 +55,26 @@ fn golden_shared_strip_names_each_directory_with_state_and_counts() {
     );
 }
 
+/// A pane too short for every directory: the strip scrolls to the selected
+/// one, its bar beside it, and its hint line counts which it is.
+#[test]
+fn golden_shared_strip_overflow() {
+    let state = shared_directories();
+    let mut view = SharedView::default();
+    for _ in 0..3 {
+        view.handle_key(press(KeyCode::Char(']')), &state);
+    }
+    assert_golden("shared_strip_overflow", golden_area().width, 14, |frame| {
+        view.draw(
+            frame,
+            ratatui::layout::Rect::new(0, 0, golden_area().width, 14),
+            &state,
+            &theme(),
+            Instant::now(),
+        );
+    });
+}
+
 #[test]
 fn a_missing_directory_says_since_when() {
     let since = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_790_000_000);

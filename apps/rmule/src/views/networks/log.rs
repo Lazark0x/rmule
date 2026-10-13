@@ -156,6 +156,36 @@ mod tests {
         );
     }
 
+    /// A log longer than its pane, scrolled back: no cursor, so the border
+    /// counts the last line on screen of all of them, and the bar shows where.
+    #[test]
+    fn golden_networks_log_overflow() {
+        let base = Instant::now();
+        let mut state = UiState::default();
+        for part_index in 0..30u32 {
+            state.apply(
+                Action::Core(CoreEvent::Download(DownloadEvent::PartVerified {
+                    download_id: download_id(1),
+                    part_index,
+                })),
+                base + Duration::from_secs(u64::from(part_index)),
+            );
+        }
+        let now = base + Duration::from_secs(60);
+        let mut view = NetworksView::new();
+        let theme = Theme::default_dark();
+        crate::golden::render_to_lines(78, 21, |frame| {
+            view.draw(frame, frame.area(), &state, &theme, now);
+        });
+        view.handle_key(press(KeyCode::Tab), &state); // focus → Log
+        for _ in 0..8 {
+            view.handle_key(press(KeyCode::Char('k')), &state);
+        }
+        assert_golden("networks_log_overflow", 78, 21, |frame| {
+            view.draw(frame, frame.area(), &state, &theme, now);
+        });
+    }
+
     #[test]
     fn golden_networks_log_focus() {
         let base = Instant::now();

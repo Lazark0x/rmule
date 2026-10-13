@@ -1,0 +1,9 @@
+┌ Downloads ┌ File details ─────────────────────────────────────┐ L add link ┐
+│  File ▲   │ origin  link                                     ▲│ Status     │
+│▸ bunny.mp4│ done    42%  (4/10 parts)                        ║│ Downloading│
+│  ABABABABA│ speed   123.4 KB/s                               █│ Paused     │
+│  5C5C5C5C5│ sources 8 known, 1 sending                       █│ Completed  │
+└───────────│ on disk —                                        █│───── 1 / 3 ┘
+┌ Sources · │                                                  █│  S reverse ┐
+│  Source ▲ │██████████░░░░░█████▓▓▓▓▓░░░░░█████▓▓▓▓▓░░░░░░░░░░▼│ Speed     █│
+└───────────└────────────────────────────────────────── 10 / 10 ┘───── 1 / 2 ┘

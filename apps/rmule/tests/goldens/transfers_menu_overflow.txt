@@ -1,0 +1,8 @@
+┌ Downloads ┌ Actions — 0707070707… ────────────────────────────┐ L add link ┐
+│  File ▲   │  Pause                                           ▲│ Status    ▲│
+│▸ bunny.mp4│  Cancel…                                         █│ Downloadin█│
+│           │  Show file details                               █│ g         ▼│
+└───────────│  Preview  details not known yet                  █│───── 1 / 3 ┘
+┌ Sources · │▸ Copy eD2k link                                  ║│  S reverse ┐
+│  Source ▲ │  Search related  not connected                   ▼│ Speed     █│
+└───────────└──────────────────────────────────────────── 5 / 8 ┘───── 1 / 2 ┘

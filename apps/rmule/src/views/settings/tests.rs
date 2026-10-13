@@ -491,3 +491,20 @@ fn the_data_directory_note_names_the_rule_that_picked_it() {
         assert!(row.contains(note), "{row}");
     }
 }
+
+/// A pane tall enough for the whole form draws no bar, and still counts the
+/// row the cursor is on.
+#[test]
+fn golden_settings_fits_a_tall_pane() {
+    let mut view = SettingsView::new();
+    let state = state();
+    assert_golden("settings_fits", 78, 60, |frame| {
+        view.draw(
+            frame,
+            frame.area(),
+            &state,
+            &Theme::default_dark(),
+            Instant::now(),
+        );
+    });
+}
