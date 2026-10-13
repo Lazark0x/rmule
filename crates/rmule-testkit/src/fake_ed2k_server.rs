@@ -101,6 +101,10 @@ struct Shared {
     /// While set ([`FakeEd2kServer::set_refusing`]), a login is closed before
     /// any id is granted — a server that accepts the socket and refuses.
     refusing: bool,
+    /// While set ([`FakeEd2kServer::set_probe_blocked`]), a login's
+    /// Back-Connect Probe reads unanswered without a dial — a client whose
+    /// firewall drops inbound TCP — so it is assigned a Low ID.
+    probe_blocked: bool,
     /// While set ([`FakeEd2kServer::set_search_silent`]), a search request is
     /// recorded and never answered — a server still thinking when its session
     /// ends.
@@ -229,6 +233,13 @@ impl FakeEd2kServer {
     /// closed before any id is granted.
     pub async fn set_refusing(&self, refusing: bool) {
         self.shared.lock().await.refusing = refusing;
+    }
+
+    /// Block (`true`) or open (`false`) the Back-Connect Probe of every later
+    /// login: a blocked one reads unanswered, so the client is assigned a Low
+    /// ID even while it listens — the bench's forced Low-ID, as a knob.
+    pub async fn set_probe_blocked(&self, blocked: bool) {
+        self.shared.lock().await.probe_blocked = blocked;
     }
 
     /// Replace the scripted `OP_GETSOURCES` answer (scripted mode only).
@@ -538,10 +549,19 @@ where
     // your <port> port" and assigns Low-ID — so the client must be accepting
     // AND answering *during* its login. Scripted mode skips the probe: every
     // client is High-ID by construction.
-    let (scripted, login_delay, tcp_flags, obfuscation_offer, standard_port, raw_id_change) = {
+    let (
+        scripted,
+        probe_blocked,
+        login_delay,
+        tcp_flags,
+        obfuscation_offer,
+        standard_port,
+        raw_id_change,
+    ) = {
         let state = shared.lock().await;
         (
             state.scripted_sources.is_some(),
+            state.probe_blocked,
             state.login_delay,
             state.tcp_flags,
             state.obfuscation_offer,
@@ -556,7 +576,8 @@ where
     if !login_delay.is_zero() {
         tokio::time::sleep(login_delay).await;
     }
-    let reachable = scripted || port_check(peer_ip, advertised, login.user_hash()).await;
+    let reachable =
+        scripted || (!probe_blocked && port_check(peer_ip, advertised, login.user_hash()).await);
 
     let assigned = if reachable {
         ClientId::from_u32(HIGH_ID)

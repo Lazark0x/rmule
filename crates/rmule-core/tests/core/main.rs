@@ -87,6 +87,7 @@ mod upload_slot_queue;
 mod callback_loopback;
 mod direct_callback_route;
 mod global_callback_loopback;
+mod server_callback_serve;
 
 // Kad: source discovery without a server in the loop.
 mod kad_disable;
