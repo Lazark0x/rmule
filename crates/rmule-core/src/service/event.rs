@@ -229,7 +229,7 @@ pub enum ServeEvent {
     /// A waiter came back on a new link and keeps its place: the new link's
     /// hello named the client waiting at `from`, whose link had ended or
     /// came from the same address and listen port (aMule attaches the new
-    /// socket to the client it knows, `ClientList.cpp:370-412`, and a client
+    /// socket to the client it knows, `ClientList.cpp:371-412`, and a client
     /// already queued keeps its place, `UploadQueue.cpp:395-431`). Every row
     /// and mark keyed by `from` is now keyed by `to`; a `from` still live is
     /// closed after this.

@@ -1,0 +1,258 @@
+//! A download of a peer already linked to us rides that link (ADR-0107, "One
+//! peer, one link"), proven on real loopback links through the production
+//! accept path and the production dial path: the asker is a `Connection`
+//! that dials rmule's listener with a hello naming a listen port of its own,
+//! and that port is watched for the second link aMule answers by dropping the
+//! first (`ClientList.cpp:400-403`).
+
+use std::net::{Ipv4Addr, SocketAddrV4};
+use std::time::Duration;
+
+use rmule_net::peer::{ConnectOptions, Connection as PeerConnection};
+use rmule_peer::{PeerHandshakeContext, ServerEvent};
+use rmule_primitives::{
+    ClientId, ClientIdentity, Ed2kFileLink, Ed2kText, FileHash, Ipv4Endpoint, UserHash,
+};
+use tokio::net::TcpListener;
+use tokio::time::timeout;
+
+use crate::adapters::peer_transfer::{PeerTransferService, WorkerBrief};
+use crate::adapters::serve_runtime::ServeOutput;
+use crate::adapters::serve_runtime::{RuntimeServeRuntimeService, ServeRuntimeService};
+use crate::adapters::tests::dialed_serve_ctx;
+use crate::adapters::{PeerWorkerEvent, RuntimePeerTransferService};
+
+use super::*;
+
+fn file() -> Ed2kFileLink {
+    Ed2kFileLink {
+        name: Ed2kText::from_utf8("partial.bin"),
+        size: 4096,
+        file_hash: FileHash::from_bytes([0x5A; FileHash::BYTE_LEN]),
+        part_hash_set: None,
+        aich_root: None,
+        ipv6_sources: Vec::new(),
+        sources: Default::default(),
+    }
+}
+
+/// The asker's side of the handshake: its hello names `listen_port`.
+fn asker_ctx(listen_port: u16) -> PeerHandshakeContext {
+    PeerHandshakeContext {
+        identity: ClientIdentity::new(
+            UserHash::from_bytes([0xA5; UserHash::BYTE_LEN]),
+            Ed2kText::from_utf8("asker"),
+            listen_port,
+            60,
+        ),
+        client_id: ClientId::from_u32(0x0100_007F),
+        ed2k_client_id: ClientId::from_u32(0x0100_007F),
+        public_ip: None,
+        connected_server: None,
+    }
+}
+
+/// Whether the next event the asker's link reads is a file request for
+/// `file_hash`, within `within`.
+async fn asked_for(asker: &mut PeerConnection, file_hash: FileHash, within: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + within;
+    while let Ok(Some(event)) = tokio::time::timeout_at(deadline, asker.next_event()).await {
+        match event {
+            PeerEvent::Server(
+                ServerEvent::FileRequested {
+                    file_hash: asked, ..
+                }
+                | ServerEvent::FileBundleRequested {
+                    file_hash: asked, ..
+                },
+            ) if asked == file_hash => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// An asker linked to a serving node, and a dial adapter sharing the node's
+/// Served Links.
+struct Linked {
+    asker: PeerConnection,
+    /// The asker's listen port, where a second link would arrive.
+    listen: TcpListener,
+    served: crate::adapters::ServeConnection,
+    dialer: RuntimePeerTransferService,
+    _serve: RuntimeServeRuntimeService,
+}
+
+impl Linked {
+    async fn up() -> Self {
+        let links = SharedServedLinks::default();
+        let mut serve = RuntimeServeRuntimeService::new().with_served_links(links.clone());
+        let bound = serve
+            .start(
+                dialed_serve_ctx().identity,
+                SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
+            )
+            .await
+            .expect("the listener binds");
+        let listen = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind the asker's listen port");
+        let listen_port = listen.local_addr().expect("bound").port();
+        let asker = PeerConnection::connect(
+            PeerEndpoint::V4(Ipv4Endpoint::new(*bound.ip(), bound.port())),
+            asker_ctx(listen_port),
+            ConnectOptions::default(),
+        )
+        .await
+        .expect("rmule accepts the asker");
+        let mut served = timeout(Duration::from_secs(5), serve.accept())
+            .await
+            .expect("the link is accepted")
+            .expect("a serve connection");
+        // The link is filed once the serve side holds its hello.
+        assert!(matches!(
+            timeout(Duration::from_secs(5), served.next_event()).await,
+            Ok(Some(ServeInput::Connection(
+                ConnectionEvent::Identified { .. }
+            )))
+        ));
+        let dialer = RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT)
+            .with_served_links(links);
+        Self {
+            asker,
+            listen,
+            served,
+            dialer,
+            _serve: serve,
+        }
+    }
+
+    /// Where the asker is a source: its address and its listen port.
+    fn at(&self) -> PeerEndpoint {
+        let port = self.listen.local_addr().expect("bound").port();
+        PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, port))
+    }
+
+    async fn download(&mut self, file: &Ed2kFileLink) -> crate::adapters::PeerWorker {
+        let at = self.at();
+        self.dialer
+            .start_download_worker(
+                at,
+                dialed_serve_ctx(),
+                file.clone(),
+                WorkerBrief::fresh(file),
+            )
+            .await
+            .expect("a worker starts")
+    }
+
+    /// The download rode the asker's link: its request arrived there, and no
+    /// second link reached the asker's listen port.
+    async fn rode_the_link(&mut self, file_hash: FileHash) {
+        assert!(
+            asked_for(&mut self.asker, file_hash, Duration::from_secs(5)).await,
+            "the download asks over the asker's own link"
+        );
+        assert!(
+            timeout(Duration::from_millis(300), self.listen.accept())
+                .await
+                .is_err(),
+            "no second link reaches the asker"
+        );
+    }
+
+    /// The asker has no such file: the download riding the link lets it go.
+    async fn has_no_such_file(&mut self, file_hash: FileHash) {
+        self.asker
+            .send(PeerCommand::Server(
+                rmule_peer::ServerCommand::AnswerFileNotFound { file_hash },
+            ))
+            .await
+            .expect("the asker's link is up");
+    }
+}
+
+/// The worker's events up to its end, or as far as it got in five seconds.
+async fn until_disconnected(worker: &mut crate::adapters::PeerWorker) -> Vec<PeerWorkerEvent> {
+    let mut seen = Vec::new();
+    while let Ok(Some(event)) = timeout(Duration::from_secs(5), worker.next_event()).await {
+        let done = matches!(event, PeerWorkerEvent::Disconnected);
+        seen.push(event);
+        if done {
+            break;
+        }
+    }
+    seen
+}
+
+#[tokio::test]
+async fn a_download_of_a_peer_linked_to_us_rides_its_link_and_dials_nothing() {
+    let mut linked = Linked::up().await;
+    let file = file();
+    let mut worker = linked.download(&file).await;
+
+    linked.rode_the_link(file.file_hash).await;
+    assert!(matches!(
+        worker.next_event().await,
+        Some(PeerWorkerEvent::Identity(identity))
+            if identity.user_hash() == asker_ctx(0).identity.user_hash()
+    ));
+    assert!(matches!(
+        worker.next_event().await,
+        Some(PeerWorkerEvent::Connected)
+    ));
+}
+
+#[tokio::test]
+async fn a_link_a_download_let_go_stays_and_takes_the_next_download() {
+    let mut linked = Linked::up().await;
+    let file = file();
+    let mut first = linked.download(&file).await;
+    linked.rode_the_link(file.file_hash).await;
+    linked.has_no_such_file(file.file_hash).await;
+    assert!(matches!(
+        until_disconnected(&mut first).await.last(),
+        Some(PeerWorkerEvent::Disconnected)
+    ));
+
+    let _second = linked.download(&file).await;
+    linked.rode_the_link(file.file_hash).await;
+}
+
+#[tokio::test]
+async fn the_serve_side_letting_go_leaves_the_link_to_the_download_riding_it() {
+    let mut linked = Linked::up().await;
+    let file = file();
+    let mut worker = linked.download(&file).await;
+    linked.rode_the_link(file.file_hash).await;
+
+    linked
+        .served
+        .send(ServeOutput::Disconnect)
+        .await
+        .expect("the serve side is registered");
+    linked.has_no_such_file(file.file_hash).await;
+    let seen = until_disconnected(&mut worker).await;
+    assert!(
+        seen.iter()
+            .any(|event| matches!(event, PeerWorkerEvent::PartsAdvertised { parts: None, .. })),
+        "the answer reached the download over the link the serve side let go: {seen:?}"
+    );
+    // With both halves gone the link ends.
+    let closed = async {
+        while let Some(event) = linked.asker.next_event().await {
+            if matches!(
+                event,
+                PeerEvent::Connection(ConnectionEvent::Disconnected { .. })
+            ) {
+                return true;
+            }
+        }
+        true
+    };
+    assert!(
+        timeout(Duration::from_secs(5), closed)
+            .await
+            .unwrap_or(false)
+    );
+}

@@ -68,6 +68,9 @@ pub struct AdapterCells {
     pub(crate) address_families: FamilySelection,
     /// Where a refused peer hello is counted and raised (ADR-0050).
     pub(crate) hello_refusals: crate::hello_refusals::SharedHelloRefusals,
+    /// The **Served Links** (ADR-0107): the accept path files each served
+    /// link, the dial path joins one rather than dial its peer again.
+    pub(crate) served_links: super::SharedServedLinks,
 }
 
 impl AdapterCells {
@@ -104,6 +107,7 @@ impl AdapterCells {
             tunnel_admit: SharedTunnelAdmit::default(),
             address_families: FamilySelection::default(),
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
+            served_links: super::SharedServedLinks::default(),
         }
     }
 }

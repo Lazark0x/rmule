@@ -1,7 +1,7 @@
 //! A waiter is a client, not a link (ADR-0057, "A waiter on a new link"): the
 //! hello of a new link that names a client already waiting moves that
 //! client's place onto the new link, as aMule attaches a new socket to the
-//! client it knows (`ClientList.cpp:370-412`) and keeps a queued client's
+//! client it knows (`ClientList.cpp:371-412`) and keeps a queued client's
 //! place (`UploadQueue.cpp:395-431`).
 
 use rmule_peer::PeerIdentity;
@@ -15,11 +15,11 @@ impl ServeState {
     /// Move the place of the client `identity` names onto `peer`, the link
     /// its hello just came in on. The client is the waiter holding the same
     /// User Hash, best rank first — aMule's queue finds its client by hash
-    /// (`UploadQueue.cpp:395`). It is attached when the link it waited on has
+    /// (`UploadQueue.cpp:396-397`). It is attached when the link it waited on has
     /// ended, or comes from the same address and listen port, which aMule
-    /// drops for the new one (`ClientList.cpp:395-401`); a live link from
+    /// drops for the new one (`ClientList.cpp:400-403`); a live link from
     /// anywhere else keeps its client, and the new link is another
-    /// (`:384-394`).
+    /// (`:384-398`).
     pub(super) fn relink_waiter(
         &mut self,
         peer: PeerEndpoint,

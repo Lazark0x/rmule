@@ -698,6 +698,7 @@ impl Core {
             // One cell every peer connection's first reader reports a refused
             // hello to (ADR-0050); the actor's prologue installs its bus.
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
+            served_links: crate::adapters::SharedServedLinks::default(),
         };
         // One wiring path: the default adapters adopt the cells
         // exactly as an injected one does.

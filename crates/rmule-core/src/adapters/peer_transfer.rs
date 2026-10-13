@@ -27,7 +27,7 @@ use crate::{DownloadFailure, PartPlan};
 use super::HelloAdverts;
 use super::dialed_serve::SharedDialedServeSink;
 use super::kad_runtime::{KadPresenceView, SharedKadBootstrap, SharedKadPump};
-use super::peer_transfer::worker::drive_peer_worker;
+use super::peer_transfer::worker::{drive_joined_worker, drive_peer_worker};
 use super::{InboundPeerDeps, SharedTunnelAdmit};
 use crate::buddy_link::SharedBuddySlot;
 
@@ -450,6 +450,9 @@ pub struct RuntimePeerTransferService {
     /// to, as an accepted link's are. Default (never installed) off
     /// `Core::builder`: the frames reach nothing.
     side: SideServices,
+    /// The **Served Links** a download joins before it dials (ADR-0107).
+    /// Default/unshared off `Core::builder`: every download dials.
+    served_links: super::SharedServedLinks,
 }
 
 /// The cells only a link's side-channel frames reach (Kad firewall checks, the
@@ -480,6 +483,7 @@ impl RuntimePeerTransferService {
             file_known: self.side.file_known.clone(),
             tunnel_admit: self.side.tunnel_admit.clone(),
             hello_refusals: self.hello_refusals.clone(),
+            served_links: self.served_links.clone(),
         }
     }
 }
@@ -498,6 +502,7 @@ impl RuntimePeerTransferService {
             ip_filter: SharedIpFilter::default(),
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
             side: SideServices::default(),
+            served_links: super::SharedServedLinks::default(),
         }
     }
 
@@ -521,6 +526,7 @@ impl RuntimePeerTransferService {
             ip_filter: SharedIpFilter::default(),
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
             side: SideServices::default(),
+            served_links: super::SharedServedLinks::default(),
         }
     }
 
@@ -557,6 +563,16 @@ impl RuntimePeerTransferService {
         self.ip_filter = ip_filter;
         self
     }
+
+    /// Share the **Served Links** a download joins before it dials
+    /// (ADR-0107). `Core::builder` wires the one instance in through
+    /// `adopt_cells`.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_served_links(mut self, served_links: super::SharedServedLinks) -> Self {
+        self.served_links = served_links;
+        self
+    }
 }
 
 impl Default for RuntimePeerTransferService {
@@ -579,6 +595,7 @@ impl PeerTransferService for RuntimePeerTransferService {
         self.side.peer_roster = cells.peer_roster.clone();
         self.side.file_known = cells.file_known.clone();
         self.side.tunnel_admit = cells.tunnel_admit.clone();
+        self.served_links = cells.served_links.clone();
     }
 
     fn set_kad_presence(&mut self, kad_presence: KadPresenceView) {
@@ -609,6 +626,7 @@ impl PeerTransferService for RuntimePeerTransferService {
         } = brief;
         let ban_store = self.ban_store.clone();
         let ip_filter = self.ip_filter.clone();
+        let served_links = self.served_links.clone();
         let deps = self.link_deps();
         // Every advert read now, per dial: what is true when the
         // peer is met is what the hello says — the SUI keypair included, with
@@ -644,6 +662,24 @@ impl PeerTransferService for RuntimePeerTransferService {
             if ban_store.lock().await.is_banned(peer.ip(), Instant::now()) {
                 end_dial(&event_tx, DialEnd::Banned).await;
                 let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
+                return;
+            }
+            // One peer, one link (ADR-0107): a peer linked to us already is
+            // asked over that link, as aMule asks a client over the socket it
+            // holds (`BaseClient.cpp:1489-1496`); a second link would make it
+            // drop the first (`ClientList.cpp:400-403`).
+            if let Some(joined) = served_links.join(peer, &event_tx).await {
+                tracing::debug!(?peer, "download rides the peer's served link");
+                drive_joined_worker(
+                    joined,
+                    file,
+                    own_status,
+                    want_sources,
+                    command_rx,
+                    event_tx,
+                    deps.slot_wait_timeout,
+                )
+                .await;
                 return;
             }
             // Connect + identify run inside the worker task, off the runner's

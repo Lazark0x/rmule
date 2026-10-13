@@ -741,6 +741,16 @@ connection here at accept time; unmatched inbound connections go to the serve pa
 before.
 _Avoid_: inbound peer (that is any accepted connection; this is one routed to *download*), dialed worker (the opposite construction)
 
+**Served Link**:
+An accepted connection that took the serve road, filed (`SharedServedLinks`) under the
+address a dial would reach its peer at: the link's own address with the hello's listen port,
+where the peer is a source. A download about to dial that address joins the link instead of
+dialing (ADR-0107, "One peer, one link"): its requests go out on the link and the link's
+requester events come back to it, as aMule asks a client over the socket it already holds.
+The link lives while its serve side or its download holds it, takes one download at a time,
+and is taken again by a later one; a newer link of the same peer replaces its filing.
+_Avoid_: shared connection (every link is bidirectional; this is the accepted one a download rides), second link
+
 **Callback Capability**:
 Our own half of the **Low-ID Admission** — aMule's `CanDoCallback`: whether we
 may ask a candidate to dial us back. It holds when the inbound listener is bound *and* we
@@ -1320,7 +1330,7 @@ _Avoid_: offline mode (peers are very much online), Kad-only mode (a config post
 ## Relationships
 
 - The core actor owns the unified set of live peer **Connection**s; the **download scheduler** and the **Upload Slot Queue** are two consumers over that one set (a connection may both pull and serve — wired on accepted connections first, dialed connections later).
-- The inbound accept loop routes by asking the **Awaited Inbound** registry (ADR-0039, ADR-0091): an accepted connection whose identified `(server, low id)` matches a **Pending Callback**, or whose hello confirms a **Pending Tunnel Claim**, becomes an **Adopted Inbound Worker** for that download; every other accepted connection flows to the serve path as before. So the accept stream is a third reader of the unified connection set, feeding the download scheduler — not only serve.
+- The inbound accept loop routes by asking the **Awaited Inbound** registry (ADR-0039, ADR-0091): an accepted connection whose identified `(server, low id)` matches a **Pending Callback**, or whose hello confirms a **Pending Tunnel Claim**, becomes an **Adopted Inbound Worker** for that download; every other accepted connection flows to the serve path as a **Served Link**, which a later download of its peer rides instead of dialing it. So the accept stream is a third reader of the unified connection set, feeding the download scheduler — not only serve.
 - A **Search Activity** consumes search support from the eD2k server protocol service and presents app-facing result streams; selecting a result starts a separate download workflow rather than mutating the search.
 - Search uses its own `SearchCommand` / `SearchEvent` vocabulary under `CoreCommand::Search` / `CoreEvent::Search`; it is not a hidden phase of `DownloadCommand`.
 - A **Search Result Set** is process-local state for one **Search Activity**; durable search history and searchable local result indexes are later product features.

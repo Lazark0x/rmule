@@ -19,7 +19,8 @@ use crate::adapters::InboundPeerDeps;
 use crate::adapters::dialed_serve::{DialedRoute, bridge_dialed_serve, route_dialed_connection};
 use crate::adapters::hello_wait::{Opening, await_hello};
 use crate::adapters::peer_transfer::{PeerWorkerCommand, PeerWorkerEvent};
-use crate::adapters::serve_runtime::ServeConnection;
+use crate::adapters::serve_runtime::{ServeConnection, ServeInput};
+use crate::adapters::served_link::JoinedLink;
 use crate::service::DialEnd;
 
 use self::wait::{Ended, await_probe, forward_shared, next_event};
@@ -42,7 +43,7 @@ pub(crate) async fn drive_peer_worker(
     own_status: PartBitmap,
     want_sources: bool,
     identified: Option<PeerIdentity>,
-    mut command_rx: mpsc::Receiver<PeerWorkerCommand>,
+    command_rx: mpsc::Receiver<PeerWorkerCommand>,
     event_tx: mpsc::Sender<PeerWorkerEvent>,
     deps: InboundPeerDeps,
 ) {
@@ -89,6 +90,103 @@ pub(crate) async fn drive_peer_worker(
         let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
         return; // dropping peer_cmd_tx winds the router (and socket) down
     }
+    work_the_link(
+        WorkerHalves {
+            peer_cmd_tx,
+            requester_rx,
+        },
+        Some(ServeHalf {
+            peer,
+            server_rx,
+            sink: dialed_serve_sink,
+        }),
+        &file,
+        own_status,
+        want_sources,
+        command_rx,
+        event_tx,
+        slot_wait_timeout,
+    )
+    .await;
+}
+
+/// Drive a download worker over a **Served Link** it joined (ADR-0107, "One
+/// peer, one link"): the peer is linked to us already, so nothing is dialed
+/// and nothing waits for a hello — the link's identity is the one the
+/// download keeps, as an adopted worker's is — and the link's serve half
+/// stays where it is, registered since the peer came in.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn drive_joined_worker(
+    joined: JoinedLink,
+    file: Ed2kFileLink,
+    own_status: PartBitmap,
+    want_sources: bool,
+    command_rx: mpsc::Receiver<PeerWorkerCommand>,
+    event_tx: mpsc::Sender<PeerWorkerEvent>,
+    slot_wait_timeout: Duration,
+) {
+    let JoinedLink {
+        identity,
+        peer_cmd_tx,
+        requester_rx,
+    } = joined;
+    if event_tx
+        .send(PeerWorkerEvent::Identity(identity))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    work_the_link(
+        WorkerHalves {
+            peer_cmd_tx,
+            requester_rx,
+        },
+        None,
+        &file,
+        own_status,
+        want_sources,
+        command_rx,
+        event_tx,
+        slot_wait_timeout,
+    )
+    .await;
+}
+
+/// The download's two ends of a link: where its commands are framed and where
+/// the link's requester events arrive.
+struct WorkerHalves {
+    peer_cmd_tx: mpsc::Sender<PeerCommand>,
+    requester_rx: mpsc::Receiver<PeerEvent>,
+}
+
+/// A dialed or adopted link's serve half, handed to the serve activity once
+/// the worker is connected.
+struct ServeHalf {
+    peer: PeerEndpoint,
+    server_rx: mpsc::Receiver<ServeInput>,
+    sink: crate::adapters::SharedDialedServeSink,
+}
+
+/// From a connected link to the worker's end: report the connection, send the
+/// connect-time file request, hand the serve half (when the link has one of
+/// its own) to the serve activity, then take the download's commands until it
+/// winds the worker down.
+#[allow(clippy::too_many_arguments)]
+async fn work_the_link(
+    halves: WorkerHalves,
+    serve_half: Option<ServeHalf>,
+    file: &Ed2kFileLink,
+    own_status: PartBitmap,
+    want_sources: bool,
+    mut command_rx: mpsc::Receiver<PeerWorkerCommand>,
+    event_tx: mpsc::Sender<PeerWorkerEvent>,
+    slot_wait_timeout: Duration,
+) {
+    let WorkerHalves {
+        peer_cmd_tx,
+        mut requester_rx,
+    } = halves;
     if event_tx.send(PeerWorkerEvent::Connected).await.is_err() {
         return;
     }
@@ -119,30 +217,12 @@ pub(crate) async fn drive_peer_worker(
     // `SourceExchange` + `SourcesAsked`.
     let _ = peer_cmd_tx.send(connect_request).await;
 
-    // Same-socket serve: while the serve activity is running, hand the serve
-    // half of this connection to it so the peer's pull is admitted to the one
-    // cross-connection UploadSlotQueue exactly like an accepted connection. When
-    // not serving the sink is empty and the router drops Server Capability
-    // requests.
-    let serve_sink = dialed_serve_sink.sender();
-    if let Some(serve_sink) = serve_sink {
-        let (serve_cmd_tx, serve_cmd_rx) = mpsc::channel(16);
-        let (serve_evt_tx, serve_evt_rx) = mpsc::channel(16);
-        tokio::spawn(bridge_dialed_serve(
-            server_rx,
-            serve_cmd_rx,
-            peer_cmd_tx.clone(),
-            serve_evt_tx,
-        ));
-        let _ = serve_sink
-            .send(ServeConnection::new(peer, serve_cmd_tx, serve_evt_rx))
-            .await;
-    } else {
-        // Not serving: nobody drains the serve half. Close it now so the
-        // router's bounded `server_tx.send(..)` fails fast (the request is
-        // dropped) instead of filling at capacity and stalling the socket once
-        // a peer sends >16 Server Capability requests.
-        drop(server_rx);
+    // Same-socket serve: a link of the worker's own hands its serve half to
+    // the serve activity, so the peer's pull is admitted to the one
+    // cross-connection UploadSlotQueue exactly like an accepted connection; a
+    // joined link's serve half never left it.
+    if let Some(half) = serve_half {
+        hand_over_serve_half(half, &peer_cmd_tx).await;
     }
 
     // Set once the download signals a local-reason abandon (ADR-0056): the
@@ -179,7 +259,7 @@ pub(crate) async fn drive_peer_worker(
                 } => {
                     let streamed = stream_part_download(
                         &mut link,
-                        &file,
+                        file,
                         plan,
                         resume_offset,
                         slot_wait_timeout,
@@ -195,7 +275,7 @@ pub(crate) async fn drive_peer_worker(
                     }
                 }
                 PeerWorkerCommand::RequestAich { part, root } => {
-                    if !request_aich_recovery(&mut link, &file, part, root, slot_wait_timeout).await
+                    if !request_aich_recovery(&mut link, file, part, root, slot_wait_timeout).await
                     {
                         break;
                     }
@@ -250,6 +330,38 @@ pub(crate) async fn drive_peer_worker(
     };
     let _ = peer_cmd_tx.send(teardown).await;
     drop(peer_cmd_tx);
+}
+
+/// While the serve activity is running, hand `half` to it so the peer's pull
+/// is admitted to the one cross-connection UploadSlotQueue exactly like an
+/// accepted connection; its commands are framed onto the link through
+/// `peer_cmd_tx`. When not serving the sink is empty and the router drops
+/// Server Capability requests.
+async fn hand_over_serve_half(half: ServeHalf, peer_cmd_tx: &mpsc::Sender<PeerCommand>) {
+    let ServeHalf {
+        peer,
+        server_rx,
+        sink,
+    } = half;
+    if let Some(serve_sink) = sink.sender() {
+        let (serve_cmd_tx, serve_cmd_rx) = mpsc::channel(16);
+        let (serve_evt_tx, serve_evt_rx) = mpsc::channel(16);
+        tokio::spawn(bridge_dialed_serve(
+            server_rx,
+            serve_cmd_rx,
+            peer_cmd_tx.clone(),
+            serve_evt_tx,
+        ));
+        let _ = serve_sink
+            .send(ServeConnection::new(peer, serve_cmd_tx, serve_evt_rx))
+            .await;
+    } else {
+        // Not serving: nobody drains the serve half. Close it now so the
+        // router's bounded `server_tx.send(..)` fails fast (the request is
+        // dropped) instead of filling at capacity and stalling the socket once
+        // a peer sends >16 Server Capability requests.
+        drop(server_rx);
+    }
 }
 
 /// Wait for a dialed peer's hello, or learn why the connection ended before

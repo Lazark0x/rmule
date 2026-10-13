@@ -129,6 +129,11 @@ the file's one registry row, from the record, without reading the file.**
   under the run's source cap as aMule admits it under its own (`ClientTCPSocket.cpp:452-454`). A
   queued or paused download has no run to take one, and its asker is not kept. A probe of a download
   not yet offered moves no waiter, because no slot can be granted for it.
+- **The candidate is the client that asked.** aMule adds the asking client itself, link and all
+  (`DownloadQueue.cpp:707-760`). The sighting names the asker at its link's address with its
+  hello's listen port, whatever ID the hello claims (`BaseClient.cpp:661`, `:678-680`), and while the
+  link it asked on lives the run's worker rides that link instead of dialing (ADR-0107, "One peer,
+  one link"); a second link would make aMule drop the first and end our upload to it.
 - **A whole bitmap is count `0` on the wire** (`rmule-peer/src/session/serve.rs:96-107`), so a
   Partial Share whose every part verified answers as a complete file does. The UDP reask answer takes
   the served file's status the same way; it no longer assumes every file is whole.

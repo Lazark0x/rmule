@@ -1,6 +1,6 @@
 //! A waiter is a client, not a link: the hello of a new link that names a
 //! client already waiting takes that client's place (aMule attaches the new
-//! socket to the client it knows, `ClientList.cpp:370-412`, and a client
+//! socket to the client it knows, `ClientList.cpp:371-412`, and a client
 //! already on the queue keeps its place, `UploadQueue.cpp:395-431`).
 
 use super::*;
@@ -66,7 +66,7 @@ fn a_new_link_takes_a_place_only_from_its_own_client() {
     assert_eq!(rank_of(&mut state, neighbour, file, t), Some(2));
 
     // The same user on a second link while its first is still up from
-    // another address is not attached (`ClientList.cpp:384-394`).
+    // another address is not attached (`ClientList.cpp:384-398`).
     let mut state = waiting(file, first, t);
     let elsewhere = peer_at([198, 51, 100, 7], 40000);
     assert_eq!(hello_of(&mut state, elsewhere, user(0x0B)), []);
@@ -76,7 +76,7 @@ fn a_new_link_takes_a_place_only_from_its_own_client() {
 #[test]
 fn a_new_link_from_where_the_live_one_is_replaces_it() {
     // aMule drops the socket it held and keeps the client on the new one
-    // (`ClientList.cpp:395-401`).
+    // (`ClientList.cpp:400-403`).
     let file = hash(0x33);
     let t = Instant::now();
     let (first, second) = (
