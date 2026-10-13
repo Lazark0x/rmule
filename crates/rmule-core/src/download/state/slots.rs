@@ -325,6 +325,7 @@ impl DownloadState {
             self.sources.parts_known(),
         ) {
             Assignment::Fresh(plan) | Assignment::Raced(plan) => plan,
+            Assignment::Busy => return true,
             Assignment::Nothing { lacked: false } if !self.scheduler.is_complete() => {
                 return false;
             }

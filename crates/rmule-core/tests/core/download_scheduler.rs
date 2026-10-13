@@ -24,7 +24,7 @@ fn take(scheduler: &mut DownloadScheduler, peer: PeerEndpoint) -> Option<PartPla
 fn handed(assignment: Assignment) -> Option<PartPlan> {
     match assignment {
         Assignment::Fresh(plan) | Assignment::Raced(plan) => Some(plan),
-        Assignment::Nothing { .. } => None,
+        Assignment::Busy | Assignment::Nothing { .. } => None,
     }
 }
 

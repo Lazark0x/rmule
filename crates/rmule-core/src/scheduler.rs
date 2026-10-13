@@ -41,6 +41,8 @@ pub enum Assignment {
     Fresh(PartPlan),
     /// An in-flight part the peer now races (ADR-0026).
     Raced(PartPlan),
+    /// The peer already works a part, and is handed nothing beside it.
+    Busy,
     /// Nothing to do. `lacked` says whether the peer's Advertised Parts hold
     /// a part the file still lacks — every one in flight, the peer's own
     /// included — or none, aMule's `bPartsNeeded` false.
@@ -129,7 +131,7 @@ impl DownloadScheduler {
     /// not already on, so a surplus peer stays queued on a busy uploader
     /// instead of idling (ADR-0026). A peer that has already delivered a part
     /// idles rather than redundantly racing a healthy in-flight peer. A peer
-    /// that already holds a part is handed nothing.
+    /// that already holds a part is [`Assignment::Busy`].
     pub fn assign_next(
         &mut self,
         peer: PeerEndpoint,
@@ -138,7 +140,7 @@ impl DownloadScheduler {
         known: u32,
     ) -> Assignment {
         if self.peer_part.contains_key(&peer) {
-            return Assignment::Nothing { lacked: true };
+            return Assignment::Busy;
         }
         let held = |part: &u32| parts.has(PartIndex::new(*part));
         let inputs = RankInputs {

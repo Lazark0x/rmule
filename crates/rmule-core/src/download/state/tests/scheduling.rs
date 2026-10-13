@@ -412,3 +412,76 @@ fn on_stop_releases_in_flight_parts_and_fails_with_the_reason() {
         "the activity fails with the stop reason: {out:?}"
     );
 }
+
+/// `peer` delivers the whole of `part_index` and the runner verifies it: the
+/// decisions of the verified part's resumption.
+fn deliver_verified(
+    state: &mut DownloadState,
+    peer: PeerEndpoint,
+    part_index: u32,
+) -> Vec<Decision> {
+    let part = crate::planning::part_plan(state.file_size, part_index);
+    let _ = state.on_worker_event(
+        t0(),
+        peer,
+        PeerWorkerEvent::BlockReceived {
+            part_index,
+            offset: part.offset,
+            bytes: vec![0u8; part.len as usize],
+        },
+    );
+    state.on_persist_result(t0(), part_index, peer, Ok(()))
+}
+
+/// A part verifying can leave an idle backup holding nothing we lack: it is
+/// retired `NoNeededParts` then, not left on its slot (ADR-0112 §6), while
+/// the delivering peer takes its next part.
+#[test]
+fn a_verified_part_retires_an_idle_backup_left_holding_nothing_we_lack() {
+    let three_parts = 2 * rmule_primitives::ED2K_PART_SIZE + 1;
+    let mut state = pooled_state(
+        file_hash_only_content(three_parts),
+        &[peer(1), peer(2)],
+        QUIET_POSTURE,
+        2,
+    );
+    let _ = state.start(t0());
+    let _ = connect(&mut state, t0(), peer(1));
+    let _ = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Connected);
+    let first_two = PeerWorkerEvent::PartsAdvertised {
+        parts: Some(PartBitmap::decode(3, &[0b0000_0011]).expect("three parts")),
+        complete: false,
+    };
+    let _ = state.on_worker_event(t0(), peer(2), first_two);
+    let idled = deliver_verified(&mut state, peer(2), 1);
+    assert!(
+        idled.iter().any(|d| matches!(
+            d,
+            Decision::Phase {
+                phase: WorkerPhase::Idle,
+                ..
+            }
+        )),
+        "peer 2 holds part 0, in flight on peer 1: {idled:?}"
+    );
+
+    let verified = deliver_verified(&mut state, peer(1), 0);
+    assert!(
+        verified.iter().any(|d| matches!(
+            d,
+            Decision::Emit(DownloadEvent::PeerRetired {
+                peer: p,
+                reason: PeerRetirementReason::NoNeededParts,
+                ..
+            }) if *p == peer(2)
+        )),
+        "{verified:?}"
+    );
+    assert!(
+        verified.iter().any(|d| matches!(
+            d,
+            Decision::Emit(DownloadEvent::PartAssigned { part_index: 2, peer: p, .. }) if *p == peer(1)
+        )),
+        "{verified:?}"
+    );
+}
