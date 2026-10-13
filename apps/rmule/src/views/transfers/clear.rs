@@ -15,7 +15,7 @@ use crate::action::Action;
 use crate::state::{DownloadStatus, UiState};
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
-use crate::views::modal::Modal;
+use crate::views::modal::{Modal, scroll_key};
 use crate::wrap::wrapped_lines;
 
 /// The downloads the list shows as completed, in id order.
@@ -38,6 +38,7 @@ impl TransfersView {
             return ViewOutcome::Emit(Action::Flash(crate::words::download::NOTHING_TO_CLEAR));
         }
         self.overlay = Overlay::ConfirmClearCompleted { counted };
+        self.confirm_viewport.take();
         ViewOutcome::Redraw
     }
 
@@ -64,7 +65,10 @@ impl TransfersView {
                 self.overlay = Overlay::None;
                 ViewOutcome::Redraw
             }
-            _ => ViewOutcome::Redraw,
+            code => {
+                scroll_key(&mut self.confirm_viewport, code);
+                ViewOutcome::Redraw
+            }
         }
     }
 
@@ -77,38 +81,41 @@ impl TransfersView {
     ) {
         let count = counted.len();
         let width = 46u16.min(area.width);
-        let text_w = usize::from(width).saturating_sub(2).max(1);
         let noun = if count == 1 { "download" } else { "downloads" };
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        lines.extend(wrapped_lines(
-            &format!("Clear {count} completed {noun} from the list?"),
-            text_w,
-            Style::new().fg(theme.fg),
-        ));
-        let kept = if count == 1 {
-            "The file stays on disk and shared."
-        } else {
-            "The files stay on disk and shared."
+        let lines = |width: u16| {
+            let text_w = usize::from(width).saturating_sub(2).max(1);
+            let mut lines: Vec<Line<'static>> = Vec::new();
+            lines.extend(wrapped_lines(
+                &format!("Clear {count} completed {noun} from the list?"),
+                text_w,
+                Style::new().fg(theme.fg),
+            ));
+            let kept = if count == 1 {
+                "The file stays on disk and shared."
+            } else {
+                "The files stay on disk and shared."
+            };
+            lines.extend(wrapped_lines(kept, text_w, theme.dim_text()));
+            lines.push(Line::raw(""));
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "y",
+                    Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" clear    ", Style::new().fg(theme.fg)),
+                Span::styled(
+                    "Esc",
+                    Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" abort", Style::new().fg(theme.fg)),
+            ]));
+            lines
         };
-        lines.extend(wrapped_lines(kept, text_w, theme.dim_text()));
-        lines.push(Line::raw(""));
-        lines.push(Line::from(vec![
-            Span::styled(
-                "y",
-                Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" clear    ", Style::new().fg(theme.fg)),
-            Span::styled(
-                "Esc",
-                Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" abort", Style::new().fg(theme.fg)),
-        ]));
 
         Modal::new(" Clear completed ", theme)
             .flash_title(theme)
             .at_least(6)
-            .draw(frame, area, width, theme, lines);
+            .draw_scrolled(frame, area, width, theme, &self.confirm_viewport, lines);
     }
 }
 

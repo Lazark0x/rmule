@@ -213,6 +213,9 @@ pub struct SettingsView {
     removing: Option<std::path::PathBuf>,
     /// The disclosure questions this view answered (`ScanConsent::asked`).
     answered: std::collections::BTreeSet<u64>,
+    /// What part of the remove confirm or a disclosure question is on
+    /// screen, in a frame too short for it.
+    modal_viewport: std::cell::Cell<Viewport>,
 }
 
 impl Default for SettingsView {
@@ -228,6 +231,7 @@ impl Default for SettingsView {
             slots,
             removing: None,
             answered: std::collections::BTreeSet::new(),
+            modal_viewport: std::cell::Cell::default(),
         }
     }
 }
@@ -464,7 +468,11 @@ impl SettingsView {
         if let Some(consent) =
             crate::views::shared_files::scan::open_consent(state, &self.answered, true)
         {
-            return crate::views::shared_files::scan::consent_key(key, consent, &mut self.answered);
+            return crate::views::shared_files::scan::consent_key(
+                key,
+                consent,
+                (&mut self.answered, &mut self.modal_viewport),
+            );
         }
         if self.removing.is_some() {
             return self.remove_key(key);
@@ -684,12 +692,18 @@ impl SettingsView {
         }
         self.viewport.draw(frame, area, bar, theme);
         if let Some(dir) = &self.removing {
-            shared_dirs::draw_remove(frame, area, dir, state, theme);
+            shared_dirs::draw_remove(frame, area, (dir, &self.modal_viewport), state, theme);
         }
         if let Some(consent) =
             crate::views::shared_files::scan::open_consent(state, &self.answered, true)
         {
-            crate::views::shared_files::scan::draw_consent(frame, area, consent, theme);
+            crate::views::shared_files::scan::draw_consent(
+                frame,
+                area,
+                consent,
+                theme,
+                &self.modal_viewport,
+            );
         }
     }
 }

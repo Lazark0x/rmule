@@ -23,7 +23,7 @@ use crate::action::Action;
 use crate::row_selection::viewport::Viewport;
 use crate::state::{UiState, server_label};
 use crate::theme::Theme;
-use crate::views::modal::Modal;
+use crate::views::modal::{Modal, scroll_key};
 use crate::views::{ViewOutcome, connect_action};
 use crate::wrap::{clamp_u16, labeled_lines, wrap_text, wrapped_lines};
 
@@ -105,6 +105,8 @@ impl Menu {
 pub(super) struct Confirm {
     name: String,
     server: ServerEndpoint,
+    /// What part of the question is on screen, in a frame too short for it.
+    viewport: std::cell::Cell<Viewport>,
 }
 
 pub(super) fn draw_menu(frame: &mut Frame, area: Rect, menu: &Menu, theme: &Theme) {
@@ -165,36 +167,39 @@ pub(super) fn draw_menu(frame: &mut Frame, area: Rect, menu: &Menu, theme: &Them
 
 pub(super) fn draw_confirm(frame: &mut Frame, area: Rect, confirm: &Confirm, theme: &Theme) {
     let width = FORM_W.min(area.width);
-    let text_w = usize::from(width).saturating_sub(2).max(1);
-    // Both prose lines wrap: a long server name grows the modal.
-    let mut lines = wrapped_lines(
-        &format!(
-            "Remove '{}' ({})?",
-            confirm.name,
-            server_label(&confirm.server)
-        ),
-        text_w,
-        Style::new().fg(theme.fg),
-    );
-    // aMule's own posture, which core implements: the list entry goes, the
-    // session does not (ADR-0080).
-    lines.extend(wrapped_lines(
-        "The list entry goes; a session connected to it stays up.",
-        text_w,
-        theme.dim_text(),
-    ));
-    lines.push(Line::raw(""));
-    lines.push(Line::from(vec![
-        Span::styled("y", Style::new().fg(theme.accent)),
-        Span::styled(" confirm    ", Style::new().fg(theme.fg)),
-        Span::styled("Esc", Style::new().fg(theme.accent)),
-        Span::styled(" abort", Style::new().fg(theme.fg)),
-    ]));
+    let lines = |width: u16| {
+        let text_w = usize::from(width).saturating_sub(2).max(1);
+        // Both prose lines wrap: a long server name grows the modal.
+        let mut lines = wrapped_lines(
+            &format!(
+                "Remove '{}' ({})?",
+                confirm.name,
+                server_label(&confirm.server)
+            ),
+            text_w,
+            Style::new().fg(theme.fg),
+        );
+        // aMule's own posture, which core implements: the list entry goes, the
+        // session does not (ADR-0080).
+        lines.extend(wrapped_lines(
+            "The list entry goes; a session connected to it stays up.",
+            text_w,
+            theme.dim_text(),
+        ));
+        lines.push(Line::raw(""));
+        lines.push(Line::from(vec![
+            Span::styled("y", Style::new().fg(theme.accent)),
+            Span::styled(" confirm    ", Style::new().fg(theme.fg)),
+            Span::styled("Esc", Style::new().fg(theme.accent)),
+            Span::styled(" abort", Style::new().fg(theme.fg)),
+        ]));
+        lines
+    };
 
     Modal::new(" Remove server ", theme)
         .danger(theme)
         .at_least(6)
-        .draw(frame, area, width, theme, lines);
+        .draw_scrolled(frame, area, width, theme, &confirm.viewport, lines);
 }
 
 impl NetworksView {
@@ -342,6 +347,7 @@ impl NetworksView {
                 self.confirm = Some(Confirm {
                     name: row_name(row),
                     server,
+                    viewport: std::cell::Cell::default(),
                 });
                 ViewOutcome::Redraw
             }
@@ -380,7 +386,12 @@ impl NetworksView {
                 self.confirm = None;
                 ViewOutcome::Redraw
             }
-            _ => ViewOutcome::Redraw,
+            code => {
+                if let Some(confirm) = self.confirm.as_mut() {
+                    scroll_key(&mut confirm.viewport, code);
+                }
+                ViewOutcome::Redraw
+            }
         }
     }
 }

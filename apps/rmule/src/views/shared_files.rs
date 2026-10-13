@@ -82,6 +82,9 @@ pub struct SharedView {
     /// so each closes before core's next scan edge clears it, and a later
     /// question about the same directory is still asked.
     answered: std::collections::BTreeSet<u64>,
+    /// What part of a disclosure question is on screen, in a frame too
+    /// short for it.
+    consent_viewport: std::cell::Cell<Viewport>,
     /// The directory the strip filters the files table to; `None` shows
     /// every shared file.
     dir_filter: Option<std::path::PathBuf>,
@@ -117,6 +120,7 @@ impl Default for SharedView {
             menu: None,
             confirm: None,
             answered: std::collections::BTreeSet::new(),
+            consent_viewport: std::cell::Cell::default(),
             dir_filter: None,
             files_area: Rect::default(),
             peers_area: Rect::default(),
@@ -187,7 +191,11 @@ impl SharedView {
             return ViewOutcome::Ignored;
         }
         if let Some(consent) = scan::open_consent(state, &self.answered, false) {
-            return scan::consent_key(key, consent, &mut self.answered);
+            return scan::consent_key(
+                key,
+                consent,
+                (&mut self.answered, &mut self.consent_viewport),
+            );
         }
         if self.confirm.is_some() {
             return self.handle_confirm_key(key);
@@ -320,7 +328,7 @@ impl SharedView {
             draw_confirm(frame, area, confirm, theme);
         }
         if let Some(consent) = self.pending_consent(state) {
-            scan::draw_consent(frame, area, consent, theme);
+            scan::draw_consent(frame, area, consent, theme, &self.consent_viewport);
         }
     }
 

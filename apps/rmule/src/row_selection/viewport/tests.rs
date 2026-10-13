@@ -16,6 +16,7 @@ fn at(first: usize, shown: usize, total: usize) -> Viewport {
         total,
         cursor: None,
         tail: false,
+        held: false,
     }
 }
 

@@ -371,6 +371,36 @@ impl Form {
         }
     }
 
+    /// The form as a modal lays it out: its fields, `footer` under them (the
+    /// key legend), and the lines a scrolling frame keeps on screen for the
+    /// focus. The first field answers for everything above it and the last
+    /// for everything under it, so the heading, the rejection and the legend
+    /// are in view when the focus is at an end.
+    pub fn render_modal(
+        &self,
+        width: usize,
+        theme: &Theme,
+        footer: Vec<Line<'static>>,
+    ) -> (Vec<Line<'static>>, Range<usize>) {
+        let mut rendered = self.render(width, theme, true);
+        rendered.lines.push(Line::raw(""));
+        rendered.lines.extend(footer);
+        let mut focus = rendered.focus;
+        let mut focusable = self
+            .fields
+            .iter()
+            .enumerate()
+            .filter(|(_, field)| field.focusable())
+            .map(|(index, _)| index);
+        if focusable.next() == Some(self.focus) {
+            focus.start = 0;
+        }
+        if focusable.last().unwrap_or(self.focus) == self.focus {
+            focus.end = rendered.lines.len();
+        }
+        (rendered.lines, focus)
+    }
+
     /// Render the whole form to `width` columns.
     ///
     /// `caret` marks the focused field's insertion point; a browsing surface

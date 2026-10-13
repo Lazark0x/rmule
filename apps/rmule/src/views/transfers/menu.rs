@@ -247,6 +247,7 @@ impl TransfersView {
                 }
                 MenuAction::Cancel => {
                     self.overlay = Overlay::ConfirmCancel;
+                    self.confirm_viewport.take();
                     ViewOutcome::Redraw
                 }
                 MenuAction::Details => {

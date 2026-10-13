@@ -4,9 +4,11 @@
 //! own add raised. Each view remembers what it answered, since the question
 //! stays open in the state until core's next edge for the directory.
 
+use std::cell::Cell;
 use std::collections::BTreeSet;
 
-use crate::views::modal::Modal;
+use crate::row_selection::viewport::Viewport;
+use crate::views::modal::{Modal, scroll_key};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
@@ -35,20 +37,26 @@ pub(crate) fn open_consent<'a>(
 
 /// `y` shares, `n` keeps the directory private. Every other key is
 /// swallowed so nothing behind the question moves, except what the globals
-/// claim (a tab switch, quit — which answers nothing).
+/// claim (a tab switch, quit — which answers nothing). `j` `k` `g` `G`
+/// scroll the question in a frame too short for it.
 pub(crate) fn consent_key(
     key: KeyEvent,
     consent: &ScanConsent,
-    answered: &mut BTreeSet<u64>,
+    (answered, viewport): (&mut BTreeSet<u64>, &mut Cell<Viewport>),
 ) -> ViewOutcome {
     let share = match key.code {
         KeyCode::Char('y') => true,
         KeyCode::Char('n') => false,
-        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('j' | 'k' | 'g' | 'G' | 'm' | 'x') => {
+        KeyCode::Char('j' | 'k' | 'g' | 'G') | KeyCode::Up | KeyCode::Down => {
+            scroll_key(viewport, key.code);
+            return ViewOutcome::Redraw;
+        }
+        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('m' | 'x') => {
             return ViewOutcome::Redraw;
         }
         _ => return ViewOutcome::Ignored,
     };
+    viewport.take();
     answered.insert(consent.asked);
     ViewOutcome::Emit(Action::Command(CoreCommand::Scan(ScanCommand::Answer {
         dir: consent.dir.clone(),
@@ -57,7 +65,13 @@ pub(crate) fn consent_key(
 }
 
 /// The question, with what a yes discloses.
-pub(crate) fn draw_consent(frame: &mut Frame, area: Rect, consent: &ScanConsent, theme: &Theme) {
+pub(crate) fn draw_consent(
+    frame: &mut Frame,
+    area: Rect,
+    consent: &ScanConsent,
+    theme: &Theme,
+    viewport: &Cell<Viewport>,
+) {
     let (title, question, consequence) = crate::words::scan::share_confirm(
         &consent.dir,
         consent.offer,
@@ -65,21 +79,23 @@ pub(crate) fn draw_consent(frame: &mut Frame, area: Rect, consent: &ScanConsent,
         &consent.replaces,
     );
     let width = clamp_u16(64).min(area.width);
-    let text_w = usize::from(width).saturating_sub(4).max(1);
-
-    let mut lines = wrapped_lines(&question, text_w, Style::new().fg(theme.fg));
-    lines.push(Line::from(""));
-    lines.extend(wrapped_lines(&consequence, text_w, theme.dim_text()));
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("y", Style::new().fg(theme.bad).add_modifier(Modifier::BOLD)),
-        Span::styled(" share    ", Style::new().fg(theme.fg)),
-        Span::styled("n", Style::new().fg(theme.accent)),
-        Span::styled(" keep private", Style::new().fg(theme.fg)),
-    ]));
+    let lines = |width: u16| {
+        let text_w = usize::from(width).saturating_sub(4).max(1);
+        let mut lines = wrapped_lines(&question, text_w, Style::new().fg(theme.fg));
+        lines.push(Line::from(""));
+        lines.extend(wrapped_lines(&consequence, text_w, theme.dim_text()));
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("y", Style::new().fg(theme.bad).add_modifier(Modifier::BOLD)),
+            Span::styled(" share    ", Style::new().fg(theme.fg)),
+            Span::styled("n", Style::new().fg(theme.accent)),
+            Span::styled(" keep private", Style::new().fg(theme.fg)),
+        ]));
+        lines
+    };
     Modal::new(title, theme)
         .padded()
-        .draw(frame, area, width, theme, lines);
+        .draw_scrolled(frame, area, width, theme, viewport, lines);
 }
 
 #[cfg(test)]

@@ -21,8 +21,9 @@ use crate::action::Action;
 use crate::row_selection::MARKER;
 use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
+use crate::table_sort::RowMove;
 use crate::theme::Theme;
-use crate::views::modal::Modal;
+use crate::views::modal::{Modal, scroll_key};
 use crate::words::units::short_hash;
 use crate::wrap::{clamp_u16, labeled_lines, wrapped_lines};
 
@@ -41,6 +42,8 @@ pub(super) struct FileMenu {
 /// The unshare confirmation (names the object and the consequence).
 pub(super) struct Confirm {
     file_hash: FileHash,
+    /// What part of the question is on screen, in a frame too short for it.
+    viewport: Cell<Viewport>,
 }
 
 #[derive(Clone, Copy)]
@@ -104,21 +107,28 @@ pub(super) fn draw_confirm(frame: &mut Frame, area: Rect, confirm: &Confirm, the
     .unwrap_or(0)
         + 4;
     let width = clamp_u16(natural).min(area.width);
-    let text_w = usize::from(width).saturating_sub(4).max(1);
-
-    let mut lines = wrapped_lines(&question, text_w, Style::new().fg(theme.fg));
-    lines.push(Line::from(""));
-    lines.extend(wrapped_lines(consequence, text_w, theme.dim_text()));
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("y", Style::new().fg(theme.bad).add_modifier(Modifier::BOLD)),
-        Span::styled(" confirm    ", Style::new().fg(theme.fg)),
-        Span::styled("Esc", Style::new().fg(theme.accent)),
-        Span::styled(" cancel", Style::new().fg(theme.fg)),
-    ]));
-    Modal::new(title, theme)
-        .padded()
-        .draw(frame, area, width, theme, lines);
+    let lines = |width: u16| {
+        let text_w = usize::from(width).saturating_sub(4).max(1);
+        let mut lines = wrapped_lines(&question, text_w, Style::new().fg(theme.fg));
+        lines.push(Line::from(""));
+        lines.extend(wrapped_lines(consequence, text_w, theme.dim_text()));
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("y", Style::new().fg(theme.bad).add_modifier(Modifier::BOLD)),
+            Span::styled(" confirm    ", Style::new().fg(theme.fg)),
+            Span::styled("Esc", Style::new().fg(theme.accent)),
+            Span::styled(" cancel", Style::new().fg(theme.fg)),
+        ]));
+        lines
+    };
+    Modal::new(title, theme).padded().draw_scrolled(
+        frame,
+        area,
+        width,
+        theme,
+        &confirm.viewport,
+        lines,
+    );
 }
 
 /// Natural (unwrapped) width of a menu item, gutter included.
@@ -195,7 +205,13 @@ impl SharedView {
                 self.confirm = None;
                 ViewOutcome::Redraw
             }
-            _ => ViewOutcome::Ignored,
+            code => match self.confirm.as_mut() {
+                Some(confirm) if RowMove::of(code).is_some() => {
+                    scroll_key(&mut confirm.viewport, code);
+                    ViewOutcome::Redraw
+                }
+                _ => ViewOutcome::Ignored,
+            },
         }
     }
 
@@ -244,7 +260,10 @@ impl SharedView {
                 }
             }
             MenuAction::Unshare => {
-                self.confirm = Some(Confirm { file_hash });
+                self.confirm = Some(Confirm {
+                    file_hash,
+                    viewport: Cell::default(),
+                });
                 self.menu = None;
                 ViewOutcome::Redraw
             }

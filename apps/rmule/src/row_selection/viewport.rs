@@ -126,6 +126,9 @@ pub(crate) struct Viewport {
     /// A list without a cursor resting on its end keeps the end in view as
     /// items arrive.
     tail: bool,
+    /// A form scrolled by the operator's keys rather than by its focus: the
+    /// first line stays where it was put until the focus moves again.
+    held: bool,
 }
 
 impl Viewport {
@@ -139,6 +142,7 @@ impl Viewport {
             total: 0,
             cursor: None,
             tail: true,
+            held: false,
         }
     }
 
@@ -225,6 +229,21 @@ impl Viewport {
         }
         self.first = first;
         moved
+    }
+
+    /// Scroll a form by a key's move, within what the last draw laid out,
+    /// and let it stay there: the form does not pull the first line back to
+    /// its focused field until [`Viewport::release`]. Whether it moved.
+    pub(crate) fn hold(&mut self, movement: RowMove) -> bool {
+        let moved = self.scroll(movement);
+        self.held = true;
+        moved
+    }
+
+    /// Let a form follow its focus again, after the focus moved or a field
+    /// took a key.
+    pub(crate) const fn release(&mut self) {
+        self.held = false;
     }
 
     /// A page of a list without a cursor: the lines the last draw showed, at
@@ -408,7 +427,11 @@ impl Viewport {
             below += next;
             fill -= 1;
         }
-        let first = self.first.min(fill).clamp(top, span.start);
+        let first = if self.held {
+            self.first.min(fill)
+        } else {
+            self.first.min(fill).clamp(top, span.start)
+        };
         let mut shown = 0;
         let mut lines = 0;
         for index in first..total {
@@ -425,6 +448,7 @@ impl Viewport {
             total,
             cursor: None,
             tail: false,
+            held: self.held,
         };
     }
 }
