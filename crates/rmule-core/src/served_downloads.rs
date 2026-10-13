@@ -25,20 +25,26 @@
 //! ([`RunLease::take_askers`]) and the actor closes when it takes the lease
 //! back.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::SystemTime;
 
 use rmule_peer::PartBitmap;
-use rmule_primitives::{ED2K_PART_SIZE, Ed2kText, FileHash, PartHash, PartHashSet, SourceSighting};
+use rmule_primitives::{ED2K_PART_SIZE, Ed2kText, FileHash, PartHash, SourceSighting};
 use tokio::sync::{mpsc, watch};
 
 use crate::download::RunNumber;
-use crate::file_key::FileKey;
 use crate::{
     DownloadId, DownloadLifecycle, DurableDownloadRecord, SharedFileEntry, VerifiedPartRecord,
 };
+
+mod identity;
+mod lease;
+mod range;
+
+pub(crate) use identity::{PartFileIdentity, ReadCheck};
+pub(crate) use lease::RunLease;
+pub(crate) use range::{VerifiedRange, WholeSet};
 
 /// How many askers a running download's inbox holds before the serve side
 /// drops the next one.
@@ -72,144 +78,6 @@ pub(crate) fn is_member(lifecycle: DownloadLifecycle, file_size: u64) -> bool {
             | DownloadLifecycle::Completing
             | DownloadLifecycle::Paused
     ) && file_size > ED2K_PART_SIZE
-}
-
-/// A part hash set holding every hash its file's size calls for.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct WholeSet(Arc<[PartHash]>);
-
-impl WholeSet {
-    /// `hashes` as the whole set of a `file_size`-byte file; `None` when they
-    /// are not as many as the size calls for (none held is not a set).
-    pub(crate) fn of(file_size: u64, hashes: &[PartHash]) -> Option<Self> {
-        let expected = PartHashSet::expected_hash_count(file_size).ok()?;
-        (expected > 0 && hashes.len() == expected).then(|| Self(hashes.into()))
-    }
-
-    /// The hashes in part order.
-    pub(crate) fn hashes(&self) -> &[PartHash] {
-        &self.0
-    }
-}
-
-/// The parts whose recorded hash equals the whole set's at their index: the
-/// only bytes the serve side reads from a part file.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct VerifiedRange(BTreeSet<u32>);
-
-impl VerifiedRange {
-    /// The range `records` hold against `set`. Without a whole set no part is
-    /// checked, so the range is empty.
-    pub(crate) fn of_records(set: Option<&WholeSet>, records: &[VerifiedPartRecord]) -> Self {
-        let Some(set) = set else {
-            return Self::default();
-        };
-        Self(
-            records
-                .iter()
-                .filter(|record| {
-                    set.hashes().get(record.part_index as usize) == Some(&record.part_hash)
-                })
-                .map(|record| record.part_index)
-                .collect(),
-        )
-    }
-
-    /// Whether part `part_index` lies inside the range.
-    pub(crate) fn holds(&self, part_index: u32) -> bool {
-        self.0.contains(&part_index)
-    }
-
-    /// The status a `file_size`-byte file holding this range states: spelt by
-    /// the one function the run's own status is ([`PartBitmap::downloader`]),
-    /// so what the serve side says and what the run says are one set.
-    pub(crate) fn status(&self, file_size: u64) -> PartBitmap {
-        PartBitmap::downloader(file_size, |part| self.holds(part.value()))
-    }
-
-    /// Whether the range holds any part of the file.
-    pub(crate) fn holds_a_part(&self) -> bool {
-        !self.0.is_empty()
-    }
-
-    /// Whether every byte of `start..end` lies inside the range: each part
-    /// it touches is held.
-    pub(crate) fn covers(&self, start: u64, end: u64) -> bool {
-        if end <= start {
-            return true;
-        }
-        let part = |offset: u64| u32::try_from(offset / ED2K_PART_SIZE).ok();
-        match (part(start), part(end - 1)) {
-            (Some(first), Some(last)) => (first..=last).all(|part| self.holds(part)),
-            _ => false,
-        }
-    }
-}
-
-/// The file a Served Download's verified bytes are read from, as the writer
-/// that last held it read it through its handle. Memory only: every start
-/// re-reads the parts it vouches for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PartFileIdentity {
-    /// Which file it is.
-    pub(crate) key: FileKey,
-    /// Its length and modification time as the run left it; `None` while a
-    /// run writes it, when only the key is compared.
-    pub(crate) at_rest: Option<AtRest>,
-}
-
-/// A file's length and modification time with nobody writing it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct AtRest {
-    /// Its length in bytes.
-    pub(crate) len: u64,
-    /// When it was last written.
-    pub(crate) modified: SystemTime,
-}
-
-impl PartFileIdentity {
-    /// The identity of the file `key` names while a run writes it: only its
-    /// key is compared.
-    pub(crate) const fn while_written(key: FileKey) -> Self {
-        Self { key, at_rest: None }
-    }
-
-    /// The identity of the file `meta` describes, `key` its file key, with
-    /// nobody writing it: its length and time are compared too. `None` when
-    /// the system keeps no modification time.
-    pub(crate) fn at_rest(key: FileKey, meta: &std::fs::Metadata) -> Option<Self> {
-        Some(Self {
-            key,
-            at_rest: Some(AtRest {
-                len: meta.len(),
-                modified: meta.modified().ok()?,
-            }),
-        })
-    }
-
-    /// Whether the file an opened handle reports — `key`, and `meta` for its
-    /// length and time — is this one: the key always, the length and time
-    /// only when the identity holds them, since a run moves both as it
-    /// writes.
-    pub(crate) fn holds(&self, key: FileKey, meta: &std::fs::Metadata) -> bool {
-        self.key == key
-            && self.at_rest.is_none_or(|rest| {
-                rest.len == meta.len() && meta.modified().ok() == Some(rest.modified)
-            })
-    }
-}
-
-/// How a read of a Served Download's bytes is checked before it reads
-/// (ADR-0113 §"Reading a part file"): the file it opens must be the one the
-/// identity names, and a path that names nothing gives way to the other
-/// once — the completion move puts the bytes at one of the two at every
-/// instant.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ReadCheck {
-    /// The file the entry's range was read from; `None` reads nothing.
-    pub(crate) identity: Option<PartFileIdentity>,
-    /// The download's other path.
-    pub(crate) other: PathBuf,
 }
 
 /// What a running download's source-exchange answer is drawn from
@@ -737,86 +605,6 @@ impl ServedDownloads {
             self.offers.send_modify(|generation| *generation += 1);
         }
         true
-    }
-}
-
-/// A run's lease on its download's entry: the only way a run writes it, and
-/// good only while the actor has not taken it back.
-pub(crate) struct RunLease {
-    cell: ServedDownloads,
-    file_hash: FileHash,
-    run: RunNumber,
-}
-
-impl RunLease {
-    /// Open the entry's inbox: the askers the serve side hands this run from
-    /// now on, in place of any inbox an earlier pass of the run opened.
-    /// `None` when the run no longer holds the entry.
-    pub(crate) fn take_askers(&self) -> Option<mpsc::Receiver<SourceSighting>> {
-        let (askers, inbox) = mpsc::channel(ASKER_INBOX);
-        let mut guard = self.cell.lock();
-        let book = &mut *guard;
-        book.leased(self)?.askers = Some(askers);
-        book.version += 1;
-        Some(inbox)
-    }
-
-    /// The source-exchange pool the run's Source Book holds now; the cell's
-    /// version moves only when it differs from the one held.
-    pub(crate) fn record_pool(&self, pool: ExchangePool) -> bool {
-        let mut guard = self.cell.lock();
-        let book = &mut *guard;
-        let Some(entry) = book.leased(self) else {
-            return false;
-        };
-        if entry.served.pool != pool {
-            entry.served.pool = pool;
-            book.version += 1;
-        }
-        true
-    }
-
-    /// Rule the Verified Range from the part hash set in force and the parts
-    /// the store records: `set` becomes the entry's set when it is whole.
-    pub(crate) fn record_range(&self, set: &[PartHash], records: &[VerifiedPartRecord]) -> bool {
-        self.cell.write(self, |entry| {
-            let served = &mut entry.served;
-            if let Some(whole) = WholeSet::of(served.file_size, set) {
-                served.set = Some(whole);
-            }
-            served.range = if entry.emptied {
-                VerifiedRange::default()
-            } else {
-                VerifiedRange::of_records(served.set.as_ref(), records)
-            };
-        })
-    }
-
-    /// The file the run holds, as it read it through its handle: a range a
-    /// read emptied may be ruled again from here.
-    pub(crate) fn record_identity(&self, identity: PartFileIdentity) -> bool {
-        self.cell.write(self, |entry| {
-            entry.served.identity = Some(identity);
-            entry.emptied = false;
-        })
-    }
-
-    /// The finished file is in place at `path`, the destination the
-    /// completion move chose (ADR-0115), `identity` the file that holds the
-    /// bytes now: the entry is read from there, still under the download's
-    /// name.
-    pub(crate) fn bytes_in_place(
-        &self,
-        path: &std::path::Path,
-        identity: Option<PartFileIdentity>,
-    ) -> bool {
-        self.cell.write(self, |entry| {
-            let served = &mut entry.served;
-            served.final_path = path.to_path_buf();
-            served.bytes_at = BytesAt::FinalFile;
-            served.identity = identity;
-            entry.emptied &= identity.is_none();
-        })
     }
 }
 

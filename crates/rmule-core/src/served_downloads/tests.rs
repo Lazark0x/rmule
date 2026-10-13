@@ -6,6 +6,7 @@ use rmule_primitives::{Ed2kFileLink, Ed2kText};
 use super::*;
 use crate::DownloadPaths;
 use crate::download::RunNumber;
+use crate::file_key::FileKey;
 use crate::storage::DownloadRepository;
 use crate::store::download::DurableDownloadRepository;
 
