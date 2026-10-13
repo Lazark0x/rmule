@@ -7,7 +7,9 @@
 //!
 //! - At [`FILE_REASK_TIME`] − [`UDP_REASK_LEAD`] since the last reask, when the
 //!   gates pass, a `0x90` goes to the source's client-UDP endpoint and the latch
-//!   is set (aMule `CUpDownClient::UDPReaskForDownload`, `DownloadClient.cpp`).
+//!   is set (aMule `CUpDownClient::UDPReaskForDownload`, `DownloadClient.cpp`);
+//!   while we are unreachable, a Low-ID source's `0x94` goes to its buddy
+//!   instead.
 //! - At [`FILE_REASK_TIME`], the **TCP full ask**: the record leaves the stage
 //!   for its road, the latch reset with the standing (aMule `AskForDownload`,
 //!   `DownloadClient.cpp:139-160`). A lost datagram costs the 20 s grace, never
@@ -26,9 +28,10 @@
 
 use std::time::{Duration, Instant};
 
+use rmule_kad::KadId;
 use rmule_peer::PeerIdentity;
 use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
-use rmule_primitives::PeerEndpoint;
+use rmule_primitives::{Ipv4Endpoint, PeerEndpoint};
 
 use super::SourceBook;
 use super::purge::PurgeKind;
@@ -225,12 +228,35 @@ pub(crate) enum Reask {
         /// identity stated it.
         crypt: Option<PeerUdpCryptTarget>,
     },
+    /// Send `OP_REASKCALLBACKUDP` for the firewalled source at `peer` to its
+    /// `buddy`, which relays it: we are firewalled, so the direct ping cannot
+    /// be answered (ADR-0057). Its latch is set, and the answer comes from
+    /// `contact`, as a direct ping's does.
+    ThroughBuddy {
+        /// The record's endpoint.
+        peer: PeerEndpoint,
+        /// Where the answer comes from, and the version the reask is framed
+        /// for.
+        contact: UdpContact,
+        /// The buddy that relays it.
+        buddy: BuddyRoad,
+    },
     /// The TCP full ask: the record at `peer` left the RemoteQueued stage for
     /// its road, its standing ended.
     FullAsk {
         /// The endpoint it stood at.
         peer: PeerEndpoint,
     },
+}
+
+/// A firewalled source's serving buddy, as its record names it: the Kad ID
+/// the buddy checks a relay against and the endpoint it is reached at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BuddyRoad {
+    /// The buddy's Kad ID, the `0x94`'s leading 16 bytes.
+    pub(crate) buddy_id: KadId,
+    /// The buddy's UDP endpoint; Kad is IPv4-only (ADR-0087).
+    pub(crate) buddy_udp: Ipv4Endpoint,
 }
 
 /// What a reply said to the standing it matched.
@@ -339,8 +365,11 @@ impl SourceBook {
     /// ping goes when every gate passes: our socket, our reachability, the
     /// source's contact, parts we need, no ping already out, and no source ask
     /// due, which the TCP ask carries (`DownloadClient.cpp:1269-1273`,
-    /// ADR-0108). A ping the moving gates held is looked at again
-    /// [`REASK_RECHECK`] later.
+    /// ADR-0108). While we are unreachable, a Low-ID source whose record names
+    /// its buddy's ID and endpoint is reasked through that buddy instead,
+    /// neither our reachability nor a source ask holding that road
+    /// (`DownloadClient.cpp:1297-1318`). A ping the moving gates held is
+    /// looked at again [`REASK_RECHECK`] later.
     pub(crate) fn sweep(&mut self, now: Instant, gates: ReaskGates) -> Vec<Reask> {
         let mut queued: Vec<RecordId> = self
             .records
@@ -373,16 +402,35 @@ impl SourceBook {
             if elapsed < period.saturating_sub(UDP_REASK_LEAD) {
                 continue;
             }
-            if gates.reachable && !sx_due {
-                standing.udp_pending = true;
-                standing.recheck_at = None;
-                due.push(Reask::Ping {
-                    peer,
-                    contact,
-                    crypt: standing.crypt,
+            let buddy = record
+                .candidate
+                .and_then(|candidate| candidate.buddy)
+                .and_then(|buddy| {
+                    Some(BuddyRoad {
+                        buddy_id: buddy.buddy_id,
+                        buddy_udp: buddy.buddy_udp?,
+                    })
                 });
-            } else {
-                standing.recheck_at = Some(now + REASK_RECHECK);
+            match (gates.reachable, buddy) {
+                (true, _) if !sx_due => {
+                    standing.udp_pending = true;
+                    standing.recheck_at = None;
+                    due.push(Reask::Ping {
+                        peer,
+                        contact,
+                        crypt: standing.crypt,
+                    });
+                }
+                (false, Some(buddy)) => {
+                    standing.udp_pending = true;
+                    standing.recheck_at = None;
+                    due.push(Reask::ThroughBuddy {
+                        peer,
+                        contact,
+                        buddy,
+                    });
+                }
+                _ => standing.recheck_at = Some(now + REASK_RECHECK),
             }
         }
         due

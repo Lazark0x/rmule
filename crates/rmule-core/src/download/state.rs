@@ -227,17 +227,21 @@ pub(crate) enum Decision {
     /// Resolving a connected-server `None` to the live server it was filed
     /// under is the runner's concern.
     EndCallback { key: CallbackKey },
-    /// Send `ping`, a source's `OP_REASKFILEPING` (`0x90`), out the shared
+    /// Send `ping`, a source's `OP_REASKFILEPING` (`0x90`) or the
+    /// `OP_REASKCALLBACKUDP` (`0x94`) its buddy relays, out the shared
     /// client-UDP socket (ADR-0057). The brain framed it for the source
     /// standing at `peer` and set its one-in-flight latch; the runner claims
-    /// the endpoint in the **Reask Routes** first (ADR-0107) and, when another
-    /// download's ping holds it, hands it back through
+    /// `answered_from` in the **Reask Routes** first (ADR-0107) and, when
+    /// another download's ping holds it, hands it back through
     /// [`DownloadState::on_ping_held`].
     SendReaskPing {
         /// The endpoint the source's record stands at.
         peer: PeerEndpoint,
         /// The datagram, its client-UDP destination and crypt target.
         ping: crate::client_udp::ClientUdpSend,
+        /// The source's client-UDP endpoint its answer comes from: the
+        /// ping's destination, or past a buddy, the source's own.
+        answered_from: PeerEndpoint,
     },
     /// Every part is verified — assemble and finalize the file.
     Finalize,

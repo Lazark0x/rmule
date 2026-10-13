@@ -12,6 +12,7 @@ use crate::download::source_book::{NO_NEEDED_PARTS_MULTIPLIER, REASK_RECHECK, UD
 use crate::own_identity::ConnectedSession;
 use crate::service::IgnoredReaskReply;
 
+mod buddy;
 mod exchange_pool;
 mod no_file;
 mod no_needed_parts;
@@ -178,11 +179,20 @@ fn the_udp_ping_fires_first_and_the_latch_bars_a_second_ping() {
     let mut state = standing();
     let due = state.on_tick(t0() + udp_due());
     assert_eq!(pinged(&due), vec![contact(peer(1))]);
-    let Some(Decision::SendReaskPing { peer: at, ping }) = due.first() else {
+    let Some(Decision::SendReaskPing {
+        peer: at,
+        ping,
+        answered_from,
+    }) = due.first()
+    else {
         panic!("one ping: {due:?}");
     };
     assert_eq!(*at, peer(1));
     assert_eq!(ping.datagram[..2], [0xC5, 0x90]);
+    assert_eq!(
+        *answered_from, ping.to,
+        "a direct ping is answered where it went"
+    );
 
     assert!(
         pinged(&state.on_tick(t0() + udp_due() + Duration::from_secs(5))).is_empty(),

@@ -36,6 +36,28 @@ fn the_ping_to_a_udpv4_sharer_is_the_captured_one() {
     );
 }
 
+/// The `0x94` through a buddy carries that same ping after the buddy-ID: the
+/// tail a buddy relays as `0x9A`, re-framed as the firewalled source reads it,
+/// is the captured `0x90` byte for byte (stock 2.3.3
+/// `DownloadClient.cpp:1297-1318`).
+#[test]
+fn the_reask_through_a_buddy_relays_the_captured_ping() {
+    let buddy_id = [0xB0; rmule_peer::BUDDY_ID_LEN];
+    let datagram = requester::ping_via_buddy(
+        buddy_id,
+        FileHash::from_bytes(FILE_HASH),
+        UDP_V4,
+        UDP_V4,
+        || PartBitmap::downloader_empty(FILE_SIZE),
+    );
+    let relayed = rmule_peer::ReaskCallbackUdp::decode_udp(&datagram).expect("a 0x94");
+    assert_eq!(relayed.buddy_id, buddy_id);
+    assert_eq!(
+        rmule_peer::peer_udp::responder::relayed_ping(&relayed.forwarded),
+        load(AMULE_ACK_DIR, "reask_ping_0x90.bin")
+    );
+}
+
 /// aMule's `0x91` to that ping reads as rank 1 with its complete-source status,
 /// because both ends are UDPv4. Read as if one end were not UDPv4, it is
 /// misframed.

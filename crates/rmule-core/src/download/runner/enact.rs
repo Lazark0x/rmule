@@ -226,11 +226,16 @@ where
                         .update_worker(ctx.download_id, slot, |entry| entry.mark_remembered());
                 }
             }
-            Decision::SendReaskPing { peer, ping } => {
-                // One `0x90` in flight per peer endpoint across the Download
-                // Set (ADR-0107): the reply names no file, so a second
-                // download's ping to this endpoint waits, its latch handed
-                // back to the brain, until the first is answered or lapses.
+            Decision::SendReaskPing {
+                peer,
+                ping,
+                answered_from,
+            } => {
+                // One reask in flight per answering endpoint across the
+                // Download Set (ADR-0107): the reply names no file, so a
+                // second download's reask answered there waits, its latch
+                // handed back to the brain, until the first is answered or
+                // lapses.
                 let at = now();
                 let claimed = ctx
                     .runner
@@ -238,7 +243,7 @@ where
                     .reask_reply_sink
                     .lock()
                     .expect("reask reply sink mutex")
-                    .claim_ping(ping.to, ctx.download_id, at);
+                    .claim_ping(answered_from, ctx.download_id, at);
                 if !claimed {
                     ctx.state.on_ping_held(at, peer);
                     continue;

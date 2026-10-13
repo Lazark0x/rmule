@@ -17,7 +17,8 @@ use crate::download::source_book::{Answer, Reask, ReaskGates};
 use crate::service::{DownloadEvent, IgnoredReaskReply};
 
 impl DownloadState {
-    /// The reask sweep at `now` (ADR-0057): each due `0x90` leaves as a
+    /// The reask sweep at `now` (ADR-0057): each due `0x90`, and each `0x94`
+    /// a firewalled source is reasked by through its buddy, leaves as a
     /// [`Decision::SendReaskPing`], and each TCP full ask hands its record to
     /// its road, which the fill that follows opens.
     pub(super) fn reask_sweep(&mut self, now: Instant, out: &mut Vec<Decision>) {
@@ -42,6 +43,27 @@ impl DownloadState {
                     out.push(Decision::SendReaskPing {
                         peer,
                         ping: ClientUdpSend::to_peer(contact.endpoint, ping, crypt),
+                        answered_from: contact.endpoint,
+                    });
+                }
+                Reask::ThroughBuddy {
+                    peer,
+                    contact,
+                    buddy,
+                } => {
+                    let ping = requester::ping_via_buddy(
+                        *buddy.buddy_id.as_bytes(),
+                        self.file_hash,
+                        self.our_udp_version,
+                        contact.version,
+                        || self.our_part_status(),
+                    );
+                    // Plain, as aMule sends it to a buddy whose key it does
+                    // not hold (`DownloadClient.cpp:1318`).
+                    out.push(Decision::SendReaskPing {
+                        peer,
+                        ping: ClientUdpSend::plaintext(PeerEndpoint::V4(buddy.buddy_udp), ping),
+                        answered_from: contact.endpoint,
                     });
                 }
                 Reask::FullAsk { peer } => {
