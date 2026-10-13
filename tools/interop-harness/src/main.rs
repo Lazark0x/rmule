@@ -360,9 +360,30 @@ enum HarnessCommand {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let reads_only = cli.command.reads_only();
     let result = dispatch(cli.command);
-    sweep_dangling_bench_stage_images();
+    if !reads_only {
+        sweep_dangling_bench_stage_images();
+    }
     result
+}
+
+impl HarnessCommand {
+    /// Whether the subcommand only reads a retained run: it builds nothing,
+    /// so it leaves the image store alone. Its sweep would race a build
+    /// running beside it: the legacy builder's step images stay untagged
+    /// until the build's tag lands, and a prune removes them under it.
+    fn reads_only(&self) -> bool {
+        matches!(
+            self,
+            Self::Ed2kFrames { .. }
+                | Self::PeerUdpReaskScore(_)
+                | Self::PeerLowIdCallbackReaskScore(_)
+                | Self::PeerUdpReaskEmitScore(_)
+                | Self::PeerStreamingWindowScore(_)
+                | Self::PeerPartialShareScore(_)
+        )
+    }
 }
 
 /// Best-effort: run after every subcommand, success or failure. A harness
