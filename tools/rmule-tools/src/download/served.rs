@@ -80,7 +80,29 @@ impl ServedArgs {
         if self.share.is_empty() {
             return Ok(None);
         }
-        share_files(core, &self.share, |_| {}).await.map(Some)
+        self.share_now(core, &self.share).await.map(Some)
+    }
+
+    /// Share `files` from a throwaway directory, answering afterwards the
+    /// download directory's confirm when it came during the pass.
+    async fn share_now(&self, core: &mut Core, files: &[PathBuf]) -> Result<ScratchShare> {
+        let mut asked = Vec::new();
+        let share = share_files(core, files, |event| {
+            if let CoreEvent::Scan(ScanEvent::ConsentRequested {
+                dir, adding: false, ..
+            }) = event
+            {
+                asked.push(dir.clone());
+            }
+        })
+        .await?;
+        if self.share_download_dir {
+            for dir in asked {
+                core.send(CoreCommand::Scan(ScanCommand::Answer { dir, share: true }))
+                    .await?;
+            }
+        }
+        Ok(share)
     }
 
     /// Print `event` as its record, stamped when asked, and answer the
@@ -192,6 +214,7 @@ impl Gates {
 /// If the core no longer takes commands, or the share fails.
 pub(crate) async fn pause_then_share(
     core: &mut Core,
+    served: &ServedArgs,
     ids: &[u64],
     after: &[PathBuf],
     shared: &mut Option<ScratchShare>,
@@ -218,7 +241,7 @@ pub(crate) async fn pause_then_share(
                 share.add(file)?;
             }
         }
-        None => *shared = Some(share_files(core, after, |_| {}).await?),
+        None => *shared = Some(served.share_now(core, after).await?),
     }
     println!("download shared_after_pause files={}", after.len());
     Ok(())

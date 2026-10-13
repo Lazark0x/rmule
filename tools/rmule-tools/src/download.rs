@@ -302,6 +302,7 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
                     let ids: Vec<u64> = endings.queued().collect();
                     served::pause_then_share(
                         &mut core,
+                        &args.served,
                         &ids,
                         &args.gates.share_after_pause,
                         &mut shared,
