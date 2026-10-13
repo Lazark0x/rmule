@@ -11,7 +11,7 @@
 mod carry;
 mod fs;
 mod hash;
-pub(crate) mod plan;
+mod plan;
 mod progress;
 mod report;
 #[cfg(test)]
@@ -35,6 +35,8 @@ use crate::registry::SharedFileEntry;
 pub use fs::FsDirectorySource;
 pub(crate) use hash::HashTurn;
 use plan::{FoundFile, list, plan};
+#[cfg(test)]
+pub(crate) use plan::skipped_name;
 pub use progress::{
     DirectoryOffer, DirectoryRole, DirectoryScanDiagnostics, DirectoryState, ScanPhase,
     ScanSummary, SharedDirectoryDiagnostics,

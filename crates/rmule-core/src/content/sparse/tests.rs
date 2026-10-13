@@ -102,7 +102,7 @@ fn the_scan_passes_over_the_probe_file() {
         ".film.bin.part.holeprobe",
         "beside the part file"
     );
-    assert!(crate::directory_scan::plan::skipped_name(
+    assert!(crate::directory_scan::skipped_name(
         probe.file_name().unwrap()
     ));
 }
