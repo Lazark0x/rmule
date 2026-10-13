@@ -200,9 +200,9 @@ the file's one registry row, from the record, without reading the file.**
 ### What the operator sees
 
 Core says `ServeEvent::PartialOffered { file_hash }` when a download begins to offer its parts and
-`ServeEvent::PartialWithdrawn { file_hash, cause }` when it stops, `cause` a code — completed (a
-`FileShared` follows), ended (the download's own event says why), held back, changed (a read found
-the part file not the one it named), unreadable. The sentences are written in `rmule-words`. Shared
+`ServeEvent::PartialWithdrawn { file_hash, cause }` when it stops, `cause` a code — completed (the
+row's `FileShared` is said just before it), ended (the download's own event says why), held back,
+changed (a read found the part file not the one it named), unreadable. The sentences are written in `rmule-words`. Shared
 Files lists each Partial Share under the download's name and size with the State `partial`, ranked
 after offered; a download whose Offer Check has not passed is not listed, since it offers nothing.
 The upload-peers pane names a partial upload's file from it.
