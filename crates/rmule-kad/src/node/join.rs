@@ -5,7 +5,10 @@
 //! pass that reaches a merged table lives in `small_timer`: it never gates on
 //! join state.
 
+use std::net::IpAddr;
 use std::time::Duration;
+
+use rmule_primitives::Informant;
 
 use super::{KadEvent, KadNode, KadNodeDiagnostic, PendingBootstrap};
 use crate::lookup_walk::KadWalkPurpose;
@@ -257,8 +260,10 @@ impl KadNode {
             sender.version,
             KadContactState::Responded,
         );
+        // The responder vouches for its own address and for every row it sent.
+        let informant = Informant::Party(IpAddr::V4(from.ip()));
         let known = self.routing.get(sender.id).is_some();
-        if self.store(now, responder) {
+        if self.store(now, responder, informant) {
             // aMule adds the responder with `update = true`
             // (`KademliaUDPListener.cpp:559`): a known one is marked alive.
             if known {
@@ -273,7 +278,7 @@ impl KadNode {
                 continue;
             }
             let hearsay = row.in_state(KadContactState::Pending);
-            if self.store(now, hearsay) {
+            if self.store(now, hearsay, informant) {
                 self.probe(now, hearsay.id(), hearsay.endpoint(), true);
             }
         }

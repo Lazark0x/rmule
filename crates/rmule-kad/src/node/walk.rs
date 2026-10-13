@@ -8,7 +8,10 @@
 //! timeouts and budgets are rmule policy — deterministic knobs for the sim
 //! tier, not wire compatibility.
 
+use std::net::IpAddr;
 use std::time::Duration;
+
+use rmule_primitives::Informant;
 
 use super::{KadCallbackWalkEnd, KadEvent, KadNode, KadNodeDiagnostic};
 use crate::buddy::BuddyMessage;
@@ -105,18 +108,23 @@ impl KadNode {
         target: KadId,
         contacts: &[KadContact],
     ) {
-        // IP-filtered rows are dropped before any walk sees them (aMule
-        // `ProcessKademlia2Response`, `KademliaUDPListener.cpp#L733` —
-        // its filter runs before the rows reach the search manager *or* the
-        // routing zone), so a walk never dials a filtered candidate.
-        let (admitted, refused): (Vec<KadContact>, Vec<KadContact>) = contacts
-            .iter()
-            .copied()
-            .partition(|contact| self.contact_admission.admits(contact.endpoint().ip()));
-        for contact in refused {
-            self.emit_diagnostic(KadNodeDiagnostic::ContactIpFiltered {
-                endpoint: contact.endpoint(),
-            });
+        // A row no node can be at, then an IP-filtered one, is dropped before
+        // any walk sees it (aMule `ProcessKademlia2Response`,
+        // `KademliaUDPListener.cpp:732-733` — its checks run before the rows
+        // reach the search manager *or* the routing zone), so a walk never
+        // dials either. The responder is the party that named every row
+        // (ADR-0085).
+        let informant = Informant::Party(IpAddr::V4(from.ip()));
+        let mut admitted = Vec::with_capacity(contacts.len());
+        for &contact in contacts {
+            let endpoint = contact.endpoint();
+            if !crate::net::may_be_a_contact(informant, endpoint, contact.version()) {
+                self.emit_diagnostic(KadNodeDiagnostic::ContactRefused { endpoint });
+            } else if !self.contact_admission.admits(endpoint.ip()) {
+                self.emit_diagnostic(KadNodeDiagnostic::ContactIpFiltered { endpoint });
+            } else {
+                admitted.push(contact);
+            }
         }
         let consumed = self.walks.iter_mut().find_map(|walk| {
             if walk.target() != target {

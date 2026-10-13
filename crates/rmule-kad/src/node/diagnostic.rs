@@ -189,6 +189,17 @@ pub enum KadNodeDiagnostic {
         /// The cap that refused it.
         cap: crate::KadAdmissionCap,
     },
+    /// A contact intake refused because no Kad node can be at its endpoint:
+    /// an address in a Reserved Range the party that named it cannot vouch
+    /// for (ADR-0085), port `0`, or port `53` on a contact older than Kad
+    /// version 6 — aMule's `IsGoodIPPort` and DNS-port rule at
+    /// `CRoutingZone::Add` (`RoutingZone.cpp:405-406`) and on every
+    /// `KADEMLIA2_RES` row (`KademliaUDPListener.cpp:732-733`). The contact is
+    /// never stored, probed, walked, or dialed.
+    ContactRefused {
+        /// The endpoint concerned.
+        endpoint: KadNodeEndpoint,
+    },
     /// A request opcode's per-`(IP, opcode)` leaky bucket exceeded its
     /// per-minute rate (ADR-0064); the datagram is dropped before
     /// dispatch. Responses are never bucketed — solicitation correlation

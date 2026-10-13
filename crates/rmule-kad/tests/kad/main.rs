@@ -26,6 +26,7 @@ mod truncation;
 mod contact_admission;
 mod merge_contacts;
 mod routing_caps;
+mod reserved_contacts;
 mod routing_census;
 mod routing_table;
 mod small_timer;

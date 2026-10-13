@@ -8,9 +8,17 @@
 //! Reserved Range check ([`rmule_primitives::is_reserved_ipv4`], ADR-0085), read
 //! for the question their caller asks.
 
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 
-use crate::KadId;
+use rmule_primitives::Informant;
+
+use crate::flood::DNS_CONFUSION_PORT;
+use crate::{KadId, KadNodeEndpoint};
+
+/// The first Kad version whose datagrams are obfuscated, so a contact of an
+/// older one on port `53` could be a confused DNS reply (aMule's
+/// `!(port == 53 && version <= 5)`).
+const DNS_PORT_SAFE_VERSION: u8 = 6;
 
 /// The publish tolerance: a non-LAN publish is dropped unless the XOR distance's
 /// most significant 32-bit word is at most this (aMule's `SEARCHTOLERANCE`).
@@ -47,6 +55,25 @@ pub(crate) fn is_good_ip_port(ip: Ipv4Addr, port: u16) -> bool {
     port != 0 && !rmule_primitives::is_reserved_ipv4(ip) && !is_lan_ip(ip)
 }
 
+/// Whether a contact `informant` named at `endpoint`, speaking Kad `version`,
+/// can be a Kad node: its address lies in no Reserved Range the informant
+/// cannot vouch for ([`Informant::admits`], ADR-0085), its port is not `0`,
+/// and it is not on port `53` below Kad version 6. That is aMule's
+/// `IsGoodIPPort` and DNS-port rule at `CRoutingZone::Add`
+/// (`RoutingZone.cpp:405-406`) and on every `KADEMLIA2_RES` row
+/// (`KademliaUDPListener.cpp:732-733`), without its LAN filter: a LAN contact
+/// is a contact.
+pub(crate) fn may_be_a_contact(
+    informant: Informant,
+    endpoint: KadNodeEndpoint,
+    version: u8,
+) -> bool {
+    let port = endpoint.udp_port();
+    informant.admits(IpAddr::V4(endpoint.ip()))
+        && port != 0
+        && !(port == DNS_CONFUSION_PORT && version < DNS_PORT_SAFE_VERSION)
+}
+
 /// Whether some informant could make `ip` one host's address: it lies in no
 /// Reserved Range, or it is loopback, which stands on an informant from this
 /// host ([`rmule_primitives::Informant::admits`], ADR-0085).
@@ -58,7 +85,7 @@ pub(crate) fn is_good_ip_port(ip: Ipv4Addr, port: u16) -> bool {
 /// that shares a host with its publisher truly observes loopback, which is a
 /// peer only when that storer is on our host too.
 pub(crate) fn may_name_a_host(ip: Ipv4Addr) -> bool {
-    rmule_primitives::Informant::Own.admits(std::net::IpAddr::V4(ip))
+    Informant::Own.admits(IpAddr::V4(ip))
 }
 
 /// Whether a *claimed* IPv4 may be the target of a datagram rmule sends on
