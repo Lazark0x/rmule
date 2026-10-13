@@ -25,6 +25,7 @@ mod download_ends;
 mod download_rest;
 mod natt_counters;
 mod natt_prediction;
+mod part_file;
 mod search_counters;
 mod server_health;
 mod uploads;
@@ -191,8 +192,10 @@ impl DiagnosticsState {
     /// file missing: the size fixes the part count (`part_count(size)`), so
     /// the picture exists before the scheduler's first settle or the hash set.
     /// A row already open — one at rest, which a resume runs on —
-    /// keeps its part map and counters and restarts its clock, since
-    /// `started_at` is the run's (ADR-0094).
+    /// keeps its part map, counters and last Allocated Bytes reading and
+    /// restarts its clock, since `started_at` is the run's (ADR-0094); its
+    /// Hole Verdict is the last run's, so it reads unknown until this run's
+    /// probe answers (ADR-0111).
     pub fn ensure_download(
         &self,
         download_id: DownloadId,
@@ -206,6 +209,7 @@ impl DiagnosticsState {
             .and_modify(|row| {
                 row.started_at = Instant::now();
                 row.dial_ends.clear();
+                row.hole_verdict = None;
             })
             .or_insert_with(|| DownloadDiagnostics {
                 download_id,
@@ -220,6 +224,8 @@ impl DiagnosticsState {
                 dials_ended: 0,
                 reask_replies_ignored: 0,
                 dial_ends: BTreeMap::new(),
+                allocated_bytes: None,
+                hole_verdict: None,
             });
     }
 

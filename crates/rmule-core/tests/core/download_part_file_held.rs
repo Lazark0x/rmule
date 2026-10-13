@@ -41,7 +41,26 @@ struct Leg {
 }
 
 impl Leg {
+    /// The restored run, waiting for a connection with its part file held.
     async fn waiting_with_part_zero() -> Self {
+        let mut leg = Self::with_part_zero(true).await;
+        next_expected(
+            &mut leg.core,
+            "the restored run waiting, its file held",
+            |event| {
+                matches!(
+                    event,
+                    CoreEvent::Download(DownloadEvent::WaitingForConnection { .. })
+                )
+            },
+        )
+        .await;
+        leg
+    }
+
+    /// The download stored with part 0 verified, and a core attached to it
+    /// that starts it again only when `restore`.
+    async fn with_part_zero(restore: bool) -> Self {
         let mut bytes = vec![0x5A; PART];
         bytes.push(0xA5);
         let link = file_link("held.bin", &bytes);
@@ -73,27 +92,19 @@ impl Leg {
         .unwrap();
         repo.set_lifecycle(id, DownloadLifecycle::Active).unwrap();
 
-        let mut core = Core::builder(
+        let builder = Core::builder(
             CoreConfig {
                 download_restore_pace: Duration::from_millis(10),
                 ..CoreConfig::default()
             },
             store,
         )
-        .settings(crate::fixture::attach_settings().await)
-        .restore_at_attach()
-        .build();
-        next_expected(
-            &mut core,
-            "the restored run waiting, its file held",
-            |event| {
-                matches!(
-                    event,
-                    CoreEvent::Download(DownloadEvent::WaitingForConnection { .. })
-                )
-            },
-        )
-        .await;
+        .settings(crate::fixture::attach_settings().await);
+        let core = if restore {
+            builder.restore_at_attach().build()
+        } else {
+            builder.build()
+        };
         Self {
             core,
             id,
@@ -381,4 +392,54 @@ async fn a_verified_file_whose_rename_is_refused_keeps_its_parts_and_fails_by_th
     assert!(nothing_dropped(&events), "{events:#?}");
     assert_eq!(leg.repo.verified_parts(leg.id).unwrap().len(), 2);
     assert_eq!(std::fs::read(leg.part_path()).unwrap(), leg.bytes);
+}
+
+/// The run reads its part file's Allocated Bytes when it holds the file and
+/// after each part, and probes its disk once (ADR-0111): after the run's first
+/// persisted part the row carries both levels, and keeps them after the run.
+#[tokio::test]
+async fn a_run_publishes_its_part_files_allocated_bytes_and_hole_verdict() {
+    let mut leg = Leg::waiting_with_part_zero().await;
+    leg.connect().await;
+
+    let events = leg.events_until_the_run_ends().await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, DownloadEvent::PartVerified { part_index: 1, .. })),
+        "part 1 is the run's first persisted part: {events:#?}"
+    );
+    let row = leg
+        .core
+        .diagnostics_snapshot()
+        .downloads
+        .remove(&leg.id)
+        .expect("the row outlives the run");
+    let allocated = row.allocated_bytes.expect("read after the part");
+    assert!(
+        allocated >= ED2K_PART_SIZE,
+        "part 0's bytes take their space: {allocated}"
+    );
+    assert!(row.hole_verdict.is_some(), "the run's probe answered");
+}
+
+#[tokio::test]
+async fn a_row_at_rest_after_attach_has_no_part_file_reading() {
+    let mut leg = Leg::with_part_zero(false).await;
+    next_expected(&mut leg.core, "the download reported at attach", |event| {
+        matches!(
+            event,
+            CoreEvent::Download(DownloadEvent::DownloadRecovered { .. })
+        )
+    })
+    .await;
+
+    let row = leg
+        .core
+        .diagnostics_snapshot()
+        .downloads
+        .remove(&leg.id)
+        .expect("the row at rest");
+    assert_eq!(row.allocated_bytes, None, "no run has read the part file");
+    assert_eq!(row.hole_verdict, None, "no run has probed its disk");
 }

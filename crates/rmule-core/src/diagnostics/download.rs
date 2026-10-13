@@ -6,6 +6,7 @@ use std::time::Instant;
 use super::{
     ClientSoftware, DownloadId, DownloadMetadata, FileHash, PeerEndpoint, PeerRetirementReason,
 };
+use crate::content::HoleVerdict;
 use crate::service::DialEnd;
 
 /// Stable identifier for one peer worker slot inside one download.
@@ -288,6 +289,18 @@ pub struct DownloadDiagnostics {
     /// peer and the run's end, is cleared when a run starts, and at most
     /// [`DIAL_ENDS_KEPT`] are kept, the oldest leaving first.
     pub dial_ends: BTreeMap<PeerEndpoint, SourceDialEnd>,
+    /// **Allocated Bytes**: what the filesystem reserved for the `.part`,
+    /// read on the run's held handle when it holds the file and after each
+    /// part written (ADR-0111). A storage reading, not a counter: it falls
+    /// when a gap is punched and may exceed the file's length; core computes
+    /// no ratio from it. `None` when not read, or when the last reading
+    /// failed. The row keeps the last reading after the run ends; the next
+    /// run's first reading replaces it.
+    pub allocated_bytes: Option<u64>,
+    /// The run's **Hole Verdict**: whether the disk under the `.part` holds
+    /// holes, as the run's Hole Probe measured (ADR-0111). `None` from a run's
+    /// start until its probe answers; the row keeps it after the run.
+    pub hole_verdict: Option<HoleVerdict>,
 }
 
 /// The most [`DownloadDiagnostics::dial_ends`] a row keeps.

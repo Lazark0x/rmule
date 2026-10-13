@@ -148,7 +148,7 @@ pub use clients_met::{
     CLIENTS_MET_FILE, CREDITFILE_VERSION, ClientsMetError, CreditRecord, EXPIRY_SECS,
     load_clients_met, save_clients_met, seed_credit_ring,
 };
-pub use content::{ContentFileStore, PartFileChange, RestoredProgress, Revalidation};
+pub use content::{ContentFileStore, HoleVerdict, PartFileChange, RestoredProgress, Revalidation};
 pub use credit::{CreditStore, CreditTotals, KeyBinding, PeerCredit, credit_modifier};
 pub use data_dir::{DataDir, DataDirSource, home_dir, resolve_data_dir};
 pub use directory_scan::{

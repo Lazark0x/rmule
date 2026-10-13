@@ -11,7 +11,7 @@
 mod carry;
 mod fs;
 mod hash;
-mod plan;
+pub(crate) mod plan;
 mod progress;
 mod report;
 #[cfg(test)]

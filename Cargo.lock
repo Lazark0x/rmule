@@ -2781,6 +2781,7 @@ dependencies = [
  "rmule-ed2k",
  "rmule-kad",
  "rmule-net",
+ "rmule-os",
  "rmule-peer",
  "rmule-primitives",
  "rmule-store",

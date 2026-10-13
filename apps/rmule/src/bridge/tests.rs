@@ -123,6 +123,8 @@ fn set_byte_levels(snapshot: &Arc<Mutex<DiagnosticsSnapshot>>, received: u64, se
             known_sources: 0,
             dials_ended: 0,
             dial_ends: Default::default(),
+            allocated_bytes: None,
+            hole_verdict: None,
             reask_replies_ignored: 0,
         },
     );

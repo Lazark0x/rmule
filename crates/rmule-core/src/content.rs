@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use tokio::fs::{self, OpenOptions};
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 
 use rmule_primitives::FileHash;
 
@@ -22,34 +22,45 @@ use crate::{
 pub struct ContentFileStore;
 
 mod held;
+mod sparse;
 
 pub use held::PartFileChange;
 pub(crate) use held::{HeldPartFile, HeldWriteError};
+pub use sparse::HoleVerdict;
+pub(crate) use sparse::probe_holes;
 
 impl ContentFileStore {
     /// Write `bytes` into the `.part` file at absolute `offset`, creating the
     /// file and its parent directory if needed — for a part file written
     /// outside a run (a test's or a tool's seed). A run never writes by path:
     /// it writes through its held handle (ADR-0094, "The run holds its part
-    /// file"). Never truncates, and flushed before returning.
+    /// file"). Never truncates, and handed to the operating system before
+    /// returning. It is the run's write all the same (ADR-0111): the sparse
+    /// flag set, the Extension Gap punched, so a seeded part file is as sparse
+    /// as one a run wrote.
     pub async fn write_verified_part(
         paths: &DownloadPaths,
         offset: u64,
         bytes: &[u8],
     ) -> Result<(), CoreError> {
-        if let Some(parent) = paths.part_path().parent() {
-            fs::create_dir_all(parent).await.map_err(io_error)?;
-        }
-        let mut file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .open(paths.part_path())
-            .await
-            .map_err(io_error)?;
-        file.seek(SeekFrom::Start(offset)).await.map_err(io_error)?;
-        file.write_all(bytes).await.map_err(io_error)?;
-        file.flush().await.map_err(io_error)
+        let path = paths.part_path().to_path_buf();
+        let bytes = bytes.to_vec();
+        let written = tokio::task::spawn_blocking(move || {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(false)
+                .open(&path)?;
+            let punches = rmule_os::sparse::set_sparse(&file).is_ok();
+            let end = file.metadata()?.len();
+            sparse::write_at(&file, offset, &bytes, punches.then_some(end))
+        })
+        .await
+        .map_err(|error| io_error(std::io::Error::other(error)))?;
+        written.map_err(io_error)
     }
 
     /// Read exactly `len` bytes from `path` starting at `offset`. A short file
@@ -94,13 +105,14 @@ impl ContentFileStore {
         })
     }
 
-    /// Remove the `.part` file. Idempotent: an already-absent file is success,
-    /// so a cancel after a finalize is not an error.
+    /// Remove the `.part` file and the Hole Probe's file beside it.
+    /// Idempotent: an already-absent file is success, so a cancel after a
+    /// finalize is not an error.
     pub async fn delete_part(paths: &DownloadPaths) -> Result<(), CoreError> {
-        match fs::remove_file(paths.part_path()).await {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(io_error(error)),
+        remove_if_present(paths.part_path()).await?;
+        match sparse::probe_path(paths.part_path()) {
+            Some(probe) => remove_if_present(&probe).await,
+            None => Ok(()),
         }
     }
 }
@@ -244,6 +256,14 @@ async fn read_exact_at(path: &Path, offset: u64, len: usize) -> std::io::Result<
     let mut bytes = vec![0; len];
     file.read_exact(&mut bytes).await?;
     Ok(bytes)
+}
+
+async fn remove_if_present(path: &Path) -> Result<(), CoreError> {
+    match fs::remove_file(path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(io_error(error)),
+    }
 }
 
 fn io_error(error: std::io::Error) -> CoreError {

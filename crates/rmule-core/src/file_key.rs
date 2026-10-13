@@ -39,16 +39,9 @@ impl FileKey {
         std::fs::metadata(path).map(|meta| Self::of_metadata(&meta))
     }
 
-    /// [`Self::at`], off the runtime's threads.
-    pub(crate) async fn at_async(path: &Path) -> io::Result<Self> {
-        tokio::fs::metadata(path)
-            .await
-            .map(|meta| Self::of_metadata(&meta))
-    }
-
     /// The key of the file `file` holds open.
-    pub(crate) async fn of_open(file: &tokio::fs::File) -> io::Result<Self> {
-        file.metadata().await.map(|meta| Self::of_metadata(&meta))
+    pub(crate) fn of_open(file: &std::fs::File) -> io::Result<Self> {
+        file.metadata().map(|meta| Self::of_metadata(&meta))
     }
 }
 
@@ -76,21 +69,9 @@ impl FileKey {
         Self::of_handle(&file)
     }
 
-    /// [`Self::at`], off the runtime's threads.
-    pub(crate) async fn at_async(path: &Path) -> io::Result<Self> {
-        let path = path.to_path_buf();
-        tokio::task::spawn_blocking(move || Self::at(&path))
-            .await
-            .map_err(io::Error::other)?
-    }
-
-    /// The key of the file `file` holds open, read through a second handle
-    /// to it.
-    pub(crate) async fn of_open(file: &tokio::fs::File) -> io::Result<Self> {
-        let file = file.try_clone().await?.into_std().await;
-        tokio::task::spawn_blocking(move || Self::of_handle(&file))
-            .await
-            .map_err(io::Error::other)?
+    /// The key of the file `file` holds open.
+    pub(crate) fn of_open(file: &std::fs::File) -> io::Result<Self> {
+        Self::of_handle(file)
     }
 }
 
@@ -98,25 +79,24 @@ impl FileKey {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn a_path_and_a_handle_on_it_key_the_same_file_and_another_file_does_not() {
+    #[test]
+    fn a_path_and_a_handle_on_it_key_the_same_file_and_another_file_does_not() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("held.bin");
         let other = dir.path().join("other.bin");
         std::fs::write(&path, b"held").unwrap();
         std::fs::write(&other, b"other").unwrap();
-        let open = tokio::fs::File::open(&path).await.unwrap();
+        let open = std::fs::File::open(&path).unwrap();
 
-        let held = FileKey::of_open(&open).await.unwrap();
+        let held = FileKey::of_open(&open).unwrap();
         assert_eq!(FileKey::at(&path).unwrap(), held);
-        assert_eq!(FileKey::at_async(&path).await.unwrap(), held);
         let another = FileKey::at(&other).unwrap();
         assert_ne!(another, held);
         assert_eq!(another.volume, held.volume, "one directory, one volume");
 
         std::fs::rename(&other, &path).unwrap();
         assert_eq!(FileKey::at(&path).unwrap(), another);
-        assert_eq!(FileKey::of_open(&open).await.unwrap(), held);
+        assert_eq!(FileKey::of_open(&open).unwrap(), held);
     }
 
     #[test]

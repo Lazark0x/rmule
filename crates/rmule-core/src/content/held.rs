@@ -33,13 +33,19 @@
 //! until the last handle closes, the path cannot be opened, which is no proof
 //! of a change, and the next part is written into a file that is about to
 //! vanish.
+//!
+//! The handle is the **Sparse Part File**'s (ADR-0111): it carries the sparse
+//! flag on Windows, and each write is one blocking-pool call — the check, the
+//! positional write, the punch of its **Extension Gap**, and the **Allocated
+//! Bytes** reading — so no other operation is in flight on the handle while a
+//! raw-handle call runs on it.
 
-use std::io::ErrorKind;
+use std::fs::{File, OpenOptions};
+use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use tokio::fs::{self, File, OpenOptions};
-use tokio::io::{AsyncSeekExt, AsyncWriteExt, SeekFrom};
-
+use crate::content::sparse;
 use crate::file_key::FileKey;
 
 /// What a run found at its part file's path that is no longer the file it
@@ -80,13 +86,17 @@ pub(crate) enum HeldWriteError {
 /// The one open handle a run holds on its `.part` file.
 #[derive(Debug)]
 pub(crate) struct HeldPartFile {
-    file: File,
+    /// Shared with the blocking-pool call each write and check is.
+    file: Arc<File>,
     path: PathBuf,
     /// Which file the handle holds.
     key: FileKey,
     /// Where the highest part recorded in the file ends: a file shorter than
     /// this has lost parts.
     recorded_end: u64,
+    /// Whether a write punches its Extension Gap: off for the run when the
+    /// volume refused the sparse flag, where a punch writes zeros.
+    punches: bool,
 }
 
 impl HeldPartFile {
@@ -94,21 +104,32 @@ impl HeldPartFile {
     /// (with its parent directory) if absent; with parts recorded it must
     /// already be there, and a missing one is [`PartFileChange::Gone`] —
     /// never recreated behind the operator's back. `recorded_end` is where
-    /// the highest recorded part ends.
-    pub(crate) async fn hold(path: &Path, recorded_end: u64) -> Result<Self, HeldWriteError> {
+    /// the highest recorded part ends. The sparse flag is set once here; a
+    /// volume that refuses it is no error, but the run then punches nothing.
+    /// Answers the run-start Allocated Bytes reading too, `None` when it
+    /// failed.
+    pub(crate) async fn hold(
+        path: &Path,
+        recorded_end: u64,
+    ) -> Result<(Self, Option<u64>), HeldWriteError> {
+        let path = path.to_path_buf();
+        blocking(move || Self::hold_blocking(path, recorded_end)).await
+    }
+
+    fn hold_blocking(
+        path: PathBuf,
+        recorded_end: u64,
+    ) -> Result<(Self, Option<u64>), HeldWriteError> {
         let parts_recorded = recorded_end > 0;
         if !parts_recorded && let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .await
-                .map_err(HeldWriteError::Io)?;
+            std::fs::create_dir_all(parent).map_err(HeldWriteError::Io)?;
         }
         let opened = OpenOptions::new()
             .read(true)
             .write(true)
             .create(!parts_recorded)
             .truncate(false)
-            .open(path)
-            .await;
+            .open(&path);
         let file = match opened {
             Ok(file) => file,
             Err(error) if error.kind() == ErrorKind::NotFound => {
@@ -116,59 +137,67 @@ impl HeldPartFile {
             }
             Err(error) => return Err(HeldWriteError::Io(error)),
         };
-        let key = FileKey::of_open(&file).await.map_err(HeldWriteError::Io)?;
-        let held = Self {
-            key,
-            file,
-            path: path.to_path_buf(),
-            recorded_end,
+        let key = FileKey::of_open(&file).map_err(HeldWriteError::Io)?;
+        let punches = match rmule_os::sparse::set_sparse(&file) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::debug!(%error, "the part file's volume refused the sparse flag");
+                false
+            }
         };
-        held.check().await.map_err(HeldWriteError::Changed)?;
-        Ok(held)
+        check_file(&file, &path, key, recorded_end).map_err(HeldWriteError::Changed)?;
+        let allocated = rmule_os::sparse::allocated_bytes(&file).ok();
+        let held = Self {
+            file: Arc::new(file),
+            path,
+            key,
+            recorded_end,
+            punches,
+        };
+        Ok((held, allocated))
     }
 
     /// Is the file at the path still the file held, and all of it? Reads the
     /// path's key and the handle's length.
     pub(crate) async fn check(&self) -> Result<(), PartFileChange> {
-        let at_path = match FileKey::at_async(&self.path).await {
-            Ok(key) => key,
-            Err(error) if error.kind() == ErrorKind::NotFound => return Err(PartFileChange::Gone),
-            // An unreadable key is not proof of a change; the write that
-            // follows says what is wrong.
-            Err(_) => return Ok(()),
-        };
-        if at_path != self.key {
-            return Err(PartFileChange::Replaced);
+        let file = Arc::clone(&self.file);
+        let path = self.path.clone();
+        let (key, recorded_end) = (self.key, self.recorded_end);
+        match tokio::task::spawn_blocking(move || check_file(&file, &path, key, recorded_end)).await
+        {
+            Ok(checked) => checked.map(|_| ()),
+            // A check that could not run is no proof of a change.
+            Err(_) => Ok(()),
         }
-        let len = match self.file.metadata().await {
-            Ok(meta) => meta.len(),
-            Err(_) => return Ok(()),
-        };
-        if len < self.recorded_end {
-            return Err(PartFileChange::Truncated { len });
-        }
-        Ok(())
     }
 
     /// Write one verified part at `offset` through the held handle, after
-    /// checking the file is still the one held. Never truncates, and flushed
-    /// before returning, so a crash cannot lose a part the store says it has.
+    /// checking the file is still the one held, and punch the Extension Gap
+    /// the write opened. Never truncates, and handed to the operating system
+    /// before returning, so a crash of the process cannot lose a part the
+    /// store says it has. Answers the Allocated Bytes reading after the
+    /// write, `None` when it failed.
     pub(crate) async fn write_part(
         &mut self,
         offset: u64,
         bytes: &[u8],
-    ) -> Result<(), HeldWriteError> {
-        self.check().await.map_err(HeldWriteError::Changed)?;
-        let written = async {
-            self.file.seek(SeekFrom::Start(offset)).await?;
-            self.file.write_all(bytes).await?;
-            self.file.flush().await
-        };
-        written.await.map_err(HeldWriteError::Io)?;
+    ) -> Result<Option<u64>, HeldWriteError> {
+        let file = Arc::clone(&self.file);
+        let path = self.path.clone();
+        let (key, recorded_end, punches) = (self.key, self.recorded_end, self.punches);
+        let part = bytes.to_vec();
+        let allocated = blocking(move || {
+            let end =
+                check_file(&file, &path, key, recorded_end).map_err(HeldWriteError::Changed)?;
+            sparse::write_at(&file, offset, &part, end.filter(|_| punches))
+                .map_err(HeldWriteError::Io)?;
+            Ok(rmule_os::sparse::allocated_bytes(&file).ok())
+        })
+        .await?;
         self.recorded_end = self
             .recorded_end
             .max(offset.saturating_add(bytes.len() as u64));
-        Ok(())
+        Ok(allocated)
     }
 
     /// The parts a truncation cut were dropped: the recorded parts now end at
@@ -176,6 +205,42 @@ impl HeldPartFile {
     pub(crate) fn parts_dropped(&mut self, recorded_end: u64) {
         self.recorded_end = recorded_end;
     }
+}
+
+/// Is the file at `path` the one `file` holds (`key`), and at least
+/// `recorded_end` long? Answers the handle's length, `None` when it could not
+/// be read: an unreadable key or length is not proof of a change, and the
+/// write that follows says what is wrong.
+fn check_file(
+    file: &File,
+    path: &Path,
+    key: FileKey,
+    recorded_end: u64,
+) -> Result<Option<u64>, PartFileChange> {
+    match FileKey::at(path) {
+        Ok(at_path) if at_path != key => return Err(PartFileChange::Replaced),
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => return Err(PartFileChange::Gone),
+        Err(_) => return Ok(None),
+    }
+    let Ok(meta) = file.metadata() else {
+        return Ok(None);
+    };
+    let len = meta.len();
+    if len < recorded_end {
+        return Err(PartFileChange::Truncated { len });
+    }
+    Ok(Some(len))
+}
+
+/// Run `work` on the blocking pool; a call that could not run is an I/O
+/// error.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, HeldWriteError> + Send + 'static,
+) -> Result<T, HeldWriteError> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| HeldWriteError::Io(io::Error::other(error)))?
 }
 
 #[cfg(test)]

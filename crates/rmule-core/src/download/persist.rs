@@ -17,7 +17,7 @@ use rmule_primitives::{Ed2kFileLink, PartHash};
 use tokio::sync::mpsc;
 
 use crate::adapters::{PeerTransferService, SourceLookupService};
-use crate::content::{HeldPartFile, HeldWriteError, PartFileChange, Revalidation};
+use crate::content::{HeldPartFile, HeldWriteError, PartFileChange, Revalidation, probe_holes};
 use crate::download::runner::RunnerContext;
 use crate::durable::VerifiedPartRecord;
 use crate::error::{DownloadFailure, FinalizeError, StorageIntegrityFault};
@@ -38,7 +38,9 @@ pub(super) enum PersistError {
 
 /// Open the run's part file and hold it (ADR-0094): created for a download
 /// with nothing recorded, opened as it is otherwise. A repaired run keeps the
-/// handle it already holds.
+/// handle it already holds. A newly held file publishes the run-start
+/// Allocated Bytes reading, then the run's Hole Probe runs beside the
+/// `.part` and publishes its verdict (ADR-0111); no verdict refuses the run.
 pub(super) async fn hold_part_file<S, P>(
     runner: &RunnerContext<S, P>,
     download_id: DownloadId,
@@ -58,9 +60,13 @@ pub(super) async fn hold_part_file<S, P>(
         .store
         .verified_parts(download_id)
         .map_err(store_failed)?;
-    match HeldPartFile::hold(record.paths().part_path(), recorded_end(&parts)).await {
-        Ok(file) => {
+    let part_path = record.paths().part_path();
+    match HeldPartFile::hold(part_path, recorded_end(&parts)).await {
+        Ok((file, allocated)) => {
             *held = Some(file);
+            let diagnostics = &runner.rt.diagnostics;
+            diagnostics.part_file_read(download_id, allocated);
+            diagnostics.hole_probed(download_id, probe_holes(part_path).await);
             Ok(())
         }
         Err(HeldWriteError::Changed(_)) => Err(DownloadFailure::StorageIntegrityFailed(
@@ -178,14 +184,17 @@ async fn write_through_held<S, P>(
     let mut held = runner.part_file.lock().await;
     let file = held.as_mut().ok_or_else(rejected)?;
     match file.write_part(record.offset, bytes).await {
-        Ok(()) => runner
-            .rt
-            .store
-            .record_verified_part(download_id, record)
-            .map_err(|error| {
-                tracing::warn!(%error, "a verified part could not be recorded");
-                PersistError::Ended(DownloadFailure::StoreFailed)
-            }),
+        Ok(allocated) => {
+            runner.rt.diagnostics.part_file_read(download_id, allocated);
+            runner
+                .rt
+                .store
+                .record_verified_part(download_id, record)
+                .map_err(|error| {
+                    tracing::warn!(%error, "a verified part could not be recorded");
+                    PersistError::Ended(DownloadFailure::StoreFailed)
+                })
+        }
         Err(HeldWriteError::Io(error)) => {
             tracing::warn!(%error, "a verified part could not be written to the part file");
             Err(rejected())
