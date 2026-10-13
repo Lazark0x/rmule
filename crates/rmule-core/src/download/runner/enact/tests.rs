@@ -389,7 +389,10 @@ mod server_callback_never_left {
             filter: &filter,
             dial: crate::dialable::DialPosition::default(),
         };
-        let row = SourceSighting::plain(PeerSource::new(ClientId::from_u32(7), 4662));
+        let row = SourceSighting::plain(
+            PeerSource::new(ClientId::from_u32(7), 4662),
+            rmule_primitives::Informant::Own,
+        );
         let opened = ctx
             .state
             .on_sightings(std::time::Instant::now(), Channel::Server, vec![row], &gate)
