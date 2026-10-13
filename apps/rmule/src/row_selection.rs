@@ -8,7 +8,7 @@
 //! `highlight_symbol`; a table that draws its own lines builds its gutter with
 //! [`gutter`] and finishes the selected row with [`mark_row`].
 //!
-//! Beside it every scrollable list keeps a [`viewport::Viewport`]: what part
+//! Beside it every scrollable list keeps a `Viewport` (`viewport`): what part
 //! of it is on screen, which its scroll bar and its count are drawn from.
 
 use ratatui::style::{Modifier, Style};

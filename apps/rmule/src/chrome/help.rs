@@ -275,6 +275,24 @@ mod tests {
         });
     }
 
+    /// A frame tall enough for every binding: no bar, and no count — the
+    /// help has no cursor to place.
+    #[test]
+    fn golden_help_overlay_fits_a_tall_frame() {
+        let mut chrome = chrome();
+        chrome.update(&Action::ToggleHelp, now());
+        assert_golden("chrome_help_fits", 100, 40, |frame| {
+            draw_frame(
+                frame,
+                &UiState::default(),
+                &chrome,
+                &Theme::default_dark(),
+                now(),
+            );
+            draw_overlays(frame, &chrome, &Theme::default_dark());
+        });
+    }
+
     /// An overlay taller than 80×24 scrolls rather than dropping a row. The
     /// `5 / 6` row and the last binding
     /// are both reachable, the border says which lines show, and the chrome
