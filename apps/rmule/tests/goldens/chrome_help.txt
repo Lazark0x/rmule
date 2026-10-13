@@ -1,24 +1,24 @@
 ┌ 1 Networks │ 2 │ 3 │ 4 │ 5 │ 6 ─────────────────────────────────────── rmule ┐
 ┌ Help ────────────────────────────────────────────────────────────────────────┐
-│ rmule 0.1.0 (0123456789ab, committed 2026-09-30)                             │
-│                                                                              │
-│ 1–6             switch view directly                                         │
-│ h / l           previous / next view                                         │
-│ [ / ]           Searches: previous / next held search / Shared: filter by    │
-│                 directory                                                    │
-│ j/k  ↑/↓        select row in focused pane                                   │
-│ g / G           top / bottom                                                 │
-│ Tab / Shift-Tab cycle panes (accent border = focus)                          │
-│ m / Enter       row action menu                                              │
-│ /               Searches: focus query input                                  │
-│ ← / →           Searches: pick method (input focused)                        │
-│ o               Searches: type/size/sources/extension filters                │
-│ x / n           Searches: stop or close a search / server's next page        │
-│ s / S           sort the focused table by next column / reverse              │
-│ a               Shared: filter / Networks: add server                        │
-│ U               Networks: update server list from URL                        │
-│ 5 / 6           Statistics (display-only) / Settings                         │
-│ Enter  ← / →    Settings: edit a field / step a selector                     │
-│ x               Settings: stop sharing the selected directory                │
-└──────────────────────────────────────────────────────────── 1–20 of 30 · j/k ┘
+│ rmule 0.1.0 (0123456789ab, committed 2026-09-30)                            ▲│
+│                                                                             █│
+│ 1–6             switch view directly                                        █│
+│ h / l           previous / next view                                        █│
+│ [ / ]           Searches: previous / next held search / Shared: filter by   █│
+│                 directory                                                   █│
+│ j/k  ↑/↓        select row in focused pane                                  █│
+│ g / G           top / bottom                                                █│
+│ Tab / Shift-Tab cycle panes (accent border = focus)                         █│
+│ m / Enter       row action menu                                             █│
+│ /               Searches: focus query input                                 █│
+│ ← / →           Searches: pick method (input focused)                       █│
+│ o               Searches: type/size/sources/extension filters               █│
+│ x / n           Searches: stop or close a search / server's next page       ║│
+│ s / S           sort the focused table by next column / reverse             ║│
+│ a               Shared: filter / Networks: add server                       ║│
+│ U               Networks: update server list from URL                       ║│
+│ 5 / 6           Statistics (display-only) / Settings                        ║│
+│ Enter  ← / →    Settings: edit a field / step a selector                    ║│
+│ x               Settings: stop sharing the selected directory               ▼│
+└─────────────────────────────────────────────────────────────── j/k ─ 20 / 30 ┘
 └ — │ Users: — · Files: — │ ▼ 0.0 KB/s ▲ 0.0 KB/s │ ●eD2k off ●Kad off ────────┘
