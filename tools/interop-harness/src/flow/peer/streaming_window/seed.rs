@@ -95,7 +95,7 @@ impl SeedHolding {
     }
 
     /// The spelling [`Self::parse`] reads back.
-    pub(crate) fn spec(&self) -> String {
+    pub fn spec(&self) -> String {
         match self {
             Self::Complete => "complete".to_owned(),
             Self::Partial(held) => held

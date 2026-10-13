@@ -318,6 +318,16 @@ enum HarnessCommand {
     /// own tap and write its verdict file, without driving the flow again.
     #[command(name = "peer-udp-reask-emit-score")]
     PeerUdpReaskEmitScore(PeerUdpReaskEmitScoreArgs),
+    /// The streaming-window flow (ADR-0112): one Streaming Priority file held
+    /// in part by stock aMule seeds, downloaded by rmule with a chosen window;
+    /// scores the part filter, the rank, both status forms and NoNeededParts,
+    /// and measures the verified prefix over time.
+    #[command(name = "peer-streaming-window")]
+    PeerStreamingWindow(crate::cli::streaming_window::PeerStreamingWindowArgs),
+    /// Score a finished, kept (`--collect`) or archived `peer-streaming-window`
+    /// run dir from its own tap and logs.
+    #[command(name = "peer-streaming-window-score")]
+    PeerStreamingWindowScore(crate::cli::streaming_window::PeerStreamingWindowScoreArgs),
     /// Two hellos, one client: from one address, two peer-TCP connections say
     /// the same user hash and listen port to a High-ID aMule (and, as the
     /// control, two different ports); records whether aMule closed the first
@@ -479,6 +489,12 @@ fn dispatch(command: HarnessCommand) -> Result<()> {
         }
         HarnessCommand::PeerUdpReaskEmitScore(args) => {
             peer_udp_reask_emit_score(args)?;
+        }
+        HarnessCommand::PeerStreamingWindow(args) => {
+            crate::cli::streaming_window::peer_streaming_window(args)?;
+        }
+        HarnessCommand::PeerStreamingWindowScore(args) => {
+            crate::cli::streaming_window::peer_streaming_window_score(args)?;
         }
         HarnessCommand::Sx1Gate(args) => {
             crate::cli::peer::sx1_gate(args)?;
