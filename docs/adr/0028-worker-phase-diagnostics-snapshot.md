@@ -17,8 +17,8 @@ point-in-time `DiagnosticsSnapshot`.
 - `WorkerPhase` mixes connection facts and orchestration facts. Each phase has a
   writer at the transition it names, and a phase nothing writes is deleted rather than
   rendered:
-  - `Idle` — the slot holds no peer: before its first dial, and after a retirement
-    until the pool backfills it;
+  - `Idle` — the slot holds no peer yet: its row as it is built, before its first
+    phase is written;
   - `Connecting` — the dial and the hello, written when the slot dials;
   - `AskingFile` — the hello done and the file asked, written at `Connected`, until
     the probe's answer asks a slot or the hash set, or retires the worker;
@@ -30,7 +30,7 @@ point-in-time `DiagnosticsSnapshot`.
   - `RequestingPart`, `ReceivingPart`, `VerifyingPart` — a part handed at a grant or
     after the last one, its blocks arriving, its hash being checked;
   - `Retired { reason }` and `ShutDown` — the worker left the fleet, for a reason of
-    its own or with the whole download.
+    its own or with the whole download; the row keeps it until the slot dials again.
 
   It lives in `rmule-core` beside the scheduler, not in `rmule-net`, whose
   one-conversation surface has no words for orchestration (ADR-0026). A granted

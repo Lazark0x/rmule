@@ -39,8 +39,8 @@ impl WorkerSlot {
 /// phase has a writer at the transition it names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkerPhase {
-    /// The slot exists but holds no peer — its state between construction and
-    /// its first dial, and after a retirement until the pool backfills it.
+    /// The slot holds no peer yet: its row as it is built, before its first
+    /// phase is written.
     Idle,
     /// Dialing the peer and reading its hello.
     Connecting,
@@ -76,8 +76,8 @@ pub enum WorkerPhase {
         /// The zero-based part index being checked.
         part_index: u32,
     },
-    /// The worker left the fleet; the row stays so the reason is visible after
-    /// the fact.
+    /// The worker left the fleet; the row stays, until the slot dials again,
+    /// so the reason is visible after the fact.
     Retired {
         /// Why it left.
         reason: PeerRetirementReason,
