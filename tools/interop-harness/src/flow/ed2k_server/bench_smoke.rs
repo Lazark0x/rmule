@@ -81,8 +81,11 @@ pub fn run_bench_smoke(options: BenchSmokeOptions<'_>) -> Result<()> {
         let probe = options.rmule_client_container.probe_command(
             bench.staging(options.layout),
             &bench.names.server_endpoint(),
-            options.udp_ports_advert,
-            options.advertise_ipv6,
+            crate::rmule::ProbeAsks {
+                udp_ports_advert: options.udp_ports_advert,
+                advertise_ipv6: options.advertise_ipv6,
+                holepunch_target: None,
+            },
         );
         fs::create_dir_all(options.layout.probe_dir()).with_context(|| {
             format!("create probe dir {}", options.layout.probe_dir().display())

@@ -116,8 +116,7 @@ pub fn run_server_cycle(options: ServerCycleOptions<'_>) -> Result<()> {
         let probe = options.rmule_client_container.probe_command(
             bench.staging(options.layout),
             &server_endpoint,
-            None,
-            None,
+            crate::rmule::ProbeAsks::default(),
         );
         let probe_output = probe
             .to_command()

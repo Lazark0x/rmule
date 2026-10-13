@@ -25,7 +25,7 @@ use crate::artifacts::RunLayout;
 use crate::docker::{Docker, DockerCommand, RunContainer};
 
 pub use client::{
-    DownloadCrypt, REGISTRANT_ANNOUNCE_TIMEOUT_SECS, REGISTRANT_PORT_BASE, Registrant,
+    DownloadCrypt, ProbeAsks, REGISTRANT_ANNOUNCE_TIMEOUT_SECS, REGISTRANT_PORT_BASE, Registrant,
     RmuleClientContainer, release_held_download,
 };
 pub use run::{

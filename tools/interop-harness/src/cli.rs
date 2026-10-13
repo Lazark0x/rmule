@@ -22,6 +22,7 @@ pub(crate) mod ask_budget;
 pub(crate) mod bench;
 pub(crate) mod bootstrap;
 pub(crate) mod ed2k_server;
+pub(crate) mod holepunch_fail;
 pub(crate) mod kad_buddy;
 pub(crate) mod kad_capture;
 pub(crate) mod kad_dialed_link;

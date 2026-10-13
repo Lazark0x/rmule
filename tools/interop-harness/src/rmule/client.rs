@@ -68,6 +68,18 @@ pub struct DownloadCrypt<'a> {
     pub peer_crypt_flip: &'a [String],
 }
 
+/// What the server probe's login rides and what it asks once logged in. The
+/// default rides nothing past aMule 2.3.3's four tags and asks nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProbeAsks {
+    /// `CT_EMULE_UDPPORTS` (`0xF9`), naming this client-UDP port.
+    pub udp_ports_advert: Option<u16>,
+    /// `CT_MOD_IP_V6` (`0xAE`) with its `SRVCAP_IPV6` bit, naming this address.
+    pub advertise_ipv6: Option<std::net::Ipv6Addr>,
+    /// A punch asked toward this Low ID once logged in (`0x60`).
+    pub holepunch_target: Option<u32>,
+}
+
 /// The rust image plus mounted workspace an rmule client container runs in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RmuleClientContainer {
@@ -253,8 +265,7 @@ impl RmuleClientContainer {
         &self,
         staging: BenchStaging<'_>,
         server_endpoint: &str,
-        udp_ports_advert: Option<u16>,
-        advertise_ipv6: Option<std::net::Ipv6Addr>,
+        asks: ProbeAsks,
     ) -> DockerCommand {
         let mut run = self
             .workspace
@@ -267,11 +278,14 @@ impl RmuleClientContainer {
             .arg(server_endpoint)
             .arg("--out")
             .arg(format!("{CONTAINER_RUN_ROOT}/probe"));
-        if let Some(client_udp) = udp_ports_advert {
+        if let Some(client_udp) = asks.udp_ports_advert {
             run = run.arg("--udp-ports-advert").arg(client_udp.to_string());
         }
-        if let Some(address) = advertise_ipv6 {
+        if let Some(address) = asks.advertise_ipv6 {
             run = run.arg("--advertise-ipv6").arg(address.to_string());
+        }
+        if let Some(target) = asks.holepunch_target {
+            run = run.arg("--holepunch-target").arg(target.to_string());
         }
         staging.docker.run_container(run)
     }

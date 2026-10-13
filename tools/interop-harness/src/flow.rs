@@ -49,6 +49,7 @@ pub use self::ed2k_server::{
     run_search_wire, run_server_cycle, run_server_login_crypt, run_server_skeleton,
     run_sweep_follows_list,
 };
+pub use self::ed2k_server::{HolepunchFailOptions, run_holepunch_fail, score_holepunch_fail};
 pub use self::evidence::flush_golden_files;
 pub use self::gate::start_rmule_serve_with_login_retry;
 pub use self::kad_buddy::{

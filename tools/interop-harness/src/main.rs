@@ -25,6 +25,9 @@ use crate::cli::ed2k_server::{
     amule_low_id_callback, amule_serves_rmule_downloads, amule_serves_rmule_searches, bench_smoke,
     rmule_serves_amule_downloads, search_spacing, search_wire, server_cycle,
 };
+use crate::cli::holepunch_fail::{
+    HolepunchFailArgs, HolepunchFailScoreArgs, holepunch_fail, holepunch_fail_score,
+};
 use crate::cli::kad_buddy::{
     KadCoreBuddyArgs, KadDirectCallbackArgs, KadFirewalledBuddyArgs, KadRequiredCheckArgs,
     kad_core_buddy, kad_direct_callback, kad_firewalled_buddy, kad_required_check,
@@ -331,6 +334,15 @@ enum HarnessCommand {
     /// own taps and the downloader's copy, without driving the flow again.
     #[command(name = "server-callback-serve-score")]
     ServerCallbackServeScore(ServerCallbackServeScoreArgs),
+    /// The holepunch-fail leg: ed2ksrv and one in-network server probe asking
+    /// a punch toward a Low ID nobody holds; ed2ksrv's OP_LOWID_HOLEPUNCH_FAIL
+    /// (0x62) is cut from the server tap for fixture promotion.
+    #[command(name = "ed2ksrv-holepunch-fail")]
+    Ed2ksrvHolepunchFail(HolepunchFailArgs),
+    /// Score a finished or archived `ed2ksrv-holepunch-fail` run dir from its
+    /// own tap, without driving the leg again.
+    #[command(name = "ed2ksrv-holepunch-fail-score")]
+    Ed2ksrvHolepunchFailScore(HolepunchFailScoreArgs),
     /// Score a finished (or archived) `peer-udp-reask-emit` run dir from its
     /// own tap and write its verdict file, without driving the flow again.
     #[command(name = "peer-udp-reask-emit-score")]
@@ -397,6 +409,7 @@ impl HarnessCommand {
             Self::PeerUdpReaskScore(args) => Some(&args.run_dir),
             Self::PeerLowIdCallbackReaskScore(args) => Some(&args.run_dir),
             Self::ServerCallbackServeScore(args) => Some(&args.run_dir),
+            Self::Ed2ksrvHolepunchFailScore(args) => Some(&args.run_dir),
             Self::PeerUdpReaskEmitScore(args) => Some(&args.run_dir),
             Self::PeerStreamingWindowScore(args) => Some(&args.run_dir),
             Self::PeerPartialShareScore(args) => Some(&args.run_dir),
@@ -415,6 +428,7 @@ impl HarnessCommand {
                 | Self::PeerUdpReaskScore(_)
                 | Self::PeerLowIdCallbackReaskScore(_)
                 | Self::ServerCallbackServeScore(_)
+                | Self::Ed2ksrvHolepunchFailScore(_)
                 | Self::PeerUdpReaskEmitScore(_)
                 | Self::PeerStreamingWindowScore(_)
                 | Self::PeerPartialShareScore(_)
@@ -560,6 +574,12 @@ fn dispatch(command: HarnessCommand) -> Result<()> {
         }
         HarnessCommand::ServerCallbackServeScore(args) => {
             server_callback_serve_score(args)?;
+        }
+        HarnessCommand::Ed2ksrvHolepunchFail(args) => {
+            holepunch_fail(args)?;
+        }
+        HarnessCommand::Ed2ksrvHolepunchFailScore(args) => {
+            holepunch_fail_score(args)?;
         }
         HarnessCommand::PeerUdpReaskEmitScore(args) => {
             peer_udp_reask_emit_score(args)?;
