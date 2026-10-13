@@ -233,13 +233,11 @@ impl DownloadState {
                 peer,
                 cancel: granted && unworkable,
             });
+            // The row keeps the reason until the slot dials again (ADR-0028):
+            // `ShutDown` is the whole download's stop, never one worker's.
             out.push(Decision::Phase {
                 slot,
                 phase: WorkerPhase::Retired { reason },
-            });
-            out.push(Decision::Phase {
-                slot,
-                phase: WorkerPhase::ShutDown,
             });
             self.free_slots.insert(slot.as_usize());
         }

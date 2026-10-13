@@ -58,6 +58,13 @@ fn a_granted_worker_with_no_part_free_gives_its_slot_back_onto_the_ordinary_cade
 
     let verified = deliver_verified(&mut state, peer(1), 0);
     assert!(gave_back(&verified, peer(1)), "{verified:?}");
+    assert_eq!(
+        phases(&verified),
+        vec![WorkerPhase::Retired {
+            reason: PeerRetirementReason::NoFreePart
+        }],
+        "the row keeps why it left"
+    );
     assert!(
         verified.iter().any(|d| matches!(
             d,
