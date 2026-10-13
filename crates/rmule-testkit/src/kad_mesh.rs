@@ -9,7 +9,6 @@
 //! literally.
 
 use rmule_kad::KadNodeStart;
-use std::net::Ipv4Addr;
 use std::time::Duration;
 
 use rmule_kad::{
@@ -462,11 +461,11 @@ pub const HUB: &str = "hub";
 pub const STORERS: [(&str, u8); 3] = [("r10", 10), ("r20", 20), ("r30", 30)];
 
 /// Node `a`'s endpoint in a two-node sim.
-pub const A_EP: KadNodeEndpoint = KadNodeEndpoint::new(Ipv4Addr::new(203, 0, 113, 1), 4701);
+pub const A_EP: KadNodeEndpoint = crate::kad_node::endpoint(1, 4701);
 /// Node `b`'s endpoint in a two-node sim.
-pub const B_EP: KadNodeEndpoint = KadNodeEndpoint::new(Ipv4Addr::new(203, 0, 113, 2), 4702);
+pub const B_EP: KadNodeEndpoint = crate::kad_node::endpoint(2, 4702);
 
-/// The publisher's endpoint in a source mesh — TEST-NET, so its publishes
+/// The publisher's endpoint in a source mesh — fake-public, so its publishes
 /// pass the storers' tolerance gate rather than the LAN bypass.
 pub fn a_endpoint() -> KadNodeEndpoint {
     crate::kad_source::contact_endpoint(254)

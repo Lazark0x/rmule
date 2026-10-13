@@ -5,15 +5,13 @@
 //! nodes). The node-level legs and the helpers shared here live in
 //! [`super::requester`].
 
-use std::net::Ipv4Addr;
-
 use rmule_kad::{
     KadCommand, KadEvent, KadId, KadInstant, KadNode, KadNodeConfig, KadNodeDiagnostic,
     KadNodeEndpoint, KadSearchEnd,
 };
 use rmule_primitives::{ClientId, PeerSource};
 use rmule_testkit::kad_mesh::A;
-use rmule_testkit::kad_node::{hello_req_from, lookup_res_bytes};
+use rmule_testkit::kad_node::{hello_req_from, host_ip, lookup_res_bytes};
 use rmule_testkit::{FakeKadPeer, KadMeshSim};
 
 use super::requester::{
@@ -21,7 +19,7 @@ use super::requester::{
     fixture_target, id_near, request, target,
 };
 
-const A_EP: KadNodeEndpoint = KadNodeEndpoint::new(Ipv4Addr::new(203, 0, 113, 254), 4999);
+const A_EP: KadNodeEndpoint = KadNodeEndpoint::new(host_ip(254), 4999);
 
 fn node_config(id: KadId, endpoint: KadNodeEndpoint) -> KadNodeConfig {
     KadNodeConfig {

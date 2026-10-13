@@ -62,7 +62,9 @@ pub use node::{
 pub use nodes_dat::{CONTACT_FILE_LIMIT, MIN_CONTACTS_TO_WRITE, NodesDat, NodesDatError};
 pub use nodes_dat_bootstrap::BootstrapEditionError;
 pub use reachability::FirewallDecodeError;
-pub use routing::{KadContact, KadContactState, KadRoutingTable, KadRoutingUpdate};
+pub use routing::{
+    KadAdmissionCap, KadContact, KadContactState, KadRoutingTable, KadRoutingUpdate,
+};
 pub use source_result::{
     KadSourceResultDecodeError, KadSourceRow, SOURCE_RESULT_BLOCKED_BY,
     SOURCE_RESULT_ROWS_PER_DATAGRAM, decode_source_result, encode_source_result,

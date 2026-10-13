@@ -2,13 +2,11 @@
 //! guards a `0x5A` answer must pass, and the events an inbound findbuddy or
 //! callback request surfaces to the core.
 
-use std::net::Ipv4Addr;
-
 use rmule_kad::{Kad2Message, KadCommand, KadEvent, KadNode, KadNodeDiagnostic};
 use rmule_primitives::Ipv4Endpoint;
 use rmule_primitives::session::drain;
 use rmule_testkit::kad_node::{
-    T0, datagrams, deliver, diagnostics, endpoint, events, id, info, node,
+    T0, datagrams, deliver, diagnostics, endpoint, events, host_ip, id, info, node,
 };
 
 /// Assemble a plain (`0xE4`) `0x5A KADEMLIA_FINDBUDDY_RES` wire datagram:
@@ -55,7 +53,7 @@ fn buddy_recruit_emits_0x51_toward_the_inverse_target_and_a_verified_0x5a_fills_
         vec![
             KadEvent::HadContact { from: buddy },
             KadEvent::BuddyFound {
-                buddy: Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 1), 4701),
+                buddy: Ipv4Endpoint::new(host_ip(1), 4701),
                 buddy_id: id(0x55),
                 buddy_hash: rmule_kad::UserHash::from_bytes([0xBB; 16]),
                 buddy_tcp_port: 6752,
@@ -314,7 +312,7 @@ fn inbound_findbuddy_and_callback_requests_surface_as_core_decided_events() {
         vec![
             KadEvent::HadContact { from },
             KadEvent::FindBuddyRequested {
-                requester: Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 5), 4705),
+                requester: Ipv4Endpoint::new(host_ip(5), 4705),
                 buddy_id: id(0x33),
                 requester_hash: rmule_kad::UserHash::from_bytes([0x44; 16]),
                 requester_tcp_port: 4664,
@@ -331,7 +329,7 @@ fn inbound_findbuddy_and_callback_requests_surface_as_core_decided_events() {
     assert_eq!(
         events(&drain(|| node.poll_output())),
         vec![KadEvent::CallbackRelayRequested {
-            requester: Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 5), 4705),
+            requester: Ipv4Endpoint::new(host_ip(5), 4705),
             buddy_id: id(0x7A),
             file_hash: rmule_kad::FileHash::from_bytes([0xCD; 16]),
             requester_tcp_port: 5000,

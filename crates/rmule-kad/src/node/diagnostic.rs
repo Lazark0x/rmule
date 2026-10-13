@@ -179,6 +179,16 @@ pub enum KadNodeDiagnostic {
         /// The endpoint concerned.
         endpoint: KadNodeEndpoint,
     },
+    /// A contact the routing table refused because storing it would break an
+    /// admission cap (ADR-0064): one contact per IP and ten per /24
+    /// table-wide, two per /24 in a bucket. A newcomer is never stored; a known
+    /// contact claiming a new IP keeps its old entry.
+    ContactOverAdmissionCap {
+        /// The endpoint the contact arrived at.
+        endpoint: KadNodeEndpoint,
+        /// The cap that refused it.
+        cap: crate::KadAdmissionCap,
+    },
     /// A request opcode's per-`(IP, opcode)` leaky bucket exceeded its
     /// per-minute rate (ADR-0064); the datagram is dropped before
     /// dispatch. Responses are never bucketed — solicitation correlation

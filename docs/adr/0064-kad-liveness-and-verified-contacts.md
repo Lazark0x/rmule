@@ -82,9 +82,10 @@ outbound, because the `0x22` consume checks it.
   evicted, replaced as a `Failed` contact, or moves; the per-bucket count is read off the
   bucket. The gate runs on every add, including the replacement of a `Failed` contact
   (which leaves the tallies first), and on every endpoint move to a new IP; an update at
-  the same IP passes untouched. A refused add is `KadRoutingUpdate::RejectedIpLimit` or
-  `RejectedSubnetLimit` (naming whether the table or the bucket bound it), a refused move
-  leaves the entry exactly as it was, and the node diagnoses both. The private ranges
+  the same IP passes untouched. A refusal is `KadRoutingUpdate::RejectedAdmissionCap`,
+  naming the cap (`KadAdmissionCap`: the address, the /24 across the table, or the /24 in
+  the bucket); a refused add stores nothing, a refused move leaves the entry exactly as it
+  was, and the node diagnoses both (`ContactOverAdmissionCap`). The private ranges
   and loopback are exempt from both /24 caps, as aMule exempts `IsLanIP`. Loopback is
   also exempt from the per-IP cap, which aMule never needs: it refuses loopback contacts
   outright, while rmule admits one from an informant on this host (ADR-0085), and

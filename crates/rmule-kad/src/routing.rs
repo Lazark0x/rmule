@@ -20,8 +20,11 @@ use crate::udp_key::KadUdpKey;
 use crate::{KadId, KadInstant, KadNodeEndpoint};
 
 mod aging;
+mod caps;
 
 use aging::ContactAging;
+use caps::AdmissionTally;
+pub use caps::KadAdmissionCap;
 
 /// Where a contact sits in the lookup lifecycle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -211,6 +214,14 @@ pub enum KadRoutingUpdate {
         /// The ID whose entry stands unchanged.
         id: KadId,
     },
+    /// Storing the contact at its IP would break an admission cap (ADR-0064,
+    /// aMule `CheckGlobalIPLimits` and the bin's /24 rule): a newcomer is
+    /// dropped, and a known contact moving to a new IP keeps its old entry
+    /// unchanged (aMule `ChangeContactIPAddress`).
+    RejectedAdmissionCap {
+        /// The cap that refused it.
+        cap: KadAdmissionCap,
+    },
 }
 
 /// One stored contact with its aging — the routing-table record. Aging lives
@@ -241,6 +252,15 @@ struct KadBucket {
     last_activity: Option<KadInstant>,
 }
 
+impl KadBucket {
+    /// The IP of every contact the bucket holds — what its /24 cap counts.
+    fn ips(&self) -> impl Iterator<Item = Ipv4Addr> + '_ {
+        self.contacts
+            .iter()
+            .map(|entry| entry.contact.endpoint().ip())
+    }
+}
+
 /// A k-bucket Kad routing table keyed by the owning node's [`KadId`].
 ///
 /// Iteration order (bucket index, then insertion order within the bucket) is
@@ -259,6 +279,9 @@ pub struct KadRoutingTable {
     /// `RoutingZone::Add`'s key gate). `None` until the verify-key state is
     /// armed, which leaves the key gate silent — the pre-key posture.
     own_public_ip: Option<Ipv4Addr>,
+    /// The table-wide per-IP and per-/24 counts the admission caps read
+    /// (ADR-0064), kept in step with every stored contact's IP.
+    admission: AdmissionTally,
 }
 
 impl KadRoutingTable {
@@ -285,6 +308,7 @@ impl KadRoutingTable {
             buckets: vec![KadBucket::default(); Self::BUCKET_COUNT],
             last_contact: None,
             own_public_ip: None,
+            admission: AdmissionTally::default(),
         }
     }
 
@@ -354,19 +378,28 @@ impl KadRoutingTable {
     ///    ([`RejectedHijack`](KadRoutingUpdate::RejectedHijack)) — rmule's
     ///    documented strengthening of aMule's `IsAcceptableContact` filter
     ///    (`RoutingZone.cpp#L897`) for entries the key gate cannot judge.
+    /// 3. **Admission caps** — a move to a new IP must keep the table within
+    ///    one contact per IP and ten per /24, and the bucket within two per
+    ///    /24 ([`RejectedAdmissionCap`](KadRoutingUpdate::RejectedAdmissionCap),
+    ///    aMule `ChangeContactIPAddress`).
+    ///
+    /// A newcomer passes the same caps before it takes a free slot or a
+    /// `Failed` contact's (aMule `CRoutingBin::AddContact`, ADR-0064).
     pub fn upsert(&mut self, now: KadInstant, contact: KadContact) -> KadRoutingUpdate {
         let Some(index) = self.bucket_index(contact.id()) else {
             return KadRoutingUpdate::RejectedSelf;
         };
         let my_ip = self.own_public_ip;
         let bucket = &mut self.buckets[index];
+        let admission = &mut self.admission;
+        let arriving_ip = contact.endpoint().ip();
 
-        let update = if let Some(existing) = bucket
+        let update = if let Some(position) = bucket
             .contacts
-            .iter_mut()
-            .map(|entry| &mut entry.contact)
-            .find(|c| c.id() == contact.id())
+            .iter()
+            .position(|entry| entry.contact.id() == contact.id())
         {
+            let existing = bucket.contacts[position].contact;
             let stored_key = my_ip.map_or(0, |ip| existing.udp_key().key_value(ip));
             let presented_key = my_ip.map_or(0, |ip| contact.udp_key().key_value(ip));
             if stored_key != 0 && stored_key != presented_key {
@@ -378,6 +411,14 @@ impl KadRoutingTable {
             let key_proven = stored_key != 0;
             if moved && existing.verified() && !key_proven {
                 return KadRoutingUpdate::RejectedHijack { id: contact.id() };
+            }
+            let left_ip = existing.endpoint().ip();
+            if left_ip != arriving_ip {
+                if let Some(cap) = admission.refusal(arriving_ip, bucket.ips(), Some(left_ip)) {
+                    return KadRoutingUpdate::RejectedAdmissionCap { cap };
+                }
+                admission.uncount(left_ip);
+                admission.count(arriving_ip);
             }
             // Without an armed public IP the key gate cannot judge; keep a
             // stored key rather than let a plaintext update wipe it. Armed,
@@ -393,19 +434,31 @@ impl KadRoutingTable {
             if !moved && existing.verified() {
                 next = next.into_verified();
             }
-            *existing = next;
+            bucket.contacts[position].contact = next;
             KadRoutingUpdate::Updated
         } else if bucket.contacts.len() < Self::K {
+            if let Some(cap) = admission.refusal(arriving_ip, bucket.ips(), None) {
+                return KadRoutingUpdate::RejectedAdmissionCap { cap };
+            }
             bucket.contacts.push(RoutingEntry::fresh(now, contact));
+            admission.count(arriving_ip);
             KadRoutingUpdate::Added
-        } else if let Some(failed) = bucket
+        } else if let Some(position) = bucket
             .contacts
-            .iter_mut()
-            .find(|entry| entry.contact.state() == KadContactState::Failed)
+            .iter()
+            .position(|entry| entry.contact.state() == KadContactState::Failed)
         {
-            let evicted = failed.contact.id();
-            *failed = RoutingEntry::fresh(now, contact);
-            KadRoutingUpdate::AddedEvictingFailed { evicted }
+            let failed = bucket.contacts[position].contact;
+            let failed_ip = failed.endpoint().ip();
+            if let Some(cap) = admission.refusal(arriving_ip, bucket.ips(), Some(failed_ip)) {
+                return KadRoutingUpdate::RejectedAdmissionCap { cap };
+            }
+            bucket.contacts[position] = RoutingEntry::fresh(now, contact);
+            admission.uncount(failed_ip);
+            admission.count(arriving_ip);
+            KadRoutingUpdate::AddedEvictingFailed {
+                evicted: failed.id(),
+            }
         } else {
             return KadRoutingUpdate::RejectedBucketFull;
         };
@@ -443,9 +496,16 @@ impl KadRoutingTable {
             return false;
         };
         let bucket = &mut self.buckets[index];
-        let before = bucket.contacts.len();
-        bucket.contacts.retain(|entry| entry.contact.id() != id);
-        bucket.contacts.len() != before
+        let Some(position) = bucket
+            .contacts
+            .iter()
+            .position(|entry| entry.contact.id() == id)
+        else {
+            return false;
+        };
+        let evicted = bucket.contacts.remove(position);
+        self.admission.uncount(evicted.contact.endpoint().ip());
+        true
     }
 
     /// The contact with this ID, if the table holds it.

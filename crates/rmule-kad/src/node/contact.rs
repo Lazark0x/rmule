@@ -333,6 +333,15 @@ impl KadNode {
             | KadRoutingUpdate::RejectedSelf
             | KadRoutingUpdate::RejectedHijack { .. }
             | KadRoutingUpdate::RejectedKeyMismatch { .. } => false,
+            // One IP or one /24 never occupies more of the table than aMule
+            // lets it (ADR-0064).
+            KadRoutingUpdate::RejectedAdmissionCap { cap } => {
+                self.emit_diagnostic(KadNodeDiagnostic::ContactOverAdmissionCap {
+                    endpoint: contact.endpoint(),
+                    cap,
+                });
+                false
+            }
         }
     }
 

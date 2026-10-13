@@ -29,10 +29,23 @@ pub fn id(byte: u8) -> KadId {
     KadId::from_bytes([byte; KadId::BYTE_LEN])
 }
 
-/// A counterparty endpoint in the `203.0.113.0/24` documentation range, so a
-/// leg that leaks a real send can never reach a live host.
-pub fn endpoint(host: u8, port: u16) -> KadNodeEndpoint {
-    KadNodeEndpoint::new(Ipv4Addr::new(203, 0, 113, host), port)
+/// Counterparty `host`'s address, `45.55.<host>.1`: fake-public, and alone in
+/// its /24.
+///
+/// Fake-public because the publish-tolerance gates and the flood limiter wave
+/// a LAN address through. Alone in its /24 because the routing table admits
+/// at most two contacts per /24 in a bucket and ten across the table
+/// (ADR-0064): counterparties sharing one /24 would be refused as soon as a
+/// third landed in one bucket. The address space is the fake-public plan's
+/// (the interop harness's `45.55` slot); every Kad leg is sans-I/O, so no
+/// datagram to it leaves the process.
+pub const fn host_ip(host: u8) -> Ipv4Addr {
+    Ipv4Addr::new(45, 55, host, 1)
+}
+
+/// Counterparty `host`'s endpoint at `port` (its address is [`host_ip`]).
+pub const fn endpoint(host: u8, port: u16) -> KadNodeEndpoint {
+    KadNodeEndpoint::new(host_ip(host), port)
 }
 
 /// The default config of the node under test: ID `0xAA…`, the default eD2k/Kad

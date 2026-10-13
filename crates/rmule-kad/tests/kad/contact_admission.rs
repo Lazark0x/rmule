@@ -12,7 +12,6 @@
 
 use rmule_kad::KadInstant;
 use rmule_kad::KadNodeStart;
-use std::net::Ipv4Addr;
 
 use rmule_kad::{
     Kad2Message, Kad2NodeInfo, KadBootstrapNode, KadCommand, KadContact, KadContactAdmission,
@@ -21,7 +20,7 @@ use rmule_kad::{
 };
 use rmule_primitives::{FileHash, SourceLookupTarget};
 use rmule_testkit::drain_split;
-use rmule_testkit::kad_node::{T0, deliver, endpoint, id};
+use rmule_testkit::kad_node::{T0, deliver, endpoint, host_ip, id};
 
 /// The blocked host octet: the admission closure refuses exactly this IP.
 const FILTERED_HOST: u8 = 66;
@@ -36,9 +35,8 @@ fn filtering_node() -> KadNode {
         user_hash: rmule_kad::UserHash::from_bytes([0xEE; 16]),
     };
     KadNode::new(
-        KadNodeStart::new(config, KadInstant::EPOCH).admission(KadContactAdmission::new(|ip| {
-            ip != Ipv4Addr::new(203, 0, 113, FILTERED_HOST)
-        })),
+        KadNodeStart::new(config, KadInstant::EPOCH)
+            .admission(KadContactAdmission::new(|ip| ip != host_ip(FILTERED_HOST))),
     )
 }
 
@@ -129,7 +127,7 @@ fn a_bootstrap_hearsay_row_with_a_filtered_ip_is_neither_stored_nor_probed() {
     assert!(
         datagrams
             .iter()
-            .all(|(to, _)| to.ip() != Ipv4Addr::new(203, 0, 113, FILTERED_HOST)),
+            .all(|(to, _)| to.ip() != host_ip(FILTERED_HOST)),
         "the filtered hearsay row is never probed: {datagrams:?}"
     );
     assert!(
@@ -270,7 +268,7 @@ fn a_lookup_response_row_with_a_filtered_ip_is_never_walked() {
     assert!(
         datagrams
             .iter()
-            .all(|(to, _)| to.ip() != Ipv4Addr::new(203, 0, 113, FILTERED_HOST)),
+            .all(|(to, _)| to.ip() != host_ip(FILTERED_HOST)),
         "the filtered row is never queried: {datagrams:?}"
     );
     assert!(
