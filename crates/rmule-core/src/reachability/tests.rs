@@ -82,7 +82,7 @@ fn the_engaged_snapshot_feeds_the_brokers_busy_guard() {
             user_hash: None,
         },
         &DialBackGuards {
-            own: OwnListenEndpoint::Known(endpoint([192, 0, 2, 1], 4662)),
+            own: OwnListenEndpoint::at(endpoint([192, 0, 2, 1], 4662)),
             busy: &engaged,
             crypt: None,
         },
@@ -307,7 +307,7 @@ fn is_reachable_follows_the_open_snapshot_but_not_the_firewalled_one() {
 #[test]
 fn the_broker_dials_with_the_version_gated_ack() {
     let guards = DialBackGuards {
-        own: OwnListenEndpoint::Known(endpoint([10, 0, 0, 1], 4662)),
+        own: OwnListenEndpoint::at(endpoint([10, 0, 0, 1], 4662)),
         busy: &HashSet::new(),
         crypt: None,
     };
@@ -361,7 +361,7 @@ fn the_broker_silently_refuses_the_two_engagement_guards() {
             user_hash: None,
         },
         &DialBackGuards {
-            own: OwnListenEndpoint::Known(own_endpoint),
+            own: OwnListenEndpoint::at(own_endpoint),
             busy: &HashSet::new(),
             crypt: None,
         },
@@ -385,7 +385,7 @@ fn the_broker_silently_refuses_the_two_engagement_guards() {
                 user_hash: None,
             },
             &DialBackGuards {
-                own: OwnListenEndpoint::Known(own_endpoint),
+                own: OwnListenEndpoint::at(own_endpoint),
                 busy: &busy,
                 crypt: None,
             },
@@ -398,10 +398,11 @@ fn the_broker_silently_refuses_the_two_engagement_guards() {
 
 /// The ADR-0058 self-connect guard's own value follows Address Learning's
 /// live IPv4, the same `SharedOwnIdentity` read the Kad pump samples for the
-/// node's verify-key level: with no public IPv4 known yet it falls back to
-/// matching on port alone (aMule has no finer signal before that settles); a
-/// requester at the old IP + our port stops being a self-connect the moment
-/// the level moves, and one at the new IP starts being one.
+/// node's verify-key level: with no public IPv4 known yet nothing is us, so a
+/// requester at another IP that shares our port is dialed, as aMule's
+/// `GetPublicIP() == 0` test reads; a requester at the old IP + our port stops
+/// being a self-connect the moment the level moves, and one at the new IP
+/// starts being one.
 #[test]
 fn the_self_connect_guard_follows_the_learned_public_ip() {
     let own_identity = crate::own_identity::SharedOwnIdentity::default();
@@ -427,10 +428,10 @@ fn the_self_connect_guard_follows_the_learned_public_ip() {
             }
     };
 
-    // No IPv4 known yet: the port-only fallback pins any requester at our
-    // port as a self-connect, regardless of which IP it claims.
-    assert!(is_self_connect(old_ip), "port-only fallback: old IP");
-    assert!(is_self_connect(new_ip), "port-only fallback: new IP");
+    // No IPv4 known yet: a requester on our port is somebody else's node
+    // that shares the default port, whatever IP it claims.
+    assert!(!is_self_connect(old_ip), "no IP known: old IP is dialed");
+    assert!(!is_self_connect(new_ip), "no IP known: new IP is dialed");
 
     // Address Learning settles on `old_ip` (the verify-key fixture): the guard now
     // matches exact IP + port.
@@ -480,7 +481,7 @@ fn the_broker_reads_the_two_reading_crypt_rule_off_a_v7_check() {
     // that merely supports (`Supported`): both support, the requester asks —
     // obfuscated, keyed on the requester's own hash.
     let guards_supported = DialBackGuards {
-        own: OwnListenEndpoint::Known(own),
+        own: OwnListenEndpoint::at(own),
         busy: &HashSet::new(),
         crypt: Some(rmule_net::peer::ObfuscationPolicy::Supported),
     };
@@ -522,7 +523,7 @@ fn the_broker_reads_the_two_reading_crypt_rule_off_a_v7_check() {
     // entirely: incompatible, refused and distinguishable from the two
     // engagement guards.
     let guards_off = DialBackGuards {
-        own: OwnListenEndpoint::Known(own),
+        own: OwnListenEndpoint::at(own),
         busy: &HashSet::new(),
         crypt: None,
     };
