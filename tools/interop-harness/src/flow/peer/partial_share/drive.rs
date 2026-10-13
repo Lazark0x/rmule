@@ -23,6 +23,12 @@ use crate::rmule::RMULE_SERVE_TCP_PORT;
 const STIMULUS_SECS: u64 = 40;
 /// How long a stimulus range waits for its bytes before the next one goes.
 const STIMULUS_RANGE_WAIT_SECS: u64 = 10;
+/// The `sh -c` script a held stimulus runs: wait for the file its `$0`
+/// names, then exec the rest of its arguments untouched (a link's `|`
+/// included).
+const HOLD_UNTIL_GATE: &str = r#"while [ ! -e "$0" ]; do sleep 0.1; done; exec "$@""#;
+/// The `rmule-tools` image's own entrypoint.
+const IMAGE_ENTRYPOINT: &str = "/entrypoint.sh";
 
 /// The steps after rmule starts, and what they need.
 pub(super) struct Drive<'a> {
@@ -63,8 +69,11 @@ impl Drive<'_> {
         // The stimulus's slot ask follows its hash-set ask, so it waits for
         // rmule to hold the set: a no-file answer would end its ask there.
         if options.straddle && options.prober {
+            // The first line is the link's own, holding no part hash.
             self.wait(docker, "rmule's hash set", |trail| {
-                trail.first_at("download.hash_set_received").is_some()
+                trail
+                    .named("download.hash_set_received")
+                    .any(|mark| mark.field("part_count").is_some_and(|count| count != "0"))
             })?;
             let stimulus = self.stimulus(bench, topology, PRE_PART, &[(0, 4_096)], true)?;
             topology.stimuli.push(stimulus);
@@ -284,6 +293,8 @@ impl Drive<'_> {
     ) -> Result<Stimulus> {
         let name = format!("rmule-interop-stimulus-{purpose}-{}", self.suffix);
         let output_dir = format!("{RUN_MOUNT}/{ROOT_DIR}/stimulus/{purpose}");
+        let gate = format!("gates/stimulus-{purpose}");
+        let gate_in_container = format!("{RUN_MOUNT}/{ROOT_DIR}/{gate}");
         let peer = format!("{}:{RMULE_SERVE_TCP_PORT}", topology.rmule_ip);
         let range_wait = STIMULUS_RANGE_WAIT_SECS.to_string();
         let max_seconds = STIMULUS_SECS.to_string();
@@ -309,11 +320,18 @@ impl Drive<'_> {
         ]
         .into_iter()
         .fold(
+            // Held at its gate until its address is read: a stimulus whose
+            // asks end at once has no address left to read.
             RunContainer::new(self.options.rmule_tools_image.to_owned())
                 .detach()
                 .name(&name)
                 .network(bench.names.network_name.clone())
-                .volume(self.options.layout.root(), RUN_MOUNT),
+                .volume(self.options.layout.root(), RUN_MOUNT)
+                .entrypoint("sh")
+                .arg("-c")
+                .arg(HOLD_UNTIL_GATE)
+                .arg(&gate_in_container)
+                .arg(IMAGE_ENTRYPOINT),
             RunContainer::arg,
         );
         for (start, end) in ranges {
@@ -321,21 +339,14 @@ impl Drive<'_> {
         }
         let started_at = now();
         bench.start_extra(&name, container, &format!("run the {purpose} stimulus"))?;
-        let address = run_checked(
+        let ip = run_checked(
             bench.docker.container_ip(name.clone()),
             "inspect the stimulus ip",
-        )?;
-        // An exited container has no address: say what it printed.
-        let ip = match address.trim().parse() {
-            Ok(ip) => ip,
-            Err(_) => {
-                let logs = bench.docker.logs(name.clone()).to_command().output()?;
-                bail!(
-                    "the {purpose} stimulus exited at once: {}",
-                    String::from_utf8_lossy(&logs.stderr).trim()
-                );
-            }
-        };
+        )?
+        .trim()
+        .parse()
+        .context("stimulus address")?;
+        fs::write(self.root.join(&gate), b"").context("release the stimulus")?;
         act(
             topology,
             format!("{purpose} stimulus at {ip} asks {ranges:?}"),
