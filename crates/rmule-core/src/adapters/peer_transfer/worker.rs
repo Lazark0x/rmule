@@ -560,12 +560,12 @@ async fn stream_part_download(
         // `OP_OUTOFPARTREQS` on the granted slot: the transfer is over, not
         // the flow. The part goes back to the download, and the worker stays
         // on the link for the next grant (ADR-0057).
-        let event = match forward_slot_news(event_tx, file_hash, event).await {
-            Ok(SlotNews::Other(event)) => event,
-            Ok(SlotNews::Noted) => continue,
-            Ok(SlotNews::Requeued) => return Streamed::Next,
+        match forward_slot_news(event_tx, file_hash, &event).await {
+            Ok(None) => {}
+            Ok(Some(SlotNews::Noted)) => continue,
+            Ok(Some(SlotNews::Requeued)) => return Streamed::Next,
             Err(Ended) => return Streamed::WindDown,
-        };
+        }
         match event {
             PeerEvent::Requester(RequesterEvent::PartReceived {
                 file_hash: received,

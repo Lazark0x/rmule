@@ -143,9 +143,9 @@ pub(super) async fn idle_wait(
             Ok(None) => continue,
             Err(Ended) => return Idled::Ended,
         };
-        match forward_slot_news(link.event_tx, file_hash, event).await {
-            Ok(SlotNews::Requeued) => return Idled::Requeued,
-            Ok(SlotNews::Noted | SlotNews::Other(_)) => {}
+        match forward_slot_news(link.event_tx, file_hash, &event).await {
+            Ok(Some(SlotNews::Requeued)) => return Idled::Requeued,
+            Ok(Some(SlotNews::Noted) | None) => {}
             Err(Ended) => return Idled::Ended,
         }
     }
@@ -157,8 +157,6 @@ pub(super) enum SlotNews {
     Noted,
     /// `OP_OUTOFPARTREQS` queued the flow again, forwarded as `Requeued`.
     Requeued,
-    /// No slot answer: the caller's own to read.
-    Other(PeerEvent),
 }
 
 /// The slot's answers every wait after the probe forwards alike: the slot ask
@@ -166,15 +164,16 @@ pub(super) enum SlotNews {
 /// again (`Requeued`, ADR-0057); a peer saying mid-flow that it lacks the file
 /// is reported as the probe reports it, and the slot's other ends as
 /// `Disconnected`, both ending the worker. Our own release is ignored.
+/// `Ok(None)` for an event that is no slot answer, the caller's own to read.
 pub(super) async fn forward_slot_news(
     event_tx: &mpsc::Sender<PeerWorkerEvent>,
     file_hash: FileHash,
-    event: PeerEvent,
-) -> Result<SlotNews, Ended> {
+    event: &PeerEvent,
+) -> Result<Option<SlotNews>, Ended> {
     let PeerEvent::Requester(requester) = event else {
-        return Ok(SlotNews::Other(event));
+        return Ok(None);
     };
-    let (report, news) = match requester {
+    let (report, news) = match *requester {
         RequesterEvent::SlotAsked { file_hash: asked } if asked == file_hash => {
             (PeerWorkerEvent::SlotAsked, SlotNews::Noted)
         }
@@ -196,7 +195,7 @@ pub(super) async fn forward_slot_news(
         RequesterEvent::SlotReleased {
             file_hash: released,
             reason: SlotReleaseReason::DownloadComplete,
-        } if released == file_hash => return Ok(SlotNews::Noted),
+        } if released == file_hash => return Ok(Some(SlotNews::Noted)),
         // A mid-flow `OP_FILEREQANSNOFIL`: the peer lacks the file after all,
         // reported as the probe reports it, and the download retires the
         // source on it (ADR-0090).
@@ -219,10 +218,10 @@ pub(super) async fn forward_slot_news(
             let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
             return Err(Ended);
         }
-        other => return Ok(SlotNews::Other(PeerEvent::Requester(other))),
+        _ => return Ok(None),
     };
     match event_tx.send(report).await {
-        Ok(()) => Ok(news),
+        Ok(()) => Ok(Some(news)),
         Err(_) => Err(Ended),
     }
 }
