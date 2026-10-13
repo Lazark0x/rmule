@@ -115,9 +115,10 @@ pub(crate) fn resolve_family(sighting: SourceSighting, ours: DialPosition) -> Op
     settle_dual_stack(sighting.peer_source()?, sighting.ipv6(), ours)
 }
 
-/// A source's addresses, each judged on its own by `admits` — the IP filter at
-/// ingest (ADR-0087): every address that may be dialed is judged before
-/// any family or road is chosen.
+/// A source's addresses, each judged on its own by `admits` — at ingest, the
+/// Reserved Range check against the sighting's Informant and then the IP
+/// filter (ADR-0085, ADR-0087): every address that may be dialed is judged
+/// before any family or road is chosen.
 ///
 /// - A dual-stack pair: both halves are dialable. A refused IPv6 half is
 ///   dropped from the record; a refused client id leaves the source on its
