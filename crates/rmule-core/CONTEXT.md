@@ -584,7 +584,7 @@ Where a download's bytes lie now: its `.part` until it completes, the finished f
 _Avoid_: part path (half of it), download location
 
 **Content Store**:
-The byte I/O abstraction. Download writes verified parts into a `.part` file and promotes it to `final_path`; serve reads ranges (`read_range`) from shared files, and from a download's part file inside its **Verified Range**. One abstraction, both directions.
+The byte I/O abstraction. Download writes verified parts into a `.part` file and promotes it to `final_path`; serve reads ranges (`read_range`) from shared files, and from a download's part file inside its **Verified Range** through a handle checked against its **Part File Identity** (`read_checked`). One abstraction, both directions.
 _Avoid_: storage backend, file manager
 
 **Held Part File**:

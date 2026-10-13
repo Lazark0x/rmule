@@ -147,18 +147,20 @@ the file's one registry row, from the record, without reading the file.**
 - **The identity.** The read opens the path, reads the opened handle's key, length and modification
   time, compares them with the entry's Part File Identity, and only then reads, through that handle.
   The key is always compared; the length and time only while no run writes the file. A mismatch, or
-  an identity that cannot be read, sends nothing; the entry's Verified Range is emptied, so the
-  download answers probes and offers nothing. A running download's run meets the same change at its
-  own next check and fails as ADR-0094 says.
+  an identity that cannot be read, sends nothing; the Partial Share stops being served at once, as for
+  a failed read, and the entry's Verified Range is emptied — whoever holds it, until a holder records
+  the identity of the file it reads — so the download answers probes and offers nothing. A running
+  download's run meets the same change at its own next check and fails as ADR-0094 says.
 - **Which path.** The entry names the path that holds the bytes: the part file until the completion
   move puts the final file in place, then the final path, with the identity of the file now holding
   them (a rename keeps the key, a copy has a new one). ADR-0115 deletes the part file only after the
   final file is in place, so at every instant one of the two holds the verified bytes and a copy in
   progress keeps serving from the part file. A read that finds its path gone tries the other once.
-- **A failed read** of both paths stops serving the Partial Share until the next trigger: its waiters
-  and slot holders are told `OP_FILEREQANSNOFIL` and released. It has no registry row, so the Registry
-  Check never looks at it (ADR-0106).
-- **Nothing is suspended across the move.** rmule opens the file per read (`content.rs:58`); aMule
+- **A failed read** of both paths stops serving the Partial Share at once: its waiters and slot
+  holders are told `OP_FILEREQANSNOFIL` and released, and its Verified Range is emptied as for a
+  changed file, so no later trigger offers it again until a holder reads the file. It has no registry
+  row, so the Registry Check never looks at it (ADR-0106).
+- **Nothing is suspended across the move.** rmule opens the file per read (`content/checked.rs`); aMule
   suspends uploads around completion only to close its one permanent handle (`PartFile.cpp:2186-2192`,
   `:2152`).
 
