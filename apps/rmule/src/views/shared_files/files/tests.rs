@@ -141,6 +141,18 @@ fn golden_shared_named() {
     });
 }
 
+/// A Partial Share lists under its download's name and size, its State
+/// `partial`, ranked after the offered rows.
+#[test]
+fn golden_shared_partial() {
+    let state = crate::fixture::partially_served();
+    let mut view = SharedView::default();
+    view.handle_key(press(KeyCode::Char('s')), &state);
+    assert_golden("shared_partial", GOLDEN_W, GOLDEN_H, |frame| {
+        view.draw(frame, frame.area(), &state, &theme(), Instant::now());
+    });
+}
+
 /// A file at its realistic widest (six-digit requests and
 /// accepted counts, a near-terabyte transfer) — the pair that must not
 /// split across two lines.

@@ -75,13 +75,19 @@ fn peers_header(
     column_lines(&labels, widths, 1, &Span::styled("  ", style))
 }
 
-/// The file a peer is served or waits for, by its shared name; the short
-/// hash until the registry's name is read.
+/// The file a peer is served or waits for, by its shared name — a Partial
+/// Share's by its download's; the short hash until a name is read.
 fn file_label(state: &UiState, file: FileHash) -> (String, bool) {
     state
         .shared
         .get(&file)
         .and_then(crate::state::SharedRow::name)
+        .or_else(|| {
+            state
+                .partial_download(file)
+                .and_then(|download| download.metadata.as_ref())
+                .map(|metadata| metadata.name.to_display_string())
+        })
         .map_or_else(|| (short_hash(file), false), |name| (name, true))
 }
 

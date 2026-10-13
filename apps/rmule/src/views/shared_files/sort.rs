@@ -15,7 +15,7 @@ use rmule_core::diagnostics::ShareTotals;
 use rmule_primitives::FileHash;
 
 use super::SharedView;
-use crate::state::{SharedRow, UiState, withheld_rank};
+use crate::state::{DownloadRow, PARTIAL_RANK, SharedRow, UiState, withheld_rank};
 use crate::table_sort::{ColumnKind, ColumnSpec, SortValue, SortedTable, TableSort, TableSorts};
 use crate::views::ViewOutcome;
 use rmule_core::Withheld;
@@ -37,8 +37,8 @@ pub(super) enum SharedColumn {
     Transferred,
 }
 
-/// One shared file's cells, joined once per frame: the registry row and the
-/// levels read beside it.
+/// One shared file's cells, joined once per frame: the registry row, or the
+/// download a Partial Share belongs to, and the levels read beside it.
 pub(super) struct SharedLine {
     pub(super) file_hash: FileHash,
     /// The name it is shared under; `None` until the registry's path is read.
@@ -46,6 +46,9 @@ pub(super) struct SharedLine {
     /// Why nothing is offered for it now, and since when; `None` while
     /// offered.
     pub(super) withheld: Option<Withheld>,
+    /// A download offering the parts it verified (ADR-0113), not a registry
+    /// row.
+    pub(super) partial: bool,
     pub(super) size: Option<u64>,
     /// Peers holding a slot for it now.
     pub(super) uploading: u64,
@@ -61,20 +64,52 @@ pub(super) struct SharedLine {
 
 impl SharedLine {
     pub(super) fn new(row: &SharedRow, state: &UiState) -> Self {
+        Self::joined(
+            row.file_hash,
+            row.name(),
+            row.withheld,
+            row.file_size,
+            state,
+        )
+    }
+
+    /// A Partial Share, under its download's name and size.
+    fn partial(file_hash: FileHash, download: &DownloadRow, state: &UiState) -> Self {
+        let metadata = download.metadata.as_ref();
+        Self {
+            partial: true,
+            ..Self::joined(
+                file_hash,
+                metadata.map(|metadata| metadata.name.to_display_string()),
+                None,
+                metadata.map(|metadata| metadata.size),
+                state,
+            )
+        }
+    }
+
+    fn joined(
+        file_hash: FileHash,
+        name: Option<String>,
+        withheld: Option<Withheld>,
+        size: Option<u64>,
+        state: &UiState,
+    ) -> Self {
         let counters = state.last_snapshot_at.map(|_| {
             state
                 .diagnostics
                 .shared_files
-                .get(&row.file_hash)
+                .get(&file_hash)
                 .copied()
                 .unwrap_or_default()
         });
         Self {
-            file_hash: row.file_hash,
-            name: row.name(),
-            withheld: row.withheld,
-            size: row.file_size,
-            uploading: state.uploading_now(row.file_hash) as u64,
+            file_hash,
+            name,
+            withheld,
+            partial: false,
+            size,
+            uploading: state.uploading_now(file_hash) as u64,
             requests: counters.map(|counters| counters.requests),
             accepted: counters.map(|counters| counters.accepted),
             transferred: counters.map(|counters| counters.transferred),
@@ -128,9 +163,11 @@ impl SortedTable for SharedTable {
                 .map(|name| SortValue::Text(Cow::Borrowed(name))),
             // State renders words but is a rank (ADR-0070: nothing sorts by
             // the spelling of an enumeration).
-            SharedColumn::State => Some(SortValue::Quantity(withheld_rank(
-                row.withheld.map(|held| held.reason),
-            ))),
+            SharedColumn::State => Some(SortValue::Quantity(if row.partial {
+                PARTIAL_RANK
+            } else {
+                withheld_rank(row.withheld.map(|held| held.reason))
+            })),
             SharedColumn::Size => row.size.map(SortValue::Quantity),
             SharedColumn::Uploading => Some(SortValue::Quantity(row.uploading)),
             SharedColumn::Requests => row.requests.map(SortValue::Quantity),
@@ -151,10 +188,13 @@ impl SortedTable for SharedTable {
 }
 
 impl SharedView {
-    /// The shared files' cells, one line per file, in the sort's order.
+    /// The shared files' cells, one line per file, in the sort's order: the
+    /// registry's rows, then every Partial Share the registry does not offer
+    /// whole. A Partial Share has no path the table knows, so a directory
+    /// filter shows none.
     pub(super) fn sorted_lines(&self, state: &UiState) -> Vec<SharedLine> {
         let filter = self.directory_filter(state);
-        let lines: Vec<SharedLine> = state
+        let rows = state
             .shared
             .values()
             .filter(|row| {
@@ -164,8 +204,17 @@ impl SharedView {
                         .is_some_and(|path| path.starts_with(dir))
                 })
             })
-            .map(|row| SharedLine::new(row, state))
-            .collect();
+            .map(|row| SharedLine::new(row, state));
+        let partials = state
+            .partial_shares
+            .iter()
+            .filter(|file_hash| filter.is_none() && !state.shared.contains_key(file_hash))
+            .filter_map(|&file_hash| {
+                state
+                    .partial_download(file_hash)
+                    .map(|download| SharedLine::partial(file_hash, download, state))
+            });
+        let lines: Vec<SharedLine> = rows.chain(partials).collect();
         let order = self.sort.order(&lines);
         let mut slots: Vec<Option<SharedLine>> = lines.into_iter().map(Some).collect();
         order
@@ -174,12 +223,11 @@ impl SharedView {
             .collect()
     }
 
-    /// The shared files in display order.
-    pub(super) fn ordered<'a>(&self, state: &'a UiState) -> Vec<&'a SharedRow> {
-        self.sorted_lines(state)
-            .iter()
-            .map(|line| &state.shared[&line.file_hash])
-            .collect()
+    /// The registry row under the cursor; `None` on a Partial Share, which
+    /// has none, or an empty table.
+    pub(super) fn selected_row<'a>(&self, state: &'a UiState) -> Option<&'a SharedRow> {
+        let lines = self.sorted_lines(state);
+        state.shared.get(&lines.get(self.files_selected)?.file_hash)
     }
 
     /// The shared files' hashes in display order — what the cursor is

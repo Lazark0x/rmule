@@ -33,6 +33,7 @@ use crate::state::{UiState, withheld_words};
 use crate::table_sort::{SortedTable, TableSort, arrow_floors, header_label, header_widths};
 use crate::theme::Theme;
 use crate::views::{DrawnRows, day, human_size, say_gave_way, scroll_to_show};
+use crate::words::serve::PARTIAL;
 use crate::wrap::{Column, TableColumns, clamp_u16, column_lines, gave_way};
 
 /// Fixed widths of the files table's non-name columns: State · Size ·
@@ -156,7 +157,7 @@ fn file_columns(line: &SharedLine, widths: &[usize], theme: &Theme) -> Vec<Colum
         None => (crate::words::units::short_hash(line.file_hash), dim),
     };
     let state = line.withheld.map_or_else(
-        || Column::left("shared", dim),
+        || Column::left(if line.partial { PARTIAL } else { "shared" }, dim),
         |held| {
             Column::left(
                 format!("{} since {}", withheld_words(held.reason), day(held.since)),
@@ -257,7 +258,7 @@ impl SharedView {
             " Shared Files · {} · {total} ",
             crate::words::scan::files(lines_in_order.len())
         );
-        let hint = if state.shared.is_empty() {
+        let hint = if lines_in_order.is_empty() {
             ""
         } else {
             " s sort  S reverse "

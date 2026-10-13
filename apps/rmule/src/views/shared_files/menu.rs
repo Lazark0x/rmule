@@ -256,8 +256,10 @@ impl SharedView {
             return ViewOutcome::Ignored;
         }
         self.clamp_selection(state);
-        let Some(row) = self.ordered(state).get(self.files_selected).copied() else {
-            return ViewOutcome::Ignored; // nothing shared → no menu
+        // Nothing shared, or a Partial Share: its offer is its download's,
+        // ended only by cancelling it, so it has no menu.
+        let Some(row) = self.selected_row(state) else {
+            return ViewOutcome::Ignored;
         };
         self.menu = Some(FileMenu {
             file_hash: row.file_hash,
