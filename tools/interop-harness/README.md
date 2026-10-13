@@ -44,6 +44,14 @@ socket is bound — and the summary's `login_accepted` / `udp_ports_advert` say
 whether this server body still takes the login. Run it beside a bare control:
 the claim is that the flag words and the ID class do not move.
 
+`--advertise-ipv6 <addr>` adds `CT_MOD_IP_V6` (`0xAE`) with its `SRVCAP_IPV6`
+bit (ADR-0087). Beside `--udp-ports-advert` the login carries **six tags**
+(`…,0xFB,0xAE,0xF9`), the login a dual-stack core sends, which no run has yet
+put to Lugdunum (ADR-0047, ADR-0091): `bench-smoke --udp-ports-advert 4672
+--advertise-ipv6 2001:db8::9`, run `RUN-ID-TBD`. The summary's `login_tags`
+and `advertised_ipv6` name what the login carried; `login_accepted` and the
+flag words are Lugdunum's answer, read against the bare and the five-tag runs.
+
 ## Low-ID Callback (ADR-0039)
 
 ```bash

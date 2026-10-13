@@ -254,6 +254,7 @@ impl RmuleClientContainer {
         staging: BenchStaging<'_>,
         server_endpoint: &str,
         udp_ports_advert: Option<u16>,
+        advertise_ipv6: Option<std::net::Ipv6Addr>,
     ) -> DockerCommand {
         let mut run = self
             .workspace
@@ -268,6 +269,9 @@ impl RmuleClientContainer {
             .arg(format!("{CONTAINER_RUN_ROOT}/probe"));
         if let Some(client_udp) = udp_ports_advert {
             run = run.arg("--udp-ports-advert").arg(client_udp.to_string());
+        }
+        if let Some(address) = advertise_ipv6 {
+            run = run.arg("--advertise-ipv6").arg(address.to_string());
         }
         staging.docker.run_container(run)
     }

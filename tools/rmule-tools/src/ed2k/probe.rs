@@ -59,6 +59,12 @@ pub(crate) struct ServerProbeArgs {
     /// one — no socket is bound, the port is only a value.
     #[arg(long)]
     udp_ports_advert: Option<u16>,
+    /// Ride `CT_MOD_IP_V6` (`0xAE`) with its `SRVCAP_IPV6` bit on the login,
+    /// naming this address (ADR-0087). Beside `--udp-ports-advert` the login
+    /// carries six tags, `0xF9` after `0xAE`, as a dual-stack core's does. No
+    /// address is held; it is only a value.
+    #[arg(long)]
+    advertise_ipv6: Option<std::net::Ipv6Addr>,
 }
 
 /// Accumulates the probe's `key: value` lines: each is printed live (so it
@@ -387,7 +393,7 @@ async fn probe_login(
         login_timeout: per_step,
         obfuscation: None,
         obfuscated_port: None,
-        advertised_ipv6: None,
+        advertised_ipv6: args.advertise_ipv6,
         udp_ports: args
             .udp_ports_advert
             .map(|client_udp| rmule_ed2k::UdpPortsAdvert {
@@ -398,6 +404,14 @@ async fn probe_login(
     if let Some(advert) = options.udp_ports {
         report.line(format!("udp_ports_advert: 0x{:08X}", advert.word()));
     }
+    if let Some(address) = options.advertised_ipv6 {
+        report.line(format!("advertised_ipv6: {address}"));
+    }
+    // aMule 2.3.3's four, then each advert this login rides.
+    let login_tags = 4
+        + usize::from(options.advertised_ipv6.is_some())
+        + usize::from(options.udp_ports.is_some());
+    report.line(format!("login_tags: {login_tags}"));
     match Connection::connect_with_options(endpoint, identity, options).await {
         Ok(mut conn) => {
             match await_login(&mut conn, per_step).await {

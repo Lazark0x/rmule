@@ -117,6 +117,7 @@ pub fn run_server_cycle(options: ServerCycleOptions<'_>) -> Result<()> {
             bench.staging(options.layout),
             &server_endpoint,
             None,
+            None,
         );
         let probe_output = probe
             .to_command()
