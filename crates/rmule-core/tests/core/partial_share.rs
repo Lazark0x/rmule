@@ -58,7 +58,7 @@ impl PeerTransferService for Gated {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, rmule_core::DownloadFailure> {
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
@@ -66,6 +66,7 @@ impl PeerTransferService for Gated {
         tokio::spawn(async move {
             let mut gate = this.gate.clone();
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(rmule_testkit::every_part(file.size)).await;
             let mut held = Vec::new();
             loop {
                 tokio::select! {

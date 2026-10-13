@@ -99,7 +99,8 @@ async fn run_of<P: PeerTransferService>(
         .unwrap_or_default();
     assert!(cell.install(&record, &set));
     runner.served = cell.hand_to_run(link.file_hash, 1);
-    *runner.part_file.lock().await = Some(HeldPartFile::hold(paths.part_path(), 0).await.unwrap().0);
+    *runner.part_file.lock().await =
+        Some(HeldPartFile::hold(paths.part_path(), 0).await.unwrap().0);
     (runner, held, record)
 }
 
@@ -154,8 +155,19 @@ fn working(link: &Ed2kFileLink, record: &DurableDownloadRecord) -> (DownloadStat
         vec![SourceSighting::plain(PeerSource::HighId(SOURCE))],
         &gate,
     );
-    let assigned = state
-        .on_worker_event(now, PeerEndpoint::V4(SOURCE), PeerWorkerEvent::Connected)
+    let mut decisions =
+        state.on_worker_event(now, PeerEndpoint::V4(SOURCE), PeerWorkerEvent::Connected);
+    decisions.extend(state.on_worker_event(
+        now,
+        PeerEndpoint::V4(SOURCE),
+        PeerWorkerEvent::PartsAdvertised {
+            parts: Some(rmule_peer::PartBitmap::all_present(
+                rmule_primitives::part_count(link.size),
+            )),
+            complete: false,
+        },
+    ));
+    let assigned = decisions
         .into_iter()
         .find_map(|decision| match decision {
             Decision::Emit(DownloadEvent::PartAssigned { part_index, .. }) => Some(part_index),
