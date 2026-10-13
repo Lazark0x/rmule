@@ -28,11 +28,19 @@ use crate::wrap::clamp_u16;
 /// The column the bar takes at a list's inner right edge.
 pub(crate) const BAR_W: u16 = 1;
 
-/// `area` without its right column, and that column: where a list draws its
-/// items, and where its bar goes.
+/// Whether a list needs its bar's column: surely when it has more items than
+/// its viewport has lines, else when laid out at its full width its wrapped
+/// rows overflow — asked only of a list short enough to be cheap to lay out.
 #[must_use]
-pub(crate) fn split(area: Rect) -> (Rect, Rect) {
-    let bar = BAR_W.min(area.width);
+pub(crate) fn needs_bar(items: usize, room: u16, overflows_at_full_width: impl FnOnce() -> bool) -> bool {
+    items > usize::from(room) || overflows_at_full_width()
+}
+
+/// `area` split into where a list draws its items and where its bar goes:
+/// the right column while it has a `bar`, nothing otherwise.
+#[must_use]
+pub(crate) fn split(area: Rect, bar: bool) -> (Rect, Rect) {
+    let bar = if bar { BAR_W.min(area.width) } else { 0 };
     let list = Rect {
         width: area.width - bar,
         ..area
@@ -222,18 +230,14 @@ impl Viewport {
     /// note that gives way before it does.
     pub(crate) fn draw(&self, frame: &mut Frame, pane: Rect, bar: Rect, theme: &Theme) -> Rect {
         self.draw_bar(frame, bar, theme);
-        if pane.width <= 2 || pane.height == 0 {
-            return Rect::default();
-        }
-        let border = Rect::new(pane.x + 1, pane.bottom() - 1, pane.width - 2, 1);
-        self.draw_count(frame, border, theme)
+        self.draw_count(frame, crate::views::bottom_border(pane), theme)
     }
 
     /// Draw the count at the right end of `line`, and return what is left of
     /// `line` before it, a cell apart: all of it when there is no count or it
     /// does not fit.
     pub(crate) fn draw_count(&self, frame: &mut Frame, line: Rect, theme: &Theme) -> Rect {
-        let Some(count) = self.count() else {
+        let Some(count) = self.count().filter(|_| line.width > 0) else {
             return line;
         };
         let text = format!(" {count} ");

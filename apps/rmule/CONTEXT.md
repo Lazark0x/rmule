@@ -77,7 +77,7 @@ What selecting a row is in every table: the cursor on a row's identity (`RowCurs
 _Avoid_: highlight, cursor row, active row, current row
 
 **Viewport**:
-What part of a scrollable list is on screen — its first item, how many items the last draw showed whole, and of how many — owned beside the **Row Selection** (`row_selection::viewport`), written by the draw, and the one source of the list's scroll bar and count. In a list with a cursor it follows the cursor, moving no further than keeps it on screen; in one without (the log, the help, a details modal) it stays where it was scrolled, and one resting on its end keeps the end in view. While the list overflows, the bar (`▲` `█` `║` `▼`) takes the inner right column; the bottom border's right end says the cursor's row over the rows — or, while it overflows, the last item on screen over the total — and that count gives way last.
+What part of a scrollable list is on screen — its first item, how many items the last draw showed whole, and of how many — owned beside the **Row Selection** (`row_selection::viewport`), written by the draw, and the one source of the list's scroll bar and count. In a list with a cursor it follows the cursor, moving no further than keeps it on screen; in one without (the log, the help) it stays where it was scrolled, and one resting on its end keeps the end in view. While the list overflows, the bar (`▲` `█` `║` `▼`) takes the inner right column; the bottom border's right end says the cursor's row over the rows — or, while it overflows, the last item on screen over the total — and that count gives way last.
 _Avoid_: scroll offset (one fact of it), scroll state, window, page
 
 **Natural Direction**:

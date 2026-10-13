@@ -224,21 +224,32 @@ pub(crate) fn pane_hit(area: Rect, column: u16, row: u16) -> bool {
 /// Say on a bordered pane's bottom border which of its table's columns gave
 /// way at this width ([`crate::wrap::gave_way`]): a column the pane cannot
 /// hold is a gap in what the operator sees, and a gap is said in words — by
-/// name when the border holds them, else by count, never cut. Drawn after the
-/// pane, over its border; nothing when every column shows.
-pub(crate) fn say_gave_way(frame: &mut ratatui::Frame, pane: Rect, hidden: &[&str], theme: &Theme) {
-    if pane.width <= 2 || pane.height == 0 {
+/// name when the border holds them, else by count, never cut. `foot` is the
+/// stretch of the border the Viewport's count left
+/// ([`Viewport::draw`](crate::row_selection::viewport::Viewport::draw)), so
+/// the note gives way before the count does. Drawn after the pane, over its
+/// border; nothing when every column shows.
+pub(crate) fn say_gave_way(frame: &mut ratatui::Frame, foot: Rect, hidden: &[&str], theme: &Theme) {
+    if foot.width == 0 || foot.height == 0 {
         return;
     }
-    let room = usize::from(pane.width - 2);
-    let Some(note) = crate::wrap::gave_way_note(hidden, room) else {
+    let Some(note) = crate::wrap::gave_way_note(hidden, usize::from(foot.width)) else {
         return;
     };
-    let line = Rect::new(pane.x + 1, pane.bottom() - 1, pane.width - 2, 1);
+    let line = Rect { height: 1, ..foot };
     frame.render_widget(
         ratatui::widgets::Paragraph::new(ratatui::text::Span::styled(note, theme.dim_text())),
         line,
     );
+}
+
+/// The stretch of a bordered pane's bottom border between its corners, where
+/// its count and its notes go; nothing for a pane too small to have one.
+pub(crate) fn bottom_border(pane: Rect) -> Rect {
+    if pane.width <= 2 || pane.height == 0 {
+        return Rect::default();
+    }
+    Rect::new(pane.x + 1, pane.bottom() - 1, pane.width - 2, 1)
 }
 
 /// Center a `width`×`height` rect inside `area`, clamped to fit — the one

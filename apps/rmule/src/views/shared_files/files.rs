@@ -286,7 +286,7 @@ impl SharedView {
         }
         say_gave_way(
             frame,
-            area,
+            crate::views::bottom_border(area),
             &gave_way(SharedTable::COLUMNS.iter().map(|c| c.label), &widths),
             theme,
         );

@@ -30,7 +30,7 @@ showed whole, and of how many. The draw writes it, and the list's scroll bar and
 are drawn from it; no view keeps a scroll offset or a count of its own.
 
 - An item is what the list scrolls by: a row in a table, a menu or a strip, however many
-  lines it wraps to; a line in the log, the help, a details modal and the Settings form.
+  lines it wraps to; a line in the log, the help and the Settings form.
 - A list with a cursor follows it: the first item moves no further than keeps the cursor
   wholly on screen. A list without one scrolls by the same keys — `j` / `k` a line, `g` /
   `G` the ends, the help's page keys a page — and stays where it was put while items
@@ -39,10 +39,12 @@ are drawn from it; no view keeps a scroll offset or a count of its own.
   `▲` and `▼` at its ends once it is three cells tall, and a `█` thumb on a `║` track
   whose size and place are the visible window over the whole list. The thumb touches an
   end only when the list is at that end. A list that fits draws no bar.
-- A pane's list — a table, the log, the Settings form — keeps that column whether or not
-  the bar is drawn, so a list growing past its pane never re-wraps its rows. An overlay
-  sized to its content — a menu, a details modal, the help — is one column wider only
-  while it overflows.
+- The column is the bar's only while the list overflows: a list that fits keeps every
+  column for its items, so a table at the widths it was laid out for loses no cell to a
+  bar it does not draw. A list with more items than lines surely overflows; a shorter one
+  is laid out at its full width first and, when its wrapped rows overflow there, one
+  column narrower. An overlay sized to its content — a menu, the help — grows by the
+  column instead when the frame has it.
 - The bottom border carries the count at its right end: the cursor's row over the rows in
   a list with one, whether or not it overflows — Settings counts its rows, not its lines
   — and the last item on screen over the total in a list without, only while it

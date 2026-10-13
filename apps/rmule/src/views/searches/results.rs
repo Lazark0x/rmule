@@ -381,7 +381,7 @@ impl SearchesView {
         );
         say_gave_way(
             frame,
-            pane,
+            crate::views::bottom_border(pane),
             &gave_way(ResultsTable::COLUMNS.iter().map(|c| c.label), &cols),
             theme,
         );

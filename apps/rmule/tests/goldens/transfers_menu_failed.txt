@@ -10,7 +10,7 @@
 │            │  Preview  details not known yet                  │            │
 │            │  Copy eD2k link  no metadata yet                 │            │
 │            │  Search related  not connected                   │            │
-└────────────│  Priority ▸  needs core priority model           │────────────┘
+└────────────│  Priority ▸  needs core priority model           │───── 4 / 4 ┘
 ┌ Sources · 3│  Category ▸  needs core categories               │────────────┐
 │            └──────────────────────────────────────────────────┘            │
 │                                                                            │

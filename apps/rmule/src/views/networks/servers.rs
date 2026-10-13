@@ -276,7 +276,7 @@ impl NetworksView {
         let widths = server_widths(usize::from(inner.width), &floors, &headers);
         say_gave_way(
             frame,
-            area,
+            crate::views::bottom_border(area),
             &gave_way(ServersTable::COLUMNS.iter().map(|c| c.label), &widths),
             theme,
         );
