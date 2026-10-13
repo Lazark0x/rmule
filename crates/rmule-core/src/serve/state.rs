@@ -367,7 +367,7 @@ impl ServeState {
     /// A registry row's pool is its upload-engaged clients; a Partial Share's
     /// is its download's own, as the run published it from its Source Book
     /// (ADR-0113): the sources it downloads from or waits at that are not
-    /// queue-full, of which [`ServedFileKind::InProgress`] keeps only those
+    /// queue-full, of which [`ServedFileKind::InProgress`](crate::serve::source_exchange::ServedFileKind::InProgress) keeps only those
     /// whose parts are known.
     fn answer_source_exchange(
         &mut self,
