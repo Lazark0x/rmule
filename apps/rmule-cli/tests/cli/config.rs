@@ -89,7 +89,7 @@ fn config_temp_dir_is_made_shown_refused_inside_a_shared_directory_and_cleared()
         .assert()
         .failure()
         .stderr(contains(
-            "is not set as the temp directory: it lies inside the shared directory",
+            "is not set as the Temp Directory: it lies inside the shared directory",
         ));
     cli(data.path())
         .args(["config", "show"])

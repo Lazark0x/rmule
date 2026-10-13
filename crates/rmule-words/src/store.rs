@@ -18,7 +18,7 @@ pub const NOT_SAVED: Sentence =
 
 /// A Settings edit Core Settings refused for its value: nothing was written,
 /// and the sentence says what the key takes, for a download dir the share
-/// guards refuse, why it may not be shared, and for a temp dir, why it was
+/// guards refuse, why it may not be shared, and for a Temp Directory, why it was
 /// not taken.
 #[must_use]
 pub fn setting_refused(refusal: &rmule_core::SettingRefusal) -> Sentence {
@@ -37,7 +37,7 @@ pub fn setting_refused(refusal: &rmule_core::SettingRefusal) -> Sentence {
         }
         R::TempDirRefused(guard) => {
             return Sentence::owned(format!(
-                "not saved as the temp dir: {}",
+                "not saved as the Temp Directory: {}",
                 super::scan::temp_dir_refusal(guard)
             ));
         }

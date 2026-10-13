@@ -1,10 +1,14 @@
 //! The TUI's own app words, beside the shared ones it re-exports: a Settings
-//! receipt and a run with no core, which word the TUI's own types.
+//! receipt, why a Paths row refused its text and what an unset Temp
+//! Directory reads as, and a run with no core, which word the TUI's own
+//! types.
 
 pub use rmule_words::app::*;
 
+use std::path::Path;
+
 use super::Sentence;
-use crate::config::PrefEdit;
+use crate::config::{PrefEdit, UnfitDirectory};
 use crate::state::AttachFailure;
 
 /// The status-bar receipt for a saved Settings edit, which names the restart
@@ -16,8 +20,8 @@ pub fn receipt(edit: &PrefEdit, effect: rmule_core::TakesEffect) -> Sentence {
     let on_off = |on: bool| if on { "on" } else { "off" };
     let what = match edit {
         PrefEdit::DownloadDir(dir) => format!("download dir → {}", dir.display()),
-        PrefEdit::TempDir(Some(dir)) => format!("temp dir → {}", dir.display()),
-        PrefEdit::TempDir(None) => "temp dir → the default".to_string(),
+        PrefEdit::TempDir(Some(dir)) => format!("Temp Directory → {}", dir.display()),
+        PrefEdit::TempDir(None) => "Temp Directory → the default".to_string(),
         PrefEdit::Nickname(name) => format!("nickname → {name}"),
         PrefEdit::TcpPort(port) => format!("eD2k port → {port}"),
         PrefEdit::UdpPort(port) => format!("UDP port → {port}"),
@@ -83,4 +87,36 @@ pub fn ui_only(failure: AttachFailure) -> Sentence {
         "UI-only: {} (see the run log)",
         attach_failure_words(failure)
     ))
+}
+
+/// The Download dir row left empty: downloads need somewhere to land.
+pub const DOWNLOAD_DIR_REQUIRED: &str = "a download directory is required";
+
+/// Why the Download dir row's text names no directory rmule takes.
+#[must_use]
+pub fn download_dir_unfit(unfit: &UnfitDirectory) -> String {
+    match unfit {
+        UnfitDirectory::Relative => "the download directory must be an absolute path".to_string(),
+        UnfitDirectory::NotADirectory(text) => format!("'{text}' exists and is not a directory"),
+    }
+}
+
+/// Why the Temp dir row's text names no directory rmule takes; left empty,
+/// the row goes back to the default instead.
+#[must_use]
+pub fn temp_dir_unfit(unfit: &UnfitDirectory) -> String {
+    match unfit {
+        UnfitDirectory::Relative => "the Temp Directory must be an absolute path".to_string(),
+        UnfitDirectory::NotADirectory(text) => format!("'{text}' exists and is not a directory"),
+    }
+}
+
+/// The Temp dir row while none is set: the directory core reads by default,
+/// `default`, or where it lies while no data directory is known.
+#[must_use]
+pub fn temp_dir_default(default: Option<&Path>) -> String {
+    match default {
+        Some(dir) => format!("{}  (the default)", dir.display()),
+        None => "the default: Temp in the data dir".to_string(),
+    }
 }

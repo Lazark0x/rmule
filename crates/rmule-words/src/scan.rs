@@ -68,10 +68,10 @@ pub fn refusal(reason: &DirectoryRefusal) -> String {
             format!("it holds the shared directory {}", child.display())
         }
         DirectoryRefusal::HoldsTempDirectory => {
-            "it is or holds the temp dir, where unfinished downloads are kept".to_string()
+            "it is or holds the Temp Directory, where unfinished downloads are kept".to_string()
         }
         DirectoryRefusal::InsideTempDirectory => {
-            "it lies inside the temp dir, where unfinished downloads are kept".to_string()
+            "it lies inside the Temp Directory, where unfinished downloads are kept".to_string()
         }
         DirectoryRefusal::DownloadDirectory => {
             "it is the download directory — change that above, under Paths".to_string()

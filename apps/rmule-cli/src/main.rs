@@ -289,7 +289,7 @@ async fn main() -> Result<()> {
                     .map_err(|error| match error {
                         SettingError::Refused(SettingRefusal::TempDirRefused(reason)) => {
                             anyhow::anyhow!(
-                                "{} is not set as the temp directory: {}",
+                                "{} is not set as the Temp Directory: {}",
                                 dir.display(),
                                 rmule_words::scan::temp_dir_refusal(&reason)
                             )

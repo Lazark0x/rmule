@@ -174,7 +174,7 @@ fn an_empty_temp_dir_field_clears_the_one_set() {
     assert_eq!(config.load(None).expect("load").temp_dir, None);
     assert_eq!(
         crate::words::app::receipt(&cleared, TakesEffect::NextStart).as_str(),
-        "saved: temp dir → the default (takes effect on restart)"
+        "saved: Temp Directory → the default (takes effect on restart)"
     );
 }
 

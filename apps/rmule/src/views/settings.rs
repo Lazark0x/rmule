@@ -250,13 +250,13 @@ fn build(prefs: &Preferences, state: &UiState) -> (Form, Vec<Slot>) {
                 .with_placeholder("unset — downloads have nowhere to land"),
             // Unset, the row names the directory core reads by default.
             Row::TempDir => Field::text("Temp dir", path(&prefs.temp_dir)).with_placeholder(
-                match &prefs.data_dir {
-                    Some(dir) => format!(
-                        "{}  (the default)",
-                        rmule_core::CoreSettings::default_temp_dir(&dir.path).display()
-                    ),
-                    None => "the default: Temp in the data dir".to_string(),
-                },
+                crate::words::app::temp_dir_default(
+                    prefs
+                        .data_dir
+                        .as_ref()
+                        .map(|dir| rmule_core::CoreSettings::default_temp_dir(&dir.path))
+                        .as_deref(),
+                ),
             ),
             Row::DataDir => match &prefs.data_dir {
                 Some(dir) => Field::display("Data dir", dir.path.display().to_string())

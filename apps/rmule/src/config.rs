@@ -28,6 +28,7 @@ use rmule_core::{
 use rmule_primitives::{ServerEndpoint, UserHash};
 
 use crate::table_sort::{Direction, TableSorts};
+use crate::words::app as words;
 use crate::theme::Theme;
 
 mod front_end_key;
@@ -631,7 +632,10 @@ impl PrefEdit {
 /// a typo the operator wants to hear about now rather than at the first
 /// completed download.
 pub fn validate_download_dir(path: &str) -> Result<PathBuf, String> {
-    directory(path, "download directory")
+    if path.trim().is_empty() {
+        return Err(words::DOWNLOAD_DIR_REQUIRED.to_string());
+    }
+    directory(path).map_err(|unfit| words::download_dir_unfit(&unfit))
 }
 
 /// A Temp Directory as an operator types it, by the same rule as
@@ -641,22 +645,30 @@ pub fn validate_temp_dir(path: &str) -> Result<Option<PathBuf>, String> {
     if path.trim().is_empty() {
         return Ok(None);
     }
-    directory(path, "temp directory").map(Some)
+    directory(path)
+        .map(Some)
+        .map_err(|unfit| words::temp_dir_unfit(&unfit))
 }
 
-/// `path` as the directory `what` names: absolute, and not an existing
+/// Why typed text does not name a directory a Paths row takes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UnfitDirectory {
+    /// The path is relative.
+    Relative,
+    /// The path exists and is not a directory; the text as typed, trimmed.
+    NotADirectory(String),
+}
+
+/// The text `path`, trimmed, as a directory: absolute, and not an existing
 /// non-directory.
-fn directory(path: &str, what: &str) -> Result<PathBuf, String> {
+fn directory(path: &str) -> Result<PathBuf, UnfitDirectory> {
     let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return Err(format!("{what} is required"));
-    }
     let path = Path::new(trimmed);
     if !path.is_absolute() {
-        return Err(format!("{what} must be an absolute path"));
+        return Err(UnfitDirectory::Relative);
     }
     if path.exists() && !path.is_dir() {
-        return Err(format!("'{trimmed}' exists and is not a directory"));
+        return Err(UnfitDirectory::NotADirectory(trimmed.to_string()));
     }
     Ok(path.to_path_buf())
 }
