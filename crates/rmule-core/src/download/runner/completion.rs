@@ -124,7 +124,7 @@ pub(super) async fn complete<S, P>(
         }
         return finish(runner, download_id, &paths).await;
     }
-    let destination = free_destination(paths.final_path()).await;
+    let destination = free_destination(&paths).await;
     store_destination(runner, download_id, &destination)?;
     let placed = move_into_place(runner, download_id, file, &paths, destination).await?;
     finish(runner, download_id, &placed).await
@@ -268,10 +268,12 @@ async fn hashes_to<S, P>(
     }
 }
 
-/// Step 2: `final_path`, or the first free numbered name beside it.
-async fn free_destination(final_path: &Path) -> PathBuf {
-    let final_path = final_path.to_path_buf();
-    on_pool(move || crate::free_name::first_free(&final_path, Path::exists)).await
+/// Step 2: the name the download was placed under, or the first free
+/// numbered name of it beside it: counted from that name each time, as
+/// aMule's is, so a move a past one numbered never numbers past the number.
+async fn free_destination(row: &DownloadPaths) -> PathBuf {
+    let placed = crate::free_name::placed(row);
+    on_pool(move || crate::free_name::first_free(&placed, Path::exists)).await
 }
 
 /// Store `Completing` with `destination`, in one write, before it is used.
@@ -292,7 +294,7 @@ fn store_destination<S, P>(
 
 /// Steps 3 to 5: rename the part file onto `destination`, wait while a
 /// program holds it, copy across volumes; a name taken meanwhile takes the
-/// next free one beside the row's final path, stored first. Answers the
+/// next free one of the placed name, stored first. Answers the
 /// paths the finished file and the part file hold once the file is in place.
 async fn move_into_place<S, P>(
     runner: &RunnerContext<S, P>,
@@ -317,7 +319,7 @@ async fn move_into_place<S, P>(
         match landed {
             Landed::InPlace => return Ok(DownloadPaths::new(destination, part_path.to_owned())),
             Landed::Taken => {
-                destination = free_destination(row.final_path()).await;
+                destination = free_destination(row).await;
                 store_destination(runner, download_id, &destination)?;
             }
             Landed::Refused(Refusal::InUse { os_code }) => {

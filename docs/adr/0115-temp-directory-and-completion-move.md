@@ -74,12 +74,16 @@ The move is the run's last step (ADR-0093), on the blocking pool, after the sche
 last decision; Download State holds no clock and takes no part.
 
 1. **Check.** The run hashes the part file, as today; a mismatch repairs (ADR-0094).
-2. **Name.** The destination is the row's final path or, when a file stands there, the first free
-   `stem (n).ext` beside it. The run stores `Completing` and the destination in one write before
-   anything moves. A file at the row's final path of the file's size that hashes to the file hash
-   (one read, before the check) is the download's own — a past move landed it and a Pause or a
-   stop came before its row was written — so the run takes step 6 there, numbering nothing past it;
-   a file of another size or hash is someone else's and is left as it is.
+2. **Name.** The destination is the final path the download was placed under or, when a file
+   stands there, the first free `stem (n).ext` beside it, numbered from the placed name every time
+   as aMule's move is (`ThreadTasks.cpp`), so a move that numbered once never stacks a second
+   number on the first (`film (2).mkv`, never `film (1) (1).mkv`). The placed name is the part
+   file's less `.part`: a placement names the two alike, and a move stores only its destination.
+   The run stores `Completing` and the destination in one write before anything moves. A file at
+   the row's final path of the file's size that hashes to the file hash (one read, before the
+   check) is the download's own — a past move landed it and a Pause or a stop came before its row
+   was written — so the run takes step 6 there, numbering nothing past it; a file of another size
+   or hash is someone else's and is left as it is.
 3. **Rename.** The run renames the part file onto the destination.
 4. **In use.** When the OS refuses the rename because another program holds the file (Windows
    `ERROR_SHARING_VIOLATION` 32 or `ERROR_LOCK_VIOLATION` 33), the download stays `Completing`

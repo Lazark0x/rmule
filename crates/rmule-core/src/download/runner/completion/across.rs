@@ -67,7 +67,7 @@ pub(super) async fn copy_into_place<S, P>(
         match landed {
             Landed::InPlace => break,
             Landed::Taken => {
-                destination = free_destination(row.final_path()).await;
+                destination = free_destination(row).await;
                 store_destination(runner, download_id, &destination)?;
             }
             Landed::Refused(refusal) => {

@@ -246,6 +246,32 @@ async fn a_taken_destination_completes_under_the_first_free_numbered_name() {
     assert_eq!(completed_at(&leg.events()), Some(numbered.as_path()));
 }
 
+/// A move whose stored destination a past move numbered, that name taken
+/// since: the next free name counts from the name the download was placed
+/// under, as aMule's does, never on from the number.
+#[tokio::test]
+async fn a_move_numbered_once_counts_its_next_free_name_from_the_placed_name() {
+    let mut leg = finished(300_000, Arc::new(OsCompletionFs));
+    let placed = leg.paths.final_path().to_path_buf();
+    let first = placed.with_file_name("film (1).mkv");
+    let second = placed.with_file_name("film (2).mkv");
+    std::fs::write(&placed, b"the operator's own file").unwrap();
+    std::fs::write(&first, b"a file that came to stand there").unwrap();
+    leg.runner.rt.store.set_completing(leg.id, &first).unwrap();
+    let mut rx = std::mem::replace(&mut leg.held.in_place_rx, mpsc::channel(1).1);
+    let (result, ()) = tokio::join!(
+        complete(&leg.runner, leg.id, &leg.file, Vec::new()),
+        answer(&mut rx, true, |report| assert_eq!(report.path, second)),
+    );
+    result.unwrap();
+    assert_eq!(leg.final_path(), second);
+    assert_eq!(std::fs::read(&second).unwrap(), leg.bytes);
+    assert_eq!(
+        std::fs::read(&first).unwrap(),
+        b"a file that came to stand there"
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn across_volumes_the_copy_lands_whole_and_the_part_goes_only_once_the_row_is_written() {
     let fs = TwoVolumes {
