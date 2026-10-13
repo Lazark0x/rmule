@@ -253,9 +253,9 @@ impl Viewport {
         }
     }
 
-    /// The bar: `▲` and `▼` at its ends once it is three cells tall, the
-    /// thumb on the track between.
-    fn draw_bar(&self, frame: &mut Frame, bar: Rect, theme: &Theme) {
+    /// The bar down `bar`, while the list overflows: `▲` and `▼` at its ends
+    /// once it is three cells tall, the thumb on the track between.
+    pub(crate) fn draw_bar(&self, frame: &mut Frame, bar: Rect, theme: &Theme) {
         if bar.width == 0 || bar.height == 0 {
             return;
         }

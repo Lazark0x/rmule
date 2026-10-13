@@ -32,6 +32,7 @@ use ratatui::widgets::Paragraph;
 use rmule_primitives::FileHash;
 
 use super::{DrawnRows, ViewOutcome, rate_cell};
+use crate::row_selection::viewport::{BAR_W, Viewport};
 use crate::state::UiState;
 use crate::table_sort::{RowCursor, RowMove, TableSort};
 use crate::theme::Theme;
@@ -66,10 +67,10 @@ pub struct SharedView {
     /// The selected upload peer, by endpoint; `peers_selected` is its
     /// position in the current order.
     peer_cursor: RowCursor<rmule_primitives::PeerEndpoint>,
-    /// Each table's first drawn row: moved at draw only as far as keeps the
-    /// selection on screen.
-    files_offset: usize,
-    peers_offset: usize,
+    /// What part of each table, and of the directory strip, is on screen.
+    files_viewport: Viewport,
+    peers_viewport: Viewport,
+    strip_viewport: Viewport,
     /// "Active uploads only" (spec §3.5): default on; `a` toggles.
     active_only: bool,
     /// Row menu on the FILES table (spec §3.5), when open.
@@ -109,8 +110,9 @@ impl Default for SharedView {
             peers_selected: 0,
             peer_sort: TableSort::default(),
             peer_cursor: RowCursor::default(),
-            files_offset: 0,
-            peers_offset: 0,
+            files_viewport: Viewport::default(),
+            peers_viewport: Viewport::default(),
+            strip_viewport: Viewport::default(),
             active_only: true,
             menu: None,
             confirm: None,
@@ -135,10 +137,15 @@ enum Pane {
 }
 
 /// Column widths for a pane's table: the greedy column absorbs everything
-/// the fixed ones leave over, after the selection gutter, and no
-/// header is split.
-fn table_widths(area: Rect, table: &TableColumns<'_>) -> Vec<usize> {
-    greedy_widths(usize::from(area.width).saturating_sub(GUTTER_W), table, 1)
+/// the fixed ones leave over, after the selection gutter and the Viewport's
+/// bar column while it has a `bar`, and no header is split.
+fn table_widths(area: Rect, bar: bool, table: &TableColumns<'_>) -> Vec<usize> {
+    let bar = if bar { usize::from(BAR_W) } else { 0 };
+    greedy_widths(
+        usize::from(area.width).saturating_sub(GUTTER_W + bar),
+        table,
+        1,
+    )
 }
 
 fn pane_border(theme: &Theme, focused: bool) -> Style {

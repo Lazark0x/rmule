@@ -184,24 +184,6 @@ impl DrawnRows {
     }
 }
 
-/// The first row to draw so the row at `selected` is on screen: `offset`
-/// moved no further than it must, rows being `heights` lines tall in `room`
-/// lines. A selection above the viewport pulls it up; one below pushes it
-/// down just far enough.
-pub(crate) fn scroll_to_show(offset: usize, selected: usize, heights: &[u16], room: u16) -> usize {
-    let Some(last) = heights.len().checked_sub(1) else {
-        return 0;
-    };
-    let selected = selected.min(last);
-    let mut offset = offset.min(selected);
-    let lines =
-        |from: usize| -> u32 { heights[from..=selected].iter().map(|h| u32::from(*h)).sum() };
-    while offset < selected && lines(offset) > u32::from(room) {
-        offset += 1;
-    }
-    offset
-}
-
 /// A server-reported population, five columns wide at most: exact under ten
 /// thousand, then whole thousands, then whole millions — `—` when nothing
 /// was reported. A rounded population is still the server's claim; a wrapped

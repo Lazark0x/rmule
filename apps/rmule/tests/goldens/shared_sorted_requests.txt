@@ -1,21 +1,21 @@
 ┌ Shared Files · 4 files · — ───────────────────────────── s sort  S reverse ┐
-│  File       State        Size Uploading Requests ▼   Accepted   Transferred│
-│▸ alpha.film shared     0.1 KB         0      9 (0)      6 (0)        0.0 KB│
-│  .name.mkv                                                                 │
-│  charlie.im shared     0.3 KB         2      5 (0)      2 (0)        1.0 KB│
-│  age.name.i                                                                │
-│  so                                                                        │
-│  bravo.song shared     0.2 KB         2      0 (0)      0 (0)        0.0 KB│
-│  .name.mp3                                                                 │
-│  0404040404 shared          —         0      0 (0)      0 (0)        0.0 KB│
+│  File       State       Size Uploading Requests ▼   Accepted   Transferred▲│
+│▸ alpha.film shared    0.1 KB         0      9 (0)      6 (0)        0.0 KB█│
+│  .name.mkv                                                                █│
+│  charlie.im shared    0.3 KB         2      5 (0)      2 (0)        1.0 KB█│
+│  age.name.i                                                               █│
+│  so                                                                       █│
+│  bravo.song shared    0.2 KB         2      0 (0)      0 (0)        0.0 KB║│
+│  .name.mp3                                                                ║│
+│  0404040404 shared         —         0      0 (0)      0 (0)        0.0 KB▼│
 │Off-screen: Transferred 0.0 KB (0.0 KB)                                     │
-└────────────────────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────────── 1 / 4 ┘
 ┌ Uploads · active only ────────────────────────────────── s sort  S reverse ┐
-│  Peer ▲                Software     State             Speed File           │
-│▸ 10.0.0.20:4662        —            Uploading             — bravo.song.name│
-│                                                             .mp3           │
-│  10.0.0.21:4662        —            Uploading             — bravo.song.name│
-│                                                             .mp3           │
-│  10.0.0.30:4662        —            Uploading             — charlie.image.n│
-│                                                             ame.iso        │
-└────────────────────────────────────────────────────────────────────────────┘
+│  Peer ▲                Software     State             Speed File          ▲│
+│▸ 10.0.0.20:4662        —            Uploading             — bravo.song.nam█│
+│                                                             e.mp3         █│
+│  10.0.0.21:4662        —            Uploading             — bravo.song.nam█│
+│                                                             e.mp3         █│
+│  10.0.0.30:4662        —            Uploading             — charlie.image.║│
+│                                                             name.iso      ▼│
+└───────────────────────────────────────────────────────────────────── 1 / 4 ┘

@@ -9,7 +9,7 @@
 │Off-screen: Requests 3 (12) ·   │
 │Accepted 1 (5) · Transferred 1.0│
 │MB (4.0 MB)                     │
-└ 3 columns not shown ───────────┘
+└ 3 columns not shown ──── 1 / 2 ┘
 ┌ Uploads · active only ─ s sort ┐
 │  Peer ▲     State Speed File   │
 │▸ 10.0.0.1:  Uploa     — 0101010│
@@ -18,4 +18,4 @@
 │Off-screen: Software aMule      │
 │v2.3.3                          │
 │  2 hidden queued               │
-└ too narrow to show: Software ──┘
+└ 1 column not shown ───── 1 / 1 ┘

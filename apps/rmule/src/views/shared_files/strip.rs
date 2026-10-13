@@ -14,7 +14,7 @@ use ratatui::widgets::Paragraph;
 use rmule_core::SharedDirectoryDiagnostics;
 
 use super::SharedView;
-use crate::row_selection::gutter;
+use crate::row_selection::{gutter, viewport};
 use crate::state::UiState;
 use crate::theme::Theme;
 use crate::words::scan::{role_words, state_words, under_words};
@@ -53,10 +53,12 @@ impl SharedView {
     }
 
     /// Draw the strip at the top of `area`, one entry a line, wrapped rather
-    /// than cut; the rest of `area` is returned for the table. Nothing is
-    /// drawn while no directory is listed.
+    /// than cut, over its hint line, which carries the strip's count; the
+    /// rest of `area` is returned for the table. Entries the strip has no
+    /// room for scroll under the Viewport, which follows the selection.
+    /// Nothing is drawn while no directory is listed.
     pub(super) fn draw_strip(
-        &self,
+        &mut self,
         frame: &mut Frame,
         area: Rect,
         state: &UiState,
@@ -67,11 +69,11 @@ impl SharedView {
             return area;
         }
         let selected = self.directory_filter(state);
-        let text_w = usize::from(area.width).saturating_sub(2).max(1);
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        let total = crate::words::scan::all_words(state.shared.len());
-        push_entry(&mut lines, &total, selected.is_none(), text_w, theme);
-        for entry in entries {
+        let mut texts = vec![(
+            crate::words::scan::all_words(state.shared.len()),
+            selected.is_none(),
+        )];
+        texts.extend(entries.iter().map(|entry| {
             let mut text = entry.dir.display().to_string();
             if let Some(role) = role_words(entry.role) {
                 text.push_str(&format!(" ({role})"));
@@ -81,22 +83,51 @@ impl SharedView {
                 state_words(&entry.state),
                 under_words(state.shared_under(&entry.dir))
             ));
-            push_entry(
-                &mut lines,
-                &text,
-                selected == Some(entry.dir.as_path()),
-                text_w,
-                theme,
+            (text, selected == Some(entry.dir.as_path()))
+        }));
+        let cursor = texts.iter().position(|(_, on)| *on).unwrap_or(0);
+        let rows_at = |width: u16| -> Vec<Vec<Line<'static>>> {
+            let text_w = usize::from(width).saturating_sub(2).max(1);
+            texts
+                .iter()
+                .map(|(text, on)| entry_lines(text, *on, text_w, theme))
+                .collect()
+        };
+        // The table keeps at least its header and one row; the hint line
+        // takes one more.
+        let room = area.height.saturating_sub(3);
+        let bar = viewport::needs_bar(texts.len(), room, || {
+            rows_at(area.width).iter().map(Vec::len).sum::<usize>() > usize::from(room)
+        });
+        let rows = rows_at(if bar {
+            area.width.saturating_sub(viewport::BAR_W)
+        } else {
+            area.width
+        });
+        let heights: Vec<u16> = rows.iter().map(|row| clamp_u16(row.len())).collect();
+        let entries_h = clamp_u16(heights.iter().map(|h| usize::from(*h)).sum()).min(room);
+        let first = self
+            .strip_viewport
+            .follow(cursor, heights.len(), entries_h, |index| heights[index]);
+        let lines: Vec<Line<'static>> = rows
+            .into_iter()
+            .skip(first)
+            .flatten()
+            .take(usize::from(entries_h))
+            .collect();
+        let (list, bar) = viewport::split(Rect { height: entries_h, ..area }, bar);
+        frame.render_widget(Paragraph::new(lines), list);
+        self.strip_viewport.draw_bar(frame, bar, theme);
+        let hint_line = Rect::new(area.x, area.y + entries_h, area.width, 1);
+        let rest = self.strip_viewport.draw_count(frame, hint_line, theme);
+        let hint = crate::words::scan::STRIP_HINT;
+        if Span::raw(hint).width() <= usize::from(rest.width) {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(hint, theme.dim_text()))),
+                rest,
             );
         }
-        let hint = crate::words::scan::STRIP_HINT;
-        lines.push(Line::from(Span::styled(hint, theme.dim_text())));
-        // The table keeps at least its header and one row.
-        let height = clamp_u16(lines.len()).min(area.height.saturating_sub(2));
-        frame.render_widget(
-            Paragraph::new(lines),
-            Rect::new(area.x, area.y, area.width, height),
-        );
+        let height = entries_h + 1;
         Rect::new(
             area.x,
             area.y + height,
@@ -106,28 +137,28 @@ impl SharedView {
     }
 }
 
-/// One strip entry, marked when selected, wrapped under its own gutter.
-fn push_entry(
-    lines: &mut Vec<Line<'static>>,
-    text: &str,
-    selected: bool,
-    width: usize,
-    theme: &Theme,
-) {
+/// One strip entry's lines, marked when selected, wrapped under its own
+/// gutter.
+fn entry_lines(text: &str, selected: bool, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     let style = if selected {
         Style::new().fg(theme.fg)
     } else {
         theme.dim_text()
     };
-    for (index, part) in wrap_text(text, width).into_iter().enumerate() {
-        let mut spans = vec![if index == 0 {
-            gutter(selected, true, theme)
-        } else {
-            Span::raw("  ")
-        }];
-        spans.push(Span::styled(part, style));
-        lines.push(Line::from(spans));
-    }
+    wrap_text(text, width)
+        .into_iter()
+        .enumerate()
+        .map(|(index, part)| {
+            Line::from(vec![
+                if index == 0 {
+                    gutter(selected, true, theme)
+                } else {
+                    Span::raw("  ")
+                },
+                Span::styled(part, style),
+            ])
+        })
+        .collect()
 }
 
 #[cfg(test)]
