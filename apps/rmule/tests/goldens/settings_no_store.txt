@@ -1,6 +1,7 @@
 ┌ Settings ──────────────────────────────────── j/k row  ←→ step  Enter edit ┐
 │Paths                                                                       │
 │ Download dir unset — downloads have nowhere to land                        │
+│ Temp dir     the default: Temp in the data dir                             │
 │ Data dir     —  (none: give --data-dir, or set RMULE_DATA or HOME)         │
 │                                                                            │
 │Shared directories                                                          │
@@ -19,5 +20,4 @@
 │Servers                                                                     │
 │ Dead after   3  failed tries in a row; a dead server stays listed          │
 │ Hide shares  off  from servers that answer related searches                │
-│                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘

@@ -8,6 +8,7 @@ fn state() -> UiState {
     UiState {
         preferences: Preferences {
             download_dir: Some(std::path::PathBuf::from("/home/u/Downloads")),
+            temp_dir: None,
             data_dir: Some(crate::args::DataDir {
                 path: std::path::PathBuf::from("/home/u/.local/share/rmule"),
                 source: crate::args::DataDirSource::Home,
@@ -146,6 +147,28 @@ fn a_download_directory_commit_warns_before_it_lands() {
         view.handle_key(press(KeyCode::Enter), &state),
         ViewOutcome::Emit(Action::Preference(PrefEdit::DownloadDir(_)))
     ));
+}
+
+/// Nothing under the Temp Directory is offered, so its commit asks no guard
+/// and warns of nothing: the `Enter` that ends the typing hands the app the
+/// edit, and core judges where it lies at the set.
+#[test]
+fn a_temp_directory_commit_lands_without_a_share_warning() {
+    let mut view = SettingsView::new();
+    let state = state();
+    let parts = crate::fixture::rooted("srv/parts");
+    focus_on(&mut view, Row::TempDir);
+    view.handle_key(press(KeyCode::Enter), &state);
+    for c in parts.display().to_string().chars() {
+        view.handle_key(press(KeyCode::Char(c)), &state);
+    }
+    let ViewOutcome::Emit(Action::Preference(PrefEdit::TempDir(dir))) =
+        view.handle_key(press(KeyCode::Enter), &state)
+    else {
+        panic!("the commit is the edit");
+    };
+    assert_eq!(dir, parts);
+    assert_eq!(view.form.error, None);
 }
 
 #[test]

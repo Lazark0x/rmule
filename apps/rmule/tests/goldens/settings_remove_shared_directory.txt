@@ -1,16 +1,16 @@
 ┌ Settings ───────────────────────────────────────── j/k row  x stop sharing ┐
 │Paths                                                                       │
 │ Download dir unset — downloads have nowhere to land                        │
-│ Data ┌ Stop sharing? ───────────────────────────────────────────────┐      │
-│      │ Stop sharing /srv/media? 1 file, 700.0 MB.                   │      │
-│Shared│                                                              │      │
-│ Share│ They leave the offer at once: servers and Kad stop hearing   │      │
-│      │ of them, and an upload in progress ends. The files stay on   │      │
-│ Share│ disk, and adding the directory again reads nothing.          │      │
+│ Temp ┌ Stop sharing? ───────────────────────────────────────────────┐      │
+│ Data │ Stop sharing /srv/media? 1 file, 700.0 MB.                   │      │
+│      │                                                              │      │
+│Shared│ They leave the offer at once: servers and Kad stop hearing   │      │
+│ Share│ of them, and an upload in progress ends. The files stay on   │      │
+│      │ disk, and adding the directory again reads nothing.          │      │
 │ Share│                                                              │      │
-│      │ y stop sharing    n keep it                                  │      │
-│Networ└──────────────────────────────────────────────────────────────┘      │
+│ Share│ y stop sharing    n keep it                                  │      │
+│      └──────────────────────────────────────────────────────────────┘      │
+│Network                                                                     │
 │ Nickname     rmule  (on restart)                                           │
 │ eD2k port    4662  (on restart)                                            │
-│ UDP port     4672  (on restart)                                            │
 └────────────────────────────────────────────────────────────────────────────┘

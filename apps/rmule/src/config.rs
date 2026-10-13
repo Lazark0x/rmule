@@ -5,7 +5,7 @@
 //! # Core's keys and the front end's
 //!
 //! Core owns every preference that changes what core does — the download
-//! directory, the ports, obfuscation, port mapping, the server policy,
+//! directory, the Temp Directory, the ports, obfuscation, port mapping, the server policy,
 //! `Remember peers`, the mirrors — and an edit to one goes through **Core
 //! Settings**: the handle validates it, persists it, takes up a live key in
 //! the running core, and answers when it takes effect. The receipt reads that
@@ -161,6 +161,7 @@ impl SharedConfig {
         let text = |key: FrontEndKey| self.settings.front_end_value(key.key());
         Ok(Preferences {
             download_dir: core.download_dir,
+            temp_dir: core.temp_dir,
             data_dir,
             nickname: core.nickname,
             tcp_port: core.tcp_port,
@@ -326,6 +327,10 @@ impl ObfuscationChoice {
 pub struct Preferences {
     /// Where downloads are written; `None` until something chooses one.
     pub download_dir: Option<PathBuf>,
+    /// The **Temp Directory** new downloads keep their part files in
+    /// (ADR-0115); `None` until the operator chooses one, and core then
+    /// reads the default in the data directory.
+    pub temp_dir: Option<PathBuf>,
     /// Where the databases live and which rule picked it — `--data-dir`,
     /// `RMULE_DATA`, `XDG_DATA_HOME`, `HOME` or `LOCALAPPDATA`, resolved at
     /// startup, so it cannot be stored in the store it locates.
@@ -400,6 +405,7 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             download_dir: None,
+            temp_dir: None,
             data_dir: None,
             nickname: rmule_core::DEFAULT_NICKNAME.to_string(),
             tcp_port: rmule_core::DEFAULT_TCP_PORT,
@@ -439,6 +445,7 @@ impl Preferences {
     pub fn apply(&mut self, edit: &PrefEdit) {
         match edit {
             PrefEdit::DownloadDir(dir) => self.download_dir = Some(dir.clone()),
+            PrefEdit::TempDir(dir) => self.temp_dir = Some(dir.clone()),
             PrefEdit::Nickname(name) => self.nickname = name.clone(),
             PrefEdit::TcpPort(port) => self.tcp_port = *port,
             PrefEdit::UdpPort(port) => self.udp_port = *port,
@@ -471,6 +478,10 @@ impl Preferences {
 pub enum PrefEdit {
     /// Validated by [`validate_download_dir`]; the next download reads it.
     DownloadDir(PathBuf),
+    /// Validated by [`validate_temp_dir`]; a running core places the next
+    /// download's part file there, and every download already placed keeps
+    /// its own.
+    TempDir(PathBuf),
     /// Takes effect at the next start — the running session already sent its
     /// identity.
     Nickname(String),
@@ -569,6 +580,7 @@ impl PrefEdit {
                 dir: dir.clone(),
                 share_confirmed: true,
             },
+            Self::TempDir(dir) => Setting::TempDir(dir.clone()),
             Self::Nickname(name) => Setting::Nickname(name.clone()),
             Self::TcpPort(port) => Setting::TcpPort(*port),
             Self::UdpPort(port) => Setting::UdpPort(*port),
@@ -618,13 +630,26 @@ impl PrefEdit {
 /// a typo the operator wants to hear about now rather than at the first
 /// completed download.
 pub fn validate_download_dir(path: &str) -> Result<PathBuf, String> {
+    directory(path, "download directory")
+}
+
+/// A Temp Directory as an operator types it, by the same rule as
+/// [`validate_download_dir`]: core judges where it lies at the set, and makes
+/// it.
+pub fn validate_temp_dir(path: &str) -> Result<PathBuf, String> {
+    directory(path, "temp directory")
+}
+
+/// `path` as the directory `what` names: absolute, and not an existing
+/// non-directory.
+fn directory(path: &str, what: &str) -> Result<PathBuf, String> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
-        return Err("download directory is required".to_string());
+        return Err(format!("{what} is required"));
     }
     let path = Path::new(trimmed);
     if !path.is_absolute() {
-        return Err("download directory must be an absolute path".to_string());
+        return Err(format!("{what} must be an absolute path"));
     }
     if path.exists() && !path.is_dir() {
         return Err(format!("'{trimmed}' exists and is not a directory"));

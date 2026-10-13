@@ -1,6 +1,7 @@
 ┌ Settings ────────────────────────────────────────── Enter save  Esc cancel ┐
 │Paths                                                                       │
 │ Download dir /home/u/Downloads                                             │
+│ Temp dir     /home/u/.local/share/rmule/Temp  (the default)                │
 │ Data dir     /home/u/.local/share/rmule  (from HOME)                       │
 │                                                                            │
 │Shared directories                                                          │
@@ -25,6 +26,5 @@
 │ Player       unset — Preview is off                                        │
 │                                                                            │
 │Kad                                                                         │
-│ nodes.dat    http://upd.emule-security.org/nodes.dat  (on restart)         │
 │ ✗ nickname is required                                                     │
 └────────────────────────────────────────────────────────────────────────────┘

@@ -16,6 +16,7 @@ pub fn receipt(edit: &PrefEdit, effect: rmule_core::TakesEffect) -> Sentence {
     let on_off = |on: bool| if on { "on" } else { "off" };
     let what = match edit {
         PrefEdit::DownloadDir(dir) => format!("download dir → {}", dir.display()),
+        PrefEdit::TempDir(dir) => format!("temp dir → {}", dir.display()),
         PrefEdit::Nickname(name) => format!("nickname → {name}"),
         PrefEdit::TcpPort(port) => format!("eD2k port → {port}"),
         PrefEdit::UdpPort(port) => format!("UDP port → {port}"),
@@ -46,6 +47,9 @@ pub fn receipt(edit: &PrefEdit, effect: rmule_core::TakesEffect) -> Sentence {
     };
     let when = match (edit, effect) {
         (PrefEdit::ServerMetUrl(_), _) => Some("the next server list update uses it"),
+        (PrefEdit::TempDir(_), rmule_core::TakesEffect::Now) => {
+            Some("downloads started from now on; the rest stay where they are")
+        }
         (_, rmule_core::TakesEffect::Now) => None,
         (_, rmule_core::TakesEffect::NextStart) => Some("takes effect on restart"),
     };

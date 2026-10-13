@@ -1,6 +1,7 @@
 ┌ Settings ──────────────────────────────────── j/k row  ←→ step  Enter edit ┐
 │Paths                                                                       │
 │ Download dir unset — downloads have nowhere to land                        │
+│ Temp dir     /srv/rmule/Temp  (the default)                                │
 │ Data dir     /srv/rmule  (from --data-dir)                                 │
 │                                                                            │
 │Shared directories                                                          │
@@ -10,5 +11,4 @@
 │ Share a dir  Enter, type an absolute path, Enter                           │
 │                                                                            │
 │Network                                                                     │
-│ Nickname     rmule  (on restart)                                           │
 └────────────────────────────────────────────────────────────────────────────┘

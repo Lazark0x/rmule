@@ -50,7 +50,8 @@ use ratatui::widgets::{Block, Paragraph};
 
 use crate::action::Action;
 use crate::config::{
-    ObfuscationChoice, PrefEdit, Preferences, ThemeChoice, validate_download_dir, validate_nickname,
+    ObfuscationChoice, PrefEdit, Preferences, ThemeChoice, validate_download_dir,
+    validate_nickname, validate_temp_dir,
 };
 use crate::form::{self, Field, Form, FormKey, validate_port, validate_url};
 use crate::state::UiState;
@@ -68,6 +69,7 @@ mod shared_dirs;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Row {
     DownloadDir,
+    TempDir,
     DataDir,
     Nickname,
     TcpPort,
@@ -90,8 +92,9 @@ pub(super) enum Row {
 }
 
 impl Row {
-    const ALL: [Row; 20] = [
+    const ALL: [Row; 21] = [
         Row::DownloadDir,
+        Row::TempDir,
         Row::DataDir,
         Row::Nickname,
         Row::TcpPort,
@@ -245,6 +248,16 @@ fn build(prefs: &Preferences, state: &UiState) -> (Form, Vec<Slot>) {
         let field = match row {
             Row::DownloadDir => Field::text("Download dir", path(&prefs.download_dir))
                 .with_placeholder("unset — downloads have nowhere to land"),
+            // Unset, the row names the directory core reads by default.
+            Row::TempDir => Field::text("Temp dir", path(&prefs.temp_dir)).with_placeholder(
+                match &prefs.data_dir {
+                    Some(dir) => format!(
+                        "{}  (the default)",
+                        rmule_core::CoreSettings::default_temp_dir(&dir.path).display()
+                    ),
+                    None => "the default: Temp in the data dir".to_string(),
+                },
+            ),
             Row::DataDir => match &prefs.data_dir {
                 Some(dir) => Field::display("Data dir", dir.path.display().to_string())
                     .with_note(format!("({})", front_door::source_words(dir.source))),
@@ -391,6 +404,7 @@ impl SettingsView {
         };
         let edit = match row.as_ref() {
             Some(Row::DownloadDir) => PrefEdit::DownloadDir(validate_download_dir(text)?),
+            Some(Row::TempDir) => PrefEdit::TempDir(validate_temp_dir(text)?),
             Some(Row::Nickname) => PrefEdit::Nickname(validate_nickname(text)?),
             Some(Row::TcpPort) => {
                 let port = validate_port(text)?;
