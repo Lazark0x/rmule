@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use rmule_core::{
     ContentFileStore, Core, CoreConfig, CoreEvent, DownloadEvent, DownloadFailure, DownloadId,
-    DownloadLifecycle, DownloadPaths, DownloadRepository, DurableDownloadRepository,
+    DownloadLifecycle, DownloadPaths, DownloadRepository, DurableDownloadRepository, HoleVerdict,
     PartFileChange, PartsLost, StorageIntegrityFault, VerifiedPartRecord, open_durable_store,
 };
 use rmule_primitives::ED2K_PART_SIZE;
@@ -421,6 +421,53 @@ async fn a_run_publishes_its_part_files_allocated_bytes_and_hole_verdict() {
         "part 0's bytes take their space: {allocated}"
     );
     assert!(row.hole_verdict.is_some(), "the run's probe answered");
+}
+
+/// A `HoleLess` verdict is told once per run as `HoleLessDestination`, naming
+/// the part file's directory, and no other verdict is told (ADR-0111): on
+/// whatever disk the test runs, the edges agree with the row's level.
+#[tokio::test]
+async fn a_run_tells_its_hole_verdict_only_when_hole_less_and_only_once() {
+    let mut leg = Leg::with_part_zero(true).await;
+    let mut events = Vec::new();
+    timeout(Duration::from_secs(30), async {
+        loop {
+            let Some(CoreEvent::Download(event)) = leg.core.next_event().await else {
+                continue;
+            };
+            let waiting = matches!(event, DownloadEvent::WaitingForConnection { .. });
+            events.push(event);
+            if waiting {
+                return;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the restored run never waited; saw {events:#?}"));
+    leg.connect().await;
+    events.extend(leg.events_until_the_run_ends().await);
+
+    let told: Vec<&Path> = events
+        .iter()
+        .filter_map(|event| match event {
+            DownloadEvent::HoleLessDestination { directory, .. } => Some(directory.as_path()),
+            _ => None,
+        })
+        .collect();
+    let verdict = leg
+        .core
+        .diagnostics_snapshot()
+        .downloads
+        .remove(&leg.id)
+        .and_then(|row| row.hole_verdict)
+        .expect("the run's probe answered");
+    let directory = leg.part_path().parent().expect("the part file's directory");
+    let expected: Vec<&Path> = if verdict == HoleVerdict::HoleLess {
+        vec![directory]
+    } else {
+        Vec::new()
+    };
+    assert_eq!(told, expected, "verdict {verdict:?}");
 }
 
 #[tokio::test]

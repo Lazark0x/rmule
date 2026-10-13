@@ -286,6 +286,15 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
             let text = words::part_file_lost(&download_name(state, download_id), found, lost);
             note(state, text)
         }
+        // Once per run (ADR-0111): the note says it now; the Transfers
+        // details modal keeps the verdict as the row's level.
+        E::HoleLessDestination {
+            download_id,
+            directory,
+        } => {
+            let text = words::hole_less_destination(&download_name(state, download_id), &directory);
+            note(state, text)
+        }
         E::FinishedFileRejected {
             download_id,
             parts_dropped,

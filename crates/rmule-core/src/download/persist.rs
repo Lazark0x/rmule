@@ -17,7 +17,9 @@ use rmule_primitives::{Ed2kFileLink, PartHash};
 use tokio::sync::mpsc;
 
 use crate::adapters::{PeerTransferService, SourceLookupService};
-use crate::content::{HeldPartFile, HeldWriteError, PartFileChange, Revalidation, probe_holes};
+use crate::content::{
+    HeldPartFile, HeldWriteError, HoleVerdict, PartFileChange, Revalidation, probe_holes,
+};
 use crate::download::runner::RunnerContext;
 use crate::durable::VerifiedPartRecord;
 use crate::error::{DownloadFailure, FinalizeError, StorageIntegrityFault};
@@ -41,6 +43,8 @@ pub(super) enum PersistError {
 /// handle it already holds. A newly held file publishes the run-start
 /// Allocated Bytes reading, then the run's Hole Probe runs beside the
 /// `.part` and publishes its verdict (ADR-0111); no verdict refuses the run.
+/// A `HoleLess` one is also told as [`DownloadEvent::HoleLessDestination`],
+/// so once per run.
 pub(super) async fn hold_part_file<S, P>(
     runner: &RunnerContext<S, P>,
     download_id: DownloadId,
@@ -66,7 +70,21 @@ pub(super) async fn hold_part_file<S, P>(
             *held = Some(file);
             let diagnostics = &runner.rt.diagnostics;
             diagnostics.part_file_read(download_id, allocated);
-            diagnostics.hole_probed(download_id, probe_holes(part_path).await);
+            let verdict = probe_holes(part_path).await;
+            diagnostics.hole_probed(download_id, verdict);
+            // A probe that answered named a file, so its path has a parent.
+            if verdict == HoleVerdict::HoleLess
+                && let Some(directory) = part_path.parent()
+            {
+                send_download_event(
+                    &runner.rt.evt_tx,
+                    DownloadEvent::HoleLessDestination {
+                        download_id,
+                        directory: directory.to_path_buf(),
+                    },
+                )
+                .await;
+            }
             Ok(())
         }
         Err(HeldWriteError::Changed(_)) => Err(DownloadFailure::StorageIntegrityFailed(

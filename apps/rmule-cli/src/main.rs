@@ -22,7 +22,7 @@ use rmule_core::{
     open_durable_store,
 };
 use rmule_primitives::{Ed2kLink, SafeFileName, ServerEndpoint};
-use rmule_words::download::completed_line;
+use rmule_words::download::{completed_line, hole_less_destination};
 
 mod kad;
 
@@ -412,6 +412,14 @@ async fn run_add(data_dir: &std::path::Path, link_str: &str, verbose: bool) -> R
             }
             CoreEvent::Download(DownloadEvent::DownloadCancelled { .. }) => {
                 anyhow::bail!("download {} cancelled", download_label(download_id));
+            }
+            // The run's disk holds no holes (ADR-0111): the download goes on,
+            // and this edge is the only place the CLI hears of it.
+            CoreEvent::Download(DownloadEvent::HoleLessDestination { directory, .. }) => {
+                println!(
+                    "{}",
+                    hole_less_destination(&download_label(download_id), &directory)
+                );
             }
             // The one client-UDP socket never bound at core start (ADR-0057):
             // non-fatal to this download (it runs over the

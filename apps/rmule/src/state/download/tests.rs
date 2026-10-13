@@ -399,3 +399,36 @@ fn a_recovered_rows_file_path_is_the_one_its_edge_named() {
     );
     assert_eq!(state.downloads[&download_id(2)].file_path, Some(finished));
 }
+
+/// A run on a disk that holds no holes (ADR-0111) is said once, by the
+/// download's name and its part file's directory: the status note now, and
+/// the Networks log for after the next note replaces it.
+#[test]
+fn a_hole_less_destination_sets_the_note_and_logs_its_line() {
+    use std::time::Instant;
+
+    use crate::action::Action;
+
+    let mut state = crate::fixture::three_downloads();
+    state.apply(
+        Action::Core(download_event(DownloadEvent::HoleLessDestination {
+            download_id: download_id(1),
+            directory: PathBuf::from("/srv/rmule/Temp"),
+        })),
+        Instant::now(),
+    );
+    assert_eq!(
+        state.notable.as_deref(),
+        Some(
+            "bunny.mp4: the disk under /srv/rmule/Temp holds no holes, so the part file takes \
+             its full length on disk up to its last verified part; the download goes on — \
+             downloads started with the Temp Directory on another disk avoid this"
+        )
+    );
+    assert_eq!(
+        state.log.back().expect("the edge's log line").text,
+        "the disk under /srv/rmule/Temp holds no holes, so the part file takes its full length \
+         on disk up to its last verified part; downloads started with the Temp Directory on \
+         another disk avoid this"
+    );
+}

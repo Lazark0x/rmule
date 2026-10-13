@@ -319,6 +319,12 @@ impl DownloadEvent {
             D::WaitingForConnection { download_id } => {
                 Record::new("download.waiting_for_connection").count("id", download_id.as_u64())
             }
+            D::HoleLessDestination {
+                download_id,
+                directory,
+            } => Record::new("download.hole_less_destination")
+                .count("id", download_id.as_u64())
+                .path("directory", directory),
         }
     }
 }

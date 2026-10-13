@@ -429,6 +429,18 @@ pub enum DownloadEvent {
         /// The download that waits.
         download_id: DownloadId,
     },
+    /// The run's Hole Probe found that the disk under its part file holds no
+    /// holes (ADR-0111, "Each run measures whether its disk holds holes"):
+    /// the file takes its full length up to its last verified part. Told
+    /// once per run, when the run first holds its part file; the run goes on
+    /// unchanged. A disk that holds holes, or a probe that failed, sends
+    /// nothing: the verdict is the row's level either way.
+    HoleLessDestination {
+        /// The download whose part file lies there.
+        download_id: DownloadId,
+        /// The directory that holds the part file.
+        directory: PathBuf,
+    },
 }
 
 /// Why a download with no source to try waits, rather than fails: which

@@ -9,13 +9,14 @@ use std::path::Path;
 
 use rmule_core::{
     DialEnd, DownloadEvent, DownloadFailure, DownloadId, DownloadLifecycle, DownloadMetadata,
-    IgnoredReaskReply, PartFault, PartFileChange, PartReleaseReason, PartsLost,
+    HoleVerdict, IgnoredReaskReply, PartFault, PartFileChange, PartReleaseReason, PartsLost,
     PeerRetirementReason, PurgedSource, RestartOutcome, SourcePurgeReason, SourceWait,
     StorageIntegrityFault,
 };
 use rmule_primitives::PeerEndpoint;
 
 use super::Sentence;
+use super::os::kind_words;
 use super::units::{address, count, human_size, short_hex};
 
 /// What a download waiting for a connection needs to move on (ADR-0097): no
@@ -432,6 +433,61 @@ pub fn part_file_lost(name: &str, found: PartFileChange, lost: PartsLost) -> Sen
     ))
 }
 
+/// The run's Hole Probe found a disk that holds no holes (ADR-0111): said
+/// once per run, naming the download and its part file's directory. The
+/// Temp Directory decides where a download's part file lies when it starts,
+/// so only downloads started after it moves avoid this.
+#[must_use]
+pub fn hole_less_destination(name: &str, directory: &Path) -> Sentence {
+    Sentence::owned(format!(
+        "{name}: {}; the download goes on — {HOLE_LESS_REMEDY}",
+        hole_less_words(directory)
+    ))
+}
+
+/// What a disk that holds no holes costs the part file there.
+fn hole_less_words(directory: &Path) -> String {
+    format!(
+        "the disk under {} holds no holes, so the part file takes its full length on disk up to its last verified part",
+        directory.display()
+    )
+}
+
+/// How the operator keeps the next downloads off a disk that holds no holes.
+const HOLE_LESS_REMEDY: &str =
+    "downloads started with the Temp Directory on another disk avoid this";
+
+/// The Transfers details modal's On disk row (ADR-0111, "What the operator
+/// reads"): the part file's Allocated Bytes as read, above its length
+/// included, and what the run's Hole Verdict means. A reading or a verdict
+/// not yet taken is a dash, and no state reads as an all-clear.
+#[must_use]
+pub fn on_disk(allocated: Option<u64>, verdict: Option<HoleVerdict>) -> String {
+    const DASH: &str = "—";
+    let verdict = verdict.map(|verdict| match verdict {
+        HoleVerdict::HoldsHoles => {
+            "this disk holds holes, so the part file takes only the parts written".to_string()
+        }
+        HoleVerdict::HoleLess => "this disk holds no holes, so the part file takes its full \
+             length up to its last verified part"
+            .to_string(),
+        HoleVerdict::Unknown(kind) => {
+            format!("the disk was not measured: {}", kind_words(kind))
+        }
+    });
+    match (allocated, verdict) {
+        (None, None) => DASH.to_string(),
+        (allocated, verdict) => format!(
+            "{}; {}",
+            allocated.map_or_else(
+                || DASH.to_string(),
+                |bytes| format!("{} allocated", human_size(bytes))
+            ),
+            verdict.as_deref().unwrap_or(DASH)
+        ),
+    }
+}
+
 /// The finished file did not match its hash and no part could be named.
 #[must_use]
 pub fn finished_file_rejected(name: &str, parts: u32, bytes: u64) -> Sentence {
@@ -772,5 +828,39 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
         D::WaitingForConnection { .. } => {
             "waiting for a connection (no server session, Kad off)".to_string()
         }
+        D::HoleLessDestination { directory, .. } => {
+            format!("{}; {HOLE_LESS_REMEDY}", hole_less_words(directory))
+        }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use rmule_core::{DownloadEvent, DownloadId};
+
+    use super::{hole_less_destination, log_line};
+
+    /// A directory with spaces and non-ASCII names reads whole in the edge's
+    /// sentence and its Networks-log line: no quoting, no escape, no cut.
+    #[test]
+    fn a_hole_less_directory_with_spaces_and_non_ascii_names_reads_whole() {
+        let directory = Path::new("/Volumes/Мой диск/Temp files");
+        assert_eq!(
+            hole_less_destination("Ünïcode film.mkv", directory).as_str(),
+            "Ünïcode film.mkv: the disk under /Volumes/Мой диск/Temp files holds no holes, \
+             so the part file takes its full length on disk up to its last verified part; \
+             the download goes on — downloads started with the Temp Directory on another \
+             disk avoid this"
+        );
+        let line = log_line(&DownloadEvent::HoleLessDestination {
+            download_id: DownloadId::from_u64(1),
+            directory: directory.to_path_buf(),
+        });
+        assert!(
+            line.contains("the disk under /Volumes/Мой диск/Temp files holds no holes,"),
+            "{line}"
+        );
+    }
 }
