@@ -38,6 +38,11 @@ fn record(
     let steps: &[DownloadLifecycle] = match lifecycle {
         DownloadLifecycle::Queued => &[],
         DownloadLifecycle::Active => &[DownloadLifecycle::Active],
+        DownloadLifecycle::Completed => &[
+            DownloadLifecycle::Active,
+            DownloadLifecycle::Completing,
+            DownloadLifecycle::Completed,
+        ],
         later => &[DownloadLifecycle::Active, later],
     };
     for &step in steps {
@@ -66,7 +71,7 @@ fn verified(part_index: u32, part_hash: PartHash) -> VerifiedPartRecord {
 }
 
 #[test]
-fn only_a_queued_running_or_paused_download_larger_than_one_part_is_served() {
+fn only_a_queued_running_completing_or_paused_download_larger_than_one_part_is_served() {
     let store = store();
     let cell = ServedDownloads::default();
     for (seed, size, lifecycle, served) in [
@@ -75,6 +80,7 @@ fn only_a_queued_running_or_paused_download_larger_than_one_part_is_served() {
         (3, SIZE, DownloadLifecycle::Paused, true),
         (4, SIZE, DownloadLifecycle::Failed, false),
         (5, SIZE, DownloadLifecycle::Completed, false),
+        (8, SIZE, DownloadLifecycle::Completing, true),
         (6, ED2K_PART_SIZE, DownloadLifecycle::Queued, false),
         (7, 1_000, DownloadLifecycle::Active, false),
     ] {

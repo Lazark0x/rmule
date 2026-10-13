@@ -552,6 +552,7 @@ impl DownloadRepository for DurableDownloadRepository {
             return Err(FinalizeError::Mismatch);
         }
         ContentFileStore::finalize(&paths).await?;
+        self.set_lifecycle(id, DownloadLifecycle::Completing)?;
         self.set_lifecycle(id, DownloadLifecycle::Completed)?;
         Ok(paths.final_path().to_path_buf())
     }

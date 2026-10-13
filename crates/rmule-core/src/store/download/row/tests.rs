@@ -1,4 +1,5 @@
-//! The stored encoding of a download row's part path, pinned byte for byte.
+//! The stored encoding of a download row: its part path and the live enums it
+//! embeds, pinned byte for byte.
 
 use rmule_primitives::{Ed2kFileLink, Ed2kText, FileHash};
 
@@ -43,4 +44,50 @@ fn a_part_path_encodes_to_the_bytes_version_nine_writes() {
         released
     );
     assert_eq!(released.part_path.held_path(), None);
+}
+
+/// The live lifecycle and failure are encoded by position on today's row:
+/// every variant a store already holds keeps its byte, and the completion
+/// move's `Completing` and `CompletionCopyFailed` take the next ones, so every
+/// row on disk decodes as it was written (ADR-0115).
+#[test]
+fn the_completion_variants_are_appended_after_every_byte_a_store_holds() {
+    use crate::{DownloadFailure, DownloadLifecycle};
+
+    let lifecycles = [
+        (DownloadLifecycle::Queued, 0),
+        (DownloadLifecycle::Active, 1),
+        (DownloadLifecycle::Paused, 2),
+        (DownloadLifecycle::Failed, 3),
+        (DownloadLifecycle::Completed, 4),
+        (DownloadLifecycle::Cancelled, 5),
+        (DownloadLifecycle::Completing, 6),
+    ];
+    for (lifecycle, byte) in lifecycles {
+        assert_eq!(postcard::to_allocvec(&lifecycle).unwrap(), [byte]);
+        assert_eq!(
+            postcard::from_bytes::<DownloadLifecycle>(&[byte]).unwrap(),
+            lifecycle
+        );
+    }
+    let failures: [(DownloadFailure, &[u8]); 5] = [
+        (DownloadFailure::PartVerificationFailed, &[8]),
+        (DownloadFailure::FinalPathTaken, &[10]),
+        (
+            DownloadFailure::CompletedFileNotMoved { os_code: Some(18) },
+            &[11, 1, 36],
+        ),
+        (DownloadFailure::StoreFailed, &[12]),
+        (
+            DownloadFailure::CompletionCopyFailed { os_code: Some(28) },
+            &[13, 1, 56],
+        ),
+    ];
+    for (failure, encoded) in failures {
+        assert_eq!(postcard::to_allocvec(&failure).unwrap(), encoded);
+        assert_eq!(
+            postcard::from_bytes::<DownloadFailure>(encoded).unwrap(),
+            failure
+        );
+    }
 }

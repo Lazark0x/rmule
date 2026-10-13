@@ -91,6 +91,10 @@ fn completion_cancel_and_clear_each_leave_no_seeds_and_refuse_later_writes() {
         repo.set_lifecycle(id, DownloadLifecycle::Active).unwrap();
         repo.write_source_seeds(id, &[seed(3, SeedRank::Known)], SystemTime::now())
             .unwrap();
+        if end == DownloadLifecycle::Completed {
+            repo.set_lifecycle(id, DownloadLifecycle::Completing)
+                .unwrap();
+        }
         repo.set_lifecycle(id, end).unwrap();
         assert!(repo.source_seeds(id).unwrap().is_empty(), "{end:?}");
         assert!(

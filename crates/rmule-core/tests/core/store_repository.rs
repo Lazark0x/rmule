@@ -186,6 +186,14 @@ fn lifecycle_allows_pause_resume_and_completion_path() {
         DownloadLifecycle::Active,
         DownloadLifecycle::Paused,
         DownloadLifecycle::Active,
+        DownloadLifecycle::Completing,
+        // A Pause before the file is in place, and the repair of a copy whose
+        // bytes changed, both leave the move (ADR-0115).
+        DownloadLifecycle::Paused,
+        DownloadLifecycle::Active,
+        DownloadLifecycle::Completing,
+        DownloadLifecycle::Active,
+        DownloadLifecycle::Completing,
         DownloadLifecycle::Completed,
     ] {
         repo.set_lifecycle(created.id(), state).unwrap();
@@ -195,6 +203,23 @@ fn lifecycle_allows_pause_resume_and_completion_path() {
         repo.load_download(created.id()).unwrap().lifecycle(),
         DownloadLifecycle::Completed
     );
+}
+
+/// Every completion goes through `Completing`, which names the destination
+/// before anything moves (ADR-0115).
+#[test]
+fn a_running_download_completes_only_through_completing() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repository(dir.path());
+    let created = create(&repo, dir.path(), "download.bin");
+    repo.set_lifecycle(created.id(), DownloadLifecycle::Active)
+        .unwrap();
+
+    let err = repo
+        .set_lifecycle(created.id(), DownloadLifecycle::Completed)
+        .unwrap_err();
+
+    assert_eq!(err, CoreError::InvalidLifecycleTransition);
 }
 
 #[test]

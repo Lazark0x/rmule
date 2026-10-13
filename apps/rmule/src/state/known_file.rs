@@ -125,7 +125,9 @@ impl KnownFileMarks {
                 DownloadStatus::Waiting
                 | DownloadStatus::NoConnection
                 | DownloadStatus::Downloading
-                | DownloadStatus::Paused => KnownFileMark::Downloading { name },
+                | DownloadStatus::Paused
+                // An active download's mark while it completes (ADR-0115).
+                | DownloadStatus::Completing => KnownFileMark::Downloading { name },
                 DownloadStatus::Failed => KnownFileMark::Failed {
                     download_id: *id,
                     name,

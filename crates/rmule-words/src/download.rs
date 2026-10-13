@@ -98,6 +98,20 @@ pub fn download_failure_words(reason: &DownloadFailure) -> String {
         DownloadFailure::StoreFailed => {
             "rmule's store could not read or write this download's record"
         }
+        DownloadFailure::CompletionCopyFailed { os_code } => {
+            let why = os_code.map_or_else(String::new, |code| {
+                format!(
+                    " ({})",
+                    super::os::refusal_words(
+                        std::io::Error::from_raw_os_error(code).kind(),
+                        Some(code)
+                    )
+                )
+            });
+            return format!(
+                "the finished file could not be copied to the disk where it goes{why}; every checked part is kept, so Restart once that disk takes it"
+            );
+        }
     };
     code.to_string()
 }
@@ -252,6 +266,7 @@ pub const fn lifecycle_words(lifecycle: DownloadLifecycle) -> &'static str {
         DownloadLifecycle::Failed => "failed",
         DownloadLifecycle::Completed => "completed",
         DownloadLifecycle::Cancelled => "cancelled",
+        DownloadLifecycle::Completing => "completing",
     }
 }
 

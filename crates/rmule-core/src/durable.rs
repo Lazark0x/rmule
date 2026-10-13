@@ -13,7 +13,7 @@ use crate::{DownloadFailure, DownloadId, VerificationAuthority};
 
 /// The state a download row is in. `Completed` and `Cancelled` are terminal —
 /// nothing leaves them — and every other state may go to `Cancelled` or
-/// `Failed`.
+/// `Failed`. Encoded by declaration order: a variant is added at the end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DownloadLifecycle {
     /// Accepted and stored, but no run has started yet.
@@ -25,10 +25,15 @@ pub enum DownloadLifecycle {
     Paused,
     /// A run ended without the file. Resumable — a retry may find new sources.
     Failed,
-    /// Every part verified and the file finalized. Terminal.
+    /// The finished file is in place, its registry row written and its part
+    /// file gone. Terminal.
     Completed,
     /// Abandoned by the caller. Terminal.
     Cancelled,
+    /// Every part verified and the file hash checked; the finished file is
+    /// not yet in place at its destination, which the row names (ADR-0115).
+    /// Live: attach starts its run, which goes straight to the move.
+    Completing,
 }
 
 impl DownloadLifecycle {
@@ -43,7 +48,10 @@ impl DownloadLifecycle {
                 true
             }
             (Self::Queued, Self::Active | Self::Paused) => true,
-            (Self::Active, Self::Paused | Self::Completed) => true,
+            (Self::Active, Self::Paused | Self::Completing) => true,
+            // A copy whose bytes changed under it repairs (`Active`); a Pause
+            // before the file is in place leaves it `Paused` (ADR-0115).
+            (Self::Completing, Self::Completed | Self::Active | Self::Paused) => true,
             (Self::Paused, Self::Active) => true,
             (Self::Failed, Self::Active | Self::Paused) => true,
             _ => false,

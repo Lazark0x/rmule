@@ -57,14 +57,17 @@ pub enum PartialEnd {
     Unreadable,
 }
 
-/// Whether a download row is a Served Download: queued, active or paused,
-/// and larger than one part (aMule's `GetFileSize() > PARTSIZE`). A failed
-/// row's part file is in doubt; a file of one part has no part hash set and
-/// is shared by its completion alone.
+/// Whether a download row is a Served Download: queued, active, completing
+/// or paused, and larger than one part (aMule's `GetFileSize() > PARTSIZE`).
+/// A failed row's part file is in doubt; a file of one part has no part hash
+/// set and is shared by its completion alone.
 pub(crate) fn is_member(lifecycle: DownloadLifecycle, file_size: u64) -> bool {
     matches!(
         lifecycle,
-        DownloadLifecycle::Queued | DownloadLifecycle::Active | DownloadLifecycle::Paused
+        DownloadLifecycle::Queued
+            | DownloadLifecycle::Active
+            | DownloadLifecycle::Completing
+            | DownloadLifecycle::Paused
     ) && file_size > ED2K_PART_SIZE
 }
 

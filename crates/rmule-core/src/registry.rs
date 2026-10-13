@@ -289,6 +289,9 @@ mod tests {
         .id();
         store.set_lifecycle(id, DownloadLifecycle::Active).unwrap();
         store
+            .set_lifecycle(id, DownloadLifecycle::Completing)
+            .unwrap();
+        store
             .set_lifecycle(id, DownloadLifecycle::Completed)
             .unwrap();
         id
@@ -372,6 +375,9 @@ mod tests {
             .record_provisional_part_hashes(id, &peer_hashes)
             .unwrap();
         store.set_lifecycle(id, DownloadLifecycle::Active).unwrap();
+        store
+            .set_lifecycle(id, DownloadLifecycle::Completing)
+            .unwrap();
         store
             .set_lifecycle(id, DownloadLifecycle::Completed)
             .unwrap();

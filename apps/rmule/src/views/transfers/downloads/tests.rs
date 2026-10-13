@@ -585,10 +585,10 @@ fn sort_values_and_cell_text_agree_for_every_edge_case() {
     let statuses = [
         (2, "Waiting", 1),
         (4, "Paused", 2),
-        (5, "Completed", 3),
+        (5, "Completed", 4),
         (7, "No network", 1),
         (8, "Asking Kad", 1),
-        (9, "Failed", 4),
+        (9, "Failed", 5),
         (10, "Downloading", 0),
     ];
     check(&state, &statuses);

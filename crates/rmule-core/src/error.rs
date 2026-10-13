@@ -126,8 +126,9 @@ pub enum DownloadFailure {
     #[error("stored download content does not match its verified-part records: {0}")]
     StorageIntegrityFailed(StorageIntegrityFault),
     /// Every part verified and the whole file hashed, but a file already
-    /// stands at the final path, and rmule never overwrites one. The verified
-    /// parts are kept: a Restart once the path is free completes the file.
+    /// stood at the final path, and rmule never overwrites one. No longer
+    /// produced — a taken name now takes the next free one (ADR-0115) — and
+    /// still read from a row that holds it.
     #[error("a file already stands at the download's final path")]
     FinalPathTaken,
     /// Every part verified and the whole file hashed, but the part file could
@@ -142,6 +143,15 @@ pub enum DownloadFailure {
     /// the run could not keep what it earned or learn what it holds.
     #[error("the download's store record could not be read or written")]
     StoreFailed,
+    /// Every part verified and the whole file hashed, the destination lies on
+    /// another volume, and the Completion Copy onto it failed — a full disk,
+    /// an I/O error (ADR-0115). The partial copy is deleted, the part file
+    /// and every verified part are kept.
+    #[error("the finished file could not be copied to its final path{}", OsCode(*.os_code))]
+    CompletionCopyFailed {
+        /// The OS's error number, when there is one.
+        os_code: Option<i32>,
+    },
 }
 
 /// Why [`DownloadRepository::finalize`](crate::DownloadRepository::finalize)

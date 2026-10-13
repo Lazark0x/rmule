@@ -62,6 +62,7 @@ pub(super) const fn lifecycle(state: DownloadLifecycle) -> &'static str {
         DownloadLifecycle::Failed => "failed",
         DownloadLifecycle::Completed => "completed",
         DownloadLifecycle::Cancelled => "cancelled",
+        DownloadLifecycle::Completing => "completing",
     }
 }
 
@@ -82,6 +83,13 @@ pub(super) fn failure(record: Record, failure: &DownloadFailure) -> Record {
         DownloadFailure::StoreFailed => "store_failed",
         DownloadFailure::CompletedFileNotMoved { os_code } => {
             let record = record.code("failure", "completed_file_not_moved");
+            return match os_code {
+                Some(number) => record.count("os_code", *number),
+                None => record.code("os_code", "none"),
+            };
+        }
+        DownloadFailure::CompletionCopyFailed { os_code } => {
+            let record = record.code("failure", "completion_copy_failed");
             return match os_code {
                 Some(number) => record.count("os_code", *number),
                 None => record.code("os_code", "none"),

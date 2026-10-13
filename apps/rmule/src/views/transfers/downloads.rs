@@ -255,6 +255,7 @@ pub(super) fn status_label(status: DownloadStatus) -> &'static str {
         DownloadStatus::NoConnection => "No network",
         DownloadStatus::Downloading => "Downloading",
         DownloadStatus::Paused => "Paused",
+        DownloadStatus::Completing => "Completing",
         DownloadStatus::Completed => "Completed",
         DownloadStatus::Failed => "Failed",
     }
@@ -262,7 +263,9 @@ pub(super) fn status_label(status: DownloadStatus) -> &'static str {
 
 fn status_style(status: DownloadStatus, theme: &Theme) -> Style {
     let color = match status {
-        DownloadStatus::Downloading | DownloadStatus::Completed => theme.good,
+        DownloadStatus::Downloading | DownloadStatus::Completing | DownloadStatus::Completed => {
+            theme.good
+        }
         DownloadStatus::Waiting => theme.fg,
         DownloadStatus::NoConnection => theme.highlight,
         DownloadStatus::Paused => theme.highlight,

@@ -102,7 +102,8 @@ impl DownloadLine {
 
 /// A status's place in aMule's download-status order
 /// (`CPartFile::getPartfileStatusRang`, `amule-kno/src/PartFile.cpp:4638`):
-/// moving bytes, then waiting for them, paused, complete, failed. The first
+/// moving bytes, then waiting for them, paused, completing (`PS_COMPLETING`,
+/// `:4649`), complete, failed. The first
 /// in that order ranks lowest, so the column's Natural Direction (ascending, a
 /// rank's) opens on aMule's first click: the downloads moving bytes at the
 /// top.
@@ -113,23 +114,26 @@ const fn status_rank(status: DownloadStatus) -> u64 {
         // of its waiting files, `getPartfileStatusRang`'s `1`.
         DownloadStatus::Waiting | DownloadStatus::NoConnection => 1,
         DownloadStatus::Paused => 2,
-        DownloadStatus::Completed => 3,
-        DownloadStatus::Failed => 4,
+        DownloadStatus::Completing => 3,
+        DownloadStatus::Completed => 4,
+        DownloadStatus::Failed => 5,
     }
 }
 
 /// The group a download falls in under Progress and Done, ahead of its share
 /// (ADR-0070, "A column's order may be a rank"): the downloads moving bytes,
-/// then the completed ones, then the rest — led by those whose run is alive
+/// then those moving their finished file into place, then the completed
+/// ones, then the rest — led by those whose run is alive
 /// but moves no bytes (waiting for a source, a slot or a network), then
 /// those with no run (paused, failed). The operator's reading of aMule: what
 /// is happening now, what just finished, what waits on them.
 const fn activity_rank(status: DownloadStatus) -> u8 {
     match status {
         DownloadStatus::Downloading => 0,
-        DownloadStatus::Completed => 1,
-        DownloadStatus::Waiting | DownloadStatus::NoConnection => 2,
-        DownloadStatus::Paused | DownloadStatus::Failed => 3,
+        DownloadStatus::Completing => 1,
+        DownloadStatus::Completed => 2,
+        DownloadStatus::Waiting | DownloadStatus::NoConnection => 3,
+        DownloadStatus::Paused | DownloadStatus::Failed => 4,
     }
 }
 

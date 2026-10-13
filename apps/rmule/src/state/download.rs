@@ -34,6 +34,10 @@ pub enum DownloadStatus {
     Downloading,
     /// Stopped on request; the row keeps everything it knows.
     Paused,
+    /// Every part verified and the file checked: core moves the finished
+    /// file into place (ADR-0115). Its step and the bytes copied are levels
+    /// on the download's diagnostics row.
+    Completing,
     /// Core called the file finished.
     Completed,
     /// Core called it terminally failed; the row keeps the reason.
@@ -159,6 +163,8 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
                 DownloadLifecycle::Paused => DownloadStatus::Paused,
                 DownloadLifecycle::Failed => DownloadStatus::Failed,
                 DownloadLifecycle::Completed => DownloadStatus::Completed,
+                // Its run starts at once and goes straight to the move.
+                DownloadLifecycle::Completing => DownloadStatus::Completing,
                 // A cancelled download has no row to recover.
                 DownloadLifecycle::Cancelled => return false,
             };

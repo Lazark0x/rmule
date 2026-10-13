@@ -506,7 +506,11 @@ async fn attach_names_the_part_file_or_the_finished_file_by_lifecycle() {
     let (done, done_paths) = seeded(
         "done.bin",
         0x33,
-        &[DownloadLifecycle::Active, DownloadLifecycle::Completed],
+        &[
+            DownloadLifecycle::Active,
+            DownloadLifecycle::Completing,
+            DownloadLifecycle::Completed,
+        ],
     );
     // The finished file is gone from disk, so a re-add to the same place is
     // admitted and takes the completed row's `.part` slot.

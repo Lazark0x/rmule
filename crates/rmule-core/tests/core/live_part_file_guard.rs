@@ -198,6 +198,8 @@ async fn clearing_completed_downloads_leaves_the_live_part_file() {
             .id();
         std::fs::write(paths.final_path(), b"done bytes").unwrap();
         repo.set_lifecycle(id, DownloadLifecycle::Active).unwrap();
+        repo.set_lifecycle(id, DownloadLifecycle::Completing)
+            .unwrap();
         repo.set_lifecycle(id, DownloadLifecycle::Completed)
             .unwrap();
         completed = Some((id, paths.final_path().to_path_buf()));
