@@ -31,7 +31,7 @@ use crate::file_history::Ed2kIdentity;
 use crate::storage::{DownloadRepository, ResolvedAuthority, resolve_hash_authority};
 use crate::{
     CoreError, DownloadFailure, DownloadId, DownloadLifecycle, DownloadPaths,
-    DurableDownloadRecord, VerificationAuthority, VerifiedPartRecord,
+    DurableDownloadRecord, PartFault, VerificationAuthority, VerifiedPartRecord,
 };
 use row::{
     DISTRUSTED_PEERS, DOWNLOAD_IDS, DOWNLOADS, DistrustedPeerRow, DownloadRow, IDENTITY, PART_PATH,
@@ -75,6 +75,32 @@ impl DurableDownloadRepository {
     #[must_use]
     pub fn new(store: Arc<Store>) -> Self {
         Self { store }
+    }
+
+    /// Drop the record of each part in `damaged`, the parts revalidation
+    /// found no longer holding, so they are fetched again: Resume's effect,
+    /// and the Offer Check's (ADR-0113).
+    ///
+    /// # Errors
+    /// [`CoreError::UnknownDownload`] when the row is gone, or
+    /// [`CoreError::Repository`].
+    pub(crate) fn drop_parts(
+        &self,
+        id: DownloadId,
+        damaged: &[PartFault],
+    ) -> Result<(), CoreError> {
+        if damaged.is_empty() {
+            return Ok(());
+        }
+        self.store.write(|txn| {
+            require_row(txn, id)?;
+            for fault in damaged {
+                VERIFIED_PARTS
+                    .table()
+                    .remove(txn, &(id.as_u64(), fault.part_index()))?;
+            }
+            Ok(())
+        })
     }
 
     /// Record one part as hash-checked and on disk. Upserts on part index, so
@@ -573,18 +599,8 @@ impl DownloadRepository for DurableDownloadRepository {
         let record = self.load_download(id)?;
         let parts = self.verified_parts(id)?;
         let revalidation = revalidate_verified_parts(record.paths(), &parts).await;
-        if let Revalidation::Restored { damaged, .. } = &revalidation
-            && !damaged.is_empty()
-        {
-            self.store.write(|txn| {
-                require_row(txn, id)?;
-                for fault in damaged {
-                    VERIFIED_PARTS
-                        .table()
-                        .remove(txn, &(id.as_u64(), fault.part_index()))?;
-                }
-                Ok::<(), CoreError>(())
-            })?;
+        if let Revalidation::Restored { damaged, .. } = &revalidation {
+            self.drop_parts(id, damaged)?;
         }
         Ok(revalidation)
     }

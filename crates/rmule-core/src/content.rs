@@ -4,14 +4,18 @@
 //! part bytes meet the filesystem — every caller reaches it with a part that the
 //! hash set has already vouched for.
 
+use std::io::{Read, Seek};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 
 use rmule_primitives::FileHash;
 
+use crate::file_key::FileKey;
 use crate::hashing::{file_hash_streamed, part_hash_of};
+use crate::served_downloads::PartFileIdentity;
 use crate::{
     CoreError, DownloadPaths, FinalizeError, PartFault, StorageIntegrityFault, VerifiedPartRecord,
 };
@@ -105,11 +109,13 @@ impl ContentFileStore {
 }
 
 /// Restored-progress facts from resume-time revalidation
-/// ([`DownloadRepository::revalidate`](crate::DownloadRepository::revalidate)).
+/// ([`DownloadRepository::revalidate`](crate::DownloadRepository::revalidate)),
+/// and the file they were read through.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RestoredProgress {
     verified_parts: usize,
     verified_bytes: u64,
+    read_through: Option<PartFileIdentity>,
 }
 
 impl RestoredProgress {
@@ -117,7 +123,16 @@ impl RestoredProgress {
         Self {
             verified_parts,
             verified_bytes,
+            read_through: None,
         }
+    }
+
+    /// The **Part File Identity** of the handle the parts were read
+    /// through — its key, length and time, with no run writing the file —
+    /// which the Offer Check hands the download's Served Download (ADR-0113).
+    /// `None` when no part was read, or the handle's identity could not be.
+    pub(crate) const fn read_through(self) -> Option<PartFileIdentity> {
+        self.read_through
     }
 
     /// How many durable part records still hashed correctly against the bytes
@@ -163,32 +178,64 @@ pub(crate) async fn revalidate_verified_parts(
     paths: &DownloadPaths,
     parts: &[VerifiedPartRecord],
 ) -> Revalidation {
+    let (paths, parts) = (paths.clone(), parts.to_vec());
+    tokio::task::spawn_blocking(move || {
+        walk_verified_parts(&paths, &parts, &AtomicBool::new(false))
+    })
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(Revalidation::Condemned(
+        StorageIntegrityFault::PartFileUnreadable { os_code: None },
+    ))
+}
+
+/// [`revalidate_verified_parts`]' walk, on the calling thread, looking at
+/// `stop` before each part: `None` once it is raised. The walk the Offer
+/// Check runs on the blocking pool under the scans' hashing turn (ADR-0113),
+/// and Resume's own.
+pub(crate) fn walk_verified_parts(
+    paths: &DownloadPaths,
+    parts: &[VerifiedPartRecord],
+    stop: &AtomicBool,
+) -> Option<Revalidation> {
     if parts.is_empty() {
-        return Revalidation::Restored {
+        return Some(Revalidation::Restored {
             progress: RestoredProgress::new(0, 0),
             damaged: Vec::new(),
-        };
+        });
     }
     let unreadable = |error: std::io::Error| {
-        Revalidation::Condemned(StorageIntegrityFault::PartFileUnreadable {
-            os_code: error.raw_os_error(),
-        })
+        Some(Revalidation::Condemned(
+            StorageIntegrityFault::PartFileUnreadable {
+                os_code: error.raw_os_error(),
+            },
+        ))
     };
-    let mut file = match fs::File::open(paths.part_path()).await {
+    let mut file = match std::fs::File::open(paths.part_path()) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Revalidation::Condemned(StorageIntegrityFault::PartFileMissing);
+            return Some(Revalidation::Condemned(
+                StorageIntegrityFault::PartFileMissing,
+            ));
         }
         Err(error) => return unreadable(error),
     };
-    let found_len = match file.metadata().await {
-        Ok(metadata) => metadata.len(),
+    let metadata = match file.metadata() {
+        Ok(metadata) => metadata,
         Err(error) => return unreadable(error),
     };
+    let found_len = metadata.len();
+    let read_through = FileKey::of_open(&file)
+        .ok()
+        .and_then(|key| PartFileIdentity::read(key, &metadata, true));
     let mut held = 0usize;
     let mut verified_bytes = 0u64;
     let mut damaged = Vec::new();
     for part in parts {
+        if stop.load(Ordering::Relaxed) {
+            return None;
+        }
         let expected_end = part.offset.saturating_add(part.len);
         if expected_end > found_len {
             damaged.push(PartFault::Short {
@@ -207,11 +254,10 @@ pub(crate) async fn revalidate_verified_parts(
             continue;
         };
         let mut bytes = vec![0; len];
-        let read = async {
-            file.seek(SeekFrom::Start(part.offset)).await?;
-            file.read_exact(&mut bytes).await
-        };
-        if let Err(error) = read.await {
+        let read = file
+            .seek(SeekFrom::Start(part.offset))
+            .and_then(|_| file.read_exact(&mut bytes));
+        if let Err(error) = read {
             return unreadable(error);
         }
         let found = part_hash_of(&bytes);
@@ -229,12 +275,17 @@ pub(crate) async fn revalidate_verified_parts(
     if held == 0 {
         let recorded = u32::try_from(parts.len()).unwrap_or(u32::MAX);
         let first = damaged.swap_remove(0);
-        return Revalidation::Condemned(StorageIntegrityFault::NoPartHolds { recorded, first });
+        return Some(Revalidation::Condemned(
+            StorageIntegrityFault::NoPartHolds { recorded, first },
+        ));
     }
-    Revalidation::Restored {
-        progress: RestoredProgress::new(held, verified_bytes),
+    Some(Revalidation::Restored {
+        progress: RestoredProgress {
+            read_through,
+            ..RestoredProgress::new(held, verified_bytes)
+        },
         damaged,
-    }
+    })
 }
 
 async fn read_exact_at(path: &Path, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {

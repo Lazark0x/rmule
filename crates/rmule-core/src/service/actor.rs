@@ -8,6 +8,7 @@
 mod client_udp;
 mod download;
 mod kad;
+mod offer_check;
 mod peer;
 mod prologue;
 mod quit;
@@ -339,6 +340,9 @@ struct CoreActor<S, P, L, K: KadRuntimeFactory> {
     /// How many peers each running download writes as its **Source Seeds**
     /// (ADR-0109): the settings' at start, then the operator's latest.
     remember_peers: crate::RememberPeers,
+    /// The **Offer Check**s started after the Registry Check's start look
+    /// and not yet applied or stopped (ADR-0113).
+    offer_checks: offer_check::OfferChecks,
 }
 
 /// What the activities the actor started tell it as they go: a run or a

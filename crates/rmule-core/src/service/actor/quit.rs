@@ -39,8 +39,10 @@ where
             self.stop_scans().await;
         }
         // The Registry Check rules on the same share set; it has no quit step
-        // of its own, since it ends within one wait of its flag.
+        // of its own, since it ends within one wait of its flag. The Offer
+        // Checks end before their next part.
         self.registry_check.retire(JOIN_GRACE).await;
+        self.offer_checks.stop_all();
         if !self.activities.searches.is_empty() {
             announce(&self.evt_tx, QuitStep::Search).await;
             self.activities.searches.stop_all(&self.evt_tx).await;

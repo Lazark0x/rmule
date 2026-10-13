@@ -271,6 +271,9 @@ where
         if self.activities.has_download(download_id) {
             return Err(CoreCommandRejectReason::DownloadAlreadyActive);
         }
+        // The run's own revalidation below takes over from an Offer Check
+        // still waiting or running for this row (ADR-0113).
+        self.offer_checks.stop(download_id);
         let Ok(record) = self.wiring.store.load_download(download_id) else {
             return Err(CoreCommandRejectReason::UnknownDownload);
         };
@@ -412,7 +415,7 @@ where
 
     /// Tell of the parts revalidation dropped, and rest the part picture on
     /// the verified set that is left.
-    async fn drop_damaged(
+    pub(super) async fn drop_damaged(
         &mut self,
         download_id: DownloadId,
         record: &DurableDownloadRecord,

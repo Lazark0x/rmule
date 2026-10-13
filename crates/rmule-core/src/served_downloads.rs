@@ -665,6 +665,41 @@ impl ServedDownloads {
         true
     }
 
+    /// Whether the core actor holds the entry of `file_hash`, and it is
+    /// `download_id`'s.
+    pub(crate) fn held_by_actor(&self, file_hash: FileHash, download_id: DownloadId) -> bool {
+        self.lock().entries.get(&file_hash).is_some_and(|entry| {
+            entry.holder == Holder::Actor && entry.served.download_id == download_id
+        })
+    }
+
+    /// The **Offer Check** found the parts `records` names still holding in
+    /// the file `identity` names (ADR-0113 §"A paused download"): the entry
+    /// the actor holds for `download_id` takes them as its range, against the
+    /// set it holds, and that file as its identity. The actor looks at what
+    /// this moved itself. `false` when the entry is gone, another download's,
+    /// or a run holds it.
+    pub(crate) fn offer_checked(
+        &self,
+        file_hash: FileHash,
+        download_id: DownloadId,
+        records: &[VerifiedPartRecord],
+        identity: PartFileIdentity,
+    ) -> bool {
+        let mut guard = self.lock();
+        let book = &mut *guard;
+        let Some(entry) = book.entries.get_mut(&file_hash).filter(|entry| {
+            entry.holder == Holder::Actor && entry.served.download_id == download_id
+        }) else {
+            return false;
+        };
+        entry.emptied = false;
+        entry.served.range = VerifiedRange::of_records(entry.served.set.as_ref(), records);
+        entry.served.identity = Some(identity);
+        book.version += 1;
+        true
+    }
+
     /// Run `write` on the entry `lease` holds and bump the offer generation
     /// when it changed whether the entry is offered. `false` when the lease's
     /// run no longer holds the entry.

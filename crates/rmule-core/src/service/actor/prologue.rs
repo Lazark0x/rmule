@@ -546,6 +546,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
         trail,
         intent: super::server_intent::IntentLedger::default(),
         remember_peers,
+        offer_checks: super::offer_check::OfferChecks::default(),
     };
     // The listener is up from attach (ADR-0095): before any download
     // restored below starts, and before any connect.

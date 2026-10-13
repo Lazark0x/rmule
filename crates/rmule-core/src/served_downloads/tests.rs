@@ -338,3 +338,31 @@ fn a_read_that_found_the_file_changed_empties_the_range_until_a_holder_reads_the
     lease.record_range(&set, &[verified(0, set[0])]);
     assert_eq!(cell.offered(), [file], "a file read again is ruled again");
 }
+
+#[test]
+fn the_offer_check_writes_only_an_entry_the_actor_holds() {
+    let store = store();
+    let cell = ServedDownloads::default();
+    let row = record(&store, 1, SIZE, DownloadLifecycle::Paused);
+    let file = row.file_hash();
+    let set = hashes(1);
+    cell.install(&row, &set);
+    let held = [verified(1, set[1])];
+
+    let lease = cell.hand_to_run(file, 1).unwrap();
+    assert!(!cell.held_by_actor(file, row.id()));
+    assert!(!cell.offer_checked(file, row.id(), &held, identity(7)));
+    drop(lease);
+    cell.take_back(file, 1);
+    assert!(!cell.offer_checked(file, DownloadId::from_u64(99), &held, identity(7)));
+
+    assert!(cell.held_by_actor(file, row.id()));
+    assert!(cell.offer_checked(file, row.id(), &held, identity(7)));
+    let served = cell.served(file).unwrap();
+    assert!(served.range.holds(1) && !served.range.holds(0));
+    assert_eq!(served.identity, Some(identity(7)));
+    assert_eq!(
+        cell.look(),
+        [OfferChange::Joined(file), OfferChange::Offered(file)]
+    );
+}

@@ -362,3 +362,120 @@ async fn a_resumed_download_offers_the_part_it_recorded_unless_its_folder_is_ref
         })
     )));
 }
+
+/// A download of `bytes` a past process left paused in `dir`, its two parts
+/// recorded, its part file holding `on_disk` when there is one.
+async fn left_paused(
+    repo: &DurableDownloadRepository,
+    dir: &Path,
+    (name, bytes): (&str, &[u8]),
+    on_disk: Option<&[u8]>,
+) -> (rmule_core::DownloadId, FileHash) {
+    let link = file_link(name, bytes);
+    let hashes = link.part_hash_set.as_ref().unwrap().hashes().to_vec();
+    let paths = DownloadPaths::from_final_path(dir.join(name));
+    let record = repo.create_download(&link, None, &paths).unwrap();
+    for part_index in 0..2 {
+        let len = part(bytes, part_index).len() as u64;
+        repo.record_verified_part(
+            record.id(),
+            VerifiedPartRecord {
+                part_index,
+                offset: u64::from(part_index) * ED2K_PART_SIZE,
+                len,
+                part_hash: hashes[part_index as usize],
+            },
+        )
+        .unwrap();
+    }
+    repo.set_lifecycle(record.id(), DownloadLifecycle::Paused)
+        .unwrap();
+    if let Some(on_disk) = on_disk {
+        ContentFileStore::write_verified_part(&paths, 0, on_disk)
+            .await
+            .unwrap();
+    }
+    (record.id(), link.file_hash)
+}
+
+/// The core a restart builds over `store`, its download directory `dir`.
+fn restarted(store: Arc<DurableStore>, dir: &Path) -> Core {
+    Core::builder(CoreConfig::default(), store)
+        .settings(rmule_core::CoreSettings {
+            download_dir: Some(dir.to_path_buf()),
+            ..rmule_core::CoreSettings::default()
+        })
+        .build()
+}
+
+#[tokio::test]
+async fn after_a_restart_a_paused_download_is_offered_once_its_parts_are_read_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = std::fs::canonicalize(tmp.path()).unwrap();
+    let store = rmule_testkit::memory_store();
+    let repo = DurableDownloadRepository::new(Arc::clone(&store));
+    let bytes = content();
+    let mut on_disk = bytes.clone();
+    let tail = on_disk.len() - 4;
+    on_disk[tail..].copy_from_slice(b"TAIL");
+    let (download_id, file) =
+        left_paused(&repo, &dir, ("damaged.bin", &bytes), Some(&on_disk)).await;
+
+    let mut core = restarted(Arc::clone(&store), &dir);
+    let events = events_until(&mut core, offered(file)).await;
+    let dropped = events.iter().find_map(|event| match event {
+        CoreEvent::Download(DownloadEvent::DamagedPartsDropped { damaged, .. }) => Some(
+            damaged
+                .iter()
+                .map(rmule_core::PartFault::part_index)
+                .collect::<Vec<_>>(),
+        ),
+        _ => None,
+    });
+    assert_eq!(
+        dropped,
+        Some(vec![1]),
+        "the damaged tail is dropped and said"
+    );
+    let held: Vec<u32> = repo
+        .verified_parts(download_id)
+        .unwrap()
+        .iter()
+        .map(|part| part.part_index)
+        .collect();
+    assert_eq!(held, [0]);
+    assert_eq!(
+        repo.load_download(download_id).unwrap().lifecycle(),
+        DownloadLifecycle::Paused,
+        "the check offers it and leaves it paused"
+    );
+}
+
+#[tokio::test]
+async fn after_a_restart_a_paused_download_whose_part_file_is_gone_stays_paused_and_unoffered() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = std::fs::canonicalize(tmp.path()).unwrap();
+    let store = rmule_testkit::memory_store();
+    let repo = DurableDownloadRepository::new(Arc::clone(&store));
+    // Checked in the store's order: the gone one first.
+    let mut other = content();
+    other[0] = 0xCD;
+    let (gone_id, gone) = left_paused(&repo, &dir, ("gone.bin", &other), None).await;
+    let bytes = content();
+    let (_, kept) = left_paused(&repo, &dir, ("kept.bin", &bytes), Some(&bytes)).await;
+
+    let mut core = restarted(Arc::clone(&store), &dir);
+    let events = events_until(&mut core, offered(kept)).await;
+    assert!(
+        !events.iter().any(offered(gone)),
+        "a part file gone offers nothing"
+    );
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        CoreEvent::Download(DownloadEvent::DamagedPartsDropped { .. })
+    )));
+    assert_eq!(
+        repo.load_download(gone_id).unwrap().lifecycle(),
+        DownloadLifecycle::Paused
+    );
+}

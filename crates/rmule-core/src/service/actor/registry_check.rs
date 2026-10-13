@@ -41,6 +41,8 @@ pub(super) enum RegistryMessage {
     RowsWanted(std::sync::mpsc::Sender<Vec<SharedFileEntry>>),
     /// A ruling of the Registry Check.
     Check(CheckReport),
+    /// An **Offer Check**'s walk of a download's parts (ADR-0113).
+    OfferChecked(super::offer_check::OfferChecked),
 }
 
 /// The sender both workers report on; the actor holds one for its whole
@@ -180,6 +182,7 @@ where
                 Err(error) => tracing::warn!(%error, "registry unreadable for a worker"),
             },
             RegistryMessage::Check(report) => self.on_check_report(report).await,
+            RegistryMessage::OfferChecked(report) => self.on_offer_checked(report).await,
         }
     }
 
@@ -205,6 +208,9 @@ where
                     self.wiring.file_known.share(row.file_hash);
                 }
                 self.share_set_changed();
+                // The downloads a restart found queued or paused are offered
+                // once their parts are read again, behind the start look.
+                self.start_offer_checks();
             }
             CheckReport::WatchUnavailable(_) => {
                 send_event(&self.evt_tx, ServeEvent::SharesUnwatched.into()).await;
