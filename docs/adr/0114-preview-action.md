@@ -110,8 +110,9 @@ name on disk:
   heaviest `*.<extension>` glob winning, case folded unless the glob is marked `cs`. The app
   comes from the MIME Applications spec's `mimeapps.list` files in the spec's order
   (desktop-specific lists first, config directories before data directories): the first
-  installed entry listed under *Default Applications*, else under *Added Associations*, else
-  in a data directory's `mimeinfo.cache`, never one listed under *Removed Associations*. The
+  installed entry listed under *Default Applications*, else the first under *Added
+  Associations* or in a data directory's `mimeinfo.cache` that no list names under *Removed
+  Associations*. The
   launch is `gio launch <desktop file> <file>`: GLib runs the entry's `Exec` by the Desktop
   Entry spec (field codes, quoting, `Terminal`), which rmule does not re-implement; a system
   without GLib's `gio` gets the refused-spawn note. rmule does not run `xdg-mime query
