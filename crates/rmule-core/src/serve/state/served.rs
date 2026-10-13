@@ -19,7 +19,8 @@ use rmule_primitives::{Ed2kText, FileHash, PartHash, PeerEndpoint};
 use super::reask::full_bitmap;
 use super::{ServeDecision, ServeState};
 use crate::registry::SharedFileEntry;
-use crate::served_downloads::ServedLook;
+use crate::serve::source_exchange::ServedFileKind;
+use crate::served_downloads::{ExchangePool, ServedLook};
 
 /// The file an ask names, as the share set holds it.
 #[derive(Clone, Copy, Debug)]
@@ -94,6 +95,20 @@ impl<'a> Asked<'a> {
         match self {
             Self::Row(_) => false,
             Self::Download { look, .. } => look.takes_askers,
+        }
+    }
+
+    /// Which pool a source-exchange ask is answered from, and the run's pool
+    /// for a Partial Share; `None` for a download not offered, which answers
+    /// none.
+    pub(super) const fn exchange(self) -> Option<(ServedFileKind, Option<&'a ExchangePool>)> {
+        match self {
+            Self::Row(_) => Some((ServedFileKind::Complete, None)),
+            Self::Download {
+                look,
+                offered: true,
+            } => Some((ServedFileKind::InProgress, Some(&look.served.pool))),
+            Self::Download { offered: false, .. } => None,
         }
     }
 }

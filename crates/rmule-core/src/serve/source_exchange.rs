@@ -8,9 +8,9 @@
 //!
 //! Two things live here: [`select_sources`] (the pool filters + 500-entry cap)
 //! and [`SourceExchangeThrottle`] (the 40/160-minute per-peer reask gate).
-//! `ServeState` supplies the candidate pool from the state it owns (the
-//! upload-engaged clients of a complete shared file) and echoes the result out
-//! as an `OP_ANSWERSOURCES` the peer session frames.
+//! `ServeState` supplies the candidate pool — the upload-engaged clients of a
+//! complete shared file, or a Partial Share's download's own sources — and
+//! echoes the result out as an `OP_ANSWERSOURCES` the peer session frames.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -44,15 +44,10 @@ pub(crate) enum ServedFileKind {
     /// status we do not know is **included**.
     Complete,
     /// A file still downloading (`CPartFile::CreateSrcInfoPacket` @4e8f2b3c):
-    /// the pool is the download's own source list, and a candidate whose part
-    /// status we do not know is **excluded** — the include/exclude asymmetry is
-    /// aMule's own.
-    ///
-    /// Modelled and tested here (the ADR-0055 two-pool asymmetry is the whole
-    /// reason the kinds differ), but not yet wired: rmule shares only complete
-    /// files today, so [`ServeState`](super::state::ServeState) never builds an
-    /// in-progress pool. It flips live with partial-file sharing.
-    #[allow(dead_code)]
+    /// the pool is the download's own source list — a **Partial Share**'s, as
+    /// its run publishes it (ADR-0113) — and a candidate whose part status we
+    /// do not know is **excluded**: the include/exclude asymmetry is aMule's
+    /// own.
     InProgress,
 }
 

@@ -164,6 +164,20 @@ impl PartFileIdentity {
     }
 }
 
+/// What a running download's source-exchange answer is drawn from
+/// (ADR-0113): the sources its run downloads from or waits at whose queue is
+/// not full, each with the parts it advertised — `None` when it advertised
+/// none — and how many sources the run knows, which the serve throttle reads
+/// as the file's rarity. Empty while the actor holds the entry: a queued or
+/// paused download has no source in those states.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ExchangePool {
+    /// Each source, as an answer names it, with its Advertised Parts.
+    pub(crate) sources: Vec<(SourceSighting, Option<PartBitmap>)>,
+    /// How many sources the run knows.
+    pub(crate) known: u32,
+}
+
 /// Which of a download's two paths holds its verified bytes now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BytesAt {
@@ -195,6 +209,8 @@ pub(crate) struct Served {
     pub(crate) range: VerifiedRange,
     /// The file the range was read from, once a writer read it.
     pub(crate) identity: Option<PartFileIdentity>,
+    /// What a source-exchange ask for it is answered from.
+    pub(crate) pool: ExchangePool,
 }
 
 /// Who writes an entry now.
@@ -339,6 +355,7 @@ impl ServedDownloads {
             set: WholeSet::of(record.file_size(), set),
             range: VerifiedRange::default(),
             identity: None,
+            pool: ExchangePool::default(),
         };
         let mut book = self.lock();
         if book.entries.contains_key(&record.file_hash()) {
@@ -375,8 +392,8 @@ impl ServedDownloads {
     }
 
     /// Take the entry of `file_hash` back from run `run`, which has ended or
-    /// been told to; from here its lease writes nothing and its inbox is
-    /// closed.
+    /// been told to; from here its lease writes nothing, its inbox is closed
+    /// and its source-exchange pool is empty.
     pub(crate) fn take_back(&self, file_hash: FileHash, run: u64) {
         let mut guard = self.lock();
         let book = &mut *guard;
@@ -384,7 +401,8 @@ impl ServedDownloads {
             && entry.holder == Holder::Run(run)
         {
             entry.holder = Holder::Actor;
-            if entry.askers.take().is_some() {
+            let pool = std::mem::take(&mut entry.served.pool);
+            if entry.askers.take().is_some() || pool != ExchangePool::default() {
                 book.version += 1;
             }
         }
@@ -531,7 +549,6 @@ impl ServedDownloads {
     }
 
     /// The file hashes offered now, in hash order.
-    #[cfg(test)]
     pub(crate) fn offered(&self) -> Vec<FileHash> {
         let book = self.lock();
         let mut offered: Vec<FileHash> = book
@@ -545,7 +562,6 @@ impl ServedDownloads {
     }
 
     /// The Served Download of `file_hash`, as it stands.
-    #[cfg(test)]
     pub(crate) fn served(&self, file_hash: FileHash) -> Option<Served> {
         self.lock()
             .entries
@@ -600,6 +616,21 @@ impl RunLease {
         book.leased(self)?.askers = Some(askers);
         book.version += 1;
         Some(inbox)
+    }
+
+    /// The source-exchange pool the run's Source Book holds now; the cell's
+    /// version moves only when it differs from the one held.
+    pub(crate) fn record_pool(&self, pool: ExchangePool) -> bool {
+        let mut guard = self.cell.lock();
+        let book = &mut *guard;
+        let Some(entry) = book.leased(self) else {
+            return false;
+        };
+        if entry.served.pool != pool {
+            entry.served.pool = pool;
+            book.version += 1;
+        }
+        true
     }
 
     /// Rule the Verified Range from the part hash set in force and the parts

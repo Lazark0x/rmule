@@ -28,7 +28,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use rmule_ed2k::OfferedFile;
+use rmule_ed2k::{FileCompleteness, OfferedFile};
 use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
 use rmule_peer::{ClientSoftware, PartBitmap, PeerIdentity, ServerCommand};
 use rmule_primitives::{AichHashSet, Ed2kText, FileHash, PeerEndpoint, SourceSighting, UserHash};
@@ -36,7 +36,7 @@ use rmule_primitives::{AichHashSet, Ed2kText, FileHash, PeerEndpoint, SourceSigh
 use crate::WaiterLeaveCause;
 use crate::registry::SharedFileEntry;
 use crate::serve::source_exchange::{
-    ServedFileKind, SourceExchangeThrottle, SxCandidate, SxRequester, held_parts, select_sources,
+    SourceExchangeThrottle, SxCandidate, SxRequester, held_parts, select_sources,
 };
 use crate::served_downloads::ServedLook;
 use crate::service::ServeEvent;
@@ -295,6 +295,21 @@ impl ServeState {
         for file_hash in leaving {
             decisions.extend(self.stop_serving(file_hash, now, modifiers));
         }
+        // The rows whole, then each Partial Share as incomplete under its
+        // download's name and size (ADR-0113 §"Announce and Kad").
+        let mut partial_files: Vec<OfferedFile> = partials
+            .iter()
+            .filter_map(|file_hash| Some((*file_hash, self.served.get(file_hash)?)))
+            .map(|(file_hash, look)| {
+                OfferedFile::new(
+                    file_hash,
+                    look.served.file_size,
+                    Ed2kText::from_utf8(look.served.name.as_str()),
+                )
+                .with_completeness(FileCompleteness::Incomplete)
+            })
+            .collect();
+        partial_files.sort_unstable_by_key(OfferedFile::file_hash);
         let files = entries
             .iter()
             .map(|entry| {
@@ -304,6 +319,7 @@ impl ServeState {
                     Ed2kText::from_utf8(entry.name.as_str()),
                 )
             })
+            .chain(partial_files)
             .collect();
         self.shared = entries
             .into_iter()
@@ -345,38 +361,55 @@ impl ServeState {
     /// candidate pool for `file_hash`, apply the per-peer throttle, filter it
     /// (LowID / self skip, needed-chunk, 500 cap), and — if anything survives —
     /// frame an `OP_ANSWERSOURCES(2)` plus a served-sources event. A file we do
-    /// not share, a throttled ask, or an empty result all send nothing (aMule's
-    /// `NULL` reply packet).
+    /// not offer, a throttled ask, or an empty result all send nothing
+    /// (aMule's `NULL` reply packet).
     ///
-    /// Only a complete shared file has an engaged-client pool here; an
-    /// in-progress download's source list lives in `DownloadState` (not owned
-    /// by the serve brain), so serving partials' sources rides rmule's
-    /// partial-file sharing (the [`ServedFileKind::InProgress`] pool rules are
-    /// modelled and tested in `serve::source_exchange`, unwired here).
+    /// A registry row's pool is its upload-engaged clients; a Partial Share's
+    /// is its download's own, as the run published it from its Source Book
+    /// (ADR-0113): the sources it downloads from or waits at that are not
+    /// queue-full, of which [`ServedFileKind::InProgress`] keeps only those
+    /// whose parts are known.
     fn answer_source_exchange(
         &mut self,
         now: Instant,
         peer: PeerEndpoint,
         file_hash: FileHash,
     ) -> Vec<ServeDecision> {
-        if !self.shared.contains_key(&file_hash) {
+        let Some((kind, pool)) = self.asked(file_hash).and_then(|asked| asked.exchange()) else {
             return Vec::new();
-        }
-        let candidates: Vec<SxCandidate> = self
-            .queue
-            .engaged_peers(file_hash)
-            .into_iter()
-            .filter_map(|engaged| {
-                let source = self.identities.get(&engaged)?.source_coordinate();
-                Some(SxCandidate {
-                    source,
-                    part_status: self.sx_part_status.get(&(engaged, file_hash)).cloned(),
-                })
-            })
-            .collect();
+        };
+        let (candidates, known): (Vec<SxCandidate>, usize) = match pool {
+            Some(pool) => (
+                pool.sources
+                    .iter()
+                    .map(|(source, parts)| SxCandidate {
+                        source: *source,
+                        part_status: parts.clone(),
+                    })
+                    .collect(),
+                usize::try_from(pool.known).unwrap_or(usize::MAX),
+            ),
+            None => {
+                let engaged: Vec<SxCandidate> = self
+                    .queue
+                    .engaged_peers(file_hash)
+                    .into_iter()
+                    .filter_map(|engaged| {
+                        let source = self.identities.get(&engaged)?.source_coordinate();
+                        Some(SxCandidate {
+                            source,
+                            part_status: self.sx_part_status.get(&(engaged, file_hash)).cloned(),
+                        })
+                    })
+                    .collect();
+                let known = engaged.len();
+                (engaged, known)
+            }
+        };
         // Rarity (rare vs common reask gate) follows how many sources we know
-        // for the file — the engaged-client count, aMule's `GetSourceCount`.
-        if !self.sx_throttle.admit(peer, now, candidates.len()) {
+        // for the file — aMule's `GetSourceCount`: a row's engaged clients, a
+        // download's every source.
+        if !self.sx_throttle.admit(peer, now, known) {
             return Vec::new();
         }
         // The needed-chunk gate reads the requester's own last status (name ask or UDP reask);
@@ -394,7 +427,7 @@ impl ServeState {
         // Which of these the answer's wire form can carry is the peer
         // session's call: a classic answer leaves an IPv6-only source out, and
         // one left empty sends nothing (ADR-0087).
-        let sources = select_sources(ServedFileKind::Complete, &requester, &candidates);
+        let sources = select_sources(kind, &requester, &candidates);
         if sources.is_empty() {
             return Vec::new();
         }

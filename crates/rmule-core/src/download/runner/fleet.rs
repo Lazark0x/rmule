@@ -317,6 +317,7 @@ where
     let mut queue: VecDeque<Decision> = ctx.state.start(now()).into();
     enact_drain(&mut queue, &mut ctx).await?;
     publish_seeds(&ctx);
+    publish_exchange_pool(&ctx);
     if ctx.command_channels.is_empty()
         && !ctx.state.has_pending_callbacks()
         && !ctx.state.is_complete()
@@ -519,6 +520,7 @@ where
                 enact_drain(&mut q, &mut ctx).await?;
                 told_wait = retell_wait(&ctx, &discovery, lookup_owed, told_wait).await;
                 publish_seeds(&ctx);
+                publish_exchange_pool(&ctx);
                 continue;
             }
             Some((udp_src, datagram)) = reask_reply_rx.recv() => {
@@ -641,6 +643,15 @@ fn source_wait(discovery: &super::DiscoveryLiveness, lookup_owed: bool) -> Optio
 /// Publish the run's **Source Seeds** ranking for the actor's next write
 /// (ADR-0109): after the first fill, then each sample tick, so it is one
 /// sweep old at most.
+/// Hand the serve side the run's source-exchange pool (ADR-0113): after the
+/// first fill, then each sample tick — aMule builds its answer from the
+/// source list at the ask, and a pool a second old is that list.
+fn publish_exchange_pool<S, P>(ctx: &LoopCtx<'_, S, P>) {
+    if let Some(lease) = &ctx.runner.served {
+        lease.record_pool(ctx.state.exchange_pool());
+    }
+}
+
 fn publish_seeds<S, P>(ctx: &LoopCtx<'_, S, P>) {
     let ranking = ctx.state.source_seeds();
     ctx.runner.seeds_tx.send_if_modified(|held| {
@@ -652,7 +663,6 @@ fn publish_seeds<S, P>(ctx: &LoopCtx<'_, S, P>) {
     });
 }
 
-/// Sleep until `deadline`, or never while the brain names none (ADR-0026).
 /// The next asker the serve side handed this run; pending forever for a run
 /// with no inbox.
 async fn recv_asker(askers: &mut Option<mpsc::Receiver<SourceSighting>>) -> Option<SourceSighting> {
@@ -662,6 +672,7 @@ async fn recv_asker(askers: &mut Option<mpsc::Receiver<SourceSighting>>) -> Opti
     }
 }
 
+/// Sleep until `deadline`, or never while the brain names none (ADR-0026).
 async fn sleep_until_optional(deadline: Option<tokio::time::Instant>) {
     match deadline {
         Some(deadline) => tokio::time::sleep_until(deadline).await,

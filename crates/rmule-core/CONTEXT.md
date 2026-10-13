@@ -1137,10 +1137,11 @@ transport plumbing owned by the server-UDP adapter, not the engine.
 _Avoid_: discovery task twins (the retired GlobalSourceDiscovery/KadSourceDiscovery copies), source lookup (the eD2k TCP exchange), scheduler
 
 **Kad Publisher**:
-The small Core task that keeps the Kad node's publications equal to the offered
-**Shared File Registry** rows: it registers each newly offered file once, and withdraws
-each file no longer offered (unshared, gone or a **Withheld Row**) from the node's
-5-hour republish cadence (ADR-0106).
+The small Core task that keeps the Kad node's source publications equal to the offered
+**Shared File Registry** rows and the **Partial Share**s: it registers each newly offered
+file once, and withdraws each file no longer offered (unshared, gone, a **Withheld Row**,
+or a download whose offer ended) from the node's 5-hour republish cadence (ADR-0106,
+ADR-0113).
 Split out of Kad discovery because publishing is registry-driven, not
 download-driven — it runs even with zero active downloads.
 _Avoid_: republish timer (the node's), discovery sweep, announce (the eD2k `OP_OFFERFILES` path)

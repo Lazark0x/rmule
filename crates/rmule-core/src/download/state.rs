@@ -626,6 +626,18 @@ impl DownloadState {
         })
     }
 
+    /// The pool a source-exchange answer for this file is drawn from while it
+    /// downloads (ADR-0113): the sources we download from or wait at that are
+    /// not queue-full, and how many sources the book knows.
+    pub(crate) fn exchange_pool(&self) -> crate::served_downloads::ExchangePool {
+        crate::served_downloads::ExchangePool {
+            sources: self
+                .sources
+                .exchange_pool(|endpoint| self.scheduler.is_working(endpoint)),
+            known: self.sources.counts().known,
+        }
+    }
+
     /// The live facts behind our **Callback Capability** moved:
     /// a login — to another server, whose namespace a Low ID is now read in —
     /// or re-assignment, a session's end, the Kad TCP verdict flipping.

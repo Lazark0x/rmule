@@ -12,6 +12,7 @@ use crate::download::source_book::{NO_NEEDED_PARTS_MULTIPLIER, REASK_RECHECK, UD
 use crate::own_identity::ConnectedSession;
 use crate::service::IgnoredReaskReply;
 
+mod exchange_pool;
 mod no_needed_parts;
 mod purge;
 

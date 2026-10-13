@@ -51,6 +51,7 @@ fn download(whole: bool, verified: &[u32], running: bool) -> ServedLook {
             set,
             range,
             identity: None,
+            pool: Default::default(),
         },
         takes_askers: running,
     }
@@ -409,4 +410,107 @@ fn a_partial_share_the_cell_dropped_answers_until_the_next_share_trigger() {
             ServerCommand::AnswerFileNotFound { file_hash: file }
         )]
     );
+}
+
+/// One `OP_OFFERFILES` to a server granting compression names a row with
+/// the complete marker and a Partial Share with the incomplete one
+/// (`KnownFile.cpp:1097-1107`), each under its own name and size.
+#[test]
+fn a_compression_server_reads_a_row_complete_and_a_partial_share_incomplete_in_one_announce() {
+    use rmule_ed2k::{OfferFiles, ServerGrants};
+    use rmule_primitives::ClientId;
+
+    let (row, partial) = (hash(0x01), hash(0x02));
+    let mut state = ServeState::new(UploadSlotQueue::new(1, 8));
+    state.on_served([(partial, download(true, &[0], false))].into());
+    let decisions = state.on_share_set(vec![entry(row, 42, "r")], Instant::now(), &no_modifiers());
+    let Some(ServeDecision::Announce(files)) = decisions.last() else {
+        panic!("an announce: {decisions:?}");
+    };
+    let grants = ServerGrants {
+        compression: true,
+        ..ServerGrants::default()
+    };
+    let id = ClientId::from_u32(0x0403_0201);
+    let packet = OfferFiles::announce(grants, id, id, 4662, files).encode_packet();
+    let expected: &[u8] = &[
+        0x02, 0x00, 0x00, 0x00, // file_count = 2
+        // The row: its hash, 251.251.251.251:0xFBFB, two tags.
+        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+        0x01, // file_hash
+        0xFB, 0xFB, 0xFB, 0xFB, 0xFB, 0xFB, // complete marker
+        0x02, 0x00, 0x00, 0x00, // tag_count = 2
+        0x82, 0x01, 0x01, 0x00, b'r', // FT_FILENAME "r"
+        0x83, 0x02, 0x2A, 0x00, 0x00, 0x00, // FT_FILESIZE = 42
+        // The Partial Share: its hash, 252.252.252.252:0xFCFC, its
+        // download's name and size.
+        0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02,
+        0x02, // file_hash
+        0xFC, 0xFC, 0xFC, 0xFC, 0xFC, 0xFC, // incomplete marker
+        0x02, 0x00, 0x00, 0x00, // tag_count = 2
+        0x82, 0x01, 0x0C, 0x00, b'd', b'o', b'w', b'n', b'l', b'o', b'a', b'd', b'.', b'b', b'i',
+        b'n', // FT_FILENAME "download.bin"
+        0x83, 0x02, 0x00, 0x50, 0xBD, 0x01, // FT_FILESIZE = 29_184_000
+    ];
+    assert_eq!(packet.payload(), expected);
+}
+
+#[test]
+fn a_partial_shares_exchange_answers_from_its_runs_pool_and_leaves_out_an_unknown_status() {
+    use crate::served_downloads::ExchangePool;
+    use rmule_primitives::{ClientId, PeerSource};
+
+    let file = hash(0x02);
+    let source = |octet: u8| {
+        SourceSighting::plain(PeerSource::new(
+            ClientId::from_u32(u32::from_le_bytes([10, 0, 0, octet])),
+            4662,
+        ))
+    };
+    let mut look = download(true, &[0], true);
+    look.served.pool = ExchangePool {
+        sources: vec![(source(1), Some(holding_real(&[1]))), (source(2), None)],
+        known: 7,
+    };
+    let mut state = state_of(Vec::new(), vec![(file, look)]);
+    let p = peer(4001);
+    identify(&mut state, p, user(0x0B), Instant::now());
+    let _ = ask(&mut state, p, name_ask(file));
+    assert_eq!(
+        ask(
+            &mut state,
+            p,
+            ServerEvent::SourcesRequested { file_hash: file }
+        ),
+        [send(
+            p,
+            ServerCommand::AnswerSources {
+                file_hash: file,
+                sources: vec![source(1)],
+            },
+        )]
+    );
+}
+
+#[test]
+fn a_download_not_offered_answers_no_exchange() {
+    let file = hash(0x02);
+    let mut state = state_of(Vec::new(), vec![(file, download(true, &[], true))]);
+    let p = peer(4001);
+    identify(&mut state, p, user(0x0B), Instant::now());
+    assert_eq!(
+        ask(
+            &mut state,
+            p,
+            ServerEvent::SourcesRequested { file_hash: file }
+        ),
+        []
+    );
+}
+
+/// What a source advertising `parts` of a file of [`SIZE`] holds, over its
+/// three real parts.
+fn holding_real(parts: &[u32]) -> PartBitmap {
+    let bits = parts.iter().fold(0u8, |bits, part| bits | 1 << part);
+    PartBitmap::decode(3, &[bits]).unwrap()
 }

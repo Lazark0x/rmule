@@ -1,6 +1,7 @@
 //! The Kad Discovery Channel and the Kad Publisher against a fake Kad
 //! channel and the durable registry: routed sources, one publish per
-//! offered file, withdrawal and re-publication, and a failed registry read.
+//! offered file — a Partial Share included — withdrawal and re-publication,
+//! and a failed registry read.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -143,6 +144,7 @@ async fn publishes_each_shared_file_exactly_once() {
             channel,
             Arc::new(shared),
             WithheldRows::default(),
+            Default::default(),
             share_changed_rx,
         )
         .run(),
@@ -195,6 +197,7 @@ async fn a_withheld_file_is_withdrawn_and_published_again_once_offered() {
             channel,
             Arc::new(shared),
             withheld.clone(),
+            Default::default(),
             share_changed_rx,
         )
         .run(),
@@ -220,6 +223,73 @@ async fn a_withheld_file_is_withdrawn_and_published_again_once_offered() {
         file_hash,
         "offered again, it is published again"
     );
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_partial_share_is_published_once_and_withdrawn_when_its_download_ends() {
+    use crate::served_downloads::{PartialEnd, ServedDownloads};
+    use crate::storage::DownloadRepository;
+    use rmule_primitives::{ED2K_PART_SIZE, Ed2kFileLink, Ed2kText, PartHash};
+
+    let file_hash = FileHash::from_bytes([0x46; FileHash::BYTE_LEN]);
+    let size = 2 * ED2K_PART_SIZE + 5;
+    let set: Vec<PartHash> = (0..3)
+        .map(|part| PartHash::from_bytes([part; 16]))
+        .collect();
+    let store = rmule_testkit::memory_store();
+    let downloads = crate::store::download::DurableDownloadRepository::new(store.clone());
+    let link = Ed2kFileLink {
+        name: Ed2kText::from_utf8("partial.bin"),
+        size,
+        file_hash,
+        part_hash_set: None,
+        aich_root: None,
+        ipv6_sources: Vec::new(),
+        sources: Default::default(),
+    };
+    let paths = crate::DownloadPaths::from_final_path("/downloads/partial.bin".into());
+    let record = downloads.create_download(&link, None, &paths).unwrap();
+    let served = ServedDownloads::default();
+    assert!(served.install(&record, &set));
+    let lease = served.hand_to_run(file_hash, 1).unwrap();
+    lease.record_range(
+        &set,
+        &[crate::VerifiedPartRecord {
+            part_index: 0,
+            offset: 0,
+            len: ED2K_PART_SIZE,
+            part_hash: set[0],
+        }],
+    );
+
+    let (channel, mut probes) = fake_channel(None);
+    let (share_changed_tx, share_changed_rx) = mpsc::channel(8);
+    let task = tokio::spawn(
+        KadPublisher::new(
+            channel,
+            Arc::new(DurableSharedFileRegistry::new(store)),
+            WithheldRows::default(),
+            served.clone(),
+            share_changed_rx,
+        )
+        .run(),
+    );
+    let wait = Duration::from_secs(2);
+    let first = tokio::time::timeout(wait, probes.publishes.recv()).await;
+    let first = first.unwrap().unwrap();
+    assert_eq!((first.file_hash(), first.file_size()), (file_hash, size));
+    for _ in 0..3 {
+        share_changed_tx.send(()).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(probes.publishes.try_recv().is_err(), "published once");
+
+    served.take_back(file_hash, 1);
+    assert!(served.end(record.id(), PartialEnd::Ended));
+    share_changed_tx.send(()).await.unwrap();
+    let withdrawn = tokio::time::timeout(wait, probes.withdraws.recv()).await;
+    assert_eq!(withdrawn.unwrap().unwrap().file_hash(), file_hash);
     task.abort();
 }
 
@@ -299,6 +369,7 @@ async fn a_failed_registry_read_withdraws_nothing_and_the_sweep_is_retried() {
             channel,
             Arc::clone(&registry),
             WithheldRows::default(),
+            Default::default(),
             share_changed_rx,
         )
         .run(),
