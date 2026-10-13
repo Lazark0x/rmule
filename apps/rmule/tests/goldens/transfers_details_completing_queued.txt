@@ -1,0 +1,21 @@
+┌ Downloads (3) ─────────── s sort  S reverse  C clear completed  L add link ┐
+│  File ▲      Size       Done Progress   Speed      ETA    Src   Status     │
+│▸ bunny.mp4   87.7 MB    100% ██████████ —          —      0     Completing │
+│  ABABABABAB┌ File details ────────────────────────────────────┐ Paused     │
+│  5C5C5C5C5C│ name    bunny.mp4                                │ Completed  │
+│            │ hash    07070707070707070707070707070707         │            │
+│            │ size    87.7 MB                                  │            │
+│            │ origin  link                                     │            │
+│            │ done    100%  (10/10 parts)                      │            │
+│            │ speed   0.0 KB/s                                 │            │
+│            │ sources 0 known, 0 sending                       │            │
+│            │ on disk —                                        │            │
+└────────────│ move    waiting its turn to copy the finished    │────────────┘
+┌ Sources · b│         file to the disk it goes to              │────────────┐
+│            │                                                  │            │
+│            │██████████████████████████████████████████████████│            │
+│            └──────────────────────────────────────────────────┘            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘

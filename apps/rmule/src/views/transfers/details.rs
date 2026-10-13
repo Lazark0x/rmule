@@ -18,7 +18,7 @@ use crate::state::UiState;
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
 use crate::views::modal::Modal;
-use crate::words::download::{on_disk, source_wait_words};
+use crate::words::download::{completion_progress, on_disk, source_wait_words};
 use crate::wrap::labeled_lines;
 
 /// Width of the details modal's label column (`" {label:<8}"`).
@@ -133,6 +133,15 @@ impl TransfersView {
                 lines.extend(detail_rows("waiting", wait, value_w, theme));
             }
         }
+        // A completing row says what its move does, and what its copy has
+        // written (ADR-0115).
+        if let Some(progress) = diag.and_then(|d| d.completion)
+            && row.is_some_and(|row| row.status == crate::state::DownloadStatus::Completing)
+        {
+            let size = metadata.map_or(0, |m| m.size);
+            let doing = completion_progress(progress.step, progress.copied, size);
+            lines.extend(detail_rows("move", &doing, value_w, theme));
+        }
         lines.push(Line::raw(""));
         // The modal's wider budget buckets the same map more finely than the
         // table cell does — same fact, more resolution (ADR-0079).
@@ -244,6 +253,63 @@ mod tests {
             Some(100_000_000),
             None,
         );
+    }
+
+    /// The details modal over the active download, its completion move at
+    /// `step` with `copied` bytes written.
+    fn assert_completing_golden(name: &str, step: rmule_core::CompletionStep, copied: u64) {
+        let mut view = TransfersView::new();
+        view.overlay = Overlay::Details;
+        let mut state = three_downloads();
+        state
+            .downloads
+            .get_mut(&download_id(1))
+            .expect("the active download")
+            .status = crate::state::DownloadStatus::Completing;
+        let diag = state
+            .diagnostics
+            .downloads
+            .get_mut(&download_id(1))
+            .expect("the active download's row");
+        // Every part verified: only then does a move begin.
+        diag.parts = part_map("VVVVVVVVVV");
+        diag.workers.clear();
+        diag.known_sources = 0;
+        diag.completion = Some(rmule_core::diagnostics::CompletionProgress { step, copied });
+        assert_golden(name, GOLDEN_W, GOLDEN_H, |frame| {
+            let area = frame.area();
+            view.draw(frame, area, &state, &Theme::default_dark(), now());
+        });
+    }
+
+    #[test]
+    fn golden_details_completing_at_each_step() {
+        use rmule_core::CompletionStep as Step;
+        for (name, step, copied) in [
+            ("transfers_details_completing_moving", Step::Moving, 0),
+            (
+                "transfers_details_completing_queued",
+                Step::QueuedForCopy,
+                0,
+            ),
+            (
+                "transfers_details_completing_copying",
+                Step::Copying,
+                46_000_000,
+            ),
+            (
+                "transfers_details_completing_held",
+                Step::WaitingForRelease,
+                0,
+            ),
+            (
+                "transfers_details_completing_store",
+                Step::WaitingForStore,
+                92_000_000,
+            ),
+        ] {
+            assert_completing_golden(name, step, copied);
+        }
     }
 
     #[test]

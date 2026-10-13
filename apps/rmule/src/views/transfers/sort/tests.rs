@@ -334,3 +334,17 @@ fn golden_transfers_sorted_by_size() {
         view.draw(frame, frame.area(), &state, &Theme::default_dark(), now());
     });
 }
+
+/// A completing download ranks between paused and completed in aMule's
+/// status order, and between moving bytes and completed by activity —
+/// by its rank, never by its words.
+#[test]
+fn a_completing_download_ranks_between_downloading_and_completed() {
+    use super::{activity_rank, status_rank};
+    use crate::state::DownloadStatus as S;
+
+    assert!(status_rank(S::Paused) < status_rank(S::Completing));
+    assert!(status_rank(S::Completing) < status_rank(S::Completed));
+    assert!(activity_rank(S::Downloading) < activity_rank(S::Completing));
+    assert!(activity_rank(S::Completing) < activity_rank(S::Completed));
+}

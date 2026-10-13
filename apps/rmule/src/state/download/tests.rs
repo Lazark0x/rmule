@@ -252,6 +252,7 @@ fn recovered_rows_map_the_persisted_lifecycle() {
         (1, DownloadLifecycle::Active, DownloadStatus::Waiting),
         (2, DownloadLifecycle::Paused, DownloadStatus::Paused),
         (3, DownloadLifecycle::Queued, DownloadStatus::Waiting),
+        (4, DownloadLifecycle::Completing, DownloadStatus::Completing),
     ];
     for (n, lifecycle, expected) in cases {
         fold(
@@ -431,4 +432,77 @@ fn a_hole_less_destination_sets_the_note_and_logs_its_line() {
          on disk up to its last verified part; downloads started with the Temp Directory on \
          another disk avoid this"
     );
+}
+
+/// A completion move's steps fold into the Completing status, each said on
+/// the status bar by the download's name; the move ends Completed, and a
+/// Pause that stopped it leaves the row Paused (ADR-0115).
+#[test]
+fn completing_edges_hold_the_row_completing_until_it_completes_or_pauses() {
+    use rmule_core::CompletionStep;
+
+    let mut state = UiState::default();
+    let named = rmule_core::DownloadMetadata {
+        name: rmule_primitives::Ed2kText::from_utf8("film.mkv"),
+        size: 1_000,
+        origin: rmule_core::DownloadMetadataOrigin::Link,
+    };
+    fold(
+        &mut state,
+        download_event(DownloadEvent::DownloadQueued {
+            download_id: download_id(1),
+            file_hash: file_hash(7),
+            metadata: named,
+            file_path: crate::fixture::part_file(),
+        }),
+    );
+    let to = std::path::PathBuf::from("/dl/film (1).mkv");
+    let completing = |step| {
+        download_event(DownloadEvent::Completing {
+            download_id: download_id(1),
+            to: to.clone(),
+            step,
+        })
+    };
+    assert!(fold(
+        &mut state,
+        completing(CompletionStep::WaitingForRelease)
+    ));
+    assert_eq!(
+        state.downloads[&download_id(1)].status,
+        DownloadStatus::Completing
+    );
+    assert_eq!(
+        state.notable.as_deref(),
+        Some(
+            "film.mkv: waiting for the file to be released; it completes once the program \
+             holding it lets go"
+        )
+    );
+    fold(&mut state, completing(CompletionStep::Copying));
+    assert_eq!(
+        state.notable.as_deref(),
+        Some("film.mkv: copying the finished file to the disk it goes to")
+    );
+    fold(
+        &mut state,
+        download_event(DownloadEvent::DownloadPaused {
+            download_id: download_id(1),
+        }),
+    );
+    assert_eq!(
+        state.downloads[&download_id(1)].status,
+        DownloadStatus::Paused
+    );
+    fold(&mut state, completing(CompletionStep::QueuedForCopy));
+    fold(
+        &mut state,
+        download_event(DownloadEvent::DownloadCompleted {
+            download_id: download_id(1),
+            final_path: to.clone(),
+        }),
+    );
+    let row = &state.downloads[&download_id(1)];
+    assert_eq!(row.status, DownloadStatus::Completed);
+    assert_eq!(row.file_path.as_deref(), Some(to.as_path()));
 }
