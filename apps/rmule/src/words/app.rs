@@ -16,7 +16,8 @@ pub fn receipt(edit: &PrefEdit, effect: rmule_core::TakesEffect) -> Sentence {
     let on_off = |on: bool| if on { "on" } else { "off" };
     let what = match edit {
         PrefEdit::DownloadDir(dir) => format!("download dir → {}", dir.display()),
-        PrefEdit::TempDir(dir) => format!("temp dir → {}", dir.display()),
+        PrefEdit::TempDir(Some(dir)) => format!("temp dir → {}", dir.display()),
+        PrefEdit::TempDir(None) => "temp dir → the default".to_string(),
         PrefEdit::Nickname(name) => format!("nickname → {name}"),
         PrefEdit::TcpPort(port) => format!("eD2k port → {port}"),
         PrefEdit::UdpPort(port) => format!("UDP port → {port}"),

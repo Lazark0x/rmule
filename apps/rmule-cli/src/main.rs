@@ -106,7 +106,14 @@ enum ConfigCommand {
     SetDownloadDir { path: PathBuf },
     /// Set the directory new downloads keep their part files in, made when
     /// missing; downloads already started keep theirs.
-    SetTempDir { path: PathBuf },
+    SetTempDir {
+        #[arg(required_unless_present = "default")]
+        path: Option<PathBuf>,
+        /// Clear the one set: new downloads keep their part files in the
+        /// default, `Temp` in the data directory.
+        #[arg(long, conflicts_with = "path")]
+        default: bool,
+    },
     /// Show current preferences.
     Show,
 }
@@ -258,14 +265,25 @@ async fn main() -> Result<()> {
                     })?;
                 println!("download_dir {}", dir.display());
             }
-            ConfigCommand::SetTempDir { path } => {
+            ConfigCommand::SetTempDir { path: None, .. } => {
+                CoreSettingsHandle::open(open_store(&data_dir)?)
+                    .share_guards(share_guards(&data_dir))
+                    .set(Setting::TempDir(None))?;
+                println!(
+                    "temp_dir {} (default)",
+                    CoreSettings::default_temp_dir(&data_dir).display()
+                );
+            }
+            ConfigCommand::SetTempDir {
+                path: Some(path), ..
+            } => {
                 let dir = std::path::absolute(&path)
                     .with_context(|| format!("resolve {}", path.display()))?;
                 // Judged against the download directory and every shared
                 // directory the store lists, then made, before it is stored.
                 CoreSettingsHandle::open(open_store(&data_dir)?)
                     .share_guards(share_guards(&data_dir))
-                    .set(Setting::TempDir(dir.clone()))
+                    .set(Setting::TempDir(Some(dir.clone())))
                     .map_err(|error| match error {
                         SettingError::Refused(SettingRefusal::TempDirRefused(reason)) => {
                             anyhow::anyhow!(

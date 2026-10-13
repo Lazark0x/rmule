@@ -43,7 +43,7 @@ fn every_setting_set_on_the_store_alone_persists_for_the_next_start() {
             dir: dir.clone(),
             share_confirmed: false,
         },
-        Setting::TempDir(parts.path().to_path_buf()),
+        Setting::TempDir(Some(parts.path().to_path_buf())),
         Setting::Nickname("  hübsch ".to_owned()),
         Setting::TcpPort(4711),
         Setting::UdpPort(4722),
@@ -254,7 +254,7 @@ fn a_temp_dir_not_apart_from_the_shared_directories_is_refused_and_nothing_store
     ];
     for (dir, refusal) in refusals {
         assert_eq!(
-            machine.settings.set(Setting::TempDir(dir.clone())),
+            machine.settings.set(Setting::TempDir(Some(dir.clone()))),
             Err(SettingError::Refused(SettingRefusal::TempDirRefused(
                 refusal
             ))),
@@ -274,22 +274,24 @@ fn a_temp_dir_not_apart_from_the_shared_directories_is_refused_and_nothing_store
         })
         .expect("a download directory under the shelf");
     assert_eq!(
-        machine.settings.set(Setting::TempDir(holds)),
+        machine.settings.set(Setting::TempDir(Some(holds))),
         Err(SettingError::Refused(SettingRefusal::TempDirRefused(
             DirectoryRefusal::HoldsShared { child: inner }
         )))
     );
     #[cfg(unix)]
     assert_eq!(
-        machine.settings.set(Setting::TempDir(
+        machine.settings.set(Setting::TempDir(Some(
             <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(b"/parts-\xff").into()
-        )),
+        ))),
         Err(SettingError::Refused(SettingRefusal::TempDirRefused(
             DirectoryRefusal::NotUtf8
         )))
     );
     assert!(matches!(
-        machine.settings.set(Setting::TempDir(file.join("parts"))),
+        machine
+            .settings
+            .set(Setting::TempDir(Some(file.join("parts")))),
         Err(SettingError::Refused(SettingRefusal::TempDirRefused(
             DirectoryRefusal::Unreachable(_)
         )))
@@ -306,13 +308,43 @@ fn a_temp_dir_inside_the_data_directory_is_made_and_stored() {
     let machine = Machine::new();
     let parts = machine.data.join("Parts/new");
     assert_eq!(
-        machine.settings.set(Setting::TempDir(parts.clone())),
+        machine.settings.set(Setting::TempDir(Some(parts.clone()))),
         Ok(TakesEffect::NextStart)
     );
     assert!(parts.is_dir());
     let stored = machine.settings.read().expect("read");
     assert_eq!(stored.temp_dir, Some(parts.clone()));
     assert_eq!(stored.effective_temp_dir(Some(&machine.data)), Some(parts));
+}
+
+/// A cleared Temp Directory reads unset again: the default in the data
+/// directory is in force, and a download directory the one set held is
+/// taken.
+#[test]
+fn a_cleared_temp_dir_returns_to_the_default() {
+    let machine = Machine::new();
+    let parts = machine.home.join("work/parts");
+    machine
+        .settings
+        .set(Setting::TempDir(Some(parts)))
+        .expect("the temp dir");
+    assert_eq!(
+        machine.settings.set(Setting::TempDir(None)),
+        Ok(TakesEffect::NextStart)
+    );
+    let stored = machine.settings.read().expect("read");
+    assert_eq!(stored.temp_dir, None);
+    assert_eq!(
+        stored.effective_temp_dir(Some(&machine.data)),
+        Some(CoreSettings::default_temp_dir(&machine.data))
+    );
+    assert_eq!(
+        machine.settings.set(Setting::DownloadDir {
+            dir: machine.home.join("work"),
+            share_confirmed: true,
+        }),
+        Ok(TakesEffect::NextStart)
+    );
 }
 
 /// A download directory that is the Temp Directory, or holds it, is refused
@@ -325,7 +357,7 @@ fn a_download_dir_that_is_or_holds_the_temp_dir_is_refused() {
     let parts = machine.home.join("work/parts");
     machine
         .settings
-        .set(Setting::TempDir(parts.clone()))
+        .set(Setting::TempDir(Some(parts.clone())))
         .expect("the temp dir");
     for dir in [parts.clone(), machine.home.join("work")] {
         assert_eq!(

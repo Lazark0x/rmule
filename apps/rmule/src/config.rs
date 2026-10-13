@@ -445,7 +445,7 @@ impl Preferences {
     pub fn apply(&mut self, edit: &PrefEdit) {
         match edit {
             PrefEdit::DownloadDir(dir) => self.download_dir = Some(dir.clone()),
-            PrefEdit::TempDir(dir) => self.temp_dir = Some(dir.clone()),
+            PrefEdit::TempDir(dir) => self.temp_dir = dir.clone(),
             PrefEdit::Nickname(name) => self.nickname = name.clone(),
             PrefEdit::TcpPort(port) => self.tcp_port = *port,
             PrefEdit::UdpPort(port) => self.udp_port = *port,
@@ -480,8 +480,9 @@ pub enum PrefEdit {
     DownloadDir(PathBuf),
     /// Validated by [`validate_temp_dir`]; a running core places the next
     /// download's part file there, and every download already placed keeps
-    /// its own.
-    TempDir(PathBuf),
+    /// its own. `None`, the field left empty, clears the one set: the default
+    /// in the data directory is in force again.
+    TempDir(Option<PathBuf>),
     /// Takes effect at the next start — the running session already sent its
     /// identity.
     Nickname(String),
@@ -635,9 +636,12 @@ pub fn validate_download_dir(path: &str) -> Result<PathBuf, String> {
 
 /// A Temp Directory as an operator types it, by the same rule as
 /// [`validate_download_dir`]: core judges where it lies at the set, and makes
-/// it.
-pub fn validate_temp_dir(path: &str) -> Result<PathBuf, String> {
-    directory(path, "temp directory")
+/// it. Empty text is `None`, which clears the one set back to the default.
+pub fn validate_temp_dir(path: &str) -> Result<Option<PathBuf>, String> {
+    if path.trim().is_empty() {
+        return Ok(None);
+    }
+    directory(path, "temp directory").map(Some)
 }
 
 /// `path` as the directory `what` names: absolute, and not an existing

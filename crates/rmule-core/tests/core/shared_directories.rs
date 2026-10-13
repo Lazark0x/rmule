@@ -380,7 +380,8 @@ async fn the_temp_directory_and_a_directory_holding_it_are_not_shared() {
 
     let moved = machine.directory("spool/parts", &[]);
     assert_eq!(
-        core.settings().set(rmule_core::Setting::TempDir(moved)),
+        core.settings()
+            .set(rmule_core::Setting::TempDir(Some(moved))),
         Ok(rmule_core::TakesEffect::Now)
     );
     assert_eq!(
@@ -415,7 +416,7 @@ async fn an_add_awaiting_its_confirm_is_refused_when_the_temp_directory_moves_in
 
     assert_eq!(
         core.settings()
-            .set(rmule_core::Setting::TempDir(spool.join("parts"))),
+            .set(rmule_core::Setting::TempDir(Some(spool.join("parts")))),
         Ok(rmule_core::TakesEffect::Now)
     );
     assert_eq!(
@@ -477,7 +478,8 @@ async fn an_entry_refused_for_the_old_temp_directory_is_scanned_once_it_moves_aw
     );
     let elsewhere = machine.directory("spool/parts", &[]);
     assert_eq!(
-        core.settings().set(rmule_core::Setting::TempDir(elsewhere)),
+        core.settings()
+            .set(rmule_core::Setting::TempDir(Some(elsewhere))),
         Ok(rmule_core::TakesEffect::Now)
     );
     timeout(HANG_GUARD, async {

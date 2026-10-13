@@ -313,8 +313,8 @@ where
     /// one refused for the old Temp Directory is scanned once it passes, and
     /// an add waiting on its confirm that now is, holds or lies inside the
     /// new one is refused, its scan stopped and nothing stored.
-    pub(super) async fn temp_directory_moved(&mut self, dir: PathBuf) {
-        self.directories.temp_dir = Some(dir);
+    pub(super) async fn temp_directory_moved(&mut self, dir: Option<PathBuf>) {
+        self.directories.temp_dir = dir;
         let adding: Vec<PathBuf> = self
             .activities
             .scans()

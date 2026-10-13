@@ -30,7 +30,8 @@ different volumes. The part file is deleted only after the finished file is in p
 ### The Temp Directory
 
 - **A Core Setting** beside the download directory (ADR-0069): `CoreSettings::temp_dir`, set by
-  `Setting::TempDir`. Unset, it is `Temp` in the data directory the front end hands core
+  `Setting::TempDir` and cleared by it with no path (an empty Temp dir field, `rmule-cli config
+  set-temp-dir --default`). Unset, it is `Temp` in the data directory the front end hands core
   (ADR-0076). The set makes it when it is missing. A core given neither (a test, a tool) places a
   part file beside its final path, as before.
 - **Placement.** `place_download` chooses both paths at once: the final path in the download

@@ -52,10 +52,11 @@ fn config_download_dir_round_trips_in_one_process_group() {
 }
 
 /// The Temp Directory reads as the default in the data directory until one
-/// is set; a set one is made and shown, and one inside the download
-/// directory is refused with its reason and not stored.
+/// is set; a set one is made and shown, one inside the download directory is
+/// refused with its reason and not stored, and `--default` clears the one
+/// set.
 #[test]
-fn config_temp_dir_is_made_shown_and_refused_inside_a_shared_directory() {
+fn config_temp_dir_is_made_shown_refused_inside_a_shared_directory_and_cleared() {
     let data = tempdir().unwrap();
     let elsewhere = tempdir().unwrap();
     let default = data.path().join("Temp");
@@ -95,4 +96,26 @@ fn config_temp_dir_is_made_shown_and_refused_inside_a_shared_directory() {
         .assert()
         .success()
         .stdout(contains(format!("temp_dir {}", parts.display())));
+
+    // `--default` clears the one set: the default is in force again.
+    cli(data.path())
+        .args(["config", "set-temp-dir", "--default"])
+        .assert()
+        .success()
+        .stdout(contains(format!(
+            "temp_dir {} (default)",
+            default.display()
+        )));
+    cli(data.path())
+        .args(["config", "show"])
+        .assert()
+        .success()
+        .stdout(contains(format!(
+            "temp_dir {} (default)",
+            default.display()
+        )));
+    cli(data.path())
+        .args(["config", "set-temp-dir"])
+        .assert()
+        .failure();
 }

@@ -183,8 +183,11 @@ pub enum Setting {
     /// Absolute, valid UTF-8, a directory, not the home or a filesystem root,
     /// and apart from every shared directory: not the download directory or
     /// another listed one, inside one or holding one. Inside rmule's data
-    /// directory is allowed. Downloads already placed keep their paths.
-    TempDir(PathBuf),
+    /// directory is allowed. `None` clears the one set, back to the default
+    /// in the data directory
+    /// ([`default_temp_dir`](CoreSettings::default_temp_dir)). Downloads
+    /// already placed keep their paths.
+    TempDir(Option<PathBuf>),
     /// The advertised nickname: not blank, and free of control characters.
     Nickname(String),
     /// The eD2k listen port; never `0`.
@@ -290,8 +293,10 @@ pub(crate) enum LiveSetting {
         share_confirmed: bool,
     },
     /// The next download placed keeps its part file in this Temp Directory,
-    /// and the guards judge every directory against it.
-    TempDir(PathBuf),
+    /// the one in force, and the guards judge every directory against it;
+    /// `None` — none set and no data directory — places it beside its final
+    /// path.
+    TempDir(Option<PathBuf>),
     /// The one obfuscation policy every surface reads as it decides
     /// (ADR-0046): the next dial, accept, datagram and crypt-ping follow it,
     /// and the Kad node is re-armed.
@@ -412,7 +417,10 @@ impl CoreSettingsHandle {
                 let temp_dir = self.temp_dir_in_force(set);
                 stored::validate_download_dir(dir, &self.guards, temp_dir.as_deref())?;
             }
-            Setting::TempDir(dir) => {
+            // The default lies in the data directory, which no shared
+            // directory may be in or hold.
+            Setting::TempDir(None) => {}
+            Setting::TempDir(Some(dir)) => {
                 let download_dir = self.store.download_dir()?;
                 let shared = self.registry.shared_directories()?;
                 guard_temp_dir(dir, &self.guards, download_dir.as_deref(), &shared)
@@ -455,7 +463,7 @@ impl CoreSettingsHandle {
     /// store refused the read or the write.
     pub fn set(&self, setting: Setting) -> Result<TakesEffect, SettingError> {
         self.check(&setting)?;
-        if let Setting::TempDir(dir) = &setting {
+        if let Setting::TempDir(Some(dir)) = &setting {
             std::fs::create_dir_all(dir).map_err(|error| {
                 SettingRefusal::TempDirRefused(DirectoryRefusal::Unreachable(error.kind()))
             })?;
@@ -483,7 +491,7 @@ impl CoreSettingsHandle {
                 dir,
                 share_confirmed,
             },
-            Setting::TempDir(dir) => LiveSetting::TempDir(dir),
+            Setting::TempDir(dir) => LiveSetting::TempDir(self.temp_dir_in_force(dir)),
             Setting::Obfuscation(policy) => LiveSetting::Obfuscation(policy),
             _ => return Ok(TakesEffect::NextStart),
         };

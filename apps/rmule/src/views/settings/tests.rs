@@ -167,7 +167,7 @@ fn a_temp_directory_commit_lands_without_a_share_warning() {
     else {
         panic!("the commit is the edit");
     };
-    assert_eq!(dir, parts);
+    assert_eq!(dir, Some(parts));
     assert_eq!(view.form.error, None);
 }
 

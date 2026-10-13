@@ -280,6 +280,36 @@ async fn a_new_download_fills_in_the_temp_directory_and_finishes_in_the_download
     core.shutdown().await;
 }
 
+/// A Temp Directory cleared on a running core (ADR-0115): the next download
+/// placed keeps its part file in the default in the data directory again.
+#[tokio::test]
+async fn a_temp_directory_cleared_on_a_running_core_places_the_next_part_file_in_the_default() {
+    let machine = Machine::new();
+    let bytes = b"placed in the default once more".to_vec();
+    let set = machine.data.join("parts");
+    let mut core = machine.core(rmule_testkit::memory_store(), Some(set), &bytes);
+    assert_eq!(
+        core.settings().set(rmule_core::Setting::TempDir(None)),
+        Ok(rmule_core::TakesEffect::Now)
+    );
+
+    core.send(CoreCommand::Download(DownloadCommand::StartDownload {
+        file: file_link_without_part_hash_set("cleared.bin", &bytes),
+        source_hint: Some(server()),
+        name: rmule_testkit::file_name("cleared.bin"),
+        if_taken: NameTaken::Refuse,
+    }))
+    .await
+    .unwrap();
+    let (filled, _) = queued_then_completed(&mut core).await;
+
+    assert_eq!(
+        filled,
+        CoreSettings::default_temp_dir(&machine.data).join("cleared.bin.part")
+    );
+    core.shutdown().await;
+}
+
 /// A name whose part file is taken in the Temp Directory numbers, as one
 /// taken in the download directory does: the file and its part take the
 /// first `stem (n).ext` free in both, and the file there is left alone.

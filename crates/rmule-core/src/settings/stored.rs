@@ -111,7 +111,8 @@ pub(super) fn persist(store: &DurableAppConfig, setting: &Setting) -> Result<(),
     let flag = |on: bool| if on { "true" } else { "false" };
     match setting {
         Setting::DownloadDir { dir, .. } => store.set_dir(Preference::DownloadDir, dir),
-        Setting::TempDir(dir) => store.set_dir(Preference::TempDir, dir),
+        Setting::TempDir(Some(dir)) => store.set_dir(Preference::TempDir, dir),
+        Setting::TempDir(None) => store.clear_preference(Preference::TempDir),
         Setting::Nickname(nickname) => store.set_nickname(&Ed2kText::from_utf8(nickname.trim())),
         Setting::TcpPort(port) => store.set_tcp_port(*port),
         Setting::UdpPort(port) => store.set_udp_port(*port),

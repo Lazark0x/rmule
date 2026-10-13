@@ -296,6 +296,17 @@ impl DurableAppConfig {
         self.set_value(preference.key(), value)
     }
 
+    /// Remove what `preference` holds, so it reads unset again.
+    pub(crate) fn clear_preference(&self, preference: Preference) -> Result<(), CoreError> {
+        self.store.write::<_, CoreError>(|txn| {
+            txn.open_table(PREFERENCES)
+                .map_err(StoreError::from)?
+                .remove(preference.key())
+                .map_err(StoreError::from)?;
+            Ok(())
+        })
+    }
+
     /// Replace the advertised nickname. Mints the identity first when none
     /// exists, so the edit can never land on a row that is not there.
     pub(crate) fn set_nickname(&self, nickname: &Ed2kText) -> Result<(), CoreError> {
