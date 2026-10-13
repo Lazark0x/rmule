@@ -151,3 +151,65 @@ async fn attach_resolves_completing_rows_by_the_disk_and_shares_each_before_its_
     }
     assert!(!Path::new(&downloads.join(".again.bin.completing")).exists());
 }
+
+/// A Pause that reaches a completing row whose finished file is already in
+/// place is refused, and the move it started completes on its own.
+#[tokio::test]
+async fn a_pause_of_a_row_whose_file_is_in_place_is_refused_and_it_completes() {
+    let root = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(root.path()).unwrap();
+    let (downloads, temp, data) = (root.join("dl"), root.join("temp"), root.join("data"));
+    for dir in [&downloads, &temp, &data] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let store = open_durable_store(&data).unwrap();
+    let repo = DurableDownloadRepository::new(Arc::clone(&store));
+    let bytes = two_parts(0x3C);
+    let link = file_link("placed.bin", &bytes);
+    let paths = DownloadPaths::new(downloads.join("placed.bin"), temp.join("placed.bin.part"));
+    let id = completing(&repo, &link, &paths);
+    std::fs::write(paths.final_path(), &bytes).unwrap();
+
+    // No restore at attach: the Pause is what gives the row its run.
+    let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(CoreSettings {
+            download_dir: Some(downloads.clone()),
+            temp_dir: Some(temp.clone()),
+            ..crate::fixture::attach_settings().await
+        })
+        .share_guards(ShareGuards {
+            home: None,
+            data_dir: Some(data.clone()),
+        })
+        .build();
+    core.send(rmule_core::CoreCommand::Download(
+        rmule_core::DownloadCommand::PauseDownload { download_id: id },
+    ))
+    .await
+    .unwrap();
+    let refused = next_expected(&mut core, "the pause refused", |event| {
+        matches!(event, CoreEvent::CommandRejected { .. })
+    })
+    .await;
+    assert!(
+        matches!(
+            refused,
+            CoreEvent::CommandRejected {
+                reason: rmule_core::CoreCommandRejectReason::DownloadCompleting
+            }
+        ),
+        "{refused:?}"
+    );
+    next_expected(&mut core, "the download completed", |event| {
+        matches!(
+            event,
+            CoreEvent::Download(DownloadEvent::DownloadCompleted { download_id, .. })
+                if *download_id == id
+        )
+    })
+    .await;
+    assert_eq!(
+        repo.load_download(id).unwrap().lifecycle(),
+        DownloadLifecycle::Completed
+    );
+}
