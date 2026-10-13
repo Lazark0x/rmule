@@ -128,6 +128,10 @@ _Avoid_: authentication, SUI (**Secure User Identification** is a different, sig
 A part transfer whose payload is compressed (`OP_COMPRESSEDPART`) rather than raw (`OP_SENDINGPART`). Negotiated *per direction* through each side's **Capability Block**: a peer sends us compressed parts only if our block advertised data compression, and we send compressed only if the downloading peer's block did. Independent per direction, so "accept compressed, send raw" is a valid state.
 _Avoid_: compressed file (the file content is unchanged; only the on-wire part payload is compressed)
 
+**Advertised Parts**:
+The parts a peer's part status says it holds of one file — an `OP_FILESTATUS`, a `0x91` ack's status, the status a name ask or a reask ping carries — read over the file's real parts: a count of `0` is a complete source, every part; a count of `ed2k_status_part_count(size)` gives the first `part_count(size)` bits, so the phantom part of an exact multiple is never read; any other count is refused whole, as aMule throws. `PartBitmap::advertised_parts` is the one reader; rmule-core keeps each source's on its record.
+_Avoid_: availability, file status (that is the packet), bitmap (that is the wire form)
+
 **AICH Exchange**:
 The peer C2C packets that carry **AICH Hash Set** recovery data (`OP_AICHREQUEST 0x9B` /
 `OP_AICHANSWER 0x9C`) and master-hash discovery (`OP_AICHFILEHASHREQ 0x9E` /
