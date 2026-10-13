@@ -15,7 +15,7 @@ fn row() -> DownloadRow {
         ipv6_sources: Vec::new(),
         sources: Default::default(),
     };
-    let paths = DownloadPaths::from_persisted_paths("/dl/a.bin".into(), "/dl/a.bin.part".into());
+    let paths = DownloadPaths::new("/dl/a.bin".into(), "/dl/a.bin.part".into());
     DownloadRow::new(&file, None, &paths)
 }
 

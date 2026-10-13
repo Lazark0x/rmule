@@ -191,7 +191,7 @@ impl DownloadRow {
 
     /// Where this download's bytes live: the two paths it was created with.
     pub(super) fn paths(&self) -> DownloadPaths {
-        DownloadPaths::from_persisted_paths(
+        DownloadPaths::new(
             self.final_path.clone().into(),
             self.part_path.index_text().into(),
         )

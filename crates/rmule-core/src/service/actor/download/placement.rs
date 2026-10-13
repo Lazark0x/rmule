@@ -1,9 +1,11 @@
 //! Where a new download lands: the download directory the Core Settings name,
-//! judged by the share guards at the start, under the name the command gives.
-//! A command names no folder (ADR-0069), so a file can finish only where
-//! core's own rule for sharing it holds (ADR-0101).
+//! judged by the share guards at the start, under the name the command gives,
+//! with its part file `<name>.part` in the Temp Directory (ADR-0115). A
+//! command names no folder (ADR-0069), so a file can finish only where core's
+//! own rule for sharing it holds (ADR-0101), and fills only where nothing is
+//! shared.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use rmule_primitives::SafeFileName;
 
@@ -23,8 +25,10 @@ where
     K: KadRuntimeFactory,
 {
     /// The paths a download named `name` writes, in the download directory
-    /// as it stands now, or why it has none: no download directory, or one
-    /// the guards refuse where its path leads now.
+    /// and the Temp Directory as they stand now, or why it has none: no
+    /// download directory, or one the guards refuse where its path leads
+    /// now. A core with no Temp Directory places the part file beside its
+    /// final path.
     pub(super) fn place_download(
         &self,
         name: &SafeFileName,
@@ -38,39 +42,40 @@ where
         self.directories
             .guard_in_place(dir)
             .map_err(CoreCommandRejectReason::DownloadDirRefused)?;
-        Ok(DownloadPaths::from_final_path(match if_taken {
-            NameTaken::Refuse => name.path_in(dir),
-            NameTaken::Number => free_path(dir, name),
-        }))
+        let parts = self.directories.temp_dir.as_deref().unwrap_or(dir);
+        Ok(match if_taken {
+            NameTaken::Refuse => placed(dir, parts, name.as_str()),
+            NameTaken::Number => free_paths(dir, parts, name),
+        })
     }
 }
 
-/// `dir/name`, or the first `dir/stem (n).ext` for which neither the file nor
-/// its `.part` exists. The numbered form adds only a space, parentheses and
-/// digits to a cleaned name, so it stays one component inside `dir`.
-fn free_path(dir: &Path, name: &SafeFileName) -> PathBuf {
-    let taken = |path: &Path| {
-        path.exists()
-            || DownloadPaths::from_final_path(path.to_path_buf())
-                .part_path()
-                .exists()
-    };
-    let plain = name.path_in(dir);
-    if !taken(&plain) {
+/// `dir/name`, with its part file `parts/name.part`.
+fn placed(dir: &Path, parts: &Path, name: &str) -> DownloadPaths {
+    DownloadPaths::new(dir.join(name), parts.join(format!("{name}.part")))
+}
+
+/// [`placed`] under `name`, or under the first `stem (n).ext` for which
+/// neither the file nor its part file exists. The numbered form adds only a
+/// space, parentheses and digits to a cleaned name, so it stays one component
+/// inside each directory.
+fn free_paths(dir: &Path, parts: &Path, name: &SafeFileName) -> DownloadPaths {
+    let free = |paths: &DownloadPaths| !paths.final_path().exists() && !paths.part_path().exists();
+    let name = name.as_str();
+    let plain = placed(dir, parts, name);
+    if free(&plain) {
         return plain;
     }
-    let name = name.as_str();
     let (stem, ext) = match name.rsplit_once('.') {
         Some((stem, ext)) if !stem.is_empty() => (stem, Some(ext)),
         _ => (name, None),
     };
     (1..)
-        .map(|n| {
-            dir.join(match ext {
-                Some(ext) => format!("{stem} ({n}).{ext}"),
-                None => format!("{stem} ({n})"),
-            })
+        .map(|n| match ext {
+            Some(ext) => format!("{stem} ({n}).{ext}"),
+            None => format!("{stem} ({n})"),
         })
-        .find(|path| !taken(path))
+        .map(|numbered| placed(dir, parts, &numbered))
+        .find(free)
         .expect("an unbounded range finds a free name")
 }

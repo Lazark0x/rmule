@@ -52,8 +52,11 @@ impl DownloadLifecycle {
 }
 
 /// The two paths one download writes: the partial file it fills, and the
-/// destination it is renamed to once every part verifies. Held together so no
-/// caller can pair a `.part` with the wrong destination.
+/// destination it is moved to once every part verifies. Held together so no
+/// caller can pair a `.part` with the wrong destination. Chosen once, when
+/// the download is placed, and kept on its row: the part file in the Temp
+/// Directory (ADR-0115), or beside its final path for an older row or a core
+/// given no Temp Directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DownloadPaths {
     final_path: PathBuf,
@@ -61,9 +64,20 @@ pub struct DownloadPaths {
 }
 
 impl DownloadPaths {
+    /// The pair a placement chose: the destination and the partial file, in
+    /// whatever directories each lies in.
+    #[must_use]
+    pub const fn new(final_path: PathBuf, part_path: PathBuf) -> Self {
+        Self {
+            final_path,
+            part_path,
+        }
+    }
+
     /// Derive the pair from the destination: the partial file is the same path
-    /// with `.part` appended, so the two always live in the same directory and
-    /// the finalize is a rename, never a copy across filesystems.
+    /// with `.part` appended, in the same directory: the shape of a row
+    /// placed before the Temp Directory, and of a placement on a core given
+    /// none.
     #[must_use]
     pub fn from_final_path(final_path: PathBuf) -> Self {
         let mut part_path = final_path.clone().into_os_string();
@@ -72,14 +86,6 @@ impl DownloadPaths {
         Self {
             final_path,
             part_path: PathBuf::from(part_path),
-        }
-    }
-
-    #[must_use]
-    pub(crate) const fn from_persisted_paths(final_path: PathBuf, part_path: PathBuf) -> Self {
-        Self {
-            final_path,
-            part_path,
         }
     }
 
