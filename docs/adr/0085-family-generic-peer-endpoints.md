@@ -151,10 +151,14 @@ For `OP_FOUNDSOURCES`, `OP_FOUNDSOURCES_OBFU` and `OP_GLOBFOUNDSOURCES`:
   injects through a `CoreBuilder` adapter) or a party at an address. That party is the server
   at the address the session's TCP connection reached, the global-UDP server, the
   source-exchange peer, the Kad storer whose `0x3B` it was, or the peer that asked us for the
-  file. The network-facing producers stamp it. Loopback passes only from rmule itself or from
-  an informant at loopback, so a remote party cannot aim rmule at its own host, and a
-  loopback rig (the in-process tests, a single-host lab) works with no switch. Every other
-  Reserved Range is refused whoever stated it.
+  file. The Informant is required: every constructor of a sighting names it and none
+  defaults to rmule's own, so a producer that forgets it does not compile. A wire reader that
+  cannot know who sent the bytes (a server's `0x42`/`0x44` list, a peer's source-exchange
+  entry) yields **Source Claims**, and the reader that knows the sender makes each a sighting
+  by naming it. Loopback passes only from rmule itself or from an informant at loopback, so
+  a remote party cannot aim rmule at its own host, and a loopback rig (the in-process tests,
+  a single-host lab) works with no switch. Every other Reserved Range is refused whoever
+  stated it.
 - **Kad's readers apply the same check where no informant is at hand.** The `0x3B` reader
   keeps a row's `kad_udp` unless no informant could make it a host, and the gate then judges
   it against the storer. It refuses a buddy `TAG_SERVERIP` in any Reserved Range: the buddy is
@@ -162,6 +166,20 @@ For `OP_FOUNDSOURCES`, `OP_FOUNDSOURCES_OBFU` and `OP_GLOBFOUNDSOURCES`:
   refuses a reserved buddy endpoint in a `0x44` outright, because it re-serves the row to
   remote searchers. The `nodes.dat` contact gate (ADR-0066) is this check plus aMule's LAN
   filter, as `IsGoodIPPort` is (`NetworkFunctions.h:118-121`).
+- **The Kad routing table, a walk's answers and the server list take the same check.** A Kad
+  contact is judged against the party whose datagram named it: a hello's sender, a bootstrap
+  responder and the rows it sent, and a `KADEMLIA2_RES` responder's rows before any walk sees
+  them. aMule runs `IsGoodIPPort` before the IP filter at `CRoutingZone::Add`
+  (`RoutingZone.cpp:405-406`) and on every `KADEMLIA2_RES` row (`KademliaUDPListener.cpp:732-733`).
+  Its port rules come with it: port `0` names no endpoint, and port `53` on a contact older
+  than Kad version 6 is refused, since it could be a confused DNS reply. A contact merged from
+  `nodes.dat` is rmule's own and has passed that file's gate. A server.met row is judged
+  against the URL's host: loopback stands only when that host is a loopback address or
+  `localhost` (RFC 6761 §6.3). A server the operator adds is rmule's own, and a Reserved
+  Range other than loopback is refused with a reason the operator reads. aMule runs `IsGoodIP`
+  on every server it adds that has no dynamic IP (`ServerList.cpp:206`); a named server is
+  resolved when dialed and is not judged here. LAN addresses pass at all three, where
+  aMule's `IsGoodIPPort` and `FilterLanIPs` refuse them.
 - **Where this departs from aMule's `IsGoodIP`** (`NetworkFunctions.cpp:101-142`, called at
   `PartFile.cpp:1665` and `:2794` and `DownloadQueue.cpp:728` and `:1583`). aMule refuses
   LAN addresses by default (`/eMule/FilterLanIPs`, `Preferences.cpp:1176`); rmule never does.
@@ -228,6 +246,9 @@ For `OP_FOUNDSOURCES`, `OP_FOUNDSOURCES_OBFU` and `OP_GLOBFOUNDSOURCES`:
 - **Refuse loopback whoever stated it, as aMule does.** Rejected: loopback is relative to
   the reader, so the refusal is right only for a remote informant. Every loopback rig would
   then need a switch to admit it, and a switch that reaches production is a setting.
+- **A default Informant of rmule's own, which network producers stamp over.** Rejected: a
+  producer that forgets to stamp hands a remote party's loopback to the gate as rmule's own
+  word, and nothing catches it.
 - **aMule's whole reserved table.** Rejected: four of its blocks are allocated address
   space today, and the other four can each name one host.
 - **One filter verdict for a source's two halves.** Rejected: neither reference links them,
