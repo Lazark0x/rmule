@@ -227,6 +227,24 @@ struct ServerListContext<'a> {
 async fn handle_server_list_command(command: ServerListCommand, ctx: ServerListContext<'_>) {
     match command {
         ServerListCommand::AddServer { server } => {
+            // The operator's word, judged as aMule's `AddServer` judges every
+            // server with no dynamic IP (`ServerList.cpp:206`, ADR-0085). A
+            // named server is resolved when dialed.
+            let reserved = server
+                .endpoint
+                .host()
+                .parse()
+                .is_ok_and(|ip| !rmule_primitives::Informant::Own.admits(ip));
+            if reserved {
+                send_event(
+                    ctx.evt_tx,
+                    CoreEvent::CommandRejected {
+                        reason: CoreCommandRejectReason::ServerAddressReserved,
+                    },
+                )
+                .await;
+                return;
+            }
             let endpoint = server.endpoint.clone();
             let merged = mutate_and_publish(ctx.store, ctx.diagnostics, |store| {
                 store.merge_server(server)

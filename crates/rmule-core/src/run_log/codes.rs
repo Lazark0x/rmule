@@ -462,6 +462,7 @@ pub(super) fn command_rejected(record: Record, reason: &CoreCommandRejectReason)
             return kad_unavailable(record.code("reason", "kad_unavailable"), why);
         }
         CoreCommandRejectReason::UnknownServer => "unknown_server",
+        CoreCommandRejectReason::ServerAddressReserved => "server_address_reserved",
         CoreCommandRejectReason::ServerListStoreFailed => "server_list_store_failed",
         CoreCommandRejectReason::ServerListFetchUnavailable => "server_list_fetch_unavailable",
         CoreCommandRejectReason::ServerListUpdateInFlight => "server_list_update_in_flight",

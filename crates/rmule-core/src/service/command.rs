@@ -424,6 +424,11 @@ pub enum CoreCommandRejectReason {
     /// A server-list command named an endpoint the list does not hold
     /// (ADR-0080).
     UnknownServer,
+    /// An added server's address lies in a Reserved Range no server can be
+    /// at (ADR-0085): a broadcast, multicast, link-local or "this network"
+    /// address. The operator's own word stands on loopback, so a single-host
+    /// lab's server is listed.
+    ServerAddressReserved,
     /// The server-list store refused the write; the list is unchanged. The
     /// store's own reason is traced at `warn` — it is a storage fault, not a
     /// caller mistake, so it is not modelled as a command vocabulary.
