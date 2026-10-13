@@ -73,6 +73,8 @@ pub(crate) struct SeedRow {
     pub(crate) holding: String,
     /// Its container.
     pub(crate) container: String,
+    /// Its upload cap, KiB/s.
+    pub(crate) max_upload_kib: u32,
 }
 
 #[derive(Serialize)]
@@ -158,7 +160,12 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         seeds: topology
             .seeds
             .iter()
-            .map(|seed| format!("{} {} {}", seed.role, seed.ip, seed.holding))
+            .map(|seed| {
+                format!(
+                    "{} {} {} KiB/s holding {}",
+                    seed.role, seed.ip, seed.max_upload_kib, seed.holding
+                )
+            })
             .collect(),
         statuses: wire
             .statuses

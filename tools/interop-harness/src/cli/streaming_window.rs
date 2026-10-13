@@ -61,9 +61,10 @@ pub(crate) struct PeerStreamingWindowArgs {
     /// rmule's peer workers per download; unset keeps the core's default.
     #[arg(long)]
     pub(crate) peer_concurrency: Option<usize>,
-    /// Each seed's upload cap in KiB/s, so the file takes minutes.
-    #[arg(long, default_value_t = 200)]
-    pub(crate) seed_max_upload_kib: u32,
+    /// The seeds' upload caps in KiB/s, so the file takes minutes: one for
+    /// every seed, or a comma list with one per `--seed`.
+    #[arg(long, value_delimiter = ',', default_value = "200")]
+    pub(crate) seed_max_upload_kib: Vec<u32>,
     /// rmule's part-map tick, in milliseconds.
     #[arg(long, default_value_t = 1_000)]
     pub(crate) report_parts_every_ms: u64,
@@ -99,7 +100,7 @@ struct ResolvedConfig {
     seeds: Vec<String>,
     streaming_window: u32,
     peer_concurrency: Option<usize>,
-    seed_max_upload_kib: u32,
+    seed_max_upload_kib: Vec<u32>,
     report_parts_every_ms: u64,
     hold_secs: u64,
     wait_secs: Option<u64>,
@@ -134,7 +135,7 @@ pub(crate) fn peer_streaming_window(args: PeerStreamingWindowArgs) -> Result<()>
             seeds: seeds.iter().map(SeedHolding::spec).collect(),
             streaming_window: args.streaming_window,
             peer_concurrency: args.peer_concurrency,
-            seed_max_upload_kib: args.seed_max_upload_kib,
+            seed_max_upload_kib: args.seed_max_upload_kib.clone(),
             report_parts_every_ms: args.report_parts_every_ms,
             hold_secs: args.hold_secs,
             wait_secs: args.wait_secs,
@@ -166,7 +167,7 @@ pub(crate) fn peer_streaming_window(args: PeerStreamingWindowArgs) -> Result<()>
         seeds: &seeds,
         window_parts: args.streaming_window,
         peer_concurrency: args.peer_concurrency,
-        seed_max_upload_kib: args.seed_max_upload_kib,
+        seed_max_upload_kib: &args.seed_max_upload_kib,
         parts_every_ms: args.report_parts_every_ms,
         hold_secs: args.hold_secs,
         link_sources: args.link_sources,

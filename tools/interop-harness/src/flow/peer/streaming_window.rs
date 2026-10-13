@@ -106,8 +106,9 @@ pub struct StreamingWindowOptions<'a> {
     pub window_parts: u32,
     /// rmule's peer workers per download; `None` keeps the default.
     pub peer_concurrency: Option<usize>,
-    /// Each seed's upload cap, KiB/s, so the prefix grows over minutes.
-    pub seed_max_upload_kib: u32,
+    /// The seeds' upload caps, KiB/s, so the prefix grows over minutes: one
+    /// for every seed, or one per seed in start order.
+    pub seed_max_upload_kib: &'a [u32],
     /// rmule's part-map tick, in milliseconds.
     pub parts_every_ms: u64,
     /// rmule's bounded run, in seconds.
@@ -133,6 +134,15 @@ pub fn run_streaming_window(options: StreamingWindowOptions<'_>) -> Result<()> {
     if options.seeds.is_empty() {
         bail!("a streaming-window run needs at least one seed");
     }
+    let caps: Vec<u32> = match options.seed_max_upload_kib {
+        [cap] => vec![*cap; options.seeds.len()],
+        caps if caps.len() == options.seeds.len() => caps.to_vec(),
+        caps => bail!(
+            "{} upload caps for {} seeds: give one, or one per seed",
+            caps.len(),
+            options.seeds.len()
+        ),
+    };
     if options.build_images {
         bench.build_image("server", options.server_image, options.server_build_context)?;
         bench.build_image("aMule", options.amule_image, options.amule_build_context)?;
@@ -199,7 +209,7 @@ pub fn run_streaming_window(options: StreamingWindowOptions<'_>) -> Result<()> {
             },
         )?;
         let mut rows = Vec::new();
-        for seed in &staged {
+        for (seed, cap) in staged.iter().zip(&caps) {
             let name = format!("rmule-interop-amule-seed-{}-{suffix}", seed.role);
             let container = bench
                 .amule_container(options.amule_image, &name)
@@ -208,14 +218,14 @@ pub fn run_streaming_window(options: StreamingWindowOptions<'_>) -> Result<()> {
                 .volume(&seed.temp, SEED_TEMP_MOUNT)
                 .env("AMULE_SHARED_DIR", SEED_INCOMING_MOUNT)
                 .volume(&seed.incoming, SEED_INCOMING_MOUNT)
-                .env("AMULE_MAX_UPLOAD", options.seed_max_upload_kib.to_string())
+                .env("AMULE_MAX_UPLOAD", cap.to_string())
                 .env_assignments(options.amule_env);
             bench.start_extra(&name, container, "run a seed aMule")?;
             wait_for_amule_ready(&bench.docker, options.layout, &name, timeout, AMULE_READY)?;
             wait_for_share(&bench.docker, &name, timeout)?;
             let ip = run_checked(bench.docker.container_ip(name.clone()), "inspect seed ip")?;
             println!(
-                "peer_streaming_window seed={} ip={} holds={}",
+                "peer_streaming_window seed={} ip={} cap_kib={cap} holds={}",
                 seed.role,
                 ip.trim(),
                 seed.holding.spec()
@@ -225,6 +235,7 @@ pub fn run_streaming_window(options: StreamingWindowOptions<'_>) -> Result<()> {
                 ip: ip.trim().parse().context("seed address")?,
                 holding: seed.holding.spec(),
                 container: name,
+                max_upload_kib: *cap,
             });
         }
 
