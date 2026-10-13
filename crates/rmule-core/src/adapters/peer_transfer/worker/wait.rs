@@ -37,12 +37,12 @@ pub(super) async fn await_probe(
                 Err(end) => return end,
             };
         match forward_shared(event_tx, file_hash, event).await {
-            Forward::Own(PeerEvent::Requester(RequesterEvent::FileProbed {
+            Ok(Some(PeerEvent::Requester(RequesterEvent::FileProbed {
                 file_hash: probed,
                 status,
-            })) if probed == file_hash => break status,
-            Forward::Done | Forward::Own(_) => {}
-            Forward::Ended => return Streamed::WindDown,
+            }))) if probed == file_hash => break status,
+            Ok(_) => {}
+            Err(Ended) => return Streamed::WindDown,
         }
     };
     let (parts, complete) = match status {
@@ -108,28 +108,22 @@ pub(super) async fn next_event(
     }
 }
 
-/// What [`forward_shared`] made of one peer event.
-pub(super) enum Forward {
-    /// Forwarded, or ignored as every wait ignores it.
-    Done,
-    /// The connection or the download side ended; `Disconnected` is sent
-    /// when the peer's side did.
-    Ended,
-    /// An event only the caller's own wait reads.
-    Own(PeerEvent),
-}
+/// The connection or the download side ended; `Disconnected` was sent when
+/// the peer's side did.
+pub(super) struct Ended;
 
 /// The arms the probe wait and the part stream share: exchanged sources
 /// (ADR-0055), a hash set and an AICH root proposal (ADR-0038) forwarded as
 /// they come; a refused serving command ignored, since it concerns the serve
 /// half (aMule's `RemoveFromUploadQueue` leaves the socket alone,
 /// `UploadQueue.cpp:560-587`); any other refusal and the connection's end
-/// reported as `Disconnected`.
+/// reported as `Disconnected`. `Ok(None)` when the event was forwarded or
+/// ignored, `Ok(Some(event))` for one only the caller's own wait reads.
 pub(super) async fn forward_shared(
     event_tx: &mpsc::Sender<PeerWorkerEvent>,
     file_hash: FileHash,
     event: Option<PeerEvent>,
-) -> Forward {
+) -> Result<Option<PeerEvent>, Ended> {
     match event {
         Some(PeerEvent::Requester(RequesterEvent::HashSetReceived {
             file_hash: received,
@@ -140,7 +134,7 @@ pub(super) async fn forward_shared(
                 .await
                 .is_err()
             {
-                return Forward::Ended;
+                return Err(Ended);
             }
         }
         Some(PeerEvent::Requester(RequesterEvent::SourcesReceived {
@@ -163,9 +157,9 @@ pub(super) async fn forward_shared(
         | Some(PeerEvent::Connection(ConnectionEvent::Disconnected { .. }))
         | None => {
             let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-            return Forward::Ended;
+            return Err(Ended);
         }
-        Some(event) => return Forward::Own(event),
+        Some(event) => return Ok(Some(event)),
     }
-    Forward::Done
+    Ok(None)
 }

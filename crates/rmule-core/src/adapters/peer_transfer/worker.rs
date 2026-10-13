@@ -22,7 +22,7 @@ use crate::adapters::peer_transfer::{PeerWorkerCommand, PeerWorkerEvent};
 use crate::adapters::serve_runtime::ServeConnection;
 use crate::service::DialEnd;
 
-use self::wait::{Forward, await_probe, forward_shared, next_event};
+use self::wait::{Ended, await_probe, forward_shared, next_event};
 
 /// Drive a peer worker over an established `conn` — the body shared by a dialed
 /// worker ([`RuntimePeerTransferService`](crate::RuntimePeerTransferService)'s `start_peer_worker`) and an adopted
@@ -447,9 +447,9 @@ async fn stream_part_download(
             Err(end) => return end,
         };
         let event = match forward_shared(event_tx, file_hash, event).await {
-            Forward::Done => continue,
-            Forward::Ended => return Streamed::WindDown,
-            Forward::Own(event) => event,
+            Ok(Some(event)) => event,
+            Ok(None) => continue,
+            Err(Ended) => return Streamed::WindDown,
         };
         match event {
             PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash: granted })
