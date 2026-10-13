@@ -557,8 +557,10 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     actor
         .run(
             inbox,
-            finished_rx,
-            in_place_rx,
+            super::RunNotices {
+                finished: finished_rx,
+                in_place: in_place_rx,
+            },
             scan_rx,
             download_reach_rx,
             serve_ended_rx,

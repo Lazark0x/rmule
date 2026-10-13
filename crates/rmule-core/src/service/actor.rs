@@ -341,6 +341,14 @@ struct CoreActor<S, P, L, K: KadRuntimeFactory> {
     remember_peers: crate::RememberPeers,
 }
 
+/// What the activities the actor started tell it as they go: a run or a
+/// search that ended, and a download run's finished file in place
+/// (ADR-0115).
+pub(super) struct RunNotices {
+    pub(super) finished: mpsc::Receiver<FinishedActivity>,
+    pub(super) in_place: mpsc::Receiver<crate::download::FinalFileInPlace>,
+}
+
 impl<S, P, L, K> CoreActor<S, P, L, K>
 where
     S: SourceLookupService,
@@ -399,13 +407,16 @@ where
     async fn run(
         mut self,
         mut inbox: super::inbox::Inbox,
-        mut finished_rx: mpsc::Receiver<FinishedActivity>,
-        mut in_place_rx: mpsc::Receiver<crate::download::FinalFileInPlace>,
+        runs: RunNotices,
         mut scan_rx: mpsc::UnboundedReceiver<registry_check::RegistryMessage>,
         mut download_reach_rx: mpsc::Receiver<crate::callback::DownloadReach>,
         mut serve_ended_rx: watch::Receiver<u64>,
         mut kad_ended_rx: watch::Receiver<u64>,
     ) {
+        let RunNotices {
+            finished: mut finished_rx,
+            in_place: mut in_place_rx,
+        } = runs;
         // The **Session Generation** (ADR-0095): each session the operator's
         // connect installs wakes the searches that waited for one.
         let mut session_rx = self.wiring.shared_server_session.session_changes();

@@ -327,12 +327,7 @@ mod tests {
         assert!(
             auto_share_completed_download(
                 id,
-                &store
-                    .load_download(id)
-                    .unwrap()
-                    .paths()
-                    .final_path()
-                    .to_path_buf(),
+                store.load_download(id).unwrap().paths().final_path(),
                 &*store,
                 &*registry,
                 |_| false,
@@ -392,12 +387,7 @@ mod tests {
         assert!(
             auto_share_completed_download(
                 id,
-                &store
-                    .load_download(id)
-                    .unwrap()
-                    .paths()
-                    .final_path()
-                    .to_path_buf(),
+                store.load_download(id).unwrap().paths().final_path(),
                 &*store,
                 &*registry,
                 |_| false,
