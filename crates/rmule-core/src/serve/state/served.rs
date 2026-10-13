@@ -34,10 +34,10 @@ pub(super) enum Asked<'a> {
 impl<'a> Asked<'a> {
     /// The name the file is offered under.
     pub(super) fn name(&self) -> Ed2kText {
-        Ed2kText::from_utf8(match self {
-            Self::Row(entry) => entry.name.as_str(),
-            Self::Download { look, .. } => look.served.name.as_str(),
-        })
+        match self {
+            Self::Row(entry) => Ed2kText::from_utf8(entry.name.as_str()),
+            Self::Download { look, .. } => look.served.name.clone(),
+        }
     }
 
     /// The file's exact size.

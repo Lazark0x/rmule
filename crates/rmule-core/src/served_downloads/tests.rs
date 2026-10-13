@@ -366,3 +366,22 @@ fn the_offer_check_writes_only_an_entry_the_actor_holds() {
         [OfferChange::Joined(file), OfferChange::Offered(file)]
     );
 }
+
+/// A Served Download is offered under the download's own name, which its
+/// destination's file name differs from once a safe-filename rewrite or the
+/// completion move's free name chose another (ADR-0113), from install
+/// through the move.
+#[test]
+fn a_served_download_is_offered_under_the_downloads_name_not_its_paths() {
+    let store = store();
+    let cell = ServedDownloads::default();
+    let row = record(&store, 1, SIZE, DownloadLifecycle::Active);
+    let file = row.file_hash();
+    assert!(cell.install(&row, &hashes(1)));
+    let served = Ed2kText::from_utf8("served.bin");
+    assert_eq!(cell.served(file).unwrap().name, served);
+
+    let lease = cell.hand_to_run(file, 1).expect("the actor holds it");
+    assert!(lease.bytes_in_place(std::path::Path::new("/downloads/1 (1).bin"), None));
+    assert_eq!(cell.served(file).unwrap().name, served);
+}

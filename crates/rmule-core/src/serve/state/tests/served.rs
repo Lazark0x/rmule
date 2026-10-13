@@ -44,7 +44,7 @@ pub(super) fn download(whole: bool, verified: &[u32], running: bool) -> ServedLo
         served: Served {
             download_id: DownloadId::from_u64(1),
             file_size: SIZE,
-            name: "download.bin".into(),
+            name: Ed2kText::from_utf8("download.bin"),
             part_path: PathBuf::from("/temp/download.bin.part"),
             final_path: PathBuf::from("/downloads/download.bin"),
             bytes_at: BytesAt::PartFile,

@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::SystemTime;
 
 use rmule_peer::PartBitmap;
-use rmule_primitives::{ED2K_PART_SIZE, FileHash, PartHash, PartHashSet, SourceSighting};
+use rmule_primitives::{ED2K_PART_SIZE, Ed2kText, FileHash, PartHash, PartHashSet, SourceSighting};
 use tokio::sync::{mpsc, watch};
 
 use crate::file_key::FileKey;
@@ -234,9 +234,11 @@ pub(crate) struct Served {
     pub(crate) download_id: DownloadId,
     /// The file's exact size.
     pub(crate) file_size: u64,
-    /// The name the file is offered under: its destination's file name, the
-    /// name its registry row takes at completion.
-    pub(crate) name: String,
+    /// The name the file is offered under: the download's own, as its stored
+    /// metadata spells it (ADR-0113), which the destination's file name may
+    /// not be once a safe-filename rewrite or a free name chose that. A
+    /// download whose name core never learned takes its destination's.
+    pub(crate) name: Ed2kText,
     /// The part file.
     pub(crate) part_path: PathBuf,
     /// The destination.
@@ -399,14 +401,22 @@ impl ServedDownloads {
             return false;
         }
         let paths = record.paths();
+        let known = &record.metadata().name;
+        let name = if known.as_bytes().is_empty() {
+            Ed2kText::from_utf8(
+                paths
+                    .final_path()
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            )
+        } else {
+            known.clone()
+        };
         let served = Served {
             download_id: record.id(),
             file_size: record.file_size(),
-            name: paths
-                .final_path()
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+            name,
             part_path: paths.part_path().to_path_buf(),
             final_path: paths.final_path().to_path_buf(),
             bytes_at: BytesAt::PartFile,
@@ -791,7 +801,8 @@ impl RunLease {
 
     /// The finished file is in place at `path`, the destination the
     /// completion move chose (ADR-0115), `identity` the file that holds the
-    /// bytes now: the entry is read from there, under its name.
+    /// bytes now: the entry is read from there, still under the download's
+    /// name.
     pub(crate) fn bytes_in_place(
         &self,
         path: &std::path::Path,
@@ -800,10 +811,6 @@ impl RunLease {
         self.cell.write(self, |entry| {
             let served = &mut entry.served;
             served.final_path = path.to_path_buf();
-            served.name = path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default();
             served.bytes_at = BytesAt::FinalFile;
             served.identity = identity;
             entry.emptied &= identity.is_none();

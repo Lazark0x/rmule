@@ -314,12 +314,8 @@ impl ServeState {
             .iter()
             .filter_map(|file_hash| Some((*file_hash, self.served.get(file_hash)?)))
             .map(|(file_hash, look)| {
-                OfferedFile::new(
-                    file_hash,
-                    look.served.file_size,
-                    Ed2kText::from_utf8(look.served.name.as_str()),
-                )
-                .with_completeness(FileCompleteness::Incomplete)
+                OfferedFile::new(file_hash, look.served.file_size, look.served.name.clone())
+                    .with_completeness(FileCompleteness::Incomplete)
             })
             .collect();
         partial_files.sort_unstable_by_key(OfferedFile::file_hash);
