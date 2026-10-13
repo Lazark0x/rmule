@@ -192,6 +192,36 @@ fn a_completed_download_is_ready_whatever_its_parts_and_a_failed_one_by_its_firs
     assert!(preview_target(&state, id).is_ok());
 }
 
+/// A completion move hands Preview the `.part` while the `.part` still holds
+/// the bytes, and the finished file once core says the file is in place:
+/// waiting for the store follows a rename that took the `.part` away.
+#[test]
+fn a_move_past_its_swap_hands_preview_the_finished_file() {
+    use rmule_core::{CompletionStep, CoreEvent, DownloadEvent};
+
+    let id = download_id(1);
+    let mut state = preview_ready();
+    let to = rooted("films/film (1).mkv");
+    let completing = |step| {
+        CoreEvent::Download(DownloadEvent::Completing {
+            download_id: id,
+            to: to.clone(),
+            step,
+        })
+    };
+    crate::state::fold(&mut state, completing(CompletionStep::WaitingForRelease));
+    assert_eq!(
+        preview_target(&state, id).map(|target| target.path),
+        Ok(rooted("films/film.mkv.part").as_path()),
+        "the rename has not happened"
+    );
+    crate::state::fold(&mut state, completing(CompletionStep::WaitingForStore));
+    assert_eq!(
+        preview_target(&state, id).map(|target| target.path),
+        Ok(to.as_path())
+    );
+}
+
 /// The exit status of a Unix process `code` ended with, or Windows' own.
 fn exited(code: i32) -> std::process::ExitStatus {
     #[cfg(unix)]

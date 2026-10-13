@@ -10,7 +10,8 @@
 use std::path::PathBuf;
 
 use rmule_core::{
-    DownloadEvent, DownloadFailure, DownloadId, DownloadLifecycle, DownloadMetadata, SourceWait,
+    CompletionStep, DownloadEvent, DownloadFailure, DownloadId, DownloadLifecycle,
+    DownloadMetadata, SourceWait,
 };
 use rmule_primitives::{ED2K_PART_SIZE, FileHash};
 
@@ -70,8 +71,9 @@ pub struct DownloadRow {
     pub metadata: Option<DownloadMetadata>,
     /// Where the download's bytes lie now, as core published it (ADR-0114):
     /// the `.part` from `DownloadQueued` or `DownloadRecovered`, the finished
-    /// file once `DownloadCompleted` names it. Never composed from the
-    /// download directory and the name. `None` until one of those edges.
+    /// file once a `Completing` edge waiting for the store or
+    /// `DownloadCompleted` names it. Never composed from the download
+    /// directory and the name. `None` until one of those edges.
     pub file_path: Option<PathBuf>,
     /// Why the last run failed, as the `DownloadFailed` edge said, or as the
     /// store kept it across a restart (`DownloadRecovered`). `None` for a row
@@ -334,9 +336,17 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
         }
         // A step of the completion move that waits or copies began: the
         // row reads Completing, and the note says what it does (ADR-0115).
+        // Waiting for the store is the one step core tells only once the
+        // finished file is in place, so from it on the bytes lie at `to`:
+        // a same-volume rename has taken the `.part` away.
         E::Completing {
-            download_id, step, ..
+            download_id,
+            step,
+            to,
         } => {
+            if step == CompletionStep::WaitingForStore {
+                row_mut(state, download_id).file_path = Some(to);
+            }
             let changed = set_status(state, download_id, DownloadStatus::Completing);
             let text = words::completing(&download_name(state, download_id), step);
             note(state, text) || changed
