@@ -27,7 +27,9 @@ aMule citations are to 2.3.3 unless they say kno's fork; read, never ported (ADR
   become Had.
 - **What the scan knows without reading** comes from one **Known** view the actor answers in
   channel order: the registry rows, the spare copies (ADR-0104), and the part files the
-  download rows name.
+  download rows name. A pass reads it once its listing is done, and every watch round reads it
+  again, so a path a download names before its file lands there is known by the time the scan
+  judges that file.
 - **Which rows the scan owns:** every registry row under its directory, whatever its source. A file
   it hashes enters as `ShareSource::DownloadDirectory`. When content it hashes is already shared
   from another path still on disk, the first path in wins and the new path is recorded as a spare

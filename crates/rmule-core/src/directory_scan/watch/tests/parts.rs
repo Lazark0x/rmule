@@ -4,6 +4,7 @@
 //! learns its row.
 
 use super::*;
+use crate::directory_scan::DirectorySource;
 
 fn leftovers(harness: &Harness) -> Vec<Vec<PathBuf>> {
     harness
@@ -92,4 +93,46 @@ fn a_completing_downloads_copy_and_its_destination_are_never_hashed() {
         0,
         "neither the copy nor the file is read"
     );
+}
+
+/// A round that read what is known just before a download stored
+/// `Completing`, then found its file landed (ADR-0115): the file settles,
+/// and the next round, which knows the download's destination, lets it go
+/// unread.
+#[test]
+fn a_destination_that_settled_before_its_download_was_known_completing_is_never_hashed() {
+    let harness = Harness::new(World::new(), Vec::new());
+    let mut watch = harness.watch(
+        vec![step(ms(1_000), |dir| {
+            dir.file("/dl/film.mkv", b"the finished file", 2);
+            vec![moved("/dl/film.mkv")]
+        })],
+        ms(20_000),
+    );
+    // Every read after the first one that met the landed file knows it.
+    let met = Cell::new(false);
+    let mut rows = || {
+        if met.get() {
+            *harness.parts.borrow_mut() = PartFiles::of([(PathBuf::from("/dl/film.mkv"), true)]);
+        }
+        met.set(harness.world.kind(Path::new("/dl/film.mkv")).is_ok());
+        harness.rows_now()
+    };
+    let seams = WatchSeams {
+        source: &harness.world,
+        watch: &mut watch,
+        rows: &mut rows,
+        report: &mut |report| harness.report(report),
+    };
+    let known_at_start = harness.known();
+    watch_loop(
+        seams,
+        Path::new(ROOT),
+        &known_at_start,
+        &harness.stop,
+        &harness.progress,
+        &mut harness.memory.borrow_mut(),
+    );
+    assert!(harness.shares().is_empty(), "{:?}", harness.shares());
+    assert_eq!(harness.world.opens(), 0, "the landed file is never read");
 }

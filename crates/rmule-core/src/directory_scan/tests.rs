@@ -27,7 +27,7 @@ fn pass_with(dir: &Scripted, rows: &[SharedFileEntry], consent: Consent) -> Outc
     let end = run_pass(
         dir,
         Path::new(ROOT),
-        &known(rows),
+        &mut || Some(known(rows)),
         consent,
         &AtomicBool::new(false),
         &progress,
@@ -326,7 +326,7 @@ fn a_raised_stop_ends_the_pass_before_the_next_read() {
     let end = run_pass(
         &dir,
         Path::new(ROOT),
-        &known(&[]),
+        &mut || Some(known(&[])),
         Consent::Given,
         &AtomicBool::new(true),
         &progress,
@@ -447,7 +447,7 @@ fn restart_revalidation_on_disk_wall_time() {
     }
     let source = CountingFs(AtomicUsize::new(0));
     // The rows a first pass would have left: every file's own stamp.
-    let rows: Vec<_> = super::walk(&source, tmp.path(), &super::Known::default())
+    let rows: Vec<_> = super::plan::walk(&source, tmp.path(), &super::Known::default())
         .unwrap()
         .found
         .into_iter()
@@ -467,7 +467,7 @@ fn restart_revalidation_on_disk_wall_time() {
     let end = run_pass(
         &source,
         tmp.path(),
-        &known(&rows),
+        &mut || Some(known(&rows)),
         Consent::Given,
         &AtomicBool::new(false),
         &progress,

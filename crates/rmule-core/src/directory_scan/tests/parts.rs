@@ -2,12 +2,16 @@
 //! by their download rows"): the scan skips the paths the download rows
 //! name, never a suffix.
 
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use super::super::scripted::{ROOT, Scripted};
-use super::super::{Consent, Known, Memory, PartFiles, ProgressCell, ScanReport, run_pass};
+use super::super::scripted::{ROOT, Scripted, World};
+use super::super::{
+    Consent, DirEntry, DirectorySource, EntryKind, FileStamp, Known, Memory, PartFiles,
+    ProgressCell, ScanReport, run_pass,
+};
 use super::shared_paths;
 
 fn pass_with_parts(dir: &Scripted, parts: PartFiles) -> Vec<ScanReport> {
@@ -16,9 +20,11 @@ fn pass_with_parts(dir: &Scripted, parts: PartFiles) -> Vec<ScanReport> {
     run_pass(
         dir,
         Path::new(ROOT),
-        &Known {
-            parts,
-            ..Known::default()
+        &mut || {
+            Some(Known {
+                parts: parts.clone(),
+                ..Known::default()
+            })
         },
         Consent::Given,
         &AtomicBool::new(false),
@@ -86,10 +92,12 @@ fn a_completing_downloads_destination_is_left_with_its_row_then_trusted() {
         run_pass(
             &dir,
             Path::new(ROOT),
-            &Known {
-                rows: rows.clone(),
-                parts,
-                ..Known::default()
+            &mut || {
+                Some(Known {
+                    rows: rows.clone(),
+                    parts: parts.clone(),
+                    ..Known::default()
+                })
             },
             Consent::Given,
             &AtomicBool::new(false),
@@ -117,4 +125,72 @@ fn a_completing_downloads_destination_is_left_with_its_row_then_trusted() {
         "{completed:?}"
     );
     assert_eq!(dir.opens(), 0);
+}
+
+/// A download directory a completing download's file lands in while the
+/// pass lists it: the move has stored its destination, then its file lands.
+struct LandsWhileListed {
+    dir: World,
+    landed: Arc<AtomicBool>,
+}
+
+impl DirectorySource for LandsWhileListed {
+    fn list(&self, dir: &Path) -> io::Result<Vec<DirEntry>> {
+        if !self.landed.swap(true, Ordering::SeqCst) {
+            self.dir
+                .with(|dir| dir.file("/dl/film.mkv", b"the finished file", 4));
+        }
+        self.dir.list(dir)
+    }
+
+    fn kind(&self, path: &Path) -> io::Result<EntryKind> {
+        self.dir.kind(path)
+    }
+
+    fn is_folder(&self, path: &Path) -> io::Result<bool> {
+        self.dir.is_folder(path)
+    }
+
+    fn stamp(&self, path: &Path) -> io::Result<FileStamp> {
+        self.dir.stamp(path)
+    }
+
+    fn open(&self, path: &Path) -> io::Result<Box<dyn io::Read + Send>> {
+        self.dir.open(path)
+    }
+}
+
+/// A pass whose scan started before a download stored `Completing` and
+/// whose listing finds that download's file landed (ADR-0115): what the
+/// pass judges by is read after the listing, so the file is the
+/// download's own and never read.
+#[test]
+fn a_file_landed_while_the_pass_lists_is_judged_by_what_is_known_after() {
+    let landed = Arc::new(AtomicBool::new(false));
+    let source = LandsWhileListed {
+        dir: World::new(),
+        landed: Arc::clone(&landed),
+    };
+    let progress: ProgressCell = Arc::new(Mutex::new(None));
+    let mut reports = Vec::new();
+    run_pass(
+        &source,
+        Path::new(ROOT),
+        &mut || {
+            let completing = landed
+                .load(Ordering::SeqCst)
+                .then(|| (PathBuf::from("/dl/film.mkv"), true));
+            Some(Known {
+                parts: PartFiles::of(completing),
+                ..Known::default()
+            })
+        },
+        Consent::Given,
+        &AtomicBool::new(false),
+        &progress,
+        &mut Memory::default(),
+        &mut |report| reports.push(report),
+    );
+    assert!(shared_paths(&reports).is_empty(), "{reports:?}");
+    assert_eq!(source.dir.opens(), 0, "the landed file is never read");
 }

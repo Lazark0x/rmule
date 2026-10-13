@@ -130,8 +130,11 @@ decode and read as before.
 - No half-copied file ever carries the finished name, and the scan never hashes a completing
   download's files: the copy's dot-prefixed name is one the scan and its watch skip (ADR-0101),
   and a `Completing` row's destination is, like its part file, a path the scan knows as the
-  download's own (ADR-0102) and skips while the row is `Completing`. By the time the row leaves
-  that state the registry entry exists, and the scan trusts it on its path, size and time.
+  download's own (ADR-0102) and skips while the row is `Completing`. A pass judges what it listed
+  by what is known after the listing, and a watch round stops settling a file once it is known as
+  a download's own, so a scan that read what was known before the row stored `Completing` never
+  reads the landed file either. By the time the row leaves that state the registry entry exists,
+  and the scan trusts it on its path, size and time.
 
 A `Completing` row at attach is resolved by what is on disk:
 
