@@ -609,7 +609,19 @@ _Avoid_: filesystem detection
 
 **Hole Verdict**:
 `HoldsHoles`, `HoleLess`, or `Unknown` with the OS error kind, from the **Hole Probe**. Published as `DownloadDiagnostics::hole_verdict`; a `HoleLess` run also sends `HoleLessDestination` once. Never a scheduling input or a reason to refuse.
-_Avoid_: sparse support, hole-less destination
+_Avoid_: sparse support
+
+**Hole-less Destination**:
+A directory whose **Hole Verdict** is `HoleLess`; `DownloadEvent::HoleLessDestination`, sent once per run whose part file lies in one, names it (ADR-0111).
+_Avoid_: non-sparse disk
+
+**Completion Move**:
+A run's last step, after its last verified part (ADR-0115): the part file checked against the file hash, the destination named — the row's final path or its **Free Name** — and stored with `Completing` before anything moves, then a rename, waiting while a program holds the file, or the **Completion Copy** across volumes; with the finished file in place the core actor writes its registry row, and only then is the part file deleted and `Completed` stored. Each step that waits or copies is told as `DownloadEvent::Completing`.
+_Avoid_: completion (alone), rename (one of its steps)
+
+**Free Name**:
+The numbered `stem (n).ext` beside a name that is taken, `n` counting from one, the first for which nothing stands (ADR-0115, `free_name`). A placement and a **Completion Move** choose by the one rule, and a move numbers from the name its download was placed under, every time, as aMule does, so numbered names never stack.
+_Avoid_: unique name, collision suffix
 
 **Completing**:
 The durable lifecycle between the last verified part and the finished file in place (ADR-0115): renaming, waiting for a program to release the file, or copying across volumes. Attach resumes the move; a Pause or Cancel stops it until the file is in place and is refused after.

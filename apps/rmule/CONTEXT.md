@@ -98,6 +98,10 @@ The Settings preference, off by default, under which the app sends at start the 
 A session lost later is a different matter: core re-makes it while the operator's intent stands (**Server Intent**) — Autoconnect is only what dials at start.
 _Avoid_: auto-reconnect (that is the Server Intent, not this preference), connect on startup to any server (aMule walks the list; rmule does not)
 
+**Preview**:
+The Transfers action — the row menu's item and the `v` key — that hands a **Preview Ready** download's **Download File Path** to the **Player Command** as one argument, through no shell, on the player lane (ADR-0114). The menu greys it with the reason on a row it cannot act on, and a launch that cannot start flashes that reason.
+_Avoid_: play, open, preview window
+
 **Preview Ready**:
 A Transfers row the Preview action acts on (ADR-0114): core says the download is **Previewable** (`DownloadMetadata::is_previewable()`, read, never re-derived) and it is complete or its diagnostics row has part 0 `Verified`. A resting row counts, so a restored download is ready before it resumes, and so is a failed one that kept the part. Read from the row each frame, never stored; the tail never gates.
 _Avoid_: playable, preview available (aMule's `PreviewAvailable`, a byte-range query), head and tail verified
