@@ -231,6 +231,15 @@ overrides it (the fake-docker suite sets `0`). Not a Readiness Gate — nothing 
 polled — and not a Tap window, which is observation after the stimulus.
 _Avoid_: publish window, sleep, warm-up
 
+**Search Schedule**:
+The bounded cadence of the requester's repeated Kad source searches (`Cancel` +
+re-`Add`, four attempts, a 2 s gap inside each, 25 s between). Resolved once per run
+and clamped so its total never exceeds `--timeout`;
+`RMULE_KAD_SEARCH_CANCEL_GAP_SECS` and `RMULE_KAD_SEARCH_RETRY_INTERVAL_SECS`
+override the two pauses (the fake-docker suite sets both `0`). Live runs keep the
+defaults.
+_Avoid_: retry loop, sleep
+
 **Seeded Bootstrap**:
 The harness-generated `preferencesKad.dat` (pinning a node's Kad ID) and `nodes.dat`
 (naming its starting contacts) dropped into a container before it starts. Seeding is

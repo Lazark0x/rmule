@@ -22,9 +22,9 @@ use crate::flow::identity::parse_ed2k_file_hash;
 use crate::flow::logs::collect_kad_node_logs;
 use crate::flow::mesh::{
     KAD_NETWORK_SUBNET, KAD_PUBLISHER_KAD_ID, KAD_PUBLISHER_USER_HASH_HEX,
-    KAD_SEARCH_SIGNAL_GRACE_SECS, KadCandidateIdentities, KadCaptureOptions, kad_mesh_bpf,
-    kad_role_env, plan_kad_nodes, start_kad_node, trigger_source_search, wait_kad_settle_window,
-    write_kad_candidate_summary, write_kad_endpoints, write_kad_nodes,
+    KAD_SEARCH_SIGNAL_GRACE_SECS, KadCandidateIdentities, KadCaptureOptions, KadSearchSchedule,
+    kad_mesh_bpf, kad_role_env, plan_kad_nodes, start_kad_node, trigger_source_search,
+    wait_kad_settle_window, write_kad_candidate_summary, write_kad_endpoints, write_kad_nodes,
 };
 
 /// The flow name every artifact this flow writes is tagged with.
@@ -137,7 +137,13 @@ pub fn run_kad_source_lookup_capture(options: KadCaptureOptions<'_>) -> Result<(
         )?;
 
         let file_hash_hex = link.trim().split('|').nth(4).unwrap_or_default();
-        trigger_source_search(&docker, &names.requester, link.trim(), file_hash_hex);
+        trigger_source_search(
+            &docker,
+            &names.requester,
+            link.trim(),
+            file_hash_hex,
+            KadSearchSchedule::resolve(options.timeout_secs),
+        );
 
         // Best-effort: the requester entrypoint emits this once the download is
         // present. The retained pcap is the real evidence, so not observing the
