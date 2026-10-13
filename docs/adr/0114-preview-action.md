@@ -62,7 +62,10 @@ effect at once: every launch reads it.
 
 - Empty clears it. A text whose words do not split (an open quote) is refused under the
   field, and so is one whose first word holds `%PARTFILE`, so the downloaded file is never
-  the program run.
+  the program run. A first word written as a path that names a folder is refused too,
+  since no system runs a folder, unless on macOS it is an application bundle (below). A
+  bare name is the system's to find on `PATH`, and a path not there yet is taken: the
+  player may be installed later. The Settings commit and every launch read it alike.
 - No default player. An association launcher (`open`, `xdg-open`, `start`) picks a handler
   by extension, and the extension of a `.part` is `.part`. Unset, Preview is greyed with its
   reason; there is no fallback like aMule's.
@@ -77,6 +80,15 @@ rmule substitutes after, so there is nothing to escape. The path is absolute (co
 relative download or Temp Directory, ADR-0115), so a player cannot read it as an option. The first word is
 the program, run with standard input, output and error null; the terminal holds the TUI.
 
+On macOS a player is an application bundle, a folder no exec runs, and that is what a Mac
+operator picks (`/Applications/IINA.app`). A first word naming a folder called `.app`
+starts through LaunchServices with the app named: the words become `/usr/bin/open -a
+<bundle>` and then the other words, and `%PARTFILE` is placed by the same rules, inside a
+word or else last. Named, the app is the handler; LaunchServices never picks one by the
+`.part` extension, so the reason for no `open` default stands. The other words are
+`open`'s own: what follows `--args` goes to the app's `main` rather than being opened, so a
+command with `--args` places `%PARTFILE` before it. Still arguments, never a shell line.
+
 **A launch.** The view emits `Action::Preview(DownloadId)`. The reducer resolves the row,
 the command and the path by the same reading the menu shows, so the two cannot disagree. It
 then hands the arguments to a player lane, as it does the Kad start. A task on the app's
@@ -85,6 +97,9 @@ through `spawn_blocking`, because the runtime's drop waits for blocking tasks, a
 player would hold the TUI's exit. Quitting the TUI does not kill the player (`kill_on_drop`
 stays off); on Unix the player gets a process group of its own, so the terminal closing
 does not reach it. Nothing is tracked beyond the exit: a second launch is a second process.
+A launch through `open` ends once LaunchServices has handed the file over, not when the
+player quits; `open` exits non-zero when the app cannot open the file, and that status is
+noted as any player's is.
 
 **The control.** The Transfers row menu offers **Preview** under *Show file details*, and
 `v` on the Transfers table does the same, bound on that tab alone (ADR-0074). The first
@@ -100,7 +115,7 @@ state that holds decides:
 | Preview Ready | launches | launches |
 
 A refused spawn flashes and notes *the player could not start* with the OS error kind in
-the operator's words; a non-zero exit notes its status; an end by signal says so; a zero
+the operator's words, a denied permission as *the program is not executable*; a non-zero exit notes its status; an end by signal says so; a zero
 exit says nothing. Each note names the download. Every reason and note is written in the
 TUI's words from a code (`words/player.rs`); no type name or Debug output reaches the
 operator.
