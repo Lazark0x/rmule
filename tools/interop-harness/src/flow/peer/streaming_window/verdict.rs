@@ -567,11 +567,18 @@ fn retired_seed_waits(wire: &Wire, run: &Replay, parts: u32) -> Claim {
             .iter()
             .find(|dial| dial.seed == *seed && dial.at >= until)
             .map(|dial| dial.at - not_before);
-        redials += i64::try_from(inside).unwrap_or(i64::MAX);
+        let pings = wire
+            .datagrams
+            .iter()
+            .filter(|datagram| {
+                datagram.seed == *seed && datagram.at > *not_after && datagram.at < until
+            })
+            .count();
+        redials += i64::try_from(inside + pings).unwrap_or(i64::MAX);
         notes.push(format!(
-            "{seed} retired between {not_before:.1} and {not_after:.1}: {inside} dials before +{until_s:.0} s, remote-queued {}, next dial {}",
-            run.remote_queued.contains(seed),
+            "{seed} retired between {not_before:.1} and {not_after:.1}: {inside} dials and {pings} UDP datagrams before +{until_s:.0} s; next dial {}, re-asked over TCP {}",
             full_ask.map_or_else(|| "none on the tap".to_owned(), |after| format!("+{after:.0} s")),
+            run.reasked_over_tcp.contains(seed),
             until_s = NO_NEEDED_PARTS_REASK_SECS - REASK_SLACK_SECS,
         ));
     }

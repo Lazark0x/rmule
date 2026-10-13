@@ -18,7 +18,7 @@ use std::path::Path;
 use anyhow::Result;
 use rmule_primitives::{ED2K_PART_SIZE, ed2k_status_part_count, part_count};
 
-use crate::flow::pcap::{Ed2kFrame, records, tcp_capture};
+use crate::flow::pcap::{Ed2kFrame, records, tcp_capture, udp4_datagrams};
 
 const OP_EDONKEYPROT: u8 = 0xE3;
 const OP_EMULEPROT: u8 = 0xC5;
@@ -96,6 +96,9 @@ pub(crate) struct Wire {
     pub(crate) requests: Vec<Request>,
     /// Every dial rmule made to a seed, in capture order.
     pub(crate) dials: Vec<Dial>,
+    /// Every UDP datagram rmule sent a seed, in capture order: a reask ping
+    /// would be one.
+    pub(crate) datagrams: Vec<Dial>,
     /// Links between rmule and a seed that did not open with an eD2k frame —
     /// obfuscated, so unreadable here.
     pub(crate) unread_links: usize,
@@ -161,6 +164,14 @@ pub(crate) fn read(
                     parts,
                 });
             }
+        }
+    }
+    for datagram in udp4_datagrams(pcap)? {
+        if *datagram.source.ip() == rmule && seeds.contains(datagram.destination.ip()) {
+            wire.datagrams.push(Dial {
+                at: datagram.at,
+                seed: *datagram.destination.ip(),
+            });
         }
     }
     let by_time = |a: &f64, b: &f64| a.total_cmp(b);

@@ -60,6 +60,12 @@ pub(crate) enum LogEvent {
         /// The reason's code, as `no_needed_parts`.
         reason: String,
     },
+    /// `download.source_reasked_over_tcp`: the Remote-Queued Pool's TCP full
+    /// ask.
+    ReaskedOverTcp {
+        /// The source.
+        peer: Ipv4Addr,
+    },
     /// `download.source_remote_queued`.
     RemoteQueued {
         /// The source.
@@ -115,6 +121,7 @@ pub(crate) fn parse_log(text: &str, id: u64) -> Vec<LogEvent> {
                     reason: (*fields.get("reason")?).to_owned(),
                 },
                 "source_remote_queued" => LogEvent::RemoteQueued { peer: peer()? },
+                "source_reasked_over_tcp" => LogEvent::ReaskedOverTcp { peer: peer()? },
                 "parts_tick" => LogEvent::Tick {
                     at: fields.get("at_unix_ms")?.parse::<f64>().ok()? / 1000.0,
                     parts: (*fields.get("parts")?).to_owned(),
@@ -202,6 +209,8 @@ pub(crate) struct Replay {
     pub(crate) retirements: Vec<Retirement>,
     /// Sources that entered the Remote-Queued Pool.
     pub(crate) remote_queued: BTreeSet<Ipv4Addr>,
+    /// Sources the Remote-Queued Pool re-asked by the TCP full ask.
+    pub(crate) reasked_over_tcp: BTreeSet<Ipv4Addr>,
     /// Every tick, in order: unix seconds and the part map.
     pub(crate) ticks: Vec<(f64, String)>,
     /// Ticks whose part map disagrees with the replayed one.
@@ -373,6 +382,9 @@ pub(crate) fn replay(events: &[LogEvent], topology: &Topology<'_>) -> Replay {
                     });
                 }
                 parts.release(*peer);
+            }
+            LogEvent::ReaskedOverTcp { peer } => {
+                out.reasked_over_tcp.insert(*peer);
             }
             LogEvent::RemoteQueued { peer } => {
                 departed.remove(peer);
