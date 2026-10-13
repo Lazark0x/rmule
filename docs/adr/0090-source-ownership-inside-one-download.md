@@ -67,7 +67,10 @@ puts its source on the uploader's queue, as aMule's `SendStartupLoadReq` sets
 record earns a standing then, **without a rank** until a `0x60` ranks it, its clock dated
 at the ask. A rank on a live worker ranks or refreshes it, and so do Advertised Parts
 holding no part we lack (rank 0, ADR-0112). A grant or a transfer ends it — the source is
-live, not queued. How the worker ends decides the rest:
+live, not queued. A worker whose slot ask waits on its hash-set ask holds none until the
+ask leaves, at the answer or the Hash-Set Deadline (ADR-0026), so a link that ends at the
+hash-set ask leaves the book, as aMule deletes a `DS_REQHASHSET` source
+(`BaseClient.cpp:1305-1329`). How the worker ends decides the rest:
 
 | The worker ends by | Its standing | Its record | Spent |
 |---|---|---|---|
@@ -77,7 +80,7 @@ live, not queued. How the worker ends decides the rest:
 | `OP_OUTOFPARTREQS` (`0x57`) on a granted slot | the worker does not end: its flow is queued again on the same link, as aMule turns `DS_DOWNLOADING` back into `DS_ONQUEUE` (`ClientTCPSocket.cpp:755-762`); the part it held is released for retry (ADR-0026) and a standing is earned without a rank, which the `0x60` that follows ranks (ADR-0057) | stays Worker | no |
 | `OP_OUTOFPARTREQS` while only queued | ignored, as aMule acts on it only while downloading | stays Worker | no |
 | Advertised Parts holding no part we lack | kept, or earned at rank 0, with the no-needed-parts mark: asked again at twice the period, over TCP | waits in RemoteQueued | no |
-| a granted slot it has no part to work, given back with `0x56` | earned, on the ordinary cadence (ADR-0057) | waits in RemoteQueued | no |
+| a granted slot it has no part to work, given back with `0x56` (`NoFreePart`) | earned, on the ordinary cadence (ADR-0057) | waits in RemoteQueued | no |
 | the peer saying it lacks the file (`0x48`, at the probe or mid-slot) | ends | leaves the book, whichever road reached it — a called-back source does not return to its lane | every Ask Name its record holds, below |
 | bad data it alone sent, or a part hash set not the file's own | ends | leaves | no: distrusted (invariant 4) |
 | a hello naming a distrusted User Hash | ends | leaves | no |

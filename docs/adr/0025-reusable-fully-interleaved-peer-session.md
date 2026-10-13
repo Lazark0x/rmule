@@ -26,11 +26,15 @@ one active slot context per connection.
   unambiguously.
 - A re-probe of a known file answers from the session's per-file state without a
   wire round-trip, and a hash set already received is not requested again.
-- The first `RequestParts` takes the slot context, which moves through queued,
-  slotted and downloading. Once the slot is granted, further `RequestParts` for the
-  same file go straight out as `OP_REQUESTPARTS` over the held slot: one
-  `OP_STARTUPLOADREQ` per file, across all its parts and blocks, as eMule does.
-- `RequestParts` for a different file while a slot is held is rejected at once with
+- The slot ask (`AskSlot`, or a first `RequestParts` when none was sent) takes the slot
+  context, which moves through queued, slotted and downloading. Once the slot is
+  granted, `RequestParts` for the same file go straight out as `OP_REQUESTPARTS` over
+  the held slot: one `OP_STARTUPLOADREQ` per file, across all its parts and blocks, as
+  eMule does. A `RequestParts` before the grant waits for it, its ranges held.
+- The session asks a part hash set only when told (`RequestHashSet`, once per file),
+  and its slot ask waits on no answer: which link asks, and when a slot ask follows
+  it, is the download's decision (ADR-0026, "One hash-set ask at a time").
+- A slot ask for a different file while a slot is held is rejected at once with
   `PeerError::SlotBusy`. Probes and hash-set requests keep interleaving freely.
 - The session never infers completion from byte counts. The slot ends on
   `RequesterCommand::ReleaseSlot` (the runtime worker decides the file is done),

@@ -14,11 +14,27 @@ independently in different domain phases, and release builds without
 `rmule-core` keeps a Worker Phase per peer worker, readable as part of a
 point-in-time `DiagnosticsSnapshot`.
 
-- `WorkerPhase` mixes connection facts and orchestration facts: `Idle`,
-  `Connecting`, `HandshakingPeer`, `WaitingForSlot`, `RequestingHashSet`,
-  `RequestingPart`, `ReceivingPart`, `VerifyingPart`, `Releasing` and `Retired`. It
-  lives in `rmule-core` beside the scheduler, not in `rmule-net`, whose
-  one-conversation surface has no words for orchestration (ADR-0026).
+- `WorkerPhase` mixes connection facts and orchestration facts. Each phase has a
+  writer at the transition it names, and a phase nothing writes is deleted rather than
+  rendered:
+  - `Idle` — the slot holds no peer: before its first dial, and after a retirement
+    until the pool backfills it;
+  - `Connecting` — the dial and the hello, written when the slot dials;
+  - `AskingFile` — the hello done and the file asked, written at `Connected`, until
+    the probe's answer asks a slot or the hash set, or retires the worker;
+  - `RequestingHashSet` — asked for the part hash set, its slot ask waiting on the
+    answer or the Hash-Set Deadline (ADR-0026);
+  - `WaitingForSlot { rank }` — the slot ask out, written when it is sent and when
+    `OP_OUTOFPARTREQS` queues the flow again; its rank, once an `OP_QUEUERANKING`
+    gives one, refreshed by each;
+  - `RequestingPart`, `ReceivingPart`, `VerifyingPart` — a part handed at a grant or
+    after the last one, its blocks arriving, its hash being checked;
+  - `Retired { reason }` and `ShutDown` — the worker left the fleet, for a reason of
+    its own or with the whole download.
+
+  It lives in `rmule-core` beside the scheduler, not in `rmule-net`, whose
+  one-conversation surface has no words for orchestration (ADR-0026). A granted
+  worker never idles: it is handed a part or gives the slot back (ADR-0056).
 - Each slot has one `WorkerEntry`: its slot, the peer endpoint once known, the
   phase, the monotonic `Instant` it was entered, a transition count, and the peer's
   client software when identified. One writer per slot means no write contention.

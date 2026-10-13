@@ -47,28 +47,33 @@ and nothing left to request from this source
    download while its slot is granted or active sends `0x56` before closing. This covers
    aMule's first two triggers; closing right after is safe because aMule's receipt path
    expects no follow-up.
-2. **No needed parts.** A worker with a granted slot and no assignable part, while it
-   advertises a part we lack, sends `0x56`, gives up the slot and stays connected in a
-   slotless **standby** state; one advertising no part we lack sends `0x56` and is retired
-   `NoNeededParts` (ADR-0112). When a part
-   frees, it re-runs the full ask cycle from the start-upload request. Holding one of the
-   counterparty's few upload slots while requesting nothing is the incivility aMule's
-   `DS_NONEEDEDPARTS` cancel avoids.
+2. **Nothing to work on a granted slot.** A worker granted a slot it has no part to be
+   handed — at the grant, or after a part it streamed — sends `0x56` and gives the slot
+   back, as aMule's `SendBlockRequests` does when no free block is left
+   (`DownloadClient.cpp:641-693`). One whose Advertised Parts still hold a part we lack,
+   every one in flight elsewhere, is retired `NoFreePart` and its record waits in the
+   RemoteQueued stage on the ordinary cadence (ADR-0057); one advertising no part we
+   lack is retired `NoNeededParts` (ADR-0112). Neither stays connected: the record's
+   standing, not the socket, brings the source back. Holding one of the counterparty's
+   few upload slots while requesting nothing is the incivility aMule's
+   `DS_NONEEDEDPARTS` cancel avoids. A worker that holds no granted slot sends no
+   `0x56`.
 3. **At most one `0x56` per ask cycle** per connection, reset by the next ask and by
    teardown.
 
 The codec is the empty `0xE3` frame in `rmule_peer`. The session's serve half raises the
-event; its download half owns the teardown emit and the standby transition. Core maps the
+event; its download half owns the emit, and core decides when (both triggers end the
+worker). Core maps the
 event onto the serve state's release and promote batch.
 
 ## Consequences
 
 - The deterministic tier covers the consume path (release and promotion, connection
   survives, slotless no-op, re-ask at the tail, pending sends dropped) and the emit path
-  (`0x56` before close on cancel, pause and completion, the standby transition, the
-  once-per-cycle latch).
-- One capture per direction is enough, because the standby trigger sends the same bytes
-  as the captured teardown emit. Consume is proven by a pinned aMule downloading from
+  (`0x56` before close on cancel, pause and completion, a granted slot given back,
+  the once-per-cycle latch).
+- One capture per direction is enough, because the give-back sends the same bytes as
+  the captured teardown emit. Consume is proven by a pinned aMule downloading from
   rmule and cancelling through `amulecmd`; emit by rmule cancelling a download from aMule,
   which logs `Upload session ended due canceled transfer`.
 
@@ -79,6 +84,11 @@ event onto the serve state's release and promote batch.
 - **Closing the socket instead of emitting, or emitting only on teardown.** Rejected:
   close-only leaves rmule unable to say it, and an idle worker that keeps its slot through
   the end-game hogs the counterparty's slot.
+- **A slotless standby**: the worker stays connected after its `0x56`, to be handed a
+  released part and re-run the ask cycle on the same link. Rejected: aMule has none —
+  its `DS_NONEEDEDPARTS` link idles into the uploader's 40 s close
+  (`CONNECTION_TIMEOUT`, `Constants.h:34`) — and it holds one of the download's worker
+  slots for a source the record's standing already brings back on its reask.
 - **Swapping out slow sources** (cancelling a slower source to free blocks for a faster
   one,
   [DownloadClient.cpp#L656](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/DownloadClient.cpp#L656)).

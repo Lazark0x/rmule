@@ -405,7 +405,7 @@ _Avoid_: source list (aMule's `m_SrcList` is only the pool), ledger (the Activit
 NAT-T, credit and `SeedLedger` already are)
 
 **Advertised Parts**:
-The parts one source said it holds of this download's file — its latest `OP_FILESTATUS` to a worker or the status in a `0x91` ack — over the file's real parts (count `0` is every part; the phantom part is never read). A record-tier attachment of its **Source Book** record (ADR-0112): replaced by each status, gone with the record, never stored. A worker is handed a part from them only once its own probe answers: what an earlier connection or a merged-in record left is not that worker's word.
+The parts one source said it holds of this download's file — its latest `OP_FILESTATUS` to a worker or the status in a `0x91` ack — over the file's real parts (count `0` is every part; the phantom part is never read). A record-tier attachment of its **Source Book** record (ADR-0112): replaced by each status, gone with the record, never stored. A worker asks its slot on them only once its own probe answers, and is handed a part from them at its grant: what an earlier connection or a merged-in record left is not that worker's word.
 _Avoid_: availability, bitmap, file status, part picture (the download's own, ADR-0094)
 
 **Part Frequency**:
@@ -475,12 +475,16 @@ that peer again, is cleared when a run starts, and the row keeps the newest 64 (
 _Avoid_: dial failure (`DialFailure` is a server dial's)
 
 **Remote-Queued Pool**:
-The **Source Book** records in their RemoteQueued stage, each holding its queue standing at a remote uploader **without a connection**: the rank, the UDP contact and peer-UDP crypt target the identity it queued under stated, the reask clock and its one-ping latch (ADR-0057, ADR-0090). Entered when a worker on the uploader's queue — its upload request out, ranked or not yet — hangs up, or when a worker's **Advertised Parts** hold no part we lack (rank 0, the no-needed-parts mark, ADR-0112); kept alive by the reask heartbeat the brain's tick runs while we are connected to a server or Kad (UDP ping first — a called-back source's at the address it called in from, or through its buddy while we are firewalled — TCP full ask as fallback, a called-back source's by its callback road); left on grant (the uploader dials back), file-not-found (which spends it), the TCP full ask, or — queue-full or holding no part we lack, while the file holds 80 % of aMule's default source limit — one of the book's purges. Queue standing is a fact about the remote peer, not about a socket.
+The **Source Book** records in their RemoteQueued stage, each holding its queue standing at a remote uploader **without a connection**: the rank, the UDP contact and peer-UDP crypt target the identity it queued under stated, the reask clock and its one-ping latch (ADR-0057, ADR-0090). Entered when a worker on the uploader's queue — its upload request out, ranked or not yet — hangs up, when a granted worker gives back a slot it has no part for (`0x56`, `NoFreePart`, the ordinary cadence), or when a worker's **Advertised Parts** hold no part we lack (rank 0, the no-needed-parts mark, ADR-0112); kept alive by the reask heartbeat the brain's tick runs while we are connected to a server or Kad (UDP ping first — a called-back source's at the address it called in from, or through its buddy while we are firewalled — TCP full ask as fallback, a called-back source's by its callback road); left on grant (the uploader dials back), file-not-found (which spends it), the TCP full ask, or — queue-full or holding no part we lack, while the file holds 80 % of aMule's default source limit — one of the book's purges. Queue standing is a fact about the remote peer, not about a socket.
 _Avoid_: waiting workers (no worker exists while pooled), source cache, reconnect list, pool (as a list apart from the book)
 
-**Slotless Standby**:
-A download worker that sent `OP_CANCELTRANSFER` because the scheduler had no part to assign it, surrendered its remote upload slot, and stays connected awaiting a released part — at which point it re-runs the full ask cycle from the start-upload request (ADR-0056). Distinct from an idle worker, which still holds its granted slot.
-_Avoid_: parked worker, dormant connection, cancelled worker (the transfer is cancelled, not the worker)
+**Slot Ask**:
+A download worker's `OP_STARTUPLOADREQ`, sent at its probe answer when its **Advertised Parts** hold a part we lack — whether or not one is free — and the queue standing it earns its record (ADR-0026, ADR-0090). The part is chosen at the grant, never at the ask; a grant with no part to hand gives the slot back with `OP_CANCELTRANSFER` and retires the worker `NoFreePart` (ADR-0056). There is no slotless standby: no worker stays connected after giving a slot back.
+_Avoid_: slot request (the codec is `StartUploadReq`), upload request (that is the uploader's view), standby
+
+**Hash-Set Deadline**:
+The 20 s a download's one `OP_HASHSETREQUEST` in flight waits for its answer before its worker asks its slot regardless and the ask passes to the next link (ADR-0026) — half aMule's 40 s idle close, so the slot ask still reaches an uploader that never answers the set. Only one link asks at a time, and only while the download holds no whole part hash set; a link with `p=` never asks.
+_Avoid_: hash-set timeout (nothing times out: the slot ask goes out and the ask moves)
 
 **Had Set**:
 The durable set of file hashes that were in the **Shared File Registry** and whose file has since left the disk, each with the name it last had and when it left (ADR-0105). A row joins it in the step that removes the row; a share of the same content, from any source, takes the hash out in the step that stores the row, and nothing else does. A renamed or copied file moves its row and never passes through it. It shares nothing and answers nothing on the wire; it exists so the operator can be told they once had a file.

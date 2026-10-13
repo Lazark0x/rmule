@@ -152,13 +152,15 @@ aMule's `FILEREASKTIME` of 1 300 000 ms
   cadence above, never the no-needed-parts one; a `0x57` while only queued changes
   nothing.
 - **A granted slot given back:** a worker granted a slot it has no part to work gives it
-  back with `0x56` (ADR-0056) and its record waits in RemoteQueued with a standing on the
-  ordinary cadence: it holds a part we lack, only none is free now.
+  back with `0x56` (ADR-0056), retired `NoFreePart`, and its record waits in RemoteQueued
+  with a standing without a rank, its clock dated at the give-back, on the ordinary
+  cadence: it holds a part we lack, only none is free now. aMule marks such a source
+  `DS_NONEEDEDPARTS` (`DownloadClient.cpp:667`) and asks it at twice the period; rmule
+  keeps the ordinary period, since a part frees as soon as a racer verifies or fails.
 - **No needed parts:** such a source reasks at twice the period, then forces a TCP
   recheck
   ([PartFile.cpp#L1439](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/PartFile.cpp#L1439)).
-  A slotless standby worker (ADR-0056) that loses its connection degrades into this
-  cadence. A worker whose Advertised Parts hold no part we lack enters this cadence too,
+  A worker whose Advertised Parts hold no part we lack enters this cadence too,
   its record keeping or earning a rank-0 standing with the mark (ADR-0112).
 
 ### Uploader: standing that survives disconnect

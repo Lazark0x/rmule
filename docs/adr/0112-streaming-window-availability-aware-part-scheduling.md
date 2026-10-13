@@ -67,13 +67,15 @@ rules at other lines. aMule facts are read, never ported (ADR-0004).
 - After its connect-time `RequestFile` the worker reads the peer's answers — sources, a hash
   set, an AICH root, forwarded as they are while a part streams — until the probe is answered,
   bounded by `slot_wait_timeout` (ending `SlotTimeout`), then sends `PartsAdvertised`. The
-  brain assigns on `PartsAdvertised`, never on `Connected`.
+  brain asks the worker's slot (or the hash set) on `PartsAdvertised`, never on
+  `Connected`, and hands its first part at the grant (ADR-0026, "The slot ask").
 - A handed part cannot be taken back: the worker asks the session for the part's first block
   at once and defers a later `RequestPart` to the part's end. Assigning before the status
   would hand a partial source a part it lacks. aMule likewise chooses a part only once the
-  status is known.
+  status is known, and only on a granted slot.
 - An `OP_FILEREQANSNOFIL` answer ends the worker as it does today.
-- A release hands the freed part only to workers whose Advertised Parts are known.
+- A release hands the freed part only to a granted worker; a queued one is handed its part
+  at its grant.
 
 ### 4. The rank
 
@@ -149,10 +151,14 @@ one tuple wins; `i` sits in every key, so no two tie:
   nears its source limit (ADR-0057). It is not spent and not distrusted (ADR-0090): a source
   with nothing we need is alive and honest. The retirement says why; no queue rank is
   reported for it.
-- A worker whose Advertised Parts hold a part the file lacks, every one in flight elsewhere,
-  and which may not race because it has delivered a part (ADR-0026), idles as today: it is
-  the backup a release hands the part to.
-- A worker slot is never held by a source that holds nothing we need.
+- A worker whose Advertised Parts hold a part the file lacks asks its slot at its probe
+  answer even when every such part is in flight elsewhere (ADR-0026): its part is chosen at
+  the grant. Granted with none it may be handed — every one in flight, and it may not race
+  because it has delivered a part — it gives the slot back with `OP_CANCELTRANSFER` and is
+  retired **`NoFreePart`**, its record waiting in the RemoteQueued stage on the ordinary
+  cadence (ADR-0056, ADR-0057): it still holds a part we lack.
+- A worker slot is never held by a source that holds nothing we need, nor a granted slot by
+  a worker with no part to work.
 
 ## Consequences
 
