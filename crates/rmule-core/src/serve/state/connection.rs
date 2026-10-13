@@ -37,14 +37,14 @@ impl ServeState {
         // A file we do not share is not answered and the connection stays up
         // (`:442-447` `break`s before any reply); the asker learns it from
         // its status ask or its bundle.
-        let Some(asked) = self.asked(file_hash) else {
+        let Some(found) = self.lookup(file_hash) else {
             return Vec::new();
         };
         let command = ServerCommand::AnswerFileName {
             file_hash,
-            file_name: asked.name(),
+            file_name: found.name(),
         };
-        let (file_size, offered) = (asked.file_size(), asked.offered());
+        let (file_size, offered) = (found.file_size(), found.offered());
         let kept = self.keep_asker(peer, file_hash);
         let moved = offered
             .then(|| self.follow_asked_file(peer, file_hash))
@@ -118,14 +118,14 @@ impl ServeState {
         asks: Vec<BundledAsk>,
         cut: Option<BundleCut>,
     ) -> Vec<ServeDecision> {
-        let asked = self
-            .asked(file_hash)
-            .filter(|asked| file_size.is_none_or(|size| size == asked.file_size()));
-        let Some(asked) = asked else {
+        let found = self
+            .lookup(file_hash)
+            .filter(|found| file_size.is_none_or(|size| size == found.file_size()));
+        let Some(found) = found else {
             let command = ServerCommand::AnswerFileNotFound { file_hash };
             return vec![ServeDecision::Send { peer, command }];
         };
-        let (name, size, offered) = (asked.name(), asked.file_size(), asked.offered());
+        let (name, size, offered) = (found.name(), found.file_size(), found.offered());
         let kept = self.keep_asker(peer, file_hash);
         // The file is set before any sub is walked (`:1103`).
         let moved = offered
@@ -191,9 +191,9 @@ impl ServeState {
         peer: PeerEndpoint,
         file_hash: FileHash,
     ) -> Vec<ServeDecision> {
-        let (command, moved) = match self.asked(file_hash) {
-            Some(asked) => {
-                let (bitmap, offered) = (asked.status(), asked.offered());
+        let (command, moved) = match self.lookup(file_hash) {
+            Some(found) => {
+                let (bitmap, offered) = (found.status(), found.offered());
                 let moved = offered
                     .then(|| self.follow_asked_file(peer, file_hash))
                     .flatten();
@@ -210,7 +210,7 @@ impl ServeState {
     /// when it is not cached (ADR-0038). A Served Download answers nothing:
     /// its tree is whole only once the file is (ADR-0113).
     fn answer_aich_root(&self, peer: PeerEndpoint, file_hash: FileHash) -> Vec<ServeDecision> {
-        let Some(entry) = self.asked(file_hash).and_then(|asked| asked.row()) else {
+        let Some(entry) = self.lookup(file_hash).and_then(|found| found.row()) else {
             return Vec::new(); // not shared whole
         };
         match self.aich_cache.get(&file_hash) {
@@ -284,7 +284,7 @@ impl ServeState {
                 // set is not yet whole: answer "no such file" rather than
                 // silently dropping the request (design §5;
                 // `UploadClient.cpp:676-698`).
-                let part_hashes = self.asked(file_hash).and_then(|asked| asked.hash_set());
+                let part_hashes = self.lookup(file_hash).and_then(|found| found.hash_set());
                 let command = match part_hashes {
                     Some(part_hashes) => ServerCommand::AnswerHashSet {
                         file_hash,
@@ -295,7 +295,7 @@ impl ServeState {
                 vec![ServeDecision::Send { peer, command }]
             }
             ServerEvent::SlotRequested { file_hash } => {
-                if !self.asked(file_hash).is_some_and(|asked| asked.offered()) {
+                if !self.lookup(file_hash).is_some_and(|found| found.offered()) {
                     // We do not offer it — unshared, or a download with no
                     // verified part yet: nothing is sent, as aMule queues and
                     // answers only a file it finds (stock 2.3.3 `4e8f2b3c`
@@ -400,7 +400,7 @@ impl ServeState {
             } => {
                 // Not shared whole — a Served Download included, whose tree
                 // is whole only once the file is: let the requester fall back.
-                let Some(entry) = self.asked(file_hash).and_then(|asked| asked.row()) else {
+                let Some(entry) = self.lookup(file_hash).and_then(|found| found.row()) else {
                     return Vec::new();
                 };
                 // A cache hit answers pure; the first request round-trips one

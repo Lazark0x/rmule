@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use super::connection::{record_served_range, subtract_served_ranges};
-use super::served::Asked;
+use super::served::Found;
 use super::{ReadPurpose, ServeDecision, ServeState, rank_updates};
 use crate::served_downloads::PartialEnd;
 use crate::service::ServeEvent;
@@ -40,10 +40,10 @@ impl ServeState {
         if !self.queue.is_granted(peer) {
             return Vec::new();
         }
-        let (path, check, range) = match self.asked(file_hash).filter(Asked::offered) {
+        let (path, check, range) = match self.lookup(file_hash).filter(Found::offered) {
             None => return Vec::new(),
-            Some(Asked::Row(entry)) => (entry.path.clone(), None, None),
-            Some(Asked::Download { look, .. }) => {
+            Some(Found::Row(entry)) => (entry.path.clone(), None, None),
+            Some(Found::Download { look, .. }) => {
                 let (path, check) = look.served.read_target();
                 (path, Some(check), Some(look.served.range.clone()))
             }

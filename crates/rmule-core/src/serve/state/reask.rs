@@ -60,11 +60,11 @@ impl ServeState {
         // Share with its Verified Range.
         let file_hash = ping.file_hash();
         let shared = self
-            .asked(file_hash)
-            .filter(|asked| asked.offered())
-            .map(|asked| SharedFile {
-                size: asked.file_size(),
-                status: asked.status(),
+            .lookup(file_hash)
+            .filter(|found| found.offered())
+            .map(|found| SharedFile {
+                size: found.file_size(),
+                status: found.status(),
             });
         let room = QueueRoom {
             waiting: self.queue.waiting_len(),

@@ -24,14 +24,14 @@ use crate::served_downloads::{ExchangePool, ServedLook};
 
 /// The file an ask names, as the share set holds it.
 #[derive(Clone, Copy, Debug)]
-pub(super) enum Asked<'a> {
+pub(super) enum Found<'a> {
     /// An offered registry row: the file whole.
     Row(&'a SharedFileEntry),
     /// A Served Download; `offered` when it is a Partial Share.
     Download { look: &'a ServedLook, offered: bool },
 }
 
-impl<'a> Asked<'a> {
+impl<'a> Found<'a> {
     /// The name the file is offered under.
     pub(super) fn name(&self) -> Ed2kText {
         match self {
@@ -134,11 +134,11 @@ impl ServeState {
 
     /// The file `file_hash` names, as the share set holds it: an offered row,
     /// which wins, or a Served Download.
-    pub(super) fn asked(&self, file_hash: FileHash) -> Option<Asked<'_>> {
+    pub(super) fn lookup(&self, file_hash: FileHash) -> Option<Found<'_>> {
         if let Some(entry) = self.shared.get(&file_hash) {
-            return Some(Asked::Row(entry));
+            return Some(Found::Row(entry));
         }
-        self.served.get(&file_hash).map(|look| Asked::Download {
+        self.served.get(&file_hash).map(|look| Found::Download {
             look,
             offered: self.partials.contains(&file_hash),
         })
@@ -152,8 +152,8 @@ impl ServeState {
         peer: PeerEndpoint,
         file_hash: FileHash,
     ) -> Option<ServeDecision> {
-        self.asked(file_hash)
-            .filter(Asked::keeps_askers)
+        self.lookup(file_hash)
+            .filter(Found::keeps_askers)
             .and(self.identities.get(&peer))
             .map(|identity| ServeDecision::KeepAsker {
                 file_hash,
