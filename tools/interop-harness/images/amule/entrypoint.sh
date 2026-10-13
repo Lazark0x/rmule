@@ -657,6 +657,13 @@ run_direct_peer_mode() {
     set_config ECAddress 127.0.0.1
     set_config ECPort "$EC_PORT"
     set_config ECPassword "$EC_PASSWORD_MD5"
+    # Optional upload-rate cap (partial-share seeds): a seed reached only
+    # through a link's sources, slow enough that the downloader holds a part
+    # verified while others are still arriving. `0`/unset leaves aMule's
+    # default (unlimited).
+    if [ "${AMULE_MAX_UPLOAD:-0}" != "0" ]; then
+        set_config MaxUpload "$AMULE_MAX_UPLOAD"
+    fi
     # Secure User Identification on (aMule default, pinned explicitly — the
     # exchange is the whole point of this mode).
     set_config IsSecureIdentEnabled 1
