@@ -96,16 +96,22 @@ pub(super) async fn complete<S, P>(
     file: &Ed2kFileLink,
     file_hash_only_parts: Vec<u32>,
 ) -> Result<(), DownloadFailure> {
-    let record = runner
-        .rt
-        .store
-        .load_download(download_id)
-        .map_err(|_| DownloadFailure::StoreFailed)?;
-    let paths = record.paths().clone();
+    let paths = row_paths(runner, download_id)?;
+    complete_at(runner, download_id, file, &paths, file_hash_only_parts).await
+}
+
+/// [`complete`] the download whose row holds `paths`.
+async fn complete_at<S, P>(
+    runner: &RunnerContext<S, P>,
+    download_id: DownloadId,
+    file: &Ed2kFileLink,
+    paths: &DownloadPaths,
+    file_hash_only_parts: Vec<u32>,
+) -> Result<(), DownloadFailure> {
     let_go_of_part_file(runner, download_id, paths.part_path()).await?;
     let landed = own_file_at(runner, paths.final_path(), file).await?;
     if !landed {
-        check(runner, download_id, file).await?;
+        check(runner, download_id, file, paths.part_path()).await?;
     }
     for part_index in file_hash_only_parts {
         send_download_event(
@@ -122,12 +128,25 @@ pub(super) async fn complete<S, P>(
         if !runner.completion.found_in_place() {
             return Err(stopped(runner).await);
         }
-        return finish(runner, download_id, &paths).await;
+        return finish(runner, download_id, paths).await;
     }
-    let destination = free_destination(&paths).await;
+    let destination = free_destination(paths).await;
     store_destination(runner, download_id, &destination)?;
-    let placed = move_into_place(runner, download_id, file, &paths, destination).await?;
+    let placed = move_into_place(runner, download_id, file, paths, destination).await?;
     finish(runner, download_id, &placed).await
+}
+
+/// The paths the download's row holds.
+fn row_paths<S, P>(
+    runner: &RunnerContext<S, P>,
+    download_id: DownloadId,
+) -> Result<DownloadPaths, DownloadFailure> {
+    runner
+        .rt
+        .store
+        .load_download(download_id)
+        .map(|record| record.paths().clone())
+        .map_err(|_| DownloadFailure::StoreFailed)
 }
 
 /// The run of a row attach found `Completing` resolves it by what is on disk
@@ -138,12 +157,7 @@ pub(super) async fn recover<S, P>(
     file: &Ed2kFileLink,
     recovered: Recovered,
 ) -> Result<(), DownloadFailure> {
-    let record = runner
-        .rt
-        .store
-        .load_download(download_id)
-        .map_err(|_| DownloadFailure::StoreFailed)?;
-    let paths = record.paths().clone();
+    let paths = row_paths(runner, download_id)?;
     let (part, destination) = {
         let (part, destination) = (paths.part_path().to_owned(), paths.final_path().to_owned());
         on_pool(move || (part.exists(), destination.exists())).await
@@ -165,7 +179,7 @@ pub(super) async fn recover<S, P>(
         (true, _) => {
             gate.release();
             remove_quietly(copy_path(paths.final_path())).await;
-            return complete(runner, download_id, file, Vec::new()).await;
+            return complete_at(runner, download_id, file, &paths, Vec::new()).await;
         }
     }
     if !gate.found_in_place() {
@@ -197,28 +211,17 @@ async fn let_go_of_part_file<S, P>(
     Ok(())
 }
 
-/// Step 1: the part file hashes to the file hash, or the download repairs.
-/// The run's stop is answered while the hash reads.
+/// Step 1: the part file at `part_path` hashes to the file hash, or the
+/// download repairs. The run's stop is answered while the hash reads.
 async fn check<S, P>(
     runner: &RunnerContext<S, P>,
     download_id: DownloadId,
     file: &Ed2kFileLink,
+    part_path: &Path,
 ) -> Result<(), DownloadFailure> {
-    let paths = runner
-        .rt
-        .store
-        .load_download(download_id)
-        .map_err(|_| DownloadFailure::StoreFailed)?
-        .paths()
-        .clone();
-    let mut stop_rx = runner.stop_rx.clone();
-    let hashed = tokio::select! {
-        biased;
-        () = wait_until_stop(&mut stop_rx) => {
-            return Err(stop_reason(&stop_rx).unwrap_or(DownloadFailure::Cancelled));
-        }
-        hashed = ContentFileStore::hash_file(paths.part_path(), file.size) => hashed,
-    };
+    let hashed = runner
+        .until_stop(ContentFileStore::hash_file(part_path, file.size))
+        .await?;
     match hashed {
         Ok(hash) if hash == file.file_hash => Ok(()),
         Ok(_) => Err(refused(runner, download_id, FinalizeError::Mismatch).await),
@@ -257,16 +260,10 @@ async fn hashes_to<S, P>(
     path: &Path,
     file: &Ed2kFileLink,
 ) -> Result<bool, DownloadFailure> {
-    let mut stop_rx = runner.stop_rx.clone();
-    tokio::select! {
-        biased;
-        () = wait_until_stop(&mut stop_rx) => {
-            Err(stop_reason(&stop_rx).unwrap_or(DownloadFailure::Cancelled))
-        }
-        hashed = ContentFileStore::hash_file(path, file.size) => {
-            Ok(hashed.is_ok_and(|hash| hash == file.file_hash))
-        }
-    }
+    let hashed = runner
+        .until_stop(ContentFileStore::hash_file(path, file.size))
+        .await?;
+    Ok(hashed.is_ok_and(|hash| hash == file.file_hash))
 }
 
 /// Step 2: the name the download was placed under, or the first free
@@ -312,18 +309,9 @@ async fn move_into_place<S, P>(
     let mut backoff = Backoff::new();
     let mut waiting = false;
     loop {
-        if !runner.completion.begin() {
-            return Err(stopped(runner).await);
-        }
-        let landed = land(runner, part_path, &destination).await;
-        runner.completion.settle(matches!(landed, Landed::InPlace));
-        match landed {
-            Landed::InPlace => return Ok(DownloadPaths::new(destination, part_path.to_owned())),
-            Landed::Taken => {
-                destination = free_destination(row).await;
-                store_destination(runner, download_id, &destination)?;
-            }
-            Landed::Refused(Refusal::InUse { os_code }) => {
+        match land_free(runner, download_id, row, part_path, &mut destination).await? {
+            Ok(()) => return Ok(DownloadPaths::new(destination, part_path.to_owned())),
+            Err(Refusal::InUse { os_code }) => {
                 if !waiting {
                     waiting = true;
                     tracing::info!(os_code, "another program holds the finished file; waiting");
@@ -337,15 +325,44 @@ async fn move_into_place<S, P>(
                 }
                 wait_or_stop(runner, backoff.next()).await?;
             }
-            Landed::Refused(Refusal::CrossesDevices) => {
+            Err(Refusal::CrossesDevices) => {
                 let destination =
                     copy_into_place(runner, download_id, file, row, destination).await?;
                 return Ok(DownloadPaths::new(destination, part_path.to_owned()));
             }
-            Landed::Refused(Refusal::Other { os_code }) => {
+            Err(Refusal::Other { os_code }) => {
                 tracing::warn!(?os_code, "the finished file could not be moved into place");
                 return Err(DownloadFailure::CompletedFileNotMoved { os_code });
             }
+        }
+    }
+}
+
+/// Land `from` under `destination` through the Completion Gate: a name a
+/// file took since it was named gives way to the next free one of the
+/// placed name, stored first, and the landing is tried again. `Ok(Err(_))`
+/// when the system refused it; `Err` ends the run, a stop that closed the
+/// gate among them.
+async fn land_free<S, P>(
+    runner: &RunnerContext<S, P>,
+    download_id: DownloadId,
+    row: &DownloadPaths,
+    from: &Path,
+    destination: &mut PathBuf,
+) -> Result<Result<(), Refusal>, DownloadFailure> {
+    loop {
+        if !runner.completion.begin() {
+            return Err(stopped(runner).await);
+        }
+        let landed = land(runner, from, destination).await;
+        runner.completion.settle(matches!(landed, Landed::InPlace));
+        match landed {
+            Landed::InPlace => return Ok(Ok(())),
+            Landed::Taken => {
+                *destination = free_destination(row).await;
+                store_destination(runner, download_id, destination)?;
+            }
+            Landed::Refused(refusal) => return Ok(Err(refusal)),
         }
     }
 }
@@ -398,12 +415,7 @@ async fn wait_or_stop<S, P>(
     runner: &RunnerContext<S, P>,
     wait: Duration,
 ) -> Result<(), DownloadFailure> {
-    let mut stop_rx = runner.stop_rx.clone();
-    tokio::select! {
-        biased;
-        () = wait_until_stop(&mut stop_rx) => Err(stop_reason(&stop_rx).unwrap_or(DownloadFailure::Cancelled)),
-        () = tokio::time::sleep(wait) => Ok(()),
-    }
+    runner.until_stop(tokio::time::sleep(wait)).await
 }
 
 /// The stop that closed the gate, once it has reached the run: the actor

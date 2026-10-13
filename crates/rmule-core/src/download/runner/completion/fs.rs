@@ -27,6 +27,15 @@ pub(crate) enum Refusal {
 }
 
 impl Refusal {
+    /// The OS's error number, when the refusal kept one.
+    pub(crate) const fn os_code(self) -> Option<i32> {
+        match self {
+            Self::InUse { os_code } => Some(os_code),
+            Self::Other { os_code } => os_code,
+            Self::CrossesDevices => None,
+        }
+    }
+
     /// The refusal `error` stands for.
     pub(crate) fn of(error: &io::Error) -> Self {
         if error.kind() == io::ErrorKind::CrossesDevices {

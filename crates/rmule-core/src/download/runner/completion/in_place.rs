@@ -10,7 +10,7 @@ use tokio::sync::oneshot;
 
 use super::{Backoff, FinalFileInPlace, Refusal, on_pool, tell, wait_or_stop};
 use crate::content::ContentFileStore;
-use crate::download::runner::{RunnerContext, served, stop_reason, wait_until_stop};
+use crate::download::runner::{RunnerContext, served};
 use crate::error::DownloadFailure;
 use crate::service::{CompletionStep, DownloadEvent, DownloadId, send_download_event};
 use crate::storage::DownloadRepository;
@@ -82,12 +82,10 @@ async fn report_in_place<S, P>(
         if runner.rt.in_place_tx.send(report).await.is_err() {
             return Err(DownloadFailure::Cancelled);
         }
-        let mut stop_rx = runner.stop_rx.clone();
-        let written = tokio::select! {
-            biased;
-            () = wait_until_stop(&mut stop_rx) => return Err(stop_reason(&stop_rx).unwrap_or(DownloadFailure::Cancelled)),
-            written = answer => written.map_err(|_| DownloadFailure::Cancelled)?,
-        };
+        let written = runner
+            .until_stop(answer)
+            .await?
+            .map_err(|_| DownloadFailure::Cancelled)?;
         if written {
             return Ok(());
         }
@@ -117,7 +115,6 @@ async fn delete_part<S, P>(
                 if !waiting {
                     waiting = true;
                     let step = CompletionStep::WaitingForRelease;
-                    runner.rt.diagnostics.completion_step(download_id, step);
                     tell(runner, download_id, paths.final_path(), step).await;
                 }
                 wait_or_stop(runner, backoff.next()).await?;

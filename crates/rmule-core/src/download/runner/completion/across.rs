@@ -10,12 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use rmule_primitives::{Ed2kFileLink, FileHash};
 
 use super::copy::{Copied, copy_hashed, copy_path, sync_directory};
-use super::{
-    Landed, Refusal, free_destination, land, on_pool, refused, remove_quietly, stopped,
-    store_destination, tell,
-};
+use super::{land_free, on_pool, refused, remove_quietly, stopped, tell};
 use crate::DownloadPaths;
-use crate::download::runner::{RunnerContext, stop_reason, wait_until_stop};
+use crate::download::runner::RunnerContext;
 use crate::error::{DownloadFailure, FinalizeError};
 use crate::service::{CompletionStep, DownloadId};
 
@@ -32,8 +29,6 @@ pub(super) async fn copy_into_place<S, P>(
     mut destination: PathBuf,
 ) -> Result<PathBuf, DownloadFailure> {
     let part_path = row.part_path();
-    let diagnostics = &runner.rt.diagnostics;
-    diagnostics.completion_step(download_id, CompletionStep::QueuedForCopy);
     tell(
         runner,
         download_id,
@@ -41,13 +36,9 @@ pub(super) async fn copy_into_place<S, P>(
         CompletionStep::QueuedForCopy,
     )
     .await;
-    let mut stop_rx = runner.stop_rx.clone();
-    let turn = tokio::select! {
-        biased;
-        () = wait_until_stop(&mut stop_rx) => return Err(stop_reason(&stop_rx).unwrap_or(DownloadFailure::Cancelled)),
-        turn = Arc::clone(&runner.rt.copy_turn).acquire_owned() => turn,
-    };
-    diagnostics.completion_step(download_id, CompletionStep::Copying);
+    let turn = runner
+        .until_stop(Arc::clone(&runner.rt.copy_turn).acquire_owned())
+        .await?;
     tell(runner, download_id, &destination, CompletionStep::Copying).await;
     let copy = copy_path(&destination);
     remove_quietly(copy.clone()).await;
@@ -57,28 +48,17 @@ pub(super) async fn copy_into_place<S, P>(
         tracing::warn!("the bytes copied do not hash to the file; repairing");
         return Err(refused(runner, download_id, FinalizeError::Mismatch).await);
     }
-    loop {
-        if !runner.completion.begin() {
+    match land_free(runner, download_id, row, &copy, &mut destination).await {
+        Ok(Ok(())) => {}
+        Ok(Err(refusal)) => {
             remove_quietly(copy).await;
-            return Err(stopped(runner).await);
+            return Err(DownloadFailure::CompletionCopyFailed {
+                os_code: refusal.os_code(),
+            });
         }
-        let landed = land(runner, &copy, &destination).await;
-        runner.completion.settle(matches!(landed, Landed::InPlace));
-        match landed {
-            Landed::InPlace => break,
-            Landed::Taken => {
-                destination = free_destination(row).await;
-                store_destination(runner, download_id, &destination)?;
-            }
-            Landed::Refused(refusal) => {
-                remove_quietly(copy).await;
-                let os_code = match refusal {
-                    Refusal::InUse { os_code } => Some(os_code),
-                    Refusal::Other { os_code } => os_code,
-                    Refusal::CrossesDevices => None,
-                };
-                return Err(DownloadFailure::CompletionCopyFailed { os_code });
-            }
+        Err(failure) => {
+            remove_quietly(copy).await;
+            return Err(failure);
         }
     }
     drop(turn);
@@ -119,15 +99,13 @@ async fn copy_answering_stop<S, P>(
             })
         }
     });
-    let mut stop_rx = runner.stop_rx.clone();
-    let copied = tokio::select! {
-        biased;
-        () = wait_until_stop(&mut stop_rx) => {
+    let copied = match runner.until_stop(&mut task).await {
+        Ok(copied) => copied,
+        Err(failure) => {
             drop(raise);
             let _ = task.await;
-            return Err(stop_reason(&stop_rx).unwrap_or(DownloadFailure::Cancelled));
+            return Err(failure);
         }
-        copied = &mut task => copied,
     };
     let failed = |os_code| {
         tracing::warn!(

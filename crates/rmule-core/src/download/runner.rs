@@ -205,6 +205,22 @@ impl<S, P> RunnerContext<S, P> {
         self.repair.swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// `work`, unless the run's stop arrives first: the stop is looked at
+    /// first, and ends the wait with the failure it stands for.
+    pub(crate) async fn until_stop<T>(
+        &self,
+        work: impl std::future::Future<Output = T>,
+    ) -> Result<T, DownloadFailure> {
+        let mut stop_rx = self.stop_rx.clone();
+        tokio::select! {
+            biased;
+            () = wait_until_stop(&mut stop_rx) => {
+                Err(stop_reason(&stop_rx).unwrap_or(DownloadFailure::Cancelled))
+            }
+            done = work => Ok(done),
+        }
+    }
+
     /// Our own half of the family question, read fresh — the chooser's verdict
     /// is re-derived on every advert, never cached, because an IPv6 prefix
     /// renumber is routine.
@@ -321,17 +337,14 @@ where
     let server_leg = server_leg::ServerLeg::new(runner.rt.server_session.session_changes(), target);
     // The link's own sources come first (ADR-0089's amendment), and a
     // link that carries one can feed the run without a server, as Kad can.
-    let link_sources = {
-        let mut stop_rx = runner.stop_rx.clone();
-        let now = crate::server_list::unix_seconds(std::time::SystemTime::now());
-        tokio::select! {
-            biased;
-            _ = wait_until_stop(&mut stop_rx) => {
-                return Err(stop_reason(&stop_rx).unwrap_or(DownloadFailure::Cancelled));
-            }
-            sources = link_sources::link_sources(&request.file, &runner.rt.resolver, now) => sources,
-        }
-    };
+    let now = crate::server_list::unix_seconds(std::time::SystemTime::now());
+    let link_sources = runner
+        .until_stop(link_sources::link_sources(
+            &request.file,
+            &runner.rt.resolver,
+            now,
+        ))
+        .await?;
     // The seeds attach handed this run go first (ADR-0109, "Source Seeds");
     // every source of the start passes the same gate, inside the brain. A run
     // whose seeds can be dialed starts its fleet at once and makes its first
