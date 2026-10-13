@@ -413,7 +413,7 @@ _Avoid_: availability, source count
 **Source Sighting**:
 One channel's statement that a peer has the file, with the one road it names
 (`rmule-primitives` glossary). Every channel — a server answer, a source exchange, a link,
-a Kad source row — hands the **Source Book** this one value.
+a Kad source row, a peer that asked us about the file — hands the **Source Book** this one value.
 _Avoid_: exchanged source, Kad source (each was one channel's copy)
 
 **Distrusted Peer**:
@@ -646,7 +646,8 @@ _Avoid_: sequential download, buffer
 **Serve State**:
 The sans-I/O serving brain, the serve-side mirror of **Download State**: it owns every
 clock-free serve decision — probe/status/hash-set answers from a **Shared File
-Registry** snapshot, slot admission via the **Upload Slot Queue** it contains, AICH
+Registry** snapshot and its copy of the **Served Downloads** (a registry row wins), slot
+admission via the **Upload Slot Queue** it contains, AICH
 tree building from round-tripped byte reads, credit recording, and **Secured
 Identity** binding — and returns an ordered `Vec<ServeDecision>` that the `ServeTask`
 enacts (sockets, registry snapshot refreshes, ledger lock, `ContentFileStore` reads).

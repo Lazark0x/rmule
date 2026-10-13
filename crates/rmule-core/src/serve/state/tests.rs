@@ -4,6 +4,7 @@
 //! live in a submodule.
 
 mod reask;
+mod served;
 mod sharing;
 mod slots;
 mod source_exchange;

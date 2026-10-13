@@ -13,7 +13,8 @@
 //!   obfuscated for a waiter we know;
 //! - a known waiter's ping is answered only for the file it waits for, and its
 //!   UDP version decides what is read of the ping (`> 3` the part status,
-//!   `== 3` the complete-source count) and whether our status rides the ack;
+//!   `== 3` the complete-source count) and whether our status rides the ack —
+//!   the parts we hold of the file, a whole file's as the count `0` alone;
 //! - a ping cut short of what that version reads is silenced, as aMule's
 //!   reader throws and its dispatcher only logs;
 //! - an unknown pinger gets `OP_QUEUEFULL`, always plaintext, only while
@@ -114,6 +115,28 @@ pub struct QueueRoom {
     pub max: usize,
 }
 
+/// The file a ping names, as we share it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedFile {
+    /// Its exact size, which a UDPv4 ping's status is read against.
+    pub size: u64,
+    /// The parts we hold, in the writer's count (`size / PARTSIZE + 1`); a
+    /// status holding every part, or the count-`0` sentinel, goes out as the
+    /// count `0` alone.
+    pub status: PartBitmap,
+}
+
+impl SharedFile {
+    /// A file we share whole.
+    #[must_use]
+    pub fn whole(size: u64) -> Self {
+        Self {
+            size,
+            status: PartBitmap::complete_source_sentinel(),
+        }
+    }
+}
+
 /// The responder's verdict on one ping.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReaskAnswer {
@@ -165,16 +188,16 @@ pub enum Standing {
     Restated(Option<PartBitmap>),
 }
 
-/// Answer `ping` from `pinger`, given the queue's `room` and the shared file's
-/// size (`None` when we do not share the file).
+/// Answer `ping` from `pinger`, given the queue's `room` and the file as we
+/// share it (`None` when we do not share the file).
 #[must_use]
 pub fn answer(
     ping: &ReaskPing<'_>,
     pinger: &Pinger,
     room: QueueRoom,
-    shared_size: Option<u64>,
+    shared: Option<&SharedFile>,
 ) -> ReaskAnswer {
-    let Some(file_size) = shared_size else {
+    let Some(shared) = shared else {
         // Resolved before the file, so a waiter we know is answered
         // obfuscated even here; anyone else plaintext.
         let encrypt_for = match pinger {
@@ -187,7 +210,7 @@ pub fn answer(
         });
     };
     match pinger {
-        Pinger::Known(waiter) => answer_waiter(ping, waiter, file_size),
+        Pinger::Known(waiter) => answer_waiter(ping, waiter, shared),
         Pinger::Ambiguous => ReaskAnswer::untouched(ReaskReply::Silent(Silence::AmbiguousIp)),
         Pinger::Unknown if room.waiting + QUEUE_FULL_HEADROOM > room.max => {
             // Never obfuscated: there is no identity to key on (aMule: "we
@@ -203,7 +226,8 @@ pub fn answer(
 }
 
 /// A known waiter's ping for a file we share.
-fn answer_waiter(ping: &ReaskPing<'_>, waiter: &KnownWaiter, file_size: u64) -> ReaskAnswer {
+fn answer_waiter(ping: &ReaskPing<'_>, waiter: &KnownWaiter, shared: &SharedFile) -> ReaskAnswer {
+    let file_size = shared.size;
     if waiter.waiting_for != ping.file_hash {
         return ReaskAnswer::untouched(ReaskReply::Silent(Silence::OtherFile));
     }
@@ -227,10 +251,16 @@ fn answer_waiter(ping: &ReaskPing<'_>, waiter: &KnownWaiter, file_size: u64) -> 
     if waiter.udp_version == 3 && !carries_complete_count(ping.datagram) {
         return silenced(standing);
     }
-    // Our status rides only to a UDPv4 waiter, in aMule's writer shape for a
-    // file that is not a part file: the count `0` alone (`:214-219`). Every
-    // file rmule shares is complete.
-    let part_status = (waiter.udp_version > 3).then(PartBitmap::complete_source_sentinel);
+    // Our status rides only to a UDPv4 waiter (`:214-219`): a part file's
+    // own, a whole file's as the count `0` alone, the writer shape for a file
+    // that is not a part file.
+    let part_status = (waiter.udp_version > 3).then(|| {
+        if shared.status.is_complete() {
+            PartBitmap::complete_source_sentinel()
+        } else {
+            shared.status.clone()
+        }
+    });
     ReaskAnswer {
         reply: ReaskReply::Send {
             datagram: ReaskAck {

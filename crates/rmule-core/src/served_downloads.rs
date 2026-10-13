@@ -17,17 +17,29 @@
 //! generation**; the actor selects on it, reads what moved
 //! ([`ServedDownloads::look`]) and fires its one share trigger. The actor's
 //! own changes it looks at in the same step that made them.
+//!
+//! Serve State reads every entry afresh before each peer input and reask
+//! ([`ServedDownloads::read_since`]), gated by the cell's **version**, which
+//! every change moves. An asker of a running download is handed to its run
+//! through the entry's inbox ([`ServedDownloads::sight`]), which the run opens
+//! ([`RunLease::take_askers`]) and the actor closes when it takes the lease
+//! back.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::SystemTime;
 
-use rmule_primitives::{ED2K_PART_SIZE, FileHash, PartHash, PartHashSet};
-use tokio::sync::watch;
+use rmule_peer::PartBitmap;
+use rmule_primitives::{ED2K_PART_SIZE, FileHash, PartHash, PartHashSet, SourceSighting};
+use tokio::sync::{mpsc, watch};
 
 use crate::file_key::FileKey;
 use crate::{DownloadId, DownloadLifecycle, DurableDownloadRecord, VerifiedPartRecord};
+
+/// How many askers a running download's inbox holds before the serve side
+/// drops the next one.
+const ASKER_INBOX: usize = 16;
 
 /// Why a Partial Share stopped being offered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,9 +110,15 @@ impl VerifiedRange {
     }
 
     /// Whether part `part_index` lies inside the range.
-    #[cfg(test)]
     pub(crate) fn holds(&self, part_index: u32) -> bool {
         self.0.contains(&part_index)
+    }
+
+    /// The status a `file_size`-byte file holding this range states: spelt by
+    /// the one function the run's own status is ([`PartBitmap::downloader`]),
+    /// so what the serve side says and what the run says are one set.
+    pub(crate) fn status(&self, file_size: u64) -> PartBitmap {
+        PartBitmap::downloader(file_size, |part| self.holds(part.value()))
     }
 
     /// Whether the range holds any part of the file.
@@ -193,6 +211,12 @@ struct Entry {
     holder: Holder,
     /// Why a run's write withdrew the offer, until the actor looks.
     withdrawn: Option<PartialEnd>,
+    /// A run's write offered the entry since the actor's last look, so an
+    /// offer that ended again before the look is still said.
+    offered_since_look: bool,
+    /// Where the run holding the entry takes its askers; `None` while the
+    /// actor holds it.
+    askers: Option<mpsc::Sender<SourceSighting>>,
 }
 
 /// What the actor's last look saw of a Served Download.
@@ -209,6 +233,8 @@ struct Book {
     ended: HashMap<FileHash, PartialEnd>,
     /// What the actor's last look saw.
     seen: HashMap<FileHash, Seen>,
+    /// Moved by every change a reader could see.
+    version: u64,
 }
 
 impl Book {
@@ -226,6 +252,26 @@ impl Book {
             .get_mut(&lease.file_hash)
             .filter(|entry| entry.holder == Holder::Run(lease.run))
     }
+}
+
+/// One Served Download as Serve State reads it (ADR-0113 rule 5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ServedLook {
+    /// The entry as it stands.
+    pub(crate) served: Served,
+    /// Whether it is offered now: a **Partial Share**.
+    pub(crate) offered: bool,
+    /// Whether a run holds it and takes its askers as sightings.
+    pub(crate) takes_askers: bool,
+}
+
+/// Every Served Download as one read found it, at the cell's version then.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ServedRead {
+    /// The version the read was made at.
+    pub(crate) version: u64,
+    /// Each entry, by file hash.
+    pub(crate) entries: HashMap<FileHash, ServedLook>,
 }
 
 /// One change the actor's look found since the last.
@@ -304,8 +350,11 @@ impl ServedDownloads {
                 served,
                 holder: Holder::Actor,
                 withdrawn: None,
+                offered_since_look: false,
+                askers: None,
             },
         );
+        book.version += 1;
         true
     }
 
@@ -326,12 +375,18 @@ impl ServedDownloads {
     }
 
     /// Take the entry of `file_hash` back from run `run`, which has ended or
-    /// been told to; from here its lease writes nothing.
+    /// been told to; from here its lease writes nothing and its inbox is
+    /// closed.
     pub(crate) fn take_back(&self, file_hash: FileHash, run: u64) {
-        if let Some(entry) = self.lock().entries.get_mut(&file_hash)
+        let mut guard = self.lock();
+        let book = &mut *guard;
+        if let Some(entry) = book.entries.get_mut(&file_hash)
             && entry.holder == Holder::Run(run)
         {
             entry.holder = Holder::Actor;
+            if entry.askers.take().is_some() {
+                book.version += 1;
+            }
         }
     }
 
@@ -353,17 +408,53 @@ impl ServedDownloads {
         book.entries.remove(&file_hash);
         book.held_back.remove(&file_hash);
         book.ended.insert(file_hash, cause);
+        book.version += 1;
         true
     }
 
     /// Hold back `file_hash`'s entry, or release it.
     pub(crate) fn hold_back(&self, file_hash: FileHash, held: bool) {
         let mut book = self.lock();
-        if !held {
-            book.held_back.remove(&file_hash);
-        } else if book.entries.contains_key(&file_hash) {
-            book.held_back.insert(file_hash);
+        let moved = if !held {
+            book.held_back.remove(&file_hash)
+        } else {
+            book.entries.contains_key(&file_hash) && book.held_back.insert(file_hash)
+        };
+        if moved {
+            book.version += 1;
         }
+    }
+
+    /// Every Served Download as it stands, unless nothing changed since the
+    /// read at version `seen`.
+    pub(crate) fn read_since(&self, seen: u64) -> Option<ServedRead> {
+        let book = self.lock();
+        (book.version != seen).then(|| ServedRead {
+            version: book.version,
+            entries: book
+                .entries
+                .iter()
+                .map(|(file_hash, entry)| {
+                    let look = ServedLook {
+                        served: entry.served.clone(),
+                        offered: book.offered(*file_hash),
+                        takes_askers: entry.askers.is_some(),
+                    };
+                    (*file_hash, look)
+                })
+                .collect(),
+        })
+    }
+
+    /// Hand `sighting`, an asker of `file_hash`'s Served Download, to the run
+    /// that holds it. `false` when no run takes it: the entry is gone, the
+    /// actor holds it, or its inbox is full.
+    pub(crate) fn sight(&self, file_hash: FileHash, sighting: SourceSighting) -> bool {
+        self.lock()
+            .entries
+            .get(&file_hash)
+            .and_then(|entry| entry.askers.as_ref())
+            .is_some_and(|askers| askers.try_send(sighting).is_ok())
     }
 
     /// Every entry's destination, for the refused-folder rule.
@@ -388,25 +479,31 @@ impl ServedDownloads {
             let offered = book.offered(file_hash);
             let entry = book.entries.get_mut(&file_hash).expect("listed above");
             let withdrawn = entry.withdrawn.take();
-            match book.seen.get(&file_hash) {
-                None => {
-                    changes.push(OfferChange::Joined(file_hash));
-                    if offered {
-                        changes.push(OfferChange::Offered(file_hash));
-                    }
-                }
-                Some(was) if offered && !was.offered => {
+            let flickered = std::mem::take(&mut entry.offered_since_look);
+            let cause = if book.held_back.contains(&file_hash) {
+                PartialEnd::HeldBack
+            } else {
+                withdrawn.unwrap_or(PartialEnd::Changed)
+            };
+            let was = book.seen.get(&file_hash).map(|seen| seen.offered);
+            if was.is_none() {
+                changes.push(OfferChange::Joined(file_hash));
+            }
+            let was = was.unwrap_or(false);
+            match (was, offered) {
+                (false, true) => changes.push(OfferChange::Offered(file_hash)),
+                (true, false) => changes.push(OfferChange::Withdrawn(file_hash, cause)),
+                // Withdrawn and offered again between two looks: both said.
+                (true, true) if withdrawn.is_some() => {
+                    changes.push(OfferChange::Withdrawn(file_hash, cause));
                     changes.push(OfferChange::Offered(file_hash));
                 }
-                Some(was) if !offered && was.offered => {
-                    let cause = if book.held_back.contains(&file_hash) {
-                        PartialEnd::HeldBack
-                    } else {
-                        withdrawn.unwrap_or(PartialEnd::Changed)
-                    };
+                // Offered and withdrawn again between two looks: both said.
+                (false, false) if flickered => {
+                    changes.push(OfferChange::Offered(file_hash));
                     changes.push(OfferChange::Withdrawn(file_hash, cause));
                 }
-                Some(_) => {}
+                _ => {}
             }
             seen.insert(file_hash, Seen { offered });
         }
@@ -468,10 +565,14 @@ impl ServedDownloads {
         };
         write(&mut entry.served);
         let now = book.offered(lease.file_hash);
+        let entry = book.leased(lease).expect("written above");
         if was && !now {
-            let entry = book.leased(lease).expect("written above");
             entry.withdrawn = Some(PartialEnd::Changed);
         }
+        if !was && now {
+            entry.offered_since_look = true;
+        }
+        book.version += 1;
         drop(guard);
         if was != now {
             self.offers.send_modify(|generation| *generation += 1);
@@ -489,6 +590,18 @@ pub(crate) struct RunLease {
 }
 
 impl RunLease {
+    /// Open the entry's inbox: the askers the serve side hands this run from
+    /// now on, in place of any inbox an earlier pass of the run opened.
+    /// `None` when the run no longer holds the entry.
+    pub(crate) fn take_askers(&self) -> Option<mpsc::Receiver<SourceSighting>> {
+        let (askers, inbox) = mpsc::channel(ASKER_INBOX);
+        let mut guard = self.cell.lock();
+        let book = &mut *guard;
+        book.leased(self)?.askers = Some(askers);
+        book.version += 1;
+        Some(inbox)
+    }
+
     /// Rule the Verified Range from the part hash set in force and the parts
     /// the store records: `set` becomes the entry's set when it is whole.
     pub(crate) fn record_range(&self, set: &[PartHash], records: &[VerifiedPartRecord]) -> bool {

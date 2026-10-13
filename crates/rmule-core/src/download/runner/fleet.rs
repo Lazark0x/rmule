@@ -233,6 +233,10 @@ where
     // run holds the inbox for its life, so none is taken by a repair's rerun
     // while this one still runs.
     let mut later_links = runner.later_links.lock().await;
+    // The peers that ask us about this file while it downloads (ADR-0113):
+    // the serve side hands each to this run as a candidate source. A run
+    // with no lease — a download of one part — takes none.
+    let mut askers = runner.served.as_ref().and_then(|lease| lease.take_askers());
     // `fact_tx` is moved in and kept alive for the whole run so a worker
     // backfilled mid-download can join the shared event stream by cloning it
     // (ADR-0030).
@@ -458,6 +462,14 @@ where
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
             }
+            Some(sighting) = recv_asker(&mut askers) => {
+                // A peer asked us about the file: one more candidate, under
+                // the run's source cap.
+                let taken = intake::sight(ctx.runner, &mut ctx.state, Channel::Prober, [sighting]);
+                let mut q: VecDeque<Decision> = taken.decisions.into();
+                enact_drain(&mut q, &mut ctx).await?;
+                continue;
+            }
             Some(sources) = kad_sources_rx.recv() => {
                 // Kad sources (ADR-0043): a dialable row pools, a buddy or
                 // type-6 row becomes a callback candidate.
@@ -641,6 +653,15 @@ fn publish_seeds<S, P>(ctx: &LoopCtx<'_, S, P>) {
 }
 
 /// Sleep until `deadline`, or never while the brain names none (ADR-0026).
+/// The next asker the serve side handed this run; pending forever for a run
+/// with no inbox.
+async fn recv_asker(askers: &mut Option<mpsc::Receiver<SourceSighting>>) -> Option<SourceSighting> {
+    match askers {
+        Some(askers) => askers.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
 async fn sleep_until_optional(deadline: Option<tokio::time::Instant>) {
     match deadline {
         Some(deadline) => tokio::time::sleep_until(deadline).await,

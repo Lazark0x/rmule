@@ -345,6 +345,45 @@ fn our_part_status_reports_the_verified_parts_as_the_reask_ping_bitfield() {
     );
 }
 
+#[test]
+fn the_verified_range_states_the_status_the_run_states_for_the_same_parts() {
+    // Invariant A (ADR-0113): what the serve side says of a download and what
+    // its run says are one set, phantom part included, whichever size.
+    use crate::served_downloads::{VerifiedRange, WholeSet};
+    use rmule_primitives::{ED2K_PART_SIZE, PartHash, PartHashSet};
+
+    for file_size in [3 * ED2K_PART_SIZE, 3 * ED2K_PART_SIZE + 5] {
+        let count = PartHashSet::expected_hash_count(file_size).unwrap();
+        let hashes: Vec<PartHash> = (0..count)
+            .map(|part| PartHash::from_bytes([u8::try_from(part).unwrap(); 16]))
+            .collect();
+        let set = WholeSet::of(file_size, &hashes).expect("the whole set");
+        let records: Vec<crate::VerifiedPartRecord> = [0u32, 2]
+            .into_iter()
+            .map(|part_index| crate::VerifiedPartRecord {
+                part_index,
+                offset: u64::from(part_index) * ED2K_PART_SIZE,
+                len: ED2K_PART_SIZE,
+                part_hash: hashes[part_index as usize],
+            })
+            .collect();
+        let state = pooled_state(
+            ContentFacts {
+                verified_parts: vec![0, 2],
+                ..file_hash_only_content(file_size)
+            },
+            &[],
+            QUIET_POSTURE,
+            1,
+        );
+        assert_eq!(
+            VerifiedRange::of_records(Some(&set), &records).status(file_size),
+            state.our_part_status(),
+            "{file_size} bytes"
+        );
+    }
+}
+
 /// A one-part download with server-UDP global discovery armed (ADR-0051): an
 /// exhausted pool waits for a future UDP sweep instead of failing.
 fn discovery_armed_state(pool: Vec<PeerEndpoint>, peer_concurrency: usize) -> DownloadState {

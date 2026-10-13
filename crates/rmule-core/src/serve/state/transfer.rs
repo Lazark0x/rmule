@@ -100,7 +100,7 @@ impl ServeState {
         decisions
     }
 
-    /// Stop serving `file_hash` now: it leaves the snapshot, and every peer
+    /// Stop serving `file_hash` now: it leaves the share set, and every peer
     /// queued or holding a slot for it is told `OP_FILEREQANSNOFIL` and
     /// released, waiters first so a freed slot never goes to another asker
     /// of the same file. A downloader that hears it records us as a dead
@@ -112,6 +112,7 @@ impl ServeState {
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
         self.shared.remove(&file_hash);
+        self.partials.remove(&file_hash);
         self.aich_cache.remove(&file_hash);
         let (holders, waiters): (Vec<PeerEndpoint>, Vec<PeerEndpoint>) = self
             .queue

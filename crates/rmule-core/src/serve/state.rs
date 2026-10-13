@@ -3,7 +3,8 @@
 //! [`ServeState`] is the **Serve State**, the serve-side mirror of
 //! [`DownloadState`](crate::download): it owns every clock-free serve
 //! decision — probe/status/hash-set answers from a **Shared File Registry**
-//! snapshot, slot admission via the **Upload Slot Queue** it contains, block
+//! snapshot and its copy of the **Served Downloads** (ADR-0113), slot
+//! admission via the **Upload Slot Queue** it contains, block
 //! sends with served-range subtraction, AICH tree building from round-tripped
 //! byte reads, credit recording, and **Secured Identity** binding — and
 //! returns an ordered `Vec<`[`ServeDecision`]`>` that the `ServeTask` enacts.
@@ -18,24 +19,26 @@
 
 mod connection;
 mod reask;
+mod served;
 #[cfg(test)]
 mod tests;
 mod transfer;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use rmule_ed2k::OfferedFile;
 use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
 use rmule_peer::{ClientSoftware, PartBitmap, PeerIdentity, ServerCommand};
-use rmule_primitives::{AichHashSet, Ed2kText, FileHash, PeerEndpoint, UserHash};
+use rmule_primitives::{AichHashSet, Ed2kText, FileHash, PeerEndpoint, SourceSighting, UserHash};
 
 use crate::WaiterLeaveCause;
 use crate::registry::SharedFileEntry;
 use crate::serve::source_exchange::{
     ServedFileKind, SourceExchangeThrottle, SxCandidate, SxRequester, held_parts, select_sources,
 };
+use crate::served_downloads::ServedLook;
 use crate::service::ServeEvent;
 use crate::upload_queue::{Promotion, UploadSlotQueue};
 
@@ -107,6 +110,13 @@ pub(super) enum ServeDecision {
         peer: PeerEndpoint,
         file_hash: FileHash,
     },
+    /// Hand `sighting`, a peer that asked about `file_hash`, to the run of
+    /// the download serving it as a candidate source (ADR-0113). The run
+    /// takes it under its own source cap; a full inbox drops it.
+    KeepAsker {
+        file_hash: FileHash,
+        sighting: SourceSighting,
+    },
 }
 
 /// Why a [`ServeDecision::ReadRange`] was issued — the resumption context
@@ -163,6 +173,16 @@ pub(super) struct ServeState {
     /// replaced by [`ServeState::on_share_set`] on the share-changed trigger
     /// — no per-probe registry round trips.
     shared: HashMap<FileHash, SharedFileEntry>,
+    /// The brain's copy of the **Served Downloads** (ADR-0113): every
+    /// download answering probes, refreshed by [`ServeState::on_served`].
+    served: HashMap<FileHash, ServedLook>,
+    /// Entries the cell no longer holds, answering from their last copy
+    /// until the next share trigger drops them.
+    ended: HashSet<FileHash>,
+    /// The **Partial Share**s: the Served Downloads offered at the last share
+    /// trigger whose content no registry row offers whole. With the rows,
+    /// the share set.
+    partials: HashSet<FileHash>,
     queue: UploadSlotQueue,
     /// The identity each connected peer's session read off its hello and
     /// keeps current (ADR-0055 §Serving): its User Hash keys credit
@@ -200,6 +220,9 @@ impl ServeState {
     pub(super) fn new(queue: UploadSlotQueue) -> Self {
         Self {
             shared: HashMap::new(),
+            served: HashMap::new(),
+            ended: HashSet::new(),
+            partials: HashSet::new(),
             queue,
             identities: HashMap::new(),
             served_ranges: HashMap::new(),
@@ -238,8 +261,10 @@ impl ServeState {
     }
 
     /// Replace the share-set snapshot and announce it. Fed the offered
-    /// registry rows at serve start and on every share-changed trigger. A
-    /// file that left the offer stops being served at once
+    /// registry rows at serve start and on every share-changed trigger, with
+    /// the Served Downloads as last refreshed: the Partial Shares are those
+    /// offered then that no row offers whole. A file that left the offer —
+    /// a row or a Partial Share — stops being served at once
     /// ([`stop_serving`](Self::stop_serving)).
     pub(super) fn on_share_set(
         &mut self,
@@ -247,12 +272,25 @@ impl ServeState {
         now: Instant,
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
-        let leaving: Vec<FileHash> = self
+        for file_hash in self.ended.drain() {
+            self.served.remove(&file_hash);
+        }
+        let rows: HashSet<FileHash> = entries.iter().map(|entry| entry.file_hash).collect();
+        let partials: HashSet<FileHash> = self
+            .served
+            .iter()
+            .filter(|(file_hash, look)| look.offered && !rows.contains(file_hash))
+            .map(|(file_hash, _)| *file_hash)
+            .collect();
+        let mut leaving: Vec<FileHash> = self
             .shared
             .keys()
-            .filter(|file_hash| !entries.iter().any(|entry| entry.file_hash == **file_hash))
+            .chain(&self.partials)
+            .filter(|file_hash| !rows.contains(file_hash) && !partials.contains(file_hash))
             .copied()
             .collect();
+        leaving.sort_unstable();
+        leaving.dedup();
         let mut decisions = Vec::new();
         for file_hash in leaving {
             decisions.extend(self.stop_serving(file_hash, now, modifiers));
@@ -271,6 +309,7 @@ impl ServeState {
             .into_iter()
             .map(|entry| (entry.file_hash, entry))
             .collect();
+        self.partials = partials;
         decisions.push(ServeDecision::Announce(files));
         decisions
     }
@@ -385,11 +424,11 @@ impl ServeState {
         purge_after: Duration,
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
-        let shared = &self.shared;
+        let (shared, partials) = (&self.shared, &self.partials);
         let purge = self.queue.purge(
             now,
             purge_after,
-            |hash| shared.contains_key(&hash),
+            |hash| shared.contains_key(&hash) || partials.contains(&hash),
             modifiers,
         );
         for &peer in &purge.removed {

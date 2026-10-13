@@ -6,7 +6,7 @@
 use std::time::Instant;
 
 use rmule_peer::peer_udp::responder::{
-    self, KnownWaiter, Pinger, QueueRoom, ReaskReply, Silence, Standing,
+    self, KnownWaiter, Pinger, QueueRoom, ReaskReply, SharedFile, Silence, Standing,
 };
 use rmule_peer::{PartBitmap, PeerIdentity};
 use rmule_primitives::{PeerEndpoint, ed2k_status_part_count};
@@ -55,15 +55,24 @@ impl ServeState {
             ReaskResolution::AmbiguousIp => (None, Pinger::Ambiguous),
             ReaskResolution::Unknown => (None, Pinger::Unknown),
         };
+        // Only a file in the share set is answered (aMule's `sharedfiles`,
+        // `ClientUDPSocket.cpp:177`): a row with its count `0`, a Partial
+        // Share with its Verified Range.
         let file_hash = ping.file_hash();
-        let file_size = self.shared.get(&file_hash).map(|entry| entry.file_size);
+        let shared = self
+            .asked(file_hash)
+            .filter(|asked| asked.offered())
+            .map(|asked| SharedFile {
+                size: asked.file_size(),
+                status: asked.status(),
+            });
         let room = QueueRoom {
             waiting: self.queue.waiting_len(),
             max: self.queue.max_queue_len(),
         };
-        let answer = responder::answer(&ping, &pinger, room, file_size);
+        let answer = responder::answer(&ping, &pinger, room, shared.as_ref());
 
-        if let (Some(peer), Some(file_size)) = (peer, file_size) {
+        if let (Some(peer), Some(file_size)) = (peer, shared.map(|shared| shared.size)) {
             match answer.standing {
                 Standing::Untouched => {}
                 Standing::Heard => self.queue.refresh_reask(peer, now),

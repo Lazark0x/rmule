@@ -44,7 +44,7 @@ fn unstarted(peer_concurrency: usize) -> DownloadState {
     )
 }
 
-fn every_channel() -> [Channel; 6] {
+fn every_channel() -> [Channel; 7] {
     [
         Channel::Link,
         Channel::Seed,
@@ -52,6 +52,7 @@ fn every_channel() -> [Channel; 6] {
         Channel::Global(source_server(9)),
         Channel::Kad,
         Channel::Exchanged(peer(1)),
+        Channel::Prober,
     ]
 }
 
@@ -390,4 +391,52 @@ fn the_start_pools_seeds_then_link_then_server_and_a_shared_source_once() {
     );
     assert_eq!(state.peer_crypt(peer(3)), answered.peer_crypt());
     assert!(state.is_remembered(peer(1)));
+}
+
+/// The `n`th of many High-ID sources, past what [`peer`] can number:
+/// `10.1.<n % 256>.<n / 256 + 1>`.
+fn nth_source(n: u32) -> SourceSighting {
+    let [low, high, ..] = n.to_le_bytes();
+    let ip = u32::from_le_bytes([10, 1, low, high + 1]);
+    SourceSighting::plain(PeerSource::new(
+        rmule_primitives::ClientId::from_u32(ip),
+        4662,
+    ))
+}
+
+#[test]
+fn a_prober_joins_the_pool_once_and_never_past_the_source_cap() {
+    use crate::download::state::sightings::PROBER_SOURCE_CAP;
+
+    let mut state = unstarted(1);
+    let below: Vec<SourceSighting> = (0..PROBER_SOURCE_CAP - 1).map(nth_source).collect();
+    take(&mut state, Channel::Server, below);
+    let prober = nth_source(PROBER_SOURCE_CAP);
+    for _ in 0..2 {
+        take(&mut state, Channel::Prober, vec![prober]);
+    }
+    assert_eq!(
+        state.known_sources(),
+        PROBER_SOURCE_CAP,
+        "the prober joined once"
+    );
+
+    let taken = take(
+        &mut state,
+        Channel::Prober,
+        vec![nth_source(PROBER_SOURCE_CAP + 1)],
+    );
+    assert_eq!(
+        state.known_sources(),
+        PROBER_SOURCE_CAP,
+        "none past the cap"
+    );
+    assert_eq!((taken.tally.received, taken.tally.admitted), (1, 0));
+    // Another channel's source still joins: the cap is the prober's.
+    take(
+        &mut state,
+        Channel::Server,
+        vec![nth_source(PROBER_SOURCE_CAP + 2)],
+    );
+    assert_eq!(state.known_sources(), PROBER_SOURCE_CAP + 1);
 }

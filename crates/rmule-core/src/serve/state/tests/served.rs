@@ -1,0 +1,412 @@
+//! Asks about a download (ADR-0113 §"What each ask is answered"): a Served
+//! Download answers probes from its start and offers nothing until its
+//! Verified Range holds a part; a Partial Share is offered from its range; a
+//! registry row of the same hash wins; a running download's askers are kept
+//! as candidates; nothing is AICH.
+
+use std::path::PathBuf;
+
+use rmule_peer::ReaskAck;
+
+use super::*;
+use crate::DownloadId;
+use crate::VerifiedPartRecord;
+use crate::served_downloads::{BytesAt, Served, VerifiedRange, WholeSet};
+
+/// Three whole parts: the writer counts four, the phantom always held, and
+/// the whole set has four hashes, the empty fourth part's included.
+const SIZE: u64 = 3 * ED2K_PART_SIZE;
+
+fn set() -> Vec<PartHash> {
+    (0..4)
+        .map(|part| PartHash::from_bytes([0x40 + part; 16]))
+        .collect()
+}
+
+/// A Served Download of [`SIZE`] bytes, its whole set held when `whole`, the
+/// parts `verified` recorded against it, its run taking askers when
+/// `running`.
+fn download(whole: bool, verified: &[u32], running: bool) -> ServedLook {
+    let hashes = set();
+    let set = whole.then(|| WholeSet::of(SIZE, &hashes).expect("the whole set"));
+    let records: Vec<VerifiedPartRecord> = verified
+        .iter()
+        .map(|&part_index| VerifiedPartRecord {
+            part_index,
+            offset: u64::from(part_index) * ED2K_PART_SIZE,
+            len: ED2K_PART_SIZE,
+            part_hash: hashes[part_index as usize],
+        })
+        .collect();
+    let range = VerifiedRange::of_records(set.as_ref(), &records);
+    ServedLook {
+        offered: set.is_some() && range.holds_a_part(),
+        served: Served {
+            download_id: DownloadId::from_u64(1),
+            file_size: SIZE,
+            name: "download.bin".into(),
+            part_path: PathBuf::from("/temp/download.bin.part"),
+            final_path: PathBuf::from("/downloads/download.bin"),
+            bytes_at: BytesAt::PartFile,
+            set,
+            range,
+            identity: None,
+        },
+        takes_askers: running,
+    }
+}
+
+/// A state serving `rows` and the Served Downloads `downloads`, through one
+/// slot, the share trigger fired once.
+fn state_of(rows: Vec<SharedFileEntry>, downloads: Vec<(FileHash, ServedLook)>) -> ServeState {
+    let mut state = ServeState::new(UploadSlotQueue::new(1, 8));
+    state.on_served(downloads.into_iter().collect());
+    let _ = state.on_share_set(rows, Instant::now(), &no_modifiers());
+    state
+}
+
+fn ask(state: &mut ServeState, p: PeerEndpoint, request: ServerEvent) -> Vec<ServeDecision> {
+    state.on_conn_event(
+        Instant::now(),
+        p,
+        ServeInput::Server(request),
+        &no_modifiers(),
+    )
+}
+
+fn name_ask(file_hash: FileHash) -> ServerEvent {
+    ServerEvent::FileRequested {
+        file_hash,
+        status: PartStatusTail::of(&PartBitmap::downloader_empty(SIZE)),
+    }
+}
+
+/// The status a writer states for a file of [`SIZE`] holding `parts`, the
+/// phantom fourth part held.
+fn holding(parts: &[u32]) -> PartBitmap {
+    let bits = parts.iter().fold(1u8 << 3, |bits, part| bits | 1 << part);
+    PartBitmap::decode(4, &[bits]).unwrap()
+}
+
+/// What the run is handed for an asker identified by [`identify`].
+fn kept(file_hash: FileHash, user_hash: UserHash) -> ServeDecision {
+    let identity = hello_facts(user_hash, 0, 0, 2).identity();
+    ServeDecision::KeepAsker {
+        file_hash,
+        sighting: identity.source_coordinate(),
+    }
+}
+
+#[test]
+fn a_download_before_its_first_verified_part_answers_probes_and_moves_nobody() {
+    let (row, file) = (hash(0x01), hash(0x02));
+    let mut state = state_of(
+        vec![entry(row, 1_000, "row.bin")],
+        vec![(file, download(false, &[], false))],
+    );
+    let t = Instant::now();
+    // A waiter of the row asks about the download.
+    let _ = slot_request(&mut state, peer(4000), row, t);
+    let p = peer(4001);
+    identify(&mut state, p, user(0x0B), t);
+    assert!(matches!(
+        slot_request(&mut state, p, row, t).as_slice(),
+        [
+            _,
+            _,
+            ServeDecision::Emit(ServeEvent::PeerQueued { rank: 1, .. })
+        ]
+    ));
+
+    assert_eq!(
+        ask(&mut state, p, name_ask(file)),
+        [send(
+            p,
+            ServerCommand::AnswerFileName {
+                file_hash: file,
+                file_name: Ed2kText::from_utf8("download.bin"),
+            },
+        )],
+        "named, and the waiter stays queued for the row"
+    );
+    assert_eq!(
+        ask(&mut state, p, ServerEvent::FileIdSet { file_hash: file }),
+        [send(
+            p,
+            ServerCommand::AnswerFileStatus {
+                file_hash: file,
+                bitmap: PartBitmap::downloader_empty(SIZE),
+            },
+        )],
+        "the empty bitmap, phantom part held"
+    );
+    assert_eq!(
+        ask(
+            &mut state,
+            p,
+            ServerEvent::HashSetRequested { file_hash: file }
+        ),
+        [send(
+            p,
+            ServerCommand::AnswerFileNotFound { file_hash: file }
+        )],
+        "no set held"
+    );
+    assert_eq!(
+        slot_request(&mut state, p, file, t),
+        [],
+        "a slot ask is silent"
+    );
+    assert_eq!(state.queue.waiting_file(p), Some(row), "it moved no waiter");
+}
+
+#[test]
+fn a_download_with_its_whole_set_and_no_part_answers_the_set_and_offers_nothing() {
+    let file = hash(0x02);
+    let mut state = state_of(Vec::new(), vec![(file, download(true, &[], false))]);
+    let p = peer(4001);
+    assert_eq!(
+        ask(
+            &mut state,
+            p,
+            ServerEvent::HashSetRequested { file_hash: file }
+        ),
+        [send(
+            p,
+            ServerCommand::AnswerHashSet {
+                file_hash: file,
+                part_hashes: set(),
+            },
+        )]
+    );
+    assert_eq!(slot_request(&mut state, p, file, Instant::now()), []);
+}
+
+#[test]
+fn a_partial_share_queues_a_slot_ask_and_states_its_verified_range() {
+    let file = hash(0x02);
+    let mut state = state_of(Vec::new(), vec![(file, download(true, &[0, 2], false))]);
+    let t = Instant::now();
+    let holder = peer(4000);
+    assert!(matches!(
+        slot_request(&mut state, holder, file, t).as_slice(),
+        [
+            ServeDecision::CountUploadRequest { .. },
+            ServeDecision::Send {
+                command: ServerCommand::GrantSlot { .. },
+                ..
+            },
+            ServeDecision::Emit(ServeEvent::UploadSlotGranted { .. }),
+        ]
+    ));
+    let waiter = peer(4001);
+    assert!(matches!(
+        slot_request(&mut state, waiter, file, t).as_slice(),
+        [
+            ServeDecision::CountUploadRequest { .. },
+            ServeDecision::Send {
+                command: ServerCommand::SetQueueRank { rank: 1 },
+                ..
+            },
+            ServeDecision::Emit(ServeEvent::PeerQueued { rank: 1, .. }),
+        ]
+    ));
+    assert_eq!(
+        ask(
+            &mut state,
+            waiter,
+            ServerEvent::FileIdSet { file_hash: file }
+        ),
+        [send(
+            waiter,
+            ServerCommand::AnswerFileStatus {
+                file_hash: file,
+                bitmap: holding(&[0, 2]),
+            },
+        )]
+    );
+}
+
+#[test]
+fn a_waiters_udp_reask_carries_a_partial_shares_range_and_a_whole_files_count_zero() {
+    let (row, partial, whole) = (hash(0x01), hash(0x02), hash(0x03));
+    let mut state = state_of(
+        vec![entry(row, SIZE, "row.bin")],
+        vec![
+            (partial, download(true, &[1], false)),
+            (whole, download(true, &[0, 1, 2], false)),
+        ],
+    );
+    let t = Instant::now();
+    // A holder takes the one slot; each waiter after it queues.
+    let _ = slot_request(&mut state, peer_at([10, 0, 0, 1], 4000), row, t);
+    for (file, ip, status) in [
+        (row, [10, 0, 0, 2], PartBitmap::complete_source_sentinel()),
+        (partial, [10, 0, 0, 3], holding(&[1])),
+        (whole, [10, 0, 0, 4], PartBitmap::complete_source_sentinel()),
+    ] {
+        let waiter = peer_at(ip, 4662);
+        identify_udp(&mut state, waiter, user(ip[3]), 4672, 4, t);
+        let _ = slot_request(&mut state, waiter, file, t);
+        let rank = state.queue.waiting_len() as u16;
+        assert_eq!(
+            state.on_reask_ping(t, udp(ip, 4672), &reask_ping(file)),
+            [ServeDecision::SendClientUdp {
+                to: udp(ip, 4672),
+                datagram: ReaskAck {
+                    part_status: Some(status),
+                    rank,
+                }
+                .encode_udp(),
+                crypt_target: target_of(user(ip[3])),
+            }],
+            "file {file:?}"
+        );
+    }
+}
+
+#[test]
+fn a_registry_row_and_a_served_download_of_one_hash_the_row_answers() {
+    let file = hash(0x02);
+    let mut state = state_of(
+        vec![entry(file, SIZE, "row.bin")],
+        vec![(file, download(true, &[0], true))],
+    );
+    let p = peer(4001);
+    identify(&mut state, p, user(0x0B), Instant::now());
+    let named = ask(&mut state, p, name_ask(file));
+    assert_eq!(
+        named,
+        [send(
+            p,
+            ServerCommand::AnswerFileName {
+                file_hash: file,
+                file_name: Ed2kText::from_utf8("row.bin"),
+            },
+        )],
+        "the row's name, and no asker kept for the download"
+    );
+    assert_eq!(
+        ask(&mut state, p, ServerEvent::FileIdSet { file_hash: file }),
+        [send(
+            p,
+            ServerCommand::AnswerFileStatus {
+                file_hash: file,
+                bitmap: super::super::reask::full_bitmap(SIZE),
+            },
+        )]
+    );
+}
+
+#[test]
+fn a_running_downloads_asker_is_kept_and_a_paused_ones_is_answered_only() {
+    let (running, paused) = (hash(0x02), hash(0x03));
+    let mut state = state_of(
+        Vec::new(),
+        vec![
+            (running, download(true, &[0], true)),
+            (paused, download(true, &[0], false)),
+        ],
+    );
+    let p = peer(4001);
+    identify(&mut state, p, user(0x0B), Instant::now());
+    let name = |file| {
+        send(
+            p,
+            ServerCommand::AnswerFileName {
+                file_hash: file,
+                file_name: Ed2kText::from_utf8("download.bin"),
+            },
+        )
+    };
+    assert_eq!(
+        ask(&mut state, p, name_ask(running)),
+        [name(running), kept(running, user(0x0B))]
+    );
+    assert_eq!(ask(&mut state, p, name_ask(paused)), [name(paused)]);
+    // A bundle keeps its asker past the file gate too.
+    let bundle = ServerEvent::FileBundleRequested {
+        file_hash: running,
+        file_size: Some(SIZE),
+        asks: vec![BundledAsk::SetReqId],
+        cut: None,
+    };
+    assert_eq!(
+        ask(&mut state, p, bundle),
+        [
+            kept(running, user(0x0B)),
+            send(
+                p,
+                ServerCommand::AnswerFileStatus {
+                    file_hash: running,
+                    bitmap: holding(&[0]),
+                },
+            ),
+        ]
+    );
+}
+
+#[test]
+fn an_aich_ask_for_a_served_download_decides_nothing() {
+    let file = hash(0x02);
+    let mut state = state_of(Vec::new(), vec![(file, download(true, &[0], true))]);
+    let p = peer(4001);
+    let root = rmule_primitives::AichRootHash::from_bytes([7; 20]);
+    for request in [
+        ServerEvent::AichRequested {
+            file_hash: file,
+            part: 0,
+            root,
+        },
+        ServerEvent::AichFileHashRequested { file_hash: file },
+    ] {
+        assert_eq!(ask(&mut state, p, request), []);
+    }
+}
+
+#[test]
+fn a_partial_share_the_cell_dropped_answers_until_the_next_share_trigger() {
+    let file = hash(0x02);
+    let mut state = state_of(Vec::new(), vec![(file, download(true, &[0], false))]);
+    let t = Instant::now();
+    let _ = slot_request(&mut state, peer(4000), file, t);
+    let waiter = peer(4001);
+    let _ = slot_request(&mut state, waiter, file, t);
+
+    // The download ended; the cell no longer holds it.
+    state.on_served(HashMap::new());
+    assert!(matches!(
+        ask(
+            &mut state,
+            waiter,
+            ServerEvent::FileIdSet { file_hash: file }
+        )
+        .as_slice(),
+        [ServeDecision::Send {
+            command: ServerCommand::AnswerFileStatus { .. },
+            ..
+        }]
+    ));
+    let purged = state.on_purge(t, Duration::from_secs(3600), &no_modifiers());
+    assert_eq!(purged, [], "its waiter is still waiting for a shared file");
+
+    let decisions = state.on_share_set(Vec::new(), t, &no_modifiers());
+    assert!(
+        decisions.contains(&send(
+            waiter,
+            ServerCommand::AnswerFileNotFound { file_hash: file }
+        )),
+        "the trigger stops serving it: {decisions:?}"
+    );
+    assert_eq!(
+        ask(
+            &mut state,
+            waiter,
+            ServerEvent::FileIdSet { file_hash: file }
+        ),
+        [send(
+            waiter,
+            ServerCommand::AnswerFileNotFound { file_hash: file }
+        )]
+    );
+}

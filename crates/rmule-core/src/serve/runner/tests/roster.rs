@@ -26,6 +26,7 @@ async fn a_granted_upload_marks_the_peer_roster_known_and_its_release_forgets_it
         diagnostics: &diagnostics,
         peer_roster: &peer_roster,
         read_failed_tx: None,
+        served: &Default::default(),
     };
     let (_accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(1);
     let mut serve_runtime = FakeServeRuntime {
@@ -113,6 +114,7 @@ async fn a_waiter_leaving_forgets_the_peer_roster_mark(cause: crate::WaiterLeave
         diagnostics: &diagnostics,
         peer_roster: &peer_roster,
         read_failed_tx: None,
+        served: &Default::default(),
     };
     let (_accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(1);
     let mut serve_runtime = FakeServeRuntime {
@@ -256,6 +258,7 @@ async fn a_stopped_serve_forgets_its_holder_and_its_waiter() {
             peer_roster: peer_roster.clone(),
             withheld: crate::registry_check::WithheldRows::default(),
             read_failed_tx: None,
+            served: Default::default(),
         }
         .run(),
     );

@@ -210,3 +210,81 @@ fn each_look_says_each_change_once_with_its_cause() {
     );
     assert_eq!(cell.look(), []);
 }
+
+#[test]
+fn an_offer_that_comes_and_goes_between_two_looks_is_said_both_ways() {
+    let store = store();
+    let cell = ServedDownloads::default();
+    let row = record(&store, 1, SIZE, DownloadLifecycle::Queued);
+    let file = row.file_hash();
+    let set = hashes(1);
+    cell.install(&row, &set);
+    assert_eq!(cell.look(), [OfferChange::Joined(file)]);
+    let lease = cell.hand_to_run(file, 1).unwrap();
+
+    lease.record_range(&set, &[verified(0, set[0])]);
+    lease.record_range(&set, &[]);
+    assert_eq!(
+        cell.look(),
+        [
+            OfferChange::Offered(file),
+            OfferChange::Withdrawn(file, PartialEnd::Changed)
+        ]
+    );
+
+    lease.record_range(&set, &[verified(0, set[0])]);
+    assert_eq!(cell.look(), [OfferChange::Offered(file)]);
+    lease.record_range(&set, &[]);
+    lease.record_range(&set, &[verified(0, set[0])]);
+    assert_eq!(
+        cell.look(),
+        [
+            OfferChange::Withdrawn(file, PartialEnd::Changed),
+            OfferChange::Offered(file)
+        ]
+    );
+    assert_eq!(cell.look(), []);
+}
+
+#[test]
+fn only_the_run_holding_an_entry_takes_its_askers_and_a_full_inbox_drops_one() {
+    let store = store();
+    let cell = ServedDownloads::default();
+    let row = record(&store, 1, SIZE, DownloadLifecycle::Queued);
+    let file = row.file_hash();
+    cell.install(&row, &hashes(1));
+    let asker = |n: u8| {
+        SourceSighting::plain(rmule_primitives::PeerSource::new(
+            rmule_primitives::ClientId::from_u32(u32::from_le_bytes([10, 0, 0, n])),
+            4662,
+        ))
+    };
+    let takes_askers =
+        |cell: &ServedDownloads| cell.read_since(0).unwrap().entries[&file].takes_askers;
+
+    assert!(!cell.sight(file, asker(1)), "the actor holds it: no run");
+    assert!(!takes_askers(&cell));
+
+    let lease = cell.hand_to_run(file, 1).unwrap();
+    let mut inbox = lease.take_askers().expect("the run holds it");
+    assert!(takes_askers(&cell));
+    for n in 0..ASKER_INBOX {
+        assert!(cell.sight(file, asker(u8::try_from(n).unwrap())));
+    }
+    assert!(
+        !cell.sight(file, asker(0xFF)),
+        "a full inbox drops the asker"
+    );
+    assert_eq!(inbox.try_recv().ok(), Some(asker(0)));
+
+    cell.take_back(file, 1);
+    assert!(
+        !cell.sight(file, asker(1)),
+        "the inbox closed with the lease"
+    );
+    assert!(!takes_askers(&cell));
+    assert!(
+        lease.take_askers().is_none(),
+        "a run without the lease opens none"
+    );
+}
