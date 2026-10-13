@@ -12,8 +12,8 @@ use rmule_primitives::{
 
 use rmule_kad::{
     Kad2Message, Kad2NodeInfo, KadCommand, KadEvent, KadId, KadInstant, KadNode, KadNodeConfig,
-    KadNodeDiagnostic, KadNodeEndpoint, KadNodeStart, KadObfuscation, KadOutput, KadSelfCheck,
-    udp_verify_key,
+    KadNodeDiagnostic, KadNodeEndpoint, KadNodeStart, KadObfuscation, KadOutput, KadProtocol,
+    KadSelfCheck, udp_verify_key,
 };
 use rmule_primitives::session::drain;
 
@@ -220,6 +220,12 @@ pub fn crypt_start() -> KadNodeStart {
 /// recipient `peer` would — under its Kad ID (the NodeID family a stored
 /// contact's `HELLO_RES` rides), under the verify key it handed us (`handed`,
 /// the family a handler reply rides), or as plaintext.
+///
+/// # Panics
+/// On an obfuscated datagram neither key opens: `peer` would drop it, so a
+/// mis-keyed send fails the leg instead of being read as if it were plain. A
+/// datagram led by a Kad protocol byte is plaintext; an obfuscated one never
+/// starts with one.
 pub fn opened_messages(
     outputs: &[KadOutput],
     peer: KadId,
@@ -235,8 +241,20 @@ pub fn opened_messages(
         .map(|output| match output {
             KadOutput::Datagram { to, bytes } => KadOutput::Datagram {
                 to: *to,
-                bytes: decrypt_datagram_client(bytes, &keys)
-                    .map_or_else(|| bytes.clone(), |opened| opened.payload),
+                bytes: if bytes
+                    .first()
+                    .copied()
+                    .and_then(KadProtocol::from_byte)
+                    .is_some()
+                {
+                    bytes.clone()
+                } else {
+                    decrypt_datagram_client(bytes, &keys)
+                        .unwrap_or_else(|| {
+                            panic!("no key {peer:?} holds opens the obfuscated datagram to {to:?}")
+                        })
+                        .payload
+                },
             },
             KadOutput::Event(_) => output.clone(),
         })
