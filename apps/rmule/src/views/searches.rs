@@ -71,6 +71,8 @@ pub struct SearchesView {
     results_state: TableState,
     /// What part of the results table is on screen.
     viewport: Viewport,
+    /// What part of the row menu is on screen, in a frame too short for it.
+    menu_viewport: std::cell::Cell<Viewport>,
     /// The results' order. Per table and durable, not per search.
     sort: TableSort<ResultsTable>,
     /// Every search of the run, each with its query and its own cursor.
@@ -335,7 +337,7 @@ impl SearchesView {
         self.draw_results(frame, results_area, state, theme);
 
         if let Some(cursor) = self.menu {
-            draw_menu(frame, area, cursor, state, theme);
+            draw_menu(frame, area, (cursor, &self.menu_viewport), state, theme);
         }
         self.draw_readd(frame, area, theme);
     }

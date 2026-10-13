@@ -319,33 +319,42 @@ impl TransfersView {
             .unwrap_or(0)
             + 2;
         let width = clamp_u16(natural.max(52)).min(area.width);
-        let text_w = usize::from(width).saturating_sub(2 + 2).max(1);
-
-        let lines: Vec<Line<'static>> = items
+        let at = items
             .iter()
-            .flat_map(|item| {
-                let marker = if item.action == cursor { "▸ " } else { "  " };
-                let label_style = if item.reason.is_some() {
-                    theme.dim_text()
-                } else {
-                    Style::new().fg(theme.fg)
-                };
-                let text = match item.reason {
-                    Some(reason) => format!("{}  {reason}", item.label),
-                    None => item.label.clone(),
-                };
-                labeled_lines(
-                    Span::styled(marker.to_string(), Style::new().fg(theme.accent)),
-                    &text,
-                    label_style,
-                    text_w,
-                )
-            })
-            .collect();
-
-        Modal::new(title, theme)
-            .flash_title(theme)
-            .draw(frame, area, width, theme, lines);
+            .position(|item| item.action == cursor)
+            .unwrap_or(0);
+        let rows = |width: u16| -> Vec<Vec<Line<'static>>> {
+            let text_w = usize::from(width).saturating_sub(2 + 2).max(1);
+            items
+                .iter()
+                .map(|item| {
+                    let marker = if item.action == cursor { "▸ " } else { "  " };
+                    let label_style = if item.reason.is_some() {
+                        theme.dim_text()
+                    } else {
+                        Style::new().fg(theme.fg)
+                    };
+                    let text = match item.reason {
+                        Some(reason) => format!("{}  {reason}", item.label),
+                        None => item.label.clone(),
+                    };
+                    labeled_lines(
+                        Span::styled(marker.to_string(), Style::new().fg(theme.accent)),
+                        &text,
+                        label_style,
+                        text_w,
+                    )
+                })
+                .collect()
+        };
+        Modal::new(title, theme).flash_title(theme).draw_list(
+            frame,
+            area,
+            (width, at),
+            theme,
+            &self.menu_viewport,
+            rows,
+        );
     }
 }
 

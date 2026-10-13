@@ -12,7 +12,7 @@
 │no core events│ Priority: Low → Norm                         │              │
 │              │ Add server… (a)                              │arted)        │
 │              │ Update list from URL… (U)                    │              │
-│              └──────────────────────────────────────────────┘              │
+│              └─────────────────────────────────────── 1 / 7 ┘              │
 │                                    ││UDP       — (never run)               │
 │                                    ││Keywords  —                           │
 │                                    ││Node id   —                           │

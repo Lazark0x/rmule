@@ -4,6 +4,8 @@
 //! asks first; the items the current selection cannot use stay visible and
 //! greyed rather than disappearing.
 
+use std::cell::Cell;
+
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
@@ -16,6 +18,7 @@ use rmule_primitives::FileHash;
 use super::ViewOutcome;
 use super::{GUTTER_W, Pane, SharedView};
 use crate::action::Action;
+use crate::row_selection::viewport::Viewport;
 use crate::row_selection::MARKER;
 use crate::state::UiState;
 use crate::theme::Theme;
@@ -31,6 +34,8 @@ pub(super) struct FileMenu {
     /// survives later selection drift.
     file_hash: FileHash,
     selected: usize,
+    /// What part of the menu is on screen, in a frame too short for it.
+    viewport: Cell<Viewport>,
 }
 
 /// The unshare confirmation (names the object and the consequence).
@@ -264,6 +269,7 @@ impl SharedView {
         self.menu = Some(FileMenu {
             file_hash: row.file_hash,
             selected: first_enabled_menu_index(state),
+            viewport: Cell::default(),
         });
         ViewOutcome::Redraw
     }
@@ -284,15 +290,22 @@ impl SharedView {
             .unwrap_or(0)
             + 4; // borders + 1-col pad each side
         let width = clamp_u16(natural).min(area.width);
-        let text_w = usize::from(width).saturating_sub(6).max(1);
-        let lines: Vec<Line<'static>> = items
-            .iter()
-            .enumerate()
-            .flat_map(|(idx, item)| menu_item_lines(item, idx == menu.selected, text_w, theme))
-            .collect();
-        Modal::new(title, theme)
-            .padded()
-            .draw(frame, area, width, theme, lines);
+        let rows = |width: u16| -> Vec<Vec<Line<'static>>> {
+            let text_w = usize::from(width).saturating_sub(6).max(1);
+            items
+                .iter()
+                .enumerate()
+                .map(|(idx, item)| menu_item_lines(item, idx == menu.selected, text_w, theme))
+                .collect()
+        };
+        Modal::new(title, theme).padded().draw_list(
+            frame,
+            area,
+            (width, menu.selected),
+            theme,
+            &menu.viewport,
+            rows,
+        );
     }
 }
 

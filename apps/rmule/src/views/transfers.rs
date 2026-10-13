@@ -150,6 +150,8 @@ pub struct TransfersView {
     sources_state: TableState,
     /// What part of the sources pane is on screen.
     source_viewport: Viewport,
+    /// What part of the row menu is on screen, in a frame too short for it.
+    menu_viewport: std::cell::Cell<Viewport>,
     focus: Pane,
     overlay: Overlay,
     /// The Add-link form (`L`), modal over everything while it is up.

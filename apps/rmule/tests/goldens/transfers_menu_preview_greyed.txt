@@ -9,6 +9,6 @@
 │  Search related  not connected                   │
 │  Priority ▸  needs core priority model           │
 │  Category ▸  needs core categories               │
-└──────────────────────────────────────────────────┘
+└─────────────────────────────────────────── 1 / 8 ┘
 │                                                  │
 └──────────────────────────────────────────────────┘

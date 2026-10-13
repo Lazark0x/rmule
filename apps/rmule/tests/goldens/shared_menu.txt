@@ -10,7 +10,7 @@
 │           │   Search related  (not connected)                 │            │
 │Off-screen:│ ▸ Unshare…                                        │            │
 └───────────│   Comments  (non-goal, ADR-0068)                  │───── 1 / 2 ┘
-┌ Uploads · └───────────────────────────────────────────────────┘  S reverse ┐
+┌ Uploads · └──────────────────────────────────────────── 3 / 4 ┘  S reverse ┐
 │  Peer ▲                Software     State             Speed File           │
 │▸ 10.0.0.1:4662         aMule v2.3.3 Uploading             — 0101010101…    │
 │                                                                            │
