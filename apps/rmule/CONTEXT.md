@@ -99,7 +99,7 @@ A session lost later is a different matter: core re-makes it while the operator'
 _Avoid_: auto-reconnect (that is the Server Intent, not this preference), connect on startup to any server (aMule walks the list; rmule does not)
 
 **Preview**:
-The Transfers action — the row menu's item and the `v` key — that hands a **Preview Ready** download's **Download File Path** to the **Player Command** as one argument, through no shell, on the player lane (ADR-0114). The menu greys it with the reason on a row it cannot act on, and a launch that cannot start flashes that reason.
+The Transfers action — the row menu's item and the `v` key — that hands a **Preview Ready** download's **Download File Path** to the **Player Command**, or with none set to the **Default App**, as one argument, through no shell, on the player lane (ADR-0114). The menu greys it with the reason on a row it cannot act on, and a launch that cannot start flashes that reason.
 _Avoid_: play, open, preview window
 
 **Preview Ready**:
@@ -107,5 +107,9 @@ A Transfers row the Preview action acts on (ADR-0114): core says the download is
 _Avoid_: playable, preview available (aMule's `PreviewAvailable`, a byte-range query), head and tail verified
 
 **Player Command**:
-The operator's player: one text under the TUI's own key `player_command`, edited on the Settings tab, unset by default — no `open`/`xdg-open`/`start` default, since those resolve `.part`, not the media inside. Split POSIX-style at launch (`shlex`, no shell); every `%PARTFILE` inside a word becomes the **Download File Path**, else the path goes last; the first word is the program and never holds `%PARTFILE`, and written as a path it is never a folder — except a macOS application bundle (`/Applications/IINA.app`), which starts as `open -a <bundle>` and the other words, the app named, so LaunchServices never picks a handler by `.part`. Read at every launch.
+The operator's player: one text under the TUI's own key `player_command`, edited on the Settings tab, unset by default, and then Preview opens the **Default App**; set, it overrides that. Split POSIX-style at launch (`shlex`, no shell); every `%PARTFILE` inside a word becomes the **Download File Path**, else the path goes last; the first word is the program and never holds `%PARTFILE`, and written as a path it is never a folder — except a macOS application bundle (`/Applications/IINA.app`), which starts as `open -a <bundle>` and the other words, the app named, so LaunchServices never picks a handler by `.part`. Read at every launch.
 _Avoid_: video player path, command line (a line implies a shell), viewer
+
+**Default App**:
+The app the operating system opens a download's real type with, which Preview starts when no **Player Command** is set (ADR-0114). Looked up on the player lane by the extension of the download's name, never of the file on disk (`.part`): LaunchServices on macOS, started as `open -a <app> <file>`; `AssocQueryStringW` on Windows, its executable run on the file; the freedesktop `globs2` and `mimeapps.list` files elsewhere, the desktop entry started by `gio launch`. A type with no app says so and points to the Player Command.
+_Avoid_: system player, file association, open-with

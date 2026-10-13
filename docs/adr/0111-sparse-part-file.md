@@ -154,17 +154,22 @@ before completion, and the finished file is never pre-sized either.
   which takes in the former `rmule-winsock`. Module `winsock` is the ICMP-reset switch `rmule-net`
   sets on every unconnected UDP socket, unchanged. Module `sparse` holds three primitives over a
   borrowed `&std::fs::File`: `set_sparse` (a no-op off Windows), `punch_hole(offset, len)` and
-  `allocated_bytes`. What to punch, the probe and the verdict are core's.
+  `allocated_bytes`. What to punch, the probe and the verdict are core's. Module `default_app`
+  answers which app the system opens a file-name extension with, on macOS and Windows; what
+  to start it on is the TUI's (ADR-0114).
 - **Safe where a safe call exists:** the Linux punch goes through `rustix`, the Unix reading through
   std. The waived functions are the macOS punch (`libc`'s `F_PUNCHHOLE` and `fpunchhole_t`), the
   three Windows calls (`DeviceIoControl` with `FSCTL_SET_SPARSE` and with `FSCTL_SET_ZERO_DATA`,
-  `GetFileInformationByHandleEx` with `FileStandardInfo`) and `WSAIoctl`. `libc`, `rustix` and
+  `GetFileInformationByHandleEx` with `FileStandardInfo`), `WSAIoctl`, and the default-app
+  lookups ADR-0114 lists. `libc`, `rustix` and
   `windows-sys` are already in the dependency graph: no crate is added.
 - **How the compiler and the guards hold it.** The crate's own lint table repeats
   `[workspace.lints]` but relaxes `unsafe_code` to `deny`; every other crate keeps `forbid`, which
   no inner `allow` can lift. `scripts/guards.sh` (check `unsafe`) pins the waived functions by file
   and name: each carries the one waiver, holds one `unsafe` block under a `// SAFETY:` comment, and
-  nothing else in the crate, or outside it, holds either.
+  may declare the foreign function it calls, when no crate in the graph does, in one `unsafe
+  extern` block under a `// SAFETY:` comment of its own. Nothing else in the crate, or outside
+  it, holds any of them.
 
 ## Consequences
 

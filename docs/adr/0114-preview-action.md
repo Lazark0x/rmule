@@ -24,7 +24,8 @@ arbitrary options could be passed to the player" (`:1467-1472`), and the text go
 ## Decision
 
 **Preview is the TUI's action. It hands the file core published for a download to the
-player the operator set, as one argument and through no shell, when core says the
+player the operator set — with none set, to the app the operating system opens the
+download's real type with — as one argument and through no shell, when core says the
 download is Previewable and its first part is verified or the download is complete.
 Core carries the facts and never runs a player.**
 
@@ -66,9 +67,10 @@ effect at once: every launch reads it.
   since no system runs a folder, unless on macOS it is an application bundle (below). A
   bare name is the system's to find on `PATH`, and a path not there yet is taken: the
   player may be installed later. The Settings commit and every launch read it alike.
-- No default player. An association launcher (`open`, `xdg-open`, `start`) picks a handler
-  by extension, and the extension of a `.part` is `.part`. Unset, Preview is greyed with its
-  reason; there is no fallback like aMule's.
+- Unset, Preview opens the **Default App** (below), and a set Player Command overrides it.
+  The file is never handed to an association launcher (`open <file>`, `xdg-open`, `start`):
+  one picks a handler by the extension on disk, and the extension of a `.part` is `.part`.
+  rmule looks the app up by the download's real name and names it.
 
 **Arguments, never a shell line.** At launch the text is split into words by POSIX rules
 (the `shlex` crate, ADR-0002): quotes and backslashes are honoured; nothing is expanded,
@@ -85,9 +87,47 @@ operator picks (`/Applications/IINA.app`). A first word naming a folder called `
 starts through LaunchServices with the app named: the words become `/usr/bin/open -a
 <bundle>` and then the other words, and `%PARTFILE` is placed by the same rules, inside a
 word or else last. Named, the app is the handler; LaunchServices never picks one by the
-`.part` extension, so the reason for no `open` default stands. The other words are
+`.part` extension. The other words are
 `open`'s own: what follows `--args` goes to the app's `main` rather than being opened, so a
 command with `--args` places `%PARTFILE` before it. Still arguments, never a shell line.
+
+**The Default App.** With no Player Command, Preview asks the operating system which app
+opens the download's real type, by the extension of its name: the bytes after the last `.`,
+read as the file class reads them, so a name whose stem is not UTF-8 keeps its extension. The
+app is started on the file core published, `.part` or finished, with no copy and no second
+name on disk:
+
+- **macOS**: LaunchServices. `UTTypeCreatePreferredIdentifierForTag` reads the extension as a
+  type and `LSCopyDefaultApplicationURLForContentType` names its default app for any role;
+  the launch is the bundle road above, `/usr/bin/open -a <app> <file>`.
+- **Windows**: `AssocQueryStringW` with `ASSOCSTR_EXECUTABLE` for `.<extension>` and the
+  `open` verb, the Unknown type ignored (`ASSOCF_INIT_IGNOREUNKNOWN`), so a type with no app
+  answers that, not with the Open With dialog. The launch is that executable with the file as
+  its one argument: no shell, no `start`. A packaged (Store) app that has no executable to
+  run this way ends in a lookup or spawn note.
+- **Linux and other freedesktop systems**: rmule reads the freedesktop files itself. The
+  extension's MIME type comes from shared-mime-info's `globs2` files, user before system, the
+  heaviest `*.<extension>` glob winning, case folded unless the glob is marked `cs`. The app
+  comes from the MIME Applications spec's `mimeapps.list` files in the spec's order
+  (desktop-specific lists first, config directories before data directories): the first
+  installed entry listed under *Default Applications*, else under *Added Associations*, else
+  in a data directory's `mimeinfo.cache`, never one listed under *Removed Associations*. The
+  launch is `gio launch <desktop file> <file>`: GLib runs the entry's `Exec` by the Desktop
+  Entry spec (field codes, quoting, `Terminal`), which rmule does not re-implement; a system
+  without GLib's `gio` gets the refused-spawn note. rmule does not run `xdg-mime query
+  default`: it is a shell script, the lookup would start a process, and a test could not hand
+  it directories of its own.
+
+The calls the standard library does not expose are `rmule-os`'s (ADR-0111), module
+`default_app`, one waived function per call: on macOS `CFStringCreateWithBytes`, the type
+lookup, the app lookup, `CFURLGetFileSystemRepresentation` and `CFRelease`; on Windows
+`AssocQueryStringW`, from `windows-sys`'s `Win32_UI_Shell`. No crate in the graph declares
+the two CoreServices calls, so each function that calls one declares it in an `unsafe extern`
+block of its own, under its own `// SAFETY:` comment. The lookup runs on the player lane, never
+on a frame. It is a short read, so the lane runs it through `spawn_blocking`; the wait for the
+player still never does. A type the system has no app for notes and flashes *no app opens
+.<extension> files here*, with the way out, a player set in Settings; a lookup the system
+fails notes its error kind in the operator's words.
 
 **A launch.** The view emits `Action::Preview(DownloadId)`. The reducer resolves the row,
 the command and the path by the same reading the menu shows, so the two cannot disagree. It
@@ -109,7 +149,7 @@ state that holds decides:
 | --- | --- | --- |
 | name or file path not known yet | greyed, *details not known yet* | flashes the reason |
 | not Previewable | greyed, *not a video or audio file* | flashes the reason |
-| no Player Command | greyed, *set a player in Settings* | flashes the reason |
+| no Player Command and no extension on the name | greyed, *no app for this type* | flashes the reason |
 | no diagnostics row in the last snapshot | greyed, *part map not loaded yet* | flashes the reason |
 | part 0 not verified and not `Completed` | greyed, *first part not verified yet* | flashes the reason |
 | Preview Ready | launches | launches |
@@ -135,8 +175,8 @@ Split by POSIX rules, a path with backslashes in the command goes in single quot
 - On Windows a player holding the `.part` without delete sharing holds up the completion
   move: the download stays Completing, "waiting for the file to be released", and completes
   on its own once the player closes (ADR-0115).
-- A player that sniffs only the extension may refuse a `.part`; which player is the
-  operator's choice.
+- A player that sniffs only the extension may refuse a `.part`, the Default App among them;
+  a Player Command then names one that reads the content.
 - A completed file moved or renamed after it finished keeps its old path on the download
   record, which is never rewritten; its Preview hands the player a path that is gone, and
   the exit note says the player failed.
@@ -158,3 +198,7 @@ Split by POSIX rules, a path with backslashes in the command goes in single quot
   that sees the path; rmule's never does.
 - **Copying the verified head to a temporary file.** Rejected: gigabytes of copy for what
   the `.part` already holds in place.
+- **A hard link or symbolic link with the real name beside the `.part`.** Rejected: a second
+  name on disk, to make and to clear away, when naming the app reaches the same handler.
+- **Handing the file to `open`, `xdg-open` or `start`.** Rejected: each picks the handler by
+  the extension on disk, `.part`.
