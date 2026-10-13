@@ -377,6 +377,19 @@ The NAT and IPv6 waves add four (ADR-0092):
   already-built compile-stage image and skips recompiling, and `AMULE_KNO_SRC`
   (a pinned clone elsewhere on the host) is the pin check's fallback
   when a worktree carries no in-tree vendored source.
+  `--build-images` builds it only through `build.sh` (the `--quic` variant when
+  the image tag ends in `:quic`), which makes the compile stage too, so a cold
+  host no longer fails on a missing `amule-kno-build` image; a missing reference
+  clone fails with the script's own message. Every flow that starts the image
+  checks its `org.rmule.amule_kno.commit` (and `.quic`) label first and refuses
+  an off-pin image unless `RMULE_BENCH_AMULE_KNO_OFF_PIN=1`, and the verdict
+  body's `pin` is read off that label, not written as a constant.
+- **`emuleqt`** — emule-qt's headless `emulecored` (ADR-0082) at the commit in
+  `docs/reference/emule-qt/emule-qt.meta.toml`. `--build-images` builds it only
+  through `images/emuleqt/build.sh`, which verifies the reference clone against
+  that pin and stamps `org.rmule.emuleqt.commit`; every flow that starts it
+  checks the label first (`RMULE_BENCH_EMULEQT_OFF_PIN=1` runs off the pin) and
+  the verdict body's `pin` reads off it.
 - **`ed2ksrv`** — the third-party ed2k-server coordinator
   (`andrey23127/ed2k-server`) at the pin in `images/ed2ksrv/pin.env`, built
   from a clean clone by `images/ed2ksrv/build.sh <clone>`, which stamps the

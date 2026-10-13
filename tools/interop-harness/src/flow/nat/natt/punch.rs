@@ -45,7 +45,7 @@ use crate::bench_doctor::CONNTRACK_UDP_TIMEOUT_SECS;
 use crate::docker::{InternalNetwork, RunContainer};
 use crate::fake_public::{MAX_NODES_PER_SUBNET, fake_public_address, subnet_cidr};
 use crate::flow::bench::{Bench, run_checked};
-use crate::flow::ed2ksrv::Ed2ksrvImage;
+use crate::flow::ed2ksrv::ED2KSRV;
 use crate::flow::gate::wait_for_container_log;
 use crate::flow::nat::NAT_CLIENT_UDP_PORT;
 use crate::flow::nat::claims::Body;
@@ -444,7 +444,7 @@ pub(crate) fn drive(
         vec![Body {
             name: "ed2ksrv".to_owned(),
             image: options.ed2ksrv_image.to_owned(),
-            pin: crate::flow::ed2ksrv::body_pin(&bench.docker, options.ed2ksrv_image),
+            pin: crate::flow::ed2ksrv::ED2KSRV.body_pin(&bench.docker, options.ed2ksrv_image),
             address_v4: server_v4.clone(),
             address_v6: String::new(),
         }],
@@ -524,7 +524,7 @@ pub(super) fn start_server(
         .with_context(|| format!("write {}", config_path.display()))?;
 
     let name = format!("rmule-interop-nattsrv-{suffix}");
-    let ed2ksrv = Ed2ksrvImage::check(&bench.docker, options.ed2ksrv_image)?;
+    let ed2ksrv = ED2KSRV.check(&bench.docker, options.ed2ksrv_image)?;
     bench.start_extra(
         &name,
         ed2ksrv

@@ -28,6 +28,7 @@ use crate::flow::gate::wait_for_container_log;
 use crate::flow::nat::claims::{Body, Claim, label};
 use crate::flow::nat::natt::NattFlow;
 use crate::flow::nat::natt::verdict::{NattVerdict, WireRow, write};
+use crate::flow::pinned_image::AMULE_KNO;
 use crate::flow::taps::{Attachment, PerAttachmentTaps, TapRole, TapsRecord, write_taps_record};
 
 /// Every tap records all IP traffic on the body's own attachment. A NAT-T
@@ -401,8 +402,7 @@ pub(crate) struct Driven {
 fn build_images(bench: &Bench, options: &NattOptions<'_>) -> Result<()> {
     if options.build_images {
         if options.flow.needs_amule_kno() {
-            bench
-                .build_amule_kno_image(options.amule_kno_image, options.amule_kno_build_context)?;
+            AMULE_KNO.build(options.amule_kno_image, options.amule_kno_build_context)?;
         }
         if options.flow.needs_ed2ksrv() || options.low_id_buddy {
             crate::flow::ed2ksrv::build(
@@ -447,9 +447,10 @@ fn start_bodies(
     let mut observed = None;
     if options.flow.needs_amule_kno() {
         let name = format!("rmule-interop-nattkno-{suffix}");
+        let kno = AMULE_KNO.check(&bench.docker, options.amule_kno_image)?;
         bench.start_extra(
             &name,
-            RunContainer::new(options.amule_kno_image)
+            kno.container()
                 .detach()
                 .name(&name)
                 .network(&stage.network)
@@ -461,7 +462,7 @@ fn start_bodies(
         stage.bodies.push(Body {
             name: "amule-kno".to_owned(),
             image: options.amule_kno_image.to_owned(),
-            pin: "kno/amule integration/network-parity ab483654".to_owned(),
+            pin: kno.pin(),
             address_v4: stage.v4(HOST_AMULE_KNO).to_owned(),
             address_v6: String::new(),
         });

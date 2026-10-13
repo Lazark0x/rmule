@@ -760,7 +760,7 @@ fn server_sentinel(
                  records and a server list with {} IPv6 entries. No upstream build with IPv6 \
                  exists yet to pin; until one does, this row \
                  has no counterparty and the harness fabricates none.",
-                crate::flow::ed2ksrv::body_pin(&bench.docker, options.ed2ksrv_image),
+                crate::flow::ed2ksrv::ED2KSRV.body_pin(&bench.docker, options.ed2ksrv_image),
                 row.int("tcp_flags_bits"),
                 row.flag("ipv6_status_present"),
                 row.text("server_ipv6"),

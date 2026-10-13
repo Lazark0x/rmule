@@ -486,7 +486,7 @@ pub(in crate::flow::nat::natt) fn drive(
             pin: format!(
                 "{}; its High-ID back-connect to the root dropped in its own netns, so the \
                  root's id is Low",
-                crate::flow::ed2ksrv::body_pin(&bench.docker, options.ed2ksrv_image),
+                crate::flow::ed2ksrv::ED2KSRV.body_pin(&bench.docker, options.ed2ksrv_image),
             ),
             address_v4: server_v4,
             address_v6: String::new(),

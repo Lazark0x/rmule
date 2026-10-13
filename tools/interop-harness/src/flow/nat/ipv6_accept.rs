@@ -30,6 +30,7 @@ use crate::docker::{InternalNetwork, RunContainer};
 use crate::fake_public::{MAX_NODES_PER_SUBNET, fake_public_address, subnet_cidr};
 use crate::fake_public_v6::FakePublicV6Plan;
 use crate::flow::bench::{Bench, run_checked};
+use crate::flow::pinned_image::{AMULE_KNO, EMULEQT, PinnedImage};
 
 /// The flow's name in every artifact it writes.
 const FLOW: &str = "ipv6-net-accept";
@@ -244,10 +245,10 @@ fn drive(bench: &mut Bench, options: &Ipv6NetAcceptOptions<'_>) -> Result<()> {
 
     if options.build_images {
         for body in options.bodies {
-            if body.name == "amule-kno" {
-                bench.build_amule_kno_image(body.image, body.build_context)?;
-            } else {
-                bench.build_image(body.name, body.image, body.build_context)?;
+            match body.name {
+                "amule-kno" => AMULE_KNO.build(body.image, body.build_context)?,
+                "emuleqt" => EMULEQT.build(body.image, body.build_context)?,
+                _ => bench.build_image(body.name, body.image, body.build_context)?,
             }
         }
     }
@@ -309,9 +310,17 @@ fn measure_one(
         fake_public_address(MIXED_BODY_SUBNET_INDEX * MAX_NODES_PER_SUBNET + index)?.ip;
     let address = plan.address(index as u16)?;
     let container = format!("rmule-interop-v6body-{}-{suffix}", body.name);
+    // A pinned body is checked against its pin before it starts.
+    let pinned = match body.name {
+        "amule-kno" => Some(AMULE_KNO.check(&bench.docker, body.image)?),
+        "emuleqt" => Some(EMULEQT.check(&bench.docker, body.image)?),
+        _ => None,
+    };
     bench.start_extra(
         &container,
-        RunContainer::new(body.image)
+        pinned
+            .as_ref()
+            .map_or_else(|| RunContainer::new(body.image), PinnedImage::container)
             .detach()
             .name(&container)
             .network(network)

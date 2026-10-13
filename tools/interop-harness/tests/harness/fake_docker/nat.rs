@@ -169,3 +169,95 @@ fn ipv6_net_accept_builds_natgw_then_rebuilds_natprobe_without_build_images() {
         "emuleqt stays gated behind --build-images:\n{log}"
     );
 }
+
+/// Drive `ipv6-net-accept` with kno's aMule as its one body against the Fake
+/// Build Log Docker, whose images carry no label. `kno_recipe` is the kno build
+/// context; returns the command's result and the docker log.
+fn run_net_accept_with_kno(
+    kno_recipe: &Path,
+    extra: &[&str],
+    envs: &[(&str, &str)],
+) -> (assert_cmd::assert::Assert, String) {
+    let run_root = tempfile::tempdir().unwrap();
+    let fake_bin = tempfile::tempdir().unwrap();
+    let docker_log = run_root.path().join("docker.log");
+    let docker = fake_build_log_docker(fake_bin.path(), &docker_log);
+    let mut command = Command::cargo_bin("rmule-interop-harness").unwrap();
+    command
+        .args([
+            "ipv6-net-accept",
+            "--skip-emuleqt",
+            "--timeout",
+            "2",
+            "--settle",
+            "0",
+        ])
+        .args(extra)
+        .arg("--container-runtime")
+        .arg(&docker)
+        .arg("--run-root")
+        .arg(run_root.path())
+        .arg("--amule-kno-build-context")
+        .arg(kno_recipe)
+        .args(["--natgw-build-context", &image_dir("natgw")])
+        .args(["--natprobe-build-context", &image_dir("natprobe")])
+        .envs(envs.iter().copied());
+    let assert = command.assert();
+    let log = std::fs::read_to_string(&docker_log).unwrap();
+    (assert, log)
+}
+
+/// `--build-images` builds kno's aMule only through the recipe's own
+/// `build.sh` (which verifies the pin and stamps the labels): it is handed the
+/// image tag, and the harness never runs a bare `docker build` of the recipe's
+/// Dockerfile, whose compile stage only that script makes.
+#[test]
+fn build_images_builds_kno_through_the_recipes_build_script() {
+    let recipe = tempfile::tempdir().unwrap();
+    let marker = recipe.path().join("ran");
+    let script = recipe.path().join("build.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/bash\nprintf '%s' \"$AMULE_KNO_RUNTIME_TAG\" > {}\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+
+    // Off the pin on purpose: the stub stamps no label, and this test is about
+    // how the image is built, not about starting it.
+    let (_, log) = run_net_accept_with_kno(
+        recipe.path(),
+        &["--build-images"],
+        &[("RMULE_BENCH_AMULE_KNO_OFF_PIN", "1")],
+    );
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap(),
+        "rmule/interop-amule-kno:local",
+        "build.sh ran with the tag to build:\n{log}"
+    );
+    assert!(
+        !log.lines()
+            .any(|line| line.starts_with("build") && line.contains("amule-kno")),
+        "no bare docker build of the kno recipe:\n{log}"
+    );
+}
+
+/// A kno image whose commit label is not the pin is refused before any
+/// container starts, and the refusal names the script that rebuilds it.
+#[test]
+fn a_kno_image_off_the_pin_is_refused_before_it_starts() {
+    let recipe = tempfile::tempdir().unwrap();
+    let (assert, log) = run_net_accept_with_kno(recipe.path(), &["--skip-build"], &[]);
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(
+        stderr.contains("org.rmule.amule_kno.commit") && stderr.contains("amule-kno/build.sh"),
+        "the refusal names the label and the rebuild script:\n{stderr}"
+    );
+    assert!(
+        !log.lines()
+            .any(|line| line.starts_with("run") && line.contains("amule-kno")),
+        "kno's container never started:\n{log}"
+    );
+}

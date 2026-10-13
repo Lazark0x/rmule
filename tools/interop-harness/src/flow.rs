@@ -31,6 +31,7 @@ pub(crate) mod nat;
 pub(crate) mod packed_source_exchange;
 pub(crate) mod pcap;
 pub(crate) mod peer;
+pub(crate) mod pinned_image;
 pub(crate) mod taps;
 pub(crate) mod wire_filter;
 

@@ -31,7 +31,7 @@ use anyhow::{Context, Result, bail};
 use crate::artifacts::RunLayout;
 use crate::docker::RunContainer;
 use crate::flow::bench::{Bench, CaptureSidecar, DEFAULT_TAP_INTERFACE, amulecmd_command};
-use crate::flow::ed2ksrv::Ed2ksrvImage;
+use crate::flow::ed2ksrv::ED2KSRV;
 use crate::flow::gate::wait_for_container_log;
 use crate::flow::logs::retain_artifact;
 use crate::rmule::RmuleClientContainer;
@@ -336,7 +336,7 @@ pub(crate) fn start_ed2ksrv(
     fs::write(&config_path, rendered.join("\n"))
         .with_context(|| format!("write {}", config_path.display()))?;
     let name = format!("{}-ed2ksrv", bench.names.server_container_name);
-    let ed2ksrv = Ed2ksrvImage::check(&bench.docker, image)?;
+    let ed2ksrv = ED2KSRV.check(&bench.docker, image)?;
     bench.start_extra(
         &name,
         ed2ksrv

@@ -721,22 +721,6 @@ impl Bench {
             .context("run the bench doctor")
     }
 
-    /// Build kno's aMule runtime image from `context` (`images/amule-kno`).
-    /// The build context is the parent `images/` directory, so the Dockerfile
-    /// can lift the stock `amule` recipe's scenario entrypoint beside its own
-    /// instead of carrying a copy of it.
-    pub(crate) fn build_amule_kno_image(&self, tag: &str, context: &Path) -> Result<()> {
-        run_checked(
-            self.docker.build_image_with_dockerfile(
-                tag,
-                context.join("Dockerfile").as_os_str(),
-                context.join("..").as_os_str(),
-            ),
-            "build amule-kno image",
-        )
-        .map(|_| ())
-    }
-
     /// Build the `rmule-tools` driver image from the warm host-cached
     /// prebuild (see [`crate::flow::driver_image`]). `context` is the
     /// workspace root the prebuild compiles; `dockerfile` is the runtime
