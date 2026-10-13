@@ -85,6 +85,11 @@ impl Backoff {
 /// Move a download whose every part is verified into place, steps 1 to 7.
 /// `file_hash_only_parts` are the parts written while no part hash set was
 /// held: verified the moment the whole file hashes.
+///
+/// A file that stands at the row's final path and hashes to the file hash
+/// is the download's own, which a past move put there and a Pause or a stop
+/// left before its row was written: the move finishes there, reading the
+/// part file not at all, and numbers nothing past it.
 pub(super) async fn complete<S, P>(
     runner: &RunnerContext<S, P>,
     download_id: DownloadId,
@@ -92,7 +97,16 @@ pub(super) async fn complete<S, P>(
     file_hash_only_parts: Vec<u32>,
 ) -> Result<(), DownloadFailure> {
     let_go_of_part_file(runner, download_id).await?;
-    check(runner, download_id, file).await?;
+    let record = runner
+        .rt
+        .store
+        .load_download(download_id)
+        .map_err(|_| DownloadFailure::StoreFailed)?;
+    let paths = record.paths().clone();
+    let landed = own_file_at(runner, paths.final_path(), file).await?;
+    if !landed {
+        check(runner, download_id, file).await?;
+    }
     for part_index in file_hash_only_parts {
         send_download_event(
             &runner.rt.evt_tx,
@@ -103,15 +117,16 @@ pub(super) async fn complete<S, P>(
         )
         .await;
     }
-    let record = runner
-        .rt
-        .store
-        .load_download(download_id)
-        .map_err(|_| DownloadFailure::StoreFailed)?;
-    let paths = record.paths();
+    if landed {
+        store_destination(runner, download_id, paths.final_path())?;
+        if !runner.completion.found_in_place() {
+            return Err(stopped(runner).await);
+        }
+        return finish(runner, download_id, &paths).await;
+    }
     let destination = free_destination(paths.final_path()).await;
     store_destination(runner, download_id, &destination)?;
-    let placed = move_into_place(runner, download_id, file, paths, destination).await?;
+    let placed = move_into_place(runner, download_id, file, &paths, destination).await?;
     finish(runner, download_id, &placed).await
 }
 
@@ -134,7 +149,7 @@ pub(super) async fn recover<S, P>(
         on_pool(move || (part.exists(), destination.exists())).await
     };
     let gate = &runner.completion;
-    let in_place = match (part, destination) {
+    match (part, destination) {
         (false, false) => {
             gate.release();
             return Err(DownloadFailure::StorageIntegrityFailed(
@@ -143,16 +158,15 @@ pub(super) async fn recover<S, P>(
         }
         // A past process put the file in place: the part file left with the
         // rename, or the row of the copy that landed beside it was written.
-        (false, true) => true,
-        (true, true) if recovered.row_written => true,
-        (true, destination) => {
+        (false, true) => {}
+        (true, true) if recovered.row_written => {}
+        // The move again: a destination a past copy landed is found its
+        // own there, so a stop while it is read leaves nothing to undo.
+        (true, _) => {
             gate.release();
             remove_quietly(copy_path(paths.final_path())).await;
-            destination && hashes_to(runner, paths.final_path(), file).await?
+            return complete(runner, download_id, file, Vec::new()).await;
         }
-    };
-    if !in_place {
-        return complete(runner, download_id, file, Vec::new()).await;
     }
     if !gate.found_in_place() {
         return Err(stopped(runner).await);
@@ -209,6 +223,30 @@ async fn check<S, P>(
         Ok(_) => Err(refused(runner, download_id, FinalizeError::Mismatch).await),
         Err(error) => Err(refused(runner, download_id, error).await),
     }
+}
+
+/// Whether the file at `path` is the download's own finished file: of its
+/// size and hashing to its hash. A file of any other size, or none, is
+/// answered without a read.
+async fn own_file_at<S, P>(
+    runner: &RunnerContext<S, P>,
+    path: &Path,
+    file: &Ed2kFileLink,
+) -> Result<bool, DownloadFailure> {
+    let size = {
+        let path = path.to_owned();
+        on_pool(move || {
+            std::fs::symlink_metadata(&path)
+                .ok()
+                .filter(std::fs::Metadata::is_file)
+                .map(|metadata| metadata.len())
+        })
+        .await
+    };
+    if size != Some(file.size) {
+        return Ok(false);
+    }
+    hashes_to(runner, path, file).await
 }
 
 /// Whether the file at `path` hashes to `file`'s hash: one read, the stop

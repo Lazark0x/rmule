@@ -76,7 +76,10 @@ last decision; Download State holds no clock and takes no part.
 1. **Check.** The run hashes the part file, as today; a mismatch repairs (ADR-0094).
 2. **Name.** The destination is the row's final path or, when a file stands there, the first free
    `stem (n).ext` beside it. The run stores `Completing` and the destination in one write before
-   anything moves.
+   anything moves. A file at the row's final path of the file's size that hashes to the file hash
+   (one read, before the check) is the download's own — a past move landed it and a Pause or a
+   stop came before its row was written — so the run takes step 6 there, numbering nothing past it;
+   a file of another size or hash is someone else's and is left as it is.
 3. **Rename.** The run renames the part file onto the destination.
 4. **In use.** When the OS refuses the rename because another program holds the file (Windows
    `ERROR_SHARING_VIOLATION` 32 or `ERROR_LOCK_VIOLATION` 33), the download stays `Completing`
@@ -131,7 +134,7 @@ A `Completing` row at attach is resolved by what is on disk:
 | Part file | Destination | The run |
 |---|---|---|
 | there | absent | moves again; a leftover `.completing` copy is deleted |
-| there | there | the destination is rmule's when the registry holds the file at it, or when it hashes to the file hash (one read): the run takes step 6 if the row is missing, then step 7; otherwise it takes the next free name and moves again |
+| there | there | the destination is rmule's when the registry holds the file at it, or when it hashes to the file hash (step 2's one read): the run takes step 6 if the row is missing, then step 7; otherwise it takes the next free name and moves again. A Pause during that read leaves the row `Paused` naming the destination, and the resumed move reads it again |
 | gone | there | completes: the part file goes only after the destination and its row are in place |
 | gone | absent | fails as `PartFileMissing` |
 

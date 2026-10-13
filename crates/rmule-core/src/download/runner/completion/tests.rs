@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 
 use super::copy::copy_path;
 use super::fs::{CompletionFs, OsCompletionFs, Refusal};
-use super::{FinalFileInPlace, Recovered, StopAnswer, complete, recover};
+use super::{CompletionGate, FinalFileInPlace, Recovered, StopAnswer, complete, recover};
 use crate::diagnostics::DiagnosticsState;
 use crate::download::runner::test_context::{Held, runner_context};
 use crate::download::runner::{RunnerContext, StopReason};
@@ -509,6 +509,47 @@ async fn attach_resolves_a_completing_row_by_what_is_on_disk() {
         ))
     );
     assert_eq!(reported, None);
+}
+
+/// A Pause that reaches a recovered move while it reads the file a past
+/// process copied into place leaves the row `Paused`; the resumed move
+/// finds that file its own and finishes there, copying nothing beside it.
+#[tokio::test]
+async fn a_move_paused_while_recovery_reads_its_landed_copy_finishes_there_on_resume() {
+    let mut leg = finished(300_000, Arc::new(OsCompletionFs));
+    let destination = leg.paths.final_path().to_path_buf();
+    std::fs::write(&destination, &leg.bytes).unwrap();
+    let store = Arc::clone(&leg.runner.rt.store);
+    store.set_completing(leg.id, &destination).unwrap();
+    assert_eq!(leg.runner.completion.stop().await, StopAnswer::Stopped);
+    leg.held._stop_tx.send(StopReason::Pause).unwrap();
+    let paused = recover(
+        &leg.runner,
+        leg.id,
+        &leg.file,
+        Recovered { row_written: false },
+    )
+    .await;
+    assert_eq!(paused, Err(DownloadFailure::Paused));
+    store
+        .set_lifecycle(leg.id, DownloadLifecycle::Paused)
+        .unwrap();
+
+    store
+        .set_lifecycle(leg.id, DownloadLifecycle::Active)
+        .unwrap();
+    leg.runner.completion = Arc::new(CompletionGate::open());
+    leg.held._stop_tx.send(StopReason::Active).unwrap();
+    let mut rx = std::mem::replace(&mut leg.held.in_place_rx, mpsc::channel(1).1);
+    let (result, ()) = tokio::join!(
+        complete(&leg.runner, leg.id, &leg.file, Vec::new()),
+        answer(&mut rx, true, |report| assert_eq!(report.path, destination)),
+    );
+    result.unwrap();
+    assert_eq!(leg.final_path(), destination);
+    assert!(!destination.with_file_name("film (1).mkv").exists());
+    assert!(!leg.paths.part_path().exists());
+    assert_eq!(leg.lifecycle(), DownloadLifecycle::Completed);
 }
 
 /// [`recover`] driven to its end, the actor answering its one report.
