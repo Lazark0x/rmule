@@ -295,6 +295,14 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
             let text = words::hole_less_destination(&download_name(state, download_id), &directory);
             note(state, text)
         }
+        E::PartsDisproved {
+            download_id,
+            parts,
+            bytes,
+        } => {
+            let text = words::parts_disproved(&download_name(state, download_id), parts, bytes);
+            note(state, text)
+        }
         E::FinishedFileRejected {
             download_id,
             parts_dropped,

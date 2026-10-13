@@ -498,6 +498,16 @@ pub fn finished_file_rejected(name: &str, parts: u32, bytes: u64) -> Sentence {
     ))
 }
 
+/// Parts fetched before the file's part hash set arrived did not match it
+/// when it did, and are fetched again.
+#[must_use]
+pub fn parts_disproved(name: &str, parts: u32, bytes: u64) -> Sentence {
+    Sentence::owned(format!(
+        "{name}: parts fetched before the file's part hash set arrived did not match it — {}",
+        parts_to_fetch_again(parts, bytes)
+    ))
+}
+
 /// The store could not record a failure just told.
 #[must_use]
 pub fn failure_not_recorded(name: &str) -> Sentence {
@@ -695,6 +705,10 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
             "{}: {}",
             part_file_change_words(*found),
             parts_lost_words(*lost)
+        ),
+        D::PartsDisproved { parts, bytes, .. } => format!(
+            "parts fetched before the hash set did not match it: {}",
+            parts_to_fetch_again(*parts, *bytes)
         ),
         D::FinishedFileRejected {
             parts_dropped,

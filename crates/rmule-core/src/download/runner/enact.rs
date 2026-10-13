@@ -503,7 +503,7 @@ where
 
 /// The parts a part hash set disproved as it arrived, dropped by the store in
 /// the write that recorded it: no longer verified by the file hash at
-/// finalize, and fetched again.
+/// finalize, said, and fetched again.
 fn refetch_disproved<S, P>(
     ctx: &mut LoopCtx<'_, S, P>,
     disproved: &[crate::VerifiedPartRecord],
@@ -520,6 +520,11 @@ fn refetch_disproved<S, P>(
     );
     ctx.file_hash_only_parts.retain(|part| !lost.contains(part));
     ctx.runner.rt.diagnostics.parts_lost(ctx.download_id, &lost);
+    queue.push_back(Decision::Emit(DownloadEvent::PartsDisproved {
+        download_id: ctx.download_id,
+        parts: u32::try_from(lost.len()).unwrap_or(u32::MAX),
+        bytes: disproved.iter().map(|part| part.len).sum(),
+    }));
     queue.extend(ctx.state.refetch(now(), &lost));
 }
 

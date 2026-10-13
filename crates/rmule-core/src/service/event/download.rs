@@ -75,6 +75,17 @@ pub enum DownloadEvent {
         /// Each dropped part and what its check found, lowest part first.
         damaged: Vec<crate::PartFault>,
     },
+    /// Parts the run fetched before the file's part hash set arrived did not
+    /// match it when it did (ADR-0113, "The sets and who writes them"): their
+    /// records are dropped, without a read, and the parts are fetched again.
+    PartsDisproved {
+        /// The download whose parts were disproved.
+        download_id: DownloadId,
+        /// How many parts the set disproved.
+        parts: u32,
+        /// How many bytes they held.
+        bytes: u64,
+    },
     /// The run found that the file at its part file's path is not the file it
     /// holds, or no longer all of it (ADR-0094, "The run holds its part
     /// file"): removed, replaced or cut short. The verified parts it cost

@@ -281,7 +281,7 @@ async fn a_part_the_arriving_set_disproves_is_dropped_and_fetched_again() {
         ..with_set
     };
     let cell = ServedDownloads::default();
-    let (runner, _held, record) = run_of(NeverTransfers, &link, &cell, dir.path()).await;
+    let (runner, mut held, record) = run_of(NeverTransfers, &link, &cell, dir.path()).await;
     let (state, part) = working(&link, &record);
     let mut ctx = ctx_of(&runner, &link, &record, state);
     enact_drain(&mut VecDeque::from([persist(&bytes, part)]), &mut ctx)
@@ -306,6 +306,17 @@ async fn a_part_the_arriving_set_disproves_is_dropped_and_fetched_again() {
     assert!(!ctx.state.our_part_status().has(PartIndex::new(part)));
     assert_ne!(ctx.state.part_map().0[part as usize], PartState::Verified);
     assert!(cell.offered().is_empty());
+    let said = std::iter::from_fn(|| held.evt_rx.try_recv().ok()).find_map(|event| match event {
+        crate::service::CoreEvent::Download(DownloadEvent::PartsDisproved {
+            parts, bytes, ..
+        }) => Some((parts, bytes)),
+        _ => None,
+    });
+    assert_eq!(
+        said,
+        Some((1, part_bytes(&bytes, part).len() as u64)),
+        "the loss is said"
+    );
 }
 
 #[tokio::test]

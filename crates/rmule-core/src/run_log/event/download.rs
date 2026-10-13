@@ -73,6 +73,14 @@ impl DownloadEvent {
                 ),
                 *lost,
             ),
+            D::PartsDisproved {
+                download_id,
+                parts,
+                bytes,
+            } => Record::new("download.parts_disproved")
+                .count("id", download_id.as_u64())
+                .count("parts", *parts)
+                .count("bytes", *bytes),
             D::FinishedFileRejected {
                 download_id,
                 parts_dropped,
