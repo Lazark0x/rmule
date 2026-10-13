@@ -14,6 +14,7 @@
 mod aliases;
 mod asks;
 mod blocks;
+mod exchange;
 mod frequency;
 mod gate;
 mod lanes;

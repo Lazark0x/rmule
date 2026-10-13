@@ -26,9 +26,9 @@
 
 use std::time::{Duration, Instant};
 
+use rmule_peer::PeerIdentity;
 use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
-use rmule_peer::{PartBitmap, PeerIdentity};
-use rmule_primitives::{PeerEndpoint, PeerSource, SourceSighting};
+use rmule_primitives::PeerEndpoint;
 
 use super::SourceBook;
 use super::purge::PurgeKind;
@@ -136,6 +136,18 @@ pub(super) struct Standing {
 }
 
 impl Standing {
+    /// Whether it is a place a source-exchange answer may name: not
+    /// queue-full (`IsRemoteQueueFull`), and not holding nothing we need
+    /// (`DS_NONEEDEDPARTS` is no queue state).
+    pub(super) const fn names_a_place(&self) -> bool {
+        !self.queue_full && !self.no_needed_parts
+    }
+
+    /// The peer-UDP crypt target the identity it queued under stated.
+    pub(super) const fn crypt(&self) -> Option<PeerUdpCryptTarget> {
+        self.crypt
+    }
+
     /// Take what a revised identity of the live worker states: a contact
     /// replaces the one held, silence keeps it, and the crypt target is the
     /// identity's.
@@ -369,54 +381,6 @@ impl SourceBook {
             standing.udp_pending = false;
             standing.recheck_at = Some(now + REASK_RECHECK);
         }
-    }
-
-    /// The sources a source-exchange answer for the file may name, with the
-    /// parts each advertised (aMule `CPartFile::CreateSrcInfoPacket`, stock
-    /// 2.3.3 `PartFile.cpp:2596-2605`): each we download from — a live
-    /// worker `downloading` says holds a part — or wait at with a place in
-    /// its queue: not queue-full (`IsRemoteQueueFull`), and not holding
-    /// nothing we need (`DS_NONEEDEDPARTS` is no queue state). In record
-    /// order.
-    pub(crate) fn exchange_pool(
-        &self,
-        downloading: impl Fn(PeerEndpoint) -> bool,
-    ) -> Vec<(SourceSighting, Option<PartBitmap>)> {
-        let mut pool: Vec<(RecordId, SourceSighting, Option<PartBitmap>)> = self
-            .records
-            .iter()
-            .filter_map(|(id, record)| {
-                let waits = record
-                    .standing
-                    .is_some_and(|standing| !standing.queue_full && !standing.no_needed_parts);
-                let downloads = record
-                    .stage
-                    .live()
-                    .is_some_and(|live| downloading(live.endpoint));
-                if !waits && !downloads {
-                    return None;
-                }
-                let source = match record.stage.identity() {
-                    Some(identity) => identity.source_coordinate(),
-                    None => {
-                        let source = match *record.endpoints.first()? {
-                            PeerEndpoint::V4(v4) => PeerSource::HighId(v4),
-                            PeerEndpoint::V6(v6) => PeerSource::Ipv6(v6),
-                        };
-                        let user_hash = record
-                            .standing
-                            .and_then(|standing| standing.crypt)
-                            .map(|crypt| crypt.user_hash);
-                        SourceSighting::new(source, user_hash, None)
-                    }
-                };
-                Some((*id, source, record.advertised.clone()))
-            })
-            .collect();
-        pool.sort_unstable_by_key(|(id, ..)| id.0);
-        pool.into_iter()
-            .map(|(_, source, parts)| (source, parts))
-            .collect()
     }
 
     /// The endpoint each record in the RemoteQueued stage stands at.
