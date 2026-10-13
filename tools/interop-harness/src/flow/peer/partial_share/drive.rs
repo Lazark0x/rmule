@@ -52,7 +52,12 @@ impl Drive<'_> {
         if options.prober {
             self.add_link(docker, topology, PROBER, &self.peer_link)?;
         }
-        if options.straddle {
+        // The stimulus's slot ask follows its hash-set ask, so it waits for
+        // rmule to hold the set: a no-file answer would end its ask there.
+        if options.straddle && options.prober {
+            self.wait(docker, "rmule's hash set", |trail| {
+                trail.first_at("download.hash_set_received").is_some()
+            })?;
             let stimulus = self.stimulus(bench, topology, PRE_PART, &[(0, 4_096)], true)?;
             topology.stimuli.push(stimulus);
         }
@@ -69,7 +74,9 @@ impl Drive<'_> {
             },
         )?;
         self.add_link(docker, topology, DOWNLOADER, &self.peer_link)?;
-        if options.straddle {
+        // With one slot the downloader holds it: a straddle stimulus would
+        // only queue, and take the queued downloader's rank.
+        if options.straddle && !options.queued {
             let parts = trail
                 .last_parts()
                 .and_then(|mark| mark.field("parts"))

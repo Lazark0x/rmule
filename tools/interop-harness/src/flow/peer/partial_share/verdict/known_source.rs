@@ -25,11 +25,20 @@ pub(super) fn reask_ack(run: &Run<'_>) -> Claim {
     let mut pings = 0;
     let mut failures = Vec::new();
     let mut acked = Vec::new();
-    for ping in
-        run.wire.datagrams.iter().filter(
-            |datagram| matches!(&datagram.said, Udp::Ping { hash } if *hash == run.stream_hash),
-        )
-    {
+    // A reask from a peer rmule queued in the same leg: one it never queued
+    // (a downloader reasking the restarted node) is not this claim's.
+    let queued_by = |peer: Ipv4Addr, at: f64| {
+        run.trail.named("serve.peer_queued").any(|mark| {
+            mark.peer() == Some(peer)
+                && mark
+                    .at
+                    .is_some_and(|queued| queued <= at && run.leg_at(queued) == run.leg_at(at))
+        })
+    };
+    for ping in run.wire.datagrams.iter().filter(|datagram| {
+        matches!(&datagram.said, Udp::Ping { hash } if *hash == run.stream_hash)
+            && queued_by(datagram.peer, datagram.at)
+    }) {
         pings += 1;
         let answer = run.wire.datagrams.iter().find(|datagram| {
             datagram.peer == ping.peer
