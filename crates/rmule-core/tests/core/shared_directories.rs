@@ -346,6 +346,45 @@ async fn a_refused_download_directory_is_not_scanned_and_covers_nothing() {
     core.shutdown().await;
 }
 
+/// The Temp Directory, and a directory holding it, are refused at the add
+/// (ADR-0115): no part file of a new download lies under a shared directory.
+/// A Temp Directory moved on the running core is judged at once — the new one
+/// is refused, and the old one is a directory like any other.
+#[tokio::test]
+async fn the_temp_directory_and_a_directory_holding_it_are_not_shared() {
+    let machine = Machine::new();
+    let parts = machine.directory("work/parts", &[]);
+    let work = machine.root.join("work");
+    let mut core = machine.core_with(
+        rmule_testkit::memory_store(),
+        CoreConfig::default(),
+        rmule_core::CoreSettings {
+            temp_dir: Some(parts.clone()),
+            ..rmule_core::CoreSettings::default()
+        },
+    );
+    for dir in [&parts, &work] {
+        assert_eq!(
+            refused(&mut core, dir).await,
+            DirectoryRefusal::HoldsTempDirectory,
+            "{}",
+            dir.display()
+        );
+    }
+
+    let moved = machine.directory("spool/parts", &[]);
+    assert_eq!(
+        core.settings().set(rmule_core::Setting::TempDir(moved)),
+        Ok(rmule_core::TakesEffect::Now)
+    );
+    assert_eq!(
+        refused(&mut core, &machine.root.join("spool")).await,
+        DirectoryRefusal::HoldsTempDirectory
+    );
+    add(&mut core, &work, false).await;
+    core.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_remove_unshares_at_once_and_the_add_again_reads_nothing() {
     let machine = Machine::new();

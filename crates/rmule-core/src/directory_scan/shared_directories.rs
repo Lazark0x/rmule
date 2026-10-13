@@ -1,8 +1,10 @@
 //! The **Shared Directory List**'s rules that need no scan (ADR-0101,
 //! "Shared Directories"): the guards an added directory and the download
-//! directory must pass, and which entries are scanned and which are covered
-//! by another. Pure but for the looks the guards take at the path itself: its
-//! canonical form, whether it is a directory, and whether it is a mount point.
+//! directory must pass, the ones the **Temp Directory** must pass apart from
+//! every shared directory (ADR-0115), and which entries are scanned and which
+//! are covered by another. Pure but for the looks the guards take at the path
+//! itself: its canonical form, whether it is a directory, and whether it is a
+//! mount point.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -20,16 +22,18 @@ pub struct ShareGuards {
     pub data_dir: Option<PathBuf>,
 }
 
-/// Why a directory was not added to, or removed from, the list. A code: the
-/// front end words it.
+/// Why a directory was not added to, or removed from, the list, or not
+/// taken as the Temp Directory. A code: the front end words it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum DirectoryRefusal {
     /// Nothing is there, or it is not a directory.
     NotADirectory,
-    /// The path could not be looked at, for an OS error of this kind.
+    /// The path could not be looked at, or made, for an OS error of this kind.
     Unreachable(io::ErrorKind),
     /// The path is not valid UTF-8; the list keys on its text.
     NotUtf8,
+    /// A relative path, which would move with the working directory.
+    NotAbsolute,
     /// The operator's home directory itself.
     HomeDirectory,
     /// A filesystem root: `/`, or a mount point.
@@ -45,6 +49,15 @@ pub enum DirectoryRefusal {
         /// The listed directory it lies in.
         parent: PathBuf,
     },
+    /// A Temp Directory holding a directory in the list, the download
+    /// directory included.
+    HoldsShared {
+        /// The listed directory it holds.
+        child: PathBuf,
+    },
+    /// The Temp Directory, or a directory holding it: rmule's unfinished part
+    /// files lie there.
+    HoldsTempDirectory,
     /// The download directory is shared while it is the download directory;
     /// it is changed in Settings, not removed.
     DownloadDirectory,
@@ -55,8 +68,8 @@ pub enum DirectoryRefusal {
 }
 
 /// Check `path` for the add against `listed` — every entry's canonical path,
-/// the download directory's and those being added included — and answer its
-/// canonical path, the list's key.
+/// the download directory's and those being added included — and the Temp
+/// Directory `temp_dir`, and answer its canonical path, the list's key.
 ///
 /// # Errors
 /// The first guard it fails, in the order ADR-0101 lists them.
@@ -64,6 +77,7 @@ pub(crate) fn admit(
     path: &Path,
     listed: &[PathBuf],
     guards: &ShareGuards,
+    temp_dir: Option<&Path>,
 ) -> Result<PathBuf, DirectoryRefusal> {
     let dir = match std::fs::canonicalize(path) {
         Ok(dir) => dir,
@@ -77,7 +91,7 @@ pub(crate) fn admit(
         Ok(_) => return Err(DirectoryRefusal::NotADirectory),
         Err(error) => return Err(DirectoryRefusal::Unreachable(error.kind())),
     }
-    guard(&dir, guards)?;
+    guard(&dir, guards, temp_dir)?;
     if listed.contains(&dir) {
         return Err(DirectoryRefusal::AlreadyShared);
     }
@@ -91,7 +105,8 @@ pub(crate) fn admit(
 
 /// Check a directory where it is now with the add's guards on what a
 /// directory is: valid UTF-8, not the home, not a filesystem root, not rmule's
-/// data directory, inside it or holding it. The download directory is judged
+/// data directory, inside it or holding it, and neither the Temp Directory
+/// `temp_dir` nor holding it. The download directory is judged
 /// so at its set and before each of its scans, and every listed entry when its
 /// scan starts and again when it appears after missing, since what a path
 /// leads to can change after the add. Unlike an add it need not be there
@@ -101,13 +116,21 @@ pub(crate) fn admit(
 ///
 /// # Errors
 /// The first guard it fails, in the order ADR-0101 lists them.
-pub(crate) fn guard_in_place(dir: &Path, guards: &ShareGuards) -> Result<(), DirectoryRefusal> {
-    guard(&resolved(dir), guards)
+pub(crate) fn guard_in_place(
+    dir: &Path,
+    guards: &ShareGuards,
+    temp_dir: Option<&Path>,
+) -> Result<(), DirectoryRefusal> {
+    guard(&resolved(dir), guards, temp_dir)
 }
 
 /// The guards on what the canonical directory `dir` is, whatever the list
 /// holds.
-fn guard(dir: &Path, guards: &ShareGuards) -> Result<(), DirectoryRefusal> {
+fn guard(
+    dir: &Path,
+    guards: &ShareGuards,
+    temp_dir: Option<&Path>,
+) -> Result<(), DirectoryRefusal> {
     if dir.to_str().is_none() {
         return Err(DirectoryRefusal::NotUtf8);
     }
@@ -124,6 +147,64 @@ fn guard(dir: &Path, guards: &ShareGuards) -> Result<(), DirectoryRefusal> {
         if data.starts_with(dir) {
             return Err(DirectoryRefusal::HoldsDataDirectory);
         }
+    }
+    if temp_dir
+        .map(resolved)
+        .is_some_and(|temp| temp.starts_with(dir))
+    {
+        return Err(DirectoryRefusal::HoldsTempDirectory);
+    }
+    Ok(())
+}
+
+/// Check `dir` for the Temp Directory where it is now, or would be made
+/// (ADR-0115): an absolute UTF-8 path, not an existing file, not the home
+/// or a filesystem root, and apart from the Shared Directory List — not the
+/// download directory `download_dir`, nor one of `shared` (canonical, as the
+/// list keys them), inside one or holding one. rmule's data directory is no
+/// bar: the default lies inside it.
+///
+/// # Errors
+/// The first guard it fails, in that order.
+pub(crate) fn guard_temp_dir(
+    dir: &Path,
+    guards: &ShareGuards,
+    download_dir: Option<&Path>,
+    shared: &[PathBuf],
+) -> Result<(), DirectoryRefusal> {
+    if dir.to_str().is_none() {
+        return Err(DirectoryRefusal::NotUtf8);
+    }
+    if !dir.is_absolute() {
+        return Err(DirectoryRefusal::NotAbsolute);
+    }
+    if dir.exists() && !dir.is_dir() {
+        return Err(DirectoryRefusal::NotADirectory);
+    }
+    let dir = resolved(dir);
+    if guards.home.as_deref().map(canonical).as_deref() == Some(dir.as_path()) {
+        return Err(DirectoryRefusal::HomeDirectory);
+    }
+    if mount_point(&dir) {
+        return Err(DirectoryRefusal::FilesystemRoot);
+    }
+    let download = download_dir.map(resolved);
+    if download.as_ref() == Some(&dir) {
+        return Err(DirectoryRefusal::DownloadDirectory);
+    }
+    let listed: Vec<&PathBuf> = download.iter().chain(shared).collect();
+    if listed.contains(&&dir) {
+        return Err(DirectoryRefusal::AlreadyShared);
+    }
+    if let Some(parent) = listed.iter().find(|entry| dir.starts_with(entry)) {
+        return Err(DirectoryRefusal::InsideShared {
+            parent: (*parent).clone(),
+        });
+    }
+    if let Some(child) = listed.iter().find(|entry| entry.starts_with(&dir)) {
+        return Err(DirectoryRefusal::HoldsShared {
+            child: (*child).clone(),
+        });
     }
     Ok(())
 }

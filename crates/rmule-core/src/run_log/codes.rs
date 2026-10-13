@@ -280,12 +280,15 @@ fn directory_refusal_as(
         R::NotADirectory => record.code(name, "not_a_directory"),
         R::Unreachable(kind) => record.code(name, "unreachable").os_error(*kind, None),
         R::NotUtf8 => record.code(name, "not_utf8"),
+        R::NotAbsolute => record.code(name, "not_absolute"),
         R::HomeDirectory => record.code(name, "home_directory"),
         R::FilesystemRoot => record.code(name, "filesystem_root"),
         R::DataDirectory => record.code(name, "data_directory"),
         R::HoldsDataDirectory => record.code(name, "holds_data_directory"),
         R::AlreadyShared => record.code(name, "already_shared"),
         R::InsideShared { parent } => record.code(name, "inside_shared").path("parent", parent),
+        R::HoldsShared { child } => record.code(name, "holds_shared").path("child", child),
+        R::HoldsTempDirectory => record.code(name, "holds_temp_directory"),
         R::DownloadDirectory => record.code(name, "download_directory"),
         R::NotShared => record.code(name, "not_shared"),
         R::StoreFailed => record.code(name, "store_failed"),
@@ -307,6 +310,9 @@ pub(super) fn setting_refusal(record: Record, refusal: &crate::SettingRefusal) -
             "guard",
             guard,
         ),
+        R::TempDirRefused(guard) => {
+            directory_refusal_as(record.code("reason", "temp_dir_refused"), "guard", guard)
+        }
         R::NicknameUnfit => record.code("reason", "nickname_unfit"),
         R::UrlBlank => record.code("reason", "url_blank"),
         R::CoreKey => record.code("reason", "core_key"),

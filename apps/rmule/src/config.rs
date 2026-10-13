@@ -83,8 +83,9 @@ impl SharedConfig {
     /// own key is never refused.
     ///
     /// # Errors
-    /// The refusal core's `set` would answer.
-    pub fn check(&self, edit: &PrefEdit) -> Result<(), rmule_core::SettingRefusal> {
+    /// The refusal core's `set` would answer, or the store's failure to read
+    /// what core judges the value against.
+    pub fn check(&self, edit: &PrefEdit) -> Result<(), SettingError> {
         match edit.keeper() {
             Keeper::Core(setting) => self.settings.check(&setting),
             Keeper::FrontEnd(_) => Ok(()),

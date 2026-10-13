@@ -317,14 +317,14 @@ impl DurableAppConfig {
         KAD_IDENTITY_SINGLETON.edit(&self.store, |record| record.udp_port = port)
     }
 
-    /// Persist the download directory. Fails with
-    /// [`CoreError::Repository`] on a path that is not valid UTF-8, since the
-    /// preferences column is text.
-    pub(crate) fn set_download_dir(&self, dir: &Path) -> Result<(), CoreError> {
+    /// Persist a directory — the download directory or the Temp Directory —
+    /// under `preference`. Fails with [`CoreError::Repository`] on a path
+    /// that is not valid UTF-8, since the preferences column is text.
+    pub(crate) fn set_dir(&self, preference: Preference, dir: &Path) -> Result<(), CoreError> {
         let value = dir
             .to_str()
-            .ok_or_else(|| CoreError::Repository("download dir is not valid UTF-8".to_owned()))?;
-        self.set_preference(Preference::DownloadDir, value)
+            .ok_or_else(|| CoreError::Repository("directory is not valid UTF-8".to_owned()))?;
+        self.set_preference(preference, value)
     }
 
     /// Read the decimal `u32` stored under `preference`, or mint one from OS

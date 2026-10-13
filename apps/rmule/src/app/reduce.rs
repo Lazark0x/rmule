@@ -155,12 +155,19 @@ impl App {
             },
             Action::ConfirmDownloadDir(dir) => {
                 let edit = crate::config::PrefEdit::DownloadDir(dir.clone());
-                if let Some(Err(refusal)) = self.config.as_ref().map(|config| config.check(&edit)) {
-                    rmule_core::run_log::write(&refusal.record(), self.run_log.get());
-                    return self.reduce(
-                        Action::Flash(crate::words::store::setting_refused(&refusal)),
-                        now,
-                    );
+                match self.config.as_ref().map(|config| config.check(&edit)) {
+                    Some(Err(rmule_core::SettingError::Refused(refusal))) => {
+                        rmule_core::run_log::write(&refusal.record(), self.run_log.get());
+                        return self.reduce(
+                            Action::Flash(crate::words::store::setting_refused(&refusal)),
+                            now,
+                        );
+                    }
+                    Some(Err(error)) => {
+                        tracing::warn!(%error, "a setting could not be checked");
+                        return self.reduce(Action::Flash(crate::words::store::NOT_SAVED), now);
+                    }
+                    Some(Ok(())) | None => {}
                 }
                 self.views.settings.warn_share(dir);
                 self.dirty = true;

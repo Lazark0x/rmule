@@ -9,16 +9,18 @@
 //! and the two ports in the identity rows, every other key in the preferences
 //! table — so no front end parses a stored spelling of its own. It refuses a
 //! download directory the Shared Directory List's guards refuse (ADR-0101),
-//! with the add's reason, so a refused directory is never stored.
+//! with the add's reason, and a Temp Directory that is not apart from every
+//! shared directory (ADR-0115), so a refused directory is never stored.
 
 mod stored;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rmule_net::peer::ObfuscationPolicy;
 
-use crate::app_config::{DEFAULT_NICKNAME, DEFAULT_PROTOCOL_VERSION};
+use crate::app_config::{AppConfigStore, DEFAULT_NICKNAME, DEFAULT_PROTOCOL_VERSION, Preference};
+use crate::directory_scan::guard_temp_dir;
 use crate::port_mapping::PortMappingMode;
 use crate::server_list::ServerPolicy;
 use crate::service::SettingsDoor;
@@ -39,6 +41,10 @@ pub struct CoreSettings {
     /// Where finished downloads are written, and the Shared Directory List's
     /// entry 0 (ADR-0101); `None` until the operator chooses one.
     pub download_dir: Option<PathBuf>,
+    /// The **Temp Directory** (ADR-0115): where a download started from now
+    /// on keeps its part file. `None` until the operator chooses one, and
+    /// then [`temp_directory`](Self::temp_directory) reads the default.
+    pub temp_dir: Option<PathBuf>,
     /// The nickname the identity row advertises.
     pub nickname: String,
     /// The eD2k listen port: the listener binds it, and every login, hello
@@ -104,6 +110,7 @@ impl Default for CoreSettings {
     fn default() -> Self {
         Self {
             download_dir: None,
+            temp_dir: None,
             nickname: DEFAULT_NICKNAME.to_owned(),
             tcp_port: 0,
             udp_port: 0,
@@ -133,6 +140,28 @@ impl CoreSettings {
             DEFAULT_PROTOCOL_VERSION,
         )
     }
+
+    /// Where a download started now keeps its part file (ADR-0115): the
+    /// [`temp_dir`](Self::temp_dir) set, or else
+    /// [`default_temp_dir`](Self::default_temp_dir) in `data_dir`, rmule's
+    /// data directory. `None` with neither — a test's or a tool's core — and
+    /// the part file then lies beside its final path.
+    #[must_use]
+    pub fn temp_directory(&self, data_dir: Option<&Path>) -> Option<PathBuf> {
+        temp_directory(self.temp_dir.clone(), data_dir)
+    }
+
+    /// The Temp Directory of an operator who never chose one: `Temp` in the
+    /// data directory `data_dir`.
+    #[must_use]
+    pub fn default_temp_dir(data_dir: &Path) -> PathBuf {
+        data_dir.join("Temp")
+    }
+}
+
+/// The Temp Directory `set`, or the default in `data_dir`.
+pub(crate) fn temp_directory(set: Option<PathBuf>, data_dir: Option<&Path>) -> Option<PathBuf> {
+    set.or_else(|| data_dir.map(CoreSettings::default_temp_dir))
 }
 
 /// One change to a core-owned preference, as a front end asks for it.
@@ -141,7 +170,8 @@ pub enum Setting {
     /// The download directory. Absolute, valid UTF-8, not an existing file,
     /// and passing the Shared Directory List's guards (ADR-0101) where it is,
     /// or would be made: not the home, a filesystem root, or rmule's data
-    /// directory, inside it or holding it.
+    /// directory, inside it or holding it, and neither the Temp Directory nor
+    /// holding it.
     DownloadDir {
         /// The directory.
         dir: PathBuf,
@@ -152,6 +182,12 @@ pub enum Setting {
         /// share.
         share_confirmed: bool,
     },
+    /// The **Temp Directory** (ADR-0115), made by the set when it is missing.
+    /// Absolute, valid UTF-8, a directory, not the home or a filesystem root,
+    /// and apart from every shared directory: not the download directory or
+    /// another listed one, inside one or holding one. Inside rmule's data
+    /// directory is allowed. Downloads already placed keep their paths.
+    TempDir(PathBuf),
     /// The advertised nickname: not blank, and free of control characters.
     Nickname(String),
     /// The eD2k listen port; never `0`.
@@ -212,6 +248,10 @@ pub enum SettingRefusal {
     /// added directory must pass refuse it, for this reason (ADR-0101).
     #[error("the share guards refuse the download directory")]
     DownloadDirRefused(DirectoryRefusal),
+    /// The Temp Directory is refused for this reason (ADR-0115), the set's
+    /// own failure to make it among them.
+    #[error("the temp directory is refused")]
+    TempDirRefused(DirectoryRefusal),
     /// A blank nickname, or one holding control characters a hello would carry.
     #[error("the nickname must not be blank or hold control characters")]
     NicknameUnfit,
@@ -252,6 +292,9 @@ pub(crate) enum LiveSetting {
         /// Whether the front end's confirm already said yes.
         share_confirmed: bool,
     },
+    /// The next download placed keeps its part file in this Temp Directory,
+    /// and the guards judge every directory against it.
+    TempDir(PathBuf),
     /// The one obfuscation policy every surface reads as it decides
     /// (ADR-0046): the next dial, accept, datagram and crypt-ping follow it,
     /// and the Kad node is re-armed.
@@ -291,7 +334,8 @@ impl CoreSettingsHandle {
     }
 
     /// The operator's home and rmule's data directory, which a download
-    /// directory set through this handle may not be (ADR-0101): the same
+    /// directory set through this handle may not be (ADR-0101), and the data
+    /// directory the default Temp Directory lies in (ADR-0115): the same
     /// [`ShareGuards`] a front end hands
     /// [`CoreBuilder::share_guards`](crate::CoreBuilder::share_guards), since
     /// core never reads the environment. A running core's handle has its
@@ -354,12 +398,33 @@ impl CoreSettingsHandle {
     /// What [`set`](Self::set) would refuse `setting` for, writing nothing:
     /// the check a front end makes before it asks the operator to confirm
     /// what the value means — a download directory the guards refuse is
-    /// refused before the disclosure it would need.
+    /// refused before the disclosure it would need. A Temp Directory that
+    /// cannot be made is found only by the set, which makes it.
     ///
     /// # Errors
-    /// The [`SettingRefusal`] `set` would answer.
-    pub fn check(&self, setting: &Setting) -> Result<(), SettingRefusal> {
-        stored::validate(setting, &self.guards)
+    /// [`SettingError::Refused`] with the refusal `set` would answer;
+    /// [`SettingError::Store`] when the store could not be read for what a
+    /// directory is judged against.
+    pub fn check(&self, setting: &Setting) -> Result<(), SettingError> {
+        match setting {
+            Setting::DownloadDir { dir, .. } => {
+                let temp_dir = temp_directory(
+                    self.store
+                        .preference(Preference::TempDir)?
+                        .map(PathBuf::from),
+                    self.guards.data_dir.as_deref(),
+                );
+                stored::validate_download_dir(dir, &self.guards, temp_dir.as_deref())?;
+            }
+            Setting::TempDir(dir) => {
+                let download_dir = self.store.download_dir()?;
+                let shared = self.registry.shared_directories()?;
+                guard_temp_dir(dir, &self.guards, download_dir.as_deref(), &shared)
+                    .map_err(SettingRefusal::TempDirRefused)?;
+            }
+            other => stored::validate(other)?,
+        }
+        Ok(())
     }
 
     /// Validate `setting`, persist it, and answer when it takes effect.
@@ -367,8 +432,9 @@ impl CoreSettingsHandle {
     /// A handle taken from a running core queues a live key for it before
     /// answering [`TakesEffect::Now`]: `Remember peers`, the Dead Server
     /// Limit, the Announce Policy, the download directory, whose scan core
-    /// starts itself, and the obfuscation policy, which every surface reads
-    /// as it decides (ADR-0046). The key shares the core's command queue, so a
+    /// starts itself, the Temp Directory, where the next download placed
+    /// keeps its part file, and the obfuscation policy, which every surface
+    /// reads as it decides (ADR-0046). The key shares the core's command queue, so a
     /// command sent after the answer is taken after the change. Every other
     /// key, every key set on the store alone, and a live key whose core has
     /// stopped answer [`TakesEffect::NextStart`].
@@ -376,10 +442,17 @@ impl CoreSettingsHandle {
     /// # Errors
     /// [`SettingError::Refused`] for a value the key cannot take, with nothing
     /// written — among them a download directory the share guards refuse,
-    /// [`SettingRefusal::DownloadDirRefused`] with the add's reason;
-    /// [`SettingError::Store`] when the store refused the write.
+    /// [`SettingRefusal::DownloadDirRefused`] with the add's reason, and a
+    /// Temp Directory refused or not made,
+    /// [`SettingRefusal::TempDirRefused`]; [`SettingError::Store`] when the
+    /// store refused the read or the write.
     pub fn set(&self, setting: Setting) -> Result<TakesEffect, SettingError> {
-        stored::validate(&setting, &self.guards)?;
+        self.check(&setting)?;
+        if let Setting::TempDir(dir) = &setting {
+            std::fs::create_dir_all(dir).map_err(|error| {
+                SettingRefusal::TempDirRefused(DirectoryRefusal::Unreachable(error.kind()))
+            })?;
+        }
         stored::persist(&self.store, &setting)?;
         if let Setting::DownloadDir {
             dir,
@@ -403,6 +476,7 @@ impl CoreSettingsHandle {
                 dir,
                 share_confirmed,
             },
+            Setting::TempDir(dir) => LiveSetting::TempDir(dir),
             Setting::Obfuscation(policy) => LiveSetting::Obfuscation(policy),
             _ => return Ok(TakesEffect::NextStart),
         };

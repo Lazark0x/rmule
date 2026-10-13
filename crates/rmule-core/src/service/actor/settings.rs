@@ -38,6 +38,9 @@ where
                 }
                 self.download_directory(dir).await;
             }
+            // Downloads already placed keep the paths their rows hold
+            // (ADR-0115).
+            LiveSetting::TempDir(dir) => self.directories.temp_dir = Some(dir),
             LiveSetting::Obfuscation(policy) => self.on_set_obfuscation(policy).await,
         }
     }

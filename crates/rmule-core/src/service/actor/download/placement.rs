@@ -11,7 +11,6 @@ use crate::DownloadPaths;
 use crate::adapters::{
     KadRuntimeFactory, PeerTransferService, ServeRuntimeService, SourceLookupService,
 };
-use crate::directory_scan::guard_in_place;
 use crate::service::{CoreCommandRejectReason, NameTaken};
 
 use super::super::CoreActor;
@@ -36,7 +35,8 @@ where
             .download_dir
             .as_deref()
             .ok_or(CoreCommandRejectReason::NoDownloadDir)?;
-        guard_in_place(dir, &self.directories.guards)
+        self.directories
+            .guard_in_place(dir)
             .map_err(CoreCommandRejectReason::DownloadDirRefused)?;
         Ok(DownloadPaths::from_final_path(match if_taken {
             NameTaken::Refuse => name.path_in(dir),

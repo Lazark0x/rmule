@@ -42,7 +42,9 @@ pub use progress::{
 pub(crate) use progress::{InstalledDirectory, InstalledState};
 pub(crate) use report::{PassEnd, ScanReport};
 pub use shared_directories::{DirectoryRefusal, ShareGuards};
-pub(crate) use shared_directories::{RefusedFolders, admit, canonical, covering, guard_in_place};
+pub(crate) use shared_directories::{
+    RefusedFolders, admit, canonical, covering, guard_in_place, guard_temp_dir,
+};
 pub use source::{DirEntry, DirectorySource, EntryKind, FileIdentity, FileStamp};
 pub use watch::WatchFault;
 pub(crate) use watch::{

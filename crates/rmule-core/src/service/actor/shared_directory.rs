@@ -49,6 +49,10 @@ pub(super) struct DirectoryList {
     pub(super) turn: HashTurn,
     /// What the guards refuse beyond the filesystem's own facts.
     pub(super) guards: ShareGuards,
+    /// The Temp Directory (ADR-0115): where the next download placed keeps
+    /// its part file, and what no entry may be or hold. `None` on a core
+    /// given neither the setting nor a data directory.
+    pub(super) temp_dir: Option<PathBuf>,
 }
 
 /// One list entry: the directory its scan walks, its canonical form, what
@@ -60,6 +64,12 @@ struct Entry {
 }
 
 impl DirectoryList {
+    /// Judge `dir` by the guards on what a directory is, where its path
+    /// leads now ([`guard_in_place`]), the Temp Directory among them.
+    pub(super) fn guard_in_place(&self, dir: &Path) -> Result<(), DirectoryRefusal> {
+        guard_in_place(dir, &self.guards, self.temp_dir.as_deref())
+    }
+
     /// The download directory, unless the guards refuse it.
     fn shared_download_dir(&self) -> Option<&PathBuf> {
         self.download_dir
@@ -166,7 +176,7 @@ where
             }
         }
         for dir in self.directories.added.clone() {
-            if let Err(reason) = guard_in_place(&dir, &self.directories.guards) {
+            if let Err(reason) = self.directories.guard_in_place(&dir) {
                 self.directories
                     .added_refused
                     .insert(dir.clone(), reason.clone());
@@ -225,7 +235,7 @@ where
                 self.refused_download_dir(dir).await;
                 false
             }
-            Some(ScanRole::Added) => match guard_in_place(dir, &self.directories.guards) {
+            Some(ScanRole::Added) => match self.directories.guard_in_place(dir) {
                 Ok(()) => true,
                 Err(reason) => {
                     self.refused_added(dir.to_path_buf(), reason).await;
@@ -254,7 +264,7 @@ where
     /// Name `dir` entry 0 and judge it by the guards, saying so when they
     /// refuse it; `true` when it passes.
     async fn name_download_dir(&mut self, dir: PathBuf) -> bool {
-        let refused = guard_in_place(&dir, &self.directories.guards).err();
+        let refused = self.directories.guard_in_place(&dir).err();
         self.directories.download_dir = Some(dir.clone());
         self.directories.download_refused.clone_from(&refused);
         let Some(reason) = refused else {
@@ -346,7 +356,12 @@ where
                     .map(|scan| scan.dir.clone()),
             )
             .collect();
-        let dir = match admit(&path, &listed, &self.directories.guards) {
+        let dir = match admit(
+            &path,
+            &listed,
+            &self.directories.guards,
+            self.directories.temp_dir.as_deref(),
+        ) {
             Ok(dir) => dir,
             Err(reason) => return self.refuse(path, reason).await,
         };

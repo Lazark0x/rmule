@@ -79,9 +79,9 @@ fn notify_kad_publisher<C>(kad: &Option<kad::KadActivity<C>>) {
 /// **Obfuscation Policy**: that key is live, and from build on it lives in its
 /// one cell (ADR-0046), so its start value is not kept where a reader could
 /// take it for the policy in force. The live keys kept here — the server
-/// policy, `Remember peers`, the download directory — are read once, at
-/// start, to seed the owner each live change then writes; the rest take
-/// effect at the next start.
+/// policy, `Remember peers`, the download directory, the Temp Directory —
+/// are read once, at start, to seed the owner each live change then writes;
+/// the rest take effect at the next start.
 pub(super) struct StartSettings {
     /// The nickname and TCP port every login, hello and Kad dial presents.
     pub(super) credentials: super::ClientCredentials,
@@ -95,6 +95,9 @@ pub(super) struct StartSettings {
     pub(super) server_policy: crate::ServerPolicy,
     /// The download directory, at start.
     pub(super) download_dir: Option<PathBuf>,
+    /// The Temp Directory the operator set, at start; `None` reads the
+    /// default in the data directory.
+    pub(super) temp_dir: Option<PathBuf>,
 }
 
 impl StartSettings {
@@ -107,6 +110,7 @@ impl StartSettings {
         let credentials = settings.credentials();
         let crate::CoreSettings {
             download_dir,
+            temp_dir,
             nickname: _,
             tcp_port: _,
             udp_port,
@@ -126,6 +130,7 @@ impl StartSettings {
             remember_peers,
             server_policy,
             download_dir,
+            temp_dir,
         };
         (start, obfuscation)
     }

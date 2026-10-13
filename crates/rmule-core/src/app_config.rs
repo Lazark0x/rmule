@@ -74,6 +74,9 @@ pub struct KadIdentity {
 pub enum Preference {
     /// Directory finished downloads are written to.
     DownloadDir,
+    /// The **Temp Directory** new downloads keep their part files in
+    /// (ADR-0115): [`CoreSettings::temp_dir`](crate::CoreSettings::temp_dir).
+    TempDir,
     /// The `server.met` mirror an operator-driven list update fetches
     /// (`rmule_bootstrap::DEFAULT_SERVER_MET_URL` when unset).
     ServerMetUrl,
@@ -126,8 +129,9 @@ pub enum Preference {
 
 impl Preference {
     /// Every core-owned key, so the front end's raw surface can refuse them.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::DownloadDir,
+        Self::TempDir,
         Self::ServerMetUrl,
         Self::AutoFetchServerMet,
         Self::NodesDatUrl,
@@ -148,6 +152,7 @@ impl Preference {
     pub const fn key(self) -> &'static str {
         match self {
             Self::DownloadDir => "download_dir",
+            Self::TempDir => "temp_dir",
             Self::ServerMetUrl => "server_met_url",
             Self::AutoFetchServerMet => "auto_fetch_server_met",
             Self::NodesDatUrl => "nodes_dat_url",
