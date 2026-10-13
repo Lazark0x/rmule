@@ -330,6 +330,7 @@ async fn events_within(
     }
 }
 
+#[cfg(unix)]
 fn failure(events: &[DownloadEvent]) -> Option<&DownloadFailure> {
     events.iter().find_map(|event| match event {
         DownloadEvent::DownloadFailed { reason, .. } => Some(reason),
