@@ -286,6 +286,7 @@ impl Drive<'_> {
         let range_wait = STIMULUS_RANGE_WAIT_SECS.to_string();
         let max_seconds = STIMULUS_SECS.to_string();
         let mut container = [
+            "ed2k",
             "peer",
             "transfer",
             "capture",
@@ -318,13 +319,21 @@ impl Drive<'_> {
         }
         let started_at = now();
         bench.start_extra(&name, container, &format!("run the {purpose} stimulus"))?;
-        let ip = run_checked(
+        let address = run_checked(
             bench.docker.container_ip(name.clone()),
             "inspect the stimulus ip",
-        )?
-        .trim()
-        .parse()
-        .context("stimulus address")?;
+        )?;
+        // An exited container has no address: say what it printed.
+        let ip = match address.trim().parse() {
+            Ok(ip) => ip,
+            Err(_) => {
+                let logs = bench.docker.logs(name.clone()).to_command().output()?;
+                bail!(
+                    "the {purpose} stimulus exited at once: {}",
+                    String::from_utf8_lossy(&logs.stderr).trim()
+                );
+            }
+        };
         act(
             topology,
             format!("{purpose} stimulus at {ip} asks {ranges:?}"),
