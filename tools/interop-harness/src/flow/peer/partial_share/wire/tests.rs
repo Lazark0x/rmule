@@ -168,3 +168,46 @@ fn a_reask_answer_reads_with_or_without_its_status() {
         })
     );
 }
+
+/// A hello leads with its hash size, a hello answer does not; both read as
+/// the ID and listen port the peer claims.
+#[test]
+fn a_hello_and_its_answer_read_as_the_claimed_id_and_port() {
+    let mut answer = HASH.to_vec();
+    answer.extend_from_slice(&0x1000_0001u32.to_le_bytes());
+    answer.extend_from_slice(&4_662u16.to_le_bytes());
+    answer.extend_from_slice(&0u32.to_le_bytes());
+    let mut hello = vec![16];
+    hello.extend_from_slice(&answer);
+    let claimed = vec![Said::Hello {
+        id: 0x1000_0001,
+        port: 4_662,
+    }];
+    assert_eq!(decoded(0xE3, 0x01, &hello, false), claimed);
+    assert_eq!(decoded(0xE3, 0x4C, &answer, false), claimed);
+}
+
+/// A name ask is the peer's probe when the peer sends it and rmule's own
+/// download asking when rmule does; the peer's name answer is its answer
+/// to that ask.
+#[test]
+fn a_name_ask_reads_by_who_sent_it() {
+    assert_eq!(
+        decoded(0xE3, 0x58, &HASH, false),
+        vec![Said::NameAsk {
+            hash: HASH,
+            sources_asked: false
+        }]
+    );
+    assert_eq!(
+        decoded(0xE3, 0x58, &HASH, true),
+        vec![Said::FileAsk { hash: HASH }]
+    );
+    let mut answer = HASH.to_vec();
+    answer.extend_from_slice(&10u16.to_le_bytes());
+    answer.extend_from_slice(b"stream.mkv");
+    assert_eq!(
+        decoded(0xE3, 0x59, &answer, false),
+        vec![Said::FileAnswer { hash: HASH }]
+    );
+}

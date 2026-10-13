@@ -9,6 +9,7 @@
 
 mod answers;
 mod known_source;
+mod links;
 mod offers;
 mod uploads;
 
@@ -102,13 +103,18 @@ pub(crate) struct Knobs {
     pub(crate) pause: bool,
     pub(crate) restart: bool,
     pub(crate) straddle: bool,
-    /// Whether rmule's dials to the downloaders went through.
-    #[serde(default)]
+    /// Whether rmule's dials to the downloaders went through; a topology
+    /// written before they could be dropped let every dial through.
+    #[serde(default = "dials_went_through")]
     pub(crate) dial_downloaders: bool,
     /// The server rmule logged in to: `lugdunum` or `ed2k-server`.
     #[serde(default)]
     pub(crate) rmule_server: String,
     pub(crate) downloader_image: String,
+}
+
+fn dials_went_through() -> bool {
+    true
 }
 
 /// A claim's outcome.
@@ -318,6 +324,9 @@ pub(crate) fn claims(run: &Run<'_>) -> Vec<Claim> {
         uploads::pause(run),
         offers::restart(run),
         answers::complete_form(run),
+        links::rides_the_askers_link(run),
+        links::relinked_waiter_keeps_its_place(run),
+        links::dialled_at_its_address(run),
     ]
 }
 

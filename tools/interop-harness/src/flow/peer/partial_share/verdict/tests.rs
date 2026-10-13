@@ -3,7 +3,7 @@
 use std::net::{Ipv4Addr, SocketAddr};
 
 use super::super::marks::Trail;
-use super::super::wire::{Item, Said, Status, Wire};
+use super::super::wire::{Close, Item, Open, Said, Status, Wire};
 use super::{Body, Claim, Knobs, Run, STRADDLE, Stimulus, TopologyFile, Verdict, claims};
 use crate::flow::ed2k_server::search_wire::server_tap::OfferedRow;
 
@@ -69,6 +69,30 @@ impl Fixture {
             from_rmule,
             said,
         });
+    }
+
+    /// A frame on the link `peer` names.
+    fn said_on(&mut self, at: f64, peer: SocketAddr, from_rmule: bool, said: Said) {
+        self.wire.items.push(Item {
+            at,
+            peer,
+            from_rmule,
+            said,
+        });
+    }
+
+    /// A dial: rmule's to `peer`, or the peer's from that socket.
+    fn open(&mut self, at: f64, peer: SocketAddr, by_rmule: bool) {
+        self.wire.opens.push(Open {
+            at,
+            peer,
+            rmule_port: if by_rmule { 50_000 } else { 4_663 },
+            by_rmule,
+        });
+    }
+
+    fn close(&mut self, at: f64, peer: SocketAddr, by_rmule: bool) {
+        self.wire.closes.push(Close { at, peer, by_rmule });
     }
 
     fn claim(&self, name: &str) -> Claim {
@@ -218,4 +242,97 @@ fn the_announce_must_mark_the_partial_incomplete() {
         .offers
         .push((1001.0, vec![row(STREAM, 0xFBFB_FBFB, 0xFBFB)]));
     assert_eq!(misread.claim(NAME).verdict, Verdict::Fail);
+}
+
+fn socket(ip: Ipv4Addr, port: u16) -> SocketAddr {
+    SocketAddr::new(ip.into(), port)
+}
+
+/// The downloader asks on its own link, then rmule's download asks it over
+/// the same link and it answers.
+fn ridden(dial_downloaders: bool) -> Fixture {
+    let mut run = Fixture::new(TRAIL);
+    run.topology.knobs.dial_downloaders = dial_downloaders;
+    let link = socket(DOWNLOADER, 40_000);
+    run.open(1001.0, link, false);
+    run.said_on(1001.1, link, true, Said::Accept);
+    run.said_on(1200.0, link, true, Said::FileAsk { hash: STREAM });
+    run.said_on(1200.1, link, false, Said::FileAnswer { hash: STREAM });
+    run
+}
+
+/// rmule's download asking over the asker's own link passes; a dial to the
+/// asker while that link is up fails, and more so once the asker drops the
+/// first link for it. With the dials dropped on rmule's link the claim
+/// cannot be judged.
+#[test]
+fn a_download_of_an_asker_must_ride_the_askers_link() {
+    const NAME: &str = "rmule-rides-the-askers-link";
+    assert_eq!(ridden(true).claim(NAME).verdict, Verdict::Pass);
+    assert_eq!(ridden(false).claim(NAME).verdict, Verdict::NotRun);
+
+    let mut second = ridden(true);
+    second.open(1150.0, socket(DOWNLOADER, 4_662), true);
+    second.close(1152.0, socket(DOWNLOADER, 40_000), false);
+    let claim = second.claim(NAME);
+    assert_eq!(claim.verdict, Verdict::Fail);
+    assert!(
+        claim.detail.contains("closed that link"),
+        "{}",
+        claim.detail
+    );
+
+    let mut after = ridden(true);
+    after.close(1300.0, socket(DOWNLOADER, 40_000), false);
+    after.open(1400.0, socket(DOWNLOADER, 4_662), true);
+    assert_eq!(after.claim(NAME).verdict, Verdict::Pass);
+}
+
+/// A waiter queued at rank 1 that comes back on a new link of its own is
+/// told rank 1 again; rank 2, behind its own stale entry, fails.
+#[test]
+fn a_waiter_back_on_a_new_link_must_keep_its_rank() {
+    const NAME: &str = "a-relinked-waiter-keeps-its-place";
+    let relinked = |rank| {
+        let mut run = Fixture::new(TRAIL);
+        let first = socket(DOWNLOADER, 40_000);
+        let second = socket(DOWNLOADER, 40_001);
+        run.open(1001.0, first, false);
+        run.said_on(1001.1, first, true, Said::Rank { rank: 1 });
+        run.close(1041.0, first, false);
+        run.open(2300.0, second, false);
+        run.said_on(2300.1, second, true, Said::Rank { rank });
+        run
+    };
+    assert_eq!(relinked(1).claim(NAME).verdict, Verdict::Pass);
+    assert_eq!(relinked(2).claim(NAME).verdict, Verdict::Fail);
+    assert_eq!(Fixture::new(TRAIL).claim(NAME).verdict, Verdict::NotRun);
+}
+
+/// A peer whose hello claims `0x10000001` from another address is dialled
+/// at its socket's address with its hello's port, never at `1.0.0.16`.
+#[test]
+fn a_peer_met_inbound_must_be_dialled_at_its_address() {
+    const NAME: &str = "a-peer-met-inbound-is-dialled-at-its-address";
+    let dialled = |at: Ipv4Addr| {
+        let mut run = Fixture::new(TRAIL);
+        let link = socket(STIMULUS, 40_002);
+        run.open(1001.0, link, false);
+        run.said_on(
+            1001.1,
+            link,
+            false,
+            Said::Hello {
+                id: 0x1000_0001,
+                port: 4_662,
+            },
+        );
+        run.open(1100.0, socket(at, 4_662), true);
+        run
+    };
+    assert_eq!(dialled(STIMULUS).claim(NAME).verdict, Verdict::Pass);
+    assert_eq!(
+        dialled(Ipv4Addr::new(1, 0, 0, 16)).claim(NAME).verdict,
+        Verdict::Fail
+    );
 }

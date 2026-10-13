@@ -12,6 +12,7 @@ const OP_EDONKEYPROT: u8 = 0xE3;
 const OP_EMULEPROT: u8 = 0xC5;
 const OP_PACKEDPROT: u8 = 0xD4;
 
+const OP_HELLO: u8 = 0x01;
 const OP_SENDINGPART: u8 = 0x46;
 const OP_REQUESTPARTS: u8 = 0x47;
 const OP_FILEREQANSNOFIL: u8 = 0x48;
@@ -25,6 +26,7 @@ const OP_CANCELTRANSFER: u8 = 0x56;
 const OP_OUTOFPARTREQS: u8 = 0x57;
 const OP_REQUESTFILENAME: u8 = 0x58;
 const OP_REQFILENAMEANSWER: u8 = 0x59;
+const OP_HELLOANSWER: u8 = 0x4C;
 
 const OP_COMPRESSEDPART: u8 = 0x40;
 const OP_QUEUERANKING: u8 = 0x60;
@@ -137,8 +139,41 @@ pub(crate) fn decode(
         }
         (OP_EMULEPROT, OP_MULTIPACKET, false) => one(bundle(body, HASH_LEN)),
         (OP_EMULEPROT, OP_MULTIPACKET_EXT, false) => one(bundle(body, HASH_LEN + 8)),
+        (OP_EDONKEYPROT, OP_HELLO, false) if body.first() == Some(&(HASH_LEN as u8)) => {
+            one(hello(body, 1))
+        }
+        (OP_EDONKEYPROT, OP_HELLOANSWER, false) => one(hello(body, 0)),
+        (
+            OP_EDONKEYPROT,
+            OP_REQUESTFILENAME | OP_SETREQFILEID | OP_HASHSETREQUEST | OP_STARTUPLOADREQ
+            | OP_REQUESTPARTS,
+            true,
+        )
+        | (OP_EMULEPROT, OP_MULTIPACKET | OP_MULTIPACKET_EXT | OP_REQUESTPARTS_I64, true) => {
+            one(hash().map(|hash| Said::FileAsk { hash }))
+        }
+        (
+            OP_EDONKEYPROT,
+            OP_REQFILENAMEANSWER | OP_FILESTATUS | OP_HASHSETANSWER | OP_FILEREQANSNOFIL,
+            false,
+        )
+        | (OP_EMULEPROT, OP_MULTIPACKETANSWER, false) => {
+            one(hash().map(|hash| Said::FileAnswer { hash }))
+        }
         _ => Vec::new(),
     }
+}
+
+/// A hello (`lead` 1, past its hash-size byte) or hello answer (`lead`
+/// 0): `<user hash 16><ID 4><port 2>` before its tags.
+fn hello(body: &[u8], lead: usize) -> Option<Said> {
+    let id = u32::from_le_bytes(
+        body.get(lead + HASH_LEN..lead + HASH_LEN + 4)?
+            .try_into()
+            .ok()?,
+    );
+    let port = u16_at(body, lead + HASH_LEN + 4)?;
+    Some(Said::Hello { id, port })
 }
 
 /// A peer's file-request bundle: a name ask, and whether it also asked for

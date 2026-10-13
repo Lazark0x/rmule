@@ -1,6 +1,7 @@
 //! What the tap on rmule's namespace shows between rmule and the bodies that
 //! fetch from it: every answer rmule gave a probe, every slot ask and grant,
-//! every block it sent and every reask it answered.
+//! every block it sent and every reask it answered, the hellos the bodies
+//! said, rmule's own download asks on their links, and every dial.
 //!
 //! Read by a reader of the harness's own, not rmule's: rmule's writers are
 //! what the flow tests. A frame is attributed by its direction alone — what
@@ -77,6 +78,14 @@ pub(crate) enum Said {
     SourcesAsk { hash: Hash },
     /// A peer cancelled its transfer (`0x56`).
     Cancel,
+    /// A peer's hello or hello answer: the ID it claims and its listen port.
+    Hello { id: u32, port: u16 },
+    /// rmule asked the peer about `hash` as its downloader: a name, status,
+    /// bundle, hash-set or slot ask, or a request.
+    FileAsk { hash: Hash },
+    /// The peer answered rmule's ask about `hash`: a name, status, bundle,
+    /// hash set or no-file.
+    FileAnswer { hash: Hash },
 }
 
 /// One frame of a link, attributed.
@@ -98,6 +107,26 @@ pub(crate) struct Close {
     pub(crate) at: f64,
     pub(crate) peer: SocketAddr,
     pub(crate) by_rmule: bool,
+}
+
+/// A TCP dial: rmule's to any address, or a peer's to rmule.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Open {
+    pub(crate) at: f64,
+    /// The other end: the address rmule dialled, or the peer's socket.
+    pub(crate) peer: SocketAddr,
+    /// rmule's end of the link.
+    pub(crate) rmule_port: u16,
+    pub(crate) by_rmule: bool,
+}
+
+impl Open {
+    /// Whether `other` is this dial again: a retransmitted SYN.
+    fn same_link(&self, other: &Self) -> bool {
+        self.peer == other.peer
+            && self.rmule_port == other.rmule_port
+            && self.by_rmule == other.by_rmule
+    }
 }
 
 /// One client-UDP datagram between rmule and a peer.
@@ -127,6 +156,8 @@ pub(crate) struct Datagram {
 pub(crate) struct Wire {
     pub(crate) items: Vec<Item>,
     pub(crate) closes: Vec<Close>,
+    /// Every dial, its retransmissions folded into the first.
+    pub(crate) opens: Vec<Open>,
     pub(crate) datagrams: Vec<Datagram>,
     /// Links that are not plain eD2k from their first byte, or cut by a hole.
     pub(crate) unread_links: usize,
@@ -191,6 +222,24 @@ pub(crate) fn read(pcap: &Path, rmule: Ipv4Addr, peers: &[Ipv4Addr]) -> Result<W
                 peer: close.source,
                 by_rmule: false,
             });
+        }
+    }
+    for open in &capture.opens {
+        let (peer, rmule_port, by_rmule) = if is_rmule(&open.source) {
+            (open.destination, open.source.port(), true)
+        } else if is_peer(&open.source) && is_rmule(&open.destination) {
+            (open.source, open.destination.port(), false)
+        } else {
+            continue;
+        };
+        let dial = Open {
+            at: open.at,
+            peer,
+            rmule_port,
+            by_rmule,
+        };
+        if !wire.opens.iter().any(|seen| seen.same_link(&dial)) {
+            wire.opens.push(dial);
         }
     }
     for datagram in udp4_datagrams(pcap)? {
