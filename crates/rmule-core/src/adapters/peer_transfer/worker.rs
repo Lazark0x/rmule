@@ -1,14 +1,15 @@
-//! Driving one dialed or adopted peer worker to a downloaded part: the block
-//! request loop that turns granted slots into bytes, the identity wait the
-//! dialer blocks on, and the AICH recovery detour a corrupt part triggers.
+//! Driving one dialed or adopted peer worker to a downloaded part: the probe
+//! wait its first part waits on, the block request loop that turns granted
+//! slots into bytes, the identity wait the dialer blocks on, and the AICH
+//! recovery detour a corrupt part triggers.
 
 use std::collections::VecDeque;
 use std::time::Duration;
 
 use rmule_net::peer::Connection as PeerConnection;
 use rmule_peer::{
-    ConnectionEvent, EMBLOCKSIZE, FileProbeStatus, NoticeEvent, PartBitmap, PartRanges,
-    PeerCommand, PeerEvent, PeerIdentity, RequesterCommand, RequesterEvent, SlotReleaseReason,
+    ConnectionEvent, EMBLOCKSIZE, PartBitmap, PartRanges, PeerCommand, PeerEvent, PeerIdentity,
+    RequesterCommand, RequesterEvent, SlotReleaseReason,
 };
 use rmule_primitives::{AichRootHash, Ed2kFileLink, PeerEndpoint};
 use tokio::sync::mpsc;
@@ -20,6 +21,8 @@ use crate::adapters::hello_wait::{Opening, await_hello};
 use crate::adapters::peer_transfer::{PeerWorkerCommand, PeerWorkerEvent};
 use crate::adapters::serve_runtime::ServeConnection;
 use crate::service::DialEnd;
+
+use self::wait::{Forward, await_probe, forward_shared, next_event};
 
 /// Drive a peer worker over an established `conn` — the body shared by a dialed
 /// worker ([`RuntimePeerTransferService`](crate::RuntimePeerTransferService)'s `start_peer_worker`) and an adopted
@@ -146,76 +149,96 @@ pub(crate) async fn drive_peer_worker(
     // teardown then emits `OP_CANCELTRANSFER` instead of the silent slot
     // release a normal completion uses.
     let mut cancel = false;
-    // Commands the block loop read mid-part but could not act on there (a
-    // next part, an AICH detour); served here, in arrival order, before the
-    // channel is read again.
+    // Commands the probe wait or the block loop read but could not act on
+    // there (a next part, an AICH detour); served here, in arrival order,
+    // before the channel is read again.
     let mut deferred = VecDeque::new();
-    loop {
-        let command = match deferred.pop_front() {
-            Some(command) => command,
-            None => match command_rx.recv().await {
+    // The first part waits for the probe's answer (ADR-0112): the brain
+    // assigns on `PartsAdvertised`, so a partial source is never handed a
+    // part it lacks.
+    let probed = await_probe(
+        &mut requester_rx,
+        &peer_cmd_tx,
+        &event_tx,
+        PartCommands {
+            rx: &mut command_rx,
+            deferred: &mut deferred,
+        },
+        file.file_hash,
+        slot_wait_timeout,
+    )
+    .await;
+    if let Streamed::Shutdown { cancel: c } = probed {
+        cancel = c;
+    }
+    if matches!(probed, Streamed::Next) {
+        loop {
+            let command = match deferred.pop_front() {
                 Some(command) => command,
-                None => break,
-            },
-        };
-        match command {
-            PeerWorkerCommand::RequestPart {
-                plan,
-                resume_offset,
-            } => {
-                let streamed = stream_part_download(
-                    &mut requester_rx,
-                    &peer_cmd_tx,
-                    &event_tx,
-                    PartCommands {
-                        rx: &mut command_rx,
-                        deferred: &mut deferred,
-                    },
-                    &file,
+                None => match command_rx.recv().await {
+                    Some(command) => command,
+                    None => break,
+                },
+            };
+            match command {
+                PeerWorkerCommand::RequestPart {
                     plan,
                     resume_offset,
-                    slot_wait_timeout,
-                )
-                .await;
-                match streamed {
-                    Streamed::Next => {}
-                    Streamed::WindDown => break,
-                    Streamed::Shutdown { cancel: c } => {
-                        cancel = c;
+                } => {
+                    let streamed = stream_part_download(
+                        &mut requester_rx,
+                        &peer_cmd_tx,
+                        &event_tx,
+                        PartCommands {
+                            rx: &mut command_rx,
+                            deferred: &mut deferred,
+                        },
+                        &file,
+                        plan,
+                        resume_offset,
+                        slot_wait_timeout,
+                    )
+                    .await;
+                    match streamed {
+                        Streamed::Next => {}
+                        Streamed::WindDown => break,
+                        Streamed::Shutdown { cancel: c } => {
+                            cancel = c;
+                            break;
+                        }
+                    }
+                }
+                PeerWorkerCommand::RequestAich { part, root } => {
+                    if !request_aich_recovery(
+                        &mut requester_rx,
+                        &peer_cmd_tx,
+                        &event_tx,
+                        &file,
+                        part,
+                        root,
+                        slot_wait_timeout,
+                    )
+                    .await
+                    {
                         break;
                     }
                 }
-            }
-            PeerWorkerCommand::RequestAich { part, root } => {
-                if !request_aich_recovery(
-                    &mut requester_rx,
-                    &peer_cmd_tx,
-                    &event_tx,
-                    &file,
-                    part,
-                    root,
-                    slot_wait_timeout,
-                )
-                .await
-                {
+                PeerWorkerCommand::RequestAichFileHash => {
+                    // Fire-and-forget: the OP_AICHFILEHASHANS answer arrives on the
+                    // event stream and is forwarded as AichFileHashReceived while a
+                    // part streams (ADR-0038).
+                    let _ = peer_cmd_tx
+                        .send(PeerCommand::Requester(
+                            RequesterCommand::RequestAichFileHash {
+                                file_hash: file.file_hash,
+                            },
+                        ))
+                        .await;
+                }
+                PeerWorkerCommand::Shutdown { cancel: c } => {
+                    cancel = c;
                     break;
                 }
-            }
-            PeerWorkerCommand::RequestAichFileHash => {
-                // Fire-and-forget: the OP_AICHFILEHASHANS answer arrives on the
-                // event stream and is forwarded as AichFileHashReceived while a
-                // part streams (ADR-0038).
-                let _ = peer_cmd_tx
-                    .send(PeerCommand::Requester(
-                        RequesterCommand::RequestAichFileHash {
-                            file_hash: file.file_hash,
-                        },
-                    ))
-                    .await;
-            }
-            PeerWorkerCommand::Shutdown { cancel: c } => {
-                cancel = c;
-                break;
             }
         }
     }
@@ -355,7 +378,7 @@ async fn stream_part_download(
     events: &mut mpsc::Receiver<PeerEvent>,
     cmd_tx: &mpsc::Sender<PeerCommand>,
     event_tx: &mpsc::Sender<PeerWorkerEvent>,
-    commands: PartCommands<'_>,
+    mut commands: PartCommands<'_>,
     file: &Ed2kFileLink,
     plan: PartPlan,
     resume_offset: u64,
@@ -410,64 +433,37 @@ async fn stream_part_download(
         // queue us forever before a grant, and a peer that grants can then
         // stall sending nothing. The deadline resets whenever a block
         // arrives (below), so a healthy transfer is never cut off.
-        //
-        // The command channel is read between blocks too: a `Shutdown`
-        // mid-part stops the stream at once instead of letting the peer send
-        // the rest of a part the download has already let go of (aMule's
-        // `CUpDownClient::Disconnected` aborts the transfer on the spot). The
-        // bias puts the command first so a shutdown is never starved by a
-        // busy block stream.
-        let event = tokio::select! {
-            biased;
-            command = commands.rx.recv() => match command {
-                Some(PeerWorkerCommand::Shutdown { cancel }) => {
-                    return Streamed::Shutdown { cancel };
-                }
-                Some(PeerWorkerCommand::RequestAichFileHash) => {
-                    let _ = cmd_tx
-                        .send(PeerCommand::Requester(RequesterCommand::RequestAichFileHash { file_hash }))
-                        .await;
-                    continue;
-                }
-                Some(later) => {
-                    commands.deferred.push_back(later);
-                    continue;
-                }
-                None => return Streamed::WindDown,
-            },
-            waited = tokio::time::timeout_at(progress_deadline, events.recv()) => match waited {
-                Ok(event) => event,
-                Err(_) => {
-                    let _ = event_tx.send(PeerWorkerEvent::SlotTimeout).await;
-                    return Streamed::WindDown;
-                }
-            },
+        let event = match next_event(
+            events,
+            cmd_tx,
+            event_tx,
+            &mut commands,
+            file_hash,
+            progress_deadline,
+        )
+        .await
+        {
+            Ok(event) => event,
+            Err(end) => return end,
+        };
+        let event = match forward_shared(event_tx, file_hash, event).await {
+            Forward::Done => continue,
+            Forward::Ended => return Streamed::WindDown,
+            Forward::Own(event) => event,
         };
         match event {
-            Some(PeerEvent::Requester(RequesterEvent::HashSetReceived {
-                file_hash: received,
-                part_hashes,
-            })) if received == file_hash => {
-                if event_tx
-                    .send(PeerWorkerEvent::HashSetReceived { part_hashes })
-                    .await
-                    .is_err()
-                {
-                    return Streamed::WindDown;
-                }
-            }
-            Some(PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash: granted }))
+            PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash: granted })
                 if granted == file_hash =>
             {
                 if event_tx.send(PeerWorkerEvent::SlotGranted).await.is_err() {
                     return Streamed::WindDown;
                 }
             }
-            Some(PeerEvent::Requester(RequesterEvent::PartReceived {
+            PeerEvent::Requester(RequesterEvent::PartReceived {
                 file_hash: received,
                 offset,
                 bytes,
-            })) if received == file_hash => {
+            }) if received == file_hash => {
                 // Data progress: extend the no-progress budget and forward
                 // the block to core, which merges it into the shared prefix.
                 progress_deadline = tokio::time::Instant::now() + slot_wait_timeout;
@@ -484,72 +480,40 @@ async fn stream_part_download(
                     return Streamed::WindDown;
                 }
             }
-            Some(PeerEvent::Requester(RequesterEvent::SourcesReceived {
-                file_hash: received,
-                sources,
-            })) if received == file_hash => {
-                // Forward exchanged sources to the runner's candidate pool
-                // (ADR-0055); non-terminal — keep streaming this part.
-                let _ = event_tx
-                    .send(PeerWorkerEvent::SourcesReceived { sources })
-                    .await;
-            }
-            Some(PeerEvent::Requester(RequesterEvent::FileProbed {
-                file_hash: probed,
-                status,
-            })) if probed == file_hash => {
-                // The one bit of the peer's part picture the source-ask gate
-                // reads (ADR-0108); non-terminal.
-                let complete = match &status {
-                    FileProbeStatus::Available { complete, .. } => *complete,
-                    FileProbeStatus::NotAvailable => false,
-                };
-                let _ = event_tx
-                    .send(PeerWorkerEvent::PartsAdvertised { complete })
-                    .await;
-            }
-            Some(PeerEvent::Requester(RequesterEvent::AichFileHashReceived { root })) => {
-                // A trusted-set root proposal (ADR-0038); forward to the
-                // runner's vote tally. Non-terminal — keep streaming. No file
-                // guard: the 0x9D answer carries no file hash.
-                let _ = event_tx
-                    .send(PeerWorkerEvent::AichFileHashReceived { root })
-                    .await;
-            }
             // The peer signals it finished the requested range; the
             // range-done check at the top of the loop emits PartStreamed
             // once the assigned range is delivered, otherwise the next block
             // is requested.
-            Some(PeerEvent::Requester(RequesterEvent::SlotReleased {
+            PeerEvent::Requester(RequesterEvent::SlotReleased {
                 file_hash: released,
                 reason: SlotReleaseReason::DownloadComplete,
-            })) if released == file_hash => {}
-            Some(PeerEvent::Requester(RequesterEvent::SlotReleased {
+            }) if released == file_hash => {}
+            PeerEvent::Requester(RequesterEvent::SlotReleased {
                 file_hash: released,
                 reason: SlotReleaseReason::QueueRejected,
-            })) if released == file_hash => {
+            }) if released == file_hash => {
                 let _ = event_tx.send(PeerWorkerEvent::SlotRejected).await;
                 return Streamed::WindDown;
             }
-            Some(PeerEvent::Requester(RequesterEvent::SlotReleased {
+            PeerEvent::Requester(RequesterEvent::SlotReleased {
                 file_hash: released,
                 ..
-            })) if released == file_hash => {
+            }) if released == file_hash => {
                 let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
                 return Streamed::WindDown;
             }
             // The peer is holding us in its upload queue. Non-terminal:
             // keep the connection open and keep waiting for a slot grant,
             // but forward the position so core/CLI see queue progress.
-            Some(PeerEvent::Requester(RequesterEvent::QueueRanked {
+            PeerEvent::Requester(RequesterEvent::QueueRanked {
                 file_hash: ranked,
                 rank,
-            }))
-            | Some(PeerEvent::Requester(RequesterEvent::QueueProgress {
+            })
+            | PeerEvent::Requester(RequesterEvent::QueueProgress {
                 file_hash: ranked,
                 new_rank: rank,
                 ..
-            })) if ranked == file_hash => {
+            }) if ranked == file_hash => {
                 if event_tx
                     .send(PeerWorkerEvent::Queued { rank })
                     .await
@@ -558,33 +522,23 @@ async fn stream_part_download(
                     return Streamed::WindDown;
                 }
             }
-            // A serving command the session refused (a block after the slot
-            // was released) concerns the serve half; the link and this
-            // download carry on, as aMule's `RemoveFromUploadQueue` leaves
-            // the socket alone (`UploadQueue.cpp:560-587`).
-            Some(PeerEvent::Notice(NoticeEvent::CommandRejected { reason }))
-                if reason.is_serving_refusal() => {}
-            Some(PeerEvent::Notice(NoticeEvent::CommandRejected { .. }))
-            | Some(PeerEvent::Connection(ConnectionEvent::Disconnected { .. }))
-            | None => {
-                let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-                return Streamed::WindDown;
-            }
             _ => {}
         }
     }
 }
 
-/// The worker's command side, lent to the block loop so it can hear a
-/// `Shutdown` mid-part; anything else it reads there waits in `deferred`.
+/// The worker's command side, lent to the probe wait and the block loop so
+/// they can hear a `Shutdown`; anything else they read there waits in
+/// `deferred`.
 struct PartCommands<'a> {
     rx: &'a mut mpsc::Receiver<PeerWorkerCommand>,
     deferred: &'a mut VecDeque<PeerWorkerCommand>,
 }
 
-/// How one part's stream ended.
+/// How a wait on the peer ended: the probe's, or one part's stream.
 enum Streamed {
-    /// The assigned range was delivered; read the next command.
+    /// The probe was answered, or the assigned range delivered; read the
+    /// next command.
     Next,
     /// The peer or the core side went away; wind the worker down.
     WindDown,
@@ -594,3 +548,4 @@ enum Streamed {
 
 #[cfg(test)]
 mod tests;
+mod wait;

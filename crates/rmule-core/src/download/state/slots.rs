@@ -218,8 +218,8 @@ impl DownloadState {
             self.free_slots.insert(slot.as_usize());
         }
         self.retired_peers = self.retired_peers.saturating_add(1);
-        // Hand the released part to a still-connected idle worker; a connecting
-        // backfill is assigned on its own `Connected` event (ADR-0030).
+        // Hand the released part to a still-connected idle worker whose parts
+        // are known; any other is assigned on its own probe answer (ADR-0112).
         for p in self.connected_workers() {
             self.assign(p, out);
         }
@@ -254,11 +254,16 @@ impl DownloadState {
     /// Assign `peer` its next part (a fresh pending part, else a raced
     /// in-flight one, ADR-0026), resuming from the part's shared prefix
     /// (ADR-0029). Emits the assignment decisions, or an `Idle` phase when
-    /// there is nothing for the peer to do.
+    /// there is nothing for the peer to do. A worker whose Advertised Parts
+    /// are not known yet is handed nothing (ADR-0112): its probe answer
+    /// assigns it.
     pub(super) fn assign(&mut self, peer: PeerEndpoint, out: &mut Vec<Decision>) {
         let Some(slot) = self.worker_slots.get(&peer).copied() else {
             return;
         };
+        if self.sources.parts(peer).is_none() {
+            return;
+        }
         if let Some(plan) = self.scheduler.assign_next(peer) {
             let resume_offset = plan.offset
                 + self

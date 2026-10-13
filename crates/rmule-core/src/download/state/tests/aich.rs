@@ -23,8 +23,8 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_resumes_from_it() {
 
     let mut state = aich_state(file_size, root, vec![peer(1), peer(2)], 2);
     let _ = state.start(t0());
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
-    let _ = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(1));
+    let _ = connect(&mut state, t0(), peer(2));
 
     let mut corrupt_block1 = true_bytes[emb..2 * emb].to_vec();
     corrupt_block1[0] ^= 0xFF;
@@ -168,7 +168,7 @@ fn an_aich_attributed_corrupt_block_distrusts_only_its_sender() {
     let _ = state.start(t0());
     for (at, user_hash) in [(peer(1), CORRUPTER), (peer(2), HONEST)] {
         let _ = state.on_worker_event(t0(), at, identified(user_hash));
-        let _ = state.on_worker_event(t0(), at, PeerWorkerEvent::Connected);
+        let _ = connect(&mut state, t0(), at);
     }
     let mut corrupt_block0 = true_bytes[..emb].to_vec();
     corrupt_block0[0] ^= 0xFF;
@@ -281,7 +281,7 @@ fn a_hash_set_that_is_not_the_files_own_is_refused_and_its_sender_distrusted() {
     let file = two_part_file();
     let mut state = two_part_state(&file);
     let _ = state.on_worker_event(t0(), peer(2), identified(FORGER));
-    let _ = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(2));
     let mut forged = file.part_hash_set().expect("two parts").hashes().to_vec();
     forged[0] = PartHash::from_bytes([0x22; 16]);
 

@@ -86,25 +86,31 @@ impl DownloadState {
             (_, HeardReply::Ignored(why)) => self.ignored(from, ignored_reason(why)),
             (None, _) => self.ignored(from, IgnoredReaskReply::NoPooledSource),
             (Some((peer, _)), HeardReply::Rank { rank, part_status }) => {
-                // A UDPv4 ack's part status is read as a probe's (aMule
-                // `ProcessFileStatus(true, …)`, stock 2.3.3
+                // A UDPv4 ack's part status is read as a probe's, by the one
+                // reader (aMule `ProcessFileStatus(true, …)`, stock 2.3.3
                 // `ClientUDPSocket.cpp:258-263`): one counting other than
                 // the file's parts throws there before the rank is read.
-                let parts_needed = match part_status.as_ref().map(|s| self.lacks_any_of(s)) {
+                let parts = match part_status
+                    .as_ref()
+                    .map(|status| status.advertised_parts(self.file_size))
+                {
                     Some(None) => {
                         return vec![Decision::Emit(
                             self.ignored(from, IgnoredReaskReply::PartCountMismatch),
                         )];
                     }
-                    Some(Some(needed)) => Some(needed),
+                    Some(Some(parts)) => Some(parts),
                     None => None,
                 };
+                let parts_needed = parts.as_ref().map(|parts| self.lacks_any_of(parts));
                 self.sources
                     .reask_answered(peer, Answer::Rank { rank, parts_needed }, now);
-                // It is an advertisement like a probe's (ADR-0108).
+                // It is an advertisement like a probe's (ADR-0108), and its
+                // parts replace the record's (ADR-0112).
                 if let Some(status) = part_status {
                     self.sources
                         .advertised(peer, advertises_complete(&status), now);
+                    self.sources.write_parts(peer, parts);
                 }
                 DownloadEvent::SourceReaskAcked {
                     download_id: self.download_id,
@@ -133,25 +139,13 @@ impl DownloadState {
         vec![Decision::Emit(event)]
     }
 
-    /// Whether a source whose part status is `status` holds a part we lack —
-    /// aMule's `bPartsNeeded` (stock 2.3.3 `DownloadClient.cpp:397-449`): a
-    /// complete source's sentinel always does; a status is read against the
-    /// file's `size / PARTSIZE + 1` parts, the phantom last part of an exact
-    /// multiple never counting; `None` when it counts other parts, which
-    /// aMule refuses whole.
-    fn lacks_any_of(&self, status: &PartBitmap) -> Option<bool> {
-        if status.part_count() == 0 {
-            return Some(true);
-        }
-        if status.part_count() != self.our_part_status().part_count() {
-            return None;
-        }
-        let real = rmule_primitives::part_count(self.file_size);
-        Some(
-            status
-                .iter_present()
-                .any(|part| part.value() < real && !self.scheduler.is_part_verified(part.value())),
-        )
+    /// Whether a source whose Advertised Parts are `parts` holds a part we
+    /// lack — aMule's `bPartsNeeded` (stock 2.3.3 `DownloadClient.cpp:397-449`),
+    /// the one predicate a `0x91` status and an assignment both read.
+    pub(super) fn lacks_any_of(&self, parts: &PartBitmap) -> bool {
+        parts
+            .iter_present()
+            .any(|part| !self.scheduler.is_part_verified(part.value()))
     }
 
     /// The event for a reply from `from` that changed nothing, for `reason`.

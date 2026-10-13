@@ -188,7 +188,8 @@ impl SourceBook {
     /// higher stage keeps the record — Worker > Dialing > CallbackPending >
     /// RemoteQueued > Pooled, a High-ID lane ahead of a Low-ID one, else the
     /// older — and the other's aliases and attachments join it. The record that
-    /// gave way ends whatever it had in flight. Two records that cannot be one
+    /// gave way ends whatever it had in flight; its Advertised Parts join the
+    /// keeper only when the keeper has none, as a standing does. Two records that cannot be one
     /// — three endpoints between them, or two Low-ID candidates — stay apart.
     pub(super) fn merge(&mut self, a: RecordId, b: RecordId) -> Option<MergeEnd> {
         let (left, right) = (self.records.get(&a)?, self.records.get(&b)?);
@@ -228,6 +229,14 @@ impl SourceBook {
             self.aliases.bind_key(candidate.key(), keep);
         }
         keeper.standing = keeper.standing.or(folded.standing);
+        // The folded record's parts left the count with it; the keeper takes
+        // them only when it advertised none.
+        if keeper.advertised.is_none()
+            && let Some(parts) = folded.advertised
+        {
+            self.frequency.add(&parts);
+            keeper.advertised = Some(parts);
+        }
         keeper.seed = keeper.seed.or(folded.seed);
         keeper.asks = keeper.asks.merge(folded.asks);
         ended

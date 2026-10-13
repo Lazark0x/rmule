@@ -130,7 +130,7 @@ fn a_candidate_with_neither_callback_nor_coordinator_still_starves_the_download(
     // one behind it.
     let mut state = callback_state(vec![peer(1)], Vec::new(), false, 1);
     let _ = state.start(t0());
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(1));
 
     let discovered = via_global(
         &mut state,
@@ -186,7 +186,7 @@ fn an_adopted_global_callback_peer_binds_then_its_connected_event_assigns_it() {
         "not assigned until the adopted worker's own Connected arrives"
     );
 
-    let _ = state.on_worker_event(t0(), peer(9), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(9));
     assert!(
         state.is_working(peer(9)),
         "the adopted global peer holds a part once its Connected flows the normal path"
@@ -285,7 +285,7 @@ fn an_adopted_callback_peer_binds_then_its_connected_event_assigns_it() {
         "not assigned until the adopted worker's own Connected arrives"
     );
 
-    let _ = state.on_worker_event(t0(), peer(9), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(9));
     assert!(
         state.is_working(peer(9)),
         "the adopted peer holds a part once its Connected flows the normal path"
@@ -306,7 +306,7 @@ fn a_callback_landing_on_a_worked_endpoint_names_no_slot() {
             .any(|d| matches!(d, Decision::RequestCallback { low_id, .. } if *low_id == low(7))),
         "the second slot calls low(7) back beside the dial: {started:?}"
     );
-    let _ = state.on_worker_event(t0(), peer(9), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(9));
     assert!(state.is_working(peer(9)));
 
     let landing = state.on_callback_connected(t0(), connected_key(low(7)), peer(9));
@@ -341,7 +341,7 @@ fn a_called_back_source_whose_worker_ends_without_a_rank_is_called_back_again() 
     let mut state = callback_state(Vec::new(), vec![low_candidate(7)], true, 1);
     let _ = state.start(t0());
     let _ = state.on_callback_connected(t0(), connected_key(low(7)), peer(9));
-    let _ = state.on_worker_event(t0(), peer(9), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(9));
 
     let ended = state.on_worker_event(t0(), peer(9), PeerWorkerEvent::Disconnected);
 

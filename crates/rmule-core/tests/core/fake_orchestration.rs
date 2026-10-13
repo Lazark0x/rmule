@@ -287,14 +287,16 @@ impl PeerTransferService for ScriptedPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         assert_eq!(peer, self.expected_peer);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let outcome = self.outcome.clone();
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             let mut hashes_sent = false;
             while let Some(command) = command_rx.recv().await {
                 match command {
@@ -338,14 +340,16 @@ impl PeerTransferService for FirstPartThenBlocked {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let part_hashes = self.part_hashes.clone();
         let first_part = self.first_part.clone();
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
                 match command {
                     PeerWorkerCommand::RequestPart {
@@ -381,11 +385,12 @@ impl PeerTransferService for FirstPartThenBlocked {
 
 /// Spawn a worker that connects, streams `part` on request, and stops — the
 /// minimal delivery a one-part download needs to complete.
-fn spawn_delivering_worker(peer: PeerEndpoint, part: DownloadedPart) -> PeerWorker {
+fn spawn_delivering_worker(peer: PeerEndpoint, file_size: u64, part: DownloadedPart) -> PeerWorker {
     let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
     let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
     tokio::spawn(async move {
         let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+        let _ = event_tx.send(rmule_testkit::every_part(file_size)).await;
         while let Some(command) = command_rx.recv().await {
             match command {
                 PeerWorkerCommand::RequestPart {
@@ -418,23 +423,23 @@ impl PeerTransferService for CapturePeerCrypt {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
         // The runner always dials through `start_download_worker`; reaching
         // the plaintext base means the target was dropped en route.
         *self.captured.lock().unwrap() = Some(None);
-        Ok(spawn_delivering_worker(peer, self.part.clone()))
+        Ok(spawn_delivering_worker(peer, file.size, self.part.clone()))
     }
 
     async fn start_download_worker(
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
         brief: rmule_core::WorkerBrief,
     ) -> Result<PeerWorker, DownloadFailure> {
         *self.captured.lock().unwrap() = Some(Some(brief.peer_crypt));
-        Ok(spawn_delivering_worker(peer, self.part.clone()))
+        Ok(spawn_delivering_worker(peer, file.size, self.part.clone()))
     }
 }
 

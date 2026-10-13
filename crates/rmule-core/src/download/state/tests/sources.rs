@@ -494,7 +494,7 @@ fn known_sources_count_the_slots_and_the_pools_and_drop_a_retired_source() {
 fn known_sources_count_a_source_that_queued_us_once() {
     let mut state = callback_state(vec![peer(1)], Vec::new(), true, 1);
     let _ = state.start(t0());
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(1));
     let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Queued { rank: 3 });
     assert_eq!(state.known_sources(), 1, "held by its worker and the queue");
 

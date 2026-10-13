@@ -285,7 +285,7 @@ fn exchanging_state() -> (DownloadState, PeerEndpoint) {
         spawned(&started).contains(&PeerEndpoint::V6(half())),
         "{started:?}"
     );
-    let _ = state.on_worker_event(t0(), high, PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), high);
     (state, high)
 }
 

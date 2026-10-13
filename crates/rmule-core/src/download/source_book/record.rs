@@ -5,7 +5,7 @@
 //! in its Worker stage, so what the hello stated ends with that worker
 //! (ADR-0049).
 
-use rmule_peer::PeerIdentity;
+use rmule_peer::{PartBitmap, PeerIdentity};
 use rmule_primitives::{Ipv4Endpoint, PeerCrypt, PeerEndpoint};
 
 use super::road::PendingRoad;
@@ -145,6 +145,10 @@ pub(super) struct Record {
     pub(super) seed: Option<PeerEndpoint>,
     /// What the download's source asks stamped on this peer (ADR-0108).
     pub(super) asks: AskFacts,
+    /// The parts its source last advertised, over the file's real parts:
+    /// its **Advertised Parts** (ADR-0112). Written only through the book,
+    /// which keeps **Part Frequency** with it.
+    pub(super) advertised: Option<PartBitmap>,
 }
 
 impl Record {
@@ -157,6 +161,7 @@ impl Record {
             standing: None,
             seed: None,
             asks: AskFacts::default(),
+            advertised: None,
         }
     }
 

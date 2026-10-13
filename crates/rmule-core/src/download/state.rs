@@ -517,7 +517,7 @@ impl DownloadState {
             distrusted,
             seeds_written,
         } = facts;
-        let mut sources = SourceBook::new(distrusted);
+        let mut sources = SourceBook::new(distrusted, rmule_primitives::part_count(file_size));
         sources.logged_into(posture.callback_capability.server());
         let seeds = SeedLedger::default();
         let our_udp_version = if posture.client_udp {

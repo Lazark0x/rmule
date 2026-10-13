@@ -14,6 +14,7 @@
 mod aliases;
 mod asks;
 mod blocks;
+mod frequency;
 mod gate;
 mod lanes;
 mod purge;
@@ -34,6 +35,7 @@ use rmule_primitives::{Ipv4Endpoint, PeerCrypt, PeerEndpoint, UserHash};
 
 use self::aliases::Aliases;
 use self::blocks::Blocks;
+use self::frequency::PartFrequency;
 pub(crate) use self::gate::Gate;
 use self::lanes::Lanes;
 #[cfg(test)]
@@ -168,12 +170,15 @@ pub(crate) struct SourceBook {
     /// When a purge last let a source go, or the run started: `None` before
     /// the first tick.
     purged_at: Option<Instant>,
+    /// Part Frequency over the records' Advertised Parts (ADR-0112).
+    frequency: PartFrequency,
 }
 
 impl SourceBook {
     /// The empty book a run starts with, holding the distrust the download's
-    /// record carries. Every source reaches it as a sighting.
-    pub(crate) fn new(distrusted: HashSet<UserHash>) -> Self {
+    /// record carries, for a file of `part_count` parts. Every source reaches
+    /// it as a sighting.
+    pub(crate) fn new(distrusted: HashSet<UserHash>, part_count: u32) -> Self {
         Self {
             records: HashMap::new(),
             minted: 0,
@@ -184,6 +189,7 @@ impl SourceBook {
             file_asks: FileAskClock::default(),
             own_server: None,
             purged_at: None,
+            frequency: PartFrequency::new(part_count),
         }
     }
 
@@ -360,11 +366,15 @@ impl SourceBook {
         id
     }
 
-    /// Take `id` out of the book: its aliases, its lane, the record. What its
-    /// source asks stamped stays under its names for the run.
+    /// Take `id` out of the book: its aliases, its lane, the record, and its
+    /// Advertised Parts out of Part Frequency. What its source asks stamped
+    /// stays under its names for the run.
     fn remove(&mut self, id: RecordId) -> Option<Record> {
         self.keep_asks(id);
         let record = self.records.remove(&id)?;
+        if let Some(parts) = &record.advertised {
+            self.frequency.subtract(parts);
+        }
         for &endpoint in &record.endpoints {
             self.aliases.unbind_endpoint(endpoint, id);
         }

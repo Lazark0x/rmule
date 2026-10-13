@@ -19,6 +19,7 @@ use crate::download::state::CallbackCapability;
 use crate::hello_facts::HelloFacts;
 use crate::ip_filter::IpFilter;
 
+mod frequency;
 mod low_id_names;
 
 const BAD: UserHash = UserHash::from_bytes([0xBA; UserHash::BYTE_LEN]);
@@ -49,7 +50,7 @@ fn empty_book() -> SourceBook {
 }
 
 fn book_distrusting(distrusted: HashSet<UserHash>) -> SourceBook {
-    SourceBook::new(distrusted)
+    SourceBook::new(distrusted, 3)
 }
 
 fn plain(n: u8) -> SourceSighting {

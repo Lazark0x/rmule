@@ -27,7 +27,7 @@ fn sources_received_refills_the_pool_and_fills_a_free_slot() {
     // One initial candidate, concurrency 2 → one worker spawns, one free slot.
     let mut state = file_hash_only_state(vec![peer(1)], 2);
     let _ = state.start(t0());
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(1));
 
     // A worker exchanges two sources: a new High-ID peer(2) and a dup of the
     // already-working peer(1). `peer(n)` is IP 10.0.0.n; its High-ID client
@@ -95,13 +95,45 @@ fn an_exchanged_source_records_the_crypt_side_its_dial_meets() {
     );
 }
 
+/// A worker's first part waits for its probe's answer (ADR-0112): the
+/// handshake alone hands it nothing, a release meanwhile passes it over, and
+/// its Advertised Parts assign it.
+#[test]
+fn a_connected_worker_is_handed_nothing_until_its_parts_are_known() {
+    let mut state = two_peer_state();
+    let connected = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    assert!(
+        !connected.iter().any(|d| matches!(
+            d,
+            Decision::Emit(DownloadEvent::PartAssigned { .. }) | Decision::Phase { .. }
+        )),
+        "{connected:?}"
+    );
+
+    let _ = connect(&mut state, t0(), peer(2));
+    let _ = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Disconnected);
+    assert!(
+        !state.is_working(peer(1)),
+        "the released part waits for a worker whose parts are known"
+    );
+
+    let answered = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::every_part(ONE_PART));
+    assert!(
+        answered.iter().any(|d| matches!(
+            d,
+            Decision::Emit(DownloadEvent::PartAssigned { part_index: 0, peer: p, .. }) if *p == peer(1)
+        )),
+        "{answered:?}"
+    );
+}
+
 #[test]
 fn a_raced_part_completing_clears_the_losing_racer_and_finalizes() {
     let mut state = two_peer_state();
 
     // peer 1 takes the only part; peer 2, idle with nothing fresh, races it.
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
-    let assigned_two = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(1));
+    let assigned_two = connect(&mut state, t0(), peer(2));
     assert!(
         assigned_two.iter().any(|d| matches!(
             d,
@@ -148,7 +180,7 @@ fn racing_a_partially_assembled_part_resumes_from_the_shared_prefix() {
     let mut state = two_peer_state();
 
     // peer 1 takes part 0 and delivers a partial prefix, then stalls.
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(1));
     let part = crate::planning::part_plan(ONE_PART, 0);
     let _ = state.on_worker_event(
         t0(),
@@ -162,7 +194,7 @@ fn racing_a_partially_assembled_part_resumes_from_the_shared_prefix() {
 
     // peer 2 races the same part: it must resume from the shared prefix
     // end, not refetch from the part's first byte (ADR-0029).
-    let raced = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Connected);
+    let raced = connect(&mut state, t0(), peer(2));
     let resume_offset = raced
         .iter()
         .find_map(|d| {
@@ -189,8 +221,8 @@ fn a_retired_worker_frees_its_slot_and_backfills_a_pooled_candidate() {
     // Three candidates, room for two: peer 3 waits in the pool.
     let mut state = file_hash_only_state(vec![peer(1), peer(2), peer(3)], 2);
     let _ = state.start(t0());
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
-    let _ = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(1));
+    let _ = connect(&mut state, t0(), peer(2));
 
     // peer 1 drops while peer 2 still races the part, so nothing is
     // released, but the freed slot 0 is backfilled by the pooled peer 3.
@@ -209,7 +241,7 @@ fn a_retired_worker_frees_its_slot_and_backfills_a_pooled_candidate() {
 fn the_last_worker_retiring_with_an_empty_pool_fails_the_download() {
     let mut state = file_hash_only_state(vec![peer(1)], 1);
     let _ = state.start(t0());
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(1));
 
     // The sole worker drops: its part returns to the pool and, with no
     // candidate left to backfill, the download fails (ADR-0030).
@@ -236,7 +268,7 @@ fn an_armed_download_waits_instead_of_failing_when_its_pool_exhausts() {
     // future UDP sweep may backfill, so the download waits rather than failing.
     let mut state = discovery_armed_state(vec![peer(1)], 2);
     let _ = state.start(t0());
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(1));
     let retired = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
     assert!(
         !retired
@@ -249,8 +281,8 @@ fn an_armed_download_waits_instead_of_failing_when_its_pool_exhausts() {
 #[test]
 fn a_verification_failure_retires_every_contributor() {
     let mut state = two_peer_state();
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
-    let _ = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(1));
+    let _ = connect(&mut state, t0(), peer(2));
 
     // Two peers assemble the part across the cross-peer prefix: peer 1 the
     // head, peer 2 the completing tail.
@@ -301,8 +333,8 @@ fn a_verification_failure_retires_every_contributor() {
 #[test]
 fn every_retirement_ends_its_worker() {
     let mut state = two_peer_state();
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
-    let _ = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(1));
+    let _ = connect(&mut state, t0(), peer(2));
     let part = crate::planning::part_plan(ONE_PART, 0);
     let _ = state.on_worker_event(
         t0(),
@@ -333,7 +365,7 @@ fn every_retirement_ends_its_worker() {
 #[test]
 fn on_stop_releases_in_flight_parts_and_fails_with_the_reason() {
     let mut state = two_peer_state();
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(1));
 
     // A pause releases the in-flight part with the Paused reason (so it can
     // resume later) and fails the activity with Paused.

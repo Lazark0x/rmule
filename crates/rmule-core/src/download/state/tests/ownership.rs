@@ -56,7 +56,7 @@ fn sight(state: &mut DownloadState) -> Vec<PeerEndpoint> {
 fn a_remote_queued_source_sighted_again_keeps_one_owner() {
     let mut state = exchanging_state();
     assert_eq!(sight(&mut state), vec![source()]);
-    let _ = state.on_worker_event(t0(), source(), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), source());
     let _ = state.on_worker_event(t0(), source(), PeerWorkerEvent::Queued { rank: 3 });
     let _ = state.on_worker_event(t0(), source(), PeerWorkerEvent::Disconnected);
 
@@ -90,7 +90,7 @@ fn sight_hashed(
 /// `at` completes its hello naming `user_hash`, then connects.
 fn hello(state: &mut DownloadState, at: PeerEndpoint, user_hash: UserHash) -> Vec<Decision> {
     let mut out = state.on_worker_event(t0(), at, identified(user_hash));
-    out.extend(state.on_worker_event(t0(), at, PeerWorkerEvent::Connected));
+    out.extend(connect(state, t0(), at));
     out
 }
 

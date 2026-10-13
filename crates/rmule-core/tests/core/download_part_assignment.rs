@@ -305,8 +305,9 @@ impl PeerTransferService for GatedConnectTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let gate = Arc::clone(&self.gate);
@@ -316,6 +317,7 @@ impl PeerTransferService for GatedConnectTransfer {
             // runner cannot assign a part before `Connected` (ADR-0030).
             gate.notified().await;
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
                 match command {
                     PeerWorkerCommand::RequestPart {
@@ -354,8 +356,9 @@ impl PeerTransferService for MultiPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let part_hashes = self.part_hashes.clone();
@@ -363,6 +366,7 @@ impl PeerTransferService for MultiPeerTransfer {
         let assignments = Arc::clone(&self.assignments);
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             let mut sent_hashes = false;
             while let Some(command) = command_rx.recv().await {
                 match command {
@@ -413,8 +417,9 @@ impl PeerTransferService for DisconnectThenSuccess {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let disconnecting_peer = self.disconnecting_peer;
@@ -422,6 +427,7 @@ impl PeerTransferService for DisconnectThenSuccess {
         let bytes = self.bytes.clone();
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
                 match command {
                     PeerWorkerCommand::RequestPart { .. } if peer == disconnecting_peer => {

@@ -45,8 +45,9 @@ impl PeerTransferService for CreditingPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: rmule_peer::PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let bytes = self.bytes.clone();
@@ -60,6 +61,7 @@ impl PeerTransferService for CreditingPeerTransfer {
                 )))
                 .await;
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             if let Some(public_key) = verified_key {
                 let _ = event_tx
                     .send(PeerWorkerEvent::IdentityVerified {

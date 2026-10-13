@@ -39,7 +39,7 @@ fn only_an_ask_that_went_out_holds_the_peer_off() {
     assert_eq!(spawn_wants(&state.start(t0()), peer(1)), Some(true));
 
     // An answer with no ask behind it, and a connection that ends.
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(1));
     let _ = via_exchange(&mut state, peer(1), Vec::new());
     let next = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
     assert_eq!(spawn_wants(&next, peer(2)), Some(true));
@@ -53,7 +53,7 @@ fn only_an_ask_that_went_out_holds_the_peer_off() {
 
     // Asked and answered: the next connection to it carries no ask, while a
     // stranger's does.
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(1));
     let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SourcesAsked);
     let _ = via_exchange(&mut state, peer(1), Vec::new());
     let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
@@ -90,7 +90,7 @@ fn a_low_id_peer_called_back_again_is_the_peer_already_asked() {
     // The callback lands, the peer names its hash, is asked and answers.
     let connection = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 7), 51_234));
     let _ = state.on_callback_connected(t0(), connected_key(first), connection);
-    let _ = state.on_worker_event(t0(), connection, PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), connection);
     let _ = state.on_worker_event(t0(), connection, identified(hash));
     let _ = state.on_worker_event(t0(), connection, PeerWorkerEvent::SourcesAsked);
     let _ = via_exchange(&mut state, connection, Vec::new());
@@ -144,7 +144,7 @@ fn a_departed_peers_facts_go_at_the_client_list_cleanup() {
     let _ = state.start(t0());
     let _ = state.on_tick(t0());
     for gone in [peer(1), peer(2)] {
-        let _ = state.on_worker_event(t0(), gone, PeerWorkerEvent::Connected);
+        let _ = connect(&mut state, t0(), gone);
         let _ = state.on_worker_event(t0(), gone, PeerWorkerEvent::SourcesAsked);
         let _ = via_exchange(&mut state, gone, Vec::new());
         let _ = state.on_worker_event(t0(), gone, PeerWorkerEvent::Disconnected);
@@ -157,7 +157,7 @@ fn a_departed_peers_facts_go_at_the_client_list_cleanup() {
         spawn_wants(&sighted_at(&mut state, soon, &[peer(1)]), peer(1)),
         Some(false)
     );
-    let _ = state.on_worker_event(soon, peer(1), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, soon, peer(1));
 
     let pass = t0() + CLIENT_LIST_CLEANUP;
     let _ = state.on_tick(pass);

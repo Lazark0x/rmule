@@ -393,8 +393,9 @@ impl PeerTransferService for MismatchedThenSuccess {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let mismatched_peer = self.mismatched_peer;
@@ -403,6 +404,7 @@ impl PeerTransferService for MismatchedThenSuccess {
         let bytes = self.bytes.clone();
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
                 match command {
                     PeerWorkerCommand::RequestPart { .. } if peer == mismatched_peer => {

@@ -106,8 +106,10 @@ pub enum PeerWorkerCommand {
 /// every worker's events into the one scheduling brain.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PeerWorkerEvent {
-    /// The handshake finished and the peer is usable. Core assigns the worker
-    /// its first part here, not at spawn, so a failed handshake strands nothing.
+    /// The handshake finished and the peer is usable. Core assigns nothing
+    /// yet: the worker's first part waits for [`Self::PartsAdvertised`]
+    /// (ADR-0112), so neither a failed handshake nor a part the peer lacks
+    /// strands one.
     Connected,
     /// The peer's identity, as its session keeps it: sent once its hello is
     /// read — immediately before `Connected` — and again whole each time the
@@ -170,13 +172,18 @@ pub enum PeerWorkerEvent {
         /// The part whose assigned range is fully delivered.
         part_index: u32,
     },
-    /// The peer answered the file probe (ADR-0108): whether its copy of the
-    /// file is complete — aMule's `m_bCompleteSource`, the one bit of its part
-    /// picture the source-ask gate reads. `false` when it said it lacks the
-    /// file. The download's **Source Ask Clock** keeps it for the run.
+    /// The peer answered the connect-time file probe, once per worker
+    /// (ADR-0112): the parts it holds, which its Source Book record keeps and
+    /// the brain assigns from, and whether its copy is complete — aMule's
+    /// `m_bCompleteSource`, which the download's **Source Ask Clock** keeps
+    /// for the run (ADR-0108). The worker's first part is assigned here.
     PartsAdvertised {
+        /// Its **Advertised Parts** over the file's real parts; `None` when it
+        /// answered `OP_FILEREQANSNOFIL`, lacking the file.
+        parts: Option<PartBitmap>,
         /// aMule's part-count-0 "complete" sentinel, or a one-part file's
-        /// name answer — never a spelled-out bitmap, however full.
+        /// name answer — never a spelled-out bitmap, however full. `false`
+        /// when it lacks the file.
         complete: bool,
     },
     /// The connect-time file request carried a source ask (ADR-0108), as the
@@ -229,6 +236,22 @@ pub enum PeerWorkerEvent {
     /// Terminal like [`Self::Disconnected`], but core retires the source for
     /// this reason — every road to it meets the same two stances.
     CryptIncompatible,
+}
+
+#[cfg(test)]
+impl PeerWorkerEvent {
+    /// A probe answer spelling out every part of a `file_size`-byte file — not
+    /// the complete-source sentinel, so the source-ask gate reads it as it
+    /// reads a source that never advertised (ADR-0108). What an in-process
+    /// fake sends after `Connected` (ADR-0030).
+    pub(crate) fn every_part(file_size: u64) -> Self {
+        Self::PartsAdvertised {
+            parts: Some(PartBitmap::all_present(rmule_primitives::part_count(
+                file_size,
+            ))),
+            complete: false,
+        }
+    }
 }
 
 /// Whether a raw part status a source advertised — a `0x91`'s, unexpanded —

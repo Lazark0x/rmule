@@ -100,6 +100,14 @@ fn until_road_ends(state: &mut DownloadState, key: CallbackKey) -> Vec<Decision>
     panic!("{key:?}'s road never ended: {out:?}");
 }
 
+/// The worker on `peer` completed its handshake and its peer answered the
+/// probe with every part (ADR-0112): the decisions of both, in order.
+fn connect(state: &mut DownloadState, now: Instant, peer: PeerEndpoint) -> Vec<Decision> {
+    let mut out = state.on_worker_event(now, peer, PeerWorkerEvent::Connected);
+    out.extend(state.on_worker_event(now, peer, PeerWorkerEvent::every_part(state.file_size)));
+    out
+}
+
 fn peer(n: u8) -> PeerEndpoint {
     PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, n), 4662))
 }

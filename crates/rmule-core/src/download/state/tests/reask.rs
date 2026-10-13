@@ -84,7 +84,7 @@ fn queue_and_hang_up_as(
     rank: u16,
     at: Instant,
 ) {
-    let _ = state.on_worker_event(at, peer, PeerWorkerEvent::Connected);
+    let _ = connect(state, at, peer);
     if let Some(identity) = identity {
         let _ = state.on_worker_event(at, peer, PeerWorkerEvent::Identity(identity));
     }
@@ -331,6 +331,22 @@ fn a_reask_ack_holding_no_part_we_lack_makes_the_source_no_needed_parts() {
     assert_eq!(
         asked_by_tcp(&state.on_tick(window + FILE_REASK_TIME * NO_NEEDED_PARTS_MULTIPLIER)),
         vec![peer(1)]
+    );
+}
+
+/// A UDPv4 `0x91`'s part status is the source's Advertised Parts now: it
+/// replaces what its worker's probe wrote on the record (ADR-0112), and Part
+/// Frequency follows.
+#[test]
+fn a_reask_acks_part_status_replaces_the_records_parts() {
+    let (mut state, window) = three_part_standing();
+    assert_eq!(state.sources.part_frequency(), [1, 1, 1]);
+    let middle = PartBitmap::decode(3, &[0b0000_0010]).expect("three parts");
+    let _ = state.on_reask_reply(window, contact(peer(1)), &v4_ack_with(middle.clone(), 2));
+    assert_eq!(state.sources.parts(peer(1)), Some(&middle));
+    assert_eq!(
+        (state.sources.part_frequency(), state.sources.parts_known()),
+        (&[0, 1, 0][..], 1)
     );
 }
 
@@ -612,7 +628,7 @@ fn a_source_exchange_due_source_prefers_the_tcp_full_ask() {
 #[test]
 fn a_no_needed_parts_source_reasks_at_double_the_period_over_tcp() {
     let mut state = started(&[peer(1)], live_posture());
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(1));
     let identity = reaskable(SOURCE).identity();
     let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Identity(identity));
     let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Queued { rank: 5 });
@@ -650,7 +666,7 @@ fn a_tick_sweeps_every_source_in_book_order() {
 #[test]
 fn a_granted_source_keeps_no_standing() {
     let mut state = started(&[peer(1)], live_posture());
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(1));
     let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Queued { rank: 2 });
     let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotGranted);
     let ended = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
@@ -738,7 +754,7 @@ fn the_captured_amule_reask_ack_lands_on_its_source() {
     let read = |name: &str| std::fs::read(format!("{DIR}{name}")).expect("captured datagram");
     let sharer = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(192, 0, 2, 6), 4662));
     let mut state = started(&[sharer], live_posture());
-    let _ = state.on_worker_event(t0(), sharer, PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), sharer);
     let hello = HelloFacts {
         udp_port: 4672,
         udp_version: 4,

@@ -46,8 +46,8 @@ pub mod wire;
 pub use client_software::{amule_233, client_software, emule_qt};
 pub use download::{
     PendingPeerTransfer, PlanAssertingPeerTransfer, StaticPeerTransfer, StaticSourceLookup,
-    emit_streamed_part, file_link, file_link_without_part_hash_set, file_name, in_download_dir,
-    loopback_peer, next_event, plain_sources, run_download, source_with_high_id,
+    emit_streamed_part, every_part, file_link, file_link_without_part_hash_set, file_name,
+    in_download_dir, loopback_peer, next_event, plain_sources, run_download, source_with_high_id,
     two_high_id_sources,
 };
 pub use fake_dialer::{FakeBuddy, FakeDialer};

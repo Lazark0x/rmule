@@ -1,5 +1,5 @@
 //! What a dialed worker reports about the source ask, the legacy block clock, the
-//! whole-file holder, and the findbuddy posture.
+//! whole-file holder, a probe left unanswered, and the findbuddy posture.
 
 use super::*;
 
@@ -197,13 +197,53 @@ async fn a_dialed_worker_reports_a_peer_that_holds_the_whole_file() {
             .await
             .expect("the probe is answered within 5s")
             .expect("the worker stays up until the probe is answered");
-        if let PeerWorkerEvent::PartsAdvertised { complete } = event {
+        if let PeerWorkerEvent::PartsAdvertised { complete, .. } = event {
             assert!(complete);
             break;
         }
     }
     drop(worker);
     let _ = peer_task.await;
+}
+
+/// The worker's first part waits for the probe's answer (ADR-0112), bounded
+/// by the slot budget: a peer that identifies and never answers for the file
+/// ends in `SlotTimeout`, with no `PartsAdvertised` before it.
+#[tokio::test]
+async fn a_peer_that_never_answers_the_probe_ends_in_slot_timeout() {
+    use rmule_testkit::{FakePeer, PeerScript};
+
+    let bytes = vec![0x4B; 4096];
+    let file = rmule_testkit::file_link("unanswered.bin", &bytes);
+    let uploader = FakePeer::bind().await;
+    let peer = PeerEndpoint::V4(Ipv4Endpoint::new(
+        *uploader.addr().ip(),
+        uploader.addr().port(),
+    ));
+    let peer_task = uploader.spawn(PeerScript::hello_only(
+        UserHash::from_bytes([0x3C; UserHash::BYTE_LEN]),
+        "never-answers",
+    ));
+    let mut transfer = RuntimePeerTransferService::new(Duration::from_millis(300));
+    let mut worker = transfer
+        .start_peer_worker(peer, dialed_serve_ctx(), file)
+        .await
+        .unwrap();
+    loop {
+        let event = timeout(Duration::from_secs(5), worker.next_event())
+            .await
+            .expect("the worker reports within 5s")
+            .expect("the worker stays up until its budget runs out");
+        assert!(
+            !matches!(event, PeerWorkerEvent::PartsAdvertised { .. }),
+            "nothing was advertised: {event:?}"
+        );
+        if event == PeerWorkerEvent::SlotTimeout {
+            break;
+        }
+    }
+    drop(worker);
+    let _ = timeout(Duration::from_secs(5), peer_task).await;
 }
 
 /// The FINDBUDDY responder's posture reads Self Reach's **Kad flag** alone

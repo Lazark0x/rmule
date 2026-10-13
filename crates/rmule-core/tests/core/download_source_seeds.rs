@@ -78,8 +78,9 @@ impl PeerTransferService for DialLog {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, rmule_core::DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         self.dials.lock().unwrap().push(peer);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(8);
@@ -93,6 +94,7 @@ impl PeerTransferService for DialLog {
                 let _ = event_tx.send(hello_of(peer)).await;
             }
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
                 if matches!(command, PeerWorkerCommand::Shutdown { .. }) {
                     break;
@@ -564,13 +566,15 @@ impl PeerTransferService for HelloStating {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, rmule_core::DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(8);
         tokio::spawn(async move {
             let _ = event_tx.send(hello_of(peer)).await;
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
                 if matches!(command, PeerWorkerCommand::Shutdown { .. }) {
                     break;

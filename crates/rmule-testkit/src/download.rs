@@ -139,10 +139,11 @@ impl PeerTransferService for StaticPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
         Ok(scripted_worker(
             peer,
+            file.size,
             self.outcome.clone(),
             PlanExpectation::Count(self.expected_plan_count),
         ))
@@ -164,10 +165,11 @@ impl PeerTransferService for PlanAssertingPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
         Ok(scripted_worker(
             peer,
+            file.size,
             self.outcome.clone(),
             PlanExpectation::Indexes(self.expected_plan_indexes.clone()),
         ))
@@ -183,12 +185,14 @@ impl PeerTransferService for PendingPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(8);
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
                 if matches!(command, PeerWorkerCommand::Shutdown { .. }) {
                     break;
@@ -196,6 +200,20 @@ impl PeerTransferService for PendingPeerTransfer {
             }
         });
         Ok(PeerWorker::new(peer, command_tx, event_rx))
+    }
+}
+
+/// A probe answer spelling out every part of a `file_size`-byte file — not
+/// the complete-source sentinel, so the source-ask gate reads it as it reads
+/// a source that never advertised (ADR-0108). What an in-process fake sends
+/// after `Connected`, before its first part is assigned (ADR-0030, ADR-0112).
+#[must_use]
+pub fn every_part(file_size: u64) -> PeerWorkerEvent {
+    PeerWorkerEvent::PartsAdvertised {
+        parts: Some(rmule_peer::PartBitmap::all_present(
+            rmule_primitives::part_count(file_size),
+        )),
+        complete: false,
     }
 }
 
@@ -233,6 +251,7 @@ enum PlanExpectation {
 /// holds, and asserts `expectation` once the runner shuts it down.
 fn scripted_worker(
     peer: PeerEndpoint,
+    file_size: u64,
     outcome: PeerDownloadOutcome,
     expectation: PlanExpectation,
 ) -> PeerWorker {
@@ -240,6 +259,7 @@ fn scripted_worker(
     let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
     tokio::spawn(async move {
         let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+        let _ = event_tx.send(every_part(file_size)).await;
         let mut requested = Vec::new();
         let mut sent_hashes = false;
         while let Some(command) = command_rx.recv().await {

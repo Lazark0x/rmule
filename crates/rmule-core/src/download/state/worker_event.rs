@@ -50,9 +50,10 @@ impl DownloadState {
         let mut out = Vec::new();
         self.note_seed_fact(peer, &event);
         match event {
+            // The worker's first part waits for its Advertised Parts
+            // (ADR-0112): the handshake alone assigns nothing.
             PeerWorkerEvent::Connected => {
                 self.sources.connected(peer);
-                self.assign(peer, &mut out);
                 // No trusted AICH root yet (link carried no `h=`): ask this peer
                 // for the file's master hash to feed the trusted-set vote
                 // (ADR-0038). Once a root is committed we stop asking.
@@ -91,8 +92,12 @@ impl DownloadState {
             // `DownloadClient.cpp:260-261`) — and its complete-or-not
             // advertisement.
             PeerWorkerEvent::SourcesAsked => self.sources.asked(peer, now),
-            PeerWorkerEvent::PartsAdvertised { complete } => {
+            // The probe's answer: the record keeps the parts, and the worker
+            // gets its first part from them (ADR-0112).
+            PeerWorkerEvent::PartsAdvertised { parts, complete } => {
                 self.sources.advertised(peer, complete, now);
+                self.sources.write_parts(peer, parts);
+                self.assign(peer, &mut out);
             }
             PeerWorkerEvent::IdentityVerified {
                 user_hash,
