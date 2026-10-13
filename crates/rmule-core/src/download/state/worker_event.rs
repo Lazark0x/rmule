@@ -392,7 +392,7 @@ impl DownloadState {
             .count();
         if repended > 0 {
             for peer in self.connected_workers() {
-                self.assign(peer, &mut out);
+                self.assign(now, peer, &mut out);
             }
             self.fill(now, &mut out);
         }

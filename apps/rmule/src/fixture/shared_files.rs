@@ -106,6 +106,7 @@ pub(crate) fn partially_served() -> UiState {
                 52_428_800,
                 rmule_core::DownloadMetadataOrigin::Link,
             ),
+            file_path: crate::fixture::part_file(),
         }),
     );
     serve_fold(

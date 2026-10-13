@@ -201,8 +201,12 @@ impl HeldPartFile {
     }
 
     /// The held file's key and its metadata, read through the handle.
-    pub(crate) async fn held_metadata(&self) -> std::io::Result<(FileKey, std::fs::Metadata)> {
-        Ok((self.key, self.file.metadata().await?))
+    pub(crate) async fn held_metadata(&self) -> io::Result<(FileKey, std::fs::Metadata)> {
+        let file = Arc::clone(&self.file);
+        let meta = tokio::task::spawn_blocking(move || file.metadata())
+            .await
+            .map_err(io::Error::other)??;
+        Ok((self.key, meta))
     }
 
     /// The parts a truncation cut were dropped: the recorded parts now end at

@@ -76,13 +76,14 @@ pub(super) async fn in_place<S, P>(runner: &RunnerContext<S, P>, download_id: Do
         return;
     };
     let path = record.paths().final_path();
-    let identity = match (
-        FileKey::at_async(path).await,
-        tokio::fs::metadata(path).await,
-    ) {
-        (Ok(key), Ok(meta)) => PartFileIdentity::read(key, &meta, true),
-        _ => None,
-    };
+    let owned = path.to_path_buf();
+    let identity = tokio::task::spawn_blocking(move || {
+        Some((FileKey::at(&owned).ok()?, std::fs::metadata(&owned).ok()?))
+    })
+    .await
+    .ok()
+    .flatten()
+    .and_then(|(key, meta)| PartFileIdentity::read(key, &meta, true));
     lease.bytes_in_place(identity);
 }
 

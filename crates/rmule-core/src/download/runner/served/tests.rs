@@ -99,7 +99,7 @@ async fn run_of<P: PeerTransferService>(
         .unwrap_or_default();
     assert!(cell.install(&record, &set));
     runner.served = cell.hand_to_run(link.file_hash, 1);
-    *runner.part_file.lock().await = Some(HeldPartFile::hold(paths.part_path(), 0).await.unwrap());
+    *runner.part_file.lock().await = Some(HeldPartFile::hold(paths.part_path(), 0).await.unwrap().0);
     (runner, held, record)
 }
 
@@ -125,6 +125,7 @@ fn working(link: &Ed2kFileLink, record: &DurableDownloadRecord) -> (DownloadStat
             resolved,
             trusted_aich_root: None,
             verified_parts: Vec::new(),
+            streaming_priority: false,
         },
         StartingFacts {
             distrusted: HashSet::new(),
@@ -138,6 +139,7 @@ fn working(link: &Ed2kFileLink, record: &DurableDownloadRecord) -> (DownloadStat
         },
         Duration::from_secs(30),
         1,
+        0,
     );
     let now = Instant::now();
     let _ = state.start(now);
