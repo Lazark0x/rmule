@@ -23,7 +23,7 @@ use rmule_net::ed2k::ServerObfuscationTransport;
 use rmule_peer::HelloAnswer;
 use rmule_primitives::{
     ClientId, FileHash, Ipv4Endpoint, KeywordQuery, Packet, PacketProtocol, PeerSource,
-    PrimitiveError, SearchResult, ServerEndpoint, UserHash, is_plaintext_marker,
+    PrimitiveError, SearchResult, ServerEndpoint, TagValue, UserHash, is_plaintext_marker,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -35,6 +35,10 @@ use tokio::task::JoinHandle;
 /// unbound port is refused and a live driver answers near-instantly, so this
 /// only bounds the pathological case (the real Lugdunum allows ~10 s).
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// `SRVCAP_IPV6`, the `CT_SERVER_FLAGS` bit that rides with `CT_MOD_IP_V6`
+/// (ADR-0087 §4.1).
+const SRVCAP_IPV6: u32 = 0x1000;
 
 /// A stand-in routable id handed to reachable (High-ID) clients. Any value
 /// `>= ClientId::LOW_ID_THRESHOLD` works; rmule never dials it for a callback.
@@ -521,9 +525,11 @@ where
     // later ADRs settled may ride, each at most once and in this order:
     // `CT_MOD_IP_V6` (`0xAE`, ADR-0087) and `CT_EMULE_UDPPORTS` (`0xF9`,
     // ADR-0091 — present whenever a client-UDP socket is bound, which is
-    // every running core). Anything else is a violating client and is dropped
-    // before IdChange, so any test driving a session through this server
-    // fails loudly on its login wait.
+    // every running core). `CT_MOD_IP_V6` rides exactly when
+    // `CT_SERVER_FLAGS` sets `SRVCAP_IPV6` (`0x1000`): the dialect's "send
+    // both or neither" (ADR-0087 §4.1). Anything else is a violating client
+    // and is dropped before IdChange, so any test driving a session through
+    // this server fails loudly on its login wait.
     let tag_ids: Vec<Option<u8>> = login.tags().iter().map(|t| t.name().id()).collect();
     let canonical = [Some(0x01), Some(0x11), Some(0x20), Some(0xFB)];
     let adverts: &[Option<u8>] = tag_ids.get(canonical.len()..).unwrap_or(&[]);
@@ -531,7 +537,12 @@ where
         adverts,
         [] | [Some(0xAE)] | [Some(0xF9)] | [Some(0xAE), Some(0xF9)]
     );
-    if !tag_ids.starts_with(&canonical) || !adverts_ok {
+    let flags_ipv6 = login.tags().iter().any(|tag| {
+        tag.name().id() == Some(0x20)
+            && matches!(tag.value(), TagValue::U32(flags) if flags & SRVCAP_IPV6 != 0)
+    });
+    let ipv6_paired = flags_ipv6 == adverts.contains(&Some(0xAE));
+    if !tag_ids.starts_with(&canonical) || !adverts_ok || !ipv6_paired {
         writer.abort();
         return;
     }
