@@ -1,13 +1,14 @@
-//! The waits a worker shares between its connect-time probe and each part's
-//! stream: reading the next peer event while serving the commands that arrive
-//! first, the event arms both forward alike, and the probe wait the first
-//! part waits on (ADR-0112).
+//! The waits a worker shares between its connect-time probe, the wait between
+//! parts and each part's stream: reading the next peer event while serving the
+//! commands that arrive first, the event arms all of them forward alike — the
+//! slot's answers among them — the probe wait the slot ask waits on
+//! (ADR-0112), and the wait between parts, which reads the link too (ADR-0026).
 
 use std::time::Duration;
 
 use rmule_peer::{
     ConnectionEvent, FileProbeStatus, NoticeEvent, PeerCommand, PeerEvent, RequesterCommand,
-    RequesterEvent,
+    RequesterEvent, SlotReleaseReason,
 };
 use rmule_primitives::FileHash;
 use tokio::sync::mpsc;
@@ -103,6 +104,128 @@ pub(super) async fn next_event(
 /// The connection or the download side ended; `Disconnected` was sent when
 /// the peer's side did.
 pub(super) struct Ended;
+
+/// How the wait between parts ended.
+pub(super) enum Idled {
+    /// The download sent a command.
+    Command(PeerWorkerCommand),
+    /// `OP_OUTOFPARTREQS` queued the flow again: a new slot wait begins.
+    Requeued,
+    /// The link, the download or the slot budget ended the worker; whatever
+    /// ended it was reported.
+    Ended,
+}
+
+/// Wait between parts for the download's next command, reading the link
+/// meanwhile, so a queued worker hears its rank and grant and any worker hears
+/// its link close at once (ADR-0026): the shared arms ([`forward_shared`]) and
+/// the slot's answers ([`forward_slot_news`]) are forwarded as they come. No
+/// command and no grant by `deadline` reports `SlotTimeout`.
+pub(super) async fn idle_wait(
+    link: &mut WorkerLink<'_>,
+    file_hash: FileHash,
+    deadline: tokio::time::Instant,
+) -> Idled {
+    loop {
+        let waited = tokio::select! {
+            biased;
+            command = link.commands.recv() => {
+                return command.map_or(Idled::Ended, Idled::Command);
+            }
+            waited = tokio::time::timeout_at(deadline, link.events.recv()) => waited,
+        };
+        let Ok(event) = waited else {
+            let _ = link.event_tx.send(PeerWorkerEvent::SlotTimeout).await;
+            return Idled::Ended;
+        };
+        let event = match forward_shared(link.event_tx, file_hash, event).await {
+            Ok(Some(event)) => event,
+            Ok(None) => continue,
+            Err(Ended) => return Idled::Ended,
+        };
+        match forward_slot_news(link.event_tx, file_hash, event).await {
+            Ok(SlotNews::Requeued) => return Idled::Requeued,
+            Ok(SlotNews::Noted | SlotNews::Other(_)) => {}
+            Err(Ended) => return Idled::Ended,
+        }
+    }
+}
+
+/// What a slot answer on the link came to once [`forward_slot_news`] read it.
+pub(super) enum SlotNews {
+    /// Forwarded, or ignored; keep waiting.
+    Noted,
+    /// `OP_OUTOFPARTREQS` queued the flow again, forwarded as `Requeued`.
+    Requeued,
+    /// No slot answer: the caller's own to read.
+    Other(PeerEvent),
+}
+
+/// The slot's answers every wait after the probe forwards alike: the slot ask
+/// leaving (`SlotAsked`), each rank (`Queued`), the grant, the flow queued
+/// again (`Requeued`, ADR-0057); a peer saying mid-flow that it lacks the file
+/// is reported as the probe reports it, and the slot's other ends as
+/// `Disconnected`, both ending the worker. Our own release is ignored.
+pub(super) async fn forward_slot_news(
+    event_tx: &mpsc::Sender<PeerWorkerEvent>,
+    file_hash: FileHash,
+    event: PeerEvent,
+) -> Result<SlotNews, Ended> {
+    let PeerEvent::Requester(requester) = event else {
+        return Ok(SlotNews::Other(event));
+    };
+    let (report, news) = match requester {
+        RequesterEvent::SlotAsked { file_hash: asked } if asked == file_hash => {
+            (PeerWorkerEvent::SlotAsked, SlotNews::Noted)
+        }
+        RequesterEvent::QueueRanked {
+            file_hash: ranked,
+            rank,
+        }
+        | RequesterEvent::QueueProgress {
+            file_hash: ranked,
+            new_rank: rank,
+            ..
+        } if ranked == file_hash => (PeerWorkerEvent::Queued { rank }, SlotNews::Noted),
+        RequesterEvent::SlotGranted { file_hash: granted } if granted == file_hash => {
+            (PeerWorkerEvent::SlotGranted, SlotNews::Noted)
+        }
+        RequesterEvent::Requeued {
+            file_hash: requeued,
+        } if requeued == file_hash => (PeerWorkerEvent::Requeued, SlotNews::Requeued),
+        RequesterEvent::SlotReleased {
+            file_hash: released,
+            reason: SlotReleaseReason::DownloadComplete,
+        } if released == file_hash => return Ok(SlotNews::Noted),
+        // A mid-flow `OP_FILEREQANSNOFIL`: the peer lacks the file after all,
+        // reported as the probe reports it, and the download retires the
+        // source on it (ADR-0090).
+        RequesterEvent::FileProbed {
+            file_hash: probed,
+            status: FileProbeStatus::NotAvailable,
+        } if probed == file_hash => {
+            let _ = event_tx
+                .send(PeerWorkerEvent::PartsAdvertised {
+                    parts: None,
+                    complete: false,
+                })
+                .await;
+            return Err(Ended);
+        }
+        RequesterEvent::SlotReleased {
+            file_hash: released,
+            ..
+        } if released == file_hash => {
+            let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
+            return Err(Ended);
+        }
+        other => return Ok(SlotNews::Other(PeerEvent::Requester(other))),
+    };
+    match event_tx.send(report).await {
+        Ok(()) => Ok(news),
+        Err(_) => Err(Ended),
+    }
+}
 
 /// The arms the probe wait and the part stream share: exchanged sources
 /// (ADR-0055), a hash set and an AICH root proposal (ADR-0038) forwarded as

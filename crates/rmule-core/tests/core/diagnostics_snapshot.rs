@@ -18,9 +18,9 @@ fn worker_entry_transition_updates_phase_and_bumps_count() {
         4662,
     )));
     entry.transition(WorkerPhase::Connecting);
-    entry.transition(WorkerPhase::HandshakingPeer);
+    entry.transition(WorkerPhase::AskingFile);
 
-    assert_eq!(entry.phase(), &WorkerPhase::HandshakingPeer);
+    assert_eq!(entry.phase(), &WorkerPhase::AskingFile);
     assert_eq!(entry.transition_count(), 2);
     assert_eq!(entry.peer_endpoint().unwrap().port(), 4662);
 }
@@ -41,7 +41,7 @@ fn diagnostics_state_snapshot_is_an_independent_clone() {
     let snap = state.snapshot();
 
     state.update_worker(id, WorkerSlot::from_usize(0), |entry| {
-        entry.transition(WorkerPhase::HandshakingPeer);
+        entry.transition(WorkerPhase::AskingFile);
     });
 
     let workers = &snap.downloads[&id].workers;

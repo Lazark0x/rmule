@@ -1,8 +1,9 @@
-//! The words for a download's sources: why one left, why a dial ended
-//! before its hello, why one was let go or a reask answer changed nothing,
-//! what a download with no source to try waits on, and the remembered peers
-//! a restart dials first (ADR-0109).
+//! The words for a download's sources: what a worker slot is doing, why one
+//! left, why a dial ended before its hello, why one was let go or a reask
+//! answer changed nothing, what a download with no source to try waits on,
+//! and the remembered peers a restart dials first (ADR-0109).
 
+use rmule_core::diagnostics::WorkerPhase;
 use rmule_core::{
     DialEnd, IgnoredReaskReply, PartReleaseReason, PeerRetirementReason, PurgedSource,
     SourcePurgeReason, SourceWait,
@@ -34,6 +35,9 @@ pub const fn retirement_words(reason: PeerRetirementReason) -> &'static str {
         PeerRetirementReason::Distrusted => "it sent this file bad data before",
         PeerRetirementReason::SameSource => "another connection already reaches this peer",
         PeerRetirementReason::NoNeededParts => "it holds no part we still need",
+        PeerRetirementReason::NoFreePart => {
+            "every part it has that we need is coming from another source"
+        }
         PeerRetirementReason::FileNotFound => "it does not have this file",
     }
 }
@@ -134,6 +138,26 @@ pub const fn source_wait_words(reason: SourceWait) -> &'static str {
 #[must_use]
 pub const fn waiting_for_sources(reason: SourceWait) -> Sentence {
     Sentence::fixed(source_wait_words(reason))
+}
+
+/// What a worker slot is doing, as the Sources pane's Phase cell says it:
+/// the dial, the file asked, the hash set asked, its place in the uploader's
+/// queue, the part it fetches, and its end (ADR-0028).
+#[must_use]
+pub fn phase_words(phase: &WorkerPhase) -> String {
+    match phase {
+        WorkerPhase::Idle => "idle".to_string(),
+        WorkerPhase::Connecting => "connecting".to_string(),
+        WorkerPhase::AskingFile => "asking file".to_string(),
+        WorkerPhase::RequestingHashSet => "hash set".to_string(),
+        WorkerPhase::WaitingForSlot { rank: None } => "queued".to_string(),
+        WorkerPhase::WaitingForSlot { rank: Some(rank) } => format!("queued #{rank}"),
+        WorkerPhase::RequestingPart { part_index } => format!("req p{part_index}"),
+        WorkerPhase::ReceivingPart { part_index, .. } => format!("recv p{part_index}"),
+        WorkerPhase::VerifyingPart { part_index } => format!("verify p{part_index}"),
+        WorkerPhase::Retired { .. } => "retired".to_string(),
+        WorkerPhase::ShutDown => "shutdown".to_string(),
+    }
 }
 
 /// The mark a source dialed from the download's **Source Seeds** carries in

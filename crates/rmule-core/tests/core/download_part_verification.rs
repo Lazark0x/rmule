@@ -407,6 +407,10 @@ impl PeerTransferService for MismatchedThenSuccess {
             let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
                 match command {
+                    PeerWorkerCommand::AskSlot => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::RequestHashSet => {}
                     PeerWorkerCommand::RequestPart { .. } if peer == mismatched_peer => {
                         let _ = event_tx
                             .send(PeerWorkerEvent::HashSetReceived {

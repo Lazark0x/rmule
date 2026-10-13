@@ -1,9 +1,9 @@
 //! The brain's clock-in (ADR-0026): the runner hands it `now` at the instant
 //! [`DownloadState::next_wake`] named, and [`DownloadState::on_tick`] runs what
 //! has fallen due by then — the spent endpoints' period turn (ADR-0090), the
-//! callback roads' deadlines earliest first (ADR-0039, ADR-0091), the
-//! purges, and the reask sweep over every queue standing
-//! (ADR-0057). Each sits on the record or block it governs, so a road or a
+//! **Hash-Set Deadline** (ADR-0026), the callback roads' deadlines earliest
+//! first (ADR-0039, ADR-0091), the purges, and the reask sweep over every
+//! queue standing (ADR-0057). Each sits on the record or block it governs, so a road or a
 //! standing that ends by any route takes its clock with it.
 
 use std::time::Instant;
@@ -18,6 +18,7 @@ impl DownloadState {
         self.sources.turn_spent(now);
         self.sources.clean_up_asks(now);
         let mut out = Vec::new();
+        self.hash_set_deadline(now, &mut out);
         while let Some((key, deadline)) = self.sources.take_due_deadline(now) {
             out.extend(self.expire(now, key, deadline));
         }
@@ -58,6 +59,7 @@ impl DownloadState {
         [
             self.sources.next_spent_turn(),
             self.sources.next_asks_cleanup(),
+            self.slot_asks.next_deadline(),
             self.sources.next_deadline(),
             self.callback_capability
                 .connected()

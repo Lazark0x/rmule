@@ -150,7 +150,7 @@ pub(crate) fn three_downloads() -> UiState {
                 ),
                 remembered(worker(
                     1,
-                    WorkerPhase::WaitingForSlot,
+                    WorkerPhase::WaitingForSlot { rank: Some(3) },
                     Some(peer_endpoint(2)),
                 )),
             ],

@@ -303,6 +303,10 @@ impl PeerTransferService for ScriptedPeerTransfer {
             let mut hashes_sent = false;
             while let Some(command) = command_rx.recv().await {
                 match command {
+                    PeerWorkerCommand::AskSlot => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::RequestHashSet => {}
                     PeerWorkerCommand::RequestPart {
                         plan,
                         resume_offset,
@@ -355,6 +359,10 @@ impl PeerTransferService for FirstPartThenBlocked {
             let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
                 match command {
+                    PeerWorkerCommand::AskSlot => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::RequestHashSet => {}
                     PeerWorkerCommand::RequestPart {
                         plan,
                         resume_offset,
@@ -396,6 +404,10 @@ fn spawn_delivering_worker(peer: PeerEndpoint, file_size: u64, part: DownloadedP
         let _ = event_tx.send(rmule_testkit::every_part(file_size)).await;
         while let Some(command) = command_rx.recv().await {
             match command {
+                PeerWorkerCommand::AskSlot => {
+                    let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                }
+                PeerWorkerCommand::RequestHashSet => {}
                 PeerWorkerCommand::RequestPart {
                     plan,
                     resume_offset,

@@ -63,9 +63,9 @@ impl SourceLookupService for NeverAnswers {
     }
 }
 
-/// Workers that connect and wait, each dial written down; with `hellos`
-/// each reads the peer's hello first, and the dial at `hangs_up` ends before
-/// any.
+/// Workers that connect, are granted the slot they ask and wait, each dial
+/// written down; with `hellos` each reads the peer's hello first, and the dial
+/// at `hangs_up` ends before any.
 #[derive(Clone, Default)]
 struct DialLog {
     dials: Arc<Mutex<Vec<PeerEndpoint>>>,
@@ -96,6 +96,9 @@ impl PeerTransferService for DialLog {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
             let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
+                if matches!(command, PeerWorkerCommand::AskSlot) {
+                    let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                }
                 if matches!(command, PeerWorkerCommand::Shutdown { .. }) {
                     break;
                 }
@@ -409,7 +412,8 @@ async fn a_completed_download_keeps_no_seeds() {
     assert!(repo.source_seeds(id).unwrap().is_empty());
 }
 
-/// `Remember peers` at one keeps one peer of the two the run knew.
+/// `Remember peers` at one keeps one peer of the two the run knew: the best,
+/// the one whose grant handed it the part.
 #[tokio::test]
 async fn the_remember_peers_count_bounds_the_write() {
     let dir = tempfile::tempdir().unwrap();
@@ -426,7 +430,7 @@ async fn the_remember_peers_count_bounds_the_write() {
     let repo = DurableDownloadRepository::new(open_durable_store(dir.path()).unwrap());
     let seeds = repo.source_seeds(id).unwrap();
     assert_eq!(seeds.len(), 1, "{seeds:?}");
-    assert_eq!(seeds[0].rank, SeedRank::Known);
+    assert_eq!(seeds[0].rank, SeedRank::Ranked);
 }
 
 /// `Remember peers` changed on the running core bounds the next write: core
@@ -576,6 +580,9 @@ impl PeerTransferService for HelloStating {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
             let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
+                if matches!(command, PeerWorkerCommand::AskSlot) {
+                    let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                }
                 if matches!(command, PeerWorkerCommand::Shutdown { .. }) {
                     break;
                 }

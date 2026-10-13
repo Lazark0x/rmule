@@ -1,15 +1,16 @@
 //! Driving one dialed or adopted peer worker to a downloaded part: the probe
-//! wait its first part waits on, the block request loop that turns granted
-//! slots into bytes, the identity wait the dialer blocks on, and the AICH
-//! recovery detour a corrupt part triggers.
+//! wait its slot ask waits on, the wait between parts that hears the slot's
+//! answers and the link's end, the block request loop that turns granted slots
+//! into bytes, the identity wait the dialer blocks on, and the AICH recovery
+//! detour a corrupt part triggers.
 
 use std::collections::VecDeque;
 use std::time::Duration;
 
 use rmule_net::peer::Connection as PeerConnection;
 use rmule_peer::{
-    ConnectionEvent, EMBLOCKSIZE, FileProbeStatus, PartBitmap, PartRanges, PeerCommand, PeerEvent,
-    PeerIdentity, RequesterCommand, RequesterEvent, SlotReleaseReason,
+    ConnectionEvent, EMBLOCKSIZE, PartBitmap, PartRanges, PeerCommand, PeerEvent, PeerIdentity,
+    RequesterCommand, RequesterEvent,
 };
 use rmule_primitives::{AichRootHash, Ed2kFileLink, PeerEndpoint};
 use tokio::sync::mpsc;
@@ -23,7 +24,9 @@ use crate::adapters::serve_runtime::{ServeConnection, ServeInput};
 use crate::adapters::served_link::JoinedLink;
 use crate::service::DialEnd;
 
-use self::wait::{Ended, await_probe, forward_shared, next_event};
+use self::wait::{
+    Ended, Idled, SlotNews, await_probe, forward_shared, forward_slot_news, idle_wait, next_event,
+};
 
 /// Drive a peer worker over an established `conn` — the body shared by a dialed
 /// worker ([`RuntimePeerTransferService`](crate::RuntimePeerTransferService)'s `start_peer_worker`) and an adopted
@@ -236,23 +239,42 @@ async fn work_the_link(
         commands: &mut command_rx,
         deferred: VecDeque::new(),
     };
-    // The first part waits for the probe's answer (ADR-0112): the brain
-    // assigns on `PartsAdvertised`, so a partial source is never handed a
-    // part it lacks.
+    // The slot ask waits for the probe's answer (ADR-0112): the brain asks
+    // on `PartsAdvertised` and hands the part at the grant, so a partial
+    // source is never handed a part it lacks.
     let probed = await_probe(&mut link, file.file_hash, slot_wait_timeout).await;
     if let Streamed::Shutdown { cancel: c } = probed {
         cancel = c;
     }
     if matches!(probed, Streamed::Next) {
+        // A slot wait — from the probe's answer, or the flow's return to the
+        // queue — is bounded by the slot budget with no part streaming
+        // (ADR-0026).
+        let mut slot_deadline = tokio::time::Instant::now() + slot_wait_timeout;
         loop {
             let command = match link.deferred.pop_front() {
                 Some(command) => command,
-                None => match link.commands.recv().await {
-                    Some(command) => command,
-                    None => break,
+                None => match idle_wait(&mut link, file.file_hash, slot_deadline).await {
+                    Idled::Command(command) => command,
+                    Idled::Requeued => {
+                        slot_deadline = tokio::time::Instant::now() + slot_wait_timeout;
+                        continue;
+                    }
+                    Idled::Ended => break,
                 },
             };
             match command {
+                PeerWorkerCommand::AskSlot | PeerWorkerCommand::RequestHashSet => {
+                    let file_hash = file.file_hash;
+                    let ask = match command {
+                        PeerWorkerCommand::AskSlot => RequesterCommand::AskSlot { file_hash },
+                        _ => RequesterCommand::RequestHashSet { file_hash },
+                    };
+                    if link.cmd_tx.send(PeerCommand::Requester(ask)).await.is_err() {
+                        let _ = link.event_tx.send(PeerWorkerEvent::Disconnected).await;
+                        break;
+                    }
+                }
                 PeerWorkerCommand::RequestPart {
                     plan,
                     resume_offset,
@@ -266,7 +288,9 @@ async fn work_the_link(
                     )
                     .await;
                     match streamed {
-                        Streamed::Next => {}
+                        Streamed::Next => {
+                            slot_deadline = tokio::time::Instant::now() + slot_wait_timeout;
+                        }
                         Streamed::WindDown => break,
                         Streamed::Shutdown { cancel: c } => {
                             cancel = c;
@@ -533,14 +557,16 @@ async fn stream_part_download(
             Ok(None) => continue,
             Err(Ended) => return Streamed::WindDown,
         };
+        // `OP_OUTOFPARTREQS` on the granted slot: the transfer is over, not
+        // the flow. The part goes back to the download, and the worker stays
+        // on the link for the next grant (ADR-0057).
+        let event = match forward_slot_news(event_tx, file_hash, event).await {
+            Ok(SlotNews::Other(event)) => event,
+            Ok(SlotNews::Noted) => continue,
+            Ok(SlotNews::Requeued) => return Streamed::Next,
+            Err(Ended) => return Streamed::WindDown,
+        };
         match event {
-            PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash: granted })
-                if granted == file_hash =>
-            {
-                if event_tx.send(PeerWorkerEvent::SlotGranted).await.is_err() {
-                    return Streamed::WindDown;
-                }
-            }
             PeerEvent::Requester(RequesterEvent::PartReceived {
                 file_hash: received,
                 offset,
@@ -556,74 +582,6 @@ async fn stream_part_download(
                         offset,
                         bytes,
                     })
-                    .await
-                    .is_err()
-                {
-                    return Streamed::WindDown;
-                }
-            }
-            // The peer signals it finished the requested range; the
-            // range-done check at the top of the loop emits PartStreamed
-            // once the assigned range is delivered, otherwise the next block
-            // is requested.
-            PeerEvent::Requester(RequesterEvent::SlotReleased {
-                file_hash: released,
-                reason: SlotReleaseReason::DownloadComplete,
-            }) if released == file_hash => {}
-            // A mid-slot `OP_FILEREQANSNOFIL`: the peer lacks the file after
-            // all, reported as the probe reports it, and the download retires
-            // the source on it (ADR-0090).
-            PeerEvent::Requester(RequesterEvent::FileProbed {
-                file_hash: probed,
-                status: FileProbeStatus::NotAvailable,
-            }) if probed == file_hash => {
-                let _ = event_tx
-                    .send(PeerWorkerEvent::PartsAdvertised {
-                        parts: None,
-                        complete: false,
-                    })
-                    .await;
-                return Streamed::WindDown;
-            }
-            // `OP_OUTOFPARTREQS` on the granted slot: the transfer is over,
-            // not the flow. The part goes back to the download, and the
-            // worker stays on the link for the next grant (ADR-0057).
-            PeerEvent::Requester(RequesterEvent::Requeued {
-                file_hash: requeued,
-            }) if requeued == file_hash => {
-                return match event_tx.send(PeerWorkerEvent::Requeued).await {
-                    Ok(()) => Streamed::Next,
-                    Err(_) => Streamed::WindDown,
-                };
-            }
-            PeerEvent::Requester(RequesterEvent::SlotAsked { file_hash: asked })
-                if asked == file_hash =>
-            {
-                if event_tx.send(PeerWorkerEvent::SlotAsked).await.is_err() {
-                    return Streamed::WindDown;
-                }
-            }
-            PeerEvent::Requester(RequesterEvent::SlotReleased {
-                file_hash: released,
-                ..
-            }) if released == file_hash => {
-                let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-                return Streamed::WindDown;
-            }
-            // The peer is holding us in its upload queue. Non-terminal:
-            // keep the connection open and keep waiting for a slot grant,
-            // but forward the position so core/CLI see queue progress.
-            PeerEvent::Requester(RequesterEvent::QueueRanked {
-                file_hash: ranked,
-                rank,
-            })
-            | PeerEvent::Requester(RequesterEvent::QueueProgress {
-                file_hash: ranked,
-                new_rank: rank,
-                ..
-            }) if ranked == file_hash => {
-                if event_tx
-                    .send(PeerWorkerEvent::Queued { rank })
                     .await
                     .is_err()
                 {

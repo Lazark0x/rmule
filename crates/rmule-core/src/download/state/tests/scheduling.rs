@@ -97,35 +97,62 @@ fn an_exchanged_source_records_the_crypt_side_its_dial_meets() {
     );
 }
 
-/// A worker's first part waits for its probe's answer (ADR-0112): the
-/// handshake alone hands it nothing, a release meanwhile passes it over, and
-/// its Advertised Parts assign it.
+/// A worker's slot ask waits for its probe's answer (ADR-0112) and its part
+/// for the grant (ADR-0026): the handshake alone asks nothing while the file
+/// is asked, a release meanwhile passes the worker over, its Advertised Parts
+/// ask its slot whether or not a part is free, a rank says its place, and the
+/// grant hands it the part — each step on its slot's phase (ADR-0028).
 #[test]
-fn a_connected_worker_is_handed_nothing_until_its_parts_are_known() {
+fn a_worker_asks_its_slot_at_its_probe_answer_and_is_handed_its_part_at_the_grant() {
     let mut state = two_peer_state();
     let connected = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
     assert!(
         !connected.iter().any(|d| matches!(
             d,
-            Decision::Emit(DownloadEvent::PartAssigned { .. }) | Decision::Phase { .. }
+            Decision::Emit(DownloadEvent::PartAssigned { .. })
+                | Decision::Send {
+                    command: PeerWorkerCommand::AskSlot
+                        | PeerWorkerCommand::RequestHashSet
+                        | PeerWorkerCommand::RequestPart { .. },
+                    ..
+                }
         )),
         "{connected:?}"
     );
+    assert_eq!(phases(&connected), vec![WorkerPhase::AskingFile]);
 
     let _ = connect(&mut state, t0(), peer(2));
     let _ = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Disconnected);
     assert!(
         !state.is_working(peer(1)),
-        "the released part waits for a worker whose parts are known"
+        "the released part waits for a worker whose slot is granted"
     );
 
     let answered = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::every_part(ONE_PART));
+    assert_eq!(sent(&answered), vec![(peer(1), PeerWorkerCommand::AskSlot)]);
+    assert_eq!(
+        phases(&answered),
+        vec![WorkerPhase::WaitingForSlot { rank: None }]
+    );
+    assert!(!state.is_working(peer(1)), "a queued worker holds no part");
+
+    let ranked = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Queued { rank: 7 });
+    assert_eq!(
+        phases(&ranked),
+        vec![WorkerPhase::WaitingForSlot { rank: Some(7) }]
+    );
+
+    let granted = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotGranted);
     assert!(
-        answered.iter().any(|d| matches!(
+        granted.iter().any(|d| matches!(
             d,
             Decision::Emit(DownloadEvent::PartAssigned { part_index: 0, peer: p, .. }) if *p == peer(1)
         )),
-        "{answered:?}"
+        "{granted:?}"
+    );
+    assert_eq!(
+        phases(&granted),
+        vec![WorkerPhase::RequestingPart { part_index: 0 }]
     );
 }
 
@@ -412,78 +439,5 @@ fn on_stop_releases_in_flight_parts_and_fails_with_the_reason() {
         out.iter()
             .any(|d| matches!(d, Decision::Fail(DownloadFailure::Paused))),
         "the activity fails with the stop reason: {out:?}"
-    );
-}
-
-/// `peer` delivers the whole of `part_index` and the runner verifies it: the
-/// decisions of the verified part's resumption.
-fn deliver_verified(
-    state: &mut DownloadState,
-    peer: PeerEndpoint,
-    part_index: u32,
-) -> Vec<Decision> {
-    let part = crate::planning::part_plan(state.file_size, part_index);
-    let _ = state.on_worker_event(
-        t0(),
-        peer,
-        PeerWorkerEvent::BlockReceived {
-            part_index,
-            offset: part.offset,
-            bytes: vec![0u8; part.len as usize],
-        },
-    );
-    state.on_persist_result(t0(), part_index, peer, Ok(()))
-}
-
-/// A part verifying can leave an idle backup holding nothing we lack: it is
-/// retired `NoNeededParts` then, not left on its slot (ADR-0112 §6), while
-/// the delivering peer takes its next part.
-#[test]
-fn a_verified_part_retires_an_idle_backup_left_holding_nothing_we_lack() {
-    let three_parts = 2 * rmule_primitives::ED2K_PART_SIZE + 1;
-    let mut state = pooled_state(
-        file_hash_only_content(three_parts),
-        &[peer(1), peer(2)],
-        QUIET_POSTURE,
-        2,
-    );
-    let _ = state.start(t0());
-    let _ = connect(&mut state, t0(), peer(1));
-    let _ = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Connected);
-    let first_two = PeerWorkerEvent::PartsAdvertised {
-        parts: Some(PartBitmap::decode(3, &[0b0000_0011]).expect("three parts")),
-        complete: false,
-    };
-    let _ = state.on_worker_event(t0(), peer(2), first_two);
-    let idled = deliver_verified(&mut state, peer(2), 1);
-    assert!(
-        idled.iter().any(|d| matches!(
-            d,
-            Decision::Phase {
-                phase: WorkerPhase::Idle,
-                ..
-            }
-        )),
-        "peer 2 holds part 0, in flight on peer 1: {idled:?}"
-    );
-
-    let verified = deliver_verified(&mut state, peer(1), 0);
-    assert!(
-        verified.iter().any(|d| matches!(
-            d,
-            Decision::Emit(DownloadEvent::PeerRetired {
-                peer: p,
-                reason: PeerRetirementReason::NoNeededParts,
-                ..
-            }) if *p == peer(2)
-        )),
-        "{verified:?}"
-    );
-    assert!(
-        verified.iter().any(|d| matches!(
-            d,
-            Decision::Emit(DownloadEvent::PartAssigned { part_index: 2, peer: p, .. }) if *p == peer(1)
-        )),
-        "{verified:?}"
     );
 }

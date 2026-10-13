@@ -383,6 +383,11 @@ pub enum PeerRetirementReason {
     /// over TCP at twice the reask period. Alive and honest, so neither spent
     /// nor distrusted.
     NoNeededParts,
+    /// The peer granted a slot this worker had no part to work: every part it
+    /// holds that we lack is in flight elsewhere (ADR-0112). The slot went back
+    /// with `OP_CANCELTRANSFER` (ADR-0056) and the source waits as a queued
+    /// one, asked again on the ordinary cadence (ADR-0057). Alive and honest.
+    NoFreePart,
     /// The peer said it does not have the file (`OP_FILEREQANSNOFIL`): its
     /// record is spent for this download under every name it holds, for the
     /// re-ask period, as aMule dead-lists it (ADR-0090). Honest, so not

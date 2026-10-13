@@ -28,6 +28,7 @@ mod direct_ipv6;
 mod remote_queued;
 mod seeds;
 mod sightings;
+mod slot_ask;
 mod slots;
 #[cfg(test)]
 mod tests;
@@ -427,6 +428,9 @@ pub(crate) struct DownloadState {
     /// channel for each peer stays in the runner, whether it has completed its
     /// handshake in the **Source Book**; the brain owns only the slot number.
     worker_slots: HashMap<PeerEndpoint, WorkerSlot>,
+    /// Where each worker's slot ask stands at its uploader, and the download's
+    /// one hash-set ask in flight (ADR-0026).
+    slot_asks: slot_ask::SlotAsks,
     /// The link's own part hash set, if the ed2k link carried one. Held so a
     /// peer-supplied hash set can be re-resolved against it (ADR-0027).
     link_part_hash_set: Option<PartHashSet>,
@@ -546,6 +550,7 @@ impl DownloadState {
             pending_persist: HashMap::new(),
             awaiting_recovery: HashMap::new(),
             worker_slots: HashMap::new(),
+            slot_asks: slot_ask::SlotAsks::default(),
             link_part_hash_set,
             resolved,
             trusted_aich_root,
@@ -569,8 +574,8 @@ impl DownloadState {
 
     /// Spawn the initial fleet of workers from the candidate pool, up to
     /// `peer_concurrency`. The runner enacts each [`Decision::Spawn`] by
-    /// putting that peer on the wire; the worker is assigned its first part on
-    /// its probe's answer (ADR-0030, ADR-0112).
+    /// putting that peer on the wire; the worker asks its slot on its probe's
+    /// answer and is handed its first part at the grant (ADR-0030, ADR-0026).
     pub(crate) fn start(&mut self, now: Instant) -> Vec<Decision> {
         self.started = true;
         self.sources.turn_spent(now);

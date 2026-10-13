@@ -42,9 +42,9 @@ fn a_worker_holding_nothing_we_lack_is_retired_no_needed_parts() {
     assert!(
         retired.iter().any(|d| matches!(
             d,
-            Decision::EndWorker { peer: p, cancel: true } if *p == peer(1)
+            Decision::EndWorker { peer: p, cancel: false } if *p == peer(1)
         )),
-        "{retired:?}"
+        "it asked no slot, so it has none to give back: {retired:?}"
     );
     assert!(
         !retired

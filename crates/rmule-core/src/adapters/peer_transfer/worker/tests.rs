@@ -1,9 +1,11 @@
-//! The block loop's reaction to the notices a shared link raises, and how the
-//! probe wait and the block loop report a peer that lacks the file.
+//! The block loop's reaction to the notices a shared link raises, how the
+//! probe wait and the block loop report a peer that lacks the file, and what
+//! the wait between parts hears on the link.
 
 use rmule_peer::{FileProbeStatus, NoticeEvent, PeerError, PeerEvent, RequesterEvent};
 use tokio::sync::mpsc;
 
+use super::wait::{Idled, idle_wait};
 use super::*;
 use crate::PartPlan;
 
@@ -144,4 +146,76 @@ async fn a_requeue_reports_itself_and_leaves_the_worker_on_its_link() {
     })
     .await;
     assert_eq!(reported, vec![PeerWorkerEvent::Requeued]);
+}
+
+/// Run [`idle_wait`] over `link_events`, the link closing after them, with no
+/// command sent and a slot budget of `budget`, and return the worker events
+/// it reported.
+async fn idled_over(link_events: Vec<PeerEvent>, budget: Duration) -> Vec<PeerWorkerEvent> {
+    let file = rmule_testkit::file_link("idle.bin", &[0x5A; 1024]);
+    let (events_tx, mut events) = mpsc::channel(8);
+    let (cmd_tx, _cmd_rx) = mpsc::channel(8);
+    let (event_tx, mut worker_events) = mpsc::channel(8);
+    let (_worker_cmd_tx, mut worker_cmd_rx) = mpsc::channel(8);
+    let closes = !link_events.is_empty();
+    for event in link_events {
+        events_tx.send(event).await.unwrap();
+    }
+    // With nothing to hear, the link stays open until the wait has ended.
+    let open = (!closes).then_some(events_tx);
+    let mut link = WorkerLink {
+        events: &mut events,
+        cmd_tx: &cmd_tx,
+        event_tx: &event_tx,
+        commands: &mut worker_cmd_rx,
+        deferred: VecDeque::new(),
+    };
+    let idled = idle_wait(
+        &mut link,
+        file.file_hash,
+        tokio::time::Instant::now() + budget,
+    )
+    .await;
+    assert!(matches!(idled, Idled::Ended));
+    drop(open);
+    drop(event_tx);
+    let mut reported = Vec::new();
+    while let Some(event) = worker_events.recv().await {
+        reported.push(event);
+    }
+    reported
+}
+
+/// A queued worker waiting with no command hears its slot ask leave, its
+/// rank and its grant, and its link closing reaches the download as
+/// `Disconnected` at once — no command needed to notice it (ADR-0026).
+#[tokio::test]
+async fn the_wait_between_parts_hears_the_slot_and_the_links_end() {
+    let file_hash = rmule_testkit::file_link("idle.bin", &[0x5A; 1024]).file_hash;
+    let reported = idled_over(
+        vec![
+            PeerEvent::Requester(RequesterEvent::SlotAsked { file_hash }),
+            PeerEvent::Requester(RequesterEvent::QueueRanked { file_hash, rank: 4 }),
+            PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash }),
+        ],
+        Duration::from_secs(5),
+    )
+    .await;
+    assert_eq!(
+        reported,
+        vec![
+            PeerWorkerEvent::SlotAsked,
+            PeerWorkerEvent::Queued { rank: 4 },
+            PeerWorkerEvent::SlotGranted,
+            PeerWorkerEvent::Disconnected,
+        ]
+    );
+}
+
+/// A wait between parts that hears nothing within the slot budget ends the
+/// worker with `SlotTimeout`.
+#[tokio::test]
+async fn a_silent_wait_between_parts_ends_at_the_slot_budget() {
+    let reported = idled_over(Vec::new(), Duration::ZERO).await;
+    assert_eq!(reported, vec![PeerWorkerEvent::SlotTimeout]);
 }

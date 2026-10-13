@@ -182,6 +182,10 @@ impl PeerTransferService for BackfillTransfer {
             }
             while let Some(command) = command_rx.recv().await {
                 match command {
+                    PeerWorkerCommand::AskSlot => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::RequestHashSet => {}
                     PeerWorkerCommand::RequestPart {
                         plan,
                         resume_offset,
@@ -222,9 +226,12 @@ impl PeerTransferService for AlwaysDisconnect {
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
             let _ = event_tx.send(advertised).await;
-            // The AICH-root ask the handshake triggers comes first; the part
-            // follows the probe's answer.
+            // The AICH-root ask the handshake triggers comes first; the slot
+            // ask follows the probe's answer, and the part the grant.
             while let Some(command) = command_rx.recv().await {
+                if matches!(command, PeerWorkerCommand::AskSlot) {
+                    let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                }
                 if let PeerWorkerCommand::RequestPart { .. } = command {
                     let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
                     break;

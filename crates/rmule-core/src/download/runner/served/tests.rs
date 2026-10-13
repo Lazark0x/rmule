@@ -165,13 +165,18 @@ fn working(link: &Ed2kFileLink, record: &DurableDownloadRecord) -> (DownloadStat
         PeerEndpoint::V4(SOURCE),
         PeerWorkerEvent::every_part(link.size),
     ));
+    decisions.extend(state.on_worker_event(
+        now,
+        PeerEndpoint::V4(SOURCE),
+        PeerWorkerEvent::SlotGranted,
+    ));
     let assigned = decisions
         .into_iter()
         .find_map(|decision| match decision {
             Decision::Emit(DownloadEvent::PartAssigned { part_index, .. }) => Some(part_index),
             _ => None,
         })
-        .expect("the connected source is given a part");
+        .expect("the granted source is given a part");
     (state, assigned)
 }
 

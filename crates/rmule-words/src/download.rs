@@ -40,7 +40,7 @@ pub use part_file::{
 use source::purged_source_words;
 pub use source::{
     NO_NETWORK_WAIT, NO_NETWORK_WAIT_NOTE, REMEMBER_PEERS_NOTE, REMEMBER_PEERS_REFUSED, REMEMBERED,
-    dial_end_words, ignored_reask_reply_words, release_words, remember_peers_receipt,
+    dial_end_words, ignored_reask_reply_words, phase_words, release_words, remember_peers_receipt,
     retirement_words, seeds_loaded, source_purge_reason_words, source_wait_words,
     waiting_for_sources,
 };

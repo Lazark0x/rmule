@@ -181,8 +181,9 @@ impl PeerTransferService for PlanAssertingPeerTransfer {
     }
 }
 
-/// A `PeerTransferService` whose workers connect and then do nothing: the
-/// download reaches `PeerSelected` and stays there until a command moves it.
+/// A `PeerTransferService` whose workers connect, are granted the slot they
+/// ask and then stream nothing: the download holds a part in flight until a
+/// command moves it.
 pub struct PendingPeerTransfer;
 
 impl PeerTransferService for PendingPeerTransfer {
@@ -199,8 +200,12 @@ impl PeerTransferService for PendingPeerTransfer {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
             let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
-                if matches!(command, PeerWorkerCommand::Shutdown { .. }) {
-                    break;
+                match command {
+                    PeerWorkerCommand::AskSlot => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::Shutdown { .. } => break,
+                    _ => {}
                 }
             }
         });
@@ -251,9 +256,11 @@ enum PlanExpectation {
     Indexes(Vec<u32>),
 }
 
-/// A `PeerWorker` that connects, answers the first `RequestPart` with the
-/// outcome's hash set (when it has one), streams whichever assigned part it
-/// holds, and asserts `expectation` once the runner shuts it down.
+/// A `PeerWorker` that connects, is granted its slot the moment it asks —
+/// an uploader with a free slot — answers the hash-set ask, or else its first
+/// `RequestPart`, with the outcome's hash set (when it has one), streams
+/// whichever assigned part it holds, and asserts `expectation` once the
+/// runner shuts it down.
 fn scripted_worker(
     peer: PeerEndpoint,
     file_size: u64,
@@ -269,6 +276,19 @@ fn scripted_worker(
         let mut sent_hashes = false;
         while let Some(command) = command_rx.recv().await {
             match command {
+                PeerWorkerCommand::AskSlot => {
+                    let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                }
+                PeerWorkerCommand::RequestHashSet => {
+                    if !sent_hashes && !outcome.peer_hashes.is_empty() {
+                        sent_hashes = true;
+                        let _ = event_tx
+                            .send(PeerWorkerEvent::HashSetReceived {
+                                part_hashes: outcome.peer_hashes.clone(),
+                            })
+                            .await;
+                    }
+                }
                 PeerWorkerCommand::RequestPart {
                     plan,
                     resume_offset,

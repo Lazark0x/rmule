@@ -64,6 +64,8 @@ impl PeerTransferService for StuckPeerTransfer {
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
             let _ = event_tx.send(advertised).await;
+            // An uploader with a free slot grants it at once (ADR-0026).
+            let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
             while command_rx.recv().await.is_some() {}
         });
         Ok(PeerWorker::new(peer, command_tx, event_rx))
@@ -91,6 +93,8 @@ impl PeerTransferService for DisconnectOnCuePeerTransfer {
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
             let _ = event_tx.send(advertised).await;
+            // An uploader with a free slot grants it at once (ADR-0026).
+            let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
             disconnect.notified().await;
             let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
             while command_rx.recv().await.is_some() {}
@@ -301,9 +305,10 @@ impl PeerTransferService for CompletingPeerTransfer {
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
             let _ = event_tx.send(advertised).await;
+            // An uploader with a free slot grants it at once (ADR-0026).
+            let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
             while let Some(command) = command_rx.recv().await {
                 if let crate::PeerWorkerCommand::RequestPart { plan, .. } = command {
-                    let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
                     deliver.notified().await;
                     let _ = event_tx
                         .send(PeerWorkerEvent::BlockReceived {

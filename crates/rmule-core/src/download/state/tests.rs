@@ -16,6 +16,7 @@ mod ownership;
 mod reask;
 mod scheduling;
 mod seeds;
+mod slot_ask;
 mod sources;
 
 use std::net::Ipv4Addr;
@@ -101,9 +102,18 @@ fn until_road_ends(state: &mut DownloadState, key: CallbackKey) -> Vec<Decision>
     panic!("{key:?}'s road never ended: {out:?}");
 }
 
-/// The worker on `peer` completed its handshake and its peer answered the
-/// probe with every part (ADR-0112): the decisions of both, in order.
+/// The worker on `peer` completed its handshake, its peer answered the probe
+/// with every part (ADR-0112) and granted the slot that answer asked
+/// (ADR-0026): the decisions of all three, in order.
 fn connect(state: &mut DownloadState, now: Instant, peer: PeerEndpoint) -> Vec<Decision> {
+    let mut out = probed(state, now, peer);
+    out.extend(state.on_worker_event(now, peer, PeerWorkerEvent::SlotGranted));
+    out
+}
+
+/// [`connect`] short of the grant: the handshake and the probe's answer
+/// with every part, which asks the slot (or the hash set).
+fn probed(state: &mut DownloadState, now: Instant, peer: PeerEndpoint) -> Vec<Decision> {
     let mut out = state.on_worker_event(now, peer, PeerWorkerEvent::Connected);
     out.extend(state.on_worker_event(now, peer, PeerWorkerEvent::every_part(state.file_size)));
     out
@@ -428,6 +438,71 @@ fn aich_state(
         QUIET_POSTURE,
         peer_concurrency,
     )
+}
+
+/// `peer` delivers the whole of `part_index` and the runner verifies it: the
+/// decisions of the verified part's resumption.
+fn deliver_verified(
+    state: &mut DownloadState,
+    peer: PeerEndpoint,
+    part_index: u32,
+) -> Vec<Decision> {
+    let part = crate::planning::part_plan(state.file_size, part_index);
+    let _ = state.on_worker_event(
+        t0(),
+        peer,
+        PeerWorkerEvent::BlockReceived {
+            part_index,
+            offset: part.offset,
+            bytes: vec![0u8; part.len as usize],
+        },
+    );
+    state.on_persist_result(t0(), part_index, peer, Ok(()))
+}
+
+/// A two-part file's true ED2K identity, hashed from its bytes: its file hash
+/// and the part hash set a truthful peer sends.
+fn two_part_file() -> rmule_primitives::FileHashSummary {
+    rmule_primitives::FileHashSummary::digest_bytes(
+        &[0x5A; (rmule_primitives::ED2K_PART_SIZE + 1_000) as usize],
+    )
+}
+
+/// A started two-peer download of `file`, with no link hash set.
+fn two_part_state(file: &rmule_primitives::FileHashSummary) -> DownloadState {
+    let mut state = pooled_state(
+        ContentFacts {
+            file_hash: file.file_hash(),
+            ..file_hash_only_content(file.file_size())
+        },
+        &[peer(1), peer(2)],
+        QUIET_POSTURE,
+        2,
+    );
+    let _ = state.start(t0());
+    state
+}
+
+/// The phases `decisions` writes, in order.
+fn phases(decisions: &[Decision]) -> Vec<WorkerPhase> {
+    decisions
+        .iter()
+        .filter_map(|d| match d {
+            Decision::Phase { phase, .. } => Some(phase.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The commands `decisions` sends a worker, with the peer each goes to.
+fn sent(decisions: &[Decision]) -> Vec<(PeerEndpoint, PeerWorkerCommand)> {
+    decisions
+        .iter()
+        .filter_map(|d| match d {
+            Decision::Send { peer, command } => Some((*peer, command.clone())),
+            _ => None,
+        })
+        .collect()
 }
 
 /// A two-peer download whose workers have spawned and are ready to connect:

@@ -50,10 +50,17 @@ impl DownloadState {
         let mut out = Vec::new();
         self.note_seed_fact(peer, &event);
         match event {
-            // The worker's first part waits for its Advertised Parts
-            // (ADR-0112): the handshake alone assigns nothing.
+            // The worker's slot ask waits for its Advertised Parts and its
+            // part for the grant (ADR-0112, ADR-0026): the handshake alone
+            // asks nothing.
             PeerWorkerEvent::Connected => {
                 self.sources.connected(peer);
+                if let Some(slot) = self.worker_slots.get(&peer).copied() {
+                    out.push(Decision::Phase {
+                        slot,
+                        phase: WorkerPhase::AskingFile,
+                    });
+                }
                 // No trusted AICH root yet (link carried no `h=`): ask this peer
                 // for the file's master hash to feed the trusted-set vote
                 // (ADR-0038). Once a root is committed we stop asking.
@@ -93,9 +100,10 @@ impl DownloadState {
             // advertisement.
             PeerWorkerEvent::SourcesAsked => self.sources.asked(peer, now),
             // The probe's answer: the record keeps the parts, and the worker
-            // gets its first part from them (ADR-0112). No parts at all is
-            // the peer saying it lacks the file (`0x48`, at the probe or
-            // mid-slot): the source is spent for this download (ADR-0090).
+            // asks its slot on them, its part chosen at the grant (ADR-0112,
+            // ADR-0026). No parts at all is the peer saying it lacks the file
+            // (`0x48`, at the probe or mid-slot): the source is spent for this
+            // download (ADR-0090).
             PeerWorkerEvent::PartsAdvertised { parts, complete } => {
                 self.sources.advertised(peer, complete, now);
                 let lacks_file = parts.is_none();
@@ -108,7 +116,7 @@ impl DownloadState {
                     }));
                     self.release(now, peer, PeerRetirementReason::FileNotFound, &mut out);
                 } else {
-                    self.assign(now, peer, &mut out);
+                    self.on_probe_answer(now, peer, &mut out);
                 }
             }
             PeerWorkerEvent::IdentityVerified {
@@ -171,21 +179,24 @@ impl DownloadState {
                     peer,
                     rank,
                 }));
+                self.ranked(peer, rank, &mut out);
             }
             PeerWorkerEvent::SlotGranted => {
                 // A grant ends the standing: the source is live, not queued.
+                // It hands the worker its part, or the slot goes back.
                 self.sources.end_standing(peer);
                 out.push(Decision::Emit(DownloadEvent::PeerSlotGranted {
                     download_id: self.download_id,
                     peer,
                 }));
+                self.granted(now, peer, &mut out);
             }
             PeerWorkerEvent::PartStreamed { .. } => {
                 self.sources.end_standing(peer);
                 // The worker delivered its whole assigned range. If a co-racer
                 // already finished the part (it no longer holds one) give it the
-                // next; otherwise its completing block reassigned it, so leave
-                // that assignment alone.
+                // next, or give its slot back; otherwise its completing block
+                // reassigned it, so leave that assignment alone.
                 if !self.scheduler.is_working(peer) {
                     self.assign(now, peer, &mut out);
                 }
@@ -207,6 +218,22 @@ impl DownloadState {
         self.settle_seed_dials(&mut out);
         out
     }
+    /// `peer`'s probe answered with parts: one holding nothing we lack is
+    /// retired `NoNeededParts` (ADR-0112 §6); any other asks its slot, or
+    /// the hash set first (ADR-0026).
+    fn on_probe_answer(&mut self, now: Instant, peer: PeerEndpoint, out: &mut Vec<Decision>) {
+        let Some(parts) = self.sources.worker_parts(peer) else {
+            return;
+        };
+        if self.scheduler.is_complete() {
+            return;
+        }
+        if self.scheduler.lacks_any_of(parts) {
+            self.ask_on_probe(now, peer, out);
+        } else {
+            self.retire_unworkable(now, peer, PeerRetirementReason::NoNeededParts, out);
+        }
+    }
     /// Resume after the runner has verified-and-persisted (or failed to) the
     /// assembled bytes of `part_index` that `peer` completed.
     pub(crate) fn on_persist_result(
@@ -221,17 +248,16 @@ impl DownloadState {
         match result {
             Ok(()) => {
                 self.scheduler.complete_verified(peer);
-                // The verified part may have been the last one an idle
-                // worker held that we lack: every connected worker is
-                // assigned again, and one left holding nothing we need gives
-                // its slot back (ADR-0112 §6).
-                let unneeded = self.assign_connected(&mut out);
+                // The verifier and the racers it beat hold no part now: each
+                // granted one is handed its next or gives its slot back, and
+                // a worker left holding nothing we need goes (ADR-0112 §6).
+                let unworkable = self.assign_connected(&mut out);
                 if self.scheduler.is_complete() {
                     out.push(Decision::Finalize);
                     self.settle_seed_dials(&mut out);
                 }
-                for peer in unneeded {
-                    self.retire_no_needed_parts(now, peer, &mut out);
+                for (peer, reason) in unworkable {
+                    self.retire_unworkable(now, peer, reason, &mut out);
                 }
             }
             Err(_) => {
@@ -394,6 +420,9 @@ impl DownloadState {
                     part_count: self.resolved.hashes.len(),
                     authority: self.resolved.authority,
                 }));
+                // The set is held: the one hash-set ask ends, and a slot ask
+                // waiting on it goes out (ADR-0026).
+                self.hash_set_held(out);
             }
             // A link hash set that disagrees with the peer's is unrecoverable.
             Err(failure) => out.push(Decision::Fail(failure)),
@@ -401,7 +430,7 @@ impl DownloadState {
     }
     /// The store dropped `parts`, verified before the part hash set arrived
     /// and disproved by it (ADR-0113): they are fetched again, handed to the
-    /// idle workers first.
+    /// next grants.
     pub(crate) fn refetch(&mut self, now: Instant, parts: &[u32]) -> Vec<Decision> {
         let mut out = Vec::new();
         let plans = parts

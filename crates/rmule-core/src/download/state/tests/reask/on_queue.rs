@@ -7,7 +7,8 @@ use super::*;
 
 /// `OP_OUTOFPARTREQS` on a granted slot puts the source back on its
 /// uploader's queue (ADR-0057): the worker stays, its part goes back for
-/// retry and is handed out again, and the rank that follows is its standing.
+/// retry, it waits for its next grant holding none (ADR-0026), and the rank
+/// that follows is its standing.
 /// Hung up, it reasks on the ordinary cadence — a UDP ping before
 /// `FILEREASKTIME`, never the no-needed-parts doubling: it holds parts we lack.
 #[test]
@@ -33,12 +34,12 @@ fn a_source_put_back_on_queue_stays_queued_at_its_new_rank() {
         "{requeued:?}"
     );
     assert!(
-        requeued.iter().any(|d| matches!(
-            d,
-            Decision::Send { peer: p, command: PeerWorkerCommand::RequestPart { .. } }
-                if *p == peer(1)
-        )),
-        "the part is handed out again, to wait for the next grant: {requeued:?}"
+        !requeued.iter().any(|d| matches!(d, Decision::Send { .. })),
+        "a queued worker is handed its part at its grant: {requeued:?}"
+    );
+    assert_eq!(
+        phases(&requeued),
+        vec![WorkerPhase::WaitingForSlot { rank: None }]
     );
     assert!(
         !requeued.iter().any(|d| matches!(

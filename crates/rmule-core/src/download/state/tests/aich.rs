@@ -3,8 +3,6 @@
 //! distinct IPs agree, and the provisional hash-set authority a set that is
 //! not the file's own is refused against.
 
-use rmule_primitives::{ED2K_PART_SIZE, FileHashSummary};
-
 use super::*;
 
 #[test]
@@ -214,27 +212,6 @@ fn an_aich_attributed_corrupt_block_distrusts_only_its_sender() {
         })
         .collect();
     assert_eq!(distrusted, vec![CORRUPTER], "{repaired:?}");
-}
-
-/// A two-part file's true ED2K identity, hashed from its bytes: its file hash
-/// and the part hash set a truthful peer sends.
-fn two_part_file() -> FileHashSummary {
-    FileHashSummary::digest_bytes(&[0x5A; (ED2K_PART_SIZE + 1_000) as usize])
-}
-
-/// A started two-peer download of `file`, with no link hash set.
-fn two_part_state(file: &FileHashSummary) -> DownloadState {
-    let mut state = pooled_state(
-        ContentFacts {
-            file_hash: file.file_hash(),
-            ..file_hash_only_content(file.file_size())
-        },
-        &[peer(1), peer(2)],
-        QUIET_POSTURE,
-        2,
-    );
-    let _ = state.start(t0());
-    state
 }
 
 #[test]

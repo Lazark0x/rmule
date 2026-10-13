@@ -78,6 +78,9 @@ impl PeerTransferService for Gated {
                                 serve(&event_tx, &this.bytes, plan.part_index).await;
                             }
                         }
+                        Some(PeerWorkerCommand::AskSlot) => {
+                            let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                        }
                         Some(PeerWorkerCommand::Shutdown { .. }) | None => break,
                         Some(_) => {}
                     },

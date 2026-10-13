@@ -1,12 +1,14 @@
 //! A source asked again over TCP comes back through a fresh worker, its
 //! record still holding the parts its earlier connection advertised: the new
-//! worker is handed a part only once its own probe answers (ADR-0112 §3).
+//! worker asks its slot only once its own probe answers (ADR-0112 §3), and is
+//! handed its part at the grant (ADR-0026).
 
 use super::*;
 
 /// A queued source re-dialled by its full ask completes its handshake while a
 /// part is in flight elsewhere; that part's release passes it over though
-/// its record's earlier parts hold it, and its own answer assigns it.
+/// its record's earlier parts hold it, its own answer asks its slot, and the
+/// grant hands it the part.
 #[test]
 fn a_redialled_source_is_handed_nothing_before_its_own_probe_answers() {
     let mut state = started(
@@ -39,8 +41,16 @@ fn a_redialled_source_is_handed_nothing_before_its_own_probe_answers() {
     assert!(
         answered.iter().any(|d| matches!(
             d,
-            Decision::Emit(DownloadEvent::PartAssigned { part_index: 0, peer: p, .. }) if *p == peer(1)
+            Decision::Send { peer: p, command: PeerWorkerCommand::AskSlot } if *p == peer(1)
         )),
         "{answered:?}"
+    );
+    let granted = state.on_worker_event(asked, peer(1), PeerWorkerEvent::SlotGranted);
+    assert!(
+        granted.iter().any(|d| matches!(
+            d,
+            Decision::Emit(DownloadEvent::PartAssigned { part_index: 0, peer: p, .. }) if *p == peer(1)
+        )),
+        "{granted:?}"
     );
 }

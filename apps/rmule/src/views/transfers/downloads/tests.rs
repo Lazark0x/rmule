@@ -203,7 +203,11 @@ fn the_sources_cell_counts_what_the_run_knows_and_who_is_sending() {
         0,
         vec![
             worker(0, receiving, Some(peer_endpoint(1))),
-            worker(1, WorkerPhase::WaitingForSlot, Some(peer_endpoint(2))),
+            worker(
+                1,
+                WorkerPhase::WaitingForSlot { rank: None },
+                Some(peer_endpoint(2)),
+            ),
         ],
     );
     running.known_sources = 12;

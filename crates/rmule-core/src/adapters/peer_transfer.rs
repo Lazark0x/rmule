@@ -61,6 +61,14 @@ pub struct PeerDownloadOutcome {
 /// channel; the worker answers with [`PeerWorkerEvent`]s.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PeerWorkerCommand {
+    /// Ask the uploader for a slot (`OP_STARTUPLOADREQ`) with no part chosen
+    /// (ADR-0026, "The slot ask"): the worker then waits on the link, reporting
+    /// the ask leaving, each rank and the grant; its part comes at the grant.
+    AskSlot,
+    /// Ask the uploader for the file's part hash set (`OP_HASHSETREQUEST`): the
+    /// download's one hash-set ask, whose answer arrives as
+    /// [`PeerWorkerEvent::HashSetReceived`] (ADR-0026).
+    RequestHashSet,
     /// Stream the bytes of `plan`'s part starting at `resume_offset` (the
     /// absolute file offset of the shared prefix end), block by block, to
     /// the end of the part. `resume_offset` equals `plan.offset` for a fresh
@@ -106,10 +114,10 @@ pub enum PeerWorkerCommand {
 /// every worker's events into the one scheduling brain.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PeerWorkerEvent {
-    /// The handshake finished and the peer is usable. Core assigns nothing
-    /// yet: the worker's first part waits for [`Self::PartsAdvertised`]
-    /// (ADR-0112), so neither a failed handshake nor a part the peer lacks
-    /// strands one.
+    /// The handshake finished and the peer is usable. Core asks nothing
+    /// yet: the worker's slot ask waits for [`Self::PartsAdvertised`] and its
+    /// first part for [`Self::SlotGranted`] (ADR-0112, ADR-0026), so neither a
+    /// failed handshake nor a part the peer lacks strands one.
     Connected,
     /// The peer's identity, as its session keeps it: sent once its hello is
     /// read — immediately before `Connected` — and again whole each time the
@@ -152,7 +160,8 @@ pub enum PeerWorkerEvent {
         /// Our position in the peer's upload queue.
         rank: u16,
     },
-    /// The peer granted the upload slot (`OP_ACCEPTUPLOADREQ`).
+    /// The peer granted the upload slot (`OP_ACCEPTUPLOADREQ`): the download
+    /// hands the worker its part, or gives the slot back (ADR-0056).
     SlotGranted,
     /// The worker waited the configured slot budget without a grant and
     /// gave up. Terminal for this worker's current part.
@@ -179,7 +188,8 @@ pub enum PeerWorkerEvent {
     /// (ADR-0112): the parts it holds, which its Source Book record keeps and
     /// the brain assigns from, and whether its copy is complete — aMule's
     /// `m_bCompleteSource`, which the download's **Source Ask Clock** keeps
-    /// for the run (ADR-0108). The worker's first part is assigned here.
+    /// for the run (ADR-0108). The worker's slot — or the hash set — is asked
+    /// here.
     PartsAdvertised {
         /// Its **Advertised Parts** over the file's real parts; `None` when it
         /// answered `OP_FILEREQANSNOFIL`, lacking the file.
@@ -223,8 +233,7 @@ pub enum PeerWorkerEvent {
     },
     /// The peer ended our granted slot and put us back on its queue
     /// (`OP_OUTOFPARTREQS`, ADR-0057). Not terminal: the worker stays on its
-    /// link, queued, and waits for the next grant with whatever part it is
-    /// handed next.
+    /// link, queued, and the next grant hands it its part.
     Requeued,
     /// The connection ended, for any reason. Terminal — no further event
     /// follows, and core retires the worker.

@@ -153,11 +153,12 @@ impl DownloadState {
         }
     }
     /// Retire `peer` after a failure (disconnect, slot rejection/timeout, or a
-    /// verification failure it contributed to). Returns its in-flight part to
-    /// the pool when it was the sole holder (ADR-0026), frees its diagnostics
-    /// slot, hands the released part to a still-connected idle worker, and
-    /// backfills a replacement from the candidate pool (ADR-0030). When the
-    /// pool is exhausted and no worker remains, the download fails.
+    /// verification failure it contributed to), or a slot it cannot work.
+    /// Returns its in-flight part to the pool when it was the sole holder
+    /// (ADR-0026), frees its diagnostics slot, hands the released part to a
+    /// granted worker with none, passes a hash-set ask it held, and backfills
+    /// a replacement from the candidate pool (ADR-0030). When the pool is
+    /// exhausted and no worker remains, the download fails.
     pub(super) fn release(
         &mut self,
         now: Instant,
@@ -173,16 +174,20 @@ impl DownloadState {
                 reason: PartReleaseReason::PeerRetired(reason),
             }));
         }
+        let granted = self.slot_asks.granted(peer);
         if let Some(slot) = self.worker_slots.remove(&peer) {
             // A worker that hangs up or times out its slot wait keeps its
             // standing (ADR-0057). A source whose Advertised Parts hold
             // nothing we lack keeps that mark on its standing, or earns one
             // at rank 0, and reasks at twice the period, over TCP (aMule
-            // `DS_NONEEDEDPARTS`, ADR-0112). Any other end is the standing's
-            // (ADR-0090, "How a worker ends, and what its record keeps").
+            // `DS_NONEEDEDPARTS`, ADR-0112). One that gave back a granted
+            // slot with no part free earns a standing on the ordinary cadence.
+            // Any other end is the standing's (ADR-0090, "How a worker ends,
+            // and what its record keeps").
             match reason {
                 PeerRetirementReason::PeerDisconnected | PeerRetirementReason::SlotTimeout => {}
                 PeerRetirementReason::NoNeededParts => self.sources.no_needed_parts(peer, now),
+                PeerRetirementReason::NoFreePart => self.sources.on_queue(peer, now),
                 _ => self.sources.end_standing(peer),
             }
             // A worker that gave way in a merge left the book already: its
@@ -219,10 +224,14 @@ impl DownloadState {
             }
             // Every retirement ends its worker — a bad-data one included,
             // whose socket would otherwise idle until the peer dropped it. A
-            // source with nothing we need gives back a slot it granted.
+            // worker that cannot work a granted slot gives it back (ADR-0056).
+            let unworkable = matches!(
+                reason,
+                PeerRetirementReason::NoNeededParts | PeerRetirementReason::NoFreePart
+            );
             out.push(Decision::EndWorker {
                 peer,
-                cancel: reason == PeerRetirementReason::NoNeededParts,
+                cancel: granted && unworkable,
             });
             out.push(Decision::Phase {
                 slot,
@@ -235,8 +244,9 @@ impl DownloadState {
             self.free_slots.insert(slot.as_usize());
         }
         self.retired_peers = self.retired_peers.saturating_add(1);
-        // The released part goes to a still-connected idle worker whose own
-        // probe answered; any other is assigned on that answer (ADR-0112).
+        self.forget_slot_ask(now, peer, out);
+        // The released part goes to a granted worker with none; a queued one
+        // is handed its part at its grant (ADR-0026).
         self.reassign_workers(now, out);
     }
 
@@ -244,12 +254,12 @@ impl DownloadState {
     /// (`OP_OUTOFPARTREQS`, ADR-0057): the worker stays, waiting for a slot;
     /// the part it held goes back for retry (ADR-0026) and its record earns
     /// a standing without a rank, which the `OP_QUEUERANKING` that follows
-    /// ranks. Every connected worker is then handed its next part — this one
-    /// included, which then waits for the next grant with it.
+    /// ranks. Its next grant hands it its next part; a granted worker with
+    /// none takes the released one now.
     pub(super) fn requeued(&mut self, now: Instant, peer: PeerEndpoint, out: &mut Vec<Decision>) {
-        let Some(slot) = self.worker_slots.get(&peer).copied() else {
+        if !self.worker_slots.contains_key(&peer) {
             return;
-        };
+        }
         if let Some(plan) = self.scheduler.release_for_retry(peer) {
             out.push(Decision::Emit(DownloadEvent::PartReleased {
                 download_id: self.download_id,
@@ -259,56 +269,41 @@ impl DownloadState {
             }));
         }
         self.sources.on_queue(peer, now);
+        self.queued_again(peer, out);
         self.reassign_workers(now, out);
-        if self.scheduler.is_working(peer) {
-            out.push(Decision::Phase {
-                slot,
-                phase: WorkerPhase::WaitingForSlot,
-            });
-        }
     }
 
-    /// Hand every connected worker its next part and backfill the free
-    /// slots; with the pool empty and nothing active or connecting the
+    /// Hand every granted worker with no part its next one and backfill the
+    /// free slots; with the pool empty and nothing active or connecting the
     /// download fails (ADR-0026's terminal condition, ADR-0030). A worker
-    /// left holding nothing we need is retired last, once all that has
-    /// settled (ADR-0112 §6).
+    /// left unable to work its slot is retired last, once all that has
+    /// settled (ADR-0112 §6, ADR-0056).
     pub(super) fn reassign_workers(&mut self, now: Instant, out: &mut Vec<Decision>) {
-        let unneeded = self.assign_connected(out);
+        let unworkable = self.assign_connected(out);
         self.fill(now, out);
         if self.out_of_sources() {
             out.push(Decision::Fail(DownloadFailure::NoUsableSources));
         }
-        for peer in unneeded {
-            self.retire_no_needed_parts(now, peer, out);
+        for (peer, reason) in unworkable {
+            self.retire_unworkable(now, peer, reason, out);
         }
     }
 
     /// [`Self::assign_or_lacking`] for every connected worker, in slot
-    /// order. The ones holding nothing we need are returned, for the caller
-    /// to retire once its own decisions have settled.
-    pub(super) fn assign_connected(&mut self, out: &mut Vec<Decision>) -> Vec<PeerEndpoint> {
+    /// order. The ones that cannot work a slot are returned with why, for
+    /// the caller to retire once its own decisions have settled.
+    pub(super) fn assign_connected(
+        &mut self,
+        out: &mut Vec<Decision>,
+    ) -> Vec<(PeerEndpoint, PeerRetirementReason)> {
         self.connected_workers()
             .into_iter()
-            .filter(|&peer| self.assign_or_lacking(peer, out) == Handed::NothingNeeded)
+            .filter_map(|peer| {
+                self.assign_or_lacking(peer, out)
+                    .unworkable()
+                    .map(|r| (peer, r))
+            })
             .collect()
-    }
-
-    /// Retire `peer`, whose Advertised Parts hold no part we lack, as
-    /// `NoNeededParts` (ADR-0112 §6): its record waits in the RemoteQueued
-    /// stage with the mark, unspent, and its slot is backfilled.
-    pub(super) fn retire_no_needed_parts(
-        &mut self,
-        now: Instant,
-        peer: PeerEndpoint,
-        out: &mut Vec<Decision>,
-    ) {
-        out.push(Decision::Emit(DownloadEvent::PeerRetired {
-            download_id: self.download_id,
-            peer,
-            reason: PeerRetirementReason::NoNeededParts,
-        }));
-        self.release(now, peer, PeerRetirementReason::NoNeededParts, out);
     }
 
     /// The workers that completed their handshake, in slot order so the
@@ -331,22 +326,22 @@ impl DownloadState {
             self.seeds.dialable(other);
         }
     }
-    /// Assign `peer` its next part — a fresh pending part its Advertised
-    /// Parts hold, else a raced in-flight one, by rank (ADR-0026, ADR-0112) —
-    /// resuming from the part's shared prefix (ADR-0029), or an `Idle` phase
-    /// when every part it holds that we lack is in flight. A worker whose own
-    /// probe has not answered is handed nothing, whatever its record kept from
-    /// an earlier connection: that answer assigns it. One whose parts hold
-    /// nothing we lack is retired `NoNeededParts`.
+    /// Assign granted `peer` its next part — a fresh pending part its
+    /// Advertised Parts hold, else a raced in-flight one, by rank (ADR-0026,
+    /// ADR-0112) — resuming from the part's shared prefix (ADR-0029). A worker
+    /// whose own probe has not answered is handed nothing, whatever its record
+    /// kept from an earlier connection, and a queued one waits for its grant.
+    /// One whose parts hold nothing we lack is retired `NoNeededParts`; a
+    /// granted one with nothing free gives the slot back, `NoFreePart`.
     pub(super) fn assign(&mut self, now: Instant, peer: PeerEndpoint, out: &mut Vec<Decision>) {
-        if self.assign_or_lacking(peer, out) == Handed::NothingNeeded {
-            self.retire_no_needed_parts(now, peer, out);
+        if let Some(reason) = self.assign_or_lacking(peer, out).unworkable() {
+            self.retire_unworkable(now, peer, reason, out);
         }
     }
 
-    /// [`Self::assign`] short of the retirement: the assignment decisions, an
-    /// `Idle` phase, or nothing, and what they came to — the caller retires
-    /// a worker holding nothing we need.
+    /// [`Self::assign`] short of the retirement: the assignment decisions or
+    /// nothing, and what they came to — the caller retires a worker that
+    /// cannot work its slot.
     fn assign_or_lacking(&mut self, peer: PeerEndpoint, out: &mut Vec<Decision>) -> Handed {
         let Some(slot) = self.worker_slots.get(&peer).copied() else {
             return Handed::Unanswered;
@@ -354,6 +349,15 @@ impl DownloadState {
         let Some(parts) = self.sources.worker_parts(peer) else {
             return Handed::Unanswered;
         };
+        if self.scheduler.is_complete() {
+            return Handed::Complete;
+        }
+        if !self.scheduler.lacks_any_of(parts) {
+            return Handed::NothingNeeded;
+        }
+        if !self.slot_asks.granted(peer) {
+            return Handed::Queued;
+        }
         let plan = match self.scheduler.assign_next(
             peer,
             parts,
@@ -362,16 +366,7 @@ impl DownloadState {
         ) {
             Assignment::Fresh(plan) | Assignment::Raced(plan) => plan,
             Assignment::Busy => return Handed::Assigned,
-            Assignment::Nothing { lacked: false } if !self.scheduler.is_complete() => {
-                return Handed::NothingNeeded;
-            }
-            Assignment::Nothing { .. } => {
-                out.push(Decision::Phase {
-                    slot,
-                    phase: WorkerPhase::Idle,
-                });
-                return Handed::Idle;
-            }
+            Assignment::Nothing { .. } => return Handed::NothingFree,
         };
         let resume_offset = plan.offset
             + self
@@ -405,12 +400,27 @@ impl DownloadState {
 enum Handed {
     /// It holds a part: one handed now, or the one it already works.
     Assigned,
-    /// Every part it holds that we lack is in flight elsewhere: it idles, the
-    /// backup a release hands a part to (ADR-0112 §6).
-    Idle,
-    /// It is no worker whose own probe answered: that answer assigns it
+    /// The file is complete: nothing is handed to anyone.
+    Complete,
+    /// It is queued: its grant hands it its part (ADR-0026).
+    Queued,
+    /// It is no worker whose own probe answered: that answer asks its slot
     /// (ADR-0112 §3).
     Unanswered,
     /// Its Advertised Parts hold no part the file lacks.
     NothingNeeded,
+    /// It is granted, and every part it holds that we lack is in flight
+    /// elsewhere, or it may not race one (ADR-0026).
+    NothingFree,
+}
+
+impl Handed {
+    /// Why a worker this came to cannot work a slot, if it cannot.
+    const fn unworkable(self) -> Option<PeerRetirementReason> {
+        match self {
+            Self::NothingNeeded => Some(PeerRetirementReason::NoNeededParts),
+            Self::NothingFree => Some(PeerRetirementReason::NoFreePart),
+            Self::Assigned | Self::Complete | Self::Queued | Self::Unanswered => None,
+        }
+    }
 }

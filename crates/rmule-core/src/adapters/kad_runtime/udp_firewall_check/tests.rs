@@ -354,9 +354,10 @@ impl PeerTransferService for DisconnectingPeerTransfer {
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
             let _ = event_tx.send(advertised).await;
+            let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
             disconnect.notified().await;
             let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-            // Drain whatever the runner sent meanwhile (a `RequestPart`) so
+            // Drain whatever the runner sent meanwhile (a slot ask, a part) so
             // its sender never blocks on a full channel.
             while command_rx.recv().await.is_some() {}
         });

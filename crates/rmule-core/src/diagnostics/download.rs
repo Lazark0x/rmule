@@ -33,24 +33,31 @@ impl WorkerSlot {
 
 /// Currently observed orchestration state of one worker slot.
 ///
-/// Mixes connection-level facts (`Connecting`, `HandshakingPeer`) with
+/// Mixes connection-level facts (`Connecting`, `AskingFile`) with
 /// orchestration facts (`WaitingForSlot`, `VerifyingPart`, `Retired`)
-/// because hang investigation needs both in one place (ADR-0028).
+/// because hang investigation needs both in one place (ADR-0028). Every
+/// phase has a writer at the transition it names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkerPhase {
     /// The slot exists but holds no peer — its state between construction and
     /// its first dial, and after a retirement until the pool backfills it.
     Idle,
-    /// Dialing the peer; nothing has been exchanged yet.
+    /// Dialing the peer and reading its hello.
     Connecting,
-    /// The TCP connection is up and the eD2k hello exchange is running.
-    HandshakingPeer,
-    /// The upload request is in and the peer is queueing us. The longest phase
-    /// by far on a busy source, and the one `slot_wait_timeout` bounds.
-    WaitingForSlot,
-    /// Waiting on `OP_HASHSETANSWER` before any part can be verified.
+    /// The hello is done and the file asked; the worker waits for the probe's
+    /// answer, which asks its slot or the hash set, or retires it (ADR-0112).
+    AskingFile,
+    /// Asked for the part hash set; its slot ask waits on the answer or the
+    /// **Hash-Set Deadline** (ADR-0026).
     RequestingHashSet,
-    /// A part was asked for and the first block has not arrived.
+    /// The slot ask is out and the peer is queueing us. The longest phase by
+    /// far on a busy source, and the one `slot_wait_timeout` bounds.
+    WaitingForSlot {
+        /// Our place in the peer's upload queue, once an `OP_QUEUERANKING`
+        /// gives one; refreshed by each.
+        rank: Option<u16>,
+    },
+    /// A part was handed at a grant and its first block has not arrived.
     RequestingPart {
         /// The zero-based part index asked for.
         part_index: u32,
@@ -69,8 +76,6 @@ pub enum WorkerPhase {
         /// The zero-based part index being checked.
         part_index: u32,
     },
-    /// The worker is giving its part back to the pool before it leaves.
-    Releasing,
     /// The worker left the fleet; the row stays so the reason is visible after
     /// the fact.
     Retired {
