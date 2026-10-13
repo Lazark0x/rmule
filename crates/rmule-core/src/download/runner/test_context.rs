@@ -118,6 +118,7 @@ pub(in crate::download) fn runner_context<S, P>(
         part_file: Mutex::new(None),
         later_links: Mutex::new(mpsc::unbounded_channel().1),
         repair: std::sync::atomic::AtomicBool::new(false),
+        hole_probed: std::sync::atomic::AtomicBool::new(false),
         seeds_tx: watch::channel(Vec::new()).0,
         served: None,
         run: 0,

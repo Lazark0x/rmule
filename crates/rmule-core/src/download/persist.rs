@@ -13,6 +13,8 @@
 //! The completion move's check repairs the same way when the whole file does
 //! not hash.
 
+use std::sync::atomic::Ordering;
+
 use ed2k::digest::Digest;
 use rmule_primitives::{Ed2kFileLink, PartHash};
 use tokio::sync::mpsc;
@@ -42,10 +44,11 @@ pub(super) enum PersistError {
 /// Open the run's part file and hold it (ADR-0094): created for a download
 /// with nothing recorded, opened as it is otherwise. A repaired run keeps the
 /// handle it already holds. A newly held file publishes the run-start
-/// Allocated Bytes reading, then the run's Hole Probe runs beside the
-/// `.part` and publishes its verdict (ADR-0111); no verdict refuses the run.
-/// A `HoleLess` one is also told as [`DownloadEvent::HoleLessDestination`],
-/// so once per run.
+/// Allocated Bytes reading, then — the first time the run holds it — the
+/// run's Hole Probe runs beside the `.part` and publishes its verdict
+/// (ADR-0111); no verdict refuses the run. A `HoleLess` one is also told as
+/// [`DownloadEvent::HoleLessDestination`], so once per run: a run whose
+/// finished file did not hash holds the file again and probes nothing.
 pub(super) async fn hold_part_file<S, P>(
     runner: &RunnerContext<S, P>,
     download_id: DownloadId,
@@ -71,6 +74,9 @@ pub(super) async fn hold_part_file<S, P>(
             *held = Some(file);
             let diagnostics = &runner.rt.diagnostics;
             diagnostics.part_file_read(download_id, allocated);
+            if runner.hole_probed.swap(true, Ordering::SeqCst) {
+                return Ok(());
+            }
             let verdict = probe_holes(part_path).await;
             diagnostics.hole_probed(download_id, verdict);
             // A probe that answered named a file, so its path has a parent.

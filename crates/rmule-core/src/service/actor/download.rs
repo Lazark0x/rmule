@@ -704,6 +704,7 @@ where
                 part_file: Mutex::new(None),
                 later_links: Mutex::new(later_inbox),
                 repair: std::sync::atomic::AtomicBool::new(false),
+                hole_probed: std::sync::atomic::AtomicBool::new(false),
                 seeds_tx,
                 served,
                 run,

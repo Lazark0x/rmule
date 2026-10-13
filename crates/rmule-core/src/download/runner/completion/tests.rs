@@ -389,6 +389,44 @@ async fn a_copy_whose_part_file_changed_under_it_lands_nothing_and_repairs() {
     );
 }
 
+/// A run whose finished file did not hash holds its part file again to
+/// fetch what it lost, and its Hole Probe stays the one it ran: the probe
+/// and its notice come once per run (ADR-0111).
+#[tokio::test]
+async fn a_run_that_repairs_a_finished_file_holds_its_part_file_again_without_a_second_probe() {
+    use std::io::{Seek, SeekFrom, Write};
+
+    use crate::download::persist::hold_part_file;
+
+    let leg = finished(ED2K_PART_SIZE + 5_000, Arc::new(OsCompletionFs));
+    hold_part_file(&leg.runner, leg.id).await.unwrap();
+    let verdict =
+        |leg: &Finished| leg.runner.rt.diagnostics.snapshot().downloads[&leg.id].hole_verdict;
+    let probed = verdict(&leg);
+    assert!(probed.is_some(), "the run's probe ran");
+    // A probe run again here would answer that its file cannot be made.
+    std::fs::create_dir(
+        leg.paths
+            .part_path()
+            .with_file_name(".film.mkv.part.holeprobe"),
+    )
+    .unwrap();
+    let mut part = std::fs::OpenOptions::new()
+        .write(true)
+        .open(leg.paths.part_path())
+        .unwrap();
+    part.seek(SeekFrom::Start(10)).unwrap();
+    part.write_all(&[!leg.bytes[10]]).unwrap();
+    drop(part);
+
+    let result = complete(&leg.runner, leg.id, &leg.file, Vec::new()).await;
+    assert_eq!(result, Err(DownloadFailure::PartVerificationFailed));
+    assert!(leg.runner.take_repair(), "the run starts over in place");
+    hold_part_file(&leg.runner, leg.id).await.unwrap();
+    assert!(leg.runner.part_file.lock().await.is_some(), "held again");
+    assert_eq!(verdict(&leg), probed, "the probe is not run again");
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_file_a_program_holds_waits_for_its_release_and_then_completes() {
     let fs = HeldFor {

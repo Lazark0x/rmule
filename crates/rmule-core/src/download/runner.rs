@@ -176,6 +176,11 @@ pub(crate) struct RunnerContext<S, P> {
     /// a finished file that did not hash — so its end starts it over in place
     /// instead of failing the download.
     pub(crate) repair: std::sync::atomic::AtomicBool,
+    /// Set once the run's **Hole Probe** has run (ADR-0111): a run that
+    /// holds its part file again after a repair probes nothing and tells
+    /// nothing again, so the probe and its `HoleLess` notice come once per
+    /// run.
+    pub(crate) hole_probed: std::sync::atomic::AtomicBool,
     /// Where the run publishes its **Source Seeds** ranking each reask sweep
     /// (ADR-0109), for the core actor to write.
     pub(crate) seeds_tx: watch::Sender<Vec<crate::download::source_seeds::SourceSeed>>,
