@@ -15,9 +15,9 @@ re-run it after editing a table and paste its output here.
 | server-udp | 12 | 12 | 0 | 0 | 0 | 9 | 3 | 0 | 9 |
 | peer-tcp | 46 | 44 | 1 | 0 | 1 | 24 | 21 | 1 | 23 |
 | peer-udp | 8 | 7 | 1 | 0 | 0 | 7 | 1 | 0 | 7 |
-| kad-udp | 36 | 25 | 5 | 0 | 6 | 24 | 6 | 6 | 21 |
+| kad-udp | 39 | 28 | 3 | 0 | 8 | 24 | 7 | 8 | 23 |
 | bootstrap | 19 | 12 | 2 | 0 | 5 | 7 | 9 | 3 | 5 |
-| **Total** | **143** | **121** | **10** | **0** | **12** | **86** | **47** | **10** | **79** |
+| **Total** | **146** | **124** | **8** | **0** | **14** | **86** | **48** | **12** | **81** |
 
 The script counts every table row that has both a `Status` and an `Evidence`
 column. The detail tables in `peer-tcp.md` (*Client identification*, *Hello read
