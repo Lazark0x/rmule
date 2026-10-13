@@ -57,7 +57,9 @@ pub fn completing_status(progress: Option<CompletionProgress>) -> String {
             format!("Completing: {} copied", human_size(copied))
         }
         Some((
-            CompletionStep::Moving | CompletionStep::QueuedForCopy | CompletionStep::WaitingForStore,
+            CompletionStep::Moving
+            | CompletionStep::QueuedForCopy
+            | CompletionStep::WaitingForStore,
             _,
         ))
         | None => "Completing".to_string(),
