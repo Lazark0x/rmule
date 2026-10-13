@@ -17,7 +17,7 @@ use rmule_peer::{
 };
 use rmule_primitives::{
     AichRootHash, ClientId, Ed2kText, FileHash, Ipv4Endpoint, Ipv6Endpoint, Packet, PacketProtocol,
-    PartHash, PeerEndpoint, PeerSource, SourceSighting, UserHash,
+    PartHash, PeerEndpoint, PeerSource, SourceClaim, UserHash,
 };
 use rmule_testkit::wire::cut_payload;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -368,7 +368,7 @@ fn buddy_relay_secure_ident_and_human_layer_packets_cut_anywhere_are_errors() {
 #[test]
 fn source_exchange_hello_and_emule_info_packets_cut_anywhere_are_errors() {
     let entry = SourceExchangeEntry::new(
-        SourceSighting::new(
+        SourceClaim::new(
             PeerSource::new(ClientId::from_u32(0x0A0B_0C0D), 4662),
             None,
             None,

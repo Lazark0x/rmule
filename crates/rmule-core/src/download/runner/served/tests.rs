@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 
 use rmule_peer::{PartBitmap, PartIndex, PeerHandshakeContext};
 use rmule_primitives::{
-    ED2K_PART_SIZE, Ed2kFileLink, Ipv4Endpoint, PartHash, PeerEndpoint, PeerSource, SourceSighting,
+    ED2K_PART_SIZE, Ed2kFileLink, Informant, Ipv4Endpoint, PartHash, PeerEndpoint, PeerSource,
+    SourceSighting,
 };
 
 use super::super::enact::{LoopCtx, enact_drain};
@@ -151,7 +152,10 @@ fn working(link: &Ed2kFileLink, record: &DurableDownloadRecord) -> (DownloadStat
     let _ = state.on_sightings(
         now,
         Channel::Link,
-        vec![SourceSighting::plain(PeerSource::HighId(SOURCE))],
+        vec![SourceSighting::plain(
+            PeerSource::HighId(SOURCE),
+            Informant::Own,
+        )],
         &gate,
     );
     let mut decisions =

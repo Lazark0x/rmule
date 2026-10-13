@@ -439,6 +439,7 @@ fn a_file_not_found_reply_spends_the_source_for_the_re_ask_period() {
         )),
         Some(SOURCE),
         None,
+        rmule_primitives::Informant::Own,
     );
     assert_eq!(
         take(&mut state, Channel::Server, [elsewhere]).tally.fresh,

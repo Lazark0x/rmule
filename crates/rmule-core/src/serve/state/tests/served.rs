@@ -100,9 +100,7 @@ fn kept(file_hash: FileHash, link: PeerEndpoint, user_hash: UserHash) -> ServeDe
     let identity = hello_facts(user_hash, 0, 0, 2).identity();
     ServeDecision::KeepAsker {
         file_hash,
-        sighting: identity
-            .source_coordinate(link)
-            .with_informant(rmule_primitives::Informant::Party(link.ip())),
+        sighting: identity.source_coordinate(link),
     }
 }
 

@@ -14,8 +14,8 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, PeerEndpoint, PeerSource, ServerEndpoint, SourceLookupTarget,
-    SourceSighting,
+    ClientId, Ed2kFileLink, Informant, PeerEndpoint, PeerSource, ServerEndpoint,
+    SourceLookupTarget, SourceSighting,
 };
 use rmule_testkit::HANG_GUARD;
 use rmule_testkit::file_link_without_part_hash_set;
@@ -175,8 +175,8 @@ async fn a_filtered_server_snapshot_source_never_reaches_the_pool() {
             outcome: SourceLookupOutcome {
                 client_id: ClientId::from_u32(0x0100_007F),
                 sources: vec![
-                    SourceSighting::plain(filtered_source(4662)),
-                    SourceSighting::plain(admitted),
+                    SourceSighting::plain(filtered_source(4662), Informant::Own),
+                    SourceSighting::plain(admitted, Informant::Own),
                 ],
             },
         })

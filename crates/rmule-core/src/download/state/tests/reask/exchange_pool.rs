@@ -33,9 +33,12 @@ fn the_pool_holds_what_we_download_from_or_wait_at_and_leaves_out_a_full_queue()
     assert_eq!(
         exchange.sources,
         [
-            (SourceSighting::new(at(1), Some(SOURCE), None), Some(middle)),
             (
-                SourceSighting::new(at(3), None, None),
+                SourceSighting::new(at(1), Some(SOURCE), None, rmule_primitives::Informant::Own),
+                Some(middle)
+            ),
+            (
+                SourceSighting::new(at(3), None, None, rmule_primitives::Informant::Own),
                 Some(PartBitmap::all_present(3))
             ),
         ]

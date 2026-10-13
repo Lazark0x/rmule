@@ -9,7 +9,7 @@ use std::net::Ipv4Addr;
 use std::time::Duration;
 
 use rmule_primitives::{
-    Ed2kText, Ipv4Endpoint, PeerEndpoint, PeerSource, SourceListTail, UserHash,
+    Ed2kText, Ipv4Endpoint, PeerEndpoint, PeerSource, SourceClaim, SourceListTail, UserHash,
 };
 
 use super::super::tests::{FakeLink, client_id, connected, test_sinks};
@@ -23,6 +23,11 @@ mod server_facts;
 
 fn target(byte: u8) -> SourceLookupTarget {
     SourceLookupTarget::new(FileHash::from_bytes([byte; FileHash::BYTE_LEN]), 1024)
+}
+
+/// What each sighting's row said, whoever stated it.
+fn claims(sightings: &[SourceSighting]) -> Vec<SourceClaim> {
+    sightings.iter().map(|sighting| sighting.claim()).collect()
 }
 
 #[tokio::test]
@@ -54,10 +59,10 @@ async fn concurrent_lookups_are_demuxed_by_file_hash() {
     assert!(requested.contains(&a.file_hash()) && requested.contains(&b.file_hash()));
 
     // Answer out of order: each waiter gets ITS own sources (no stealing).
-    let src_b = vec![SourceSighting::plain(PeerSource::new(client_id(), 7001))];
+    let src_b = vec![SourceClaim::plain(PeerSource::new(client_id(), 7001))];
     let src_a = vec![
-        SourceSighting::plain(PeerSource::new(client_id(), 7002)),
-        SourceSighting::plain(PeerSource::new(client_id(), 7003)),
+        SourceClaim::plain(PeerSource::new(client_id(), 7002)),
+        SourceClaim::plain(PeerSource::new(client_id(), 7003)),
     ];
     evt_tx
         .send(Ed2kEvent::SourcesFound {
@@ -78,8 +83,8 @@ async fn concurrent_lookups_are_demuxed_by_file_hash() {
 
     let outcome_a = lookup_a.await.unwrap().unwrap();
     let outcome_b = lookup_b.await.unwrap().unwrap();
-    assert_eq!(outcome_a.sources, src_a);
-    assert_eq!(outcome_b.sources, src_b);
+    assert_eq!(claims(&outcome_a.sources), src_a);
+    assert_eq!(claims(&outcome_b.sources), src_b);
     assert_eq!(outcome_a.client_id, client_id());
 }
 
@@ -107,7 +112,7 @@ async fn a_server_answer_is_the_word_of_the_address_its_session_reached() {
         cmd_rx.recv().await,
         Some(Ed2kCommand::RequestSources { .. })
     ));
-    let source = SourceSighting::plain(PeerSource::new(
+    let source = SourceClaim::plain(PeerSource::new(
         ClientId::from_u32(u32::from_le_bytes([127, 0, 0, 1])),
         7001,
     ));
@@ -123,7 +128,7 @@ async fn a_server_answer_is_the_word_of_the_address_its_session_reached() {
     let outcome = lookup.await.unwrap().unwrap();
     assert_eq!(
         outcome.sources,
-        [source.with_informant(rmule_primitives::Informant::Party(server_ip))]
+        [source.stated_by(rmule_primitives::Informant::Party(server_ip))]
     );
 }
 
@@ -179,7 +184,7 @@ async fn a_second_lookup_for_the_same_file_joins_the_ask_in_flight() {
     for _ in 0..8 {
         tokio::task::yield_now().await;
     }
-    let answer = vec![SourceSighting::plain(PeerSource::new(client_id(), 7104))];
+    let answer = vec![SourceClaim::plain(PeerSource::new(client_id(), 7104))];
     evt_tx
         .send(Ed2kEvent::SourcesFound {
             file_hash: file.file_hash(),
@@ -189,8 +194,14 @@ async fn a_second_lookup_for_the_same_file_joins_the_ask_in_flight() {
         .await
         .unwrap();
 
-    assert_eq!(lookup_first.await.unwrap().unwrap().sources, answer);
-    assert_eq!(lookup_second.await.unwrap().unwrap().sources, answer);
+    assert_eq!(
+        claims(&lookup_first.await.unwrap().unwrap().sources),
+        answer
+    );
+    assert_eq!(
+        claims(&lookup_second.await.unwrap().unwrap().sources),
+        answer
+    );
     assert!(
         cmd_rx.try_recv().is_err(),
         "the joined lookup put a second ask on the wire"

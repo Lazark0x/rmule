@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kText, FileHash, FileHashSummary, PeerEndpoint, PeerSource, ServerEndpoint,
-    SourceSighting,
+    ClientId, Ed2kText, FileHash, FileHashSummary, Informant, PeerEndpoint, PeerSource,
+    ServerEndpoint, SourceSighting,
 };
 use tokio::sync::Notify;
 use tokio::time::{Duration, timeout};
@@ -37,10 +37,10 @@ impl SourceLookupService for FixedSourceLookup {
     ) -> Result<SourceLookupOutcome, DownloadFailure> {
         Ok(SourceLookupOutcome {
             client_id: ClientId::from_u32(PEER_CLIENT_ID),
-            sources: vec![SourceSighting::plain(PeerSource::new(
-                ClientId::from_u32(PEER_CLIENT_ID),
-                4663,
-            ))],
+            sources: vec![SourceSighting::plain(
+                PeerSource::new(ClientId::from_u32(PEER_CLIENT_ID), 4663),
+                Informant::Own,
+            )],
         })
     }
 }

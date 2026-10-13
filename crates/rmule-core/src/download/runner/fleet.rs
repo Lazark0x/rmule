@@ -417,7 +417,7 @@ where
             Some((source_server, sources)) = global_sources_rx.recv() => {
                 // Server-UDP global sources (ADR-0051): a Low-ID row is held
                 // for a per-server callback to `source_server`.
-                let taken = intake::sight(ctx.runner, &mut ctx.state, Channel::Global(source_server), sources.into_iter().map(SourceSighting::plain));
+                let taken = intake::sight(ctx.runner, &mut ctx.state, Channel::Global(source_server), intake::global_answer(source_server, sources));
                 let mut q: VecDeque<Decision> = taken.decisions.into();
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;

@@ -5,7 +5,7 @@
 //! survival — the aMule-mirrored sanity filter, the Low-ID routing rule and
 //! the cumulative per-file cap — without touching an entry's provenance.
 
-use rmule_primitives::{Ipv4Endpoint, PeerEndpoint, PeerSource, SourceSighting};
+use rmule_primitives::{Informant, Ipv4Endpoint, PeerEndpoint, PeerSource, SourceSighting};
 
 use super::SourceExchangeEntry;
 
@@ -69,13 +69,19 @@ fn keep_entry(
 /// keeps the entry's provenance.
 fn admit(
     entry: SourceExchangeEntry,
+    informant: Informant,
     own_endpoint: Option<PeerEndpoint>,
     connected_server: Option<Ipv4Endpoint>,
 ) -> Option<SourceSighting> {
     if keep_entry(entry, own_endpoint, connected_server) {
         // The row's server rides on: a Low ID is read in the namespace of
         // the server that assigned it (aMule `AddClientSources`).
-        return Some(entry.source().with_server(entry.server()));
+        return Some(
+            entry
+                .source()
+                .with_server(entry.server())
+                .stated_by(informant),
+        );
     }
     let ipv6 = entry.ipv6()?;
     let endpoint = PeerEndpoint::V6(ipv6);
@@ -84,6 +90,7 @@ fn admit(
             PeerSource::Ipv6(ipv6),
             entry.user_hash(),
             entry.crypt_options(),
+            informant,
         )
     })
 }
@@ -95,14 +102,16 @@ fn admit(
 /// this file has already been handed across earlier answers, so the cap is
 /// honored cumulatively rather than reset per packet.
 ///
-/// The surviving [`SourceSighting`]s carry exactly the provenance
-/// ([`SourceSighting::user_hash`] / [`SourceSighting::crypt_options`]) they
+/// Each survivor is `informant`'s word — the peer whose answer it is
+/// (ADR-0085) — and carries exactly the provenance
+/// ([`SourceSighting::user_hash`] / [`SourceSighting::crypt_options`]) it
 /// decoded with — the same ADR-0046 model the server `0x44` path feeds, read
 /// through [`SourceSighting::peer_crypt`] and met with ours by
 /// `PeerCrypt::outbound` (ADR-0049); this function only decides *which*
 /// entries survive, never touches their provenance fields.
 pub(crate) fn sanitize_and_route(
     entries: Vec<SourceExchangeEntry>,
+    informant: Informant,
     own_endpoint: Option<PeerEndpoint>,
     connected_server: Option<Ipv4Endpoint>,
     already_forwarded: usize,
@@ -110,7 +119,7 @@ pub(crate) fn sanitize_and_route(
     let remaining_capacity = PER_FILE_SOURCE_CAP.saturating_sub(already_forwarded);
     entries
         .into_iter()
-        .filter_map(|entry| admit(entry, own_endpoint, connected_server))
+        .filter_map(|entry| admit(entry, informant, own_endpoint, connected_server))
         .take(remaining_capacity)
         .collect()
 }

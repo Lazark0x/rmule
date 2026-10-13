@@ -349,8 +349,7 @@ impl KadPumpState {
                         file_hash: target.file_hash(),
                         answer: candidates
                             .into_iter()
-                            .filter_map(rmule_kad::KadSourceCandidate::sighting)
-                            .map(|sighting| sighting.with_informant(informant))
+                            .filter_map(|candidate| candidate.sighting(informant))
                             .collect(),
                     });
                 }

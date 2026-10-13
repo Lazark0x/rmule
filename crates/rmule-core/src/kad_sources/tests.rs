@@ -8,7 +8,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rmule_primitives::{ClientId, FileHash, PeerSource, SourceLookupTarget, SourceSighting};
+use rmule_primitives::{
+    ClientId, FileHash, Informant, PeerSource, SourceLookupTarget, SourceSighting,
+};
 use tokio::sync::mpsc;
 
 use super::{KadDiscoveryChannel, KadPublisher, KadSourceRegistry};
@@ -91,7 +93,10 @@ fn engine<C: KadSourceChannel>(
 async fn asks_kad_and_routes_found_sources_to_the_matching_download() {
     let file_hash = FileHash::from_bytes([0x21; FileHash::BYTE_LEN]);
     let source = PeerSource::new(ClientId::from_u32(u32::from_le_bytes([10, 0, 0, 9])), 4662);
-    let (channel, _probes) = fake_channel(Some((file_hash, vec![SourceSighting::plain(source)])));
+    let (channel, _probes) = fake_channel(Some((
+        file_hash,
+        vec![SourceSighting::plain(source, Informant::Own)],
+    )));
 
     let downloads: KadSourceRegistry = Arc::new(Mutex::new(HashMap::new()));
     let (sink_tx, mut sink_rx) = mpsc::channel(8);
@@ -111,7 +116,7 @@ async fn asks_kad_and_routes_found_sources_to_the_matching_download() {
         .await
         .expect("a Kad source routed within 2s")
         .expect("sink stayed open");
-    assert_eq!(routed, vec![SourceSighting::plain(source)]);
+    assert_eq!(routed, vec![SourceSighting::plain(source, Informant::Own)]);
 
     task.abort();
 }

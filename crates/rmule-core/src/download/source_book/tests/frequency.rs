@@ -20,11 +20,17 @@ fn part_frequency_counts_the_records_holding_each_part() {
     let mut book = empty_book();
     let _ = sight(&mut book, plain(1));
     let one = work(&mut book);
-    let _ = sight(&mut book, SourceSighting::plain(PeerSource::Ipv6(v6(1))));
+    let _ = sight(
+        &mut book,
+        SourceSighting::plain(PeerSource::Ipv6(v6(1)), rmule_primitives::Informant::Own),
+    );
     let one_v6 = work(&mut book);
     let _ = sight(&mut book, plain(2));
     let two = work(&mut book);
-    let _ = sight(&mut book, SourceSighting::plain(PeerSource::Ipv6(v6(2))));
+    let _ = sight(
+        &mut book,
+        SourceSighting::plain(PeerSource::Ipv6(v6(2)), rmule_primitives::Informant::Own),
+    );
     let two_v6 = work(&mut book);
 
     book.write_parts(one_v6, parts(0b001));

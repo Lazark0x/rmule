@@ -10,7 +10,7 @@
 //! gates (the IP filter, the dial family) judge them the same way.
 
 use rmule_primitives::{
-    Ed2kFileLink, Ipv4Endpoint, LinkPeer, LinkPeerHost, PeerSource, SourceSighting,
+    Ed2kFileLink, Informant, Ipv4Endpoint, LinkPeer, LinkPeerHost, PeerSource, SourceSighting,
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -57,12 +57,13 @@ pub(crate) async fn link_sources(
             PeerSource::HighId(Ipv4Endpoint::new(ip, peer.port)),
             peer.user_hash,
             peer.crypt,
+            Informant::Own,
         ))
     });
     let ipv6 = file
         .ipv6_sources
         .iter()
-        .map(|endpoint| SourceSighting::plain(PeerSource::Ipv6(*endpoint)));
+        .map(|endpoint| SourceSighting::plain(PeerSource::Ipv6(*endpoint), Informant::Own));
     classic.chain(ipv6).collect()
 }
 

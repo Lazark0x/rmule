@@ -20,8 +20,8 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, Ed2kText, FileHashSummary, PeerEndpoint, PeerSource, ServerEndpoint,
-    SourceLookupTarget, SourceSighting,
+    ClientId, Ed2kFileLink, Ed2kText, FileHashSummary, Informant, PeerEndpoint, PeerSource,
+    ServerEndpoint, SourceLookupTarget, SourceSighting,
 };
 use rmule_testkit::{StaticPeerTransfer, file_link_without_part_hash_set, source_with_high_id};
 use tokio::time::timeout;
@@ -259,7 +259,7 @@ async fn completed_download_auto_registers_into_the_shared_file_registry() {
     let source = ScriptedSourceLookup {
         outcome: SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![SourceSighting::plain(high)],
+            sources: vec![SourceSighting::plain(high, Informant::Own)],
         },
     };
     let transfer = ScriptedPeerTransfer {
@@ -347,7 +347,7 @@ async fn auto_share_persists_the_link_authority_part_hash_set() {
     let source = ScriptedSourceLookup {
         outcome: SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![SourceSighting::plain(high)],
+            sources: vec![SourceSighting::plain(high, Informant::Own)],
         },
     };
     let transfer = ScriptedPeerTransfer {
@@ -445,7 +445,7 @@ async fn a_had_file_downloaded_again_leaves_the_had_set_when_it_is_whole() {
     let source = ScriptedSourceLookup {
         outcome: SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![SourceSighting::plain(high)],
+            sources: vec![SourceSighting::plain(high, Informant::Own)],
         },
     };
     let transfer = ScriptedPeerTransfer {

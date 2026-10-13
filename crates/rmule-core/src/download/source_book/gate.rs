@@ -71,8 +71,8 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     use rmule_primitives::{
-        Informant, Ipv4Endpoint, Ipv6Endpoint, PeerSource, SightedBuddy, SourceCryptOptions,
-        SourceRoad, UserHash,
+        Informant, Ipv4Endpoint, Ipv6Endpoint, PeerSource, SightedBuddy, SourceClaim,
+        SourceCryptOptions, SourceRoad, UserHash,
     };
 
     use super::*;
@@ -97,8 +97,8 @@ mod tests {
     /// The shapes the channels hand the gate for a source at `ip`: a server
     /// answer, a source-exchange row with its hash and server, a Kad direct
     /// row with its connect options, and the two Kad callback rows, named by
-    /// the endpoint the storer observed.
-    fn shapes(ip: Ipv4Addr) -> [SourceSighting; 5] {
+    /// the endpoint the storer observed. Each test names who stated them.
+    fn shapes(ip: Ipv4Addr) -> [SourceClaim; 5] {
         let hash = Some(UserHash::from_bytes([0x5A; 16]));
         let observed = Ipv4Endpoint::new(ip, 4672);
         let buddy = SightedBuddy {
@@ -106,15 +106,15 @@ mod tests {
             buddy_udp: None,
         };
         [
-            SourceSighting::plain(PeerSource::HighId(at(ip))),
-            SourceSighting::new(PeerSource::HighId(at(ip)), hash, None)
+            SourceClaim::plain(PeerSource::HighId(at(ip))),
+            SourceClaim::new(PeerSource::HighId(at(ip)), hash, None)
                 .with_server(Some(at(Ipv4Addr::new(45, 55, 200, 1)))),
-            SourceSighting::new(
+            SourceClaim::new(
                 PeerSource::HighId(at(ip)),
                 hash,
                 Some(SourceCryptOptions::from_byte(0x01)),
             ),
-            SourceSighting::by_road(
+            SourceClaim::by_road(
                 SourceRoad::DirectUdpCallback {
                     kad_udp: observed,
                     tcp_port: 4662,
@@ -122,7 +122,7 @@ mod tests {
                 hash,
                 Some(SourceCryptOptions::from_byte(0x08)),
             ),
-            SourceSighting::by_road(
+            SourceClaim::by_road(
                 SourceRoad::Buddy {
                     buddy,
                     kad_udp: observed,
@@ -145,17 +145,17 @@ mod tests {
             Ipv4Addr::BROADCAST,
             Ipv4Addr::new(0, 0, 0, 5),
         ] {
-            for sighting in shapes(reserved) {
+            for claim in shapes(reserved) {
                 assert_eq!(
-                    gate(&filter).judge(sighting.with_informant(remote)),
+                    gate(&filter).judge(claim.stated_by(remote)),
                     Err(Blocked::Reserved),
-                    "{sighting:?}"
+                    "{claim:?}"
                 );
             }
         }
         for host in [Ipv4Addr::new(45, 55, 200, 8), Ipv4Addr::new(10, 0, 0, 8)] {
-            for sighting in shapes(host) {
-                assert!(gate(&filter).admits(sighting.with_informant(remote)));
+            for claim in shapes(host) {
+                assert!(gate(&filter).admits(claim.stated_by(remote)));
             }
         }
     }
@@ -165,14 +165,17 @@ mod tests {
     #[test]
     fn loopback_passes_only_from_an_informant_on_this_host() {
         let filter = IpFilter::default();
-        for sighting in shapes(Ipv4Addr::LOCALHOST) {
-            assert!(gate(&filter).admits(sighting), "rmule's own: {sighting:?}");
+        for claim in shapes(Ipv4Addr::LOCALHOST) {
             assert!(
-                gate(&filter).admits(sighting.with_informant(party([127, 0, 0, 1]))),
-                "a party on this host: {sighting:?}"
+                gate(&filter).admits(claim.stated_by(Informant::Own)),
+                "rmule's own: {claim:?}"
+            );
+            assert!(
+                gate(&filter).admits(claim.stated_by(party([127, 0, 0, 1]))),
+                "a party on this host: {claim:?}"
             );
             assert_eq!(
-                gate(&filter).judge(sighting.with_informant(party([45, 55, 200, 7]))),
+                gate(&filter).judge(claim.stated_by(party([45, 55, 200, 7]))),
                 Err(Blocked::Reserved)
             );
         }
@@ -187,9 +190,7 @@ mod tests {
         let public_v6 = Ipv6Endpoint::new("2a01:4f8::7".parse().unwrap(), 4662);
         let loopback_v6 = Ipv6Endpoint::new(std::net::Ipv6Addr::LOCALHOST, 4662);
         let dual = |v4: Ipv4Addr, v6| {
-            SourceSighting::plain(PeerSource::HighId(at(v4)))
-                .with_ipv6_half(Some(v6))
-                .with_informant(remote)
+            SourceSighting::plain(PeerSource::HighId(at(v4)), remote).with_ipv6_half(Some(v6))
         };
 
         let judged = gate(&filter)
@@ -207,12 +208,11 @@ mod tests {
         );
         assert_eq!(judged.ipv6(), None, "the reserved half is dropped");
 
-        let low_id = SourceSighting::plain(PeerSource::new(
-            rmule_primitives::ClientId::from_u32(42),
-            4662,
-        ))
-        .with_ipv6_half(Some(loopback_v6))
-        .with_informant(remote);
+        let low_id = SourceSighting::plain(
+            PeerSource::new(rmule_primitives::ClientId::from_u32(42), 4662),
+            remote,
+        )
+        .with_ipv6_half(Some(loopback_v6));
         let judged = gate(&filter).judge(low_id).expect("a Low ID's roads stand");
         assert_eq!(judged.ipv6(), None, "its rung-0 half is dropped");
     }
@@ -233,9 +233,8 @@ mod tests {
         let blocked_v4 = Ipv4Addr::new(203, 0, 113, 7);
         let open_v4 = Ipv4Addr::new(45, 55, 200, 8);
         let dual = |v4: Ipv4Addr, v6| {
-            SourceSighting::plain(PeerSource::HighId(at(v4)))
+            SourceSighting::plain(PeerSource::HighId(at(v4)), party([45, 55, 200, 1]))
                 .with_ipv6_half(Some(v6))
-                .with_informant(party([45, 55, 200, 1]))
         };
 
         let judged = gate(&filter).judge(dual(open_v4, blocked_v6)).unwrap();

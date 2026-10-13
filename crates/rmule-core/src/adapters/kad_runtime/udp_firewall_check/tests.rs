@@ -383,14 +383,14 @@ async fn a_download_workers_connect_marks_the_roster_and_disconnect_forgets_it()
         outcome: crate::SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
             sources: vec![
-                rmule_primitives::SourceSighting::plain(rmule_primitives::PeerSource::new(
-                    ClientId::from_u32(42),
-                    4662,
-                )),
-                rmule_primitives::SourceSighting::plain(rmule_primitives::PeerSource::new(
-                    ClientId::from_u32(0x0100_007F),
-                    4663,
-                )),
+                rmule_primitives::SourceSighting::plain(
+                    rmule_primitives::PeerSource::new(ClientId::from_u32(42), 4662),
+                    rmule_primitives::Informant::Own,
+                ),
+                rmule_primitives::SourceSighting::plain(
+                    rmule_primitives::PeerSource::new(ClientId::from_u32(0x0100_007F), 4663),
+                    rmule_primitives::Informant::Own,
+                ),
             ],
         },
     };

@@ -7,7 +7,7 @@
 
 use std::net::Ipv4Addr;
 
-use rmule_primitives::{Ipv4Endpoint, PeerSource, SourceSighting, UserHash};
+use rmule_primitives::{Informant, Ipv4Endpoint, PeerSource, SourceSighting, UserHash};
 
 use crate::DownloadFailure;
 
@@ -45,7 +45,10 @@ fn sight(state: &mut DownloadState) -> Vec<PeerEndpoint> {
     spawned(&via_exchange(
         state,
         peer(1),
-        vec![SourceSighting::plain(PeerSource::HighId(v4))],
+        vec![SourceSighting::plain(
+            PeerSource::HighId(v4),
+            Informant::Own,
+        )],
     ))
 }
 
@@ -81,7 +84,7 @@ fn sight_hashed(
             let PeerEndpoint::V4(v4) = at else {
                 unreachable!()
             };
-            SourceSighting::new(PeerSource::HighId(v4), hash, None)
+            SourceSighting::new(PeerSource::HighId(v4), hash, None, Informant::Own)
         })
         .collect();
     spawned(&via_exchange(state, peer(1), sources))

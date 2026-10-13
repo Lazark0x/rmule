@@ -6,7 +6,7 @@ use rmule_ed2k::{
     GetSourcesRequest, Output, ServerCapability, ServerTcpFlags,
 };
 use rmule_primitives::{
-    Capabilities, ClientId, CryptStance, Packet, PeerSource, SourceLookupTarget, SourceSighting,
+    Capabilities, ClientId, CryptStance, Packet, PeerSource, SourceClaim, SourceLookupTarget,
 };
 
 fn target(size: u64) -> SourceLookupTarget {
@@ -166,7 +166,7 @@ fn inbound_found_sources_before_id_change_emits_event() {
     assert!(matches!(
         session.poll_output(),
         Some(Output::Event(Ed2kEvent::SourcesFound { file_hash, sources, .. }))
-            if file_hash == crate::fixture::hash(0xBB) && sources == vec![SourceSighting::plain(source)]
+            if file_hash == crate::fixture::hash(0xBB) && sources == vec![SourceClaim::plain(source)]
     ));
 }
 

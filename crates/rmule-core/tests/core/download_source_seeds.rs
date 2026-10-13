@@ -18,7 +18,7 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, Ipv4Endpoint, PeerEndpoint, PeerSource, ServerEndpoint,
+    ClientId, Ed2kFileLink, Informant, Ipv4Endpoint, PeerEndpoint, PeerSource, ServerEndpoint,
     SourceLookupTarget, SourceSighting,
 };
 use rmule_testkit::{StaticPeerTransfer, StaticSourceLookup, file_link};
@@ -42,7 +42,7 @@ fn answering(sources: &[PeerEndpoint]) -> StaticSourceLookup {
                 .iter()
                 .map(|peer| {
                     let v4 = peer.as_v4().expect("IPv4 test source");
-                    SourceSighting::plain(PeerSource::HighId(v4))
+                    SourceSighting::plain(PeerSource::HighId(v4), Informant::Own)
                 })
                 .collect(),
         },

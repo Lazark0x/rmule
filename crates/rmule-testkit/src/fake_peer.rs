@@ -13,7 +13,7 @@ use rmule_peer::{
     PartBitmap, RequestItem,
 };
 use rmule_primitives::{
-    ClientId, Ed2kText, FileHash, PacketProtocol, PartHash, PeerSource, SourceSighting, UserHash,
+    ClientId, Ed2kText, FileHash, PacketProtocol, PartHash, PeerSource, SourceClaim, UserHash,
 };
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -89,7 +89,7 @@ pub enum SourcesPolicy {
     /// Answer with this source list, packed (`0xD4`) — the ADR-0053
     /// peer-inbound-inflate scenario. aMule always packs `OP_ANSWERSOURCES`
     /// regardless of size.
-    AnswerPacked(Vec<SourceSighting>),
+    AnswerPacked(Vec<SourceClaim>),
 }
 
 /// One accepted connection's script.

@@ -63,7 +63,10 @@ fn known_ipv6() -> DialPosition {
 
 fn ipv6_only() -> (Ipv6Endpoint, SourceSighting) {
     let endpoint = Ipv6Endpoint::new("2a01:4f8::7".parse().unwrap(), 4662);
-    (endpoint, SourceSighting::plain(PeerSource::Ipv6(endpoint)))
+    (
+        endpoint,
+        SourceSighting::plain(PeerSource::Ipv6(endpoint), rmule_primitives::Informant::Own),
+    )
 }
 
 /// A filtered High ID never pools, whichever channel names it, and its
@@ -130,7 +133,10 @@ fn an_ipv6_only_source_pools_on_no_channel_while_we_hold_no_ipv6() {
 #[test]
 fn a_low_id_row_passes_the_filter_and_is_called_back_through_its_channels_server() {
     let filter = blocking(&[1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    let row = SourceSighting::plain(PeerSource::new(low(7), 4662));
+    let row = SourceSighting::plain(
+        PeerSource::new(low(7), 4662),
+        rmule_primitives::Informant::Own,
+    );
     for channel in every_channel() {
         let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
         let taken = take_through(&mut state, channel, vec![row], &filter);
@@ -190,7 +196,11 @@ fn an_exchanged_low_id_row_is_called_back_through_the_server_it_names() {
             Vec::new(),
         );
         let _ = state.start(t0());
-        let row = SourceSighting::plain(PeerSource::new(low(7), 4662)).with_server(Some(named));
+        let row = SourceSighting::plain(
+            PeerSource::new(low(7), 4662),
+            rmule_primitives::Informant::Own,
+        )
+        .with_server(Some(named));
         let asked: Vec<CallbackKey> = via_exchange(&mut state, peer(1), vec![row])
             .iter()
             .filter_map(|decision| match decision {
@@ -367,6 +377,7 @@ fn the_start_pools_seeds_then_link_then_server_and_a_shared_source_once() {
         }),
         Some(UserHash::from_bytes([0x5F; UserHash::BYTE_LEN])),
         Some(SourceCryptOptions::from_byte(0x03)),
+        rmule_primitives::Informant::Own,
     );
     let seeds = take(&mut state, Channel::Seed, plain_sightings(&[peer(1)]));
     let link = take(
@@ -402,10 +413,10 @@ fn the_start_pools_seeds_then_link_then_server_and_a_shared_source_once() {
 fn nth_source(n: u32) -> SourceSighting {
     let [low, high, ..] = n.to_le_bytes();
     let ip = u32::from_le_bytes([10, 1, low, high + 1]);
-    SourceSighting::plain(PeerSource::new(
-        rmule_primitives::ClientId::from_u32(ip),
-        4662,
-    ))
+    SourceSighting::plain(
+        PeerSource::new(rmule_primitives::ClientId::from_u32(ip), 4662),
+        rmule_primitives::Informant::Own,
+    )
 }
 
 #[test]

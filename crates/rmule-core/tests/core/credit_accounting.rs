@@ -11,8 +11,8 @@ use rmule_core::{
     RuntimeServeRuntimeService, SourceLookupOutcome, SourceLookupService,
 };
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, Ed2kText, FileHashSummary, PeerEndpoint, PeerSource, ServerEndpoint,
-    SourceLookupTarget, SourceSighting, UserHash,
+    ClientId, Ed2kFileLink, Ed2kText, FileHashSummary, Informant, PeerEndpoint, PeerSource,
+    ServerEndpoint, SourceLookupTarget, SourceSighting, UserHash,
 };
 
 const FILE_BYTES: usize = 4096; // sub-part file: one block, one BlockReceived
@@ -28,7 +28,7 @@ impl SourceLookupService for OneSourceLookup {
     ) -> Result<SourceLookupOutcome, DownloadFailure> {
         Ok(SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![SourceSighting::plain(self.peer)],
+            sources: vec![SourceSighting::plain(self.peer, Informant::Own)],
         })
     }
 }

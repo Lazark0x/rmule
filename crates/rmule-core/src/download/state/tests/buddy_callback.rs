@@ -39,6 +39,7 @@ fn direct_row(connect_options: u8) -> SourceSighting {
         Some(rmule_primitives::SourceCryptOptions::from_byte(
             connect_options,
         )),
+        rmule_primitives::Informant::Own,
     )
 }
 

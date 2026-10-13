@@ -47,8 +47,8 @@ use rmule_kad::KadId;
 use rmule_peer::natt::RendezvousBody;
 use rmule_peer::{PeerHandshakeContext, ReaskCallbackUdp};
 use rmule_primitives::{
-    ClientIdentity, Ed2kFileLink, Ed2kText, FileHash, Ipv4Endpoint, PeerEndpoint, ServerEndpoint,
-    SightedBuddy, SourceLookupTarget, SourceRoad, SourceSighting, UserHash,
+    ClientIdentity, Ed2kFileLink, Ed2kText, FileHash, Informant, Ipv4Endpoint, PeerEndpoint,
+    ServerEndpoint, SightedBuddy, SourceLookupTarget, SourceRoad, SourceSighting, UserHash,
 };
 use rmule_testkit::file_link_without_part_hash_set;
 use tokio::net::UdpSocket;
@@ -177,6 +177,7 @@ fn buddy_row_stating(buddy_udp: Ipv4Endpoint, connect_options: u8) -> SourceSigh
         Some(rmule_primitives::SourceCryptOptions::from_byte(
             connect_options,
         )),
+        Informant::Own,
     )
 }
 
@@ -531,6 +532,7 @@ async fn a_kad_row_with_the_direct_callback_bit_draws_a_0x95_toward_its_own_endp
         },
         Some(TARGET_HASH),
         Some(rmule_primitives::SourceCryptOptions::from_byte(0x08)),
+        Informant::Own,
     );
     let p = crate::fixture::free_port().await;
     let mut core = Core::builder(
@@ -718,7 +720,9 @@ async fn a_published_type_6_row_served_back_by_a_storer_takes_the_direct_udp_roa
     .user_hash(OUR_HASH)
     .peer_transfer(NeverDials)
     .kad(OneRowKad::answering(
-        candidate.sighting().expect("a type-6 row is a sighting"),
+        candidate
+            .sighting(Informant::Own)
+            .expect("a type-6 row is a sighting"),
     ))
     .build();
     core.send(CoreCommand::Serve(rmule_core::ServeCommand::StartServing {

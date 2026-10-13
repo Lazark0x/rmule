@@ -3,7 +3,7 @@
 //! filter reload applies from the next batch; sources already pooled stay as
 //! they are.
 
-use rmule_primitives::{Informant, SourceSighting};
+use rmule_primitives::{Informant, Ipv4Endpoint, PeerSource, SourceSighting};
 
 use super::RunnerContext;
 use crate::download::source_book::Gate;
@@ -23,9 +23,6 @@ pub(super) fn sight<S, P>(
         filter: &filter,
         dial: runner.dial_position(),
     };
-    let sightings = sightings
-        .into_iter()
-        .map(|sighting| stated_by(channel, sighting));
     let taken = state.on_sightings(super::now(), channel, sightings, &gate);
     for _ in 0..taken.tally.family_unreachable {
         runner.rt.diagnostics.count_undialable_family_source();
@@ -47,67 +44,47 @@ pub(super) fn any_admitted<S, P>(
     sightings.iter().any(|&sighting| gate.admits(sighting))
 }
 
-/// `sighting` as the word of the party its channel names: the peer whose
-/// source-exchange answer it is, or the server a global-UDP answer came from.
-/// Every other channel's producer stamps its own [`Informant`]: the server
-/// session, the Kad pump and the serve side, which read the party off the
-/// network. A link, a seed and an injected adapter's source stay rmule's own.
-fn stated_by(channel: Channel, sighting: SourceSighting) -> SourceSighting {
-    match channel {
-        Channel::Exchanged(peer) => sighting.with_informant(Informant::Party(peer.ip())),
-        Channel::Global(server) => {
-            sighting.with_informant(Informant::Party(std::net::IpAddr::V4(server.ip)))
-        }
-        Channel::Link | Channel::Seed | Channel::Server | Channel::Kad | Channel::Prober => {
-            sighting
-        }
-    }
+/// A server-UDP global answer's `sources` (ADR-0051) as the word of `server`,
+/// the server that sent it (ADR-0085). The answer carries no crypt material,
+/// so each is a plain record.
+pub(super) fn global_answer(
+    server: Ipv4Endpoint,
+    sources: Vec<PeerSource>,
+) -> impl Iterator<Item = SourceSighting> {
+    let informant = Informant::Party(std::net::IpAddr::V4(server.ip));
+    sources
+        .into_iter()
+        .map(move |source| SourceSighting::plain(source, informant))
 }
 
 #[cfg(test)]
 mod tests {
     use std::net::Ipv4Addr;
 
-    use rmule_primitives::{Ipv4Endpoint, PeerEndpoint, PeerSource};
-
     use super::*;
     use crate::dialable::DialPosition;
     use crate::download::source_book::Blocked;
     use crate::ip_filter::IpFilter;
 
-    /// A source-exchange or global-UDP answer is judged as the word of the
-    /// party its channel names: a loopback row from a remote peer or server is
-    /// refused, from a peer on this host it passes, and a link's is rmule's own.
+    /// A global-UDP answer is judged as the word of the server that sent it:
+    /// a loopback row from a remote server is refused, and from a server on
+    /// this host it passes.
     #[test]
-    fn an_exchanged_or_global_row_is_the_word_of_the_party_its_channel_names() {
+    fn a_global_row_is_the_word_of_the_server_that_sent_it() {
         let filter = IpFilter::default();
         let gate = Gate {
             filter: &filter,
             dial: DialPosition::default(),
         };
-        let loopback = SourceSighting::plain(PeerSource::HighId(Ipv4Endpoint::new(
-            Ipv4Addr::LOCALHOST,
-            4662,
-        )));
+        let loopback = PeerSource::HighId(Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, 4662));
         let remote = Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 7), 4662);
         let local = Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, 4663);
 
-        for channel in [
-            Channel::Exchanged(PeerEndpoint::V4(remote)),
-            Channel::Global(remote),
-        ] {
-            assert_eq!(
-                gate.judge(stated_by(channel, loopback)),
-                Err(Blocked::Reserved),
-                "{channel:?}"
-            );
+        for sighting in global_answer(remote, vec![loopback]) {
+            assert_eq!(gate.judge(sighting), Err(Blocked::Reserved));
         }
-        for channel in [
-            Channel::Exchanged(PeerEndpoint::V4(local)),
-            Channel::Global(local),
-            Channel::Link,
-        ] {
-            assert!(gate.admits(stated_by(channel, loopback)), "{channel:?}");
+        for sighting in global_answer(local, vec![loopback]) {
+            assert!(gate.admits(sighting));
         }
     }
 }

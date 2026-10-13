@@ -12,8 +12,8 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, ED2K_PART_SIZE, Ed2kFileLink, PeerCrypt, PeerEndpoint, PeerSource, ServerEndpoint,
-    SourceCryptOptions, SourceLookupTarget, SourceSighting, UserHash,
+    ClientId, ED2K_PART_SIZE, Ed2kFileLink, Informant, PeerCrypt, PeerEndpoint, PeerSource,
+    ServerEndpoint, SourceCryptOptions, SourceLookupTarget, SourceSighting, UserHash,
 };
 use rmule_testkit::file_link;
 use rmule_testkit::file_link_without_part_hash_set;
@@ -53,7 +53,10 @@ async fn fake_adapters_drive_happy_path_download_events() {
     let source = ScriptedSourceLookup {
         outcome: SourceLookupOutcome {
             client_id,
-            sources: vec![SourceSighting::plain(low), SourceSighting::plain(high)],
+            sources: vec![
+                SourceSighting::plain(low, Informant::Own),
+                SourceSighting::plain(high, Informant::Own),
+            ],
         },
     };
     let transfer = ScriptedPeerTransfer {
@@ -131,7 +134,7 @@ async fn streamed_worker_fact_verifies_first_part_before_worker_finishes() {
     let source = ScriptedSourceLookup {
         outcome: SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![SourceSighting::plain(high)],
+            sources: vec![SourceSighting::plain(high, Informant::Own)],
         },
     };
     let transfer = FirstPartThenBlocked {
@@ -457,6 +460,7 @@ async fn server_lookup_crypt_capable_source_is_obfuscate_dialed() {
         PeerSource::new(client_id, 4663),
         Some(dial_hash),
         Some(SourceCryptOptions::from_byte(0x01)),
+        Informant::Own,
     );
     let source = ScriptedSourceLookup {
         outcome: SourceLookupOutcome {

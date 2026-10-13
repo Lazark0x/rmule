@@ -14,8 +14,8 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, PeerEndpoint, PeerSource, ServerEndpoint, SourceLookupTarget,
-    SourceSighting,
+    ClientId, Ed2kFileLink, Informant, PeerEndpoint, PeerSource, ServerEndpoint,
+    SourceLookupTarget, SourceSighting,
 };
 use rmule_testkit::HANG_GUARD;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -734,10 +734,10 @@ impl SourceLookupService for RecordingSourceLookup {
         self.calls.lock().unwrap().push(target);
         Ok(SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![SourceSighting::plain(PeerSource::new(
-                ClientId::from_u32(0x0100_007F),
-                4663,
-            ))],
+            sources: vec![SourceSighting::plain(
+                PeerSource::new(ClientId::from_u32(0x0100_007F), 4663),
+                Informant::Own,
+            )],
         })
     }
 }

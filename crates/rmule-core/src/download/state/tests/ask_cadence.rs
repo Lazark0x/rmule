@@ -110,6 +110,7 @@ fn a_low_id_peer_called_back_again_is_the_peer_already_asked() {
                 rmule_primitives::PeerSource::new(next, 4662),
                 Some(hash),
                 None,
+                rmule_primitives::Informant::Own,
             ),
             low_candidate(stranger.as_u32()),
         ],

@@ -116,11 +116,13 @@ fn a_source_exchange_request_answers_from_the_engaged_high_id_upload_clients() {
         PeerSource::new(high_id_client([1, 2, 3, 4]), 4662),
         Some(user(0xA1)),
         None,
+        rmule_primitives::Informant::Party(high_a.ip()),
     );
     let expected_b = SourceSighting::new(
         PeerSource::new(high_id_client([5, 6, 7, 8]), 5000),
         Some(user(0xB2)),
         None,
+        rmule_primitives::Informant::Party(high_b.ip()),
     );
     assert_eq!(
         out,
@@ -258,6 +260,7 @@ fn a_low_id_client_that_named_an_ipv6_is_served_over_it() {
         PeerSource::Ipv6(Ipv6Endpoint::new(v6, 4662)),
         Some(user(0x51)),
         None,
+        rmule_primitives::Informant::Party(queued.ip()),
     );
     assert_eq!(
         state.on_conn_event(t, asker, sx_request(file), &no_modifiers()),
@@ -299,8 +302,13 @@ fn a_high_id_client_that_named_an_ipv6_is_served_with_both_addresses() {
         t,
     );
     let decisions = state.on_conn_event(t, asker, sx_request(file), &no_modifiers());
-    let expected = SourceSighting::new(PeerSource::new(id, 4662), Some(user(0x51)), None)
-        .with_ipv6_half(Some(Ipv6Endpoint::new(v6, 4662)));
+    let expected = SourceSighting::new(
+        PeerSource::new(id, 4662),
+        Some(user(0x51)),
+        None,
+        rmule_primitives::Informant::Party(queued.ip()),
+    )
+    .with_ipv6_half(Some(Ipv6Endpoint::new(v6, 4662)));
     assert_eq!(
         decisions.first(),
         Some(&ServeDecision::Send {
@@ -354,8 +362,13 @@ fn a_revised_ipv6_is_the_one_an_answer_offers() {
         t,
     );
     let decisions = state.on_conn_event(t, asker, sx_request(file), &no_modifiers());
-    let expected = SourceSighting::new(PeerSource::new(id, 4662), Some(user(0x52)), None)
-        .with_ipv6_half(Some(Ipv6Endpoint::new(moved, 4662)));
+    let expected = SourceSighting::new(
+        PeerSource::new(id, 4662),
+        Some(user(0x52)),
+        None,
+        rmule_primitives::Informant::Party(queued.ip()),
+    )
+    .with_ipv6_half(Some(Ipv6Endpoint::new(moved, 4662)));
     assert_eq!(
         decisions.first(),
         Some(&ServeDecision::Send {
@@ -383,6 +396,7 @@ fn a_revised_client_id_is_read_against_the_link_an_answer_offers() {
         PeerSource::new(high_id_client([198, 51, 100, 9]), 4662),
         Some(user(0x53)),
         None,
+        rmule_primitives::Informant::Party(queued.ip()),
     );
     for (moved, offered) in [
         (high_id_client([198, 51, 100, 10]), Some(at_link)),
@@ -488,6 +502,7 @@ fn pool_with_known_unknown_and_empty_status(
             PeerSource::new(high_id_client(octets), 4662),
             Some(user(hash_byte)),
             None,
+            rmule_primitives::Informant::Party(p.ip()),
         )
     });
     (state, sources)

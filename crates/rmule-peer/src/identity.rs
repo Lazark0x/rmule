@@ -7,8 +7,8 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rmule_primitives::{
-    ClientId, CryptStance, Ed2kText, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, PeerSource,
-    SourceSighting, Tag, TagValue, UserHash,
+    ClientId, CryptStance, Ed2kText, Informant, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint,
+    PeerSource, SourceSighting, Tag, TagValue, UserHash,
 };
 
 use crate::capability::{CT_EMULE_UDPPORTS, MiscOptions1, MiscOptions2, ModMiscOptions};
@@ -365,6 +365,9 @@ impl PeerIdentity {
     /// and stores it as a High ID (`:678-680`), and that is where it dials the
     /// client (`:1620`). A Low ID stays the callback it names. An IPv6 link
     /// has no IPv4 address to read a claim against, so there the claim stands.
+    ///
+    /// The sighting is the peer's own word, so its Informant is the party at
+    /// the link's address (ADR-0085).
     #[must_use]
     pub fn source_coordinate(&self, link: PeerEndpoint) -> SourceSighting {
         let classic = match link.as_v4() {
@@ -384,7 +387,13 @@ impl PeerIdentity {
             Some(endpoint) if !classic.is_high_id() => PeerSource::Ipv6(endpoint),
             _ => classic,
         };
-        SourceSighting::new(source, Some(self.user_hash), None).with_ipv6_half(ipv6)
+        SourceSighting::new(
+            source,
+            Some(self.user_hash),
+            None,
+            Informant::Party(link.ip()),
+        )
+        .with_ipv6_half(ipv6)
     }
 
     /// Whether the peer claims to be logged in to `server` — the "on our

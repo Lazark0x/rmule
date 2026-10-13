@@ -223,8 +223,13 @@ mod tests {
             unreachable!()
         };
         let hash = rmule_primitives::UserHash::from_bytes([0x51; 16]);
-        let dual = SourceSighting::new(PeerSource::HighId(v4), Some(hash), None)
-            .with_ipv6_half(Some(v6()));
+        let dual = SourceSighting::new(
+            PeerSource::HighId(v4),
+            Some(hash),
+            None,
+            rmule_primitives::Informant::Own,
+        )
+        .with_ipv6_half(Some(v6()));
 
         assert_eq!(
             resolve_family(dual, ours()),
@@ -251,8 +256,13 @@ mod tests {
             unreachable!()
         };
         let hash = rmule_primitives::UserHash::from_bytes([0x52; 16]);
-        let dual = SourceSighting::new(PeerSource::HighId(v4), Some(hash), None)
-            .with_ipv6_half(Some(v6()));
+        let dual = SourceSighting::new(
+            PeerSource::HighId(v4),
+            Some(hash),
+            None,
+            rmule_primitives::Informant::Own,
+        )
+        .with_ipv6_half(Some(v6()));
         let refusing = |refused: PeerEndpoint| move |endpoint| endpoint != refused;
 
         let v4_only =
@@ -291,7 +301,9 @@ mod tests {
         let [row] = rows.as_slice() else {
             panic!("one published source, one row: {rows:?}");
         };
-        let row = row.sighting().expect("a direct row is a sighting");
+        let row = row
+            .sighting(rmule_primitives::Informant::Own)
+            .expect("a direct row is a sighting");
         let high_id = PeerSource::HighId(Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 8), 4662));
         let half = Ipv6Endpoint::new("3fff:ed2:1::8".parse().unwrap(), 4662);
 

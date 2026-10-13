@@ -164,9 +164,7 @@ impl ServeState {
             .and(self.identities.get(&peer))
             .map(|identity| ServeDecision::KeepAsker {
                 file_hash,
-                sighting: identity
-                    .source_coordinate(peer)
-                    .with_informant(rmule_primitives::Informant::Party(peer.ip())),
+                sighting: identity.source_coordinate(peer),
             })
     }
 }

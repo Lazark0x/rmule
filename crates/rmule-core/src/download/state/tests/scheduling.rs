@@ -33,10 +33,10 @@ fn sources_received_refills_the_pool_and_fills_a_free_slot() {
     // already-working peer(1). `peer(n)` is IP 10.0.0.n; its High-ID client
     // id is that IP as a little-endian u32 (ADR-0055 backfill).
     let src = |n: u8| {
-        rmule_primitives::SourceSighting::plain(PeerSource::new(
-            ClientId::from_u32(u32::from_le_bytes([10, 0, 0, n])),
-            4662,
-        ))
+        rmule_primitives::SourceSighting::plain(
+            PeerSource::new(ClientId::from_u32(u32::from_le_bytes([10, 0, 0, n])), 4662),
+            Informant::Own,
+        )
     };
     let decisions = via_exchange(&mut state, peer(1), vec![src(2), src(1)]);
 
@@ -54,8 +54,8 @@ fn sources_received_refills_the_pool_and_fills_a_free_slot() {
 
 #[test]
 fn an_exchanged_source_records_the_crypt_side_its_dial_meets() {
-    use rmule_primitives::SourceSighting;
     use rmule_primitives::{ClientId, PeerCrypt, PeerSource, SourceCryptOptions};
+    use rmule_primitives::{Informant, SourceSighting};
     let mut state = file_hash_only_state(vec![peer(1)], 4);
     let _ = state.start(t0());
 
@@ -66,15 +66,17 @@ fn an_exchanged_source_records_the_crypt_side_its_dial_meets() {
         PeerSource::new(high_id(2), 4662),
         Some(dial_hash),
         Some(SourceCryptOptions::from_byte(0x01)),
+        Informant::Own,
     );
     // peer(3): a v4 source that carries a hash but does NOT support crypt.
     let no_crypt = SourceSighting::new(
         PeerSource::new(high_id(3), 4662),
         Some(UserHash::from_bytes([0x99; 16])),
         Some(SourceCryptOptions::from_byte(0x00)),
+        Informant::Own,
     );
     // peer(4): a plain (v1) source, no hash at all.
-    let plain = SourceSighting::plain(PeerSource::new(high_id(4), 4662));
+    let plain = SourceSighting::plain(PeerSource::new(high_id(4), 4662), Informant::Own);
 
     let _ = via_exchange(&mut state, peer(1), vec![crypt_capable, no_crypt, plain]);
 

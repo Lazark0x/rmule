@@ -85,8 +85,8 @@ pub use server::{
 };
 pub use session::{SessionCore, SessionOutput};
 pub use source::{
-    PeerSource, SightedBuddy, SourceCryptOptions, SourceListTail, SourceLookupTarget, SourceRoad,
-    SourceSighting,
+    PeerSource, SightedBuddy, SourceClaim, SourceCryptOptions, SourceListTail, SourceLookupTarget,
+    SourceRoad, SourceSighting,
 };
 pub use tag::{HASH_TAG_LEN, Tag, TagName, TagNameEncoding, TagValue};
 pub use text::Ed2kText;

@@ -20,7 +20,7 @@ mod sources;
 
 use std::net::Ipv4Addr;
 
-use rmule_primitives::{AichHashSet, EMBLOCKSIZE, Ipv4Endpoint, SourceSighting};
+use rmule_primitives::{AichHashSet, EMBLOCKSIZE, Informant, Ipv4Endpoint, SourceSighting};
 
 use rmule_peer::natt::CALLBACK_SILENCE_FALLBACK;
 
@@ -72,6 +72,7 @@ fn kad_buddy_sighting(
         Some(rmule_primitives::SourceCryptOptions::from_byte(
             connect_options,
         )),
+        Informant::Own,
     )
 }
 
@@ -171,8 +172,12 @@ fn set_held_content(file_size: u64, verified_parts: Vec<u32>) -> ContentFacts {
 fn plain_sightings(pool: &[PeerEndpoint]) -> Vec<SourceSighting> {
     pool.iter()
         .map(|&endpoint| match endpoint {
-            PeerEndpoint::V4(v4) => SourceSighting::plain(rmule_primitives::PeerSource::HighId(v4)),
-            PeerEndpoint::V6(v6) => SourceSighting::plain(rmule_primitives::PeerSource::Ipv6(v6)),
+            PeerEndpoint::V4(v4) => {
+                SourceSighting::plain(rmule_primitives::PeerSource::HighId(v4), Informant::Own)
+            }
+            PeerEndpoint::V6(v6) => {
+                SourceSighting::plain(rmule_primitives::PeerSource::Ipv6(v6), Informant::Own)
+            }
         })
         .collect()
 }
@@ -201,7 +206,9 @@ fn via_global(
     server: Ipv4Endpoint,
     rows: Vec<rmule_primitives::PeerSource>,
 ) -> Vec<Decision> {
-    let rows = rows.into_iter().map(SourceSighting::plain);
+    let rows = rows
+        .into_iter()
+        .map(|source| SourceSighting::plain(source, Informant::Own));
     take(state, Channel::Global(server), rows).decisions
 }
 
@@ -289,7 +296,10 @@ fn low(n: u32) -> ClientId {
 /// and a port, and nothing rung 1 could use beyond the server namespace.
 /// A connected-server Low-ID source, as a server answer names it.
 fn low_candidate(n: u32) -> SourceSighting {
-    SourceSighting::plain(rmule_primitives::PeerSource::new(low(n), 4662))
+    SourceSighting::plain(
+        rmule_primitives::PeerSource::new(low(n), 4662),
+        Informant::Own,
+    )
 }
 
 /// The connected-server (`server: None`) callback key for `low_id` — the form

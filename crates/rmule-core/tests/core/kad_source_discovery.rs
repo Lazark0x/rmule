@@ -14,8 +14,8 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, PeerEndpoint, PeerSource, ServerEndpoint, SourceLookupTarget,
-    SourceSighting,
+    ClientId, Ed2kFileLink, Informant, PeerEndpoint, PeerSource, ServerEndpoint,
+    SourceLookupTarget, SourceSighting,
 };
 use rmule_testkit::file_link_without_part_hash_set;
 use tokio::sync::mpsc;
@@ -115,7 +115,8 @@ async fn kad_fed_sources_fill_the_pool_and_the_scheduler_dials_them() {
             }],
         },
     };
-    let factory = StubKad::new().answering_sources(vec![SourceSighting::plain(kad_source)]);
+    let factory =
+        StubKad::new().answering_sources(vec![SourceSighting::plain(kad_source, Informant::Own)]);
 
     let mut core = Core::builder(
         CoreConfig {
@@ -201,7 +202,7 @@ async fn with_no_server_at_all_a_kad_search_row_downloads_over_kad() {
     )
     .expect("a valid row");
     let channel = StubKad::new()
-        .answering_sources(vec![SourceSighting::plain(kad_source)])
+        .answering_sources(vec![SourceSighting::plain(kad_source, Informant::Own)])
         .answering_keywords(vec![row]);
     let mut core = Core::builder(
         CoreConfig {

@@ -8,8 +8,8 @@ use std::net::Ipv4Addr;
 use std::time::Instant;
 
 use rmule_primitives::{
-    ClientId, CryptStance, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, PeerSource, SourceSighting,
-    UserHash,
+    ClientId, CryptStance, Informant, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, PeerSource,
+    SourceSighting, UserHash,
 };
 
 use super::*;
@@ -55,7 +55,7 @@ fn book_distrusting(distrusted: HashSet<UserHash>) -> SourceBook {
 }
 
 fn plain(n: u8) -> SourceSighting {
-    SourceSighting::plain(PeerSource::HighId(v4(n)))
+    SourceSighting::plain(PeerSource::HighId(v4(n)), Informant::Own)
 }
 
 fn dual(n: u8, half: u16) -> SourceSighting {
@@ -63,7 +63,10 @@ fn dual(n: u8, half: u16) -> SourceSighting {
 }
 
 fn low_id(id: u32) -> SourceSighting {
-    SourceSighting::plain(PeerSource::new(ClientId::from_u32(id), 4662))
+    SourceSighting::plain(
+        PeerSource::new(ClientId::from_u32(id), 4662),
+        Informant::Own,
+    )
 }
 
 fn sight(book: &mut SourceBook, sighting: SourceSighting) -> Sighted {
@@ -156,7 +159,7 @@ fn a_sighting_of_a_held_source_merges_and_never_duplicates() {
         Sighted::Pooled(Some(PeerEndpoint::V6(v6(1))))
     );
     assert_eq!(sight(&mut book, plain(1)), Sighted::Merged(None));
-    let ipv6_only = SourceSighting::plain(PeerSource::Ipv6(v6(1)));
+    let ipv6_only = SourceSighting::plain(PeerSource::Ipv6(v6(1)), Informant::Own);
     assert_eq!(sight(&mut book, ipv6_only), Sighted::Merged(None));
 
     assert_eq!(sight(&mut book, low_id(7)), Sighted::Pooled(None));
@@ -169,6 +172,7 @@ fn a_sighting_of_a_held_source_merges_and_never_duplicates() {
         PeerSource::new(ClientId::from_u32(7), 4662),
         Some(UserHash::from_bytes([0x5A; UserHash::BYTE_LEN])),
         None,
+        Informant::Own,
     );
     assert_eq!(sight(&mut book, hashed), Sighted::Merged(None));
     assert_eq!(book.counts().known, 2);
@@ -222,7 +226,10 @@ fn a_queued_source_is_dialed_at_the_ipv6_its_session_revised() {
 
     let mut book = empty_book();
     let old = PeerEndpoint::V6(v6(1));
-    let _ = sight(&mut book, SourceSighting::plain(PeerSource::Ipv6(v6(1))));
+    let _ = sight(
+        &mut book,
+        SourceSighting::plain(PeerSource::Ipv6(v6(1)), Informant::Own),
+    );
     assert_eq!(work(&mut book), old);
     let at = queue(&mut book, old);
     let moved = PeerEndpoint::V6(Ipv6Endpoint::new(moved_ip, 4662));
@@ -331,7 +338,7 @@ fn bad_data_is_never_pooled_again() {
     assert_eq!(book.distrust(peer), Some(BAD));
     assert_eq!(book.distrust(peer), None, "a distrust is new once");
 
-    let named = SourceSighting::new(PeerSource::HighId(v4(2)), Some(BAD), None);
+    let named = SourceSighting::new(PeerSource::HighId(v4(2)), Some(BAD), None, Informant::Own);
     assert_eq!(
         sight(&mut book, named),
         Sighted::Blocked(Blocked::Distrusted)
@@ -340,6 +347,7 @@ fn bad_data_is_never_pooled_again() {
         PeerSource::new(ClientId::from_u32(7), 4662),
         Some(BAD),
         None,
+        Informant::Own,
     );
     assert_eq!(sight(&mut book, low), Sighted::Blocked(Blocked::Distrusted));
 
@@ -364,7 +372,10 @@ fn two_live_records_proven_one_peer_keep_the_older_worker() {
     let mut book = empty_book();
     let _ = sight(&mut book, plain(1));
     let older = work(&mut book);
-    let _ = sight(&mut book, SourceSighting::plain(PeerSource::Ipv6(v6(1))));
+    let _ = sight(
+        &mut book,
+        SourceSighting::plain(PeerSource::Ipv6(v6(1)), Informant::Own),
+    );
     let newer = work(&mut book);
 
     assert_eq!(
@@ -393,7 +404,10 @@ fn a_callback_in_flight_outranks_a_pooled_record_of_the_same_peer() {
         panic!("a callable downloader asks for a callback");
     };
     let half = PeerEndpoint::V6(v6(7));
-    let _ = sight(&mut book, SourceSighting::plain(PeerSource::Ipv6(v6(7))));
+    let _ = sight(
+        &mut book,
+        SourceSighting::plain(PeerSource::Ipv6(v6(7)), Informant::Own),
+    );
     assert!(book.is_pooled_or_live(half));
 
     let with_half = low_id(7).with_ipv6_half(Some(v6(7)));
@@ -470,7 +484,7 @@ fn the_ip_filter_is_judged_per_half() {
 fn an_ipv6_only_source_needs_an_ipv6_of_our_own() {
     let filter = IpFilter::default();
     let mut book = empty_book();
-    let ipv6_only = SourceSighting::plain(PeerSource::Ipv6(v6(1)));
+    let ipv6_only = SourceSighting::plain(PeerSource::Ipv6(v6(1)), Informant::Own);
 
     assert_eq!(
         sight_through(&mut book, ipv6_only, &filter, DialPosition::default()),

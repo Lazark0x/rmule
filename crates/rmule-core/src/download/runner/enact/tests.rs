@@ -92,6 +92,7 @@ mod buddy_hash_spelling {
             },
             Some(UserHash::from_bytes([0xAB; UserHash::BYTE_LEN])),
             Some(SourceCryptOptions::from_byte(0x00)),
+            rmule_primitives::Informant::Own,
         )
     }
 
@@ -476,7 +477,10 @@ mod queued_roster {
         // the RemoteQueued stage, and the relation is held.
         sighted(
             &mut ctx.state,
-            vec![SourceSighting::plain(PeerSource::HighId(QUEUED))],
+            vec![SourceSighting::plain(
+                PeerSource::HighId(QUEUED),
+                rmule_primitives::Informant::Own,
+            )],
         );
         connected(&mut ctx.state, queued);
         let now = std::time::Instant::now();
@@ -498,13 +502,17 @@ mod queued_roster {
         // halves: the queued record gives way to the live one.
         sighted(
             &mut ctx.state,
-            vec![SourceSighting::plain(PeerSource::Ipv6(live_half()))],
+            vec![SourceSighting::plain(
+                PeerSource::Ipv6(live_half()),
+                rmule_primitives::Informant::Own,
+            )],
         );
         connected(&mut ctx.state, live);
         sighted(
             &mut ctx.state,
             vec![
-                SourceSighting::plain(PeerSource::HighId(QUEUED)).with_ipv6_half(Some(live_half())),
+                SourceSighting::plain(PeerSource::HighId(QUEUED), rmule_primitives::Informant::Own)
+                    .with_ipv6_half(Some(live_half())),
             ],
         );
         enact_drain(&mut VecDeque::new(), &mut ctx)

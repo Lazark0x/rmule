@@ -267,10 +267,13 @@ fn only_the_run_holding_an_entry_takes_its_askers_and_a_full_inbox_drops_one() {
     let file = row.file_hash();
     cell.install(&row, &hashes(1));
     let asker = |n: u8| {
-        SourceSighting::plain(rmule_primitives::PeerSource::new(
-            rmule_primitives::ClientId::from_u32(u32::from_le_bytes([10, 0, 0, n])),
-            4662,
-        ))
+        SourceSighting::plain(
+            rmule_primitives::PeerSource::new(
+                rmule_primitives::ClientId::from_u32(u32::from_le_bytes([10, 0, 0, n])),
+                4662,
+            ),
+            rmule_primitives::Informant::Own,
+        )
     };
     let takes_askers =
         |cell: &ServedDownloads| cell.read_since(0).unwrap().entries[&file].takes_askers;

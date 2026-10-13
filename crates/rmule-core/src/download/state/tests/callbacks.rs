@@ -19,6 +19,7 @@ fn punchable(n: u32) -> SourceSighting {
         rmule_primitives::PeerSource::new(low(n), 4662),
         Some(UserHash::from_bytes([0xAB; UserHash::BYTE_LEN])),
         None,
+        rmule_primitives::Informant::Own,
     )
 }
 

@@ -11,7 +11,8 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, Ed2kLink, PeerEndpoint, PeerSource, SourceLookupTarget, SourceSighting,
+    ClientId, Ed2kFileLink, Ed2kLink, Informant, PeerEndpoint, PeerSource, SourceLookupTarget,
+    SourceSighting,
 };
 use rmule_testkit::HANG_GUARD;
 use std::time::Duration;
@@ -48,7 +49,7 @@ impl SourceLookupService for OneSourceLookup {
     ) -> Result<SourceLookupOutcome, DownloadFailure> {
         Ok(SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![SourceSighting::plain(server_source())],
+            sources: vec![SourceSighting::plain(server_source(), Informant::Own)],
         })
     }
 }

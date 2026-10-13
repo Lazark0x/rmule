@@ -8,7 +8,7 @@ use std::net::Ipv4Addr;
 use std::time::Instant;
 
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, Ed2kText, FileHash, Ipv4Endpoint, PeerEndpoint, PeerSource,
+    ClientId, Ed2kFileLink, Ed2kText, FileHash, Informant, Ipv4Endpoint, PeerEndpoint, PeerSource,
     SourceSighting,
 };
 use tokio::sync::mpsc;
@@ -96,7 +96,10 @@ fn brain(sightings: Vec<SourceSighting>, peer_concurrency: usize, at: Instant) -
 }
 
 fn low_id_source() -> SourceSighting {
-    SourceSighting::plain(PeerSource::new(ClientId::from_u32(LOW_ID), 4662))
+    SourceSighting::plain(
+        PeerSource::new(ClientId::from_u32(LOW_ID), 4662),
+        Informant::Own,
+    )
 }
 
 /// A worker the accept-router built from a connection at `peer`, and the
@@ -156,10 +159,13 @@ async fn a_surplus_connection_leaves_the_live_worker_its_channel() {
         &file,
         brain(
             vec![
-                SourceSighting::plain(PeerSource::HighId(match high(9) {
-                    PeerEndpoint::V4(v4) => v4,
-                    PeerEndpoint::V6(_) => unreachable!(),
-                })),
+                SourceSighting::plain(
+                    PeerSource::HighId(match high(9) {
+                        PeerEndpoint::V4(v4) => v4,
+                        PeerEndpoint::V6(_) => unreachable!(),
+                    }),
+                    Informant::Own,
+                ),
                 low_id_source(),
             ],
             2,

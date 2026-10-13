@@ -10,8 +10,8 @@ use rmule_peer::{
     SourceExchangeEntry, SourceExchangeVersion,
 };
 use rmule_primitives::{
-    ClientId, Ed2kText, FileHash, Ipv4Endpoint, Packet, PacketProtocol, PartHash, SourceSighting,
-    Tag, TagName, TagValue, UserHash,
+    ClientId, Ed2kText, FileHash, Ipv4Endpoint, Packet, PacketProtocol, PartHash, SourceClaim, Tag,
+    TagName, TagValue, UserHash,
 };
 
 /// `packet` with its payload cut to the first `at` bytes: the framing byte
@@ -217,7 +217,7 @@ pub fn sending_part_bytes(file_hash: FileHash, start: u32, data: &[u8]) -> Vec<u
 /// fixture asserts it actually packed rather than silently exercising the
 /// plain path; callers must pick a `sources` list redundant/large enough to
 /// compress smaller (a handful of repeated entries is enough).
-pub fn packed_answer_sources_bytes(file_hash: FileHash, sources: &[SourceSighting]) -> Vec<u8> {
+pub fn packed_answer_sources_bytes(file_hash: FileHash, sources: &[SourceClaim]) -> Vec<u8> {
     let plain = AnswerSources {
         file_hash,
         sources: sources

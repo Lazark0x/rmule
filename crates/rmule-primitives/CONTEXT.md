@@ -110,7 +110,7 @@ A range no remote host can be reached at (`is_reserved_address`, ADR-0085): IPv4
 _Avoid_: bogon, bad IP, `IsGoodIP` (aMule's table holds more blocks and refuses LAN)
 
 **Informant**:
-Who stated a **Source Sighting**: rmule itself (a link, a seed, a source an embedding program injected) or the party at an address that sent it, as the producer that read it off the network stamps it. Loopback is relative to its reader, so a loopback address is a peer only when its Informant is on this host; every other **Reserved Range** is refused whoever stated it.
+Who stated a **Source Sighting**: rmule itself (a link, a seed, a source an embedding program injected) or the party at an address that sent it. Every sighting names its own and none defaults to rmule's, so a producer that read an address off the network cannot leave it unsaid. Loopback is relative to its reader, so a loopback address is a peer only when its Informant is on this host; every other **Reserved Range** is refused whoever stated it.
 _Avoid_: source, origin (a sighting's channel is its origin; the Informant is the party behind it)
 
 **Ed2k Wire Form**:
@@ -185,6 +185,14 @@ carried and nothing more: the **User Hash**, the crypt or connect-options byte, 
 half. A download takes every source through this one value.
 _Avoid_: exchanged source (the name it had while only source exchange carried it),
 candidate (that is the download's Low-ID record), source record (that is the wire form)
+
+**Source Claim**:
+What one channel's row says about a source — the road and what the channel carried beside
+it — with nobody named as having said it. A wire reader that cannot know who sent the bytes
+(a server's `0x42`/`0x44` list, a peer's source-exchange entry) yields claims, and a wire
+writer takes them; the reader that knows the sender makes each a **Source Sighting** by
+naming its **Informant**.
+_Avoid_: unattributed sighting, raw source
 
 **Session Core**:
 The two traits (`SessionCore`, `SessionOutput`) that define the sans-I/O shape

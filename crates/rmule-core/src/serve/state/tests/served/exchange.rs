@@ -11,10 +11,13 @@ fn a_partial_shares_exchange_answers_from_its_runs_pool_and_leaves_out_an_unknow
 
     let file = hash(0x02);
     let source = |octet: u8| {
-        SourceSighting::plain(PeerSource::new(
-            ClientId::from_u32(u32::from_le_bytes([10, 0, 0, octet])),
-            4662,
-        ))
+        SourceSighting::plain(
+            PeerSource::new(
+                ClientId::from_u32(u32::from_le_bytes([10, 0, 0, octet])),
+                4662,
+            ),
+            rmule_primitives::Informant::Own,
+        )
     };
     let mut look = download(true, &[0], true);
     look.served.pool = ExchangePool {

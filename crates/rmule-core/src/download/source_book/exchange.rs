@@ -3,7 +3,7 @@
 //! with a place, each with its Advertised Parts.
 
 use rmule_peer::PartBitmap;
-use rmule_primitives::{PeerEndpoint, PeerSource, SourceSighting};
+use rmule_primitives::{Informant, PeerEndpoint, PeerSource, SourceSighting};
 
 use super::SourceBook;
 use super::record::RecordId;
@@ -45,7 +45,8 @@ impl SourceBook {
                             .standing
                             .and_then(|standing| standing.crypt())
                             .map(|crypt| crypt.user_hash);
-                        SourceSighting::new(source, user_hash, None)
+                        // The book's own record, which rmule states to the asker.
+                        SourceSighting::new(source, user_hash, None, Informant::Own)
                     }
                 };
                 Some((*id, source, record.advertised.clone()))

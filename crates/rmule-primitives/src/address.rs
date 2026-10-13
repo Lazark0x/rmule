@@ -64,11 +64,13 @@ const fn is_loopback(ip: IpAddr) -> bool {
 /// A loopback address is relative to its reader. From a party on this host it
 /// names this host truly; from a remote party it names that party's host, and
 /// taken here it would aim rmule at its own.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+///
+/// No informant is assumed: every sighting names its own, so a producer that
+/// read an address off the network cannot leave it as rmule's word by default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Informant {
     /// rmule's own word: a link the operator gave, a seed the node remembers,
     /// or a source the embedding program injected.
-    #[default]
     Own,
     /// A party at this address: a server, a Kad storer, or a peer.
     Party(IpAddr),

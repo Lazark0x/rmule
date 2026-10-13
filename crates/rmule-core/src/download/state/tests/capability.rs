@@ -164,7 +164,12 @@ fn high_id_on(server: Ipv4Endpoint) -> CallbackCapability {
 fn after_a_server_move_a_low_id_is_called_back_by_the_server_that_assigned_it() {
     let server_a = Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 201, 1), 4661);
     let server_b = Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 201, 2), 4661);
-    let low_7 = || SourceSighting::plain(rmule_primitives::PeerSource::new(low(7), 4662));
+    let low_7 = || {
+        SourceSighting::plain(
+            rmule_primitives::PeerSource::new(low(7), 4662),
+            rmule_primitives::Informant::Own,
+        )
+    };
     let mut state = state_from(
         file_hash_only_content(ONE_PART),
         SourcingPosture {

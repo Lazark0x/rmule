@@ -7,14 +7,17 @@ use rmule_primitives::{ClientId, Ipv4Endpoint, PeerSource};
 use super::*;
 
 fn high_id(octets: [u8; 4], port: u16) -> SourceSighting {
-    SourceSighting::plain(PeerSource::new(
-        ClientId::from_u32(u32::from_le_bytes(octets)),
-        port,
-    ))
+    SourceSighting::plain(
+        PeerSource::new(ClientId::from_u32(u32::from_le_bytes(octets)), port),
+        rmule_primitives::Informant::Own,
+    )
 }
 
 fn low_id(id: u32) -> SourceSighting {
-    SourceSighting::plain(PeerSource::new(ClientId::from_u32(id), 4662))
+    SourceSighting::plain(
+        PeerSource::new(ClientId::from_u32(id), 4662),
+        rmule_primitives::Informant::Own,
+    )
 }
 
 fn endpoint(octets: [u8; 4], port: u16) -> PeerEndpoint {

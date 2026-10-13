@@ -16,8 +16,8 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, Ed2kText, FileHash, FileHashSummary, Ipv4Endpoint, PeerEndpoint,
-    PeerSource, SafeFileName, ServerEndpoint, SourceLookupTarget, SourceSighting,
+    ClientId, Ed2kFileLink, Ed2kText, FileHash, FileHashSummary, Informant, Ipv4Endpoint,
+    PeerEndpoint, PeerSource, SafeFileName, ServerEndpoint, SourceLookupTarget, SourceSighting,
 };
 use tokio::time::{Duration, timeout};
 
@@ -77,8 +77,13 @@ pub fn loopback_peer(last_octet: u8) -> PeerEndpoint {
 
 /// Wrap plain server-lookup sources as candidates: a `0x42` reply carries no
 /// crypt provenance, so every source is `SourceSighting::plain` (ADR-0046).
+/// A scripted lookup answer is the test's own word, so a loopback peer passes
+/// the Reserved Range check (ADR-0085).
 pub fn plain_sources(sources: Vec<PeerSource>) -> Vec<SourceSighting> {
-    sources.into_iter().map(SourceSighting::plain).collect()
+    sources
+        .into_iter()
+        .map(|source| SourceSighting::plain(source, Informant::Own))
+        .collect()
 }
 
 /// A `SourceLookupService` that answers every lookup with the same outcome.

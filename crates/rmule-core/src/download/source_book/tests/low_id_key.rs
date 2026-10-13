@@ -30,6 +30,7 @@ fn buddy_row(user_hash: UserHash, kad_udp: Ipv4Endpoint) -> SourceSighting {
         },
         Some(user_hash),
         Some(SourceCryptOptions::from_byte(0x01)),
+        rmule_primitives::Informant::Own,
     )
 }
 
@@ -43,6 +44,7 @@ fn direct_row(user_hash: UserHash, kad_udp: Ipv4Endpoint) -> SourceSighting {
         },
         Some(user_hash),
         Some(SourceCryptOptions::from_byte(0x08)),
+        rmule_primitives::Informant::Own,
     )
 }
 
@@ -108,7 +110,10 @@ fn another_owner_on_a_held_key_inherits_no_buddy_and_no_ipv6_half() {
         "the crypt side is the newcomer's row's alone"
     );
     assert_eq!(
-        sight(&mut book, SourceSighting::plain(PeerSource::Ipv6(v6(1)))),
+        sight(
+            &mut book,
+            SourceSighting::plain(PeerSource::Ipv6(v6(1)), rmule_primitives::Informant::Own)
+        ),
         Sighted::Pooled(Some(PeerEndpoint::V6(v6(1)))),
         "the older owner's half left the record: a source sighted there is new"
     );

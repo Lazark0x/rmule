@@ -167,7 +167,7 @@ impl CallbackCapability {
 mod tests {
     use std::net::Ipv4Addr;
 
-    use rmule_primitives::{ClientId, PeerSource, SourceSighting};
+    use rmule_primitives::{ClientId, Informant, PeerSource, SourceSighting};
 
     use super::*;
 
@@ -186,7 +186,7 @@ mod tests {
 
     fn server_candidate(source_server: Option<Ipv4Endpoint>) -> LowIdCandidate {
         LowIdCandidate::from_sighting(
-            SourceSighting::plain(PeerSource::new(ClientId::from_u32(9), 4662)),
+            SourceSighting::plain(PeerSource::new(ClientId::from_u32(9), 4662), Informant::Own),
             source_server,
         )
         .expect("a Low-ID source is a candidate")

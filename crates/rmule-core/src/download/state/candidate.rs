@@ -373,7 +373,10 @@ mod tests {
     #[test]
     fn a_record_built_from_a_plain_server_answer_is_honestly_empty() {
         let candidate = LowIdCandidate::from_sighting(
-            SourceSighting::plain(PeerSource::new(low(7), 4662)),
+            SourceSighting::plain(
+                PeerSource::new(low(7), 4662),
+                rmule_primitives::Informant::Own,
+            ),
             None,
         )
         .expect("a Low-ID source is a candidate");
@@ -386,17 +389,23 @@ mod tests {
         // A dialable source is nobody's callback, and id 0 names nobody.
         assert!(
             LowIdCandidate::from_sighting(
-                SourceSighting::plain(PeerSource::new(
-                    ClientId::from_u32(u32::from_le_bytes([45, 55, 200, 3])),
-                    4662,
-                )),
+                SourceSighting::plain(
+                    PeerSource::new(
+                        ClientId::from_u32(u32::from_le_bytes([45, 55, 200, 3])),
+                        4662,
+                    ),
+                    rmule_primitives::Informant::Own
+                ),
                 None,
             )
             .is_none()
         );
         assert!(
             LowIdCandidate::from_sighting(
-                SourceSighting::plain(PeerSource::new(low(0), 4662)),
+                SourceSighting::plain(
+                    PeerSource::new(low(0), 4662),
+                    rmule_primitives::Informant::Own
+                ),
                 None
             )
             .is_none()
@@ -413,6 +422,7 @@ mod tests {
                 PeerSource::new(low(7), 4662),
                 Some(hash(0xAB)),
                 Some(SourceCryptOptions::from_byte(0x01)),
+                rmule_primitives::Informant::Own,
             ),
             None,
         )
@@ -432,6 +442,7 @@ mod tests {
                 PeerSource::new(low(7), 4662),
                 Some(hash(0xAB)),
                 Some(SourceCryptOptions::from_byte(0x89)),
+                rmule_primitives::Informant::Own,
             ),
             None,
         )
@@ -447,7 +458,10 @@ mod tests {
     #[test]
     fn a_source_learned_twice_keeps_every_fact_either_sighting_stated() {
         let bare = LowIdCandidate::from_sighting(
-            SourceSighting::plain(PeerSource::new(low(7), 4662)),
+            SourceSighting::plain(
+                PeerSource::new(low(7), 4662),
+                rmule_primitives::Informant::Own,
+            ),
             None,
         )
         .expect("candidate");
@@ -506,6 +520,7 @@ mod tests {
                 },
                 Some(hash(0xAB)),
                 Some(SourceCryptOptions::from_byte(connect_options)),
+                rmule_primitives::Informant::Own,
             )
         };
 
@@ -593,7 +608,9 @@ mod tests {
             }],
         );
         let rows = decode_source_result(&served[0]).expect("rmule reads its own storer's row");
-        let row = rows[0].sighting().expect("a buddy row is a sighting");
+        let row = rows[0]
+            .sighting(rmule_primitives::Informant::Own)
+            .expect("a buddy row is a sighting");
         assert_eq!(row.peer_source(), None, "a row with a road is not rescued");
 
         let candidate =
@@ -637,6 +654,7 @@ mod tests {
                 },
                 Some(hash(0xAB)),
                 Some(SourceCryptOptions::from_byte(0x08)),
+                rmule_primitives::Informant::Own,
             ),
             None,
         )
@@ -662,7 +680,10 @@ mod tests {
         let ours = Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 1), 4661);
         let next = Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 2), 4661);
         let connected = LowIdCandidate::from_sighting(
-            SourceSighting::plain(PeerSource::new(low(7), 4662)),
+            SourceSighting::plain(
+                PeerSource::new(low(7), 4662),
+                rmule_primitives::Informant::Own,
+            ),
             Some(ours),
         )
         .expect("candidate");
@@ -670,7 +691,10 @@ mod tests {
         assert!(!connected.natt_facts(Some(next)).admits_coordinator());
 
         let global = LowIdCandidate::from_sighting(
-            SourceSighting::plain(PeerSource::new(low(7), 4662)),
+            SourceSighting::plain(
+                PeerSource::new(low(7), 4662),
+                rmule_primitives::Informant::Own,
+            ),
             Some(next),
         )
         .expect("candidate");
