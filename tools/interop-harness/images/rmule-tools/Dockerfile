@@ -41,10 +41,10 @@ FROM debian:bookworm-slim
 LABEL org.rmule.bench=1
 # iproute2 backs the LAN default-route knob the entrypoint applies (ADR-0092):
 # a driver on a NAT gateway's LAN has no egress until its default route points
-# at the gateway.
+# at the gateway. iptables backs its forced-Low-ID knob.
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends iproute2 \
+    && apt-get install -y --no-install-recommends iproute2 iptables \
     && rm -rf /var/lib/apt/lists/*
 COPY rmule-tools /usr/bin/rmule-tools
 COPY entrypoint.sh /entrypoint.sh

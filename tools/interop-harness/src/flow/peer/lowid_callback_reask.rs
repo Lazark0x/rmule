@@ -379,7 +379,7 @@ fn save_logs(bench: &Bench, container: &str, path: &Path) -> Result<()> {
 
 /// A stock aMule on the bench at `ip`, logged in to `ed2ksrv` with plain
 /// frames, so the server tap reads every one.
-fn amule_on_ed2ksrv(bench: &Bench, image: &str, name: &str, ip: &str) -> RunContainer {
+pub(super) fn amule_on_ed2ksrv(bench: &Bench, image: &str, name: &str, ip: &str) -> RunContainer {
     RunContainer::new(image.to_owned())
         .detach()
         .name(name)

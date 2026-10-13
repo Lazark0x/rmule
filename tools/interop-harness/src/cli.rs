@@ -31,6 +31,7 @@ pub(crate) mod nat;
 pub(crate) mod packed_source_exchange;
 pub(crate) mod partial_share;
 pub(crate) mod peer;
+pub(crate) mod server_callback_serve;
 pub(crate) mod streaming_window;
 pub(crate) mod sweep_follows_list;
 

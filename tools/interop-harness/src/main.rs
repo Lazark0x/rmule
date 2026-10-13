@@ -53,6 +53,10 @@ use crate::cli::peer::{
     PeerUdpReaskScoreArgs, amule_direct_sui, peer_udp_reask, peer_udp_reask_emit,
     peer_udp_reask_emit_score, peer_udp_reask_score,
 };
+use crate::cli::server_callback_serve::{
+    ServerCallbackServeArgs, ServerCallbackServeScoreArgs, server_callback_serve,
+    server_callback_serve_score,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "rmule-interop-harness")]
@@ -316,6 +320,17 @@ enum HarnessCommand {
     /// its own taps and logs, without driving the flow again.
     #[command(name = "peer-lowid-callback-reask-score")]
     PeerLowIdCallbackReaskScore(PeerLowIdCallbackReaskScoreArgs),
+    /// The server-callback-serve flow: ed2ksrv, a Low-ID rmule sharer (its
+    /// listener's inbound TCP dropped) and a High-ID stock aMule downloading
+    /// the file through the server's callback relay: OP_CALLBACKREQUEST,
+    /// OP_CALLBACKREQUESTED, rmule's dial-back, a byte-equal upload. Taps in
+    /// the server's and rmule's namespaces.
+    #[command(name = "server-callback-serve")]
+    ServerCallbackServe(ServerCallbackServeArgs),
+    /// Score a finished or archived `server-callback-serve` run dir from its
+    /// own taps and the downloader's copy, without driving the flow again.
+    #[command(name = "server-callback-serve-score")]
+    ServerCallbackServeScore(ServerCallbackServeScoreArgs),
     /// Score a finished (or archived) `peer-udp-reask-emit` run dir from its
     /// own tap and write its verdict file, without driving the flow again.
     #[command(name = "peer-udp-reask-emit-score")]
@@ -381,6 +396,7 @@ impl HarnessCommand {
         match self {
             Self::PeerUdpReaskScore(args) => Some(&args.run_dir),
             Self::PeerLowIdCallbackReaskScore(args) => Some(&args.run_dir),
+            Self::ServerCallbackServeScore(args) => Some(&args.run_dir),
             Self::PeerUdpReaskEmitScore(args) => Some(&args.run_dir),
             Self::PeerStreamingWindowScore(args) => Some(&args.run_dir),
             Self::PeerPartialShareScore(args) => Some(&args.run_dir),
@@ -398,6 +414,7 @@ impl HarnessCommand {
             Self::Ed2kFrames { .. }
                 | Self::PeerUdpReaskScore(_)
                 | Self::PeerLowIdCallbackReaskScore(_)
+                | Self::ServerCallbackServeScore(_)
                 | Self::PeerUdpReaskEmitScore(_)
                 | Self::PeerStreamingWindowScore(_)
                 | Self::PeerPartialShareScore(_)
@@ -537,6 +554,12 @@ fn dispatch(command: HarnessCommand) -> Result<()> {
         }
         HarnessCommand::PeerLowIdCallbackReaskScore(args) => {
             peer_lowid_callback_reask_score(args)?;
+        }
+        HarnessCommand::ServerCallbackServe(args) => {
+            server_callback_serve(args)?;
+        }
+        HarnessCommand::ServerCallbackServeScore(args) => {
+            server_callback_serve_score(args)?;
         }
         HarnessCommand::PeerUdpReaskEmitScore(args) => {
             peer_udp_reask_emit_score(args)?;
