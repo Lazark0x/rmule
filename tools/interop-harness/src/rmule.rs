@@ -238,6 +238,7 @@ impl RmuleWorkspace {
     /// rustup reach the registry. Foreground and cached: a warm run returns in
     /// seconds.
     fn prebuild_command(&self, docker: &Docker) -> Result<DockerCommand> {
+        crate::run_record::expect_binary(&self.target_cache()?.join("debug/rmule-tools"));
         Ok(docker.run_container(
             RunContainer::new(self.image.clone())
                 .remove_after_exit()

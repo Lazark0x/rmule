@@ -145,6 +145,7 @@ impl Counterparty {
         let labels = self.read(docker, image);
         let off_pin = std::env::var(self.off_pin_env).is_ok_and(|value| value == "1");
         self.admit(image, &labels, off_pin)?;
+        crate::run_record::note_image(docker, image, false);
         Ok(PinnedImage {
             counterparty: self,
             image: image.to_owned(),

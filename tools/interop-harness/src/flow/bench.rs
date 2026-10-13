@@ -495,7 +495,9 @@ impl Bench {
         server: RunContainer,
     ) -> Result<()> {
         self.server_started = true;
+        let image = server.image().to_string_lossy().into_owned();
         let id = run_checked(self.docker.run_container(server), "run server container")?;
+        crate::run_record::note_image(&self.docker, &image, false);
         write_id(
             &layout.server_container_id_file(),
             fallback_id(&id, &self.names.server_container_name),
@@ -595,7 +597,9 @@ impl Bench {
         timeout: Duration,
     ) -> Result<()> {
         self.amule_started = true;
+        let image = amule.image().to_string_lossy().into_owned();
         let id = run_checked(self.docker.run_container(amule), "run aMule container")?;
+        crate::run_record::note_image(&self.docker, &image, false);
         write_id(
             &layout.amule_container_id_file(),
             fallback_id(&id, &self.names.amule_container_name),
@@ -687,7 +691,9 @@ impl Bench {
         phase: &str,
     ) -> Result<()> {
         self.track(name);
+        let image = container.image().to_string_lossy().into_owned();
         run_checked(self.docker.run_container(container), phase)?;
+        crate::run_record::note_image(&self.docker, &image, false);
         Ok(())
     }
 

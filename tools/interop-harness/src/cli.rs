@@ -78,7 +78,10 @@ pub(crate) fn create_run_dir(run_root: &Path) -> Result<PathBuf> {
         };
         let run_dir = run_root.join(name);
         match std::fs::create_dir(&run_dir) {
-            Ok(()) => return Ok(run_dir),
+            Ok(()) => {
+                rmule_interop_harness::run_record::begin(&run_dir)?;
+                return Ok(run_dir);
+            }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
                 return Err(error).with_context(|| format!("create run dir {}", run_dir.display()));

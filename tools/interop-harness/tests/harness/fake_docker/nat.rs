@@ -174,13 +174,13 @@ fn ipv6_net_accept_builds_natgw_then_rebuilds_natprobe_without_build_images() {
 /// Build Log Docker, whose images carry no label. `kno_recipe` is the kno build
 /// context; returns the command's result and the docker log.
 fn run_net_accept_with_kno(
+    run_root: &Path,
     kno_recipe: &Path,
     extra: &[&str],
     envs: &[(&str, &str)],
 ) -> (assert_cmd::assert::Assert, String) {
-    let run_root = tempfile::tempdir().unwrap();
     let fake_bin = tempfile::tempdir().unwrap();
-    let docker_log = run_root.path().join("docker.log");
+    let docker_log = run_root.join("docker.log");
     let docker = fake_build_log_docker(fake_bin.path(), &docker_log);
     let mut command = Command::cargo_bin("rmule-interop-harness").unwrap();
     command
@@ -196,7 +196,7 @@ fn run_net_accept_with_kno(
         .arg("--container-runtime")
         .arg(&docker)
         .arg("--run-root")
-        .arg(run_root.path())
+        .arg(run_root)
         .arg("--amule-kno-build-context")
         .arg(kno_recipe)
         .args(["--natgw-build-context", &image_dir("natgw")])
@@ -227,7 +227,9 @@ fn build_images_builds_kno_through_the_recipes_build_script() {
 
     // Off the pin on purpose: the stub stamps no label, and this test is about
     // how the image is built, not about starting it.
+    let run_root = tempfile::tempdir().unwrap();
     let (_, log) = run_net_accept_with_kno(
+        run_root.path(),
         recipe.path(),
         &["--build-images"],
         &[("RMULE_BENCH_AMULE_KNO_OFF_PIN", "1")],
@@ -249,7 +251,9 @@ fn build_images_builds_kno_through_the_recipes_build_script() {
 #[test]
 fn a_kno_image_off_the_pin_is_refused_before_it_starts() {
     let recipe = tempfile::tempdir().unwrap();
-    let (assert, log) = run_net_accept_with_kno(recipe.path(), &["--skip-build"], &[]);
+    let run_root = tempfile::tempdir().unwrap();
+    let (assert, log) =
+        run_net_accept_with_kno(run_root.path(), recipe.path(), &["--skip-build"], &[]);
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
     assert!(
         stderr.contains("org.rmule.amule_kno.commit") && stderr.contains("amule-kno/build.sh"),
@@ -260,4 +264,35 @@ fn a_kno_image_off_the_pin_is_refused_before_it_starts() {
             .any(|line| line.starts_with("run") && line.contains("amule-kno")),
         "kno's container never started:\n{log}"
     );
+}
+
+/// Every run leaves a `run.toml` the harness wrote itself: the commit it was
+/// built from, and the end of the run — written although the flow failed.
+#[test]
+fn a_failed_run_still_leaves_its_run_record() {
+    let recipe = tempfile::tempdir().unwrap();
+    let run_root = tempfile::tempdir().unwrap();
+    let (assert, _) =
+        run_net_accept_with_kno(run_root.path(), recipe.path(), &["--skip-build"], &[]);
+    assert.failure();
+
+    let run_dir = std::fs::read_dir(run_root.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.join("run.toml").is_file())
+        .expect("a run dir holding run.toml");
+    let record: toml::Table = std::fs::read_to_string(run_dir.join("run.toml"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let head = std::process::Command::new("git")
+        .args(["-C", env!("CARGO_MANIFEST_DIR"), "rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        record["harness_commit"].as_str().unwrap(),
+        String::from_utf8_lossy(&head.stdout).trim()
+    );
+    assert_eq!(record["outcome"].as_str(), Some("error"));
+    assert!(record["duration_ms"].as_integer().is_some(), "{record:?}");
 }

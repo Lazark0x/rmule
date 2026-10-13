@@ -7,6 +7,8 @@
 //! holds no orchestration of its own.
 #![warn(missing_docs)]
 
+use std::path::Path;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
@@ -361,14 +363,31 @@ enum HarnessCommand {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let reads_only = cli.command.reads_only();
+    let scored = cli.command.scored_run_dir().map(Path::to_owned);
     let result = dispatch(cli.command);
     if !reads_only {
+        rmule_interop_harness::run_record::finish(result.is_err());
         sweep_dangling_bench_stage_images();
+    } else if let (Some(run_dir), Ok(())) = (scored, &result) {
+        rmule_interop_harness::run_record::rescored(&run_dir);
     }
     result
 }
 
 impl HarnessCommand {
+    /// The retained run dir a score subcommand reads, so the re-score can note
+    /// itself in that run's record.
+    fn scored_run_dir(&self) -> Option<&Path> {
+        match self {
+            Self::PeerUdpReaskScore(args) => Some(&args.run_dir),
+            Self::PeerLowIdCallbackReaskScore(args) => Some(&args.run_dir),
+            Self::PeerUdpReaskEmitScore(args) => Some(&args.run_dir),
+            Self::PeerStreamingWindowScore(args) => Some(&args.run_dir),
+            Self::PeerPartialShareScore(args) => Some(&args.run_dir),
+            _ => None,
+        }
+    }
+
     /// Whether the subcommand only reads a retained run: it builds nothing,
     /// so it leaves the image store alone. Its sweep would race a build
     /// running beside it: the legacy builder's step images stay untagged

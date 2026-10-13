@@ -43,6 +43,7 @@ const ENTRYPOINT: &str = "entrypoint.sh";
 /// step.
 pub(crate) fn build(docker: &Docker, tag: &str, dockerfile: &Path, workspace: &Path) -> Result<()> {
     let binary = crate::rmule::prebuild_driver_binary(docker, workspace)?;
+    crate::run_record::note_binary(&binary);
     let context = stage_context(workspace, dockerfile, &binary)?;
     let phase = "build rmule-tools driver image";
     let command = docker.build_image_with_dockerfile(
@@ -50,14 +51,18 @@ pub(crate) fn build(docker: &Docker, tag: &str, dockerfile: &Path, workspace: &P
         context.join("Dockerfile").as_os_str(),
         context.as_os_str(),
     );
-    match run_checked(command.clone(), phase) {
+    let built = match run_checked(command.clone(), phase) {
         Ok(_) => Ok(()),
         Err(err) if is_retriable_build_export_failure(&err.to_string()) => {
             println!("{phase}: retrying once after a legacy-builder export flake: {err}");
             run_checked(command, phase).map(|_| ())
         }
         Err(err) => Err(err),
+    };
+    if built.is_ok() {
+        crate::run_record::note_image(docker, tag, true);
     }
+    built
 }
 
 /// Lay the recipe's `Dockerfile` and entrypoint and the prebuilt `binary` out

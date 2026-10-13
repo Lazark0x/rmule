@@ -327,6 +327,18 @@ impl Docker {
         ])
     }
 
+    /// `docker image inspect -f '{{.Id}}' <tag>` — the image's content id, which
+    /// tells two builds of one tag apart.
+    pub fn image_id(&self, tag: impl Into<OsString>) -> DockerCommand {
+        self.command(vec![
+            OsString::from("image"),
+            OsString::from("inspect"),
+            OsString::from("-f"),
+            OsString::from("{{.Id}}"),
+            tag.into(),
+        ])
+    }
+
     /// `docker info --format <format>` — what **Bench Doctor** reads the daemon's
     /// own capability report out of.
     pub fn info(&self, format: impl Into<OsString>) -> DockerCommand {
@@ -552,6 +564,11 @@ pub struct RunContainer {
 }
 
 impl RunContainer {
+    /// The image the container starts from.
+    pub fn image(&self) -> &OsStr {
+        &self.image
+    }
+
     /// Run `image` with no options yet.
     pub fn new(image: impl Into<OsString>) -> Self {
         Self {

@@ -231,6 +231,14 @@ overrides it (the fake-docker suite sets `0`). Not a Readiness Gate — nothing 
 polled — and not a Tap window, which is observation after the stimulus.
 _Avoid_: publish window, sleep, warm-up
 
+**Run Record**:
+The `run.toml` the harness itself writes into every Run Dir: when the run began and
+ended, the commit and dirty state of the harness workspace, the hash of the `rmule-tools`
+binary (or the id of the Driver Image) under test, the ids of the images the run started,
+and how it ended. It is what lets "mine before running" tell an unchanged build from a
+changed one; a re-score only appends `rescored_at`.
+_Avoid_: run metadata, resolved config (that is the flow's options only)
+
 **Driver Image**:
 The `rmule-tools` image every UDP or in-network driver runs from. It is not compiled
 by `docker build`: the binary comes from the shared target cache (the warm

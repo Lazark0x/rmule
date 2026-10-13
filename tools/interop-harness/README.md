@@ -466,6 +466,7 @@ Each run writes:
 ```text
 .scratch/interop-runs/<timestamp>/
   resolved-config.toml
+  run.toml
   synthetic/shared.bin
   synthetic/shared.ed2k.txt
   rmule/rmule.redb
@@ -480,6 +481,20 @@ Each run writes:
   docker/server-container-id.txt
   docker/amule-container-id.txt
 ```
+
+`resolved-config.toml` holds the flow's options. `run.toml` is the run record the
+harness writes itself, whether the flow passed or not: `started_unix_ms`,
+`harness_commit` (`git rev-parse HEAD` of the workspace the harness was built
+from), `dirty` and `dirty_paths` (a count, not the paths), `rmule_binary_sha256`
+of the prebuilt `rmule-tools` under test and `rmule_image_id` of the driver
+image, `counterparty_images` (image tag to image id for every image the run
+started), and at the end `finished_unix_ms`, `duration_ms` and `outcome`
+(`pass`, `fail`, `skip` or `error`: an error returned by the flow, a `FAIL` or
+all-`SKIPPED` set of verdict files, otherwise `pass`). Tags alone do not tell two
+builds apart, so a repeat of a flow with the same options is redundant only when
+the commit, `dirty` and the binary hash or image id all match. Verdict bodies
+name rmule as `<commit>[+dirty] sha256 <prefix>` from the same record. A re-score
+of a retained run never rewrites the record; it appends one `rescored_at` line.
 
 Use `--keep-containers` to leave the containers and network running. The harness prints retained container and network names in that mode.
 
