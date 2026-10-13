@@ -19,7 +19,7 @@ use crate::download::state::DownloadState;
 use crate::file_key::FileKey;
 use crate::served_downloads::PartFileIdentity;
 use crate::service::DownloadId;
-use crate::storage::{DownloadRepository, ResolvedAuthority};
+use crate::storage::DownloadRepository;
 
 use super::RunnerContext;
 
@@ -32,11 +32,7 @@ pub(super) async fn lease_started<S, P>(runner: &RunnerContext<S, P>, download_i
     if let Some(identity) = held_identity(runner, false).await {
         lease.record_identity(identity);
     }
-    let set = match runner.rt.store.hash_authority(download_id) {
-        Ok(ResolvedAuthority::Link(hashes) | ResolvedAuthority::Provisional(hashes)) => hashes,
-        Ok(ResolvedAuthority::FileHashOnly) | Err(_) => Vec::new(),
-    };
-    rule_range(runner, download_id, &set);
+    rule_recorded_range(runner, download_id);
 }
 
 /// Rule the Verified Range from the parts the store records against `set`.
@@ -62,6 +58,20 @@ pub(super) fn rule_range<S, P>(
     }
 }
 
+/// [`rule_range`] against the set the store records in force. A store that
+/// cannot read the set leaves the range as it was, as one that cannot list
+/// the parts does.
+pub(super) fn rule_recorded_range<S, P>(runner: &RunnerContext<S, P>, download_id: DownloadId) {
+    match runner.rt.store.hash_authority(download_id) {
+        Ok(authority) => rule_range(runner, download_id, &authority.into_part_hashes()),
+        Err(error) => tracing::warn!(
+            download_id = download_id.as_u64(),
+            %error,
+            "the part hash set could not be read from the store"
+        ),
+    }
+}
+
 /// [`rule_range`] against the set the brain holds in force.
 pub(super) fn rule_range_of<S, P>(
     runner: &RunnerContext<S, P>,
@@ -83,11 +93,7 @@ pub(super) async fn in_place<S, P>(
     let Some(lease) = &runner.served else {
         return;
     };
-    let set = match runner.rt.store.hash_authority(download_id) {
-        Ok(ResolvedAuthority::Link(hashes) | ResolvedAuthority::Provisional(hashes)) => hashes,
-        Ok(ResolvedAuthority::FileHashOnly) | Err(_) => Vec::new(),
-    };
-    rule_range(runner, download_id, &set);
+    rule_recorded_range(runner, download_id);
     lease.bytes_in_place(path, identity_at(path).await);
 }
 

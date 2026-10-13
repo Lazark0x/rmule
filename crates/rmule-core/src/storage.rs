@@ -37,6 +37,37 @@ pub enum ResolvedAuthority {
     FileHashOnly,
 }
 
+impl ResolvedAuthority {
+    /// The part hashes in force, in part order: none for
+    /// [`Self::FileHashOnly`].
+    #[must_use]
+    pub fn into_part_hashes(self) -> Vec<PartHash> {
+        match self {
+            Self::Link(hashes) | Self::Provisional(hashes) => hashes,
+            Self::FileHashOnly => Vec::new(),
+        }
+    }
+}
+
+/// The part hashes `store` holds in force for `download_id`, in part order:
+/// none when it holds none, and none when it cannot read them, which is said.
+pub(crate) fn recorded_part_hashes<R: DownloadRepository + ?Sized>(
+    store: &R,
+    download_id: DownloadId,
+) -> Vec<PartHash> {
+    match store.hash_authority(download_id) {
+        Ok(authority) => authority.into_part_hashes(),
+        Err(error) => {
+            tracing::warn!(
+                download_id = download_id.as_u64(),
+                %error,
+                "the part hash set could not be read from the store"
+            );
+            Vec::new()
+        }
+    }
+}
+
 /// The precedence rule behind [`DownloadRepository::hash_authority`], shared by
 /// both adapters so it resolves identically: the canonical link's `p=` set
 /// wins, else the recorded provisional hashes, else file-hash-only.

@@ -25,7 +25,7 @@ use super::{RunnerContext, served, stop_reason, wait_until_stop};
 use crate::content::{ContentFileStore, on_pool};
 use crate::error::{DownloadFailure, FinalizeError, StorageIntegrityFault};
 use crate::service::{CompletionStep, DownloadEvent, DownloadId, send_download_event};
-use crate::storage::{DownloadRepository, ResolvedAuthority};
+use crate::storage::DownloadRepository;
 use crate::{DownloadLifecycle, DownloadPaths};
 
 mod across;
@@ -466,11 +466,7 @@ async fn repair<S, P>(runner: &RunnerContext<S, P>, download_id: DownloadId) -> 
     {
         return DownloadFailure::StoreFailed;
     }
-    let set = match runner.rt.store.hash_authority(download_id) {
-        Ok(ResolvedAuthority::Link(hashes) | ResolvedAuthority::Provisional(hashes)) => hashes,
-        Ok(ResolvedAuthority::FileHashOnly) | Err(_) => Vec::new(),
-    };
-    served::rule_range(runner, download_id, &set);
+    served::rule_recorded_range(runner, download_id);
     failure
 }
 

@@ -16,7 +16,7 @@ use crate::diagnostics::DiagnosticsState;
 use crate::download::source_seeds::SourceSeed;
 use crate::served_downloads::ServedDownloads;
 use crate::service::{CoreEvent, DownloadEvent, DownloadId, send_download_event};
-use crate::storage::{DownloadRepository, ResolvedAuthority};
+use crate::storage::{DownloadRepository, recorded_part_hashes};
 use crate::store::download::DurableDownloadRepository;
 use crate::{DownloadFailure, DownloadLifecycle};
 
@@ -53,11 +53,7 @@ pub(in crate::service::actor) async fn attach_downloads(
         let parts = store.verified_parts(download_id).unwrap_or_default();
         let verified_bytes = parts.iter().map(|part| part.len).sum();
         let held: Vec<u32> = parts.iter().map(|part| part.part_index).collect();
-        let set = match store.hash_authority(download_id) {
-            Ok(ResolvedAuthority::Link(hashes) | ResolvedAuthority::Provisional(hashes)) => hashes,
-            Ok(ResolvedAuthority::FileHashOnly) | Err(_) => Vec::new(),
-        };
-        served.install(&record, &set);
+        served.install(&record, &recorded_part_hashes(store, download_id));
         diagnostics.rest_download(
             download_id,
             record.file_hash(),

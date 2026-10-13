@@ -13,7 +13,7 @@ use crate::adapters::{
 };
 use crate::served_downloads::{OfferChange, PartialEnd, RunLease};
 use crate::service::{DownloadId, ServeEvent};
-use crate::storage::{DownloadRepository, ResolvedAuthority};
+use crate::storage::{DownloadRepository, recorded_part_hashes};
 use crate::{DownloadLifecycle, DurableDownloadRecord};
 
 use super::{CoreActor, send_event};
@@ -36,12 +36,9 @@ where
     }
 
     /// The part hash set the store holds in force for `download_id`; empty
-    /// when it holds none.
+    /// when it holds none or cannot read it.
     pub(super) fn recorded_set(&self, download_id: DownloadId) -> Vec<PartHash> {
-        match self.wiring.store.hash_authority(download_id) {
-            Ok(ResolvedAuthority::Link(hashes) | ResolvedAuthority::Provisional(hashes)) => hashes,
-            Ok(ResolvedAuthority::FileHashOnly) | Err(_) => Vec::new(),
-        }
+        recorded_part_hashes(&*self.wiring.store, download_id)
     }
 
     /// The lease on `file_hash`'s entry for run `run`; `None` when the file

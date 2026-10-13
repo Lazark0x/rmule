@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 
 use crate::registry_check::{WithheldReason, WithheldRows};
 use crate::service::{CoreEvent, DownloadId, ServeEvent};
-use crate::storage::{DownloadRepository, ResolvedAuthority};
+use crate::storage::DownloadRepository;
 use crate::{CoreError, DownloadLifecycle, DurableDownloadRecord};
 
 /// How a file came to be shared. Distinguishes a row a lone-file share wrote
@@ -148,8 +148,7 @@ where
     // Ask the seam one question — the effective per-part authority — and map its
     // answer to the hashes the auto-shared file replies to hash-set probes with.
     let part_hashes = match store.hash_authority(download_id) {
-        Ok(ResolvedAuthority::Link(hashes) | ResolvedAuthority::Provisional(hashes)) => hashes,
-        Ok(ResolvedAuthority::FileHashOnly) => Vec::new(),
+        Ok(authority) => authority.into_part_hashes(),
         Err(error) => {
             tracing::warn!(
                 download_id = download_id.as_u64(),
