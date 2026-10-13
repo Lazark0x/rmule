@@ -1,3 +1,6 @@
+//! The Served Downloads cell on its own: who is a member, one writer per
+//! entry, when an entry is offered, and what each look reports.
+
 use rmule_primitives::{Ed2kFileLink, Ed2kText};
 
 use super::*;

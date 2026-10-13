@@ -1,3 +1,7 @@
+//! The run's writes to its Served Download, driven through the enactor:
+//! the range before the next decision, a set that arrives late or disproves
+//! a part, and the identity a pause leaves.
+
 use std::collections::{HashSet, VecDeque};
 use std::net::Ipv4Addr;
 use std::path::Path;
