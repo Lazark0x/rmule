@@ -9,7 +9,8 @@ use rmule_primitives::{Ed2kFileClass, UserHash};
 
 use crate::bootstrap_fetch::BootstrapFetchArgs;
 use crate::download::{
-    DownloadPauseArgs, DownloadResumeArgs, DownloadStartArgs, DownloadStatusArgs,
+    DownloadPauseArgs, DownloadReopenArgs, DownloadResumeArgs, DownloadStartArgs,
+    DownloadStatusArgs,
 };
 use crate::ed2k::{
     LiveCaptureArgs, SearchWireArgs, SentinelStimulusArgs, ServerProbeArgs, SliceCaptureArgs,
@@ -285,6 +286,10 @@ pub(crate) enum DownloadCommand {
     Pause(DownloadPauseArgs),
     /// List resumable diagnostic durable downloads.
     Status(DownloadStatusArgs),
+    /// Open a past run's Durable Store as a restarted node does and serve
+    /// what it holds, resuming nothing: each queued or paused download is
+    /// offered once its Offer Check has read its parts again (ADR-0113).
+    Reopen(DownloadReopenArgs),
 }
 
 #[derive(Debug, Subcommand)]

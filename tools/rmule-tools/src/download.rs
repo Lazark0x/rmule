@@ -24,8 +24,13 @@ use crate::operand::{parse_hex16, parse_seeded_kad_contacts};
 use crate::serve::PeerCryptPolicyArg;
 use crate::serve::crypt_flip;
 use endings::{Endings, Noted};
+use served::{Gate, GateArgs, Gates, ServedArgs};
 
 mod endings;
+mod reopen;
+mod served;
+
+pub(crate) use reopen::{DownloadReopenArgs, reopen};
 
 #[derive(Debug, Args)]
 pub(crate) struct DownloadStartArgs {
@@ -59,7 +64,8 @@ pub(crate) struct DownloadStartArgs {
     /// Also bind the inbound peer listener on `0.0.0.0:<tcp-port>` while
     /// downloading. This makes rmule reachable (High ID) and callback-capable
     /// (ADR-0039), so a discovered Low-ID source can be called back and adopted.
-    /// No files are shared; the bound listener is the point.
+    /// Peers it accepts are answered for each download from its verified parts
+    /// (ADR-0113); `--share` adds whole files beside them.
     #[arg(long)]
     serve: bool,
     /// Optional overall deadline in seconds for a *bounded* run. When set and the
@@ -105,6 +111,10 @@ pub(crate) struct DownloadStartArgs {
     /// policy the run starts under.
     #[arg(long, value_parser = crypt_flip::parse)]
     peer_crypt_flip: Vec<crypt_flip::CryptFlip>,
+    #[command(flatten)]
+    served: ServedArgs,
+    #[command(flatten)]
+    gates: GateArgs,
     #[command(flatten)]
     identity: DownloadIdentityArgs,
 }
@@ -182,24 +192,26 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
         }
     }
     let store = open_store(&args.data_dir)?;
-    let mut config = CoreConfig::default();
+    let mut config = args.served.config(CoreConfig::default());
     if let Some(concurrency) = args.peer_concurrency {
         config.peer_concurrency_per_download = concurrency;
     }
     if let Some(parts) = args.streaming_window {
         config.streaming_window_parts = parts;
     }
-    let settings = args.identity.settings(rmule_core::CoreSettings {
-        udp_port: args.udp_port,
-        obfuscation: args.peer_crypt.map(rmule_core::ObfuscationPolicy::from),
-        download_dir: Some(crate::output::download_dir(&args.out)?),
-        ..rmule_core::CoreSettings::default()
-    });
+    let settings = args
+        .served
+        .settings(args.identity.settings(rmule_core::CoreSettings {
+            udp_port: args.udp_port,
+            obfuscation: args.peer_crypt.map(rmule_core::ObfuscationPolicy::from),
+            download_dir: Some(crate::output::download_dir(&args.out)?),
+            ..rmule_core::CoreSettings::default()
+        }));
     // One production core either way: with `--serve` it also
     // binds the inbound listener (earning High ID + Callback Capability,
     // ADR-0039) and shares the one Low-ID callback table so the accept-router
-    // can adopt a called-back source. No files are shared — only the bound
-    // listener matters. Without it the same wiring simply never serves.
+    // can adopt a called-back source. Without it the same wiring simply never
+    // serves.
     let builder = args.identity.core_builder(config, settings, store)?;
     // A pinned `--kad-id-hex` places the node; otherwise its store mints one.
     let mut core = match args.kad_id_hex.as_deref() {
@@ -223,7 +235,7 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
             let Some(event) = core.next_event().await else {
                 anyhow::bail!("serve event stream ended before ServingStarted");
             };
-            println!("{}", event.record().render(Level::Full));
+            args.served.take(&core, &event).await?;
             match event {
                 CoreEvent::Serve(rmule_core::ServeEvent::ServingStarted { .. }) => break,
                 CoreEvent::Serve(rmule_core::ServeEvent::ServingFailed { reason }) => {
@@ -240,6 +252,9 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
         core.send(CoreCommand::EnableKad(kad_enable_config(&args)?))
             .await?;
     }
+    let mut shared = args.served.share_at_start(&mut core).await?;
+    let mut gates = Gates::new(&args.gates);
+    let mut lingering = false;
 
     // The operator's word, given on the command line (ADR-0095): the one
     // login, which binds the listener if `--serve` has not, then the download
@@ -281,6 +296,7 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
             Deadline,
             Flip,
             PartsTick,
+            Gates,
             Event(Option<CoreEvent>),
         }
         let step = tokio::select! {
@@ -303,6 +319,7 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
                     None => std::future::pending().await,
                 }
             } => Step::PartsTick,
+            () = gates.tick() => Step::Gates,
             event = core.next_event() => Step::Event(event),
         };
         let event = match step {
@@ -321,6 +338,28 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
                 print_parts_tick(&core);
                 continue;
             }
+            Step::Gates => match gates.look() {
+                Gate::Shut => continue,
+                Gate::Pause => {
+                    let ids: Vec<u64> = endings.queued().collect();
+                    served::pause_then_share(
+                        &mut core,
+                        &ids,
+                        &args.gates.share_after_pause,
+                        &mut shared,
+                    )
+                    .await?;
+                    continue;
+                }
+                Gate::Stop => {
+                    println!(
+                        "download stop_gate id={} at_unix_ms={}",
+                        endings.first().map_or(0, |id| id.as_u64()),
+                        served::unix_ms()
+                    );
+                    break endings.verdict();
+                }
+            },
             Step::Event(event) => event,
         };
         let Some(event) = event else {
@@ -329,7 +368,7 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
                 endings.queued().collect::<Vec<_>>()
             ));
         };
-        println!("{}", event.record().render(Level::Full));
+        args.served.take(&core, &event).await?;
         let CoreEvent::Download(event) = event else {
             continue;
         };
@@ -343,7 +382,14 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
                     .map_or_else(|| "-".to_owned(), |path| path.display().to_string())
             ),
         }
-        if endings.all_ended() {
+        if endings.all_ended() && !lingering {
+            // A peer mid-upload when the last download ended is served on,
+            // from the final path, until the deadline.
+            if args.served.linger && deadline.is_some() {
+                lingering = true;
+                println!("download all_ended lingering=yes");
+                continue;
+            }
             if args.serve {
                 core.send(CoreCommand::Serve(CoreServeCommand::StopServing))
                     .await?;
