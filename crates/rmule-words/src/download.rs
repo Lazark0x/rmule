@@ -451,17 +451,21 @@ pub fn part_file_lost(name: &str, found: PartFileChange, lost: PartsLost) -> Sen
 pub fn hole_less_destination(name: &str, directory: &Path) -> Sentence {
     Sentence::owned(format!(
         "{name}: {}; the download goes on — {HOLE_LESS_REMEDY}",
-        hole_less_words(directory)
+        hole_less_where(directory)
     ))
 }
 
-/// What a disk that holds no holes costs the part file there.
-fn hole_less_words(directory: &Path) -> String {
+/// Where the part file lies, and what the disk there costs it.
+fn hole_less_where(directory: &Path) -> String {
     format!(
-        "the disk under {} holds no holes, so the part file takes its full length on disk up to its last verified part",
+        "its part file lies in {}; {HOLE_LESS}",
         directory.display()
     )
 }
+
+/// The `HoleLess` verdict: what a disk that holds no holes costs the part
+/// file there. The edge's sentence and the On disk row both say it.
+const HOLE_LESS: &str = "this disk holds no holes, so the part file takes its full length on disk up to its last verified part";
 
 /// How the operator keeps the next downloads off a disk that holds no holes.
 const HOLE_LESS_REMEDY: &str =
@@ -478,9 +482,7 @@ pub fn on_disk(allocated: Option<u64>, verdict: Option<HoleVerdict>) -> String {
         HoleVerdict::HoldsHoles => {
             "this disk holds holes, so the part file takes only the parts written".to_string()
         }
-        HoleVerdict::HoleLess => "this disk holds no holes, so the part file takes its full \
-             length up to its last verified part"
-            .to_string(),
+        HoleVerdict::HoleLess => HOLE_LESS.to_string(),
         HoleVerdict::Unknown(kind) => {
             format!("the disk was not measured: {}", kind_words(kind))
         }
@@ -853,7 +855,7 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
             "waiting for a connection (no server session, Kad off)".to_string()
         }
         D::HoleLessDestination { directory, .. } => {
-            format!("{}; {HOLE_LESS_REMEDY}", hole_less_words(directory))
+            format!("{}; {HOLE_LESS_REMEDY}", hole_less_where(directory))
         }
         // The line a one-shot download prints, so the two front ends say a
         // step of the move one way.
@@ -892,17 +894,17 @@ mod tests {
         let directory = Path::new("/Volumes/Мой диск/Temp files");
         assert_eq!(
             hole_less_destination("Ünïcode film.mkv", directory).as_str(),
-            "Ünïcode film.mkv: the disk under /Volumes/Мой диск/Temp files holds no holes, \
-             so the part file takes its full length on disk up to its last verified part; \
-             the download goes on — downloads started with the Temp Directory on another \
-             disk avoid this"
+            "Ünïcode film.mkv: its part file lies in /Volumes/Мой диск/Temp files; this disk \
+             holds no holes, so the part file takes its full length on disk up to its last \
+             verified part; the download goes on — downloads started with the Temp Directory \
+             on another disk avoid this"
         );
         let line = log_line(&DownloadEvent::HoleLessDestination {
             download_id: DownloadId::from_u64(1),
             directory: directory.to_path_buf(),
         });
         assert!(
-            line.contains("the disk under /Volumes/Мой диск/Temp files holds no holes,"),
+            line.contains("its part file lies in /Volumes/Мой диск/Temp files; this disk"),
             "{line}"
         );
     }

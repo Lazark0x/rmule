@@ -11,11 +11,11 @@
 │            │ sources 8 known, 1 sending                       │            │
 │            │ on disk 64.9 MB allocated; this disk holds no    │            │
 └────────────│         holes, so the part file takes its full   │────────────┘
-┌ Sources · b│         length up to its last verified part      │  S reverse ┐
-│  Source ▲  │                                                  │  Speed     │
-│▸ 10.0.0.1:4│██████████░░░░░█████▓▓▓▓▓░░░░░█████▓▓▓▓▓░░░░░░░░░░│  98.7 KB/s │
-│  10.0.0.2:4└──────────────────────────────────────────────────┘  —         │
-│                                                                            │
+┌ Sources · b│         length on disk up to its last verified   │  S reverse ┐
+│  Source ▲  │         part                                     │  Speed     │
+│▸ 10.0.0.1:4│                                                  │  98.7 KB/s │
+│  10.0.0.2:4│██████████░░░░░█████▓▓▓▓▓░░░░░█████▓▓▓▓▓░░░░░░░░░░│  —         │
+│            └──────────────────────────────────────────────────┘            │
 │                                                                            │
 │                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘

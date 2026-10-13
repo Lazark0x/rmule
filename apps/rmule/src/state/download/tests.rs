@@ -421,16 +421,17 @@ fn a_hole_less_destination_sets_the_note_and_logs_its_line() {
     assert_eq!(
         state.notable.as_deref(),
         Some(
-            "bunny.mp4: the disk under /srv/rmule/Temp holds no holes, so the part file takes \
-             its full length on disk up to its last verified part; the download goes on — \
-             downloads started with the Temp Directory on another disk avoid this"
+            "bunny.mp4: its part file lies in /srv/rmule/Temp; this disk holds no holes, so \
+             the part file takes its full length on disk up to its last verified part; the \
+             download goes on — downloads started with the Temp Directory on another disk \
+             avoid this"
         )
     );
     assert_eq!(
         state.log.back().expect("the edge's log line").text,
-        "the disk under /srv/rmule/Temp holds no holes, so the part file takes its full length \
-         on disk up to its last verified part; downloads started with the Temp Directory on \
-         another disk avoid this"
+        "its part file lies in /srv/rmule/Temp; this disk holds no holes, so the part file \
+         takes its full length on disk up to its last verified part; downloads started with \
+         the Temp Directory on another disk avoid this"
     );
 }
 
