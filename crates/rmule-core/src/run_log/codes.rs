@@ -308,6 +308,7 @@ fn directory_refusal_as(
         R::InsideShared { parent } => record.code(name, "inside_shared").path("parent", parent),
         R::HoldsShared { child } => record.code(name, "holds_shared").path("child", child),
         R::HoldsTempDirectory => record.code(name, "holds_temp_directory"),
+        R::InsideTempDirectory => record.code(name, "inside_temp_directory"),
         R::DownloadDirectory => record.code(name, "download_directory"),
         R::NotShared => record.code(name, "not_shared"),
         R::StoreFailed => record.code(name, "store_failed"),

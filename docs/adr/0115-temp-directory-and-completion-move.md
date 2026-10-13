@@ -44,9 +44,13 @@ different volumes. The part file is deleted only after the finished file is in p
   valid UTF-8 or not absolute; a path that is not a directory or cannot be made. Inside the data
   directory is allowed; the default lies there.
 - **Symmetric.** A shared-directory add, and a download directory set, that is the Temp Directory
-  or holds it is refused (`DirectoryRefusal::HoldsTempDirectory`), so no part file of a new
-  download lies under a shared directory. The guard is judged again wherever ADR-0101 judges the
-  others again.
+  or holds it is refused (`DirectoryRefusal::HoldsTempDirectory`), and so is one inside it
+  (`DirectoryRefusal::InsideTempDirectory`): the Temp Directory and the Shared Directory List
+  never overlap, either way, so no part file of a new download lies under a shared directory and
+  nothing is shared from among them. The guard is judged again wherever ADR-0101 judges the
+  others again, and when the Temp Directory moves on a running core: an entry refused for the old
+  one is scanned once it passes, and an add still waiting on its confirm that the new one
+  overlaps is refused, its scan stopped and nothing stored.
 - **Older rows.** A row whose part file lies beside its final path keeps working, and its move is a
   rename within that directory. Those rows are now the only reason the scan skips part files by the
   rows that name them (ADR-0102).

@@ -308,6 +308,58 @@ where
         self.install_directories();
     }
 
+    /// The Temp Directory moved (the operator's set on a running core,
+    /// ADR-0115): every entry is judged again against it, as at attach, so
+    /// one refused for the old Temp Directory is scanned once it passes, and
+    /// an add waiting on its confirm that now is, holds or lies inside the
+    /// new one is refused, its scan stopped and nothing stored.
+    pub(super) async fn temp_directory_moved(&mut self, dir: PathBuf) {
+        self.directories.temp_dir = Some(dir);
+        let adding: Vec<PathBuf> = self
+            .activities
+            .scans()
+            .filter(|scan| matches!(scan.role, ScanRole::Adding { .. }))
+            .map(|scan| scan.dir.clone())
+            .collect();
+        for dir in adding {
+            if let Err(reason) = self.directories.guard_in_place(&dir) {
+                self.stop_scan(&dir).await;
+                self.refuse(dir, reason).await;
+            }
+        }
+        for dir in self.directories.added.clone() {
+            match self.directories.guard_in_place(&dir) {
+                Ok(()) => {
+                    self.directories.added_refused.remove(&dir);
+                }
+                Err(reason) => {
+                    let was = self
+                        .directories
+                        .added_refused
+                        .insert(dir.clone(), reason.clone());
+                    if was.as_ref() != Some(&reason) {
+                        self.stop_scan(&dir).await;
+                        self.refuse(dir, reason).await;
+                    }
+                }
+            }
+        }
+        if let Some(download) = self.directories.download_dir.clone() {
+            let refused = self.directories.guard_in_place(&download).err();
+            if refused != self.directories.download_refused {
+                if refused.is_some() {
+                    self.name_download_dir(download.clone()).await;
+                    self.refused_download_dir(&download).await;
+                } else {
+                    self.directories.download_refused = None;
+                }
+            }
+        }
+        self.match_refusals().await;
+        self.reconcile().await;
+        self.install_directories();
+    }
+
     /// The guards refuse the download directory `dir`: its scan stops, the
     /// entries it covered are scanned, and the list shows it refused.
     async fn refused_download_dir(&mut self, dir: &Path) {

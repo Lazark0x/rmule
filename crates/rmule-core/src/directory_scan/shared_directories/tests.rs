@@ -127,9 +127,15 @@ fn the_download_dir_is_guarded_where_it_would_be_made() {
             dir.display()
         );
     }
+    // Nor a directory inside it: the two never overlap (ADR-0115).
     assert_eq!(
         guard_in_place(&spelled("home/films/parts/inner"), &guards, Some(&temp)),
-        Ok(())
+        Err(DirectoryRefusal::InsideTempDirectory)
+    );
+    assert_eq!(
+        guard_in_place(&spelled("home/films/partsx"), &guards, Some(&temp)),
+        Ok(()),
+        "a sibling whose name begins the same is apart"
     );
 }
 

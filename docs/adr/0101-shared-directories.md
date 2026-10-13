@@ -45,13 +45,13 @@ its download completes into one, is cancelled or fails.
   | rmule's data directory, anything inside it, or a directory holding it | the store, the identity keys and the credit file |
   | already in the list | nothing to add |
   | inside a listed directory, the download directory included | already shared |
-  | the Temp Directory, or a directory holding it | rmule's unfinished part files (ADR-0115) |
+  | the Temp Directory, a directory holding it, or one inside it | rmule's unfinished part files (ADR-0115) |
 
   The home and data directories are handed to core by the front end at build time. A parent of
   an added entry is not refused: it replaces the entry after the confirm names it.
 
   The download directory passes the guards on what a directory is (UTF-8, home, root, data
-  directory) at the set, and may neither be nor hold the Temp Directory: Core Settings refuses
+  directory) at the set, and may neither be, hold nor lie inside the Temp Directory: Core Settings refuses
   one that fails them with the guard's reason (`SettingRefusal::DownloadDirRefused`, ADR-0069)
   and stores nothing. Core judges it again whenever it names it — at attach and when the setting
   moves — and again when it appears after missing, since the directory and the guards can change

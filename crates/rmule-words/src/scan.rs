@@ -70,6 +70,9 @@ pub fn refusal(reason: &DirectoryRefusal) -> String {
         DirectoryRefusal::HoldsTempDirectory => {
             "it is or holds the temp dir, where unfinished downloads are kept".to_string()
         }
+        DirectoryRefusal::InsideTempDirectory => {
+            "it lies inside the temp dir, where unfinished downloads are kept".to_string()
+        }
         DirectoryRefusal::DownloadDirectory => {
             "it is the download directory — change that above, under Paths".to_string()
         }

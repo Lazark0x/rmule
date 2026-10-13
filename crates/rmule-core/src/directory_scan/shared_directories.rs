@@ -58,6 +58,9 @@ pub enum DirectoryRefusal {
     /// The Temp Directory, or a directory holding it: rmule's unfinished part
     /// files lie there.
     HoldsTempDirectory,
+    /// A directory inside the Temp Directory: no shared directory and the
+    /// Temp Directory overlap, either way (ADR-0115).
+    InsideTempDirectory,
     /// The download directory is shared while it is the download directory;
     /// it is changed in Settings, not removed.
     DownloadDirectory,
@@ -106,7 +109,7 @@ pub(crate) fn admit(
 /// Check a directory where it is now with the add's guards on what a
 /// directory is: valid UTF-8, not the home, not a filesystem root, not rmule's
 /// data directory, inside it or holding it, and neither the Temp Directory
-/// `temp_dir` nor holding it. The download directory is judged
+/// `temp_dir`, holding it nor inside it. The download directory is judged
 /// so at its set and before each of its scans, and every listed entry when its
 /// scan starts and again when it appears after missing, since what a path
 /// leads to can change after the add. Unlike an add it need not be there
@@ -148,11 +151,13 @@ fn guard(
             return Err(DirectoryRefusal::HoldsDataDirectory);
         }
     }
-    if temp_dir
-        .map(resolved)
-        .is_some_and(|temp| temp.starts_with(dir))
-    {
-        return Err(DirectoryRefusal::HoldsTempDirectory);
+    if let Some(temp) = temp_dir.map(resolved) {
+        if temp.starts_with(dir) {
+            return Err(DirectoryRefusal::HoldsTempDirectory);
+        }
+        if dir.starts_with(&temp) {
+            return Err(DirectoryRefusal::InsideTempDirectory);
+        }
     }
     Ok(())
 }
