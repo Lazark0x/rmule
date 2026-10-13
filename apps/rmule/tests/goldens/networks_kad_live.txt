@@ -1,13 +1,13 @@
 ┌ Servers (4) · 10.0.0.1:4661 HighID ─────── c disconnect · a add · U update ┐
-│   Name ▲   Address        Port Desc   Ping Users Files Age Prio Fail Static│
-│▸● eDonkey  10.0.0.1       4661 Main   42ms    1M   24M 12s Norm    0 no    │
-│   Prime                        hub,                                        │
-│                                no                                          │
-│                                fakes                                       │
+│   Name ▲   Address        Port Desc  Ping Users Files Age Prio Fail Static▲│
+│▸● eDonkey  10.0.0.1       4661 Main  42ms    1M   24M 12s Norm    0 no    █│
+│   Prime                        hub,                                       ║│
+│                                no                                         ║│
+│                                fakes                                      ▼│
 │Grants at login (14m ago): compression, new tags, unicode, related search,  │
 │large files, obfuscation · UDP (12s ago): get sources, get files, new tags, │
 │unicode, get sources 2, large files, UDP obfuscation, TCP obfuscation       │
-└────────────────────────────────────────────────────────────────────────────┘
+└───────────────────────────────────────────────────────────────────── 1 / 4 ┘
 ┌ Log (0) ───────────────────────────┐┌ Kad ───────────────────────── K stop ┐
 │no core events yet                  ││● Kad: running                        │
 │                                    ││Joined    yes                         │

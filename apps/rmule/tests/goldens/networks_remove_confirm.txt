@@ -1,13 +1,13 @@
 ┌ Servers (4) · 10.0.0.1:4661 HighID ─────── c disconnect · a add · U update ┐
-│   Name ▲   Address        Port Desc   Ping Users Files Age Prio Fail Static│
-│▸● eDonkey  10.0.0.1       4661 Main   42ms    1M   24M 12s Norm    0 no    │
-│   Prime                        hub,                                        │
-│                                no                                          │
-│                                fakes                                       │
+│   Name ▲   Address        Port Desc  Ping Users Files Age Prio Fail Static▲│
+│▸● eDonkey  10.0.0.1       4661 Main  42ms    1M   24M 12s Norm    0 no    █│
+│   Prime                        hub,                                       ║│
+│                                no                                         ║│
+│                                fakes                                      ▼│
 │Grants at login (14m ago): compression, new tags, unicode, related search,  │
 │large fil┌ Remove server ─────────────────────────────────────────┐ew tags, │
 │unicode, │Remove 'eDonkey Prime' (10.0.0.1:4661)?                 │on       │
-└─────────│The list entry goes; a session connected to it stays up.│─────────┘
+└─────────│The list entry goes; a session connected to it stays up.│── 1 / 4 ┘
 ┌ Log (0) │                                                        │ K start ┐
 │no core e│y confirm    Esc abort                                  │         │
 │         └────────────────────────────────────────────────────────┘)        │

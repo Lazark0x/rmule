@@ -20,6 +20,7 @@ use rmule_primitives::ServerEndpoint;
 
 use super::sort::ServersTable;
 use super::{NetworksView, Pane};
+use crate::row_selection::viewport::{self, Viewport};
 use crate::row_selection::{mark_row, selection_style};
 use crate::state::{Ed2kConnection, UiState, server_label};
 use crate::table_sort::{SortedTable, arrow_floors, header_label, header_widths};
@@ -138,8 +139,8 @@ fn format_age(age: Option<Duration>) -> String {
 /// The fewest lines the detail pane takes: one per sentence.
 const DETAIL_PANE_MIN_H: u16 = 4;
 
-/// Draw the selected server's detail at the bottom of `body` and return what
-/// is left of `body` above it (ADR-0080, "The detail pane"). The table has no
+/// The selected server's detail as it sits at the bottom of `body` (ADR-0080,
+/// "The detail pane"): its lines and the height it takes. The table has no
 /// room for these as columns at 80 cells, so they are said whole, wrapped,
 /// for whichever row the cursor is on.
 ///
@@ -148,18 +149,17 @@ const DETAIL_PANE_MIN_H: u16 = 4;
 /// Where that would take more than half of `body` from the table, it
 /// collapses to one wrapped line of grants, UDP flags and the connected
 /// server's share news (ADR-0099).
-fn draw_detail(
-    frame: &mut Frame,
+fn detail(
     body: Rect,
     row: Option<&ServerDiagnostics>,
     state: &UiState,
     theme: &Theme,
-) -> Rect {
+) -> (Vec<Line<'static>>, u16) {
     let Some(row) = row else {
-        return body;
+        return (Vec::new(), 0);
     };
     if body.height < 3 || body.width == 0 {
-        return body;
+        return (Vec::new(), 0);
     }
     let width = usize::from(body.width);
     let age = |ago| format_age(Some(ago));
@@ -179,17 +179,24 @@ fn draw_detail(
         .flat_map(|sentence| wrapped_lines(sentence, width, theme.dim_text()))
         .collect();
     let pane_h = clamp_u16(pane.len()).max(DETAIL_PANE_MIN_H);
-    let (lines, height) = if pane_h <= body.height / 2 {
-        (pane, pane_h)
-    } else {
-        let mut text = crate::words::server::grants_line(row, age);
-        if let Some(news) = told.and_then(crate::words::server::shares_line) {
-            text = format!("{text} · {news}");
-        }
-        let lines = wrapped_lines(&text, width, theme.dim_text());
-        let height = clamp_u16(lines.len()).min(body.height / 2);
-        (lines, height)
-    };
+    if pane_h <= body.height / 2 {
+        return (pane, pane_h);
+    }
+    let mut text = crate::words::server::grants_line(row, age);
+    if let Some(news) = told.and_then(crate::words::server::shares_line) {
+        text = format!("{text} · {news}");
+    }
+    let lines = wrapped_lines(&text, width, theme.dim_text());
+    let height = clamp_u16(lines.len()).min(body.height / 2);
+    (lines, height)
+}
+
+/// Draw the detail [`detail`] laid out at the bottom of `body` and return
+/// what is left of `body` above it.
+fn draw_detail(frame: &mut Frame, body: Rect, (lines, height): (Vec<Line<'static>>, u16)) -> Rect {
+    if height == 0 {
+        return body;
+    }
     let line_area = Rect::new(body.x, body.bottom() - height, body.width, height);
     frame.render_widget(Paragraph::new(lines), line_area);
     Rect::new(body.x, body.y, body.width, body.height - height)
@@ -273,35 +280,76 @@ impl NetworksView {
         // header stays one line; Name pays for the arrow.
         let floors = arrow_floors(&self.sort, &SERVER_COLS, SERVER_NAME_COL);
         let headers = header_widths(&self.sort);
-        let widths = server_widths(usize::from(inner.width), &floors, &headers);
-        say_gave_way(
-            frame,
-            crate::views::bottom_border(area),
-            &gave_way(ServersTable::COLUMNS.iter().map(|c| c.label), &widths),
-            theme,
-        );
+        let widths_at = |bar: bool| {
+            let bar = if bar { viewport::BAR_W } else { 0 };
+            server_widths(usize::from(inner.width - bar), &floors, &headers)
+        };
         let dim = theme.dim_text();
-        let labels: Vec<Column> = ServersTable::COLUMNS
-            .iter()
-            .map(|column| {
-                let label = header_label(column.label, self.sort.arrow(column.column));
-                if column.kind.right_aligned() {
-                    Column::right(label, dim)
-                } else {
-                    Column::left(label, dim)
-                }
+        let header_at = |widths: &[usize]| {
+            let labels: Vec<Column> = ServersTable::COLUMNS
+                .iter()
+                .map(|column| {
+                    let label = header_label(column.label, self.sort.arrow(column.column));
+                    if column.kind.right_aligned() {
+                        Column::right(label, dim)
+                    } else {
+                        Column::left(label, dim)
+                    }
+                })
+                .collect();
+            column_lines(&labels, widths, 1, &Span::raw(" ".repeat(SERVER_GUTTER_W)))
+        };
+        let selected = rows.get(self.server_sel).copied();
+        // The selected server's values in the columns that gave way.
+        let off_screen_at = |widths: &[usize]| {
+            selected.map_or_else(Vec::new, |row| {
+                let values: Vec<String> = server_columns(row, Style::new(), theme)
+                    .into_iter()
+                    .map(|column| column.text)
+                    .collect();
+                crate::views::off_screen::hidden(
+                    ServersTable::COLUMNS.iter().map(|column| column.label),
+                    &values,
+                    widths,
+                )
             })
-            .collect();
-        let header = column_lines(&labels, &widths, 1, &Span::raw(" ".repeat(SERVER_GUTTER_W)));
+        };
+        // The rows' room below the header, above the detail pane and the
+        // `Off-screen:` line, at `widths`.
+        let body_at = |widths: &[usize]| {
+            let header_h = clamp_u16(header_at(widths).len()).min(inner.height);
+            let body = Rect::new(
+                inner.x,
+                inner.y + header_h,
+                inner.width,
+                inner.height - header_h,
+            );
+            let (_, detail_h) = detail(body, selected, state, theme);
+            let body = Rect {
+                height: body.height - detail_h,
+                ..body
+            };
+            body.height - crate::views::off_screen::height(body, &off_screen_at(widths))
+        };
+        let bar = viewport::needs_bar(rows.len(), inner.height.saturating_sub(1), || {
+            let widths = widths_at(false);
+            let drawn: usize = (0..rows.len())
+                .map(|index| self.row_lines(rows[index], index, &widths, connected, theme).len())
+                .sum();
+            drawn > usize::from(body_at(&widths))
+        });
+        let widths = widths_at(bar);
+        let header = header_at(&widths);
         let header_h = clamp_u16(header.len()).min(inner.height);
+        let (list, _) = viewport::split(inner, bar);
         frame.render_widget(
             Paragraph::new(header),
-            Rect::new(inner.x, inner.y, inner.width, header_h),
+            Rect::new(list.x, list.y, list.width, header_h),
         );
         self.header_area = Rect::new(
-            inner.x.saturating_add(clamp_u16(SERVER_GUTTER_W)),
-            inner.y,
-            inner.width.saturating_sub(clamp_u16(SERVER_GUTTER_W)),
+            list.x.saturating_add(clamp_u16(SERVER_GUTTER_W)),
+            list.y,
+            list.width.saturating_sub(clamp_u16(SERVER_GUTTER_W)),
             header_h,
         );
         self.header_cols.clone_from(&widths);
@@ -316,7 +364,7 @@ impl NetworksView {
         );
 
         if rows.is_empty() {
-            self.server_offset = 0;
+            self.viewport = Viewport::default();
             frame.render_widget(
                 Paragraph::new(wrapped_lines(
                     "no servers — press a to add one, or U to update the list from a URL",
@@ -328,32 +376,23 @@ impl NetworksView {
             return;
         }
 
-        // The selected server's values in the columns that gave way.
-        let off_screen = rows.get(self.server_sel).map_or_else(Vec::new, |row| {
-            let values: Vec<String> = server_columns(row, Style::new(), theme)
-                .into_iter()
-                .map(|column| column.text)
-                .collect();
-            crate::views::off_screen::hidden(
-                ServersTable::COLUMNS.iter().map(|column| column.label),
-                &values,
-                &widths,
+        let body = draw_detail(frame, body, detail(body, selected, state, theme));
+        let body = crate::views::off_screen::draw(frame, body, &off_screen_at(&widths), theme);
+        let (body, _) = viewport::split(body, bar);
+        let budget = body.height;
+        let mut viewport = self.viewport;
+        let first = viewport.follow(self.server_sel, rows.len(), budget, |index| {
+            clamp_u16(
+                self.row_lines(rows[index], index, &widths, connected, theme)
+                    .len(),
             )
         });
-        let body = draw_detail(
-            frame,
-            body,
-            rows.get(self.server_sel).copied(),
-            state,
-            theme,
-        );
-        let body = crate::views::off_screen::draw(frame, body, &off_screen, theme);
-        let budget = usize::from(body.height);
-        self.scroll_to_selection(&rows, &widths, connected, budget, theme);
+        self.viewport = viewport;
 
         let mut lines: Vec<Line> = Vec::new();
         let mut heights: Vec<u16> = Vec::new();
-        for (index, row) in rows.iter().enumerate().skip(self.server_offset) {
+        let budget = usize::from(budget);
+        for (index, row) in rows.iter().enumerate().skip(first) {
             let rendered = self.row_lines(row, index, &widths, connected, theme);
             // A row that cannot fit whole is not started: half a wrapped row
             // at the pane edge reads as truncation, which is the one thing
@@ -367,41 +406,22 @@ impl NetworksView {
                 break;
             }
         }
-        self.server_rows = DrawnRows::new(body, self.server_offset, heights);
+        self.server_rows = DrawnRows::new(body, first, heights);
         frame.render_widget(Paragraph::new(lines), body);
-    }
-
-    /// Put the selected row on screen, scrolling as little as it takes.
-    ///
-    /// The walk goes *up* from the selection, taking rows while they still fit
-    /// — so it touches only rows that will be drawn, whatever the list's
-    /// length. A downloaded server.met is thousands of rows and this runs
-    /// every frame; summing from the current offset instead would make the
-    /// cost of pressing `G` quadratic in the list.
-    fn scroll_to_selection(
-        &mut self,
-        rows: &[&ServerDiagnostics],
-        widths: &[usize],
-        connected: Option<&ServerEndpoint>,
-        budget: usize,
-        theme: &Theme,
-    ) {
-        let height = |view: &Self, index: usize| {
-            view.row_lines(rows[index], index, widths, connected, theme)
-                .len()
-        };
-        let mut used = height(self, self.server_sel);
-        // The highest row that can be on screen with the selection still on it.
-        let mut top = self.server_sel;
-        while top > 0 {
-            let above = height(self, top - 1);
-            if used + above > budget {
-                break;
-            }
-            used += above;
-            top -= 1;
-        }
-        self.server_offset = self.server_offset.clamp(top, self.server_sel);
+        // The bar runs down the header and the rows.
+        let bar = Rect::new(
+            body.right(),
+            inner.y,
+            if bar { viewport::BAR_W } else { 0 },
+            header_h + body.height,
+        );
+        let foot = self.viewport.draw(frame, area, bar, theme);
+        say_gave_way(
+            frame,
+            foot,
+            &gave_way(ServersTable::COLUMNS.iter().map(|c| c.label), &widths),
+            theme,
+        );
     }
 
     /// One listed server as display lines: the ten cells, wrapped, under a

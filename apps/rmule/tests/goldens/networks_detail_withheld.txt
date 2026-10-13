@@ -20,7 +20,7 @@
 │Shares withheld from this server: it answers related searches, which would    │
 │tell anyone which files you share together. Kad and other servers still have  │
 │them                                                                          │
-└──────────────────────────────────────────────────────────────────────────────┘
+└─────────────────────────────────────────────────────────────────────── 1 / 4 ┘
 ┌ Log (0) ─────────────────────────────┐┌ Kad ──────────────────────── K start ┐
 │no core events yet                    ││● Kad: off                            │
 │                                      ││Joined    — (node not started)        │

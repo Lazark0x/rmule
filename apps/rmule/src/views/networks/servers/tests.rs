@@ -306,17 +306,17 @@ fn a_long_list_scrolls_the_selected_row_into_view() {
             .expect("draw");
     };
     draw(&mut view);
-    assert_eq!(view.server_offset, 0);
+    assert_eq!(view.viewport.first(), 0);
     view.handle_key(press(KeyCode::Char('G')), &state);
     draw(&mut view);
-    assert!(view.server_offset > 0, "the table scrolled to the last row");
+    assert!(view.viewport.first() > 0, "the table scrolled to the last row");
     assert!(
         view.server_rows.line_of(39).is_some(),
         "the selected row is on screen"
     );
     view.handle_key(press(KeyCode::Char('g')), &state);
     draw(&mut view);
-    assert_eq!(view.server_offset, 0, "g scrolls back to the top");
+    assert_eq!(view.viewport.first(), 0, "g scrolls back to the top");
 }
 
 /// Everything on screen, one string per row.

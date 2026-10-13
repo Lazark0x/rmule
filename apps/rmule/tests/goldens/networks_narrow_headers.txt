@@ -1,13 +1,13 @@
 ┌ Servers (4) · 10.0.0.1:4661 HighID ──────┐
-│   Name ▲ Address  Port Desc Ping   Age   │
-│▸● eDonke 10.0.0.1 4661 Main 42ms   12s   │
-│   y                    hub,              │
+│   Name ▲ Address Port Desc Ping   Age   ▲│
+│▸● eDonke 10.0.0. 4661 Main 42ms   12s   █│
+│   y      1            hub,              ▼│
 │Off-screen: Users 1M · Files 24M · Prio   │
 │Norm · Fail 0 · Static no                 │
 │Grants at login (14m ago): compression,   │
 │new tags, unicode, related search, large  │
 │files, obfuscation · UDP (12s ago): get   │
-└ 5 columns not shown ─────────────────────┘
+└ 5 columns not shown ────────────── 1 / 4 ┘
 ┌──┐┌ Kad ──────────────────────── K start ┐
 │no││● Kad: off                            │
 │  ││Joined    — (node not started)        │

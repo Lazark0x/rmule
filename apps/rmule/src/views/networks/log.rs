@@ -13,6 +13,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
 use super::{NetworksView, Pane};
+use crate::row_selection::viewport;
 use crate::state::UiState;
 use crate::theme::Theme;
 use crate::wrap::labeled_lines;
@@ -29,15 +30,6 @@ fn fallback_wall() -> chrono::DateTime<chrono::FixedOffset> {
 }
 
 impl NetworksView {
-    pub(super) fn max_log_offset(&self, state: &UiState) -> usize {
-        let lines = if self.log_lines > 0 {
-            self.log_lines
-        } else {
-            state.log.len()
-        };
-        lines.saturating_sub(self.log_rows.max(1))
-    }
-
     pub(super) fn draw_log(
         &mut self,
         frame: &mut Frame,
@@ -62,10 +54,8 @@ impl NetworksView {
         if inner.height == 0 || inner.width == 0 {
             return;
         }
-        let visible = inner.height as usize;
-        self.log_rows = visible; // remembered for input-time scroll clamping
-
         if state.log.is_empty() {
+            self.log_viewport.show(0, inner.height);
             frame.render_widget(
                 Paragraph::new(Line::styled("no core events yet", theme.dim_text())),
                 inner,
@@ -80,34 +70,38 @@ impl NetworksView {
         // the reader to do arithmetic): derived as `wall_now − age`, since
         // the state layer stays clock-free.
         let wall_now = self.wall_now.unwrap_or_else(fallback_wall);
-        let text_w = usize::from(inner.width).saturating_sub(AGE_GUTTER_W).max(1);
-        let lines: Vec<Line> = state
-            .log
-            .iter()
-            .flat_map(|line| {
-                let age = chrono::Duration::from_std(now.saturating_duration_since(line.at))
-                    .unwrap_or_else(|_| chrono::Duration::zero());
-                labeled_lines(
-                    Span::styled(
-                        format!(
-                            "{:>width$} ",
-                            (wall_now - age).format("%H:%M:%S"),
-                            width = AGE_GUTTER_W - 1
+        let lines_at = |width: u16| -> Vec<Line> {
+            let text_w = usize::from(width).saturating_sub(AGE_GUTTER_W).max(1);
+            state
+                .log
+                .iter()
+                .flat_map(|line| {
+                    let age = chrono::Duration::from_std(now.saturating_duration_since(line.at))
+                        .unwrap_or_else(|_| chrono::Duration::zero());
+                    labeled_lines(
+                        Span::styled(
+                            format!(
+                                "{:>width$} ",
+                                (wall_now - age).format("%H:%M:%S"),
+                                width = AGE_GUTTER_W - 1
+                            ),
+                            theme.dim_text(),
                         ),
-                        theme.dim_text(),
-                    ),
-                    line.text.as_str(),
-                    Style::new().fg(theme.fg),
-                    text_w,
-                )
-            })
-            .collect();
-        self.log_lines = lines.len();
-
-        let offset = self.log_offset.min(lines.len().saturating_sub(visible));
-        let end = lines.len() - offset;
-        let start = end.saturating_sub(visible);
-        frame.render_widget(Paragraph::new(lines[start..end].to_vec()), inner);
+                        line.text.as_str(),
+                        Style::new().fg(theme.fg),
+                        text_w,
+                    )
+                })
+                .collect()
+        };
+        let bar = viewport::needs_bar(state.log.len(), inner.height, || {
+            lines_at(inner.width).len() > usize::from(inner.height)
+        });
+        let (list, bar) = viewport::split(inner, bar);
+        let lines = lines_at(list.width);
+        let shown = self.log_viewport.show(lines.len(), list.height);
+        frame.render_widget(Paragraph::new(lines[shown].to_vec()), list);
+        self.log_viewport.draw(frame, area, bar, theme);
     }
 }
 
@@ -127,7 +121,7 @@ mod tests {
     fn log_focus_scrolls_and_g_bindings_jump_to_the_ends() {
         let mut state = UiState::default();
         let now = Instant::now();
-        for part_index in 0..10u32 {
+        for part_index in 0..30u32 {
             state.apply(
                 Action::Core(CoreEvent::Download(DownloadEvent::PartVerified {
                     download_id: download_id(1),
@@ -137,15 +131,25 @@ mod tests {
             );
         }
         let mut view = NetworksView::new();
+        let draw = |view: &mut NetworksView| {
+            crate::golden::render_to_lines(78, 21, |frame| {
+                view.draw(frame, frame.area(), &state, &Theme::default_dark(), now);
+            })
+        };
+        draw(&mut view);
         view.handle_key(press(KeyCode::Tab), &state); // focus → Log
-        assert_eq!(view.log_offset, 0, "starts pinned to the newest line");
+        let end = view.log_viewport.first();
+        assert!(end > 0, "opens on the newest line");
         view.handle_key(press(KeyCode::Char('k')), &state);
-        assert_eq!(view.log_offset, 1, "k scrolls one line older");
-        // Default log_rows is 4 ⇒ oldest offset is 10 − 4.
+        assert_eq!(view.log_viewport.first(), end - 1, "k scrolls one line older");
         view.handle_key(press(KeyCode::Char('g')), &state);
-        assert_eq!(view.log_offset, 6, "g jumps to the oldest window");
+        assert_eq!(view.log_viewport.first(), 0, "g jumps to the oldest window");
         view.handle_key(press(KeyCode::Char('G')), &state);
-        assert_eq!(view.log_offset, 0, "G pins back to the newest");
+        assert_eq!(view.log_viewport.first(), end, "G pins back to the newest");
+        assert!(
+            draw(&mut view).contains(" 30 / 30 "),
+            "resting on the end, the border counts the newest line"
+        );
     }
 
     #[test]
@@ -208,10 +212,6 @@ mod tests {
         assert!(
             rendered.contains("already checked"),
             "the log tail was cut:\n{rendered}"
-        );
-        assert!(
-            view.log_lines > state.log.len(),
-            "the entry wrapped to more display lines than entries"
         );
     }
 }

@@ -1,13 +1,13 @@
 ┌ Servers (4) · 10.0.0.1:4661 HighID ─ c connect · a add · U update · m menu ┐
-│   Name ▲   Address        Port Desc   Ping Users Files Age Prio Fail Static│
-│▸  Flaky    172.16.9.9     5000 —         —     —     —   — Low  dead no    │
-│   Mirror                                                                   │
-│   Static   10.0.0.2       4242 Operat 1.2s  9812  431k  2h High    0 yes   │
-│   Pin                          or                                          │
-│              ┌ Server actions ──────────────────────────────┐              │
+│   Name ▲   Address        Port Desc  Ping Users Files Age Prio Fail Static▲│
+│▸  Flaky    172.16.9.9     5000 —        —     —     —   — Low  dead no    ║│
+│   Mirror                                                                  █│
+│                                                                           ║│
+│                                                                           ║│
+│              ┌ Server actions ──────────────────────────────┐             ▼│
 │Grants: never │ Connect (c)                                  │DP: no status │
 │answer yet    │ Copy server link                             │              │
-└──────────────│ Remove…                                      │──────────────┘
+└──────────────│ Remove…                                      │─────── 2 / 4 ┘
 ┌ Log (0) ─────│ Pin as static                                │───── K start ┐
 │no core events│ Priority: Low → Norm                         │              │
 │              │ Add server… (a)                              │arted)        │
