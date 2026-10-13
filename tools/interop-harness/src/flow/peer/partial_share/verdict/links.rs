@@ -207,7 +207,13 @@ fn ride(
                     close.at
                 ));
             }
-            format!("{} closed it at {:.3}", body.role, close.at)
+            let cancelled = on_link(run, link.peer)
+                .filter(|item| !item.from_rmule && item.at > first.at && item.at <= close.at)
+                .find(|item| item.said == Said::Cancel)
+                .map_or_else(String::new, |cancel| {
+                    format!(" after its own cancel at {:.3}", cancel.at)
+                });
+            format!("{} closed it at {:.3}{cancelled}", body.role, close.at)
         }
         Some(close) => format!("rmule closed it at {:.3}", close.at),
         None => "open to the tap's end".to_owned(),
@@ -416,20 +422,38 @@ pub(super) fn dialled_at_its_address(run: &Run<'_>) -> Claim {
                 && ask.at > item.at
                 && matches!(ask.said, Said::FileAsk { .. })
         });
-        if at_socket > 0 || asked_on_link {
-            judged.push(format!(
-                "{socket} claimed {id:#010x}: {at_socket} dials at {socket}:{port}{}",
-                if asked_on_link {
-                    ", asked on its link"
-                } else {
-                    ""
-                }
-            ));
-        } else {
-            judged.push(format!(
-                "{socket} claimed {id:#010x}: never dialled nor asked"
+        // A dial to a body that has left dies on the neighbour lookup and
+        // never reaches the tap; a dial at the claimed address goes out by
+        // the gateway and would. rmule's trail names the dial it chose.
+        let coordinate = format!("{socket}:{port}");
+        let selected = run
+            .trail
+            .named("download.peer_selected")
+            .filter(|mark| {
+                mark.field("peer") == Some(coordinate.as_str())
+                    && mark.at.is_some_and(|at| at > item.at)
+            })
+            .count();
+        let mut seen_back = Vec::new();
+        if at_socket > 0 {
+            seen_back.push(format!("{at_socket} dials at {coordinate}"));
+        }
+        if asked_on_link {
+            seen_back.push("asked on its link".to_owned());
+        }
+        if selected > 0 {
+            seen_back.push(format!(
+                "{selected} downloads chose {coordinate} (rmule's trail)"
             ));
         }
+        judged.push(if seen_back.is_empty() {
+            format!("{socket} claimed {id:#010x}: never dialled nor asked")
+        } else {
+            format!(
+                "{socket} claimed {id:#010x}: {}; no dial at the claimed address",
+                seen_back.join(", ")
+            )
+        });
     }
     if !failures.is_empty() {
         return Claim::new(NAME, Verdict::Fail, failures.join("; "));
