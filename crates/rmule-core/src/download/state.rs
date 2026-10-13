@@ -264,10 +264,10 @@ pub(crate) struct ContentFacts {
     pub(crate) trusted_aich_root: Option<AichRootHash>,
     /// Parts an earlier run already verified; they are never re-fetched.
     pub(crate) verified_parts: Vec<u32>,
-    /// The download is Streaming Priority (`DownloadMetadata::
-    /// is_streaming_priority`): its parts are ranked with the Preview Band and
-    /// the Streaming Window (ADR-0112 §5).
-    pub(crate) streaming_priority: bool,
+    /// How its parts are ranked: with the Preview Band and the Streaming
+    /// Window when it is Streaming Priority (`DownloadMetadata::
+    /// is_streaming_priority`, ADR-0112 §5).
+    pub(crate) order: PartOrder,
 }
 
 /// How a Low-ID candidate is to be reached — the three callback roads and the
@@ -502,8 +502,7 @@ impl DownloadState {
     /// Build the scheduling state from what the run knows up front — the
     /// content, the candidate sources and rmule's own sourcing posture — plus
     /// the slot economy: how many workers or pending callbacks may hold a slot
-    /// at once, and how long a callback holds one before it lapses — and the
-    /// Streaming Window's width a Streaming Priority download ranks by.
+    /// at once, and how long a callback holds one before it lapses.
     pub(crate) fn new(
         download_id: DownloadId,
         content: ContentFacts,
@@ -511,7 +510,6 @@ impl DownloadState {
         posture: SourcingPosture,
         callback_timeout: Duration,
         peer_concurrency: usize,
-        streaming_window_parts: u32,
     ) -> Self {
         let ContentFacts {
             file_hash,
@@ -520,15 +518,8 @@ impl DownloadState {
             resolved,
             trusted_aich_root,
             verified_parts,
-            streaming_priority,
+            order,
         } = content;
-        let order = if streaming_priority {
-            PartOrder::Streaming {
-                window_parts: streaming_window_parts,
-            }
-        } else {
-            PartOrder::Rarest
-        };
         let StartingFacts {
             distrusted,
             seeds_written,

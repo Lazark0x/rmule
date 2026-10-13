@@ -34,6 +34,35 @@ pub enum PartOrder {
     },
 }
 
+impl PartOrder {
+    /// The order a download ranks its parts in: a Streaming Window of
+    /// `window_parts` when it is Streaming Priority, else the rarest first.
+    #[must_use]
+    pub const fn of(streaming_priority: bool, window_parts: u32) -> Self {
+        if streaming_priority {
+            Self::Streaming { window_parts }
+        } else {
+            Self::Rarest
+        }
+    }
+
+    /// The Preview Band of a `file_size`-byte file in this order.
+    fn band(self, file_size: u64) -> BTreeSet<u32> {
+        match self {
+            Self::Rarest => BTreeSet::new(),
+            Self::Streaming { .. } => preview_band(file_size),
+        }
+    }
+
+    /// The Streaming Window's width; `0` for none.
+    const fn window_parts(self) -> u32 {
+        match self {
+            Self::Rarest => 0,
+            Self::Streaming { window_parts } => window_parts,
+        }
+    }
+}
+
 /// What [`DownloadScheduler::assign_next`] handed a peer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Assignment {
@@ -112,14 +141,8 @@ impl DownloadScheduler {
             racing: BTreeMap::new(),
             peer_part: HashMap::new(),
             completed: HashSet::new(),
-            band: match order {
-                PartOrder::Rarest => BTreeSet::new(),
-                PartOrder::Streaming { .. } => preview_band(file_size),
-            },
-            window_parts: match order {
-                PartOrder::Rarest => 0,
-                PartOrder::Streaming { window_parts } => window_parts,
-            },
+            band: order.band(file_size),
+            window_parts: order.window_parts(),
         }
     }
 

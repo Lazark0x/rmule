@@ -126,7 +126,7 @@ fn working(link: &Ed2kFileLink, record: &DurableDownloadRecord) -> (DownloadStat
             resolved,
             trusted_aich_root: None,
             verified_parts: Vec::new(),
-            streaming_priority: false,
+            order: crate::scheduler::PartOrder::Rarest,
         },
         StartingFacts {
             distrusted: HashSet::new(),
@@ -140,7 +140,6 @@ fn working(link: &Ed2kFileLink, record: &DurableDownloadRecord) -> (DownloadStat
         },
         Duration::from_secs(30),
         1,
-        0,
     );
     let now = Instant::now();
     let _ = state.start(now);

@@ -143,8 +143,7 @@ fn request_for<S, P>(
             60,
         ),
         verified_part_indexes: Vec::new(),
-        streaming_priority: false,
-        streaming_window_parts: 4,
+        order: crate::scheduler::PartOrder::Rarest,
         peer_concurrency: 1,
         discovery: DiscoveryLiveness {
             global_servers: std::sync::Arc::default(),

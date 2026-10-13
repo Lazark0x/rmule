@@ -23,6 +23,7 @@ use crate::hashing::{
     ResolvedHashSet, hash_set_proves_file, proven_link_hash_set, resolve_hash_set_authority,
 };
 use crate::peer_roster::{PeerRelation, RelationLease};
+use crate::scheduler::PartOrder;
 use crate::service::{
     DownloadEvent, DownloadId, SourceWait, VerificationAuthority, send_download_event,
 };
@@ -87,10 +88,8 @@ pub(super) struct FleetStart<'a> {
     pub(super) peer_concurrency: usize,
     /// Parts an earlier run already verified on disk; they are never re-fetched.
     pub(super) verified_part_indexes: Vec<u32>,
-    /// The download is Streaming Priority (ADR-0112 §5).
-    pub(super) streaming_priority: bool,
-    /// The Streaming Window's width a Streaming Priority download ranks by.
-    pub(super) streaming_window_parts: u32,
+    /// How the download ranks its parts (ADR-0112 §5).
+    pub(super) order: PartOrder,
     /// The run's first sightings, by channel.
     pub(super) sources: StartSources,
     /// Where the **Callback Capability** is re-read from for the rest of the run.
@@ -139,8 +138,7 @@ where
         ctx,
         peer_concurrency,
         verified_part_indexes,
-        streaming_priority,
-        streaming_window_parts,
+        order,
         sources,
         callback_facts,
         posture,
@@ -260,7 +258,7 @@ where
             resolved,
             trusted_aich_root: file.aich_root,
             verified_parts: verified_part_indexes,
-            streaming_priority,
+            order,
         },
         StartingFacts {
             distrusted: sources.distrusted,
@@ -269,7 +267,6 @@ where
         posture,
         runner.rt.callback_timeout,
         peer_concurrency,
-        streaming_window_parts,
     );
     // The snapshot is sighted in the order a pool is built; nothing fills a
     // slot until `start`.

@@ -147,7 +147,7 @@ fn file_hash_only_content(file_size: u64) -> ContentFacts {
         },
         trusted_aich_root: None,
         verified_parts: Vec::new(),
-        streaming_priority: false,
+        order: PartOrder::Rarest,
     }
 }
 
@@ -232,7 +232,6 @@ fn state_from(
         posture,
         CALLBACK_TIMEOUT,
         peer_concurrency,
-        4,
     );
     for (channel, sightings) in batches {
         take(&mut state, channel, sightings);

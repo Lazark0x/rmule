@@ -69,7 +69,7 @@ fn brain(sightings: Vec<SourceSighting>, peer_concurrency: usize, at: Instant) -
             },
             trusted_aich_root: None,
             verified_parts: Vec::new(),
-            streaming_priority: false,
+            order: crate::scheduler::PartOrder::Rarest,
         },
         StartingFacts {
             distrusted: HashSet::new(),
@@ -83,7 +83,6 @@ fn brain(sightings: Vec<SourceSighting>, peer_concurrency: usize, at: Instant) -
         },
         std::time::Duration::from_secs(30),
         peer_concurrency,
-        4,
     );
     let filter = IpFilter::default();
     let gate = Gate {

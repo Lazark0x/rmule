@@ -134,7 +134,7 @@ fn a_streaming_priority_download_fetches_its_head_and_tail_first() {
     let size = 2 * rmule_primitives::ED2K_PART_SIZE + rmule_primitives::ED2K_PART_SIZE / 2;
     for (streaming_priority, order) in [(true, vec![0, 2, 1]), (false, vec![0, 1, 2])] {
         let content = ContentFacts {
-            streaming_priority,
+            order: PartOrder::of(streaming_priority, 4),
             ..file_hash_only_content(size)
         };
         let pool = [peer(1), peer(2), peer(3)];
