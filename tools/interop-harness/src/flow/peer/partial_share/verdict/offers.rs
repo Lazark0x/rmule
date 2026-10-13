@@ -159,10 +159,19 @@ pub(super) fn restart(run: &Run<'_>) -> Claim {
     }
     let downloaders: Vec<std::net::Ipv4Addr> = run.downloaders().collect();
     let to_downloader = |item: &crate::flow::peer::partial_share::wire::Item| matches!(item.peer.ip(), std::net::IpAddr::V4(v4) if downloaders.contains(&v4));
+    // On a link of the second leg: the first leg's sockets drain what their
+    // send buffers held, under the shaper, after the reopen.
+    let second_leg_link = |item: &crate::flow::peer::partial_share::wire::Item| {
+        run.wire
+            .opens
+            .iter()
+            .any(|open| open.peer == item.peer && open.at >= reopened)
+    };
     let served_again = run.wire.items.iter().any(|item| {
         item.from_rmule
             && item.at > reoffered
             && to_downloader(item)
+            && second_leg_link(item)
             && matches!(&item.said, Said::Block { hash, .. } if *hash == run.stream_hash)
     });
     // The pre-check half: did any ask for the partial reach rmule while its
