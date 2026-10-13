@@ -36,7 +36,7 @@ use rmule_primitives::{AichHashSet, Ed2kText, FileHash, PeerEndpoint, SourceSigh
 use crate::WaiterLeaveCause;
 use crate::registry::SharedFileEntry;
 use crate::serve::source_exchange::{
-    SourceExchangeThrottle, SxCandidate, SxRequester, held_parts, select_sources,
+    SourceExchangeThrottle, SxCandidate, SxRequester, select_sources,
 };
 use crate::served_downloads::{PartFileIdentity, PartialEnd, ReadCheck, ServedLook};
 use crate::service::ServeEvent;
@@ -216,7 +216,7 @@ pub(super) struct ServeState {
     /// (known2.met) is deferred.
     aich_cache: HashMap<FileHash, AichHashSet>,
     /// The parts each peer holds of a file we share, from the part status its
-    /// last name ask or UDP reask wrote (read through `held_parts`, ADR-0055 §Serving)
+    /// last name ask or UDP reask wrote (read through `PartBitmap::advertised_parts`, ADR-0055 §Serving)
     /// — aMule's per-client `m_upPartStatus`. Read twice
     /// by a source-exchange answer: the asker's own entry is the needed-part
     /// filter's reference, and each pooled source's entry is what it offers. A peer or file absent
@@ -344,8 +344,13 @@ impl ServeState {
     }
 
     /// Keep the part status `peer` just wrote for `file_hash` — its name ask's
-    /// or its UDP reask's: one reader ([`held_parts`]) and one rule for both,
-    /// as aMule's `ProcessExtendedInfo` serves both (ADR-0055 §Serving).
+    /// or its UDP reask's: one reader ([`PartBitmap::advertised_parts`], the
+    /// one every status goes through) and one rule for both, as aMule's
+    /// `ProcessExtendedInfo` serves both (ADR-0055 §Serving). aMule's uploader
+    /// clears a status whose count is not the file's (`UploadClient.cpp:418-421`)
+    /// and so does this; it reads a count of zero as all-zero
+    /// (`UploadClient.cpp:415-416`), which would drop a complete source from
+    /// every answer, where this reads the writer's meaning, every part.
     /// A status this file cannot read leaves the peer's parts unknown,
     /// as aMule clears it; so does any status from a peer whose hello claimed
     /// extended requests `0` — aMule clears it and returns before reading
@@ -363,7 +368,7 @@ impl ServeState {
             .is_some_and(|identity| identity.extended_requests_version() > 0);
         match wire
             .filter(|_| claims_status)
-            .and_then(|wire| held_parts(file_size, &wire))
+            .and_then(|wire| wire.advertised_parts(file_size))
         {
             Some(held) => self.sx_part_status.insert((peer, file_hash), held),
             None => self.sx_part_status.remove(&(peer, file_hash)),

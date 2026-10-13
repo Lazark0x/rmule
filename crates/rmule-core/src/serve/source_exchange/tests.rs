@@ -140,27 +140,6 @@ fn an_unknown_requester_is_sent_sources_holding_a_part_and_the_unknowns() {
 }
 
 #[test]
-fn a_name_ask_status_is_read_against_the_served_files_part_count() {
-    use rmule_primitives::ED2K_PART_SIZE;
-
-    // An exact multiple: two real parts, counted three on the wire. Whether a
-    // writer sets the phantom third bit or not, the kept status is the two
-    // real parts, so the phantom never reads as a part held or lacked.
-    let size = 2 * ED2K_PART_SIZE;
-    for wire in [bitmap(3, &[0, 2]), bitmap(3, &[0])] {
-        assert_eq!(held_parts(size, &wire), Some(bitmap(2, &[0])));
-    }
-    // The count the file has not got — the real two, an older rmule writer's —
-    // is no status at all, as aMule's uploader clears it.
-    assert_eq!(held_parts(size, &bitmap(2, &[0, 1])), None);
-    // A zero count is a complete file, every part held.
-    assert_eq!(
-        held_parts(size, &PartBitmap::complete_source_sentinel()),
-        Some(bitmap(2, &[0, 1])),
-    );
-}
-
-#[test]
 fn the_answer_is_capped_at_five_hundred_entries() {
     // 600 distinct HighID candidates → only the first 500 are served.
     let candidates: Vec<_> = (0..600u32)
