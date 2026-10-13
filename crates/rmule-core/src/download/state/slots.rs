@@ -234,8 +234,8 @@ impl DownloadState {
             self.free_slots.insert(slot.as_usize());
         }
         self.retired_peers = self.retired_peers.saturating_add(1);
-        // Hand the released part to a still-connected idle worker whose parts
-        // are known; any other is assigned on its own probe answer (ADR-0112).
+        // Hand the released part to a still-connected idle worker whose own
+        // probe answered; any other is assigned on that answer (ADR-0112).
         let unneeded = self.offer_connected(out);
         self.fill(now, out);
         // ADR-0026's terminal condition (ADR-0030): only fail once the pool is
@@ -298,10 +298,10 @@ impl DownloadState {
     /// Assign `peer` its next part — a fresh pending part its Advertised
     /// Parts hold, else a raced in-flight one, by rank (ADR-0026, ADR-0112) —
     /// resuming from the part's shared prefix (ADR-0029), or an `Idle` phase
-    /// when every part it holds that we lack is in flight. A worker whose
-    /// Advertised Parts are not known yet is handed nothing: its probe answer
-    /// assigns it. One whose parts hold nothing we lack is retired
-    /// `NoNeededParts`.
+    /// when every part it holds that we lack is in flight. A worker whose own
+    /// probe has not answered is handed nothing, whatever its record kept from
+    /// an earlier connection: that answer assigns it. One whose parts hold
+    /// nothing we lack is retired `NoNeededParts`.
     pub(super) fn assign(&mut self, now: Instant, peer: PeerEndpoint, out: &mut Vec<Decision>) {
         if !self.offer(peer, out) {
             self.retire_no_needed_parts(now, peer, out);
@@ -315,7 +315,7 @@ impl DownloadState {
         let Some(slot) = self.worker_slots.get(&peer).copied() else {
             return true;
         };
-        let Some(parts) = self.sources.parts(peer) else {
+        let Some(parts) = self.sources.worker_parts(peer) else {
             return true;
         };
         let plan = match self.scheduler.assign_next(

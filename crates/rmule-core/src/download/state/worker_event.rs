@@ -96,7 +96,7 @@ impl DownloadState {
             // gets its first part from them (ADR-0112).
             PeerWorkerEvent::PartsAdvertised { parts, complete } => {
                 self.sources.advertised(peer, complete, now);
-                self.sources.write_parts(peer, parts);
+                self.sources.probe_answered(peer, parts);
                 self.assign(now, peer, &mut out);
             }
             PeerWorkerEvent::IdentityVerified {

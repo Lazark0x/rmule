@@ -15,6 +15,7 @@ use crate::service::IgnoredReaskReply;
 mod exchange_pool;
 mod no_needed_parts;
 mod purge;
+mod redial;
 
 /// The port every test source advertises for client UDP.
 const UDP_PORT: u16 = 5000;

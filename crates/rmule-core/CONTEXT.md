@@ -403,7 +403,7 @@ _Avoid_: source list (aMule's `m_SrcList` is only the pool), ledger (the Activit
 NAT-T, credit and `SeedLedger` already are)
 
 **Advertised Parts**:
-The parts one source said it holds of this download's file — its latest `OP_FILESTATUS` to a worker or the status in a `0x91` ack — over the file's real parts (count `0` is every part; the phantom part is never read). A record-tier attachment of its **Source Book** record (ADR-0112): replaced by each status, gone with the record, never stored; a worker's first part waits for them.
+The parts one source said it holds of this download's file — its latest `OP_FILESTATUS` to a worker or the status in a `0x91` ack — over the file's real parts (count `0` is every part; the phantom part is never read). A record-tier attachment of its **Source Book** record (ADR-0112): replaced by each status, gone with the record, never stored. A worker is handed a part from them only once its own probe answers: what an earlier connection or a merged-in record left is not that worker's word.
 _Avoid_: availability, bitmap, file status, part picture (the download's own, ADR-0094)
 
 **Part Frequency**:

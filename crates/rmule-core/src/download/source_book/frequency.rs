@@ -13,6 +13,7 @@ use rmule_peer::PartBitmap;
 use rmule_primitives::PeerEndpoint;
 
 use super::SourceBook;
+use super::record::Stage;
 
 /// How many records hold each part, and how many hold Advertised Parts at all.
 #[derive(Debug)]
@@ -72,8 +73,36 @@ impl SourceBook {
         record.advertised = parts;
     }
 
+    /// The worker at `endpoint` answered its probe with `parts`: they replace
+    /// what its record held, and from here on they are the worker's own
+    /// ([`Self::worker_parts`]).
+    pub(crate) fn probe_answered(&mut self, endpoint: PeerEndpoint, parts: Option<PartBitmap>) {
+        self.write_parts(endpoint, parts);
+        if let Some(record) = self.record_at_mut(endpoint)
+            && let Stage::Worker(live, heard) = &mut record.stage
+            && live.endpoint == endpoint
+        {
+            heard.answered = true;
+        }
+    }
+
+    /// The Advertised Parts the worker at `endpoint` may be handed a part
+    /// from: its record's, once that worker's own probe answered, and `None`
+    /// before — whatever an earlier connection or a merged-in record left on
+    /// the record is not this peer's word now (ADR-0112 §3).
+    pub(crate) fn worker_parts(&self, endpoint: PeerEndpoint) -> Option<&PartBitmap> {
+        let record = self.record_at(endpoint)?;
+        match &record.stage {
+            Stage::Worker(live, heard) if live.endpoint == endpoint && heard.answered => {
+                record.advertised.as_ref()
+            }
+            _ => None,
+        }
+    }
+
     /// The Advertised Parts of the record at `endpoint`, once its source
     /// advertised any.
+    #[cfg(test)]
     pub(crate) fn parts(&self, endpoint: PeerEndpoint) -> Option<&PartBitmap> {
         self.record_at(endpoint)?.advertised.as_ref()
     }

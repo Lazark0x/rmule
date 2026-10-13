@@ -7,7 +7,7 @@
 use rmule_peer::PeerIdentity;
 use rmule_primitives::{Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, UserHash};
 
-use super::record::{DialRoad, Lane, Live, RecordId, Stage};
+use super::record::{DialRoad, Heard, Lane, Live, RecordId, Stage};
 use super::road::PendingRoad;
 use super::standing::ReaskFacts;
 use super::{Adopted, DialEnd, NextDial, Release, SourceBook, WorkerEnd};
@@ -128,7 +128,7 @@ impl SourceBook {
             && let Stage::Dialing(live) = record.stage
             && live.endpoint == endpoint
         {
-            record.stage = Stage::Worker(live, None);
+            record.stage = Stage::Worker(live, Heard::default());
         }
     }
 
@@ -478,7 +478,14 @@ impl SourceBook {
         let hash = identity.user_hash();
         let support = identity.source_exchange();
         let buddy = identity.serving_buddy();
-        record.stage = Stage::Worker(live, Some(Box::new(identity)));
+        let answered = matches!(&record.stage, Stage::Worker(_, heard) if heard.answered);
+        record.stage = Stage::Worker(
+            live,
+            Heard {
+                identity: Some(Box::new(identity)),
+                answered,
+            },
+        );
         self.learned(endpoint, support);
         if let Some(buddy) = buddy {
             self.hello_buddy(hash, buddy.buddy_udp);
