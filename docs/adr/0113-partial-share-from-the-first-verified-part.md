@@ -133,9 +133,10 @@ the file's one registry row, from the record, without reading the file.**
   file is hashed at completion (`ThreadTasks.cpp:186`).
 - **Source exchange** answers from the download's own pool, as ADR-0055 already rules for a file in
   progress: the sources it downloads from or waits at that are not queue-full
-  (`PartFile.cpp:2601`), with a known part status. The run keeps the pool in its entry from its
-  **Source Book** (ADR-0090); a paused download has no source in those states, so its answer is
-  empty and sends nothing.
+  (`PartFile.cpp:2601`), with a known part status. A source holding no part we need is not
+  waiting (aMule's `DS_NONEEDEDPARTS` is no queue state). The run keeps the pool in its entry from
+  its **Source Book** (ADR-0090), after its first fill and on each one-second sample tick; a paused
+  download has no source in those states, so its answer is empty and sends nothing.
 
 ### Reading a part file
 
