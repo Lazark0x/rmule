@@ -825,4 +825,6 @@ impl RunLease {
 }
 
 #[cfg(test)]
+pub(crate) mod leased;
+#[cfg(test)]
 mod tests;

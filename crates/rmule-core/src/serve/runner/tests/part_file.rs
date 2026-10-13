@@ -8,17 +8,13 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use super::*;
+use crate::VerifiedPartRecord;
 use crate::file_key::FileKey;
 use crate::registry_check::CheckInput;
+use crate::served_downloads::leased::{Leased, SIZE, leased};
 use crate::served_downloads::{PartFileIdentity, PartialEnd, RunLease, ServedDownloads};
-use crate::storage::DownloadRepository;
-use crate::store::download::DurableDownloadRepository;
-use crate::{DownloadPaths, VerifiedPartRecord};
 use rmule_peer::PartRanges;
-use rmule_primitives::{ED2K_PART_SIZE, Ed2kFileLink, Ed2kText, PartHash};
-
-/// Two whole parts and a tail: three parts, three hashes.
-const SIZE: u64 = 2 * ED2K_PART_SIZE + 5;
+use rmule_primitives::ED2K_PART_SIZE;
 
 /// A serve task offering one download's first part from a part file in a
 /// temp dir, and one granted peer asking it for blocks.
@@ -46,32 +42,18 @@ struct Rig {
 async fn rig(paused: bool) -> Rig {
     let dir = tempfile::tempdir().unwrap();
     let file = FileHash::from_bytes([0x33; FileHash::BYTE_LEN]);
-    let set: Vec<PartHash> = (0..3)
-        .map(|part| PartHash::from_bytes([part; 16]))
-        .collect();
-    let store = rmule_testkit::memory_store();
-    let downloads = DurableDownloadRepository::new(store.clone());
-    let link = Ed2kFileLink {
-        name: Ed2kText::from_utf8("download.bin"),
-        size: SIZE,
-        file_hash: file,
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
-    let paths = DownloadPaths::from_final_path(dir.path().join("download.bin"));
+    let Leased {
+        store,
+        record,
+        cell,
+        lease,
+        set,
+    } = leased(file, dir.path().join("download.bin"));
     let (part, done) = (
-        paths.part_path().to_path_buf(),
-        paths.final_path().to_path_buf(),
+        record.paths().part_path().to_path_buf(),
+        record.paths().final_path().to_path_buf(),
     );
     std::fs::write(&part, vec![0xA7; SIZE as usize]).unwrap();
-    let record = downloads.create_download(&link, None, &paths).unwrap();
-    let cell = ServedDownloads::default();
-    assert!(cell.install(&record, &set));
-    let lease = cell
-        .hand_to_run(file, crate::download::RunNumber::new(1))
-        .unwrap();
     let held = std::fs::File::open(&part).unwrap();
     let key = FileKey::of_open(&held).unwrap();
     let identity = if paused {
