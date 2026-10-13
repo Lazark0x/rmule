@@ -218,11 +218,11 @@ pub const SOURCE_RESULT_ROWS_PER_DATAGRAM: usize = 50;
 /// "Source-publish layouts"). Zero rows encode to zero envelopes — a storer
 /// with nothing to say stays silent, like aMule.
 ///
-/// Row tags are written in the stored-entry order the aMule storer produces
-/// (SOURCEIP, SOURCETYPE, SOURCEPORT, SOURCEUPORT, the buddy trio on a
-/// type-3/5 row, then ENCRYPTION when present, then the string-named `ip6` and
-/// `bi6` last), each in the explicit length-prefixed name form and at a fixed
-/// width (`decode_source_result` tolerates narrower variable-width forms; the
+/// Row tags go out as SOURCEIP, SOURCETYPE, SOURCEPORT, SOURCEUPORT, the
+/// buddy trio on a type-3/5 row, ENCRYPTION when present, and the string-named
+/// `ip6` and `bi6` last, as the publisher wrote them. Every reader ignores tag
+/// order, so no other order is reproduced. Each tag is in the explicit
+/// length-prefixed name form and at a fixed width (`decode_source_result` tolerates narrower variable-width forms; the
 /// encoder never emits them). The caller applies result budgets and start
 /// offsets — this is pure serialization of already-selected rows.
 #[must_use]
@@ -258,9 +258,8 @@ fn encode_row(payload: &mut Vec<u8>, row: &KadSourceRow) {
         (TAG_SOURCEUPORT, TagValue::U16(row.udp_port)),
     ];
     // The buddy tags follow the source ones, in the publisher's own order
-    // (`TAG_SERVERIP`, `TAG_SERVERPORT`, `TAG_BUDDYHASH`) — the storer keeps
-    // the tags it received in arrival order, and that is the order they arrive
-    // in. `TAG_BUDDYHASH` goes out as the 32 hex characters aMule writes.
+    // (`TAG_SERVERIP`, `TAG_SERVERPORT`, `TAG_BUDDYHASH`). `TAG_BUDDYHASH`
+    // goes out as the 32 hex characters aMule writes.
     if let Some(buddy) = row.buddy {
         if let Some(udp) = buddy.buddy_udp {
             let [a, b, c, d] = udp.ip.octets();
@@ -288,11 +287,11 @@ fn encode_row(payload: &mut Vec<u8>, row: &KadSourceRow) {
         tags.push((TAG_ENCRYPTION, TagValue::U8(options)));
     }
     // The two IPv6 tags close the row, `ip6` then `bi6`, where the publisher
-    // wrote them — eMuleAI's `0x44` ends `ENCRYPTION, ip6, bi6`
+    // wrote them: eMuleAI's `0x44` ends `ENCRYPTION, ip6, bi6`
     // (`Search.cpp:913-923`, `a2f05dc8`), kno's ends in `ip6`
-    // (`Search.cpp:886-902`) — and where kno's storer re-serves them, in
-    // arrival order. Both were gated by `IsUsableTagIdentity` when the publish
-    // was read, so an address this storer refused was never stored to re-serve.
+    // (`Search.cpp:886-902`). Both were gated by `IsUsableTagIdentity` when the
+    // publish was read, so an address this storer refused was never stored to
+    // re-serve.
     let ipv6_tags: Vec<Tag> = [
         row.ipv6
             .map(|address| crate::ipv6_tags::ipv6_tag(crate::ipv6_tags::TAG_SOURCE_IPV6, address)),
