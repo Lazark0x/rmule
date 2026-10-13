@@ -94,9 +94,9 @@ aMule's `FILEREASKTIME` of 1 300 000 ms
   its hello advertised: aMule has no `HasLowID` gate here and sends to `GetConnectIP()`
   (stock 2.3.3 `DownloadClient.cpp:1269-1296`). Its answer refreshes the clock, so its
   callback road is taken again only on silence.
-- **Through the buddy.** When the direct ping's gate fails — we are firewalled, or the
-  source states no UDP port — a Low-ID source whose record names its buddy's ID and
-  endpoint (a Kad source row, ADR-0061) is reasked through that buddy instead:
+- **Through the buddy.** When the direct ping's gate fails because we are firewalled, a
+  Low-ID source whose record names its buddy's ID and endpoint (a Kad source row,
+  ADR-0061) is reasked through that buddy instead:
   `0x94 <buddy id 16><hash16>` with the same version-gated extras, plain, to the buddy's
   UDP endpoint (stock 2.3.3 `DownloadClient.cpp:1297-1318`). The buddy relays it as
   `0x9A` and the source answers from its own client-UDP endpoint, so the reply is matched
