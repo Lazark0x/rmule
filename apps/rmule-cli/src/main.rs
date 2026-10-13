@@ -15,7 +15,7 @@ use clap::{Parser, Subcommand};
 use rmule_core::run_log::{self, Level, LevelHandle, RunLog, RunLogFailure};
 use rmule_core::{
     AppConfigStore, Core, CoreBuilder, CoreCommand, CoreCommandRejectReason, CoreConfig, CoreEvent,
-    CoreSettingsHandle, DirectoryRefusal, DownloadCommand, DownloadEvent, DownloadId,
+    CoreSettings, CoreSettingsHandle, DirectoryRefusal, DownloadCommand, DownloadEvent, DownloadId,
     DurableAppConfig, DurableStore, ManagedServer, NameTaken, RuntimeKadFactory,
     RuntimePeerTransferService, RuntimeServeRuntimeService, RuntimeSourceLookupService, ScanEvent,
     ServerListStore, ServerPriority, Setting, SettingError, SettingRefusal, ShareGuards,
@@ -104,6 +104,9 @@ enum ServerCommand {
 enum ConfigCommand {
     /// Set the directory downloads are written to.
     SetDownloadDir { path: PathBuf },
+    /// Set the directory new downloads keep their part files in, made when
+    /// missing; downloads already started keep theirs.
+    SetTempDir { path: PathBuf },
     /// Show current preferences.
     Show,
 }
@@ -255,11 +258,38 @@ async fn main() -> Result<()> {
                     })?;
                 println!("download_dir {}", dir.display());
             }
+            ConfigCommand::SetTempDir { path } => {
+                let dir = std::path::absolute(&path)
+                    .with_context(|| format!("resolve {}", path.display()))?;
+                // Judged against the download directory and every shared
+                // directory the store lists, then made, before it is stored.
+                CoreSettingsHandle::open(open_store(&data_dir)?)
+                    .share_guards(share_guards(&data_dir))
+                    .set(Setting::TempDir(dir.clone()))
+                    .map_err(|error| match error {
+                        SettingError::Refused(SettingRefusal::TempDirRefused(reason)) => {
+                            anyhow::anyhow!(
+                                "{} is not set as the temp directory: {}",
+                                dir.display(),
+                                rmule_words::scan::temp_dir_refusal(&reason)
+                            )
+                        }
+                        other => other.into(),
+                    })?;
+                println!("temp_dir {}", dir.display());
+            }
             ConfigCommand::Show => {
                 let settings = CoreSettingsHandle::open(open_store(&data_dir)?).read()?;
-                match settings.download_dir {
+                match &settings.download_dir {
                     Some(dir) => println!("download_dir {}", dir.display()),
                     None => println!("download_dir <unset>"),
+                }
+                match &settings.temp_dir {
+                    Some(dir) => println!("temp_dir {}", dir.display()),
+                    None => println!(
+                        "temp_dir {} (default)",
+                        CoreSettings::default_temp_dir(&data_dir).display()
+                    ),
                 }
             }
         },
