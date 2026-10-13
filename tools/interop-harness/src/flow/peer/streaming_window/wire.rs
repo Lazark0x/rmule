@@ -34,6 +34,9 @@ const HASH_LEN: usize = 16;
 /// The seeds' peer TCP port.
 const SEED_TCP_PORT: u16 = 4662;
 
+/// One status as it sits in a frame: its count and its bitmap bytes.
+type StatusEntry<'a> = (u16, &'a [u8]);
+
 /// Which of aMule's two status forms a count is, for this file's size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StatusForm {
@@ -173,7 +176,7 @@ pub(crate) fn read(
 pub(crate) fn status_entries<'a>(
     frame: &'a Ed2kFrame,
     file_hash: &[u8; 16],
-) -> Vec<(u16, &'a [u8])> {
+) -> Vec<StatusEntry<'a>> {
     let payload = frame.payload();
     if payload.get(..HASH_LEN) != Some(file_hash.as_slice()) {
         return Vec::new();
@@ -191,7 +194,7 @@ pub(crate) fn status_entries<'a>(
 
 /// The status entries of a multipacket answer's body, walking every entry
 /// aMule writes there and stopping at the first it does not.
-fn multipacket_statuses(mut body: &[u8]) -> Vec<(u16, &[u8])> {
+fn multipacket_statuses(mut body: &[u8]) -> Vec<StatusEntry<'_>> {
     let mut statuses = Vec::new();
     while let Some((&opcode, rest)) = body.split_first() {
         body = match opcode {
@@ -225,7 +228,7 @@ fn multipacket_statuses(mut body: &[u8]) -> Vec<(u16, &[u8])> {
 }
 
 /// A `<count u16><bitmap>` at the front of `bytes`, and what follows it.
-fn status_at(bytes: &[u8]) -> Option<((u16, &[u8]), &[u8])> {
+fn status_at(bytes: &[u8]) -> Option<(StatusEntry<'_>, &[u8])> {
     let count = u16::from_le_bytes([*bytes.first()?, *bytes.get(1)?]);
     let len = usize::from(count).div_ceil(8);
     let bitmap = bytes.get(2..2 + len)?;

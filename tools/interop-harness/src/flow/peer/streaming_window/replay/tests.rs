@@ -1,3 +1,5 @@
+//! The rank replay over hand-built logs and statuses: each seed's first part, the reading bounds, retirements and the log format.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::Ipv4Addr;
 

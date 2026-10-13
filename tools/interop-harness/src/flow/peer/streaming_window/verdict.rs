@@ -246,7 +246,7 @@ fn claims(
             |form| form == StatusForm::Complete,
         ));
     }
-    if topology.file_size % ED2K_PART_SIZE == 0
+    if topology.file_size.is_multiple_of(ED2K_PART_SIZE)
         && topology.seeds.iter().any(|seed| seed.holding != "complete")
     {
         claims.push(status_form(

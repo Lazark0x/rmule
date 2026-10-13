@@ -1,3 +1,5 @@
+//! The tap reader's decoders: both status forms, multipacket entries and request ranges.
+
 use std::collections::BTreeSet;
 
 use rmule_primitives::ED2K_PART_SIZE;

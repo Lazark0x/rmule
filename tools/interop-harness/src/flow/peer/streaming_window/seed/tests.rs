@@ -1,3 +1,5 @@
+//! The seed fixture writer: gap runs, the `.part.met` layout aMule's loader walks, the staged `.part` and its date, seed specs.
+
 use std::collections::BTreeSet;
 
 use rmule_primitives::{ED2K_PART_SIZE, FileHash, PartHash, Tag, TagValue};

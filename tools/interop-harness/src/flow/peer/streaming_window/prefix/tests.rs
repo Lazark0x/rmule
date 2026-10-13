@@ -1,3 +1,5 @@
+//! The verified-prefix measurement over hand-built tick series.
+
 use rmule_primitives::ED2K_PART_SIZE;
 
 use super::super::replay::Replay;

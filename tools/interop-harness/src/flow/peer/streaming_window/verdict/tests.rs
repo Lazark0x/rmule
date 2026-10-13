@@ -1,3 +1,5 @@
+//! The request filter claim over hand-built statuses and requests.
+
 use std::collections::BTreeSet;
 use std::net::Ipv4Addr;
 
