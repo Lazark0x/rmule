@@ -40,6 +40,19 @@ are drawn from it; no view keeps a scroll offset or a count of its own.
   `▲` and `▼` at its ends once it is three cells tall, and a `█` thumb on a `║` track
   whose size and place are the visible window over the whole list. The thumb touches an
   end only when the list is at that end. A list that fits draws no bar.
+- The thumb moves in eighths of a cell. Its length is the share of the list on screen, in
+  eighths of the track, but at least a whole cell; its top is as far down the travel that
+  length leaves as the list is scrolled through the places its first item can take, so the
+  last page puts the thumb's end on the track's end exactly, where the share above the
+  window would round it an eighth short. A cell the thumb fills is `█`; the cell its top
+  edge falls in is the lower block of the thumb's share of it (`▁` to `▇`) in the thumb's
+  style; the cell its bottom edge falls in is the complementary lower block in the thumb's
+  style reversed, so the cell's top shows the thumb. Only the lower blocks are drawn: the
+  upper-eighth ones are not reliably in fonts. Both edges in one cell take the edge glyph
+  that overstates the thumb less. The track and the `▲` `▼` stay whole cells.
+- A theme whose thumb colour is its track colour — its text colour the same as its dim
+  one, as in a monochrome theme — draws the thumb in whole cells: a part-cell edge shows
+  where the thumb ends by its colour alone.
 - The column is the bar's only while the list overflows: a list that fits keeps every
   column for its items, so a table at the widths it was laid out for loses no cell to a
   bar it does not draw. A list with more items than lines surely overflows; a shorter one
