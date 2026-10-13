@@ -123,16 +123,20 @@ one tuple wins; `i` sits in every key, so no two tie:
   leaves candidacy, with no latch. The tail is fetched early but never gates readiness:
   ADR-0114 reads part `0`.
 - **Streaming Window**: `[anchor, anchor + N)`, `anchor` the lowest unverified part, `N`
-  `CoreConfig::streaming_window_parts`, default `4`, `0` for none; empty outside Streaming
+  `CoreConfig::streaming_window_parts`, default `8`, `0` for none; empty outside Streaming
   Priority. It slides as the anchor verifies; a resumed run anchors at its lowest unverified
   part, since the scheduler seeds only the missing ones.
 - `N` is an engineering knob: no operator chooses a look-ahead, so it sits in `CoreConfig`
   beside `peer_concurrency_per_download` (ADR-0069), not in Core Settings and never per
   download. aMule has no window, so its default is the one `CoreConfig` default that is not
-  aMule's. `4` is twice the default concurrency — every worker can hold an in-window part
-  with one out-of-order verify to spare — and 38,912,000 bytes of look-ahead; no measurement
-  backs it yet. The bench downloads one Streaming Priority file from two partial stock seeds
-  and measures the verified prefix over time for `N` in `{2, 3, 4, 6, 8}`.
+  aMule's. The default `8` is measured: against stock aMule 2.3.3 seeds (three partial
+  seeds, one worker each, no source leaving), the verified prefix reached half the file about
+  30 s sooner at `8` than at `4` (≈189 s against ≈219 s) and the time-averaged out-of-order
+  lag fell from 13.0 to 11.2 MB, while `2`, narrower than the workers, lagged 40 % more than
+  `4`; the whole file's time is set by the seeds and does not move with `N`. Two seeds cannot
+  separate `N` — every part's frequency is 1 or 2, and the window's order and the outside's
+  agree — so the bench takes three. What a wide window costs when a source leaves (the rare
+  parts it defers behind the window) is not measured.
 
 ### 6. A source that holds nothing we need
 

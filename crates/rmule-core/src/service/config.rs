@@ -51,9 +51,8 @@ pub struct CoreConfig {
     /// How many parts from the lowest unverified one a **Streaming Priority**
     /// download fetches in order before ranking the rest by rarity — the
     /// **Streaming Window** (ADR-0112 §5). `0` is no window. aMule has none;
-    /// the default `4` is twice the default concurrency, so every worker can
-    /// hold an in-window part and one verify out of order still leaves the
-    /// next lowest part to fetch.
+    /// the default `8` is the width the bench against stock seeds measured to
+    /// grow the contiguous prefix soonest.
     pub streaming_window_parts: u32,
     /// How long a peer worker keeps waiting for `OP_ACCEPTUPLOADREQ` after
     /// requesting a part before it gives up the slot and is retired.
@@ -240,7 +239,7 @@ impl Default for CoreConfig {
     fn default() -> Self {
         Self {
             peer_concurrency_per_download: 2,
-            streaming_window_parts: 4,
+            streaming_window_parts: 8,
             slot_wait_timeout: DEFAULT_SLOT_WAIT_TIMEOUT,
             upload_slot_budget: 4,
             max_upload_queue_len: 64,

@@ -644,7 +644,7 @@ aMule's head-and-tail set (`PartFile.cpp:1958-1972`): part `0`, the last, and th
 _Avoid_: first and last chunks, preview parts
 
 **Streaming Window**:
-`[anchor, anchor + N)`, the lowest unverified part and `CoreConfig::streaming_window_parts` (default 4, `0` none), fetched in order by a **Streaming Priority** download; recomputed per assignment (ADR-0112).
+`[anchor, anchor + N)`, the lowest unverified part and `CoreConfig::streaming_window_parts` (default 8, `0` none), fetched in order by a **Streaming Priority** download; recomputed per assignment (ADR-0112).
 _Avoid_: sequential download, buffer
 
 **Serve State**:
