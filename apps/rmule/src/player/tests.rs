@@ -40,6 +40,76 @@ fn a_first_word_that_is_the_file_or_no_word_at_all_is_refused() {
     assert_eq!(split("# only a comment"), Err(Unsplittable::NoProgram));
 }
 
+/// `path` as one word of a Player Command.
+fn word(path: &Path) -> String {
+    let path = path.to_str().expect("a temp path is UTF-8");
+    shlex::try_quote(path).expect("quotes").into_owned()
+}
+
+/// A folder named `name` in a fresh temp dir, which is kept while it lives.
+fn folder(name: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let folder = dir.path().join(name);
+    std::fs::create_dir(&folder).expect("folder");
+    (dir, folder)
+}
+
+#[test]
+fn a_first_word_naming_a_folder_is_refused_and_a_path_not_there_yet_is_taken() {
+    let (dir, player) = folder("player");
+    assert_eq!(
+        split(&format!("{} --fs", word(&player))),
+        Err(Unsplittable::Folder)
+    );
+    let missing = dir.path().join("mpv");
+    assert_eq!(
+        split(&word(&missing)),
+        Ok(vec![missing.display().to_string()]),
+        "a player may be installed after it is set"
+    );
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn a_folder_named_app_is_only_a_folder_off_macos() {
+    let (_dir, bundle) = folder("IINA.app");
+    assert_eq!(split(&word(&bundle)), Err(Unsplittable::Folder));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_macos_app_bundle_opens_through_launch_services_with_the_app_named() {
+    let (_dir, bundle) = folder("IINA.app");
+    let named = bundle.to_str().expect("a temp path is UTF-8");
+    let file = Path::new("/films/a.mkv.part");
+    let opened = |words: &[&str]| {
+        [os("/usr/bin/open"), os("-a")]
+            .into_iter()
+            .chain(words.iter().copied().map(os))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        args(&word(&bundle), file),
+        opened(&[named, "/films/a.mkv.part"])
+    );
+    assert_eq!(
+        args(&format!("{} -n", word(&bundle)), file),
+        opened(&[named, "-n", "/films/a.mkv.part"]),
+        "the other words are open's own, and the file goes last"
+    );
+    assert_eq!(
+        args(&format!("{} %PARTFILE --args --fs", word(&bundle)), file),
+        opened(&[named, "/films/a.mkv.part", "--args", "--fs"]),
+        "placed before --args, the file is opened, not handed to the app's main"
+    );
+    let completed = format!("{named}/");
+    assert_eq!(
+        args(&shlex::try_quote(&completed).expect("quotes"), file),
+        opened(&[&completed, "/films/a.mkv.part"]),
+        "a shell's completion ends the bundle in a slash"
+    );
+}
+
 #[test]
 fn the_placeholder_is_replaced_in_every_word_that_holds_it_and_the_path_goes_last_without_one() {
     let path = Path::new("/films/a.mkv.part");
@@ -263,5 +333,10 @@ fn a_refused_spawn_names_the_download_and_the_cause_in_the_operators_words() {
     assert_eq!(
         crate::words::player::spawn_refused("film.mkv", std::io::ErrorKind::NotFound).as_str(),
         "preview of film.mkv: the player could not start: it is not there"
+    );
+    assert_eq!(
+        crate::words::player::spawn_refused("film.mkv", std::io::ErrorKind::PermissionDenied)
+            .as_str(),
+        "preview of film.mkv: the player could not start: the program is not executable"
     );
 }

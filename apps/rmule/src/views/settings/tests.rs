@@ -285,11 +285,14 @@ fn remember_peers_takes_one_to_255() {
     }
 }
 
-/// The Player Command is split as it is typed (ADR-0114): an open quote and a
-/// first word holding the file are refused under the field with nothing
-/// emitted, empty text clears it, and a command that splits is kept as typed.
+/// The Player Command is split as it is typed (ADR-0114): an open quote, a
+/// first word holding the file and a first word naming a folder are refused
+/// under the field with nothing emitted, empty text clears it, and a command
+/// that splits is kept as typed.
 #[test]
 fn a_player_command_is_refused_unless_its_words_split_into_a_player() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let folder = format!("{}/ --fs", dir.path().display());
     let mut view = SettingsView::new();
     let state = state();
     let mut typed = |text: &str| {
@@ -306,6 +309,7 @@ fn a_player_command_is_refused_unless_its_words_split_into_a_player() {
     for (refused, why) in [
         ("mpv '--title=a b", crate::player::Unsplittable::OpenQuote),
         ("%PARTFILE --fs", crate::player::Unsplittable::NoProgram),
+        (&folder, crate::player::Unsplittable::Folder),
     ] {
         let (outcome, refusal) = typed(refused);
         assert!(

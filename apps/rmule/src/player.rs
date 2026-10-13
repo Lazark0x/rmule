@@ -6,7 +6,10 @@
 //! shell line: quotes and backslashes are honoured; nothing is expanded,
 //! globbed or run as an operator, and a word starting with `#` comments out
 //! the rest. The first word is the program, so it may not hold
-//! [`PLACEHOLDER`]: the downloaded file is never the program run.
+//! [`PLACEHOLDER`]: the downloaded file is never the program run. Written as
+//! a path, it may not name a folder, which no system runs — except on macOS
+//! an application bundle, which starts through LaunchServices with the app
+//! named (`open -a`), so no handler is ever picked by the `.part` extension.
 //!
 //! What the menu shows and what a launch does are one reading,
 //! [`preview_target`], so the two cannot disagree. The launch itself runs on
@@ -28,7 +31,13 @@ pub use launch::{Launch, PlayerLauncher, PlayerLaunches, lane, play_each};
 /// aMule player string carries over.
 pub const PLACEHOLDER: &str = "%PARTFILE";
 
-/// Why a Player Command text does not split into a player's words.
+/// The program that opens a macOS application bundle through LaunchServices,
+/// by its fixed path so no `PATH` decides it.
+#[cfg(target_os = "macos")]
+const OPEN: &str = "/usr/bin/open";
+
+/// Why a Player Command text does not split into a player's words, or its
+/// words do not start with a program.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unsplittable {
     /// A quote is never closed, or the text ends in a lone backslash.
@@ -36,19 +45,56 @@ pub enum Unsplittable {
     /// No first word names a program: every word is a comment, or the first
     /// one holds [`PLACEHOLDER`].
     NoProgram,
+    /// The first word is a path to a folder that is not a macOS application
+    /// bundle.
+    Folder,
 }
 
-/// Split `text` into the player's words.
+/// Split `text` into the player's words, program first.
+///
+/// A first word written as a path — it holds a separator — is read on disk:
+/// a folder is refused, except on macOS a folder named `.app`, an
+/// application bundle, whose words become `/usr/bin/open -a <bundle> <the
+/// other words>` so LaunchServices hands the file to that app. A bare name is the
+/// system's to find on `PATH`, and a path not there yet is taken: the player
+/// may be installed later. The Settings commit and every launch read it
+/// alike.
 ///
 /// # Errors
 /// [`Unsplittable`] when the words do not split or do not start with a
 /// program.
 pub fn split(text: &str) -> Result<Vec<String>, Unsplittable> {
     let words = shlex::split(text).ok_or(Unsplittable::OpenQuote)?;
-    match words.first() {
-        Some(program) if !program.contains(PLACEHOLDER) => Ok(words),
-        _ => Err(Unsplittable::NoProgram),
+    let Some(program) = words
+        .first()
+        .filter(|program| !program.contains(PLACEHOLDER))
+    else {
+        return Err(Unsplittable::NoProgram);
+    };
+    let path = Path::new(program);
+    if !(program.contains(std::path::is_separator) && path.is_dir()) {
+        return Ok(words);
     }
+    #[cfg(target_os = "macos")]
+    if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+    {
+        return Ok(through_launch_services(words));
+    }
+    Err(Unsplittable::Folder)
+}
+
+/// The words that open the application bundle `words[0]` through
+/// LaunchServices with the other words as `open`'s own: the app is named, so
+/// the file goes to it and to no handler of the `.part` extension.
+/// [`argv`] then places the file as for any player.
+#[cfg(target_os = "macos")]
+fn through_launch_services(words: Vec<String>) -> Vec<String> {
+    [OPEN.to_string(), "-a".to_string()]
+        .into_iter()
+        .chain(words)
+        .collect()
 }
 
 /// Why Preview cannot start for a download now. The variants are in check

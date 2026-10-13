@@ -20,6 +20,7 @@ pub const fn refusal_words(refusal: Unsplittable) -> &'static str {
     match refusal {
         Unsplittable::OpenQuote => "a quote is not closed",
         Unsplittable::NoProgram => "the first word must name the player, not %PARTFILE",
+        Unsplittable::Folder => "the first word is a folder, not a program",
     }
 }
 
@@ -81,8 +82,17 @@ pub fn exit_note(name: &str, status: ExitStatus) -> Option<Sentence> {
 pub fn spawn_refused(name: &str, kind: ErrorKind) -> Sentence {
     Sentence::owned(format!(
         "preview of {name}: the player could not start: {}",
-        os::kind_words(kind)
+        spawn_cause(kind)
     ))
+}
+
+/// Why a player could not start, as a clause. A program the system denies is
+/// one it may not run, so the clause says what the operator can change.
+const fn spawn_cause(kind: ErrorKind) -> &'static str {
+    match kind {
+        ErrorKind::PermissionDenied => "the program is not executable",
+        kind => os::kind_words(kind),
+    }
 }
 
 /// The player of download `name` started, but how it ended could not be
