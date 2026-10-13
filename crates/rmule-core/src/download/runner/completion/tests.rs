@@ -290,6 +290,46 @@ async fn across_volumes_the_copy_lands_whole_and_the_part_goes_only_once_the_row
     assert_eq!(completed_at(&events), Some(destination.as_path()));
 }
 
+/// Across a copy the Served Download names the part file until the swap and
+/// the finished file, with its own identity, from it on; it stays offered
+/// through the step and only the actor's end withdraws it (ADR-0113).
+#[tokio::test]
+async fn the_served_download_moves_to_the_finished_file_at_the_swap_and_stays_offered() {
+    use crate::served_downloads::{BytesAt, PartialEnd, ServedDownloads};
+
+    let fs = TwoVolumes {
+        before: Box::new(|_| {}),
+    };
+    let mut leg = finished(ED2K_PART_SIZE + 5_000, Arc::new(fs));
+    let cell = ServedDownloads::default();
+    let record = leg.runner.rt.store.load_download(leg.id).unwrap();
+    let set = leg.file.part_hash_set.as_ref().unwrap().hashes().to_vec();
+    assert!(cell.install(&record, &set));
+    let hash = leg.file.file_hash;
+    leg.runner.served = cell.hand_to_run(hash, leg.runner.run);
+    let before = cell.served(hash).unwrap();
+    assert_eq!(before.bytes_at, BytesAt::PartFile);
+    let mut rx = std::mem::replace(&mut leg.held.in_place_rx, mpsc::channel(1).1);
+    let actor = async {
+        let report = rx.recv().await.unwrap();
+        let served = cell.served(hash).unwrap();
+        assert_eq!(served.bytes_at, BytesAt::FinalFile);
+        assert_eq!(served.final_path, report.path);
+        assert_eq!(
+            served.identity.map(|identity| identity.key),
+            Some(crate::file_key::FileKey::at(&report.path).unwrap()),
+            "a copy's identity is its own"
+        );
+        assert_eq!(cell.offered(), [hash], "offered through the swap");
+        cell.take_back(hash, report.run);
+        assert!(cell.end(report.download_id, PartialEnd::Completed));
+        report.written.send(true).unwrap();
+    };
+    let (result, ()) = tokio::join!(complete(&leg.runner, leg.id, &leg.file, Vec::new()), actor);
+    result.unwrap();
+    assert!(cell.offered().is_empty());
+}
+
 #[tokio::test]
 async fn a_copy_whose_part_file_changed_under_it_lands_nothing_and_repairs() {
     let fs = TwoVolumes {

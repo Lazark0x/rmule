@@ -45,6 +45,7 @@ mod standing_session_search;
 mod content_files;
 mod download_attach;
 mod download_clear;
+mod download_completion;
 mod download_connection_wait;
 mod download_cross_peer_assembly;
 mod download_damaged_parts;
