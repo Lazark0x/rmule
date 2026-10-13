@@ -28,11 +28,11 @@ use ratatui::widgets::{Block, Paragraph};
 
 use super::sort::{SharedColumn, SharedLine, SharedTable};
 use super::{GUTTER_W, Pane, SharedView, num_style, pane_border, render_empty, table_widths};
+use crate::row_selection::viewport;
 use crate::row_selection::{gutter, mark_row};
 use crate::state::{UiState, withheld_words};
 use crate::table_sort::{SortedTable, TableSort, arrow_floors, header_label, header_widths};
 use crate::theme::Theme;
-use crate::row_selection::viewport;
 use crate::views::{DrawnRows, day, human_size, say_gave_way};
 use crate::words::serve::PARTIAL;
 use crate::wrap::{Column, TableColumns, clamp_u16, column_lines, gave_way};
@@ -323,7 +323,10 @@ impl SharedView {
             let widths = widths_at(false);
             let room = inner
                 .height
-                .saturating_sub(crate::views::off_screen::height(inner, &off_screen_at(&widths)))
+                .saturating_sub(crate::views::off_screen::height(
+                    inner,
+                    &off_screen_at(&widths),
+                ))
                 .saturating_sub(clamp_u16(files_header(&widths, &self.sort, theme).len()));
             rows_at(&widths).iter().map(Vec::len).sum::<usize>() > usize::from(room)
         });
@@ -346,7 +349,9 @@ impl SharedView {
         let room = list.height.saturating_sub(header_h);
         let first = self
             .files_viewport
-            .follow(self.files_selected, heights.len(), room, |index| heights[index]);
+            .follow(self.files_selected, heights.len(), room, |index| {
+                heights[index]
+            });
         lines.extend(rows.into_iter().skip(first).flatten());
         self.file_rows = DrawnRows::new(
             Rect::new(list.x, list.y + header_h, list.width, room),

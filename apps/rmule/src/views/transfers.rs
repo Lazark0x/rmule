@@ -152,6 +152,9 @@ pub struct TransfersView {
     source_viewport: Viewport,
     /// What part of the row menu is on screen, in a frame too short for it.
     menu_viewport: std::cell::Cell<Viewport>,
+    /// What part of the details modal is on screen, in a frame too short for
+    /// it; back to its first line each time it opens.
+    details_viewport: std::cell::Cell<Viewport>,
     focus: Pane,
     overlay: Overlay,
     /// The Add-link form (`L`), modal over everything while it is up.

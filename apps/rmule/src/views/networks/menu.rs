@@ -276,10 +276,10 @@ impl NetworksView {
             .position(|item| item.disabled.is_none())
             .unwrap_or(0);
         self.menu = Some(Menu {
-                items,
-                sel,
-                viewport: Cell::default(),
-            });
+            items,
+            sel,
+            viewport: Cell::default(),
+        });
         ViewOutcome::Redraw
     }
 

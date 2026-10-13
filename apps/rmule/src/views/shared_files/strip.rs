@@ -115,7 +115,13 @@ impl SharedView {
             .flatten()
             .take(usize::from(entries_h))
             .collect();
-        let (list, bar) = viewport::split(Rect { height: entries_h, ..area }, bar);
+        let (list, bar) = viewport::split(
+            Rect {
+                height: entries_h,
+                ..area
+            },
+            bar,
+        );
         frame.render_widget(Paragraph::new(lines), list);
         self.strip_viewport.draw_bar(frame, bar, theme);
         let hint_line = Rect::new(area.x, area.y + entries_h, area.width, 1);

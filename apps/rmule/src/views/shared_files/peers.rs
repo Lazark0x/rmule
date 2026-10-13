@@ -22,11 +22,11 @@ use rmule_primitives::FileHash;
 
 use super::rate_cell;
 use super::{Pane, SharedView, pane_border, render_empty, table_widths};
+use crate::row_selection::viewport;
 use crate::row_selection::{gutter, mark_row};
 use crate::state::{UiState, UploadPeer, UploadState};
 use crate::table_sort::{SortedTable, TableSort, arrow_floors, header_label, header_widths};
 use crate::theme::Theme;
-use crate::row_selection::viewport;
 use crate::views::{DrawnRows, say_gave_way, software_label};
 use crate::words::units::short_hash;
 use crate::wrap::{Column, TableColumns, clamp_u16, column_lines, gave_way, wrapped_lines};
@@ -274,8 +274,13 @@ impl SharedView {
             let widths = widths_at(false);
             let room = body
                 .height
-                .saturating_sub(crate::views::off_screen::height(body, &off_screen_at(&widths)))
-                .saturating_sub(clamp_u16(peers_header(&widths, &self.peer_sort, theme).len()));
+                .saturating_sub(crate::views::off_screen::height(
+                    body,
+                    &off_screen_at(&widths),
+                ))
+                .saturating_sub(clamp_u16(
+                    peers_header(&widths, &self.peer_sort, theme).len(),
+                ));
             rows_at(&widths).iter().map(Vec::len).sum::<usize>() > usize::from(room)
         });
         let widths = widths_at(bar);
@@ -295,7 +300,9 @@ impl SharedView {
         let room = list.height - header_h;
         let first = self
             .peers_viewport
-            .follow(self.peers_selected, heights.len(), room, |index| heights[index]);
+            .follow(self.peers_selected, heights.len(), room, |index| {
+                heights[index]
+            });
         if visible.is_empty() {
             lines.push(Line::from(Span::styled(
                 "  no active uploads",

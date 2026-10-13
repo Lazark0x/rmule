@@ -141,7 +141,11 @@ mod tests {
         let end = view.log_viewport.first();
         assert!(end > 0, "opens on the newest line");
         view.handle_key(press(KeyCode::Char('k')), &state);
-        assert_eq!(view.log_viewport.first(), end - 1, "k scrolls one line older");
+        assert_eq!(
+            view.log_viewport.first(),
+            end - 1,
+            "k scrolls one line older"
+        );
         view.handle_key(press(KeyCode::Char('g')), &state);
         assert_eq!(view.log_viewport.first(), 0, "g jumps to the oldest window");
         view.handle_key(press(KeyCode::Char('G')), &state);

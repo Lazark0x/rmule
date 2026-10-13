@@ -32,7 +32,11 @@ pub(crate) const BAR_W: u16 = 1;
 /// its viewport has lines, else when laid out at its full width its wrapped
 /// rows overflow — asked only of a list short enough to be cheap to lay out.
 #[must_use]
-pub(crate) fn needs_bar(items: usize, room: u16, overflows_at_full_width: impl FnOnce() -> bool) -> bool {
+pub(crate) fn needs_bar(
+    items: usize,
+    room: u16,
+    overflows_at_full_width: impl FnOnce() -> bool,
+) -> bool {
     items > usize::from(room) || overflows_at_full_width()
 }
 
@@ -134,7 +138,11 @@ impl Viewport {
     pub(crate) fn show(&mut self, total: usize, room: u16) -> Range<usize> {
         let room = usize::from(room);
         let last = total.saturating_sub(room);
-        self.first = if self.tail { last } else { self.first.min(last) };
+        self.first = if self.tail {
+            last
+        } else {
+            self.first.min(last)
+        };
         self.shown = room.min(total - self.first);
         self.total = total;
         self.cursor = None;

@@ -215,7 +215,10 @@ impl TransfersView {
             let cols = cols_at(false);
             let room = framed
                 .height
-                .saturating_sub(crate::views::off_screen::height(framed, &off_screen_at(&cols)))
+                .saturating_sub(crate::views::off_screen::height(
+                    framed,
+                    &off_screen_at(&cols),
+                ))
                 .saturating_sub(1);
             let drawn: u32 = workers
                 .iter()
@@ -243,7 +246,8 @@ impl TransfersView {
             // The gutter is always there, so a header click lands where drawn.
             .highlight_spacing(HighlightSpacing::Always);
         frame.render_widget(block, area);
-        let table_area = crate::views::off_screen::draw(frame, framed, &off_screen_at(&cols), theme);
+        let table_area =
+            crate::views::off_screen::draw(frame, framed, &off_screen_at(&cols), theme);
         let (list, bar) = viewport::split(table_area, bar);
         let first = self.source_viewport.follow(
             self.sources_state.selected().unwrap_or(0),

@@ -251,6 +251,7 @@ impl TransfersView {
                 }
                 MenuAction::Details => {
                     self.overlay = Overlay::Details;
+                    self.details_viewport.take();
                     ViewOutcome::Redraw
                 }
                 MenuAction::Preview => {

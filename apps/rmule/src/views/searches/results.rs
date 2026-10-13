@@ -429,7 +429,8 @@ impl SearchesView {
                 tint,
                 false,
             );
-            let (size, size_h) = wrapped_cell(&format_size(result.file_size()), cols[1], tint, true);
+            let (size, size_h) =
+                wrapped_cell(&format_size(result.file_size()), cols[1], tint, true);
             let (sources, sources_h) =
                 wrapped_cell(&result_sources_text(result), cols[2], tint, true);
             let (ftype, type_h) = wrapped_cell(&result_type_text(result), cols[3], tint, false);
@@ -447,7 +448,10 @@ impl SearchesView {
             let cols = cols_at(false);
             let room = area
                 .height
-                .saturating_sub(crate::views::off_screen::height(area, &off_screen_at(&cols)))
+                .saturating_sub(crate::views::off_screen::height(
+                    area,
+                    &off_screen_at(&cols),
+                ))
                 .saturating_sub(header_at(&cols).1);
             let drawn: u32 = results
                 .iter()
@@ -500,7 +504,10 @@ impl SearchesView {
         say_gave_way(
             frame,
             foot,
-            &gave_way(ResultsTable::COLUMNS.iter().map(|c| c.label), &self.header_cols),
+            &gave_way(
+                ResultsTable::COLUMNS.iter().map(|c| c.label),
+                &self.header_cols,
+            ),
             theme,
         );
     }

@@ -1,8 +1,8 @@
 //! The frame every modal shares: a cleared, bordered panel centered over the
 //! view, its title on the top border, its lines inside. A view builds the
-//! lines and picks the tone; the frame is drawn here once. A modal that is a
-//! list — a row menu — scrolls under a Viewport when the frame is too short
-//! for it.
+//! lines and picks the tone; the frame is drawn here once. A row menu and the
+//! details modal scroll under a Viewport when the frame is too short for
+//! them.
 
 use std::cell::Cell;
 
@@ -96,9 +96,7 @@ impl Modal {
     ) {
         let mut laid = rows(width);
         let lines: usize = laid.iter().map(Vec::len).sum();
-        let height = clamp_u16(lines + 2)
-            .max(self.min_height)
-            .min(area.height);
+        let height = clamp_u16(lines + 2).max(self.min_height).min(area.height);
         let bar = lines > usize::from(height.saturating_sub(2));
         let width = if !bar {
             width
@@ -125,12 +123,53 @@ impl Modal {
         place.draw(frame, modal, bar, theme);
     }
 
+    /// Clear a panel centered in `area` and draw the frame and the lines
+    /// `lines(width)` lays out for a panel `width` wide, scrolled by
+    /// `viewport` when the frame is too short for them all: its bar's column
+    /// widens the panel when the frame has the room, else the lines are laid
+    /// out for a panel one column narrower, and the count says the last line
+    /// on screen.
+    pub(crate) fn draw_scrolled(
+        self,
+        frame: &mut Frame,
+        area: Rect,
+        width: u16,
+        theme: &Theme,
+        viewport: &Cell<Viewport>,
+        lines: impl Fn(u16) -> Vec<Line<'static>>,
+    ) {
+        let mut laid = lines(width);
+        let height = clamp_u16(laid.len() + 2)
+            .max(self.min_height)
+            .min(area.height);
+        let bar = laid.len() > usize::from(height.saturating_sub(2));
+        let width = if !bar {
+            width
+        } else if width < area.width {
+            width + BAR_W
+        } else {
+            laid = lines(width.saturating_sub(BAR_W));
+            width
+        };
+        let modal = centered(area, width, height);
+        let (inner, bar) = split(self.open(frame, modal, theme), bar);
+        let text = self.text(inner);
+        let mut place = viewport.get();
+        let shown = place.show(laid.len(), text.height);
+        viewport.set(place);
+        frame.render_widget(Paragraph::new(laid[shown].to_vec()), text);
+        place.draw(frame, modal, bar, theme);
+    }
+
     /// Clear `modal` and draw its frame; returns the inside of the border.
     fn open(&self, frame: &mut Frame, modal: Rect, theme: &Theme) -> Rect {
         let block = Block::bordered()
             .border_style(self.border)
             .style(Style::new().fg(theme.fg).bg(theme.panel))
-            .title_top(Line::from(Span::styled(self.title.clone(), self.title_style)));
+            .title_top(Line::from(Span::styled(
+                self.title.clone(),
+                self.title_style,
+            )));
         let inner = block.inner(modal);
         frame.render_widget(Clear, modal);
         frame.render_widget(block, modal);

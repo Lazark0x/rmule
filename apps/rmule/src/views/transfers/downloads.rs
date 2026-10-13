@@ -363,7 +363,10 @@ impl TransfersView {
             let cols = cols_at(false);
             let room = inner
                 .height
-                .saturating_sub(crate::views::off_screen::height(inner, &off_screen_at(&cols)))
+                .saturating_sub(crate::views::off_screen::height(
+                    inner,
+                    &off_screen_at(&cols),
+                ))
                 .saturating_sub(self.header(&cols, theme).1);
             let drawn: u32 = lines
                 .iter()
@@ -439,7 +442,10 @@ impl TransfersView {
             })
             .unzip();
         let height = heights.into_iter().max().unwrap_or(1);
-        (Row::new(cells).style(theme.dim_text()).height(height), height)
+        (
+            Row::new(cells).style(theme.dim_text()).height(height),
+            height,
+        )
     }
 
     fn download_row(

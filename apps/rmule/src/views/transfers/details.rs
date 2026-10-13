@@ -15,6 +15,7 @@ use super::sort::DownloadLine;
 use super::{Overlay, TransfersView, selected_id};
 use crate::rates::format_rate;
 use crate::state::UiState;
+use crate::table_sort::RowMove;
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
 use crate::views::modal::Modal;
@@ -42,7 +43,13 @@ impl TransfersView {
                 self.overlay = Overlay::None;
                 ViewOutcome::Redraw
             }
-            _ => ViewOutcome::Redraw,
+            // A frame too short for every line scrolls them.
+            code => {
+                if let Some(movement) = RowMove::of(code) {
+                    self.details_viewport.get_mut().scroll(movement);
+                }
+                ViewOutcome::Redraw
+            }
         }
     }
 
@@ -84,72 +91,74 @@ impl TransfersView {
         // Key-value rows wrap under their value column: the full hash
         // is 32 hex digits, so a narrow frame must grow the modal, not cut it.
         let width = 52u16.min(area.width);
-        let inner_w = usize::from(width).saturating_sub(2).max(1);
-        let value_w = inner_w.saturating_sub(DETAIL_LABEL_W + 1).max(1);
-        let mut lines: Vec<Line<'static>> = [
-            ("name", name),
-            (
-                "hash",
-                hash.map_or_else(|| "—".to_string(), FileHash::to_hex_upper),
-            ),
-            ("size", size),
-            ("origin", origin),
-            ("done", done),
-            ("speed", format_rate(bps)),
-            ("sources", sources),
-            // The one place the Allocated Bytes and the Hole Verdict show
-            // (ADR-0111, "What the operator reads").
-            (
-                "on disk",
-                on_disk(
-                    diag.and_then(|d| d.allocated_bytes),
-                    diag.and_then(|d| d.hole_verdict),
+        let lines = |width: u16| -> Vec<Line<'static>> {
+            let inner_w = usize::from(width).saturating_sub(2).max(1);
+            let value_w = inner_w.saturating_sub(DETAIL_LABEL_W + 1).max(1);
+            let mut lines: Vec<Line<'static>> = [
+                ("name", name.clone()),
+                (
+                    "hash",
+                    hash.map_or_else(|| "—".to_string(), FileHash::to_hex_upper),
                 ),
-            ),
-        ]
-        .into_iter()
-        .flat_map(|(label, value)| detail_rows(label, &value, value_w, theme))
-        .collect();
-        // A failed row says why — or that why was not kept (ADR-0094).
-        if let Some(row) = row
-            && row.status == crate::state::DownloadStatus::Failed
-        {
-            let why = row.failure.as_ref().map_or_else(
-                || crate::state::FAILURE_NOT_RECORDED.to_string(),
-                crate::state::download_failure_words,
-            );
-            lines.extend(detail_rows("failed", &why, value_w, theme));
-        }
-        // A row whose run waits says on what (ADR-0051's amendment).
-        if let Some(row) = row {
-            let wait = match (row.status, row.source_wait) {
-                (_, Some(reason)) => Some(source_wait_words(reason)),
-                (crate::state::DownloadStatus::NoConnection, None) => {
-                    Some(crate::state::NO_NETWORK_WAIT)
-                }
-                _ => None,
-            };
-            if let Some(wait) = wait {
-                lines.extend(detail_rows("waiting", wait, value_w, theme));
+                ("size", size.clone()),
+                ("origin", origin.clone()),
+                ("done", done.clone()),
+                ("speed", format_rate(bps)),
+                ("sources", sources.clone()),
+                // The one place the Allocated Bytes and the Hole Verdict show
+                // (ADR-0111, "What the operator reads").
+                (
+                    "on disk",
+                    on_disk(
+                        diag.and_then(|d| d.allocated_bytes),
+                        diag.and_then(|d| d.hole_verdict),
+                    ),
+                ),
+            ]
+            .into_iter()
+            .flat_map(|(label, value)| detail_rows(label, &value, value_w, theme))
+            .collect();
+            // A failed row says why — or that why was not kept (ADR-0094).
+            if let Some(row) = row
+                && row.status == crate::state::DownloadStatus::Failed
+            {
+                let why = row.failure.as_ref().map_or_else(
+                    || crate::state::FAILURE_NOT_RECORDED.to_string(),
+                    crate::state::download_failure_words,
+                );
+                lines.extend(detail_rows("failed", &why, value_w, theme));
             }
-        }
-        // A completing row says what its move does, and what its copy has
-        // written (ADR-0115).
-        if let Some(progress) = diag.and_then(|d| d.completion)
-            && row.is_some_and(|row| row.status == crate::state::DownloadStatus::Completing)
-        {
-            let size = metadata.map(|m| m.size);
-            let doing = completion_progress(progress.step, progress.copied, size);
-            lines.extend(detail_rows("move", &doing, value_w, theme));
-        }
-        lines.push(Line::raw(""));
-        // The modal's wider budget buckets the same map more finely than the
-        // table cell does — same fact, more resolution (ADR-0079).
-        lines.push(Line::from(chunk_bar(diag_parts(diag), inner_w, theme)));
-
+            // A row whose run waits says on what (ADR-0051's amendment).
+            if let Some(row) = row {
+                let wait = match (row.status, row.source_wait) {
+                    (_, Some(reason)) => Some(source_wait_words(reason)),
+                    (crate::state::DownloadStatus::NoConnection, None) => {
+                        Some(crate::state::NO_NETWORK_WAIT)
+                    }
+                    _ => None,
+                };
+                if let Some(wait) = wait {
+                    lines.extend(detail_rows("waiting", wait, value_w, theme));
+                }
+            }
+            // A completing row says what its move does, and what its copy has
+            // written (ADR-0115).
+            if let Some(progress) = diag.and_then(|d| d.completion)
+                && row.is_some_and(|row| row.status == crate::state::DownloadStatus::Completing)
+            {
+                let size = metadata.map(|m| m.size);
+                let doing = completion_progress(progress.step, progress.copied, size);
+                lines.extend(detail_rows("move", &doing, value_w, theme));
+            }
+            lines.push(Line::raw(""));
+            // The modal's wider budget buckets the same map more finely than the
+            // table cell does — same fact, more resolution (ADR-0079).
+            lines.push(Line::from(chunk_bar(diag_parts(diag), inner_w, theme)));
+            lines
+        };
         Modal::new(" File details ", theme)
             .flash_title(theme)
-            .draw(frame, area, width, theme, lines);
+            .draw_scrolled(frame, area, width, theme, &self.details_viewport, lines);
     }
 }
 

@@ -52,7 +52,11 @@ pub(crate) fn draw(frame: &mut Frame, body: Rect, parts: &[String], theme: &Them
     if height == 0 {
         return body;
     }
-    let lines = wrapped_lines(&text(parts), usize::from(body.width), Style::new().fg(theme.fg));
+    let lines = wrapped_lines(
+        &text(parts),
+        usize::from(body.width),
+        Style::new().fg(theme.fg),
+    );
     let line_area = Rect::new(body.x, body.bottom() - height, body.width, height);
     frame.render_widget(Paragraph::new(lines), line_area);
     Rect::new(body.x, body.y, body.width, body.height - height)

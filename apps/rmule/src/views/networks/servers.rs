@@ -334,7 +334,10 @@ impl NetworksView {
         let bar = viewport::needs_bar(rows.len(), inner.height.saturating_sub(1), || {
             let widths = widths_at(false);
             let drawn: usize = (0..rows.len())
-                .map(|index| self.row_lines(rows[index], index, &widths, connected, theme).len())
+                .map(|index| {
+                    self.row_lines(rows[index], index, &widths, connected, theme)
+                        .len()
+                })
                 .sum();
             drawn > usize::from(body_at(&widths))
         });

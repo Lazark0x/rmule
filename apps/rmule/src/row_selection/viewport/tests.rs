@@ -50,9 +50,21 @@ fn following_moves_no_further_than_keeps_the_cursor_on_screen() {
     let mut viewport = Viewport::default();
     let one = |_| 1;
     assert_eq!(viewport.follow(4, 20, 5, one), 0);
-    assert_eq!(viewport.follow(7, 20, 5, one), 3, "down pushes it just far enough");
-    assert_eq!(viewport.follow(5, 20, 5, one), 3, "inside the window it stays");
-    assert_eq!(viewport.follow(1, 20, 5, one), 1, "up pulls it to the cursor");
+    assert_eq!(
+        viewport.follow(7, 20, 5, one),
+        3,
+        "down pushes it just far enough"
+    );
+    assert_eq!(
+        viewport.follow(5, 20, 5, one),
+        3,
+        "inside the window it stays"
+    );
+    assert_eq!(
+        viewport.follow(1, 20, 5, one),
+        1,
+        "up pulls it to the cursor"
+    );
     // Rows leave: what is left fills the room instead of hiding above.
     viewport.follow(19, 20, 5, one);
     assert_eq!(viewport.follow(7, 8, 5, one), 3);
@@ -98,5 +110,8 @@ fn a_list_resting_on_its_end_keeps_it_in_view_until_scrolled_back() {
     assert!(log.scroll(RowMove::Last));
     assert_eq!(log.show(15, 4), 11..15, "G rests it on the end again");
     assert!(log.scroll(RowMove::First));
-    assert!(!log.scroll(RowMove::Step(-1)), "nothing above the first line");
+    assert!(
+        !log.scroll(RowMove::Step(-1)),
+        "nothing above the first line"
+    );
 }
