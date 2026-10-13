@@ -32,7 +32,7 @@ use crate::table_sort::{SortedTable, arrow_floors, header_label, header_widths};
 use crate::theme::Theme;
 use crate::views::{DrawnRows, say_gave_way};
 use crate::views::{human_size, rate_cell};
-use crate::words::download::{ETA_TOO_SLOW, eta_time};
+use crate::words::download::{ETA_TOO_SLOW, completing_status, eta_time};
 use crate::words::units::short_hash_or_dash;
 use crate::wrap::{TableColumns, clamp_u16, gave_way, wrapped_cell};
 
@@ -437,7 +437,7 @@ impl TransfersView {
             (eta_cell(line.eta), cols[5], plain, false),
             (line.sources_cell(), cols[6], plain, false),
             (
-                line.status_text.to_string(),
+                line.status_text.clone(),
                 cols[7],
                 status_style(line.status, theme),
                 false,
@@ -467,16 +467,24 @@ impl TransfersView {
 /// A download's status as its cell words it: a download with no network
 /// while core re-makes the operator's session waits for that, not for
 /// nothing; one waiting with no server session while Kad runs says Kad is
-/// who asks. Each wording keeps the rank of the status it words.
+/// who asks; a completing one says what its move waits for or has copied,
+/// from its diagnostics row. Each wording keeps the rank of the status it
+/// words.
 pub(super) fn status_text(
     status: DownloadStatus,
-    wait: Option<SourceWait>,
+    row: Option<&DownloadRow>,
+    diag: Option<&DownloadDiagnostics>,
     state: &UiState,
-) -> &'static str {
-    match (status, wait) {
-        (DownloadStatus::NoConnection, _) if state.reconnect.is_some() => "Reconnecting",
-        (DownloadStatus::Waiting, Some(SourceWait::KadAlone)) => "Asking Kad",
-        _ => status_label(status),
+) -> String {
+    match (status, row.and_then(|row| row.source_wait)) {
+        (DownloadStatus::NoConnection, _) if state.reconnect.is_some() => {
+            "Reconnecting".to_string()
+        }
+        (DownloadStatus::Waiting, Some(SourceWait::KadAlone)) => "Asking Kad".to_string(),
+        (DownloadStatus::Completing, _) => {
+            completing_status(diag.and_then(|diag| diag.completion))
+        }
+        _ => status_label(status).to_string(),
     }
 }
 
@@ -524,7 +532,7 @@ impl DownloadLine {
             rate_cell(self.bps, theme).0,
             eta_cell(self.eta),
             self.sources_cell(),
-            self.status_text.to_string(),
+            self.status_text.clone(),
         ]
     }
 }

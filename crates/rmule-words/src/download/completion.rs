@@ -6,6 +6,7 @@
 use std::path::Path;
 
 use rmule_core::CompletionStep;
+use rmule_core::diagnostics::CompletionProgress;
 
 use super::super::Sentence;
 use super::super::units::human_size;
@@ -39,6 +40,27 @@ pub fn completion_progress(step: CompletionStep, copied: u64, size: Option<u64>)
             size.map_or_else(|| DASH.to_string(), human_size)
         ),
         step => completion_step_words(step).to_string(),
+    }
+}
+
+/// A completing download's status cell (ADR-0115, "What the operator
+/// reads"): Completing, with what the move waits for while a program holds
+/// the file and the bytes copied while it copies; the row's Size cell says
+/// of what. A step not yet published reads Completing.
+#[must_use]
+pub fn completing_status(progress: Option<CompletionProgress>) -> String {
+    match progress.map(|progress| (progress.step, progress.copied)) {
+        Some((CompletionStep::WaitingForRelease, _)) => {
+            "Completing: waiting for the file to be released".to_string()
+        }
+        Some((CompletionStep::Copying, copied)) => {
+            format!("Completing: {} copied", human_size(copied))
+        }
+        Some((
+            CompletionStep::Moving | CompletionStep::QueuedForCopy | CompletionStep::WaitingForStore,
+            _,
+        ))
+        | None => "Completing".to_string(),
     }
 }
 

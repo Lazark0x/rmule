@@ -21,7 +21,9 @@ use super::units::{address, count, human_size, short_hex};
 
 mod completion;
 
-pub use completion::{completing, completing_line, completion_progress, completion_step_words};
+pub use completion::{
+    completing, completing_line, completing_status, completion_progress, completion_step_words,
+};
 
 /// What a download waiting for a connection needs to move on (ADR-0097): no
 /// server session and no Kad node exist to ask for sources on.

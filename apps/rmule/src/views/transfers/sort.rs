@@ -59,7 +59,7 @@ pub(super) struct DownloadLine {
     pub(super) sources: Option<(u32, u32)>,
     pub(super) status: DownloadStatus,
     /// The status as the cell words it; the same rank as [`Self::status`].
-    pub(super) status_text: &'static str,
+    pub(super) status_text: String,
 }
 
 impl DownloadLine {
@@ -90,7 +90,7 @@ impl DownloadLine {
             eta: row_eta(row, diag, state.download_eta_speed(id)),
             sources: source_counts(diag),
             status,
-            status_text: status_text(status, row.and_then(|row| row.source_wait), state),
+            status_text: status_text(status, row, diag, state),
         }
     }
 
