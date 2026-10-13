@@ -803,5 +803,6 @@ fn self_position_follows_a_mid_session_reassignment() {
     );
 }
 
+mod part_file;
 mod roster;
 mod served;

@@ -1,19 +1,109 @@
-//! Serving file data out: what a completed block read becomes for the flow that
-//! asked, the AICH recovery answer built from the cached hash tree
+//! Serving file data out: which reads a granted flow's block request
+//! decides — inside a Partial Share's **Verified Range** only (ADR-0113
+//! §"Reading a part file") — what a completed block read becomes for the flow
+//! that asked, the AICH recovery answer built from the cached hash tree
 //! (ADR-0038) — the one read purpose whose result is a hash set, not a block —
-//! and what a failed read does: the file stops being offered at once.
+//! and what a failed or refused read does: the file stops being offered at
+//! once.
 
+use rmule_peer::{PartRanges, ServerCommand};
 use rmule_primitives::{AichHashSet, ED2K_PART_SIZE, FileHash, PeerEndpoint};
 
 use std::collections::HashMap;
 use std::time::Instant;
 
+use super::connection::{record_served_range, subtract_served_ranges};
+use super::served::Asked;
 use super::{ReadPurpose, ServeDecision, ServeState, rank_updates};
+use crate::served_downloads::PartialEnd;
 use crate::service::ServeEvent;
 use crate::upload_queue::WaiterLeaveCause;
-use rmule_peer::ServerCommand;
 
 impl ServeState {
+    /// A granted flow's block request: every sub-range left after the ranges
+    /// already served is read — a row's from its path, a Partial Share's
+    /// from the path holding its bytes, checked against its Part File
+    /// Identity. One sub-range of a Partial Share outside its Verified Range
+    /// ends the peer's slot with nothing read and nothing sent, the link
+    /// kept: aMule throws on an incomplete block and its handler only takes
+    /// the client out of the upload queue (`UploadClient.cpp:227-231`,
+    /// `:270-282`, `UploadQueue.cpp:522-546`). A peer holding no slot is read
+    /// nothing, as aMule drops its block request (`UploadClient.cpp:497-500`).
+    pub(super) fn on_parts_requested(
+        &mut self,
+        now: Instant,
+        peer: PeerEndpoint,
+        file_hash: FileHash,
+        ranges: &PartRanges,
+        modifiers: &HashMap<PeerEndpoint, f64>,
+    ) -> Vec<ServeDecision> {
+        if !self.queue.is_granted(peer) {
+            return Vec::new();
+        }
+        let (path, check, range) = match self.asked(file_hash).filter(Asked::offered) {
+            None => return Vec::new(),
+            Some(Asked::Row(entry)) => (entry.path.clone(), None, None),
+            Some(Asked::Download { look, .. }) => {
+                let (path, check) = look.served.read_target();
+                (path, Some(check), Some(look.served.range.clone()))
+            }
+        };
+        let mut served = self
+            .served_ranges
+            .get(&(peer, file_hash))
+            .cloned()
+            .unwrap_or_default();
+        let mut reads = Vec::new();
+        // `PartRanges::as_array()` yields the fixed `[(u64,u64); 3]`; the
+        // `(0,0)` padding slots are skipped by the `e > s` filter.
+        for &(start, end) in ranges.as_array().iter().filter(|(s, e)| e > s) {
+            for (send_start, send_end) in subtract_served_ranges(start, end, &served) {
+                record_served_range(&mut served, send_start, send_end);
+                reads.push((send_start, send_end));
+            }
+        }
+        if range.is_some_and(|range| !reads.iter().all(|&(s, e)| range.covers(s, e))) {
+            return self.end_slot(now, peer, modifiers);
+        }
+        // Recorded at decision time, not on the read result: a repeat
+        // request must not double-send a range whose read is still in
+        // flight, and a failed read ends the file's offer (its holders'
+        // ranges go with their slots), so nothing is stranded.
+        self.served_ranges.insert((peer, file_hash), served);
+        reads
+            .into_iter()
+            .map(|(start, end)| ServeDecision::ReadRange {
+                peer,
+                path: path.clone(),
+                offset: start,
+                len: end - start,
+                purpose: ReadPurpose::Block {
+                    file_hash,
+                    start,
+                    end,
+                },
+                check: check.clone(),
+            })
+            .collect()
+    }
+
+    /// End `peer`'s slot and nothing else: its flow's ranges go, the slot
+    /// is released and the next waiter promoted; nothing is sent to it, and
+    /// its link stays.
+    fn end_slot(
+        &mut self,
+        now: Instant,
+        peer: PeerEndpoint,
+        modifiers: &HashMap<PeerEndpoint, f64>,
+    ) -> Vec<ServeDecision> {
+        self.served_ranges
+            .retain(|(range_peer, _), _| *range_peer != peer);
+        let promotion = self.queue.release(peer, now, modifiers);
+        let mut decisions = vec![ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer })];
+        decisions.extend(self.promotion_decisions(promotion));
+        decisions
+    }
+
     /// Resume a [`ServeDecision::ReadRange`] round trip that read its bytes —
     /// the read-side twin of `DownloadState::on_persist_result`.
     ///
@@ -27,7 +117,8 @@ impl ServeState {
         purpose: ReadPurpose,
         bytes: Vec<u8>,
     ) -> Vec<ServeDecision> {
-        if !self.shared.contains_key(&purpose.file_hash()) {
+        let file_hash = purpose.file_hash();
+        if !self.shared.contains_key(&file_hash) && !self.partials.contains(&file_hash) {
             return Vec::new();
         }
         match purpose {
@@ -91,12 +182,88 @@ impl ServeState {
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
         let file_hash = purpose.file_hash();
+        let mut decisions = self.stop_and_tell(now, peer, file_hash, modifiers);
+        decisions.push(ServeDecision::ReadFailed(file_hash));
+        decisions
+    }
+
+    /// A checked read of a Partial Share found neither of its paths
+    /// readable: it stops being served at once and its range empties
+    /// (ADR-0113). It has no row, so the Registry Check is not told.
+    pub(crate) fn on_part_file_unreadable(
+        &mut self,
+        now: Instant,
+        peer: PeerEndpoint,
+        purpose: ReadPurpose,
+        modifiers: &HashMap<PeerEndpoint, f64>,
+    ) -> Vec<ServeDecision> {
+        self.withdraw_partial(
+            now,
+            peer,
+            purpose.file_hash(),
+            PartialEnd::Unreadable,
+            modifiers,
+        )
+    }
+
+    /// A checked read of a Partial Share found the file not the one its
+    /// Verified Range was read from, or could not tell: nothing of it is
+    /// sent, it stops being served at once, and its range empties until the
+    /// download's holder reads the file again (ADR-0113).
+    pub(crate) fn on_part_file_changed(
+        &mut self,
+        now: Instant,
+        peer: PeerEndpoint,
+        purpose: ReadPurpose,
+        modifiers: &HashMap<PeerEndpoint, f64>,
+    ) -> Vec<ServeDecision> {
+        self.withdraw_partial(
+            now,
+            peer,
+            purpose.file_hash(),
+            PartialEnd::Changed,
+            modifiers,
+        )
+    }
+
+    /// Stop serving the Partial Share of `file_hash`, telling the peer whose
+    /// read found it so, and empty its range in the cell for `cause` — the
+    /// range as the read was checked against it, which is this brain's copy:
+    /// a read lands within the batch that decided it.
+    fn withdraw_partial(
+        &mut self,
+        now: Instant,
+        peer: PeerEndpoint,
+        file_hash: FileHash,
+        cause: PartialEnd,
+        modifiers: &HashMap<PeerEndpoint, f64>,
+    ) -> Vec<ServeDecision> {
+        let checked = self.served.get(&file_hash).map(|look| look.served.identity);
+        let mut decisions = self.stop_and_tell(now, peer, file_hash, modifiers);
+        if let Some(checked) = checked {
+            decisions.push(ServeDecision::EmptyRange {
+                file_hash,
+                checked,
+                cause,
+            });
+        }
+        decisions
+    }
+
+    /// [`stop_serving`](Self::stop_serving), and `OP_FILEREQANSNOFIL` to
+    /// `peer` too when it was not among the file's waiters and holders.
+    fn stop_and_tell(
+        &mut self,
+        now: Instant,
+        peer: PeerEndpoint,
+        file_hash: FileHash,
+        modifiers: &HashMap<PeerEndpoint, f64>,
+    ) -> Vec<ServeDecision> {
         let told = self.queue.engaged_peers(file_hash).contains(&peer);
         let mut decisions = self.stop_serving(file_hash, now, modifiers);
         if !told {
             decisions.push(not_found(peer, file_hash));
         }
-        decisions.push(ServeDecision::ReadFailed(file_hash));
         decisions
     }
 

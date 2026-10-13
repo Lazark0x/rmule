@@ -226,6 +226,7 @@ impl ServeState {
                 offset: 0,
                 len: entry.file_size,
                 purpose: ReadPurpose::AichMasterRoot { file_hash },
+                check: None,
             }],
         }
     }
@@ -390,36 +391,7 @@ impl ServeState {
                 decisions
             }
             ServerEvent::PartsRequested { file_hash, ranges } => {
-                let Some(entry) = self.shared.get(&file_hash) else {
-                    return Vec::new();
-                };
-                let path = entry.path.clone();
-                let mut decisions = Vec::new();
-                // `PartRanges::as_array()` yields the fixed `[(u64,u64); 3]`;
-                // the `(0,0)` padding slots are skipped by the `e > s` filter.
-                for &(start, end) in ranges.as_array().iter().filter(|(s, e)| e > s) {
-                    let served = self.served_ranges.entry((peer, file_hash)).or_default();
-                    for (send_start, send_end) in subtract_served_ranges(start, end, served) {
-                        // Recorded at decision time, not on the read result: a
-                        // repeat request must not double-send a range whose
-                        // read is still in flight, and a failed read closes
-                        // the flow (its `Disconnected` wipes the peer's
-                        // ranges), so nothing is stranded.
-                        record_served_range(served, send_start, send_end);
-                        decisions.push(ServeDecision::ReadRange {
-                            peer,
-                            path: path.clone(),
-                            offset: send_start,
-                            len: send_end - send_start,
-                            purpose: ReadPurpose::Block {
-                                file_hash,
-                                start: send_start,
-                                end: send_end,
-                            },
-                        });
-                    }
-                }
-                decisions
+                self.on_parts_requested(now, peer, file_hash, &ranges, modifiers)
             }
             ServerEvent::AichRequested {
                 file_hash,
@@ -443,6 +415,7 @@ impl ServeState {
                         offset: 0,
                         len: entry.file_size,
                         purpose: ReadPurpose::AichRecovery { file_hash, part },
+                        check: None,
                     }],
                 }
             }

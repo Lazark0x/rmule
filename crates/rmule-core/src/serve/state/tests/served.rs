@@ -15,7 +15,7 @@ use crate::served_downloads::{BytesAt, Served, VerifiedRange, WholeSet};
 
 /// Three whole parts: the writer counts four, the phantom always held, and
 /// the whole set has four hashes, the empty fourth part's included.
-const SIZE: u64 = 3 * ED2K_PART_SIZE;
+pub(super) const SIZE: u64 = 3 * ED2K_PART_SIZE;
 
 fn set() -> Vec<PartHash> {
     (0..4)
@@ -26,7 +26,7 @@ fn set() -> Vec<PartHash> {
 /// A Served Download of [`SIZE`] bytes, its whole set held when `whole`, the
 /// parts `verified` recorded against it, its run taking askers when
 /// `running`.
-fn download(whole: bool, verified: &[u32], running: bool) -> ServedLook {
+pub(super) fn download(whole: bool, verified: &[u32], running: bool) -> ServedLook {
     let hashes = set();
     let set = whole.then(|| WholeSet::of(SIZE, &hashes).expect("the whole set"));
     let records: Vec<VerifiedPartRecord> = verified
@@ -59,7 +59,10 @@ fn download(whole: bool, verified: &[u32], running: bool) -> ServedLook {
 
 /// A state serving `rows` and the Served Downloads `downloads`, through one
 /// slot, the share trigger fired once.
-fn state_of(rows: Vec<SharedFileEntry>, downloads: Vec<(FileHash, ServedLook)>) -> ServeState {
+pub(super) fn state_of(
+    rows: Vec<SharedFileEntry>,
+    downloads: Vec<(FileHash, ServedLook)>,
+) -> ServeState {
     let mut state = ServeState::new(UploadSlotQueue::new(1, 8));
     state.on_served(downloads.into_iter().collect());
     let _ = state.on_share_set(rows, Instant::now(), &no_modifiers());

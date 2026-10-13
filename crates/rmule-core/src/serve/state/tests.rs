@@ -3,6 +3,7 @@
 //! and source exchange. The shared fixtures live here; each area's assertions
 //! live in a submodule.
 
+mod reading;
 mod reask;
 mod served;
 mod sharing;

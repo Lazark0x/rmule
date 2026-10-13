@@ -294,3 +294,47 @@ fn only_the_run_holding_an_entry_takes_its_askers_and_a_full_inbox_drops_one() {
         "a run without the lease opens none"
     );
 }
+
+fn identity(file: u64) -> PartFileIdentity {
+    PartFileIdentity {
+        key: FileKey { volume: 1, file },
+        at_rest: None,
+    }
+}
+
+#[test]
+fn a_read_that_found_the_file_changed_empties_the_range_until_a_holder_reads_the_file_again() {
+    let store = store();
+    let cell = ServedDownloads::default();
+    let row = record(&store, 1, SIZE, DownloadLifecycle::Queued);
+    let file = row.file_hash();
+    let set = hashes(1);
+    cell.install(&row, &set);
+    let lease = cell.hand_to_run(file, 1).unwrap();
+    lease.record_identity(identity(7));
+    lease.record_range(&set, &[verified(0, set[0])]);
+    cell.look();
+
+    assert!(
+        !cell.empty_range(file, Some(identity(8)), PartialEnd::Changed),
+        "a read checked against a file the entry no longer names empties nothing"
+    );
+    assert_eq!(cell.offered(), [file]);
+    let offers = cell.offer_changes();
+    assert!(cell.empty_range(file, Some(identity(7)), PartialEnd::Unreadable));
+    assert!(offers.has_changed().unwrap(), "the actor is woken");
+    assert_eq!(
+        cell.look(),
+        [OfferChange::Withdrawn(file, PartialEnd::Unreadable)]
+    );
+    assert_eq!(cell.served(file).unwrap().range, VerifiedRange::default());
+
+    lease.record_range(&set, &[verified(0, set[0])]);
+    assert!(
+        cell.offered().is_empty(),
+        "the run's next ruling keeps it empty"
+    );
+    lease.record_identity(identity(9));
+    lease.record_range(&set, &[verified(0, set[0])]);
+    assert_eq!(cell.offered(), [file], "a file read again is ruled again");
+}

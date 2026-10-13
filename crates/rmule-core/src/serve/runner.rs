@@ -17,7 +17,7 @@ use crate::adapters::{
     AnnounceOutcome, ServeConnection, ServeInput, ServeOutput, ServeRuntimeService,
 };
 use crate::client_udp::{ClientUdpDatagram, ClientUdpSend};
-use crate::content::ContentFileStore;
+use crate::content::{CheckedReadError, ContentFileStore};
 use crate::credit::{KeyBinding, SharedCreditStore};
 use crate::peer_roster::{PeerRelation, RelationLease};
 use crate::registry::{SharedFileEntry, SharedFileRegistry};
@@ -534,6 +534,7 @@ async fn enact<L: ServeRuntimeService>(
                 offset,
                 len,
                 purpose,
+                check: None,
             } => match ContentFileStore::read_range(&path, offset, len).await {
                 Ok(bytes) => decisions.extend(state.on_read_result(peer, purpose, bytes)),
                 Err(error) => {
@@ -547,6 +548,38 @@ async fn enact<L: ServeRuntimeService>(
                     ));
                 }
             },
+            // A Served Download's bytes: read only through a handle proven to
+            // be the file its range was read from (ADR-0113).
+            ServeDecision::ReadRange {
+                peer,
+                path,
+                offset,
+                len,
+                purpose,
+                check: Some(check),
+            } => match ContentFileStore::read_checked(&path, &check, offset, len).await {
+                Ok(bytes) => decisions.extend(state.on_read_result(peer, purpose, bytes)),
+                Err(refused) => {
+                    let modifiers = current_modifiers(credit, state.identities()).await;
+                    decisions.extend(match refused {
+                        CheckedReadError::Changed => {
+                            tracing::warn!(?purpose, path = %path.display(), "a download's part file changed; its parts are no longer offered");
+                            state.on_part_file_changed(Instant::now(), peer, purpose, &modifiers)
+                        }
+                        CheckedReadError::Unreadable(error) => {
+                            tracing::warn!(%error, ?purpose, path = %path.display(), "a download's part file could not be read; its parts are no longer offered");
+                            state.on_part_file_unreadable(Instant::now(), peer, purpose, &modifiers)
+                        }
+                    });
+                }
+            },
+            ServeDecision::EmptyRange {
+                file_hash,
+                checked,
+                cause,
+            } => {
+                served.empty_range(file_hash, checked, cause);
+            }
             ServeDecision::ReadFailed(file_hash) => {
                 if let Some(tx) = read_failed_tx {
                     let _ = tx.send(crate::registry_check::CheckInput::ReadFailed(file_hash));

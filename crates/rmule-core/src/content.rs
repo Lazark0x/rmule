@@ -21,9 +21,11 @@ use crate::{
 /// associated functions rather than a handle.
 pub struct ContentFileStore;
 
+mod checked;
 mod held;
 mod sparse;
 
+pub(crate) use checked::CheckedReadError;
 pub use held::PartFileChange;
 pub(crate) use held::{HeldPartFile, HeldWriteError};
 pub use sparse::HoleVerdict;

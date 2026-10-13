@@ -128,6 +128,19 @@ impl VerifiedRange {
     pub(crate) fn holds_a_part(&self) -> bool {
         !self.0.is_empty()
     }
+
+    /// Whether every byte of `start..end` lies inside the range: each part
+    /// it touches is held.
+    pub(crate) fn covers(&self, start: u64, end: u64) -> bool {
+        if end <= start {
+            return true;
+        }
+        let part = |offset: u64| u32::try_from(offset / ED2K_PART_SIZE).ok();
+        match (part(start), part(end - 1)) {
+            (Some(first), Some(last)) => (first..=last).all(|part| self.holds(part)),
+            _ => false,
+        }
+    }
 }
 
 /// The file a Served Download's verified bytes are read from, as the writer
@@ -165,6 +178,30 @@ impl PartFileIdentity {
         };
         Some(Self { key, at_rest })
     }
+
+    /// Whether the file an opened handle reports — `key`, and `meta` for its
+    /// length and time — is this one: the key always, the length and time
+    /// only when the identity holds them, since a run moves both as it
+    /// writes.
+    pub(crate) fn holds(&self, key: FileKey, meta: &std::fs::Metadata) -> bool {
+        self.key == key
+            && self.at_rest.is_none_or(|rest| {
+                rest.len == meta.len() && meta.modified().ok() == Some(rest.modified)
+            })
+    }
+}
+
+/// How a read of a Served Download's bytes is checked before it reads
+/// (ADR-0113 §"Reading a part file"): the file it opens must be the one the
+/// identity names, and a path that names nothing gives way to the other
+/// once — the completion move puts the bytes at one of the two at every
+/// instant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReadCheck {
+    /// The file the entry's range was read from; `None` reads nothing.
+    pub(crate) identity: Option<PartFileIdentity>,
+    /// The download's other path.
+    pub(crate) other: PathBuf,
 }
 
 /// What a running download's source-exchange answer is drawn from
@@ -216,6 +253,21 @@ pub(crate) struct Served {
     pub(crate) pool: ExchangePool,
 }
 
+impl Served {
+    /// The path that holds the bytes now, and how a read of it is checked.
+    pub(crate) fn read_target(&self) -> (PathBuf, ReadCheck) {
+        let (path, other) = match self.bytes_at {
+            BytesAt::PartFile => (&self.part_path, &self.final_path),
+            BytesAt::FinalFile => (&self.final_path, &self.part_path),
+        };
+        let check = ReadCheck {
+            identity: self.identity,
+            other: other.clone(),
+        };
+        (path.clone(), check)
+    }
+}
+
 /// Who writes an entry now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Holder {
@@ -236,6 +288,9 @@ struct Entry {
     /// Where the run holding the entry takes its askers; `None` while the
     /// actor holds it.
     askers: Option<mpsc::Sender<SourceSighting>>,
+    /// A read found the file changed or unreadable: the range stays empty
+    /// until a holder records the identity of the file it reads.
+    emptied: bool,
 }
 
 /// What the actor's last look saw of a Served Download.
@@ -372,6 +427,7 @@ impl ServedDownloads {
                 withdrawn: None,
                 offered_since_look: false,
                 askers: None,
+                emptied: false,
             },
         );
         book.version += 1;
@@ -572,17 +628,54 @@ impl ServedDownloads {
             .map(|entry| entry.served.clone())
     }
 
+    /// A read of `file_hash`'s bytes, checked against `checked`, found the
+    /// file changed or could not read it, for `cause` (ADR-0113 §"Reading a
+    /// part file"): whoever holds the entry, its Verified Range empties at
+    /// once and stays empty until a holder records the identity of the file
+    /// it reads — a run at its lease's start, the swap, the Offer Check — and
+    /// the actor's next look says why. `false` when the entry is gone, or
+    /// names another file than `checked` now: a swap moved it since the read
+    /// was decided, and the next read is checked against the new one.
+    pub(crate) fn empty_range(
+        &self,
+        file_hash: FileHash,
+        checked: Option<PartFileIdentity>,
+        cause: PartialEnd,
+    ) -> bool {
+        let mut guard = self.lock();
+        let book = &mut *guard;
+        let was = book.offered(file_hash);
+        let Some(entry) = book
+            .entries
+            .get_mut(&file_hash)
+            .filter(|entry| entry.served.identity == checked)
+        else {
+            return false;
+        };
+        entry.emptied = true;
+        entry.served.range = VerifiedRange::default();
+        if was {
+            entry.withdrawn = Some(cause);
+        }
+        book.version += 1;
+        drop(guard);
+        if was {
+            self.offers.send_modify(|generation| *generation += 1);
+        }
+        true
+    }
+
     /// Run `write` on the entry `lease` holds and bump the offer generation
     /// when it changed whether the entry is offered. `false` when the lease's
     /// run no longer holds the entry.
-    fn write(&self, lease: &RunLease, write: impl FnOnce(&mut Served)) -> bool {
+    fn write(&self, lease: &RunLease, write: impl FnOnce(&mut Entry)) -> bool {
         let mut guard = self.lock();
         let book = &mut *guard;
         let was = book.offered(lease.file_hash);
         let Some(entry) = book.leased(lease) else {
             return false;
         };
-        write(&mut entry.served);
+        write(entry);
         let now = book.offered(lease.file_hash);
         let entry = book.leased(lease).expect("written above");
         if was && !now {
@@ -639,18 +732,26 @@ impl RunLease {
     /// Rule the Verified Range from the part hash set in force and the parts
     /// the store records: `set` becomes the entry's set when it is whole.
     pub(crate) fn record_range(&self, set: &[PartHash], records: &[VerifiedPartRecord]) -> bool {
-        self.cell.write(self, |served| {
+        self.cell.write(self, |entry| {
+            let served = &mut entry.served;
             if let Some(whole) = WholeSet::of(served.file_size, set) {
                 served.set = Some(whole);
             }
-            served.range = VerifiedRange::of_records(served.set.as_ref(), records);
+            served.range = if entry.emptied {
+                VerifiedRange::default()
+            } else {
+                VerifiedRange::of_records(served.set.as_ref(), records)
+            };
         })
     }
 
-    /// The file the run holds, as it read it through its handle.
+    /// The file the run holds, as it read it through its handle: a range a
+    /// read emptied may be ruled again from here.
     pub(crate) fn record_identity(&self, identity: PartFileIdentity) -> bool {
-        self.cell
-            .write(self, |served| served.identity = Some(identity))
+        self.cell.write(self, |entry| {
+            entry.served.identity = Some(identity);
+            entry.emptied = false;
+        })
     }
 
     /// The finished file is in place at `path`, the destination the
@@ -661,7 +762,8 @@ impl RunLease {
         path: &std::path::Path,
         identity: Option<PartFileIdentity>,
     ) -> bool {
-        self.cell.write(self, |served| {
+        self.cell.write(self, |entry| {
+            let served = &mut entry.served;
             served.final_path = path.to_path_buf();
             served.name = path
                 .file_name()
@@ -669,6 +771,7 @@ impl RunLease {
                 .unwrap_or_default();
             served.bytes_at = BytesAt::FinalFile;
             served.identity = identity;
+            entry.emptied &= identity.is_none();
         })
     }
 }

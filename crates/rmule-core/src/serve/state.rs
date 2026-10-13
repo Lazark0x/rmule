@@ -38,7 +38,7 @@ use crate::registry::SharedFileEntry;
 use crate::serve::source_exchange::{
     SourceExchangeThrottle, SxCandidate, SxRequester, held_parts, select_sources,
 };
-use crate::served_downloads::ServedLook;
+use crate::served_downloads::{PartFileIdentity, PartialEnd, ReadCheck, ServedLook};
 use crate::service::ServeEvent;
 use crate::upload_queue::{Promotion, UploadSlotQueue};
 
@@ -70,13 +70,26 @@ pub(super) enum ServeDecision {
     },
     /// Read `len` bytes at `offset` from the shared file at `path`. A
     /// fallible effect: the enactor feeds the outcome back through
-    /// [`ServeState::on_read_result`] with this same `purpose`.
+    /// [`ServeState::on_read_result`] with this same `purpose`. A Served
+    /// Download's read carries its `check`: the handle the enactor opens must
+    /// be the file its **Part File Identity** names before a byte is read,
+    /// and a path that names nothing gives way to the other once (ADR-0113
+    /// §"Reading a part file"); a registry row's carries none.
     ReadRange {
         peer: PeerEndpoint,
         path: PathBuf,
         offset: u64,
         len: u64,
         purpose: ReadPurpose,
+        check: Option<ReadCheck>,
+    },
+    /// A read of `file_hash`'s Served Download, checked against `checked`,
+    /// found its file changed or unreadable: its **Verified Range** empties
+    /// in the cell for `cause`, whoever holds it (ADR-0113).
+    EmptyRange {
+        file_hash: FileHash,
+        checked: Option<PartFileIdentity>,
+        cause: PartialEnd,
     },
     /// Announce the snapshot's offer list via `OP_OFFERFILES`.
     Announce(Vec<OfferedFile>),
