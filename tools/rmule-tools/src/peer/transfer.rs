@@ -96,6 +96,29 @@ pub(crate) struct PeerTransferCaptureArgs {
     /// unchanged.
     #[arg(long)]
     pub(super) multipacket: bool,
+    /// A byte range `<start>-<end>` (end exclusive) to ask for in place of the
+    /// first part; repeat for several. Each goes as its own `OP_REQUESTPARTS`
+    /// once the one before has arrived whole or `--range-wait-secs` passed
+    /// with it unanswered; after the last the link is held to
+    /// `--max-seconds`, so a run shows whether the peer closes it.
+    #[arg(long = "range", value_parser = parse_range)]
+    ranges: Vec<(u64, u64)>,
+    /// How long a `--range` waits for its bytes before the next one goes.
+    #[arg(long, default_value_t = 10)]
+    range_wait_secs: u64,
+}
+
+/// One `--range`: `<start>-<end>`, decimal byte offsets, `start < end`.
+fn parse_range(text: &str) -> std::result::Result<(u64, u64), String> {
+    let (start, end) = text
+        .split_once('-')
+        .ok_or_else(|| format!("{text}: want <start>-<end>"))?;
+    let start: u64 = start.parse().map_err(|_| format!("{text}: bad start"))?;
+    let end: u64 = end.parse().map_err(|_| format!("{text}: bad end"))?;
+    if start >= end {
+        return Err(format!("{text}: the end must lie past the start"));
+    }
+    Ok((start, end))
 }
 
 pub(crate) async fn transfer_capture(args: PeerTransferCaptureArgs) -> Result<()> {
@@ -167,14 +190,21 @@ pub(crate) async fn transfer_capture(args: PeerTransferCaptureArgs) -> Result<()
     }
     let mut conn = PeerConnection::connect(peer, ctx, options).await?;
 
-    let requested_len = std::cmp::min(file.size, rmule_primitives::ED2K_PART_SIZE);
-    let ranges = rmule_peer::PartRanges::new([(0, requested_len), (0, 0), (0, 0)])
-        .context("first part range")?;
+    let first_part = (
+        0,
+        std::cmp::min(file.size, rmule_primitives::ED2K_PART_SIZE),
+    );
+    let mut asks = Asks::new(if args.ranges.is_empty() {
+        vec![first_part]
+    } else {
+        args.ranges.clone()
+    });
+    // Without `--range` the first part is awaited to `--max-seconds`, as
+    // before: only an asked-for range is given up on.
+    let range_wait = (!args.ranges.is_empty()).then(|| Duration::from_secs(args.range_wait_secs));
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(args.max_seconds);
     let mut sent_probe = false;
-    let mut sent_request = false;
-    let mut received: u64 = 0;
     let mut sent_release = false;
     let mut identity_verified = false;
     loop {
@@ -182,6 +212,16 @@ pub(crate) async fn transfer_capture(args: PeerTransferCaptureArgs) -> Result<()
             _ = tokio::time::sleep_until(deadline) => {
                 println!("max_seconds reached, shutting down");
                 break;
+            }
+            () = asks.lapse(range_wait) => {
+                if let Some((start, end, received)) = asks.give_up() {
+                    println!(
+                        "transfer range_unanswered range={start}-{end} received={received} waited_secs={} at_unix_ms={}",
+                        args.range_wait_secs,
+                        unix_ms()
+                    );
+                }
+                send_next(&mut conn, &file, &mut asks).await?;
             }
             event = conn.next_event() => match event {
                 Some(event @ PeerEvent::Connection(ConnectionEvent::IdentityVerified { .. })) => {
@@ -218,25 +258,23 @@ pub(crate) async fn transfer_capture(args: PeerTransferCaptureArgs) -> Result<()
                 }
                 Some(PeerEvent::Requester(RequesterEvent::FileProbed { status, .. })) => {
                     println!("file_probed: {status:?}");
-                    if !sent_request {
-                        let _ = conn.send(PeerCommand::Requester(RequesterCommand::RequestParts {
-                            file_hash: file.file_hash,
-                            file_size: file.size,
-                            ranges,
-                        })).await;
-                        sent_request = true;
+                    if !asks.started() {
+                        send_next(&mut conn, &file, &mut asks).await?;
                     }
                 }
                 Some(event @ PeerEvent::Requester(RequesterEvent::PartReceived { .. })) => {
-                    if let PeerEvent::Requester(RequesterEvent::PartReceived { bytes, .. }) = &event {
-                        received = received.saturating_add(bytes.len() as u64);
+                    if let PeerEvent::Requester(RequesterEvent::PartReceived { offset, bytes, .. }) = &event
+                        && let Some((start, end)) = asks.receive(*offset, bytes.len() as u64)
+                    {
+                        println!("transfer range_answered range={start}-{end} at_unix_ms={}", unix_ms());
+                        send_next(&mut conn, &file, &mut asks).await?;
                     }
                     println!("{event}");
                     // The slot is held across block requests (ADR-0025,
                     // amended); as the completion authority, release it once
-                    // the whole requested range has arrived, mirroring the
-                    // core worker.
-                    if !sent_release && received >= requested_len {
+                    // every requested range has arrived, mirroring the core
+                    // worker.
+                    if !sent_release && asks.all_answered() {
                         let _ = conn
                             .send(PeerCommand::Requester(RequesterCommand::ReleaseSlot {
                                 file_hash: file.file_hash,
@@ -273,9 +311,149 @@ pub(crate) async fn transfer_capture(args: PeerTransferCaptureArgs) -> Result<()
     Ok(())
 }
 
+/// Send the next `--range`, when one is left, and say so.
+async fn send_next(
+    conn: &mut PeerConnection,
+    file: &rmule_primitives::Ed2kFileLink,
+    asks: &mut Asks,
+) -> Result<()> {
+    let Some((start, end)) = asks.next() else {
+        return Ok(());
+    };
+    let ranges = rmule_peer::PartRanges::new([(start, end), (0, 0), (0, 0)])
+        .with_context(|| format!("range {start}-{end}"))?;
+    let _ = conn
+        .send(PeerCommand::Requester(RequesterCommand::RequestParts {
+            file_hash: file.file_hash,
+            file_size: file.size,
+            ranges,
+        }))
+        .await;
+    println!(
+        "transfer range_requested range={start}-{end} at_unix_ms={}",
+        unix_ms()
+    );
+    Ok(())
+}
+
+/// The ranges a run asks for, one at a time, and how much of the one in
+/// flight has arrived.
+struct Asks {
+    left: std::collections::VecDeque<(u64, u64)>,
+    current: Option<Current>,
+    answered: usize,
+    total: usize,
+}
+
+/// The range in flight: since when, and its bytes so far.
+struct Current {
+    range: (u64, u64),
+    since: tokio::time::Instant,
+    received: u64,
+}
+
+impl Asks {
+    fn new(ranges: Vec<(u64, u64)>) -> Self {
+        Self {
+            total: ranges.len(),
+            left: ranges.into(),
+            current: None,
+            answered: 0,
+        }
+    }
+
+    /// Whether the first range has gone.
+    fn started(&self) -> bool {
+        self.current.is_some() || self.left.len() < self.total
+    }
+
+    /// Take the next range as the one in flight.
+    fn next(&mut self) -> Option<(u64, u64)> {
+        let range = self.left.pop_front()?;
+        self.current = Some(Current {
+            range,
+            since: tokio::time::Instant::now(),
+            received: 0,
+        });
+        Some(range)
+    }
+
+    /// Count a block of `len` bytes at `offset` against the range in
+    /// flight, when it falls inside it; the range's bounds once it has
+    /// arrived whole.
+    fn receive(&mut self, offset: u64, len: u64) -> Option<(u64, u64)> {
+        let current = self.current.as_mut()?;
+        let (start, end) = current.range;
+        if offset < start || offset >= end {
+            return None;
+        }
+        current.received = current.received.saturating_add(len);
+        (current.received >= end - start).then(|| {
+            self.current = None;
+            self.answered += 1;
+            (start, end)
+        })
+    }
+
+    /// Whether every range has arrived whole.
+    fn all_answered(&self) -> bool {
+        self.answered == self.total
+    }
+
+    /// Resolves once the range in flight has waited `wait`; never while
+    /// none is, or with no `wait`.
+    async fn lapse(&self, wait: Option<Duration>) {
+        match (&self.current, wait) {
+            (Some(current), Some(wait)) => tokio::time::sleep_until(current.since + wait).await,
+            _ => std::future::pending().await,
+        }
+    }
+
+    /// Give up on the range in flight: its bounds and the bytes it got.
+    fn give_up(&mut self) -> Option<(u64, u64, u64)> {
+        let current = self.current.take()?;
+        Some((current.range.0, current.range.1, current.received))
+    }
+}
+
+/// The wall clock in Unix milliseconds.
+fn unix_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis())
+}
+
 /// A fresh random SUI Challenge (ADR-0041 anti-replay) for one capture run.
 fn mint_challenge() -> u32 {
     let mut bytes = [0u8; 4];
     getrandom::fill(&mut bytes).expect("OS entropy for SUI challenge");
     u32::from_le_bytes(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Asks, parse_range};
+
+    /// A range reads as decimal offsets, end exclusive, and an empty or
+    /// backward one is refused before anything is sent.
+    #[test]
+    fn a_range_is_two_offsets_its_end_past_its_start() {
+        assert_eq!(parse_range("9723904-9732096"), Ok((9_723_904, 9_732_096)));
+        assert!(parse_range("10-10").is_err());
+        assert!(parse_range("12-10").is_err());
+        assert!(parse_range("12").is_err());
+    }
+
+    /// Blocks count only against the range in flight: a late block of a
+    /// range given up on is not taken for the next one's.
+    #[tokio::test]
+    async fn a_late_block_of_a_given_up_range_counts_for_nothing() {
+        let mut asks = Asks::new(vec![(100, 200), (0, 50)]);
+        assert_eq!(asks.next(), Some((100, 200)));
+        assert_eq!(asks.give_up(), Some((100, 200, 0)));
+        assert_eq!(asks.next(), Some((0, 50)));
+        assert_eq!(asks.receive(100, 100), None);
+        assert_eq!(asks.receive(0, 50), Some((0, 50)));
+        assert!(!asks.all_answered(), "the first range never arrived");
+    }
 }
