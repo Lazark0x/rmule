@@ -70,10 +70,9 @@ pub(crate) struct Legs<'a> {
     /// own download cap reacts only after a burst, and a part crosses the
     /// bridge in half a second.
     pub(crate) shaped: Option<(std::net::Ipv4Addr, u32)>,
-    /// Drop rmule's dials to these addresses' peer port, so its download
-    /// never opens a second link to a downloader it is uploading to: stock
-    /// aMule closes the first link when a second says the same hello
-    /// (`ClientList.cpp:395-401`), which ends the upload under test.
+    /// Drop rmule's dials to these addresses' peer port, so rmule never
+    /// opens a link to a downloader: stock aMule closes a client's first
+    /// link when a second says the same hello (`ClientList.cpp:395-401`).
     pub(crate) undialled: Vec<std::net::Ipv4Addr>,
     /// Drop rmule's client-UDP datagrams to this address, so its UDP reask
     /// goes unanswered and it reasks over a new TCP link at

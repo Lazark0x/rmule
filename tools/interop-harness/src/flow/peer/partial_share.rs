@@ -116,8 +116,8 @@ pub struct PartialShareOptions<'a> {
     pub downloader_max_download_kib: u32,
     /// rmule's egress to the slot-holding downloader, kbit/s; `0` unshaped.
     pub downloader_link_kbit: u32,
-    /// Let rmule's download dial the downloaders it serves; unset, those
-    /// dials are dropped on rmule's link.
+    /// Let rmule dial the downloaders it serves; unset, those dials are
+    /// dropped on rmule's link.
     pub dial_downloaders: bool,
     /// Drop rmule's client-UDP datagrams to the queued downloader on rmule's
     /// link, so its reask goes unanswered and it reasks over a new TCP link.

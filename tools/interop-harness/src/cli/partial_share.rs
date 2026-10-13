@@ -83,12 +83,12 @@ pub(crate) struct PeerPartialShareArgs {
     /// last part well past the download's completion.
     #[arg(long, default_value_t = 64)]
     pub(crate) downloader_link_kbit: u32,
-    /// Let rmule's download dial the downloaders it serves. Unset, those
-    /// dials are dropped on rmule's link: rmule takes an asker for a source
-    /// and dials it on a second link, and stock aMule then closes the first
-    /// one, ending the upload the claims read.
+    /// Drop rmule's dials to the downloaders' peer port on rmule's link. A
+    /// download of an asker rides the link it asked on, so rmule dials a
+    /// downloader only once that link has ended; this keeps even those
+    /// dials off the network, and the one-link claim then reads NOT-RUN.
     #[arg(long)]
-    pub(crate) dial_downloaders: bool,
+    pub(crate) drop_downloader_dials: bool,
     /// Drop rmule's client-UDP datagrams to the queued downloader on rmule's
     /// link (needs `--queued`): its UDP reask goes unanswered, so it reasks
     /// over a new TCP link at `FILEREASKTIME` (`PartFile.cpp:1449-1481`),
@@ -224,7 +224,7 @@ pub(crate) fn peer_partial_share(args: PeerPartialShareArgs) -> Result<()> {
             seed_max_upload_kib: args.seed_max_upload_kib.clone(),
             downloader_max_download_kib: args.downloader_max_download_kib,
             downloader_link_kbit: args.downloader_link_kbit,
-            dial_downloaders: args.dial_downloaders,
+            dial_downloaders: !args.drop_downloader_dials,
             drop_reask_acks: args.drop_reask_acks,
             peer_concurrency: args.peer_concurrency,
             rmule_on_ed2ksrv: args.rmule_on_ed2ksrv,
@@ -269,7 +269,7 @@ pub(crate) fn peer_partial_share(args: PeerPartialShareArgs) -> Result<()> {
         seed_max_upload_kib: &args.seed_max_upload_kib,
         downloader_max_download_kib: args.downloader_max_download_kib,
         downloader_link_kbit: args.downloader_link_kbit,
-        dial_downloaders: args.dial_downloaders,
+        dial_downloaders: !args.drop_downloader_dials,
         drop_reask_acks: args.drop_reask_acks,
         peer_concurrency: args.peer_concurrency,
         rmule_on_ed2ksrv: args

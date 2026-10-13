@@ -50,7 +50,7 @@ impl Fixture {
                     pause: false,
                     restart: false,
                     straddle: true,
-                    dial_downloaders: false,
+                    dial_downloaders: true,
                     drop_reask_acks: false,
                     rmule_server: "lugdunum".to_owned(),
                     downloader_image: String::new(),
