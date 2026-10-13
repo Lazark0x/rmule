@@ -248,7 +248,7 @@ pub(crate) fn walk_verified_parts(
     let found_len = metadata.len();
     let read_through = FileKey::of_open(&file)
         .ok()
-        .and_then(|key| PartFileIdentity::read(key, &metadata, true));
+        .and_then(|key| PartFileIdentity::at_rest(key, &metadata));
     let mut held = 0usize;
     let mut verified_bytes = 0u64;
     let mut damaged = Vec::new();

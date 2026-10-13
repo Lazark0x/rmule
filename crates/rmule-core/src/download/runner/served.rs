@@ -29,7 +29,7 @@ pub(super) async fn lease_started<S, P>(runner: &RunnerContext<S, P>, download_i
     let Some(lease) = &runner.served else {
         return;
     };
-    if let Some(identity) = held_identity(runner, false).await {
+    if let Some(identity) = held_identity(runner).await {
         lease.record_identity(identity);
     }
     rule_recorded_range(runner, download_id);
@@ -131,7 +131,7 @@ async fn record_at_rest<S, P>(
             .held_metadata()
             .await
             .ok()
-            .and_then(|(key, meta)| PartFileIdentity::read(key, &meta, true)),
+            .and_then(|(key, meta)| PartFileIdentity::at_rest(key, &meta)),
         (None, Some(path)) => identity_at(path).await,
         (None, None) => None,
     };
@@ -150,18 +150,15 @@ async fn identity_at(path: &Path) -> Option<PartFileIdentity> {
     .await
     .ok()
     .flatten()
-    .and_then(|(key, meta)| PartFileIdentity::read(key, &meta, true))
+    .and_then(|(key, meta)| PartFileIdentity::at_rest(key, &meta))
 }
 
-/// The identity of the file the run holds, read through its handle; `None`
-/// when it holds none or the read fails.
-async fn held_identity<S, P>(
-    runner: &RunnerContext<S, P>,
-    at_rest: bool,
-) -> Option<PartFileIdentity> {
+/// The identity of the file the run holds while it writes — its key, read
+/// through the handle; `None` when it holds none or the read fails.
+async fn held_identity<S, P>(runner: &RunnerContext<S, P>) -> Option<PartFileIdentity> {
     let held = runner.part_file.lock().await;
-    let (key, meta) = held.as_ref()?.held_metadata().await.ok()?;
-    PartFileIdentity::read(key, &meta, at_rest)
+    let (key, _) = held.as_ref()?.held_metadata().await.ok()?;
+    Some(PartFileIdentity::while_written(key))
 }
 
 #[cfg(test)]

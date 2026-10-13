@@ -165,18 +165,23 @@ pub(crate) struct AtRest {
 }
 
 impl PartFileIdentity {
-    /// The identity of the file `meta` describes, `key` its file key; at
-    /// rest when `at_rest`. `None` when the system keeps no modification time.
-    pub(crate) fn read(key: FileKey, meta: &std::fs::Metadata, at_rest: bool) -> Option<Self> {
-        let at_rest = if at_rest {
-            Some(AtRest {
+    /// The identity of the file `key` names while a run writes it: only its
+    /// key is compared.
+    pub(crate) const fn while_written(key: FileKey) -> Self {
+        Self { key, at_rest: None }
+    }
+
+    /// The identity of the file `meta` describes, `key` its file key, with
+    /// nobody writing it: its length and time are compared too. `None` when
+    /// the system keeps no modification time.
+    pub(crate) fn at_rest(key: FileKey, meta: &std::fs::Metadata) -> Option<Self> {
+        Some(Self {
+            key,
+            at_rest: Some(AtRest {
                 len: meta.len(),
                 modified: meta.modified().ok()?,
-            })
-        } else {
-            None
-        };
-        Some(Self { key, at_rest })
+            }),
+        })
     }
 
     /// Whether the file an opened handle reports — `key`, and `meta` for its

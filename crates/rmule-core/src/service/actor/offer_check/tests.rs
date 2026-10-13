@@ -67,11 +67,7 @@ async fn a_check_reads_nothing_while_a_scan_holds_the_hashing_turn() {
     let file = std::fs::File::open(&part).unwrap();
     assert_eq!(
         progress.read_through(),
-        PartFileIdentity::read(
-            FileKey::of_open(&file).unwrap(),
-            &file.metadata().unwrap(),
-            true
-        ),
+        PartFileIdentity::at_rest(FileKey::of_open(&file).unwrap(), &file.metadata().unwrap()),
         "the identity of the handle it read through"
     );
 }

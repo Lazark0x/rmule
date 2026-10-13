@@ -71,12 +71,12 @@ async fn rig(paused: bool) -> Rig {
     assert!(cell.install(&record, &set));
     let lease = cell.hand_to_run(file, 1).unwrap();
     let held = std::fs::File::open(&part).unwrap();
-    let identity = PartFileIdentity::read(
-        FileKey::of_open(&held).unwrap(),
-        &held.metadata().unwrap(),
-        paused,
-    )
-    .unwrap();
+    let key = FileKey::of_open(&held).unwrap();
+    let identity = if paused {
+        PartFileIdentity::at_rest(key, &held.metadata().unwrap()).unwrap()
+    } else {
+        PartFileIdentity::while_written(key)
+    };
     lease.record_identity(identity);
     lease.record_range(
         &set,

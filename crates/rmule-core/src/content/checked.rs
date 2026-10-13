@@ -84,7 +84,11 @@ mod tests {
     fn identity_of(path: &Path, at_rest: bool) -> PartFileIdentity {
         let file = File::open(path).unwrap();
         let key = FileKey::of_open(&file).unwrap();
-        PartFileIdentity::read(key, &file.metadata().unwrap(), at_rest).unwrap()
+        if at_rest {
+            PartFileIdentity::at_rest(key, &file.metadata().unwrap()).unwrap()
+        } else {
+            PartFileIdentity::while_written(key)
+        }
     }
 
     fn check(identity: PartFileIdentity, other: &Path) -> ReadCheck {
