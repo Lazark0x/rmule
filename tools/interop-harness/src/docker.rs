@@ -45,9 +45,12 @@ impl DockerCommand {
 /// A multi-stage build under the plain `docker build` — no BuildKit; colima's
 /// engine defaults to the legacy builder — commits every stage as its own
 /// image, and only the final stage gets `-t`: every earlier stage is dangling
-/// the moment the build succeeds. [`Docker::prune_bench_stage_images`] sweeps
-/// exactly the images carrying this label, so it never touches an unrelated
-/// dangling image on the host.
+/// the moment the build succeeds. That stage image is also the recipe's only
+/// layer cache, so [`Docker::prune_bench_stage_images`] deletes the cache of
+/// every recipe that carries the label (`rmule-node`, `amule-kad-patched`); the
+/// `rmule-tools` driver image no longer does, it takes a prebuilt binary. The
+/// sweep removes exactly the images carrying this label, so it never touches an
+/// unrelated dangling image on the host.
 pub const BENCH_STAGE_LABEL: &str = "org.rmule.bench.stage=1";
 
 /// Whether a failed `docker build`'s combined output names one of the four

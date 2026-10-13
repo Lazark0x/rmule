@@ -135,6 +135,9 @@ pub(crate) struct Ipv6NetAcceptArgs {
     /// The natgw image, which bench-doctor probes the kernel with.
     #[arg(long, default_value = DEFAULT_NATGW_IMAGE)]
     pub(crate) natgw_image: String,
+    /// Build context for the natgw image, built before the doctor runs.
+    #[arg(long, default_value = DEFAULT_NATGW_BUILD_CONTEXT)]
+    pub(crate) natgw_build_context: PathBuf,
     /// The image the IPv6 dialer runs from; the natprobe recipe already carries
     /// a python3, and reusing it keeps the flow from inventing a body.
     #[arg(long, default_value = DEFAULT_NATPROBE_IMAGE)]
@@ -303,6 +306,7 @@ pub(crate) fn ipv6_net_accept(args: Ipv6NetAcceptArgs) -> Result<()> {
     // so its context is validated unconditionally too, not just when
     // `--build-images` is passed.
     validate_build_context_dir("natprobe", &args.natprobe_build_context)?;
+    validate_build_context_dir("natgw", &args.natgw_build_context)?;
 
     // The mode knob rides ahead of the operator's own `--emuleqt-env`, so a run
     // can still override it.
@@ -352,6 +356,7 @@ pub(crate) fn ipv6_net_accept(args: Ipv6NetAcceptArgs) -> Result<()> {
         container_runtime: &args.bench.container_runtime,
         build_images: args.bench.build_images,
         natgw_image: &args.natgw_image,
+        natgw_build_context: &args.natgw_build_context,
         keep_containers: args.bench.keep_containers,
         timeout_secs: args.timeout,
         settle_secs: args.settle,
@@ -584,6 +589,9 @@ pub(crate) struct Ipv6DialectArgs {
     /// The natgw image, which bench-doctor probes the kernel with.
     #[arg(long, default_value = DEFAULT_NATGW_IMAGE)]
     pub(crate) natgw_image: String,
+    /// Build context for the natgw image, built before the doctor runs.
+    #[arg(long, default_value = DEFAULT_NATGW_BUILD_CONTEXT)]
+    pub(crate) natgw_build_context: PathBuf,
     /// `ipv6-kad-tags` only: arm Kad datagram obfuscation (ADR-0046) on the
     /// emule-qt leg's rmule bodies — the storer's `kad join-node --kad-crypt`
     /// and the dial-back Cores' `--peer-crypt supported` — so emule-qt can
@@ -616,6 +624,8 @@ pub(crate) fn ipv6_dialect(args: Ipv6DialectArgs) -> Result<()> {
         contexts.push(args.amule.build_context());
     }
     args.bench.prepare(&contexts)?;
+    // The doctor's image is built before the doctor runs, on every run.
+    validate_build_context_dir("natgw", &args.natgw_build_context)?;
 
     let (run_dir, layout) = args.bench.create_run()?;
     write_resolved_config(
@@ -663,6 +673,7 @@ pub(crate) fn ipv6_dialect(args: Ipv6DialectArgs) -> Result<()> {
         rmule_tools_dockerfile: &args.rmule_tools_dockerfile,
         rmule_tools_build_context: &args.rmule_tools_build_context,
         natgw_image: &args.natgw_image,
+        natgw_build_context: &args.natgw_build_context,
         rmule_kad_crypt: args.rmule_kad_crypt,
         keep_containers: args.bench.keep_containers,
         timeout_secs: args.timeout,
@@ -768,8 +779,8 @@ pub(crate) fn natt(args: NattArgs) -> Result<()> {
     // `natgw` and `natprobe` rebuild on every row that stands a gateway up
     // regardless of `--build-images`, so their contexts are validated
     // unconditionally too.
+    validate_build_context_dir("natgw", &args.natgw_build_context)?;
     if args.flow.needs_natprobe() {
-        validate_build_context_dir("natgw", &args.natgw_build_context)?;
         validate_build_context_dir("natprobe", &args.natprobe_build_context)?;
     }
 

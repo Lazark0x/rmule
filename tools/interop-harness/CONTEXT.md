@@ -231,6 +231,14 @@ overrides it (the fake-docker suite sets `0`). Not a Readiness Gate — nothing 
 polled — and not a Tap window, which is observation after the stimulus.
 _Avoid_: publish window, sleep, warm-up
 
+**Driver Image**:
+The `rmule-tools` image every UDP or in-network driver runs from. It is not compiled
+by `docker build`: the binary comes from the shared target cache (the warm
+host-persisted prebuild the Kad flows also run from), is staged beside the recipe, and
+is `COPY`d into a thin runtime. An unchanged tree therefore rebuilds nothing, and the
+Bench Doctor's own image is the only one built before a flow decides to skip.
+_Avoid_: tools build, release compile
+
 **Search Schedule**:
 The bounded cadence of the requester's repeated Kad source searches (`Cancel` +
 re-`Add`, four attempts, a 2 s gap inside each, 25 s between). Resolved once per run

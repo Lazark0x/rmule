@@ -17,7 +17,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 
 use crate::artifacts::RunLayout;
-use crate::bench_doctor::{BenchDoctor, CAP_DAEMON_IPV6, DoctorReport, SkipReason};
+use crate::bench_doctor::{CAP_DAEMON_IPV6, DoctorReport, SkipReason};
 use crate::docker::{InternalNetwork, RunContainer};
 use crate::fake_public::subnet_cidr;
 use crate::fake_public_v6::FakePublicV6Plan;
@@ -161,6 +161,8 @@ pub struct Ipv6DialectOptions<'a> {
     pub rmule_tools_build_context: &'a Path,
     /// The `natgw` image, which is what **Bench Doctor** probes the kernel with.
     pub natgw_image: &'a str,
+    /// Build context for the natgw image, built before the doctor runs.
+    pub natgw_build_context: &'a Path,
     /// `ipv6-kad-tags`: arm Kad datagram obfuscation on the emule-qt leg's
     /// rmule bodies, for the verify-key three-way.
     pub rmule_kad_crypt: bool,
@@ -226,16 +228,21 @@ pub(crate) fn run(options: Ipv6DialectOptions<'_>) -> Result<()> {
 
 fn drive(bench: &mut Bench, options: &Ipv6DialectOptions<'_>) -> Result<()> {
     let flow = options.flow;
-    build_images(bench, options)?;
-
     let suffix = run_suffix(options.layout)?;
-    let doctor = BenchDoctor::new(&bench.docker, options.natgw_image, &suffix).examine()?;
+    // The doctor decides before anything but its own image is built.
+    let doctor = bench.examine_doctor(
+        "natgw",
+        options.natgw_image,
+        options.natgw_build_context,
+        &suffix,
+    )?;
     if let Err(skip) = doctor.require(
         &[CAP_DAEMON_IPV6],
         "an IPv6 dialect exchange against a pinned counterparty",
     ) {
         return write_skip(options.layout, flow, &doctor, &skip);
     }
+    build_images(bench, options)?;
 
     let leg_dir = options.layout.ipv6_dir().join(flow.name());
     fs::create_dir_all(&leg_dir).with_context(|| format!("create {}", leg_dir.display()))?;

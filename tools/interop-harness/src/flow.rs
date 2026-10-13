@@ -15,6 +15,7 @@
 
 pub(crate) mod bench;
 pub(crate) mod bootstrap;
+pub(crate) mod driver_image;
 pub(crate) mod ed2k_server;
 pub(crate) mod ed2ksrv;
 pub(crate) mod evidence;

@@ -1,8 +1,9 @@
 # `rmule-tools` inside the bench network — the **UDP** driver image.
 #
-# Build context is the REPO ROOT (the workspace sources are needed):
-#   docker build -f tools/interop-harness/images/rmule-tools/Dockerfile \
-#     -t rmule/interop-rmule-tools:local .
+# Build context is the STAGED directory the harness lays out
+# (`.scratch/interop-rmule-tools-context`): this Dockerfile, `entrypoint.sh` and
+# the `rmule-tools` binary the warm host-cached prebuild produced. The harness
+# builds it; there is no hand-run form, because the context is not a checkout.
 #
 # ## Why this image has to exist
 #
@@ -27,23 +28,14 @@
 # `is_routable` check and its High-ID back-connect probe both see a genuine
 # routable peer rather than the bridge gateway.
 #
-# No BuildKit cache mounts — the harness invokes the plain `docker build` and
-# colima's engine defaults to the legacy builder. That builder commits every
-# stage as its own image, and only the final stage below gets `-t`, so the
-# `build` stage is dangling the instant this succeeds. `org.rmule.bench.stage`
-# marks it for the label- and dangling-scoped `docker image prune` that
-# `main()` runs after every harness subcommand — never a manual
-# step, and never touching an image on the host without this label.
-
-FROM rust:1-bookworm AS build
-LABEL org.rmule.bench.stage=1
-WORKDIR /build
-COPY Cargo.toml Cargo.lock ./
-COPY crates ./crates
-COPY tools ./tools
-COPY apps ./apps
-RUN cargo build --release -p rmule-tools \
-    && cp target/release/rmule-tools /rmule-tools
+# ## Why the binary is not compiled here
+#
+# A cold `cargo build --release` inside `docker build` recompiled the whole
+# workspace on every run (the legacy builder's stage cache does not survive),
+# 1.5 to 4 minutes before a flow could even decide to skip. The Kad flows
+# already build the same crate through the host-persisted target cache in
+# seconds; this image takes that debug binary (same Debian bookworm glibc as
+# the base below). An unchanged binary is an unchanged `COPY` layer.
 
 FROM debian:bookworm-slim
 LABEL org.rmule.bench=1
@@ -54,7 +46,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install -y --no-install-recommends iproute2 \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=build /rmule-tools /usr/bin/rmule-tools
-COPY tools/interop-harness/images/rmule-tools/entrypoint.sh /entrypoint.sh
+COPY rmule-tools /usr/bin/rmule-tools
+COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]

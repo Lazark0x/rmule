@@ -28,8 +28,8 @@ use anyhow::{Context, Result, bail};
 
 use crate::artifacts::RunLayout;
 use crate::bench_doctor::{
-    BenchDoctor, CAP_BR_NETFILTER, CAP_CONNTRACK, CAP_CONNTRACK_UDP_TIMEOUT, CAP_DAEMON_IPV6,
-    CAP_IP6TABLES, CAP_NFTABLES, CONNTRACK_UDP_TIMEOUT_SECS, DoctorReport, SkipReason,
+    CAP_BR_NETFILTER, CAP_CONNTRACK, CAP_CONNTRACK_UDP_TIMEOUT, CAP_DAEMON_IPV6, CAP_IP6TABLES,
+    CAP_NFTABLES, CONNTRACK_UDP_TIMEOUT_SECS, DoctorReport, SkipReason,
 };
 use crate::docker::{InternalNetwork, RunContainer};
 use crate::fake_public::{fake_public_address, subnet_cidr};
@@ -145,12 +145,32 @@ pub(crate) fn run(options: PortMapOptions<'_>) -> Result<()> {
 #[allow(clippy::too_many_lines)]
 fn drive(bench: &mut Bench, options: &PortMapOptions<'_>) -> Result<()> {
     let flow = options.flow;
+    // The doctor decides before anything but its own image is built.
+    let suffix = names(options.layout)?;
+    let doctor = bench.examine_doctor(
+        "miniupnpd",
+        options.miniupnpd_image,
+        options.miniupnpd_build_context,
+        &suffix,
+    )?;
+    let mut required = vec![
+        CAP_NFTABLES,
+        CAP_CONNTRACK,
+        CAP_CONNTRACK_UDP_TIMEOUT,
+        CAP_BR_NETFILTER,
+    ];
+    if flow.pinhole() {
+        required.push(CAP_DAEMON_IPV6);
+        required.push(CAP_IP6TABLES);
+    }
+    if let Err(skip) = doctor.require(
+        &required,
+        "a port-mapping grant against a real miniupnpd gateway",
+    ) {
+        return write_skip(options.layout, flow, &doctor, &skip);
+    }
+
     if options.build_images {
-        bench.build_image(
-            "miniupnpd",
-            options.miniupnpd_image,
-            options.miniupnpd_build_context,
-        )?;
         if flow.kad_helpers() > 0 {
             bench.build_image("aMule", options.amule_image, options.amule_build_context)?;
         }
@@ -174,25 +194,6 @@ fn drive(bench: &mut Bench, options: &PortMapOptions<'_>) -> Result<()> {
         options.rmule_tools_dockerfile,
         options.rmule_tools_build_context,
     )?;
-
-    let suffix = names(options.layout)?;
-    let doctor = BenchDoctor::new(&bench.docker, options.miniupnpd_image, &suffix).examine()?;
-    let mut required = vec![
-        CAP_NFTABLES,
-        CAP_CONNTRACK,
-        CAP_CONNTRACK_UDP_TIMEOUT,
-        CAP_BR_NETFILTER,
-    ];
-    if flow.pinhole() {
-        required.push(CAP_DAEMON_IPV6);
-        required.push(CAP_IP6TABLES);
-    }
-    if let Err(skip) = doctor.require(
-        &required,
-        "a port-mapping grant against a real miniupnpd gateway",
-    ) {
-        return write_skip(options.layout, flow, &doctor, &skip);
-    }
 
     let leg_dir = options.layout.nat_dir().join(flow.name());
     fs::create_dir_all(&leg_dir).with_context(|| format!("create {}", leg_dir.display()))?;

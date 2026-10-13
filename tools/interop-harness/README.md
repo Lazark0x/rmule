@@ -406,14 +406,22 @@ counts of UDP or segment rows, window-edge races, or flow changes since the arch
 verdict that moved is R's `requested` control (`OBSERVED` before the flow named its verdict,
 `TCP_OPEN` now, rmule's own verdict equal).
 
-**Bench-image hygiene.** The rust-toolchain multi-stage recipes
-(`rmule-tools`, `rmule-node`, `amule-kad-patched`) build under colima's legacy
+**Bench-image hygiene.** The `rmule-tools` driver image is a thin runtime
+around the binary the warm host-cached prebuild produced
+(`.scratch/interop-target-cache`, the cache the Kad flows run from): the
+harness stages that binary, the recipe's `Dockerfile` and its entrypoint in
+`.scratch/interop-rmule-tools-context` and builds from there, so an unchanged
+tree is an unchanged `COPY` and rebuilds nothing. Every NAT or IPv6 flow builds
+the Bench Doctor's own image (`natgw`, or `miniupnpd` for `portmap`) first, runs
+the doctor, and writes a skip before it builds anything else. The remaining
+rust-toolchain multi-stage recipes
+(`rmule-node`, `amule-kad-patched`) build under colima's legacy
 `docker build` — no BuildKit, so every stage commits as its own image and
 only the final one gets `-t`. Each such `AS build` stage carries
 `org.rmule.bench.stage=1`; `main()` runs a label- and dangling-scoped
 `docker image prune` after every harness subcommand
 (`Docker::prune_bench_stage_images`), so the ~3 GB non-final stage never
-outlives the run that produced it. Every final image (these three plus
+outlives the run that produced it. Every final image (these two, `rmule-tools` plus
 `amule`/`amule-debug`) carries `org.rmule.bench=1` instead, which scopes
 the cleanup of the OTHER accumulation: tagged bench images
 (`rmule/interop-rmule-tools:<tag>`, `rmule/interop-amule-debug:<tag>`) that
