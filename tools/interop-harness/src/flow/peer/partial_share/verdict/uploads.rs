@@ -291,11 +291,20 @@ pub(super) fn pause(run: &Run<'_>) -> Claim {
             .filter(|(item, ..)| item.at > from && item.at < to)
             .count()
     };
-    if served(0.0, paused) == 0 {
+    // Holding the slot, not a whole block, is what the pause must keep: at a
+    // shaped link the first block can complete after it.
+    let marked_before = |name: &str| {
+        run.trail
+            .named(name)
+            .filter(|mark| mark.peer() == Some(holder))
+            .filter_map(|mark| mark.at)
+            .any(|at| at < paused)
+    };
+    if !marked_before("serve.upload_slot_granted") || marked_before("serve.upload_slot_released") {
         return Claim::new(
             NAME,
             Verdict::NotRun,
-            "the downloader held no slot before the pause",
+            "the downloader held no slot at the pause",
         );
     }
     let after = served(paused, end);

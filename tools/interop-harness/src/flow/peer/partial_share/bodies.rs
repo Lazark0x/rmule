@@ -1,5 +1,6 @@
 //! The stock aMule bodies of the partial-share flow: the seeds rmule fetches
-//! from, in `direct-peer` mode so only rmule's link reaches them, and the
+//! from, in `direct-peer` mode (or on ed2k-server beside rmule) so only
+//! rmule's link reaches them, and the
 //! downloaders on the eserver that fetch from rmule; and the logs each
 //! leaves for the run dir.
 
@@ -16,6 +17,7 @@ use super::{DOWNLOADER, PartialShareOptions};
 use crate::artifacts::RunLayout;
 use crate::docker::Docker;
 use crate::flow::bench::{Bench, amulecmd_command, run_checked};
+use crate::flow::ed2k_server::search_wire::ED2KSRV_IP;
 use crate::flow::gate::wait_for_amule_ready;
 use crate::flow::logs::collect_rmule_logs;
 use crate::flow::peer::streaming_window::seed::{
@@ -53,7 +55,17 @@ pub(super) fn start_seed(
     let name = format!("rmule-interop-amule-seed-{role}-{suffix}");
     let container = bench
         .amule_container(options.amule_image, &name)
-        .env("AMULE_SCENARIO_MODE", "direct-peer")
+        .env(
+            "AMULE_SCENARIO_MODE",
+            if options.rmule_on_ed2ksrv.is_some() {
+                "ed2k-server"
+            } else {
+                "direct-peer"
+            },
+        )
+        // On ed2k-server the seeds hold a High ID there, which the downloaders'
+        // Lugdunum never hears of.
+        .env("ED2K_SERVER_HOST", ED2KSRV_IP)
         .env("AMULE_TEMP_DIR", SEED_TEMP_MOUNT)
         .volume(&temp, SEED_TEMP_MOUNT)
         .env("AMULE_SHARED_DIR", SEED_INCOMING_MOUNT)
@@ -66,7 +78,11 @@ pub(super) fn start_seed(
         options.layout,
         &name,
         Duration::from_secs(options.timeout_secs),
-        SEED_READY,
+        if options.rmule_on_ed2ksrv.is_some() {
+            DOWNLOADER_READY
+        } else {
+            SEED_READY
+        },
     )?;
     wait_for_share(
         &bench.docker,

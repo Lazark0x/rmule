@@ -105,6 +105,9 @@ pub(crate) struct Knobs {
     /// Whether rmule's dials to the downloaders went through.
     #[serde(default)]
     pub(crate) dial_downloaders: bool,
+    /// The server rmule logged in to: `lugdunum` or `ed2k-server`.
+    #[serde(default)]
+    pub(crate) rmule_server: String,
     pub(crate) downloader_image: String,
 }
 

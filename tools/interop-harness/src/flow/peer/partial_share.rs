@@ -38,8 +38,10 @@ use rmule_primitives::{FileHashSummary, part_count};
 use crate::artifacts::{RunLayout, write_incompressible_file};
 use crate::docker::RunContainer;
 use crate::flow::bench::{
-    AMULE_PEER_TCP_PORT, Bench, CaptureSidecar, DEFAULT_TAP_INTERFACE, Eserver, run_checked,
+    AMULE_PEER_TCP_PORT, Bench, CaptureSidecar, DEFAULT_TAP_INTERFACE, ED2K_SERVER_PORT, Eserver,
+    run_checked,
 };
+use crate::flow::ed2k_server::search_wire;
 use crate::flow::gate::wait_for_container_log;
 use crate::flow::logs::{collect_rmule_logs, collect_server_logs};
 use crate::flow::peer::streaming_window::seed::{STREAM_FILE_NAME, SeedHolding, write_stream_file};
@@ -119,6 +121,11 @@ pub struct PartialShareOptions<'a> {
     pub dial_downloaders: bool,
     /// rmule's peer workers per download; `None` keeps the core's.
     pub peer_concurrency: Option<usize>,
+    /// Log rmule and the seeds in to ed2k-server (this image and config)
+    /// instead: the seeds then hold High IDs, so rmule's download pool has
+    /// sources to exchange, and the downloaders' Lugdunum still knows none
+    /// of them. `None` keeps rmule on Lugdunum and the seeds on no server.
+    pub rmule_on_ed2ksrv: Option<(&'a str, &'a Path)>,
     /// Add the prober before rmule's first part.
     pub prober: bool,
     /// Give rmule one slot and queue a second downloader behind the first.
@@ -257,6 +264,11 @@ pub fn run_partial_share(options: PartialShareOptions<'_>) -> Result<()> {
             restart: options.restart,
             straddle: options.straddle,
             dial_downloaders: options.dial_downloaders,
+            rmule_server: if options.rmule_on_ed2ksrv.is_some() {
+                "ed2k-server".to_owned()
+            } else {
+                "lugdunum".to_owned()
+            },
             downloader_image: options.downloader_image.to_owned(),
         },
     };
@@ -275,7 +287,10 @@ pub fn run_partial_share(options: PartialShareOptions<'_>) -> Result<()> {
         options.restart
     );
     let result = (|| -> Result<()> {
-        bench.create_network(options.layout, None)?;
+        bench.create_network(
+            options.layout,
+            options.rmule_on_ed2ksrv.map(|_| search_wire::SUBNET),
+        )?;
         bench.start_eserver(
             options.layout,
             &Eserver {
@@ -285,6 +300,13 @@ pub fn run_partial_share(options: PartialShareOptions<'_>) -> Result<()> {
                 timeout,
             },
         )?;
+        let rmule_server = match options.rmule_on_ed2ksrv {
+            Some((image, config)) => {
+                search_wire::start_ed2ksrv(&mut bench, image, config, &root, timeout)?;
+                format!("{}:{ED2K_SERVER_PORT}", search_wire::ED2KSRV_IP)
+            }
+            None => bench.names.server_endpoint(),
+        };
         for ((holding, cap), role) in options.seeds.iter().zip(&caps).zip('a'..='z') {
             let body = start_seed(
                 &mut bench, &options, &root, &stream, holding, *cap, role, &suffix,
@@ -313,7 +335,7 @@ pub fn run_partial_share(options: PartialShareOptions<'_>) -> Result<()> {
             .collect();
         let rmule_link = link(STREAM_FILE_NAME, &stream.summary, &seed_sources);
         let container_root = format!("{RUN_MOUNT}/{ROOT_DIR}");
-        let server = bench.names.server_endpoint();
+        let server = rmule_server;
         let rmule_legs = Legs {
             root: &container_root,
             server: &server,

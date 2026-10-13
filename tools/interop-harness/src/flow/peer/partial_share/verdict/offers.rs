@@ -157,11 +157,37 @@ pub(super) fn restart(run: &Run<'_>) -> Claim {
             ));
         }
     }
+    let downloaders: Vec<std::net::Ipv4Addr> = run.downloaders().collect();
+    let to_downloader = |item: &crate::flow::peer::partial_share::wire::Item| matches!(item.peer.ip(), std::net::IpAddr::V4(v4) if downloaders.contains(&v4));
     let served_again = run.wire.items.iter().any(|item| {
         item.from_rmule
             && item.at > reoffered
+            && to_downloader(item)
             && matches!(&item.said, Said::Block { hash, .. } if *hash == run.stream_hash)
     });
+    // The pre-check half: did any ask for the partial reach rmule while its
+    // check ran? A check shorter than the first ask leaves it undrawn.
+    let first_ask = run
+        .wire
+        .items
+        .iter()
+        .filter(|item| !item.from_rmule && item.at >= reopened)
+        .find(|item| {
+            super::answers::asks_for(run, item)
+                || matches!(&item.said, Said::NameAsk { hash, .. } | Said::StatusAsk { hash } if *hash == run.stream_hash)
+        })
+        .map(|item| item.at);
+    let pre_check = match first_ask {
+        Some(at) if at < reoffered => {
+            format!("an ask landed {:.3} s into the check", at - reopened)
+        }
+        Some(at) => format!(
+            "pre-check half not drawn: the first ask came {:.3} s after the reopen, the offer {:.3} s",
+            at - reopened,
+            reoffered - reopened
+        ),
+        None => "pre-check half not drawn: no ask in the second leg".to_owned(),
+    };
     let bound = run
         .trail
         .named("download reoffered")
@@ -178,11 +204,11 @@ pub(super) fn restart(run: &Run<'_>) -> Claim {
         NAME,
         &failures,
         format!(
-            "{bound}; nothing offered or granted before it; {}",
+            "{bound}; nothing offered or granted before it; {pre_check}; {}",
             if served_again {
-                "served again after it"
+                "a downloader was served again after it"
             } else {
-                "no downloader asked again inside the leg"
+                "no downloader was served again inside the leg"
             }
         ),
     )

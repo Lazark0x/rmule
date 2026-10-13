@@ -193,11 +193,15 @@ impl Drive<'_> {
                 trail.first_at("download reoffered").is_some()
             })?;
             let at = reoffered.first_at("download reoffered").unwrap_or_else(now);
+            let downloaders: Vec<Ipv4Addr> =
+                topology.downloaders.iter().map(|body| body.ip).collect();
             let asked_again =
                 self.wait_until(docker, Duration::from_secs(options.reopen_secs), |trail| {
-                    trail
-                        .named("serve.upload_slot_granted")
-                        .any(|mark| mark.leg == 2 && mark.at.is_some_and(|granted| granted > at))
+                    trail.named("serve.upload_slot_granted").any(|mark| {
+                        mark.leg == 2
+                            && mark.at.is_some_and(|granted| granted > at)
+                            && mark.peer().is_some_and(|peer| downloaders.contains(&peer))
+                    })
                 })?;
             act(
                 topology,

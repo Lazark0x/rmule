@@ -16,7 +16,10 @@ use rmule_primitives::ED2K_PART_SIZE;
 use serde::Serialize;
 
 use crate::cli::bench::{AmuleArgs, BenchArgs, CaptureArgs, EserverArgs};
-use crate::cli::nat::{DEFAULT_RMULE_TOOLS_DOCKERFILE, DEFAULT_RMULE_TOOLS_IMAGE};
+use crate::cli::nat::{
+    DEFAULT_ED2KSRV_CONFIG, DEFAULT_ED2KSRV_IMAGE, DEFAULT_RMULE_TOOLS_DOCKERFILE,
+    DEFAULT_RMULE_TOOLS_IMAGE,
+};
 use crate::cli::write_resolved_config;
 
 const FLOW: &str = "peer-partial-share";
@@ -89,6 +92,18 @@ pub(crate) struct PeerPartialShareArgs {
     /// rmule's peer workers per download; unset keeps the core's.
     #[arg(long)]
     pub(crate) peer_concurrency: Option<usize>,
+    /// Log rmule and the seeds in to ed2k-server instead of Lugdunum (the
+    /// downloaders stay on Lugdunum): the seeds then hold High IDs, so
+    /// rmule's download pool has sources to exchange, and the announce is
+    /// read on ed2k-server.
+    #[arg(long)]
+    pub(crate) rmule_on_ed2ksrv: bool,
+    /// The ed2k-server image (pinned; see `images/ed2ksrv`).
+    #[arg(long, default_value = DEFAULT_ED2KSRV_IMAGE)]
+    pub(crate) ed2ksrv_image: String,
+    /// The ed2k-server bench config; its `this_ip` is rendered per run.
+    #[arg(long, default_value = DEFAULT_ED2KSRV_CONFIG)]
+    pub(crate) ed2ksrv_config: PathBuf,
     /// Leave out the prober that asks before rmule holds a part.
     #[arg(long)]
     pub(crate) no_prober: bool,
@@ -153,6 +168,7 @@ struct ResolvedConfig {
     downloader_link_kbit: u32,
     dial_downloaders: bool,
     peer_concurrency: Option<usize>,
+    rmule_on_ed2ksrv: bool,
     prober: bool,
     queued: bool,
     pause: bool,
@@ -203,6 +219,7 @@ pub(crate) fn peer_partial_share(args: PeerPartialShareArgs) -> Result<()> {
             downloader_link_kbit: args.downloader_link_kbit,
             dial_downloaders: args.dial_downloaders,
             peer_concurrency: args.peer_concurrency,
+            rmule_on_ed2ksrv: args.rmule_on_ed2ksrv,
             prober: !args.no_prober,
             queued: args.queued,
             pause: args.pause,
@@ -246,6 +263,9 @@ pub(crate) fn peer_partial_share(args: PeerPartialShareArgs) -> Result<()> {
         downloader_link_kbit: args.downloader_link_kbit,
         dial_downloaders: args.dial_downloaders,
         peer_concurrency: args.peer_concurrency,
+        rmule_on_ed2ksrv: args
+            .rmule_on_ed2ksrv
+            .then_some((args.ed2ksrv_image.as_str(), args.ed2ksrv_config.as_path())),
         prober: !args.no_prober,
         queued: args.queued,
         pause: args.pause,
