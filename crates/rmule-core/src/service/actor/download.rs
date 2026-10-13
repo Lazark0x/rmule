@@ -1,26 +1,20 @@
 //! The download command arms: starting a download against the connected
 //! server, and the cancel / pause / resume asks that reach the runner through
-//! its stop signal. Spawning itself is the shared [`spawn_download`], so both
-//! start paths assemble the same task.
-
-use std::sync::Arc;
+//! its stop signal. Every road that starts a run ends in the one
+//! [`start_run`](CoreActor::start_run), so each assembles the same task.
 
 use rmule_primitives::Ed2kFileLink;
-use tokio::sync::{Mutex, mpsc, watch};
-use tracing::Instrument;
 
 use crate::adapters::{
     KadRuntimeFactory, PeerTransferService, ServeRuntimeService, SourceLookupService,
 };
 use crate::content::{ContentFileStore, RestoredProgress, Revalidation};
 use crate::download::source_seeds::SourceSeed;
-use crate::download::{
-    DownloadRequest, DownloadTask, RunnerContext, SharedRuntime, StopReason, file_link_from_record,
-};
+use crate::download::{StopReason, file_link_from_record};
 use crate::service::activity::ActiveDownload;
 use crate::service::{
-    CoreCommandRejectReason, CoreEvent, DownloadCommand, DownloadEvent, DownloadId,
-    FinishedActivity, RestartOutcome, send_download_event,
+    CoreCommandRejectReason, CoreEvent, DownloadCommand, DownloadEvent, DownloadId, RestartOutcome,
+    send_download_event,
 };
 use crate::storage::DownloadRepository;
 use crate::{
@@ -33,9 +27,12 @@ use super::{CoreActor, send_event};
 mod completion;
 mod placement;
 mod restore;
+mod run;
 mod seeds;
 
 pub(super) use restore::attach_downloads;
+pub(super) use run::DownloadRuntime;
+use run::RunStart;
 
 impl<S, P, L, K> CoreActor<S, P, L, K>
 where
@@ -117,33 +114,20 @@ where
                 )
                 .await;
 
-                // The file-known predicate: this download's
-                // hash, mirrored inline for the firewalled front's `0x99` gate.
-                self.wiring.file_known.download_started(file.file_hash);
-                // A Served Download from its queueing on, its lease handed to
-                // the run (ADR-0113).
+                // A Served Download from its queueing on, against the link's
+                // set (ADR-0113).
                 let link_set = file
                     .part_hash_set
                     .as_ref()
                     .map(|set| set.hashes().to_vec())
                     .unwrap_or_default();
-                self.install_served(&record, &link_set);
-                let run = self.activities.take_download_run();
-                let served = self.lease_to_run(file.file_hash, run);
-                let active = spawn_download(SpawnDownload {
-                    runtime: &self.download_runtime,
-                    download_id,
+                let start = RunStart {
                     file,
-                    identity: self.settings_identity(),
                     verified_part_indexes: Vec::new(),
-                    streaming_priority: record.metadata().is_streaming_priority(),
-                    run,
                     remembered: Vec::new(),
-                    served,
                     recovered: None,
-                });
-                self.activities.download_started(download_id, active);
-                self.served_moved().await;
+                };
+                self.start_run(&record, &link_set, start).await;
             }
             DownloadCommand::CancelDownload { download_id } => {
                 // A move whose file is in place is no longer the operator's
@@ -385,31 +369,18 @@ where
             record.file_hash(),
             record.metadata().clone(),
         );
-        // The file-known predicate, mirrored the same way
-        // `StartDownload` mirrors it.
-        self.wiring.file_known.download_started(record.file_hash());
-        // A restarted failed row is a Served Download again; a paused one's
-        // entry is the actor's to hand on (ADR-0113).
-        if let Ok(active_row) = self.wiring.store.load_download(download_id) {
-            let set = self.recorded_set(download_id);
-            self.install_served(&active_row, &set);
-        }
-        let run = self.activities.take_download_run();
-        let served = self.lease_to_run(record.file_hash(), run);
-        let active = spawn_download(SpawnDownload {
-            runtime: &self.download_runtime,
-            download_id,
+        // A restarted failed row is a Served Download again, as it stands
+        // now; a paused one's entry is the actor's to hand on (ADR-0113).
+        let active_row = self.wiring.store.load_download(download_id);
+        let set = self.recorded_set(download_id);
+        let start = RunStart {
             file,
-            identity: self.settings_identity(),
             verified_part_indexes,
-            streaming_priority: record.metadata().is_streaming_priority(),
-            run,
             remembered,
-            served,
             recovered: None,
-        });
-        self.activities.download_started(download_id, active);
-        self.served_moved().await;
+        };
+        self.start_run(active_row.as_ref().unwrap_or(&record), &set, start)
+            .await;
         Ok(())
     }
 
@@ -600,129 +571,6 @@ fn start_refusal(error: &CoreError) -> CoreCommandRejectReason {
         CoreError::DuplicateDownloadIdentity => CoreCommandRejectReason::DuplicateDownload,
         CoreError::PathConflict => CoreCommandRejectReason::DownloadPathConflict,
         _ => CoreCommandRejectReason::DownloadStoreFailed,
-    }
-}
-
-/// What the actor keeps to spawn download runners: the core-wide
-/// [`SharedRuntime`] every run clones by one `Arc`, and the three handles
-/// only the actor reads. Built once; [`spawn_download`] clones out of it, so a
-/// new runner handle is added in one place instead of in both the
-/// `StartDownload` and `ResumeDownload` arms.
-pub(super) struct DownloadRuntime<S, P> {
-    /// The handles every run shares. Its `download_reach_tx` clone is the
-    /// actor's own, which keeps the reach arm from ever closing.
-    pub(super) shared: Arc<SharedRuntime<S, P>>,
-    pub(super) peer_concurrency: usize,
-    /// The Streaming Window's width every Streaming Priority run ranks by
-    /// (`CoreConfig::streaming_window_parts`, ADR-0112).
-    pub(super) streaming_window_parts: u32,
-    pub(super) finished_tx: mpsc::Sender<FinishedActivity>,
-    /// The discovery channels every runner waits on, read live (ADR-0093):
-    /// the managed global server list and the Kad activity's liveness.
-    pub(super) discovery: crate::download::DiscoveryLiveness,
-}
-
-/// The per-spawn inputs for one download: the request identity. Nothing
-/// about another activity's liveness rides here (ADR-0093) — the discovery
-/// channels, like the listener conjunct and Self Reach,
-/// are live handles on the shared [`DownloadRuntime`]. Borrows the shared `DownloadRuntime`;
-/// [`spawn_download`] assembles the `DownloadTask` from the two.
-struct SpawnDownload<'a, S, P> {
-    runtime: &'a DownloadRuntime<S, P>,
-    download_id: DownloadId,
-    file: Ed2kFileLink,
-    /// The node's wire identity: the Core Settings' credentials as the
-    /// build-time hash, a TCP port of `0` read live at each hello.
-    identity: rmule_primitives::ClientIdentity,
-    verified_part_indexes: Vec<u32>,
-    /// The download is Streaming Priority, off its stored metadata.
-    streaming_priority: bool,
-    /// Which run of the download this is.
-    run: u64,
-    /// The seeds attach loaded for a restored run (ADR-0109); empty otherwise.
-    remembered: Vec<SourceSeed>,
-    /// The lease on the download's Served Download, handed to the run
-    /// (ADR-0113); `None` for a download that has none.
-    served: Option<crate::served_downloads::RunLease>,
-    /// What attach found of a row it found `Completing` (ADR-0115); `None`
-    /// for every other run.
-    recovered: Option<crate::download::Recovered>,
-}
-
-/// Spawn one download runner and return its live handle. The single
-/// `DownloadTask` construction site: both the `StartDownload` and
-/// `ResumeDownload` arms build a [`SpawnDownload`] and call this, so the
-/// ~12-field request + runner-context block is written once and a new field is
-/// a one-place edit. The watch channel, tracing span, and `ActiveDownload`
-/// bookkeeping ride inside.
-fn spawn_download<S, P>(spawn: SpawnDownload<'_, S, P>) -> ActiveDownload
-where
-    S: SourceLookupService,
-    P: PeerTransferService,
-{
-    let SpawnDownload {
-        runtime,
-        download_id,
-        file,
-        identity,
-        verified_part_indexes,
-        streaming_priority,
-        run,
-        remembered,
-        served,
-        recovered,
-    } = spawn;
-    let file_hash = file.file_hash;
-    // A recovered move's gate settles once its run has looked at the disk.
-    let completion = Arc::new(if recovered.is_some() {
-        crate::download::CompletionGate::settling()
-    } else {
-        crate::download::CompletionGate::open()
-    });
-    let (stop_tx, stop_rx) = watch::channel(StopReason::Active);
-    let (later_links, later_inbox) = mpsc::unbounded_channel();
-    let (seeds_tx, seeds) = watch::channel(Vec::new());
-    let download_span = tracing::info_span!("download", download_id = download_id.as_u64());
-    let handle = tokio::spawn(
-        DownloadTask {
-            request: DownloadRequest {
-                download_id,
-                file,
-                identity,
-                verified_part_indexes,
-                peer_concurrency: runtime.peer_concurrency,
-                streaming_priority,
-                streaming_window_parts: runtime.streaming_window_parts,
-                discovery: runtime.discovery.clone(),
-                remembered,
-                recovered,
-            },
-            run,
-            runner: RunnerContext {
-                rt: Arc::clone(&runtime.shared),
-                stop_rx,
-                part_file: Mutex::new(None),
-                later_links: Mutex::new(later_inbox),
-                repair: std::sync::atomic::AtomicBool::new(false),
-                hole_probed: std::sync::atomic::AtomicBool::new(false),
-                seeds_tx,
-                served,
-                run,
-                completion: Arc::clone(&completion),
-            },
-            finished_tx: runtime.finished_tx.clone(),
-        }
-        .run()
-        .instrument(download_span),
-    );
-    ActiveDownload {
-        run,
-        file_hash,
-        stop_tx,
-        handle,
-        later_links,
-        seeds,
-        completion,
     }
 }
 

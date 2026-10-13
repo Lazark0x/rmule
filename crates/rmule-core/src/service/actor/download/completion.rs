@@ -16,7 +16,7 @@ use crate::storage::DownloadRepository;
 use crate::{DownloadLifecycle, DurableDownloadRecord};
 
 use super::super::CoreActor;
-use super::{SpawnDownload, spawn_download};
+use super::RunStart;
 
 impl<S, P, L, K> CoreActor<S, P, L, K>
 where
@@ -122,25 +122,14 @@ where
             record.file_hash(),
             record.metadata().clone(),
         );
-        self.wiring.file_known.download_started(record.file_hash());
         let set = self.recorded_set(download_id);
-        self.install_served(record, &set);
-        let run = self.activities.take_download_run();
-        let served = self.lease_to_run(record.file_hash(), run);
-        let active = spawn_download(SpawnDownload {
-            runtime: &self.download_runtime,
-            download_id,
+        let start = RunStart {
             file,
-            identity: self.settings_identity(),
             verified_part_indexes: parts.iter().map(|part| part.part_index).collect(),
-            streaming_priority: record.metadata().is_streaming_priority(),
-            run,
             remembered,
-            served,
             recovered: Some(Recovered { row_written }),
-        });
-        self.activities.download_started(download_id, active);
-        self.served_moved().await;
+        };
+        self.start_run(record, &set, start).await;
         Ok(())
     }
 }
