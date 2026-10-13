@@ -12,7 +12,7 @@ use rmule_peer::{
 use rmule_primitives::FileHash;
 use tokio::sync::mpsc;
 
-use super::{PartCommands, Streamed};
+use super::{Streamed, WorkerLink};
 use crate::adapters::peer_transfer::{PeerWorkerCommand, PeerWorkerEvent};
 
 /// Wait for the peer's answer to the connect-time file probe and report it as
@@ -22,20 +22,17 @@ use crate::adapters::peer_transfer::{PeerWorkerCommand, PeerWorkerEvent};
 /// `SlotTimeout` like a stalled stream. A peer lacking the file reports no
 /// parts, then `Disconnected`, and the worker ends.
 pub(super) async fn await_probe(
-    events: &mut mpsc::Receiver<PeerEvent>,
-    cmd_tx: &mpsc::Sender<PeerCommand>,
-    event_tx: &mpsc::Sender<PeerWorkerEvent>,
-    mut commands: PartCommands<'_>,
+    link: &mut WorkerLink<'_>,
     file_hash: FileHash,
     timeout: Duration,
 ) -> Streamed {
+    let event_tx = link.event_tx;
     let deadline = tokio::time::Instant::now() + timeout;
     let status = loop {
-        let event =
-            match next_event(events, cmd_tx, event_tx, &mut commands, file_hash, deadline).await {
-                Ok(event) => event,
-                Err(end) => return end,
-            };
+        let event = match next_event(link, file_hash, deadline).await {
+            Ok(event) => event,
+            Err(end) => return end,
+        };
         match forward_shared(event_tx, file_hash, event).await {
             Ok(Some(PeerEvent::Requester(RequesterEvent::FileProbed {
                 file_hash: probed,
@@ -73,33 +70,30 @@ pub(super) async fn await_probe(
 /// ask goes out as it comes (ADR-0038); anything else waits in `deferred`. No
 /// event by `deadline` reports `SlotTimeout`.
 pub(super) async fn next_event(
-    events: &mut mpsc::Receiver<PeerEvent>,
-    cmd_tx: &mpsc::Sender<PeerCommand>,
-    event_tx: &mpsc::Sender<PeerWorkerEvent>,
-    commands: &mut PartCommands<'_>,
+    link: &mut WorkerLink<'_>,
     file_hash: FileHash,
     deadline: tokio::time::Instant,
 ) -> Result<Option<PeerEvent>, Streamed> {
     loop {
         tokio::select! {
             biased;
-            command = commands.rx.recv() => match command {
+            command = link.commands.recv() => match command {
                 Some(PeerWorkerCommand::Shutdown { cancel }) => {
                     return Err(Streamed::Shutdown { cancel });
                 }
                 Some(PeerWorkerCommand::RequestAichFileHash) => {
-                    let _ = cmd_tx
+                    let _ = link.cmd_tx
                         .send(PeerCommand::Requester(RequesterCommand::RequestAichFileHash { file_hash }))
                         .await;
                 }
-                Some(later) => commands.deferred.push_back(later),
+                Some(later) => link.deferred.push_back(later),
                 None => return Err(Streamed::WindDown),
             },
-            waited = tokio::time::timeout_at(deadline, events.recv()) => {
+            waited = tokio::time::timeout_at(deadline, link.events.recv()) => {
                 return match waited {
                     Ok(event) => Ok(event),
                     Err(_) => {
-                        let _ = event_tx.send(PeerWorkerEvent::SlotTimeout).await;
+                        let _ = link.event_tx.send(PeerWorkerEvent::SlotTimeout).await;
                         Err(Streamed::WindDown)
                     }
                 };

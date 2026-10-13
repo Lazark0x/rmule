@@ -149,33 +149,25 @@ pub(crate) async fn drive_peer_worker(
     // teardown then emits `OP_CANCELTRANSFER` instead of the silent slot
     // release a normal completion uses.
     let mut cancel = false;
-    // Commands the probe wait or the block loop read but could not act on
-    // there (a next part, an AICH detour); served here, in arrival order,
-    // before the channel is read again.
-    let mut deferred = VecDeque::new();
+    let mut link = WorkerLink {
+        events: &mut requester_rx,
+        cmd_tx: &peer_cmd_tx,
+        event_tx: &event_tx,
+        commands: &mut command_rx,
+        deferred: VecDeque::new(),
+    };
     // The first part waits for the probe's answer (ADR-0112): the brain
     // assigns on `PartsAdvertised`, so a partial source is never handed a
     // part it lacks.
-    let probed = await_probe(
-        &mut requester_rx,
-        &peer_cmd_tx,
-        &event_tx,
-        PartCommands {
-            rx: &mut command_rx,
-            deferred: &mut deferred,
-        },
-        file.file_hash,
-        slot_wait_timeout,
-    )
-    .await;
+    let probed = await_probe(&mut link, file.file_hash, slot_wait_timeout).await;
     if let Streamed::Shutdown { cancel: c } = probed {
         cancel = c;
     }
     if matches!(probed, Streamed::Next) {
         loop {
-            let command = match deferred.pop_front() {
+            let command = match link.deferred.pop_front() {
                 Some(command) => command,
-                None => match command_rx.recv().await {
+                None => match link.commands.recv().await {
                     Some(command) => command,
                     None => break,
                 },
@@ -186,13 +178,7 @@ pub(crate) async fn drive_peer_worker(
                     resume_offset,
                 } => {
                     let streamed = stream_part_download(
-                        &mut requester_rx,
-                        &peer_cmd_tx,
-                        &event_tx,
-                        PartCommands {
-                            rx: &mut command_rx,
-                            deferred: &mut deferred,
-                        },
+                        &mut link,
                         &file,
                         plan,
                         resume_offset,
@@ -209,16 +195,7 @@ pub(crate) async fn drive_peer_worker(
                     }
                 }
                 PeerWorkerCommand::RequestAich { part, root } => {
-                    if !request_aich_recovery(
-                        &mut requester_rx,
-                        &peer_cmd_tx,
-                        &event_tx,
-                        &file,
-                        part,
-                        root,
-                        slot_wait_timeout,
-                    )
-                    .await
+                    if !request_aich_recovery(&mut link, &file, part, root, slot_wait_timeout).await
                     {
                         break;
                     }
@@ -227,7 +204,8 @@ pub(crate) async fn drive_peer_worker(
                     // Fire-and-forget: the OP_AICHFILEHASHANS answer arrives on the
                     // event stream and is forwarded as AichFileHashReceived while a
                     // part streams (ADR-0038).
-                    let _ = peer_cmd_tx
+                    let _ = link
+                        .cmd_tx
                         .send(PeerCommand::Requester(
                             RequesterCommand::RequestAichFileHash {
                                 file_hash: file.file_hash,
@@ -294,14 +272,18 @@ async fn wait_for_peer_identified(
 /// resolves the awaiting part via the MD4 retire-all fallback rather than
 /// stranding it. Returns `false` (winding the worker down) only on disconnect.
 async fn request_aich_recovery(
-    events: &mut mpsc::Receiver<PeerEvent>,
-    cmd_tx: &mpsc::Sender<PeerCommand>,
-    event_tx: &mpsc::Sender<PeerWorkerEvent>,
+    link: &mut WorkerLink<'_>,
     file: &Ed2kFileLink,
     part: u16,
     root: AichRootHash,
     timeout: Duration,
 ) -> bool {
+    let WorkerLink {
+        events,
+        cmd_tx,
+        event_tx,
+        ..
+    } = link;
     if cmd_tx
         .send(PeerCommand::Requester(RequesterCommand::RequestAich {
             file_hash: file.file_hash,
@@ -373,17 +355,14 @@ async fn request_aich_recovery(
 /// nothing. Either way, if no part bytes arrive within the budget the
 /// worker gives up and reports `SlotTimeout`. The budget resets on each
 /// received block so a healthy slow transfer is not cut off.
-#[allow(clippy::too_many_arguments)]
 async fn stream_part_download(
-    events: &mut mpsc::Receiver<PeerEvent>,
-    cmd_tx: &mpsc::Sender<PeerCommand>,
-    event_tx: &mpsc::Sender<PeerWorkerEvent>,
-    mut commands: PartCommands<'_>,
+    link: &mut WorkerLink<'_>,
     file: &Ed2kFileLink,
     plan: PartPlan,
     resume_offset: u64,
     slot_wait_timeout: Duration,
 ) -> Streamed {
+    let (cmd_tx, event_tx) = (link.cmd_tx, link.event_tx);
     let file_hash = file.file_hash;
     let part_end = plan.offset + plan.len;
     let mut requested_until = resume_offset;
@@ -433,16 +412,7 @@ async fn stream_part_download(
         // queue us forever before a grant, and a peer that grants can then
         // stall sending nothing. The deadline resets whenever a block
         // arrives (below), so a healthy transfer is never cut off.
-        let event = match next_event(
-            events,
-            cmd_tx,
-            event_tx,
-            &mut commands,
-            file_hash,
-            progress_deadline,
-        )
-        .await
-        {
+        let event = match next_event(link, file_hash, progress_deadline).await {
             Ok(event) => event,
             Err(end) => return end,
         };
@@ -527,12 +497,17 @@ async fn stream_part_download(
     }
 }
 
-/// The worker's command side, lent to the probe wait and the block loop so
-/// they can hear a `Shutdown`; anything else they read there waits in
-/// `deferred`.
-struct PartCommands<'a> {
-    rx: &'a mut mpsc::Receiver<PeerWorkerCommand>,
-    deferred: &'a mut VecDeque<PeerWorkerCommand>,
+/// The worker's ends of its channels, lent to every wait on the peer: the
+/// peer's events, the commands sent it, the events sent the download, and
+/// the download's commands, read so a wait hears a `Shutdown`. A command a
+/// wait reads but cannot act on there (a next part, an AICH detour) waits in
+/// `deferred`, served in arrival order before the channel is read again.
+struct WorkerLink<'a> {
+    events: &'a mut mpsc::Receiver<PeerEvent>,
+    cmd_tx: &'a mpsc::Sender<PeerCommand>,
+    event_tx: &'a mpsc::Sender<PeerWorkerEvent>,
+    commands: &'a mut mpsc::Receiver<PeerWorkerCommand>,
+    deferred: VecDeque<PeerWorkerCommand>,
 }
 
 /// How a wait on the peer ended: the probe's, or one part's stream.

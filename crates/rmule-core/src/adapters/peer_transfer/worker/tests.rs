@@ -14,7 +14,6 @@ async fn events_after_notice(bytes: &[u8], notice: PeerError) -> Vec<PeerWorkerE
     let (cmd_tx, _cmd_rx) = mpsc::channel(8);
     let (event_tx, mut worker_events) = mpsc::channel(8);
     let (_worker_cmd_tx, mut worker_cmd_rx) = mpsc::channel(8);
-    let mut deferred = VecDeque::new();
     events_tx
         .send(PeerEvent::Notice(NoticeEvent::CommandRejected {
             reason: notice,
@@ -34,20 +33,14 @@ async fn events_after_notice(bytes: &[u8], notice: PeerError) -> Vec<PeerWorkerE
         offset: 0,
         len: bytes.len() as u64,
     };
-    stream_part_download(
-        &mut events,
-        &cmd_tx,
-        &event_tx,
-        PartCommands {
-            rx: &mut worker_cmd_rx,
-            deferred: &mut deferred,
-        },
-        &file,
-        plan,
-        0,
-        Duration::from_secs(5),
-    )
-    .await;
+    let mut link = WorkerLink {
+        events: &mut events,
+        cmd_tx: &cmd_tx,
+        event_tx: &event_tx,
+        commands: &mut worker_cmd_rx,
+        deferred: VecDeque::new(),
+    };
+    stream_part_download(&mut link, &file, plan, 0, Duration::from_secs(5)).await;
     drop(event_tx);
     let mut reported = Vec::new();
     while let Some(event) = worker_events.recv().await {
