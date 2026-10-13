@@ -156,9 +156,8 @@ impl Legs<'_> {
             "--max-seconds".to_owned(),
             self.reopen_secs.to_string(),
         ]);
-        if let Some(whole) = self.whole_path() {
-            args.extend(["--share".to_owned(), whole]);
-        }
+        // The whole file is not shared again: leg one's row for it stands in
+        // the store, and a second copy of one content is refused.
         args
     }
 
