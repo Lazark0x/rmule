@@ -297,10 +297,10 @@ fn a_status_change_under_an_open_menu_never_runs_another_action() {
     assert_eq!(view.overlay, Overlay::None);
 }
 
-/// `v` reads the row as the menu does: a ready row emits the Preview, a
-/// blocked one flashes the reason the menu greys it with.
+/// `v` asks for the selected row's Preview, ready or not: the app reads the
+/// row and flashes why a blocked one cannot start.
 #[test]
-fn v_previews_a_ready_row_and_flashes_why_a_blocked_one_cannot() {
+fn v_asks_for_the_selected_rows_preview() {
     let mut view = TransfersView::new();
     let mut state = preview_ready();
     view.select_row(&state, 0);
@@ -309,13 +309,10 @@ fn v_previews_a_ready_row_and_flashes_why_a_blocked_one_cannot() {
         ViewOutcome::Emit(Action::Preview(id)) if id == download_id(1)
     ));
     state.preferences.player_command = None;
-    match view.handle_key(press(KeyCode::Char('v')), &state) {
-        ViewOutcome::Emit(Action::Flash(text)) => assert_eq!(
-            text.as_str(),
-            crate::words::player::blocked(crate::player::PreviewBlock::NoPlayer).as_str()
-        ),
-        other => panic!("expected a flash, got {other:?}"),
-    }
+    assert!(matches!(
+        view.handle_key(press(KeyCode::Char('v')), &state),
+        ViewOutcome::Emit(Action::Preview(id)) if id == download_id(1)
+    ));
 }
 
 /// The open menu with Preview greyed by its longest reason, at the menu's

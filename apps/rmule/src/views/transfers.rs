@@ -284,16 +284,12 @@ impl TransfersView {
                 Some((id, status)) => ViewOutcome::Emit(pause_toggle_action(status, id, state)),
                 None => ViewOutcome::Ignored,
             },
-            // The menu's Preview, by the same reading (ADR-0114): a blocked
-            // row flashes the reason the menu greys it with.
+            // The menu's Preview (ADR-0114): the app reads the row as the
+            // menu does, and flashes the reason the menu greys a blocked
+            // row with.
             KeyCode::Char('v') if self.focus == Pane::Table => {
                 match self.selected_row_status(state, ids) {
-                    Some((id, _)) => {
-                        ViewOutcome::Emit(match crate::player::preview_target(state, id) {
-                            Ok(_) => Action::Preview(id),
-                            Err(block) => Action::Flash(crate::words::player::blocked(block)),
-                        })
-                    }
+                    Some((id, _)) => ViewOutcome::Emit(Action::Preview(id)),
                     None => ViewOutcome::Ignored,
                 }
             }
