@@ -14,11 +14,8 @@ use rmule_primitives::{ED2K_PART_SIZE, FileHash};
 
 /// Where the copy for `destination` is written: beside it, dot-prefixed.
 pub(crate) fn copy_path(destination: &Path) -> PathBuf {
-    let name = destination
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    destination.with_file_name(format!(".{name}.completing"))
+    crate::content::dot_sibling(destination, ".completing")
+        .unwrap_or_else(|| destination.with_file_name(".completing"))
 }
 
 /// How a copy ended.

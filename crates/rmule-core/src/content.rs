@@ -5,7 +5,7 @@
 //! hash set has already vouched for.
 
 use std::io::{Read, Seek};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::fs::{self, OpenOptions};
@@ -34,6 +34,17 @@ pub use held::PartFileChange;
 pub(crate) use held::{HeldPartFile, HeldWriteError};
 pub use sparse::HoleVerdict;
 pub(crate) use sparse::probe_holes;
+
+/// `.<file name><suffix>` beside `path`, dot-prefixed so the scan and its
+/// watch pass over it (ADR-0101): the Hole Probe's file and the Completion
+/// Copy. `None` for a path with no file name.
+pub(crate) fn dot_sibling(path: &Path, suffix: &str) -> Option<PathBuf> {
+    let name = path.file_name()?;
+    let mut sibling = std::ffi::OsString::from(".");
+    sibling.push(name);
+    sibling.push(suffix);
+    Some(path.with_file_name(sibling))
+}
 
 /// Run `work` on the blocking pool and answer what it returned: the one way
 /// core's file work leaves the async threads. A panic in `work` resumes on
@@ -76,9 +87,8 @@ impl ContentFileStore {
                 .write(true)
                 .truncate(false)
                 .open(&path)?;
-            let punches = rmule_os::sparse::set_sparse(&file).is_ok();
-            let end = file.metadata()?.len();
-            sparse::write_at(&file, offset, &bytes, punches.then_some(end))
+            let punches = sparse::open_for_writes(&file);
+            sparse::write_punching(&file, offset, &bytes, punches)
         })
         .await
         .map_err(io_error)

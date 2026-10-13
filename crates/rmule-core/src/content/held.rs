@@ -138,13 +138,7 @@ impl HeldPartFile {
             Err(error) => return Err(HeldWriteError::Io(error)),
         };
         let key = FileKey::of_open(&file).map_err(HeldWriteError::Io)?;
-        let punches = match rmule_os::sparse::set_sparse(&file) {
-            Ok(()) => true,
-            Err(error) => {
-                tracing::debug!(%error, "the part file's volume refused the sparse flag");
-                false
-            }
-        };
+        let punches = sparse::open_for_writes(&file);
         check_file(&file, &path, key, recorded_end).map_err(HeldWriteError::Changed)?;
         let allocated = rmule_os::sparse::allocated_bytes(&file).ok();
         let held = Self {

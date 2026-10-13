@@ -56,6 +56,36 @@ pub(crate) fn write_at(file: &File, offset: u64, bytes: &[u8], end: Option<u64>)
     Ok(())
 }
 
+/// Ready `file` for writes that punch their Extension Gap: set its sparse
+/// flag, and answer whether it took. A volume that refuses the flag is no
+/// error — it is logged at `debug` — but its writes then punch nothing,
+/// since a punch there would write zeros.
+pub(crate) fn open_for_writes(file: &File) -> bool {
+    match rmule_os::sparse::set_sparse(file) {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::debug!(%error, "the volume refused the sparse flag");
+            false
+        }
+    }
+}
+
+/// [`write_at`] with the file's length read on the handle just before the
+/// write, as a run reads it, punching only when `punches`
+/// ([`open_for_writes`]).
+///
+/// # Errors
+/// What the length read or the write reported.
+pub(crate) fn write_punching(
+    file: &File,
+    offset: u64,
+    bytes: &[u8],
+    punches: bool,
+) -> io::Result<()> {
+    let end = file.metadata()?.len();
+    write_at(file, offset, bytes, punches.then_some(end))
+}
+
 #[cfg(unix)]
 fn write_all_at(file: &File, bytes: &[u8], offset: u64) -> io::Result<()> {
     std::os::unix::fs::FileExt::write_all_at(file, bytes, offset)
@@ -106,16 +136,11 @@ impl HoleVerdict {
     }
 }
 
-/// The Hole Probe's file beside `part_path`: `.<part file name>.holeprobe`,
-/// dot-prefixed so the scan and its watch pass over it. Fixed per download,
-/// so the next probe truncates a file a crash left behind. `None` for a path
-/// with no file name.
+/// The Hole Probe's file beside `part_path`: `.<part file name>.holeprobe`.
+/// Fixed per download, so the next probe truncates a file a crash left
+/// behind. `None` for a path with no file name.
 pub(crate) fn probe_path(part_path: &Path) -> Option<PathBuf> {
-    let name = part_path.file_name()?;
-    let mut probe = std::ffi::OsString::from(".");
-    probe.push(name);
-    probe.push(".holeprobe");
-    Some(part_path.with_file_name(probe))
+    super::dot_sibling(part_path, ".holeprobe")
 }
 
 /// Run the Hole Probe beside `part_path`, on the blocking pool: the probe
@@ -147,15 +172,13 @@ fn measure(probe: &Path) -> io::Result<HoleVerdict> {
         .create(true)
         .truncate(true)
         .open(probe)?;
-    let punches = rmule_os::sparse::set_sparse(&file).is_ok();
+    let punches = open_for_writes(&file);
     // Not zeros: a filesystem that compresses would store a zero run as a
     // hole, and the probe measures the gap, not its ends.
     let run = [0xA5u8; PROBE_RUN];
     let tail = PROBE_RUN as u64 + PROBE_GAP;
     for offset in [0, tail] {
-        // The length before each write, read on the handle as a run reads it.
-        let end = file.metadata()?.len();
-        write_at(&file, offset, &run, punches.then_some(end))?;
+        write_punching(&file, offset, &run, punches)?;
     }
     file.sync_all()?;
     let allocated = rmule_os::sparse::allocated_bytes(&file)?;
