@@ -190,8 +190,8 @@ impl SortedTable for SharedTable {
 impl SharedView {
     /// The shared files' cells, one line per file, in the sort's order: the
     /// registry's rows, then every Partial Share the registry does not offer
-    /// whole. A Partial Share has no path the table knows, so a directory
-    /// filter shows none.
+    /// whole. A directory filter shows each under the directory its bytes lie
+    /// in: a row's file, a Partial Share's part file as its download names it.
     pub(super) fn sorted_lines(&self, state: &UiState) -> Vec<SharedLine> {
         let filter = self.directory_filter(state);
         let rows = state
@@ -208,12 +208,17 @@ impl SharedView {
         let partials = state
             .partial_shares
             .iter()
-            .filter(|file_hash| filter.is_none() && !state.shared.contains_key(file_hash))
-            .filter_map(|&file_hash| {
-                state
-                    .partial_download(file_hash)
-                    .map(|download| SharedLine::partial(file_hash, download, state))
-            });
+            .filter(|file_hash| !state.shared.contains_key(file_hash))
+            .filter_map(|&file_hash| Some((file_hash, state.partial_download(file_hash)?)))
+            .filter(|(_, download)| {
+                filter.is_none_or(|dir| {
+                    download
+                        .file_path
+                        .as_deref()
+                        .is_some_and(|path| path.starts_with(dir))
+                })
+            })
+            .map(|(file_hash, download)| SharedLine::partial(file_hash, download, state));
         let lines: Vec<SharedLine> = rows.chain(partials).collect();
         let order = self.sort.order(&lines);
         let mut slots: Vec<Option<SharedLine>> = lines.into_iter().map(Some).collect();
