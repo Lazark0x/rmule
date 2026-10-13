@@ -37,6 +37,12 @@
 //! `(start, end)` pairs and proves the equivalence on the encoding's own
 //! boundary values in tests.
 //!
+//! **IPv6 rules** (ADR-0085): the same two files may hold IPv6 rules, as
+//! amule-kno and emule-qt read them. They are kept in a second table beside the
+//! IPv4 ranges, with the same last-line-wins overlap and level threshold, and
+//! each address is judged by its own family's table: a source's two halves are
+//! never linked.
+//!
 //! **Site inventory**: aMule 2.3.3 consults `IsFiltered` at **16** non-GUI
 //! call sites across 9 files — 12 on the eD2k side (PartFile ×2,
 //! DownloadQueue, ClientList, BaseClient ×2, ServerList ×2, ClientTCPSocket
@@ -89,10 +95,40 @@ pub(crate) type SharedIpFilter = Arc<RwLock<IpFilter>>;
 
 /// aMule's per-file load report: `filtercount` (lexed range rows — including
 /// reversed ranges the map then discards) and `yyip_Bad` (malformed lines).
+/// `ipv6` counts the IPv6 rules among the accepted rows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct IpFilterLoadStats {
     pub(crate) accepted: usize,
+    pub(crate) ipv6: usize,
     pub(crate) malformed: usize,
+}
+
+/// An address as a range key: the IPv4 table's `u32` or the IPv6 table's
+/// `u128`, both host-order numeric addresses.
+trait RangeKey: Copy + Ord {
+    const MAX: Self;
+    fn next(self) -> Self;
+    fn prev(self) -> Self;
+}
+
+impl RangeKey for u32 {
+    const MAX: Self = Self::MAX;
+    fn next(self) -> Self {
+        self + 1
+    }
+    fn prev(self) -> Self {
+        self - 1
+    }
+}
+
+impl RangeKey for u128 {
+    const MAX: Self = Self::MAX;
+    fn next(self) -> Self {
+        self + 1
+    }
+    fn prev(self) -> Self {
+        self - 1
+    }
 }
 
 /// The intermediate range map with aMule `CRangeMap` insert semantics: ranges
@@ -101,49 +137,83 @@ pub(crate) struct IpFilterLoadStats {
 /// (aMule additionally merges adjacent equal-level ranges as it inserts; that
 /// changes only the internal range count, never a verdict, so rmule coalesces
 /// once at build time instead.)
-#[derive(Debug, Default)]
-struct IpRangeMap {
+#[derive(Debug)]
+struct IpRangeMap<K> {
     /// start → (inclusive end, access level).
-    ranges: BTreeMap<u32, (u32, u8)>,
+    ranges: BTreeMap<K, (K, u8)>,
 }
 
-impl IpRangeMap {
+impl<K> Default for IpRangeMap<K> {
+    fn default() -> Self {
+        Self {
+            ranges: BTreeMap::new(),
+        }
+    }
+}
+
+impl<K: RangeKey> IpRangeMap<K> {
     /// Insert `[start, end]` at `level`, overwriting overlap. A reversed range
     /// is silently discarded — aMule's `AddIPRange` refuses it while the load
     /// loop still counts the line as loaded.
-    fn insert(&mut self, start: u32, end: u32, level: u8) {
+    fn insert(&mut self, start: K, end: K, level: u8) {
         if start > end {
             return;
         }
         // A predecessor straddling `start` is split around the insertion.
-        // `pstart < start` (the range query is exclusive), so `start >= 1`
-        // and `start - 1` cannot underflow.
+        // `pstart < start` (the range query is exclusive), so `start` is above
+        // the minimum and `start.prev()` cannot underflow.
         if let Some((&pstart, &(pend, plevel))) = self.ranges.range(..start).next_back()
             && pend >= start
         {
-            self.ranges.insert(pstart, (start - 1, plevel));
+            self.ranges.insert(pstart, (start.prev(), plevel));
             if pend > end {
-                // `pend > end` bounds `end < u32::MAX`.
-                self.ranges.insert(end + 1, (pend, plevel));
+                // `pend > end` bounds `end` below the maximum.
+                self.ranges.insert(end.next(), (pend, plevel));
             }
         }
         // Ranges beginning inside [start, end] are consumed; a tail sticking
         // out past `end` survives on its own.
-        let covered: Vec<u32> = self.ranges.range(start..=end).map(|(&s, _)| s).collect();
+        let covered: Vec<K> = self.ranges.range(start..=end).map(|(&s, _)| s).collect();
         for covered_start in covered {
             let (covered_end, covered_level) = self
                 .ranges
                 .remove(&covered_start)
                 .expect("collected from the map above");
             if covered_end > end {
-                self.ranges.insert(end + 1, (covered_end, covered_level));
+                self.ranges.insert(end.next(), (covered_end, covered_level));
             }
         }
         self.ranges.insert(start, (end, level));
     }
 
+    /// The build step (aMule `CIPFilterTask::Entry`): keep only ranges whose
+    /// level is strictly below `level_threshold`, in ascending order, adjacent
+    /// survivors coalesced.
+    fn build(&self, level_threshold: u8) -> Vec<(K, K)> {
+        let mut blocked: Vec<(K, K)> = Vec::new();
+        for (&start, &(end, level)) in &self.ranges {
+            if level >= level_threshold {
+                continue;
+            }
+            match blocked.last_mut() {
+                Some(last) if last.1 != K::MAX && last.1.next() == start => last.1 = end,
+                _ => blocked.push((start, end)),
+            }
+        }
+        blocked
+    }
+}
+
+/// The two tables a load fills, one per family.
+#[derive(Debug, Default)]
+struct IpRangeMaps {
+    v4: IpRangeMap<u32>,
+    v6: IpRangeMap<u128>,
+}
+
+impl IpRangeMaps {
     /// Parse `text` (raw bytes — descriptions in real dat files are often not
-    /// UTF-8, and aMule never validates them) line by line into the map,
+    /// UTF-8, and aMule never validates them) line by line into the maps,
     /// returning the file's aMule-shaped load stats.
     fn parse_into(&mut self, text: &[u8]) -> IpFilterLoadStats {
         let mut stats = IpFilterLoadStats::default();
@@ -151,7 +221,12 @@ impl IpRangeMap {
             match parse_line(line) {
                 ParsedLine::Range { start, end, level } => {
                     stats.accepted += 1;
-                    self.insert(start, end, level);
+                    self.v4.insert(start, end, level);
+                }
+                ParsedLine::Ipv6(rule) => {
+                    stats.accepted += 1;
+                    stats.ipv6 += 1;
+                    self.v6.insert(rule.start, rule.end, rule.level);
                 }
                 ParsedLine::Ignored => {}
                 ParsedLine::Malformed => stats.malformed += 1,
@@ -159,23 +234,15 @@ impl IpRangeMap {
         }
         stats
     }
+}
 
-    /// The build step (aMule `CIPFilterTask::Entry`): keep only ranges whose
-    /// level is strictly below `level_threshold`, in ascending order, adjacent
-    /// survivors coalesced.
-    fn build(&self, level_threshold: u8) -> Vec<(u32, u32)> {
-        let mut blocked: Vec<(u32, u32)> = Vec::new();
-        for (&start, &(end, level)) in &self.ranges {
-            if level >= level_threshold {
-                continue;
-            }
-            match blocked.last_mut() {
-                Some(last) if last.1 != u32::MAX && last.1 + 1 == start => last.1 = end,
-                _ => blocked.push((start, end)),
-            }
-        }
-        blocked
-    }
+/// Whether `key` falls in one of `blocked`'s sorted, disjoint ranges — aMule's
+/// binary search (`IPFilter.cpp:438-460`).
+fn covers<K: RangeKey>(blocked: &[(K, K)], key: K) -> bool {
+    blocked
+        .partition_point(|&(start, _)| start <= key)
+        .checked_sub(1)
+        .is_some_and(|i| blocked[i].1 >= key)
 }
 
 /// The built verdict store: the blocked set (level threshold already applied)
@@ -187,6 +254,8 @@ pub(crate) struct IpFilter {
     filter_servers: bool,
     /// Sorted, disjoint, coalesced `(start, inclusive end)` blocked ranges.
     blocked: Vec<(u32, u32)>,
+    /// The IPv6 rules' blocked ranges, in the same shape (ADR-0085).
+    blocked_v6: Vec<(u128, u128)>,
 }
 
 impl Default for IpFilter {
@@ -205,6 +274,7 @@ impl IpFilter {
             filter_clients,
             filter_servers,
             blocked: Vec::new(),
+            blocked_v6: Vec::new(),
         }
     }
 
@@ -218,13 +288,14 @@ impl IpFilter {
         filter_clients: bool,
         filter_servers: bool,
     ) -> (Self, Vec<IpFilterLoadStats>) {
-        let mut map = IpRangeMap::default();
-        let stats = texts.iter().map(|text| map.parse_into(text)).collect();
+        let mut maps = IpRangeMaps::default();
+        let stats = texts.iter().map(|text| maps.parse_into(text)).collect();
         (
             Self {
                 filter_clients,
                 filter_servers,
-                blocked: map.build(level_threshold),
+                blocked: maps.v4.build(level_threshold),
+                blocked_v6: maps.v6.build(level_threshold),
             },
             stats,
         )
@@ -266,6 +337,7 @@ impl IpFilter {
                 tracing::info!(
                     file = name,
                     accepted = file_stats.accepted,
+                    ipv6 = file_stats.ipv6,
                     malformed = file_stats.malformed,
                     "loaded IP filter ranges"
                 );
@@ -273,6 +345,7 @@ impl IpFilter {
         }
         tracing::info!(
             blocked_ranges = filter.blocked.len(),
+            blocked_ipv6_ranges = filter.blocked_v6.len(),
             level = level_threshold,
             "IP filter ready"
         );
@@ -284,10 +357,7 @@ impl IpFilter {
     /// already settled: the table holds host-order numeric addresses and
     /// `u32::from(Ipv4Addr)` is exactly that.
     fn covers(&self, ip: u32) -> bool {
-        self.blocked
-            .partition_point(|&(start, _)| start <= ip)
-            .checked_sub(1)
-            .is_some_and(|i| self.blocked[i].1 >= ip)
+        covers(&self.blocked, ip)
     }
 
     /// The client-surface verdict (aMule `IsFiltered(ip)`): gated on client
@@ -296,11 +366,9 @@ impl IpFilter {
         self.filter_clients && self.covers(u32::from(ip))
     }
 
-    /// The client-surface verdict for a peer of either family (ADR-0085): the
-    /// table holds IPv4 ranges only, so a **native** IPv6 peer passes through —
-    /// noted on the trace when the gate is armed, since the pass is an
-    /// asymmetry the operator should know about, not a verdict. An IPv6 filter
-    /// format is not defined by any implementation yet.
+    /// The client-surface verdict for a peer of either family (ADR-0085): a
+    /// native IPv6 peer is judged by the IPv6 table, under the same client
+    /// gate, and an IPv4 one by the IPv4 table.
     ///
     /// `peer` is unmapped first (`IpAddr::to_canonical`): a mapped address
     /// (`::ffff:a.b.c.d`) is an IPv4 host wearing a v6 literal, and hitting the
@@ -310,12 +378,7 @@ impl IpFilter {
     pub(crate) fn is_filtered_peer(&self, peer: PeerEndpoint) -> bool {
         match peer.ip().to_canonical() {
             IpAddr::V4(ip) => self.is_filtered_client(ip),
-            IpAddr::V6(_) => {
-                if self.filter_clients && !self.blocked.is_empty() {
-                    tracing::debug!(%peer, "IPv6 peer passes the IPv4-only IP filter unchecked");
-                }
-                false
-            }
+            IpAddr::V6(ip) => self.filter_clients && covers(&self.blocked_v6, u128::from(ip)),
         }
     }
 

@@ -216,4 +216,38 @@ mod tests {
         let judged = gate(&filter).judge(low_id).expect("a Low ID's roads stand");
         assert_eq!(judged.ipv6(), None, "its rung-0 half is dropped");
     }
+
+    /// An `ipfilter.dat` naming one family of a dual-stack source drops that
+    /// half only: the filter judges each address on its own, never the pair
+    /// (ADR-0085).
+    #[test]
+    fn a_filtered_half_of_either_family_leaves_the_other_standing() {
+        let (filter, _) = IpFilter::from_texts(
+            &[b"203.0.113.0-203.0.113.255,0,v4\n2001:db8::/32,0,v6\n".as_slice()],
+            127,
+            true,
+            true,
+        );
+        let blocked_v6 = Ipv6Endpoint::new("2001:db8::7".parse().unwrap(), 4662);
+        let open_v6 = Ipv6Endpoint::new("2a01:4f8::7".parse().unwrap(), 4662);
+        let blocked_v4 = Ipv4Addr::new(203, 0, 113, 7);
+        let open_v4 = Ipv4Addr::new(45, 55, 200, 8);
+        let dual = |v4: Ipv4Addr, v6| {
+            SourceSighting::plain(PeerSource::HighId(at(v4)))
+                .with_ipv6_half(Some(v6))
+                .with_informant(party([45, 55, 200, 1]))
+        };
+
+        let judged = gate(&filter).judge(dual(open_v4, blocked_v6)).unwrap();
+        assert_eq!(judged.peer_source(), Some(PeerSource::HighId(at(open_v4))));
+        assert_eq!(judged.ipv6(), None, "the filtered IPv6 half is dropped");
+
+        let judged = gate(&filter).judge(dual(blocked_v4, open_v6)).unwrap();
+        assert_eq!(judged.peer_source(), Some(PeerSource::Ipv6(open_v6)));
+
+        assert_eq!(
+            gate(&filter).judge(dual(blocked_v4, blocked_v6)),
+            Err(Blocked::IpFiltered)
+        );
+    }
 }

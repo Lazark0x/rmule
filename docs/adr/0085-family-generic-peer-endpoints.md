@@ -180,6 +180,8 @@ For `OP_FOUNDSOURCES`, `OP_FOUNDSOURCES_OBFU` and `OP_GLOBFOUNDSOURCES`:
   IPv4 grammar. The shapes both references read are accepted: a prefix `addr/len`, a bare
   literal (`/128`), and emule-qt's `start - end` range and `description:` prefix
   (`IPFilter.cpp:173-210`, `:658-708`), each with the optional `, level , description` tail.
+  A description is text: it holds no colon and is not only hex digits and dots, so a
+  malformed range never loads as a rule naming a fragment of itself.
 - **A missing level is 0**, blocked at every threshold. That is amule-kno's default
   (`IPFilterMatch.h:233-235`) and the level rmule's IPv4 grammar already gives a line with no
   level column (the AntiP2P form); emule-qt's is 100 (`IPFilter.h:56`).
