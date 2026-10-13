@@ -867,9 +867,9 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
         D::HoleLessDestination { directory, .. } => {
             format!("{}; {HOLE_LESS_REMEDY}", hole_less_words(directory))
         }
-        D::Completing { to, step, .. } => {
-            format!("{}: {}", completion_step_words(*step), to.display())
-        }
+        // The line a one-shot download prints, so the two front ends say a
+        // step of the move one way.
+        D::Completing { to, step, .. } => completing_line(*step, to),
     })
 }
 
@@ -877,9 +877,25 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
 mod tests {
     use std::path::Path;
 
-    use rmule_core::{DownloadEvent, DownloadId};
+    use rmule_core::{CompletionStep, DownloadEvent, DownloadId};
 
     use super::{hole_less_destination, log_line};
+
+    /// The Networks log words a step of the completion move as the one-shot
+    /// download prints it: one shape on both front ends.
+    #[test]
+    fn a_completing_step_logs_the_line_the_cli_prints() {
+        let line = log_line(&DownloadEvent::Completing {
+            download_id: DownloadId::from_u64(1),
+            to: Path::new("/Downloads/Мой фильм (1).mkv").to_path_buf(),
+            step: CompletionStep::Copying,
+        });
+        assert_eq!(
+            line.as_str(),
+            "completing: copying the finished file to the disk it goes to \
+             (/Downloads/Мой фильм (1).mkv)"
+        );
+    }
 
     /// A directory with spaces and non-ASCII names reads whole in the edge's
     /// sentence and its Networks-log line: no quoting, no escape, no cut.
