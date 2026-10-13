@@ -74,10 +74,11 @@ quartet as aMule does.
 
 ### Downloader: queue standing on the source's record, and a reask cycle
 
-After a rank arrives, the worker disconnects and the source's **Source Book** record moves
-to its RemoteQueued stage, its queue standing riding the record (ADR-0090): the rank, the
-UDP contact its hello stated, the reask clock and the one-ping latch, held without a
-socket. The download's brain runs the cycle on its tick (ADR-0026). Per pooled source, on
+A worker's `OP_STARTUPLOADREQ` earns the source's **Source Book** record its queue standing,
+without a rank until a `0x60` ranks it (ADR-0090, "How a worker ends, and what its record
+keeps"). When the worker ends holding it, the record moves to its RemoteQueued stage, the
+standing riding the record: the rank, the UDP contact its hello stated, the reask clock
+and the one-ping latch, held without a socket. The download's brain runs the cycle on its tick (ADR-0026). Per pooled source, on
 aMule's `FILEREASKTIME` of 1 300 000 ms
 ([Constants.h#L35](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/include/protocol/ed2k/Constants.h#L35)):
 
@@ -93,6 +94,18 @@ aMule's `FILEREASKTIME` of 1 300 000 ms
   its hello advertised: aMule has no `HasLowID` gate here and sends to `GetConnectIP()`
   (stock 2.3.3 `DownloadClient.cpp:1269-1296`). Its answer refreshes the clock, so its
   callback road is taken again only on silence.
+- **Through the buddy.** When the direct ping's gate fails — we are firewalled, or the
+  source states no UDP port — a Low-ID source whose record names its buddy's ID and
+  endpoint (a Kad source row, ADR-0061) is reasked through that buddy instead:
+  `0x94 <buddy id 16><hash16>` with the same version-gated extras, plain, to the buddy's
+  UDP endpoint (stock 2.3.3 `DownloadClient.cpp:1297-1318`). The buddy relays it as
+  `0x9A` and the source answers from its own client-UDP endpoint, so the reply is matched
+  there as a `0x90`'s is, and the same one-in-flight latch holds it. Neither our
+  reachability nor a due source ask holds this road: aMule gates only the direct branch on
+  them (`:1269-1273`). A source whose contact is unknown is not reasked through its buddy:
+  its UDP version, which frames the extras, and the endpoint its answer would be matched
+  at both ride the contact (aMule sends the datagram and then cannot match the answer,
+  `DownloadQueue.cpp:835-849`).
 - **Connected, or nothing.** Neither the ping nor the TCP full ask leaves while rmule is
   connected to no network — no server login and no Kad node that has heard a contact,
   aMule's `IsConnected()` (stock 2.3.3 `PartFile.cpp:1460`, `:1475`). A standing that
@@ -107,8 +120,10 @@ aMule's `FILEREASKTIME` of 1 300 000 ms
   holding no part we lack makes the source no-needed-parts, and a status counting other
   than the file's parts throws in aMule before the rank is read, so rmule ignores that
   whole reply (`DownloadClient.cpp:416-424`, `:487-491`);
-  `0x93` sets queue-full and rank 0 and refreshes the clock; `0x92` drops the source as dead
-  ([DownloadClient.cpp#L1228](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/DownloadClient.cpp#L1228)).
+  `0x93` sets queue-full and rank 0 and refreshes the clock; `0x92` spends the source for
+  this download under every name its record holds, as aMule dead-lists and removes it
+  ([DownloadClient.cpp#L1228](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/DownloadClient.cpp#L1228);
+  ADR-0090).
 - **Queue full:** aMule neither lengthens a queue-full source's reask nor ranks it lower
   for a slot; it is one of the sources let go to make room.
 - **Purges:** once the file holds 80 % of aMule's default `MaxSourcesPerFile` (300), one
@@ -130,6 +145,15 @@ aMule's `FILEREASKTIME` of 1 300 000 ms
   we are unreachable, a source ask is due, or another download's ping holds the endpoint
   (ADR-0107) — the brain names a wake one second on, as aMule's once-a-second `Process`
   re-reads its gate.
+- **Back on queue:** an `OP_OUTOFPARTREQS` (`0x57`) on a granted slot keeps the worker on
+  its link, its flow queued again (ADR-0025): the part it held is released for retry, its
+  record earns a standing without a rank, and the `OP_QUEUERANKING` that follows ranks it.
+  The source holds parts we lack, so a standing it leaves with reasks on the ordinary
+  cadence above, never the no-needed-parts one; a `0x57` while only queued changes
+  nothing.
+- **A granted slot given back:** a worker granted a slot it has no part to work gives it
+  back with `0x56` (ADR-0056) and its record waits in RemoteQueued with a standing on the
+  ordinary cadence: it holds a part we lack, only none is free now.
 - **No needed parts:** such a source reasks at twice the period, then forces a TCP
   recheck
   ([PartFile.cpp#L1439](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/PartFile.cpp#L1439)).
@@ -205,3 +229,8 @@ brain's next wake. The purge clock and dial-back promotion belong to serve state
   fallback that repairs state mismatches.
 - **Periodic re-bind after a bind failure.** Rejected: it would re-run the whole front
   assembly against a running actor, for conditions a restart already clears.
+- **Reading `OP_OUTOFPARTREQS` as "no needed parts", or as a refused slot that ends the
+  worker.** Rejected: aMule's uploader sends it when our session's 10 MB or hour is up
+  while someone waits (`UploadQueue.cpp:549`), then queues us again and ranks us on the
+  same socket; nothing in it says the source holds nothing we lack, and ending the link
+  throws away the rank that follows.
