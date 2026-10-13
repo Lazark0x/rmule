@@ -40,6 +40,7 @@ fn unstarted(peer_concurrency: usize) -> DownloadState {
         QUIET_POSTURE,
         CALLBACK_TIMEOUT,
         peer_concurrency,
+        4,
     )
 }
 

@@ -474,6 +474,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
             resolver: crate::name_resolver::system_resolver(),
         }),
         peer_concurrency: wiring.config.effective_peer_concurrency_per_download(),
+        streaming_window_parts: wiring.config.streaming_window_parts,
         finished_tx: finished_tx.clone(),
         discovery: crate::download::DiscoveryLiveness {
             global_servers: Arc::clone(&global_source_servers),

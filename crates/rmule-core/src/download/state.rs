@@ -58,7 +58,7 @@ use crate::dialable::DialPosition;
 use crate::download::source_book::SourceBook;
 use crate::download::source_seeds::SeedLedger;
 use crate::hashing::ResolvedHashSet;
-use crate::scheduler::DownloadScheduler;
+use crate::scheduler::{DownloadScheduler, PartOrder};
 use crate::service::{DownloadEvent, DownloadId, PartReleaseReason};
 
 /// One effect the async runner must enact, drained in order from a
@@ -88,8 +88,10 @@ pub(crate) enum Decision {
     /// End the live worker on `peer`: the brain released it. Every
     /// retirement — whatever its reason — ends its worker through this one
     /// decision (ADR-0090 "Source ownership"); the runner sends it
-    /// `PeerWorkerCommand::Shutdown { cancel: false }`.
-    EndWorker { peer: PeerEndpoint },
+    /// `PeerWorkerCommand::Shutdown { cancel }`. `cancel` is true for a
+    /// source that holds nothing we need, so a slot it granted is given back
+    /// with `OP_CANCELTRANSFER` (ADR-0056, ADR-0112).
+    EndWorker { peer: PeerEndpoint, cancel: bool },
     /// Credit `user_hash` for serving `bytes`; the runner holds the
     /// ledger lock.
     RecordCredit { user_hash: UserHash, bytes: u64 },
@@ -262,6 +264,10 @@ pub(crate) struct ContentFacts {
     pub(crate) trusted_aich_root: Option<AichRootHash>,
     /// Parts an earlier run already verified; they are never re-fetched.
     pub(crate) verified_parts: Vec<u32>,
+    /// The download is Streaming Priority (`DownloadMetadata::
+    /// is_streaming_priority`): its parts are ranked with the Preview Band and
+    /// the Streaming Window (ADR-0112 §5).
+    pub(crate) streaming_priority: bool,
 }
 
 /// How a Low-ID candidate is to be reached — the three callback roads and the
@@ -496,7 +502,8 @@ impl DownloadState {
     /// Build the scheduling state from what the run knows up front — the
     /// content, the candidate sources and rmule's own sourcing posture — plus
     /// the slot economy: how many workers or pending callbacks may hold a slot
-    /// at once, and how long a callback holds one before it lapses.
+    /// at once, and how long a callback holds one before it lapses — and the
+    /// Streaming Window's width a Streaming Priority download ranks by.
     pub(crate) fn new(
         download_id: DownloadId,
         content: ContentFacts,
@@ -504,6 +511,7 @@ impl DownloadState {
         posture: SourcingPosture,
         callback_timeout: Duration,
         peer_concurrency: usize,
+        streaming_window_parts: u32,
     ) -> Self {
         let ContentFacts {
             file_hash,
@@ -512,7 +520,15 @@ impl DownloadState {
             resolved,
             trusted_aich_root,
             verified_parts,
+            streaming_priority,
         } = content;
+        let order = if streaming_priority {
+            PartOrder::Streaming {
+                window_parts: streaming_window_parts,
+            }
+        } else {
+            PartOrder::Rarest
+        };
         let StartingFacts {
             distrusted,
             seeds_written,
@@ -530,7 +546,7 @@ impl DownloadState {
             download_id,
             file_hash,
             file_size,
-            scheduler: DownloadScheduler::new(file_size, verified_parts),
+            scheduler: DownloadScheduler::new(file_size, verified_parts, order),
             assembly: HashMap::new(),
             pending_persist: HashMap::new(),
             awaiting_recovery: HashMap::new(),
@@ -559,7 +575,7 @@ impl DownloadState {
     /// Spawn the initial fleet of workers from the candidate pool, up to
     /// `peer_concurrency`. The runner enacts each [`Decision::Spawn`] by
     /// putting that peer on the wire; the worker is assigned its first part on
-    /// its own `Connected` event (ADR-0030).
+    /// its probe's answer (ADR-0030, ADR-0112).
     pub(crate) fn start(&mut self, now: Instant) -> Vec<Decision> {
         self.started = true;
         self.sources.turn_spent(now);

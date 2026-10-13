@@ -135,6 +135,7 @@ where
                     file,
                     identity: self.settings_identity(),
                     verified_part_indexes: Vec::new(),
+                    streaming_priority: record.metadata().is_streaming_priority(),
                     run,
                     remembered: Vec::new(),
                     served,
@@ -385,6 +386,7 @@ where
             file,
             identity: self.settings_identity(),
             verified_part_indexes,
+            streaming_priority: record.metadata().is_streaming_priority(),
             run,
             remembered,
             served,
@@ -584,6 +586,9 @@ pub(super) struct DownloadRuntime<S, P> {
     /// actor's own, which keeps the reach arm from ever closing.
     pub(super) shared: Arc<SharedRuntime<S, P>>,
     pub(super) peer_concurrency: usize,
+    /// The Streaming Window's width every Streaming Priority run ranks by
+    /// (`CoreConfig::streaming_window_parts`, ADR-0112).
+    pub(super) streaming_window_parts: u32,
     pub(super) finished_tx: mpsc::Sender<FinishedActivity>,
     /// The discovery channels every runner waits on, read live (ADR-0093):
     /// the managed global server list and the Kad activity's liveness.
@@ -603,6 +608,8 @@ struct SpawnDownload<'a, S, P> {
     /// build-time hash, a TCP port of `0` read live at each hello.
     identity: rmule_primitives::ClientIdentity,
     verified_part_indexes: Vec<u32>,
+    /// The download is Streaming Priority, off its stored metadata.
+    streaming_priority: bool,
     /// Which run of the download this is.
     run: u64,
     /// The seeds attach loaded for a restored run (ADR-0109); empty otherwise.
@@ -629,6 +636,7 @@ where
         file,
         identity,
         verified_part_indexes,
+        streaming_priority,
         run,
         remembered,
         served,
@@ -646,6 +654,8 @@ where
                 identity,
                 verified_part_indexes,
                 peer_concurrency: runtime.peer_concurrency,
+                streaming_priority,
+                streaming_window_parts: runtime.streaming_window_parts,
                 discovery: runtime.discovery.clone(),
                 remembered,
             },

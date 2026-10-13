@@ -14,6 +14,7 @@ use crate::assembly::PartAssembly;
 use crate::callback::CallbackSilence;
 use crate::diagnostics::{WorkerPhase, WorkerSlot};
 use crate::download::source_book::{Deadline, DialEnd, NextDial, Release, WorkerEnd};
+use crate::scheduler::Assignment;
 use crate::service::{DownloadEvent, PartReleaseReason, PeerRetirementReason};
 
 use super::{Decision, DownloadState, LowIdCandidate, LowIdRoad};
@@ -176,10 +177,17 @@ impl DownloadState {
             // A worker that hangs up, times out its slot wait or is refused
             // for parts while queued keeps its standing (ADR-0057); refused,
             // it holds no part we need and reasks at twice the period, over
-            // TCP (aMule `DS_NONEEDEDPARTS`). Any other end is the standing's.
+            // TCP (aMule `DS_NONEEDEDPARTS`). A source whose Advertised Parts
+            // hold nothing we lack keeps that mark on its standing, or earns
+            // one at rank 0 (ADR-0112). Any other end is the standing's.
             match reason {
                 PeerRetirementReason::PeerDisconnected | PeerRetirementReason::SlotTimeout => {}
-                PeerRetirementReason::SlotRejected => self.sources.no_needed_parts(peer),
+                PeerRetirementReason::SlotRejected => {
+                    if self.sources.rank(peer).is_some() {
+                        self.sources.no_needed_parts(peer, now);
+                    }
+                }
+                PeerRetirementReason::NoNeededParts => self.sources.no_needed_parts(peer, now),
                 _ => self.sources.end_standing(peer),
             }
             // A worker that gave way in a merge left the book already: its
@@ -195,7 +203,11 @@ impl DownloadState {
                         PeerRetirementReason::CryptIncompatible | PeerRetirementReason::Distrusted
                     );
                 let end = self.sources.end_worker(peer, failed, self.dial);
-                if end == Some(WorkerEnd::Release(Release::RemoteQueued)) {
+                // A source with nothing we need waits unranked: its
+                // retirement says why, and no queue rank is reported.
+                if end == Some(WorkerEnd::Release(Release::RemoteQueued))
+                    && reason != PeerRetirementReason::NoNeededParts
+                {
                     out.push(Decision::Emit(DownloadEvent::SourceRemoteQueued {
                         download_id: self.download_id,
                         peer,
@@ -205,8 +217,12 @@ impl DownloadState {
                 self.note_worker_end(end);
             }
             // Every retirement ends its worker — a bad-data one included,
-            // whose socket would otherwise idle until the peer dropped it.
-            out.push(Decision::EndWorker { peer });
+            // whose socket would otherwise idle until the peer dropped it. A
+            // source with nothing we need gives back a slot it granted.
+            out.push(Decision::EndWorker {
+                peer,
+                cancel: reason == PeerRetirementReason::NoNeededParts,
+            });
             out.push(Decision::Phase {
                 slot,
                 phase: WorkerPhase::Retired { reason },
@@ -220,15 +236,43 @@ impl DownloadState {
         self.retired_peers = self.retired_peers.saturating_add(1);
         // Hand the released part to a still-connected idle worker whose parts
         // are known; any other is assigned on its own probe answer (ADR-0112).
-        for p in self.connected_workers() {
-            self.assign(p, out);
-        }
+        let unneeded = self.offer_connected(out);
         self.fill(now, out);
         // ADR-0026's terminal condition (ADR-0030): only fail once the pool is
         // empty and nothing is active or connecting.
         if self.out_of_sources() {
             out.push(Decision::Fail(DownloadFailure::NoUsableSources));
         }
+        for peer in unneeded {
+            self.retire_no_needed_parts(now, peer, out);
+        }
+    }
+
+    /// Offer every connected worker its next part, in slot order. The ones
+    /// whose Advertised Parts hold no part we lack are returned, for the
+    /// caller to retire once its own release has settled.
+    pub(super) fn offer_connected(&mut self, out: &mut Vec<Decision>) -> Vec<PeerEndpoint> {
+        self.connected_workers()
+            .into_iter()
+            .filter(|&peer| !self.offer(peer, out))
+            .collect()
+    }
+
+    /// Retire `peer`, whose Advertised Parts hold no part we lack, as
+    /// `NoNeededParts` (ADR-0112 §6): its record waits in the RemoteQueued
+    /// stage with the mark, unspent, and its slot is backfilled.
+    pub(super) fn retire_no_needed_parts(
+        &mut self,
+        now: Instant,
+        peer: PeerEndpoint,
+        out: &mut Vec<Decision>,
+    ) {
+        out.push(Decision::Emit(DownloadEvent::PeerRetired {
+            download_id: self.download_id,
+            peer,
+            reason: PeerRetirementReason::NoNeededParts,
+        }));
+        self.release(now, peer, PeerRetirementReason::NoNeededParts, out);
     }
 
     /// The workers that completed their handshake, in slot order so the
@@ -251,48 +295,70 @@ impl DownloadState {
             self.seeds.dialable(other);
         }
     }
-    /// Assign `peer` its next part (a fresh pending part, else a raced
-    /// in-flight one, ADR-0026), resuming from the part's shared prefix
-    /// (ADR-0029). Emits the assignment decisions, or an `Idle` phase when
-    /// there is nothing for the peer to do. A worker whose Advertised Parts
-    /// are not known yet is handed nothing (ADR-0112): its probe answer
-    /// assigns it.
-    pub(super) fn assign(&mut self, peer: PeerEndpoint, out: &mut Vec<Decision>) {
+    /// Assign `peer` its next part — a fresh pending part its Advertised
+    /// Parts hold, else a raced in-flight one, by rank (ADR-0026, ADR-0112) —
+    /// resuming from the part's shared prefix (ADR-0029), or an `Idle` phase
+    /// when every part it holds that we lack is in flight. A worker whose
+    /// Advertised Parts are not known yet is handed nothing: its probe answer
+    /// assigns it. One whose parts hold nothing we lack is retired
+    /// `NoNeededParts`.
+    pub(super) fn assign(&mut self, now: Instant, peer: PeerEndpoint, out: &mut Vec<Decision>) {
+        if !self.offer(peer, out) {
+            self.retire_no_needed_parts(now, peer, out);
+        }
+    }
+
+    /// [`Self::assign`]'s offer: the assignment decisions, an `Idle` phase,
+    /// or nothing, and `false` only when `peer`'s Advertised Parts hold no
+    /// part the unfinished file lacks.
+    fn offer(&mut self, peer: PeerEndpoint, out: &mut Vec<Decision>) -> bool {
         let Some(slot) = self.worker_slots.get(&peer).copied() else {
-            return;
+            return true;
         };
-        if self.sources.parts(peer).is_none() {
-            return;
-        }
-        if let Some(plan) = self.scheduler.assign_next(peer) {
-            let resume_offset = plan.offset
-                + self
-                    .assembly
-                    .get(&plan.part_index)
-                    .map_or(0, PartAssembly::prefix_len);
-            out.push(Decision::Emit(DownloadEvent::PartAssigned {
-                download_id: self.download_id,
-                peer,
+        let Some(parts) = self.sources.parts(peer) else {
+            return true;
+        };
+        let plan = match self.scheduler.assign_next(
+            peer,
+            parts,
+            self.sources.part_frequency(),
+            self.sources.parts_known(),
+        ) {
+            Assignment::Fresh(plan) | Assignment::Raced(plan) => plan,
+            Assignment::Nothing { lacked: false } if !self.scheduler.is_complete() => {
+                return false;
+            }
+            Assignment::Nothing { .. } => {
+                out.push(Decision::Phase {
+                    slot,
+                    phase: WorkerPhase::Idle,
+                });
+                return true;
+            }
+        };
+        let resume_offset = plan.offset
+            + self
+                .assembly
+                .get(&plan.part_index)
+                .map_or(0, PartAssembly::prefix_len);
+        out.push(Decision::Emit(DownloadEvent::PartAssigned {
+            download_id: self.download_id,
+            peer,
+            part_index: plan.part_index,
+        }));
+        out.push(Decision::Phase {
+            slot,
+            phase: WorkerPhase::RequestingPart {
                 part_index: plan.part_index,
-            }));
-            out.push(Decision::Phase {
-                slot,
-                phase: WorkerPhase::RequestingPart {
-                    part_index: plan.part_index,
-                },
-            });
-            out.push(Decision::Send {
-                peer,
-                command: PeerWorkerCommand::RequestPart {
-                    plan,
-                    resume_offset,
-                },
-            });
-        } else {
-            out.push(Decision::Phase {
-                slot,
-                phase: WorkerPhase::Idle,
-            });
-        }
+            },
+        });
+        out.push(Decision::Send {
+            peer,
+            command: PeerWorkerCommand::RequestPart {
+                plan,
+                resume_offset,
+            },
+        });
+        true
     }
 }

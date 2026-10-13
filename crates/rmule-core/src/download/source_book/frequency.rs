@@ -80,14 +80,12 @@ impl SourceBook {
 
     /// Part Frequency: per part index, how many records' Advertised Parts hold
     /// it.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the rank reads it next"))]
     pub(crate) fn part_frequency(&self) -> &[u32] {
         &self.frequency.counts
     }
 
     /// How many records hold Advertised Parts — the sources whose parts are
     /// known, the `n` of the very-rare bound.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the rank reads it next"))]
     pub(crate) fn parts_known(&self) -> u32 {
         self.frequency.holders
     }

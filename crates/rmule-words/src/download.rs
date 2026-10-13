@@ -161,6 +161,7 @@ pub const fn retirement_words(reason: PeerRetirementReason) -> &'static str {
         PeerRetirementReason::CryptIncompatible => "its encryption and yours cannot meet",
         PeerRetirementReason::Distrusted => "it sent this file bad data before",
         PeerRetirementReason::SameSource => "another connection already reaches this peer",
+        PeerRetirementReason::NoNeededParts => "it holds no part we still need",
     }
 }
 

@@ -87,6 +87,10 @@ pub(super) struct FleetStart<'a> {
     pub(super) peer_concurrency: usize,
     /// Parts an earlier run already verified on disk; they are never re-fetched.
     pub(super) verified_part_indexes: Vec<u32>,
+    /// The download is Streaming Priority (ADR-0112 §5).
+    pub(super) streaming_priority: bool,
+    /// The Streaming Window's width a Streaming Priority download ranks by.
+    pub(super) streaming_window_parts: u32,
     /// The run's first sightings, by channel.
     pub(super) sources: StartSources,
     /// Where the **Callback Capability** is re-read from for the rest of the run.
@@ -135,6 +139,8 @@ where
         ctx,
         peer_concurrency,
         verified_part_indexes,
+        streaming_priority,
+        streaming_window_parts,
         sources,
         callback_facts,
         posture,
@@ -239,8 +245,8 @@ where
     // The sans-I/O scheduling brain (ADR-0026/0029/0030): it owns the
     // candidate pool, the free diagnostics slots, the scheduler, and the
     // cross-peer assembly, and turns each worker event into an ordered
-    // `Vec<Decision>` the runner enacts. Parts are assigned on the `Connected`
-    // event, not up front, so a failed handshake never strands a part.
+    // `Vec<Decision>` the runner enacts. Parts are assigned on each worker's
+    // probe answer, not up front, so a failed handshake never strands a part.
     let mut state = DownloadState::new(
         download_id,
         ContentFacts {
@@ -250,6 +256,7 @@ where
             resolved,
             trusted_aich_root: file.aich_root,
             verified_parts: verified_part_indexes,
+            streaming_priority,
         },
         StartingFacts {
             distrusted: sources.distrusted,
@@ -258,6 +265,7 @@ where
         posture,
         runner.rt.callback_timeout,
         peer_concurrency,
+        streaming_window_parts,
     );
     // The snapshot is sighted in the order a pool is built; nothing fills a
     // slot until `start`.

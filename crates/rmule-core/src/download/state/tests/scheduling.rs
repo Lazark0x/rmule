@@ -127,6 +127,31 @@ fn a_connected_worker_is_handed_nothing_until_its_parts_are_known() {
     );
 }
 
+/// A Streaming Priority download takes its head and its tail first — the
+/// Preview Band — then the rest; any other fills in index order (ADR-0112).
+#[test]
+fn a_streaming_priority_download_fetches_its_head_and_tail_first() {
+    let size = 2 * rmule_primitives::ED2K_PART_SIZE + rmule_primitives::ED2K_PART_SIZE / 2;
+    for (streaming_priority, order) in [(true, vec![0, 2, 1]), (false, vec![0, 1, 2])] {
+        let content = ContentFacts {
+            streaming_priority,
+            ..file_hash_only_content(size)
+        };
+        let pool = [peer(1), peer(2), peer(3)];
+        let mut state = pooled_state(content, &pool, QUIET_POSTURE, 3);
+        let _ = state.start(t0());
+        let assigned: Vec<u32> = pool
+            .iter()
+            .flat_map(|&at| connect(&mut state, t0(), at))
+            .filter_map(|d| match d {
+                Decision::Emit(DownloadEvent::PartAssigned { part_index, .. }) => Some(part_index),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(assigned, order, "streaming priority {streaming_priority}");
+    }
+}
+
 #[test]
 fn a_raced_part_completing_clears_the_losing_racer_and_finalizes() {
     let mut state = two_peer_state();
@@ -357,7 +382,7 @@ fn every_retirement_ends_its_worker() {
     for (out, at) in [(&failed, peer(1)), (&hung_up, peer(2))] {
         assert!(
             out.iter()
-                .any(|d| matches!(d, Decision::EndWorker { peer: p } if *p == at)),
+                .any(|d| matches!(d, Decision::EndWorker { peer: p, .. } if *p == at)),
             "{at:?}'s retirement ends its worker: {out:?}"
         );
     }

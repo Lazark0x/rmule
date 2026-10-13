@@ -122,6 +122,7 @@ mod buddy_hash_spelling {
                 },
                 trusted_aich_root: None,
                 verified_parts: Vec::new(),
+                streaming_priority: false,
             },
             StartingFacts {
                 distrusted: std::collections::HashSet::new(),
@@ -135,6 +136,7 @@ mod buddy_hash_spelling {
             },
             Duration::from_secs(30),
             1,
+            4,
         );
         let _ = state.start(std::time::Instant::now());
         state
@@ -424,6 +426,7 @@ mod queued_roster {
                 },
                 trusted_aich_root: None,
                 verified_parts: Vec::new(),
+                streaming_priority: false,
             },
             StartingFacts {
                 distrusted: std::collections::HashSet::new(),
@@ -437,6 +440,7 @@ mod queued_roster {
             },
             Duration::from_secs(30),
             1,
+            4,
         );
         let _ = state.start(std::time::Instant::now());
         state

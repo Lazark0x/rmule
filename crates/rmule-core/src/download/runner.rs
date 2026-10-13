@@ -77,6 +77,11 @@ pub(crate) struct DownloadRequest {
     pub(crate) identity: rmule_primitives::ClientIdentity,
     pub(crate) verified_part_indexes: Vec<u32>,
     pub(crate) peer_concurrency: usize,
+    /// The download is Streaming Priority, read off its stored metadata
+    /// (ADR-0112 §5).
+    pub(crate) streaming_priority: bool,
+    /// The Streaming Window's width (`CoreConfig::streaming_window_parts`).
+    pub(crate) streaming_window_parts: u32,
     /// The background source-discovery channels, read live (ADR-0093).
     pub(crate) discovery: DiscoveryLiveness,
     /// The download's **Source Seeds** under a day old, handed to a run attach
@@ -376,6 +381,8 @@ where
             ctx,
             peer_concurrency: request.peer_concurrency,
             verified_part_indexes: request.verified_part_indexes,
+            streaming_priority: request.streaming_priority,
+            streaming_window_parts: request.streaming_window_parts,
             sources: StartSources {
                 seeds,
                 seeds_written: request.remembered.len(),

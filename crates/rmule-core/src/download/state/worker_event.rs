@@ -97,7 +97,7 @@ impl DownloadState {
             PeerWorkerEvent::PartsAdvertised { parts, complete } => {
                 self.sources.advertised(peer, complete, now);
                 self.sources.write_parts(peer, parts);
-                self.assign(peer, &mut out);
+                self.assign(now, peer, &mut out);
             }
             PeerWorkerEvent::IdentityVerified {
                 user_hash,
@@ -174,7 +174,7 @@ impl DownloadState {
                 // next; otherwise its completing block reassigned it, so leave
                 // that assignment alone.
                 if !self.scheduler.is_working(peer) {
-                    self.assign(peer, &mut out);
+                    self.assign(now, peer, &mut out);
                 }
             }
             PeerWorkerEvent::HashSetReceived { part_hashes } => {
@@ -208,7 +208,7 @@ impl DownloadState {
         match result {
             Ok(()) => {
                 self.scheduler.complete_verified(peer);
-                self.assign(peer, &mut out);
+                self.assign(now, peer, &mut out);
                 if self.scheduler.is_complete() {
                     out.push(Decision::Finalize);
                     self.settle_seed_dials(&mut out);

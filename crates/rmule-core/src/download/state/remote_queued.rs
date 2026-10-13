@@ -7,7 +7,6 @@
 
 use std::time::Instant;
 
-use rmule_peer::PartBitmap;
 use rmule_peer::peer_udp::requester::{self, HeardReply, IgnoredReply};
 use rmule_primitives::PeerEndpoint;
 
@@ -102,7 +101,9 @@ impl DownloadState {
                     Some(Some(parts)) => Some(parts),
                     None => None,
                 };
-                let parts_needed = parts.as_ref().map(|parts| self.lacks_any_of(parts));
+                let parts_needed = parts
+                    .as_ref()
+                    .map(|parts| self.scheduler.lacks_any_of(parts));
                 self.sources
                     .reask_answered(peer, Answer::Rank { rank, parts_needed }, now);
                 // It is an advertisement like a probe's (ADR-0108), and its
@@ -137,15 +138,6 @@ impl DownloadState {
             }
         };
         vec![Decision::Emit(event)]
-    }
-
-    /// Whether a source whose Advertised Parts are `parts` holds a part we
-    /// lack — aMule's `bPartsNeeded` (stock 2.3.3 `DownloadClient.cpp:397-449`),
-    /// the one predicate a `0x91` status and an assignment both read.
-    pub(super) fn lacks_any_of(&self, parts: &PartBitmap) -> bool {
-        parts
-            .iter_present()
-            .any(|part| !self.scheduler.is_part_verified(part.value()))
     }
 
     /// The event for a reply from `from` that changed nothing, for `reason`.

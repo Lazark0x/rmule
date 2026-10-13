@@ -267,9 +267,16 @@ impl SourceBook {
         });
     }
 
-    /// The source at `endpoint` holds no part we need: its standing reasks at
-    /// twice the period, over TCP.
-    pub(crate) fn no_needed_parts(&mut self, endpoint: PeerEndpoint) {
+    /// The live worker at `endpoint`'s source holds no part we need: its
+    /// standing reasks at twice the period, over TCP — earned at rank 0 at
+    /// `now` when it held none, as a rank earns one (ADR-0112).
+    pub(crate) fn no_needed_parts(&mut self, endpoint: PeerEndpoint, now: Instant) {
+        if self
+            .live_record_mut(endpoint)
+            .is_some_and(|record| record.standing.is_none())
+        {
+            self.queued(endpoint, 0, now);
+        }
         if let Some(standing) = self
             .live_record_mut(endpoint)
             .and_then(|record| record.standing.as_mut())

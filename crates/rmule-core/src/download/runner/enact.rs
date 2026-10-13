@@ -89,12 +89,12 @@ where
                     .update_worker(ctx.download_id, slot, |entry| entry.identify(software));
             }
             Decision::Send { peer, command } => ctx.command_channels.send(peer, command).await,
-            Decision::EndWorker { peer } => {
+            Decision::EndWorker { peer, cancel } => {
                 // The brain released the worker: it ends, and its channel with
                 // it. The Peer Roster's download leg (ADR-0059)
                 // forgets it here, the one site every retirement passes —
                 // its own later `Disconnected` is a released worker's, stale.
-                ctx.command_channels.end(peer).await;
+                ctx.command_channels.end(peer, cancel).await;
                 if let Some(v4) = peer.as_v4() {
                     ctx.runner
                         .rt

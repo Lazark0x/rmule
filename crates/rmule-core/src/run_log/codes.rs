@@ -180,6 +180,7 @@ pub(super) const fn retirement(reason: PeerRetirementReason) -> &'static str {
         PeerRetirementReason::CryptIncompatible => "crypt_incompatible",
         PeerRetirementReason::Distrusted => "distrusted",
         PeerRetirementReason::SameSource => "same_source",
+        PeerRetirementReason::NoNeededParts => "no_needed_parts",
     }
 }
 
