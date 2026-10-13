@@ -199,6 +199,8 @@ async fn establish_into(
             punch: punch.clone(),
             grants,
             reach: shared.reach(),
+            dial_backs: shared.dial_backs().clone(),
+            tcp_port: identity.tcp_port(),
         },
     );
     *slot = Some(handle.clone());

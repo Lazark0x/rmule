@@ -625,6 +625,9 @@ impl Core {
         // punched path meets the IP filter, the ban gate and the inbound
         // triage exactly as a TCP accept does.
         let tunnel_admit = crate::adapters::SharedTunnelAdmit::default();
+        // A server-relayed callback's dial-back enters by the same seam
+        // (ADR-0061), so the requester meets the gates an accept does.
+        session.dial_backs().install_admit(tunnel_admit.clone());
         // The **Awaited Inbound** registry (ADR-0039, ADR-0091): every
         // download files the roads its pending callbacks may be answered on,
         // and the serve adapter's triage asks it who gets a connection. One

@@ -110,6 +110,12 @@ pub(crate) struct SharedServerSession {
     /// and which is woven after this cell. Unset, a session presents its own
     /// id, which is what the owner answers with no Kad node anyway.
     reach: Arc<std::sync::OnceLock<crate::reachability::SharedSelfReach>>,
+    /// The **Server Callback Dial-Backs** (ADR-0061): how every session
+    /// answers the server relaying a peer that wants to download from us. It
+    /// rides here because the in-flight bound outlives any one session, and
+    /// establishment, which hands each session its sinks, holds only this
+    /// cell.
+    dial_backs: super::ServerCallbackDialBacks,
 }
 
 impl Default for SharedServerSession {
@@ -117,6 +123,7 @@ impl Default for SharedServerSession {
     /// Address Learning store — the one owner every advert reads.
     fn default() -> Self {
         let own = SharedOwnIdentity::default();
+        let obfuscation = crate::obfuscation_policy::SharedObfuscationPolicy::default();
         Self {
             udp_ports_advert: crate::adapters::SharedUdpPortsAdvert::over(own.addresses().clone()),
             own,
@@ -129,7 +136,8 @@ impl Default for SharedServerSession {
             pending_connect: Arc::default(),
             login_timeout: Arc::default(),
             withhold_shares: Arc::new(watch::channel(false).0),
-            obfuscation: crate::obfuscation_policy::SharedObfuscationPolicy::default(),
+            dial_backs: super::ServerCallbackDialBacks::new(obfuscation.clone()),
+            obfuscation,
             reach: Arc::default(),
         }
     }
@@ -149,6 +157,11 @@ impl SharedServerSession {
     /// Presented Client ID from. Binding twice keeps the first.
     pub(crate) fn install_reach(&self, reach: crate::reachability::SharedSelfReach) {
         let _ = self.reach.set(reach);
+    }
+
+    /// The Server Callback Dial-Backs every session answers through.
+    pub(crate) fn dial_backs(&self) -> &super::ServerCallbackDialBacks {
+        &self.dial_backs
     }
 
     /// Self Reach as bound, or `None` for a cell no actor wove.

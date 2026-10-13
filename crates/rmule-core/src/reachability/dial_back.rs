@@ -26,7 +26,9 @@
 //! flood can provoke.
 
 use std::collections::HashSet;
+use std::hash::Hash;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::{Arc, Mutex};
 
 use rmule_net::peer::ObfuscationPolicy;
 use rmule_primitives::{Ipv4Endpoint, OutboundCrypt, PeerCrypt, PeerEndpoint, UserHash};
@@ -235,14 +237,27 @@ pub(super) const MAX_CONCURRENT_DIAL_BACKS: usize = 8;
 /// verdict and hands the [`DialBackTicket`] to the enactment task; the
 /// ticket's drop — normal end, connect failure, or panic — retires it, so
 /// the set can never leak an endpoint past its task.
-#[derive(Clone, Default)]
-pub(crate) struct DialBackRegistry {
-    engaged: std::sync::Arc<std::sync::Mutex<HashSet<Ipv4Endpoint>>>,
+///
+/// Keyed by the endpoint the dial goes to: an [`Ipv4Endpoint`] for the Kad
+/// firewall-check responder, whose requesters are IPv4 by the wire, and a
+/// [`PeerEndpoint`] for the server-relayed callback, whose `0x26` names an
+/// IPv6 one.
+#[derive(Clone)]
+pub(crate) struct DialBackRegistry<K: Eq + Hash = Ipv4Endpoint> {
+    engaged: Arc<Mutex<HashSet<K>>>,
 }
 
-impl DialBackRegistry {
+impl<K: Eq + Hash> Default for DialBackRegistry<K> {
+    fn default() -> Self {
+        Self {
+            engaged: Arc::default(),
+        }
+    }
+}
+
+impl<K: Eq + Hash + Copy> DialBackRegistry<K> {
     /// Snapshot the engaged endpoints — the broker's `busy` guard feed.
-    pub(crate) fn engaged(&self) -> HashSet<Ipv4Endpoint> {
+    pub(crate) fn engaged(&self) -> HashSet<K> {
         self.engaged
             .lock()
             .expect("dial-back registry lock")
@@ -253,25 +268,25 @@ impl DialBackRegistry {
     /// is already engaged or the concurrent budget
     /// ([`MAX_CONCURRENT_DIAL_BACKS`]) is spent — the caller then refuses
     /// silently, exactly like a broker guard.
-    pub(crate) fn begin(&self, requester: Ipv4Endpoint) -> Option<DialBackTicket> {
+    pub(crate) fn begin(&self, requester: K) -> Option<DialBackTicket<K>> {
         let mut engaged = self.engaged.lock().expect("dial-back registry lock");
         if engaged.len() >= MAX_CONCURRENT_DIAL_BACKS || !engaged.insert(requester) {
             return None;
         }
         Some(DialBackTicket {
-            engaged: std::sync::Arc::clone(&self.engaged),
+            engaged: Arc::clone(&self.engaged),
             requester,
         })
     }
 }
 
 /// One claimed dial-back enactment; dropping it retires the engagement.
-pub(crate) struct DialBackTicket {
-    engaged: std::sync::Arc<std::sync::Mutex<HashSet<Ipv4Endpoint>>>,
-    requester: Ipv4Endpoint,
+pub(crate) struct DialBackTicket<K: Eq + Hash = Ipv4Endpoint> {
+    engaged: Arc<Mutex<HashSet<K>>>,
+    requester: K,
 }
 
-impl Drop for DialBackTicket {
+impl<K: Eq + Hash> Drop for DialBackTicket<K> {
     fn drop(&mut self) {
         self.engaged
             .lock()

@@ -2,7 +2,8 @@
 //! source lookups, announce, search, Low-ID callback relay, disconnect — down
 //! the one logged-in server link, routes the server's answers back (lookups
 //! demuxed by file hash, a search answer by its place on the link, welcome-burst
-//! facts and IDCHANGE republishes into their sinks), and on any link close
+//! facts and IDCHANGE republishes into their sinks, a relayed peer callback to
+//! its dial-back), and on any link close
 //! fails every parked request so no activity hangs on a session that will
 //! never answer. The link is a trait so the loop is tested sans-I/O over a
 //! fake; the cheap-`Clone` handle is what the slot stores and adapters share.
@@ -17,13 +18,14 @@ use rmule_ed2k::{
 };
 use rmule_net::ed2k::Connection as Ed2kConnection;
 use rmule_primitives::{
-    ClientId, FileHash, SearchQuery, ServerEndpoint, SourceLookupTarget, SourceSighting,
+    ClientId, FileHash, Informant, SearchQuery, ServerEndpoint, SourceLookupTarget, SourceSighting,
 };
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::adapters::SourceLookupOutcome;
+use crate::firewalled::server_callback::ServerCallbackConsume;
 use crate::own_identity::SharedOwnIdentity;
-use crate::reachability::SharedIpv6Probe;
+use crate::reachability::{OwnListenEndpoint, SharedIpv6Probe};
 use crate::search::LiveSearches;
 use crate::server_list::ServerFacts;
 use crate::service::SearchId;
@@ -425,6 +427,12 @@ pub(crate) struct SessionSinks {
     /// Self Reach, where an offer reads the Presented Client ID it carries at
     /// the moment it is sent. `None` presents the session's own id.
     pub(crate) reach: Option<crate::reachability::SharedSelfReach>,
+    /// Where a server-relayed callback is answered (ADR-0061): a dial-back
+    /// into the serve pipeline while this session is Low-ID.
+    pub(crate) dial_backs: super::ServerCallbackDialBacks,
+    /// The TCP port the login named, as configured: the self-connect guard
+    /// reads the port we present from it at each callback.
+    pub(crate) tcp_port: u16,
 }
 
 /// Namespace for the session spawner. The session itself is the spawned task.
@@ -449,7 +457,9 @@ impl ServerSession {
             requests: request_tx.downgrade(),
             id,
         };
-        tokio::spawn(run_session(link, request_rx, sinks, grants_tx, own_link));
+        tokio::spawn(run_session(
+            link, client_id, request_rx, sinks, grants_tx, own_link,
+        ));
         ServerSessionHandle {
             request_tx,
             client_id,
@@ -466,6 +476,7 @@ impl ServerSession {
 /// answer). Ends when the link closes or all handles are dropped.
 async fn run_session<L: ServerLink>(
     mut link: L,
+    mut session_id: ClientId,
     mut request_rx: mpsc::Receiver<ServerRequest>,
     sinks: SessionSinks,
     grants_tx: watch::Sender<ServerGrants>,
@@ -481,6 +492,8 @@ async fn run_session<L: ServerLink>(
         punch,
         grants,
         reach,
+        dial_backs,
+        tcp_port,
     } = sinks;
     // Every waiter on one file's ask, keyed by the hash `OP_FOUNDSOURCES`
     // carries back (ADR-0107): lookups for different files ride the link side
@@ -719,6 +732,7 @@ async fn run_session<L: ServerLink>(
                             server_ip,
                         );
                         own.reassign_client_id(client_id);
+                        session_id = client_id;
                         let assignment = crate::service::IdAssignment { client_id, address, grants };
                         let step = crate::service::LoginStep::Reassigned { assignment };
                         facts.login_step(&server, step).await;
@@ -790,20 +804,23 @@ async fn run_session<L: ServerLink>(
                             tracing::warn!(%error, "server ident not folded into the list");
                         }
                     }
-                    // A peer asking us, through the server, to dial it back
-                    // (`0x35`, or `0x26` for an IPv6 requester — ADR-0087
-                    // §4.5). Both families project onto this one event and
-                    // both are currently **unadopted**, which is a gap worth
-                    // naming rather than a silent drop: the opcode names a
-                    // peer but no file hash, so there is no download to attach
-                    // the dial to without a policy for offering one peer to
-                    // every active download. rmule is High-ID in the ordinary
-                    // case and rarely receives either.
-                    Some(Ed2kEvent::PeerCallbackRequested { peer, .. }) => {
-                        tracing::debug!(
-                            %peer,
-                            "server relayed a peer callback; rmule adopts none yet"
+                    // A peer on the server asking to reach us (`0x35`, or
+                    // `0x26` for an IPv6 requester — ADR-0087 §4.5): it wants
+                    // to download from us, so a Low-ID session dials it back
+                    // into the serve pipeline (ADR-0061). The requester is the
+                    // server's word, judged against the address the session
+                    // reached (ADR-0085).
+                    Some(Ed2kEvent::PeerCallbackRequested { peer, crypt }) => {
+                        let verdict = dial_backs.answer(
+                            &ServerCallbackConsume { requester: peer, crypt },
+                            session_id,
+                            server_ip.map_or(Informant::Own, Informant::Party),
+                            OwnListenEndpoint::current(
+                                &own,
+                                super::presented_tcp_port(tcp_port, &own),
+                            ),
                         );
+                        tracing::debug!(%peer, ?verdict, "server relayed a peer callback");
                     }
                     // Informational server events are not part of any request.
                     Some(_) => {}
