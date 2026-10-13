@@ -33,7 +33,7 @@ mod udp_ports_advert;
 mod udp_transport;
 
 pub use kad_runtime::{
-    ClientUdpBind, KadCells, KadEnableConfig, KadNodeIdentity, KadRuntimeFactory,
+    ClientUdpBind, KadCells, KadEnableConfig, KadNodeIdentity, KadPumpStandIn, KadRuntimeFactory,
     KadShutdownHandle, KadShutdownSlot, KadSourceChannel, RuntimeKadChannel, RuntimeKadFactory,
 };
 pub use peer_transfer::{

@@ -496,6 +496,32 @@ async fn a_buddy_callback_that_cannot_leave_retires_its_road_at_once() {
     );
 }
 
+/// A running node whose pump refuses the ask — its task gone, or its inbox
+/// full — sends no `0x52` and starts no walk, so the road ends at once as one
+/// that never left, for the known endpoint and the ID-only buddy alike.
+#[tokio::test]
+async fn a_buddy_callback_the_pump_refuses_retires_its_road_at_once() {
+    let mut rig = Rig::new();
+    // The pump's task is gone: its inbox has no reader.
+    drop(std::mem::replace(&mut rig.kad, mpsc::channel(1).1));
+    for peer in [punchable(), id_only_buddy()] {
+        let (ask, mut retire_rx) = pending(DownloadAsk::BuddyCallback {
+            file_hash: file_hash(),
+        });
+        assert_eq!(
+            rig.reacher.reach(&peer, Some(ask.clone())).await,
+            PeerReachRoute::Buddy {
+                buddy_id: buddy_id(),
+                emitted_to: None,
+            }
+        );
+        assert_eq!(
+            retire_rx.try_recv(),
+            Ok((ask.key, NattRetirement::CallbackNotSent))
+        );
+    }
+}
+
 /// The fallback seam: a callback twelve seconds silent, with no server that
 /// speaks the punch, falls to the candidate's own buddy — and what reaches
 /// the NAT-T Front is one traversal naming that buddy, owned by an attempt

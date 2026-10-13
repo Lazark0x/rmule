@@ -134,9 +134,9 @@ mod upload_queue;
 
 pub use adapters::{
     AnnounceOutcome, ClientUdpBind, DownloadedPart, KadCells, KadEnableConfig, KadNodeIdentity,
-    KadRuntimeFactory, KadShutdownHandle, KadShutdownSlot, KadSourceChannel, PeerDownloadOutcome,
-    PeerTransferService, PeerWorker, PeerWorkerCommand, PeerWorkerEvent, RuntimeKadChannel,
-    RuntimeKadFactory, RuntimePeerTransferService, RuntimeServeRuntimeService,
+    KadPumpStandIn, KadRuntimeFactory, KadShutdownHandle, KadShutdownSlot, KadSourceChannel,
+    PeerDownloadOutcome, PeerTransferService, PeerWorker, PeerWorkerCommand, PeerWorkerEvent,
+    RuntimeKadChannel, RuntimeKadFactory, RuntimePeerTransferService, RuntimeServeRuntimeService,
     RuntimeSourceLookupService, ServeConnection, ServeInput, ServeOutput, ServeRuntimeService,
     SourceLookupOutcome, SourceLookupService, WorkerBrief,
 };

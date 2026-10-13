@@ -5,7 +5,7 @@
 mod callback_walk;
 mod cells;
 pub(crate) use callback_walk::{CallbackWalkAsk, CallbackWalkReply, request_kad_callback_walk};
-pub use cells::KadCells;
+pub use cells::{KadCells, KadPumpStandIn};
 mod handoff;
 mod node;
 mod presence;
@@ -630,6 +630,19 @@ pub(crate) struct BuddyCallbackAsk {
     pub(crate) file_hash: rmule_primitives::FileHash,
     /// Where the target must dial us — our advertised TCP port.
     pub(crate) tcp_port: u16,
+}
+
+impl BuddyCallbackAsk {
+    /// The command a running node is handed for this ask: the `0x52` to the
+    /// buddy.
+    pub(crate) fn node_command(&self) -> rmule_kad::KadCommand {
+        rmule_kad::KadCommand::RequestBuddyCallback {
+            buddy: rmule_kad::KadNodeEndpoint::new(self.buddy_udp.ip, self.buddy_udp.port),
+            buddy_id: self.buddy_id,
+            file_hash: self.file_hash,
+            tcp_port: self.tcp_port,
+        }
+    }
 }
 
 /// Hand one buddy callback to the running node, reporting whether a node was

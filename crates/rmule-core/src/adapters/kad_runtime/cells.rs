@@ -80,4 +80,41 @@ impl KadCells {
     pub(crate) fn detached() -> Self {
         Self::new(AdapterCells::detached())
     }
+
+    /// Stand in for a running node's pump, for a factory that runs no node of
+    /// its own: while the stand-in lives, the core's asks of a pump are taken
+    /// as a running node takes them, and a buddy callback or a Callback Walk
+    /// is handed over as the [`KadCommand`](rmule_kad::KadCommand) the pump
+    /// would give its node. Without one, such a factory's node refuses every
+    /// ask, and a download's buddy-callback road ends unsent.
+    #[must_use = "dropping the stand-in empties the pump's mailbox again"]
+    pub fn stand_in_pump(&self) -> KadPumpStandIn {
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        KadPumpStandIn {
+            _lease: self.adapters.kad_pump.install(tx),
+            asks: rx,
+        }
+    }
+}
+
+/// A test factory's pump ([`KadCells::stand_in_pump`]): it takes every ask
+/// the core puts to a running node's pump.
+pub struct KadPumpStandIn {
+    _lease: crate::mailbox::Lease<super::KadPumpCommand>,
+    asks: tokio::sync::mpsc::Receiver<super::KadPumpCommand>,
+}
+
+impl KadPumpStandIn {
+    /// The next buddy callback or Callback Walk the core asked for, as the
+    /// node command the pump would hand its node; every other ask is taken
+    /// and dropped. `None` once the core is gone.
+    pub async fn next_callback(&mut self) -> Option<rmule_kad::KadCommand> {
+        loop {
+            match self.asks.recv().await? {
+                super::KadPumpCommand::BuddyCallback(ask) => return Some(ask.node_command()),
+                super::KadPumpCommand::CallbackWalk(ask) => return Some(ask.node_command()),
+                _ => {}
+            }
+        }
+    }
 }
