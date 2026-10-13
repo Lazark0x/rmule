@@ -53,6 +53,10 @@ fn run_skipped(args: &[&str], verdict_file: &str, contexts: &[(&str, String)]) -
     (std::fs::read_to_string(&docker_log).unwrap(), verdict)
 }
 
+/// One skipping flow: its argv, its verdict file, the doctor's image and the
+/// build contexts it needs.
+type SkippedCase<'a> = (&'a [&'a str], &'a str, &'a str, Vec<(&'a str, String)>);
+
 /// A run the host cannot carry is written down as skipped after the doctor's own
 /// image alone: no `natprobe`, no capture, no compile of `rmule-tools` (no
 /// prebuild container, no driver image), and no counterparty.
@@ -67,7 +71,7 @@ fn a_skipped_nat_run_builds_only_the_doctors_image() {
         ("--natgw-build-context", natgw.clone()),
         ("--natprobe-build-context", natprobe.clone()),
     ];
-    let cases: [(&[&str], &str, &str, Vec<(&str, String)>); 3] = [
+    let cases: [SkippedCase; 3] = [
         (
             &["natgw-selfproof"],
             "natgw-selfproof-verdict.toml",

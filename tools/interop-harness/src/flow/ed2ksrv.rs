@@ -58,7 +58,7 @@ fn commit() -> &'static str {
 /// (`images/ed2ksrv`): from [`SOURCE_ENV`]'s clone when set, else from a fresh
 /// clone of the pinned repository checked out at the pinned commit under
 /// `scratch`, removed once the build ends. `build.sh` verifies the clone
-/// against the pin and stamps the labels [`Ed2ksrvImage::check`] reads; it
+/// against the pin and stamps the labels [`Counterparty::check`] reads; it
 /// calls `docker` itself, whatever `--container-runtime` names.
 ///
 /// # Errors
