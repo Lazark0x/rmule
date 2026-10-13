@@ -445,4 +445,32 @@ mod tests {
             );
         });
     }
+
+    /// Tab to the last field of a form taller than the frame keeps that
+    /// field, and the legend under it, on screen; `Home` reaches the top.
+    #[test]
+    fn golden_networks_add_form_scrolls_in_a_short_frame() {
+        let state = listed_servers();
+        let mut view = NetworksView::new();
+        view.handle_key(press(KeyCode::Char('a')), &state);
+        let now = Instant::now();
+        let shown = |view: &mut NetworksView| {
+            crate::golden::render_to_lines(70, 6, |frame| {
+                let area = frame.area();
+                view.draw(frame, area, &state, &Theme::default_dark(), now);
+            })
+        };
+        assert_golden("networks_add_form_short", 70, 6, |frame| {
+            let area = frame.area();
+            view.draw(frame, area, &state, &Theme::default_dark(), now);
+        });
+        view.handle_key(press(KeyCode::Tab), &state);
+        let last = shown(&mut view);
+        assert!(
+            last.contains("Port") && last.contains("Esc cancel"),
+            "{last}"
+        );
+        view.handle_key(press(KeyCode::Home), &state);
+        assert!(shown(&mut view).contains("Name"));
+    }
 }

@@ -252,4 +252,23 @@ mod tests {
             },
         );
     }
+
+    #[test]
+    fn golden_confirm_clear_completed_scrolls_in_a_short_frame() {
+        let mut view = TransfersView::new();
+        view.overlay = Overlay::ConfirmClearCompleted {
+            counted: vec![download_id(3)],
+        };
+        let state = three_downloads();
+        assert_golden("transfers_confirm_clear_short", 60, 5, |frame| {
+            let area = frame.area();
+            view.draw(frame, area, &state, &Theme::default_dark(), now());
+        });
+        view.handle_key(press(KeyCode::Char('G')), &state);
+        let end = crate::golden::render_to_lines(60, 5, |frame| {
+            let area = frame.area();
+            view.draw(frame, area, &state, &Theme::default_dark(), now());
+        });
+        assert!(end.contains("Esc abort"), "{end}");
+    }
 }

@@ -221,3 +221,18 @@ fn a_list_resting_on_its_end_keeps_it_in_view_until_scrolled_back() {
         "nothing above the first line"
     );
 }
+
+#[test]
+fn a_form_scrolled_by_hand_stays_until_its_focus_moves() {
+    let mut view = Viewport::default();
+    // Ten lines in a room of four, the focus on the first.
+    assert_eq!(view.follow_span(0..1, 10, 4, (0, 0)), 0);
+    view.hold(RowMove::Last);
+    assert_eq!(view.follow_span(0..1, 10, 4, (0, 0)), 6, "held at the end");
+    view.release();
+    assert_eq!(
+        view.follow_span(0..1, 10, 4, (0, 0)),
+        0,
+        "the focus pulls it back"
+    );
+}

@@ -140,4 +140,27 @@ mod tests {
             view.draw(frame, area, &state, &Theme::default_dark(), now());
         });
     }
+
+    /// In a frame too short for the question, `G` scrolls to the legend and
+    /// the bottom border says where the operator is.
+    #[test]
+    fn golden_confirm_cancel_scrolls_in_a_short_frame() {
+        let mut view = TransfersView::new();
+        view.overlay = Overlay::ConfirmCancel;
+        let state = three_downloads();
+        let shown = |view: &mut TransfersView| {
+            crate::golden::render_to_lines(60, 5, |frame| {
+                let area = frame.area();
+                view.draw(frame, area, &state, &Theme::default_dark(), now());
+            })
+        };
+        assert_golden("transfers_confirm_cancel_short", 60, 5, |frame| {
+            let area = frame.area();
+            view.draw(frame, area, &state, &Theme::default_dark(), now());
+        });
+        assert!(!shown(&mut view).contains("abort"));
+        view.handle_key(press(KeyCode::Char('G')), &state);
+        let end = shown(&mut view);
+        assert!(end.contains("Esc abort") && end.contains("4 / 4"), "{end}");
+    }
 }

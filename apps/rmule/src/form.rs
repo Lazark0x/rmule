@@ -395,7 +395,7 @@ impl Form {
         if focusable.next() == Some(self.focus) {
             focus.start = 0;
         }
-        if focusable.last().unwrap_or(self.focus) == self.focus {
+        if focusable.next_back().unwrap_or(self.focus) == self.focus {
             focus.end = rendered.lines.len();
         }
         (rendered.lines, focus)

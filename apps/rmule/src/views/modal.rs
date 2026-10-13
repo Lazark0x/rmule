@@ -19,7 +19,7 @@ use crate::table_sort::RowMove;
 use crate::theme::Theme;
 use crate::wrap::clamp_u16;
 
-/// One modal's frame, drawn by [`Modal::draw`].
+/// One modal's frame, drawn by [`Modal::draw_scrolled`].
 pub(crate) struct Modal {
     title: String,
     border: Style,

@@ -207,4 +207,37 @@ mod tests {
             Some(false)
         );
     }
+
+    #[test]
+    fn golden_the_question_scrolls_in_a_short_frame() {
+        let state = asked("/dl");
+        let mut view = SharedView::default();
+        let area = Rect::new(0, 0, 50, 5);
+        let shown = |view: &mut SharedView| {
+            crate::golden::render_to_lines(area.width, area.height, |frame| {
+                view.draw(
+                    frame,
+                    area,
+                    &state,
+                    &Theme::default_dark(),
+                    std::time::Instant::now(),
+                );
+            })
+        };
+        crate::golden::assert_golden("shared_consent_short", area.width, area.height, |frame| {
+            view.draw(
+                frame,
+                area,
+                &state,
+                &Theme::default_dark(),
+                std::time::Instant::now(),
+            );
+        });
+        view.handle_key(press(KeyCode::Char('G')), &state);
+        assert!(
+            shown(&mut view).contains("keep private"),
+            "{}",
+            shown(&mut view)
+        );
+    }
 }

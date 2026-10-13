@@ -64,6 +64,12 @@ are drawn from it; no view keeps a scroll offset or a count of its own.
   — and the last item on screen over the total in a list without, only while it
   overflows. The count gives way last: a gave-way note or a hint on the same border goes
   first. Its words are the words module's.
+- A modal too tall for the frame scrolls under a Viewport of its own, with the bar and
+  the count of a list: a confirm or the details by `j` / `k` / `g` / `G`; a form, whose
+  fields take those letters, by `PageUp` / `PageDown` / `Home` / `End`, and it follows
+  its focused field again as soon as a field takes a key. The first field answers for
+  the lines above it and the last for the lines under it, so a rejection and the key
+  legend come into view with the focus. A line wider than the modal wraps.
 - A strip with no border of its own carries the count at its own end: the held-search
   strip only while its `‹` `›` markers hide an entry, the Shared Files directory strip on
   its hint line.
