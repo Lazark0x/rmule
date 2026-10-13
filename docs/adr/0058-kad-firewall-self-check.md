@@ -71,9 +71,12 @@ socket-free.
   `0x50` gets its `0x58` and nothing more: rmule neither dials back nor sends the `0x59`
   aMule sends a requester below v7
   ([ClientList.cpp#L602](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/ClientList.cpp#L602)).
-- **Guards.** Self-connect, read against the live public IPv4 from Address Learning
-  (`OwnListenEndpoint`: the full endpoint once known, the port alone until then); a busy
-  client; and an IP rmule is itself checking.
+- **Guards.** Self-connect, read against the live public address from Address Learning
+  (`OwnListenEndpoint`): a requester is us only at our public address and our TCP port,
+  so with no public address known nothing matches, as aMule's
+  `theApp->GetPublicIP() == nContactIP && thePrefs::GetPort() == contact->GetTCPPort()` test
+  ([ClientList.cpp#L848](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/ClientList.cpp#L848));
+  a busy client; and an IP rmule is itself checking.
 - **The dial-back's crypt.** The `0x53`'s connect options and User Hash ride the chain to
   `DialBackVerdict::Dial` as the requester's `PeerCrypt`, and the dial meets our policy
   through `PeerCrypt::outbound` (ADR-0049). A `0x50` carries neither and is dialed

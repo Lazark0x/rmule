@@ -739,6 +739,10 @@ Low-ID source is callback-able only via the server that assigned its id, so the 
 covers connected-server sources only; a Low-ID source discovered over server UDP is not one.
 _Avoid_: reverse connect (that is the generic term; this is the eD2k server-relayed form), Kad callback (a different transport, parked)
 
+**Server Callback Dial-Back**:
+The other end of a **Low-ID Callback**: a Low-ID rmule whose server relays a peer's ask (`OP_CALLBACKREQUESTED` `0x35`, or `0x26` for an IPv6 peer) dials that peer and serves it over the link as an inbound peer (ADR-0061). It names no file and attaches to no download: the peer asks for its file once the link is up.
+_Avoid_: reverse callback, server callback (that is route 3, the requester's ask)
+
 **Adopted Inbound Worker**:
 A download worker built from a connection that *dialed in* (a callback'd Low-ID peer)
 rather than one rmule dialed out. The worker body is identical (ADR-0031's session is
