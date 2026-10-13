@@ -145,10 +145,14 @@ impl DurableDownloadRepository {
     }
 
     /// Every part path a download row names, with whether its download is
-    /// live (queued, active, paused or failed) — for the **Download Directory
-    /// Scan**, which skips rmule's own part files by these paths, not by a
-    /// suffix (ADR-0102, "Part files are known by their download rows"). A
-    /// part path a terminal row gave up to a new row is not listed.
+    /// live (queued, active, completing, paused or failed) — for the
+    /// **Download Directory Scan**, which skips rmule's own part files by
+    /// these paths, not by a suffix (ADR-0102, "Part files are known by their
+    /// download rows"). A completing row's destination is listed as live
+    /// beside its part path until the row is `Completed`: the move puts the
+    /// finished file there before its registry row is written, and the scan
+    /// never reads it first (ADR-0115). A part path a terminal row gave up to
+    /// a new row is not listed.
     ///
     /// # Errors
     /// [`CoreError::Repository`] when the store read fails.
@@ -157,9 +161,12 @@ impl DurableDownloadRepository {
             Ok(DOWNLOADS
                 .iter(txn)?
                 .into_iter()
-                .filter_map(|(_, row)| {
+                .flat_map(|(_, row)| {
                     let live = row.is_live();
-                    row.part_path.held_path().map(|path| (path.into(), live))
+                    let part = row.part_path.held_path().map(|path| (path.into(), live));
+                    let destination = (row.lifecycle == DownloadLifecycle::Completing)
+                        .then(|| (PathBuf::from(&row.final_path), true));
+                    part.into_iter().chain(destination)
                 })
                 .collect())
         })

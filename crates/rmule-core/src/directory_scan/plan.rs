@@ -176,6 +176,11 @@ pub(crate) fn plan(root: &Path, walked: Walked, known: &Known) -> Plan {
             continue;
         }
         if known.parts.live.contains(&file.path) {
+            // A download's own: its row, when the completion move has written
+            // one (ADR-0115), is neither trusted nor gone until the download
+            // is done with the path.
+            under.remove(file.path.as_path());
+            spares.remove(file.path.as_path());
             continue;
         }
         let spare = spares.remove(file.path.as_path());

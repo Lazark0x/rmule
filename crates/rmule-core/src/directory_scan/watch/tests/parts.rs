@@ -59,3 +59,37 @@ fn a_part_file_a_new_download_writes_is_never_hashed() {
     assert_eq!(shares[0].1.path, PathBuf::from("/dl/mine.part"));
     assert_eq!(harness.world.opens(), 1);
 }
+
+#[test]
+fn a_completing_downloads_copy_and_its_destination_are_never_hashed() {
+    let world = World::new();
+    let harness = Harness::new(world, Vec::new());
+    // The row is `Completing`: its destination is the download's own until
+    // the row is `Completed` (ADR-0115).
+    *harness.parts.borrow_mut() = PartFiles::of([(PathBuf::from("/dl/film.mkv"), true)]);
+    harness.run(
+        vec![
+            step(ms(1_000), |dir| {
+                dir.file("/dl/.film.mkv.completing", b"half the copy", 2);
+                vec![moved("/dl/.film.mkv.completing")]
+            }),
+            step(ms(2_000), |dir| {
+                dir.file("/dl/.film.mkv.completing", b"the whole copy", 3);
+                vec![moved("/dl/.film.mkv.completing")]
+            }),
+            step(ms(3_000), |dir| {
+                dir.rename("/dl/.film.mkv.completing", "/dl/film.mkv");
+                vec![moved("/dl/.film.mkv.completing"), moved("/dl/film.mkv")]
+            }),
+            // Events lost after the swap: the whole directory is examined.
+            step(ms(10_000), |_| vec![WatchSignal::Lost]),
+        ],
+        ms(20_000),
+    );
+    assert!(harness.shares().is_empty());
+    assert_eq!(
+        harness.world.opens(),
+        0,
+        "neither the copy nor the file is read"
+    );
+}

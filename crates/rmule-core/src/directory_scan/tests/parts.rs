@@ -68,3 +68,53 @@ fn a_cancelled_downloads_leftover_is_skipped_and_told() {
         )])]
     );
 }
+
+/// A pass while a completing download's file stands in place with its row
+/// written, and one after the row is `Completed` (ADR-0115): neither reads
+/// the file, the first leaves the row as it is, the second trusts it.
+#[test]
+fn a_completing_downloads_destination_is_left_with_its_row_then_trusted() {
+    use super::super::scripted::row;
+
+    let mut dir = Scripted::new();
+    let stamp = dir.file("/dl/film.mkv", b"the finished file", 4);
+    dir.file("/dl/.other.iso.completing", b"another download's copy", 4);
+    let rows = vec![row("/dl/film.mkv", stamp, 7)];
+    let pass = |parts: PartFiles| {
+        let progress: ProgressCell = Arc::new(Mutex::new(None));
+        let mut reports = Vec::new();
+        run_pass(
+            &dir,
+            Path::new(ROOT),
+            &Known {
+                rows: rows.clone(),
+                parts,
+                ..Known::default()
+            },
+            Consent::Given,
+            &AtomicBool::new(false),
+            &progress,
+            &mut Memory::default(),
+            &mut |report| reports.push(report),
+        );
+        reports
+    };
+
+    let completing = pass(PartFiles::of([(PathBuf::from("/dl/film.mkv"), true)]));
+    assert!(shared_paths(&completing).is_empty());
+    assert!(
+        !completing
+            .iter()
+            .any(|report| matches!(report, ScanReport::Gone { .. } | ScanReport::Unshare(_))),
+        "the row the move wrote is not taken for gone: {completing:?}"
+    );
+    let completed = pass(PartFiles::default());
+    assert!(shared_paths(&completed).is_empty(), "the row is trusted");
+    assert!(
+        !completed
+            .iter()
+            .any(|report| matches!(report, ScanReport::Gone { .. } | ScanReport::Unshare(_))),
+        "{completed:?}"
+    );
+    assert_eq!(dir.opens(), 0);
+}

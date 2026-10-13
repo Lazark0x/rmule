@@ -205,6 +205,37 @@ fn lifecycle_allows_pause_resume_and_completion_path() {
     );
 }
 
+/// A completing row stores its destination with its lifecycle, and names it
+/// beside its part file as the download's own until it is completed: the
+/// scan never reads the file the move puts there first (ADR-0115).
+#[test]
+fn a_completing_row_names_its_destination_as_its_own_until_it_completes() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repository(dir.path());
+    let created = create(&repo, dir.path(), "download.bin");
+    let part = created.paths().part_path().to_path_buf();
+    repo.set_lifecycle(created.id(), DownloadLifecycle::Active)
+        .unwrap();
+    let destination = dir.path().join("download (1).bin");
+
+    repo.set_completing(created.id(), &destination).unwrap();
+
+    let record = repo.load_download(created.id()).unwrap();
+    assert_eq!(record.lifecycle(), DownloadLifecycle::Completing);
+    assert_eq!(record.paths().final_path(), destination);
+    let mut parts = repo.part_files().unwrap();
+    parts.sort();
+    assert_eq!(parts, vec![(destination, true), (part.clone(), true)]);
+
+    repo.set_lifecycle(created.id(), DownloadLifecycle::Completed)
+        .unwrap();
+    assert_eq!(repo.part_files().unwrap(), vec![(part, false)]);
+    assert_eq!(
+        repo.set_completing(created.id(), dir.path()).unwrap_err(),
+        CoreError::InvalidLifecycleTransition
+    );
+}
+
 /// Every completion goes through `Completing`, which names the destination
 /// before anything moves (ADR-0115).
 #[test]

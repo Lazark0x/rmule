@@ -85,8 +85,10 @@ pub(crate) struct SetAside {
 /// rmule's own work. A file that merely ends `.part` is not among them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PartFiles {
-    /// The part paths of queued, active, paused and failed downloads: work in
-    /// progress, skipped silently.
+    /// The part paths of queued, active, completing, paused and failed
+    /// downloads, and a completing one's destination (ADR-0115): work in
+    /// progress, skipped silently, and a registry row standing on one is left
+    /// as it is.
     pub(crate) live: HashSet<PathBuf>,
     /// The part paths of cancelled and completed downloads: a file still
     /// there is a leftover, skipped, and the operator is told.
