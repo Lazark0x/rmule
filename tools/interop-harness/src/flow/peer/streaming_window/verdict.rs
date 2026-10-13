@@ -18,7 +18,7 @@ use rmule_primitives::{ED2K_PART_SIZE, part_count};
 use serde::{Deserialize, Serialize};
 
 use super::ROOT_DIR;
-use super::prefix::{Measurement, measure};
+use super::prefix::{Measurement, measure, traced_verifies};
 use super::replay::{Pick, Replay, Topology, parse_log, replay};
 use super::wire::{StatusForm, Wire, read};
 use crate::flow::identity::ParseHex16;
@@ -138,7 +138,12 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
     );
     let claims = claims(&topology, &wire, &advertised, &run);
     let (verdict, detail) = label(&claims);
-    let (measurement, series) = measure(&run, topology.file_size);
+    let trace = fs::read_to_string(run_dir.join("rmule/stderr.log")).unwrap_or_default();
+    let (measurement, series) = measure(
+        &run,
+        &traced_verifies(&trace, DOWNLOAD_ID),
+        topology.file_size,
+    );
     let series_path = root.join("prefix-series.tsv");
     fs::write(&series_path, series).with_context(|| format!("write {}", series_path.display()))?;
 
