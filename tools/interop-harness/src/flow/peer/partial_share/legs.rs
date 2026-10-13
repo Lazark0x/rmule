@@ -10,6 +10,7 @@
 
 use rmule_primitives::ED2K_PART_SIZE;
 
+use crate::flow::bench::AMULE_PEER_TCP_PORT;
 use crate::rmule::RMULE_SERVE_TCP_PORT;
 
 /// Where the rmule and stimulus containers mount the run dir.
@@ -54,6 +55,8 @@ pub(crate) struct Legs<'a> {
     pub(crate) whole_after_pause: bool,
     /// rmule's upload slots; `None` keeps the core's.
     pub(crate) upload_slots: Option<usize>,
+    /// rmule's peer workers per download; `None` keeps the core's.
+    pub(crate) peer_concurrency: Option<usize>,
     /// Watch the pause gate.
     pub(crate) pause: bool,
     /// Run a second leg, `download reopen`, once the first ends.
@@ -67,6 +70,11 @@ pub(crate) struct Legs<'a> {
     /// own download cap reacts only after a burst, and a part crosses the
     /// bridge in half a second.
     pub(crate) shaped: Option<(std::net::Ipv4Addr, u32)>,
+    /// Drop rmule's dials to these addresses' peer port, so its download
+    /// never opens a second link to a downloader it is uploading to: stock
+    /// aMule closes the first link when a second says the same hello
+    /// (`ClientList.cpp:395-401`), which ends the upload under test.
+    pub(crate) undialled: Vec<std::net::Ipv4Addr>,
 }
 
 impl Legs<'_> {
@@ -124,6 +132,9 @@ impl Legs<'_> {
         if self.pause {
             args.extend(["--pause-gate".to_owned(), self.at(PAUSE_GATE)]);
         }
+        if let Some(workers) = self.peer_concurrency {
+            args.extend(["--peer-concurrency".to_owned(), workers.to_string()]);
+        }
         if let Some(whole) = self.whole_path() {
             let flag = if self.pause && self.whole_after_pause {
                 "--share-after-pause"
@@ -158,10 +169,7 @@ impl Legs<'_> {
         if self.restart {
             legs.push(self.second());
         }
-        let mut text = String::new();
-        if let Some((address, kbit)) = self.shaped {
-            text.push_str(&shaping(address, kbit));
-        }
+        let mut text = link_conditions(self.shaped, &self.undialled);
         text.push_str(&script(&self.at(START_GATE), &legs));
         text
     }
@@ -189,17 +197,45 @@ pub(crate) fn script(gate: &str, legs: &[Vec<String>]) -> String {
     text
 }
 
-/// The `tc` lines that hold rmule's egress to `address` at `kbit`: a
-/// `prio` root whose third band a token bucket drains, and a filter sending
-/// that one address there; every other destination keeps its pace. A network
-/// condition on rmule's own link, not a change to either body.
-pub(crate) fn shaping(address: std::net::Ipv4Addr, kbit: u32) -> String {
+/// The `tc` lines that set rmule's own link: a `prio` root; a drop filter
+/// for each of `undialled`'s peer port (a dial there dies unanswered); and,
+/// for `shaped`, a token bucket draining the third band and a filter sending
+/// that one address there, every other destination keeping its pace. A
+/// network condition on rmule's own link, not a change to either body.
+pub(crate) fn link_conditions(
+    shaped: Option<(std::net::Ipv4Addr, u32)>,
+    undialled: &[std::net::Ipv4Addr],
+) -> String {
+    if shaped.is_none() && undialled.is_empty() {
+        return String::new();
+    }
+    let mut lines = vec!["tc qdisc add dev eth0 root handle 1: prio".to_owned()];
+    for address in undialled {
+        lines.push(format!(
+            "tc filter add dev eth0 parent 1: protocol ip prio 1 u32 match ip dst {address}/32 \
+             match ip dport {AMULE_PEER_TCP_PORT} 0xffff action drop"
+        ));
+    }
+    if let Some((address, kbit)) = shaped {
+        lines.push(format!(
+            "tc qdisc add dev eth0 parent 1:3 handle 30: tbf rate {kbit}kbit burst 16kb latency 1s"
+        ));
+        lines.push(format!(
+            "tc filter add dev eth0 parent 1: protocol ip prio 2 u32 match ip dst {address}/32 flowid 1:3"
+        ));
+    }
+    let listed: Vec<String> = undialled.iter().map(ToString::to_string).collect();
+    lines.push(format!(
+        "echo \"rmule-link-conditions shaped={} undialled={}\"",
+        shaped.map_or_else(
+            || "none".to_owned(),
+            |(address, kbit)| format!("{address}@{kbit}kbit")
+        ),
+        listed.join(",")
+    ));
     format!(
-        "tc qdisc add dev eth0 root handle 1: prio && \
-         tc qdisc add dev eth0 parent 1:3 handle 30: tbf rate {kbit}kbit burst 16kb latency 1s && \
-         tc filter add dev eth0 parent 1: protocol ip prio 1 u32 match ip dst {address}/32 flowid 1:3 && \
-         echo \"rmule-link-shaped dst={address} kbit={kbit}\" || \
-         {{ echo \"rmule-link-shaping-failed dst={address}\" >&2; exit 1; }}\n"
+        "{} || {{ echo \"rmule-link-conditions-failed\" >&2; exit 1; }}\n",
+        lines.join(" && ")
     )
 }
 

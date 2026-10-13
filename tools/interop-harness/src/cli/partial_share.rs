@@ -80,6 +80,15 @@ pub(crate) struct PeerPartialShareArgs {
     /// last part well past the download's completion.
     #[arg(long, default_value_t = 64)]
     pub(crate) downloader_link_kbit: u32,
+    /// Let rmule's download dial the downloaders it serves. Unset, those
+    /// dials are dropped on rmule's link: rmule takes an asker for a source
+    /// and dials it on a second link, and stock aMule then closes the first
+    /// one, ending the upload the claims read.
+    #[arg(long)]
+    pub(crate) dial_downloaders: bool,
+    /// rmule's peer workers per download; unset keeps the core's.
+    #[arg(long)]
+    pub(crate) peer_concurrency: Option<usize>,
     /// Leave out the prober that asks before rmule holds a part.
     #[arg(long)]
     pub(crate) no_prober: bool,
@@ -137,6 +146,8 @@ struct ResolvedConfig {
     seed_max_upload_kib: Vec<u32>,
     downloader_max_download_kib: u32,
     downloader_link_kbit: u32,
+    dial_downloaders: bool,
+    peer_concurrency: Option<usize>,
     prober: bool,
     queued: bool,
     pause: bool,
@@ -184,6 +195,8 @@ pub(crate) fn peer_partial_share(args: PeerPartialShareArgs) -> Result<()> {
             seed_max_upload_kib: args.seed_max_upload_kib.clone(),
             downloader_max_download_kib: args.downloader_max_download_kib,
             downloader_link_kbit: args.downloader_link_kbit,
+            dial_downloaders: args.dial_downloaders,
+            peer_concurrency: args.peer_concurrency,
             prober: !args.no_prober,
             queued: args.queued,
             pause: args.pause,
@@ -224,6 +237,8 @@ pub(crate) fn peer_partial_share(args: PeerPartialShareArgs) -> Result<()> {
         seed_max_upload_kib: &args.seed_max_upload_kib,
         downloader_max_download_kib: args.downloader_max_download_kib,
         downloader_link_kbit: args.downloader_link_kbit,
+        dial_downloaders: args.dial_downloaders,
+        peer_concurrency: args.peer_concurrency,
         prober: !args.no_prober,
         queued: args.queued,
         pause: args.pause,

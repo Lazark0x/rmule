@@ -50,6 +50,7 @@ impl Fixture {
                     pause: false,
                     restart: false,
                     straddle: true,
+                    dial_downloaders: false,
                     downloader_image: String::new(),
                 },
             },

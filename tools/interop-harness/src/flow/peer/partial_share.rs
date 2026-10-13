@@ -114,6 +114,11 @@ pub struct PartialShareOptions<'a> {
     pub downloader_max_download_kib: u32,
     /// rmule's egress to the slot-holding downloader, kbit/s; `0` unshaped.
     pub downloader_link_kbit: u32,
+    /// Let rmule's download dial the downloaders it serves; unset, those
+    /// dials are dropped on rmule's link.
+    pub dial_downloaders: bool,
+    /// rmule's peer workers per download; `None` keeps the core's.
+    pub peer_concurrency: Option<usize>,
     /// Add the prober before rmule's first part.
     pub prober: bool,
     /// Give rmule one slot and queue a second downloader behind the first.
@@ -247,6 +252,7 @@ pub fn run_partial_share(options: PartialShareOptions<'_>) -> Result<()> {
             pause: options.pause,
             restart: options.restart,
             straddle: options.straddle,
+            dial_downloaders: options.dial_downloaders,
             downloader_image: options.downloader_image.to_owned(),
         },
     };
@@ -312,6 +318,7 @@ pub fn run_partial_share(options: PartialShareOptions<'_>) -> Result<()> {
             whole: whole.is_some().then_some(WHOLE_FILE_NAME),
             whole_after_pause: options.pause,
             upload_slots: options.queued.then_some(1),
+            peer_concurrency: options.peer_concurrency,
             pause: options.pause,
             restart: options.restart,
             hold_secs: 3 * 3600,
@@ -319,6 +326,11 @@ pub fn run_partial_share(options: PartialShareOptions<'_>) -> Result<()> {
             shaped: match options.downloader_link_kbit {
                 0 => None,
                 kbit => Some((drive::body_ip(&topology, DOWNLOADER)?, kbit)),
+            },
+            undialled: if options.dial_downloaders {
+                Vec::new()
+            } else {
+                topology.downloaders.iter().map(|body| body.ip).collect()
             },
         };
         let container = RunContainer::new(options.rmule_tools_image.to_owned())

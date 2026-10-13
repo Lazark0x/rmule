@@ -102,6 +102,9 @@ pub(crate) struct Knobs {
     pub(crate) pause: bool,
     pub(crate) restart: bool,
     pub(crate) straddle: bool,
+    /// Whether rmule's dials to the downloaders went through.
+    #[serde(default)]
+    pub(crate) dial_downloaders: bool,
     pub(crate) downloader_image: String,
 }
 
