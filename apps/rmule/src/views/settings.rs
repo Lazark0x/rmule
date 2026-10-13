@@ -54,6 +54,7 @@ use crate::config::{
     validate_nickname, validate_temp_dir,
 };
 use crate::form::{self, Field, Form, FormKey, validate_port, validate_url};
+use crate::row_selection::viewport::{self, Viewport};
 use crate::state::UiState;
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
@@ -188,15 +189,16 @@ fn connect_at_start_note(last: Option<&rmule_primitives::ServerEndpoint>) -> Str
 const DASH: &str = "—";
 
 /// The Settings view. Holds view state only (ADR-0069): the form's cursor and
-/// typing, whether a text field is open for editing, and the scroll offset.
+/// typing, whether a text field is open for editing, and its Viewport.
 /// Every *value* comes from [`UiState::preferences`].
 pub struct SettingsView {
     form: Form,
     /// `true` while a text field is open: the form owns every key, so a
     /// binding letter is a character and not a command.
     editing: bool,
-    /// First rendered display line, so a long form scrolls under a short pane.
-    offset: usize,
+    /// What part of the form is on screen, in display lines, so a long form
+    /// scrolls under a short pane.
+    viewport: Viewport,
     /// Field index behind each rendered display line, from the last draw — the
     /// map a click needs once a row can wrap to more than one line.
     line_rows: Vec<Option<usize>>,
@@ -219,7 +221,7 @@ impl Default for SettingsView {
         Self {
             form,
             editing: false,
-            offset: 0,
+            viewport: Viewport::default(),
             line_rows: Vec::new(),
             body: Rect::default(),
             warned_dir: None,
@@ -572,7 +574,7 @@ impl SettingsView {
         if self.editing || !crate::views::pane_hit(self.body, column, row) {
             return ViewOutcome::Ignored;
         }
-        let line = usize::from(row - self.body.y) + self.offset;
+        let line = usize::from(row - self.body.y) + self.viewport.first();
         if let Some(Some(index)) = self.line_rows.get(line)
             && self.form.fields[*index].focusable()
         {
@@ -621,49 +623,66 @@ impl SettingsView {
             return;
         }
 
-        let mut rendered = self
-            .form
-            .render(usize::from(inner.width), theme, self.editing);
-        self.line_rows = rendered.rows;
-
         // A rejection is pinned to the foot of the pane rather than left in
         // the scrolling flow: the form is taller than the pane it lives in, so
         // an inline error would routinely land below the fold — and a reason
         // the operator cannot see is the same as no reason at all.
-        let error: Vec<Line<'static>> = match rendered.error_at {
-            Some(at) => rendered.lines.split_off(at.saturating_add(1)),
-            None => Vec::new(),
+        let render = |width: u16| {
+            let mut rendered = self.form.render(usize::from(width), theme, self.editing);
+            let error: Vec<Line<'static>> = match rendered.error_at {
+                Some(at) => rendered.lines.split_off(at.saturating_add(1)),
+                None => Vec::new(),
+            };
+            if rendered.error_at.is_some() {
+                rendered.lines.pop(); // the blank line that separated it
+            }
+            (rendered, error)
         };
-        if rendered.error_at.is_some() {
-            rendered.lines.pop(); // the blank line that separated it
+        let room = |error: &[Line<'static>]| {
+            inner
+                .height
+                .saturating_sub(clamp_u16(error.len()).min(inner.height))
+        };
+        let (mut rendered, mut error) = render(inner.width);
+        let bar = rendered.lines.len() > usize::from(room(&error))
+            && usize::from(inner.width - viewport::BAR_W) >= form::MIN_WIDTH;
+        if bar {
+            (rendered, error) = render(inner.width - viewport::BAR_W);
         }
-        let error_h = error.len().min(usize::from(inner.height));
-        let height = usize::from(inner.height).saturating_sub(error_h);
+        self.line_rows = rendered.rows;
+        let error_h = clamp_u16(error.len()).min(inner.height);
+        let height = room(&error);
 
         // Keep the focused field on screen; a form taller than its pane
-        // scrolls rather than hiding the row the cursor is on.
-        if rendered.focus.start < self.offset {
-            self.offset = rendered.focus.start;
-        } else if rendered.focus.end > self.offset + height {
-            self.offset = rendered.focus.end.saturating_sub(height);
-        }
-        self.offset = self.offset.min(rendered.lines.len().saturating_sub(height));
+        // scrolls rather than hiding the row the cursor is on. The count
+        // says which row it is, of the rows the cursor can rest on.
+        let rows = self.form.fields.iter().filter(|field| field.focusable());
+        let row = self.form.fields[..self.form.focus.min(self.form.fields.len())]
+            .iter()
+            .filter(|field| field.focusable())
+            .count();
+        let first = self.viewport.follow_span(
+            rendered.focus,
+            rendered.lines.len(),
+            height,
+            (row, rows.count()),
+        );
 
         let visible: Vec<Line<'static>> = rendered
             .lines
             .into_iter()
-            .skip(self.offset)
-            .take(height)
+            .skip(first)
+            .take(usize::from(height))
             .collect();
-        let [body, foot] = Layout::vertical([
-            Constraint::Length(clamp_u16(height)),
-            Constraint::Length(clamp_u16(error_h)),
-        ])
-        .areas(inner);
-        frame.render_widget(Paragraph::new(visible), body);
+        let [body, foot] =
+            Layout::vertical([Constraint::Length(height), Constraint::Length(error_h)])
+                .areas(inner);
+        let (list, bar) = viewport::split(body, bar);
+        frame.render_widget(Paragraph::new(visible), list);
         if error_h > 0 {
             frame.render_widget(Paragraph::new(error), foot);
         }
+        self.viewport.draw(frame, area, bar, theme);
         if let Some(dir) = &self.removing {
             shared_dirs::draw_remove(frame, area, dir, state, theme);
         }

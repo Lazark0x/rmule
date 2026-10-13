@@ -1,16 +1,16 @@
 ┌ Settings ───────────────────────────────────────── j/k row  x stop sharing ┐
-│Paths                                                                       │
-│ Download dir unset — downloads have nowhere to land                        │
-│ Temp ┌ Stop sharing? ───────────────────────────────────────────────┐      │
-│ Data │ Stop sharing /srv/media? 1 file, 700.0 MB.                   │      │
-│      │                                                              │      │
-│Shared│ They leave the offer at once: servers and Kad stop hearing   │      │
-│ Share│ of them, and an upload in progress ends. The files stay on   │      │
-│      │ disk, and adding the directory again reads nothing.          │      │
-│ Share│                                                              │      │
-│ Share│ y stop sharing    n keep it                                  │      │
-│      └──────────────────────────────────────────────────────────────┘      │
-│Network                                                                     │
-│ Nickname     rmule  (on restart)                                           │
-│ eD2k port    4662  (on restart)                                            │
-└────────────────────────────────────────────────────────────────────────────┘
+│Paths                                                                      ▲│
+│ Download dir unset — downloads have nowhere to land                       █│
+│ Temp ┌ Stop sharing? ───────────────────────────────────────────────┐     █│
+│ Data │ Stop sharing /srv/media? 1 file, 700.0 MB.                   │     █│
+│      │                                                              │     █│
+│Shared│ They leave the offer at once: servers and Kad stop hearing   │     ║│
+│ Share│ of them, and an upload in progress ends. The files stay on   │     ║│
+│      │ disk, and adding the directory again reads nothing.          │     ║│
+│ Share│                                                              │     ║│
+│ Share│ y stop sharing    n keep it                                  │     ║│
+│      └──────────────────────────────────────────────────────────────┘     ║│
+│Network                                                                    ║│
+│ Nickname     rmule  (on restart)                                          ║│
+│ eD2k port    4662  (on restart)                                           ▼│
+└──────────────────────────────────────────────────────────────────── 4 / 21 ┘

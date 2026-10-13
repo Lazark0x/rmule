@@ -1,8 +1,8 @@
 ┌ Settings ──────────────────────────────────── j/k row  ←→ step  Enter edit ┐
-│ Dead after   3  failed tries in a row; a dead server stays listed          │
-│ Hide shares  off  from servers that answer related searches                │
-│                                                                            │
-│Downloads                                                                   │
-│ Remember peers 10  per download, dialled first after a restart             │
-│ Player       unset — Preview opens the default app                         │
-└────────────────────────────────────────────────────────────────────────────┘
+│ Dead after   3  failed tries in a row; a dead server stays listed         ▲│
+│ Hide shares  off  from servers that answer related searches               ║│
+│                                                                           ║│
+│Downloads                                                                  █│
+│ Remember peers 10  per download, dialled first after a restart            ║│
+│ Player       unset — Preview opens the default app                        ▼│
+└─────────────────────────────────────────────────────────────────── 15 / 19 ┘
