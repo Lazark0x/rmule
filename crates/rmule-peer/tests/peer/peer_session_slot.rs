@@ -1,17 +1,22 @@
-//! The upload slot a requester chases: the probe and hash-set gates
-//! `RequestParts` auto-issues, the single-active-slot rule, queue rank
-//! progress, and the cancel/release paths that hand the slot back.
+//! The upload slot a requester chases: the probe gate `RequestParts`
+//! auto-issues, the slot and hash-set asks the download makes on its own
+//! (ADR-0026), the single-active-slot rule, queue rank progress, and the
+//! cancel/release paths that hand the slot back.
 
 use rmule_peer::{
     FileProbeStatus, NoticeEvent, PartRanges, PeerCommand, PeerError, PeerEvent, RequesterCommand,
     RequesterEvent, SlotReleaseReason,
 };
 use rmule_primitives::session::drain;
-use rmule_primitives::{ED2K_PART_SIZE, Packet, PartHash};
+use rmule_primitives::{ED2K_PART_SIZE, FileHash, Packet, PartHash};
 use rmule_testkit::peer_session::*;
 
+/// A multi-part `RequestParts` asks the probe, then the slot the moment the
+/// probe answers — no `OP_HASHSETREQUEST` in between: whether this link asks
+/// the set is the download's call (ADR-0026), and a link whose download holds
+/// it already never waits for its own answer.
 #[test]
-fn request_parts_auto_issues_probe_and_hashset_before_startuploadreq() {
+fn request_parts_asks_the_probe_then_the_slot_and_never_the_hash_set() {
     let h = file_hash(0xC1);
     let mut session = identified_session();
     let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
@@ -22,26 +27,105 @@ fn request_parts_auto_issues_probe_and_hashset_before_startuploadreq() {
     }));
     let immediate = drain(|| session.poll_output());
     let opcodes: Vec<u8> = writes(&immediate).iter().map(Packet::opcode).collect();
-    assert_eq!(
-        opcodes,
-        vec![0x58, 0x4F, 0x51],
-        "REQUESTFILENAME, SETREQFILEID, HASHSETREQUEST pipelined immediately"
-    );
+    assert_eq!(opcodes, vec![0x58, 0x4F], "REQUESTFILENAME, SETREQFILEID");
 
-    // Peer answers probe + status + hashset; only THEN does session send STARTUPLOADREQ.
     session.handle_bytes(&reqfilename_answer(h, "c.bin"));
     session.handle_bytes(&file_status(h, 2, &[0x01]));
     let after_probe = drain(|| session.poll_output());
-    assert!(
-        writes(&after_probe).is_empty(),
-        "no STARTUPLOADREQ until HASHSETANSWER arrives"
+    let opcodes: Vec<u8> = writes(&after_probe).iter().map(Packet::opcode).collect();
+    assert_eq!(opcodes, vec![0x54], "STARTUPLOADREQ at the probe's answer");
+}
+
+/// `h`'s connect-time file request, asked and answered with both parts of a
+/// two-part file.
+fn file_request_answered(session: &mut rmule_peer::PeerSession, h: FileHash, file_size: u64) {
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
+        file_hash: h,
+        file_size,
+        want_sources: false,
+        want_aich_root: false,
+        own_status: rmule_peer::PartBitmap::downloader_empty(file_size),
+    }));
+    session.handle_bytes(&reqfilename_answer(h, "c.bin"));
+    session.handle_bytes(&file_status(h, 2, &[0b11]));
+    let _ = drain(|| session.poll_output());
+}
+
+/// `AskSlot` puts `OP_STARTUPLOADREQ` on the wire at once, with no part asked
+/// and no hash set, and says so with `SlotAsked`; a second ask while queued
+/// sends nothing (ADR-0025, one ask per cycle).
+#[test]
+fn ask_slot_asks_once_with_no_part_and_no_hash_set() {
+    let h = file_hash(0xC5);
+    let mut session = identified_session();
+    file_request_answered(&mut session, h, ED2K_PART_SIZE + 1);
+
+    session.handle_command(PeerCommand::Requester(RequesterCommand::AskSlot {
+        file_hash: h,
+    }));
+    let out = drain(|| session.poll_output());
+    let opcodes: Vec<u8> = writes(&out).iter().map(Packet::opcode).collect();
+    assert_eq!(opcodes, vec![0x54]);
+    assert!(events(&out).iter().any(|e| matches!(
+        e,
+        PeerEvent::Requester(RequesterEvent::SlotAsked { file_hash }) if *file_hash == h
+    )));
+
+    session.handle_command(PeerCommand::Requester(RequesterCommand::AskSlot {
+        file_hash: h,
+    }));
+    assert!(writes(&drain(|| session.poll_output())).is_empty());
+
+    // The grant asks nothing by itself: the part is the download's to name.
+    session.handle_bytes(&acceptuploadreq());
+    let granted = drain(|| session.poll_output());
+    assert!(writes(&granted).is_empty(), "{granted:?}");
+    assert!(events(&granted).iter().any(|e| matches!(
+        e,
+        PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash }) if *file_hash == h
+    )));
+    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
+        file_hash: h,
+        file_size: ED2K_PART_SIZE + 1,
+        ranges,
+    }));
+    let opcodes: Vec<u8> = writes(&drain(|| session.poll_output()))
+        .iter()
+        .map(Packet::opcode)
+        .collect();
+    assert_eq!(
+        opcodes,
+        vec![0x47],
+        "the part goes out over the granted slot"
     );
+}
+
+/// `RequestHashSet` sends one `OP_HASHSETREQUEST` per file, and its answer
+/// moves no slot.
+#[test]
+fn request_hash_set_asks_once_and_moves_no_slot() {
+    let h = file_hash(0xC6);
+    let mut session = identified_session();
+    file_request_answered(&mut session, h, ED2K_PART_SIZE + 1);
+
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestHashSet {
+        file_hash: h,
+    }));
+    let opcodes: Vec<u8> = writes(&drain(|| session.poll_output()))
+        .iter()
+        .map(Packet::opcode)
+        .collect();
+    assert_eq!(opcodes, vec![0x51]);
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestHashSet {
+        file_hash: h,
+    }));
+    assert!(writes(&drain(|| session.poll_output())).is_empty());
 
     session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0xDD; 16])]));
-    let after_hashset = drain(|| session.poll_output());
-    let opcodes: Vec<u8> = writes(&after_hashset).iter().map(Packet::opcode).collect();
-    assert_eq!(opcodes, vec![0x54], "STARTUPLOADREQ now fires");
-    assert!(events(&after_hashset).iter().any(|e| matches!(
+    let answered = drain(|| session.poll_output());
+    assert!(writes(&answered).is_empty(), "no slot ask follows the set");
+    assert!(events(&answered).iter().any(|e| matches!(
         e,
         PeerEvent::Requester(RequesterEvent::HashSetReceived { file_hash, .. }) if *file_hash == h
     )));

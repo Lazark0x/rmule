@@ -56,8 +56,30 @@ pub enum RequesterCommand {
         /// source-exchange answer without one.
         own_status: PartBitmap,
     },
-    /// Request a specific set of part ranges. Auto-issues hash-set
-    /// request and slot acquisition if not already done for `file_hash`.
+    /// Ask the peer for an upload slot for `file_hash` (`OP_STARTUPLOADREQ`,
+    /// aMule `SendStartupLoadReq`): the flow takes the connection's slot
+    /// context and is queued, and `SlotAsked` says the ask left. The caller
+    /// sends it once the probe has answered, as aMule asks once a status names
+    /// a part it needs; the part itself is asked for at the grant, with
+    /// `RequestParts`. A flow already queued or granted is left alone, and a
+    /// flow whose slot was given back or released asks again; another file
+    /// holding the slot is `SlotBusy` (ADR-0025).
+    AskSlot {
+        /// The file the slot is for.
+        file_hash: FileHash,
+    },
+    /// Ask the peer for `file_hash`'s part hash set (`OP_HASHSETREQUEST`), once
+    /// per file on this connection; the answer arrives as `HashSetReceived`.
+    /// Nothing waits on it here: which link asks, and when its slot ask
+    /// follows, is the download's decision (ADR-0026).
+    RequestHashSet {
+        /// The file whose part hashes are wanted.
+        file_hash: FileHash,
+    },
+    /// Request a specific set of part ranges. Without a slot ask yet, this
+    /// asks the probe (when none was asked) and then the slot once the probe
+    /// answers; before the grant the ranges wait for it. It asks no hash set
+    /// ([`Self::RequestHashSet`] does).
     RequestParts {
         /// The file the ranges fall in.
         file_hash: FileHash,
@@ -133,6 +155,10 @@ impl PeerSession {
                 want_aich_root,
                 own_status,
             ),
+            RequesterCommand::AskSlot { file_hash } => self.handle_ask_slot(file_hash),
+            RequesterCommand::RequestHashSet { file_hash } => {
+                self.handle_request_hash_set(file_hash);
+            }
             RequesterCommand::RequestParts {
                 file_hash,
                 file_size,
@@ -159,9 +185,8 @@ impl PeerSession {
             RequesterCommand::CancelTransfer { file_hash } => {
                 if self.active_slot == Some(file_hash) {
                     self.write_packet(CancelTransfer.encode_packet());
-                    // Transition to standby (slot dropped, connection held) for
-                    // no-needed-parts emit, or teardown-emit path decides via
-                    // later Disconnect (ADR-0056).
+                    // The slot is given back and the connection held: a later
+                    // slot ask runs the cycle again (ADR-0056).
                     if let Some(flow) = self.per_file.get_mut(&file_hash) {
                         flow.slot = SlotState::Standby;
                         flow.pending_request = None;

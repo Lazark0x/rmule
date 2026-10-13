@@ -1,13 +1,13 @@
 //! The **Requester Capability**: the half of the connection that chases
 //! parts (ADR-0031).
 //!
-//! Probes a file, asks for its name, status and hash set, claims the one
-//! in-flight slot per connection (ADR-0025), and reassembles the blocks —
-//! plain and compressed — the peer sends back.
+//! Probes a file, asks for its name, status and — when told — its hash set,
+//! claims the one in-flight slot per connection (ADR-0025), and reassembles
+//! the blocks — plain and compressed — the peer sends back.
 
 use std::collections::HashMap;
 
-use rmule_primitives::{ED2K_PART_SIZE, Ed2kText, FileHash, part_count};
+use rmule_primitives::{Ed2kText, FileHash, part_count};
 
 use super::{FileProbeStatus, PeerError, PeerEvent, PeerSession, SlotReleaseReason, State};
 use crate::RequesterEvent;
@@ -87,11 +87,9 @@ pub(super) enum HashSetState {
     NotIssued,
     Pending,
     // The hashes themselves are emitted on the wire-event channel
-    // immediately; the session only needs to remember that they've
-    // arrived to decide whether to re-request on a subsequent
-    // RequestParts. Once a downstream consumer needs the cached
-    // hashes (e.g. for in-session verification, which ADR-0026
-    // forbids today), revive the Vec<PartHash> payload.
+    // immediately; the session only remembers that they arrived, so a
+    // repeated `RequestHashSet` asks nothing. Verification is core's
+    // (ADR-0026), so the hashes are not kept here.
     Cached,
 }
 
@@ -104,9 +102,9 @@ pub(super) enum SlotState {
     Queued,
     /// Slot granted; `OP_REQUESTPARTS` sent, awaiting part bytes.
     Downloading,
-    /// Slot held but no needed parts available; `OP_CANCELTRANSFER` sent
-    /// (ADR-0056). The connection stays open for re-ask when parts
-    /// become available.
+    /// The slot given back with `OP_CANCELTRANSFER` (ADR-0056), the
+    /// connection held; a later slot ask runs the cycle again from
+    /// `OP_STARTUPLOADREQ`.
     Standby,
     Released,
 }
@@ -493,7 +491,6 @@ impl PeerSession {
             Reject(&'static str),
             Send {
                 send_probe: bool,
-                send_hashset: bool,
                 send_start_upload: bool,
             },
         }
@@ -521,20 +518,12 @@ impl PeerSession {
                         complete: !multi_part,
                     };
                 }
-                let needs_hashset = file_size >= ED2K_PART_SIZE;
-                let send_hashset =
-                    needs_hashset && matches!(flow.hash_set, HashSetState::NotIssued);
-                if send_hashset {
-                    flow.hash_set = HashSetState::Pending;
-                } else if !needs_hashset && matches!(flow.hash_set, HashSetState::NotIssued) {
-                    flow.hash_set = HashSetState::Cached;
-                }
-                let probe_done = matches!(flow.probe, ProbeState::Available { .. });
-                let hashset_cached = matches!(flow.hash_set, HashSetState::Cached);
-                let send_start_upload = probe_done && hashset_cached;
+                // The slot ask follows the probe's answer and nothing else:
+                // a hash set is asked only when the caller says so
+                // (`RequestHashSet`, ADR-0026).
+                let send_start_upload = matches!(flow.probe, ProbeState::Available { .. });
                 NextAction::Send {
                     send_probe,
-                    send_hashset,
                     send_start_upload,
                 }
             }
@@ -545,7 +534,6 @@ impl PeerSession {
             }
             NextAction::Send {
                 send_probe,
-                send_hashset,
                 send_start_upload,
             } => {
                 self.active_slot = Some(file_hash);
@@ -564,14 +552,55 @@ impl PeerSession {
                         self.write_packet(SetReqFileId { file_hash }.encode_packet());
                     }
                 }
-                if send_hashset {
-                    self.write_packet(HashSetRequest { file_hash }.encode_packet());
-                }
                 if send_start_upload {
                     self.try_send_start_upload(file_hash);
                 }
             }
         }
+    }
+
+    /// `AskSlot`: take the connection's slot context for `file_hash` and ask
+    /// the peer for an upload slot, once per ask cycle — a flow already queued
+    /// or granted is left alone (ADR-0025).
+    pub(super) fn handle_ask_slot(&mut self, file_hash: FileHash) {
+        if !self.require_identified() {
+            return;
+        }
+        match self.active_slot {
+            Some(active) if active != file_hash => {
+                self.reject(PeerError::SlotBusy);
+                return;
+            }
+            _ => {}
+        }
+        let flow = self.per_file.entry(file_hash).or_default();
+        if matches!(flow.probe, ProbeState::NotAvailable) {
+            self.reject(PeerError::PeerProtocolViolation {
+                reason: "peer previously answered FILEREQANSNOFIL for this hash",
+            });
+            return;
+        }
+        if matches!(flow.slot, SlotState::Queued | SlotState::Downloading) {
+            return;
+        }
+        flow.slot = SlotState::Idle;
+        flow.last_rank = None;
+        self.active_slot = Some(file_hash);
+        self.try_send_start_upload(file_hash);
+    }
+
+    /// `RequestHashSet`: ask the peer for `file_hash`'s part hash set, once per
+    /// file on this connection. Its answer moves no slot (ADR-0026).
+    pub(super) fn handle_request_hash_set(&mut self, file_hash: FileHash) {
+        if !self.require_identified() {
+            return;
+        }
+        let flow = self.per_file.entry(file_hash).or_default();
+        if !matches!(flow.hash_set, HashSetState::NotIssued) {
+            return;
+        }
+        flow.hash_set = HashSetState::Pending;
+        self.write_packet(HashSetRequest { file_hash }.encode_packet());
     }
 
     // --- Wire-event handlers -----------------------------------
@@ -728,18 +757,15 @@ impl PeerSession {
     }
 
     /// State follow-up after the projection emits `HashSetReceived`: mark
-    /// the hash set cached and, if this file holds the active slot, advance
-    /// it toward `STARTUPLOADREQ`.
+    /// the hash set cached, so a later `RequestHashSet` asks nothing. No slot
+    /// waits on it (ADR-0026).
     pub(super) fn after_hash_set(&mut self, file_hash: FileHash) {
-        // Only cache a hash set we asked for — a planted answer must not
-        // create state or satisfy a later request's hash-set gate.
+        // Only a file this connection asked about keeps state — a planted
+        // answer must not create a flow.
         let Some(flow) = self.per_file.get_mut(&file_hash) else {
             return;
         };
         flow.hash_set = HashSetState::Cached;
-        if self.active_slot == Some(file_hash) {
-            self.advance_active_slot(file_hash);
-        }
     }
 
     pub(super) fn on_accept_upload(&mut self) {
@@ -874,18 +900,15 @@ impl PeerSession {
             }));
     }
 
+    /// After the probe answers for the file holding the active slot: a
+    /// `RequestParts` waiting on it asks the slot now.
     fn advance_active_slot(&mut self, file_hash: FileHash) {
-        // Called after probe completes or hash-set arrives for the
-        // file holding the active slot. Issues STARTUPLOADREQ when
-        // both probe + hash-set are ready and we haven't already.
         let flow = self
             .per_file
             .get(&file_hash)
             .expect("per_file entry must exist");
         let probe_done = matches!(flow.probe, ProbeState::Available { .. });
-        let hashset_done = matches!(flow.hash_set, HashSetState::Cached);
-        let slot_idle = matches!(flow.slot, SlotState::Idle);
-        if probe_done && hashset_done && slot_idle {
+        if probe_done && matches!(flow.slot, SlotState::Idle) {
             self.try_send_start_upload(file_hash);
         }
     }
