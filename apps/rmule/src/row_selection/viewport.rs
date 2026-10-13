@@ -16,7 +16,7 @@ use std::ops::Range;
 
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::Modifier;
+use ratatui::style::Style;
 use ratatui::symbols::bar;
 use ratatui::symbols::scrollbar::DOUBLE_VERTICAL;
 use ratatui::text::Span;
@@ -34,7 +34,7 @@ const EIGHTHS: u32 = 8;
 
 /// The blocks filling a cell's lower one to eight eighths. The upper-eighth
 /// blocks are not reliably in fonts, so a thumb's bottom edge is a lower
-/// block reversed.
+/// block in the track's colour on the thumb's.
 const LOWER: [&str; EIGHTHS as usize] = [
     bar::ONE_EIGHTH,
     bar::ONE_QUARTER,
@@ -49,16 +49,16 @@ const LOWER: [&str; EIGHTHS as usize] = [
 /// One cell of a scroll bar's track.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TrackCell {
-    /// Outside the thumb: the track's glyph.
+    /// Outside the thumb: the track.
     Rail,
-    /// The thumb's: `glyph` in the thumb's style, `reversed` at the thumb's
-    /// bottom edge, where the glyph is what lies below the thumb and the rest
-    /// of the cell the thumb.
+    /// The thumb's: `glyph` in the thumb's colour on the track's, or at the
+    /// thumb's bottom edge `below`, where the glyph is what lies under the
+    /// thumb, in the track's colour on the thumb's.
     Thumb {
         /// A lower block.
         glyph: &'static str,
-        /// Whether the thumb's style is reversed.
-        reversed: bool,
+        /// Whether this is the thumb's bottom edge.
+        below: bool,
     },
 }
 
@@ -69,9 +69,9 @@ impl TrackCell {
         // The thumb's share of the cell, in eighths down from its top.
         let from = thumb.start.clamp(top, top + EIGHTHS) - top;
         let to = thumb.end.clamp(top, top + EIGHTHS) - top;
-        let lower = |eighths: u32, reversed| Self::Thumb {
+        let lower = |eighths: u32, below| Self::Thumb {
             glyph: LOWER[(eighths - 1) as usize],
-            reversed,
+            below,
         };
         match (from, to) {
             _ if from >= to => Self::Rail,
@@ -362,30 +362,39 @@ impl Viewport {
     }
 
     /// The bar down `bar`, while the list overflows: `▲` and `▼` at its ends
-    /// once it is three cells tall, the thumb on the track between — its
-    /// edges in eighths of a cell while the theme gives it a colour of its
-    /// own.
+    /// once it is three cells tall, the thumb on the track between. While the
+    /// theme gives the thumb a colour of its own the track is a solid column
+    /// and the thumb's edges fall in eighths of a cell, each edge cell naming
+    /// both its colours; else whole cells, `█` on a `║` track.
     pub(crate) fn draw_bar(&self, frame: &mut Frame, bar: Rect, theme: &Theme) {
         if bar.width == 0 || bar.height == 0 {
             return;
         }
         let arrows = bar.height >= 3;
         let track = if arrows { bar.height - 2 } else { bar.height };
-        let Some(mut cells) = self.track(track, theme.thumb_in_eighths()) else {
+        let eighths = theme.thumb_in_eighths();
+        let Some(mut cells) = self.track(track, eighths) else {
             return;
         };
-        let rail = theme.dim_text();
-        let held = theme.thumb();
+        let (rail, held) = (theme.dim_text(), theme.thumb());
+        let column = theme.scroll_track();
+        let ends = if eighths { column } else { rail };
+        let (thumb, ground) = (theme.fg, theme.scroll_track);
         let buffer = frame.buffer_mut();
         for line in 0..bar.height {
-            let (symbol, style) = match (arrows, line) {
-                (true, 0) => (DOUBLE_VERTICAL.begin, rail),
-                (true, l) if l == bar.height - 1 => (DOUBLE_VERTICAL.end, rail),
+            let (symbol, style): (&str, Style) = match (arrows, line) {
+                (true, 0) => (DOUBLE_VERTICAL.begin, ends),
+                (true, l) if l == bar.height - 1 => (DOUBLE_VERTICAL.end, ends),
                 _ => match cells.next() {
-                    Some(TrackCell::Thumb { glyph, reversed }) if reversed => {
-                        (glyph, held.add_modifier(Modifier::REVERSED))
+                    Some(TrackCell::Thumb { glyph, .. }) if !eighths => (glyph, held),
+                    Some(TrackCell::Thumb { glyph, below: true }) => {
+                        (glyph, Style::new().fg(ground).bg(thumb))
                     }
-                    Some(TrackCell::Thumb { glyph, .. }) => (glyph, held),
+                    Some(TrackCell::Thumb {
+                        glyph,
+                        below: false,
+                    }) => (glyph, held.bg(ground)),
+                    Some(TrackCell::Rail) | None if eighths => (" ", column),
                     Some(TrackCell::Rail) | None => (DOUBLE_VERTICAL.track, rail),
                 },
             };

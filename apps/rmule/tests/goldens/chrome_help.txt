@@ -13,12 +13,12 @@
 │ /               Searches: focus query input                                 █│
 │ ← / →           Searches: pick method (input focused)                       █│
 │ o               Searches: type/size/sources/extension filters               █│
-│ x / n           Searches: stop or close a search / server's next page       ║│
-│ s / S           sort the focused table by next column / reverse             ║│
-│ a               Shared: filter / Networks: add server                       ║│
-│ U               Networks: update server list from URL                       ║│
-│ 5 / 6           Statistics (display-only) / Settings                        ║│
-│ Enter  ← / →    Settings: edit a field / step a selector                    ║│
+│ x / n           Searches: stop or close a search / server's next page        │
+│ s / S           sort the focused table by next column / reverse              │
+│ a               Shared: filter / Networks: add server                        │
+│ U               Networks: update server list from URL                        │
+│ 5 / 6           Statistics (display-only) / Settings                         │
+│ Enter  ← / →    Settings: edit a field / step a selector                     │
 │ x               Settings: stop sharing the selected directory               ▼│
 └─────────────────────────────────────────────────────────────── j/k ─ 20 / 30 ┘
 └ — │ Users: — · Files: — │ ▼ 0.0 KB/s ▲ 0.0 KB/s │ ●eD2k off ●Kad off ────────┘

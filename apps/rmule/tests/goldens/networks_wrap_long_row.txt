@@ -2,8 +2,8 @@
 │   Name ▲   Address        Port Desc  Ping Users Files Age Prio Fail Static▲│
 │▸  Der      198.51.100.200 4661 No       —  120k     —   — Norm    0 no    █│
 │   Grosse                       fakes                                      █│
-│   Deutsche                     , no                                       ║│
-│   Donkey                       adver                                      ║│
+│   Deutsche                     , no                                        │
+│   Donkey                       adver                                       │
 │   Server                       ts,                                        ▼│
 │Grants: never logged in, so it has not said what it grants · UDP: no status │
 │answer yet                                                                  │

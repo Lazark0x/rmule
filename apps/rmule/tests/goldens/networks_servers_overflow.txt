@@ -1,10 +1,10 @@
 ┌ Servers (40) · not connected ──────── a add · U update · m menu · s/S sort ┐
 │   Name ▲   Address        Port Desc  Ping Users Files Age Prio Fail Static▲│
-│   Server   10.0.0.23      4661 —        —     —     —   — Norm    0 no    ║│
-│   23                                                                      ║│
+│   Server   10.0.0.23      4661 —        —     —     —   — Norm    0 no     │
+│   23                                                                       │
 │   Server   10.0.0.24      4661 —        —     —     —   — Norm    0 no    ▄│
 │   24                                                                      ▄│
-│▸  Server   10.0.0.25      4661 —        —     —     —   — Norm    0 no    ║│
+│▸  Server   10.0.0.25      4661 —        —     —     —   — Norm    0 no     │
 │   25                                                                      ▼│
 │Grants: never logged in, so it has not said what it grants                  │
 │UDP: no status answer yet                                                   │

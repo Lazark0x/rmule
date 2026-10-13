@@ -11,13 +11,13 @@
 │ Nickname     rmule  (on restart)                                          █│
 │ eD2k port    4662  (on restart)                                           █│
 │ UDP port     4672  (on restart)                                           ▆│
-│ Obfuscation  off  peer TCP/UDP + Kad + server UDP                         ║│
-│ Port mapping on  opens router ports: UPnP, PCP, NAT-PMP  (on restart)     ║│
-│ Autoconnect  off  at start, to the last server — none yet  (on restart)   ║│
-│ server.met   http://upd.emule-security.org/server.met  (Networks: U)      ║│
-│ Fetch list   on  server.met at start when the list is empty  (on restart) ║│
-│                                                                           ║│
-│Servers                                                                    ║│
-│ Dead after   3  failed tries in a row; a dead server stays listed         ║│
+│ Obfuscation  off  peer TCP/UDP + Kad + server UDP                          │
+│ Port mapping on  opens router ports: UPnP, PCP, NAT-PMP  (on restart)      │
+│ Autoconnect  off  at start, to the last server — none yet  (on restart)    │
+│ server.met   http://upd.emule-security.org/server.met  (Networks: U)       │
+│ Fetch list   on  server.met at start when the list is empty  (on restart)  │
+│                                                                            │
+│Servers                                                                     │
+│ Dead after   3  failed tries in a row; a dead server stays listed          │
 │ Hide shares  off  from servers that answer related searches               ▼│
 └──────────────────────────────────────────────────────────────────── 1 / 19 ┘

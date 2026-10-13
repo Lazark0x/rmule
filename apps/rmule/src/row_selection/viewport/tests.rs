@@ -2,7 +2,7 @@
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
-use ratatui::style::Modifier;
+use ratatui::style::Color;
 
 use super::{TrackCell, Viewport};
 use crate::table_sort::RowMove;
@@ -51,11 +51,11 @@ fn a_list_that_fits_has_no_thumb_and_a_short_track_still_holds_one() {
     assert_eq!(at(997, 3, 1_000).thumb(2, 1), Some(1..2));
 }
 
-/// A bar drawn as one glyph a cell, `║` the track and a reversed cell's
+/// A bar drawn as one glyph a cell, `║` the track and a bottom edge's
 /// glyph followed by `~`.
 fn picture(cells: impl Iterator<Item = (String, bool)>) -> String {
     cells
-        .map(|(glyph, reversed)| if reversed { glyph + "~" } else { glyph })
+        .map(|(glyph, below)| if below { glyph + "~" } else { glyph })
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -68,7 +68,7 @@ fn track(first: usize, shown: usize, total: usize, track: u16) -> String {
         .expect("the list overflows");
     picture(cells.map(|cell| match cell {
         TrackCell::Rail => ("║".to_owned(), false),
-        TrackCell::Thumb { glyph, reversed } => (glyph.to_owned(), reversed),
+        TrackCell::Thumb { glyph, below } => (glyph.to_owned(), below),
     }))
 }
 
@@ -115,7 +115,7 @@ fn a_thumb_shorter_than_a_cell_is_a_cell_long() {
 #[test]
 fn a_thumb_inside_one_cell_takes_the_edge_glyph_that_overstates_it_less() {
     let cell = |thumb| match TrackCell::of(&thumb, 0) {
-        TrackCell::Thumb { glyph, reversed } => (glyph, reversed),
+        TrackCell::Thumb { glyph, below } => (glyph, below),
         TrackCell::Rail => ("║", false),
     };
     assert_eq!(
@@ -126,29 +126,51 @@ fn a_thumb_inside_one_cell_takes_the_edge_glyph_that_overstates_it_less() {
     assert_eq!(cell(2..5), ("▃", true), "the upper five overstate two");
 }
 
-#[test]
-fn the_bottom_edge_draws_reversed_and_a_theme_without_a_thumb_colour_whole_cells() {
-    let drawn = |theme: Theme| {
-        let mut terminal = Terminal::new(TestBackend::new(1, 12)).expect("test terminal");
-        terminal
-            .draw(|frame| at(45, 10, 100).draw_bar(frame, frame.area(), &theme))
-            .expect("draw frame");
-        let buffer = terminal.backend().buffer();
-        picture((0..12).map(|y| {
+/// Bar of 12 cells under the 45th of 100 items, 10 on screen: `(symbol, fg, bg)`.
+fn drawn(theme: &Theme) -> Vec<(String, Color, Color)> {
+    let mut terminal = Terminal::new(TestBackend::new(1, 12)).expect("test terminal");
+    terminal
+        .draw(|frame| at(45, 10, 100).draw_bar(frame, frame.area(), theme))
+        .expect("draw frame");
+    let buffer = terminal.backend().buffer();
+    (0..12)
+        .map(|y| {
             let cell = buffer.cell((0, y)).expect("in the bar");
-            (
-                cell.symbol().to_owned(),
-                cell.modifier.contains(Modifier::REVERSED),
-            )
-        }))
-    };
+            assert!(cell.modifier.is_empty(), "no REVERSED on row {y}");
+            (cell.symbol().to_owned(), cell.fg, cell.bg)
+        })
+        .collect()
+}
+
+#[test]
+fn the_track_is_a_solid_column_and_each_edge_cell_names_both_colours() {
+    let theme = Theme::default_dark();
+    let (thumb, track) = (theme.fg, theme.scroll_track);
+    let cells = drawn(&theme);
+    let glyphs: Vec<_> = cells.iter().map(|(g, ..)| g.as_str()).collect();
+    assert_eq!(
+        glyphs,
+        ["▲", " ", " ", " ", " ", "▄", "▄", " ", " ", " ", " ", "▼"]
+    );
+    // Every cell sits on the track colour but the bottom edge, which sits on
+    // the thumb's: the track's share of it is the glyph.
+    for (row, (_, _, bg)) in cells.iter().enumerate() {
+        assert_eq!(*bg, if row == 6 { thumb } else { track }, "row {row}");
+    }
+    assert_eq!(cells[5].1, thumb, "the top edge's glyph is the thumb");
+    assert_eq!(cells[6].1, track, "the bottom edge's glyph is the track");
+    assert_eq!(cells[0].1, theme.dim, "the arrows keep the dim colour");
+}
+
+#[test]
+fn a_theme_without_a_thumb_colour_draws_whole_cells_on_a_glyph_track() {
     let colour = Theme::default_dark();
-    assert_eq!(drawn(colour), "▲ ║ ║ ║ ║ ▄ ▄~ ║ ║ ║ ║ ▼");
     let mono = Theme {
-        dim: colour.fg,
+        scroll_track: colour.fg,
         ..colour
     };
-    assert_eq!(drawn(mono), "▲ ║ ║ ║ ║ ║ █ ║ ║ ║ ║ ▼");
+    let glyphs: Vec<_> = drawn(&mono).into_iter().map(|(g, ..)| g).collect();
+    assert_eq!(glyphs.join(" "), "▲ ║ ║ ║ ║ ║ █ ║ ║ ║ ║ ▼");
 }
 
 #[test]

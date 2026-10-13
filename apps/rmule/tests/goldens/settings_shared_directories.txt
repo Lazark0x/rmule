@@ -3,12 +3,12 @@
 │ Download dir unset — downloads have nowhere to land                       █│
 │ Temp dir     /srv/rmule/Temp  (the default)                               █│
 │ Data dir     /srv/rmule  (from --data-dir)                                ▁│
-│                                                                           ║│
-│Shared directories                                                         ║│
-│ Shared       /home/u/Downloads                                            ║│
-│                download dir · hashing 3/8, 25 % · no files shared yet     ║│
-│ Shared       /srv/media  watched · 1 file, 700.0 MB                       ║│
-│ Share a dir  Enter, type an absolute path, Enter                          ║│
-│                                                                           ║│
+│                                                                            │
+│Shared directories                                                          │
+│ Shared       /home/u/Downloads                                             │
+│                download dir · hashing 3/8, 25 % · no files shared yet      │
+│ Shared       /srv/media  watched · 1 file, 700.0 MB                        │
+│ Share a dir  Enter, type an absolute path, Enter                           │
+│                                                                            │
 │Network                                                                    ▼│
 └──────────────────────────────────────────────────────────────────── 1 / 21 ┘
