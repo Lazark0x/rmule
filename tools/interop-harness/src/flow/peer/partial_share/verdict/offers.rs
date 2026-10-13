@@ -13,6 +13,9 @@ use crate::flow::peer::partial_share::wire::Said;
 const SRV_TCPFLG_COMPRESSION: u32 = 0x0000_0001;
 const INCOMPLETE: (u32, u16) = (0xFCFC_FCFC, 0xFCFC);
 const COMPLETE: (u32, u16) = (0xFBFB_FBFB, 0xFBFB);
+/// How long after an event its stamped line may print: an announce the
+/// event triggered can reach the tap first.
+const STAMP_SLACK_SECS: f64 = 1.0;
 
 fn marker(row: &OfferedRow) -> (u32, u16) {
     (row.client_id, row.port)
@@ -29,7 +32,14 @@ pub(super) fn sentinels(run: &Run<'_>) -> Claim {
             "the tap holds no OP_IDCHANGE to rmule",
         );
     };
-    let completed = run.completed_at().unwrap_or(f64::INFINITY);
+    // While offered as a partial: up to its withdrawal, less the slack
+    // between the announce leaving and rmule printing the withdrawal's line.
+    let completed = run
+        .trail
+        .first_at("serve.partial_withdrawn")
+        .map(|at| at - STAMP_SLACK_SECS)
+        .or_else(|| run.completed_at())
+        .unwrap_or(f64::INFINITY);
     let partial: Vec<&(f64, Vec<OfferedRow>)> = run
         .offers
         .iter()

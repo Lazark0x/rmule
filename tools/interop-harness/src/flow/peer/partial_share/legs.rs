@@ -62,6 +62,11 @@ pub(crate) struct Legs<'a> {
     pub(crate) hold_secs: u64,
     /// Leg two's length, in seconds.
     pub(crate) reopen_secs: u64,
+    /// Shape rmule's egress to this address at this many kbit/s, so a
+    /// downloader on the bench network fetches a part over minutes: aMule's
+    /// own download cap reacts only after a burst, and a part crosses the
+    /// bridge in half a second.
+    pub(crate) shaped: Option<(std::net::Ipv4Addr, u32)>,
 }
 
 impl Legs<'_> {
@@ -153,7 +158,12 @@ impl Legs<'_> {
         if self.restart {
             legs.push(self.second());
         }
-        script(&self.at(START_GATE), &legs)
+        let mut text = String::new();
+        if let Some((address, kbit)) = self.shaped {
+            text.push_str(&shaping(address, kbit));
+        }
+        text.push_str(&script(&self.at(START_GATE), &legs));
+        text
     }
 }
 
@@ -177,6 +187,20 @@ pub(crate) fn script(gate: &str, legs: &[Vec<String>]) -> String {
         }
     }
     text
+}
+
+/// The `tc` lines that hold rmule's egress to `address` at `kbit`: a
+/// `prio` root whose third band a token bucket drains, and a filter sending
+/// that one address there; every other destination keeps its pace. A network
+/// condition on rmule's own link, not a change to either body.
+pub(crate) fn shaping(address: std::net::Ipv4Addr, kbit: u32) -> String {
+    format!(
+        "tc qdisc add dev eth0 root handle 1: prio && \
+         tc qdisc add dev eth0 parent 1:3 handle 30: tbf rate {kbit}kbit burst 16kb latency 1s && \
+         tc filter add dev eth0 parent 1: protocol ip prio 1 u32 match ip dst {address}/32 flowid 1:3 && \
+         echo \"rmule-link-shaped dst={address} kbit={kbit}\" || \
+         {{ echo \"rmule-link-shaping-failed dst={address}\" >&2; exit 1; }}\n"
+    )
 }
 
 /// `arg` single-quoted for `sh`: an ed2k link's `|` and every other byte

@@ -58,6 +58,9 @@ pub(crate) const DOWNLOADER: &str = "downloader";
 const PROBER: &str = "prober";
 /// The downloader held in rmule's queue behind the first.
 const QUEUED: &str = "queued";
+/// The downloader that fetches the whole file rmule shares beside the
+/// partial: rmule's complete-form status, count `0`.
+const WHOLE_PROBER: &str = "whole-prober";
 const STREAM_BYTES_SEED: u64 = 0x5EED_0545;
 const WHOLE_BYTES_SEED: u64 = 0x5EED_B5DE;
 
@@ -109,6 +112,8 @@ pub struct PartialShareOptions<'a> {
     pub seed_max_upload_kib: &'a [u32],
     /// The slot-holding downloader's download cap, KiB/s; `0` for none.
     pub downloader_max_download_kib: u32,
+    /// rmule's egress to the slot-holding downloader, kbit/s; `0` unshaped.
+    pub downloader_link_kbit: u32,
     /// Add the prober before rmule's first part.
     pub prober: bool,
     /// Give rmule one slot and queue a second downloader behind the first.
@@ -283,6 +288,9 @@ pub fn run_partial_share(options: PartialShareOptions<'_>) -> Result<()> {
         if options.queued {
             roles.push(QUEUED);
         }
+        if options.prober && options.whole_size > 0 && !options.pause {
+            roles.push(WHOLE_PROBER);
+        }
         for role in roles {
             topology
                 .downloaders
@@ -308,6 +316,10 @@ pub fn run_partial_share(options: PartialShareOptions<'_>) -> Result<()> {
             restart: options.restart,
             hold_secs: 3 * 3600,
             reopen_secs: options.reopen_secs,
+            shaped: match options.downloader_link_kbit {
+                0 => None,
+                kbit => Some((drive::body_ip(&topology, DOWNLOADER)?, kbit)),
+            },
         };
         let container = RunContainer::new(options.rmule_tools_image.to_owned())
             .detach()
@@ -315,6 +327,7 @@ pub fn run_partial_share(options: PartialShareOptions<'_>) -> Result<()> {
             .network(bench.names.network_name.clone())
             .env("RMULE_LOG", "info")
             .volume(options.layout.root(), RUN_MOUNT)
+            .cap_add("NET_ADMIN")
             .entrypoint("sh")
             .arg("-c")
             .arg(rmule_legs.script());

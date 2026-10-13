@@ -69,11 +69,17 @@ pub(crate) struct PeerPartialShareArgs {
     /// or a comma list with one per `--seed`.
     #[arg(long, value_delimiter = ',', default_value = "100,150")]
     pub(crate) seed_max_upload_kib: Vec<u32>,
-    /// The slot-holding downloader's download cap in KiB/s (`0` uncapped):
-    /// slow enough that it is mid-part when rmule completes, or holds the
-    /// slot through the queued downloader's reask.
-    #[arg(long, default_value_t = 20)]
+    /// The slot-holding downloader's own download cap in KiB/s (`0`
+    /// uncapped).
+    #[arg(long, default_value_t = 0)]
     pub(crate) downloader_max_download_kib: u32,
+    /// rmule's egress to the slot-holding downloader in kbit/s (`0`
+    /// unshaped), a `tc` token bucket in rmule's namespace: aMule's own
+    /// download cap reacts only after a burst, and a part crosses the bench
+    /// network in half a second. The default fetches a part in about eight
+    /// minutes, past the download's completion.
+    #[arg(long, default_value_t = 160)]
+    pub(crate) downloader_link_kbit: u32,
     /// Leave out the prober that asks before rmule holds a part.
     #[arg(long)]
     pub(crate) no_prober: bool,
@@ -130,6 +136,7 @@ struct ResolvedConfig {
     seeds: Vec<String>,
     seed_max_upload_kib: Vec<u32>,
     downloader_max_download_kib: u32,
+    downloader_link_kbit: u32,
     prober: bool,
     queued: bool,
     pause: bool,
@@ -176,6 +183,7 @@ pub(crate) fn peer_partial_share(args: PeerPartialShareArgs) -> Result<()> {
             seeds: seeds.iter().map(SeedHolding::spec).collect(),
             seed_max_upload_kib: args.seed_max_upload_kib.clone(),
             downloader_max_download_kib: args.downloader_max_download_kib,
+            downloader_link_kbit: args.downloader_link_kbit,
             prober: !args.no_prober,
             queued: args.queued,
             pause: args.pause,
@@ -215,6 +223,7 @@ pub(crate) fn peer_partial_share(args: PeerPartialShareArgs) -> Result<()> {
         seeds: &seeds,
         seed_max_upload_kib: &args.seed_max_upload_kib,
         downloader_max_download_kib: args.downloader_max_download_kib,
+        downloader_link_kbit: args.downloader_link_kbit,
         prober: !args.no_prober,
         queued: args.queued,
         pause: args.pause,

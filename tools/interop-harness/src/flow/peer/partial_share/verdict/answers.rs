@@ -129,7 +129,7 @@ pub(super) fn pre_part_slot_ask(run: &Run<'_>) -> Claim {
             .map_or(f64::INFINITY, |item| item.at);
         if let Some(answer) = run.wire.items.iter().find(|item| {
             item.from_rmule
-                && item.peer.ip() == ask.peer.ip()
+                && item.peer == ask.peer
                 && item.at > ask.at
                 && item.at < next_ask
                 && matches!(item.said, Said::Accept | Said::Rank { .. })

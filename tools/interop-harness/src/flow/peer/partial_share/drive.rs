@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail};
 use super::legs::{self, RUN_MOUNT, STIMULUS_USER_HASH};
 use super::marks::{self, Trail};
 use super::verdict::{Action, DURING_CHECK, PRE_PART, ROOT_DIR, STRADDLE, Stimulus, TopologyFile};
-use super::{DOWNLOADER, PROBER, PartialShareOptions, QUEUED};
+use super::{DOWNLOADER, PROBER, PartialShareOptions, QUEUED, WHOLE_PROBER};
 use crate::docker::{Docker, RunContainer};
 use crate::flow::bench::{Bench, amulecmd_command, run_checked};
 use crate::flow::peer::streaming_window::seed::SeedHolding;
@@ -51,6 +51,14 @@ impl Drive<'_> {
         })?;
         if options.prober {
             self.add_link(docker, topology, PROBER, &self.peer_link)?;
+        }
+        if let Some(whole_link) = &self.whole_link
+            && topology
+                .downloaders
+                .iter()
+                .any(|body| body.role == WHOLE_PROBER)
+        {
+            self.add_link(docker, topology, WHOLE_PROBER, whole_link)?;
         }
         // The stimulus's slot ask follows its hash-set ask, so it waits for
         // rmule to hold the set: a no-file answer would end its ask there.
@@ -141,12 +149,6 @@ impl Drive<'_> {
             })?;
             let completed = done.first_at("download.completed").unwrap_or_else(now);
             sleep_until(completed + options.linger_secs as f64);
-            if let Some(whole_link) = &self.whole_link
-                && options.prober
-            {
-                self.add_link(docker, topology, PROBER, whole_link)?;
-                thread::sleep(Duration::from_secs(60));
-            }
         }
         if options.restart {
             fs::write(self.root.join(legs::STOP_GATE), b"").context("write the stop gate")?;
@@ -352,7 +354,7 @@ impl Drive<'_> {
     }
 }
 
-fn body_ip(topology: &TopologyFile, role: &str) -> Result<Ipv4Addr> {
+pub(super) fn body_ip(topology: &TopologyFile, role: &str) -> Result<Ipv4Addr> {
     topology
         .downloaders
         .iter()
