@@ -322,9 +322,21 @@ pub(super) fn pause(run: &Run<'_>) -> Claim {
             && close.peer.ip() == IpAddr::V4(holder)
             && close.at > paused
             && close.at < end - 1.0
+            && !closed_first(run, close.peer, close.at)
     }) {
         failures.push("rmule ended the slot holder's transfer after the pause".to_owned());
     }
+    // The holder's own end of it, when it chose one: aMule cancels a slot it
+    // no longer needs once a faster source has given it the same parts.
+    let cancelled = run
+        .wire
+        .items
+        .iter()
+        .find(|item| {
+            !item.from_rmule && ip(item) == holder && item.at > paused && item.said == Said::Cancel
+        })
+        .map(|item| format!(" until the holder's own cancel at {:.3}", item.at))
+        .unwrap_or_default();
     let ranks: Vec<u16> = run
         .wire
         .datagrams
@@ -348,7 +360,16 @@ pub(super) fn pause(run: &Run<'_>) -> Claim {
         NAME,
         &failures,
         format!(
-            "{after} blocks to the slot holder after the pause; reask ranks {ranks:?}; partial still announced"
+            "{after} blocks to the slot holder after the pause{cancelled}; reask ranks {ranks:?}; partial still announced"
         ),
     )
+}
+
+/// Whether the peer had closed the link at `peer` by `at`: rmule's close then
+/// answers the peer's, it does not end the link.
+fn closed_first(run: &Run<'_>, peer: std::net::SocketAddr, at: f64) -> bool {
+    run.wire
+        .closes
+        .iter()
+        .any(|close| !close.by_rmule && close.peer == peer && close.at <= at)
 }
