@@ -15,7 +15,7 @@
 │11:59:16 part 16 verified          ║││Firewall  — (never run)               │
 │11:59:17 part 17 verified          █││UDP       — (never run)               │
 │11:59:18 part 18 verified          █││Keywords  —                           │
-│11:59:19 part 19 verified          ║││Node id   —                           │
+│11:59:19 part 19 verified          ▇││Node id   —                           │
 │11:59:20 part 20 verified          ║││Received  —                           │
 │11:59:21 part 21 verified          ▼││Sent      —                           │
 └─────────────────────────── 22 / 30 ┘└──────────────────────────────────────┘

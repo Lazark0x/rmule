@@ -16,7 +16,8 @@ use std::ops::Range;
 
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::Style;
+use ratatui::style::Modifier;
+use ratatui::symbols::bar;
 use ratatui::symbols::scrollbar::DOUBLE_VERTICAL;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
@@ -27,6 +28,62 @@ use crate::wrap::clamp_u16;
 
 /// The column the bar takes at a list's inner right edge.
 pub(crate) const BAR_W: u16 = 1;
+
+/// The thumb's resolution: eighths of a cell.
+const EIGHTHS: u32 = 8;
+
+/// The blocks filling a cell's lower one to eight eighths. The upper-eighth
+/// blocks are not reliably in fonts, so a thumb's bottom edge is a lower
+/// block reversed.
+const LOWER: [&str; EIGHTHS as usize] = [
+    bar::ONE_EIGHTH,
+    bar::ONE_QUARTER,
+    bar::THREE_EIGHTHS,
+    bar::HALF,
+    bar::FIVE_EIGHTHS,
+    bar::THREE_QUARTERS,
+    bar::SEVEN_EIGHTHS,
+    bar::FULL,
+];
+
+/// One cell of a scroll bar's track.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TrackCell {
+    /// Outside the thumb: the track's glyph.
+    Rail,
+    /// The thumb's: `glyph` in the thumb's style, `reversed` at the thumb's
+    /// bottom edge, where the glyph is what lies below the thumb and the rest
+    /// of the cell the thumb.
+    Thumb {
+        /// A lower block.
+        glyph: &'static str,
+        /// Whether the thumb's style is reversed.
+        reversed: bool,
+    },
+}
+
+impl TrackCell {
+    /// Cell `cell` of a track under a thumb spanning `thumb`, in eighths.
+    fn of(thumb: &Range<u32>, cell: u32) -> Self {
+        let top = cell * EIGHTHS;
+        // The thumb's share of the cell, in eighths down from its top.
+        let from = thumb.start.clamp(top, top + EIGHTHS) - top;
+        let to = thumb.end.clamp(top, top + EIGHTHS) - top;
+        let lower = |eighths: u32, reversed| Self::Thumb {
+            glyph: LOWER[(eighths - 1) as usize],
+            reversed,
+        };
+        match (from, to) {
+            _ if from >= to => Self::Rail,
+            (_, EIGHTHS) => lower(EIGHTHS - from, false),
+            (0, _) => lower(EIGHTHS - to, true),
+            // Both edges inside the cell, which a thumb a whole cell long
+            // never has: the edge glyph that overstates it less.
+            _ if EIGHTHS - to <= from => lower(EIGHTHS - from, false),
+            _ => lower(EIGHTHS - to, true),
+        }
+    }
+}
 
 /// Whether a list needs its bar's column: surely when it has more items than
 /// its viewport has lines, else when laid out at its full width its wrapped
@@ -195,20 +252,38 @@ impl Viewport {
         self.shown < self.total
     }
 
-    /// The thumb's cells on a `track` cells long: its size the share of the
-    /// list on screen, its place the share above it. It touches an end only
-    /// when the list is at that end, while the track leaves it room to.
+    /// The track's cells top to bottom on a `track` cells long, the thumb's
+    /// edges in eighths of a cell, or in whole cells when not `eighths`.
     /// `None` while the list fits.
-    #[must_use]
-    pub(crate) fn thumb(&self, track: u16) -> Option<Range<u16>> {
+    pub(crate) fn track(
+        &self,
+        track: u16,
+        eighths: bool,
+    ) -> Option<impl Iterator<Item = TrackCell> + use<>> {
+        let thumb = if eighths {
+            self.thumb(track, EIGHTHS)?
+        } else {
+            let cells = self.thumb(track, 1)?;
+            cells.start * EIGHTHS..cells.end * EIGHTHS
+        };
+        Some((0..u32::from(track)).map(move |cell| TrackCell::of(&thumb, cell)))
+    }
+
+    /// The thumb on a `track` cells long, in `per_cell`ths of a cell: its
+    /// length the share of the list on screen but at least a whole cell, its
+    /// top as far down its travel as the list is scrolled through the places
+    /// it can start, so the last page puts its end on the track's end. It
+    /// touches an end only when the list is at that end, while the track
+    /// leaves it room to. `None` while the list fits.
+    fn thumb(&self, track: u16, per_cell: u32) -> Option<Range<u32>> {
         if !self.overflows() || track == 0 {
             return None;
         }
         let wide = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
         let (first, shown, total) = (wide(self.first), wide(self.shown), wide(self.total));
-        let cells = u64::from(track);
-        let size = ((cells * shown + total / 2) / total).clamp(1, cells);
-        let travel = cells - size;
+        let units = u64::from(track) * u64::from(per_cell);
+        let size = ((units * shown + total / 2) / total).clamp(u64::from(per_cell), units);
+        let travel = units - size;
         let furthest = total - shown;
         let mut start = (travel * first + furthest / 2) / furthest;
         if travel >= 2 {
@@ -219,7 +294,7 @@ impl Viewport {
                 start = start.min(travel - 1);
             }
         }
-        let narrow = |n: u64| u16::try_from(n).unwrap_or(track);
+        let narrow = |n: u64| u32::try_from(n).unwrap_or(u32::MAX);
         Some(narrow(start)..narrow(start + size))
     }
 
@@ -268,31 +343,32 @@ impl Viewport {
     }
 
     /// The bar down `bar`, while the list overflows: `▲` and `▼` at its ends
-    /// once it is three cells tall, the thumb on the track between.
+    /// once it is three cells tall, the thumb on the track between — its
+    /// edges in eighths of a cell while the theme gives it a colour of its
+    /// own.
     pub(crate) fn draw_bar(&self, frame: &mut Frame, bar: Rect, theme: &Theme) {
         if bar.width == 0 || bar.height == 0 {
             return;
         }
         let arrows = bar.height >= 3;
         let track = if arrows { bar.height - 2 } else { bar.height };
-        let Some(thumb) = self.thumb(track) else {
+        let Some(mut cells) = self.track(track, theme.thumb_in_eighths()) else {
             return;
         };
         let rail = theme.dim_text();
-        let held = Style::new().fg(theme.fg);
+        let held = theme.thumb();
         let buffer = frame.buffer_mut();
         for line in 0..bar.height {
             let (symbol, style) = match (arrows, line) {
                 (true, 0) => (DOUBLE_VERTICAL.begin, rail),
                 (true, l) if l == bar.height - 1 => (DOUBLE_VERTICAL.end, rail),
-                _ => {
-                    let cell = if arrows { line - 1 } else { line };
-                    if thumb.contains(&cell) {
-                        (DOUBLE_VERTICAL.thumb, held)
-                    } else {
-                        (DOUBLE_VERTICAL.track, rail)
+                _ => match cells.next() {
+                    Some(TrackCell::Thumb { glyph, reversed }) if reversed => {
+                        (glyph, held.add_modifier(Modifier::REVERSED))
                     }
-                }
+                    Some(TrackCell::Thumb { glyph, .. }) => (glyph, held),
+                    Some(TrackCell::Rail) | None => (DOUBLE_VERTICAL.track, rail),
+                },
             };
             if let Some(cell) = buffer.cell_mut(Position::new(bar.x, bar.y + line)) {
                 cell.set_symbol(symbol).set_style(style);

@@ -17,7 +17,7 @@
 │ server.met   http://upd.emule-security.org/server.met  (Networks: U)      █│
 │ Fetch list   on  server.met at start when the list is empty  (on restart) █│
 │                                                                           █│
-│Servers                                                                    ║│
+│Servers                                                                    ▆│
 │ Dead after   3  failed tries in a row; a dead server stays listed         ║│
 │ Hide shares  off  from servers that answer related searches               ║│
 │                                                                           ║│

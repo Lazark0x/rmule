@@ -1,7 +1,12 @@
-//! The Viewport's thumb, its following and its count.
+//! The Viewport's thumb, its bar, its following and its count.
 
-use super::Viewport;
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use ratatui::style::Modifier;
+
+use super::{TrackCell, Viewport};
 use crate::table_sort::RowMove;
+use crate::theme::Theme;
 
 /// A list `total` items long showing `shown` from `first`, without a cursor.
 fn at(first: usize, shown: usize, total: usize) -> Viewport {
@@ -16,7 +21,7 @@ fn at(first: usize, shown: usize, total: usize) -> Viewport {
 
 #[test]
 fn the_thumb_is_the_window_over_the_whole_list() {
-    // (first, shown, total) on a ten-cell track → the thumb's cells.
+    // (first, shown, total) on a ten-cell track → the thumb's whole cells.
     let cases = [
         ((0, 10, 100), 0..1),
         // The last page puts the thumb on the track's end.
@@ -31,7 +36,7 @@ fn the_thumb_is_the_window_over_the_whole_list() {
     ];
     for ((first, shown, total), thumb) in cases {
         assert_eq!(
-            at(first, shown, total).thumb(10),
+            at(first, shown, total).thumb(10, 1),
             Some(thumb),
             "first {first}, shown {shown}, total {total}"
         );
@@ -40,9 +45,109 @@ fn the_thumb_is_the_window_over_the_whole_list() {
 
 #[test]
 fn a_list_that_fits_has_no_thumb_and_a_short_track_still_holds_one() {
-    assert_eq!(at(0, 10, 10).thumb(10), None);
-    assert_eq!(at(0, 3, 1_000).thumb(1), Some(0..1));
-    assert_eq!(at(997, 3, 1_000).thumb(2), Some(1..2));
+    assert_eq!(at(0, 10, 10).thumb(10, 1), None);
+    assert_eq!(at(0, 3, 1_000).thumb(1, 1), Some(0..1));
+    assert_eq!(at(997, 3, 1_000).thumb(2, 1), Some(1..2));
+}
+
+/// A bar drawn as one glyph a cell, `║` the track and a reversed cell's
+/// glyph followed by `~`.
+fn picture(cells: impl Iterator<Item = (String, bool)>) -> String {
+    cells
+        .map(|(glyph, reversed)| if reversed { glyph + "~" } else { glyph })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The track `track` cells long under `first`, `shown` and `total`, the
+/// thumb's edges in eighths.
+fn track(first: usize, shown: usize, total: usize, track: u16) -> String {
+    let cells = at(first, shown, total)
+        .track(track, true)
+        .expect("the list overflows");
+    picture(cells.map(|cell| match cell {
+        TrackCell::Rail => ("║".to_owned(), false),
+        TrackCell::Thumb { glyph, reversed } => (glyph.to_owned(), reversed),
+    }))
+}
+
+#[test]
+fn the_thumb_moves_an_eighth_of_a_cell_at_a_time() {
+    // Ten cells are eighty eighths: ten items of eighty on screen make a
+    // thumb ten eighths long with seventy to travel, one an item.
+    let cases = [
+        (0, "█ ▆~ ║ ║ ║ ║ ║ ║ ║ ║"),
+        (1, "▇ ▅~ ║ ║ ║ ║ ║ ║ ║ ║"),
+        (2, "▆ ▄~ ║ ║ ║ ║ ║ ║ ║ ║"),
+        (7, "▁ █ ▇~ ║ ║ ║ ║ ║ ║ ║"),
+        (8, "║ █ ▆~ ║ ║ ║ ║ ║ ║ ║"),
+        // One item above the end is not the end.
+        (69, "║ ║ ║ ║ ║ ║ ║ ║ ▃ ▁~"),
+        // The last page puts the thumb's end on the track's end.
+        (70, "║ ║ ║ ║ ║ ║ ║ ║ ▂ █"),
+    ];
+    for (first, bar) in cases {
+        assert_eq!(track(first, 10, 80, 10), bar, "first {first}");
+    }
+}
+
+#[test]
+fn the_last_page_ends_flush_where_the_shares_round_down() {
+    // Forty of a hundred on three cells is 9.6 eighths, sixty above it 14.4:
+    // the thumb ends on the track's last eighth all the same.
+    assert_eq!(track(60, 40, 100, 3), "║ ▂ █");
+    assert_eq!(track(0, 40, 100, 3), "█ ▆~ ║");
+}
+
+#[test]
+fn a_thumb_shorter_than_a_cell_is_a_cell_long() {
+    // Three of a thousand on ten cells is a quarter of an eighth.
+    assert_eq!(track(0, 3, 1_000, 10), "█ ║ ║ ║ ║ ║ ║ ║ ║ ║");
+    assert_eq!(track(500, 3, 1_000, 10), "║ ║ ║ ║ ▄ ▄~ ║ ║ ║ ║");
+    assert_eq!(track(997, 3, 1_000, 10), "║ ║ ║ ║ ║ ║ ║ ║ ║ █");
+    // A one-row track is all thumb wherever the list is.
+    for first in [0, 500, 997] {
+        assert_eq!(track(first, 3, 1_000, 1), "█", "first {first}");
+    }
+}
+
+#[test]
+fn a_thumb_inside_one_cell_takes_the_edge_glyph_that_overstates_it_less() {
+    let cell = |thumb| match TrackCell::of(&thumb, 0) {
+        TrackCell::Thumb { glyph, reversed } => (glyph, reversed),
+        TrackCell::Rail => ("║", false),
+    };
+    assert_eq!(
+        cell(4..7),
+        ("▄", false),
+        "the lower half overstates one eighth"
+    );
+    assert_eq!(cell(2..5), ("▃", true), "the upper five overstate two");
+}
+
+#[test]
+fn the_bottom_edge_draws_reversed_and_a_theme_without_a_thumb_colour_whole_cells() {
+    let drawn = |theme: Theme| {
+        let mut terminal = Terminal::new(TestBackend::new(1, 12)).expect("test terminal");
+        terminal
+            .draw(|frame| at(45, 10, 100).draw_bar(frame, frame.area(), &theme))
+            .expect("draw frame");
+        let buffer = terminal.backend().buffer();
+        picture((0..12).map(|y| {
+            let cell = buffer.cell((0, y)).expect("in the bar");
+            (
+                cell.symbol().to_owned(),
+                cell.modifier.contains(Modifier::REVERSED),
+            )
+        }))
+    };
+    let colour = Theme::default_dark();
+    assert_eq!(drawn(colour), "▲ ║ ║ ║ ║ ▄ ▄~ ║ ║ ║ ║ ▼");
+    let mono = Theme {
+        dim: colour.fg,
+        ..colour
+    };
+    assert_eq!(drawn(mono), "▲ ║ ║ ║ ║ ║ █ ║ ║ ║ ║ ▼");
 }
 
 #[test]

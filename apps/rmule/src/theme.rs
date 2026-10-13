@@ -160,6 +160,21 @@ impl Theme {
         Style::new().fg(self.dim)
     }
 
+    /// A scroll bar's thumb; its track is [`dim_text`](Self::dim_text).
+    #[must_use]
+    pub fn thumb(&self) -> Style {
+        Style::new().fg(self.fg)
+    }
+
+    /// Whether a scroll bar's thumb may end part-way down a cell: only while
+    /// its colour, `fg`, stands apart from the track's, `dim`. A part-cell
+    /// edge shows the thumb's end by its colour alone, so a theme without
+    /// one draws the thumb in whole cells.
+    #[must_use]
+    pub fn thumb_in_eighths(&self) -> bool {
+        self.fg != self.dim
+    }
+
     /// The active tab: accent-inverted (spec §3.1).
     #[must_use]
     pub fn tab_active(&self) -> Style {

@@ -10,7 +10,7 @@
 ││                                                                           █││
 ││Network                                                                    █││
 ││ Nickname     rmule  (on restart)                                          █││
-││ eD2k port    4662  (on restart)                                           ║││
+││ eD2k port    4662  (on restart)                                           ▆││
 ││ UDP port     4672  (on restart)                                           ║││
 ││ Obfuscation  off  peer TCP/UDP + Kad + server UDP                         ║││
 ││ Port mapping on  opens router ports: UPnP, PCP, NAT-PMP  (on restart)     ║││
