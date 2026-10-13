@@ -14,8 +14,9 @@ use crate::adapters::{
 };
 use crate::diagnostics::DiagnosticsState;
 use crate::download::source_seeds::SourceSeed;
+use crate::served_downloads::ServedDownloads;
 use crate::service::{CoreEvent, DownloadEvent, DownloadId, send_download_event};
-use crate::storage::DownloadRepository;
+use crate::storage::{DownloadRepository, ResolvedAuthority};
 use crate::store::download::DurableDownloadRepository;
 use crate::{DownloadFailure, DownloadLifecycle};
 
@@ -29,11 +30,15 @@ use super::super::CoreActor;
 /// `can_restore`, since only a core built to restore at attach runs them —
 /// each with its **Source Seeds** under a day old (ADR-0109), the older ones
 /// dropped, said once for all of them.
+///
+/// Each that is a Served Download is installed with an empty range and no
+/// identity, its lease with the actor (ADR-0113).
 pub(in crate::service::actor) async fn attach_downloads(
     store: &DurableDownloadRepository,
     diagnostics: &DiagnosticsState,
     evt_tx: &mpsc::Sender<CoreEvent>,
     can_restore: bool,
+    served: &ServedDownloads,
 ) -> (VecDeque<DownloadId>, HashMap<DownloadId, Vec<SourceSeed>>) {
     let records = match store.listed_downloads() {
         Ok(records) => records,
@@ -48,6 +53,11 @@ pub(in crate::service::actor) async fn attach_downloads(
         let parts = store.verified_parts(download_id).unwrap_or_default();
         let verified_bytes = parts.iter().map(|part| part.len).sum();
         let held: Vec<u32> = parts.iter().map(|part| part.part_index).collect();
+        let set = match store.hash_authority(download_id) {
+            Ok(ResolvedAuthority::Link(hashes) | ResolvedAuthority::Provisional(hashes)) => hashes,
+            Ok(ResolvedAuthority::FileHashOnly) | Err(_) => Vec::new(),
+        };
+        served.install(&record, &set);
         diagnostics.rest_download(
             download_id,
             record.file_hash(),

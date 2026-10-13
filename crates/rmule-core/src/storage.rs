@@ -103,14 +103,15 @@ pub trait DownloadRepository: Send + Sync + 'static {
     /// to fetch. Ordered by part index.
     fn verified_parts(&self, id: DownloadId) -> Result<Vec<VerifiedPartRecord>, CoreError>;
 
-    /// Record a peer-supplied part hash set for the download. Only one may be
-    /// in force — a second, different set is
-    /// [`CoreError::ProvisionalAuthorityConflict`].
+    /// Record a peer-supplied part hash set for the download, and drop in the
+    /// same write every verified part whose recorded hash the set disproves —
+    /// returned, to be fetched again. Only one set may be in force — a
+    /// second, different set is [`CoreError::ProvisionalAuthorityConflict`].
     fn record_provisional_part_hashes(
         &self,
         id: DownloadId,
         hashes: &[PartHash],
-    ) -> Result<(), CoreError>;
+    ) -> Result<Vec<VerifiedPartRecord>, CoreError>;
 
     /// The recorded peer-supplied hashes in part order, or empty when none were
     /// recorded. Prefer [`hash_authority`](Self::hash_authority), which applies

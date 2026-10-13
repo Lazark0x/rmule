@@ -374,6 +374,25 @@ impl DownloadState {
             Err(failure) => out.push(Decision::Fail(failure)),
         }
     }
+    /// The store dropped `parts`, verified before the part hash set arrived
+    /// and disproved by it (ADR-0113): they are fetched again, handed to the
+    /// idle workers first.
+    pub(crate) fn refetch(&mut self, now: Instant, parts: &[u32]) -> Vec<Decision> {
+        let mut out = Vec::new();
+        let plans = parts
+            .iter()
+            .map(|&part| crate::planning::part_plan(self.file_size, part));
+        let repended = plans
+            .filter(|&plan| self.scheduler.repend_verified(plan))
+            .count();
+        if repended > 0 {
+            for peer in self.connected_workers() {
+                self.assign(peer, &mut out);
+            }
+            self.fill(now, &mut out);
+        }
+        out
+    }
     /// `peer` is proven to have served this file bad data (ADR-0090
     /// invariant 4): the **Source Book** distrusts the User Hash its hello
     /// named, and a new distrust is persisted by the runner. *Proven* is the

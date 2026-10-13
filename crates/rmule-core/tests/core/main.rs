@@ -71,6 +71,7 @@ mod live_part_file_guard;
 mod credit_accounting;
 mod credit_store;
 mod download_directory_scan;
+mod partial_share;
 mod registry_against_disk;
 mod serve_lifecycle;
 mod serve_loopback;

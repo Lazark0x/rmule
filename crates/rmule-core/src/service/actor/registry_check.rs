@@ -281,8 +281,10 @@ where
 
     /// A finished download's file joins the registry if it completed
     /// (ADR-0031): offered, or withheld as refused when it lies under an
-    /// entry the guards refuse (ADR-0101) — a share-set change either way.
-    pub(super) async fn share_completed(&mut self, download_id: DownloadId) {
+    /// entry the guards refuse (ADR-0101). `true` when the row was written —
+    /// a share-set change either way, whose trigger is the caller's to fire
+    /// once its download's Served Download has ended too (ADR-0113).
+    pub(super) async fn share_completed(&mut self, download_id: DownloadId) -> bool {
         let shared = auto_share_completed_download(
             download_id,
             &*self.wiring.store,
@@ -293,23 +295,28 @@ where
         )
         .await;
         match shared {
-            Some(AutoShared::Offered(file_hash)) => self.row_shared(file_hash),
+            Some(AutoShared::Offered(file_hash)) => self.row_written(file_hash),
             Some(AutoShared::Refused(file_hash)) => {
                 // Whatever row it replaced is no longer offered either.
                 self.wiring.file_known.unshare(file_hash);
-                self.share_set_changed();
                 self.registry_check.tell(CheckInput::RowsChanged);
             }
             None => {}
         }
+        shared.is_some()
     }
 
     /// A row was written for `file_hash`: its content is on disk now and
     /// offered, whatever held it before.
     pub(super) fn row_shared(&self, file_hash: FileHash) {
+        self.row_written(file_hash);
+        self.share_set_changed();
+    }
+
+    /// [`Self::row_shared`] less the trigger.
+    fn row_written(&self, file_hash: FileHash) {
         self.registry_check.withheld.lift(file_hash);
         self.wiring.file_known.share(file_hash);
-        self.share_set_changed();
         self.registry_check.tell(CheckInput::RowsChanged);
     }
 

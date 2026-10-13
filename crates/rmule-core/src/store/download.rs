@@ -464,9 +464,13 @@ impl DownloadRepository for DurableDownloadRepository {
         })
     }
 
-    /// Store a peer-supplied part hash set for the download: the children and
-    /// the row's new authority land in one transaction, so no reader can see a
-    /// half-recorded set. Refused with
+    /// Store a peer-supplied part hash set for the download: the children,
+    /// the row's new authority and the drop of every verified part the set
+    /// disproves land in one transaction, so no reader can see a
+    /// half-recorded set or a part the set in force refutes. A part written
+    /// while no set was held was recorded with the hash of its own bytes; one
+    /// whose recorded hash is not the set's at its index is dropped and
+    /// returned, to be fetched again (ADR-0113). Refused with
     /// [`CoreError::ProvisionalAuthorityConflict`] when the row already
     /// verifies under the link's own set, which always wins, or when a
     /// *different* set is already recorded.
@@ -474,7 +478,7 @@ impl DownloadRepository for DurableDownloadRepository {
         &self,
         id: DownloadId,
         hashes: &[PartHash],
-    ) -> Result<(), CoreError> {
+    ) -> Result<Vec<VerifiedPartRecord>, CoreError> {
         self.store.write(|txn| {
             let mut row = read_row(txn, id)?;
             if row.verification_authority == Some(VerificationAuthority::LinkPartHashSet) {
@@ -483,7 +487,7 @@ impl DownloadRepository for DurableDownloadRepository {
             let existing = read_provisional(txn, id)?;
             if !existing.is_empty() {
                 return if existing == hashes {
-                    Ok(())
+                    Ok(Vec::new())
                 } else {
                     Err(CoreError::ProvisionalAuthorityConflict)
                 };
@@ -495,7 +499,16 @@ impl DownloadRepository for DurableDownloadRepository {
                 hashes.iter().map(ProvisionalPartHashRow::of),
             )?;
             row.verification_authority = Some(VerificationAuthority::PeerHashSet);
-            Ok(DOWNLOADS.update(txn, &id.as_u64(), &row).map(|_| ())?)
+            DOWNLOADS.update(txn, &id.as_u64(), &row)?;
+            let mut disproved = Vec::new();
+            for (index, part) in VERIFIED_PARTS.list(txn, id.as_u64())? {
+                let part = part.to_record(index);
+                if hashes.get(index as usize) != Some(&part.part_hash) {
+                    VERIFIED_PARTS.table().remove(txn, &(id.as_u64(), index))?;
+                    disproved.push(part);
+                }
+            }
+            Ok(disproved)
         })
     }
 

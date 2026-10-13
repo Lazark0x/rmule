@@ -66,6 +66,19 @@ pub enum ServeEvent {
         /// The content identity offered again.
         file_hash: FileHash,
     },
+    /// A download began to offer the parts it verified: a **Partial Share**
+    /// (ADR-0113). It is the download's own, never a registry row.
+    PartialOffered {
+        /// The content identity whose verified parts are offered.
+        file_hash: FileHash,
+    },
+    /// A Partial Share stopped being offered.
+    PartialWithdrawn {
+        /// The content identity no longer offered in part.
+        file_hash: FileHash,
+        /// Why.
+        cause: crate::PartialEnd,
+    },
     /// The folders of the shared files outside the download directory cannot
     /// be watched; the log says why. A file that goes from one is noticed at
     /// a peer's failed read or at the next start. Said once.

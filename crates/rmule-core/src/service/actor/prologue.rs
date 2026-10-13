@@ -432,6 +432,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
         &diagnostics,
         &evt_tx,
         wiring.restore_at_attach,
+        &wiring.served_downloads,
     )
     .await;
 

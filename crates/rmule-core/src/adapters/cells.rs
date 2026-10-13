@@ -60,6 +60,8 @@ pub struct AdapterCells {
     pub(crate) firewalled_front: crate::firewalled::front::SharedFirewalledFront,
     /// The file-known predicate.
     pub(crate) file_known: crate::known_files::SharedFileKnown,
+    /// The Served Downloads (ADR-0113).
+    pub(crate) served_downloads: crate::served_downloads::ServedDownloads,
     /// Where a risen NAT-T Tunnel enters the serve pipeline (ADR-0091).
     pub(crate) tunnel_admit: SharedTunnelAdmit,
     /// `CoreConfig::address_families` (ADR-0085).
@@ -98,6 +100,7 @@ impl AdapterCells {
             ip_filter: SharedIpFilter::default(),
             firewalled_front: crate::firewalled::front::SharedFirewalledFront::default(),
             file_known: crate::known_files::SharedFileKnown::default(),
+            served_downloads: crate::served_downloads::ServedDownloads::default(),
             tunnel_admit: SharedTunnelAdmit::default(),
             address_families: FamilySelection::default(),
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),

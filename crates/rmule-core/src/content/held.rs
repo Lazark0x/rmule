@@ -200,6 +200,11 @@ impl HeldPartFile {
         Ok(allocated)
     }
 
+    /// The held file's key and its metadata, read through the handle.
+    pub(crate) async fn held_metadata(&self) -> std::io::Result<(FileKey, std::fs::Metadata)> {
+        Ok((self.key, self.file.metadata().await?))
+    }
+
     /// The parts a truncation cut were dropped: the recorded parts now end at
     /// `recorded_end`, which the file still reaches.
     pub(crate) fn parts_dropped(&mut self, recorded_end: u64) {

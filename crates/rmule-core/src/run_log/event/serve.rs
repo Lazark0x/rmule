@@ -46,6 +46,12 @@ impl ServeEvent {
             S::FileOffered { file_hash } => {
                 Record::new("serve.file_offered").file_hash("file_hash", file_hash)
             }
+            S::PartialOffered { file_hash } => {
+                Record::new("serve.partial_offered").file_hash("file_hash", file_hash)
+            }
+            S::PartialWithdrawn { file_hash, cause } => Record::new("serve.partial_withdrawn")
+                .file_hash("file_hash", file_hash)
+                .code("cause", codes::partial_end(*cause)),
             S::SharesUnwatched => Record::new("serve.shares_unwatched"),
             S::ShareRejected { reason } => {
                 Record::new("serve.share_rejected").code("reason", codes::share_rejected(*reason))

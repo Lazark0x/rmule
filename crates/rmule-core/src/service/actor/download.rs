@@ -119,21 +119,34 @@ where
                 // The file-known predicate: this download's
                 // hash, mirrored inline for the firewalled front's `0x99` gate.
                 self.wiring.file_known.download_started(file.file_hash);
+                // A Served Download from its queueing on, its lease handed to
+                // the run (ADR-0113).
+                let link_set = file
+                    .part_hash_set
+                    .as_ref()
+                    .map(|set| set.hashes().to_vec())
+                    .unwrap_or_default();
+                self.install_served(&record, &link_set);
+                let run = self.activities.take_download_run();
+                let served = self.lease_to_run(file.file_hash, run);
                 let active = spawn_download(SpawnDownload {
                     runtime: &self.download_runtime,
                     download_id,
                     file,
                     identity: self.settings_identity(),
                     verified_part_indexes: Vec::new(),
-                    run: self.activities.take_download_run(),
+                    run,
                     remembered: Vec::new(),
+                    served,
                 });
                 self.activities.download_started(download_id, active);
+                self.served_moved().await;
             }
             DownloadCommand::CancelDownload { download_id } => {
                 if let Some(active) = self.retire_download(download_id) {
                     let _ = active.stop_tx.send(StopReason::Cancel);
                     let _ = active.handle.await;
+                    self.take_back_served(active.file_hash, active.run);
                 } else if !self.holds_place(download_id) {
                     self.reject(CoreCommandRejectReason::UnknownDownload).await;
                     return;
@@ -144,9 +157,12 @@ where
                 self.cancel(download_id).await;
             }
             DownloadCommand::PauseDownload { download_id } => {
+                // A paused download keeps its offer: its run hands the lease
+                // back as it lets its part file go (ADR-0113).
                 if let Some(active) = self.retire_download(download_id) {
                     let _ = active.stop_tx.send(StopReason::Pause);
                     let _ = active.handle.await;
+                    self.take_back_served(active.file_hash, active.run);
                 } else if self.activities.take_restoring(download_id).is_none() {
                     self.reject(CoreCommandRejectReason::UnknownDownload).await;
                     return;
@@ -355,16 +371,26 @@ where
         // The file-known predicate, mirrored the same way
         // `StartDownload` mirrors it.
         self.wiring.file_known.download_started(record.file_hash());
+        // A restarted failed row is a Served Download again; a paused one's
+        // entry is the actor's to hand on (ADR-0113).
+        if let Ok(active_row) = self.wiring.store.load_download(download_id) {
+            let set = self.recorded_set(download_id);
+            self.install_served(&active_row, &set);
+        }
+        let run = self.activities.take_download_run();
+        let served = self.lease_to_run(record.file_hash(), run);
         let active = spawn_download(SpawnDownload {
             runtime: &self.download_runtime,
             download_id,
             file,
             identity: self.settings_identity(),
             verified_part_indexes,
-            run: self.activities.take_download_run(),
+            run,
             remembered,
+            served,
         });
         self.activities.download_started(download_id, active);
+        self.served_moved().await;
         Ok(())
     }
 
@@ -447,6 +473,7 @@ where
             reason,
         )
         .await;
+        self.end_served(download_id, crate::PartialEnd::Ended).await;
     }
 
     /// Drop a download whose run, if it had one, has ended: its `.part` file,
@@ -473,6 +500,7 @@ where
             DownloadEvent::DownloadCancelled { download_id },
         )
         .await;
+        self.end_served(download_id, crate::PartialEnd::Ended).await;
     }
 
     /// Forget one completed download: its record and its resting row, then
@@ -579,6 +607,9 @@ struct SpawnDownload<'a, S, P> {
     run: u64,
     /// The seeds attach loaded for a restored run (ADR-0109); empty otherwise.
     remembered: Vec<SourceSeed>,
+    /// The lease on the download's Served Download, handed to the run
+    /// (ADR-0113); `None` for a download that has none.
+    served: Option<crate::served_downloads::RunLease>,
 }
 
 /// Spawn one download runner and return its live handle. The single
@@ -600,6 +631,7 @@ where
         verified_part_indexes,
         run,
         remembered,
+        served,
     } = spawn;
     let file_hash = file.file_hash;
     let (stop_tx, stop_rx) = watch::channel(StopReason::Active);
@@ -625,6 +657,7 @@ where
                 later_links: Mutex::new(later_inbox),
                 repair: std::sync::atomic::AtomicBool::new(false),
                 seeds_tx,
+                served,
             },
             finished_tx: runtime.finished_tx.clone(),
         }

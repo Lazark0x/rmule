@@ -149,6 +149,16 @@ impl DownloadScheduler {
         Some(part.plan)
     }
 
+    /// Return a verified part to the pending pool: its record was disproved,
+    /// and it is fetched again. `false` when the part was not verified.
+    pub fn repend_verified(&mut self, plan: PartPlan) -> bool {
+        if plan.part_index >= self.total_parts || !self.is_part_verified(plan.part_index) {
+            return false;
+        }
+        self.pending.insert(plan.part_index, plan);
+        true
+    }
+
     /// Drain every racing assignment and leave the scheduler holding none, for
     /// a teardown that has to release what workers were holding. The parts do
     /// **not** return to pending — the caller owns what happens to them.

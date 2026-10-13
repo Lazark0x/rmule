@@ -1,4 +1,3 @@
-use rmule_peer::PartIndex;
 use rmule_primitives::{Ed2kFileLink, Ed2kText};
 
 use super::*;
@@ -207,24 +206,4 @@ fn each_look_says_each_change_once_with_its_cause() {
         ]
     );
     assert_eq!(cell.look(), []);
-}
-
-#[test]
-fn the_range_of_a_file_an_exact_multiple_of_the_part_size_counts_no_phantom_part() {
-    let size = 2 * ED2K_PART_SIZE;
-    let set = hashes(1);
-    let whole = WholeSet::of(size, &set).expect("two parts and the empty remainder");
-    let empty = VerifiedRange::of_records(Some(&whole), &[]);
-    assert!(!empty.holds_a_part());
-    let status = empty.status(size);
-    assert_eq!(status.part_count(), 3);
-    assert!(
-        status.has(PartIndex::new(2)),
-        "the phantom part always reads held"
-    );
-    let one = VerifiedRange::of_records(Some(&whole), &[verified(1, set[1])]);
-    assert_eq!(
-        one.status(size).iter_present().collect::<Vec<_>>(),
-        [PartIndex::new(1), PartIndex::new(2)]
-    );
 }

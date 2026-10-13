@@ -475,6 +475,7 @@ where
                 hello_adverts: cells.hello_adverts,
                 firewalled_front: cells.firewalled_front,
                 file_known: cells.file_known,
+                served_downloads: cells.served_downloads,
                 tunnel_admit: cells.tunnel_admit,
                 hello_refusals: cells.hello_refusals,
                 ip_filter: cells.ip_filter,
@@ -686,6 +687,9 @@ impl Core {
             ip_filter,
             firewalled_front,
             file_known,
+            // The Served Downloads (ADR-0113): one cell the actor and every
+            // run write under its lease, for the serve side to read.
+            served_downloads: crate::served_downloads::ServedDownloads::default(),
             tunnel_admit,
             address_families: config.address_families,
             // One cell every peer connection's first reader reports a refused

@@ -34,6 +34,7 @@ mod intake;
 mod link_sources;
 mod lookup;
 mod reply_sink;
+mod served;
 mod server_leg;
 #[cfg(test)]
 pub(super) mod test_context;
@@ -166,6 +167,9 @@ pub(crate) struct RunnerContext<S, P> {
     /// Where the run publishes its **Source Seeds** ranking each reask sweep
     /// (ADR-0109), for the core actor to write.
     pub(crate) seeds_tx: watch::Sender<Vec<crate::download::source_seeds::SourceSeed>>,
+    /// The run's lease on its **Served Download** (ADR-0113); `None` for a
+    /// download of one part, which has none.
+    pub(crate) served: Option<crate::served_downloads::RunLease>,
 }
 
 impl<S, P> RunnerContext<S, P> {
@@ -225,6 +229,9 @@ where
                 }
             }
         };
+        if matches!(result, Err(DownloadFailure::Paused)) {
+            served::let_go(&self.runner).await;
+        }
         let completed = result.is_ok();
 
         if let Err(reason) = result
@@ -260,6 +267,7 @@ where
     check_stop(&runner.stop_rx)?;
     // The run holds its part file from its first act (ADR-0094).
     crate::download::persist::hold_part_file(runner, request.download_id).await?;
+    served::lease_started(runner, request.download_id).await;
     let target =
         rmule_primitives::SourceLookupTarget::new(request.file.file_hash, request.file.size);
     // Subscribed before the first lookup: a session that comes up after it

@@ -25,7 +25,7 @@ use crate::storage::DownloadRepository;
 
 use super::callbacks::CallbackContext;
 use super::fleet::{enter_phase, refresh_parts};
-use super::{RunnerContext, WORKER_SHUTDOWN_TIMEOUT, now};
+use super::{RunnerContext, WORKER_SHUTDOWN_TIMEOUT, now, served};
 
 /// Everything one download run carries across loop turns, owned as one value so
 /// the `select!` loop and [`enact_drain`] share a single `&mut ctx`: the
@@ -155,20 +155,27 @@ where
                         queue.extend(ctx.state.on_persist_result(now(), part_index, peer, Ok(())))
                     }
                 }
+                // Before any decision that result returned is enacted, so
+                // no status the run sends names a part the serve side
+                // lacks (ADR-0113).
+                served::rule_range_of(ctx.runner, ctx.download_id, &ctx.state);
             }
             Decision::PersistProvisionalHashes(hashes) => {
                 // A store that cannot keep the set fails the run through the
                 // one whole-fleet terminal, so every worker is
                 // told `Shutdown` and every roster relation ends — never a
                 // bare early return that leaves the fleet running unowned.
-                if ctx
+                match ctx
                     .runner
                     .rt
                     .store
                     .record_provisional_part_hashes(ctx.download_id, &hashes)
-                    .is_err()
                 {
-                    queue.push_front(Decision::Fail(DownloadFailure::StoreFailed));
+                    Err(_) => queue.push_front(Decision::Fail(DownloadFailure::StoreFailed)),
+                    Ok(disproved) => {
+                        refetch_disproved(ctx, &disproved, queue);
+                        served::rule_range(ctx.runner, ctx.download_id, &hashes);
+                    }
                 }
             }
             Decision::DistrustPeer { user_hash } => {
@@ -244,14 +251,21 @@ where
                 // Normal completion: release each held slot silently, no
                 // `OP_CANCELTRANSFER` (ADR-0056).
                 shut_down_every_worker(ctx, false).await;
-                finalize_download(
+                let finalized = finalize_download(
                     ctx.runner,
                     ctx.download_id,
                     ctx.file,
                     std::mem::take(&mut ctx.file_hash_only_parts),
                     ctx.evt_tx,
                 )
-                .await?;
+                .await;
+                // The finished file holds the bytes now; a finalize that
+                // dropped parts to fetch them again shrinks the range first.
+                match finalized {
+                    Ok(()) => served::in_place(ctx.runner, ctx.download_id).await,
+                    Err(_) => served::rule_range_of(ctx.runner, ctx.download_id, &ctx.state),
+                }
+                finalized?;
             }
             Decision::RequestCallback {
                 low_id,
@@ -485,6 +499,28 @@ where
     refresh_parts(&ctx.runner.rt.diagnostics, ctx.download_id, &ctx.state);
     hold_queued_relations(ctx);
     Ok(())
+}
+
+/// The parts a part hash set disproved as it arrived, dropped by the store in
+/// the write that recorded it: no longer verified by the file hash at
+/// finalize, and fetched again.
+fn refetch_disproved<S, P>(
+    ctx: &mut LoopCtx<'_, S, P>,
+    disproved: &[crate::VerifiedPartRecord],
+    queue: &mut VecDeque<Decision>,
+) {
+    if disproved.is_empty() {
+        return;
+    }
+    let lost: Vec<u32> = disproved.iter().map(|part| part.part_index).collect();
+    tracing::warn!(
+        download_id = ctx.download_id.as_u64(),
+        parts = lost.len(),
+        "parts fetched before the part hash set arrived do not match it; fetching them again"
+    );
+    ctx.file_hash_only_parts.retain(|part| !lost.contains(part));
+    ctx.runner.rt.diagnostics.parts_lost(ctx.download_id, &lost);
+    queue.extend(ctx.state.refetch(now(), &lost));
 }
 
 /// The Peer Roster's `Queued` leg (ADR-0059 "Roster relations"): this run

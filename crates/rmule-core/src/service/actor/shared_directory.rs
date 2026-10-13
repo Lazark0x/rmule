@@ -184,12 +184,14 @@ where
     /// their folder missing. Every row withheld as refused that no refused
     /// entry holds now — the download directory moved, or a passing entry
     /// covers it — is looked at by the Registry Check at once, since no look
-    /// touches it while it is refused.
+    /// touches it while it is refused. A Served Download whose destination
+    /// lies under a refused entry is held back the same way (ADR-0113).
     async fn match_refusals(&mut self) {
         let rows = match self.wiring.registry.list() {
             Ok(rows) => rows,
             Err(error) => {
                 tracing::warn!(%error, "rows under a refused directory not withheld; none is offered again while it is refused");
+                self.match_served_refusals().await;
                 return;
             }
         };
@@ -208,6 +210,7 @@ where
                     .tell(CheckInput::RefusalLifted(row.file_hash));
             }
         }
+        self.match_served_refusals().await;
     }
 
     /// The root of `dir`'s scan appeared after missing: judge it by the

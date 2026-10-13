@@ -19,11 +19,10 @@
 //! own changes it looks at in the same step that made them.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::SystemTime;
 
-use rmule_peer::PartBitmap;
 use rmule_primitives::{ED2K_PART_SIZE, FileHash, PartHash, PartHashSet};
 use tokio::sync::watch;
 
@@ -99,6 +98,7 @@ impl VerifiedRange {
     }
 
     /// Whether part `part_index` lies inside the range.
+    #[cfg(test)]
     pub(crate) fn holds(&self, part_index: u32) -> bool {
         self.0.contains(&part_index)
     }
@@ -106,12 +106,6 @@ impl VerifiedRange {
     /// Whether the range holds any part of the file.
     pub(crate) fn holds_a_part(&self) -> bool {
         !self.0.is_empty()
-    }
-
-    /// The status this range advertises, spelt as the download spells its
-    /// own ([`PartBitmap::downloader`]), so the two are one set.
-    pub(crate) fn status(&self, file_size: u64) -> PartBitmap {
-        PartBitmap::downloader(file_size, |part| self.holds(part.value()))
     }
 }
 
@@ -183,16 +177,6 @@ pub(crate) struct Served {
     pub(crate) range: VerifiedRange,
     /// The file the range was read from, once a writer read it.
     pub(crate) identity: Option<PartFileIdentity>,
-}
-
-impl Served {
-    /// The path the verified bytes are read from now.
-    pub(crate) fn bytes_path(&self) -> &Path {
-        match self.bytes_at {
-            BytesAt::PartFile => &self.part_path,
-            BytesAt::FinalFile => &self.final_path,
-        }
-    }
 }
 
 /// Who writes an entry now.
@@ -450,6 +434,7 @@ impl ServedDownloads {
     }
 
     /// The file hashes offered now, in hash order.
+    #[cfg(test)]
     pub(crate) fn offered(&self) -> Vec<FileHash> {
         let book = self.lock();
         let mut offered: Vec<FileHash> = book
@@ -463,6 +448,7 @@ impl ServedDownloads {
     }
 
     /// The Served Download of `file_hash`, as it stands.
+    #[cfg(test)]
     pub(crate) fn served(&self, file_hash: FileHash) -> Option<Served> {
         self.lock()
             .entries
@@ -503,11 +489,6 @@ pub(crate) struct RunLease {
 }
 
 impl RunLease {
-    /// The file the lease is on.
-    pub(crate) const fn file_hash(&self) -> FileHash {
-        self.file_hash
-    }
-
     /// Rule the Verified Range from the part hash set in force and the parts
     /// the store records: `set` becomes the entry's set when it is whole.
     pub(crate) fn record_range(&self, set: &[PartHash], records: &[VerifiedPartRecord]) -> bool {

@@ -286,3 +286,43 @@ fn the_list_edges_read_as_what_happened_to_the_directory() {
         "/srv/media no longer shared: 1 file left the offer, still on disk"
     );
 }
+
+/// A Partial Share is its download's: core's edges open and close it, a File
+/// History answer — the registry's — leaves it be, and it is named by the
+/// download it belongs to.
+#[test]
+fn a_partial_share_outlives_a_registry_answer_and_ends_on_its_withdrawal() {
+    let mut state = crate::fixture::partially_served();
+    assert_eq!(
+        state.notable.as_deref(),
+        Some("a download offers the parts it has verified")
+    );
+    history(&[(1, "/dl/film.mkv", 734_003_200)]).fold_into(&mut state);
+    let download = state
+        .partial_download(file_hash(3))
+        .expect("the share is its download's");
+    assert_eq!(
+        download
+            .metadata
+            .as_ref()
+            .map(|m| m.name.to_display_string()),
+        Some("album.flac".to_string())
+    );
+    assert!(
+        !state.shared.contains_key(&file_hash(3)),
+        "never a registry row"
+    );
+
+    fold(
+        &mut state,
+        serve_event(ServeEvent::PartialWithdrawn {
+            file_hash: file_hash(3),
+            cause: rmule_core::PartialEnd::Completed,
+        }),
+    );
+    assert!(state.partial_download(file_hash(3)).is_none());
+    assert_eq!(
+        state.notable.as_deref(),
+        Some("a download finished and is shared whole")
+    );
+}

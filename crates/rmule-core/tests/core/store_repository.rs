@@ -381,6 +381,39 @@ fn replacing_provisional_part_hashes_is_rejected_unless_identical() {
 }
 
 #[test]
+fn a_set_drops_the_parts_recorded_before_it_that_it_disproves() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repository(dir.path());
+    let created = create(&repo, dir.path(), "download.bin");
+    let hashes: Vec<PartHash> = [0x11, 0x22, 0x33]
+        .map(|byte| PartHash::from_bytes([byte; PartHash::BYTE_LEN]))
+        .to_vec();
+    let part = |part_index: u32, part_hash| VerifiedPartRecord {
+        part_index,
+        offset: u64::from(part_index) * ED2K_PART_SIZE,
+        len: ED2K_PART_SIZE,
+        part_hash,
+    };
+    let held = part(0, hashes[0]);
+    let refuted = part(1, PartHash::from_bytes([0xEE; PartHash::BYTE_LEN]));
+    repo.record_verified_part(created.id(), held).unwrap();
+    repo.record_verified_part(created.id(), refuted).unwrap();
+
+    assert_eq!(
+        repo.record_provisional_part_hashes(created.id(), &hashes)
+            .unwrap(),
+        vec![refuted]
+    );
+    assert_eq!(repo.verified_parts(created.id()).unwrap(), vec![held]);
+    assert!(
+        repo.record_provisional_part_hashes(created.id(), &hashes)
+            .unwrap()
+            .is_empty(),
+        "the set in force refutes nothing it already checked"
+    );
+}
+
+#[test]
 fn link_part_hash_authority_does_not_duplicate_hashes_as_child_rows() {
     let dir = tempfile::tempdir().unwrap();
     let repo = repository(dir.path());

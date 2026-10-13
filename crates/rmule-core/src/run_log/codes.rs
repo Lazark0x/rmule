@@ -236,6 +236,16 @@ pub(super) const fn serve_stop(reason: ServeStopReason) -> &'static str {
     }
 }
 
+pub(super) const fn partial_end(cause: crate::PartialEnd) -> &'static str {
+    match cause {
+        crate::PartialEnd::Completed => "completed",
+        crate::PartialEnd::Ended => "ended",
+        crate::PartialEnd::HeldBack => "held_back",
+        crate::PartialEnd::Changed => "changed",
+        crate::PartialEnd::Unreadable => "unreadable",
+    }
+}
+
 pub(super) const fn waiter_left(cause: WaiterLeaveCause) -> &'static str {
     match cause {
         WaiterLeaveCause::Purged => "purged",

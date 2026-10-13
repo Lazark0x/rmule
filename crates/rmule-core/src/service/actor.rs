@@ -15,6 +15,7 @@ mod registry_check;
 mod scan;
 mod search;
 mod serve;
+mod served;
 mod server;
 mod server_intent;
 mod server_udp_front;
@@ -184,6 +185,9 @@ pub(super) struct CoreWiring<S, P, L, K> {
     /// the firewalled front reads it for its `0x99` gate without awaiting
     /// this actor.
     pub(super) file_known: crate::known_files::SharedFileKnown,
+    /// The **Served Downloads** (ADR-0113): the actor installs, leases, holds
+    /// back and ends every entry; each run writes its own through its lease.
+    pub(super) served_downloads: crate::served_downloads::ServedDownloads,
     /// Where a risen NAT-T **Tunnel** enters the serve pipeline (ADR-0091):
     /// filled by the serve adapter's accept pump, read by the NAT-T front.
     pub(super) tunnel_admit: crate::adapters::SharedTunnelAdmit,
@@ -408,8 +412,17 @@ where
             crate::download::source_seeds::SEED_WRITE_INTERVAL,
         );
         seed_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut served_offers = self.wiring.served_downloads.offer_changes();
         loop {
             tokio::select! {
+                changed = served_offers.changed() => {
+                    if changed.is_err() {
+                        // Unreachable: the cell this actor holds owns the sender.
+                        break;
+                    }
+                    // A run's write moved a Partial Share's offer (ADR-0113).
+                    self.served_moved().await;
+                }
                 _ = seed_tick.tick(), if !self.activities.downloads_idle() => {
                     self.write_source_seeds();
                 }
@@ -544,8 +557,10 @@ where
                             // ADR-0093) retires here; one a stop already
                             // retired is gone from the ledger, or replaced by
                             // a later run, so its late notice retires nothing.
-                            if self.activities.download(download_id).is_some_and(|active| active.run == run) {
-                                self.retire_download(download_id);
+                            if self.activities.download(download_id).is_some_and(|active| active.run == run)
+                                && let Some(active) = self.retire_download(download_id)
+                            {
+                                self.take_back_served(active.file_hash, active.run);
                             }
                             download_id
                         }
@@ -558,8 +573,9 @@ where
                     };
                     // The join point where the download and serve halves meet
                     // (ADR-0031): a download that reached `Completed` auto-shares,
-                    // unless it finished under a refused entry (ADR-0101).
-                    self.share_completed(download_id).await;
+                    // unless it finished under a refused entry (ADR-0101), and
+                    // its Served Download ends (ADR-0113).
+                    self.download_finished(download_id).await;
                 }
                 else => break,
             }

@@ -4,7 +4,7 @@
 
 use rmule_core::file_history::HistoryPart;
 use rmule_core::{
-    ServeEvent, ServeStartFailure, ServeStopReason, ShareRejectReason, SharesWithheld,
+    PartialEnd, ServeEvent, ServeStartFailure, ServeStopReason, ShareRejectReason, SharesWithheld,
     WaiterLeaveCause, WithheldReason,
 };
 
@@ -23,6 +23,10 @@ pub const fn withheld_words(reason: WithheldReason) -> &'static str {
         WithheldReason::Refused => "folder refused",
     }
 }
+
+/// A download offering the parts it verified: the Shared Files table's
+/// State cell.
+pub const PARTIAL: &str = "partial";
 
 /// A withhold edge, in the status feed and the log.
 #[must_use]
@@ -65,6 +69,28 @@ pub fn history_unread(parts: &[HistoryPart]) -> Sentence {
 
 /// Offered again.
 pub const OFFERED: Sentence = Sentence::fixed("a shared file is readable again and offered again");
+
+/// A download began to offer the parts it verified.
+pub const PARTIAL_OFFERED: Sentence =
+    Sentence::fixed("a download offers the parts it has verified");
+
+/// A download stopped offering its parts, and why.
+#[must_use]
+pub const fn partial_withdrawn(cause: PartialEnd) -> Sentence {
+    Sentence::fixed(match cause {
+        PartialEnd::Completed => "a download finished and is shared whole",
+        PartialEnd::Ended => "a download no longer offers its parts: it ended",
+        PartialEnd::HeldBack => {
+            "a download no longer offers its parts: its folder leads where rmule will not share"
+        }
+        PartialEnd::Changed => {
+            "a download no longer offers its parts: its part file changed on disk"
+        }
+        PartialEnd::Unreadable => {
+            "a download no longer offers its parts: its part file cannot be read"
+        }
+    })
+}
 
 /// The folder watch's degrade.
 pub const UNWATCHED: Sentence = Sentence::fixed(
@@ -171,6 +197,8 @@ pub fn log_line(event: &ServeEvent) -> Sentence {
         Sv::FileUnshared { .. } => FILE_UNSHARED,
         Sv::FileWithheld { reason, .. } => withheld(*reason),
         Sv::FileOffered { .. } => OFFERED,
+        Sv::PartialOffered { .. } => PARTIAL_OFFERED,
+        Sv::PartialWithdrawn { cause, .. } => partial_withdrawn(*cause),
         Sv::SharesUnwatched => UNWATCHED,
         Sv::ShareRejected { reason } => share_rejected(*reason),
         Sv::ServingStarted { listen_addr } => serving_started(listen_addr.port()),
