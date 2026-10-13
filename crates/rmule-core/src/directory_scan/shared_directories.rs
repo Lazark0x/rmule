@@ -134,15 +134,7 @@ fn guard(
     guards: &ShareGuards,
     temp_dir: Option<&Path>,
 ) -> Result<(), DirectoryRefusal> {
-    if dir.to_str().is_none() {
-        return Err(DirectoryRefusal::NotUtf8);
-    }
-    if guards.home.as_deref().map(canonical).as_deref() == Some(dir) {
-        return Err(DirectoryRefusal::HomeDirectory);
-    }
-    if mount_point(dir) {
-        return Err(DirectoryRefusal::FilesystemRoot);
-    }
+    guard_any(dir, guards)?;
     if let Some(data) = guards.data_dir.as_deref().map(canonical) {
         if dir.starts_with(&data) {
             return Err(DirectoryRefusal::DataDirectory);
@@ -162,12 +154,27 @@ fn guard(
     Ok(())
 }
 
+/// The guards every directory rmule keeps files in passes, on its canonical
+/// path `dir`: valid UTF-8, not the home, not a filesystem root.
+fn guard_any(dir: &Path, guards: &ShareGuards) -> Result<(), DirectoryRefusal> {
+    if dir.to_str().is_none() {
+        return Err(DirectoryRefusal::NotUtf8);
+    }
+    if guards.home.as_deref().map(canonical).as_deref() == Some(dir) {
+        return Err(DirectoryRefusal::HomeDirectory);
+    }
+    if mount_point(dir) {
+        return Err(DirectoryRefusal::FilesystemRoot);
+    }
+    Ok(())
+}
+
 /// Check `dir` for the Temp Directory where it is now, or would be made
-/// (ADR-0115): an absolute UTF-8 path, not an existing file, not the home
-/// or a filesystem root, and apart from the Shared Directory List — not the
-/// download directory `download_dir`, nor one of `shared` (canonical, as the
-/// list keys them), inside one or holding one. rmule's data directory is no
-/// bar: the default lies inside it.
+/// (ADR-0115): an absolute path, not an existing file, then the guards every
+/// directory passes ([`guard_any`]), and apart from the Shared Directory
+/// List — not the download directory `download_dir`, nor one of `shared`
+/// (canonical, as the list keys them), inside one or holding one. rmule's
+/// data directory is no bar: the default lies inside it.
 ///
 /// # Errors
 /// The first guard it fails, in that order.
@@ -177,9 +184,6 @@ pub(crate) fn guard_temp_dir(
     download_dir: Option<&Path>,
     shared: &[PathBuf],
 ) -> Result<(), DirectoryRefusal> {
-    if dir.to_str().is_none() {
-        return Err(DirectoryRefusal::NotUtf8);
-    }
     if !dir.is_absolute() {
         return Err(DirectoryRefusal::NotAbsolute);
     }
@@ -187,12 +191,7 @@ pub(crate) fn guard_temp_dir(
         return Err(DirectoryRefusal::NotADirectory);
     }
     let dir = resolved(dir);
-    if guards.home.as_deref().map(canonical).as_deref() == Some(dir.as_path()) {
-        return Err(DirectoryRefusal::HomeDirectory);
-    }
-    if mount_point(&dir) {
-        return Err(DirectoryRefusal::FilesystemRoot);
-    }
+    guard_any(&dir, guards)?;
     let download = download_dir.map(resolved);
     if download.as_ref() == Some(&dir) {
         return Err(DirectoryRefusal::DownloadDirectory);
