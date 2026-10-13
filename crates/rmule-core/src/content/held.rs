@@ -45,7 +45,7 @@ use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::content::sparse;
+use crate::content::{on_pool, sparse};
 use crate::file_key::FileKey;
 
 /// What a run found at its part file's path that is no longer the file it
@@ -113,7 +113,7 @@ impl HeldPartFile {
         recorded_end: u64,
     ) -> Result<(Self, Option<u64>), HeldWriteError> {
         let path = path.to_path_buf();
-        blocking(move || Self::hold_blocking(path, recorded_end)).await
+        on_pool(move || Self::hold_blocking(path, recorded_end)).await
     }
 
     fn hold_blocking(
@@ -163,12 +163,9 @@ impl HeldPartFile {
         let file = Arc::clone(&self.file);
         let path = self.path.clone();
         let (key, recorded_end) = (self.key, self.recorded_end);
-        match tokio::task::spawn_blocking(move || check_file(&file, &path, key, recorded_end)).await
-        {
-            Ok(checked) => checked.map(|_| ()),
-            // A check that could not run is no proof of a change.
-            Err(_) => Ok(()),
-        }
+        on_pool(move || check_file(&file, &path, key, recorded_end))
+            .await
+            .map(|_| ())
     }
 
     /// Write one verified part at `offset` through the held handle, after
@@ -186,7 +183,7 @@ impl HeldPartFile {
         let path = self.path.clone();
         let (key, recorded_end, punches) = (self.key, self.recorded_end, self.punches);
         let part = bytes.to_vec();
-        let allocated = blocking(move || {
+        let allocated = on_pool(move || {
             let end =
                 check_file(&file, &path, key, recorded_end).map_err(HeldWriteError::Changed)?;
             sparse::write_at(&file, offset, &part, end.filter(|_| punches))
@@ -203,9 +200,7 @@ impl HeldPartFile {
     /// The held file's key and its metadata, read through the handle.
     pub(crate) async fn held_metadata(&self) -> io::Result<(FileKey, std::fs::Metadata)> {
         let file = Arc::clone(&self.file);
-        let meta = tokio::task::spawn_blocking(move || file.metadata())
-            .await
-            .map_err(io::Error::other)??;
+        let meta = on_pool(move || file.metadata()).await?;
         Ok((self.key, meta))
     }
 
@@ -240,16 +235,6 @@ fn check_file(
         return Err(PartFileChange::Truncated { len });
     }
     Ok(Some(len))
-}
-
-/// Run `work` on the blocking pool; a call that could not run is an I/O
-/// error.
-async fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> Result<T, HeldWriteError> + Send + 'static,
-) -> Result<T, HeldWriteError> {
-    tokio::task::spawn_blocking(work)
-        .await
-        .map_err(|error| HeldWriteError::Io(io::Error::other(error)))?
 }
 
 #[cfg(test)]

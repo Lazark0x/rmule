@@ -22,7 +22,7 @@ use rmule_primitives::Ed2kFileLink;
 use tokio::sync::oneshot;
 
 use super::{RunnerContext, served, stop_reason, wait_until_stop};
-use crate::content::ContentFileStore;
+use crate::content::{ContentFileStore, on_pool};
 use crate::error::{DownloadFailure, FinalizeError, StorageIntegrityFault};
 use crate::service::{CompletionStep, DownloadEvent, DownloadId, send_download_event};
 use crate::storage::{DownloadRepository, ResolvedAuthority};
@@ -485,13 +485,6 @@ async fn remove_quietly(path: PathBuf) {
     {
         tracing::warn!(%error, "a partial completion copy could not be deleted");
     }
-}
-
-/// Run `work` on the blocking pool.
-async fn on_pool<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
-    tokio::task::spawn_blocking(work)
-        .await
-        .expect("a completion step on the blocking pool does not panic")
 }
 
 #[cfg(test)]

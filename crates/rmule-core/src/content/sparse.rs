@@ -127,10 +127,9 @@ pub(crate) async fn probe_holes(part_path: &Path) -> HoleVerdict {
     let Some(probe) = probe_path(part_path) else {
         return HoleVerdict::Unknown(io::ErrorKind::InvalidInput);
     };
-    match tokio::task::spawn_blocking(move || probe_at(&probe)).await {
-        Ok(Ok(verdict)) => verdict,
-        Ok(Err(error)) => HoleVerdict::Unknown(error.kind()),
-        Err(_) => HoleVerdict::Unknown(io::ErrorKind::Other),
+    match super::on_pool(move || probe_at(&probe)).await {
+        Ok(verdict) => verdict,
+        Err(error) => HoleVerdict::Unknown(error.kind()),
     }
 }
 

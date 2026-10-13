@@ -35,6 +35,22 @@ pub(crate) use held::{HeldPartFile, HeldWriteError};
 pub use sparse::HoleVerdict;
 pub(crate) use sparse::probe_holes;
 
+/// Run `work` on the blocking pool and answer what it returned: the one way
+/// core's file work leaves the async threads. A panic in `work` resumes on
+/// the caller, as if it had run there; what the work itself can fail with is
+/// its own result's to say.
+pub(crate) async fn on_pool<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+    match tokio::task::spawn_blocking(work).await {
+        Ok(done) => done,
+        Err(error) => match error.try_into_panic() {
+            Ok(panic) => std::panic::resume_unwind(panic),
+            // The pool cancels only work it never started, as the runtime
+            // shuts down, when nothing awaits it any more.
+            Err(error) => unreachable!("the blocking pool cancelled work it took: {error}"),
+        },
+    }
+}
+
 impl ContentFileStore {
     /// Write `bytes` into the `.part` file at absolute `offset`, creating the
     /// file and its parent directory if needed — for a part file written
@@ -51,7 +67,7 @@ impl ContentFileStore {
     ) -> Result<(), CoreError> {
         let path = paths.part_path().to_path_buf();
         let bytes = bytes.to_vec();
-        let written = tokio::task::spawn_blocking(move || {
+        on_pool(move || {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -65,8 +81,7 @@ impl ContentFileStore {
             sparse::write_at(&file, offset, &bytes, punches.then_some(end))
         })
         .await
-        .map_err(|error| io_error(std::io::Error::other(error)))?;
-        written.map_err(io_error)
+        .map_err(io_error)
     }
 
     /// Read exactly `len` bytes from `path` starting at `offset`. A short file
@@ -85,13 +100,12 @@ impl ContentFileStore {
     /// holds fewer bytes, is [`FinalizeError::Unreadable`].
     pub(crate) async fn hash_file(path: &Path, file_size: u64) -> Result<FileHash, FinalizeError> {
         let path = path.to_path_buf();
-        let hashed = tokio::task::spawn_blocking(move || {
+        on_pool(move || {
             let file = std::fs::File::open(path)?;
             file_hash_streamed(file, file_size)
         })
         .await
-        .map_err(|_| FinalizeError::Unreadable { os_code: None })?;
-        hashed.map_err(|error| FinalizeError::Unreadable {
+        .map_err(|error| FinalizeError::Unreadable {
             os_code: error.raw_os_error(),
         })
     }
@@ -179,15 +193,11 @@ pub(crate) async fn revalidate_verified_parts(
     parts: &[VerifiedPartRecord],
 ) -> Revalidation {
     let (paths, parts) = (paths.clone(), parts.to_vec());
-    tokio::task::spawn_blocking(move || {
-        walk_verified_parts(&paths, &parts, &AtomicBool::new(false))
-    })
-    .await
-    .ok()
-    .flatten()
-    .unwrap_or(Revalidation::Condemned(
-        StorageIntegrityFault::PartFileUnreadable { os_code: None },
-    ))
+    on_pool(move || walk_verified_parts(&paths, &parts, &AtomicBool::new(false)))
+        .await
+        .unwrap_or(Revalidation::Condemned(
+            StorageIntegrityFault::PartFileUnreadable { os_code: None },
+        ))
 }
 
 /// [`revalidate_verified_parts`]' walk, on the calling thread, looking at

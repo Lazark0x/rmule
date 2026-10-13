@@ -11,7 +11,7 @@ use std::fs::File;
 use std::io::{self, ErrorKind, Read, Seek, SeekFrom};
 use std::path::Path;
 
-use super::ContentFileStore;
+use super::{ContentFileStore, on_pool};
 use crate::file_key::FileKey;
 use crate::served_downloads::ReadCheck;
 
@@ -40,9 +40,7 @@ impl ContentFileStore {
             CheckedReadError::Unreadable(io::Error::other("read range length exceeds usize"))
         })?;
         let (path, check) = (path.to_path_buf(), check.clone());
-        tokio::task::spawn_blocking(move || read_checked_blocking(&path, &check, offset, len))
-            .await
-            .map_err(|error| CheckedReadError::Unreadable(io::Error::other(error)))?
+        on_pool(move || read_checked_blocking(&path, &check, offset, len)).await
     }
 }
 
