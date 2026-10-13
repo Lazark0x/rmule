@@ -292,7 +292,8 @@ fn remember_peers_takes_one_to_255() {
 #[test]
 fn a_player_command_is_refused_unless_its_words_split_into_a_player() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let folder = format!("{}/ --fs", dir.path().display());
+    let folder = dir.path().to_str().expect("a temp path is UTF-8");
+    let folder = format!("{} --fs", shlex::try_quote(folder).expect("quotes"));
     let mut view = SettingsView::new();
     let state = state();
     let mut typed = |text: &str| {
