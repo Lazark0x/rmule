@@ -663,16 +663,6 @@ pub enum CoreEvent {
     },
 }
 
-impl CoreEvent {
-    /// The CLI's sentence for [`Self::ClientUdpBindFailed`]. The TUI words the
-    /// event's port and error kind itself, since it owns every word it shows.
-    pub fn client_udp_bind_failed_message(port: u16, kind: std::io::ErrorKind) -> String {
-        format!(
-            "UDP port {port} could not be bound ({kind}) — Kad, reask and NAT traversal are off until restart"
-        )
-    }
-}
-
 impl From<DownloadEvent> for CoreEvent {
     fn from(event: DownloadEvent) -> Self {
         Self::Download(event)

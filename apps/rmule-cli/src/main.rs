@@ -23,6 +23,7 @@ use rmule_core::{
 };
 use rmule_primitives::{Ed2kLink, SafeFileName, ServerEndpoint};
 use rmule_words::download::{completed_line, hole_less_destination};
+use rmule_words::reach::client_udp_bind_failed;
 
 mod kad;
 
@@ -427,7 +428,7 @@ async fn run_add(data_dir: &std::path::Path, link_str: &str, verbose: bool) -> R
             // are off for the rest of the process, so it is worth a line
             // even though nothing here ever sends `EnableKad`.
             CoreEvent::ClientUdpBindFailed { port, kind } => {
-                println!("{}", CoreEvent::client_udp_bind_failed_message(port, kind));
+                println!("{}", client_udp_bind_failed(port, kind));
             }
             // Half of the same story: the pair came up, but
             // without a family it selected, so some of what rides it is off
