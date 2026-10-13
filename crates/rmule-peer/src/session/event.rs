@@ -146,6 +146,9 @@ pub enum SlotReleaseReason {
     /// Wire-level protocol violation forced session into terminal
     /// slot state.
     ProtocolViolation,
+    /// The peer answered `OP_FILEREQANSNOFIL` for the file mid-slot: it does
+    /// not have it.
+    FileNotFound,
     /// Driver-owned slot-stale timeout fired (`signal_slot_stale`).
     Stale,
     /// Local-reason teardown sent `OP_CANCELTRANSFER` before releasing

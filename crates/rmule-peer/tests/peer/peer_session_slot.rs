@@ -3,8 +3,8 @@
 //! progress, and the cancel/release paths that hand the slot back.
 
 use rmule_peer::{
-    NoticeEvent, PartRanges, PeerCommand, PeerError, PeerEvent, RequesterCommand, RequesterEvent,
-    SlotReleaseReason,
+    FileProbeStatus, NoticeEvent, PartRanges, PeerCommand, PeerError, PeerEvent, RequesterCommand,
+    RequesterEvent, SlotReleaseReason,
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{ED2K_PART_SIZE, Packet, PartHash};
@@ -203,6 +203,46 @@ fn outofpartreqs_emits_queue_rejected_and_clears_active_slot() {
             reason: PeerError::SlotBusy
         })
     )));
+}
+
+/// A peer that answers `OP_FILEREQANSNOFIL` for the file it is uploading
+/// lacks it: the slot ends on that terminal path, named as such (ADR-0025),
+/// after the probe's no-file status.
+#[test]
+fn a_mid_slot_no_file_answer_ends_the_slot_as_file_not_found() {
+    let h = file_hash(0x8A);
+    let mut session = identified_session();
+    let ranges = PartRanges::new([(0, 32), (0, 0), (0, 0)]).unwrap();
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
+        file_hash: h,
+        file_size: 1_000_000,
+        ranges,
+    }));
+    session.handle_bytes(&reqfilename_answer(h, "x"));
+    session.handle_bytes(&file_status(h, 1, &[0x01]));
+    session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
+    session.handle_bytes(&acceptuploadreq());
+    let _ = drain(|| session.poll_output());
+
+    session.handle_bytes(&filereqansnofil(h));
+    let out = drain(|| session.poll_output());
+    let evs = events(&out);
+    assert!(
+        matches!(
+            evs.as_slice(),
+            [
+                PeerEvent::Requester(RequesterEvent::FileProbed {
+                    status: FileProbeStatus::NotAvailable,
+                    ..
+                }),
+                PeerEvent::Requester(RequesterEvent::SlotReleased {
+                    reason: SlotReleaseReason::FileNotFound,
+                    ..
+                }),
+            ]
+        ),
+        "{evs:?}"
+    );
 }
 
 #[test]

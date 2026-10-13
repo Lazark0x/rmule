@@ -391,6 +391,27 @@ impl SourceBook {
         Some(record)
     }
 
+    /// Spend `id` under every **Ask Name** it holds — its endpoints, its
+    /// Low-ID key, the User Hashes it knows, the one its standing keeps from
+    /// the hello it queued under among them — and take it out of the book: its
+    /// source said it lacks the file (ADR-0090). A sighting under any of those
+    /// names is refused for the spent period.
+    fn spend_lacking(&mut self, id: RecordId) {
+        let Some(record) = self.records.get(&id) else {
+            return;
+        };
+        let mut hashes = self.user_hashes(record);
+        if let Some(queued_under) = record.standing.and_then(|standing| standing.crypt())
+            && !hashes.contains(&queued_under.user_hash)
+        {
+            hashes.push(queued_under.user_hash);
+        }
+        for name in self.ask_names(record, &hashes) {
+            self.blocks.spend(name);
+        }
+        self.remove(id);
+    }
+
     /// Bind `endpoint` to `id`, if the record has room and nothing else
     /// answers to it.
     fn add_endpoint(&mut self, id: RecordId, endpoint: PeerEndpoint) {

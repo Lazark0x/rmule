@@ -93,11 +93,23 @@ impl DownloadState {
             // advertisement.
             PeerWorkerEvent::SourcesAsked => self.sources.asked(peer, now),
             // The probe's answer: the record keeps the parts, and the worker
-            // gets its first part from them (ADR-0112).
+            // gets its first part from them (ADR-0112). No parts at all is
+            // the peer saying it lacks the file (`0x48`, at the probe or
+            // mid-slot): the source is spent for this download (ADR-0090).
             PeerWorkerEvent::PartsAdvertised { parts, complete } => {
                 self.sources.advertised(peer, complete, now);
+                let lacks_file = parts.is_none();
                 self.sources.probe_answered(peer, parts);
-                self.assign(now, peer, &mut out);
+                if lacks_file {
+                    out.push(Decision::Emit(DownloadEvent::PeerRetired {
+                        download_id: self.download_id,
+                        peer,
+                        reason: PeerRetirementReason::FileNotFound,
+                    }));
+                    self.release(now, peer, PeerRetirementReason::FileNotFound, &mut out);
+                } else {
+                    self.assign(now, peer, &mut out);
+                }
             }
             PeerWorkerEvent::IdentityVerified {
                 user_hash,

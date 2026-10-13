@@ -20,7 +20,8 @@ use crate::adapters::peer_transfer::{PeerWorkerCommand, PeerWorkerEvent};
 /// first part on. The wait reads and serves what the part stream does
 /// ([`next_event`], [`forward_shared`]) and is bounded by `timeout`, ending in
 /// `SlotTimeout` like a stalled stream. A peer lacking the file reports no
-/// parts, then `Disconnected`, and the worker ends.
+/// parts, its own fact the download retires it on (ADR-0090), and the worker
+/// ends.
 pub(super) async fn await_probe(
     link: &mut WorkerLink<'_>,
     file_hash: FileHash,
@@ -53,11 +54,8 @@ pub(super) async fn await_probe(
         .send(PeerWorkerEvent::PartsAdvertised { parts, complete })
         .await
         .is_err()
+        || lacks_file
     {
-        return Streamed::WindDown;
-    }
-    if lacks_file {
-        let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
         return Streamed::WindDown;
     }
     Streamed::Next

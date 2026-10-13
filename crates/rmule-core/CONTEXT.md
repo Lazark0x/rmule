@@ -396,7 +396,8 @@ one entry takes a **Source Sighting** and merges a held source rather than pooli
 twice; two records merge only on wire proof, never on a matching User Hash. It holds the
 blocks — the **Reserved Range** check (against the sighting's **Informant**, `rmule-primitives`
 glossary), the IP filter and address family it judges each half of a sighting by, the spent
-endpoints, turned once a period at the brain's tick, and the **Distrusted Peer**s — the
+names (a failed dial's endpoint, and every **Ask Name** of a source that said it lacks the
+file), turned once a period at the brain's tick, and the **Distrusted Peer**s — the
 attachments that ride each record (its queue standing, its **Advertised Parts** and its
 **Source Ask Clock** facts among them), and picks the next dial in lane order. **Download State** maps its outcomes to
 decisions and keeps the slots' numbers and the part scheduler.
@@ -473,7 +474,7 @@ that peer again, is cleared when a run starts, and the row keeps the newest 64 (
 _Avoid_: dial failure (`DialFailure` is a server dial's)
 
 **Remote-Queued Pool**:
-The **Source Book** records in their RemoteQueued stage, each holding its queue standing at a remote uploader **without a connection**: the rank, the UDP contact and peer-UDP crypt target the identity it queued under stated, the reask clock and its one-ping latch (ADR-0057, ADR-0090). Entered when a rank arrives and the worker hangs up, or when a worker's **Advertised Parts** hold no part we lack (rank 0, the no-needed-parts mark, ADR-0112); kept alive by the reask heartbeat the brain's tick runs while we are connected to a server or Kad (UDP ping first — a called-back source's at the address it called in from — TCP full ask as fallback, a called-back source's by its callback road); left on grant (the uploader dials back), file-not-found, the TCP full ask, or — queue-full or holding no part we lack, while the file holds 80 % of aMule's default source limit — one of the book's purges. Queue standing is a fact about the remote peer, not about a socket.
+The **Source Book** records in their RemoteQueued stage, each holding its queue standing at a remote uploader **without a connection**: the rank, the UDP contact and peer-UDP crypt target the identity it queued under stated, the reask clock and its one-ping latch (ADR-0057, ADR-0090). Entered when a rank arrives and the worker hangs up, or when a worker's **Advertised Parts** hold no part we lack (rank 0, the no-needed-parts mark, ADR-0112); kept alive by the reask heartbeat the brain's tick runs while we are connected to a server or Kad (UDP ping first — a called-back source's at the address it called in from — TCP full ask as fallback, a called-back source's by its callback road); left on grant (the uploader dials back), file-not-found (which spends it), the TCP full ask, or — queue-full or holding no part we lack, while the file holds 80 % of aMule's default source limit — one of the book's purges. Queue standing is a fact about the remote peer, not about a socket.
 _Avoid_: waiting workers (no worker exists while pooled), source cache, reconnect list, pool (as a list apart from the book)
 
 **Slotless Standby**:

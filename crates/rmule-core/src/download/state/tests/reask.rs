@@ -13,6 +13,7 @@ use crate::own_identity::ConnectedSession;
 use crate::service::IgnoredReaskReply;
 
 mod exchange_pool;
+mod no_file;
 mod no_needed_parts;
 mod purge;
 mod redial;
@@ -397,11 +398,12 @@ fn a_queue_full_reply_keeps_the_source_and_refreshes_the_clock() {
     ));
 }
 
-/// A `0x92` drops the source dead: its record leaves the book, nothing is
-/// reasked, and a later sighting pools it anew — it answered, so it is not
-/// spent.
+/// A `0x92` spends the source for this download, as aMule dead-lists it
+/// (ADR-0090): its record leaves the book, nothing is reasked, and a sighting
+/// of it — at its endpoint or by the User Hash its hello named — is refused
+/// until two spent turns have passed.
 #[test]
-fn a_file_not_found_reply_drops_the_source_dead() {
+fn a_file_not_found_reply_spends_the_source_for_the_re_ask_period() {
     let mut state = standing();
     let dropped = state.on_reask_reply(t0(), contact(peer(1)), &file_not_found_datagram());
     assert!(matches!(
@@ -414,9 +416,36 @@ fn a_file_not_found_reply_drops_the_source_dead() {
         Some(t0() + FILE_REASK_TIME),
         "the spent turn alone"
     );
+    assert!(
+        spawned(&take(&mut state, Channel::Server, plain_sightings(&[peer(1)])).decisions)
+            .is_empty(),
+        "its endpoint is spent"
+    );
+    let elsewhere = SourceSighting::new(
+        rmule_primitives::PeerSource::HighId(Ipv4Endpoint::new(
+            Ipv4Addr::new(45, 55, 200, 9),
+            4662,
+        )),
+        Some(SOURCE),
+        None,
+    );
+    assert_eq!(
+        take(&mut state, Channel::Server, [elsewhere]).tally.fresh,
+        0,
+        "its User Hash is spent too"
+    );
+
+    let _ = state.on_tick(t0() + FILE_REASK_TIME);
+    assert!(
+        spawned(&take(&mut state, Channel::Server, plain_sightings(&[peer(1)])).decisions)
+            .is_empty(),
+        "one turn later it is still spent"
+    );
+    let _ = state.on_tick(t0() + FILE_REASK_TIME * 2);
     assert_eq!(
         spawned(&take(&mut state, Channel::Server, plain_sightings(&[peer(1)])).decisions),
-        vec![peer(1)]
+        vec![peer(1)],
+        "two turns later it is a source again"
     );
 }
 

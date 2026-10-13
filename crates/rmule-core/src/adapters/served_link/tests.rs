@@ -212,7 +212,7 @@ async fn a_link_a_download_let_go_stays_and_takes_the_next_download() {
     linked.has_no_such_file(file.file_hash).await;
     assert!(matches!(
         until_disconnected(&mut first).await.last(),
-        Some(PeerWorkerEvent::Disconnected)
+        Some(PeerWorkerEvent::PartsAdvertised { parts: None, .. })
     ));
 
     let _second = linked.download(&file).await;

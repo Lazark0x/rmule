@@ -1,7 +1,7 @@
 //! The **Source Book**'s one entry: every channel's **Source Sighting** is
-//! checked against the blocks, merged into the record that already holds the
-//! source, or pooled as a new record — never a second copy (ADR-0090
-//! invariants 2–4). Two held records become one only on wire proof: a
+//! checked against the blocks — a spent name of the source among them — merged
+//! into the record that already holds the source, or pooled as a new record —
+//! never a second copy (ADR-0090 invariants 2–4). Two held records become one only on wire proof: a
 //! dual-stack pairing, a Low-ID candidate's IPv6 half, an adopted callback's
 //! inbound endpoint.
 
@@ -9,6 +9,7 @@ use std::cmp::Reverse;
 
 use rmule_primitives::{Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, SourceSighting, UserHash};
 
+use super::asks::{AskName, low_id_name};
 use super::record::{Lane, Record, RecordId, Stage};
 use super::{Blocked, Gate, MergeEnd, Sighted, SourceBook};
 use crate::dialable::{DialOrder, resolve_family};
@@ -51,6 +52,9 @@ impl SourceBook {
     fn sight_dialable(&mut self, order: DialOrder, user_hash: Option<UserHash>) -> Sighted {
         if self.blocks.distrusts(user_hash) {
             return Sighted::Blocked(Blocked::Distrusted);
+        }
+        if user_hash.is_some_and(|hash| self.blocks.is_spent(AskName::User(hash))) {
+            return Sighted::Blocked(Blocked::Spent);
         }
         if let Some((held, id)) = order
             .halves()
@@ -113,6 +117,12 @@ impl SourceBook {
     fn sight_candidate(&mut self, mut candidate: LowIdCandidate) -> Sighted {
         if self.blocks.distrusts(candidate.user_hash) {
             return Sighted::Blocked(Blocked::Distrusted);
+        }
+        let spent_hash = candidate
+            .user_hash
+            .is_some_and(|hash| self.blocks.is_spent(AskName::User(hash)));
+        if spent_hash || low_id_name(&candidate).is_some_and(|name| self.blocks.is_spent(name)) {
+            return Sighted::Blocked(Blocked::Spent);
         }
         if let (Some(hash), Some(buddy)) = (candidate.user_hash, candidate.buddy)
             && buddy.buddy_udp.is_none()

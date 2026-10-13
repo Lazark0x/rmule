@@ -220,6 +220,17 @@ impl SourceBook {
         }))
     }
 
+    /// The worker at `endpoint`'s source said it lacks the file (ADR-0090):
+    /// its record is spent under every name it holds and leaves the book,
+    /// whichever road reached it — a called-back source does not return to its
+    /// Low-ID lane, and a standing it held ends.
+    pub(crate) fn lacked_file(&mut self, endpoint: PeerEndpoint) -> Option<WorkerEnd> {
+        let id = self.aliases.endpoint(endpoint)?;
+        self.records.get(&id)?.live_at(endpoint)?;
+        self.spend_lacking(id);
+        Some(WorkerEnd::Release(Release::Gone))
+    }
+
     /// A called-back source's worker ended without a queue rank (ADR-0090): its
     /// record keeps its candidate and `CallbackKey` and returns to its Low-ID
     /// lane, so its next road is a callback again rather than only a fresh

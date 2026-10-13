@@ -443,9 +443,10 @@ impl SourceBook {
         }
     }
 
-    /// The source at `peer` no longer shares the file (`0x92`): its record
-    /// leaves the book, and a fact a sighting attached to its standing —
-    /// another family's half — goes with it.
+    /// The source at `peer` no longer shares the file (`0x92`): its record is
+    /// spent under every name it holds and leaves the book, as a TCP no-file
+    /// answer's does (ADR-0090), and a fact a sighting attached to its
+    /// standing — another family's half — goes with it.
     pub(crate) fn reask_dropped(&mut self, peer: PeerEndpoint) {
         if let Some(id) = self.aliases.endpoint(peer)
             && self
@@ -453,7 +454,7 @@ impl SourceBook {
                 .get(&id)
                 .is_some_and(|record| matches!(record.stage, Stage::RemoteQueued(_)))
         {
-            self.remove(id);
+            self.spend_lacking(id);
         }
     }
 

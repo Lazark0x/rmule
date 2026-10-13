@@ -381,4 +381,9 @@ pub enum PeerRetirementReason {
     /// over TCP at twice the reask period. Alive and honest, so neither spent
     /// nor distrusted.
     NoNeededParts,
+    /// The peer said it does not have the file (`OP_FILEREQANSNOFIL`): its
+    /// record is spent for this download under every name it holds, for the
+    /// re-ask period, as aMule dead-lists it (ADR-0090). Honest, so not
+    /// distrusted.
+    FileNotFound,
 }

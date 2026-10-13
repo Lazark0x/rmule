@@ -202,7 +202,13 @@ impl DownloadState {
                         reason,
                         PeerRetirementReason::CryptIncompatible | PeerRetirementReason::Distrusted
                     );
-                let end = self.sources.end_worker(peer, failed, self.dial);
+                // A source that said it lacks the file is spent under every
+                // name its record holds, whichever road reached it (ADR-0090).
+                let end = if reason == PeerRetirementReason::FileNotFound {
+                    self.sources.lacked_file(peer)
+                } else {
+                    self.sources.end_worker(peer, failed, self.dial)
+                };
                 // A source with nothing we need waits unranked: its
                 // retirement says why, and no queue rank is reported.
                 if end == Some(WorkerEnd::Release(Release::RemoteQueued))

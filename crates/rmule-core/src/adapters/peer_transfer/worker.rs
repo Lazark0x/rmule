@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use rmule_net::peer::Connection as PeerConnection;
 use rmule_peer::{
-    ConnectionEvent, EMBLOCKSIZE, PartBitmap, PartRanges, PeerCommand, PeerEvent, PeerIdentity,
-    RequesterCommand, RequesterEvent, SlotReleaseReason,
+    ConnectionEvent, EMBLOCKSIZE, FileProbeStatus, PartBitmap, PartRanges, PeerCommand, PeerEvent,
+    PeerIdentity, RequesterCommand, RequesterEvent, SlotReleaseReason,
 };
 use rmule_primitives::{AichRootHash, Ed2kFileLink, PeerEndpoint};
 use tokio::sync::mpsc;
@@ -570,6 +570,21 @@ async fn stream_part_download(
                 file_hash: released,
                 reason: SlotReleaseReason::DownloadComplete,
             }) if released == file_hash => {}
+            // A mid-slot `OP_FILEREQANSNOFIL`: the peer lacks the file after
+            // all, reported as the probe reports it, and the download retires
+            // the source on it (ADR-0090).
+            PeerEvent::Requester(RequesterEvent::FileProbed {
+                file_hash: probed,
+                status: FileProbeStatus::NotAvailable,
+            }) if probed == file_hash => {
+                let _ = event_tx
+                    .send(PeerWorkerEvent::PartsAdvertised {
+                        parts: None,
+                        complete: false,
+                    })
+                    .await;
+                return Streamed::WindDown;
+            }
             PeerEvent::Requester(RequesterEvent::SlotReleased {
                 file_hash: released,
                 reason: SlotReleaseReason::QueueRejected,

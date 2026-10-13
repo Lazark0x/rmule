@@ -200,6 +200,7 @@ pub(super) const fn retirement(reason: PeerRetirementReason) -> &'static str {
         PeerRetirementReason::Distrusted => "distrusted",
         PeerRetirementReason::SameSource => "same_source",
         PeerRetirementReason::NoNeededParts => "no_needed_parts",
+        PeerRetirementReason::FileNotFound => "file_not_found",
     }
 }
 

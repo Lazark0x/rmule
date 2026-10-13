@@ -656,8 +656,8 @@ impl PeerSession {
     }
 
     /// State follow-up after the projection emits `FileProbed{NotAvailable}`:
-    /// record unavailability and abandon the active slot if this file held
-    /// it.
+    /// record unavailability and end the active slot if this file held it —
+    /// the peer lacks the file, a terminal path (ADR-0025).
     pub(super) fn after_file_unavailable(&mut self, file_hash: FileHash) {
         // Only record unavailability for a file we actually asked about — an
         // unsolicited FILEREQANSNOFIL must not create state or pre-poison a
@@ -667,7 +667,7 @@ impl PeerSession {
         };
         flow.probe = ProbeState::NotAvailable;
         if self.active_slot == Some(file_hash) {
-            self.release_slot(file_hash, SlotReleaseReason::ProtocolViolation);
+            self.release_slot(file_hash, SlotReleaseReason::FileNotFound);
         }
     }
 

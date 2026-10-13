@@ -538,6 +538,7 @@ pub(crate) const fn slot_release_reason_label(reason: SlotReleaseReason) -> &'st
         SlotReleaseReason::QueueRejected => "QueueRejected",
         SlotReleaseReason::PeerClosed => "PeerClosed",
         SlotReleaseReason::ProtocolViolation => "ProtocolViolation",
+        SlotReleaseReason::FileNotFound => "FileNotFound",
         SlotReleaseReason::Stale => "Stale",
         SlotReleaseReason::Cancelled => "Cancelled",
     }
