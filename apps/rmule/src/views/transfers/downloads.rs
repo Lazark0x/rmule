@@ -481,9 +481,7 @@ pub(super) fn status_text(
             "Reconnecting".to_string()
         }
         (DownloadStatus::Waiting, Some(SourceWait::KadAlone)) => "Asking Kad".to_string(),
-        (DownloadStatus::Completing, _) => {
-            completing_status(diag.and_then(|diag| diag.completion))
-        }
+        (DownloadStatus::Completing, _) => completing_status(diag.and_then(|diag| diag.completion)),
         _ => status_label(status).to_string(),
     }
 }

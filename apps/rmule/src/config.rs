@@ -28,8 +28,8 @@ use rmule_core::{
 use rmule_primitives::{ServerEndpoint, UserHash};
 
 use crate::table_sort::{Direction, TableSorts};
-use crate::words::app as words;
 use crate::theme::Theme;
+use crate::words::app as words;
 
 mod front_end_key;
 

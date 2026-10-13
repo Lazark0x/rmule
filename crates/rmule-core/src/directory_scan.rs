@@ -34,9 +34,9 @@ use crate::registry::SharedFileEntry;
 
 pub use fs::FsDirectorySource;
 pub(crate) use hash::HashTurn;
-use plan::{FoundFile, list, plan};
 #[cfg(test)]
 pub(crate) use plan::skipped_name;
+use plan::{FoundFile, list, plan};
 pub use progress::{
     DirectoryOffer, DirectoryRole, DirectoryScanDiagnostics, DirectoryState, ScanPhase,
     ScanSummary, SharedDirectoryDiagnostics,
