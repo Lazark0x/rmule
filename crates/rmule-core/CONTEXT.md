@@ -394,7 +394,8 @@ worker's stage holds the peer's **Peer Identity** (`rmule-peer` glossary) once i
 read, so the hello's facts end with that worker (ADR-0049). Its
 one entry takes a **Source Sighting** and merges a held source rather than pooling it
 twice; two records merge only on wire proof, never on a matching User Hash. It holds the
-blocks — the IP filter and address family it judges each half of a sighting by, the spent
+blocks — the **Reserved Range** check (against the sighting's **Informant**, `rmule-primitives`
+glossary), the IP filter and address family it judges each half of a sighting by, the spent
 endpoints, turned once a period at the brain's tick, and the **Distrusted Peer**s — the
 attachments that ride each record (its queue standing, its **Advertised Parts** and its
 **Source Ask Clock** facts among them), and picks the next dial in lane order. **Download State** maps its outcomes to
@@ -1271,6 +1272,8 @@ bootstrap-dial-seed, and lookup-response intakes — aMule's four `kademlia/` `I
 so a blocklisted IP never becomes a routing contact, walk candidate, or bootstrap dial. Client
 and server surfaces each have their own on/off gate, both defaulting on with an empty table —
 aMule's out-of-box posture.
+IPv6 rules from the same two files fill a second table under the same rules; each address is
+judged by its own family's table, and a source's two halves are never linked (ADR-0085).
 Distinct from the **Ban Store**: this is an operator-loaded policy file, not a runtime-observed
 offense record.
 _Avoid_: ban list (that's the Ban Store), blocklist download (auto-update is deferred), firewall
