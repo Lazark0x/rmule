@@ -22,8 +22,10 @@ use rmule_core::{
     open_durable_store,
 };
 use rmule_primitives::{Ed2kLink, SafeFileName, ServerEndpoint};
-use rmule_words::download::{completed_line, completing_line, hole_less_destination};
-use rmule_words::reach::client_udp_bind_failed;
+use rmule_words::download::{
+    completed_line, completing_line, download_failure_words, hole_less_destination,
+};
+use rmule_words::reach::{client_udp_bind_failed, half_bound as half_bound_words};
 
 mod kad;
 
@@ -443,7 +445,11 @@ async fn run_add(data_dir: &std::path::Path, link_str: &str, verbose: bool) -> R
                 return Ok(());
             }
             CoreEvent::Download(DownloadEvent::DownloadFailed { reason, .. }) => {
-                anyhow::bail!("download {} failed: {reason}", download_label(download_id));
+                anyhow::bail!(
+                    "download {} failed: {}",
+                    download_label(download_id),
+                    download_failure_words(&reason)
+                );
             }
             // Core waits for a connection (ADR-0097); this one-shot run has
             // no operator to connect, so a wait would never end.
@@ -489,7 +495,7 @@ async fn run_add(data_dir: &std::path::Path, link_str: &str, verbose: bool) -> R
             // for the rest of the process. Worth a line for the same reason
             // the total failure is.
             CoreEvent::SocketBoundWithoutFamily { half_bound } => {
-                println!("{half_bound}");
+                println!("{}", half_bound_words(&half_bound));
             }
             // The download still finishes there; only the sharing is off.
             CoreEvent::Scan(ScanEvent::DownloadDirectoryRefused { dir, reason }) => {
