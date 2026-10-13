@@ -2,7 +2,6 @@
 //! These drive the real [`rmule_core::Core`] and print each [`CoreEvent`] via
 //! its co-located `Display` projection.
 
-use rmule_core::DownloadRepository;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -10,11 +9,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Args;
 use rmule_core::KadEnableConfig;
-use rmule_core::run_log::Level;
 use rmule_core::{
-    CoreCommand, CoreConfig, CoreEvent, DownloadCommand as CoreDownloadCommand, DownloadEvent,
-    DownloadId, DownloadLifecycle, DurableDownloadRepository, ServeCommand as CoreServeCommand,
-    open_durable_store,
+    CoreCommand, CoreConfig, CoreEvent, ServeCommand as CoreServeCommand, open_durable_store,
 };
 use rmule_kad::KadId;
 use rmule_primitives::{Ed2kLink, ServerEndpoint};
@@ -29,8 +25,12 @@ use served::{Gate, GateArgs, Gates, ServedArgs};
 mod endings;
 mod reopen;
 mod served;
+mod stored;
 
 pub(crate) use reopen::{DownloadReopenArgs, reopen};
+pub(crate) use stored::{
+    DownloadPauseArgs, DownloadResumeArgs, DownloadStatusArgs, pause, resume, status,
+};
 
 #[derive(Debug, Args)]
 pub(crate) struct DownloadStartArgs {
@@ -117,48 +117,6 @@ pub(crate) struct DownloadStartArgs {
     gates: GateArgs,
     #[command(flatten)]
     identity: DownloadIdentityArgs,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct DownloadResumeArgs {
-    /// Data directory holding the Durable Store (`rmule.redb`), created when
-    /// absent.
-    #[arg(long)]
-    data_dir: PathBuf,
-    /// Durable download id to resume.
-    #[arg(long)]
-    download_id: u64,
-    /// Optional eD2k server endpoint override as `host:port`.
-    #[arg(long)]
-    server: Option<String>,
-    /// Maximum concurrent High ID peer workers per download.
-    #[arg(long)]
-    peer_concurrency: Option<usize>,
-    /// The **Streaming Window**'s width `N` in parts
-    /// (`CoreConfig::streaming_window_parts`, ADR-0112); `0` for none.
-    #[arg(long)]
-    streaming_window: Option<u32>,
-    #[command(flatten)]
-    identity: DownloadIdentityArgs,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct DownloadPauseArgs {
-    /// Data directory holding the Durable Store (`rmule.redb`), created when
-    /// absent.
-    #[arg(long)]
-    data_dir: PathBuf,
-    /// Durable download id to mark paused.
-    #[arg(long)]
-    download_id: u64,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct DownloadStatusArgs {
-    /// Data directory holding the Durable Store (`rmule.redb`), created when
-    /// absent.
-    #[arg(long)]
-    data_dir: PathBuf,
 }
 
 /// The Kad half of a Kad-sourced download: seeded, never bootstrapped, so the
@@ -446,103 +404,9 @@ fn print_parts_tick(core: &rmule_core::Core) {
     }
 }
 
-pub(crate) async fn resume(args: DownloadResumeArgs) -> Result<()> {
-    let server_override = args
-        .server
-        .as_deref()
-        .map(ServerEndpoint::parse_host_port)
-        .transpose()
-        .with_context(|| format!("parse server override {:?}", args.server))?;
-    let store = open_store(&args.data_dir)?;
-    let download_id = DownloadId::from_u64(args.download_id);
-    // The server this run connects to: the override, or the one the download
-    // was recorded against as its source hint.
-    let server = match &server_override {
-        Some(server) => server.clone(),
-        None => DurableDownloadRepository::new(std::sync::Arc::clone(&store))
-            .load_download(download_id)
-            .with_context(|| format!("load download {}", args.download_id))?
-            .source_hint()
-            .cloned()
-            .context("the download records no server; name one with --server")?,
-    };
-    let mut config = CoreConfig::default();
-    if let Some(concurrency) = args.peer_concurrency {
-        config.peer_concurrency_per_download = concurrency;
-    }
-    if let Some(parts) = args.streaming_window {
-        config.streaming_window_parts = parts;
-    }
-    let mut core = args
-        .identity
-        .core_builder(
-            config,
-            args.identity.settings(rmule_core::CoreSettings::default()),
-            store,
-        )?
-        .build();
-    // The operator's word, given on the command line (ADR-0095).
-    crate::node::connect(&core, &server).await?;
-    core.send(CoreCommand::Download(CoreDownloadCommand::ResumeDownload {
-        download_id,
-    }))
-    .await?;
-
-    while let Some(event) = core.next_event().await {
-        println!("{}", event.record().render(Level::Full));
-        match event {
-            CoreEvent::Download(DownloadEvent::DownloadCompleted { .. }) => return Ok(()),
-            CoreEvent::Download(DownloadEvent::DownloadCancelled { .. }) => {
-                anyhow::bail!("download cancelled")
-            }
-            CoreEvent::Download(DownloadEvent::DownloadFailed { reason, .. }) => {
-                anyhow::bail!("download failed: {reason}")
-            }
-            _ => {}
-        }
-    }
-
-    anyhow::bail!("download event stream ended before resume completion")
-}
-
 /// The Durable Store under `data_dir`, named in the error when it will not
 /// open — every subcommand here starts this way.
 fn open_store(data_dir: &std::path::Path) -> Result<std::sync::Arc<rmule_core::DurableStore>> {
     open_durable_store(data_dir)
         .with_context(|| format!("open the Durable Store in {}", data_dir.display()))
-}
-
-pub(crate) fn pause(args: DownloadPauseArgs) -> Result<()> {
-    let store = open_store(&args.data_dir)?;
-    let repo = DurableDownloadRepository::new(store);
-    let download_id = DownloadId::from_u64(args.download_id);
-    repo.set_lifecycle(download_id, DownloadLifecycle::Paused)?;
-    println!("download paused id={}", download_id.as_u64());
-    Ok(())
-}
-
-pub(crate) fn status(args: DownloadStatusArgs) -> Result<()> {
-    let store = open_store(&args.data_dir)?;
-    let repo = DurableDownloadRepository::new(store);
-    let records = repo.list_resumable()?;
-    println!("# resumable downloads in {}", args.data_dir.display());
-    if records.is_empty() {
-        println!("# no resumable downloads");
-        return Ok(());
-    }
-    for record in records {
-        let parts = repo.verified_parts(record.id())?;
-        let verified_bytes: u64 = parts.iter().map(|part| part.len).sum();
-        println!(
-            "download id={} state={:?} file_hash={} size={} verified_parts={} verified_bytes={} final_path={}",
-            record.id().as_u64(),
-            record.lifecycle(),
-            record.file_hash().to_hex_upper(),
-            record.file_size(),
-            parts.len(),
-            verified_bytes,
-            record.paths().final_path().display()
-        );
-    }
-    Ok(())
 }
