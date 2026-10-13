@@ -244,6 +244,10 @@ impl PeerWorkerEvent {
     /// the complete-source sentinel, so the source-ask gate reads it as it
     /// reads a source that never advertised (ADR-0108). What an in-process
     /// fake sends after `Connected` (ADR-0030).
+    ///
+    /// `rmule_testkit::every_part` is the same answer for integration tests;
+    /// this crate's own tests cannot take it, since the testkit links its own
+    /// build of this crate, whose event is not the one under test.
     pub(crate) fn every_part(file_size: u64) -> Self {
         Self::PartsAdvertised {
             parts: Some(PartBitmap::all_present(rmule_primitives::part_count(

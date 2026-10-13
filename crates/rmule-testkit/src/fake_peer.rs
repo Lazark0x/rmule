@@ -295,7 +295,7 @@ fn multipacket_answer(script: &PeerScript, req: &MultiPacketRequest) -> MultiPac
                     script.file_name.clone(),
                 )));
             }
-            RequestItem::SetReqId => items.push(AnswerItem::Status(uploader_part_status(
+            RequestItem::SetReqId => items.push(AnswerItem::Status(wire::full_status(
                 script.bytes.len() as u64,
             ))),
             RequestItem::Sources | RequestItem::Sources2 { .. } | RequestItem::AichRoot => {}
@@ -306,13 +306,6 @@ fn multipacket_answer(script: &PeerScript, req: &MultiPacketRequest) -> MultiPac
         items,
         unknown_sub: None,
     }
-}
-
-/// The uploader's advertised availability inside a bundled answer: every part
-/// of the `file_size`-byte file it serves, at the count the downloader's
-/// reader demands — any other count closes the session.
-fn uploader_part_status(file_size: u64) -> PartBitmap {
-    PartBitmap::all_present(rmule_primitives::ed2k_status_part_count(file_size))
 }
 
 /// The wire sub-opcode a decoded [`RequestItem`] arrived as, for the

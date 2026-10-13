@@ -158,14 +158,20 @@ pub fn filename_answer_bytes(file_hash: FileHash, name: &str) -> Vec<u8> {
     Packet::new(PacketProtocol::Edonkey, 0x59, payload).encode()
 }
 
+/// The status of a peer holding every part of a `file_size`-byte file,
+/// spelled out at the count aMule's reader demands — any other count closes
+/// the session — rather than as the complete-source sentinel.
+#[must_use]
+pub fn full_status(file_size: u64) -> rmule_peer::PartBitmap {
+    rmule_peer::PartBitmap::all_present(rmule_primitives::ed2k_status_part_count(file_size))
+}
+
 /// A framed file-status answer (opcode 0x50) for a `file_size`-byte file the
-/// peer holds every part of, spelled out at the count aMule's reader demands.
+/// peer holds every part of ([`full_status`]).
 pub fn file_status_bytes(file_hash: FileHash, file_size: u64) -> Vec<u8> {
     rmule_peer::FileStatus {
         file_hash,
-        bitmap: rmule_peer::PartBitmap::all_present(rmule_primitives::ed2k_status_part_count(
-            file_size,
-        )),
+        bitmap: full_status(file_size),
     }
     .encode_packet()
     .encode()

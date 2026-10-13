@@ -159,12 +159,7 @@ fn working(link: &Ed2kFileLink, record: &DurableDownloadRecord) -> (DownloadStat
     decisions.extend(state.on_worker_event(
         now,
         PeerEndpoint::V4(SOURCE),
-        PeerWorkerEvent::PartsAdvertised {
-            parts: Some(rmule_peer::PartBitmap::all_present(
-                rmule_primitives::part_count(link.size),
-            )),
-            complete: false,
-        },
+        PeerWorkerEvent::every_part(link.size),
     ));
     let assigned = decisions
         .into_iter()
