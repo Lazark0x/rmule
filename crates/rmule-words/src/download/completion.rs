@@ -10,6 +10,9 @@ use rmule_core::CompletionStep;
 use super::super::Sentence;
 use super::super::units::human_size;
 
+/// A figure not known.
+const DASH: &str = "—";
+
 /// What a completing download is doing, as a clause.
 #[must_use]
 pub const fn completion_step_words(step: CompletionStep) -> &'static str {
@@ -25,15 +28,15 @@ pub const fn completion_step_words(step: CompletionStep) -> &'static str {
 }
 
 /// What a completing download is doing, with the bytes its copy has written
-/// of the file's `size` while it copies.
+/// of the file's `size` while it copies; a size not known is a dash.
 #[must_use]
-pub fn completion_progress(step: CompletionStep, copied: u64, size: u64) -> String {
+pub fn completion_progress(step: CompletionStep, copied: u64, size: Option<u64>) -> String {
     match step {
         CompletionStep::Copying => format!(
             "{}: {} of {}",
             completion_step_words(step),
             human_size(copied),
-            human_size(size)
+            size.map_or_else(|| DASH.to_string(), human_size)
         ),
         step => completion_step_words(step).to_string(),
     }
@@ -73,8 +76,13 @@ mod tests {
     #[test]
     fn a_copy_reads_its_bytes_and_a_wait_says_what_it_waits_for() {
         assert_eq!(
-            completion_progress(CompletionStep::Copying, 1_048_576, 4_194_304),
+            completion_progress(CompletionStep::Copying, 1_048_576, Some(4_194_304)),
             "copying the finished file to the disk it goes to: 1.0 MB of 4.0 MB"
+        );
+        assert_eq!(
+            completion_progress(CompletionStep::Copying, 1_048_576, None),
+            "copying the finished file to the disk it goes to: 1.0 MB of —",
+            "a size not known is a dash, never 0 B"
         );
         assert_eq!(
             completing_line(

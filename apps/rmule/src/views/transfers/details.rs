@@ -138,7 +138,7 @@ impl TransfersView {
         if let Some(progress) = diag.and_then(|d| d.completion)
             && row.is_some_and(|row| row.status == crate::state::DownloadStatus::Completing)
         {
-            let size = metadata.map_or(0, |m| m.size);
+            let size = metadata.map(|m| m.size);
             let doing = completion_progress(progress.step, progress.copied, size);
             lines.extend(detail_rows("move", &doing, value_w, theme));
         }
