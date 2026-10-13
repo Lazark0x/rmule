@@ -250,20 +250,43 @@ fn a_windowed_0x58_counts_but_an_unrequested_one_is_diagnosed() {
 }
 
 #[test]
-fn a_0x59_ack_proves_a_connect_back_leg_unguarded() {
+fn a_0x59_ack_is_counted_only_from_a_checked_ip_within_its_window() {
     let mut node = self_checking_node();
-    // aMule's `ProcessFirewalledAckResponse` counts the legacy UDP ack with no
-    // window guard — any well-formed 0x59 proves a reachability leg.
-    node.handle_datagram(T0, endpoint(3, 5000), &[0xE4, 0x59]);
-    assert_eq!(
-        events(&drain(|| node.poll_output())),
-        vec![
-            KadEvent::HadContact {
-                from: endpoint(3, 5000)
-            },
-            KadEvent::ReachabilityConnectBack
-        ]
+    // A v6 contact gets the legacy 0x50, whose connect-back ack is the 0x59.
+    hello_from(&mut node, T0, 1, 6);
+    drain(|| node.poll_output());
+    let proves_a_leg =
+        |outputs: &[KadOutput]| events(outputs).contains(&KadEvent::ReachabilityConnectBack);
+
+    // The asked contact's ack, from any of its ports, proves a leg.
+    node.handle_datagram(T0, endpoint(1, 9999), &[0xE4, 0x59]);
+    assert!(proves_a_leg(&drain(|| node.poll_output())));
+
+    // An ack from an IP we never asked proves nothing, and says so: aMule counts
+    // it, so two spoofed datagrams would read Kad TCP open (ADR-0058).
+    node.handle_datagram(T0, endpoint(9, 5000), &[0xE4, 0x59]);
+    let outputs = drain(|| node.poll_output());
+    assert!(!proves_a_leg(&outputs));
+    assert!(matches!(
+        diagnostics(&outputs).as_slice(),
+        [KadNodeDiagnostic::UnrequestedFirewallResponse { opcode: 0x59, .. }]
+    ));
+
+    // The asked contact's own ack at the 180 s boundary is already late.
+    node.handle_datagram(
+        T0 + KadNode::FIREWALL_CHECK_WINDOW,
+        endpoint(1, 9999),
+        &[0xE4, 0x59],
     );
+    let outputs = drain(|| node.poll_output());
+    assert!(
+        !proves_a_leg(&outputs),
+        "the window boundary is already expired"
+    );
+    assert!(matches!(
+        diagnostics(&outputs).as_slice(),
+        [KadNodeDiagnostic::UnrequestedFirewallResponse { opcode: 0x59, .. }]
+    ));
 }
 
 #[test]

@@ -141,9 +141,9 @@ impl KadNode {
     /// The **Reachability** requester's response consume (ADR-0058): a `0x58`
     /// carries our observed external IP and counts the recheck (window-guarded,
     /// aMule `ProcessFirewalledResponse`); a `0x59` is a legacy UDP connect-back
-    /// ack that proves one reachability leg (aMule `ProcessFirewalledAckResponse`
-    /// — *unguarded*, its v7+ `OP_KAD_FWTCPCHECK_ACK` twin is the window-guarded
-    /// TCP path). Both are inert unless our own check is armed.
+    /// ack that proves one reachability leg, window-guarded like its v7+
+    /// `OP_KAD_FWTCPCHECK_ACK` twin where aMule's `ProcessFirewalledAckResponse`
+    /// counts any. Both are inert unless our own check is armed.
     pub(super) fn on_firewall_check_res(
         &mut self,
         now: KadInstant,
@@ -192,10 +192,18 @@ impl KadNode {
                     address: ip,
                 });
             }
-            // `0x59`: the legacy UDP connect-back ack. aMule counts it with no
-            // window guard, so any well-formed `0x59` proves a reachability leg.
+            // `0x59`: the legacy UDP connect-back ack. It counts only from an IP
+            // holding a live check window, the gate the TCP ack passes (ADR-0058):
+            // aMule counts any `0x59`, so two spoofed datagrams would read open.
             FirewallMessage::FirewalledAck => {
-                self.emit_event(KadEvent::ReachabilityConnectBack);
+                if firewall.is_check_ip(from.ip(), now) {
+                    self.emit_event(KadEvent::ReachabilityConnectBack);
+                } else {
+                    self.emit_diagnostic(KadNodeDiagnostic::UnrequestedFirewallResponse {
+                        from,
+                        opcode,
+                    });
+                }
             }
             // `is_firewall_check_res` admits only `0x58`/`0x59`.
             FirewallMessage::FirewalledReq { .. } | FirewallMessage::Firewalled2Req { .. } => {}
