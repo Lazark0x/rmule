@@ -619,6 +619,10 @@ _Avoid_: finalizing
 The move across volumes: a dot-prefixed copy beside the destination, hashed as it is read, synced, then renamed into place; one copy at a time (ADR-0115).
 _Avoid_: backup
 
+**Completion Gate**:
+The one instant a run's finished file lands in place, shared by the run and the core actor (ADR-0115): a Pause or Cancel before it closes the gate and the run lands nothing; after it the stop is refused (`DownloadCompleting`). Held settling only across a rename, and across the look a recovered row's run takes at the disk, so a stop that meets it waits no longer than that.
+_Avoid_: lock, commit flag
+
 **Download Metadata**:
 The name + exact byte size core recorded for one download, with the origin that says where it learned them (ADR-0078). Stored with the durable record at creation, backfilled from the canonical link for pre-v2 rows, and reported on both surfaces — the `DownloadQueued` / `DownloadRecovered` edge and the `DownloadDiagnostics` level row — so a consumer never re-derives a name from a link or a size from a part count. Name bytes stay wire-faithful (`Ed2kText`, ADR-0019); the origin is a fact about core's own knowledge, never a caller's claim about a UI (there is no "from search" origin).
 _Avoid_: file info, display name, file details
