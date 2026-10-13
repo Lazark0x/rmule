@@ -444,6 +444,30 @@ impl UploadSlotQueue {
             .map(|q| q.file_hash)
     }
 
+    /// The waiters in rank order, each with whether the link it waits on is
+    /// up — `false` once it hung up and its standing rides its reask
+    /// (ADR-0057).
+    pub fn waiters(&self) -> impl Iterator<Item = (PeerEndpoint, bool)> + '_ {
+        self.waiting.iter().map(|q| (q.peer, q.connected))
+    }
+
+    /// Move the wait-list entry of `from` to the link `to` the same client
+    /// came back on, keeping its place, its wait and its file, and marking
+    /// it linked: aMule's queue holds the client, not its socket
+    /// (`UploadQueue.cpp:395-431`). Returns whether an entry moved — never
+    /// onto a `to` that already holds a slot or a place.
+    pub fn relink(&mut self, from: PeerEndpoint, to: PeerEndpoint) -> bool {
+        if from == to || self.contains(to) {
+            return false;
+        }
+        let Some(entry) = self.waiting.iter_mut().find(|q| q.peer == from) else {
+            return false;
+        };
+        entry.peer = to;
+        entry.connected = true;
+        true
+    }
+
     /// Record `peer`'s advertised UDP contact on its wait-list entry (from the
     /// hello), so an inbound `OP_REASKFILEPING` from that IP + port matches it
     /// (ADR-0057). A no-op when the peer holds a slot or is not queued.

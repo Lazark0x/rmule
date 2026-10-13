@@ -20,6 +20,7 @@
 mod connection;
 mod exchange;
 mod reask;
+mod relink;
 mod served;
 #[cfg(test)]
 mod tests;

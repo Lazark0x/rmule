@@ -494,6 +494,15 @@ async fn enact<L: ServeRuntimeService>(
                             peer_roster.forget(PeerRelation::Upload, v4);
                         }
                     }
+                    ServeEvent::WaiterRelinked { from, to } => {
+                        // The mark `PeerQueued` set moves with the place.
+                        if let Some(v4) = from.as_v4() {
+                            peer_roster.forget(PeerRelation::Upload, v4);
+                        }
+                        if let Some(v4) = to.as_v4() {
+                            peer_roster.mark_known(PeerRelation::Upload, v4);
+                        }
+                    }
                     ServeEvent::UploadAddressCapReached { .. } => {
                         diagnostics.record_upload_address_cap_refusal();
                     }

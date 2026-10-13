@@ -119,6 +119,9 @@ impl ServeEvent {
             S::WaiterLeft { peer, cause } => Record::new("serve.waiter_left")
                 .peer_address("peer", peer)
                 .code("cause", codes::waiter_left(*cause)),
+            S::WaiterRelinked { from, to } => Record::new("serve.waiter_relinked")
+                .peer_address("from", from)
+                .peer_address("to", to),
             S::SourcesServed {
                 peer,
                 file_hash,

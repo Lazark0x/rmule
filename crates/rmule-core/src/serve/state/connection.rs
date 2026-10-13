@@ -483,8 +483,12 @@ impl ServeState {
     ) -> Vec<ServeDecision> {
         match fact {
             ConnectionEvent::Identified { identity } => {
+                let relinked = self.relink_waiter(peer, &identity);
                 self.identities.insert(peer, identity);
-                Vec::new()
+                if !relinked.is_empty() {
+                    self.stamp_udp_contact(peer);
+                }
+                relinked
             }
             // Only a peer the serve side already holds a hello for: the map is
             // keyed by live identified connections. A waiter already on the

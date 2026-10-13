@@ -374,6 +374,16 @@ pub(super) fn fold(state: &mut UiState, event: ServeEvent) -> bool {
         // cancelled): the same row removal as a release, since it held only
         // a queue rank.
         E::WaiterLeft { peer, .. } => release_peer(state, peer),
+        // The same row on the waiter's new link: its place did not move.
+        E::WaiterRelinked { from, to } => match state.upload_peers.remove(&from) {
+            Some(row) => {
+                state
+                    .upload_peers
+                    .insert(to, UploadPeer { peer: to, ..row });
+                true
+            }
+            None => false,
+        },
         // A source-exchange answer is not an upload request: the Requests
         // column reads core's per-file counter instead, so this edge's whole
         // footprint is its log line.

@@ -256,6 +256,11 @@ pub fn log_line(event: &ServeEvent) -> Sentence {
             };
             Sentence::owned(format!("{} {how}", address(*peer)))
         }
+        Sv::WaiterRelinked { from, to } => Sentence::owned(format!(
+            "upload peer {} came back as {} and keeps its place",
+            address(*from),
+            address(*to)
+        )),
         Sv::SourcesServed { peer, count, .. } => {
             Sentence::owned(format!("served {count} sources to {}", address(*peer)))
         }

@@ -152,6 +152,16 @@ aMule's `FILEREASKTIME` of 1 300 000 ms
   using several UDP ports are dropped silently: the silence forces the peer to a TCP full
   ask, which repairs the mismatch. `0x91` and `0x92` are encrypted when the sender's hash
   is known (ADR-0046). The full rule set is in ADR-0055's surface table.
+- **A waiter on a new link keeps its place.** The place belongs to the client, not to the
+  link it asked on: aMule attaches a new socket to the client it already knows
+  (`ClientList.cpp:370-412`) and a client already queued keeps its place
+  (`UploadQueue.cpp:395-431`). So the hello of a new link that names a waiter's User Hash
+  moves that waiter's entry — its place, its wait, its file — onto the new link when the
+  link it waited on has ended, or comes from the same address and listen port, which is
+  closed for the new one (`:395-401`); a live link from anywhere else keeps its client.
+  `ServeEvent::WaiterRelinked` carries every row and mark keyed by the old link to the
+  new one, and the new link's slot ask is answered at the place it kept. A pending
+  dial-back grant does not move yet: it is reclaimed by the purge.
 - **Promotion dials back.** Promoting a disconnected waiter dials its TCP endpoint and
   sends `OP_ACCEPTUPLOADREQ` on connect
   ([UploadQueue.cpp#L169](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/UploadQueue.cpp#L169)),

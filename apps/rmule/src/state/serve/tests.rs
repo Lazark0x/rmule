@@ -185,6 +185,36 @@ fn queuing_records_the_peers_rank_and_file() {
     ));
 }
 
+/// A waiter back on a new link is the same row at its new address, still at
+/// its rank, and no row is left at the old one.
+#[test]
+fn a_relinked_waiter_keeps_its_row_at_its_new_link() {
+    let mut state = UiState::default();
+    fold(
+        &mut state,
+        serve_event(ServeEvent::PeerQueued {
+            peer: peer_endpoint(2),
+            rank: 1,
+            file_hash: file_hash(4),
+            software: None,
+        }),
+    );
+    assert!(fold(
+        &mut state,
+        serve_event(ServeEvent::WaiterRelinked {
+            from: peer_endpoint(2),
+            to: peer_endpoint(3),
+        }),
+    ));
+    assert!(!state.upload_peers.contains_key(&peer_endpoint(2)));
+    let row = &state.upload_peers[&peer_endpoint(3)];
+    assert_eq!(row.peer, peer_endpoint(3));
+    assert!(matches!(
+        row.state,
+        UploadState::Queued { rank: 1, file } if file == file_hash(4),
+    ));
+}
+
 #[test]
 fn queue_full_notes_without_creating_a_peer_row() {
     let mut state = UiState::default();
