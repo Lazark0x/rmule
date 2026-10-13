@@ -92,7 +92,10 @@ async fn request_callback_relays_the_source_low_id_to_the_server() {
     // A Low-ID source's server-assigned id (ADR-0039): the session relays it
     // verbatim so the server can dial that peer back to us.
     let low_id = ClientId::from_u32(0x0000_2A57);
-    handle.request_callback(low_id).await;
+    assert!(
+        handle.request_callback(low_id).await,
+        "a live session takes it"
+    );
 
     match cmd_rx.recv().await.unwrap() {
         Ed2kCommand::RequestCallback { low_id: got } => assert_eq!(got, low_id),

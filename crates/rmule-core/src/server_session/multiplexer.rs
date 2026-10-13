@@ -359,13 +359,14 @@ impl ServerSessionHandle {
     }
 
     /// Ask the connected server to relay a Low-ID callback to `low_id`
-    /// (ADR-0039). Fire-and-forget — no ack, no reply; a closed session drops
-    /// the request silently (the download's callback timeout releases the slot).
-    pub(crate) async fn request_callback(&self, low_id: ClientId) {
-        let _ = self
-            .request_tx
+    /// (ADR-0039), saying whether the session took the request. No ack, no
+    /// reply beyond that: a session that has ended takes nothing, and the
+    /// caller ends the callback's road at once.
+    pub(crate) async fn request_callback(&self, low_id: ClientId) -> bool {
+        self.request_tx
             .send(ServerRequest::CallbackRequest { low_id })
-            .await;
+            .await
+            .is_ok()
     }
 
     /// End the session and wait until it has reported itself gone.

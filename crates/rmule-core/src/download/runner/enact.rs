@@ -285,12 +285,18 @@ where
                     let slot = ctx.runner.rt.server_session.slot().lock().await;
                     slot.as_ref().filter(|handle| handle.is_alive()).cloned()
                 };
-                if let Some(session) = session {
-                    tracing::info!(
-                        low_id = low_id.as_u32(),
-                        "server callback: asking the connected server to relay OP_CALLBACK"
-                    );
-                    session.request_callback(low_id).await;
+                let sent = match session {
+                    Some(session) => {
+                        tracing::info!(
+                            low_id = low_id.as_u32(),
+                            "server callback: asking the connected server to relay OP_CALLBACK"
+                        );
+                        session.request_callback(low_id).await
+                    }
+                    None => false,
+                };
+                if !sent {
+                    queue.extend(never_left(ctx, key));
                 }
             }
             Decision::RequestGlobalCallback {
@@ -316,8 +322,8 @@ where
                     want_sources,
                 };
                 ctx.callbacks.await_callback(key, brief);
-                if let Some(requester) = ctx.callbacks.facts.requester() {
-                    let _ = ctx
+                let sent = match ctx.callbacks.facts.requester() {
+                    Some(requester) => ctx
                         .runner
                         .rt
                         .global_callback_tx
@@ -326,7 +332,12 @@ where
                             low_id,
                             source_server,
                         })
-                        .await;
+                        .await
+                        .is_ok(),
+                    None => false,
+                };
+                if !sent {
+                    queue.extend(never_left(ctx, key));
                 }
             }
             Decision::RequestBuddyCallback {
@@ -496,6 +507,23 @@ where
     refresh_parts(&ctx.runner.rt.diagnostics, ctx.download_id, &ctx.state);
     hold_queued_relations(ctx);
     Ok(())
+}
+
+/// A server-relayed ask for `key`'s callback that never left — no live
+/// session, no requester endpoint to name, or a send nothing took: the brain
+/// hears it now, so the slot goes to the candidate's next road rather than
+/// waiting out the callback deadline for an invitation nobody carried. The
+/// answer is the brain's decisions, for the queue.
+fn never_left<S, P>(ctx: &mut LoopCtx<'_, S, P>, key: CallbackKey) -> Vec<Decision> {
+    tracing::debug!(
+        low_id = key.low_id.as_u32(),
+        "server callback ask never left; its road ends now"
+    );
+    ctx.state.on_traversal_retired(
+        now(),
+        key,
+        crate::diagnostics::NattRetirement::CallbackNotSent,
+    )
 }
 
 /// The parts a part hash set disproved as it arrived, dropped by the store in

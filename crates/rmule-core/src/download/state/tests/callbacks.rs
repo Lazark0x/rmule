@@ -603,3 +603,50 @@ fn a_punch_that_was_the_only_road_ends_the_candidate_when_it_retires() {
         "the candidate is gone; a second retirement ends nothing twice"
     );
 }
+
+/// A server relay that never left — no live session, no requester endpoint,
+/// a send nothing took — ends its road when the runner says so, not at the
+/// callback deadline: the candidate takes its next road at once (here the
+/// punch its facts admit), and once that has nothing either, the slot goes to
+/// the next candidate — all before the callback's thirty seconds.
+#[test]
+fn a_server_callback_that_never_left_moves_on_at_once() {
+    use crate::diagnostics::NattRetirement;
+
+    let mut state = callback_state(
+        Vec::new(),
+        vec![low_candidate(7), low_candidate(8)],
+        true,
+        1,
+    );
+    let opened = state.start(t0());
+    assert!(
+        opened
+            .iter()
+            .any(|d| matches!(d, Decision::RequestCallback { low_id, .. } if *low_id == low(7))),
+        "{opened:?}"
+    );
+    let key = connected_key(low(7));
+    let next_road = state.on_traversal_retired(t0(), key, NattRetirement::CallbackNotSent);
+    assert!(
+        next_road.iter().any(|d| matches!(
+            d,
+            Decision::FallToNatTraversal { candidate, silence, .. }
+                if candidate.low_id == low(7) && *silence == CallbackSilence::NoCallbackPossible
+        )),
+        "the unsent road hands the candidate to the punch now: {next_road:?}"
+    );
+    let freed = state.on_traversal_retired(t0(), key, NattRetirement::NotEnactable);
+    assert!(
+        freed
+            .iter()
+            .any(|d| matches!(d, Decision::EndCallback { key: ended } if *ended == key)),
+        "{freed:?}"
+    );
+    assert!(
+        freed
+            .iter()
+            .any(|d| matches!(d, Decision::RequestCallback { low_id, .. } if *low_id == low(8))),
+        "the slot goes to the next candidate: {freed:?}"
+    );
+}

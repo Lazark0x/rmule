@@ -364,7 +364,8 @@ impl DownloadState {
     }
     /// `key`'s **buddy-callback road** is over before any dial-back could
     /// answer it: its Callback Walk met nobody near the buddy ID,
-    /// or could not start. aMule's own `FINDSOURCE` source just waits out its
+    /// or could not start — or its invitation, the server's relay included,
+    /// never left. aMule's own `FINDSOURCE` source just waits out its
     /// reask in `DS_WAITCALLBACKKAD` (`PartFile.cpp:1826`); rmule instead
     /// hands the candidate to its next road now, as the punch road's own end
     /// does, because a slot held for an invitation that never left buys the
@@ -388,11 +389,12 @@ impl DownloadState {
         let Some(pending) = self.sources.road_mut(key) else {
             return Vec::new();
         };
-        // A direct-UDP `0x95` that never left ends its road the same way
-        // The invitation is over before anything could answer.
+        // A direct-UDP `0x95`, or a server's relay, that never left ends its
+        // road the same way: the invitation is over before anything could
+        // answer.
         if !matches!(
             pending.road,
-            LowIdRoad::BuddyCallback | LowIdRoad::DirectUdp
+            LowIdRoad::BuddyCallback | LowIdRoad::DirectUdp | LowIdRoad::Callback
         ) {
             return Vec::new();
         }
