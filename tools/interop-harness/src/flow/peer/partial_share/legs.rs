@@ -75,6 +75,10 @@ pub(crate) struct Legs<'a> {
     /// aMule closes the first link when a second says the same hello
     /// (`ClientList.cpp:395-401`), which ends the upload under test.
     pub(crate) undialled: Vec<std::net::Ipv4Addr>,
+    /// Drop rmule's client-UDP datagrams to this address, so its UDP reask
+    /// goes unanswered and it reasks over a new TCP link at
+    /// `FILEREASKTIME` (`PartFile.cpp:1449-1481`).
+    pub(crate) unacked: Option<std::net::Ipv4Addr>,
 }
 
 impl Legs<'_> {
@@ -168,7 +172,7 @@ impl Legs<'_> {
         if self.restart {
             legs.push(self.second());
         }
-        let mut text = link_conditions(self.shaped, &self.undialled);
+        let mut text = link_conditions(self.shaped, &self.undialled, self.unacked);
         text.push_str(&script(&self.at(START_GATE), &legs));
         text
     }
@@ -197,15 +201,17 @@ pub(crate) fn script(gate: &str, legs: &[Vec<String>]) -> String {
 }
 
 /// The `tc` lines that set rmule's own link: a `prio` root; a drop filter
-/// for each of `undialled`'s peer port (a dial there dies unanswered); and,
-/// for `shaped`, a token bucket draining the third band and a filter sending
-/// that one address there, every other destination keeping its pace. A
-/// network condition on rmule's own link, not a change to either body.
+/// for each of `undialled`'s peer port (a dial there dies unanswered); one
+/// for every UDP datagram to `unacked`; and, for `shaped`, a token bucket
+/// draining the third band and a filter sending that one address there,
+/// every other destination keeping its pace. A network condition on rmule's
+/// own link, not a change to either body.
 pub(crate) fn link_conditions(
     shaped: Option<(std::net::Ipv4Addr, u32)>,
     undialled: &[std::net::Ipv4Addr],
+    unacked: Option<std::net::Ipv4Addr>,
 ) -> String {
-    if shaped.is_none() && undialled.is_empty() {
+    if shaped.is_none() && undialled.is_empty() && unacked.is_none() {
         return String::new();
     }
     let mut lines = vec!["tc qdisc add dev eth0 root handle 1: prio".to_owned()];
@@ -213,6 +219,12 @@ pub(crate) fn link_conditions(
         lines.push(format!(
             "tc filter add dev eth0 parent 1: protocol ip prio 1 u32 match ip dst {address}/32 \
              match ip dport {AMULE_PEER_TCP_PORT} 0xffff action drop"
+        ));
+    }
+    if let Some(address) = unacked {
+        lines.push(format!(
+            "tc filter add dev eth0 parent 1: protocol ip prio 1 u32 match ip dst {address}/32 \
+             match ip protocol 17 0xff action drop"
         ));
     }
     if let Some((address, kbit)) = shaped {
@@ -225,12 +237,13 @@ pub(crate) fn link_conditions(
     }
     let listed: Vec<String> = undialled.iter().map(ToString::to_string).collect();
     lines.push(format!(
-        "echo \"rmule-link-conditions shaped={} undialled={}\"",
+        "echo \"rmule-link-conditions shaped={} undialled={} unacked={}\"",
         shaped.map_or_else(
             || "none".to_owned(),
             |(address, kbit)| format!("{address}@{kbit}kbit")
         ),
-        listed.join(",")
+        listed.join(","),
+        unacked.map_or_else(|| "none".to_owned(), |address| address.to_string())
     ));
     format!(
         "{} || {{ echo \"rmule-link-conditions-failed\" >&2; exit 1; }}\n",

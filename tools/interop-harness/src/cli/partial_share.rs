@@ -89,6 +89,12 @@ pub(crate) struct PeerPartialShareArgs {
     /// one, ending the upload the claims read.
     #[arg(long)]
     pub(crate) dial_downloaders: bool,
+    /// Drop rmule's client-UDP datagrams to the queued downloader on rmule's
+    /// link (needs `--queued`): its UDP reask goes unanswered, so it reasks
+    /// over a new TCP link at `FILEREASKTIME` (`PartFile.cpp:1449-1481`),
+    /// the road of a waiter coming back on a new link.
+    #[arg(long, requires = "queued")]
+    pub(crate) drop_reask_acks: bool,
     /// rmule's peer workers per download; unset keeps the core's.
     #[arg(long)]
     pub(crate) peer_concurrency: Option<usize>,
@@ -167,6 +173,7 @@ struct ResolvedConfig {
     downloader_max_download_kib: u32,
     downloader_link_kbit: u32,
     dial_downloaders: bool,
+    drop_reask_acks: bool,
     peer_concurrency: Option<usize>,
     rmule_on_ed2ksrv: bool,
     prober: bool,
@@ -218,6 +225,7 @@ pub(crate) fn peer_partial_share(args: PeerPartialShareArgs) -> Result<()> {
             downloader_max_download_kib: args.downloader_max_download_kib,
             downloader_link_kbit: args.downloader_link_kbit,
             dial_downloaders: args.dial_downloaders,
+            drop_reask_acks: args.drop_reask_acks,
             peer_concurrency: args.peer_concurrency,
             rmule_on_ed2ksrv: args.rmule_on_ed2ksrv,
             prober: !args.no_prober,
@@ -262,6 +270,7 @@ pub(crate) fn peer_partial_share(args: PeerPartialShareArgs) -> Result<()> {
         downloader_max_download_kib: args.downloader_max_download_kib,
         downloader_link_kbit: args.downloader_link_kbit,
         dial_downloaders: args.dial_downloaders,
+        drop_reask_acks: args.drop_reask_acks,
         peer_concurrency: args.peer_concurrency,
         rmule_on_ed2ksrv: args
             .rmule_on_ed2ksrv

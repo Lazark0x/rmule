@@ -107,6 +107,10 @@ pub(crate) struct Knobs {
     /// written before they could be dropped let every dial through.
     #[serde(default = "dials_went_through")]
     pub(crate) dial_downloaders: bool,
+    /// Whether rmule's client-UDP datagrams to the queued downloader were
+    /// dropped on its link.
+    #[serde(default)]
+    pub(crate) drop_reask_acks: bool,
     /// The server rmule logged in to: `lugdunum` or `ed2k-server`.
     #[serde(default)]
     pub(crate) rmule_server: String,

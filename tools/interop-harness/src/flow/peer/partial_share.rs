@@ -119,6 +119,9 @@ pub struct PartialShareOptions<'a> {
     /// Let rmule's download dial the downloaders it serves; unset, those
     /// dials are dropped on rmule's link.
     pub dial_downloaders: bool,
+    /// Drop rmule's client-UDP datagrams to the queued downloader on rmule's
+    /// link, so its reask goes unanswered and it reasks over a new TCP link.
+    pub drop_reask_acks: bool,
     /// rmule's peer workers per download; `None` keeps the core's.
     pub peer_concurrency: Option<usize>,
     /// Log rmule and the seeds in to ed2k-server (this image and config)
@@ -162,6 +165,9 @@ pub struct PartialShareOptions<'a> {
 pub fn run_partial_share(options: PartialShareOptions<'_>) -> Result<()> {
     if options.seeds.is_empty() {
         bail!("a partial-share run needs at least one seed");
+    }
+    if options.drop_reask_acks && !options.queued {
+        bail!("--drop-reask-acks drops the queued downloader's reask answers: it needs --queued");
     }
     if options.restart && !options.pause {
         bail!("--restart restarts rmule with its download paused: it needs --pause");
@@ -264,6 +270,7 @@ pub fn run_partial_share(options: PartialShareOptions<'_>) -> Result<()> {
             restart: options.restart,
             straddle: options.straddle,
             dial_downloaders: options.dial_downloaders,
+            drop_reask_acks: options.drop_reask_acks,
             rmule_server: if options.rmule_on_ed2ksrv.is_some() {
                 "ed2k-server".to_owned()
             } else {
@@ -357,6 +364,11 @@ pub fn run_partial_share(options: PartialShareOptions<'_>) -> Result<()> {
                 Vec::new()
             } else {
                 topology.downloaders.iter().map(|body| body.ip).collect()
+            },
+            unacked: if options.drop_reask_acks {
+                Some(drive::body_ip(&topology, QUEUED)?)
+            } else {
+                None
             },
         };
         let container = RunContainer::new(options.rmule_tools_image.to_owned())

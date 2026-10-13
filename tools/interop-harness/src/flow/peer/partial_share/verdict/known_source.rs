@@ -20,6 +20,13 @@ fn ip(item: &Item) -> Ipv4Addr {
 /// Verified Range and the file's count, not the complete form.
 pub(super) fn reask_ack(run: &Run<'_>) -> Claim {
     const NAME: &str = "a-reask-is-answered-with-the-verified-range";
+    if run.topology.knobs.drop_reask_acks {
+        return Claim::new(
+            NAME,
+            Verdict::NotRun,
+            "rmule's reask answers to the queued downloader were dropped on its link",
+        );
+    }
     let completed = run.completed_at().unwrap_or(f64::INFINITY);
     let reoffered = run.reoffered_at().unwrap_or(f64::INFINITY);
     let mut pings = 0;
