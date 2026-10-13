@@ -10,7 +10,7 @@ use super::{RunLease, ServedDownloads};
 use crate::download::RunNumber;
 use crate::storage::DownloadRepository;
 use crate::store::download::DurableDownloadRepository;
-use crate::{DownloadPaths, DurableDownloadRecord, DurableStore};
+use crate::{DownloadPaths, DurableDownloadRecord, DurableStore, SharedFileEntry};
 
 /// The size of a [`leased`] download: two whole parts and five bytes, so
 /// three parts and three hashes.
@@ -38,12 +38,8 @@ pub(crate) fn leased(file_hash: FileHash, final_path: PathBuf) -> Leased {
         .map(|part| PartHash::from_bytes([part; 16]))
         .collect();
     let store = rmule_testkit::memory_store();
-    let name = final_path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
     let link = Ed2kFileLink {
-        name: Ed2kText::from_utf8(name),
+        name: Ed2kText::from_utf8(SharedFileEntry::name_of(&final_path)),
         size: SIZE,
         file_hash,
         part_hash_set: None,

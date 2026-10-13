@@ -36,7 +36,9 @@ use tokio::sync::{mpsc, watch};
 
 use crate::download::RunNumber;
 use crate::file_key::FileKey;
-use crate::{DownloadId, DownloadLifecycle, DurableDownloadRecord, VerifiedPartRecord};
+use crate::{
+    DownloadId, DownloadLifecycle, DurableDownloadRecord, SharedFileEntry, VerifiedPartRecord,
+};
 
 /// How many askers a running download's inbox holds before the serve side
 /// drops the next one.
@@ -409,13 +411,7 @@ impl ServedDownloads {
         let paths = record.paths();
         let known = &record.metadata().name;
         let name = if known.as_bytes().is_empty() {
-            Ed2kText::from_utf8(
-                paths
-                    .final_path()
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-            )
+            Ed2kText::from_utf8(SharedFileEntry::name_of(paths.final_path()))
         } else {
             known.clone()
         };

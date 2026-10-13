@@ -61,6 +61,14 @@ pub struct SharedFileEntry {
 }
 
 impl SharedFileEntry {
+    /// The name a row whose file is at `path` is announced under: the path's
+    /// file name, empty for a path that has none.
+    pub(crate) fn name_of(path: &Path) -> String {
+        path.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+
     /// Build a registry entry from a download whose finished file is in place
     /// at `path`, the destination its completion move chose (ADR-0115). The
     /// record already carries the verified file hash, size and part hash
@@ -70,15 +78,11 @@ impl SharedFileEntry {
         path: &Path,
         part_hashes: Vec<PartHash>,
     ) -> Self {
-        let name = path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
         Self {
             file_hash: record.file_hash(),
             file_size: record.file_size(),
             path: path.to_path_buf(),
-            name,
+            name: Self::name_of(path),
             source: ShareSource::CompletedDownload,
             part_hashes,
             modified: modified_time(path),
