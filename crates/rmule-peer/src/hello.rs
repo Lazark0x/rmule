@@ -296,25 +296,17 @@ fn decode_body(payload: &[u8]) -> Result<(PeerHelloBody, HelloTrailer), PeerHell
 
 /// Read `count` tags off the front of `bytes`, returning them and the bytes
 /// they took. A tag the value model cannot hold — a type both references read
-/// but rmule never uses (`FLOAT32`, `BOOL`, `BOOLARRAY`, `BLOB`, `BSOB`,
-/// `STR17`–`STR22`), or a name that is not UTF-8 — is stepped over by its width,
-/// as the references read and ignore it.
+/// but rmule never uses, or a name that is not UTF-8 — is stepped over by its
+/// width, as the references read and ignore it
+/// ([`Tag::decode_or_step_prefix`], the rule every tag list shares).
 pub(crate) fn decode_tags(bytes: &[u8], count: usize) -> Result<(Vec<Tag>, usize), PrimitiveError> {
     // The frame, not the peer's word, bounds what is reserved.
     let mut tags = Vec::with_capacity(Tag::block_capacity(count, bytes));
     let mut reader = WireReader::new(bytes);
     for _ in 0..count {
-        let rest = reader.remaining_bytes();
-        match Tag::decode_prefix(rest) {
-            Ok((tag, used)) => {
-                tags.push(tag);
-                reader.advance_clamped(used);
-            }
-            Err(PrimitiveError::UnsupportedTagType { .. } | PrimitiveError::InvalidTag { .. }) => {
-                reader.advance_clamped(Tag::skip_prefix(rest)?);
-            }
-            Err(other) => return Err(other),
-        }
+        let (tag, used) = Tag::decode_or_step_prefix(reader.remaining_bytes())?;
+        reader.advance_clamped(used);
+        tags.extend(tag);
     }
     Ok((tags, reader.position()))
 }

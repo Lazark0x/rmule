@@ -196,6 +196,28 @@ impl Tag {
         Ok((Self { name, value }, reader.position()))
     }
 
+    /// Read the first entry of a tag list, by the rule every tolerant tag-list
+    /// reader shares (ADR-0053): the tag when [`TagValue`] models its type, or
+    /// `None` when eD2k defines the type but rmule never reads it (`FLOAT32`,
+    /// `BOOL`, `BOOLARRAY`, `BLOB`, `BSOB`, `STR17`..`STR22`) or its name is not
+    /// UTF-8 — eMule's and aMule's readers parse such a tag and ignore it.
+    /// Either way the second value is how many bytes the entry took, so the
+    /// walk goes on at the next entry.
+    ///
+    /// # Errors
+    /// [`PrimitiveError::TruncatedTag`] when the buffer stops short, and
+    /// [`PrimitiveError::UnsupportedTagType`] on a type byte eD2k does not
+    /// define: the two cases that leave the next entry's offset unknowable.
+    pub fn decode_or_step_prefix(bytes: &[u8]) -> Result<(Option<Self>, usize)> {
+        match Self::decode_prefix(bytes) {
+            Ok((tag, used)) => Ok((Some(tag), used)),
+            Err(PrimitiveError::UnsupportedTagType { .. } | PrimitiveError::InvalidTag { .. }) => {
+                Ok((None, Self::skip_prefix(bytes)?))
+            }
+            Err(other) => Err(other),
+        }
+    }
+
     /// How many bytes the first tag in `bytes` occupies, for every eD2k tag
     /// type — including the ones [`Self::decode_prefix`] has no value model
     /// for (`FLOAT32`, `BOOL`, `BOOLARRAY`, `BLOB`, `BSOB`, `STR17`..`STR22`) and

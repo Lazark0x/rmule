@@ -402,12 +402,16 @@ fn decode_row(
         ..RowTags::default()
     };
     for _ in 0..tag_count {
-        let (tag, consumed) = Tag::decode_prefix(reader.remaining_bytes()).map_err(|_| {
-            KadSourceResultDecodeError::MalformedPayload {
-                reason: "source row tag is truncated or malformed",
-            }
-        })?;
+        let (tag, consumed) =
+            Tag::decode_or_step_prefix(reader.remaining_bytes()).map_err(|_| {
+                KadSourceResultDecodeError::MalformedPayload {
+                    reason: "source row tag is truncated or malformed",
+                }
+            })?;
         reader.advance_clamped(consumed);
+        let Some(tag) = tag else {
+            continue;
+        };
         apply_tag(&mut tags, &tag);
     }
 
