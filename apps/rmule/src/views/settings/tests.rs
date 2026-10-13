@@ -336,7 +336,7 @@ fn a_player_command_is_refused_unless_its_words_split_into_a_player() {
 }
 
 #[test]
-fn golden_settings_an_unset_player_says_preview_is_off() {
+fn golden_settings_an_unset_player_says_preview_opens_the_default_app() {
     let mut view = SettingsView::new();
     let state = state();
     focus_on(&mut view, Row::PlayerCommand);

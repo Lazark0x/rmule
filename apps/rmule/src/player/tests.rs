@@ -182,7 +182,30 @@ fn a_ready_download_hands_over_its_published_path_and_the_command() {
     let state = preview_ready();
     let target = preview_target(&state, download_id(1)).expect("ready");
     assert_eq!(target.path, rooted("films/film.mkv.part"));
-    assert_eq!(target.command, "mpv --fs");
+    assert_eq!(target.player, Player::Command("mpv --fs"));
+}
+
+#[test]
+fn without_a_player_command_a_ready_download_goes_to_the_default_app_for_its_names_extension() {
+    let mut state = preview_ready();
+    state.preferences.player_command = None;
+    let target = preview_target(&state, download_id(1)).expect("ready");
+    assert_eq!(target.path, rooted("films/film.mkv.part"));
+    assert_eq!(target.player, Player::DefaultApp("mkv"));
+}
+
+#[test]
+fn the_extension_is_the_names_last_dot_on_and_a_stem_that_is_not_utf8_keeps_it() {
+    assert_eq!(extension(b"film.part.mkv"), Some("mkv"));
+    assert_eq!(extension(b"\xff\xfe film.MKV"), Some("MKV"));
+    assert_eq!(extension(b"film"), None);
+    assert_eq!(extension(b".mkv"), None, "a leading dot names no extension");
+    assert_eq!(extension(b"film."), None);
+    assert_eq!(
+        extension(b"film.\xff"),
+        None,
+        "an extension that is not UTF-8 names no type"
+    );
 }
 
 /// Each block is the one shown when it is the first that holds, even with
@@ -198,15 +221,11 @@ fn each_block_is_shown_when_it_is_the_first_that_holds() {
     let no_part_map = |state: &mut UiState| {
         state.diagnostics.downloads.remove(&download_id(1));
     };
-    let no_player = |state: &mut UiState| {
-        state.preferences.player_command = None;
-        no_part_map(state);
-    };
     let not_previewable = |state: &mut UiState| {
         let row = state.downloads.get_mut(&download_id(1)).expect("row");
         row.metadata.as_mut().expect("metadata").name =
             rmule_primitives::Ed2kText::from_utf8("notes.txt");
-        no_player(state);
+        no_part_map(state);
     };
     assert_eq!(
         block(&|state| {
@@ -226,7 +245,6 @@ fn each_block_is_shown_when_it_is_the_first_that_holds() {
         Some(PreviewBlock::DetailsUnknown)
     );
     assert_eq!(block(&not_previewable), Some(PreviewBlock::NotPreviewable));
-    assert_eq!(block(&no_player), Some(PreviewBlock::NoPlayer));
     assert_eq!(block(&no_part_map), Some(PreviewBlock::NoPartMap));
     assert_eq!(
         block(&|state| {
@@ -338,5 +356,18 @@ fn a_refused_spawn_names_the_download_and_the_cause_in_the_operators_words() {
         crate::words::player::spawn_refused("film.mkv", std::io::ErrorKind::PermissionDenied)
             .as_str(),
         "preview of film.mkv: the player could not start: the program is not executable"
+    );
+}
+
+#[test]
+fn a_type_with_no_default_app_says_so_and_points_to_the_player_setting() {
+    assert_eq!(
+        crate::words::player::no_app("film.mkv", "mkv").as_str(),
+        "preview of film.mkv: no app opens .mkv files here — set a player in Settings"
+    );
+    assert_eq!(
+        crate::words::player::lookup_failed("film.mkv", "mkv", std::io::ErrorKind::NotFound)
+            .as_str(),
+        "preview of film.mkv: the app for .mkv files could not be looked up: it is not there"
     );
 }

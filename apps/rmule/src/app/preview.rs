@@ -1,6 +1,7 @@
 //! The launch a Preview makes (ADR-0114, "A launch"): the reducer reads the
 //! download by the same [`preview_target`] the menu shows, splits the Player
-//! Command, and hands the player's arguments to the player lane.
+//! Command, and hands the player's arguments to the player lane — or, with
+//! no Player Command, the extension the lane looks the Default App up by.
 
 use std::time::Instant;
 
@@ -8,7 +9,7 @@ use rmule_core::DownloadId;
 
 use super::{App, Flow};
 use crate::action::Action;
-use crate::player::{Launch, argv, preview_target, split};
+use crate::player::{Launch, Player, Start, argv, preview_target, split};
 use crate::words::{app as app_words, player as words};
 
 impl App {
@@ -16,12 +17,19 @@ impl App {
     pub(super) fn preview(&mut self, id: DownloadId, now: Instant) -> Flow {
         let launch = match preview_target(&self.state, id) {
             Err(block) => Err(words::blocked(block)),
-            Ok(target) => split(target.command)
-                .map(|program| Launch {
-                    argv: argv(&program, target.path),
-                    name: target.metadata.name.to_display_string(),
-                })
-                .map_err(words::unsplittable),
+            Ok(target) => match target.player {
+                Player::Command(command) => split(command)
+                    .map(|words| Start::Command(argv(&words, target.path)))
+                    .map_err(words::unsplittable),
+                Player::DefaultApp(extension) => Ok(Start::DefaultApp {
+                    extension: extension.to_string(),
+                    file: target.path.to_owned(),
+                }),
+            }
+            .map(|start| Launch {
+                start,
+                name: target.metadata.name.to_display_string(),
+            }),
         };
         let refusal = match (launch, self.player.as_ref()) {
             (Err(refusal), _) => refusal,

@@ -1,6 +1,7 @@
-//! The words of **Preview** and its **Player Command** (ADR-0114): the unset
-//! Settings row, why a typed command is refused, why Preview is greyed, and
-//! how a player's launch ended. Each launch note names the download.
+//! The words of **Preview**, its **Player Command** and its **Default App**
+//! (ADR-0114): the unset Settings row, why a typed command is refused, why
+//! Preview is greyed, why no Default App starts, and how a player's launch
+//! ended. Each launch note names the download.
 
 use std::io::ErrorKind;
 use std::process::ExitStatus;
@@ -9,7 +10,7 @@ use super::{Sentence, os};
 use crate::player::{PreviewBlock, Unsplittable};
 
 /// What the unset Player Command row reads.
-pub const UNSET: &str = "unset — Preview is off";
+pub const UNSET: &str = "unset — Preview opens the default app";
 
 /// A Preview the player lane could not take: its task has ended.
 pub const LANE_ENDED: Sentence = Sentence::fixed("cannot preview: the player launcher has stopped");
@@ -42,7 +43,7 @@ pub fn unsplittable(refusal: Unsplittable) -> Sentence {
 /// What a saved Player Command reads in the Settings receipt.
 #[must_use]
 pub fn receipt(command: Option<&str>) -> String {
-    format!("player → {}", command.unwrap_or("none"))
+    format!("player → {}", command.unwrap_or("the default app"))
 }
 
 /// Why Preview is greyed, as the reason beside the menu item.
@@ -51,7 +52,7 @@ pub const fn block_words(block: PreviewBlock) -> &'static str {
     match block {
         PreviewBlock::DetailsUnknown => "details not known yet",
         PreviewBlock::NotPreviewable => "not a video or audio file",
-        PreviewBlock::NoPlayer => "set a player in Settings",
+        PreviewBlock::NoAppForType => "no app for this type",
         PreviewBlock::NoPartMap => "part map not loaded yet",
         PreviewBlock::HeadNotVerified => "first part not verified yet",
     }
@@ -93,6 +94,25 @@ const fn spawn_cause(kind: ErrorKind) -> &'static str {
         ErrorKind::PermissionDenied => "the program is not executable",
         kind => os::kind_words(kind),
     }
+}
+
+/// No Default App opens files with `extension` here, so a Preview of
+/// download `name` needs a player set.
+#[must_use]
+pub fn no_app(name: &str, extension: &str) -> Sentence {
+    Sentence::owned(format!(
+        "preview of {name}: no app opens .{extension} files here — set a player in Settings"
+    ))
+}
+
+/// The Default App for `extension` could not be looked up for a Preview of
+/// download `name`.
+#[must_use]
+pub fn lookup_failed(name: &str, extension: &str, kind: ErrorKind) -> Sentence {
+    Sentence::owned(format!(
+        "preview of {name}: the app for .{extension} files could not be looked up: {}",
+        os::kind_words(kind)
+    ))
 }
 
 /// The player of download `name` started, but how it ended could not be

@@ -11,9 +11,13 @@
 //! an application bundle, which starts through LaunchServices with the app
 //! named (`open -a`), so no handler is ever picked by the `.part` extension.
 //!
+//! With no Player Command set, Preview opens the **Default App**
+//! ([`default_app`]): the app the system opens the download's real type
+//! with, found by the extension of its name, never of the file on disk.
+//!
 //! What the menu shows and what a launch does are one reading,
 //! [`preview_target`], so the two cannot disagree. The launch itself runs on
-//! the player lane ([`lane`]).
+//! the player lane ([`lane`]), and so does the Default App's lookup.
 
 use std::ffi::OsString;
 use std::path::Path;
@@ -23,9 +27,10 @@ use rmule_core::{DownloadId, DownloadMetadata};
 
 use crate::state::{DownloadStatus, UiState};
 
+pub mod default_app;
 mod launch;
 
-pub use launch::{Launch, PlayerLauncher, PlayerLaunches, lane, play_each};
+pub use launch::{Launch, PlayerLauncher, PlayerLaunches, Start, lane, play_each};
 
 /// The word the download's path replaces, inside any word — aMule's, so an
 /// aMule player string carries over.
@@ -33,7 +38,6 @@ pub const PLACEHOLDER: &str = "%PARTFILE";
 
 /// The program that opens a macOS application bundle through LaunchServices,
 /// by its fixed path so no `PATH` decides it.
-#[cfg(target_os = "macos")]
 const OPEN: &str = "/usr/bin/open";
 
 /// Why a Player Command text does not split into a player's words, or its
@@ -105,23 +109,49 @@ pub enum PreviewBlock {
     DetailsUnknown,
     /// Core does not read the name as a video or an audio file.
     NotPreviewable,
-    /// No Player Command is set.
-    NoPlayer,
+    /// No Player Command is set and the name has no extension, so no type
+    /// to look the Default App up by.
+    NoAppForType,
     /// The last snapshot holds no diagnostics row for the download.
     NoPartMap,
     /// The download is not complete and its first part is not verified.
     HeadNotVerified,
 }
 
-/// A Preview Ready download: what to hand the player and with which command.
+/// A Preview Ready download: what to hand the player and which player.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Target<'a> {
     /// Where the download's bytes lie now, as core published it.
     pub path: &'a Path,
-    /// The Player Command's text.
-    pub command: &'a str,
+    /// The player the file goes to.
+    pub player: Player<'a>,
     /// The download's name and size, so a launch's notes name it.
     pub metadata: &'a DownloadMetadata,
+}
+
+/// The player a Preview hands the file to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Player<'a> {
+    /// The Player Command's text, which overrides the Default App.
+    Command(&'a str),
+    /// No Player Command is set: the Default App for this extension of the
+    /// download's name.
+    DefaultApp(&'a str),
+}
+
+/// The extension of a download's name, as the file class reads it: the bytes
+/// after the last `.`, read only when they are UTF-8, so a stem that is not
+/// keeps the extension. A name with no `.`, one whose only `.` leads it, and
+/// one ending in a `.` have none.
+#[must_use]
+pub fn extension(name: &[u8]) -> Option<&str> {
+    let dot = name.iter().rposition(|byte| *byte == b'.')?;
+    if dot == 0 {
+        return None;
+    }
+    std::str::from_utf8(&name[dot + 1..])
+        .ok()
+        .filter(|extension| !extension.is_empty())
 }
 
 /// Whether download `id` is **Preview Ready** (ADR-0114): core calls it
@@ -143,14 +173,15 @@ pub fn preview_target(state: &UiState, id: DownloadId) -> Result<Target<'_>, Pre
     if !metadata.is_previewable() {
         return Err(PreviewBlock::NotPreviewable);
     }
-    let command = state
-        .preferences
-        .player_command
-        .as_deref()
-        .ok_or(PreviewBlock::NoPlayer)?;
+    let player = match state.preferences.player_command.as_deref() {
+        Some(command) => Player::Command(command),
+        None => Player::DefaultApp(
+            extension(metadata.name.as_bytes()).ok_or(PreviewBlock::NoAppForType)?,
+        ),
+    };
     let target = Target {
         path,
-        command,
+        player,
         metadata,
     };
     if row.status == DownloadStatus::Completed {

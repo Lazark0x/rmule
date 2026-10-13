@@ -22,7 +22,7 @@ This page is the map. Every decision it mentions is indexed in
 | `crates/rmule-kad` | protocol | Kad2: packet envelopes, the `KadNode` and its routing table, keyword and source stores, firewall checks, buddies | `src/node.rs` |
 | `crates/rmule-bootstrap` | protocol | `server.met` and `nodes.dat` acquisition behind a `Fetcher` seam, with an optional HTTP fetcher | `src/lib.rs` |
 | `crates/rmule-net` | networking | the only sockets and timers: a generic driver for any sans-I/O session, wire capture, the crypt stream, the eD2k, peer and Kad runtimes, NAT traversal, port mapping | `src/driver.rs` |
-| `crates/rmule-os` | platform | the operating-system calls std does not expose: the Windows ICMP-reset switch for UDP sockets, the part file's sparse flag, punch and allocated size; the workspace's only `unsafe` | `src/lib.rs` |
+| `crates/rmule-os` | platform | the operating-system calls std does not expose: the Windows ICMP-reset switch for UDP sockets, the part file's sparse flag, punch and allocated size, the default app for a file-name extension; the workspace's only `unsafe` | `src/lib.rs` |
 | `crates/rmule-store` | storage | a domain-free typed layer over one `redb` file: records, tables, schema, version ladder | `src/lib.rs` |
 | `crates/rmule-core` | orchestration | the `Core` actor: downloads, uploads, search, the server list, Kad, shared files, every durable fact | `src/service.rs` |
 | `apps/rmule` | front-end | the `rmule` terminal client, with the core in-process | `src/main.rs` |
@@ -60,9 +60,11 @@ types of any layer below it, but each kind of I/O has one owner:
   ([ADR-0083](../adr/0083-redb-typed-store.md)). Protocol crates never touch
   storage.
 - **Operating-system calls std does not expose** live in `rmule-os`: the
-  ICMP-reset switch `rmule-net` sets at each UDP bind, and the sparse flag,
+  ICMP-reset switch `rmule-net` sets at each UDP bind, the sparse flag,
   punch and allocated size `rmule-core` uses on its part files
-  ([ADR-0111](../adr/0111-sparse-part-file.md)). It holds the workspace's only
+  ([ADR-0111](../adr/0111-sparse-part-file.md)), and the default app for a
+  file-name extension that `rmule`'s Preview asks on macOS and Windows
+  ([ADR-0114](../adr/0114-preview-action.md)). It holds the workspace's only
   `unsafe` code.
 - **Process concerns** (arguments, the data directory, logging, drawing) live
   in the front-ends, which hold no durable state of their own

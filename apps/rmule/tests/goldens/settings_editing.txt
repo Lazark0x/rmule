@@ -23,7 +23,7 @@
 │                                                                            │
 │Downloads                                                                   │
 │ Remember peers 10  per download, dialled first after a restart             │
-│ Player       unset — Preview is off                                        │
+│ Player       unset — Preview opens the default app                         │
 │                                                                            │
 │Kad                                                                         │
 │ ✗ nickname is required                                                     │

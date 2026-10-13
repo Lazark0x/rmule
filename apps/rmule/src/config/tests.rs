@@ -150,7 +150,7 @@ fn a_player_command_commits_at_once_and_an_empty_one_reads_back_unset() {
     assert_eq!(config.load(None).expect("load").player_command, None);
     assert_eq!(
         crate::words::app::receipt(&cleared, TakesEffect::Now).as_str(),
-        "saved: player → none"
+        "saved: player → the default app"
     );
 }
 

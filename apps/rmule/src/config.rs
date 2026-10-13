@@ -372,8 +372,8 @@ pub struct Preferences {
     /// The server the operator last connected to, if any.
     pub last_server: Option<ServerEndpoint>,
     /// The **Player Command** (ADR-0114): the text Preview splits into the
-    /// player's words. `None` until the operator sets one — there is no
-    /// default player, and Preview is off.
+    /// player's words. `None` until the operator sets one, and then Preview
+    /// opens the **Default App**.
     pub player_command: Option<String>,
     /// The **Dead Server Limit** (ADR-0052): failed tries in a row after
     /// which a listed server is dead. Live — core takes it up at once.
