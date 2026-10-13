@@ -109,7 +109,7 @@ fn a_retirement_records_what_the_seed_still_held() {
     };
     let retired = |peer| LogEvent::Retired {
         peer,
-        no_needed_parts: true,
+        reason: "no_needed_parts".to_owned(),
     };
     let events = [
         tick(5.0),
@@ -145,11 +145,15 @@ download.completed id=1
         parse_log(log, 1),
         vec![
             assigned(A, 3),
-            LogEvent::Released { peer: B, part: 0 },
+            LogEvent::Released {
+                peer: B,
+                part: 0,
+                retired: Some("peer_disconnected".to_owned())
+            },
             LogEvent::Verified { part: 3 },
             LogEvent::Retired {
                 peer: A,
-                no_needed_parts: true
+                reason: "no_needed_parts".to_owned()
             },
             LogEvent::RemoteQueued { peer: A },
             LogEvent::Tick {
@@ -159,4 +163,33 @@ download.completed id=1
             LogEvent::Completed,
         ]
     );
+}
+
+/// A seed whose link ended with no queue standing leaves the book, and its
+/// parts leave Part Frequency: A's parts B also held turn very rare, and the
+/// band's 0 leads again.
+#[test]
+fn a_departed_seed_stops_counting() {
+    let advertised = advertised();
+    let first_status_at = BTreeMap::from([(A, 1.0), (B, 1.1)]);
+    let topology = Topology {
+        size: SIZE,
+        window_parts: 2,
+        advertised: &advertised,
+        first_status_at: &first_status_at,
+    };
+    let events = [
+        tick(10.0),
+        assigned(B, 4),
+        LogEvent::Released {
+            peer: B,
+            part: 4,
+            retired: Some("peer_disconnected".to_owned()),
+        },
+        assigned(A, 0),
+        tick(20.0),
+    ];
+    let run = replay(&events, &topology);
+    assert_eq!(run.decisions[1].expected, BTreeSet::from([Pick::Fresh(0)]));
+    assert!(run.decisions[1].matched());
 }

@@ -23,6 +23,9 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 
 use rmule_primitives::{ED2K_PART_SIZE, part_count};
 
+/// The retirement code of a source that holds nothing we need: its record
+/// stays in the book (ADR-0112 §6).
+const NO_NEEDED_PARTS: &str = "no_needed_parts";
 /// How long after a status crosses the tap rmule is taken to have read it.
 const STATUS_READ_MARGIN_SECS: f64 = 0.5;
 
@@ -42,6 +45,8 @@ pub(crate) enum LogEvent {
         peer: Ipv4Addr,
         /// The part.
         part: u32,
+        /// Why the worker was retired, when that released the part.
+        retired: Option<String>,
     },
     /// `download.part_verified`.
     Verified {
@@ -52,8 +57,8 @@ pub(crate) enum LogEvent {
     Retired {
         /// The worker's peer.
         peer: Ipv4Addr,
-        /// The reason was `no_needed_parts`.
-        no_needed_parts: bool,
+        /// The reason's code, as `no_needed_parts`.
+        reason: String,
     },
     /// `download.source_remote_queued`.
     RemoteQueued {
@@ -102,11 +107,12 @@ pub(crate) fn parse_log(text: &str, id: u64) -> Vec<LogEvent> {
                 "part_released" => LogEvent::Released {
                     peer: peer()?,
                     part: part()?,
+                    retired: fields.get("retired").map(|why| (*why).to_owned()),
                 },
                 "part_verified" => LogEvent::Verified { part: part()? },
                 "peer_retired" => LogEvent::Retired {
                     peer: peer()?,
-                    no_needed_parts: fields.get("reason") == Some(&"no_needed_parts"),
+                    reason: (*fields.get("reason")?).to_owned(),
                 },
                 "source_remote_queued" => LogEvent::RemoteQueued { peer: peer()? },
                 "parts_tick" => LogEvent::Tick {
@@ -256,10 +262,15 @@ pub(crate) fn replay(events: &[LogEvent], topology: &Topology<'_>) -> Replay {
     let band = preview_band(topology.size);
     let mut parts = Parts::default();
     let mut assigned_peers: BTreeSet<Ipv4Addr> = BTreeSet::new();
+    // Peers whose worker ended with no queue standing: their record left the
+    // book, and its Advertised Parts left Part Frequency (ADR-0112 §2), until
+    // a fresh status brings them back.
+    let mut departed: BTreeSet<Ipv4Addr> = BTreeSet::new();
     let mut out = Replay::default();
     for (index, event) in events.iter().enumerate() {
         match event {
             LogEvent::Assigned { peer, part } => {
+                departed.remove(peer);
                 let Some(held) = topology.advertised.get(peer) else {
                     out.unjudged += 1;
                     parts.racing.entry(*part).or_default().insert(*peer);
@@ -269,6 +280,7 @@ pub(crate) fn replay(events: &[LogEvent], topology: &Topology<'_>) -> Replay {
                 let known = known_bounds(
                     topology,
                     &assigned_peers,
+                    &departed,
                     *peer,
                     tick_before(index),
                     tick_after(index),
@@ -321,9 +333,16 @@ pub(crate) fn replay(events: &[LogEvent], topology: &Topology<'_>) -> Replay {
                 parts.racing.entry(*part).or_default().insert(*peer);
                 parts.peer_part.insert(*peer, *part);
             }
-            LogEvent::Released { peer, part } => {
+            LogEvent::Released {
+                peer,
+                part,
+                retired,
+            } => {
                 if parts.peer_part.get(peer) == Some(part) {
                     parts.release(*peer);
+                }
+                if retired.as_deref().is_some_and(|why| why != NO_NEEDED_PARTS) {
+                    departed.insert(*peer);
                 }
             }
             LogEvent::Verified { part } => {
@@ -337,11 +356,10 @@ pub(crate) fn replay(events: &[LogEvent], topology: &Topology<'_>) -> Replay {
                 }
                 parts.verified.insert(*part);
             }
-            LogEvent::Retired {
-                peer,
-                no_needed_parts,
-            } => {
-                if *no_needed_parts {
+            LogEvent::Retired { peer, reason } => {
+                if reason != NO_NEEDED_PARTS {
+                    departed.insert(*peer);
+                } else {
                     let lacked = topology
                         .advertised
                         .get(peer)
@@ -357,6 +375,7 @@ pub(crate) fn replay(events: &[LogEvent], topology: &Topology<'_>) -> Replay {
                 parts.release(*peer);
             }
             LogEvent::RemoteQueued { peer } => {
+                departed.remove(peer);
                 out.remote_queued.insert(*peer);
             }
             LogEvent::Tick { at, parts: map } => {
@@ -377,6 +396,7 @@ pub(crate) fn replay(events: &[LogEvent], topology: &Topology<'_>) -> Replay {
 fn known_bounds(
     topology: &Topology<'_>,
     assigned: &BTreeSet<Ipv4Addr>,
+    departed: &BTreeSet<Ipv4Addr>,
     peer: Ipv4Addr,
     tick_before: Option<f64>,
     tick_after: Option<f64>,
@@ -384,12 +404,15 @@ fn known_bounds(
     let mut surely: BTreeSet<Ipv4Addr> = assigned
         .iter()
         .chain([&peer])
-        .filter(|seed| topology.advertised.contains_key(seed))
+        .filter(|seed| topology.advertised.contains_key(seed) && !departed.contains(seed))
         .copied()
         .collect();
     let mut maybe = Vec::new();
     for (seed, at) in topology.first_status_at {
-        if surely.contains(seed) || !topology.advertised.contains_key(seed) {
+        if surely.contains(seed)
+            || departed.contains(seed)
+            || !topology.advertised.contains_key(seed)
+        {
             continue;
         }
         if tick_before.is_some_and(|before| *at < before - STATUS_READ_MARGIN_SECS) {

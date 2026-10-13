@@ -88,6 +88,9 @@ struct Verdict<'a> {
     window_parts: u32,
     peer_concurrency: usize,
     seeds: Vec<String>,
+    /// Seeds rmule sent a part request to: fewer than the seeds is a run
+    /// that lost one, and is not its topology's measurement.
+    seeds_asked: usize,
     statuses: Vec<String>,
     first_requests: Vec<String>,
     measurement: Measurement,
@@ -172,6 +175,12 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
                 )
             })
             .collect(),
+        seeds_asked: wire
+            .requests
+            .iter()
+            .map(|request| request.seed)
+            .collect::<BTreeSet<_>>()
+            .len(),
         statuses: wire
             .statuses
             .iter()
@@ -342,9 +351,10 @@ fn first_ask(wire: &Wire, run: &Replay) -> Claim {
         let (Pick::Fresh(part) | Pick::Raced(part)) = decision.actual else {
             continue;
         };
+        // A seed that never granted a slot was never asked on the wire.
         let agrees = first_on_wire
             .get(&decision.peer)
-            .is_some_and(|parts| parts.contains(&part));
+            .is_none_or(|parts| parts.contains(&part));
         held &= decision.matched() && agrees;
         notes.push(format!(
             "{} part {part} ({}{}{}){}",
