@@ -362,7 +362,7 @@ async fn run_script(sock: tokio::net::TcpStream, script: PeerScript) -> PeerStat
             }
             // `OP_REQUESTFILENAME 0x58` asks for the name and is answered by
             // `OP_REQFILENAMEANSWER 0x59`; `OP_SETREQFILEID 0x4F` asks for
-            // availability and is answered by `OP_FILESTATUS 0x50`. The pairing
+            // the part status and is answered by `OP_FILESTATUS 0x50`. The pairing
             // is the one `rmule_peer::file_request` documents — a fake that
             // answers the other question lets an ordering bug pass.
             0x58 => {
