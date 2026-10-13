@@ -29,9 +29,11 @@ use super::method::SearchMethod;
 use super::sort::ResultId;
 use super::{SearchesView, ViewOutcome};
 use crate::action::Action;
+use crate::row_selection::viewport::Viewport;
 use crate::state::{SearchPane, SearchStatus, UiState};
 use crate::table_sort::RowCursor;
 use crate::theme::Theme;
+use crate::wrap::clamp_u16;
 
 /// A label keeps this many characters of its query; a longer one ends in `…`.
 /// Capped labels are exempt from the no-truncation rule, as the tab bar is:
@@ -66,9 +68,9 @@ pub(super) struct HeldSearches {
     /// The ids the operator closed: a late event naming one opens nothing,
     /// even when `newest_seen` has not reached it yet.
     closed: BTreeSet<SearchId>,
-    /// The first entry the strip drew, so it scrolls only when the current
-    /// entry would leave the view.
-    first_drawn: usize,
+    /// What part of the strip is on screen, in entries: it scrolls only when
+    /// the current entry would leave the view.
+    viewport: Viewport,
     /// Each drawn entry's columns on the strip row, for click hit-testing.
     hits: Vec<(Rect, usize)>,
 }
@@ -251,8 +253,28 @@ impl HeldSearches {
             .enumerate()
             .map(|(index, entry)| entry_text(entry, state, index == self.current))
             .collect();
-        let widths: Vec<usize> = texts.iter().map(|text| Span::raw(text).width()).collect();
-        let (first, last) = self.window(&widths, usize::from(area.width));
+        let widths: Vec<u16> = texts
+            .iter()
+            .map(|text| clamp_u16(Span::raw(text).width()))
+            .collect();
+        // While the entries outgrow the strip, both markers and the count
+        // keep their room at its ends, and the entries share the rest.
+        let fits = widths.iter().map(|w| usize::from(*w)).sum::<usize>() <= usize::from(area.width);
+        let room = if fits {
+            area.width
+        } else {
+            let at = self.current.min(texts.len() - 1);
+            let count = crate::words::viewport::count(at + 1, texts.len());
+            let ends = Span::raw(MORE_LEFT).width()
+                + Span::raw(MORE_RIGHT).width()
+                + Span::raw(&count).width()
+                + 2;
+            area.width.saturating_sub(clamp_u16(ends))
+        };
+        self.viewport
+            .follow(self.current, texts.len(), room, |index| widths[index]);
+        let shown = self.viewport.shown();
+        let (first, last) = (shown.start, shown.end.saturating_sub(1));
 
         let mut spans = Vec::new();
         let mut x = area.x;
@@ -279,28 +301,9 @@ impl HeldSearches {
             push(&mut spans, MORE_RIGHT.to_string(), theme.dim_text());
         }
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
-    }
-
-    /// The entries `first..=last` that fit `width` with the current one among
-    /// them, keeping the previous scroll unless the current entry left it.
-    fn window(&mut self, widths: &[usize], width: usize) -> (usize, usize) {
-        let marker = Span::raw(MORE_LEFT).width();
-        let current = self.current.min(widths.len() - 1);
-        let mut first = self.first_drawn.min(current);
-        let span = |first: usize, last: usize| -> usize {
-            widths[first..=last].iter().sum::<usize>()
-                + if first > 0 { marker } else { 0 }
-                + if last + 1 < widths.len() { marker } else { 0 }
-        };
-        while first < current && span(first, current) > width {
-            first += 1;
+        if self.viewport.overflows() {
+            self.viewport.draw_count(frame, area, theme);
         }
-        let mut last = current;
-        while last + 1 < widths.len() && span(first, last + 1) <= width {
-            last += 1;
-        }
-        self.first_drawn = first;
-        (first, last)
     }
 }
 

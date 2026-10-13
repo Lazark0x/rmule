@@ -175,6 +175,12 @@ impl Viewport {
         self.first
     }
 
+    /// The items the last draw showed whole.
+    #[must_use]
+    pub(crate) const fn shown(&self) -> Range<usize> {
+        self.first..self.first + self.shown
+    }
+
     /// Whether some of the list is off screen.
     #[must_use]
     pub(crate) const fn overflows(&self) -> bool {
