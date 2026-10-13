@@ -328,6 +328,17 @@ enum HarnessCommand {
     /// run dir from its own tap and logs.
     #[command(name = "peer-streaming-window-score")]
     PeerStreamingWindowScore(crate::cli::streaming_window::PeerStreamingWindowScoreArgs),
+    /// The partial-share flow (ADR-0113): stock aMule fetches a download
+    /// rmule is still fetching — probes before and after its first part, the
+    /// hash set, verified bytes only, a straddling request, the announce
+    /// markers, the reask, a pause, a restart's Offer Check, and the upload
+    /// carried across the completion move (ADR-0115).
+    #[command(name = "peer-partial-share")]
+    PeerPartialShare(Box<crate::cli::partial_share::PeerPartialShareArgs>),
+    /// Score a finished or archived `peer-partial-share` run dir from its own
+    /// tap and logs.
+    #[command(name = "peer-partial-share-score")]
+    PeerPartialShareScore(crate::cli::partial_share::PeerPartialShareScoreArgs),
     /// Two hellos, one client: from one address, two peer-TCP connections say
     /// the same user hash and listen port to a High-ID aMule (and, as the
     /// control, two different ports); records whether aMule closed the first
@@ -495,6 +506,12 @@ fn dispatch(command: HarnessCommand) -> Result<()> {
         }
         HarnessCommand::PeerStreamingWindowScore(args) => {
             crate::cli::streaming_window::peer_streaming_window_score(args)?;
+        }
+        HarnessCommand::PeerPartialShare(args) => {
+            crate::cli::partial_share::peer_partial_share(*args)?;
+        }
+        HarnessCommand::PeerPartialShareScore(args) => {
+            crate::cli::partial_share::peer_partial_share_score(args)?;
         }
         HarnessCommand::Sx1Gate(args) => {
             crate::cli::peer::sx1_gate(args)?;

@@ -81,3 +81,4 @@ pub use self::peer::{
     score_run_dir as score_peer_udp_reask, score_streaming_window, seed_holding_arg,
     stage_reask_emit_files,
 };
+pub use self::peer::{PartialShareOptions, run_partial_share, score_partial_share};

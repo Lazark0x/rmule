@@ -4,10 +4,12 @@
 //! dials an aMule directly for Secure User Identification, serves an aMule's
 //! download, or holds an aMule queued across the `FILEREASKTIME` window to draw
 //! — or emit — a peer-UDP source reask, or re-asks a Low-ID one through its
-//! callback road, or downloads one file from several partial aMule seeds.
+//! callback road, or downloads one file from several partial aMule seeds, or
+//! serves an aMule a download it is still fetching.
 
 pub(crate) mod direct_sui;
 pub(crate) mod lowid_callback_reask;
+pub(crate) mod partial_share;
 pub(crate) mod serve;
 pub(crate) mod streaming_window;
 pub(crate) mod sx1_gate;
@@ -19,6 +21,9 @@ pub use self::direct_sui::{DirectSuiOptions, run_amule_direct_sui};
 pub use self::lowid_callback_reask::verdict::score_run_dir as score_lowid_callback_reask;
 pub use self::lowid_callback_reask::{
     PeerLowIdCallbackReaskOptions, run_peer_lowid_callback_reask,
+};
+pub use self::partial_share::{
+    PartialShareOptions, run_partial_share, score_run_dir as score_partial_share,
 };
 pub use self::serve::run_rmule_serves_amule_downloads;
 pub use self::streaming_window::{
