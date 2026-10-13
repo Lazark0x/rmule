@@ -135,10 +135,6 @@ impl DownloadState {
         // Hand the re-pended part to a still-connected idle worker (slot order),
         // then backfill. Redundant with `release`'s own reassign when a bad
         // contributor was retired, but covers the case where none still are.
-        let unneeded = self.offer_connected(out);
-        self.fill(now, out);
-        for peer in unneeded {
-            self.retire_no_needed_parts(now, peer, out);
-        }
+        self.reassign_workers(now, out);
     }
 }

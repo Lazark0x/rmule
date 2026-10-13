@@ -234,12 +234,19 @@ impl DownloadState {
             self.free_slots.insert(slot.as_usize());
         }
         self.retired_peers = self.retired_peers.saturating_add(1);
-        // Hand the released part to a still-connected idle worker whose own
+        // The released part goes to a still-connected idle worker whose own
         // probe answered; any other is assigned on that answer (ADR-0112).
-        let unneeded = self.offer_connected(out);
+        self.reassign_workers(now, out);
+    }
+
+    /// Hand every connected worker its next part and backfill the free
+    /// slots; with the pool empty and nothing active or connecting the
+    /// download fails (ADR-0026's terminal condition, ADR-0030). A worker
+    /// left holding nothing we need is retired last, once all that has
+    /// settled (ADR-0112 §6).
+    pub(super) fn reassign_workers(&mut self, now: Instant, out: &mut Vec<Decision>) {
+        let unneeded = self.assign_connected(out);
         self.fill(now, out);
-        // ADR-0026's terminal condition (ADR-0030): only fail once the pool is
-        // empty and nothing is active or connecting.
         if self.out_of_sources() {
             out.push(Decision::Fail(DownloadFailure::NoUsableSources));
         }
@@ -248,13 +255,13 @@ impl DownloadState {
         }
     }
 
-    /// Offer every connected worker its next part, in slot order. The ones
-    /// whose Advertised Parts hold no part we lack are returned, for the
-    /// caller to retire once its own release has settled.
-    pub(super) fn offer_connected(&mut self, out: &mut Vec<Decision>) -> Vec<PeerEndpoint> {
+    /// [`Self::assign_or_lacking`] for every connected worker, in slot
+    /// order. The ones holding nothing we need are returned, for the caller
+    /// to retire once its own decisions have settled.
+    pub(super) fn assign_connected(&mut self, out: &mut Vec<Decision>) -> Vec<PeerEndpoint> {
         self.connected_workers()
             .into_iter()
-            .filter(|&peer| !self.offer(peer, out))
+            .filter(|&peer| self.assign_or_lacking(peer, out) == Handed::NothingNeeded)
             .collect()
     }
 
@@ -303,20 +310,20 @@ impl DownloadState {
     /// an earlier connection: that answer assigns it. One whose parts hold
     /// nothing we lack is retired `NoNeededParts`.
     pub(super) fn assign(&mut self, now: Instant, peer: PeerEndpoint, out: &mut Vec<Decision>) {
-        if !self.offer(peer, out) {
+        if self.assign_or_lacking(peer, out) == Handed::NothingNeeded {
             self.retire_no_needed_parts(now, peer, out);
         }
     }
 
-    /// [`Self::assign`]'s offer: the assignment decisions, an `Idle` phase,
-    /// or nothing, and `false` only when `peer`'s Advertised Parts hold no
-    /// part the unfinished file lacks.
-    fn offer(&mut self, peer: PeerEndpoint, out: &mut Vec<Decision>) -> bool {
+    /// [`Self::assign`] short of the retirement: the assignment decisions, an
+    /// `Idle` phase, or nothing, and what they came to — the caller retires
+    /// a worker holding nothing we need.
+    fn assign_or_lacking(&mut self, peer: PeerEndpoint, out: &mut Vec<Decision>) -> Handed {
         let Some(slot) = self.worker_slots.get(&peer).copied() else {
-            return true;
+            return Handed::Unanswered;
         };
         let Some(parts) = self.sources.worker_parts(peer) else {
-            return true;
+            return Handed::Unanswered;
         };
         let plan = match self.scheduler.assign_next(
             peer,
@@ -325,16 +332,16 @@ impl DownloadState {
             self.sources.parts_known(),
         ) {
             Assignment::Fresh(plan) | Assignment::Raced(plan) => plan,
-            Assignment::Busy => return true,
+            Assignment::Busy => return Handed::Assigned,
             Assignment::Nothing { lacked: false } if !self.scheduler.is_complete() => {
-                return false;
+                return Handed::NothingNeeded;
             }
             Assignment::Nothing { .. } => {
                 out.push(Decision::Phase {
                     slot,
                     phase: WorkerPhase::Idle,
                 });
-                return true;
+                return Handed::Idle;
             }
         };
         let resume_offset = plan.offset
@@ -360,6 +367,21 @@ impl DownloadState {
                 resume_offset,
             },
         });
-        true
+        Handed::Assigned
     }
+}
+
+/// What handing one worker its next part came to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Handed {
+    /// It holds a part: one handed now, or the one it already works.
+    Assigned,
+    /// Every part it holds that we lack is in flight elsewhere: it idles, the
+    /// backup a release hands a part to (ADR-0112 §6).
+    Idle,
+    /// It is no worker whose own probe answered: that answer assigns it
+    /// (ADR-0112 §3).
+    Unanswered,
+    /// Its Advertised Parts hold no part the file lacks.
+    NothingNeeded,
 }

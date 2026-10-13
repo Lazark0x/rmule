@@ -210,9 +210,9 @@ impl DownloadState {
                 self.scheduler.complete_verified(peer);
                 // The verified part may have been the last one an idle
                 // worker held that we lack: every connected worker is
-                // offered again, and one left holding nothing we need gives
+                // assigned again, and one left holding nothing we need gives
                 // its slot back (ADR-0112 §6).
-                let unneeded = self.offer_connected(&mut out);
+                let unneeded = self.assign_connected(&mut out);
                 if self.scheduler.is_complete() {
                     out.push(Decision::Finalize);
                     self.settle_seed_dials(&mut out);
@@ -398,10 +398,7 @@ impl DownloadState {
             .filter(|&plan| self.scheduler.repend_verified(plan))
             .count();
         if repended > 0 {
-            for peer in self.connected_workers() {
-                self.assign(now, peer, &mut out);
-            }
-            self.fill(now, &mut out);
+            self.reassign_workers(now, &mut out);
         }
         out
     }
