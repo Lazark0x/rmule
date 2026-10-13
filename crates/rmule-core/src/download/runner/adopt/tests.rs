@@ -51,6 +51,7 @@ fn reported() -> CallbackKey {
     CallbackKey {
         server: Some(Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 23), 4661)),
         low_id: ClientId::from_u32(LOW_ID),
+        kad_port: None,
     }
 }
 

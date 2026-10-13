@@ -288,6 +288,7 @@ impl Harness {
         let callback = crate::adapters::CallbackKey {
             server: None,
             low_id,
+            kad_port: None,
         };
         let (retire_tx, retire_rx) = mpsc::channel(4);
         let claim = self

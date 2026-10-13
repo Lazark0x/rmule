@@ -265,7 +265,11 @@ where
                 // road is filed under the candidate's key — one minted with no
                 // server known is resolved to the live one. Filing precedes the
                 // request so an unusually fast dial-back always finds it.
-                let key = CallbackKey { server, low_id };
+                let key = CallbackKey {
+                    server,
+                    low_id,
+                    kad_port: None,
+                };
                 let brief = AdoptionBrief {
                     file: ctx.file.clone(),
                     own_status: ctx.state.our_part_status(),
@@ -299,6 +303,7 @@ where
                 let key = CallbackKey {
                     server: Some(source_server),
                     low_id,
+                    kad_port: None,
                 };
                 let brief = AdoptionBrief {
                     file: ctx.file.clone(),

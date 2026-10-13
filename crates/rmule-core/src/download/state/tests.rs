@@ -298,6 +298,7 @@ fn connected_key(low_id: ClientId) -> CallbackKey {
     CallbackKey {
         server: None,
         low_id,
+        kad_port: None,
     }
 }
 

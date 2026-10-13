@@ -75,7 +75,7 @@ impl CallbackContext {
     pub(super) fn routing_key(&self, key: CallbackKey) -> CallbackKey {
         CallbackKey {
             server: key.server.or_else(|| self.facts.server()),
-            low_id: key.low_id,
+            ..key
         }
     }
 

@@ -216,15 +216,29 @@ impl LowIdCandidate {
             }
     }
 
-    /// The pending-callback / deadline key this candidate is held under.
+    /// The key this candidate's record and its roads are held under: its id
+    /// in its namespace, with a Kad row's Kad UDP port beside the observed
+    /// address it reads its id from (ADR-0090).
     pub(crate) const fn key(&self) -> CallbackKey {
         CallbackKey {
             server: self.source_server,
             low_id: self.low_id,
+            kad_port: match self.kad_udp {
+                Some(kad_udp) if self.from_kad => Some(kad_udp.port),
+                _ => None,
+            },
         }
     }
 
-    /// Fold a later sighting of the same source into this record.
+    /// Whether `newer`, sighted under this candidate's key, names another User
+    /// Hash than this one: **another owner** of the key, whose sighting
+    /// replaces this candidate whole rather than merging into it (ADR-0090).
+    /// A channel silent about the hash names no other owner.
+    pub(crate) fn names_another_owner(&self, newer: &Self) -> bool {
+        matches!((self.user_hash, newer.user_hash), (Some(held), Some(named)) if held != named)
+    }
+
+    /// Fold a later sighting of the same owner into this record.
     ///
     /// **Newer non-`None` wins, and an advert is never withdrawn.** A channel
     /// that did not mention a fact is silent about it, not denying it — the
@@ -232,17 +246,14 @@ impl LowIdCandidate {
     /// one — so `None` and `false` never overwrite something another channel
     /// stated. Between two channels that both stated a fact the later one wins,
     /// because a source's buddy and endpoints change under it while its id does
-    /// not.
+    /// not. A sighting of another owner ([`Self::names_another_owner`]) is not
+    /// merged at all.
     pub(crate) fn merge(&mut self, newer: Self) {
         self.tcp_port = if newer.tcp_port == 0 {
             self.tcp_port
         } else {
             newer.tcp_port
         };
-        // A sighting naming another User Hash is another owner: the stance
-        // the older one stated never rides onto it (ADR-0049).
-        let other_owner =
-            matches!((self.user_hash, newer.user_hash), (Some(held), Some(named)) if held != named);
         self.user_hash = newer.user_hash.or(self.user_hash);
         // The same buddy named again without its endpoint keeps the endpoint
         // another channel stated — an ID-only Kad row is silent about where
@@ -256,11 +267,7 @@ impl LowIdCandidate {
         };
         self.kad_udp = newer.kad_udp.or(self.kad_udp);
         self.ipv6 = newer.ipv6.or(self.ipv6);
-        self.crypt_options = if other_owner {
-            newer.crypt_options
-        } else {
-            newer.crypt_options.or(self.crypt_options)
-        };
+        self.crypt_options = newer.crypt_options.or(self.crypt_options);
         self.supports_direct_udp_callback |= newer.supports_direct_udp_callback;
         self.direct_udp_callback |= newer.direct_udp_callback;
         self.supports_natt |= newer.supports_natt;
@@ -432,29 +439,6 @@ mod tests {
         assert!(candidate.supports_direct_udp_callback);
         assert!(!candidate.supports_natt);
         assert_eq!(candidate.buddy, None);
-    }
-
-    /// A later sighting naming another User Hash is another owner: the older
-    /// sighting's "requires" never rides onto it (ADR-0049).
-    #[test]
-    fn a_later_sighting_naming_another_hash_carries_no_older_stance() {
-        let sighting = |h: u8, options: Option<u8>| {
-            LowIdCandidate::from_sighting(
-                SourceSighting::new(
-                    PeerSource::new(low(7), 4662),
-                    Some(hash(h)),
-                    options.map(SourceCryptOptions::from_byte),
-                ),
-                None,
-            )
-            .expect("a Low-ID source is a candidate")
-        };
-        let mut held = sighting(0xAB, Some(0x07));
-        held.merge(sighting(0xCD, None));
-        assert_eq!(
-            held.peer_crypt(),
-            PeerCrypt::from_record(None, Some(hash(0xCD)))
-        );
     }
 
     /// The merge rule: a later sighting fills what it knows and withdraws

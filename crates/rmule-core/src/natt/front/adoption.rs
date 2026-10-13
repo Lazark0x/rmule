@@ -79,6 +79,7 @@ fn callback_key() -> CallbackKey {
     CallbackKey {
         server: None,
         low_id: ClientId::from_u32(7),
+        kad_port: None,
     }
 }
 

@@ -103,12 +103,13 @@ impl SourceBook {
     }
 
     /// A Low-ID candidate, merged into the record its key names rather than
-    /// held twice (ADR-0039 / ADR-0051). A candidate naming its buddy by ID
-    /// alone takes the endpoint the source's own hello named earlier this run.
-    /// One whose IPv6 half another record answers to is that record's peer:
-    /// the candidate joins it. A candidate naming a distrusted User Hash is not
-    /// pooled. Reached only through [`Self::sight`], once the gate judged the
-    /// sighting it came from.
+    /// held twice (ADR-0039 / ADR-0051), or replacing that record's candidate
+    /// whole when it names another owner of the key (ADR-0090). A candidate
+    /// naming its buddy by ID alone takes the endpoint the source's own hello
+    /// named earlier this run. One whose IPv6 half another record answers to
+    /// is that record's peer: the candidate joins it. A candidate naming a
+    /// distrusted User Hash is not pooled. Reached only through
+    /// [`Self::sight`], once the gate judged the sighting it came from.
     fn sight_candidate(&mut self, mut candidate: LowIdCandidate) -> Sighted {
         if self.blocks.distrusts(candidate.user_hash) {
             return Sighted::Blocked(Blocked::Distrusted);
@@ -128,7 +129,11 @@ impl SourceBook {
                 return Sighted::Merged(None);
             };
             let before = held.ipv6;
-            held.merge(candidate);
+            if held.names_another_owner(&candidate) {
+                *held = candidate;
+            } else {
+                held.merge(candidate);
+            }
             return Sighted::Merged(self.sync_half(id, before));
         }
         if let Some(holder) = candidate

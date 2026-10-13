@@ -828,9 +828,12 @@ them — the target's **User Hash**, its **Buddy** contact, its NAT-T bit, its K
 endpoint and its IPv6 — plus whether it came from a **Kad source row** at all, which is
 what says no server can be asked to relay for it. A Kad type-3/5 row is the one channel
 that names a **Buddy**, and (only from an eMuleAI publisher) the one that can name the
-NAT-T bit. Every field is `None`/`false` unless the bytes said otherwise;
-a source learned twice merges, newer non-`None` winning and a silent channel withdrawing
-nothing. It exists because a Low-ID candidate never speaks to rmule until its callback
+NAT-T bit. Every field is `None`/`false` unless the bytes said otherwise.
+It is keyed by its namespace, its id and the port that tells two apart: a server-assigned
+id by its server, a Kad row by its observed address and Kad UDP port (ADR-0090). A source
+learned twice under one key merges, newer non-`None` winning and a silent channel
+withdrawing nothing; a sighting naming another User Hash is another owner of the key and
+replaces the record whole. It exists because a Low-ID candidate never speaks to rmule until its callback
 works, so facts not kept at discovery are gone when rung 1 needs them.
 _Avoid_: candidate (that is the High-ID pool's unqualified term), peer facts (that is
 `PeerReach`, the public record this projects into)

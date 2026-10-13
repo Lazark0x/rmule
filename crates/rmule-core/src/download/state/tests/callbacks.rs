@@ -160,6 +160,7 @@ fn an_adopted_global_callback_peer_binds_then_its_connected_event_assigns_it() {
     let key = CallbackKey {
         server: Some(server),
         low_id: low(7),
+        kad_port: None,
     };
     let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
     // Requests a per-server callback for low(7), holding slot 0.
@@ -202,6 +203,7 @@ fn a_lapsed_global_callback_frees_its_slot_for_the_next_candidate() {
     let key = CallbackKey {
         server: Some(server),
         low_id: low(7),
+        kad_port: None,
     };
     let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
     let first = via_global(
@@ -441,6 +443,7 @@ fn a_legacy_candidate_arms_no_fallback_and_lapses_at_its_own_deadline() {
     let key = CallbackKey {
         server: Some(server),
         low_id: low(7),
+        kad_port: None,
     };
     let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
     let requested = via_global(&mut state, server, vec![PeerSource::new(low(7), 4662)]);

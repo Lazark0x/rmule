@@ -185,6 +185,7 @@ pub(crate) async fn triage_inbound_connection(
     let reported = CallbackKey {
         server: identity.connected_server(),
         low_id: identity.client_id(),
+        kad_port: None,
     };
     match awaited.triage(arrival, identity.user_hash(), reported) {
         InboundVerdict::Adopt(adoption) => {

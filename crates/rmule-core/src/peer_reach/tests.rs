@@ -97,6 +97,7 @@ fn pending(
             key: CallbackKey {
                 server: None,
                 low_id: ClientId::from_u32(77),
+                kad_port: None,
             },
             retire_tx,
         },

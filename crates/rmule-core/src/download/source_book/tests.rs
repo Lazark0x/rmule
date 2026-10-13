@@ -20,6 +20,7 @@ use crate::hello_facts::HelloFacts;
 use crate::ip_filter::IpFilter;
 
 mod frequency;
+mod low_id_key;
 mod low_id_names;
 
 const BAD: UserHash = UserHash::from_bytes([0xBA; UserHash::BYTE_LEN]);
@@ -162,6 +163,7 @@ fn a_sighting_of_a_held_source_merges_and_never_duplicates() {
     let key = CallbackKey {
         server: None,
         low_id: ClientId::from_u32(7),
+        kad_port: None,
     };
     let hashed = SourceSighting::new(
         PeerSource::new(ClientId::from_u32(7), 4662),

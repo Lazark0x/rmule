@@ -48,6 +48,7 @@ impl DownloadState {
         let connected = CallbackKey {
             server: None,
             low_id: reported.low_id,
+            kad_port: None,
         };
         self.callback_slots
             .contains_key(&connected)

@@ -418,6 +418,7 @@ async fn the_adopted_buddy_links_close_frees_the_buddy_slot() {
     let key = CallbackKey {
         server: None,
         low_id: ClientId::from_u32(0x2000_0002),
+        kad_port: None,
     };
     let registration = awaited.register(key, adopt_tx, mpsc::channel(1).0);
     registration.await_callback(

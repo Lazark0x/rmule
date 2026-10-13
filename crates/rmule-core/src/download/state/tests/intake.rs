@@ -144,6 +144,7 @@ fn a_low_id_row_passes_the_filter_and_is_called_back_through_its_channels_server
             } => Some(CallbackKey {
                 server: Some(*source_server),
                 low_id: *low_id,
+                kad_port: None,
             }),
             _ => None,
         });
@@ -151,6 +152,7 @@ fn a_low_id_row_passes_the_filter_and_is_called_back_through_its_channels_server
             Channel::Global(server) => CallbackKey {
                 server: Some(server),
                 low_id: low(7),
+                kad_port: None,
             },
             _ => connected_key(low(7)),
         };
@@ -195,6 +197,7 @@ fn an_exchanged_low_id_row_is_called_back_through_the_server_it_names() {
                 Decision::RequestCallback { low_id, .. } => Some(CallbackKey {
                     server: Some(ours),
                     low_id: *low_id,
+                    kad_port: None,
                 }),
                 Decision::RequestGlobalCallback {
                     low_id,
@@ -203,6 +206,7 @@ fn an_exchanged_low_id_row_is_called_back_through_the_server_it_names() {
                 } => Some(CallbackKey {
                     server: Some(*source_server),
                     low_id: *low_id,
+                    kad_port: None,
                 }),
                 _ => None,
             })
@@ -211,7 +215,8 @@ fn an_exchanged_low_id_row_is_called_back_through_the_server_it_names() {
             asked,
             vec![CallbackKey {
                 server: Some(named),
-                low_id: low(7)
+                low_id: low(7),
+                kad_port: None
             }],
             "a row naming {named}"
         );

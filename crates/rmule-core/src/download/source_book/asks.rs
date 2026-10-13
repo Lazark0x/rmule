@@ -31,7 +31,8 @@ pub(crate) enum AskName {
     /// end of any connection.
     Endpoint(PeerEndpoint),
     /// A Low-ID callback's routing key, as the book holds it: an eD2k low id
-    /// with the server that assigned it, or a Kad row's observed address.
+    /// with the server that assigned it, or a Kad row's observed address and
+    /// Kad UDP port.
     LowId(CallbackKey),
     /// The peer's User Hash, from a candidate's record, a record-stated crypt
     /// or a hello.
