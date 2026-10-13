@@ -169,3 +169,46 @@ fn inbound_found_sources_before_id_change_emits_event() {
             if file_hash == crate::fixture::hash(0xBB) && sources == vec![SourceSighting::plain(source)]
     ));
 }
+
+/// The large form keys on aMule's `IsLargeFile`, strictly past
+/// `OLD_MAX_FILE_SIZE`, which a `u32` still holds: the file one byte past it
+/// is asked as large and only of a large-file server
+/// (`DownloadQueue.cpp:1083-1098`).
+#[test]
+fn a_file_one_byte_past_old_max_file_size_is_asked_in_the_large_form() {
+    let old_max = rmule_primitives::OLD_MAX_FILE_SIZE;
+    let mut session = crate::fixture::started_session(0x42);
+    crate::fixture::login_with_flags(
+        &mut session,
+        Some(ServerTcpFlags::from_bits(ServerTcpFlags::LARGE_FILES)),
+    );
+    let mut asked = |size| {
+        session.handle_command(Ed2kCommand::RequestSources {
+            target: target(size),
+        });
+        let Some(Output::Write(bytes)) = session.poll_output() else {
+            panic!("expected source request write");
+        };
+        GetSourcesRequest::decode_packet(&Packet::decode_exact(&bytes).unwrap()).unwrap()
+    };
+    assert!(matches!(asked(old_max), GetSourcesRequest::Normal { .. }));
+    assert!(matches!(
+        asked(old_max + 1),
+        GetSourcesRequest::Large { .. }
+    ));
+
+    let mut plain = crate::fixture::started_session(0x42);
+    crate::fixture::login_with_flags(&mut plain, None);
+    plain.handle_command(Ed2kCommand::RequestSources {
+        target: target(old_max + 1),
+    });
+    assert!(matches!(
+        plain.poll_output(),
+        Some(Output::Event(Ed2kEvent::CommandRejected {
+            command: Ed2kCommandKind::RequestSources,
+            reason: CommandRejectReason::UnsupportedServerCapability {
+                capability: ServerCapability::LargeFiles,
+            },
+        }))
+    ));
+}

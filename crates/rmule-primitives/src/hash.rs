@@ -21,6 +21,24 @@ const ED2K_PART_SIZE_USIZE: usize = ED2K_PART_SIZE as usize;
 /// each is decoded.
 pub const MAX_ED2K_FILE_SIZE: u64 = 0x40_0000_0000;
 
+/// The largest file the pre-large-file eD2k wire carried: 4 290 048 000 bytes,
+/// the largest whole number of parts under `2^32`. aMule defines it as
+/// `OLD_MAX_FILE_SIZE` (`src/include/protocol/ed2k/Constants.h:77`), eMule as
+/// `OLD_MAX_EMULE_FILE_SIZE`. A file past it is large ([`is_large_file`]).
+pub const OLD_MAX_FILE_SIZE: u64 = 4_290_048_000;
+
+/// Whether a file is large — aMule's `IsLargeFile` (`KnownFile.h:114`):
+/// strictly past [`OLD_MAX_FILE_SIZE`], not past `u32::MAX`, so a file of
+/// 4 290 048 001 bytes fits a `u32` and is still large. Every decision aMule
+/// keys on it reads this one test: the AICH recovery data's 32-bit
+/// identifiers, the Kad large source types, the large-file forms of a source
+/// request and an offer, and whether a server without large-file support may
+/// be asked for one at all.
+#[must_use]
+pub const fn is_large_file(file_size: u64) -> bool {
+    file_size > OLD_MAX_FILE_SIZE
+}
+
 /// Number of ED2K parts that cover `file_size` bytes — `ceil(file_size / ED2K_PART_SIZE)`.
 ///
 /// Saturates at `u32::MAX` for `file_size` values beyond what the eD2k wire

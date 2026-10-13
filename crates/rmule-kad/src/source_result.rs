@@ -91,15 +91,6 @@ pub(crate) const SOURCETYPE_BUDDY: u8 = 3;
 pub(crate) const SOURCETYPE_BUDDY_LARGE: u8 = 5;
 pub(crate) const SOURCETYPE_FIREWALLED_UDP: u8 = 6;
 
-/// The large-file boundary a source publish's type keys on: aMule's
-/// `OLD_MAX_FILE_SIZE` (`include/protocol/ed2k/Constants.h:89`) and eMuleAI's
-/// `OLD_MAX_EMULE_FILE_SIZE` (`Opcodes.h:165`), 4 290 048 000 bytes, the
-/// largest whole number of `PARTSIZE` parts under `2^32`. A file is large
-/// when it is **strictly greater** (`IsLargeFile`, kno `KnownFile.h:129`;
-/// eMuleAI `Search.cpp:885`, `:901`). This is not `u32::MAX`: a file of
-/// 4 290 048 001 bytes fits a `u32` and is still large.
-pub(crate) const OLD_MAX_FILE_SIZE: u64 = 4_290_048_000;
-
 /// Decode the source rows of a `KADEMLIA2_SEARCH_RES` envelope into candidates.
 ///
 /// Handles the proven plain-`0xE4` row shape: `[16B sender][16B target]
