@@ -65,7 +65,8 @@ winapi-util = "0.1.11"
 # `SIO_UDP_NETRESET`, which neither std nor socket2 exposes, and the part file's
 # sparse flag, punch and allocated size (`DeviceIoControl` with
 # `FSCTL_SET_SPARSE` / `FSCTL_SET_ZERO_DATA`, `GetFileInformationByHandleEx`,
-# ADR-0111). MIT OR Apache-2.0, already in the Windows graph through socket2 and
+# ADR-0111), and Preview's Default App, `AssocQueryStringW` (`Win32_UI_Shell`,
+# ADR-0114). MIT OR Apache-2.0, already in the Windows graph through socket2 and
 # mio: no crate added.
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
@@ -73,6 +74,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
     "Win32_System_Ioctl",
+    "Win32_UI_Shell",
 ] }
 data-encoding = "2"
 ed2k = "1"
@@ -103,6 +105,11 @@ igd-next = "0.17"
 # exposes. MIT OR Apache-2.0, already in the graph through tokio and mio: no
 # crate added.
 libc = "0.2"
+# macOS only, confined to `rmule-os`: the Core Foundation strings, URL path and
+# release around Preview's Default App lookup through LaunchServices
+# (ADR-0114). MIT OR Apache-2.0, already in the graph through chrono ->
+# iana-time-zone: no crate added.
+core-foundation-sys = "0.8.7"
 # Confined to rmule-net: the uTP (BEP-29) engine behind ADR-0091's NAT-T
 # Tunnel. **Apache-2.0** (read from the crate manifest's `license` field, not
 # assumed — it is Apache-2.0-*only*, no MIT half), which GPL-3.0-or-later

@@ -2873,6 +2873,7 @@ dependencies = [
 name = "rmule-os"
 version = "0.2.0"
 dependencies = [
+ "core-foundation-sys",
  "libc",
  "rustix",
  "tempfile",

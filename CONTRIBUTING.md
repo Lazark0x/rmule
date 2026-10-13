@@ -279,7 +279,8 @@ mechanical ones; review enforces the rest.
 - **`unsafe`** is forbidden across the workspace but in `crates/rmule-os`,
   which holds every operating-system call std does not expose (ADR-0111): only
   the functions `scripts/guards.sh` pins may hold an `unsafe` block, each under
-  a `// SAFETY:` comment.
+  a `// SAFETY:` comment, and may declare the foreign function they call, when
+  no crate does, in one `unsafe extern` block under a comment of its own.
 
 ## Docs
 

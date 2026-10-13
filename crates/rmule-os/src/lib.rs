@@ -6,12 +6,18 @@
 //! - [`sparse`]: the sparse flag, the punch and the allocated size behind
 //!   `rmule-core`'s part file. What to punch, and what a reading means, are
 //!   core's.
+//! - `default_app`, on macOS and Windows: which app the system opens a
+//!   file-name extension with, for the TUI's Preview.
 //!
 //! The crate's lint table relaxes the workspace's `unsafe_code` ban to `deny`.
 //! Only the functions `scripts/guards.sh` pins waive it, each for one `unsafe`
-//! block under a `// SAFETY:` comment; a safe call is used wherever one exists.
+//! block under a `// SAFETY:` comment, and may declare the foreign function it
+//! calls in one `unsafe extern` block under its own; a safe call is used
+//! wherever one exists.
 
 #![warn(missing_docs)]
 
+#[cfg(any(target_os = "macos", windows))]
+pub mod default_app;
 pub mod sparse;
 pub mod winsock;

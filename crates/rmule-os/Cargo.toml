@@ -12,6 +12,7 @@ publish.workspace = true
 rustix.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
+core-foundation-sys.workspace = true
 libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
