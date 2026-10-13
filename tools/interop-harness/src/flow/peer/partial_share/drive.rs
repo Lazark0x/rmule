@@ -158,6 +158,25 @@ impl Drive<'_> {
             })?;
             let completed = done.first_at("download.completed").unwrap_or_else(now);
             sleep_until(completed + options.linger_secs as f64);
+            if options.reopen_after_completion {
+                fs::write(self.root.join(legs::STOP_GATE), b"").context("write the stop gate")?;
+                act(
+                    topology,
+                    "stop gate written: rmule reopens over the finished file",
+                );
+                self.wait(
+                    docker,
+                    "the reopened node's download-directory pass",
+                    |trail| {
+                        trail.named("scan.finished").any(|mark| {
+                            mark.leg == 2
+                                && mark
+                                    .field("dir")
+                                    .is_some_and(|dir| dir.ends_with(legs::INCOMING_DIR))
+                        })
+                    },
+                )?;
+            }
         }
         if options.restart {
             fs::write(self.root.join(legs::STOP_GATE), b"").context("write the stop gate")?;

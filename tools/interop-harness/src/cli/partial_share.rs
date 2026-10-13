@@ -104,6 +104,11 @@ pub(crate) struct PeerPartialShareArgs {
     /// leg reopens its store and offers the download after its Offer Check.
     #[arg(long, requires = "pause")]
     pub(crate) restart: bool,
+    /// Restart rmule once the download has completed and `--linger-secs`
+    /// passed, so the reopened node's first pass over the download directory
+    /// rules the finished file (trusted, not hashed).
+    #[arg(long, conflicts_with = "restart")]
+    pub(crate) reopen_after_completion: bool,
     /// Leave out the `rmule-tools` stimuli (the pre-part slot ask, the
     /// straddling request, the ask during the Offer Check).
     #[arg(long)]
@@ -152,6 +157,7 @@ struct ResolvedConfig {
     queued: bool,
     pause: bool,
     restart: bool,
+    reopen_after_completion: bool,
     stimuli: bool,
     ask_after_verified: usize,
     pause_after_secs: u64,
@@ -201,6 +207,7 @@ pub(crate) fn peer_partial_share(args: PeerPartialShareArgs) -> Result<()> {
             queued: args.queued,
             pause: args.pause,
             restart: args.restart,
+            reopen_after_completion: args.reopen_after_completion,
             stimuli: !args.no_stimuli,
             ask_after_verified: args.ask_after_verified,
             pause_after_secs: args.pause_after_secs,
@@ -243,6 +250,7 @@ pub(crate) fn peer_partial_share(args: PeerPartialShareArgs) -> Result<()> {
         queued: args.queued,
         pause: args.pause,
         restart: args.restart,
+        reopen_after_completion: args.reopen_after_completion,
         straddle: !args.no_stimuli,
         ask_after_verified: args.ask_after_verified,
         pause_after_secs: args.pause_after_secs,

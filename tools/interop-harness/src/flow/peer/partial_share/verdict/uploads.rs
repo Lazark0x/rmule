@@ -243,10 +243,12 @@ pub(super) fn completion(run: &Run<'_>) -> Claim {
             format!("no downloader mid-session at the completion ({completed:.3})"),
         );
     }
+    // The announce the completion triggers can reach the tap before rmule
+    // prints the completion's line.
     let whole_row = run
         .offers
         .iter()
-        .any(|(at, rows)| *at > completed && rows.iter().any(|row| lists_whole(run, row)));
+        .any(|(at, rows)| *at > completed - 1.0 && rows.iter().any(|row| lists_whole(run, row)));
     if !whole_row {
         failures.push("no OP_OFFERFILES after the move offers the file as a whole row".to_owned());
     }

@@ -128,6 +128,10 @@ pub struct PartialShareOptions<'a> {
     /// Restart rmule, its download paused, once the queued downloader has
     /// reasked (or the pause has held a while).
     pub restart: bool,
+    /// Restart rmule once the download has completed and the run has served
+    /// on, so the reopened node's first pass over the download directory
+    /// rules the finished file.
+    pub reopen_after_completion: bool,
     /// Run the stimuli: the pre-part slot ask, the straddle, the ask during
     /// the Offer Check.
     pub straddle: bool,
@@ -320,7 +324,7 @@ pub fn run_partial_share(options: PartialShareOptions<'_>) -> Result<()> {
             upload_slots: options.queued.then_some(1),
             peer_concurrency: options.peer_concurrency,
             pause: options.pause,
-            restart: options.restart,
+            restart: options.restart || options.reopen_after_completion,
             hold_secs: 3 * 3600,
             reopen_secs: options.reopen_secs,
             shaped: match options.downloader_link_kbit {

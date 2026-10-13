@@ -103,8 +103,12 @@ pub(super) fn sentinels(run: &Run<'_>) -> Claim {
 /// is announced, and a downloader asking again is served.
 pub(super) fn restart(run: &Run<'_>) -> Claim {
     const NAME: &str = "after-a-restart-the-partial-waits-for-its-offer-check";
-    let Some(reopened) = run.reopened_at() else {
-        return Claim::new(NAME, Verdict::NotRun, "the run did not restart rmule");
+    let (true, Some(reopened)) = (run.topology.knobs.restart, run.reopened_at()) else {
+        return Claim::new(
+            NAME,
+            Verdict::NotRun,
+            "the run did not restart rmule with its download paused",
+        );
     };
     let Some(reoffered) = run.reoffered_at() else {
         return Claim::new(
