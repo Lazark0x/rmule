@@ -96,22 +96,25 @@ pub(super) struct StartSettings {
     pub(super) server_policy: crate::ServerPolicy,
     /// The download directory, at start.
     pub(super) download_dir: Option<PathBuf>,
-    /// The Temp Directory the operator set, at start; `None` reads the
-    /// default in the data directory.
+    /// The Temp Directory in force at start: the one set, or the default in
+    /// the data directory; `None` with neither.
     pub(super) temp_dir: Option<PathBuf>,
 }
 
 impl StartSettings {
     /// Split the settings a core is built under into the Obfuscation Policy,
-    /// which seeds its cell, and the rest. Every key is named, so a new one
-    /// does not compile until it is placed.
+    /// which seeds its cell, and the rest, the Temp Directory read in force
+    /// against `data_dir`. Every key is named, so a new one does not compile
+    /// until it is placed.
     pub(super) fn split(
         settings: crate::CoreSettings,
+        data_dir: Option<&std::path::Path>,
     ) -> (Self, Option<rmule_net::peer::ObfuscationPolicy>) {
         let credentials = settings.credentials();
+        let temp_dir = settings.effective_temp_dir(data_dir);
         let crate::CoreSettings {
             download_dir,
-            temp_dir,
+            temp_dir: _,
             nickname: _,
             tcp_port: _,
             udp_port,

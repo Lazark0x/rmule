@@ -43,7 +43,7 @@ pub struct CoreSettings {
     pub download_dir: Option<PathBuf>,
     /// The **Temp Directory** (ADR-0115): where a download started from now
     /// on keeps its part file. `None` until the operator chooses one, and
-    /// then [`temp_directory`](Self::temp_directory) reads the default.
+    /// then [`effective_temp_dir`](Self::effective_temp_dir) reads the default.
     pub temp_dir: Option<PathBuf>,
     /// The nickname the identity row advertises.
     pub nickname: String,
@@ -147,8 +147,10 @@ impl CoreSettings {
     /// data directory. `None` with neither — a test's or a tool's core — and
     /// the part file then lies beside its final path.
     #[must_use]
-    pub fn temp_directory(&self, data_dir: Option<&Path>) -> Option<PathBuf> {
-        temp_directory(self.temp_dir.clone(), data_dir)
+    pub fn effective_temp_dir(&self, data_dir: Option<&Path>) -> Option<PathBuf> {
+        self.temp_dir
+            .clone()
+            .or_else(|| data_dir.map(Self::default_temp_dir))
     }
 
     /// The Temp Directory of an operator who never chose one: `Temp` in the
@@ -157,11 +159,6 @@ impl CoreSettings {
     pub fn default_temp_dir(data_dir: &Path) -> PathBuf {
         data_dir.join("Temp")
     }
-}
-
-/// The Temp Directory `set`, or the default in `data_dir`.
-pub(crate) fn temp_directory(set: Option<PathBuf>, data_dir: Option<&Path>) -> Option<PathBuf> {
-    set.or_else(|| data_dir.map(CoreSettings::default_temp_dir))
 }
 
 /// One change to a core-owned preference, as a front end asks for it.
@@ -408,12 +405,11 @@ impl CoreSettingsHandle {
     pub fn check(&self, setting: &Setting) -> Result<(), SettingError> {
         match setting {
             Setting::DownloadDir { dir, .. } => {
-                let temp_dir = temp_directory(
-                    self.store
-                        .preference(Preference::TempDir)?
-                        .map(PathBuf::from),
-                    self.guards.data_dir.as_deref(),
-                );
+                let set = self
+                    .store
+                    .preference(Preference::TempDir)?
+                    .map(PathBuf::from);
+                let temp_dir = self.temp_dir_in_force(set);
                 stored::validate_download_dir(dir, &self.guards, temp_dir.as_deref())?;
             }
             Setting::TempDir(dir) => {
@@ -425,6 +421,17 @@ impl CoreSettingsHandle {
             other => stored::validate(other)?,
         }
         Ok(())
+    }
+
+    /// The Temp Directory in force when `set` is the one set: it, or the
+    /// default in the data directory the guards name.
+    fn temp_dir_in_force(&self, set: Option<PathBuf>) -> Option<PathBuf> {
+        set.or_else(|| {
+            self.guards
+                .data_dir
+                .as_deref()
+                .map(CoreSettings::default_temp_dir)
+        })
     }
 
     /// Validate `setting`, persist it, and answer when it takes effect.

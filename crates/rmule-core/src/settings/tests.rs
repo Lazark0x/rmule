@@ -312,7 +312,7 @@ fn a_temp_dir_inside_the_data_directory_is_made_and_stored() {
     assert!(parts.is_dir());
     let stored = machine.settings.read().expect("read");
     assert_eq!(stored.temp_dir, Some(parts.clone()));
-    assert_eq!(stored.temp_directory(Some(&machine.data)), Some(parts));
+    assert_eq!(stored.effective_temp_dir(Some(&machine.data)), Some(parts));
 }
 
 /// A download directory that is the Temp Directory, or holds it, is refused

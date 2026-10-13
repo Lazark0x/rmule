@@ -422,7 +422,10 @@ where
         // The one obfuscation policy every hello and login states (ADR-0046),
         // settled before anything can send one; the actor alone writes it
         // after, and keeps no start copy of it.
-        let (settings, obfuscation) = super::actor::StartSettings::split(settings);
+        let (settings, obfuscation) = super::actor::StartSettings::split(
+            settings,
+            self.node.share_guards.data_dir.as_deref(),
+        );
         self.node.cells.hello_adverts.obfuscation.set(obfuscation);
         self.source_lookup.adopt_cells(&self.node.cells);
         self.peer_transfer.adopt_cells(&self.node.cells);
