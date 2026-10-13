@@ -23,8 +23,21 @@ pub(super) struct RankInputs<'a> {
     pub(super) window: Range<u32>,
 }
 
-/// A candidate's rank; the minimum wins.
-pub(super) type Rank = (bool, bool, bool, u32, u32);
+/// A candidate's rank; the minimum wins. Its fields compare in the order
+/// they are declared, `false` ahead of `true`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct Rank {
+    /// Its frequency is above the very-rare bound.
+    common: bool,
+    /// It lies outside the **Preview Band**.
+    outside_band: bool,
+    /// It lies outside the **Streaming Window**.
+    outside_window: bool,
+    /// `0` inside the window, its frequency outside it.
+    frequency: u32,
+    /// Its index, so no two candidates tie.
+    part: u32,
+}
 
 /// The rank of candidate `part`.
 pub(super) fn rank(part: u32, inputs: &RankInputs<'_>) -> Rank {
@@ -34,13 +47,13 @@ pub(super) fn rank(part: u32, inputs: &RankInputs<'_>) -> Rank {
         .copied()
         .unwrap_or_default();
     let in_window = inputs.window.contains(&part);
-    (
-        frequency > inputs.very_rare_bound,
-        !inputs.band.contains(&part),
-        !in_window,
-        if in_window { 0 } else { frequency },
+    Rank {
+        common: frequency > inputs.very_rare_bound,
+        outside_band: !inputs.band.contains(&part),
+        outside_window: !in_window,
+        frequency: if in_window { 0 } else { frequency },
         part,
-    )
+    }
 }
 
 /// aMule's very-rare bound for `known` sources whose parts are known:
@@ -48,14 +61,14 @@ pub(super) fn rank(part: u32, inputs: &RankInputs<'_>) -> Rank {
 /// (stock 2.3.3 `PartFile.cpp:1926-1939`). Below 20 sources it is 1: a part
 /// only one source holds.
 pub(super) fn very_rare_bound(known: u32) -> u32 {
-    let modif: u64 = if known > 800 {
+    let percent: u64 = if known > 800 {
         2
     } else if known > 200 {
         5
     } else {
         10
     };
-    let bound = modif * u64::from(known) / 100;
+    let bound = percent * u64::from(known) / 100;
     u32::try_from(bound).unwrap_or(u32::MAX).max(1)
 }
 
