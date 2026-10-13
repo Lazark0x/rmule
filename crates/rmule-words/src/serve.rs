@@ -10,7 +10,7 @@ use rmule_core::{
 
 use super::Sentence;
 use super::os::kind_words;
-use super::units::address;
+use super::units::{address, human_size};
 
 /// Why a row is withheld: the Shared Files table's State cell.
 #[must_use]
@@ -73,6 +73,17 @@ pub const OFFERED: Sentence = Sentence::fixed("a shared file is readable again a
 /// A download began to offer the parts it verified.
 pub const PARTIAL_OFFERED: Sentence =
     Sentence::fixed("a download offers the parts it has verified");
+
+/// A restarted download's Offer Check read its verified parts again before
+/// it may be offered: how much it read, and how long that took.
+#[must_use]
+pub fn offer_checked(bytes_read: u64, took: std::time::Duration) -> Sentence {
+    Sentence::owned(format!(
+        "a restarted download's verified parts were read again before it is offered: {} in {} ms",
+        human_size(bytes_read),
+        took.as_millis()
+    ))
+}
 
 /// A download stopped offering its parts, and why.
 #[must_use]
@@ -199,6 +210,9 @@ pub fn log_line(event: &ServeEvent) -> Sentence {
         Sv::FileOffered { .. } => OFFERED,
         Sv::PartialOffered { .. } => PARTIAL_OFFERED,
         Sv::PartialWithdrawn { cause, .. } => partial_withdrawn(*cause),
+        Sv::OfferChecked {
+            bytes_read, took, ..
+        } => offer_checked(*bytes_read, *took),
         Sv::SharesUnwatched => UNWATCHED,
         Sv::ShareRejected { reason } => share_rejected(*reason),
         Sv::ServingStarted { listen_addr } => serving_started(listen_addr.port()),

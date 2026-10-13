@@ -79,6 +79,19 @@ pub enum ServeEvent {
         /// Why.
         cause: crate::PartialEnd,
     },
+    /// A restarted download's **Offer Check** finished (ADR-0113 §"A paused
+    /// download"): the parts it recorded were read again and hashed against
+    /// their records before it may be offered. Said once for each check
+    /// whose result is applied, whatever it found, with what the read cost.
+    OfferChecked {
+        /// The content identity whose recorded parts were read.
+        file_hash: FileHash,
+        /// The bytes read from the part file.
+        bytes_read: u64,
+        /// How long the read took, from taking the scans' hashing turn to
+        /// its last part.
+        took: std::time::Duration,
+    },
     /// The folders of the shared files outside the download directory cannot
     /// be watched; the log says why. A file that goes from one is noticed at
     /// a peer's failed read or at the next start. Said once.

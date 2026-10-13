@@ -301,6 +301,9 @@ pub(super) fn fold(state: &mut UiState, event: ServeEvent) -> bool {
             state.partial_shares.remove(&file_hash);
             note(state, words::partial_withdrawn(cause))
         }
+        // Each restored download's check at start: the log line says what it
+        // read, and `PartialOffered` says when it is offered.
+        E::OfferChecked { .. } => false,
         E::SharesUnwatched => note(state, words::UNWATCHED),
         E::ShareRejected { reason } => note(state, words::share_rejected(reason)),
         E::ServingStarted { listen_addr } => {

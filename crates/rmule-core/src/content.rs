@@ -205,9 +205,21 @@ pub(crate) async fn revalidate_verified_parts(
     let (paths, parts) = (paths.clone(), parts.to_vec());
     on_pool(move || walk_verified_parts(&paths, &parts, &AtomicBool::new(false)))
         .await
-        .unwrap_or(Revalidation::Condemned(
-            StorageIntegrityFault::PartFileUnreadable { os_code: None },
-        ))
+        .map_or(
+            Revalidation::Condemned(StorageIntegrityFault::PartFileUnreadable { os_code: None }),
+            |walked| walked.revalidation,
+        )
+}
+
+/// What a walk of a download's recorded parts found, and the bytes it read
+/// from the part file to find it.
+#[derive(Debug)]
+pub(crate) struct PartsWalked {
+    /// What the parts read again came to.
+    pub(crate) revalidation: Revalidation,
+    /// The bytes read: every recorded part that lies inside the part file, up
+    /// to a read that failed.
+    pub(crate) bytes_read: u64,
 }
 
 /// [`revalidate_verified_parts`]' walk, on the calling thread, looking at
@@ -218,6 +230,21 @@ pub(crate) fn walk_verified_parts(
     paths: &DownloadPaths,
     parts: &[VerifiedPartRecord],
     stop: &AtomicBool,
+) -> Option<PartsWalked> {
+    let mut bytes_read = 0;
+    let revalidation = walk(paths, parts, stop, &mut bytes_read)?;
+    Some(PartsWalked {
+        revalidation,
+        bytes_read,
+    })
+}
+
+/// [`walk_verified_parts`], adding each part it reads to `bytes_read`.
+fn walk(
+    paths: &DownloadPaths,
+    parts: &[VerifiedPartRecord],
+    stop: &AtomicBool,
+    bytes_read: &mut u64,
 ) -> Option<Revalidation> {
     if parts.is_empty() {
         return Some(Revalidation::Restored {
@@ -280,6 +307,7 @@ pub(crate) fn walk_verified_parts(
         if let Err(error) = read {
             return unreadable(error);
         }
+        *bytes_read = bytes_read.saturating_add(part.len);
         let found = part_hash_of(&bytes);
         if found == part.part_hash {
             held += 1;

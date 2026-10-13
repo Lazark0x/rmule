@@ -19,20 +19,21 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use rmule_primitives::FileHash;
 
 use crate::adapters::{
     KadRuntimeFactory, PeerTransferService, ServeRuntimeService, SourceLookupService,
 };
-use crate::content::{Revalidation, walk_verified_parts};
+use crate::content::{PartsWalked, Revalidation, walk_verified_parts};
 use crate::directory_scan::HashTurn;
-use crate::service::DownloadId;
+use crate::service::{DownloadId, ServeEvent};
 use crate::storage::DownloadRepository;
 use crate::{DownloadLifecycle, DownloadPaths, VerifiedPartRecord};
 
-use super::CoreActor;
 use super::registry_check::{RegistryMessage, RegistrySender};
+use super::{CoreActor, send_event};
 
 /// One download waiting for its check: where its part file is and the parts
 /// it recorded.
@@ -44,12 +45,14 @@ struct Waiting {
     stop: Arc<AtomicBool>,
 }
 
-/// A check's walk, for the actor to apply.
+/// A check's walk, for the actor to apply: what it found, the bytes it read
+/// and how long the read took.
 #[derive(Debug)]
 pub(super) struct OfferChecked {
     download_id: DownloadId,
     file_hash: FileHash,
-    revalidation: Revalidation,
+    walked: PartsWalked,
+    took: Duration,
 }
 
 /// The checks the actor started and has not applied or stopped, each with
@@ -94,18 +97,20 @@ async fn run_checks(waiting: Vec<Waiting>, turn: HashTurn, reports: RegistrySend
         let turn = turn.clone();
         let walked = tokio::task::spawn_blocking(move || {
             let _turn = turn.take(&stop)?;
-            walk_verified_parts(&paths, &parts, &stop)
+            let began = Instant::now();
+            walk_verified_parts(&paths, &parts, &stop).map(|walked| (walked, began.elapsed()))
         })
         .await
         .ok()
         .flatten();
-        let Some(revalidation) = walked else {
+        let Some((walked, took)) = walked else {
             continue;
         };
         let report = OfferChecked {
             download_id,
             file_hash,
-            revalidation,
+            walked,
+            took,
         };
         if reports.send(RegistryMessage::OfferChecked(report)).is_err() {
             return;
@@ -187,7 +192,8 @@ where
         let OfferChecked {
             download_id,
             file_hash,
-            revalidation,
+            walked,
+            took,
         } = report;
         if self.offer_checks.checking.remove(&download_id).is_none()
             || !self
@@ -197,7 +203,13 @@ where
         {
             return;
         }
-        let (progress, damaged) = match revalidation {
+        let checked = ServeEvent::OfferChecked {
+            file_hash,
+            bytes_read: walked.bytes_read,
+            took,
+        };
+        send_event(&self.evt_tx, checked.into()).await;
+        let (progress, damaged) = match walked.revalidation {
             Revalidation::Restored { progress, damaged } => (progress, damaged),
             Revalidation::Condemned(fault) => {
                 tracing::info!(download_id = download_id.as_u64(), %fault, "a download's part file backs none of its parts; it is not offered until it is resumed");

@@ -1,6 +1,7 @@
 //! The Offer Check's worker on real files: it reads nothing while a scan
-//! holds the hashing turn, and a check stopped before its turn reports
-//! nothing while the next one is still checked.
+//! holds the hashing turn, its report counts the bytes it read and times the
+//! read alone, and a check stopped before its turn reports nothing while the
+//! next one is still checked.
 
 use std::time::Duration;
 
@@ -59,7 +60,13 @@ async fn a_check_reads_nothing_while_a_scan_holds_the_hashing_turn() {
     );
     drop(scan);
     let report = next_report(&mut reports).await.unwrap();
-    let Revalidation::Restored { progress, damaged } = report.revalidation else {
+    assert_eq!(report.walked.bytes_read, 8, "the one part, read again");
+    assert!(
+        report.took < Duration::from_millis(300),
+        "the wait for the turn is not the read's: {:?}",
+        report.took
+    );
+    let Revalidation::Restored { progress, damaged } = report.walked.revalidation else {
         panic!("the part holds");
     };
     assert!(damaged.is_empty());

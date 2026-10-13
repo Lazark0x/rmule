@@ -423,6 +423,19 @@ async fn after_a_restart_a_paused_download_is_offered_once_its_parts_are_read_ag
 
     let mut core = restarted(Arc::clone(&store), &dir);
     let events = events_until(&mut core, offered(file)).await;
+    let read = events.iter().find_map(|event| match event {
+        CoreEvent::Serve(ServeEvent::OfferChecked {
+            file_hash,
+            bytes_read,
+            ..
+        }) if *file_hash == file => Some(*bytes_read),
+        _ => None,
+    });
+    assert_eq!(
+        read,
+        Some(bytes.len() as u64),
+        "the check says it read both parts again, the damaged one too"
+    );
     let dropped = events.iter().find_map(|event| match event {
         CoreEvent::Download(DownloadEvent::DamagedPartsDropped { damaged, .. }) => Some(
             damaged

@@ -96,8 +96,11 @@ the file's one registry row, from the record, without reading the file.**
   that held become the Verified Range, and the download is offered if rule 3 holds. It runs on the
   blocking pool once the Registry Check's start look is done, one download at a time, taking the
   hashing turn the scans share (ADR-0102), so it never reads beside a scan's hashing. A Resume while
-  the check waits or runs stops it, and the run's own revalidation takes over. An active download
-  restarted at attach is checked by that same revalidation before its run starts (ADR-0094).
+  the check waits or runs stops it, and the run's own revalidation takes over. Each check the actor
+  applies is said once, whatever it found, as `ServeEvent::OfferChecked` with the bytes its walk read
+  and how long the read took once it held the turn (the Run Log's `serve.offer_checked`). An active
+  download restarted at attach is checked by that same revalidation before its run starts
+  (ADR-0094).
 - **A Pause during the completion move** stops a move whose final file is not yet in place
   (ADR-0115): any partial copy is deleted, the part file is untouched, and the download is paused
   as any other, its lease with the actor and its offer kept from the part file. A Resume moves

@@ -548,7 +548,7 @@ What a read of a **Served Download**'s part file is checked against before it re
 _Avoid_: part file fingerprint, stored identity
 
 **Offer Check**:
-The core actor's re-read of every recorded part of a queued or paused download after a restart, hashed against its record, before it is offered again (ADR-0113): Resume's own revalidation, with Resume's effect, run on the blocking pool behind the scans, one download at a time. A Resume stops it and the run's own check takes over.
+The core actor's re-read of every recorded part of a queued or paused download after a restart, hashed against its record, before it is offered again (ADR-0113): Resume's own revalidation, with Resume's effect, run on the blocking pool behind the scans, one download at a time. A Resume stops it and the run's own check takes over. Each check applied is said as `OfferChecked`, with the bytes read and how long the read took.
 _Avoid_: share recheck, Registry Check (that one is for registry rows)
 
 **Share Totals**:

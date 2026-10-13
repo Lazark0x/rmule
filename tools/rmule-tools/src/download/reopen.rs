@@ -4,9 +4,10 @@
 //! its **Offer Check** has read its recorded parts again (ADR-0113 §"A paused
 //! download"); the run then serves it until its deadline.
 //!
-//! The Offer Check says nothing of its own when it passes, so this run bounds
-//! it: the wall clock at the reopen, the bytes the store recorded verified,
-//! and the moment the download is offered again.
+//! Core's `serve.offer_checked` record says what each check read and how
+//! long the read took; this run bounds the whole wait from outside it: the
+//! wall clock at the reopen, the bytes the store recorded verified, and the
+//! moment the download is offered again.
 
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddrV4};
