@@ -53,10 +53,10 @@ is `DownloadScheduler`.
   assignments. A fresh assignment takes the first-ranked pending part the peer
   advertised (ADR-0112); outside Streaming Priority, with every part advertised, that
   is the lowest index.
-- **Bounded racing.** When no pending part remains, a backup peer — one that has not
-  yet delivered a verified part in this download — joins the first-ranked in-flight
-  part it advertised (ADR-0112), so
-  several peers can sit queued on the same scarce part. The first verified copy
+- **Bounded racing.** When no pending part it advertised remains, a backup peer —
+  one that has not yet delivered a verified part in this download — joins the
+  first-ranked in-flight part it advertised (ADR-0112), so several peers can sit
+  queued on the same scarce part. The first verified copy
   wins and the losing racers are cleared; a loser's later failure is a no-op. A
   peer that has already delivered a part idles instead of racing a healthy peer, so
   racing engages only on few-part files.

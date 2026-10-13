@@ -92,8 +92,9 @@ one tuple wins; `i` sits in every key, so no two tie:
   and very rare is a part only this source holds. Inside the very-rare zone aMule orders by
   frequency before preview; the tuple keeps the band ahead, the same order whenever the
   bound is 1.
-- **Racing** keeps ADR-0026's rule, filtered: with nothing pending, a backup peer races the
-  minimum-ranked in-flight part its Advertised Parts hold and it is not on.
+- **Racing** keeps ADR-0026's rule, filtered: with no pending part its Advertised Parts hold
+  left, a backup peer races the minimum-ranked in-flight part they hold and it is not on —
+  other pending parts it lacks do not keep it off the race.
 - No randomness: the same inputs give the same part, so every decision sequence is
   assertable. aMule's completion criterion is not taken: a released part keeps its assembled
   prefix (ADR-0029) and resumes there whenever it is next chosen.
