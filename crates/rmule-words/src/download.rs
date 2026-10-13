@@ -88,38 +88,33 @@ pub fn download_failure_words(reason: &DownloadFailure) -> String {
             "a file already stands where the finished file goes; every checked part is kept, so move that file away and Restart"
         }
         DownloadFailure::CompletedFileNotMoved { os_code } => {
-            let why = os_code.map_or_else(String::new, |code| {
-                format!(
-                    " ({})",
-                    super::os::refusal_words(
-                        std::io::Error::from_raw_os_error(code).kind(),
-                        Some(code)
-                    )
-                )
-            });
             return format!(
-                "the finished file could not be moved to where it goes{why}; every checked part is kept, so Restart once the folder takes it"
+                "the finished file could not be moved to where it goes{}; every checked part is kept, so Restart once the folder takes it",
+                os_clause(*os_code)
             );
         }
         DownloadFailure::StoreFailed => {
             "rmule's store could not read or write this download's record"
         }
         DownloadFailure::CompletionCopyFailed { os_code } => {
-            let why = os_code.map_or_else(String::new, |code| {
-                format!(
-                    " ({})",
-                    super::os::refusal_words(
-                        std::io::Error::from_raw_os_error(code).kind(),
-                        Some(code)
-                    )
-                )
-            });
             return format!(
-                "the finished file could not be copied to the disk where it goes{why}; every checked part is kept, so Restart once that disk takes it"
+                "the finished file could not be copied to the disk where it goes{}; every checked part is kept, so Restart once that disk takes it",
+                os_clause(*os_code)
             );
         }
     };
     code.to_string()
+}
+
+/// What the system said when it refused, as a parenthesised clause after
+/// the refusal's sentence; nothing when it gave no code.
+fn os_clause(os_code: Option<i32>) -> String {
+    os_code.map_or_else(String::new, |code| {
+        format!(
+            " ({})",
+            super::os::refusal_words(std::io::Error::from_raw_os_error(code).kind(), Some(code))
+        )
+    })
 }
 
 /// Which check condemned a download's part file, and what it found.
@@ -127,16 +122,9 @@ pub fn download_failure_words(reason: &DownloadFailure) -> String {
 pub fn integrity_fault_words(fault: &StorageIntegrityFault) -> String {
     match fault {
         StorageIntegrityFault::PartFileMissing => "its part file is missing".to_string(),
-        StorageIntegrityFault::PartFileUnreadable { os_code } => match os_code {
-            Some(code) => format!(
-                "its part file could not be read ({})",
-                super::os::refusal_words(
-                    std::io::Error::from_raw_os_error(*code).kind(),
-                    Some(*code)
-                )
-            ),
-            None => "its part file could not be read".to_string(),
-        },
+        StorageIntegrityFault::PartFileUnreadable { os_code } => {
+            format!("its part file could not be read{}", os_clause(*os_code))
+        }
         StorageIntegrityFault::NoPartHolds { recorded, first } => format!(
             "none of its {recorded} checked parts still matches ({})",
             part_fault_words(first)
