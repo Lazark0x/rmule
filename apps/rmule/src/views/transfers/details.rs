@@ -18,7 +18,7 @@ use crate::state::UiState;
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
 use crate::views::modal::Modal;
-use crate::words::download::source_wait_words;
+use crate::words::download::{on_disk, source_wait_words};
 use crate::wrap::labeled_lines;
 
 /// Width of the details modal's label column (`" {label:<8}"`).
@@ -97,6 +97,15 @@ impl TransfersView {
             ("done", done),
             ("speed", format_rate(bps)),
             ("sources", sources),
+            // The one place the Allocated Bytes and the Hole Verdict show
+            // (ADR-0111, "What the operator reads").
+            (
+                "on disk",
+                on_disk(
+                    diag.and_then(|d| d.allocated_bytes),
+                    diag.and_then(|d| d.hole_verdict),
+                ),
+            ),
         ]
         .into_iter()
         .flat_map(|(label, value)| detail_rows(label, &value, value_w, theme))
@@ -138,6 +147,9 @@ impl TransfersView {
 #[cfg(test)]
 mod tests {
 
+    use rmule_core::HoleVerdict;
+    use rmule_primitives::ED2K_PART_SIZE;
+
     use crate::golden::assert_golden;
 
     use super::*;
@@ -171,6 +183,67 @@ mod tests {
             view.draw(frame, area, &state, &Theme::default_dark(), now());
         });
         assert!(screen.contains("no source left to try"), "{screen}");
+    }
+
+    /// The details modal over the active download, its On disk levels set.
+    fn assert_on_disk_golden(name: &str, allocated: Option<u64>, verdict: Option<HoleVerdict>) {
+        let mut view = TransfersView::new();
+        view.overlay = Overlay::Details;
+        let mut state = three_downloads();
+        let diag = state
+            .diagnostics
+            .downloads
+            .get_mut(&download_id(1))
+            .expect("the active download's row");
+        diag.allocated_bytes = allocated;
+        diag.hole_verdict = verdict;
+        assert_golden(name, GOLDEN_W, GOLDEN_H, |frame| {
+            let area = frame.area();
+            view.draw(frame, area, &state, &Theme::default_dark(), now());
+        });
+    }
+
+    /// A disk that holds holes: the part file takes its verified parts and
+    /// a probe's slack, and the row says what the verdict means.
+    #[test]
+    fn golden_details_on_disk_holds_holes() {
+        assert_on_disk_golden(
+            "transfers_details_on_disk_holds_holes",
+            Some(4 * ED2K_PART_SIZE + 4096),
+            Some(HoleVerdict::HoldsHoles),
+        );
+    }
+
+    /// A disk that holds no holes: the part file takes its length up to its
+    /// last verified part, part 6.
+    #[test]
+    fn golden_details_on_disk_hole_less() {
+        assert_on_disk_golden(
+            "transfers_details_on_disk_hole_less",
+            Some(7 * ED2K_PART_SIZE),
+            Some(HoleVerdict::HoleLess),
+        );
+    }
+
+    /// A probe that failed says the disk was not measured, and why.
+    #[test]
+    fn golden_details_on_disk_unknown() {
+        assert_on_disk_golden(
+            "transfers_details_on_disk_unknown",
+            Some(4 * ED2K_PART_SIZE + 4096),
+            Some(HoleVerdict::Unknown(std::io::ErrorKind::PermissionDenied)),
+        );
+    }
+
+    /// A reading above the file's 87.7 MB shows as read, and a verdict not
+    /// yet taken is a dash.
+    #[test]
+    fn golden_details_on_disk_above_the_files_length() {
+        assert_on_disk_golden(
+            "transfers_details_on_disk_above_length",
+            Some(100_000_000),
+            None,
+        );
     }
 
     #[test]

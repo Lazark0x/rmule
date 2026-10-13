@@ -2,15 +2,15 @@
 │  File ▲      Size       Done Progress   Speed      ETA    Src   Status     │
 │▸ bunny.mp4   87.7 MB    42%  ██░█▓░█▓░░ 123.4 KB/s 7m00s  8 (1) Downloading│
 │  ABABABABAB… ≈ 27.8 MB  —    ░░░░░░░░░░ —          —      0     Paused     │
-│  5C5C5C5C5C… 42.9 MB    100% ██████████ —          —      1     Completed  │
-│            ┌ File details ────────────────────────────────────┐            │
+│  5C5C5C5C5C┌ File details ────────────────────────────────────┐ Completed  │
 │            │ name    bunny.mp4                                │            │
 │            │ hash    07070707070707070707070707070707         │            │
 │            │ size    87.7 MB                                  │            │
 │            │ origin  link                                     │            │
 │            │ done    42%  (4/10 parts)                        │            │
 │            │ speed   123.4 KB/s                               │            │
-└────────────│ sources 8 known, 1 sending                       │────────────┘
+│            │ sources 8 known, 1 sending                       │            │
+└────────────│ on disk —                                        │────────────┘
 ┌ Sources · b│                                                  │  S reverse ┐
 │  Source ▲  │██████████░░░░░█████▓▓▓▓▓░░░░░█████▓▓▓▓▓░░░░░░░░░░│  Speed     │
 │▸ 10.0.0.1:4└──────────────────────────────────────────────────┘  98.7 KB/s │
