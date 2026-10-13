@@ -114,9 +114,7 @@ pub(super) fn restart(run: &Run<'_>) -> Claim {
             failures.push(format!("{at:.3}: announced before the check passed"));
         }
     }
-    let flagged = run
-        .flags
-        .is_some_and(|flags| flags & SRV_TCPFLG_COMPRESSION != 0);
+    let flagged = grants_compression(run);
     let announced = run.offers.iter().any(|(at, rows)| {
         *at >= reoffered
             && rows
@@ -177,18 +175,16 @@ pub(super) fn restart(run: &Run<'_>) -> Claim {
 /// incomplete marker when the server grants compression, by its hash alone
 /// when it does not (both forms then carry rmule's own ID and port).
 pub(super) fn lists_partial(run: &Run<'_>, row: &OfferedRow) -> bool {
-    row.hash == run.stream_hash
-        && (!run
-            .flags
-            .is_some_and(|flags| flags & SRV_TCPFLG_COMPRESSION != 0)
-            || marker(row) == INCOMPLETE)
+    row.hash == run.stream_hash && (!grants_compression(run) || marker(row) == INCOMPLETE)
 }
 
 /// Whether `row` lists the stream file as a whole file.
 pub(super) fn lists_whole(run: &Run<'_>, row: &OfferedRow) -> bool {
-    row.hash == run.stream_hash
-        && (!run
-            .flags
-            .is_some_and(|flags| flags & SRV_TCPFLG_COMPRESSION != 0)
-            || marker(row) == COMPLETE)
+    row.hash == run.stream_hash && (!grants_compression(run) || marker(row) == COMPLETE)
+}
+
+/// Whether the server granted rmule `SRV_TCPFLG_COMPRESSION`.
+fn grants_compression(run: &Run<'_>) -> bool {
+    run.flags
+        .is_some_and(|flags| flags & SRV_TCPFLG_COMPRESSION != 0)
 }

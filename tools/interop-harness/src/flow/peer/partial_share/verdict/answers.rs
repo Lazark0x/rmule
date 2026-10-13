@@ -352,9 +352,9 @@ pub(super) fn hash_set(run: &Run<'_>) -> Claim {
     )
 }
 
-/// The record the ticket keeps: every complete-form status (count `0`)
-/// rmule sent a stock aMule, and whether aMule went on with the file or
-/// dropped the link.
+/// A record, not a rule: every complete-form status (count `0`) rmule
+/// sent a stock aMule, and whether aMule went on with the file or dropped
+/// the link.
 pub(super) fn complete_form(run: &Run<'_>) -> Claim {
     const NAME: &str = "stock-amule-takes-the-count-0-complete-form";
     let downloaders: BTreeSet<Ipv4Addr> = run.downloaders().collect();
