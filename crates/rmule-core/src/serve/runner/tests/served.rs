@@ -33,7 +33,9 @@ async fn a_part_a_run_just_verified_is_answered_on_the_next_ask_and_the_asker_re
     let record = downloads.create_download(&link, None, &paths).unwrap();
     let cell = ServedDownloads::default();
     assert!(cell.install(&record, &set));
-    let lease = cell.hand_to_run(file, 1).unwrap();
+    let lease = cell
+        .hand_to_run(file, crate::download::RunNumber::new(1))
+        .unwrap();
     let mut askers = lease.take_askers().unwrap();
 
     let (accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(8);

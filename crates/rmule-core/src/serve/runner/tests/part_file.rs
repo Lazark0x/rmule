@@ -69,7 +69,9 @@ async fn rig(paused: bool) -> Rig {
     let record = downloads.create_download(&link, None, &paths).unwrap();
     let cell = ServedDownloads::default();
     assert!(cell.install(&record, &set));
-    let lease = cell.hand_to_run(file, 1).unwrap();
+    let lease = cell
+        .hand_to_run(file, crate::download::RunNumber::new(1))
+        .unwrap();
     let held = std::fs::File::open(&part).unwrap();
     let key = FileKey::of_open(&held).unwrap();
     let identity = if paused {
@@ -88,7 +90,7 @@ async fn rig(paused: bool) -> Rig {
         }],
     );
     if paused {
-        cell.take_back(file, 1);
+        cell.take_back(file, crate::download::RunNumber::new(1));
     }
     cell.look();
 

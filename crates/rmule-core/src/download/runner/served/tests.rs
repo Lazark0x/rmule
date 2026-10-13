@@ -98,7 +98,7 @@ async fn run_of<P: PeerTransferService>(
         .map(|set| set.hashes().to_vec())
         .unwrap_or_default();
     assert!(cell.install(&record, &set));
-    runner.served = cell.hand_to_run(link.file_hash, 1);
+    runner.served = cell.hand_to_run(link.file_hash, crate::download::RunNumber::new(1));
     *runner.part_file.lock().await =
         Some(HeldPartFile::hold(paths.part_path(), 0).await.unwrap().0);
     (runner, held, record)

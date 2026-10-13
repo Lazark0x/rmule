@@ -11,6 +11,7 @@ use rmule_primitives::{FileHash, PartHash};
 use crate::adapters::{
     KadRuntimeFactory, PeerTransferService, ServeRuntimeService, SourceLookupService,
 };
+use crate::download::RunNumber;
 use crate::served_downloads::{OfferChange, PartialEnd, RunLease};
 use crate::service::{DownloadId, ServeEvent};
 use crate::storage::{DownloadRepository, recorded_part_hashes};
@@ -43,13 +44,13 @@ where
 
     /// The lease on `file_hash`'s entry for run `run`; `None` when the file
     /// has no entry.
-    pub(super) fn lease_to_run(&self, file_hash: FileHash, run: u64) -> Option<RunLease> {
+    pub(super) fn lease_to_run(&self, file_hash: FileHash, run: RunNumber) -> Option<RunLease> {
         self.wiring.served_downloads.hand_to_run(file_hash, run)
     }
 
     /// Run `run` of the download of `file_hash` has ended: the actor writes
     /// its entry again.
-    pub(super) fn take_back_served(&self, file_hash: FileHash, run: u64) {
+    pub(super) fn take_back_served(&self, file_hash: FileHash, run: RunNumber) {
         self.wiring.served_downloads.take_back(file_hash, run);
     }
 
@@ -109,7 +110,7 @@ where
         &mut self,
         download_id: DownloadId,
         file_hash: FileHash,
-        run: u64,
+        run: RunNumber,
         path: &std::path::Path,
     ) -> bool {
         if !self.share_completion(download_id, path).await {

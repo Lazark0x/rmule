@@ -252,7 +252,9 @@ async fn a_partial_share_is_published_once_and_withdrawn_when_its_download_ends(
     let record = downloads.create_download(&link, None, &paths).unwrap();
     let served = ServedDownloads::default();
     assert!(served.install(&record, &set));
-    let lease = served.hand_to_run(file_hash, 1).unwrap();
+    let lease = served
+        .hand_to_run(file_hash, crate::download::RunNumber::new(1))
+        .unwrap();
     lease.record_range(
         &set,
         &[crate::VerifiedPartRecord {
@@ -285,7 +287,7 @@ async fn a_partial_share_is_published_once_and_withdrawn_when_its_download_ends(
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(probes.publishes.try_recv().is_err(), "published once");
 
-    served.take_back(file_hash, 1);
+    served.take_back(file_hash, crate::download::RunNumber::new(1));
     assert!(served.end(record.id(), PartialEnd::Ended));
     share_changed_tx.send(()).await.unwrap();
     let withdrawn = tokio::time::timeout(wait, probes.withdraws.recv()).await;

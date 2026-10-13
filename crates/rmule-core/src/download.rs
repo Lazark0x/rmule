@@ -15,6 +15,26 @@ pub(crate) mod source_seeds;
 mod state;
 mod worker_pool;
 
+/// Which run of a download this is, minted by the actor for each run it
+/// spawns and never reused: a finish notice and a Served Download's lease
+/// name it, so one from a run a stop already retired never acts for a later
+/// run of the same download.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RunNumber(u64);
+
+impl RunNumber {
+    /// The run after this one.
+    pub(crate) const fn next(self) -> Self {
+        Self(self.0.wrapping_add(1))
+    }
+
+    /// Run `number`, for a test that names its runs.
+    #[cfg(test)]
+    pub(crate) const fn new(number: u64) -> Self {
+        Self(number)
+    }
+}
+
 // The **Callback Capability** answer type: built only by Self Reach
 // (`reachability::SharedSelfReach::callback_capability`).
 pub(crate) use state::CallbackCapability;

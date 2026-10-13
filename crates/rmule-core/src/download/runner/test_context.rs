@@ -121,7 +121,7 @@ pub(in crate::download) fn runner_context<S, P>(
         hole_probed: std::sync::atomic::AtomicBool::new(false),
         seeds_tx: watch::channel(Vec::new()).0,
         served: None,
-        run: 0,
+        run: crate::download::RunNumber::default(),
         completion: Arc::new(crate::download::CompletionGate::open()),
     };
     (

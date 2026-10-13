@@ -135,7 +135,7 @@ struct SpawnDownload<'a, S, P> {
     /// The download is Streaming Priority, off its stored metadata.
     streaming_priority: bool,
     /// Which run of the download this is.
-    run: u64,
+    run: crate::download::RunNumber,
     /// The seeds attach loaded for a restored run (ADR-0109); empty otherwise.
     remembered: Vec<SourceSeed>,
     /// The lease on the download's Served Download, handed to the run

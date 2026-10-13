@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use crate::DurableDownloadRecord;
 use crate::adapters::{PeerTransferService, SourceLookupService};
-use crate::download::SharedRuntime;
 use crate::download::state::SourcingPosture;
+use crate::download::{RunNumber, SharedRuntime};
 use crate::durable::DownloadLifecycle;
 use crate::error::DownloadFailure;
 use crate::global_sources::SharedServerList;
@@ -188,7 +188,7 @@ pub(crate) struct RunnerContext<S, P> {
     /// download of one part, which has none.
     pub(crate) served: Option<crate::served_downloads::RunLease>,
     /// Which run of the download this is, carried on its in-place report.
-    pub(crate) run: u64,
+    pub(crate) run: RunNumber,
     /// The run's **Completion Gate**, shared with the actor's ledger entry
     /// (ADR-0115).
     pub(crate) completion: Arc<CompletionGate>,
@@ -234,7 +234,7 @@ impl<S, P> RunnerContext<S, P> {
 pub(crate) struct DownloadTask<S, P> {
     pub(crate) request: DownloadRequest,
     /// Which run of the download this is, carried on its finish notice.
-    pub(crate) run: u64,
+    pub(crate) run: RunNumber,
     pub(crate) runner: RunnerContext<S, P>,
     pub(crate) finished_tx: mpsc::Sender<FinishedActivity>,
 }

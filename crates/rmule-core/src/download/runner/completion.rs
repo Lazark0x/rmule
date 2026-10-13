@@ -50,7 +50,7 @@ pub(crate) struct FinalFileInPlace {
     /// The download whose file is in place.
     pub(crate) download_id: DownloadId,
     /// Which run of it reports.
-    pub(crate) run: u64,
+    pub(crate) run: crate::download::RunNumber,
     /// Where the file landed, a numbered name included.
     pub(crate) path: PathBuf,
     /// `true` once the row is written and the Served Download ended.

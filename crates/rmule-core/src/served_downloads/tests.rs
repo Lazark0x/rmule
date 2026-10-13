@@ -5,6 +5,7 @@ use rmule_primitives::{Ed2kFileLink, Ed2kText};
 
 use super::*;
 use crate::DownloadPaths;
+use crate::download::RunNumber;
 use crate::storage::DownloadRepository;
 use crate::store::download::DurableDownloadRepository;
 
@@ -104,22 +105,27 @@ fn one_writer_holds_an_entry_at_every_instant() {
     assert!(!cell.install(&row, &hashes(1)), "one entry per file");
 
     let first = cell
-        .hand_to_run(file, 1)
+        .hand_to_run(file, RunNumber::new(1))
         .expect("the actor holds it at install");
-    assert!(cell.hand_to_run(file, 2).is_none(), "a run holds it");
+    assert!(
+        cell.hand_to_run(file, RunNumber::new(2)).is_none(),
+        "a run holds it"
+    );
     assert!(
         !cell.end(row.id(), PartialEnd::Ended),
         "the actor ends only what it holds"
     );
     assert!(first.record_range(&hashes(1), &[verified(0, hashes(1)[0])]));
 
-    cell.take_back(file, 1);
+    cell.take_back(file, RunNumber::new(1));
     assert!(
         !first.record_range(&hashes(1), &[]),
         "a run the lease was taken back from writes nothing"
     );
-    let second = cell.hand_to_run(file, 2).expect("the actor holds it again");
-    cell.take_back(file, 1);
+    let second = cell
+        .hand_to_run(file, RunNumber::new(2))
+        .expect("the actor holds it again");
+    cell.take_back(file, RunNumber::new(1));
     assert!(
         !first.record_range(&hashes(1), &[]),
         "an earlier run's take-back leaves the later run its lease"
@@ -127,7 +133,7 @@ fn one_writer_holds_an_entry_at_every_instant() {
     assert!(second.record_range(&hashes(1), &[]));
     assert!(!cell.served(file).unwrap().range.holds_a_part());
 
-    cell.take_back(file, 2);
+    cell.take_back(file, RunNumber::new(2));
     assert!(cell.end(row.id(), PartialEnd::Ended));
     assert!(cell.served(file).is_none());
 }
@@ -139,7 +145,7 @@ fn offered_once_a_part_meets_the_whole_set_and_not_while_held_back() {
     let row = record(&store, 1, SIZE, DownloadLifecycle::Queued);
     let file = row.file_hash();
     assert!(cell.install(&row, &[]));
-    let lease = cell.hand_to_run(file, 1).unwrap();
+    let lease = cell.hand_to_run(file, RunNumber::new(1)).unwrap();
     let mut offers = cell.offer_changes();
     let set = hashes(1);
 
@@ -184,7 +190,7 @@ fn each_look_says_each_change_once_with_its_cause() {
     assert_eq!(cell.look(), [OfferChange::Joined(file)]);
     assert_eq!(cell.look(), []);
 
-    let lease = cell.hand_to_run(file, 1).unwrap();
+    let lease = cell.hand_to_run(file, RunNumber::new(1)).unwrap();
     lease.record_range(&set, &[verified(2, set[2])]);
     assert_eq!(cell.look(), [OfferChange::Offered(file)]);
 
@@ -205,7 +211,7 @@ fn each_look_says_each_change_once_with_its_cause() {
     lease.record_range(&set, &[verified(2, set[2])]);
     assert_eq!(cell.look(), [OfferChange::Offered(file)]);
 
-    cell.take_back(file, 1);
+    cell.take_back(file, RunNumber::new(1));
     cell.end(row.id(), PartialEnd::Completed);
     assert_eq!(
         cell.look(),
@@ -226,7 +232,7 @@ fn an_offer_that_comes_and_goes_between_two_looks_is_said_both_ways() {
     let set = hashes(1);
     cell.install(&row, &set);
     assert_eq!(cell.look(), [OfferChange::Joined(file)]);
-    let lease = cell.hand_to_run(file, 1).unwrap();
+    let lease = cell.hand_to_run(file, RunNumber::new(1)).unwrap();
 
     lease.record_range(&set, &[verified(0, set[0])]);
     lease.record_range(&set, &[]);
@@ -271,7 +277,7 @@ fn only_the_run_holding_an_entry_takes_its_askers_and_a_full_inbox_drops_one() {
     assert!(!cell.sight(file, asker(1)), "the actor holds it: no run");
     assert!(!takes_askers(&cell));
 
-    let lease = cell.hand_to_run(file, 1).unwrap();
+    let lease = cell.hand_to_run(file, RunNumber::new(1)).unwrap();
     let mut inbox = lease.take_askers().expect("the run holds it");
     assert!(takes_askers(&cell));
     for n in 0..ASKER_INBOX {
@@ -283,7 +289,7 @@ fn only_the_run_holding_an_entry_takes_its_askers_and_a_full_inbox_drops_one() {
     );
     assert_eq!(inbox.try_recv().ok(), Some(asker(0)));
 
-    cell.take_back(file, 1);
+    cell.take_back(file, RunNumber::new(1));
     assert!(
         !cell.sight(file, asker(1)),
         "the inbox closed with the lease"
@@ -310,7 +316,7 @@ fn a_read_that_found_the_file_changed_empties_the_range_until_a_holder_reads_the
     let file = row.file_hash();
     let set = hashes(1);
     cell.install(&row, &set);
-    let lease = cell.hand_to_run(file, 1).unwrap();
+    let lease = cell.hand_to_run(file, RunNumber::new(1)).unwrap();
     lease.record_identity(identity(7));
     lease.record_range(&set, &[verified(0, set[0])]);
     cell.look();
@@ -349,11 +355,11 @@ fn the_offer_check_writes_only_an_entry_the_actor_holds() {
     cell.install(&row, &set);
     let held = [verified(1, set[1])];
 
-    let lease = cell.hand_to_run(file, 1).unwrap();
+    let lease = cell.hand_to_run(file, RunNumber::new(1)).unwrap();
     assert!(!cell.held_by_actor(file, row.id()));
     assert!(!cell.offer_checked(file, row.id(), &held, identity(7)));
     drop(lease);
-    cell.take_back(file, 1);
+    cell.take_back(file, RunNumber::new(1));
     assert!(!cell.offer_checked(file, DownloadId::from_u64(99), &held, identity(7)));
 
     assert!(cell.held_by_actor(file, row.id()));
@@ -381,7 +387,9 @@ fn a_served_download_is_offered_under_the_downloads_name_not_its_paths() {
     let served = Ed2kText::from_utf8("served.bin");
     assert_eq!(cell.served(file).unwrap().name, served);
 
-    let lease = cell.hand_to_run(file, 1).expect("the actor holds it");
+    let lease = cell
+        .hand_to_run(file, RunNumber::new(1))
+        .expect("the actor holds it");
     assert!(lease.bytes_in_place(std::path::Path::new("/downloads/1 (1).bin"), None));
     assert_eq!(cell.served(file).unwrap().name, served);
 }

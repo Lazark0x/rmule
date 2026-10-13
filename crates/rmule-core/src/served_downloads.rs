@@ -34,6 +34,7 @@ use rmule_peer::PartBitmap;
 use rmule_primitives::{ED2K_PART_SIZE, Ed2kText, FileHash, PartHash, PartHashSet, SourceSighting};
 use tokio::sync::{mpsc, watch};
 
+use crate::download::RunNumber;
 use crate::file_key::FileKey;
 use crate::{DownloadId, DownloadLifecycle, DurableDownloadRecord, VerifiedPartRecord};
 
@@ -281,7 +282,7 @@ enum Holder {
     /// The core actor: the download is queued or paused, or its run ended.
     Actor,
     /// The run with this number.
-    Run(u64),
+    Run(RunNumber),
 }
 
 struct Entry {
@@ -451,7 +452,7 @@ impl ServedDownloads {
 
     /// Hand the entry of `file_hash` to run `run`: its lease, or `None` when
     /// there is no entry or the actor does not hold it.
-    pub(crate) fn hand_to_run(&self, file_hash: FileHash, run: u64) -> Option<RunLease> {
+    pub(crate) fn hand_to_run(&self, file_hash: FileHash, run: RunNumber) -> Option<RunLease> {
         let mut book = self.lock();
         let entry = book.entries.get_mut(&file_hash)?;
         if entry.holder != Holder::Actor {
@@ -468,7 +469,7 @@ impl ServedDownloads {
     /// Take the entry of `file_hash` back from run `run`, which has ended or
     /// been told to; from here its lease writes nothing, its inbox is closed
     /// and its source-exchange pool is empty.
-    pub(crate) fn take_back(&self, file_hash: FileHash, run: u64) {
+    pub(crate) fn take_back(&self, file_hash: FileHash, run: RunNumber) {
         let mut guard = self.lock();
         let book = &mut *guard;
         if let Some(entry) = book.entries.get_mut(&file_hash)
@@ -748,7 +749,7 @@ impl ServedDownloads {
 pub(crate) struct RunLease {
     cell: ServedDownloads,
     file_hash: FileHash,
-    run: u64,
+    run: RunNumber,
 }
 
 impl RunLease {
