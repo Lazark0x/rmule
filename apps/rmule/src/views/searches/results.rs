@@ -15,7 +15,7 @@ use rmule_primitives::{Ed2kText, SearchResult};
 
 use super::SearchesView;
 use super::sort::ResultsTable;
-use crate::row_selection::{MARKER, selection_style};
+use crate::row_selection::{MARKER, selection_style, viewport};
 use crate::state::{KnownFileMark, KnownFileMarks, SearchPane, SearchStatus, UiState};
 use crate::table_sort::{SortedTable, header_label, header_widths};
 use crate::theme::Theme;
@@ -368,25 +368,22 @@ impl SearchesView {
                 .unwrap_or(0);
             wants[index] = widest.min(cap);
         }
-        let cols = greedy_widths(
-            usize::from(area.width.saturating_sub(SYMBOL_W)),
-            &TableColumns {
-                floors: &RESULT_COLS,
-                wants: &wants,
-                headers: &headers,
-                flex: RESULT_FLEX,
-                give_way: &RESULT_GIVE_WAY,
-            },
-            usize::from(COL_SPACING),
-        );
-        say_gave_way(
-            frame,
-            crate::views::bottom_border(pane),
-            &gave_way(ResultsTable::COLUMNS.iter().map(|c| c.label), &cols),
-            theme,
-        );
+        let cols_at = |bar: bool| {
+            let bar = if bar { viewport::BAR_W } else { 0 };
+            greedy_widths(
+                usize::from(area.width.saturating_sub(SYMBOL_W).saturating_sub(bar)),
+                &TableColumns {
+                    floors: &RESULT_COLS,
+                    wants: &wants,
+                    headers: &headers,
+                    flex: RESULT_FLEX,
+                    give_way: &RESULT_GIVE_WAY,
+                },
+                usize::from(COL_SPACING),
+            )
+        };
         // The selected result's values in the columns that gave way.
-        let off_screen =
+        let off_screen_at = |cols: &[usize]| {
             selected
                 .and_then(|index| results.get(index))
                 .map_or_else(Vec::new, |result| {
@@ -399,67 +396,90 @@ impl SearchesView {
                     crate::views::off_screen::hidden(
                         ResultsTable::COLUMNS.iter().map(|c| c.label),
                         &values,
-                        &cols,
+                        cols,
                     )
-                });
-        let area = crate::views::off_screen::draw(frame, area, &off_screen, theme);
+                })
+        };
         // The arrow is part of the header's text, and every column is at
         // least as wide as its header with the arrow, so a header is one line.
         let header_style = Style::new().fg(theme.dim).add_modifier(Modifier::BOLD);
-        let (header_cells, header_heights): (Vec<_>, Vec<u16>) = ResultsTable::COLUMNS
-            .iter()
-            .zip(&cols)
-            .map(|(column, width)| {
-                let label = header_label(column.label, self.sort.arrow(column.column));
-                wrapped_cell(&label, *width, header_style, column.kind.right_aligned())
-            })
-            .unzip();
-        let header_h = header_heights.into_iter().max().unwrap_or(1);
-        let header = Row::new(header_cells).style(header_style).height(header_h);
-        self.header_area = Rect::new(
-            area.x.saturating_add(SYMBOL_W),
-            area.y,
-            area.width.saturating_sub(SYMBOL_W),
-            header_h.min(area.height),
-        );
-        self.rows_area = Rect::new(
-            area.x,
-            area.y.saturating_add(header_h),
-            area.width,
-            area.height.saturating_sub(header_h),
-        );
-
+        let header_at = |cols: &[usize]| -> (Row<'static>, u16) {
+            let (cells, heights): (Vec<_>, Vec<u16>) = ResultsTable::COLUMNS
+                .iter()
+                .zip(cols)
+                .map(|(column, width)| {
+                    let label = header_label(column.label, self.sort.arrow(column.column));
+                    wrapped_cell(&label, *width, header_style, column.kind.right_aligned())
+                })
+                .unzip();
+            let height = heights.into_iter().max().unwrap_or(1);
+            (Row::new(cells).style(header_style).height(height), height)
+        };
         let marks = KnownFileMarks::of(state);
-        let mut heights = Vec::with_capacity(results.len());
-        let rows: Vec<Row> = results
-            .iter()
-            .map(|result| {
-                let tint = marks
-                    .get(result.file_hash(), result.file_size())
-                    .map_or_else(
-                        || Style::new().fg(source_tint(result_source_count(result), theme)),
-                        |mark| mark_style(mark, theme),
-                    );
-                let (name, name_h) = wrapped_cell(
-                    &result.primary_name().to_display_string(),
-                    cols[0],
-                    tint,
-                    false,
+        let row_at = |result: &SearchResult, cols: &[usize]| -> (Row<'static>, u16) {
+            let tint = marks
+                .get(result.file_hash(), result.file_size())
+                .map_or_else(
+                    || Style::new().fg(source_tint(result_source_count(result), theme)),
+                    |mark| mark_style(mark, theme),
                 );
-                let (size, size_h) =
-                    wrapped_cell(&format_size(result.file_size()), cols[1], tint, true);
-                let (sources, sources_h) =
-                    wrapped_cell(&result_sources_text(result), cols[2], tint, true);
-                let (ftype, type_h) = wrapped_cell(&result_type_text(result), cols[3], tint, false);
-                let height = name_h.max(size_h).max(sources_h).max(type_h);
-                heights.push(height);
+            let (name, name_h) = wrapped_cell(
+                &result.primary_name().to_display_string(),
+                cols[0],
+                tint,
+                false,
+            );
+            let (size, size_h) = wrapped_cell(&format_size(result.file_size()), cols[1], tint, true);
+            let (sources, sources_h) =
+                wrapped_cell(&result_sources_text(result), cols[2], tint, true);
+            let (ftype, type_h) = wrapped_cell(&result_type_text(result), cols[3], tint, false);
+            let height = name_h.max(size_h).max(sources_h).max(type_h);
+            (
                 Row::new(vec![name, size, sources, ftype])
                     // The tint — or the mark — applies to the whole row
                     // (inventory parity).
                     .style(tint)
-                    .height(height)
-            })
-            .collect();
+                    .height(height),
+                height,
+            )
+        };
+        let bar = viewport::needs_bar(results.len(), area.height.saturating_sub(1), || {
+            let cols = cols_at(false);
+            let room = area
+                .height
+                .saturating_sub(crate::views::off_screen::height(area, &off_screen_at(&cols)))
+                .saturating_sub(header_at(&cols).1);
+            let drawn: u32 = results
+                .iter()
+                .map(|result| u32::from(row_at(result, &cols).1))
+                .sum();
+            drawn > u32::from(room)
+        });
+        let cols = cols_at(bar);
+        let area = crate::views::off_screen::draw(frame, area, &off_screen_at(&cols), theme);
+        let (header, header_h) = header_at(&cols);
+        let (list, bar) = viewport::split(area, bar);
+        self.header_area = Rect::new(
+            list.x.saturating_add(SYMBOL_W),
+            list.y,
+            list.width.saturating_sub(SYMBOL_W),
+            header_h.min(list.height),
+        );
+        self.rows_area = Rect::new(
+            list.x,
+            list.y.saturating_add(header_h),
+            list.width,
+            list.height.saturating_sub(header_h),
+        );
+        let (rows, heights): (Vec<Row>, Vec<u16>) =
+            results.iter().map(|result| row_at(result, &cols)).unzip();
+        let first = self.viewport.follow(
+            selected.unwrap_or(0),
+            heights.len(),
+            list.height.saturating_sub(header_h),
+            |index| heights[index],
+        );
+        *self.results_state.offset_mut() = first;
         self.row_heights = heights;
 
         let widths: Vec<Constraint> = cols
@@ -475,7 +495,14 @@ impl SearchesView {
             // The symbol's gutter is always there, so the header's column
             // edges — and a click on them — do not move with the selection.
             .highlight_spacing(HighlightSpacing::Always);
-        frame.render_stateful_widget(table, area, &mut self.results_state);
+        frame.render_stateful_widget(table, list, &mut self.results_state);
+        let foot = self.viewport.draw(frame, pane, bar, theme);
+        say_gave_way(
+            frame,
+            foot,
+            &gave_way(ResultsTable::COLUMNS.iter().map(|c| c.label), &self.header_cols),
+            theme,
+        );
     }
 }
 
