@@ -380,6 +380,9 @@ pub enum CoreCommandRejectReason {
     /// A resume named a download that already has a live run in the
     /// **Download Set**.
     DownloadAlreadyActive,
+    /// A Pause or a Cancel named a download whose finished file is already
+    /// in place: its completion move ends on its own (ADR-0115).
+    DownloadCompleting,
     /// A start named a file (hash and size) a live download already holds.
     /// One file is one download: its source discovery, file-known entry and
     /// `.part` are keyed by the file, so a second copy is refused rather

@@ -28,6 +28,7 @@ use tokio::sync::{Mutex, mpsc, watch};
 mod adopt;
 mod callbacks;
 mod capability;
+mod completion;
 mod enact;
 mod fleet;
 mod intake;
@@ -40,6 +41,9 @@ mod server_leg;
 pub(super) mod test_context;
 
 pub(crate) use capability::CallbackFacts;
+pub(crate) use completion::{
+    CompletionFs, CompletionGate, FinalFileInPlace, OsCompletionFs, Recovered, StopAnswer,
+};
 use fleet::{FleetStart, StartSources, apply_peer_workers_download};
 pub(crate) use link_sources::{LaterLinkSources, link_sources, names_sources};
 
@@ -87,6 +91,9 @@ pub(crate) struct DownloadRequest {
     /// The download's **Source Seeds** under a day old, handed to a run attach
     /// restores (ADR-0109); empty for every other run.
     pub(crate) remembered: Vec<crate::download::source_seeds::SourceSeed>,
+    /// What attach found of a row it found `Completing`: its run goes
+    /// straight to the move's recovery (ADR-0115). `None` for every other run.
+    pub(crate) recovered: Option<Recovered>,
 }
 
 /// The source-discovery channels a download may wait on — server-UDP global
@@ -175,6 +182,11 @@ pub(crate) struct RunnerContext<S, P> {
     /// The run's lease on its **Served Download** (ADR-0113); `None` for a
     /// download of one part, which has none.
     pub(crate) served: Option<crate::served_downloads::RunLease>,
+    /// Which run of the download this is, carried on its in-place report.
+    pub(crate) run: u64,
+    /// The run's **Completion Gate**, shared with the actor's ledger entry
+    /// (ADR-0115).
+    pub(crate) completion: Arc<CompletionGate>,
 }
 
 impl<S, P> RunnerContext<S, P> {
@@ -214,6 +226,9 @@ where
     pub(crate) async fn run(self) {
         let download_id = self.request.download_id;
         let mut request = self.request;
+        // A run that ends, however it ends, leaves its gate open: a stop
+        // never waits on a run that is gone.
+        let _release = ReleaseGate(Arc::clone(&self.runner.completion));
         // A run that lost parts it can fetch again starts over in place, in
         // the Download Set, from what still holds (ADR-0094).
         let result = loop {
@@ -224,6 +239,7 @@ where
             match self.runner.rt.store.verified_parts(download_id) {
                 Err(_) => break Err(DownloadFailure::StoreFailed),
                 Ok(parts) => {
+                    request.recovered = None;
                     request.verified_part_indexes =
                         parts.iter().map(|part| part.part_index).collect();
                     tracing::info!(
@@ -261,6 +277,15 @@ where
     }
 }
 
+/// Opens its gate when the run ends.
+struct ReleaseGate(Arc<CompletionGate>);
+
+impl Drop for ReleaseGate {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
 async fn orchestrate_download<S, P>(
     request: DownloadRequest,
     runner: &RunnerContext<S, P>,
@@ -270,9 +295,20 @@ where
     P: PeerTransferService,
 {
     check_stop(&runner.stop_rx)?;
+    // A row attach found completing goes straight to the move (ADR-0115).
+    if let Some(recovered) = request.recovered {
+        return completion::recover(runner, request.download_id, &request.file, recovered).await;
+    }
     // The run holds its part file from its first act (ADR-0094).
     crate::download::persist::hold_part_file(runner, request.download_id).await?;
     served::lease_started(runner, request.download_id).await;
+    // Every part already verified — a move a Pause stopped, a run that
+    // ended between its last part and its move: nothing to fetch.
+    let parts = rmule_primitives::part_count(request.file.size) as usize;
+    if request.verified_part_indexes.len() >= parts {
+        return completion::complete(runner, request.download_id, &request.file, Vec::new()).await;
+    }
+    let file = request.file.clone();
     let target =
         rmule_primitives::SourceLookupTarget::new(request.file.file_hash, request.file.size);
     // Subscribed before the first lookup: a session that comes up after it
@@ -374,7 +410,7 @@ where
         .into_iter()
         .collect();
 
-    apply_peer_workers_download(
+    let file_hash_only_parts = apply_peer_workers_download(
         FleetStart {
             download_id: request.download_id,
             file: request.file,
@@ -403,7 +439,8 @@ where
         },
         runner,
     )
-    .await
+    .await?;
+    completion::complete(runner, request.download_id, &file, file_hash_only_parts).await
 }
 
 pub(crate) fn file_link_from_record(

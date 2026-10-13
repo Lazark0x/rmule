@@ -1,7 +1,5 @@
 //! The content-file store's side of a download: bytes land at the part
-//! offset the plan declares, the `.part` file is renamed into place on
-//! finalization only when nothing already owns that path, and a part belongs
-//! to exactly one download.
+//! offset the plan declares, and a part belongs to exactly one download.
 use rmule_core::DownloadRepository;
 use std::fs;
 
@@ -40,32 +38,6 @@ async fn read_range_reads_a_completed_file_at_its_final_path() {
         .unwrap();
 
     assert_eq!(slice, b"3456");
-}
-
-#[tokio::test]
-async fn finalization_rejects_existing_final_path() {
-    let dir = tempfile::tempdir().unwrap();
-    let paths = DownloadPaths::from_final_path(dir.path().join("download.bin"));
-    fs::write(paths.part_path(), b"verified").unwrap();
-    fs::write(paths.final_path(), b"existing").unwrap();
-
-    let err = ContentFileStore::finalize(&paths).await.unwrap_err();
-
-    assert_eq!(err, rmule_core::FinalizeError::FinalPathTaken);
-    assert_eq!(fs::read(paths.part_path()).unwrap(), b"verified");
-    assert_eq!(fs::read(paths.final_path()).unwrap(), b"existing");
-}
-
-#[tokio::test]
-async fn finalization_renames_part_file_to_final_path() {
-    let dir = tempfile::tempdir().unwrap();
-    let paths = DownloadPaths::from_final_path(dir.path().join("download.bin"));
-    fs::write(paths.part_path(), b"complete").unwrap();
-
-    ContentFileStore::finalize(&paths).await.unwrap();
-
-    assert_eq!(fs::read(paths.final_path()).unwrap(), b"complete");
-    assert!(!paths.part_path().exists());
 }
 
 #[test]

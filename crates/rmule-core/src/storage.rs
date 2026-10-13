@@ -7,14 +7,13 @@
 //! guarantee than the link it came from.
 
 use std::future::Future;
-use std::path::PathBuf;
 
-use rmule_primitives::{Ed2kFileLink, Ed2kLink, FileHash, PartHash, ServerEndpoint};
+use rmule_primitives::{Ed2kFileLink, Ed2kLink, PartHash, ServerEndpoint};
 
 use crate::content::Revalidation;
 use crate::file_history::Ed2kIdentity;
 use crate::{
-    CoreError, DownloadId, DownloadLifecycle, DownloadPaths, DurableDownloadRecord, FinalizeError,
+    CoreError, DownloadId, DownloadLifecycle, DownloadPaths, DurableDownloadRecord,
     VerifiedPartRecord,
 };
 
@@ -59,7 +58,7 @@ pub(crate) fn resolve_hash_authority(
 
 /// The download storage boundary (ADR-0083): persistence is wholly the
 /// repository's business. Callers hand verified bytes across the seam and ask
-/// for finalization or resume-time revalidation; where the rows live (a
+/// for resume-time revalidation; where the rows live (a
 /// `rmule.redb` file or the engine's in-memory backend) and that the bytes go
 /// to content files composed via [`ContentFileStore`](crate::ContentFileStore)
 /// are not observable. The
@@ -129,19 +128,6 @@ pub trait DownloadRepository: Send + Sync + 'static {
     /// `Paused`, `Failed`), as the last process left it — read once at attach,
     /// which starts the running ones again (ADR-0094). Writes nothing.
     fn live_downloads(&self) -> Result<Vec<DurableDownloadRecord>, CoreError>;
-
-    /// Verify the assembled content against the expected ED2K file hash, then
-    /// promote the download to [`DownloadLifecycle::Completed`] (for
-    /// content-file storage, the `.part` → final rename) and answer where the
-    /// finished file now lies. On any refusal nothing is promoted, and the
-    /// cause comes back typed: only [`FinalizeError::Mismatch`] says the parts
-    /// are wrong.
-    fn finalize(
-        &self,
-        id: DownloadId,
-        expected: FileHash,
-        file_size: u64,
-    ) -> impl Future<Output = Result<PathBuf, FinalizeError>> + Send;
 
     /// Resume-time revalidation: re-hash the stored content against the
     /// durable verified-part records (ADR-0094, "Damaged parts"). A part that

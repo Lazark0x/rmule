@@ -280,6 +280,9 @@ pub(super) struct ActiveDownload {
     /// The run's latest **Source Seeds** ranking (ADR-0109), which the actor
     /// writes every ten minutes and at Quit.
     pub(super) seeds: watch::Receiver<Vec<crate::download::source_seeds::SourceSeed>>,
+    /// The run's **Completion Gate** (ADR-0115): a Pause or Cancel closes it,
+    /// or is refused once the finished file is in place.
+    pub(super) completion: std::sync::Arc<crate::download::CompletionGate>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

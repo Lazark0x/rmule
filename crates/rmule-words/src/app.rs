@@ -58,6 +58,9 @@ pub fn command_rejected(reason: &CoreCommandRejectReason) -> Sentence {
         }
         R::DownloadStoreFailed => "download refused: the download store failed (see the run log)",
         R::DownloadAlreadyActive => "resume refused: that download is already running",
+        R::DownloadCompleting => {
+            "refused: the finished file is already in place, and the download completes on its own"
+        }
         R::DownloadNotCompleted => {
             "clear refused: only a completed download is cleared; cancel drops the rest"
         }

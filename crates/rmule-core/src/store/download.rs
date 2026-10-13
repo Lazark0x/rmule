@@ -1,6 +1,6 @@
 //! The durable [`DownloadRepository`]: every download row, its verified parts
 //! and its provisional part hashes in the shared [`Store`], composed with the
-//! [`ContentFileStore`] for the bytes themselves.
+//! [`ContentFileStore`](crate::ContentFileStore) for the bytes themselves.
 //!
 //! The record shapes, their indexes and the id counter live in [`row`]; this
 //! module is the transaction boundaries. Three writes are atomic by
@@ -19,19 +19,19 @@ pub(crate) use row::{schema_v1, seed_v1};
 pub use seeds::LoadedSeeds;
 pub(crate) use seeds::UPGRADE_FROM_V12;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rmule_primitives::{Ed2kFileLink, FileHash, PartHash, ServerEndpoint, UserHash};
+use rmule_primitives::{Ed2kFileLink, PartHash, ServerEndpoint, UserHash};
 use rmule_store::{Readable, Store};
 
 use super::Schema;
-use crate::content::{ContentFileStore, Revalidation, revalidate_verified_parts};
+use crate::content::{Revalidation, revalidate_verified_parts};
 use crate::file_history::Ed2kIdentity;
 use crate::storage::{DownloadRepository, ResolvedAuthority, resolve_hash_authority};
 use crate::{
     CoreError, DownloadFailure, DownloadId, DownloadLifecycle, DownloadPaths,
-    DurableDownloadRecord, FinalizeError, VerificationAuthority, VerifiedPartRecord,
+    DurableDownloadRecord, VerificationAuthority, VerifiedPartRecord,
 };
 use row::{
     DISTRUSTED_PEERS, DOWNLOAD_IDS, DOWNLOADS, DistrustedPeerRow, DownloadRow, IDENTITY, PART_PATH,
@@ -184,6 +184,31 @@ impl DurableDownloadRepository {
         })
     }
 
+    /// Store `Completing` and the destination the completion move chose, in
+    /// one write, before anything moves (ADR-0115): from `Active`, or on a
+    /// row already completing whose destination a free name moved. The row
+    /// names the one file the move may put at that path.
+    ///
+    /// # Errors
+    /// [`CoreError::UnknownDownload`] when the row is gone, and
+    /// [`CoreError::InvalidLifecycleTransition`] from any lifecycle but
+    /// `Active` and `Completing`.
+    pub fn set_completing(&self, id: DownloadId, destination: &Path) -> Result<(), CoreError> {
+        self.store.write(|txn| {
+            let mut row = read_row(txn, id)?;
+            if !matches!(
+                row.lifecycle,
+                DownloadLifecycle::Active | DownloadLifecycle::Completing
+            ) {
+                return Err(CoreError::InvalidLifecycleTransition);
+            }
+            row.lifecycle = DownloadLifecycle::Completing;
+            row.failure = None;
+            row.final_path = destination.to_string_lossy().into_owned();
+            Ok(DOWNLOADS.update(txn, &id.as_u64(), &row).map(|_| ())?)
+        })
+    }
+
     /// Drop the verified-part records of `parts`, which the part file no
     /// longer holds (ADR-0094, "The run holds its part file"), and
     /// return the records dropped, so the caller can say what they cost.
@@ -318,10 +343,6 @@ impl DurableDownloadRepository {
                 .map(|(key, _)| DownloadId::from_u64(key))
                 .collect())
         })
-    }
-
-    fn paths(&self, id: DownloadId) -> Result<DownloadPaths, CoreError> {
-        self.store.read(|txn| Ok(read_row(txn, id)?.paths()))
     }
 }
 
@@ -539,22 +560,6 @@ impl DownloadRepository for DurableDownloadRepository {
             }
             Ok(live)
         })
-    }
-
-    async fn finalize(
-        &self,
-        id: DownloadId,
-        expected: FileHash,
-        file_size: u64,
-    ) -> Result<PathBuf, FinalizeError> {
-        let paths = self.paths(id)?;
-        if ContentFileStore::hash_for_finalize(&paths, file_size).await? != expected {
-            return Err(FinalizeError::Mismatch);
-        }
-        ContentFileStore::finalize(&paths).await?;
-        self.set_lifecycle(id, DownloadLifecycle::Completing)?;
-        self.set_lifecycle(id, DownloadLifecycle::Completed)?;
-        Ok(paths.final_path().to_path_buf())
     }
 
     async fn revalidate(&self, id: DownloadId) -> Result<Revalidation, CoreError> {

@@ -54,6 +54,17 @@ pub(super) const fn source_wait(reason: SourceWait) -> &'static str {
     }
 }
 
+pub(super) const fn completion_step(step: crate::CompletionStep) -> &'static str {
+    use crate::CompletionStep as Step;
+    match step {
+        Step::Moving => "moving",
+        Step::QueuedForCopy => "queued_for_copy",
+        Step::Copying => "copying",
+        Step::WaitingForRelease => "waiting_for_release",
+        Step::WaitingForStore => "waiting_for_store",
+    }
+}
+
 pub(super) const fn lifecycle(state: DownloadLifecycle) -> &'static str {
     match state {
         DownloadLifecycle::Queued => "queued",
@@ -429,6 +440,7 @@ pub(super) fn client_family(family: crate::diagnostics::ClientFamily) -> String 
 pub(super) fn command_rejected(record: Record, reason: &CoreCommandRejectReason) -> Record {
     let code = match reason {
         CoreCommandRejectReason::DownloadAlreadyActive => "download_already_active",
+        CoreCommandRejectReason::DownloadCompleting => "download_completing",
         CoreCommandRejectReason::DuplicateDownload => "duplicate_download",
         CoreCommandRejectReason::DownloadPathConflict => "download_path_conflict",
         CoreCommandRejectReason::NoDownloadDir => "no_download_dir",

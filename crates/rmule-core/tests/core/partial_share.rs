@@ -195,25 +195,26 @@ async fn the_first_verified_part_offers_the_download_and_completion_hands_it_to_
     gate.send(true).unwrap();
     let file = link.file_hash;
     let after = events_until(&mut core, |event| {
-        matches!(event, CoreEvent::Serve(ServeEvent::PartialWithdrawn { file_hash, .. }) if *file_hash == file)
-    })
-    .await;
-
-    // The row is written before the Partial Share ends: through the step,
-    // the file is offered as one or the other.
-    let shared = position(
-        &after,
-        |event| matches!(event, CoreEvent::Serve(ServeEvent::FileShared { file_hash }) if *file_hash == file),
-    );
-    let completed = position(&after, |event| {
         matches!(
             event,
             CoreEvent::Download(DownloadEvent::DownloadCompleted { .. })
         )
-    });
-    assert!(completed < shared);
+    })
+    .await;
+
+    // The row is written before the Partial Share ends, in the step the
+    // finished file lands in place (ADR-0115): through it, the file is
+    // offered as one or the other, and the download completes after.
+    let shared = position(
+        &after,
+        |event| matches!(event, CoreEvent::Serve(ServeEvent::FileShared { file_hash }) if *file_hash == file),
+    );
+    let withdrawn = position(
+        &after,
+        |event| matches!(event, CoreEvent::Serve(ServeEvent::PartialWithdrawn { file_hash, .. }) if *file_hash == file),
+    );
     assert_eq!(withdrawals(&after), [PartialEnd::Completed]);
-    assert!(shared < after.len() - 1, "the withdrawal follows the row");
+    assert!(shared < withdrawn, "the withdrawal follows the row");
 
     // The row carries the finished file's stamp, so the next scan pass
     // trusts it unread (ADR-0102).

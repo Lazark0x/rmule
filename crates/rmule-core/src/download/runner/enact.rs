@@ -14,7 +14,7 @@ use crate::adapters::{
 };
 use crate::callback::{DownloadAsk, DownloadReach, PendingCallback};
 use crate::credit::KeyBinding;
-use crate::download::persist::{PersistError, finalize_download, persist_streamed_part};
+use crate::download::persist::{PersistError, persist_streamed_part};
 use crate::download::state::{Decision, DownloadState};
 use crate::download::worker_pool::{WorkerChannels, WorkerFact, WorkerId, WorkerPool};
 use crate::error::DownloadFailure;
@@ -249,23 +249,10 @@ where
             }
             Decision::Finalize => {
                 // Normal completion: release each held slot silently, no
-                // `OP_CANCELTRANSFER` (ADR-0056).
+                // `OP_CANCELTRANSFER` (ADR-0056). The fleet loop sees every
+                // part verified and ends; the completion move follows it
+                // (ADR-0115).
                 shut_down_every_worker(ctx, false).await;
-                let finalized = finalize_download(
-                    ctx.runner,
-                    ctx.download_id,
-                    ctx.file,
-                    std::mem::take(&mut ctx.file_hash_only_parts),
-                    ctx.evt_tx,
-                )
-                .await;
-                // The finished file holds the bytes now; a finalize that
-                // dropped parts to fetch them again shrinks the range first.
-                match finalized {
-                    Ok(()) => served::in_place(ctx.runner, ctx.download_id).await,
-                    Err(_) => served::rule_range_of(ctx.runner, ctx.download_id, &ctx.state),
-                }
-                finalized?;
             }
             Decision::RequestCallback {
                 low_id,

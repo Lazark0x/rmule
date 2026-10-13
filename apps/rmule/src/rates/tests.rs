@@ -56,6 +56,7 @@ fn downloading(received_bytes: u64, slots: &[(usize, WorkerPhase)]) -> Diagnosti
             dial_ends: Default::default(),
             allocated_bytes: None,
             hole_verdict: None,
+            completion: None,
             reask_replies_ignored: 0,
         },
     );

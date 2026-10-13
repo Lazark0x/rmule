@@ -21,6 +21,7 @@ use rmule_primitives::AddressFamily;
 
 mod buddy_and_callbacks;
 mod buddy_hash_spelling;
+mod completion;
 mod download_ends;
 mod download_rest;
 mod natt_counters;
@@ -226,6 +227,7 @@ impl DiagnosticsState {
                 dial_ends: BTreeMap::new(),
                 allocated_bytes: None,
                 hole_verdict: None,
+                completion: None,
             });
     }
 

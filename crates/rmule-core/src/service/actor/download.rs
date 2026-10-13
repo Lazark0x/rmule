@@ -30,6 +30,7 @@ use crate::{
 
 use super::{CoreActor, send_event};
 
+mod completion;
 mod placement;
 mod restore;
 mod seeds;
@@ -139,11 +140,17 @@ where
                     run,
                     remembered: Vec::new(),
                     served,
+                    recovered: None,
                 });
                 self.activities.download_started(download_id, active);
                 self.served_moved().await;
             }
             DownloadCommand::CancelDownload { download_id } => {
+                // A move whose file is in place is no longer the operator's
+                // to stop (ADR-0115).
+                if let Err(reason) = self.stop_completion(download_id).await {
+                    return self.reject(reason).await;
+                }
                 if let Some(active) = self.retire_download(download_id) {
                     let _ = active.stop_tx.send(StopReason::Cancel);
                     let _ = active.handle.await;
@@ -158,6 +165,9 @@ where
                 self.cancel(download_id).await;
             }
             DownloadCommand::PauseDownload { download_id } => {
+                if let Err(reason) = self.stop_completion(download_id).await {
+                    return self.reject(reason).await;
+                }
                 // A paused download keeps its offer: its run hands the lease
                 // back as it lets its part file go (ADR-0113).
                 if let Some(active) = self.retire_download(download_id) {
@@ -264,6 +274,9 @@ where
         let Ok(record) = self.wiring.store.load_download(download_id) else {
             return Err(CoreCommandRejectReason::UnknownDownload);
         };
+        if record.lifecycle() == DownloadLifecycle::Completing {
+            return self.resume_completing(&record, remembered).await;
+        }
         let restart = record.lifecycle() == DownloadLifecycle::Failed;
         let Ok(recorded) = self.wiring.store.verified_parts(download_id) else {
             return Err(CoreCommandRejectReason::UnknownDownload);
@@ -390,6 +403,7 @@ where
             run,
             remembered,
             served,
+            recovered: None,
         });
         self.activities.download_started(download_id, active);
         self.served_moved().await;
@@ -506,12 +520,21 @@ where
     }
 
     /// Forget one completed download: its record and its resting row, then
-    /// the event. A run still in the **Download Set** has not been shared yet
-    /// (the auto-share rides its retire), so it is refused like any download
-    /// not completed.
+    /// the event. A run still in the **Download Set** is refused like any
+    /// download not completed, unless it has stored `Completed`: its file is
+    /// in place and shared, and all it has left is to end, which the clear
+    /// does not wait on.
     async fn clear(&mut self, download_id: DownloadId) -> Result<(), CoreCommandRejectReason> {
         if self.activities.has_download(download_id) {
-            return Err(CoreCommandRejectReason::DownloadNotCompleted);
+            let completed = self
+                .wiring
+                .store
+                .load_download(download_id)
+                .is_ok_and(|record| record.lifecycle() == DownloadLifecycle::Completed);
+            if !completed {
+                return Err(CoreCommandRejectReason::DownloadNotCompleted);
+            }
+            self.retire_download(download_id);
         }
         match self.wiring.store.clear_completed(download_id) {
             Ok(()) => {}
@@ -545,6 +568,7 @@ where
                         | DownloadLifecycle::Active
                         | DownloadLifecycle::Paused
                         | DownloadLifecycle::Failed
+                        | DownloadLifecycle::Completing
                 )
             })
     }
@@ -617,6 +641,9 @@ struct SpawnDownload<'a, S, P> {
     /// The lease on the download's Served Download, handed to the run
     /// (ADR-0113); `None` for a download that has none.
     served: Option<crate::served_downloads::RunLease>,
+    /// What attach found of a row it found `Completing` (ADR-0115); `None`
+    /// for every other run.
+    recovered: Option<crate::download::Recovered>,
 }
 
 /// Spawn one download runner and return its live handle. The single
@@ -640,8 +667,15 @@ where
         run,
         remembered,
         served,
+        recovered,
     } = spawn;
     let file_hash = file.file_hash;
+    // A recovered move's gate settles once its run has looked at the disk.
+    let completion = Arc::new(if recovered.is_some() {
+        crate::download::CompletionGate::settling()
+    } else {
+        crate::download::CompletionGate::open()
+    });
     let (stop_tx, stop_rx) = watch::channel(StopReason::Active);
     let (later_links, later_inbox) = mpsc::unbounded_channel();
     let (seeds_tx, seeds) = watch::channel(Vec::new());
@@ -658,6 +692,7 @@ where
                 streaming_window_parts: runtime.streaming_window_parts,
                 discovery: runtime.discovery.clone(),
                 remembered,
+                recovered,
             },
             run,
             runner: RunnerContext {
@@ -668,6 +703,8 @@ where
                 repair: std::sync::atomic::AtomicBool::new(false),
                 seeds_tx,
                 served,
+                run,
+                completion: Arc::clone(&completion),
             },
             finished_tx: runtime.finished_tx.clone(),
         }
@@ -681,6 +718,7 @@ where
         handle,
         later_links,
         seeds,
+        completion,
     }
 }
 

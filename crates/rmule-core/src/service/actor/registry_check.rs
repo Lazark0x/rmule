@@ -279,14 +279,20 @@ where
         send_event(&self.evt_tx, ServeEvent::FileOffered { file_hash }.into()).await;
     }
 
-    /// A finished download's file joins the registry if it completed
-    /// (ADR-0031): offered, or withheld as refused when it lies under an
-    /// entry the guards refuse (ADR-0101). `true` when the row was written —
-    /// a share-set change either way, whose trigger is the caller's to fire
-    /// once its download's Served Download has ended too (ADR-0113).
-    pub(super) async fn share_completed(&mut self, download_id: DownloadId) -> bool {
+    /// A completing download's file in place at `path` joins the registry
+    /// (ADR-0031, ADR-0115): offered, or withheld as refused when it lies
+    /// under an entry the guards refuse (ADR-0101). `true` when the row was
+    /// written — a share-set change either way, whose trigger is the
+    /// caller's to fire once its download's Served Download has ended too
+    /// (ADR-0113).
+    pub(super) async fn share_completion(
+        &mut self,
+        download_id: DownloadId,
+        path: &std::path::Path,
+    ) -> bool {
         let shared = auto_share_completed_download(
             download_id,
+            path,
             &*self.wiring.store,
             &*self.wiring.registry,
             |path| self.directories.refuses(path),

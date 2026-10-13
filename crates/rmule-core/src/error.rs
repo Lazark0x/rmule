@@ -154,30 +154,21 @@ pub enum DownloadFailure {
     },
 }
 
-/// Why [`DownloadRepository::finalize`](crate::DownloadRepository::finalize)
-/// did not promote a download: each cause is its own, since only a file that
-/// does not hash is a matter for the parts.
+/// Why the completion move's check did not pass a finished file (ADR-0115,
+/// step 1): each cause is its own, since only a file that does not hash is a
+/// matter for the parts.
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum FinalizeError {
     /// The assembled file does not hash to the file's hash.
     #[error("the assembled file does not hash to the file's hash")]
     Mismatch,
-    /// A file already stands at the final path.
-    #[error("a file already stands at the final path")]
-    FinalPathTaken,
     /// The part file could not be read whole.
     #[error("the part file could not be read{}", OsCode(*.os_code))]
     Unreadable {
         /// The OS's error number, when there is one.
         os_code: Option<i32>,
     },
-    /// The rename onto the final path failed.
-    #[error("the part file could not be moved to its final path{}", OsCode(*.os_code))]
-    NotMoved {
-        /// The OS's error number, when there is one.
-        os_code: Option<i32>,
-    },
-    /// The store failed around the rename.
+    /// The store failed around the check.
     #[error(transparent)]
     Store(#[from] CoreError),
 }

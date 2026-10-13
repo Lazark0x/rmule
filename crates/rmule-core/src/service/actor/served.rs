@@ -102,12 +102,35 @@ where
         self.served_moved().await;
     }
 
+    /// A run's finished file is in place at `path` (ADR-0115, step 6): its
+    /// registry row is written from the download record and its Served
+    /// Download ends in the same step, both before the one trigger, so the
+    /// share set holds the file at every step. A row the registry could not
+    /// write leaves the entry with the run, still offered from the finished
+    /// file, and the run reports again. `true` when the row is written.
+    pub(super) async fn completion_in_place(
+        &mut self,
+        download_id: DownloadId,
+        file_hash: FileHash,
+        run: u64,
+        path: &std::path::Path,
+    ) -> bool {
+        if !self.share_completion(download_id, path).await {
+            return false;
+        }
+        self.take_back_served(file_hash, run);
+        self.wiring
+            .served_downloads
+            .end(download_id, PartialEnd::Completed);
+        self.look_served().await;
+        self.share_set_changed();
+        true
+    }
+
     /// A run ended on its own, or a stop's run finished: a completed
-    /// download's row is written before its entry ends, and both before the
-    /// one trigger, so the share set holds the file at every step; a failed
-    /// one's entry ends.
+    /// download's entry ended when its file was put in place, and one a past
+    /// process completed ends here; a failed one's entry ends.
     pub(super) async fn download_finished(&mut self, download_id: DownloadId) {
-        let shared = self.share_completed(download_id).await;
         let cause = match self.wiring.store.load_download(download_id) {
             Ok(record) if record.lifecycle() == DownloadLifecycle::Completed => {
                 Some(PartialEnd::Completed)
@@ -120,7 +143,7 @@ where
         if let Some(cause) = cause {
             self.wiring.served_downloads.end(download_id, cause);
         }
-        if self.look_served().await || shared {
+        if self.look_served().await {
             self.share_set_changed();
         }
     }

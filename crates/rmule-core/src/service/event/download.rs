@@ -370,13 +370,14 @@ pub enum DownloadEvent {
         /// The zero-based part index within the file.
         part_index: u32,
     },
-    /// Every part verified and the file was finalized on disk. Terminal.
+    /// Every part verified, the finished file in place and shared, its part
+    /// file gone (ADR-0115). Terminal.
     DownloadCompleted {
         /// The download that finished.
         download_id: DownloadId,
         /// Where the finished file now lies: the path core resolved in the
-        /// download directory when the download started, the `.part` renamed
-        /// onto it.
+        /// download directory when the download started, or the first free
+        /// numbered name beside it the completion move took.
         final_path: PathBuf,
     },
     /// A `CancelDownload` was honoured: the run stopped and the store row is
@@ -452,6 +453,35 @@ pub enum DownloadEvent {
         /// The directory that holds the part file.
         directory: PathBuf,
     },
+    /// A step of the completion move that waits or copies began (ADR-0115):
+    /// the download is `Completing`, its finished file headed for `to`. Told
+    /// once as each such step begins; the step and the bytes copied are the
+    /// download's diagnostics level meanwhile.
+    Completing {
+        /// The download moving into place.
+        download_id: DownloadId,
+        /// Where the finished file lands, a numbered name included.
+        to: PathBuf,
+        /// What the move is doing.
+        step: CompletionStep,
+    },
+}
+
+/// Where a download's completion move stands (ADR-0115).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompletionStep {
+    /// The part file is being renamed onto its destination.
+    Moving,
+    /// The destination lies on another volume: the copy waits for the core's
+    /// one copy turn.
+    QueuedForCopy,
+    /// The finished file is being copied to the destination's volume.
+    Copying,
+    /// Another program holds the file; the move retries until it lets go.
+    WaitingForRelease,
+    /// The finished file is in place, and the store has not yet recorded it;
+    /// the move retries until it does.
+    WaitingForStore,
 }
 
 /// Why a download with no source to try waits, rather than fails: which

@@ -53,6 +53,7 @@ impl DiagnosticsState {
                 dial_ends: BTreeMap::new(),
                 allocated_bytes: None,
                 hole_verdict: None,
+                completion: None,
             });
         row.parts = parts;
         row.workers.clear();
@@ -83,7 +84,8 @@ impl DiagnosticsState {
     /// Put `download_id`'s row to rest as its run ends: a part in flight is not
     /// held, so it reads `Missing`; the workers and the sources were the run's
     /// and leave with it. A `completed` run holds every part. The last
-    /// Allocated Bytes reading and the Hole Verdict stay (ADR-0111). The row
+    /// Allocated Bytes reading and the Hole Verdict stay (ADR-0111); the
+    /// completion move's level leaves with the run (ADR-0115). The row
     /// itself stays — only a cancel removes it.
     pub fn end_run(&self, download_id: DownloadId, completed: bool) {
         let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
@@ -99,5 +101,6 @@ impl DiagnosticsState {
         }
         row.workers.clear();
         row.known_sources = 0;
+        row.completion = None;
     }
 }

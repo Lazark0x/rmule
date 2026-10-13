@@ -82,6 +82,15 @@ async fn a_cleared_download_leaves_its_file_on_disk_and_in_the_registry() {
         matches!(event, CoreEvent::Serve(ServeEvent::FileShared { .. }))
     })
     .await;
+    // Shared as its file lands in place; completed once its part file is
+    // gone (ADR-0115).
+    next_expected(&mut core, "the download completed", |event| {
+        matches!(
+            event,
+            CoreEvent::Download(DownloadEvent::DownloadCompleted { .. })
+        )
+    })
+    .await;
 
     let answer = clear(
         &mut core,

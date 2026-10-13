@@ -333,6 +333,14 @@ impl DownloadEvent {
             } => Record::new("download.hole_less_destination")
                 .count("id", download_id.as_u64())
                 .path("directory", directory),
+            D::Completing {
+                download_id,
+                to,
+                step,
+            } => Record::new("download.completing")
+                .count("id", download_id.as_u64())
+                .path("to", to)
+                .code("step", codes::completion_step(*step)),
         }
     }
 }

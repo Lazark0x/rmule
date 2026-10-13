@@ -61,14 +61,15 @@ pub struct SharedFileEntry {
 }
 
 impl SharedFileEntry {
-    /// Build a registry entry from a completed download. The record already
-    /// carries the verified file hash and size, so no re-hash is needed; the
-    /// served bytes live at `final_path`.
+    /// Build a registry entry from a download whose finished file is in place
+    /// at `path`, the destination its completion move chose (ADR-0115). The
+    /// record already carries the verified file hash, size and part hash
+    /// set, so nothing is read but the file's modification time.
     pub(crate) fn from_completed_download(
         record: &DurableDownloadRecord,
+        path: &Path,
         part_hashes: Vec<PartHash>,
     ) -> Self {
-        let path = record.paths().final_path().to_path_buf();
         let name = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
@@ -76,11 +77,11 @@ impl SharedFileEntry {
         Self {
             file_hash: record.file_hash(),
             file_size: record.file_size(),
-            path,
+            path: path.to_path_buf(),
             name,
             source: ShareSource::CompletedDownload,
             part_hashes,
-            modified: modified_time(record.paths().final_path()),
+            modified: modified_time(path),
         }
     }
 }
@@ -94,8 +95,8 @@ pub(crate) fn modified_time(path: &std::path::Path) -> Option<SystemTime> {
         .ok()
 }
 
-/// What became of a completed download's file: its registry row is written,
-/// and either offered or withheld.
+/// What became of a completing download's file: its registry row is
+/// written, and either offered or withheld.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AutoShared {
     /// The row is offered.
@@ -106,12 +107,12 @@ pub(crate) enum AutoShared {
     Refused(FileHash),
 }
 
-/// Auto-share a completed download into the **Shared File Registry** (ADR-0031),
-/// the join point where the download and serve halves meet. A
-/// download that reached [`DownloadLifecycle::Completed`] registers the file it
-/// just verified so the serve side answers probes for it; a load miss or any
-/// non-`Completed` lifecycle is a no-op returning `None` (the caller reaches
-/// here for every finished download, completed or not).
+/// Auto-share a download whose finished file is in place into the **Shared
+/// File Registry** (ADR-0031), the join point where the download and serve
+/// halves meet: the completion move's in-place step (ADR-0115) registers the
+/// file at `path` from the download record, so the serve side answers probes
+/// for it. A load miss or any lifecycle but `Completing` is a no-op returning
+/// `None`.
 ///
 /// A file whose path `refuses` names lies under a refused entry: its row is
 /// withheld as refused in `withheld` before the row is written, so no offer
@@ -127,6 +128,7 @@ pub(crate) enum AutoShared {
 /// file-known predicate — exactly once per successful auto-share.
 pub(crate) async fn auto_share_completed_download<R, G>(
     download_id: DownloadId,
+    path: &Path,
     store: &R,
     registry: &G,
     refuses: impl FnOnce(&Path) -> bool,
@@ -137,10 +139,10 @@ where
     R: DownloadRepository,
     G: SharedFileRegistry,
 {
-    // The record already holds the verified file hash, size, and `final_path`,
-    // so beyond the completion gate this needs no re-read.
+    // The record already holds the verified file hash and size, so beyond
+    // the completion gate this needs no re-read.
     let record = match store.load_download(download_id) {
-        Ok(record) if record.lifecycle() == DownloadLifecycle::Completed => record,
+        Ok(record) if record.lifecycle() == DownloadLifecycle::Completing => record,
         _ => return None,
     };
     // Ask the seam one question — the effective per-part authority — and map its
@@ -158,7 +160,7 @@ where
             Vec::new()
         }
     };
-    let entry = SharedFileEntry::from_completed_download(&record, part_hashes);
+    let entry = SharedFileEntry::from_completed_download(&record, path, part_hashes);
     let file_hash = entry.file_hash;
     let refused = refuses(&entry.path).then(|| {
         let (was, since) = (withheld.get(file_hash), SystemTime::now());
@@ -271,8 +273,8 @@ mod tests {
         ServerEndpoint::new("127.0.0.1", 4661).unwrap()
     }
 
-    /// Drive one download to `Completed` — Queued → Active → Completed is the
-    /// only path the lifecycle admits — and return its id.
+    /// Drive one download to `Completing` — its finished file in place,
+    /// its row not yet written — and return its id.
     fn complete(
         store: &DurableDownloadRepository,
         link: &Ed2kFileLink,
@@ -290,9 +292,6 @@ mod tests {
         store.set_lifecycle(id, DownloadLifecycle::Active).unwrap();
         store
             .set_lifecycle(id, DownloadLifecycle::Completing)
-            .unwrap();
-        store
-            .set_lifecycle(id, DownloadLifecycle::Completed)
             .unwrap();
         id
     }
@@ -328,6 +327,12 @@ mod tests {
         assert!(
             auto_share_completed_download(
                 id,
+                &store
+                    .load_download(id)
+                    .unwrap()
+                    .paths()
+                    .final_path()
+                    .to_path_buf(),
                 &*store,
                 &*registry,
                 |_| false,
@@ -378,9 +383,6 @@ mod tests {
         store
             .set_lifecycle(id, DownloadLifecycle::Completing)
             .unwrap();
-        store
-            .set_lifecycle(id, DownloadLifecycle::Completed)
-            .unwrap();
         let store = Arc::new(store);
         let registry = DurableSharedFileRegistry::new(handle);
         let observed = registry.clone();
@@ -390,6 +392,12 @@ mod tests {
         assert!(
             auto_share_completed_download(
                 id,
+                &store
+                    .load_download(id)
+                    .unwrap()
+                    .paths()
+                    .final_path()
+                    .to_path_buf(),
                 &*store,
                 &*registry,
                 |_| false,

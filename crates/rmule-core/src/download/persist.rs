@@ -1,8 +1,8 @@
 //! Persisting what a download earned: one verified part written through the
 //! run's **Held Part File** and recorded against the download, and the
-//! finalize that turns a fully verified part set into the completed file.
-//! Both are fallible effects, so the sans-I/O brain asks for them as decisions
-//! and resumes on the result.
+//! repair a finished file that does not hash asks for. Fallible effects, so
+//! the sans-I/O brain asks for them as decisions and resumes on the result;
+//! the completion move itself is the runner's (ADR-0115).
 //!
 //! The part file is the operator's to delete (ADR-0094, "The run holds its
 //! part file"). A run that finds the file at its path gone, replaced
@@ -10,7 +10,8 @@
 //! the verified parts it lost, and never writes into a file nobody can reach:
 //! gone or replaced fails the download, cut short repairs it in place — the
 //! run asks again and fetches the lost parts, keeping every part that holds.
-//! Finalize repairs the same way when the whole file does not hash.
+//! The completion move's check repairs the same way when the whole file does
+//! not hash.
 
 use ed2k::digest::Digest;
 use rmule_primitives::{Ed2kFileLink, PartHash};
@@ -22,7 +23,7 @@ use crate::content::{
 };
 use crate::download::runner::RunnerContext;
 use crate::durable::VerifiedPartRecord;
-use crate::error::{DownloadFailure, FinalizeError, StorageIntegrityFault};
+use crate::error::{DownloadFailure, StorageIntegrityFault};
 use crate::hashing::{ResolvedHashSet, part_hash_on_arrival, verify_part_bytes};
 use crate::service::{CoreEvent, DownloadEvent, DownloadId, PartsLost, send_download_event};
 use crate::storage::DownloadRepository;
@@ -310,95 +311,12 @@ pub(super) async fn part_file_changed<S, P>(
     }
 }
 
-pub(super) async fn finalize_download<S, P>(
-    runner: &RunnerContext<S, P>,
-    download_id: DownloadId,
-    file: &Ed2kFileLink,
-    file_hash_only_parts: Vec<u32>,
-    evt_tx: &mpsc::Sender<CoreEvent>,
-) -> Result<(), DownloadFailure>
-where
-    S: SourceLookupService,
-    P: PeerTransferService,
-{
-    // The file finalize reads and renames must still be the one the run holds.
-    {
-        let mut held = runner.part_file.lock().await;
-        if let Some(part_file) = held.as_mut()
-            && let Err(change) = part_file.check().await
-        {
-            return Err(part_file_changed(runner, download_id, part_file, change).await);
-        }
-        // Released before the rename: the completed file is the registry's.
-        *held = None;
-    }
-    let final_path = match runner
-        .rt
-        .store
-        .finalize(download_id, file.file_hash, file.size)
-        .await
-    {
-        Ok(final_path) => final_path,
-        Err(error) => return Err(finalize_refused(runner, download_id, error).await),
-    };
-    // Parts written under file-hash-only authority become verified the moment
-    // the repository's whole-file check passes at finalize.
-    for part_index in file_hash_only_parts {
-        send_download_event(
-            evt_tx,
-            DownloadEvent::PartVerified {
-                download_id,
-                part_index,
-            },
-        )
-        .await;
-    }
-
-    tracing::info!(download_id = download_id.as_u64(), "download completed",);
-    send_download_event(
-        evt_tx,
-        DownloadEvent::DownloadCompleted {
-            download_id,
-            final_path,
-        },
-    )
-    .await;
-    Ok(())
-}
-
-/// Why finalize did not complete the file, as the run's end. Only a file that
-/// does not hash touches the parts; a taken final path, a refused rename or
-/// an unreadable part file keeps every verified part, since each of them
-/// still holds, and the run ends by that cause rather than fetch them again.
-async fn finalize_refused<S, P>(
-    runner: &RunnerContext<S, P>,
-    download_id: DownloadId,
-    error: FinalizeError,
-) -> DownloadFailure {
-    tracing::warn!(
-        download_id = download_id.as_u64(),
-        %error,
-        "the finished file could not be completed",
-    );
-    match error {
-        FinalizeError::Mismatch => repair_at_finalize(runner, download_id).await,
-        FinalizeError::FinalPathTaken => DownloadFailure::FinalPathTaken,
-        FinalizeError::NotMoved { os_code } => DownloadFailure::CompletedFileNotMoved { os_code },
-        FinalizeError::Unreadable { os_code } => {
-            DownloadFailure::StorageIntegrityFailed(StorageIntegrityFault::PartFileUnreadable {
-                os_code,
-            })
-        }
-        FinalizeError::Store(_) => DownloadFailure::StoreFailed,
-    }
-}
-
 /// The whole file did not hash (ADR-0094, "Finalize with lost parts"):
 /// re-check every recorded part, drop those that fail and fetch them again.
 /// When no part can be named — a file verified by its file hash alone —
 /// every recorded part is dropped. Only a part file that is gone or
 /// unreadable fails the download.
-async fn repair_at_finalize<S, P>(
+pub(super) async fn repair_at_finalize<S, P>(
     runner: &RunnerContext<S, P>,
     download_id: DownloadId,
 ) -> DownloadFailure {

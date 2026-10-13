@@ -62,6 +62,9 @@ pub(in crate::download) struct Held {
     pub(in crate::download) evt_rx: mpsc::Receiver<crate::service::CoreEvent>,
     /// Held, never sent on: dropping it is what would stop the run.
     pub(in crate::download) _stop_tx: watch::Sender<StopReason>,
+    /// Where the run's in-place reports arrive: the test answers as the
+    /// actor would.
+    pub(in crate::download) in_place_rx: mpsc::Receiver<crate::download::FinalFileInPlace>,
 }
 
 /// Build the context around `source_lookup` and `peer_transfer`.
@@ -75,6 +78,7 @@ pub(in crate::download) fn runner_context<S, P>(
     let (stop_tx, stop_rx) = watch::channel(StopReason::Active);
     let (global_callback_tx, _global_callback_rx) = mpsc::channel(4);
     let (download_reach_tx, download_reach_rx) = mpsc::channel(4);
+    let (in_place_tx, in_place_rx) = mpsc::channel(4);
     let rt = Arc::new(SharedRuntime {
         store: Arc::new(crate::store::download::DurableDownloadRepository::new(
             store.clone(),
@@ -104,6 +108,9 @@ pub(in crate::download) fn runner_context<S, P>(
         download_reach_tx,
         peer_roster: crate::peer_roster::SharedPeerRoster::default(),
         resolver: crate::name_resolver::FakeNameResolver::knowing(&[]),
+        completion_fs: Arc::new(crate::download::OsCompletionFs),
+        copy_turn: Arc::new(tokio::sync::Semaphore::new(1)),
+        in_place_tx,
     });
     let runner = RunnerContext {
         rt,
@@ -113,6 +120,8 @@ pub(in crate::download) fn runner_context<S, P>(
         repair: std::sync::atomic::AtomicBool::new(false),
         seeds_tx: watch::channel(Vec::new()).0,
         served: None,
+        run: 0,
+        completion: Arc::new(crate::download::CompletionGate::open()),
     };
     (
         runner,
@@ -120,6 +129,7 @@ pub(in crate::download) fn runner_context<S, P>(
             download_reach_rx,
             evt_rx,
             _stop_tx: stop_tx,
+            in_place_rx,
         },
     )
 }

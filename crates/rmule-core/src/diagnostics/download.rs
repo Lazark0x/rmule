@@ -7,7 +7,7 @@ use super::{
     ClientSoftware, DownloadId, DownloadMetadata, FileHash, PeerEndpoint, PeerRetirementReason,
 };
 use crate::content::HoleVerdict;
-use crate::service::DialEnd;
+use crate::service::{CompletionStep, DialEnd};
 
 /// Stable identifier for one peer worker slot inside one download.
 /// Slot index is `0..peer_concurrency_per_download` and is assigned at
@@ -301,6 +301,20 @@ pub struct DownloadDiagnostics {
     /// holes, as the run's Hole Probe measured (ADR-0111). `None` from a run's
     /// start until its probe answers; the row keeps it after the run.
     pub hole_verdict: Option<HoleVerdict>,
+    /// Where the run's completion move stands (ADR-0115): `None` until the
+    /// move begins, and again once its run has ended.
+    pub completion: Option<CompletionProgress>,
+}
+
+/// A completion move's step and the bytes its copy has written, as levels
+/// the run publishes as each step begins and after each part it copies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompletionProgress {
+    /// What the move is doing.
+    pub step: CompletionStep,
+    /// Bytes the Completion Copy has written: 0 until a copy begins, and kept
+    /// through the steps that follow it.
+    pub copied: u64,
 }
 
 /// The most [`DownloadDiagnostics::dial_ends`] a row keeps.

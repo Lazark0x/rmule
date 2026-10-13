@@ -94,10 +94,13 @@ last decision; Download State holds no clock and takes no part.
    file's registry row from the download record — hash, size, part hash set and the file's
    modification time, nothing read (`SharedFileEntry::from_completed_download`) — and ends the
    Served Download, then fires the share trigger. A download of one part has no Served Download
-   and takes the same step without it.
+   and takes the same step without it. A row the registry cannot write leaves the Served
+   Download with the run, still offered from the finished file, and the run, its step
+   `WaitingForStore`, reports again on the backoff of step 4 until the row is written.
 7. **Done.** The run deletes the part file — a delete refused because the file is in use waits as
-   in step 4 — then stores `Completed` and sends `DownloadCompleted { final_path }`, which names
-   where the file landed.
+   in step 4 — then stores `Completed` (a store that refuses the write is retried the same way,
+   `WaitingForStore`) and sends `DownloadCompleted { final_path }`, which names where the file
+   landed.
 
 Any other refusal fails the download with the part file untouched and every verified part kept:
 a rename as `CompletedFileNotMoved { os_code }`, a copy as `CompletionCopyFailed { os_code }` (a
@@ -133,7 +136,8 @@ A `Completing` row at attach is resolved by what is on disk:
 Core carries the lifecycle, the step and the bytes copied; the sentences live in the download words
 of `rmule-words`. `DownloadEvent::Completing { download_id, to, step }` is sent when a step that
 waits or copies begins (`QueuedForCopy`, `Copying`, `WaitingForRelease`), and
-`DownloadDiagnostics::completion` holds the step and the bytes copied as a level. The TUI's status
+`DownloadDiagnostics::completion` holds the step and the bytes copied as a level. A store that
+cannot record the finished file is `WaitingForStore`, told the same way. The TUI's status
 reads Completing, with "waiting for the file to be released" while a program holds it and the
 bytes copied while it copies; the CLI prints each step's sentence. Until its registry row is
 written, a Completing download's Known-File Mark is an active download's (ADR-0100).

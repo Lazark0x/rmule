@@ -128,7 +128,7 @@ pub(super) struct StartSources {
 pub(super) async fn apply_peer_workers_download<'a, S, P>(
     start: FleetStart<'a>,
     runner: &'a RunnerContext<S, P>,
-) -> Result<(), DownloadFailure>
+) -> Result<Vec<u32>, DownloadFailure>
 where
     S: SourceLookupService,
     P: PeerTransferService,
@@ -383,8 +383,9 @@ where
                 // shutdown, and the fact-stream drain, then returns the failure.
                 // `Fail` short-circuits before the diagnostics refresh inside
                 // `enact_drain`, so the stop path skips it exactly as before.
-                let mut q: VecDeque<Decision> = ctx.state.on_stop(failure).into();
-                return enact_drain(&mut q, &mut ctx).await;
+                let mut q: VecDeque<Decision> = ctx.state.on_stop(failure.clone()).into();
+                enact_drain(&mut q, &mut ctx).await?;
+                return Err(failure);
             }
             () = sleep_until_optional(next_wake) => {
                 // Something the brain holds fell due: a callback road's
@@ -594,10 +595,10 @@ where
             publish_seeds(&ctx);
         }
     }
-    // Completion is enacted by the `Finalize` decision (worker shutdown +
-    // `finalize_download`) the moment the last part verifies; the loop then
-    // observes `is_complete` and exits.
-    Ok(())
+    // The `Finalize` decision shuts the fleet down the moment the last part
+    // verifies; the loop then observes `is_complete` and exits, handing the
+    // run the parts its completion move verifies by the file hash.
+    Ok(std::mem::take(&mut ctx.file_hash_only_parts))
 }
 
 #[cfg(test)]

@@ -332,6 +332,15 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
             let text = words::restarted(&download_name(state, download_id), &outcome);
             note(state, text) || changed
         }
+        // A step of the completion move that waits or copies began: the
+        // row reads Completing, and the note says what it does (ADR-0115).
+        E::Completing {
+            download_id, step, ..
+        } => {
+            let changed = set_status(state, download_id, DownloadStatus::Completing);
+            let text = words::completing(&download_name(state, download_id), step);
+            note(state, text) || changed
+        }
         E::WaitingForConnection { download_id } => {
             let changed = set_status(state, download_id, DownloadStatus::NoConnection);
             note(state, words::NO_NETWORK_WAIT_NOTE) || changed

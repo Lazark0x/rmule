@@ -400,6 +400,7 @@ where
         mut self,
         mut inbox: super::inbox::Inbox,
         mut finished_rx: mpsc::Receiver<FinishedActivity>,
+        mut in_place_rx: mpsc::Receiver<crate::download::FinalFileInPlace>,
         mut scan_rx: mpsc::UnboundedReceiver<registry_check::RegistryMessage>,
         mut download_reach_rx: mpsc::Receiver<crate::callback::DownloadReach>,
         mut serve_ended_rx: watch::Receiver<u64>,
@@ -555,6 +556,9 @@ where
                     let generation = *kad_ended_rx.borrow_and_update();
                     self.on_kad_ended(generation).await;
                 }
+                // A run's finished file is in place (ADR-0115): its row and
+                // the end of its Served Download are one step.
+                Some(report) = in_place_rx.recv() => self.on_final_file_in_place(report).await,
                 Some(finished) = finished_rx.recv() => {
                     let download_id = match finished {
                         FinishedActivity::Download(download_id, run) => {

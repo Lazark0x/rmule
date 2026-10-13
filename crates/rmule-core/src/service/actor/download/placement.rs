@@ -55,10 +55,9 @@ fn placed(dir: &Path, parts: &Path, name: &str) -> DownloadPaths {
     DownloadPaths::new(dir.join(name), parts.join(format!("{name}.part")))
 }
 
-/// [`placed`] under `name`, or under the first `stem (n).ext` for which
-/// neither the file nor its part file exists. The numbered form adds only a
-/// space, parentheses and digits to a cleaned name, so it stays one component
-/// inside each directory.
+/// [`placed`] under `name`, or under the first free `stem (n).ext`
+/// ([`crate::free_name`]) for which neither the file nor its part file
+/// exists.
 fn free_paths(dir: &Path, parts: &Path, name: &SafeFileName) -> DownloadPaths {
     let free = |paths: &DownloadPaths| !paths.final_path().exists() && !paths.part_path().exists();
     let name = name.as_str();
@@ -66,16 +65,8 @@ fn free_paths(dir: &Path, parts: &Path, name: &SafeFileName) -> DownloadPaths {
     if free(&plain) {
         return plain;
     }
-    let (stem, ext) = match name.rsplit_once('.') {
-        Some((stem, ext)) if !stem.is_empty() => (stem, Some(ext)),
-        _ => (name, None),
-    };
     (1..)
-        .map(|n| match ext {
-            Some(ext) => format!("{stem} ({n}).{ext}"),
-            None => format!("{stem} ({n})"),
-        })
-        .map(|numbered| placed(dir, parts, &numbered))
+        .map(|n| placed(dir, parts, &crate::free_name::numbered(name, n)))
         .find(free)
         .expect("an unbounded range finds a free name")
 }

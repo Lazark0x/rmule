@@ -72,28 +72,13 @@ impl ContentFileStore {
         read_exact_at(path, offset, len).await.map_err(io_error)
     }
 
-    /// Rename the completed `.part` file onto its destination. Refuses with
-    /// [`FinalizeError::FinalPathTaken`] when the destination already exists
-    /// rather than overwriting a file the user may want.
-    pub async fn finalize(paths: &DownloadPaths) -> Result<(), FinalizeError> {
-        if paths.final_path().exists() {
-            return Err(FinalizeError::FinalPathTaken);
-        }
-        fs::rename(paths.part_path(), paths.final_path())
-            .await
-            .map_err(|error| FinalizeError::NotMoved {
-                os_code: error.raw_os_error(),
-            })
-    }
-
-    /// The eD2k file hash of the `.part` file's first `file_size` bytes,
-    /// streamed one part at a time on the blocking pool. A file that cannot be
-    /// read, or holds fewer bytes, is [`FinalizeError::Unreadable`].
-    pub(crate) async fn hash_for_finalize(
-        paths: &DownloadPaths,
-        file_size: u64,
-    ) -> Result<FileHash, FinalizeError> {
-        let path = paths.part_path().to_path_buf();
+    /// The eD2k file hash of the first `file_size` bytes of the file at
+    /// `path`, streamed one part at a time on the blocking pool: the
+    /// completion move's check of a part file, and its look at a destination
+    /// attach found beside one (ADR-0115). A file that cannot be read, or
+    /// holds fewer bytes, is [`FinalizeError::Unreadable`].
+    pub(crate) async fn hash_file(path: &Path, file_size: u64) -> Result<FileHash, FinalizeError> {
+        let path = path.to_path_buf();
         let hashed = tokio::task::spawn_blocking(move || {
             let file = std::fs::File::open(path)?;
             file_hash_streamed(file, file_size)

@@ -34,6 +34,7 @@ fn run(number: u64) -> ActiveDownload {
         handle: tokio::spawn(async {}),
         later_links,
         seeds,
+        completion: std::sync::Arc::new(crate::download::CompletionGate::open()),
     }
 }
 

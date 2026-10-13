@@ -349,7 +349,7 @@ fn nothing_dropped(events: &[DownloadEvent]) -> bool {
 }
 
 #[tokio::test]
-async fn a_verified_file_whose_final_path_is_taken_keeps_its_parts_and_fails_by_that_cause() {
+async fn a_verified_file_whose_final_path_is_taken_completes_under_the_next_free_name() {
     let mut leg = Leg::waiting_with_part_zero().await;
     std::fs::write(leg.paths.final_path(), b"the operator's own file").unwrap();
     leg.connect().await;
@@ -357,18 +357,28 @@ async fn a_verified_file_whose_final_path_is_taken_keeps_its_parts_and_fails_by_
     let events = events_within(&mut leg, Duration::from_secs(20))
         .await
         .unwrap_or_else(|seen| panic!("the run never ended; saw {seen:#?}"));
-    assert_eq!(failure(&events), Some(&DownloadFailure::FinalPathTaken));
+    let numbered = numbered(leg.paths.final_path());
+    let landed = events.iter().find_map(|event| match event {
+        DownloadEvent::DownloadCompleted { final_path, .. } => Some(final_path.clone()),
+        _ => None,
+    });
+    assert_eq!(landed.as_deref(), Some(numbered.as_path()), "{events:#?}");
     assert!(nothing_dropped(&events), "{events:#?}");
-    assert_eq!(
-        leg.repo.verified_parts(leg.id).unwrap().len(),
-        2,
-        "every verified part is kept"
-    );
+    assert_eq!(std::fs::read(&numbered).unwrap(), leg.bytes);
     assert_eq!(
         std::fs::read(leg.paths.final_path()).unwrap(),
         b"the operator's own file"
     );
-    assert_eq!(std::fs::read(leg.part_path()).unwrap(), leg.bytes);
+}
+
+/// `stem (1).ext` beside `path`.
+fn numbered(path: &std::path::Path) -> std::path::PathBuf {
+    let stem = path.file_stem().unwrap().to_string_lossy();
+    let name = match path.extension() {
+        Some(ext) => format!("{stem} (1).{}", ext.to_string_lossy()),
+        None => format!("{stem} (1)"),
+    };
+    path.with_file_name(name)
 }
 
 #[cfg(unix)]

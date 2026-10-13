@@ -25,7 +25,7 @@ pub use self::command::{
 };
 pub use self::config::{CoreConfig, DEFAULT_SLOT_WAIT_TIMEOUT, NattConfig, VerificationAuthority};
 pub use self::event::{
-    BuddyDialFailure, CoreEvent, DialEnd, DialFailure, DownloadEvent, IdAssignment,
+    BuddyDialFailure, CompletionStep, CoreEvent, DialEnd, DialFailure, DownloadEvent, IdAssignment,
     IgnoredReaskReply, Ipv6Probe, KadStopReason, LegNotSent, LoginClaim, LoginCloseCause,
     LoginLink, LoginStep, NatTraversalUnavailableReason, PartsLost, PeerBuddy, PeerReach,
     PeerReachDropReason, PeerReachRoute, PlainLinkReason, PortTestAdmission, PortTestClosedBy,

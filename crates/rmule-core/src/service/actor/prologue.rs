@@ -446,6 +446,9 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     // asks the one selector (ADR-0061). Bounded and never awaited on the answer
     // — a full inbox costs a punch attempt, not a download.
     let (download_reach_tx, download_reach_rx) = mpsc::channel(16);
+    // The runs' in-place reports (ADR-0115, step 6): each waits on its own
+    // answer, so a report never queues behind another run's.
+    let (in_place_tx, in_place_rx) = mpsc::channel(16);
     let download_runtime = DownloadRuntime {
         shared: Arc::new(SharedRuntime {
             download_reach_tx,
@@ -472,6 +475,9 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
             reach: self_reach.clone(),
             peer_roster: wiring.peer_roster.clone(),
             resolver: crate::name_resolver::system_resolver(),
+            completion_fs: Arc::new(crate::download::OsCompletionFs),
+            copy_turn: Arc::new(tokio::sync::Semaphore::new(1)),
+            in_place_tx,
         }),
         peer_concurrency: wiring.config.effective_peer_concurrency_per_download(),
         streaming_window_parts: wiring.config.streaming_window_parts,
@@ -552,6 +558,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
         .run(
             inbox,
             finished_rx,
+            in_place_rx,
             scan_rx,
             download_reach_rx,
             serve_ended_rx,

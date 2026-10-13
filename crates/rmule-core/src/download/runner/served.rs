@@ -2,7 +2,8 @@
 //! through the lease the actor handed it. The **Verified Range** is ruled
 //! from the parts the store records against the part hash set in force — at
 //! the lease's start, after every persist result before the queue enacts
-//! anything else, after a set arrives and after a finalize — so no name ask,
+//! anything else, after a set arrives and at the completion move's swap — so
+//! no name ask,
 //! reask or status the run sends names a part the serve side lacks. The
 //! **Part File Identity** is read from the held handle: its key at the
 //! lease's start, its key, length and time as a pause lets the handle go.
@@ -66,16 +67,23 @@ pub(super) fn rule_range_of<S, P>(
     rule_range(runner, download_id, &state.resolved().hashes);
 }
 
-/// The finished file is in place at the final path: the bytes are read from
-/// it now, with its identity — a rename keeps the part file's key.
-pub(super) async fn in_place<S, P>(runner: &RunnerContext<S, P>, download_id: DownloadId) {
+/// The finished file is in place at `path`, the destination the completion
+/// move chose: the bytes are read from it now, with its identity — a rename
+/// keeps the part file's key, a copy has its own — and the range is every
+/// part the store records.
+pub(super) async fn in_place<S, P>(
+    runner: &RunnerContext<S, P>,
+    download_id: DownloadId,
+    path: &std::path::Path,
+) {
     let Some(lease) = &runner.served else {
         return;
     };
-    let Ok(record) = runner.rt.store.load_download(download_id) else {
-        return;
+    let set = match runner.rt.store.hash_authority(download_id) {
+        Ok(ResolvedAuthority::Link(hashes) | ResolvedAuthority::Provisional(hashes)) => hashes,
+        Ok(ResolvedAuthority::FileHashOnly) | Err(_) => Vec::new(),
     };
-    let path = record.paths().final_path();
+    rule_range(runner, download_id, &set);
     let owned = path.to_path_buf();
     let identity = tokio::task::spawn_blocking(move || {
         Some((FileKey::at(&owned).ok()?, std::fs::metadata(&owned).ok()?))
@@ -84,7 +92,7 @@ pub(super) async fn in_place<S, P>(runner: &RunnerContext<S, P>, download_id: Do
     .ok()
     .flatten()
     .and_then(|(key, meta)| PartFileIdentity::read(key, &meta, true));
-    lease.bytes_in_place(identity);
+    lease.bytes_in_place(path, identity);
 }
 
 /// A pause lets the held part file go: the entry keeps the key, length and

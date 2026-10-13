@@ -653,10 +653,20 @@ impl RunLease {
             .write(self, |served| served.identity = Some(identity))
     }
 
-    /// The finished file is in place at the final path, `identity` the file
-    /// that holds the bytes now.
-    pub(crate) fn bytes_in_place(&self, identity: Option<PartFileIdentity>) -> bool {
+    /// The finished file is in place at `path`, the destination the
+    /// completion move chose (ADR-0115), `identity` the file that holds the
+    /// bytes now: the entry is read from there, under its name.
+    pub(crate) fn bytes_in_place(
+        &self,
+        path: &std::path::Path,
+        identity: Option<PartFileIdentity>,
+    ) -> bool {
         self.cell.write(self, |served| {
+            served.final_path = path.to_path_buf();
+            served.name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
             served.bytes_at = BytesAt::FinalFile;
             served.identity = identity;
         })

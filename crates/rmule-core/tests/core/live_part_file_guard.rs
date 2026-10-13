@@ -13,7 +13,7 @@ use rmule_core::{
     ContentFileStore, Core, CoreCommand, CoreCommandRejectReason, CoreConfig, CoreEvent,
     DownloadCommand, DownloadEvent, DownloadId, DownloadLifecycle, DownloadPaths,
     DownloadRepository, DurableDownloadRepository, DurableStore, ScanEvent, ServeEvent,
-    VerifiedPartRecord, open_durable_store,
+    open_durable_store,
 };
 use rmule_primitives::FileHashSummary;
 use rmule_testkit::file_link;
@@ -21,7 +21,7 @@ use tokio::time::timeout;
 
 use crate::fixture::{next_expected, stub_server};
 
-const LIVE_BYTES: &[u8] = b"the live download's verified part";
+const LIVE_BYTES: &[u8] = b"the live download's part file";
 
 /// A download directory with one running download in it — waiting for a
 /// connection, its part file held — and whatever else a leg adds.
@@ -50,19 +50,12 @@ impl LiveDownload {
             .create_download(&link, Some(&stub_server("127.0.0.1")), &paths)
             .unwrap()
             .id();
+        // Bytes on disk and no part recorded: the run has its one part left
+        // to fetch, so it holds the file and waits (a run with every part
+        // recorded goes straight to its completion move, ADR-0115).
         ContentFileStore::write_verified_part(&paths, 0, LIVE_BYTES)
             .await
             .unwrap();
-        repo.record_verified_part(
-            id,
-            VerifiedPartRecord {
-                part_index: 0,
-                offset: 0,
-                len: LIVE_BYTES.len() as u64,
-                part_hash: rmule_primitives::PartHash::from_bytes(*link.file_hash.as_bytes()),
-            },
-        )
-        .unwrap();
         repo.set_lifecycle(id, DownloadLifecycle::Active).unwrap();
         seed(&repo, &dir);
 

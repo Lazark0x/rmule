@@ -23,6 +23,7 @@ pub(crate) use state::CallbackCapability;
 pub(crate) use reask_routes::ReaskRoutes;
 
 pub(crate) use runner::{
-    DiscoveryLiveness, DownloadRequest, DownloadTask, LaterLinkSources, RunnerContext, StopReason,
-    file_link_from_record, link_sources, names_sources,
+    CompletionFs, CompletionGate, DiscoveryLiveness, DownloadRequest, DownloadTask,
+    FinalFileInPlace, LaterLinkSources, OsCompletionFs, Recovered, RunnerContext, StopAnswer,
+    StopReason, file_link_from_record, link_sources, names_sources,
 };

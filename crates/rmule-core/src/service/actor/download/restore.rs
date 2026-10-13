@@ -85,9 +85,10 @@ pub(in crate::service::actor) async fn attach_downloads(
             },
         )
         .await;
+        // A completing row's run goes straight to its move (ADR-0115).
         let wants_run = matches!(
             record.lifecycle(),
-            DownloadLifecycle::Active | DownloadLifecycle::Queued
+            DownloadLifecycle::Active | DownloadLifecycle::Queued | DownloadLifecycle::Completing
         );
         if wants_run && can_restore {
             restoring.push_back(download_id);

@@ -22,7 +22,7 @@ use rmule_core::{
     open_durable_store,
 };
 use rmule_primitives::{Ed2kLink, SafeFileName, ServerEndpoint};
-use rmule_words::download::{completed_line, hole_less_destination};
+use rmule_words::download::{completed_line, completing_line, hole_less_destination};
 use rmule_words::reach::client_udp_bind_failed;
 
 mod kad;
@@ -443,6 +443,12 @@ async fn run_add(data_dir: &std::path::Path, link_str: &str, verbose: bool) -> R
             }
             CoreEvent::Download(DownloadEvent::DownloadCancelled { .. }) => {
                 anyhow::bail!("download {} cancelled", download_label(download_id));
+            }
+            // Each step of the completion move that waits or copies, as it
+            // begins (ADR-0115): a copy across disks or a held file can take
+            // a while, and the one-shot run says why it has not ended.
+            CoreEvent::Download(DownloadEvent::Completing { step, to, .. }) => {
+                println!("{}", completing_line(step, &to));
             }
             // The run's disk holds no holes (ADR-0111): the download goes on,
             // and this edge is the only place the CLI hears of it.

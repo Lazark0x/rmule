@@ -152,6 +152,7 @@ fn request_for<S, P>(
             session: runner.rt.diagnostics.clone(),
         },
         remembered: Vec::new(),
+        recovered: None,
     }
 }
 

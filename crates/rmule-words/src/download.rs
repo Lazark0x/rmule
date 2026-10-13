@@ -19,6 +19,10 @@ use super::Sentence;
 use super::os::kind_words;
 use super::units::{address, count, human_size, short_hex};
 
+mod completion;
+
+pub use completion::{completing, completing_line, completion_progress, completion_step_words};
+
 /// What a download waiting for a connection needs to move on (ADR-0097): no
 /// server session and no Kad node exist to ask for sources on.
 pub const NO_NETWORK_WAIT: &str =
@@ -860,6 +864,9 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
         }
         D::HoleLessDestination { directory, .. } => {
             format!("{}; {HOLE_LESS_REMEDY}", hole_less_words(directory))
+        }
+        D::Completing { to, step, .. } => {
+            format!("{}: {}", completion_step_words(*step), to.display())
         }
     })
 }
