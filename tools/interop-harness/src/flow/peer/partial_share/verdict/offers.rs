@@ -135,7 +135,10 @@ pub(super) fn restart(run: &Run<'_>) -> Claim {
         failures.push("no announce after the check lists the partial".to_owned());
     }
     for ask in run.wire.items.iter().filter(|item| {
-        !item.from_rmule && item.at >= reopened && item.at < reoffered && item.said == Said::SlotAsk
+        !item.from_rmule
+            && item.at >= reopened
+            && item.at < reoffered
+            && super::answers::asks_for(run, item)
     }) {
         if run.wire.items.iter().any(|item| {
             item.from_rmule

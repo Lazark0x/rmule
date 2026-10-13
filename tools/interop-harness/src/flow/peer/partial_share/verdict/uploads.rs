@@ -228,7 +228,10 @@ pub(super) fn completion(run: &Run<'_>) -> Claim {
             ip(item) == *peer
                 && item.at > completed
                 && item.at < after.0.at
-                && matches!(item.said, Said::SlotAsk | Said::Accept | Said::Rank { .. })
+                && matches!(
+                    item.said,
+                    Said::SlotAsk { .. } | Said::Accept | Said::Rank { .. }
+                )
         }) {
             failures.push(format!("{peer} queued again before its next block"));
         }

@@ -125,7 +125,7 @@ pub(crate) fn decode(
         (OP_EDONKEYPROT, OP_HASHSETREQUEST, false) => {
             one(hash().map(|hash| Said::HashSetAsk { hash }))
         }
-        (OP_EDONKEYPROT, OP_STARTUPLOADREQ, false) => vec![Said::SlotAsk],
+        (OP_EDONKEYPROT, OP_STARTUPLOADREQ, false) => vec![Said::SlotAsk { hash: hash() }],
         (OP_EDONKEYPROT, OP_CANCELTRANSFER, false) => vec![Said::Cancel],
         (OP_EDONKEYPROT, OP_REQUESTPARTS, false) => one(request(body, 4)),
         (OP_EMULEPROT, OP_REQUESTPARTS_I64, false) => one(request(body, 8)),

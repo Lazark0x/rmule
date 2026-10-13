@@ -76,9 +76,9 @@ pub(crate) struct PeerPartialShareArgs {
     /// rmule's egress to the slot-holding downloader in kbit/s (`0`
     /// unshaped), a `tc` token bucket in rmule's namespace: aMule's own
     /// download cap reacts only after a burst, and a part crosses the bench
-    /// network in half a second. The default fetches a part in about eight
-    /// minutes, past the download's completion.
-    #[arg(long, default_value_t = 160)]
+    /// network in half a second. The default, 8 KB/s, fetches even the short
+    /// last part well past the download's completion.
+    #[arg(long, default_value_t = 64)]
     pub(crate) downloader_link_kbit: u32,
     /// Leave out the prober that asks before rmule holds a part.
     #[arg(long)]

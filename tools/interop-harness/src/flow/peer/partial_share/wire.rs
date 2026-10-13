@@ -69,8 +69,8 @@ pub(crate) enum Said {
     StatusAsk { hash: Hash },
     /// A peer asked rmule for its hash set.
     HashSetAsk { hash: Hash },
-    /// A peer asked rmule for a slot.
-    SlotAsk,
+    /// A peer asked rmule for a slot, for `hash` when the ask names it.
+    SlotAsk { hash: Option<Hash> },
     /// A peer asked rmule for byte ranges (end exclusive).
     Request { hash: Hash, ranges: Vec<(u64, u64)> },
     /// A peer asked rmule for sources, standalone.

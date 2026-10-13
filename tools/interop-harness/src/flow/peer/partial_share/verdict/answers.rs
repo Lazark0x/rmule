@@ -93,6 +93,21 @@ pub(super) fn pre_part_probe(run: &Run<'_>) -> Claim {
     )
 }
 
+/// Whether `item` asks a slot for the stream file: by its hash, or on a link
+/// that asked for nothing else (an ask with no hash names the file the link
+/// last named).
+pub(super) fn asks_for(run: &Run<'_>, item: &Item) -> bool {
+    match &item.said {
+        Said::SlotAsk { hash: Some(hash) } => *hash == run.stream_hash,
+        Said::SlotAsk { hash: None } => run.wire.items.iter().any(|named| {
+            named.peer == item.peer
+                && named.at <= item.at
+                && matches!(&named.said, Said::NameAsk { hash, .. } if *hash == run.stream_hash)
+        }),
+        _ => false,
+    }
+}
+
 /// A slot ask before the first part draws nothing; stock aMule sends none,
 /// as it asks no slot of a source holding no part it needs.
 pub(super) fn pre_part_slot_ask(run: &Run<'_>) -> Claim {
@@ -105,7 +120,7 @@ pub(super) fn pre_part_slot_ask(run: &Run<'_>) -> Claim {
         .wire
         .items
         .iter()
-        .filter(|item| !item.from_rmule && item.at < cutoff && item.said == Said::SlotAsk)
+        .filter(|item| !item.from_rmule && item.at < cutoff && asks_for(run, item))
         .collect();
     if asks.is_empty() {
         return Claim::new(
@@ -124,7 +139,7 @@ pub(super) fn pre_part_slot_ask(run: &Run<'_>) -> Claim {
                 !item.from_rmule
                     && item.peer == ask.peer
                     && item.at > ask.at
-                    && item.said == Said::SlotAsk
+                    && matches!(item.said, Said::SlotAsk { .. })
             })
             .map_or(f64::INFINITY, |item| item.at);
         if let Some(answer) = run.wire.items.iter().find(|item| {
