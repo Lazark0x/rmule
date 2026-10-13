@@ -151,6 +151,22 @@ fn file_hash_only_content(file_size: u64) -> ContentFacts {
     }
 }
 
+/// A `file_size`-byte download holding a whole part hash set — a peer's,
+/// adopted — with `verified_parts` verified against it.
+fn set_held_content(file_size: u64, verified_parts: Vec<u32>) -> ContentFacts {
+    let count = rmule_primitives::PartHashSet::expected_hash_count(file_size).expect("a part file");
+    ContentFacts {
+        resolved: ResolvedHashSet {
+            authority: VerificationAuthority::PeerHashSet,
+            hashes: (0..count)
+                .map(|part| PartHash::from_bytes([u8::try_from(part).expect("few parts"); 16]))
+                .collect(),
+        },
+        verified_parts,
+        ..file_hash_only_content(file_size)
+    }
+}
+
 /// The sightings of `pool`'s endpoints, none obfuscated.
 fn plain_sightings(pool: &[PeerEndpoint]) -> Vec<SourceSighting> {
     pool.iter()
@@ -331,10 +347,7 @@ fn our_part_status_reports_the_verified_parts_as_the_reask_ping_bitfield() {
     // scheduler, so the three pre-verified parts read back present and parts
     // 1, 3 read absent.
     let state = pooled_state(
-        ContentFacts {
-            verified_parts: vec![0, 2, 4],
-            ..file_hash_only_content(5 * rmule_primitives::ED2K_PART_SIZE)
-        },
+        set_held_content(5 * rmule_primitives::ED2K_PART_SIZE, vec![0, 2, 4]),
         &[],
         QUIET_POSTURE,
         1,
@@ -350,13 +363,11 @@ fn the_verified_range_states_the_status_the_run_states_for_the_same_parts() {
     // Invariant A (ADR-0113): what the serve side says of a download and what
     // its run says are one set, phantom part included, whichever size.
     use crate::served_downloads::{VerifiedRange, WholeSet};
-    use rmule_primitives::{ED2K_PART_SIZE, PartHash, PartHashSet};
+    use rmule_primitives::ED2K_PART_SIZE;
 
     for file_size in [3 * ED2K_PART_SIZE, 3 * ED2K_PART_SIZE + 5] {
-        let count = PartHashSet::expected_hash_count(file_size).unwrap();
-        let hashes: Vec<PartHash> = (0..count)
-            .map(|part| PartHash::from_bytes([u8::try_from(part).unwrap(); 16]))
-            .collect();
+        let content = set_held_content(file_size, vec![0, 2]);
+        let hashes = content.resolved.hashes.clone();
         let set = WholeSet::of(file_size, &hashes).expect("the whole set");
         let records: Vec<crate::VerifiedPartRecord> = [0u32, 2]
             .into_iter()
@@ -367,15 +378,7 @@ fn the_verified_range_states_the_status_the_run_states_for_the_same_parts() {
                 part_hash: hashes[part_index as usize],
             })
             .collect();
-        let state = pooled_state(
-            ContentFacts {
-                verified_parts: vec![0, 2],
-                ..file_hash_only_content(file_size)
-            },
-            &[],
-            QUIET_POSTURE,
-            1,
-        );
+        let state = pooled_state(content, &[], QUIET_POSTURE, 1);
         assert_eq!(
             VerifiedRange::of_records(Some(&set), &records).status(file_size),
             state.our_part_status(),

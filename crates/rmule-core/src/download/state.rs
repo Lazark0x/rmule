@@ -620,9 +620,19 @@ impl DownloadState {
     /// source-reask ping's body (ADR-0057: rides the `0x90` when the source's
     /// UDP version is `> 3`) and a new worker's connect-time name ask,
     /// telling the uploader which parts we still need.
+    ///
+    /// A part verified while no whole part hash set was held is left out until
+    /// one is: it is outside the Verified Range, which the serve side reads
+    /// (ADR-0113 rule 2), and aMule never holds such a part. A file of one part
+    /// has no set; its file hash proves its part.
     pub(crate) fn our_part_status(&self) -> PartBitmap {
+        let set_held = match PartHashSet::expected_hash_count(self.file_size) {
+            Ok(0) => true,
+            Ok(expected) => self.resolved.hashes.len() == expected,
+            Err(_) => false,
+        };
         PartBitmap::downloader(self.file_size, |part| {
-            self.scheduler.is_part_verified(part.value())
+            set_held && self.scheduler.is_part_verified(part.value())
         })
     }
 

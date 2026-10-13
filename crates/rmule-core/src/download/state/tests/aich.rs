@@ -315,3 +315,36 @@ fn a_hash_set_that_is_not_the_files_own_is_refused_and_its_sender_distrusted() {
         "the forged set is never adopted: {out:?}"
     );
 }
+
+/// A part verified while no part hash set was held is outside the Verified
+/// Range until a set arrives (ADR-0113 rule 2): the status the run sends
+/// leaves it out, so it never names a part the serve side refuses, and names
+/// it once the file's own set is adopted.
+#[test]
+fn a_part_verified_before_the_set_is_named_only_once_the_set_arrives() {
+    let file = two_part_file();
+    let mut state = pooled_state(
+        ContentFacts {
+            file_hash: file.file_hash(),
+            verified_parts: vec![0],
+            ..file_hash_only_content(file.file_size())
+        },
+        &[peer(1)],
+        QUIET_POSTURE,
+        1,
+    );
+    let _ = state.start(t0());
+    let none = PartBitmap::downloader(file.file_size(), |_| false);
+    assert_eq!(state.our_part_status(), none);
+
+    let _ = connect(&mut state, t0(), peer(1));
+    let hashes = file.part_hash_set().expect("two parts").hashes().to_vec();
+    let _ = state.on_worker_event(
+        t0(),
+        peer(1),
+        PeerWorkerEvent::HashSetReceived {
+            part_hashes: hashes,
+        },
+    );
+    assert!(state.our_part_status().has(rmule_peer::PartIndex::new(0)));
+}
