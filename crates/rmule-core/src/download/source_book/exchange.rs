@@ -34,8 +34,8 @@ impl SourceBook {
                 if !waits && !downloads {
                     return None;
                 }
-                let source = match record.stage.identity() {
-                    Some(identity) => identity.source_coordinate(),
+                let source = match record.stage.live().zip(record.stage.identity()) {
+                    Some((live, identity)) => identity.source_coordinate(live.endpoint),
                     None => {
                         let source = match *record.endpoints.first()? {
                             PeerEndpoint::V4(v4) => PeerSource::HighId(v4),

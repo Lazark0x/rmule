@@ -7,8 +7,8 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rmule_primitives::{
-    ClientId, CryptStance, Ed2kText, Ipv4Endpoint, Ipv6Endpoint, PeerSource, SourceSighting, Tag,
-    TagValue, UserHash,
+    ClientId, CryptStance, Ed2kText, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, PeerSource,
+    SourceSighting, Tag, TagValue, UserHash,
 };
 
 use crate::capability::{CT_EMULE_UDPPORTS, MiscOptions1, MiscOptions2, ModMiscOptions};
@@ -349,18 +349,34 @@ impl PeerIdentity {
         PeerUdpCryptTarget::new(self.user_hash, self.crypt)
     }
 
-    /// The peer as a source of the files it deals in (ADR-0055 §Serving): its
-    /// advertised `(client id, listen port)` with its User Hash, and the
-    /// usable IPv6 its hello (or a later `OP_CHANGE_CLIENT_IP`) named as the
-    /// source's IPv6 half. emule-qt writes `CT_MOD_IP_V6` for any source with
-    /// one, High ID included (`KnownFile.cpp:937`), and only an ExtSX record
-    /// can carry it (ADR-0087). A Low-ID client with an IPv6 is a source over
-    /// that IPv6 alone, the client emule-qt's writer keeps
-    /// (`KnownFile.cpp:846-854`); any other Low-ID client is a source an
-    /// answer filters out.
+    /// The peer as a source of the files it deals in (ADR-0055 §Serving), met
+    /// on a link from `link`: its Client ID read against that link, its listen
+    /// port, its User Hash, and the usable IPv6 its hello (or a later
+    /// `OP_CHANGE_CLIENT_IP`) named as the source's IPv6 half. emule-qt writes
+    /// `CT_MOD_IP_V6` for any source with one, High ID included
+    /// (`KnownFile.cpp:937`), and only an ExtSX record can carry it
+    /// (ADR-0087). A Low-ID client with an IPv6 is a source over that IPv6
+    /// alone, the client emule-qt's writer keeps (`KnownFile.cpp:846-854`);
+    /// any other Low-ID client is a source an answer filters out.
+    ///
+    /// Over IPv4 a claim that is no Low ID — a High ID, none, or the link's
+    /// own address — is the link's address, whatever number the hello wrote:
+    /// aMule takes the socket's address as the client's (`BaseClient.cpp:661`)
+    /// and stores it as a High ID (`:678-680`), and that is where it dials the
+    /// client (`:1620`). A Low ID stays the callback it names. An IPv6 link
+    /// has no IPv4 address to read a claim against, so there the claim stands.
     #[must_use]
-    pub fn source_coordinate(&self) -> SourceSighting {
-        let classic = PeerSource::new(self.client_id, self.tcp_port);
+    pub fn source_coordinate(&self, link: PeerEndpoint) -> SourceSighting {
+        let classic = match link.as_v4() {
+            Some(link)
+                if self.client_id.is_high_id()
+                    || self.client_id.as_u32() == 0
+                    || self.client_id.as_u32() == u32::from_le_bytes(link.ip.octets()) =>
+            {
+                PeerSource::HighId(Ipv4Endpoint::new(link.ip, self.tcp_port))
+            }
+            _ => PeerSource::new(self.client_id, self.tcp_port),
+        };
         let ipv6 = self
             .peer_ipv6()
             .map(|address| Ipv6Endpoint::new(address, self.tcp_port));

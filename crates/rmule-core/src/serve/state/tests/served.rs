@@ -94,12 +94,12 @@ fn holding(parts: &[u32]) -> PartBitmap {
     PartBitmap::decode(4, &[bits]).unwrap()
 }
 
-/// What the run is handed for an asker identified by [`identify`].
-fn kept(file_hash: FileHash, user_hash: UserHash) -> ServeDecision {
+/// What the run is handed for an asker at `link` identified by [`identify`].
+fn kept(file_hash: FileHash, link: PeerEndpoint, user_hash: UserHash) -> ServeDecision {
     let identity = hello_facts(user_hash, 0, 0, 2).identity();
     ServeDecision::KeepAsker {
         file_hash,
-        sighting: identity.source_coordinate(),
+        sighting: identity.source_coordinate(link),
     }
 }
 
@@ -327,7 +327,7 @@ fn a_running_downloads_asker_is_kept_and_a_paused_ones_is_answered_only() {
     };
     assert_eq!(
         ask(&mut state, p, name_ask(running)),
-        [name(running), kept(running, user(0x0B))]
+        [name(running), kept(running, p, user(0x0B))]
     );
     assert_eq!(ask(&mut state, p, name_ask(paused)), [name(paused)]);
     // A bundle keeps its asker past the file gate too.
@@ -340,7 +340,7 @@ fn a_running_downloads_asker_is_kept_and_a_paused_ones_is_answered_only() {
     assert_eq!(
         ask(&mut state, p, bundle),
         [
-            kept(running, user(0x0B)),
+            kept(running, p, user(0x0B)),
             send(
                 p,
                 ServerCommand::AnswerFileStatus {
@@ -349,6 +349,47 @@ fn a_running_downloads_asker_is_kept_and_a_paused_ones_is_answered_only() {
                 },
             ),
         ]
+    );
+}
+
+/// The source the run is handed for an asker at `link` whose hello claims
+/// `claimed`.
+fn kept_at(link: PeerEndpoint, claimed: ClientId) -> Option<PeerSource> {
+    let running = hash(0x02);
+    let mut state = state_of(Vec::new(), vec![(running, download(true, &[0], true))]);
+    let hello = HelloFacts {
+        client_id: claimed,
+        ..hello_facts(user(0x0B), 0, 0, 2)
+    };
+    let _ = state.on_conn_event(Instant::now(), link, hello.identified(), &no_modifiers());
+    ask(&mut state, link, name_ask(running))
+        .into_iter()
+        .find_map(|decision| match decision {
+            ServeDecision::KeepAsker { sighting, .. } => sighting.peer_source(),
+            _ => None,
+        })
+}
+
+#[test]
+fn an_asker_is_a_source_at_the_address_its_link_came_from_whatever_high_id_it_claims() {
+    // aMule takes the socket's address as a High-ID client's (BaseClient.cpp
+    // `:661`, `:678-680`) and dials that (`:1620`), the hello's port beside it.
+    let link = peer_at([172, 18, 0, 6], 36126);
+    let socket = PeerSource::HighId(rmule_primitives::Ipv4Endpoint::new(
+        Ipv4Addr::new(172, 18, 0, 6),
+        4662,
+    ));
+    for claimed in [0x1000_0001, 0, u32::from_le_bytes([172, 18, 0, 6])] {
+        assert_eq!(kept_at(link, ClientId::from_u32(claimed)), Some(socket));
+    }
+    // A Low ID stays the callback it names: the socket is not where a dial
+    // reaches it.
+    assert_eq!(
+        kept_at(link, ClientId::from_u32(77)),
+        Some(PeerSource::LowId {
+            id: ClientId::from_u32(77),
+            port: 4662
+        })
     );
 }
 

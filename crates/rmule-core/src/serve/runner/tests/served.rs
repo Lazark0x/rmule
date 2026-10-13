@@ -62,7 +62,7 @@ async fn a_part_a_run_just_verified_is_answered_on_the_next_ask_and_the_asker_re
         .await
         .unwrap();
     let hello = || HelloFacts::of(UserHash::from_bytes([0x0B; UserHash::BYTE_LEN]));
-    let sighting = hello().identity().source_coordinate();
+    let sighting = hello().identity().source_coordinate(peer);
     conn_tx.send(hello().identified()).await.unwrap();
     let mut status = async || {
         conn_tx

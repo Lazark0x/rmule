@@ -82,7 +82,7 @@ impl ServeState {
                     .engaged_peers(file_hash)
                     .into_iter()
                     .filter_map(|engaged| {
-                        let source = self.identities.get(&engaged)?.source_coordinate();
+                        let source = self.identities.get(&engaged)?.source_coordinate(engaged);
                         Some(SxCandidate {
                             source,
                             part_status: self.sx_part_status.get(&(engaged, file_hash)).cloned(),
@@ -108,7 +108,7 @@ impl ServeState {
             endpoint: self
                 .identities
                 .get(&peer)
-                .and_then(|identity| identity.source_coordinate().as_peer_endpoint()),
+                .and_then(|identity| identity.source_coordinate(peer).as_peer_endpoint()),
             part_status: self.sx_part_status.get(&(peer, file_hash)).cloned(),
         };
         // Which of these the answer's wire form can carry is the peer

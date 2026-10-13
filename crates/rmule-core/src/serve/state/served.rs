@@ -163,7 +163,7 @@ impl ServeState {
             .and(self.identities.get(&peer))
             .map(|identity| ServeDecision::KeepAsker {
                 file_hash,
-                sighting: identity.source_coordinate(),
+                sighting: identity.source_coordinate(peer),
             })
     }
 }
