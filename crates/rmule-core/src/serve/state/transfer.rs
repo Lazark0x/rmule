@@ -118,7 +118,7 @@ impl ServeState {
         bytes: Vec<u8>,
     ) -> Vec<ServeDecision> {
         let file_hash = purpose.file_hash();
-        if !self.shared.contains_key(&file_hash) && !self.partials.contains(&file_hash) {
+        if !self.in_share_set(file_hash) {
             return Vec::new();
         }
         match purpose {

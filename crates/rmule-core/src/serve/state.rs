@@ -471,6 +471,8 @@ impl ServeState {
         purge_after: Duration,
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
+        // [`Self::in_share_set`], read by field: the queue is borrowed
+        // mutably beside it.
         let (shared, partials) = (&self.shared, &self.partials);
         let purge = self.queue.purge(
             now,

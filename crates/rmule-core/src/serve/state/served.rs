@@ -132,6 +132,12 @@ impl ServeState {
         }
     }
 
+    /// Whether `file_hash` is in the share set: an offered row or a Partial
+    /// Share.
+    pub(super) fn in_share_set(&self, file_hash: FileHash) -> bool {
+        self.shared.contains_key(&file_hash) || self.partials.contains(&file_hash)
+    }
+
     /// The file `file_hash` names, as the share set holds it: an offered row,
     /// which wins, or a Served Download.
     pub(super) fn lookup(&self, file_hash: FileHash) -> Option<Found<'_>> {

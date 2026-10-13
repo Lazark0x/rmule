@@ -44,11 +44,9 @@ impl ServeState {
             file_hash,
             file_name: found.name(),
         };
-        let (file_size, offered) = (found.file_size(), found.offered());
+        let file_size = found.file_size();
         let kept = self.keep_asker(peer, file_hash);
-        let moved = offered
-            .then(|| self.follow_asked_file(peer, file_hash))
-            .flatten();
+        let moved = self.follow_asked_file(peer, file_hash);
         let claims_status = self
             .identities
             .get(&peer)
@@ -84,12 +82,17 @@ impl ServeState {
     }
 
     /// Move a waiter to the file it just asked about, and report the move so a
-    /// consumer's row names the file the waiter now waits for.
+    /// consumer's row names the file the waiter now waits for. Only an
+    /// offered file moves one: a download not yet offered can grant no slot
+    /// (ADR-0113).
     fn follow_asked_file(
         &mut self,
         peer: PeerEndpoint,
         file_hash: FileHash,
     ) -> Option<ServeDecision> {
+        if !self.in_share_set(file_hash) {
+            return None;
+        }
         let rank = self.queue.follow_asked_file(peer, file_hash)?;
         Some(ServeDecision::Emit(ServeEvent::PeerQueued {
             peer,
@@ -125,12 +128,10 @@ impl ServeState {
             let command = ServerCommand::AnswerFileNotFound { file_hash };
             return vec![ServeDecision::Send { peer, command }];
         };
-        let (name, size, offered) = (found.name(), found.file_size(), found.offered());
+        let (name, size) = (found.name(), found.file_size());
         let kept = self.keep_asker(peer, file_hash);
         // The file is set before any sub is walked (`:1103`).
-        let moved = offered
-            .then(|| self.follow_asked_file(peer, file_hash))
-            .flatten();
+        let moved = self.follow_asked_file(peer, file_hash);
         if let Some(cut) = cut {
             let statuses = asks.into_iter().filter_map(|ask| match ask {
                 BundledAsk::Name { part_status } => Some(part_status),
@@ -193,10 +194,8 @@ impl ServeState {
     ) -> Vec<ServeDecision> {
         let (command, moved) = match self.lookup(file_hash) {
             Some(found) => {
-                let (bitmap, offered) = (found.status(), found.offered());
-                let moved = offered
-                    .then(|| self.follow_asked_file(peer, file_hash))
-                    .flatten();
+                let bitmap = found.status();
+                let moved = self.follow_asked_file(peer, file_hash);
                 (ServerCommand::AnswerFileStatus { file_hash, bitmap }, moved)
             }
             None => (ServerCommand::AnswerFileNotFound { file_hash }, None),
