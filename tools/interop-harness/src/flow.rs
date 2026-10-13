@@ -15,6 +15,7 @@
 
 pub(crate) mod bench;
 pub(crate) mod bootstrap;
+pub(crate) mod driver_image;
 pub(crate) mod ed2k_server;
 pub(crate) mod ed2ksrv;
 pub(crate) mod evidence;
@@ -30,6 +31,7 @@ pub(crate) mod nat;
 pub(crate) mod packed_source_exchange;
 pub(crate) mod pcap;
 pub(crate) mod peer;
+pub(crate) mod pinned_image;
 pub(crate) mod taps;
 pub(crate) mod wire_filter;
 
@@ -47,6 +49,7 @@ pub use self::ed2k_server::{
     run_search_wire, run_server_cycle, run_server_login_crypt, run_server_skeleton,
     run_sweep_follows_list,
 };
+pub use self::ed2k_server::{HolepunchFailOptions, run_holepunch_fail, score_holepunch_fail};
 pub use self::evidence::flush_golden_files;
 pub use self::gate::start_rmule_serve_with_login_retry;
 pub use self::kad_buddy::{
@@ -73,9 +76,15 @@ pub use self::packed_source_exchange::{PackedSourceExchangeOptions, run_packed_s
 pub use self::pcap::ed2k_frame_listing;
 pub use self::peer::{
     DEFAULT_REASK_WINDOW_SECS, DirectSuiOptions, PeerLowIdCallbackReaskOptions,
-    PeerUdpReaskEmitOptions, PeerUdpReaskOptions, Sx1GateOptions, TwoHellosOptions,
+    PeerUdpReaskEmitOptions, PeerUdpReaskOptions, SeedHolding, StreamingWindowOptions,
+    Sx1GateOptions, TwoHellosOptions, collect_streaming_window_run, default_seeds,
     run_amule_direct_sui, run_peer_lowid_callback_reask, run_peer_udp_reask,
-    run_peer_udp_reask_emit, run_rmule_serves_amule_downloads, run_sx1_gate, run_two_hellos,
-    score_emit_run_dir as score_peer_udp_reask_emit, score_lowid_callback_reask,
-    score_run_dir as score_peer_udp_reask, stage_reask_emit_files,
+    run_peer_udp_reask_emit, run_rmule_serves_amule_downloads, run_streaming_window, run_sx1_gate,
+    run_two_hellos, score_emit_run_dir as score_peer_udp_reask_emit, score_lowid_callback_reask,
+    score_run_dir as score_peer_udp_reask, score_streaming_window, seed_holding_arg,
+    stage_reask_emit_files,
+};
+pub use self::peer::{PartialShareOptions, run_partial_share, score_partial_share};
+pub use self::peer::{
+    ServerCallbackServeOptions, run_server_callback_serve, score_server_callback_serve,
 };

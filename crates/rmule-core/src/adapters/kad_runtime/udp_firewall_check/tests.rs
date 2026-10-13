@@ -345,16 +345,19 @@ impl PeerTransferService for DisconnectingPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = PeerWorkerEvent::every_part(file.size);
         let (command_tx, mut command_rx) = mpsc::channel(8);
         let (event_tx, event_rx) = mpsc::channel(8);
         let disconnect = self.disconnect.clone();
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
+            let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
             disconnect.notified().await;
             let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-            // Drain whatever the runner sent meanwhile (a `RequestPart`) so
+            // Drain whatever the runner sent meanwhile (a slot ask, a part) so
             // its sender never blocks on a full channel.
             while command_rx.recv().await.is_some() {}
         });
@@ -381,14 +384,14 @@ async fn a_download_workers_connect_marks_the_roster_and_disconnect_forgets_it()
         outcome: crate::SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
             sources: vec![
-                rmule_primitives::SourceSighting::plain(rmule_primitives::PeerSource::new(
-                    ClientId::from_u32(42),
-                    4662,
-                )),
-                rmule_primitives::SourceSighting::plain(rmule_primitives::PeerSource::new(
-                    ClientId::from_u32(0x0100_007F),
-                    4663,
-                )),
+                rmule_primitives::SourceSighting::plain(
+                    rmule_primitives::PeerSource::new(ClientId::from_u32(42), 4662),
+                    rmule_primitives::Informant::Own,
+                ),
+                rmule_primitives::SourceSighting::plain(
+                    rmule_primitives::PeerSource::new(ClientId::from_u32(0x0100_007F), 4663),
+                    rmule_primitives::Informant::Own,
+                ),
             ],
         },
     };

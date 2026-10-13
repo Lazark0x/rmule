@@ -40,9 +40,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::docker::RunContainer;
 use crate::flow::bench::Bench;
-use crate::flow::ed2ksrv::Ed2ksrvImage;
+use crate::flow::ed2ksrv::ED2KSRV;
 use crate::flow::gate::wait_for_container_log;
 use crate::flow::nat::dialect::bench::{
     HOST_ED2KSRV, HOST_EMULEQT, HOST_QUEUED, Ipv6DialectOptions, Stage, body_log, out, run_driver,
@@ -53,6 +52,7 @@ use crate::flow::nat::dialect::legs::RMULE_USER_HASH;
 use crate::flow::nat::dialect::verdict::{Body, Claim, DriverRow, Evidence};
 use crate::flow::nat::dialect::{BODY_PEER_TCP_PORT, ED2KSRV_TCP_PORT};
 use crate::flow::nat::synthetic::write_hashed;
+use crate::flow::pinned_image::EMULEQT;
 
 /// One part, as every ExtSX leg shares.
 const SHARED_BYTES: u64 = 1 << 20;
@@ -109,7 +109,7 @@ pub(super) fn start(
     let server_v4 = stage.v4(HOST_ED2KSRV).to_owned();
 
     let server = format!("rmule-interop-v6srv-{suffix}");
-    let ed2ksrv = Ed2ksrvImage::check(&bench.docker, options.ed2ksrv_image)?;
+    let ed2ksrv = ED2KSRV.check(&bench.docker, options.ed2ksrv_image)?;
     bench.start_extra(
         &server,
         ed2ksrv
@@ -126,9 +126,10 @@ pub(super) fn start(
     )?;
 
     let name = format!("rmule-interop-v6qt-{suffix}");
+    let qt = EMULEQT.check(&bench.docker, options.emuleqt_image)?;
     bench.start_extra(
         &name,
-        RunContainer::new(options.emuleqt_image)
+        qt.container()
             .detach()
             .name(&name)
             .network(&stage.network)
@@ -156,7 +157,7 @@ pub(super) fn start(
         Body {
             name: "emuleqt".to_owned(),
             image: options.emuleqt_image.to_owned(),
-            pin: "ModderMule/emule-qt 73fff714".to_owned(),
+            pin: qt.pin(),
             address_v4: stage.v4(HOST_EMULEQT).to_owned(),
             address_v6: stage.v6(HOST_EMULEQT).to_owned(),
         },

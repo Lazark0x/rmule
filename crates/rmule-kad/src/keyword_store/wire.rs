@@ -95,12 +95,16 @@ fn decode_publish_file(
     let mut size = None;
     let mut tags = Vec::new();
     for _ in 0..tag_count {
-        let (tag, consumed) = Tag::decode_prefix(reader.remaining_bytes()).map_err(|_| {
-            KeywordDecodeError::Malformed {
-                reason: "publish tag is truncated or malformed",
-            }
-        })?;
+        let (tag, consumed) =
+            Tag::decode_or_step_prefix(reader.remaining_bytes()).map_err(|_| {
+                KeywordDecodeError::Malformed {
+                    reason: "publish tag is truncated or malformed",
+                }
+            })?;
         reader.advance_clamped(consumed);
+        let Some(tag) = tag else {
+            continue;
+        };
         // FILENAME/FILESIZE are dropped from the verbatim list on every
         // occurrence; only the first populates the typed field (aMule:
         // `if (entry->GetCommonFileName().IsEmpty()) { SetFileName(...); }
@@ -356,12 +360,16 @@ pub fn decode_search_key_res(
         let tag_count = reader.read_u8("keyword result tag count")?;
         let mut tags = Vec::with_capacity(usize::from(tag_count));
         for _ in 0..tag_count {
-            let (tag, consumed) = Tag::decode_prefix(reader.remaining_bytes()).map_err(|_| {
-                KeywordDecodeError::Malformed {
-                    reason: "keyword result tag is truncated or malformed",
-                }
-            })?;
+            let (tag, consumed) =
+                Tag::decode_or_step_prefix(reader.remaining_bytes()).map_err(|_| {
+                    KeywordDecodeError::Malformed {
+                        reason: "keyword result tag is truncated or malformed",
+                    }
+                })?;
             reader.advance_clamped(consumed);
+            let Some(tag) = tag else {
+                continue;
+            };
             tags.push(tag);
         }
         rows.push(KeywordResultRow { file_id, tags });

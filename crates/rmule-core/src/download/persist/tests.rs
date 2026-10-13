@@ -26,6 +26,7 @@ async fn held_part_file(dir: &tempfile::TempDir) -> HeldPartFile {
     HeldPartFile::hold(&dir.path().join("file.part"), 0)
         .await
         .expect("a new part file is held")
+        .0
 }
 
 #[tokio::test]

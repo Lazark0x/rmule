@@ -19,6 +19,7 @@ fn punchable(n: u32) -> SourceSighting {
         rmule_primitives::PeerSource::new(low(n), 4662),
         Some(UserHash::from_bytes([0xAB; UserHash::BYTE_LEN])),
         None,
+        rmule_primitives::Informant::Own,
     )
 }
 
@@ -130,7 +131,7 @@ fn a_candidate_with_neither_callback_nor_coordinator_still_starves_the_download(
     // one behind it.
     let mut state = callback_state(vec![peer(1)], Vec::new(), false, 1);
     let _ = state.start(t0());
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(1));
 
     let discovered = via_global(
         &mut state,
@@ -160,6 +161,7 @@ fn an_adopted_global_callback_peer_binds_then_its_connected_event_assigns_it() {
     let key = CallbackKey {
         server: Some(server),
         low_id: low(7),
+        kad_port: None,
     };
     let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
     // Requests a per-server callback for low(7), holding slot 0.
@@ -186,7 +188,7 @@ fn an_adopted_global_callback_peer_binds_then_its_connected_event_assigns_it() {
         "not assigned until the adopted worker's own Connected arrives"
     );
 
-    let _ = state.on_worker_event(t0(), peer(9), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(9));
     assert!(
         state.is_working(peer(9)),
         "the adopted global peer holds a part once its Connected flows the normal path"
@@ -202,6 +204,7 @@ fn a_lapsed_global_callback_frees_its_slot_for_the_next_candidate() {
     let key = CallbackKey {
         server: Some(server),
         low_id: low(7),
+        kad_port: None,
     };
     let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
     let first = via_global(
@@ -285,7 +288,7 @@ fn an_adopted_callback_peer_binds_then_its_connected_event_assigns_it() {
         "not assigned until the adopted worker's own Connected arrives"
     );
 
-    let _ = state.on_worker_event(t0(), peer(9), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(9));
     assert!(
         state.is_working(peer(9)),
         "the adopted peer holds a part once its Connected flows the normal path"
@@ -306,7 +309,7 @@ fn a_callback_landing_on_a_worked_endpoint_names_no_slot() {
             .any(|d| matches!(d, Decision::RequestCallback { low_id, .. } if *low_id == low(7))),
         "the second slot calls low(7) back beside the dial: {started:?}"
     );
-    let _ = state.on_worker_event(t0(), peer(9), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(9));
     assert!(state.is_working(peer(9)));
 
     let landing = state.on_callback_connected(t0(), connected_key(low(7)), peer(9));
@@ -341,7 +344,7 @@ fn a_called_back_source_whose_worker_ends_without_a_rank_is_called_back_again() 
     let mut state = callback_state(Vec::new(), vec![low_candidate(7)], true, 1);
     let _ = state.start(t0());
     let _ = state.on_callback_connected(t0(), connected_key(low(7)), peer(9));
-    let _ = state.on_worker_event(t0(), peer(9), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(9));
 
     let ended = state.on_worker_event(t0(), peer(9), PeerWorkerEvent::Disconnected);
 
@@ -441,6 +444,7 @@ fn a_legacy_candidate_arms_no_fallback_and_lapses_at_its_own_deadline() {
     let key = CallbackKey {
         server: Some(server),
         low_id: low(7),
+        kad_port: None,
     };
     let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
     let requested = via_global(&mut state, server, vec![PeerSource::new(low(7), 4662)]);
@@ -597,5 +601,52 @@ fn a_punch_that_was_the_only_road_ends_the_candidate_when_it_retires() {
             .on_traversal_retired(t0(), connected_key(low(8)), reason)
             .is_empty(),
         "the candidate is gone; a second retirement ends nothing twice"
+    );
+}
+
+/// A server relay that never left — no live session, no requester endpoint,
+/// a send nothing took — ends its road when the runner says so, not at the
+/// callback deadline: the candidate takes its next road at once (here the
+/// punch its facts admit), and once that has nothing either, the slot goes to
+/// the next candidate — all before the callback's thirty seconds.
+#[test]
+fn a_server_callback_that_never_left_moves_on_at_once() {
+    use crate::diagnostics::NattRetirement;
+
+    let mut state = callback_state(
+        Vec::new(),
+        vec![low_candidate(7), low_candidate(8)],
+        true,
+        1,
+    );
+    let opened = state.start(t0());
+    assert!(
+        opened
+            .iter()
+            .any(|d| matches!(d, Decision::RequestCallback { low_id, .. } if *low_id == low(7))),
+        "{opened:?}"
+    );
+    let key = connected_key(low(7));
+    let next_road = state.on_traversal_retired(t0(), key, NattRetirement::CallbackNotSent);
+    assert!(
+        next_road.iter().any(|d| matches!(
+            d,
+            Decision::FallToNatTraversal { candidate, silence, .. }
+                if candidate.low_id == low(7) && *silence == CallbackSilence::NoCallbackPossible
+        )),
+        "the unsent road hands the candidate to the punch now: {next_road:?}"
+    );
+    let freed = state.on_traversal_retired(t0(), key, NattRetirement::NotEnactable);
+    assert!(
+        freed
+            .iter()
+            .any(|d| matches!(d, Decision::EndCallback { key: ended } if *ended == key)),
+        "{freed:?}"
+    );
+    assert!(
+        freed
+            .iter()
+            .any(|d| matches!(d, Decision::RequestCallback { low_id, .. } if *low_id == low(8))),
+        "the slot goes to the next candidate: {freed:?}"
     );
 }

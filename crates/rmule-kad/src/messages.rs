@@ -472,9 +472,12 @@ fn decode_published_source(
     let mut source = KadPublishedSource::default();
     let (mut buddy_ip, mut buddy_port, mut buddy_id, mut buddy_ipv6) = (None, None, None, None);
     for _ in 0..tag_count {
-        let (tag, consumed) = Tag::decode_prefix(reader.remaining_bytes())
+        let (tag, consumed) = Tag::decode_or_step_prefix(reader.remaining_bytes())
             .map_err(|_| "publish tag is truncated or malformed")?;
         reader.advance_clamped(consumed);
+        let Some(tag) = tag else {
+            continue;
+        };
         let Some(name) = tag.name().id() else {
             // The IPv6 tags are string-named (ADR-0087), so they never reach
             // the numeric-id match below. Both claims are gated exactly as
@@ -703,7 +706,7 @@ fn decode_node_header(reader: &mut WireReader<'_>) -> Result<Kad2NodeInfo, &'sta
 fn skip_tag_list(reader: &mut WireReader<'_>, what: &'static str) -> Result<(), &'static str> {
     let count = reader.read_u8(what).map_err(field)?;
     for _ in 0..count {
-        let (_, consumed) = Tag::decode_prefix(reader.remaining_bytes())
+        let (_, consumed) = Tag::decode_or_step_prefix(reader.remaining_bytes())
             .map_err(|_| "tag is truncated or malformed")?;
         reader.advance_clamped(consumed);
     }
@@ -723,9 +726,12 @@ fn decode_hello(reader: &mut WireReader<'_>) -> Result<Kad2NodeInfo, &'static st
     let mut info = decode_node_header(reader)?;
     let tag_count = reader.read_u8("hello tag count").map_err(field)?;
     for _ in 0..tag_count {
-        let (tag, consumed) = Tag::decode_prefix(reader.remaining_bytes())
+        let (tag, consumed) = Tag::decode_or_step_prefix(reader.remaining_bytes())
             .map_err(|_| "hello tag is truncated or malformed")?;
         reader.advance_clamped(consumed);
+        let Some(tag) = tag else {
+            continue;
+        };
         match tag.name().id() {
             Some(TAG_SOURCEUPORT) => {
                 info.udp_port_tag = match tag.value() {

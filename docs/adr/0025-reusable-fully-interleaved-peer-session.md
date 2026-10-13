@@ -26,18 +26,32 @@ one active slot context per connection.
   unambiguously.
 - A re-probe of a known file answers from the session's per-file state without a
   wire round-trip, and a hash set already received is not requested again.
-- The first `RequestParts` takes the slot context, which moves through queued,
-  slotted and downloading. Once the slot is granted, further `RequestParts` for the
-  same file go straight out as `OP_REQUESTPARTS` over the held slot: one
-  `OP_STARTUPLOADREQ` per file, across all its parts and blocks, as eMule does.
-- `RequestParts` for a different file while a slot is held is rejected at once with
+- The slot ask (`AskSlot`, or a first `RequestParts` when none was sent) takes the slot
+  context, which moves through queued, slotted and downloading. Once the slot is
+  granted, `RequestParts` for the same file go straight out as `OP_REQUESTPARTS` over
+  the held slot: one `OP_STARTUPLOADREQ` per file, across all its parts and blocks, as
+  eMule does. A `RequestParts` before the grant waits for it, its ranges held.
+- The session asks a part hash set only when told (`RequestHashSet`, once per file),
+  and its slot ask waits on no answer: which link asks, and when a slot ask follows
+  it, is the download's decision (ADR-0026, "One hash-set ask at a time").
+- A slot ask for a different file while a slot is held is rejected at once with
   `PeerError::SlotBusy`. Probes and hash-set requests keep interleaving freely.
 - The session never infers completion from byte counts. The slot ends on
   `RequesterCommand::ReleaseSlot` (the runtime worker decides the file is done),
-  `CancelTransfer` (ADR-0056), or a terminal path: peer close, `OP_OUTOFPARTREQS`,
-  a mid-slot `OP_FILEREQANSNOFIL`, or the driver-owned stale timeout. Each emits
-  `SlotReleased` with a `SlotReleaseReason`, after which the next file may take
-  the slot.
+  `CancelTransfer` (ADR-0056), or a terminal path: peer close, a mid-slot
+  `OP_FILEREQANSNOFIL` (the peer lacks the file), or the driver-owned stale
+  timeout. Each emits `SlotReleased` with a `SlotReleaseReason`, after which the
+  next file may take the slot.
+- `OP_OUTOFPARTREQS` is not terminal. On a granted slot it ends the transfer,
+  not the flow: the flow is queued again on the same link and the session emits
+  `Requeued`, as aMule turns `DS_DOWNLOADING` back into `DS_ONQUEUE`
+  (`ClientTCPSocket.cpp:755-762`). The uploader sends it when our session is over
+  and someone waits (`UploadQueue.cpp:549`, `UploadClient.cpp:597-600`), then
+  queues us again and sends `OP_QUEUERANKING` on the same socket
+  (`UploadClient.cpp:643-660`), which ranks the flow; a later
+  `OP_ACCEPTUPLOADREQ` grants it again, and the next `RequestParts` waits for that
+  grant as a first one does. While the flow is only queued, `OP_OUTOFPARTREQS`
+  changes nothing.
 - Timers stay in the driver (ADR-0021): it calls `signal_slot_stale()` and
   `signal_idle_close()` when its clocks fire.
 

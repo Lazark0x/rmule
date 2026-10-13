@@ -35,8 +35,12 @@ const RANGE_COUNT: usize = 3;
 /// block request streamed immediately.
 pub const EMBLOCKSIZE: u64 = 184_320;
 
-/// Selector for the part-transfer wire variant. `for_file_size` picks
-/// `U64` once the file size requires a 64-bit offset; otherwise `U32`.
+/// Selector for the part-transfer wire variant. aMule picks it per block, on
+/// the block's own offsets: the `_I64` opcodes once an offset passes
+/// `0xFFFFFFFF` (`UploadClient.cpp:307`, `:361`; `DownloadClient.cpp:745`),
+/// never on `IsLargeFile`, so the blocks of a large file below 4 GiB still
+/// ride the 32-bit opcodes. [`Self::for_file_size`] fed a block's highest
+/// offset is that rule.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PartOffsetWidth {
     /// The original opcodes, offsets as `u32`.
@@ -46,7 +50,8 @@ pub enum PartOffsetWidth {
 }
 
 impl PartOffsetWidth {
-    /// The narrowest width that can address every byte of a file this size.
+    /// The narrowest width that can address every byte up to `file_size` —
+    /// a block's highest offset, for aMule's per-block choice.
     #[must_use]
     pub const fn for_file_size(file_size: u64) -> Self {
         if file_size <= u32::MAX as u64 {

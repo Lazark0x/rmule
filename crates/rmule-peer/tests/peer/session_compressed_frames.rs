@@ -15,7 +15,7 @@ use rmule_peer::{
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{
-    ClientId, FileHash, Ipv4Endpoint, Packet, PacketProtocol, PeerSource, SourceSighting, UserHash,
+    ClientId, FileHash, Ipv4Endpoint, Packet, PacketProtocol, PeerSource, SourceClaim, UserHash,
 };
 use rmule_testkit::peer_session::{ctx, peer};
 
@@ -114,7 +114,7 @@ fn oversized_compressed_frame_is_skipped_without_closing_session() {
 #[test]
 fn packed_answer_sources_inflates_to_sources_received() {
     let file_hash = FileHash::from_bytes([0x21; 16]);
-    let source = SourceSighting::plain(PeerSource::new(ClientId::from_u32(0x0100_00A8), 4662));
+    let source = SourceClaim::plain(PeerSource::new(ClientId::from_u32(0x0100_00A8), 4662));
     let plain = AnswerSources {
         file_hash,
         sources: vec![SourceExchangeEntry::plain(source)],
@@ -155,6 +155,11 @@ fn packed_answer_sources_inflates_to_sources_received() {
         .expect("SourcesReceived emitted");
 
     assert_eq!(fh, file_hash);
-    assert_eq!(sources, vec![source]);
+    let peer = rmule_primitives::Informant::Party(session.peer_endpoint().ip());
+    assert_eq!(
+        sources,
+        vec![source.stated_by(peer)],
+        "the answering peer's word"
+    );
     assert!(!outputs.iter().any(|o| matches!(o, PeerOutput::Close(_))));
 }

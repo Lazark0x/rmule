@@ -26,13 +26,13 @@ use rmule_primitives::{ED2K_PART_SIZE, FileHash};
 use super::chunks::chunk_bar;
 use super::sort::{DownloadLine, DownloadsTable};
 use super::{COL_SPACING, Pane, SYMBOL_W, TransfersView, draw_centered, pane_block, table_widths};
-use crate::row_selection::{MARKER, selection_style};
+use crate::row_selection::{MARKER, selection_style, viewport};
 use crate::state::{DownloadRow, DownloadStatus, UiState};
 use crate::table_sort::{SortedTable, arrow_floors, header_label, header_widths};
 use crate::theme::Theme;
 use crate::views::{DrawnRows, say_gave_way};
 use crate::views::{human_size, rate_cell};
-use crate::words::download::{ETA_TOO_SLOW, eta_time};
+use crate::words::download::{ETA_TOO_SLOW, completing_status, eta_time};
 use crate::words::units::short_hash_or_dash;
 use crate::wrap::{TableColumns, clamp_u16, gave_way, wrapped_cell};
 
@@ -255,6 +255,7 @@ pub(super) fn status_label(status: DownloadStatus) -> &'static str {
         DownloadStatus::NoConnection => "No network",
         DownloadStatus::Downloading => "Downloading",
         DownloadStatus::Paused => "Paused",
+        DownloadStatus::Completing => "Completing",
         DownloadStatus::Completed => "Completed",
         DownloadStatus::Failed => "Failed",
     }
@@ -262,7 +263,9 @@ pub(super) fn status_label(status: DownloadStatus) -> &'static str {
 
 fn status_style(status: DownloadStatus, theme: &Theme) -> Style {
     let color = match status {
-        DownloadStatus::Downloading | DownloadStatus::Completed => theme.good,
+        DownloadStatus::Downloading | DownloadStatus::Completing | DownloadStatus::Completed => {
+            theme.good
+        }
         DownloadStatus::Waiting => theme.fg,
         DownloadStatus::NoConnection => theme.highlight,
         DownloadStatus::Paused => theme.highlight,
@@ -330,28 +333,49 @@ impl TransfersView {
         }
         let floors = arrow_floors(&self.sort, &DOWNLOAD_COLS, DOWNLOAD_FLEX);
         let headers = header_widths(&self.sort);
-        let cols = table_widths(
-            area,
-            &TableColumns {
-                floors: &floors,
-                headers: &headers,
-                flex: DOWNLOAD_FLEX,
-                wants: &wants,
-                give_way: &DOWNLOAD_GIVE_WAY,
-            },
-        );
-        let (header_cells, header_heights): (Vec<_>, Vec<u16>) = DownloadsTable::COLUMNS
-            .iter()
-            .zip(&cols)
-            .map(|(column, width)| {
-                let label = header_label(column.label, self.sort.arrow(column.column));
-                wrapped_cell(&label, *width, theme.dim_text(), false)
-            })
-            .unzip();
-        let header_h = header_heights.into_iter().max().unwrap_or(1);
-        let header = Row::new(header_cells)
-            .style(theme.dim_text())
-            .height(header_h);
+        let cols_at = |bar: bool| {
+            table_widths(
+                area,
+                bar,
+                &TableColumns {
+                    floors: &floors,
+                    headers: &headers,
+                    flex: DOWNLOAD_FLEX,
+                    wants: &wants,
+                    give_way: &DOWNLOAD_GIVE_WAY,
+                },
+            )
+        };
+        // The selected download's values in the columns that gave way.
+        let selected = self.table_state.selected();
+        let off_screen_at = |cols: &[usize]| {
+            selected
+                .and_then(|at| values.get(at))
+                .map_or_else(Vec::new, |values| {
+                    crate::views::off_screen::hidden(
+                        DownloadsTable::COLUMNS.iter().map(|c| c.label),
+                        values,
+                        cols,
+                    )
+                })
+        };
+        let bar = viewport::needs_bar(lines.len(), inner.height.saturating_sub(1), || {
+            let cols = cols_at(false);
+            let room = inner
+                .height
+                .saturating_sub(crate::views::off_screen::height(
+                    inner,
+                    &off_screen_at(&cols),
+                ))
+                .saturating_sub(self.header(&cols, theme).1);
+            let drawn: u32 = lines
+                .iter()
+                .map(|line| u32::from(self.download_row(line, state, theme, &cols).1))
+                .sum();
+            drawn > u32::from(room)
+        });
+        let cols = cols_at(bar);
+        let (header, header_h) = self.header(&cols, theme);
         let (rows, heights): (Vec<_>, Vec<u16>) = lines
             .iter()
             .map(|line| self.download_row(line, state, theme, &cols))
@@ -368,45 +392,60 @@ impl TransfersView {
             // edges — and a click on them — do not move with the selection.
             .highlight_spacing(HighlightSpacing::Always);
         frame.render_widget(block, area);
-        // The selected download's values in the columns that gave way.
-        let off_screen = self
-            .table_state
-            .selected()
-            .and_then(|at| values.get(at))
-            .map_or_else(Vec::new, |values| {
-                crate::views::off_screen::hidden(
-                    DownloadsTable::COLUMNS.iter().map(|c| c.label),
-                    values,
-                    &cols,
-                )
-            });
-        let inner = crate::views::off_screen::draw(frame, inner, &off_screen, theme);
-        frame.render_stateful_widget(table, inner, &mut self.table_state);
+        let inner = crate::views::off_screen::draw(frame, inner, &off_screen_at(&cols), theme);
+        let (list, bar) = viewport::split(inner, bar);
+        let first = self.viewport.follow(
+            self.table_state.selected().unwrap_or(0),
+            heights.len(),
+            list.height.saturating_sub(header_h),
+            |index| heights[index],
+        );
+        *self.table_state.offset_mut() = first;
+        frame.render_stateful_widget(table, list, &mut self.table_state);
+        let foot = self.viewport.draw(frame, area, bar, theme);
         say_gave_way(
             frame,
-            area,
+            foot,
             &gave_way(DownloadsTable::COLUMNS.iter().map(|c| c.label), &cols),
             theme,
         );
 
         self.header_area = Rect::new(
-            inner.x.saturating_add(SYMBOL_W),
-            inner.y,
-            inner.width.saturating_sub(SYMBOL_W),
-            header_h.min(inner.height),
+            list.x.saturating_add(SYMBOL_W),
+            list.y,
+            list.width.saturating_sub(SYMBOL_W),
+            header_h.min(list.height),
         );
         self.header_cols = cols;
-        let offset = self.table_state.offset().min(heights.len());
         self.rows = DrawnRows::new(
             Rect::new(
-                inner.x,
-                inner.y.saturating_add(header_h),
-                inner.width,
-                inner.height.saturating_sub(header_h),
+                list.x,
+                list.y.saturating_add(header_h),
+                list.width,
+                list.height.saturating_sub(header_h),
             ),
-            offset,
-            heights[offset..].to_vec(),
+            first,
+            heights[first..].to_vec(),
         );
+    }
+
+    /// The header row at `cols`, and its height: one line, since every
+    /// column holds its header and the sort's arrow, unless the pane is too
+    /// narrow for even the greedy column's.
+    fn header(&self, cols: &[usize], theme: &Theme) -> (Row<'static>, u16) {
+        let (cells, heights): (Vec<_>, Vec<u16>) = DownloadsTable::COLUMNS
+            .iter()
+            .zip(cols)
+            .map(|(column, width)| {
+                let label = header_label(column.label, self.sort.arrow(column.column));
+                wrapped_cell(&label, *width, theme.dim_text(), false)
+            })
+            .unzip();
+        let height = heights.into_iter().max().unwrap_or(1);
+        (
+            Row::new(cells).style(theme.dim_text()).height(height),
+            height,
+        )
     }
 
     fn download_row(
@@ -434,7 +473,7 @@ impl TransfersView {
             (eta_cell(line.eta), cols[5], plain, false),
             (line.sources_cell(), cols[6], plain, false),
             (
-                line.status_text.to_string(),
+                line.status_text.clone(),
                 cols[7],
                 status_style(line.status, theme),
                 false,
@@ -464,16 +503,22 @@ impl TransfersView {
 /// A download's status as its cell words it: a download with no network
 /// while core re-makes the operator's session waits for that, not for
 /// nothing; one waiting with no server session while Kad runs says Kad is
-/// who asks. Each wording keeps the rank of the status it words.
+/// who asks; a completing one says what its move waits for or has copied,
+/// from its diagnostics row. Each wording keeps the rank of the status it
+/// words.
 pub(super) fn status_text(
     status: DownloadStatus,
-    wait: Option<SourceWait>,
+    row: Option<&DownloadRow>,
+    diag: Option<&DownloadDiagnostics>,
     state: &UiState,
-) -> &'static str {
-    match (status, wait) {
-        (DownloadStatus::NoConnection, _) if state.reconnect.is_some() => "Reconnecting",
-        (DownloadStatus::Waiting, Some(SourceWait::KadAlone)) => "Asking Kad",
-        _ => status_label(status),
+) -> String {
+    match (status, row.and_then(|row| row.source_wait)) {
+        (DownloadStatus::NoConnection, _) if state.reconnect.is_some() => {
+            "Reconnecting".to_string()
+        }
+        (DownloadStatus::Waiting, Some(SourceWait::KadAlone)) => "Asking Kad".to_string(),
+        (DownloadStatus::Completing, _) => completing_status(diag.and_then(|diag| diag.completion)),
+        _ => status_label(status).to_string(),
     }
 }
 
@@ -521,7 +566,7 @@ impl DownloadLine {
             rate_cell(self.bps, theme).0,
             eta_cell(self.eta),
             self.sources_cell(),
-            self.status_text.to_string(),
+            self.status_text.clone(),
         ]
     }
 }

@@ -1,15 +1,16 @@
 ┌ 1 │ 2 │ 3 │ 4 │ 5 │ 6 Settings ─────────────────────────────────────── rmule ┐
 │┌ Settings ──────────────────────────────────── j/k row  ←→ step  Enter edit ┐│
-││Paths                                                                       ││
-││ Download dir unset — downloads have nowhere to land                        ││
-││ Data dir     /srv/rmule  (from --data-dir)                                 ││
-││                                                                            ││
-││Shared directories                                                          ││
-││ Share a dir  Enter, type an absolute path, Enter                           ││
-││                                                                            ││
-││Network                                                                     ││
-││ Nickname     rmule  (on restart)                                           ││
-││ eD2k port    4662  (on restart)                                            ││
+││Paths                                                                      ▲││
+││ Download dir unset — downloads have nowhere to land                       █││
+││ Temp dir     /srv/rmule/Temp  (the default)                               █││
+││ Data dir     /srv/rmule  (from --data-dir)                                █││
+││                                                                           █││
+││Shared directories                                                         █││
+││ Share a dir  Enter, type an absolute path, Enter                          █││
+││                                                                           █││
+││Network                                                                    █││
+││ Nickname     rmule  (on restart)                                          █││
+││ eD2k port    4662  (on restart)                                           ▆││
 ││ UDP port     4672  (on restart)                                            ││
 ││ Obfuscation  off  peer TCP/UDP + Kad + server UDP                          ││
 ││ Port mapping on  opens router ports: UPnP, PCP, NAT-PMP  (on restart)      ││
@@ -18,7 +19,6 @@
 ││ Fetch list   on  server.met at start when the list is empty  (on restart)  ││
 ││                                                                            ││
 ││Servers                                                                     ││
-││ Dead after   3  failed tries in a row; a dead server stays listed          ││
-││ Hide shares  off  from servers that answer related searches                ││
-│└────────────────────────────────────────────────────────────────────────────┘│
+││ Dead after   3  failed tries in a row; a dead server stays listed         ▼││
+│└──────────────────────────────────────────────────────────────────── 1 / 19 ┘│
 └ — │ Users: — · Files: — │ ▼ 0.0 KB/s ▲ 0.0 KB/s │ ●eD2k off ●Kad off ────────┘

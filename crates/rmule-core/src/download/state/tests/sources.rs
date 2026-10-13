@@ -47,7 +47,10 @@ fn kad_sightings_dial_direct_high_id_sources() {
     let mut state = callback_state(Vec::new(), Vec::new(), true, 2);
     let direct = PeerSource::new(ClientId::from_u32(u32::from_le_bytes([10, 0, 0, 5])), 4662);
 
-    let decisions = via_kad(&mut state, vec![SourceSighting::plain(direct)]);
+    let decisions = via_kad(
+        &mut state,
+        vec![SourceSighting::plain(direct, Informant::Own)],
+    );
 
     assert!(
         decisions
@@ -71,6 +74,7 @@ fn a_direct_kad_rows_crypt_side_reaches_its_dial() {
         direct,
         Some(UserHash::from_bytes([0x5A; 16])),
         Some(SourceCryptOptions::from_byte(0x07)),
+        Informant::Own,
     );
 
     let _ = via_kad(&mut state, vec![row]);
@@ -102,6 +106,7 @@ fn a_retired_hellos_required_crypt_does_not_outlive_its_worker() {
             direct,
             Some(UserHash::from_bytes([0x5A; 16])),
             Some(SourceCryptOptions::from_byte(0x01)),
+            Informant::Own,
         )
     };
 
@@ -143,6 +148,7 @@ fn a_retired_hellos_disabled_crypt_does_not_outlive_its_worker() {
         direct,
         Some(hash),
         Some(SourceCryptOptions::from_byte(0x03)),
+        Informant::Own,
     );
 
     let _ = via_kad(&mut state, vec![requesting_row]);
@@ -213,7 +219,10 @@ fn kad_sightings_drop_a_low_id_row_entirely() {
         tcp_port: 4662,
     });
 
-    let decisions = via_kad(&mut state, row.sighting().into_iter().collect());
+    let decisions = via_kad(
+        &mut state,
+        row.sighting(Informant::Own).into_iter().collect(),
+    );
 
     assert!(
         decisions.is_empty(),
@@ -358,8 +367,8 @@ fn a_sentinel_ipv6_source_is_pooled_and_dialed_rather_than_called_back() {
 mod crypt_stance {
     use super::*;
     use rmule_primitives::{
-        ClientId, CryptStance, OutboundCrypt, PeerSource, SourceCryptOptions, SourceSighting,
-        UserHash,
+        ClientId, CryptStance, Informant, OutboundCrypt, PeerSource, SourceCryptOptions,
+        SourceSighting, UserHash,
     };
 
     const HASH: UserHash = UserHash::from_bytes([0x5A; 16]);
@@ -371,6 +380,7 @@ mod crypt_stance {
             direct,
             Some(hash),
             options.map(SourceCryptOptions::from_byte),
+            Informant::Own,
         )
     }
 
@@ -382,6 +392,7 @@ mod crypt_stance {
             PeerSource::HighId(v4),
             Some(hash),
             options.map(SourceCryptOptions::from_byte),
+            Informant::Own,
         );
         let _ = via_exchange(state, peer(1), vec![source]);
     }
@@ -494,7 +505,7 @@ fn known_sources_count_the_slots_and_the_pools_and_drop_a_retired_source() {
 fn known_sources_count_a_source_that_queued_us_once() {
     let mut state = callback_state(vec![peer(1)], Vec::new(), true, 1);
     let _ = state.start(t0());
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(1));
     let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Queued { rank: 3 });
     assert_eq!(state.known_sources(), 1, "held by its worker and the queue");
 

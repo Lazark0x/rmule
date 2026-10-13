@@ -183,43 +183,63 @@ impl SharedTunnelAdmit {
             .map_err(|_| TunnelAdmitRefusal::PipelineClosed)
     }
 
-    /// Enact one callback dial-back (ADR-0061 routes 2/4): open the stream
-    /// toward `requester` — obfuscated toward `obfuscate_toward` when the
-    /// verdict named a key — and admit it as the dialer's side, so the peer
-    /// that asked us to connect meets the IP filter, the ban store and the
-    /// triage exactly as if it had dialed us. Every dial-back — the firewalled
-    /// front's `0x99`/`0x95` and a served link's `0x99` — goes
-    /// through here.
-    ///
-    /// Fire-and-forget on its own task: aMule treats a refused callback dial
-    /// as silent and the requester's own timeout is what notices. A crypt
-    /// handshake that does not complete lands in the same place, because to
-    /// the requester the two are the same silence.
+    /// Enact one callback dial-back (ADR-0061 routes 2/4) on its own task:
+    /// [`callback_dial_back`](Self::callback_dial_back), fire-and-forget.
+    /// Every dial-back — the firewalled front's `0x99`/`0x95` and a served
+    /// link's `0x99` — goes through here; a server-relayed one awaits
+    /// [`callback_dial_back`](Self::callback_dial_back) on a task that holds
+    /// its in-flight claim.
     pub(crate) fn spawn_callback_dial_back(
         &self,
         requester: PeerEndpoint,
         obfuscate_toward: Option<UserHash>,
     ) {
         let admit = self.clone();
-        tokio::spawn(async move {
-            let stream =
-                match PeerConnection::dial_stream(requester, DIAL_BACK_TIMEOUT, obfuscate_toward)
-                    .await
-                {
-                    Ok(stream) => stream,
-                    Err(error) => {
-                        tracing::debug!(?requester, %error, "callback dial-back refused; silent");
-                        return;
-                    }
-                };
-            if let Err(refusal) = admit.admit(stream, requester, PeerStreamRole::Dialer).await {
-                tracing::debug!(
-                    ?requester,
-                    ?refusal,
-                    "callback dial-back opened but the serve pipeline would not take it"
-                );
-            }
-        });
+        tokio::spawn(async move { admit.callback_dial_back(requester, obfuscate_toward).await });
+    }
+
+    /// One callback dial-back: open the stream toward `requester` —
+    /// obfuscated toward `obfuscate_toward` when the verdict named a key —
+    /// and admit it as the dialer's side, so the peer that asked us to
+    /// connect meets the IP filter, the ban store and the triage exactly as
+    /// if it had dialed us. Ends once the pipeline took the link or the dial
+    /// failed.
+    ///
+    /// Silent either way: aMule treats a refused callback dial as silent and
+    /// the requester's own timeout is what notices. A crypt handshake that
+    /// does not complete lands in the same place, because to the requester the
+    /// two are the same silence.
+    pub(crate) async fn callback_dial_back(
+        &self,
+        requester: PeerEndpoint,
+        obfuscate_toward: Option<UserHash>,
+    ) {
+        let stream =
+            match PeerConnection::dial_stream(requester, DIAL_BACK_TIMEOUT, obfuscate_toward).await
+            {
+                Ok(stream) => stream,
+                Err(error) => {
+                    tracing::debug!(?requester, %error, "callback dial-back refused; silent");
+                    return;
+                }
+            };
+        if let Err(refusal) = self.admit(stream, requester, PeerStreamRole::Dialer).await {
+            tracing::debug!(
+                ?requester,
+                ?refusal,
+                "callback dial-back opened but the serve pipeline would not take it"
+            );
+        }
+    }
+
+    /// Whether a stream admitted now would be taken: a pump filled the cell,
+    /// so there is a hello to write, and its pipeline is still open.
+    pub(crate) fn is_serving(&self) -> bool {
+        self.0
+            .lock()
+            .expect("tunnel admit cell")
+            .as_ref()
+            .is_some_and(|admit| admit.accept_tx.strong_count() > 0)
     }
 
     /// Empty the cell: this node is not serving any more. Called

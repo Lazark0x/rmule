@@ -1,18 +1,18 @@
 ┌ Downloads (3) ───── s sort ┐
-│  File ▲           Status   │
-│▸ bunny.mp4        Downloadi│
-│                   ng       │
-│  ABABABABAB       Paused   │
-│  …                         │
+│  File ▲          Status   ▲│
+│▸ bunny.mp4       Downloadi█│
+│                  ng       █│
+│  ABABABABA       Paused    │
+│  B…                       ▼│
 │Off-screen: Size 87.7 MB ·  │
 │Done 42% · Progress 42% ·   │
 │Speed 123.4 KB/s · ETA 7m00s│
 │· Src 8 (1)                 │
-└ 6 columns not shown ───────┘
+└ 6 hidden ─────────── 1 / 3 ┘
 ┌ Sources · bunny.mp4 ───────┐
-│  Source ▲  Software Phase  │
-│▸ 10.0.0.1: aMule    recv   │
+│  Source ▲  Software Phase ▲│
+│▸ 10.0.0.1: aMule    recv  █│
 │  4662      v2.3.3   p4     │
-│  10.0.0.2: —        queued │
+│  10.0.0.2: —        queue ▼│
 │Off-screen: Speed 98.7 KB/s │
-└ too narrow to show: Speed ─┘
+└ 1 column not shown ─ 1 / 2 ┘

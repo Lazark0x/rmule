@@ -45,8 +45,8 @@ use rmule_core::{
     open_durable_store_in_memory,
 };
 use rmule_primitives::{
-    ClientId, ClientIdentity, Ed2kLink, Ed2kText, PeerSource, ServerEndpoint, SourceLookupTarget,
-    SourceSighting, UserHash,
+    ClientId, ClientIdentity, Ed2kLink, Ed2kText, Informant, PeerSource, ServerEndpoint,
+    SourceLookupTarget, SourceSighting, UserHash,
 };
 
 use crate::driver_row::Row;
@@ -375,6 +375,9 @@ async fn requester(
             },
             Some(target.user_hash),
             None,
+            // A source the harness injects through its adapter is rmule's own
+            // word (ADR-0085).
+            Informant::Own,
         ),
     );
 

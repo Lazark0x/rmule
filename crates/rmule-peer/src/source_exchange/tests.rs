@@ -2,14 +2,14 @@
 
 use std::net::Ipv4Addr;
 
-use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint, PeerSource, SourceSighting};
+use rmule_primitives::{ClientId, Informant, Ipv4Endpoint, PeerEndpoint, PeerSource, SourceClaim};
 
 use super::admission::{PER_FILE_SOURCE_CAP, is_plausible_high_id_endpoint, sanitize_and_route};
 use super::{ServedSourcesVersion, SourceExchangeEntry, SourceExchangeVersion};
 
 fn high_id_entry(octets: [u8; 4], port: u16) -> SourceExchangeEntry {
     let id = u32::from_le_bytes(octets);
-    SourceExchangeEntry::plain(SourceSighting::plain(PeerSource::new(
+    SourceExchangeEntry::plain(SourceClaim::plain(PeerSource::new(
         ClientId::from_u32(id),
         port,
     )))
@@ -17,10 +17,13 @@ fn high_id_entry(octets: [u8; 4], port: u16) -> SourceExchangeEntry {
 
 fn low_id_entry(low_id: u32, server: Option<Ipv4Endpoint>) -> SourceExchangeEntry {
     SourceExchangeEntry::new(
-        SourceSighting::plain(PeerSource::new(ClientId::from_u32(low_id), 4662)),
+        SourceClaim::plain(PeerSource::new(ClientId::from_u32(low_id), 4662)),
         server,
     )
 }
+
+/// The peer whose answer the entries are.
+const PEER: Informant = Informant::Party(std::net::IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)));
 
 fn server(a: u8, b: u8, c: u8, d: u8, port: u16) -> Ipv4Endpoint {
     Ipv4Endpoint::new(Ipv4Addr::new(a, b, c, d), port)
@@ -47,14 +50,14 @@ fn plausible_high_id_endpoint_accepts_routable_address() {
 #[test]
 fn sanitize_and_route_drops_zero_ip_high_id() {
     let entries = vec![high_id_entry([0, 3, 2, 1], 4662)];
-    let out = sanitize_and_route(entries, None, None, 0);
+    let out = sanitize_and_route(entries, PEER, None, None, 0);
     assert!(out.is_empty());
 }
 
 #[test]
 fn sanitize_and_route_drops_loopback_high_id() {
     let entries = vec![high_id_entry([127, 0, 0, 1], 4662)];
-    let out = sanitize_and_route(entries, None, None, 0);
+    let out = sanitize_and_route(entries, PEER, None, None, 0);
     assert!(out.is_empty());
 }
 
@@ -62,7 +65,7 @@ fn sanitize_and_route_drops_loopback_high_id() {
 fn sanitize_and_route_drops_own_endpoint() {
     let own = PeerEndpoint::V4(server(1, 2, 3, 4, 4662));
     let entries = vec![high_id_entry([1, 2, 3, 4], 4662)];
-    let out = sanitize_and_route(entries, Some(own), None, 0);
+    let out = sanitize_and_route(entries, PEER, Some(own), None, 0);
     assert!(
         out.is_empty(),
         "a peer echoing our own address back is dropped"
@@ -73,21 +76,21 @@ fn sanitize_and_route_drops_own_endpoint() {
 fn sanitize_and_route_keeps_sane_high_id() {
     let own = PeerEndpoint::V4(server(9, 9, 9, 9, 4662));
     let entries = vec![high_id_entry([1, 2, 3, 4], 4662)];
-    let out = sanitize_and_route(entries, Some(own), None, 0);
+    let out = sanitize_and_route(entries, PEER, Some(own), None, 0);
     assert_eq!(out.len(), 1);
 }
 
 #[test]
 fn sanitize_and_route_parks_low_id_with_no_server() {
     let entries = vec![low_id_entry(5000, None)];
-    let out = sanitize_and_route(entries, None, Some(server(192, 0, 2, 1, 4661)), 0);
+    let out = sanitize_and_route(entries, PEER, None, Some(server(192, 0, 2, 1, 4661)), 0);
     assert!(out.is_empty(), "a Low-ID with no declared server is parked");
 }
 
 #[test]
 fn sanitize_and_route_parks_low_id_on_a_different_server() {
     let entries = vec![low_id_entry(5000, Some(server(198, 51, 100, 9, 4661)))];
-    let out = sanitize_and_route(entries, None, Some(server(192, 0, 2, 1, 4661)), 0);
+    let out = sanitize_and_route(entries, PEER, None, Some(server(192, 0, 2, 1, 4661)), 0);
     assert!(
         out.is_empty(),
         "a Low-ID whose declaring server is not our connected server is parked"
@@ -98,7 +101,7 @@ fn sanitize_and_route_parks_low_id_on_a_different_server() {
 fn sanitize_and_route_keeps_low_id_matching_connected_server() {
     let connected = server(192, 0, 2, 1, 4661);
     let entries = vec![low_id_entry(5000, Some(connected))];
-    let out = sanitize_and_route(entries, None, Some(connected), 0);
+    let out = sanitize_and_route(entries, PEER, None, Some(connected), 0);
     assert_eq!(
         out.iter().map(|s| s.server()).collect::<Vec<_>>(),
         vec![Some(connected)],
@@ -110,11 +113,11 @@ fn sanitize_and_route_keeps_low_id_matching_connected_server() {
 fn sanitize_and_route_honors_the_per_file_cap() {
     let entries: Vec<_> = (0..5).map(|i| high_id_entry([1, 2, 3, i], 4662)).collect();
     // Already at the cap: nothing further is accepted.
-    let out = sanitize_and_route(entries.clone(), None, None, PER_FILE_SOURCE_CAP);
+    let out = sanitize_and_route(entries.clone(), PEER, None, None, PER_FILE_SOURCE_CAP);
     assert!(out.is_empty());
 
     // Two slots of remaining capacity: only the first two survive.
-    let out = sanitize_and_route(entries, None, None, PER_FILE_SOURCE_CAP - 2);
+    let out = sanitize_and_route(entries, PEER, None, None, PER_FILE_SOURCE_CAP - 2);
     assert_eq!(out.len(), 2);
 }
 

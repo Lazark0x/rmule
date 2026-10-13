@@ -56,6 +56,10 @@ pub(crate) async fn share_files(
         path: dir.path().to_path_buf(),
     }))
     .await?;
+    // Core names a directory by its canonical path; another directory's
+    // confirm or pass (the download directory's first share) is not this one's.
+    let own = std::fs::canonicalize(dir.path()).unwrap_or_else(|_| dir.path().to_path_buf());
+    let ours = |asked: &Path| asked == own || asked == dir.path();
     let mut shared = 0;
     let deadline = tokio::time::Instant::now() + SHARE_BUDGET;
     loop {
@@ -73,19 +77,27 @@ pub(crate) async fn share_files(
         match event {
             // The confirm a front end would put to the operator: this driver
             // is the operator, and it placed every file there itself.
-            CoreEvent::Scan(ScanEvent::ConsentRequested { dir, .. }) => {
-                core.send(CoreCommand::Scan(ScanCommand::Answer { dir, share: true }))
-                    .await?;
+            CoreEvent::Scan(ScanEvent::ConsentRequested { dir: asked, .. }) if ours(&asked) => {
+                core.send(CoreCommand::Scan(ScanCommand::Answer {
+                    dir: asked,
+                    share: true,
+                }))
+                .await?;
             }
-            CoreEvent::Scan(ScanEvent::DirectoryRefused { dir, reason }) => {
-                bail!("{} was not shared: {reason:?}", dir.display());
+            CoreEvent::Scan(ScanEvent::DirectoryRefused {
+                dir: refused,
+                reason,
+            }) if ours(&refused) => {
+                bail!("{} was not shared: {reason:?}", refused.display());
             }
             CoreEvent::Serve(ServeEvent::FileShared { .. }) => shared += 1,
-            CoreEvent::Scan(ScanEvent::Finished { .. }) => break,
+            CoreEvent::Scan(ScanEvent::Finished { dir: finished, .. }) if ours(&finished) => break,
             _ => {}
         }
     }
-    if shared != files.len() {
+    // Another directory's pass may share files meanwhile; fewer than ours
+    // is what says ours were not all taken.
+    if shared < files.len() {
         bail!(
             "{shared} of {} files shared: two of one content, or a name the scan skips",
             files.len()
@@ -142,6 +154,45 @@ mod tests {
         assert!(seen > 0, "the events met are handed on");
         drop(share);
         assert!(!dir.exists());
+        core.shutdown().await;
+    }
+
+    /// The download directory's first-share confirm, met during the pass,
+    /// is handed on unanswered and its pass does not end this one: only the
+    /// flow's own file is shared.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_download_directorys_confirm_is_left_to_the_caller() {
+        let (ours, downloads) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let one = ours.path().join("one.bin");
+        std::fs::write(&one, b"the flow's own file, shared").unwrap();
+        std::fs::write(downloads.path().join("done.bin"), b"a finished download").unwrap();
+        let mut core = Core::builder(
+            CoreConfig::default(),
+            open_durable_store_in_memory().unwrap(),
+        )
+        .settings(rmule_core::CoreSettings {
+            download_dir: Some(downloads.path().to_path_buf()),
+            ..rmule_core::CoreSettings::default()
+        })
+        .build();
+
+        let mut asked = Vec::new();
+        let mut shared = Vec::new();
+        let share = share_files(&mut core, &[one], |event| match event {
+            rmule_core::CoreEvent::Scan(rmule_core::ScanEvent::ConsentRequested {
+                adding: false,
+                ..
+            }) => asked.push(()),
+            rmule_core::CoreEvent::Serve(rmule_core::ServeEvent::FileShared { file_hash }) => {
+                shared.push(*file_hash);
+            }
+            _ => {}
+        })
+        .await
+        .expect("the flow's file is shared");
+        assert_eq!(asked.len(), 1, "the download directory asked once");
+        assert_eq!(shared.len(), 1, "nothing under the download directory");
+        drop(share);
         core.shutdown().await;
     }
 

@@ -6,14 +6,14 @@
 
 use std::path::{Path, PathBuf};
 
-use rmule_primitives::{Ed2kFileLink, Ed2kText, FileHash, PartHash, ServerEndpoint};
+use rmule_primitives::{Ed2kFileClass, Ed2kFileLink, Ed2kText, FileHash, PartHash, ServerEndpoint};
 use serde::{Deserialize, Serialize};
 
 use crate::{DownloadFailure, DownloadId, VerificationAuthority};
 
 /// The state a download row is in. `Completed` and `Cancelled` are terminal —
 /// nothing leaves them — and every other state may go to `Cancelled` or
-/// `Failed`.
+/// `Failed`. Encoded by declaration order: a variant is added at the end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DownloadLifecycle {
     /// Accepted and stored, but no run has started yet.
@@ -25,10 +25,15 @@ pub enum DownloadLifecycle {
     Paused,
     /// A run ended without the file. Resumable — a retry may find new sources.
     Failed,
-    /// Every part verified and the file finalized. Terminal.
+    /// The finished file is in place, its registry row written and its part
+    /// file gone. Terminal.
     Completed,
     /// Abandoned by the caller. Terminal.
     Cancelled,
+    /// Every part verified and the file hash checked; the finished file is
+    /// not yet in place at its destination, which the row names (ADR-0115).
+    /// Live: attach starts its run, which goes straight to the move.
+    Completing,
 }
 
 impl DownloadLifecycle {
@@ -43,7 +48,10 @@ impl DownloadLifecycle {
                 true
             }
             (Self::Queued, Self::Active | Self::Paused) => true,
-            (Self::Active, Self::Paused | Self::Completed) => true,
+            (Self::Active, Self::Paused | Self::Completing) => true,
+            // A copy whose bytes changed under it repairs (`Active`); a Pause
+            // before the file is in place leaves it `Paused` (ADR-0115).
+            (Self::Completing, Self::Completed | Self::Active | Self::Paused) => true,
             (Self::Paused, Self::Active) => true,
             (Self::Failed, Self::Active | Self::Paused) => true,
             _ => false,
@@ -52,8 +60,11 @@ impl DownloadLifecycle {
 }
 
 /// The two paths one download writes: the partial file it fills, and the
-/// destination it is renamed to once every part verifies. Held together so no
-/// caller can pair a `.part` with the wrong destination.
+/// destination it is moved to once every part verifies. Held together so no
+/// caller can pair a `.part` with the wrong destination. Chosen once, when
+/// the download is placed, and kept on its row: the part file in the Temp
+/// Directory (ADR-0115), or beside its final path for an older row or a core
+/// given no Temp Directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DownloadPaths {
     final_path: PathBuf,
@@ -61,9 +72,20 @@ pub struct DownloadPaths {
 }
 
 impl DownloadPaths {
+    /// The pair a placement chose: the destination and the partial file, in
+    /// whatever directories each lies in.
+    #[must_use]
+    pub const fn new(final_path: PathBuf, part_path: PathBuf) -> Self {
+        Self {
+            final_path,
+            part_path,
+        }
+    }
+
     /// Derive the pair from the destination: the partial file is the same path
-    /// with `.part` appended, so the two always live in the same directory and
-    /// the finalize is a rename, never a copy across filesystems.
+    /// with `.part` appended, in the same directory: the shape of a row
+    /// placed before the Temp Directory, and of a placement on a core given
+    /// none.
     #[must_use]
     pub fn from_final_path(final_path: PathBuf) -> Self {
         let mut part_path = final_path.clone().into_os_string();
@@ -72,14 +94,6 @@ impl DownloadPaths {
         Self {
             final_path,
             part_path: PathBuf::from(part_path),
-        }
-    }
-
-    #[must_use]
-    pub(crate) const fn from_persisted_paths(final_path: PathBuf, part_path: PathBuf) -> Self {
-        Self {
-            final_path,
-            part_path,
         }
     }
 
@@ -97,7 +111,7 @@ impl DownloadPaths {
     }
 }
 
-/// Where core learned a download's [`DownloadMetadata`] (ADR-0077).
+/// Where core learned a download's [`DownloadMetadata`] (ADR-0078).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DownloadMetadataOrigin {
     /// Recorded at creation from the `Ed2kFileLink` the `StartDownload`
@@ -115,7 +129,7 @@ pub enum DownloadMetadataOrigin {
 }
 
 /// The file facts core holds for one download: the name to show a human and
-/// the exact byte size, plus where they came from (ADR-0077). Recorded at
+/// the exact byte size, plus where they came from (ADR-0078). Recorded at
 /// creation, persisted with the download row, and replayed on recovery — so a
 /// front-end never has to re-derive a name from the canonical link or
 /// approximate a size from the part count.
@@ -155,6 +169,39 @@ impl DownloadMetadata {
             size,
             origin: DownloadMetadataOrigin::Unknown,
         }
+    }
+
+    /// The name's eD2k File Class, read from its bytes; `None` for an empty
+    /// or unclassifiable name.
+    #[must_use]
+    pub fn file_class(&self) -> Option<Ed2kFileClass> {
+        Ed2kFileClass::from_name_bytes(self.name.as_bytes())
+    }
+
+    /// Whether the download is in the **Streaming Priority** set — video,
+    /// audio or archive — which the scheduler serves head and tail first and
+    /// through a sequential window (ADR-0112). aMule's preview priority is
+    /// video and archive behind its `PreviewPrio` preference
+    /// (`PartFile.cpp:1941-1945`); rmule adds audio, with no switch, so every
+    /// Previewable download is fetched head first. A CD image is not an
+    /// archive (`OtherFunctions.cpp:125-138`).
+    #[must_use]
+    pub fn is_streaming_priority(&self) -> bool {
+        matches!(
+            self.file_class(),
+            Some(Ed2kFileClass::Video | Ed2kFileClass::Audio | Ed2kFileClass::Archive)
+        )
+    }
+
+    /// Whether the download is **Previewable** — video or audio, aMule's
+    /// preview gate (`PartFile.cpp:3795-3797`): a player can open its file
+    /// while it runs (ADR-0114). A front end reads this, never re-derives it.
+    #[must_use]
+    pub fn is_previewable(&self) -> bool {
+        matches!(
+            self.file_class(),
+            Some(Ed2kFileClass::Video | Ed2kFileClass::Audio)
+        )
     }
 }
 
@@ -223,7 +270,7 @@ impl DurableDownloadRecord {
         self.metadata.size
     }
 
-    /// The stored name + exact size and their origin (ADR-0077).
+    /// The stored name + exact size and their origin (ADR-0078).
     #[must_use]
     pub const fn metadata(&self) -> &DownloadMetadata {
         &self.metadata
@@ -249,6 +296,18 @@ impl DurableDownloadRecord {
     #[must_use]
     pub const fn paths(&self) -> &DownloadPaths {
         &self.paths
+    }
+
+    /// Where the download's bytes lie now (ADR-0114): the finished file of a
+    /// `Completed` download, the `.part` of any other. A completed row's
+    /// `.part` slot may have been released to a newer row and is then not a
+    /// path, so it is never read for one.
+    #[must_use]
+    pub fn file_path(&self) -> &Path {
+        match self.lifecycle {
+            DownloadLifecycle::Completed => self.paths.final_path(),
+            _ => self.paths.part_path(),
+        }
     }
 
     /// The row's current state, read straight from the store: what the
@@ -285,4 +344,44 @@ pub(crate) struct DurableDownloadRecordInput {
     pub lifecycle: DownloadLifecycle,
     pub verification_authority: Option<VerificationAuthority>,
     pub failure: Option<DownloadFailure>,
+}
+
+#[cfg(test)]
+mod tests {
+    use rmule_primitives::Ed2kText;
+
+    use super::{DownloadMetadata, DownloadMetadataOrigin};
+
+    fn named(name: &[u8]) -> DownloadMetadata {
+        DownloadMetadata {
+            name: Ed2kText::from_bytes(name.to_vec()),
+            size: 1,
+            origin: DownloadMetadataOrigin::Link,
+        }
+    }
+
+    /// The two sets the scheduler and the Preview control read: video and
+    /// audio are both, an archive is Streaming Priority only, a CD image and
+    /// everything else neither; a name that is not UTF-8 keeps its class.
+    #[test]
+    fn previewable_and_streaming_priority_follow_the_name() {
+        let cases: [(&[u8], bool, bool); 8] = [
+            (b"film.MKV", true, true),
+            (b"song.mp3", true, true),
+            (b"pack.rar", false, true),
+            (b"disc.iso", false, false),
+            (b"notes.txt", false, false),
+            (b"README", false, false),
+            (b".avi", false, false),
+            (b"Cr\xe9dits.avi", true, true),
+        ];
+        for (name, previewable, priority) in cases {
+            let metadata = named(name);
+            assert_eq!(metadata.is_previewable(), previewable, "{name:?}");
+            assert_eq!(metadata.is_streaming_priority(), priority, "{name:?}");
+        }
+        let unnamed = DownloadMetadata::unnamed(1);
+        assert!(!unnamed.is_previewable());
+        assert!(!unnamed.is_streaming_priority());
+    }
 }

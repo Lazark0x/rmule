@@ -8,7 +8,7 @@
 use rmule_ed2k::{Ed2kEvent, FoundSources, FoundSourcesObfu, GetSourcesRequest, ServerPacket};
 use rmule_primitives::{
     ClientId, CryptStance, FileHash, OutboundCrypt, Packet, PacketProtocol, PeerSource,
-    SourceLookupTarget, SourceSighting, UserHash,
+    SourceClaim, SourceLookupTarget, UserHash,
 };
 
 const HAS_USER_HASH: u8 = 0x80;
@@ -125,7 +125,7 @@ fn found_sources_obfu_masks_the_transport_bit_out_of_crypt_options() {
     // 0x80 HAS_USER_HASH is wire framing (it gates the trailing hash), not a
     // crypt capability. A source that carries it and an otherwise-identical
     // source-exchange-style source that does not must decode to the SAME
-    // `SourceCryptOptions`, or any `SourceSighting`-keyed dedup would treat one
+    // `SourceCryptOptions`, or any `SourceClaim`-keyed dedup would treat one
     // peer as two. aMule stores `byCryptOptions & 0x7F` for exactly this reason.
     let with_transport =
         obfu_source_bytes(high_id(), 4662, HAS_USER_HASH | 0x01, Some(user_hash(0x05)));
@@ -222,7 +222,7 @@ fn obfu_found_sources_projects_crypt_provenance_onto_the_event() {
 #[test]
 fn plain_found_sources_projects_as_plaintext_only_candidates() {
     // The plain `0x42` path carries no crypt material, so every candidate is
-    // `SourceSighting::plain` — dialed plaintext.
+    // `SourceClaim::plain` — dialed plaintext.
     let source = PeerSource::new(high_id(), 4662);
     let plain = ServerPacket::FoundSources(
         FoundSources::new(crate::fixture::hash(0x33), vec![source]).unwrap(),
@@ -231,7 +231,7 @@ fn plain_found_sources_projects_as_plaintext_only_candidates() {
     let Ed2kEvent::SourcesFound { sources, .. } = Ed2kEvent::from_server_packet(&plain) else {
         panic!("expected SourcesFound");
     };
-    assert_eq!(sources, vec![SourceSighting::plain(source)]);
+    assert_eq!(sources, vec![SourceClaim::plain(source)]);
     assert_eq!(
         sources[0].peer_crypt().outbound(OURS),
         OutboundCrypt::Plaintext

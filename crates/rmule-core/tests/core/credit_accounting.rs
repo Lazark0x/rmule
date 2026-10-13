@@ -11,8 +11,8 @@ use rmule_core::{
     RuntimeServeRuntimeService, SourceLookupOutcome, SourceLookupService,
 };
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, Ed2kText, FileHashSummary, PeerEndpoint, PeerSource, ServerEndpoint,
-    SourceLookupTarget, SourceSighting, UserHash,
+    ClientId, Ed2kFileLink, Ed2kText, FileHashSummary, Informant, PeerEndpoint, PeerSource,
+    ServerEndpoint, SourceLookupTarget, SourceSighting, UserHash,
 };
 
 const FILE_BYTES: usize = 4096; // sub-part file: one block, one BlockReceived
@@ -28,7 +28,7 @@ impl SourceLookupService for OneSourceLookup {
     ) -> Result<SourceLookupOutcome, DownloadFailure> {
         Ok(SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![SourceSighting::plain(self.peer)],
+            sources: vec![SourceSighting::plain(self.peer, Informant::Own)],
         })
     }
 }
@@ -45,8 +45,9 @@ impl PeerTransferService for CreditingPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: rmule_peer::PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let bytes = self.bytes.clone();
@@ -60,6 +61,7 @@ impl PeerTransferService for CreditingPeerTransfer {
                 )))
                 .await;
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             if let Some(public_key) = verified_key {
                 let _ = event_tx
                     .send(PeerWorkerEvent::IdentityVerified {
@@ -70,6 +72,10 @@ impl PeerTransferService for CreditingPeerTransfer {
             }
             while let Some(command) = command_rx.recv().await {
                 match command {
+                    PeerWorkerCommand::AskSlot => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::RequestHashSet => {}
                     PeerWorkerCommand::RequestPart {
                         plan,
                         resume_offset,

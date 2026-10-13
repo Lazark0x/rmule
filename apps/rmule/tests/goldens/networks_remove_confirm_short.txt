@@ -1,0 +1,5 @@
+┌ Remove server ──────────────────────────────────────────┐┐
+│Remove 'eDonkey Prime' (10.0.0.1:4661)?                 ▲││
+│The list entry goes; a session connected to it stays up.█││
+│                                                        ▼││
+└────────────────────────────────────────────────── 3 / 4 ┘┘

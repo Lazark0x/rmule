@@ -163,7 +163,8 @@ impl DownloadRow {
     }
 
     /// Whether a second row for this file's identity would race this one.
-    /// Terminal rows (completed, cancelled) do not.
+    /// Terminal rows (completed, cancelled) do not; a completing one still
+    /// writes its part file and its destination (ADR-0115).
     pub(super) const fn is_live(&self) -> bool {
         matches!(
             self.lifecycle,
@@ -171,6 +172,7 @@ impl DownloadRow {
                 | DownloadLifecycle::Active
                 | DownloadLifecycle::Paused
                 | DownloadLifecycle::Failed
+                | DownloadLifecycle::Completing
         )
     }
 
@@ -181,7 +183,8 @@ impl DownloadRow {
     }
 
     /// Whether a caller could still resume this row — the live set minus
-    /// `Active`, which belongs to a run that is already on the wire.
+    /// `Active` and `Completing`, which belong to a run that is already on
+    /// the wire or that attach starts again.
     pub(super) const fn is_resumable(&self) -> bool {
         matches!(
             self.lifecycle,
@@ -191,7 +194,7 @@ impl DownloadRow {
 
     /// Where this download's bytes live: the two paths it was created with.
     pub(super) fn paths(&self) -> DownloadPaths {
-        DownloadPaths::from_persisted_paths(
+        DownloadPaths::new(
             self.final_path.clone().into(),
             self.part_path.index_text().into(),
         )

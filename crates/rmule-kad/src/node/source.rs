@@ -16,8 +16,8 @@ use crate::lookup_walk::KadWalkPurpose;
 use crate::messages::{Kad2Message, KadPublishedSource};
 use crate::net;
 use crate::source_result::{
-    OLD_MAX_FILE_SIZE, SOURCETYPE_BUDDY, SOURCETYPE_BUDDY_LARGE, SOURCETYPE_DIRECT,
-    SOURCETYPE_DIRECT_LARGE, SOURCETYPE_FIREWALLED_UDP,
+    SOURCETYPE_BUDDY, SOURCETYPE_BUDDY_LARGE, SOURCETYPE_DIRECT, SOURCETYPE_DIRECT_LARGE,
+    SOURCETYPE_FIREWALLED_UDP,
 };
 use crate::source_store::StoreOutcome;
 use crate::{
@@ -333,7 +333,9 @@ impl KadNode {
     ///   came from.
     pub(super) fn publish_source_req(&self, request: &KadPublishRequest) -> Option<Kad2Message> {
         let file_size = request.target().file_size();
-        let large = file_size > OLD_MAX_FILE_SIZE;
+        // aMule's `IsLargeFile` (`Search.cpp:613`, `:633`): strictly past
+        // `OLD_MAX_FILE_SIZE`, which a `u32` still holds.
+        let large = rmule_primitives::is_large_file(file_size);
         let callable_by_udp = self.publish_connect_options.is_some_and(|byte| {
             rmule_primitives::SourceCryptOptions::from_byte(byte).supports_direct_udp_callback()
         });
@@ -366,8 +368,8 @@ impl KadNode {
                 // `encode_published_source` narrows or widens it with
                 // `CTagVarInt`'s own rule, so every size this node holds is
                 // always `Some`. The `large` row-type choice above is a
-                // separate fact, keyed on `OLD_MAX_FILE_SIZE` rather than on
-                // the tag's width — this field does not gate it.
+                // separate fact, keyed on `is_large_file` rather than on the
+                // tag's width — this field does not gate it.
                 file_size: Some(file_size),
                 encryption: self.publish_connect_options,
                 // The `ip6` tag is gated on a Known address (ADR-0087): it is

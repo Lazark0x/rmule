@@ -107,7 +107,7 @@ where a rejected alternative would otherwise come back.
 | [0098](0098-hello-names-the-live-session.md) | Every hello names the live server session |
 | [0099](0099-announce-policy.md) | The Announce Policy: shares may be withheld from servers that answer related searches |
 | [0100](0100-known-file-marks.md) | Known-File Marks: every search result says whether rmule has, fetches, failed, had or dropped the file |
-| [0101](0101-shared-directories.md) | Shared directories are the only way rmule shares: whole, recursive, guarded and confirmed |
+| [0101](0101-shared-directories.md) | Shared directories are the only way rmule shares a whole file: whole directories, recursive, guarded and confirmed |
 | [0102](0102-directory-scan-and-hash-trust.md) | The scan hashes one file at a time and trusts a stored hash on its path, size and time |
 | [0103](0103-directory-watch.md) | The watch: one notify stream per shared directory, coalesced and waiting for stillness |
 | [0104](0104-spare-copies-and-renames.md) | Spare copies and renames carry a stored hash only when the file's identity proves it |
@@ -117,3 +117,8 @@ where a rejected alternative would otherwise come back.
 | [0108](0108-source-exchange-ask-cadence.md) | The source-exchange ask follows aMule's gate, per peer and download, under every name the peer is known by |
 | [0109](0109-source-seeds.md) | Source Seeds: a restart dials first the peers the last run knew, without asking anyone |
 | [0110](0110-dial-end-cause.md) | A dial that ends before the hello says why, and the cause outlives the slot |
+| [0111](0111-sparse-part-file.md) | A part file stays positional and is never pre-sized; every write that extends it punches the gap it opened, and each run measures whether its disk holds holes |
+| [0112](0112-streaming-window-availability-aware-part-scheduling.md) | A peer is handed only a part it advertised: very rare first, then aMule's head and tail, then a streaming window, then rarest |
+| [0113](0113-partial-share-from-the-first-verified-part.md) | A download offers its verified parts from the first one, running or paused: the download's own, never a registry row |
+| [0114](0114-preview-action.md) | Preview hands a download's own file to the operator's player as one argument, once its first part is verified |
+| [0115](0115-temp-directory-and-completion-move.md) | Part files live in a Temp Directory apart from finished files; completion moves the file into the download directory, waits while a program holds it, and copies only across volumes |

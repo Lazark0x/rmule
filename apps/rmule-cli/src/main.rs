@@ -15,14 +15,17 @@ use clap::{Parser, Subcommand};
 use rmule_core::run_log::{self, Level, LevelHandle, RunLog, RunLogFailure};
 use rmule_core::{
     AppConfigStore, Core, CoreBuilder, CoreCommand, CoreCommandRejectReason, CoreConfig, CoreEvent,
-    CoreSettingsHandle, DirectoryRefusal, DownloadCommand, DownloadEvent, DownloadId,
+    CoreSettings, CoreSettingsHandle, DirectoryRefusal, DownloadCommand, DownloadEvent, DownloadId,
     DurableAppConfig, DurableStore, ManagedServer, NameTaken, RuntimeKadFactory,
     RuntimePeerTransferService, RuntimeServeRuntimeService, RuntimeSourceLookupService, ScanEvent,
     ServerListStore, ServerPriority, Setting, SettingError, SettingRefusal, ShareGuards,
     open_durable_store,
 };
 use rmule_primitives::{Ed2kLink, SafeFileName, ServerEndpoint};
-use rmule_words::download::completed_line;
+use rmule_words::download::{
+    completed_line, completing_line, download_failure_words, hole_less_destination,
+};
+use rmule_words::reach::{client_udp_bind_failed, half_bound as half_bound_words};
 
 mod kad;
 
@@ -103,6 +106,16 @@ enum ServerCommand {
 enum ConfigCommand {
     /// Set the directory downloads are written to.
     SetDownloadDir { path: PathBuf },
+    /// Set the directory new downloads keep their part files in, made when
+    /// missing; downloads already started keep theirs.
+    SetTempDir {
+        #[arg(required_unless_present = "default")]
+        path: Option<PathBuf>,
+        /// Clear the one set: new downloads keep their part files in the
+        /// default, `Temp` in the data directory.
+        #[arg(long, conflicts_with = "path")]
+        default: bool,
+    },
     /// Show current preferences.
     Show,
 }
@@ -254,11 +267,49 @@ async fn main() -> Result<()> {
                     })?;
                 println!("download_dir {}", dir.display());
             }
+            ConfigCommand::SetTempDir { path: None, .. } => {
+                CoreSettingsHandle::open(open_store(&data_dir)?)
+                    .share_guards(share_guards(&data_dir))
+                    .set(Setting::TempDir(None))?;
+                println!(
+                    "temp_dir {} (default)",
+                    CoreSettings::default_temp_dir(&data_dir).display()
+                );
+            }
+            ConfigCommand::SetTempDir {
+                path: Some(path), ..
+            } => {
+                let dir = std::path::absolute(&path)
+                    .with_context(|| format!("resolve {}", path.display()))?;
+                // Judged against the download directory and every shared
+                // directory the store lists, then made, before it is stored.
+                CoreSettingsHandle::open(open_store(&data_dir)?)
+                    .share_guards(share_guards(&data_dir))
+                    .set(Setting::TempDir(Some(dir.clone())))
+                    .map_err(|error| match error {
+                        SettingError::Refused(SettingRefusal::TempDirRefused(reason)) => {
+                            anyhow::anyhow!(
+                                "{} is not set as the Temp Directory: {}",
+                                dir.display(),
+                                rmule_words::scan::temp_dir_refusal(&reason)
+                            )
+                        }
+                        other => other.into(),
+                    })?;
+                println!("temp_dir {}", dir.display());
+            }
             ConfigCommand::Show => {
                 let settings = CoreSettingsHandle::open(open_store(&data_dir)?).read()?;
-                match settings.download_dir {
+                match &settings.download_dir {
                     Some(dir) => println!("download_dir {}", dir.display()),
                     None => println!("download_dir <unset>"),
+                }
+                match &settings.temp_dir {
+                    Some(dir) => println!("temp_dir {}", dir.display()),
+                    None => println!(
+                        "temp_dir {} (default)",
+                        CoreSettings::default_temp_dir(&data_dir).display()
+                    ),
                 }
             }
         },
@@ -394,7 +445,11 @@ async fn run_add(data_dir: &std::path::Path, link_str: &str, verbose: bool) -> R
                 return Ok(());
             }
             CoreEvent::Download(DownloadEvent::DownloadFailed { reason, .. }) => {
-                anyhow::bail!("download {} failed: {reason}", download_label(download_id));
+                anyhow::bail!(
+                    "download {} failed: {}",
+                    download_label(download_id),
+                    download_failure_words(&reason)
+                );
             }
             // Core waits for a connection (ADR-0097); this one-shot run has
             // no operator to connect, so a wait would never end.
@@ -413,20 +468,34 @@ async fn run_add(data_dir: &std::path::Path, link_str: &str, verbose: bool) -> R
             CoreEvent::Download(DownloadEvent::DownloadCancelled { .. }) => {
                 anyhow::bail!("download {} cancelled", download_label(download_id));
             }
+            // Each step of the completion move that waits or copies, as it
+            // begins (ADR-0115): a copy across disks or a held file can take
+            // a while, and the one-shot run says why it has not ended.
+            CoreEvent::Download(DownloadEvent::Completing { step, to, .. }) => {
+                println!("{}", completing_line(step, &to));
+            }
+            // The run's disk holds no holes (ADR-0111): the download goes on,
+            // and this edge is the only place the CLI hears of it.
+            CoreEvent::Download(DownloadEvent::HoleLessDestination { directory, .. }) => {
+                println!(
+                    "{}",
+                    hole_less_destination(&download_label(download_id), &directory)
+                );
+            }
             // The one client-UDP socket never bound at core start (ADR-0057):
             // non-fatal to this download (it runs over the
             // server-relayed and TCP-only paths), but reask, NAT-T and Kad
             // are off for the rest of the process, so it is worth a line
             // even though nothing here ever sends `EnableKad`.
             CoreEvent::ClientUdpBindFailed { port, kind } => {
-                println!("{}", CoreEvent::client_udp_bind_failed_message(port, kind));
+                println!("{}", client_udp_bind_failed(port, kind));
             }
             // Half of the same story: the pair came up, but
             // without a family it selected, so some of what rides it is off
             // for the rest of the process. Worth a line for the same reason
             // the total failure is.
             CoreEvent::SocketBoundWithoutFamily { half_bound } => {
-                println!("{half_bound}");
+                println!("{}", half_bound_words(&half_bound));
             }
             // The download still finishes there; only the sharing is off.
             CoreEvent::Scan(ScanEvent::DownloadDirectoryRefused { dir, reason }) => {

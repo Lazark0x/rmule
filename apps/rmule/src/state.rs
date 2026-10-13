@@ -7,7 +7,7 @@
 //! rows, levels, rates, the status-bar info feed); each view extends the fold
 //! with its own vocabulary.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Instant;
 
 use rmule_core::diagnostics::DiagnosticsSnapshot;
@@ -44,7 +44,9 @@ pub use known_file::{KnownFileMark, KnownFileMarks};
 pub use log::LogLine;
 pub use rate_history::RateSample;
 pub use search::{MoreEnded, SearchPane, SearchStatus};
-pub use serve::{ScanConsent, SharedRow, SharedUnder, UploadPeer, UploadState, withheld_rank};
+pub use serve::{
+    PARTIAL_RANK, ScanConsent, SharedRow, SharedUnder, UploadPeer, UploadState, withheld_rank,
+};
 pub use server::{Ed2kConnection, Reconnect};
 pub use session::SessionConfig;
 
@@ -89,6 +91,9 @@ pub struct UiState {
     /// Shared-file registry as the UI knows it (spec §3.5), folded from the
     /// serve share-set and upload events.
     pub shared: BTreeMap<FileHash, SharedRow>,
+    /// The **Partial Shares** core says are offered now (ADR-0113): a
+    /// download's own offer, never a registry row, named by its download.
+    pub partial_shares: BTreeSet<FileHash>,
     /// Upload-side peers (slot holders + queue waiters), keyed by endpoint.
     pub upload_peers: BTreeMap<PeerEndpoint, UploadPeer>,
     /// The **File History** as core last answered it — the registry's entries
@@ -163,6 +168,7 @@ impl Default for UiState {
             reconnect: None,
             downloads: BTreeMap::new(),
             shared: BTreeMap::new(),
+            partial_shares: BTreeSet::new(),
             upload_peers: BTreeMap::new(),
             searches: BTreeMap::new(),
             refused_searches: BTreeMap::new(),
@@ -244,6 +250,7 @@ impl UiState {
             | Action::ConfirmDownloadDir(_)
             | Action::SearchRelated(_)
             | Action::StartKad
+            | Action::Preview(_)
             | Action::Quit => false,
         }
     }

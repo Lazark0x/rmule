@@ -2724,9 +2724,11 @@ dependencies = [
  "rmule-bootstrap",
  "rmule-core",
  "rmule-kad",
+ "rmule-os",
  "rmule-primitives",
  "rmule-testkit",
  "rmule-words",
+ "shlex",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -2780,6 +2782,7 @@ dependencies = [
  "rmule-ed2k",
  "rmule-kad",
  "rmule-net",
+ "rmule-os",
  "rmule-peer",
  "rmule-primitives",
  "rmule-store",
@@ -2853,10 +2856,10 @@ dependencies = [
  "rcgen",
  "rmule-ed2k",
  "rmule-kad",
+ "rmule-os",
  "rmule-peer",
  "rmule-primitives",
  "rmule-testkit",
- "rmule-winsock",
  "rsa",
  "rustls",
  "socket2",
@@ -2865,6 +2868,17 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+]
+
+[[package]]
+name = "rmule-os"
+version = "0.2.0"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
+ "rustix",
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2949,13 +2963,6 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "rmule-winsock"
-version = "0.2.0"
-dependencies = [
- "windows-sys 0.61.2",
 ]
 
 [[package]]

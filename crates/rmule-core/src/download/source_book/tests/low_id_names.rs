@@ -64,6 +64,7 @@ fn one_low_id_on_two_servers_is_two_peers_with_their_own_ask_facts() {
     let on_b = CallbackKey {
         server: Some(SERVER_B),
         low_id: ClientId::from_u32(7),
+        kad_port: None,
     };
     assert!(
         !book.wants_sources_for(on_a, now),

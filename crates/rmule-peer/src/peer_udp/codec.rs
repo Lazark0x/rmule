@@ -116,14 +116,20 @@ impl ReaskFilePing {
     /// Frame the ping, including only the fields this sender's version carries.
     pub fn encode_udp(&self) -> Vec<u8> {
         let mut datagram = udp_header(ClientUdpOpcode::ReaskFilePing);
-        datagram.extend_from_slice(self.file_hash.as_bytes());
+        self.write_body(&mut datagram);
+        datagram
+    }
+
+    /// The ping's body alone — the file hash and the version-gated extras —
+    /// as a `0x94` relays it after the buddy-ID.
+    pub(crate) fn write_body(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(self.file_hash.as_bytes());
         if let Some(status) = &self.part_status {
-            write_part_status(&mut datagram, status);
+            write_part_status(out, status);
         }
         if let Some(count) = self.complete_sources {
-            datagram.extend_from_slice(&count.to_le_bytes());
+            out.extend_from_slice(&count.to_le_bytes());
         }
-        datagram
     }
 
     /// Decode a full `[0xC5][0x90][body]` datagram, reading the version-gated

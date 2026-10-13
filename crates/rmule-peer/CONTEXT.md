@@ -41,7 +41,7 @@ What one connection has heard about a peer's software, folded in arrival order a
 _Avoid_: client info, hello facts (the hello alone is only part of it)
 
 **Peer Identity**:
-What a peer's hello said about it — User Hash, Client ID, ports, capability stances, its buddy, its IPv6 — read once into `PeerIdentity` and kept current by the **Peer Session** that read it: a later **Legacy Mule Info** revises its **Client Software**, its client-UDP reask contact or its source-exchange facts, an `OP_CHANGE_CLIENT_IP` its IPv6, and an `OP_CHANGE_CLIENT_ID` its Client ID and the server it names (its "on our server" claim then reads that address). The session reports it whole: `Identified` at the hello, then `IdentityRevised` naming what changed. The facts consumers derive — the peer-UDP crypt target, the peer as a source, its UDP contact, its "on our server" claim — are read off it, never copied apart from it, and it lives as long as the connection.
+What a peer's hello said about it — User Hash, Client ID, ports, capability stances, its buddy, its IPv6 — read once into `PeerIdentity` and kept current by the **Peer Session** that read it: a later **Legacy Mule Info** revises its **Client Software**, its client-UDP reask contact or its source-exchange facts, an `OP_CHANGE_CLIENT_IP` its IPv6, and an `OP_CHANGE_CLIENT_ID` its Client ID and the server it names (its "on our server" claim then reads that address). The session reports it whole: `Identified` at the hello, then `IdentityRevised` naming what changed. The facts consumers derive — the peer-UDP crypt target, the peer as a source, its UDP contact, its "on our server" claim — are read off it, never copied apart from it, and it lives as long as the connection. The peer as a source is read against the link it was met on: over IPv4 a claim that is no Low ID is the link's address, as aMule reads a High-ID client (`BaseClient.cpp:661`, `:678-680`), so a hello never chooses where rmule dials.
 _Avoid_: hello record (core's name for this same value), hello facts (a copy that stops tracking the peer)
 
 **Hello Trailer**:
@@ -65,7 +65,7 @@ The IPv6-carrying source-exchange record (version pinned at 1): id, port, and a 
 _Avoid_: extended source exchange (the wider emule-qt feature this map ruled out), SX3
 
 **Reask Responder**:
-The uploader half of the peer-UDP reask (ADR-0057), sans-I/O and stateless. It reads an `OP_REASKFILEPING` (`0x90`) into a typed ping, then answers it once core has resolved the pinger against its queue: *Known* (the file it waits for, its rank, its UDP version, its extended-requests claim and its crypt target), *Ambiguous* (several waiters behind one IP) or *Unknown*, together with the queue's waiting length and maximum and whether the file is shared. The answer is a reply plus the peer it may be obfuscated for, or a named silence, plus the part status the ping restated for core to record. Every aMule rule sits inside: the sender is resolved before the file, the UDP version gates what is read, a malformed ping is silenced and counted, `OP_QUEUEFULL` goes only to an unknown pinger while `waiting + 50 > max`, and a hash mismatch, an ambiguous IP or an unknown pinger with room are dropped silently.
+The uploader half of the peer-UDP reask (ADR-0057), sans-I/O and stateless. It reads an `OP_REASKFILEPING` (`0x90`) into a typed ping, then answers it once core has resolved the pinger against its queue: *Known* (the file it waits for, its rank, its UDP version, its extended-requests claim and its crypt target), *Ambiguous* (several waiters behind one IP) or *Unknown*, together with the queue's waiting length and maximum and the file as we share it — its size and the parts we hold, which a whole file states as the count `0` alone. The answer is a reply plus the peer it may be obfuscated for, or a named silence, plus the part status the ping restated for core to record. Every aMule rule sits inside: the sender is resolved before the file, the UDP version gates what is read, a malformed ping is silenced and counted, `OP_QUEUEFULL` goes only to an unknown pinger while `waiting + 50 > max`, and a hash mismatch, an ambiguous IP or an unknown pinger with room are dropped silently.
 _Avoid_: reply matrix (the rules, not where they live), reask handler
 
 **Reask Requester**:
@@ -127,6 +127,10 @@ _Avoid_: authentication, SUI (**Secure User Identification** is a different, sig
 **Compressed Part**:
 A part transfer whose payload is compressed (`OP_COMPRESSEDPART`) rather than raw (`OP_SENDINGPART`). Negotiated *per direction* through each side's **Capability Block**: a peer sends us compressed parts only if our block advertised data compression, and we send compressed only if the downloading peer's block did. Independent per direction, so "accept compressed, send raw" is a valid state.
 _Avoid_: compressed file (the file content is unchanged; only the on-wire part payload is compressed)
+
+**Advertised Parts**:
+The parts a peer's part status says it holds of one file — an `OP_FILESTATUS`, a `0x91` ack's status, the status a name ask or a reask ping carries — read over the file's real parts: a count of `0` is a complete source, every part; a count of `ed2k_status_part_count(size)` gives the first `part_count(size)` bits, so the phantom part of an exact multiple is never read; any other count is refused whole, as aMule throws. `PartBitmap::advertised_parts` is the one reader; rmule-core keeps each source's on its record.
+_Avoid_: availability, file status (that is the packet), bitmap (that is the wire form)
 
 **AICH Exchange**:
 The peer C2C packets that carry **AICH Hash Set** recovery data (`OP_AICHREQUEST 0x9B` /

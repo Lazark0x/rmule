@@ -21,7 +21,7 @@ fn pass_knowing(dir: &Scripted, known: &Known, consent: Consent) -> (PassEnd, Ve
     let end = run_pass(
         dir,
         Path::new(ROOT),
-        known,
+        &mut || Some(known.clone()),
         consent,
         &AtomicBool::new(false),
         &progress,

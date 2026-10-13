@@ -6,6 +6,7 @@
 //! A focused form swallows the global binding letters — typing `q` into a
 //! hostname must not quit.
 
+use std::cell::Cell;
 use std::net::Ipv4Addr;
 
 use ratatui::Frame;
@@ -20,10 +21,11 @@ use rmule_primitives::{Ed2kText, ServerEndpoint};
 use super::NetworksView;
 use crate::action::Action;
 use crate::form::{Field, Form, FormKey, validate_port, validate_url};
+use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
-use crate::views::modal::Modal;
+use crate::views::modal::{Modal, release_form, scroll_form};
 use crate::wrap::clamp_u16;
 
 /// Floor width of a modal form; a longer entry grows it (see [`draw_form`]).
@@ -63,6 +65,8 @@ impl FormKind {
 pub(super) struct ServerForm {
     kind: FormKind,
     form: Form,
+    /// What part of the form is on screen, in a frame too short for it.
+    viewport: Cell<Viewport>,
 }
 
 impl ServerForm {
@@ -76,6 +80,7 @@ impl ServerForm {
             ])
             // Address: the only field with no sane default.
             .focused_on(1),
+            viewport: Cell::default(),
         }
     }
 
@@ -86,6 +91,7 @@ impl ServerForm {
         Self {
             kind: FormKind::UpdateFromUrl,
             form: Form::new(vec![Field::text("URL", url)]),
+            viewport: Cell::default(),
         }
     }
 
@@ -153,23 +159,28 @@ pub(super) fn draw_form(frame: &mut Frame, area: Rect, entry: &ServerForm, theme
     let width = clamp_u16(entry.form.natural_width() + 2)
         .max(FORM_W)
         .min(area.width);
-    let inner_w = usize::from(width).saturating_sub(2).max(1);
-
-    let mut lines = entry.form.render(inner_w, theme, true).lines;
-    lines.push(Line::raw(""));
-    lines.push(Line::from(vec![
-        Span::styled(" Tab", Style::new().fg(theme.accent)),
-        Span::styled(" field    ", Style::new().fg(theme.fg)),
-        Span::styled("Enter", Style::new().fg(theme.accent)),
-        Span::styled(
-            format!(" {}    ", entry.kind.commit_verb()),
-            Style::new().fg(theme.fg),
-        ),
-        Span::styled("Esc", Style::new().fg(theme.accent)),
-        Span::styled(" cancel", Style::new().fg(theme.fg)),
-    ]));
-
-    Modal::new(entry.kind.title(), theme).draw(frame, area, width, theme, lines);
+    Modal::new(entry.kind.title(), theme).draw_form(
+        frame,
+        area,
+        width,
+        theme,
+        &entry.viewport,
+        |width| {
+            let inner_w = usize::from(width).saturating_sub(2).max(1);
+            let legend = Line::from(vec![
+                Span::styled(" Tab", Style::new().fg(theme.accent)),
+                Span::styled(" field    ", Style::new().fg(theme.fg)),
+                Span::styled("Enter", Style::new().fg(theme.accent)),
+                Span::styled(
+                    format!(" {}    ", entry.kind.commit_verb()),
+                    Style::new().fg(theme.fg),
+                ),
+                Span::styled("Esc", Style::new().fg(theme.accent)),
+                Span::styled(" cancel", Style::new().fg(theme.fg)),
+            ]);
+            entry.form.render_modal(inner_w, theme, vec![legend])
+        },
+    );
 }
 
 impl NetworksView {
@@ -188,6 +199,10 @@ impl NetworksView {
         let Some(entry) = self.form.as_mut() else {
             return ViewOutcome::Ignored;
         };
+        if scroll_form(&mut entry.viewport, key.code) {
+            return ViewOutcome::Redraw;
+        }
+        release_form(&mut entry.viewport);
         match entry.form.handle_key(key) {
             FormKey::Cancel => {
                 self.form = None;
@@ -429,5 +444,33 @@ mod tests {
                 base + Duration::from_secs(2),
             );
         });
+    }
+
+    /// Tab to the last field of a form taller than the frame keeps that
+    /// field, and the legend under it, on screen; `Home` reaches the top.
+    #[test]
+    fn golden_networks_add_form_scrolls_in_a_short_frame() {
+        let state = listed_servers();
+        let mut view = NetworksView::new();
+        view.handle_key(press(KeyCode::Char('a')), &state);
+        let now = Instant::now();
+        let shown = |view: &mut NetworksView| {
+            crate::golden::render_to_lines(70, 6, |frame| {
+                let area = frame.area();
+                view.draw(frame, area, &state, &Theme::default_dark(), now);
+            })
+        };
+        assert_golden("networks_add_form_short", 70, 6, |frame| {
+            let area = frame.area();
+            view.draw(frame, area, &state, &Theme::default_dark(), now);
+        });
+        view.handle_key(press(KeyCode::Tab), &state);
+        let last = shown(&mut view);
+        assert!(
+            last.contains("Port") && last.contains("Esc cancel"),
+            "{last}"
+        );
+        view.handle_key(press(KeyCode::Home), &state);
+        assert!(shown(&mut view).contains("Name"));
     }
 }

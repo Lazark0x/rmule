@@ -17,11 +17,12 @@ use crate::adapters::{
     AnnounceOutcome, ServeConnection, ServeInput, ServeOutput, ServeRuntimeService,
 };
 use crate::client_udp::{ClientUdpDatagram, ClientUdpSend};
-use crate::content::ContentFileStore;
+use crate::content::{CheckedReadError, ContentFileStore};
 use crate::credit::{KeyBinding, SharedCreditStore};
 use crate::peer_roster::{PeerRelation, RelationLease};
 use crate::registry::{SharedFileEntry, SharedFileRegistry};
 use crate::serve::state::{ServeDecision, ServeSelfPosition, ServeState};
+use crate::served_downloads::ServedDownloads;
 use crate::service::{CoreEvent, ServeEvent, ServeStopReason};
 use crate::store::registry::DurableSharedFileRegistry;
 use crate::upload_queue::UploadSlotQueue;
@@ -84,6 +85,10 @@ pub(crate) struct ServeTask<L> {
     /// Where a failed read of a shared file goes: the **Registry Check**.
     /// `None` for a serve task woven without one.
     pub(crate) read_failed_tx: Option<std::sync::mpsc::Sender<crate::registry_check::CheckInput>>,
+    /// The **Served Downloads** (ADR-0113): read afresh before every peer
+    /// input, reask ping and share trigger, and where a running download's
+    /// askers are handed to its run.
+    pub(crate) served: ServedDownloads,
 }
 
 /// Project the session's self-facts into the brain's [`ServeSelfPosition`].
@@ -153,6 +158,7 @@ where
             peer_roster,
             withheld,
             read_failed_tx,
+            served,
         } = self;
         // Every Upload relation this activity marks ends with it (ADR-0093 invariant 1):
         // a stop, a listener death or a panic
@@ -166,6 +172,8 @@ where
         // identities, and the AICH cache, and turns each input into an ordered
         // `Vec<ServeDecision>` this task enacts.
         let mut state = ServeState::new(queue);
+        // The cell's version the brain's copy was last read at.
+        let mut served_seen = 0;
         // Every connection's events funnel into one stream the task selects on
         // (cf. the download runner's `fact_rx`).
         let (fact_tx, mut fact_rx) = mpsc::channel::<(PeerEndpoint, ServeInput)>(64);
@@ -180,6 +188,7 @@ where
             diagnostics: &diagnostics,
             peer_roster: &peer_roster,
             read_failed_tx: read_failed_tx.as_ref(),
+            served: &served,
         };
 
         // Announce the share set as of serve start — once the Registry
@@ -189,6 +198,7 @@ where
             // A trigger sent before this read signals a change the read
             // already holds: announcing again for it would say nothing new.
             while share_changed_rx.try_recv().is_ok() {}
+            refresh_served(&served, &mut served_seen, &mut state);
             let mut decisions: VecDeque<ServeDecision> = state
                 .on_share_set(
                     read_share_set(&registry, &withheld),
@@ -242,6 +252,7 @@ where
                         break;
                     }
                     let modifiers = current_modifiers(&credit, state.identities()).await;
+                    refresh_served(&served, &mut served_seen, &mut state);
                     let mut decisions: VecDeque<ServeDecision> = state
                         .on_share_set(read_share_set(&registry, &withheld), Instant::now(), &modifiers)
                         .into();
@@ -299,6 +310,9 @@ where
                     // login that just made us High-ID must stop the guard
                     // refusing on the very next ask.
                     state.on_self_position(self_position(own_identity.as_ref()));
+                    // The downloads' Verified Ranges likewise: a part a run
+                    // just verified is answered for on this very input.
+                    refresh_served(&served, &mut served_seen, &mut state);
                     let mut decisions: VecDeque<ServeDecision> = state
                         .on_conn_event(Instant::now(), peer, event, &modifiers)
                         .into();
@@ -347,6 +361,7 @@ where
                     // One inbound OP_REASKFILEPING from the client-UDP front:
                     // answer the reply matrix, refresh the waiter's standing.
                     Some((udp_src, datagram)) => {
+                        refresh_served(&served, &mut served_seen, &mut state);
                         let mut decisions: VecDeque<ServeDecision> = state
                             .on_reask_ping(Instant::now(), udp_src, &datagram)
                             .into();
@@ -397,6 +412,8 @@ struct ServeSinks<'a> {
     peer_roster: &'a crate::peer_roster::SharedPeerRoster,
     /// The **Registry Check**'s inputs, where a failed read goes.
     read_failed_tx: Option<&'a std::sync::mpsc::Sender<crate::registry_check::CheckInput>>,
+    /// The **Served Downloads**, whose runs take their askers.
+    served: &'a ServedDownloads,
 }
 
 /// Carry out one `Vec<ServeDecision>` against the live runtime — the only
@@ -422,6 +439,7 @@ async fn enact<L: ServeRuntimeService>(
         diagnostics,
         peer_roster,
         read_failed_tx,
+        served,
     } = sinks;
     while let Some(decision) = decisions.pop_front() {
         match decision {
@@ -476,6 +494,15 @@ async fn enact<L: ServeRuntimeService>(
                             peer_roster.forget(PeerRelation::Upload, v4);
                         }
                     }
+                    ServeEvent::WaiterRelinked { from, to } => {
+                        // The mark `PeerQueued` set moves with the place.
+                        if let Some(v4) = from.as_v4() {
+                            peer_roster.forget(PeerRelation::Upload, v4);
+                        }
+                        if let Some(v4) = to.as_v4() {
+                            peer_roster.mark_known(PeerRelation::Upload, v4);
+                        }
+                    }
                     ServeEvent::UploadAddressCapReached { .. } => {
                         diagnostics.record_upload_address_cap_refusal();
                     }
@@ -516,6 +543,7 @@ async fn enact<L: ServeRuntimeService>(
                 offset,
                 len,
                 purpose,
+                check: None,
             } => match ContentFileStore::read_range(&path, offset, len).await {
                 Ok(bytes) => decisions.extend(state.on_read_result(peer, purpose, bytes)),
                 Err(error) => {
@@ -529,6 +557,38 @@ async fn enact<L: ServeRuntimeService>(
                     ));
                 }
             },
+            // A Served Download's bytes: read only through a handle proven to
+            // be the file its range was read from (ADR-0113).
+            ServeDecision::ReadRange {
+                peer,
+                path,
+                offset,
+                len,
+                purpose,
+                check: Some(check),
+            } => match ContentFileStore::read_checked(&path, &check, offset, len).await {
+                Ok(bytes) => decisions.extend(state.on_read_result(peer, purpose, bytes)),
+                Err(refused) => {
+                    let modifiers = current_modifiers(credit, state.identities()).await;
+                    decisions.extend(match refused {
+                        CheckedReadError::Changed => {
+                            tracing::warn!(?purpose, path = %path.display(), "a download's part file changed; its parts are no longer offered");
+                            state.on_part_file_changed(Instant::now(), peer, purpose, &modifiers)
+                        }
+                        CheckedReadError::Unreadable(error) => {
+                            tracing::warn!(%error, ?purpose, path = %path.display(), "a download's part file could not be read; its parts are no longer offered");
+                            state.on_part_file_unreadable(Instant::now(), peer, purpose, &modifiers)
+                        }
+                    });
+                }
+            },
+            ServeDecision::EmptyRange {
+                file_hash,
+                checked,
+                cause,
+            } => {
+                served.empty_range(file_hash, checked, cause);
+            }
             ServeDecision::ReadFailed(file_hash) => {
                 if let Some(tx) = read_failed_tx {
                     let _ = tx.send(crate::registry_check::CheckInput::ReadFailed(file_hash));
@@ -565,6 +625,14 @@ async fn enact<L: ServeRuntimeService>(
                     );
                 }
             },
+            // A run that is gone, or whose inbox is full, takes nothing:
+            // the asker was answered all the same.
+            ServeDecision::KeepAsker {
+                file_hash,
+                sighting,
+            } => {
+                served.sight(file_hash, sighting);
+            }
             ServeDecision::DialBackGrant { peer, file_hash } => {
                 // Seam (ADR-0057): promotion of a disconnected waiter dials its
                 // TCP endpoint and grants on connect — a serve-side outbound
@@ -588,6 +656,16 @@ fn read_share_set(
     withheld: &crate::registry_check::WithheldRows,
 ) -> Vec<SharedFileEntry> {
     withheld.offered(registry.list().unwrap_or_default())
+}
+
+/// Refresh the brain's copy of the **Served Downloads** when the cell moved
+/// since the read at `seen` (ADR-0113 rule 5): a level, read before every
+/// decision that answers for a download.
+fn refresh_served(served: &ServedDownloads, seen: &mut u64, state: &mut ServeState) {
+    if let Some(read) = served.read_since(*seen) {
+        *seen = read.version;
+        state.on_served(read.entries);
+    }
 }
 
 /// Register one identified serve connection (accepted *or* dialed): record its

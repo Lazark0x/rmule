@@ -306,17 +306,20 @@ fn a_long_list_scrolls_the_selected_row_into_view() {
             .expect("draw");
     };
     draw(&mut view);
-    assert_eq!(view.server_offset, 0);
+    assert_eq!(view.viewport.first(), 0);
     view.handle_key(press(KeyCode::Char('G')), &state);
     draw(&mut view);
-    assert!(view.server_offset > 0, "the table scrolled to the last row");
+    assert!(
+        view.viewport.first() > 0,
+        "the table scrolled to the last row"
+    );
     assert!(
         view.server_rows.line_of(39).is_some(),
         "the selected row is on screen"
     );
     view.handle_key(press(KeyCode::Char('g')), &state);
     draw(&mut view);
-    assert_eq!(view.server_offset, 0, "g scrolls back to the top");
+    assert_eq!(view.viewport.first(), 0, "g scrolls back to the top");
 }
 
 /// Everything on screen, one string per row.
@@ -401,4 +404,33 @@ fn the_detail_pane_collapses_where_the_table_would_lose_half_its_rows() {
         tall.contains("Shares: not announced to this session yet"),
         "{tall}"
     );
+}
+
+/// A server list longer than its pane: the bar runs down the header and the
+/// rows, and the border counts the cursor's row of the forty.
+#[test]
+fn golden_networks_servers_overflow() {
+    let servers: Vec<ServerDiagnostics> = (0..40u8)
+        .map(|n| listed(&format!("10.0.0.{n}"), 4661, &format!("Server {n}")))
+        .collect();
+    let state = UiState {
+        diagnostics: DiagnosticsSnapshot {
+            servers,
+            ..DiagnosticsSnapshot::default()
+        },
+        ..UiState::default()
+    };
+    let mut view = NetworksView::new();
+    for _ in 0..25 {
+        view.handle_key(press(KeyCode::Char('j')), &state);
+    }
+    assert_golden("networks_servers_overflow", 78, 24, |frame| {
+        view.draw(
+            frame,
+            frame.area(),
+            &state,
+            &Theme::default_dark(),
+            Instant::now(),
+        );
+    });
 }

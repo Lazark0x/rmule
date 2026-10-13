@@ -4,11 +4,21 @@
 //!
 //! They live here rather than beside any one caller because the four
 //! admission paths must agree byte for byte: a private copy in any of them
-//! would be free to drift.
+//! would be free to drift. The address classifiers are each the workspace's one
+//! Reserved Range check ([`rmule_primitives::is_reserved_ipv4`], ADR-0085), read
+//! for the question their caller asks.
 
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 
-use crate::KadId;
+use rmule_primitives::Informant;
+
+use crate::flood::DNS_CONFUSION_PORT;
+use crate::{KadId, KadNodeEndpoint};
+
+/// The first Kad version whose datagrams are obfuscated, so a contact of an
+/// older one on port `53` could be a confused DNS reply (aMule's
+/// `!(port == 53 && version <= 5)`).
+const DNS_PORT_SAFE_VERSION: u8 = 6;
 
 /// The publish tolerance: a non-LAN publish is dropped unless the XOR distance's
 /// most significant 32-bit word is at most this (aMule's `SEARCHTOLERANCE`).
@@ -37,43 +47,58 @@ pub(crate) fn distance_top_word(own: KadId, key: KadId) -> u32 {
 /// with the LAN filter on — Kad is a public-internet DHT: a contact is dialable
 /// only with a nonzero port and a routable IP.
 ///
-/// Rejects the unspecified address (`0.0.0.0`), the loopback and RFC1918
-/// private ranges (via [`is_lan_ip`]), and the link-local block (`169.254/16`)
-/// — exactly the ranges aMule's `IsGoodIP`/`IsLANIP` refuse, none of which can
-/// host a live Kad node. aMule's `IsGoodIP` filters no further, so multicast,
-/// broadcast, and the `240/4` reserved block are deliberately *not* rejected
-/// here either: adding them would drop contacts aMule would load, diverging
-/// from its routing-table admission.
+/// That is the one Reserved Range check every intake applies
+/// ([`rmule_primitives::is_reserved_ipv4`], ADR-0085) plus the private ranges
+/// and loopback ([`is_lan_ip`]), as aMule's `IsGoodIPPort` is `IsGoodIP` with
+/// its LAN filter on (`NetworkFunctions.h:118-121`).
 pub(crate) fn is_good_ip_port(ip: Ipv4Addr, port: u16) -> bool {
-    port != 0 && !ip.is_unspecified() && !is_lan_ip(ip) && !ip.is_link_local()
+    port != 0 && !rmule_primitives::is_reserved_ipv4(ip) && !is_lan_ip(ip)
 }
 
-/// Whether an IPv4 can name one remote host at all. It refuses `0.0.0.0`
-/// and everything from `224.0.0.0` up: multicast (`224/4`) and the reserved
-/// `240/4`, which holds the limited broadcast `255.255.255.255`. That is
-/// also eMuleAI's `UINT_MAX` stand-in for an IPv6 address in a 32-bit field
-/// (`CAddress::ToUInt32`, eMuleAI `Address.cpp:91-92`).
+/// Whether a contact `informant` named at `endpoint`, speaking Kad `version`,
+/// can be a Kad node: its address lies in no Reserved Range the informant
+/// cannot vouch for ([`Informant::admits`], ADR-0085), its port is not `0`,
+/// and it is not on port `53` below Kad version 6. That is aMule's
+/// `IsGoodIPPort` and DNS-port rule at `CRoutingZone::Add`
+/// (`RoutingZone.cpp:405-406`) and on every `KADEMLIA2_RES` row
+/// (`KademliaUDPListener.cpp:732-733`), without its LAN filter: a LAN contact
+/// is a contact.
+pub(crate) fn may_be_a_contact(
+    informant: Informant,
+    endpoint: KadNodeEndpoint,
+    version: u8,
+) -> bool {
+    let port = endpoint.udp_port();
+    informant.admits(IpAddr::V4(endpoint.ip()))
+        && port != 0
+        && !(port == DNS_CONFUSION_PORT && version < DNS_PORT_SAFE_VERSION)
+}
+
+/// Whether some informant could make `ip` one host's address: it lies in no
+/// Reserved Range, or it is loopback, which stands on an informant from this
+/// host ([`rmule_primitives::Informant::admits`], ADR-0085).
 ///
-/// A source row's `TAG_SOURCEIP` (the `0x95` target) passes this gate
-/// alone. That address is the storer's observation of where the publish
-/// came from, not a claim, and a storer that shares a host with its
-/// publisher truly observes loopback.
-pub(crate) fn is_unicast_host(ip: Ipv4Addr) -> bool {
-    !ip.is_unspecified() && ip.octets()[0] < 224
+/// A source row's `TAG_SOURCEIP` (the `0x95` target) is the storer's
+/// observation of where the publish came from. The reader does not know the
+/// storer, so it keeps only what some informant could vouch for, and the
+/// Source Book gate judges the rest against the storer that answered: a storer
+/// that shares a host with its publisher truly observes loopback, which is a
+/// peer only when that storer is on our host too.
+pub(crate) fn may_name_a_host(ip: Ipv4Addr) -> bool {
+    Informant::Own.admits(IpAddr::V4(ip))
 }
 
 /// Whether a *claimed* IPv4 may be the target of a datagram rmule sends on
 /// the claim alone: a source row's `TAG_SERVERIP`, the buddy a `0x52` or a
-/// rendezvous goes to. It must be [`is_unicast_host`] and also neither
-/// loopback nor link-local, so a row cannot aim rmule at its own host or at
-/// its link.
+/// rendezvous goes to. It must lie in no Reserved Range
+/// ([`rmule_primitives::is_reserved_ipv4`], ADR-0085), loopback included: the
+/// buddy is a third party the row names, judged with no informant at hand, and
+/// a row whose buddy has no endpoint is still walked to by the buddy's ID.
 ///
-/// The private ranges stay admitted. rmule's Kad serves LAN peers (the
-/// [`is_lan_ip`] tolerance bypass), and the counterparties do not filter
-/// the buddy address by range. aMule applies no filter to it
-/// (`DownloadQueue.cpp:1714` filters only the source IP), and eMuleAI
-/// applies only its user IP filter (`DownloadQueue.cpp:4932-4942`). Refusing
-/// them is a node-wide LAN policy that no ADR has made.
+/// The private ranges are admitted: a LAN peer is a peer (ADR-0085). aMule
+/// applies no filter to the buddy address (`DownloadQueue.cpp:1714` filters
+/// only the source IP), and eMuleAI applies only its user IP filter
+/// (`DownloadQueue.cpp:4932-4942`).
 pub(crate) fn is_claimed_udp_target(ip: Ipv4Addr) -> bool {
-    is_unicast_host(ip) && !ip.is_loopback() && !ip.is_link_local()
+    !rmule_primitives::is_reserved_ipv4(ip)
 }

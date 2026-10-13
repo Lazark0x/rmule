@@ -76,7 +76,7 @@ fn slotless_standby_transition_on_cancel_transfer() {
         ranges,
     }));
     session.handle_bytes(&reqfilename_answer(h, "file"));
-    session.handle_bytes(&file_status(h, 1, &[0x01]));
+    session.handle_bytes(&file_status(h, 2, &[0x01]));
     session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     session.handle_bytes(&acceptuploadreq());
     let _ = drain(|| session.poll_output());
@@ -126,7 +126,7 @@ fn standby_re_ask_skips_probe_and_hashset() {
         ranges,
     }));
     session.handle_bytes(&reqfilename_answer(h, "file"));
-    session.handle_bytes(&file_status(h, 1, &[0x01]));
+    session.handle_bytes(&file_status(h, 2, &[0x01]));
     session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     session.handle_bytes(&acceptuploadreq());
     let _ = drain(|| session.poll_output());
@@ -171,7 +171,7 @@ fn cancel_latch_prevents_double_emit_in_same_cycle() {
         ranges,
     }));
     session.handle_bytes(&reqfilename_answer(h, "file"));
-    session.handle_bytes(&file_status(h, 1, &[0x01]));
+    session.handle_bytes(&file_status(h, 2, &[0x01]));
     session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     session.handle_bytes(&acceptuploadreq());
     let _ = drain(|| session.poll_output());

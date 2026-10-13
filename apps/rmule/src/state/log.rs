@@ -80,6 +80,7 @@ mod tests {
                     size: 123_456,
                     origin: rmule_core::DownloadMetadataOrigin::Link,
                 },
+                file_path: crate::fixture::part_file(),
             })),
             Instant::now(),
         );
@@ -92,6 +93,7 @@ mod tests {
                 failure: None,
                 file_hash: file_hash(7),
                 metadata: rmule_core::DownloadMetadata::unnamed(999),
+                file_path: crate::fixture::part_file(),
             })),
             Instant::now(),
         );

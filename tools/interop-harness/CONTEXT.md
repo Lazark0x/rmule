@@ -231,6 +231,31 @@ overrides it (the fake-docker suite sets `0`). Not a Readiness Gate — nothing 
 polled — and not a Tap window, which is observation after the stimulus.
 _Avoid_: publish window, sleep, warm-up
 
+**Run Record**:
+The `run.toml` the harness itself writes into every Run Dir: when the run began and
+ended, the commit and dirty state of the harness workspace, the hash of the `rmule-tools`
+binary (or the id of the Driver Image) under test, the ids of the images the run started,
+and how it ended. It is what lets "mine before running" tell an unchanged build from a
+changed one; a re-score only appends `rescored_at`.
+_Avoid_: run metadata, resolved config (that is the flow's options only)
+
+**Driver Image**:
+The `rmule-tools` image every UDP or in-network driver runs from. It is not compiled
+by `docker build`: the binary comes from the shared target cache (the warm
+host-persisted prebuild the Kad flows also run from), is staged beside the recipe, and
+is `COPY`d into a thin runtime. An unchanged tree therefore rebuilds nothing, and the
+Bench Doctor's own image is the only one built before a flow decides to skip.
+_Avoid_: tools build, release compile
+
+**Search Schedule**:
+The bounded cadence of the requester's repeated Kad source searches (`Cancel` +
+re-`Add`, four attempts, a 2 s gap inside each, 25 s between). Resolved once per run
+and clamped so its total never exceeds `--timeout`;
+`RMULE_KAD_SEARCH_CANCEL_GAP_SECS` and `RMULE_KAD_SEARCH_RETRY_INTERVAL_SECS`
+override the two pauses (the fake-docker suite sets both `0`). Live runs keep the
+defaults.
+_Avoid_: retry loop, sleep
+
 **Seeded Bootstrap**:
 The harness-generated `preferencesKad.dat` (pinning a node's Kad ID) and `nodes.dat`
 (naming its starting contacts) dropped into a container before it starts. Seeding is

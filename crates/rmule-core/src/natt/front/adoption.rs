@@ -79,6 +79,7 @@ fn callback_key() -> CallbackKey {
     CallbackKey {
         server: None,
         low_id: ClientId::from_u32(7),
+        kad_port: None,
     }
 }
 
@@ -97,6 +98,7 @@ fn deps() -> InboundPeerDeps {
         file_known: crate::known_files::SharedFileKnown::default(),
         tunnel_admit: crate::adapters::SharedTunnelAdmit::default(),
         hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
+        served_links: crate::adapters::SharedServedLinks::default(),
     }
 }
 

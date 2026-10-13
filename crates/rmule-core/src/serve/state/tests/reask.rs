@@ -134,9 +134,9 @@ fn a_ping_from_an_ip_several_waiters_share_resolves_to_no_one() {
     );
     let t = Instant::now();
     let _ = slot_request(&mut state, peer_at([10, 0, 0, 1], 4000), served, t);
-    for (tcp, udp_port) in [(4000, 6001), (4001, 6002)] {
+    for (tcp, udp_port, client) in [(4000, 6001, 0x0B), (4001, 6002, 0x0C)] {
         let p = peer_at([10, 0, 0, 3], tcp);
-        identify_udp(&mut state, p, user(0x0B), udp_port, 4, t);
+        identify_udp(&mut state, p, user(client), udp_port, 4, t);
         let _ = slot_request(&mut state, p, served, t);
     }
     let ambiguous = udp([10, 0, 0, 3], 6999);

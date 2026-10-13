@@ -29,7 +29,7 @@ _Avoid_: start over (not an action of its own), retry, re-add (the Failed mark's
 _Avoid_: exit, teardown
 
 **Core Settings**:
-The operator's preferences that change what core does, and the one door to them (ADR-0069): a `CoreSettings` value the builder reads from the store it is given (or a test injects), and a synchronous handle — `Core::settings()` on a running core, or opened on the store alone where no core runs. `set(Setting)` validates — a download directory against the **Shared Directory List**'s guards too, refusing it with the guard's reason — persists, and answers `TakesEffect::Now` (`Remember peers`, the **Dead Server Limit**, the **Announce Policy**, the download directory, whose scan core starts with the answer the front end's confirm gave, and the **Obfuscation Policy**, which every surface reads as it decides) or `NextStart` (every other key, and every key set through a handle no core runs behind). A live key shares the actor's one inbox with the commands, so a command sent after `Now` runs under it. The nickname and the two ports live in the identity rows and the rest in the preferences table; the handle hides which, and `CoreSettings::credentials` is the one place the nickname and TCP port become what a login, a hello and a Kad dial present: no command carries credentials. An injected TCP port of `0` takes one the OS assigns, and the port presented is the one the listener bound; the store refuses `0`. The front end's own keys (theme, table sorts, Run Log level, connect at start, last server) share that table through a raw key/value surface core never interprets.
+The operator's preferences that change what core does, and the one door to them (ADR-0069): a `CoreSettings` value the builder reads from the store it is given (or a test injects), and a synchronous handle — `Core::settings()` on a running core, or opened on the store alone where no core runs. `set(Setting)` validates — a download directory against the **Shared Directory List**'s guards too, refusing it with the guard's reason, and a **Temp Directory** against the list, which it must lie apart from — persists, and answers `TakesEffect::Now` (`Remember peers`, the **Dead Server Limit**, the **Announce Policy**, the download directory, whose scan core starts with the answer the front end's confirm gave, the **Temp Directory**, which downloads started after the change place their part files in, and the **Obfuscation Policy**, which every surface reads as it decides) or `NextStart` (every other key, and every key set through a handle no core runs behind). A live key shares the actor's one inbox with the commands, so a command sent after `Now` runs under it. The nickname and the two ports live in the identity rows and the rest in the preferences table; the handle hides which, and `CoreSettings::credentials` is the one place the nickname and TCP port become what a login, a hello and a Kad dial present: no command carries credentials. An injected TCP port of `0` takes one the OS assigns, and the port presented is the one the listener bound; the store refuses `0`. The front end's own keys (theme, table sorts, Run Log level, connect at start, last server, player command) share that table through a raw key/value surface core never interprets.
 _Avoid_: config (that is `CoreConfig`, the engineering knobs: timeouts, concurrency, cadences), preferences (the stored key/value rows)
 
 **Serving Started**:
@@ -148,7 +148,7 @@ The core-owned set of IPs this session already has an eD2k relationship with (AD
 _Avoid_: client list (that's aMule's whole peer-tracking object; this is one membership question), ban store (a different enforcement, unrelated criteria)
 
 **Roster Relation**:
-One owner's hold on a peer endpoint in the **Peer Roster**, added by that owner's start event and removed only by its own terminal event — never by a purge that guesses (ADR-0059 "Roster relations"). Four exist: a **Download Relation** (one download's worker whose hello completed — `Connected` — ended by `EndWorker` or the fleet's whole-fleet shutdown on completion or failure, held per download so two downloads on one peer never retire each other's), a **Queued Relation** (one download's **Remote-Queued Pool** membership, held to its Source Book's RemoteQueued stage after each brain step, so every way out of the pool ends it — a TCP full ask, a `0x92`, a merge, an endpoint another record took), a **Waiter Relation** (`PeerQueued`, ended by `WaiterLeft` — purged or cancelled — or turned into an Upload Relation by a promotion), and an **Upload Relation** (`UploadSlotGranted` ↔ `UploadSlotReleased`). Waiter and Upload share one membership, as aMule's one upload state does. The owning activity's end — a serve stop or listener death, a download's run ending on any road, a quit's abort — ends every relation it still holds.
+One owner's hold on a peer endpoint in the **Peer Roster**, added by that owner's start event and removed only by its own terminal event — never by a purge that guesses (ADR-0059 "Roster relations"). Four exist: a **Download Relation** (one download's worker whose hello completed — `Connected` — ended by `EndWorker` or the fleet's whole-fleet shutdown on completion or failure, held per download so two downloads on one peer never retire each other's), a **Queued Relation** (one download's **Remote-Queued Pool** membership, held to its Source Book's RemoteQueued stage after each brain step, so every way out of the pool ends it — a TCP full ask, a `0x92`, a merge, an endpoint another record took), a **Waiter Relation** (`PeerQueued`, ended by `WaiterLeft` — purged or cancelled — or turned into an Upload Relation by a promotion, and carried to the waiter's new link by `WaiterRelinked`), and an **Upload Relation** (`UploadSlotGranted` ↔ `UploadSlotReleased`). Waiter and Upload share one membership, as aMule's one upload state does. The owning activity's end — a serve stop or listener death, a download's run ending on any road, a quit's abort — ends every relation it still holds.
 _Avoid_: known client (aMule keeps an object per client whether or not any state is live; a relation is a live state), mark/forget as nouns (those are the roster's write calls)
 
 **Crypt Stance** (of a peer):
@@ -394,18 +394,28 @@ worker's stage holds the peer's **Peer Identity** (`rmule-peer` glossary) once i
 read, so the hello's facts end with that worker (ADR-0049). Its
 one entry takes a **Source Sighting** and merges a held source rather than pooling it
 twice; two records merge only on wire proof, never on a matching User Hash. It holds the
-blocks — the IP filter and address family it judges each half of a sighting by, the spent
-endpoints, turned once a period at the brain's tick, and the **Distrusted Peer**s — the
-attachments that ride each record (its queue standing and its **Source Ask Clock** facts
-among them), and picks the next dial in lane order. **Download State** maps its outcomes to
+blocks — the **Reserved Range** check (against the sighting's **Informant**, `rmule-primitives`
+glossary), the IP filter and address family it judges each half of a sighting by, the spent
+names (a failed dial's endpoint, and every **Ask Name** of a source that said it lacks the
+file), turned once a period at the brain's tick, and the **Distrusted Peer**s — the
+attachments that ride each record (its queue standing, its **Advertised Parts** and its
+**Source Ask Clock** facts among them), and picks the next dial in lane order. **Download State** maps its outcomes to
 decisions and keeps the slots' numbers and the part scheduler.
 _Avoid_: source list (aMule's `m_SrcList` is only the pool), ledger (the Activity ledger,
 NAT-T, credit and `SeedLedger` already are)
 
+**Advertised Parts**:
+The parts one source said it holds of this download's file — its latest `OP_FILESTATUS` to a worker or the status in a `0x91` ack — over the file's real parts (count `0` is every part; the phantom part is never read). A record-tier attachment of its **Source Book** record (ADR-0112): replaced by each status, gone with the record, never stored. A worker asks its slot on them only once its own probe answers, and is handed a part from them at its grant: what an earlier connection or a merged-in record left is not that worker's word.
+_Avoid_: availability, bitmap, file status, part picture (the download's own, ADR-0094)
+
+**Part Frequency**:
+Per part, how many **Source Book** records' **Advertised Parts** hold it — aMule's `m_SrcpartFrequency` — kept by the book on every write, merge and removal. The scheduler's only rarity input; very rare is at most `max(1, m × n / 100)` (ADR-0112).
+_Avoid_: availability, source count
+
 **Source Sighting**:
 One channel's statement that a peer has the file, with the one road it names
 (`rmule-primitives` glossary). Every channel — a server answer, a source exchange, a link,
-a Kad source row — hands the **Source Book** this one value.
+a Kad source row, a peer that asked us about the file — hands the **Source Book** this one value.
 _Avoid_: exchanged source, Kad source (each was one channel's copy)
 
 **Distrusted Peer**:
@@ -414,8 +424,9 @@ _Avoid_: banned peer (that is `BanStore`), blacklist, bad source
 
 **Reask Routes**:
 Where a reask reply (`0x91`/`0x92`/`0x93`, which names no file) goes when several downloads
-pool one peer: each running download's reply sink, and the one `0x90` in flight per peer
-client-UDP endpoint with the download that sent it. The reply reaches that download alone;
+pool one peer: each running download's reply sink, and the one reask in flight per peer
+client-UDP endpoint it is answered from — a `0x90`'s destination, or a `0x94`'s source past
+its buddy — with the download that sent it. The reply reaches that download alone;
 a second download's ping to the endpoint waits until the first is answered or lapses at
 the 20 s lead; a reply nothing asked for drops (ADR-0107).
 _Avoid_: reply fan-out (a reply reaches the one download that asked)
@@ -464,12 +475,16 @@ that peer again, is cleared when a run starts, and the row keeps the newest 64 (
 _Avoid_: dial failure (`DialFailure` is a server dial's)
 
 **Remote-Queued Pool**:
-The **Source Book** records in their RemoteQueued stage, each holding its queue standing at a remote uploader **without a connection**: the rank, the UDP contact and peer-UDP crypt target the identity it queued under stated, the reask clock and its one-ping latch (ADR-0057, ADR-0090). Entered when a rank arrives and the worker hangs up; kept alive by the reask heartbeat the brain's tick runs while we are connected to a server or Kad (UDP ping first — a called-back source's at the address it called in from — TCP full ask as fallback, a called-back source's by its callback road); left on grant (the uploader dials back), file-not-found, the TCP full ask, or — queue-full or holding no part we lack, while the file holds 80 % of aMule's default source limit — one of the book's purges. Queue standing is a fact about the remote peer, not about a socket.
+The **Source Book** records in their RemoteQueued stage, each holding its queue standing at a remote uploader **without a connection**: the rank, the UDP contact and peer-UDP crypt target the identity it queued under stated, the reask clock and its one-ping latch (ADR-0057, ADR-0090). Entered when a worker on the uploader's queue — its upload request out, ranked or not yet — hangs up, when a granted worker gives back a slot it has no part for (`0x56`, `NoFreePart`, the ordinary cadence), or when a worker's **Advertised Parts** hold no part we lack (rank 0, the no-needed-parts mark, ADR-0112); kept alive by the reask heartbeat the brain's tick runs while we are connected to a server or Kad (UDP ping first — a called-back source's at the address it called in from, or through its buddy while we are firewalled — TCP full ask as fallback, a called-back source's by its callback road); left on grant (the uploader dials back), file-not-found (which spends it), the TCP full ask, or — queue-full or holding no part we lack, while the file holds 80 % of aMule's default source limit — one of the book's purges. Queue standing is a fact about the remote peer, not about a socket.
 _Avoid_: waiting workers (no worker exists while pooled), source cache, reconnect list, pool (as a list apart from the book)
 
-**Slotless Standby**:
-A download worker that sent `OP_CANCELTRANSFER` because the scheduler had no part to assign it, surrendered its remote upload slot, and stays connected awaiting a released part — at which point it re-runs the full ask cycle from the start-upload request (ADR-0056). Distinct from an idle worker, which still holds its granted slot.
-_Avoid_: parked worker, dormant connection, cancelled worker (the transfer is cancelled, not the worker)
+**Slot Ask**:
+A download worker's `OP_STARTUPLOADREQ`, sent at its probe answer when its **Advertised Parts** hold a part we lack — whether or not one is free — and the queue standing it earns its record (ADR-0026, ADR-0090). The part is chosen at the grant, never at the ask; a grant with no part to hand gives the slot back with `OP_CANCELTRANSFER` and retires the worker `NoFreePart` (ADR-0056). There is no slotless standby: no worker stays connected after giving a slot back.
+_Avoid_: slot request (the codec is `StartUploadReq`), upload request (that is the uploader's view), standby
+
+**Hash-Set Deadline**:
+The 20 s a download's one `OP_HASHSETREQUEST` in flight waits for its answer before its worker asks its slot regardless and the ask passes to the next link (ADR-0026) — half aMule's 40 s idle close, so the slot ask still reaches an uploader that never answers the set. Only one link asks at a time, and only while the download holds no whole part hash set; a link with `p=` never asks.
+_Avoid_: hash-set timeout (nothing times out: the slot ask goes out and the ask moves)
 
 **Had Set**:
 The durable set of file hashes that were in the **Shared File Registry** and whose file has since left the disk, each with the name it last had and when it left (ADR-0105). A row joins it in the step that removes the row; a share of the same content, from any source, takes the hash out in the step that stores the row, and nothing else does. A renamed or copied file moves its row and never passes through it. It shares nothing and answers nothing on the wire; it exists so the operator can be told they once had a file.
@@ -520,8 +535,28 @@ What rmule's own records say about files the operator has already met: every **S
 _Avoid_: known files (the File-Known Predicate is a different question), library, download history
 
 **Shared File Registry**:
-The durable source of truth for what we serve: the files the **Download Directory Scan** of each shared directory hashed and auto-registered completed downloads, less what `UnshareFile` withdrew — each row carrying the modification time the **Hash Trust Rule** compares. The serve side answers probes and hash-set requests against its offered rows (every row but a **Withheld Row**) and announces them via `OP_OFFERFILES`. Every entry a read answers with is whole — the row *and* its ED2K part hash set — so a serve state seeded from the registry answers a hash-set probe for a file shared before the last restart. A new abstraction — not a widening of `DownloadRepository`.
+The durable source of truth for what we serve: the files the **Download Directory Scan** of each shared directory hashed and auto-registered completed downloads, less what `UnshareFile` withdrew — each row carrying the modification time the **Hash Trust Rule** compares. The serve side answers probes and hash-set requests against its offered rows (every row but a **Withheld Row**) and announces them via `OP_OFFERFILES`. Every entry a read answers with is whole — the row *and* its ED2K part hash set — so a serve state seeded from the registry answers a hash-set probe for a file shared before the last restart. A new abstraction — not a widening of `DownloadRepository`. A download's offer is a **Partial Share**, never a row.
 _Avoid_: shared folder, library, content index
+
+**Served Download**:
+What a download larger than one part — queued, running, completing or paused — tells the serve side, keyed by file hash (ADR-0113): size, name, both paths and which one holds the bytes, the part hash set once whole, its **Verified Range**, its **Part File Identity**, its source-exchange pool, and an inbox for askers. Written by one holder at a time, under a lease: the run, then its completion move, and the core actor while the download is queued or paused; the actor ends it. Answers probes from the row's start.
+_Avoid_: downloading slot, partial entry
+
+**Partial Share**:
+A **Served Download** that is offered: it has a verified part, holds the whole hash set, and its destination is not refused. It stays offered while its download is paused (ADR-0113). Announced as incomplete, published as a Kad source, granted slots. Never a registry row, a keyword or an AICH source.
+_Avoid_: partial file share, incomplete share
+
+**Verified Range**:
+The parts whose recorded part hash equals the whole set's. These are the only bytes the serve side reads from a part file; a request outside it ends the slot.
+_Avoid_: downloaded range, gap list
+
+**Part File Identity**:
+What a read of a **Served Download**'s part file is checked against before it reads (ADR-0113): the file key (device and inode, on Windows volume serial number and file index), the length and the modification time, taken from the **Held Part File** handle at pause or from the handle the **Offer Check** read through. The key is always compared, the length and time only while no run writes the file; a mismatch sends nothing and empties the **Verified Range**. Kept in memory only.
+_Avoid_: part file fingerprint, stored identity
+
+**Offer Check**:
+The core actor's re-read of every recorded part of a queued or paused download after a restart, hashed against its record, before it is offered again (ADR-0113): Resume's own revalidation, with Resume's effect, run on the blocking pool behind the scans, one download at a time. A Resume stops it and the run's own check takes over. Each check applied is said as `OfferChecked`, with the bytes read and how long the read took.
+_Avoid_: share recheck, Registry Check (that one is for registry rows)
 
 **Share Totals**:
 What the serve activity has done for each file across every run — upload requests drawn, slots granted, bytes served — aMule's all-time `CFileStatistic` figures from `known.met`. Kept on the Durable Store beside the **Shared File Registry**'s row, keyed by the same file hash but not inside it: they outlive an unshare, a rename and a file that left and came back, as aMule's known list does, and a share of the same content picks them up. Written as absolute figures once a minute and at **Quit**, so a crash loses at most a minute of counting.
@@ -530,6 +565,10 @@ _Avoid_: known.met, statistics (the whole Statistics view), lifetime counters
 **Data Directory**:
 Where the **Durable Store** and the data files beside it live, resolved by the one rule every front end uses: `--data-dir`, then `RMULE_DATA`, then `$XDG_DATA_HOME/rmule` or `$HOME/.local/share/rmule` on Unix and `%LOCALAPPDATA%\rmule` on Windows (local, not roaming: part files run to gigabytes). Core reads no environment; the front end hands in how a variable is read.
 _Avoid_: profile dir, workspace, config dir
+
+**Temp Directory**:
+The Core Setting naming where new downloads keep their part files (ADR-0115). Defaults to `Temp` in the **Data Directory**; never the download directory, a shared directory, inside one, or holding one. A download keeps the part path placed at its start when the setting changes.
+_Avoid_: incoming, cache dir
 
 **Durable Store**:
 The single on-disk home of every durable seam — download records, the Shared File Registry and its Had Set, the credit ledger, identities and the server list — opened once per process and owned by core. Seams are views over it, not files of their own; a change that must hold across seams can be one atomic step.
@@ -547,26 +586,91 @@ _Avoid_: snapshot diff, reach log, state dump
 A download row's `.part` file, held, or released once a terminal row gave the path up to a new row so that the store's one-writer-per-`.part` rule lets the new row in. A released slot is not a path; stored, it is the stand-in text `"\0released:{key}"`, which the row's unique index sees as a value no other row can hold.
 _Avoid_: part path string, tombstone
 
+**Download File Path**:
+Where a download's bytes lie now: its `.part` until it completes, the finished file after (ADR-0114). Read from the stored record by one accessor, never from a released **Part Path Slot**; carried as `file_path` on `DownloadQueued` and `DownloadRecovered`, moved by `DownloadCompleted`'s `final_path`. A front end hands it on and never composes one.
+_Avoid_: part path (half of it), download location
+
 **Content Store**:
-The byte I/O abstraction. Download writes verified parts into a `.part` file and promotes it to `final_path`; serve reads ranges (`read_range`) from completed files at `final_path`. One abstraction, both directions.
+The byte I/O abstraction. Download writes verified parts into a `.part` file and promotes it to `final_path`; serve reads ranges (`read_range`) from shared files, and from a download's part file inside its **Verified Range** through a handle checked against its **Part File Identity** (`read_checked`). One abstraction, both directions.
+_Avoid_: storage backend, file manager
 
 **Held Part File**:
-The one handle a download's run holds on its `.part` file from its first act to finalize (ADR-0094, "The part file under a running download"). Every verified part is written through it, never by path. Before each part, at finalize, and each second while the run waits (for a connection, or for sources with nothing in flight) the run compares the path's device and inode (on Windows its volume serial number and file index) with the handle's, and the handle's length with the recorded parts' end, and reports what it found — `Gone`, `Replaced` or `Truncated` — as `PartFileLost`, with what it cost — or, when the store cannot say which parts were lost, with no count, and the download fails as a store failure. The part file is the operator's to delete; rmule never recreates it behind them.
+The one handle a download's run holds on its `.part` file from its first act to finalize (ADR-0094, "The run holds its part file"). Every verified part is written through it, never by path. Before each part, at finalize, and each second while the run waits (for a connection, or for sources with nothing in flight) the run compares the path's device and inode (on Windows its volume serial number and file index) with the handle's, and the handle's length with the recorded parts' end, and reports what it found — `Gone`, `Replaced` or `Truncated` — as `PartFileLost`, with what it cost — or, when the store cannot say which parts were lost, with no count, and the download fails as a store failure. The part file is the operator's to delete; rmule never recreates it behind them. It carries the sparse flag on Windows; each write punches its **Extension Gap** and reads **Allocated Bytes** (ADR-0111).
 _Avoid_: part file lock (nothing is locked), reopen
-_Avoid_: storage backend, file manager
+
+**Sparse Part File**:
+A download's `.part` under ADR-0111: positional, never pre-sized, holding only hash-verified bytes. Where the **Hole Verdict** is `HoldsHoles` it occupies only the bytes written plus slack. Its length is the end of the highest part written.
+_Avoid_: temp file, preallocated file
+
+**Extension Gap**:
+For a write at `offset` into a file whose length was `end`, the range `[end, offset)`. The only range a write can make a filesystem zero-fill; punched after the write, aligned inward to 4 KiB.
+_Avoid_: hole, gap
+
+**Allocated Bytes**:
+What the filesystem reserved for the part file, read on the held handle at the hold and after each write; published as `DownloadDiagnostics::allocated_bytes`. A storage reading, not a **Transfer Byte Counter**: it can fall and can exceed the file's length. Shown only in the Transfers details modal's On disk row.
+_Avoid_: disk usage, sparseness
+
+**Hole Probe**:
+The run's one measurement when it first holds its part file: a dot-prefixed probe file beside the part, written through the same write and punch, `fsync`ed, read, then deleted (ADR-0111).
+_Avoid_: filesystem detection
+
+**Hole Verdict**:
+`HoldsHoles`, `HoleLess`, or `Unknown` with the OS error kind, from the **Hole Probe**. Published as `DownloadDiagnostics::hole_verdict`; a `HoleLess` run also sends `HoleLessDestination` once. Never a scheduling input or a reason to refuse.
+_Avoid_: sparse support
+
+**Hole-less Destination**:
+A directory whose **Hole Verdict** is `HoleLess`; `DownloadEvent::HoleLessDestination`, sent once per run whose part file lies in one, names it (ADR-0111).
+_Avoid_: non-sparse disk
+
+**Completion Move**:
+A run's last step, after its last verified part (ADR-0115): the part file checked against the file hash, the destination named — the row's final path or its **Free Name** — and stored with `Completing` before anything moves, then a rename, waiting while a program holds the file, or the **Completion Copy** across volumes; with the finished file in place the core actor writes its registry row, and only then is the part file deleted and `Completed` stored. Each step that waits or copies is told as `DownloadEvent::Completing`.
+_Avoid_: completion (alone), rename (one of its steps)
+
+**Free Name**:
+The numbered `stem (n).ext` beside a name that is taken, `n` counting from one, the first for which nothing stands (ADR-0115, `free_name`). A placement and a **Completion Move** choose by the one rule, and a move numbers from the name its download was placed under, every time, as aMule does, so numbered names never stack.
+_Avoid_: unique name, collision suffix
+
+**Completing**:
+The durable lifecycle between the last verified part and the finished file in place (ADR-0115): renaming, waiting for a program to release the file, or copying across volumes. Attach resumes the move; a Pause or Cancel stops it until the file is in place and is refused after.
+_Avoid_: finalizing
+
+**Completion Copy**:
+The move across volumes: a dot-prefixed copy beside the destination, hashed as it is read, synced, then renamed into place; one copy at a time (ADR-0115).
+_Avoid_: backup
+
+**Completion Gate**:
+The one instant a run's finished file lands in place, shared by the run and the core actor (ADR-0115): a Pause or Cancel before it closes the gate and the run lands nothing; after it the stop is refused (`DownloadCompleting`). Held settling only across a rename, and across the look a recovered row's run takes at the disk, so a stop that meets it waits no longer than that.
+_Avoid_: lock, commit flag
 
 **Download Metadata**:
 The name + exact byte size core recorded for one download, with the origin that says where it learned them (ADR-0078). Stored with the durable record at creation, backfilled from the canonical link for pre-v2 rows, and reported on both surfaces — the `DownloadQueued` / `DownloadRecovered` edge and the `DownloadDiagnostics` level row — so a consumer never re-derives a name from a link or a size from a part count. Name bytes stay wire-faithful (`Ed2kText`, ADR-0019); the origin is a fact about core's own knowledge, never a caller's claim about a UI (there is no "from search" origin).
 _Avoid_: file info, display name, file details
 
+**Streaming Priority**:
+Downloads whose **Download Metadata** name is in aMule's video, audio or archive table (`is_streaming_priority()`); aMule's is video and archive behind `PreviewPrio` (`PartFile.cpp:1941-1945`), rmule adds audio, no switch (ADR-0112).
+_Avoid_: preview priority, sequential flag
+
+**Previewable**:
+A download whose name is in aMule's video or audio table (`is_previewable()`), read by core off the raw bytes, never re-derived (ADR-0112, ADR-0114).
+_Avoid_: media file, playable
+
 **Download State**:
 The sans-I/O scheduling brain for one download (`download/state.rs`). It owns every channel-free decision — which part a peer works, how cross-peer blocks assemble (ADR-0029), when a raced part completes and clears its losers (ADR-0026), which candidate backfills a retired worker (ADR-0030), when a pooled source is reasked and when a callback road lapses — and returns an ordered `Vec<Decision>` the async runner *enacts* (the only async surface). Time is an argument: each entry takes `now`, `on_tick(now)` runs the reask sweep, turns the spent period and expires deadlines, and `next_wake()` names when the runner wakes it next. Persistence is a fallible effect, so it round-trips through `on_persist_result`. Touching no socket, clock, store, or channel is what makes the racing / resume / retire-all / backfill / reask behaviours assertable as plain decision sequences instead of only through a live Tokio actor.
 _Avoid_: download manager, actor, scheduler (the `DownloadScheduler` is one of the bags it owns)
 
+**Preview Band**:
+aMule's head-and-tail set (`PartFile.cpp:1958-1972`): part `0`, the last, and the last-but-one when the last part's length plus one is below `PARTSIZE / 3`. Only for **Streaming Priority**; ranks below a very rare part, above the **Streaming Window**; no latch (ADR-0112).
+_Avoid_: first and last chunks, preview parts
+
+**Streaming Window**:
+`[anchor, anchor + N)`, the lowest unverified part and `CoreConfig::streaming_window_parts` (default 8, `0` none), fetched in order by a **Streaming Priority** download; recomputed per assignment (ADR-0112).
+_Avoid_: sequential download, buffer
+
 **Serve State**:
 The sans-I/O serving brain, the serve-side mirror of **Download State**: it owns every
 clock-free serve decision — probe/status/hash-set answers from a **Shared File
-Registry** snapshot, slot admission via the **Upload Slot Queue** it contains, AICH
+Registry** snapshot and its copy of the **Served Downloads** (a registry row wins), slot
+admission via the **Upload Slot Queue** it contains, AICH
 tree building from round-tripped byte reads, credit recording, and **Secured
 Identity** binding — and returns an ordered `Vec<ServeDecision>` that the `ServeTask`
 enacts (sockets, registry snapshot refreshes, ledger lock, `ContentFileStore` reads).
@@ -635,6 +739,10 @@ Low-ID source is callback-able only via the server that assigned its id, so the 
 covers connected-server sources only; a Low-ID source discovered over server UDP is not one.
 _Avoid_: reverse connect (that is the generic term; this is the eD2k server-relayed form), Kad callback (a different transport, parked)
 
+**Server Callback Dial-Back**:
+The other end of a **Low-ID Callback**: a Low-ID rmule whose server relays a peer's ask (`OP_CALLBACKREQUESTED` `0x35`, or `0x26` for an IPv6 peer) dials that peer and serves it over the link as an inbound peer (ADR-0061). It names no file and attaches to no download: the peer asks for its file once the link is up.
+_Avoid_: reverse callback, server callback (that is route 3, the requester's ask)
+
 **Adopted Inbound Worker**:
 A download worker built from a connection that *dialed in* (a callback'd Low-ID peer)
 rather than one rmule dialed out. The worker body is identical (ADR-0031's session is
@@ -643,6 +751,16 @@ and enters the requester flow directly. The core actor routes a matched inbound
 connection here at accept time; unmatched inbound connections go to the serve path as
 before.
 _Avoid_: inbound peer (that is any accepted connection; this is one routed to *download*), dialed worker (the opposite construction)
+
+**Served Link**:
+An accepted connection that took the serve road, filed (`SharedServedLinks`) under the
+address a dial would reach its peer at: the link's own address with the hello's listen port,
+where the peer is a source. A download about to dial that address joins the link instead of
+dialing (ADR-0107, "One peer, one link"): its requests go out on the link and the link's
+requester events come back to it, as aMule asks a client over the socket it already holds.
+The link lives while its serve side or its download holds it, takes one download at a time,
+and is taken again by a later one; a newer link of the same peer replaces its filing.
+_Avoid_: shared connection (every link is bidirectional; this is the accepted one a download rides), second link
 
 **Callback Capability**:
 Our own half of the **Low-ID Admission** — aMule's `CanDoCallback`: whether we
@@ -720,9 +838,12 @@ them — the target's **User Hash**, its **Buddy** contact, its NAT-T bit, its K
 endpoint and its IPv6 — plus whether it came from a **Kad source row** at all, which is
 what says no server can be asked to relay for it. A Kad type-3/5 row is the one channel
 that names a **Buddy**, and (only from an eMuleAI publisher) the one that can name the
-NAT-T bit. Every field is `None`/`false` unless the bytes said otherwise;
-a source learned twice merges, newer non-`None` winning and a silent channel withdrawing
-nothing. It exists because a Low-ID candidate never speaks to rmule until its callback
+NAT-T bit. Every field is `None`/`false` unless the bytes said otherwise.
+It is keyed by its namespace, its id and the port that tells two apart: a server-assigned
+id by its server, a Kad row by its observed address and Kad UDP port (ADR-0090). A source
+learned twice under one key merges, newer non-`None` winning and a silent channel
+withdrawing nothing; a sighting naming another User Hash is another owner of the key and
+replaces the record whole. It exists because a Low-ID candidate never speaks to rmule until its callback
 works, so facts not kept at discovery are gone when rung 1 needs them.
 _Avoid_: candidate (that is the High-ID pool's unqualified term), peer facts (that is
 `PeerReach`, the public record this projects into)
@@ -1056,10 +1177,11 @@ transport plumbing owned by the server-UDP adapter, not the engine.
 _Avoid_: discovery task twins (the retired GlobalSourceDiscovery/KadSourceDiscovery copies), source lookup (the eD2k TCP exchange), scheduler
 
 **Kad Publisher**:
-The small Core task that keeps the Kad node's publications equal to the offered
-**Shared File Registry** rows: it registers each newly offered file once, and withdraws
-each file no longer offered (unshared, gone or a **Withheld Row**) from the node's
-5-hour republish cadence (ADR-0106).
+The small Core task that keeps the Kad node's source publications equal to the offered
+**Shared File Registry** rows and the **Partial Share**s: it registers each newly offered
+file once, and withdraws each file no longer offered (unshared, gone, a **Withheld Row**,
+or a download whose offer ended) from the node's 5-hour republish cadence (ADR-0106,
+ADR-0113).
 Split out of Kad discovery because publishing is registry-driven, not
 download-driven — it runs even with zero active downloads.
 _Avoid_: republish timer (the node's), discovery sweep, announce (the eD2k `OP_OFFERFILES` path)
@@ -1163,6 +1285,8 @@ bootstrap-dial-seed, and lookup-response intakes — aMule's four `kademlia/` `I
 so a blocklisted IP never becomes a routing contact, walk candidate, or bootstrap dial. Client
 and server surfaces each have their own on/off gate, both defaulting on with an empty table —
 aMule's out-of-box posture.
+IPv6 rules from the same two files fill a second table under the same rules; each address is
+judged by its own family's table, and a source's two halves are never linked (ADR-0085).
 Distinct from the **Ban Store**: this is an operator-loaded policy file, not a runtime-observed
 offense record.
 _Avoid_: ban list (that's the Ban Store), blocklist download (auto-update is deferred), firewall
@@ -1222,7 +1346,7 @@ _Avoid_: offline mode (peers are very much online), Kad-only mode (a config post
 ## Relationships
 
 - The core actor owns the unified set of live peer **Connection**s; the **download scheduler** and the **Upload Slot Queue** are two consumers over that one set (a connection may both pull and serve — wired on accepted connections first, dialed connections later).
-- The inbound accept loop routes by asking the **Awaited Inbound** registry (ADR-0039, ADR-0091): an accepted connection whose identified `(server, low id)` matches a **Pending Callback**, or whose hello confirms a **Pending Tunnel Claim**, becomes an **Adopted Inbound Worker** for that download; every other accepted connection flows to the serve path as before. So the accept stream is a third reader of the unified connection set, feeding the download scheduler — not only serve.
+- The inbound accept loop routes by asking the **Awaited Inbound** registry (ADR-0039, ADR-0091): an accepted connection whose identified `(server, low id)` matches a **Pending Callback**, or whose hello confirms a **Pending Tunnel Claim**, becomes an **Adopted Inbound Worker** for that download; every other accepted connection flows to the serve path as a **Served Link**, which a later download of its peer rides instead of dialing it. So the accept stream is a third reader of the unified connection set, feeding the download scheduler — not only serve.
 - A **Search Activity** consumes search support from the eD2k server protocol service and presents app-facing result streams; selecting a result starts a separate download workflow rather than mutating the search.
 - Search uses its own `SearchCommand` / `SearchEvent` vocabulary under `CoreCommand::Search` / `CoreEvent::Search`; it is not a hidden phase of `DownloadCommand`.
 - A **Search Result Set** is process-local state for one **Search Activity**; durable search history and searchable local result indexes are later product features.

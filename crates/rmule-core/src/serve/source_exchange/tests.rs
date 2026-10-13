@@ -7,14 +7,17 @@ use rmule_primitives::{ClientId, Ipv4Endpoint, PeerSource};
 use super::*;
 
 fn high_id(octets: [u8; 4], port: u16) -> SourceSighting {
-    SourceSighting::plain(PeerSource::new(
-        ClientId::from_u32(u32::from_le_bytes(octets)),
-        port,
-    ))
+    SourceSighting::plain(
+        PeerSource::new(ClientId::from_u32(u32::from_le_bytes(octets)), port),
+        rmule_primitives::Informant::Own,
+    )
 }
 
 fn low_id(id: u32) -> SourceSighting {
-    SourceSighting::plain(PeerSource::new(ClientId::from_u32(id), 4662))
+    SourceSighting::plain(
+        PeerSource::new(ClientId::from_u32(id), 4662),
+        rmule_primitives::Informant::Own,
+    )
 }
 
 fn endpoint(octets: [u8; 4], port: u16) -> PeerEndpoint {
@@ -136,27 +139,6 @@ fn an_unknown_requester_is_sent_sources_holding_a_part_and_the_unknowns() {
     assert_eq!(
         select_sources(ServedFileKind::InProgress, &other_requester(), &candidates),
         vec![holds_part_2.source],
-    );
-}
-
-#[test]
-fn a_name_ask_status_is_read_against_the_served_files_part_count() {
-    use rmule_primitives::ED2K_PART_SIZE;
-
-    // An exact multiple: two real parts, counted three on the wire. Whether a
-    // writer sets the phantom third bit or not, the kept status is the two
-    // real parts, so the phantom never reads as a part held or lacked.
-    let size = 2 * ED2K_PART_SIZE;
-    for wire in [bitmap(3, &[0, 2]), bitmap(3, &[0])] {
-        assert_eq!(held_parts(size, &wire), Some(bitmap(2, &[0])));
-    }
-    // The count the file has not got — the real two, an older rmule writer's —
-    // is no status at all, as aMule's uploader clears it.
-    assert_eq!(held_parts(size, &bitmap(2, &[0, 1])), None);
-    // A zero count is a complete file, every part held.
-    assert_eq!(
-        held_parts(size, &PartBitmap::complete_source_sentinel()),
-        Some(bitmap(2, &[0, 1])),
     );
 }
 

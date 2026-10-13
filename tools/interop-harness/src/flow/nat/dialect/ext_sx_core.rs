@@ -27,7 +27,7 @@ use anyhow::{Context, Result};
 
 use crate::docker::RunContainer;
 use crate::flow::bench::{Bench, CAPTURE_MOUNT};
-use crate::flow::ed2ksrv::Ed2ksrvImage;
+use crate::flow::ed2ksrv::ED2KSRV;
 use crate::flow::evidence::write_pcap_all_matches;
 use crate::flow::gate::wait_for_container_log;
 use crate::flow::nat::dialect::bench::{
@@ -85,7 +85,7 @@ pub(super) fn start(
     let server_v4 = stage.v4(HOST_ED2KSRV).to_owned();
 
     let server = format!("rmule-interop-v6srv-{suffix}");
-    let ed2ksrv = Ed2ksrvImage::check(&bench.docker, options.ed2ksrv_image)?;
+    let ed2ksrv = ED2KSRV.check(&bench.docker, options.ed2ksrv_image)?;
     bench.start_extra(
         &server,
         ed2ksrv

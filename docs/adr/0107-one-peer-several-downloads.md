@@ -35,6 +35,7 @@ at `crates/rmule-peer/tests/fixtures/peer_udp_reask/captured/amule-233-reask-ack
 | **Pending Tunnel Claims** | target User Hash → an ordered list, one entry per download | each run | registration to adoption, retract or the run's end |
 | **Source Ask Clock** (ADR-0108) | the peer's **Ask Names** — endpoint, `(server, low_id)`, User Hash — inside one download | the run | stamps: the run; a name bound to a connection's endpoint: that worker |
 | **Source Seeds** (ADR-0109) | `(DownloadId, peer endpoint)`, in rank order | the Durable Store, written by the core actor from the run's ranking | from a write to the next write, 24 h, or the row's completion, cancel or clear |
+| **Served Downloads** (ADR-0113) | file hash | the download's activity, by lease: the run, then its completion move, and the core actor while the download is queued or paused; the actor ends it | from the row being queued to its cancel or failure, or at completion until the registry row is written |
 
 Invariants every transition keeps:
 
@@ -99,6 +100,24 @@ Handing one adopted connection to two downloads would need one worker serving tw
 A4AF — which rmule does not have; the cost is one lapsed callback deadline for the second download,
 bounded and visible.
 
+### One peer, one link (the Served Link)
+
+A peer that dialed us — an asker of a Served Download (ADR-0113) or of a registry row — is
+already linked to us, and a download of it rides that link rather than open a second.
+
+| Rule | aMule | rmule |
+|---|---|---|
+| a client met inbound is one client with the link it came on | the new socket is attached to the client the hello names (`ClientList.cpp:371-412`) | an accepted link that takes the serve road is a **Served Link**, filed under the address a dial would reach its peer at: the link's own address with the hello's listen port |
+| a download from a connected client asks over its socket | `TryToConnect` on a live socket only calls `ConnectionEstablished` (`BaseClient.cpp:1489-1496`), which sends the file request (`:1692-1698`) | a download about to dial that address joins the Served Link: its requests go out on the link and the link's requester events come back to it; nothing is dialed |
+| where a client met inbound is dialed | its socket's address (`BaseClient.cpp:661`, `:1620`); a High-ID claim is overwritten by it (`:678-680`) | the peer as a source is read against its link (`PeerIdentity::source_coordinate`), so the sighting and the filing name one address |
+| a second link from the same address and port replaces the first | the old socket is dropped (`ClientList.cpp:400-403`), and what it carried ends | not opened while a Served Link is filed there |
+
+The link lives while either half holds it, as a dialed link does (ADR-0031): the serve side letting
+go leaves it to the download, the download's end leaves it to the serve side, and a later download
+joins it again. A newer link filed under the same address replaces the older filing. One download
+rides a link at a time; a second download of the same peer dials, the departure below. A Low-ID
+asker is a callback source, which no dial reaches, so its link is not joined.
+
 ### Citations in two trees
 
 Every citation here and in ADR-0108 is checked against stock 2.3.3 and kno's fork. Twenty
@@ -118,8 +137,12 @@ rows carry the same code in both (the fork only widens tick counts to 64 bits). 
 - Two downloads falling back on the same Low-ID peer no longer strand each other.
 - **Two downloads dial one High-ID peer twice.** A stock aMule 2.3.3 answers the second hello from the
   same client and closes the first socket silently (`AttachToAlreadyKnown`, `ClientList.cpp:386-403`),
-  which can leave the first download with no usable source. The remedy is aMule's model — one connection
-  per peer that several downloads ride, re-targeted between files — which rmule does not have.
+  which can leave the first download with no usable source. A Served Link takes one download, so a
+  second download of a peer linked to us dials it the same way. The remedy is aMule's model — one
+  connection per peer that several downloads ride, re-targeted between files — which rmule does not
+  have.
+- An asker downloading from us is asked for our download over its own link, so our upload to it
+  survives our download from it.
 - The reask attribution is proven against fakes and the captured `0x91`; a bench topology with a
   queuing stock sharer is what would prove it live.
 

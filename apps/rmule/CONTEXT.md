@@ -53,7 +53,7 @@ What a view did with an input it was offered: ignored it (bubble on to the globa
 _Avoid_: event result, handled flag
 
 **Sentence**:
-What the Networks log, the status bar's note and a flash hold: a line written from a code in a words module — `rmule-words`, whose glossary owns the term, or the TUI's own (`crate::words`, which re-exports the shared modules under the same names and adds the sentences that word the TUI's own types: its command line, a run with no core, a Settings edit, a server-health edge, a search entry's paging, the share set's tally). `scripts/guards.sh` refuses a sentence made, or a Debug format, anywhere else in the TUI's source outside tests and `tracing` calls, and a glyph golden refuses to render `Some(`, `None`, a struct's braces, a Rust path or a byte array.
+What the Networks log, the status bar's note and a flash hold: a line written from a code in a words module — `rmule-words`, whose glossary owns the term, or the TUI's own (`crate::words`, which re-exports the shared modules under the same names and adds the sentences that word the TUI's own types: its command line, a run with no core, a Settings edit, a server-health edge, a search entry's paging, the share set's tally, a preview's reasons and notes). `scripts/guards.sh` refuses a sentence made, or a Debug format, anywhere else in the TUI's source outside tests and `tracing` calls, and a glyph golden refuses to render `Some(`, `None`, a struct's braces, a Rust path or a byte array.
 _Avoid_: message, string, label (a label is a word in a cell; a sentence is a line said)
 
 **Off-screen line**:
@@ -76,6 +76,10 @@ _Avoid_: ordering, ranking, sort mode, sort key (a key with no column)
 What selecting a row is in every table: the cursor on a row's identity (`RowCursor`), moved by `j`/`k`/arrows and `g`/`G`, and the one mark it wears — the `▸` gutter marker and the selection background across the row, bold in the focused pane and dimmed, never hidden, in a pane without the focus. A click selects and focuses; `Enter`/`m` open the menu on the selected row. Settings' form fields are not rows.
 _Avoid_: highlight, cursor row, active row, current row
 
+**Viewport**:
+What part of a scrollable list is on screen — its first item, how many items the last draw showed whole, and of how many — owned beside the **Row Selection** (`row_selection::viewport`), written by the draw, and the one source of the list's scroll bar and count. In a list with a cursor it follows the cursor, moving no further than keeps it on screen; in one without (the log, the help, the file details modal) it stays where it was scrolled, and one resting on its end keeps the end in view. While the list overflows, the bar (`▲` `▼` at its ends, a `█` thumb on a track column of its own colour, the thumb's edges in eighths of a cell; whole cells on a `║` track where the theme has no distinct thumb colour) takes the inner right column; the bottom border's right end says the cursor's row over the rows — or, while it overflows, the last item on screen over the total — and that count gives way last.
+_Avoid_: scroll offset (one fact of it), scroll state, window, page
+
 **Natural Direction**:
 The direction a column takes when it first receives the **Table Sort**: ascending for text and for ranks (a word standing for an order: a type, a status, a priority), descending for quantities.
 _Avoid_: default direction, initial order
@@ -97,3 +101,19 @@ _Avoid_: search tab (the Search tab holds them), search history, saved search, s
 The Settings preference, off by default, under which the app sends at start the same `ConnectToServer` the `c` key sends, to the server last connected to (recorded on every `Connected` edge) — once, to that server alone (ADR-0095, "Connecting is the operator's act"). Nothing else in the app dials a server; with it off, a start connects to nothing and the Kad join waits for the operator's connect.
 A session lost later is a different matter: core re-makes it while the operator's intent stands (**Server Intent**) — Autoconnect is only what dials at start.
 _Avoid_: auto-reconnect (that is the Server Intent, not this preference), connect on startup to any server (aMule walks the list; rmule does not)
+
+**Preview**:
+The Transfers action — the row menu's item and the `v` key — that hands a **Preview Ready** download's **Download File Path** to the **Player Command**, or with none set to the **Default App**, as one argument, through no shell, on the player lane (ADR-0114). The menu greys it with the reason on a row it cannot act on, and a launch that cannot start flashes that reason.
+_Avoid_: play, open, preview window
+
+**Preview Ready**:
+A Transfers row the Preview action acts on (ADR-0114): core says the download is **Previewable** (`DownloadMetadata::is_previewable()`, read, never re-derived) and it is complete or its diagnostics row has part 0 `Verified`. A resting row counts, so a restored download is ready before it resumes, and so is a failed one that kept the part. Read from the row each frame, never stored; the tail never gates.
+_Avoid_: playable, preview available (aMule's `PreviewAvailable`, a byte-range query), head and tail verified
+
+**Player Command**:
+The operator's player: one text under the TUI's own key `player_command`, edited on the Settings tab, unset by default, and then Preview opens the **Default App**; set, it overrides that. Split POSIX-style at launch (`shlex`, no shell); every `%PARTFILE` inside a word becomes the **Download File Path**, else the path goes last; the first word is the program and never holds `%PARTFILE`, and written as a path it is never a folder — except a macOS application bundle (`/Applications/IINA.app`), which starts as `open -a <bundle>` and the other words, the app named, so LaunchServices never picks a handler by `.part`. Read at every launch.
+_Avoid_: video player path, command line (a line implies a shell), viewer
+
+**Default App**:
+The app the operating system opens a download's real type with, which Preview starts when no **Player Command** is set (ADR-0114). Looked up on the player lane by the extension of the download's name, never of the file on disk (`.part`): LaunchServices on macOS, started as `open -a <app> <file>`; `AssocQueryStringW` on Windows, its executable run on the file; the freedesktop `globs2` and `mimeapps.list` files elsewhere, the desktop entry started by `gio launch`. A type with no app says so and points to the Player Command.
+_Avoid_: system player, file association, open-with

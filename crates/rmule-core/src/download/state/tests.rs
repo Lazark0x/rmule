@@ -16,11 +16,12 @@ mod ownership;
 mod reask;
 mod scheduling;
 mod seeds;
+mod slot_ask;
 mod sources;
 
 use std::net::Ipv4Addr;
 
-use rmule_primitives::{AichHashSet, EMBLOCKSIZE, Ipv4Endpoint, SourceSighting};
+use rmule_primitives::{AichHashSet, EMBLOCKSIZE, Informant, Ipv4Endpoint, SourceSighting};
 
 use rmule_peer::natt::CALLBACK_SILENCE_FALLBACK;
 
@@ -72,6 +73,7 @@ fn kad_buddy_sighting(
         Some(rmule_primitives::SourceCryptOptions::from_byte(
             connect_options,
         )),
+        Informant::Own,
     )
 }
 
@@ -98,6 +100,23 @@ fn until_road_ends(state: &mut DownloadState, key: CallbackKey) -> Vec<Decision>
         }
     }
     panic!("{key:?}'s road never ended: {out:?}");
+}
+
+/// The worker on `peer` completed its handshake, its peer answered the probe
+/// with every part (ADR-0112) and granted the slot that answer asked
+/// (ADR-0026): the decisions of all three, in order.
+fn connect(state: &mut DownloadState, now: Instant, peer: PeerEndpoint) -> Vec<Decision> {
+    let mut out = probed(state, now, peer);
+    out.extend(state.on_worker_event(now, peer, PeerWorkerEvent::SlotGranted));
+    out
+}
+
+/// [`connect`] short of the grant: the handshake and the probe's answer
+/// with every part, which asks the slot (or the hash set).
+fn probed(state: &mut DownloadState, now: Instant, peer: PeerEndpoint) -> Vec<Decision> {
+    let mut out = state.on_worker_event(now, peer, PeerWorkerEvent::Connected);
+    out.extend(state.on_worker_event(now, peer, PeerWorkerEvent::every_part(state.file_size)));
+    out
 }
 
 fn peer(n: u8) -> PeerEndpoint {
@@ -139,6 +158,23 @@ fn file_hash_only_content(file_size: u64) -> ContentFacts {
         },
         trusted_aich_root: None,
         verified_parts: Vec::new(),
+        order: PartOrder::Rarest,
+    }
+}
+
+/// A `file_size`-byte download holding a whole part hash set — a peer's,
+/// adopted — with `verified_parts` verified against it.
+fn set_held_content(file_size: u64, verified_parts: Vec<u32>) -> ContentFacts {
+    let count = rmule_primitives::PartHashSet::expected_hash_count(file_size).expect("a part file");
+    ContentFacts {
+        resolved: ResolvedHashSet {
+            authority: VerificationAuthority::PeerHashSet,
+            hashes: (0..count)
+                .map(|part| PartHash::from_bytes([u8::try_from(part).expect("few parts"); 16]))
+                .collect(),
+        },
+        verified_parts,
+        ..file_hash_only_content(file_size)
     }
 }
 
@@ -146,8 +182,12 @@ fn file_hash_only_content(file_size: u64) -> ContentFacts {
 fn plain_sightings(pool: &[PeerEndpoint]) -> Vec<SourceSighting> {
     pool.iter()
         .map(|&endpoint| match endpoint {
-            PeerEndpoint::V4(v4) => SourceSighting::plain(rmule_primitives::PeerSource::HighId(v4)),
-            PeerEndpoint::V6(v6) => SourceSighting::plain(rmule_primitives::PeerSource::Ipv6(v6)),
+            PeerEndpoint::V4(v4) => {
+                SourceSighting::plain(rmule_primitives::PeerSource::HighId(v4), Informant::Own)
+            }
+            PeerEndpoint::V6(v6) => {
+                SourceSighting::plain(rmule_primitives::PeerSource::Ipv6(v6), Informant::Own)
+            }
         })
         .collect()
 }
@@ -176,7 +216,9 @@ fn via_global(
     server: Ipv4Endpoint,
     rows: Vec<rmule_primitives::PeerSource>,
 ) -> Vec<Decision> {
-    let rows = rows.into_iter().map(SourceSighting::plain);
+    let rows = rows
+        .into_iter()
+        .map(|source| SourceSighting::plain(source, Informant::Own));
     take(state, Channel::Global(server), rows).decisions
 }
 
@@ -264,7 +306,10 @@ fn low(n: u32) -> ClientId {
 /// and a port, and nothing rung 1 could use beyond the server namespace.
 /// A connected-server Low-ID source, as a server answer names it.
 fn low_candidate(n: u32) -> SourceSighting {
-    SourceSighting::plain(rmule_primitives::PeerSource::new(low(n), 4662))
+    SourceSighting::plain(
+        rmule_primitives::PeerSource::new(low(n), 4662),
+        Informant::Own,
+    )
 }
 
 /// The connected-server (`server: None`) callback key for `low_id` — the form
@@ -273,6 +318,7 @@ fn connected_key(low_id: ClientId) -> CallbackKey {
     CallbackKey {
         server: None,
         low_id,
+        kad_port: None,
     }
 }
 
@@ -321,10 +367,7 @@ fn our_part_status_reports_the_verified_parts_as_the_reask_ping_bitfield() {
     // scheduler, so the three pre-verified parts read back present and parts
     // 1, 3 read absent.
     let state = pooled_state(
-        ContentFacts {
-            verified_parts: vec![0, 2, 4],
-            ..file_hash_only_content(5 * rmule_primitives::ED2K_PART_SIZE)
-        },
+        set_held_content(5 * rmule_primitives::ED2K_PART_SIZE, vec![0, 2, 4]),
         &[],
         QUIET_POSTURE,
         1,
@@ -333,6 +376,35 @@ fn our_part_status_reports_the_verified_parts_as_the_reask_ping_bitfield() {
         state.our_part_status(),
         PartBitmap::decode(6, &[0b0011_0101]).unwrap(),
     );
+}
+
+#[test]
+fn the_verified_range_states_the_status_the_run_states_for_the_same_parts() {
+    // Invariant A (ADR-0113): what the serve side says of a download and what
+    // its run says are one set, phantom part included, whichever size.
+    use crate::served_downloads::{VerifiedRange, WholeSet};
+    use rmule_primitives::ED2K_PART_SIZE;
+
+    for file_size in [3 * ED2K_PART_SIZE, 3 * ED2K_PART_SIZE + 5] {
+        let content = set_held_content(file_size, vec![0, 2]);
+        let hashes = content.resolved.hashes.clone();
+        let set = WholeSet::of(file_size, &hashes).expect("the whole set");
+        let records: Vec<crate::VerifiedPartRecord> = [0u32, 2]
+            .into_iter()
+            .map(|part_index| crate::VerifiedPartRecord {
+                part_index,
+                offset: u64::from(part_index) * ED2K_PART_SIZE,
+                len: ED2K_PART_SIZE,
+                part_hash: hashes[part_index as usize],
+            })
+            .collect();
+        let state = pooled_state(content, &[], QUIET_POSTURE, 1);
+        assert_eq!(
+            VerifiedRange::of_records(Some(&set), &records).status(file_size),
+            state.our_part_status(),
+            "{file_size} bytes"
+        );
+    }
 }
 
 /// A one-part download with server-UDP global discovery armed (ADR-0051): an
@@ -366,6 +438,71 @@ fn aich_state(
         QUIET_POSTURE,
         peer_concurrency,
     )
+}
+
+/// `peer` delivers the whole of `part_index` and the runner verifies it: the
+/// decisions of the verified part's resumption.
+fn deliver_verified(
+    state: &mut DownloadState,
+    peer: PeerEndpoint,
+    part_index: u32,
+) -> Vec<Decision> {
+    let part = crate::planning::part_plan(state.file_size, part_index);
+    let _ = state.on_worker_event(
+        t0(),
+        peer,
+        PeerWorkerEvent::BlockReceived {
+            part_index,
+            offset: part.offset,
+            bytes: vec![0u8; part.len as usize],
+        },
+    );
+    state.on_persist_result(t0(), part_index, peer, Ok(()))
+}
+
+/// A two-part file's true ED2K identity, hashed from its bytes: its file hash
+/// and the part hash set a truthful peer sends.
+fn two_part_file() -> rmule_primitives::FileHashSummary {
+    rmule_primitives::FileHashSummary::digest_bytes(
+        &[0x5A; (rmule_primitives::ED2K_PART_SIZE + 1_000) as usize],
+    )
+}
+
+/// A started two-peer download of `file`, with no link hash set.
+fn two_part_state(file: &rmule_primitives::FileHashSummary) -> DownloadState {
+    let mut state = pooled_state(
+        ContentFacts {
+            file_hash: file.file_hash(),
+            ..file_hash_only_content(file.file_size())
+        },
+        &[peer(1), peer(2)],
+        QUIET_POSTURE,
+        2,
+    );
+    let _ = state.start(t0());
+    state
+}
+
+/// The phases `decisions` writes, in order.
+fn phases(decisions: &[Decision]) -> Vec<WorkerPhase> {
+    decisions
+        .iter()
+        .filter_map(|d| match d {
+            Decision::Phase { phase, .. } => Some(phase.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The commands `decisions` sends a worker, with the peer each goes to.
+fn sent(decisions: &[Decision]) -> Vec<(PeerEndpoint, PeerWorkerCommand)> {
+    decisions
+        .iter()
+        .filter_map(|d| match d {
+            Decision::Send { peer, command } => Some((*peer, command.clone())),
+            _ => None,
+        })
+        .collect()
 }
 
 /// A two-peer download whose workers have spawned and are ready to connect:

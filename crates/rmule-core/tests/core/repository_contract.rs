@@ -59,10 +59,7 @@ async fn persist(
 /// The happy sequence: parts persisted out of order (assembly is the
 /// repository's business), revalidation restores the full progress, and
 /// finalize verifies the assembled content and promotes to `Completed`.
-async fn persists_revalidates_and_finalizes(
-    repo: DurableDownloadRepository,
-    paths: &DownloadPaths,
-) {
+async fn persists_and_revalidates(repo: DurableDownloadRepository, paths: &DownloadPaths) {
     let bytes = fixture_bytes();
     let link = file_link("contract.bin", &bytes);
     let hashes = link.part_hash_set.as_ref().unwrap().hashes().to_vec();
@@ -96,21 +93,12 @@ async fn persists_revalidates_and_finalizes(
     assert!(damaged.is_empty());
     assert_eq!(progress.verified_parts(), 2);
     assert_eq!(progress.verified_bytes(), bytes.len() as u64);
-
-    repo.finalize(id, link.file_hash, link.size).await.unwrap();
-    assert_eq!(
-        repo.load_download(id).unwrap().lifecycle(),
-        DownloadLifecycle::Completed
-    );
 }
 
-/// Corrupted bytes behind a genuine-looking record: finalize refuses to
-/// promote with the typed integrity error, revalidation drops the damaged part
-/// and keeps the other, and re-persisting the genuine part repairs the download.
-async fn corrupted_bytes_fail_finalize_and_revalidate(
-    repo: DurableDownloadRepository,
-    paths: &DownloadPaths,
-) {
+/// Corrupted bytes behind a genuine-looking record: revalidation drops the
+/// damaged part and keeps the other, and re-persisting the genuine part
+/// repairs the download.
+async fn corrupted_bytes_fail_revalidation(repo: DurableDownloadRepository, paths: &DownloadPaths) {
     let bytes = fixture_bytes();
     let link = file_link("contract.bin", &bytes);
     let hashes = link.part_hash_set.as_ref().unwrap().hashes().to_vec();
@@ -141,18 +129,8 @@ async fn corrupted_bytes_fail_finalize_and_revalidate(
     )
     .await;
 
-    let err = repo
-        .finalize(id, link.file_hash, link.size)
-        .await
-        .unwrap_err();
-    assert_eq!(err, rmule_core::FinalizeError::Mismatch);
-    // Nothing promoted: the download stays where it was...
-    assert_eq!(
-        repo.load_download(id).unwrap().lifecycle(),
-        DownloadLifecycle::Active
-    );
-    // ...and resume-time revalidation drops the damaged part alone: its
-    // record goes, the other part's stays, so a resume fetches only part 0.
+    // Resume-time revalidation drops the damaged part alone: its record
+    // goes, the other part's stays, so a resume fetches only part 0.
     let Revalidation::Restored { progress, damaged } = repo.revalidate(id).await.unwrap() else {
         panic!("one intact part keeps the part file");
     };
@@ -173,7 +151,7 @@ async fn corrupted_bytes_fail_finalize_and_revalidate(
         .collect();
     assert_eq!(held, vec![1]);
 
-    // Re-persisting the genuine part repairs the download; finalize promotes.
+    // Re-persisting the genuine part repairs the download: both hold again.
     persist(
         &repo,
         paths,
@@ -182,11 +160,11 @@ async fn corrupted_bytes_fail_finalize_and_revalidate(
         first,
     )
     .await;
-    repo.finalize(id, link.file_hash, link.size).await.unwrap();
-    assert_eq!(
-        repo.load_download(id).unwrap().lifecycle(),
-        DownloadLifecycle::Completed
-    );
+    let Revalidation::Restored { progress, damaged } = repo.revalidate(id).await.unwrap() else {
+        panic!("a repaired part file is not condemned");
+    };
+    assert!(damaged.is_empty(), "{damaged:?}");
+    assert_eq!(progress.verified_parts(), 2);
 }
 
 /// The three verification-authority outcomes resolve identically behind the
@@ -267,35 +245,31 @@ async fn hash_authority_resolves_link_provisional_and_none<R: DownloadRepository
 }
 
 #[tokio::test]
-async fn store_in_memory_persists_revalidates_and_finalizes() {
+async fn store_in_memory_persists_and_revalidates() {
     let dir = tempfile::tempdir().unwrap();
     let paths = DownloadPaths::from_final_path(dir.path().join("contract.bin"));
-    persists_revalidates_and_finalizes(store_in_memory(), &paths).await;
+    persists_and_revalidates(store_in_memory(), &paths).await;
 }
 
 #[tokio::test]
-async fn store_on_file_persists_revalidates_and_finalizes() {
+async fn store_on_file_persists_and_revalidates() {
     let dir = tempfile::tempdir().unwrap();
     let paths = DownloadPaths::from_final_path(dir.path().join("contract.bin"));
-    persists_revalidates_and_finalizes(store_on_file(dir.path()), &paths).await;
-    // The content-file promotion is additionally observable on disk: the
-    // whole file at `final_path`, no leftover `.part`.
-    assert_eq!(std::fs::read(paths.final_path()).unwrap(), fixture_bytes());
-    assert!(!paths.part_path().exists());
+    persists_and_revalidates(store_on_file(dir.path()), &paths).await;
 }
 
 #[tokio::test]
-async fn store_in_memory_corrupted_bytes_fail_finalize_and_revalidate() {
+async fn store_in_memory_corrupted_bytes_fail_revalidation() {
     let dir = tempfile::tempdir().unwrap();
     let paths = DownloadPaths::from_final_path(dir.path().join("contract.bin"));
-    corrupted_bytes_fail_finalize_and_revalidate(store_in_memory(), &paths).await;
+    corrupted_bytes_fail_revalidation(store_in_memory(), &paths).await;
 }
 
 #[tokio::test]
-async fn store_on_file_corrupted_bytes_fail_finalize_and_revalidate() {
+async fn store_on_file_corrupted_bytes_fail_revalidation() {
     let dir = tempfile::tempdir().unwrap();
     let paths = DownloadPaths::from_final_path(dir.path().join("contract.bin"));
-    corrupted_bytes_fail_finalize_and_revalidate(store_on_file(dir.path()), &paths).await;
+    corrupted_bytes_fail_revalidation(store_on_file(dir.path()), &paths).await;
 }
 
 #[tokio::test]

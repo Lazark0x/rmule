@@ -58,6 +58,9 @@ pub fn command_rejected(reason: &CoreCommandRejectReason) -> Sentence {
         }
         R::DownloadStoreFailed => "download refused: the download store failed (see the run log)",
         R::DownloadAlreadyActive => "resume refused: that download is already running",
+        R::DownloadCompleting => {
+            "refused: the finished file is already in place, and the download completes on its own"
+        }
         R::DownloadNotCompleted => {
             "clear refused: only a completed download is cleared; cancel drops the rest"
         }
@@ -65,6 +68,7 @@ pub fn command_rejected(reason: &CoreCommandRejectReason) -> Sentence {
         R::UnknownSearch => "refused: that search has already ended",
         R::SearchIdInUse => "search refused: one with the same number is running",
         R::UnknownServer => "refused: that server is not in the list",
+        R::ServerAddressReserved => "add refused: no server can be at that address",
         R::ServerListStoreFailed => {
             "the server list could not be saved; it is unchanged (see the run log)"
         }

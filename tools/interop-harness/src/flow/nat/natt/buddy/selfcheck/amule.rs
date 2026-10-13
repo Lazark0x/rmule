@@ -458,7 +458,11 @@ pub(in crate::flow::nat::natt) fn drive(
     bodies.push(Body {
         name: "rmule-root".to_owned(),
         image: options.rmule_tools_image.to_owned(),
-        pin: format!("this worktree; kad id {}", mesh::hex(&mesh::BUDDY_KAD_ID)),
+        pin: format!(
+            "{}; kad id {}",
+            crate::run_record::rmule_pin(),
+            mesh::hex(&mesh::BUDDY_KAD_ID)
+        ),
         address_v4: root_v4,
         address_v6: String::new(),
     });
@@ -466,7 +470,8 @@ pub(in crate::flow::nat::natt) fn drive(
         name: format!("rmule-udp-helper-{index}"),
         image: options.rmule_tools_image.to_owned(),
         pin: format!(
-            "this worktree; kad id {}",
+            "{}; kad id {}",
+            crate::run_record::rmule_pin(),
             mesh::hex(&HELPER_KAD_IDS[index])
         ),
         address_v4: v4.clone(),
@@ -475,7 +480,10 @@ pub(in crate::flow::nat::natt) fn drive(
     bodies.push(Body {
         name: format!("kad-storer-{}", storer[0].kad_id),
         image: options.rmule_tools_image.to_owned(),
-        pin: "this worktree; routing-only Kad Stimulus Node at the file key".to_owned(),
+        pin: format!(
+            "{}; routing-only Kad Stimulus Node at the file key",
+            crate::run_record::rmule_pin()
+        ),
         address_v4: storer_v4,
         address_v6: String::new(),
     });
@@ -486,7 +494,7 @@ pub(in crate::flow::nat::natt) fn drive(
             pin: format!(
                 "{}; its High-ID back-connect to the root dropped in its own netns, so the \
                  root's id is Low",
-                crate::flow::ed2ksrv::body_pin(&bench.docker, options.ed2ksrv_image),
+                crate::flow::ed2ksrv::ED2KSRV.body_pin(&bench.docker, options.ed2ksrv_image),
             ),
             address_v4: server_v4,
             address_v6: String::new(),

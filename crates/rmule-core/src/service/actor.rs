@@ -8,6 +8,7 @@
 mod client_udp;
 mod download;
 mod kad;
+mod offer_check;
 mod peer;
 mod prologue;
 mod quit;
@@ -15,6 +16,7 @@ mod registry_check;
 mod scan;
 mod search;
 mod serve;
+mod served;
 mod server;
 mod server_intent;
 mod server_udp_front;
@@ -78,9 +80,9 @@ fn notify_kad_publisher<C>(kad: &Option<kad::KadActivity<C>>) {
 /// **Obfuscation Policy**: that key is live, and from build on it lives in its
 /// one cell (ADR-0046), so its start value is not kept where a reader could
 /// take it for the policy in force. The live keys kept here — the server
-/// policy, `Remember peers`, the download directory — are read once, at
-/// start, to seed the owner each live change then writes; the rest take
-/// effect at the next start.
+/// policy, `Remember peers`, the download directory, the Temp Directory —
+/// are read once, at start, to seed the owner each live change then writes;
+/// the rest take effect at the next start.
 pub(super) struct StartSettings {
     /// The nickname and TCP port every login, hello and Kad dial presents.
     pub(super) credentials: super::ClientCredentials,
@@ -94,18 +96,25 @@ pub(super) struct StartSettings {
     pub(super) server_policy: crate::ServerPolicy,
     /// The download directory, at start.
     pub(super) download_dir: Option<PathBuf>,
+    /// The Temp Directory in force at start: the one set, or the default in
+    /// the data directory; `None` with neither.
+    pub(super) temp_dir: Option<PathBuf>,
 }
 
 impl StartSettings {
     /// Split the settings a core is built under into the Obfuscation Policy,
-    /// which seeds its cell, and the rest. Every key is named, so a new one
-    /// does not compile until it is placed.
+    /// which seeds its cell, and the rest, the Temp Directory read in force
+    /// against `data_dir`. Every key is named, so a new one does not compile
+    /// until it is placed.
     pub(super) fn split(
         settings: crate::CoreSettings,
+        data_dir: Option<&std::path::Path>,
     ) -> (Self, Option<rmule_net::peer::ObfuscationPolicy>) {
         let credentials = settings.credentials();
+        let temp_dir = settings.effective_temp_dir(data_dir);
         let crate::CoreSettings {
             download_dir,
+            temp_dir: _,
             nickname: _,
             tcp_port: _,
             udp_port,
@@ -125,6 +134,7 @@ impl StartSettings {
             remember_peers,
             server_policy,
             download_dir,
+            temp_dir,
         };
         (start, obfuscation)
     }
@@ -184,6 +194,9 @@ pub(super) struct CoreWiring<S, P, L, K> {
     /// the firewalled front reads it for its `0x99` gate without awaiting
     /// this actor.
     pub(super) file_known: crate::known_files::SharedFileKnown,
+    /// The **Served Downloads** (ADR-0113): the actor installs, leases, holds
+    /// back and ends every entry; each run writes its own through its lease.
+    pub(super) served_downloads: crate::served_downloads::ServedDownloads,
     /// Where a risen NAT-T **Tunnel** enters the serve pipeline (ADR-0091):
     /// filled by the serve adapter's accept pump, read by the NAT-T front.
     pub(super) tunnel_admit: crate::adapters::SharedTunnelAdmit,
@@ -330,6 +343,17 @@ struct CoreActor<S, P, L, K: KadRuntimeFactory> {
     /// How many peers each running download writes as its **Source Seeds**
     /// (ADR-0109): the settings' at start, then the operator's latest.
     remember_peers: crate::RememberPeers,
+    /// The **Offer Check**s started after the Registry Check's start look
+    /// and not yet applied or stopped (ADR-0113).
+    offer_checks: offer_check::OfferChecks,
+}
+
+/// What the activities the actor started tell it as they go: a run or a
+/// search that ended, and a download run's finished file in place
+/// (ADR-0115).
+pub(super) struct RunNotices {
+    pub(super) finished: mpsc::Receiver<FinishedActivity>,
+    pub(super) in_place: mpsc::Receiver<crate::download::FinalFileInPlace>,
 }
 
 impl<S, P, L, K> CoreActor<S, P, L, K>
@@ -390,12 +414,16 @@ where
     async fn run(
         mut self,
         mut inbox: super::inbox::Inbox,
-        mut finished_rx: mpsc::Receiver<FinishedActivity>,
+        runs: RunNotices,
         mut scan_rx: mpsc::UnboundedReceiver<registry_check::RegistryMessage>,
         mut download_reach_rx: mpsc::Receiver<crate::callback::DownloadReach>,
         mut serve_ended_rx: watch::Receiver<u64>,
         mut kad_ended_rx: watch::Receiver<u64>,
     ) {
+        let RunNotices {
+            finished: mut finished_rx,
+            in_place: mut in_place_rx,
+        } = runs;
         // The **Session Generation** (ADR-0095): each session the operator's
         // connect installs wakes the searches that waited for one.
         let mut session_rx = self.wiring.shared_server_session.session_changes();
@@ -408,8 +436,17 @@ where
             crate::download::source_seeds::SEED_WRITE_INTERVAL,
         );
         seed_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut served_offers = self.wiring.served_downloads.offer_changes();
         loop {
             tokio::select! {
+                changed = served_offers.changed() => {
+                    if changed.is_err() {
+                        // Unreachable: the cell this actor holds owns the sender.
+                        break;
+                    }
+                    // A run's write moved a Partial Share's offer (ADR-0113).
+                    self.served_moved().await;
+                }
                 _ = seed_tick.tick(), if !self.activities.downloads_idle() => {
                     self.write_source_seeds();
                 }
@@ -537,6 +574,9 @@ where
                     let generation = *kad_ended_rx.borrow_and_update();
                     self.on_kad_ended(generation).await;
                 }
+                // A run's finished file is in place (ADR-0115): its row and
+                // the end of its Served Download are one step.
+                Some(report) = in_place_rx.recv() => self.on_final_file_in_place(report).await,
                 Some(finished) = finished_rx.recv() => {
                     let download_id = match finished {
                         FinishedActivity::Download(download_id, run) => {
@@ -544,8 +584,10 @@ where
                             // ADR-0093) retires here; one a stop already
                             // retired is gone from the ledger, or replaced by
                             // a later run, so its late notice retires nothing.
-                            if self.activities.download(download_id).is_some_and(|active| active.run == run) {
-                                self.retire_download(download_id);
+                            if self.activities.download(download_id).is_some_and(|active| active.run == run)
+                                && let Some(active) = self.retire_download(download_id)
+                            {
+                                self.take_back_served(active.file_hash, active.run);
                             }
                             download_id
                         }
@@ -558,8 +600,9 @@ where
                     };
                     // The join point where the download and serve halves meet
                     // (ADR-0031): a download that reached `Completed` auto-shares,
-                    // unless it finished under a refused entry (ADR-0101).
-                    self.share_completed(download_id).await;
+                    // unless it finished under a refused entry (ADR-0101), and
+                    // its Served Download ends (ADR-0113).
+                    self.download_finished(download_id).await;
                 }
                 else => break,
             }

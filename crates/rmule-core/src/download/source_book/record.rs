@@ -5,7 +5,7 @@
 //! in its Worker stage, so what the hello stated ends with that worker
 //! (ADR-0049).
 
-use rmule_peer::PeerIdentity;
+use rmule_peer::{PartBitmap, PeerIdentity};
 use rmule_primitives::{Ipv4Endpoint, PeerCrypt, PeerEndpoint};
 
 use super::road::PendingRoad;
@@ -64,6 +64,19 @@ pub(crate) struct Live {
     pub(crate) endpoint: PeerEndpoint,
 }
 
+/// What a connected worker's peer told it, current with every revision and
+/// gone with the worker: an earlier connection's word never stands in for it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct Heard {
+    /// The identity the peer's session keeps once the hello is read: its own
+    /// statement of its hash, its crypt stance, its UDP contact and its buddy.
+    pub(super) identity: Option<Box<PeerIdentity>>,
+    /// Whether the peer answered the worker's probe. Until it does, the
+    /// record's Advertised Parts are an earlier connection's or a merged-in
+    /// record's, and the worker is handed nothing (ADR-0112 §3).
+    pub(super) answered: bool,
+}
+
 /// A record's one stage — its one owner (ADR-0090 invariant 1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Stage {
@@ -71,11 +84,8 @@ pub(super) enum Stage {
     Pooled(Lane),
     /// A worker that has not completed its handshake.
     Dialing(Live),
-    /// A connected worker, with the identity its peer's session keeps once
-    /// the hello is read: the peer's own statement of its hash, its crypt
-    /// stance, its UDP contact and its buddy, current with every revision and
-    /// gone with the worker.
-    Worker(Live, Option<Box<PeerIdentity>>),
+    /// A connected worker, with what its peer told it on this connection.
+    Worker(Live, Heard),
     /// A callback or punch in flight toward a Low-ID candidate, with its road
     /// and the deadlines that govern it.
     CallbackPending(PendingRoad),
@@ -108,7 +118,7 @@ impl Stage {
     /// The identity the stage's worker holds, once its peer identified.
     pub(super) fn identity(&self) -> Option<&PeerIdentity> {
         match self {
-            Self::Worker(_, identity) => identity.as_deref(),
+            Self::Worker(_, heard) => heard.identity.as_deref(),
             _ => None,
         }
     }
@@ -145,6 +155,10 @@ pub(super) struct Record {
     pub(super) seed: Option<PeerEndpoint>,
     /// What the download's source asks stamped on this peer (ADR-0108).
     pub(super) asks: AskFacts,
+    /// The parts its source last advertised, over the file's real parts:
+    /// its **Advertised Parts** (ADR-0112). Written only through the book,
+    /// which keeps **Part Frequency** with it.
+    pub(super) advertised: Option<PartBitmap>,
 }
 
 impl Record {
@@ -157,6 +171,7 @@ impl Record {
             standing: None,
             seed: None,
             asks: AskFacts::default(),
+            advertised: None,
         }
     }
 

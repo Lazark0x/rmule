@@ -12,10 +12,13 @@
 //! plan and reconnecting an idle session are the caller's effects, made by the
 //! Join Sequence in `rmule_core::join` (ADR-0067).
 
+mod list_host;
+
 use rmule_ed2k::{ServerMet, ServerMetEntry, ServerMetError};
 use rmule_primitives::ServerEndpoint;
 use thiserror::Error;
 
+use self::list_host::ListHost;
 use crate::fetcher::{FetchError, Fetcher};
 
 /// Why a server.met acquisition produced no install plan.
@@ -138,6 +141,10 @@ impl ServerMetInstall {
 /// returns its first failure as-is. On success the returned plan reconciles
 /// `installed` with the freshly parsed rows and is the caller's cue to persist
 /// and reconnect if idle.
+///
+/// The fresh rows are the word of `url`'s host, and a row whose address no
+/// server can be at as that host's word is dropped before the merge
+/// (ADR-0085).
 pub async fn fetch_server_met<F>(
     fetcher: &F,
     url: &str,
@@ -149,7 +156,13 @@ where
 {
     let bytes = fetcher.get(url, max_bytes).await?;
     let fresh = ServerMet::decode(&bytes)?;
-    let install = merge_installed(installed, fresh.into_entries());
+    let host = ListHost::of(url);
+    let fresh = fresh
+        .into_entries()
+        .into_iter()
+        .filter(|entry| host.admits(entry))
+        .collect();
+    let install = merge_installed(installed, fresh);
     tracing::debug!(
         added = install.added,
         updated = install.updated,
@@ -360,6 +373,40 @@ mod tests {
 
         assert_eq!(install.added(), 0);
         assert!(install.servers().is_empty());
+    }
+
+    /// A fetched list's rows are its URL host's word (ADR-0085): from a
+    /// remote mirror every Reserved Range row is dropped and a LAN row stays;
+    /// loopback stands only from a mirror on this host.
+    #[tokio::test]
+    async fn a_row_no_server_can_be_at_is_dropped_by_the_lists_host() {
+        let rows = [
+            RowSpec::new(Ipv4Addr::LOCALHOST, 4661).name("Loopback"),
+            RowSpec::new(Ipv4Addr::BROADCAST, 4661).name("Broadcast"),
+            RowSpec::new(Ipv4Addr::new(224, 0, 0, 1), 4661).name("Multicast"),
+            RowSpec::new(Ipv4Addr::new(0, 0, 0, 5), 4661).name("This network"),
+            RowSpec::new(Ipv4Addr::new(192, 168, 1, 10), 4661).name("Lan"),
+            RowSpec::new(Ipv4Addr::new(45, 55, 200, 1), 4661).name("Public"),
+        ];
+        let remote = vec!["Lan", "Public"];
+        let on_this_host = vec!["Loopback", "Lan", "Public"];
+        for (url, expected) in [
+            ("http://mirror.example/server.met", &remote),
+            ("http://198.51.100.7:8080/server.met", &remote),
+            ("http://127.0.0.1:8080/server.met", &on_this_host),
+            ("http://localhost/server.met", &on_this_host),
+            ("http://[::1]:8080/server.met", &on_this_host),
+        ] {
+            let fetcher = FakeFetcher::serving(met_bytes(&rows));
+
+            let install = fetch_server_met(&fetcher, url, CAP, Vec::new())
+                .await
+                .expect(url);
+
+            let names: Vec<_> = install.servers().iter().map(name_of).collect();
+            assert_eq!(&names, expected, "{url}");
+            assert_eq!(install.added(), expected.len(), "{url}");
+        }
     }
 
     #[tokio::test]

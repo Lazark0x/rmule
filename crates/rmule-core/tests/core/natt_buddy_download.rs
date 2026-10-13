@@ -29,10 +29,11 @@
 //! neither that guard nor the self-punch guard is weakened for a test. The
 //! rise and the download's adoption of the risen Tunnel are proven below the
 //! guards in `natt::front::live` and `adapters::inbound_triage::tests::verdicts`,
-//! which this leg meets at the claim. The callback leg stops short of the `0x52`
-//! itself: a scripted Kad seam has no node to send it from, so the event says
-//! nothing was emitted, and the bytes are proven against the captured aMule
-//! row in `rmule-kad`'s `buddy_publish_capture`.
+//! which this leg meets at the claim. The callback leg stops at the node
+//! command: the scripted Kad seam's pump stand-in takes the `0x52` ask as a
+//! running node does, so the event names the buddy it went to and the ask
+//! names the file and our port; the bytes the node writes from it are
+//! proven in `rmule-kad`.
 
 use rmule_testkit::HANG_GUARD;
 use std::net::Ipv4Addr;
@@ -47,8 +48,8 @@ use rmule_kad::KadId;
 use rmule_peer::natt::RendezvousBody;
 use rmule_peer::{PeerHandshakeContext, ReaskCallbackUdp};
 use rmule_primitives::{
-    ClientIdentity, Ed2kFileLink, Ed2kText, FileHash, Ipv4Endpoint, PeerEndpoint, ServerEndpoint,
-    SightedBuddy, SourceLookupTarget, SourceRoad, SourceSighting, UserHash,
+    ClientIdentity, Ed2kFileLink, Ed2kText, FileHash, Informant, Ipv4Endpoint, PeerEndpoint,
+    ServerEndpoint, SightedBuddy, SourceLookupTarget, SourceRoad, SourceSighting, UserHash,
 };
 use rmule_testkit::file_link_without_part_hash_set;
 use tokio::net::UdpSocket;
@@ -64,6 +65,9 @@ const TARGET_HASH: UserHash = UserHash::from_bytes([0xAB; UserHash::BYTE_LEN]);
 const OUR_HASH: UserHash = UserHash::from_bytes([0x42; UserHash::BYTE_LEN]);
 /// The buddy's Kad ID — the `0x94` relay key the buddy routes by.
 const BUDDY_ID: [u8; 16] = [0x7A; 16];
+/// The buddy's Kad UDP endpoint on the callback legs' row: where the `0x52`
+/// goes.
+const CALLBACK_BUDDY_UDP: Ipv4Endpoint = Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 9), 9000);
 
 /// A server lookup that always fails: the row must arrive over Kad, and a
 /// server source would give the download another road to take.
@@ -127,15 +131,27 @@ impl KadSourceChannel for OneRowChannel {
     }
 }
 
+/// The stand-in for the node's pump a [`OneRowKad`] start leaves, shared
+/// with the leg that reads what the core asked of it.
+type PumpCell = std::sync::Arc<tokio::sync::Mutex<Option<rmule_core::KadPumpStandIn>>>;
+
 struct OneRowKad {
     channel: Option<OneRowChannel>,
+    pump: PumpCell,
 }
 
 impl OneRowKad {
     fn answering(row: SourceSighting) -> Self {
         Self {
             channel: Some(OneRowChannel::new(row)),
+            pump: PumpCell::default(),
         }
+    }
+
+    /// Where the started node's pump stand-in is kept: every `0x52` the core
+    /// asks for is taken there, as a running node takes it.
+    fn pump(&self) -> PumpCell {
+        std::sync::Arc::clone(&self.pump)
     }
 }
 
@@ -147,8 +163,9 @@ impl KadRuntimeFactory for OneRowKad {
         _config: &KadEnableConfig,
         _node: &rmule_core::KadNodeIdentity,
         _bind: rmule_core::ClientUdpBind,
-        _cells: &rmule_core::KadCells,
+        cells: &rmule_core::KadCells,
     ) -> Result<OneRowChannel, rmule_core::CoreError> {
+        *self.pump.lock().await = Some(cells.stand_in_pump());
         Ok(self.channel.take().expect("kad started once"))
     }
 }
@@ -177,6 +194,7 @@ fn buddy_row_stating(buddy_udp: Ipv4Endpoint, connect_options: u8) -> SourceSigh
         Some(rmule_primitives::SourceCryptOptions::from_byte(
             connect_options,
         )),
+        Informant::Own,
     )
 }
 
@@ -299,12 +317,14 @@ async fn a_callable_downloader_adopts_the_publishers_dial_back_and_completes_the
     let out = tempfile::tempdir().unwrap();
     let bytes = vec![0x5A_u8; 4096];
     let file = rmule_testkit::file_link("buddy-callback.bin", &bytes);
+    let file_hash = file.file_hash;
 
     // The connected server grants High-ID and holds no source for the file:
     // the only source is the Kad row.
     let server = rmule_testkit::FakeEd2kServer::start().await;
     let server_ep = ServerEndpoint::parse_host_port(&server.local_addr().to_string()).unwrap();
-    let row = buddy_row_stating(Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 9), 9000), 0x00);
+    let kad = OneRowKad::answering(buddy_row_stating(CALLBACK_BUDDY_UDP, 0x00));
+    let pump = kad.pump();
     let p = crate::fixture::free_port().await;
     let mut core = Core::builder(
         CoreConfig {
@@ -319,7 +339,7 @@ async fn a_callable_downloader_adopts_the_publishers_dial_back_and_completes_the
     ))
     .user_hash(OUR_HASH)
     .peer_transfer(NeverDials)
-    .kad(OneRowKad::answering(row))
+    .kad(kad)
     .build();
 
     core.send(CoreCommand::Serve(rmule_core::ServeCommand::StartServing {
@@ -343,6 +363,8 @@ async fn a_callable_downloader_adopts_the_publishers_dial_back_and_completes_the
 
     buddy_callback_to_completion(
         &mut core,
+        &pump,
+        file_hash,
         listen,
         bytes,
         &out.path().join("buddy-callback.bin"),
@@ -355,6 +377,8 @@ async fn a_callable_downloader_adopts_the_publishers_dial_back_and_completes_the
 /// `OP_CALLBACK`, and the file completes byte-equal at `output`.
 async fn buddy_callback_to_completion(
     core: &mut Core,
+    pump: &PumpCell,
+    file_hash: FileHash,
     listen: std::net::SocketAddrV4,
     bytes: Vec<u8>,
     output: &std::path::Path,
@@ -375,11 +399,32 @@ async fn buddy_callback_to_completion(
         matches!(
             route,
             CoreEvent::PeerReachRouted {
-                route: PeerReachRoute::Buddy { buddy_id, emitted_to: None },
+                route: PeerReachRoute::Buddy { buddy_id, emitted_to: Some(to) },
                 ..
-            } if buddy_id == KadId::from_bytes(BUDDY_ID)
+            } if buddy_id == KadId::from_bytes(BUDDY_ID) && to == CALLBACK_BUDDY_UDP
         ),
         "a callable downloader asks the buddy, not the punch: {route:?}"
+    );
+    // What the node was handed: the `0x52` to the row's buddy, naming the
+    // file and the port the target is to dial.
+    let asked = timeout(HANG_GUARD, async {
+        pump.lock()
+            .await
+            .as_mut()
+            .expect("the Kad node started")
+            .next_callback()
+            .await
+    })
+    .await
+    .expect("the 0x52 ask reaches the node");
+    assert_eq!(
+        asked,
+        Some(rmule_kad::KadCommand::RequestBuddyCallback {
+            buddy: rmule_kad::KadNodeEndpoint::new(CALLBACK_BUDDY_UDP.ip, CALLBACK_BUDDY_UDP.port),
+            buddy_id: KadId::from_bytes(BUDDY_ID),
+            file_hash,
+            tcp_port: listen.port(),
+        })
     );
 
     // The publisher, as aMule dials back on `OP_CALLBACK`: not on any server,
@@ -439,12 +484,14 @@ async fn a_kad_only_open_downloader_takes_the_buddy_callback_road() {
     let out = tempfile::tempdir().unwrap();
     let bytes = vec![0xA5_u8; 4096];
     let file = rmule_testkit::file_link("kad-only-callback.bin", &bytes);
+    let file_hash = file.file_hash;
     // No server anywhere: serving's login and the download's lookup both fail,
     // so no session self-fact exists and only the Kad verdict can make us
     // callable.
     let no_server = ServerEndpoint::new("127.0.0.1", crate::fixture::dead_port().await)
         .expect("server endpoint");
-    let row = buddy_row_stating(Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 9), 9000), 0x00);
+    let kad = OneRowKad::answering(buddy_row_stating(CALLBACK_BUDDY_UDP, 0x00));
+    let pump = kad.pump();
     let p = crate::fixture::free_port().await;
     let mut core = Core::builder(
         CoreConfig {
@@ -460,7 +507,7 @@ async fn a_kad_only_open_downloader_takes_the_buddy_callback_road() {
     .user_hash(OUR_HASH)
     .source_lookup(FailingSourceLookup)
     .peer_transfer(NeverDials)
-    .kad(OneRowKad::answering(row))
+    .kad(kad)
     // The ADR-0058 TCP verdict a real node would have reached, injected as
     // a level.
     .kad_reach(rmule_core::KadReachLevel::fixed(true))
@@ -486,6 +533,8 @@ async fn a_kad_only_open_downloader_takes_the_buddy_callback_road() {
 
     buddy_callback_to_completion(
         &mut core,
+        &pump,
+        file_hash,
         listen,
         bytes,
         &out.path().join("kad-only-callback.bin"),
@@ -531,6 +580,7 @@ async fn a_kad_row_with_the_direct_callback_bit_draws_a_0x95_toward_its_own_endp
         },
         Some(TARGET_HASH),
         Some(rmule_primitives::SourceCryptOptions::from_byte(0x08)),
+        Informant::Own,
     );
     let p = crate::fixture::free_port().await;
     let mut core = Core::builder(
@@ -632,7 +682,7 @@ async fn a_published_type_6_row_served_back_by_a_storer_takes_the_direct_udp_roa
     let storer = rmule_net::kad::spawn(bare(key, UserHash::from_bytes([0xCC; 16])), loopback)
         .await
         .expect("storer binds");
-    let publisher =
+    let mut publisher =
         rmule_net::kad::spawn(bare(KadId::from_bytes([0x5E; 16]), TARGET_HASH), loopback)
             .await
             .expect("publisher binds");
@@ -651,7 +701,19 @@ async fn a_published_type_6_row_served_back_by_a_storer_takes_the_direct_udp_roa
     ] {
         publisher.command(command).await.expect("publisher alive");
     }
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // The publish walk can end only at a node the publisher knows: wait for
+    // the storer to enter its table rather than for a guessed while.
+    timeout(HANG_GUARD, async {
+        loop {
+            match publisher.next_event().await {
+                Some(rmule_kad::KadEvent::ContactAdded { id, .. }) if id == key => return,
+                Some(_) => {}
+                None => panic!("the publisher stopped before it met the storer"),
+            }
+        }
+    })
+    .await
+    .expect("the publisher meets the storer");
     publisher
         .command(rmule_kad::KadCommand::PublishSource {
             request: rmule_kad::KadPublishRequest::new(target),
@@ -718,7 +780,9 @@ async fn a_published_type_6_row_served_back_by_a_storer_takes_the_direct_udp_roa
     .user_hash(OUR_HASH)
     .peer_transfer(NeverDials)
     .kad(OneRowKad::answering(
-        candidate.sighting().expect("a type-6 row is a sighting"),
+        candidate
+            .sighting(Informant::Own)
+            .expect("a type-6 row is a sighting"),
     ))
     .build();
     core.send(CoreCommand::Serve(rmule_core::ServeCommand::StartServing {

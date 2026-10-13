@@ -346,6 +346,156 @@ async fn a_refused_download_directory_is_not_scanned_and_covers_nothing() {
     core.shutdown().await;
 }
 
+/// The Temp Directory, a directory holding it and one inside it are refused
+/// at the add (ADR-0115): no part file of a new download lies under a shared
+/// directory, and none is shared from where they lie. A Temp Directory moved
+/// on the running core is judged at once — the new one is refused, and the
+/// old one is a directory like any other.
+#[tokio::test]
+async fn the_temp_directory_and_a_directory_holding_it_are_not_shared() {
+    let machine = Machine::new();
+    let parts = machine.directory("work/parts", &[]);
+    let inner = machine.directory("work/parts/inner", &[]);
+    let work = machine.root.join("work");
+    let mut core = machine.core_with(
+        rmule_testkit::memory_store(),
+        CoreConfig::default(),
+        rmule_core::CoreSettings {
+            temp_dir: Some(parts.clone()),
+            ..rmule_core::CoreSettings::default()
+        },
+    );
+    for dir in [&parts, &work] {
+        assert_eq!(
+            refused(&mut core, dir).await,
+            DirectoryRefusal::HoldsTempDirectory,
+            "{}",
+            dir.display()
+        );
+    }
+    assert_eq!(
+        refused(&mut core, &inner).await,
+        DirectoryRefusal::InsideTempDirectory
+    );
+
+    let moved = machine.directory("spool/parts", &[]);
+    assert_eq!(
+        core.settings()
+            .set(rmule_core::Setting::TempDir(Some(moved))),
+        Ok(rmule_core::TakesEffect::Now)
+    );
+    assert_eq!(
+        refused(&mut core, &machine.root.join("spool")).await,
+        DirectoryRefusal::HoldsTempDirectory
+    );
+    add(&mut core, &work, false).await;
+    core.shutdown().await;
+}
+
+/// A Temp Directory set while an add waits on its confirm is judged against
+/// that add as well (ADR-0115): the add now holds it, so it is refused, its
+/// scan stopped, and the confirm that follows stores nothing.
+#[tokio::test]
+async fn an_add_awaiting_its_confirm_is_refused_when_the_temp_directory_moves_into_it() {
+    let machine = Machine::new();
+    let spool = machine.directory("spool", &[("song.ogg", b"song")]);
+    let store = rmule_testkit::memory_store();
+    let registry = DurableSharedFileRegistry::new(store.clone());
+    let mut core = machine.core(store);
+    send(
+        &core,
+        ScanCommand::AddSharedDirectory {
+            path: spool.clone(),
+        },
+    )
+    .await;
+    assert!(matches!(
+        next_scan_event(&mut core).await,
+        ScanEvent::ConsentRequested { dir, .. } if dir == spool
+    ));
+
+    assert_eq!(
+        core.settings()
+            .set(rmule_core::Setting::TempDir(Some(spool.join("parts")))),
+        Ok(rmule_core::TakesEffect::Now)
+    );
+    assert_eq!(
+        next_scan_event(&mut core).await,
+        ScanEvent::DirectoryRefused {
+            dir: spool.clone(),
+            reason: DirectoryRefusal::HoldsTempDirectory
+        }
+    );
+    send(
+        &core,
+        ScanCommand::Answer {
+            dir: spool,
+            share: true,
+        },
+    )
+    .await;
+    let listed = diagnostics(&mut core).await.shared_directories;
+    assert!(
+        listed
+            .iter()
+            .all(|entry| entry.role == DirectoryRole::DownloadDirectory),
+        "{listed:?}"
+    );
+    assert!(registry.list().unwrap().is_empty());
+    core.shutdown().await;
+}
+
+/// An entry refused at attach for holding the Temp Directory is judged again
+/// when the Temp Directory moves away on the running core, and scanned once
+/// it passes (ADR-0115).
+#[tokio::test]
+async fn an_entry_refused_for_the_old_temp_directory_is_scanned_once_it_moves_away() {
+    let machine = Machine::new();
+    let media = machine.directory("media", &[("film.mkv", b"film bytes")]);
+    let store = rmule_testkit::memory_store();
+    let mut core = machine.core(store.clone());
+    add(&mut core, &media, true).await;
+    assert!(matches!(
+        next_scan_event(&mut core).await,
+        ScanEvent::DirectoryAdded { dir, .. } if dir == media
+    ));
+    core.shutdown().await;
+
+    let mut core = machine.core_with(
+        store,
+        CoreConfig::default(),
+        rmule_core::CoreSettings {
+            temp_dir: Some(media.join("parts")),
+            ..rmule_core::CoreSettings::default()
+        },
+    );
+    assert_eq!(
+        next_scan_event(&mut core).await,
+        ScanEvent::DirectoryRefused {
+            dir: media.clone(),
+            reason: DirectoryRefusal::HoldsTempDirectory
+        }
+    );
+    let elsewhere = machine.directory("spool/parts", &[]);
+    assert_eq!(
+        core.settings()
+            .set(rmule_core::Setting::TempDir(Some(elsewhere))),
+        Ok(rmule_core::TakesEffect::Now)
+    );
+    timeout(HANG_GUARD, async {
+        loop {
+            if let ScanEvent::Finished { dir, .. } = next_scan_event(&mut core).await
+                && dir == media
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the entry is scanned once the Temp Directory moved away");
+    core.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_remove_unshares_at_once_and_the_add_again_reads_nothing() {
     let machine = Machine::new();

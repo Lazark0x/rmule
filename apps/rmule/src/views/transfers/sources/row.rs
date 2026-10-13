@@ -10,7 +10,7 @@ use rmule_core::diagnostics::{
 use rmule_primitives::PeerEndpoint;
 
 use crate::state::UiState;
-use crate::words::download::{REMEMBERED, dial_end_words};
+use crate::words::download::{REMEMBERED, dial_end_words, phase_words};
 
 /// What a source row is across frames: a slot by its peer (and its slot, for
 /// a slot that holds no peer yet), or a source whose dial ended by its peer.
@@ -101,7 +101,7 @@ impl SourceRow<'_> {
     pub(in crate::views::transfers) fn phase_cell(&self) -> String {
         match self {
             Self::Slot(_, Some(end)) | Self::Ended(_, end) => dial_end_words(end.cause).to_string(),
-            Self::Slot(worker, None) => phase_label(worker.phase()),
+            Self::Slot(worker, None) => phase_words(worker.phase()),
         }
     }
 
@@ -114,16 +114,15 @@ impl SourceRow<'_> {
                 WorkerPhase::ReceivingPart { .. } => 0,
                 WorkerPhase::VerifyingPart { .. } => 1,
                 WorkerPhase::RequestingPart { .. } => 2,
-                WorkerPhase::RequestingHashSet => 3,
-                WorkerPhase::WaitingForSlot => 4,
-                WorkerPhase::HandshakingPeer => 5,
+                WorkerPhase::WaitingForSlot { .. } => 3,
+                WorkerPhase::RequestingHashSet => 4,
+                WorkerPhase::AskingFile => 5,
                 WorkerPhase::Connecting => 6,
                 WorkerPhase::Idle => 7,
-                WorkerPhase::Releasing => 8,
-                WorkerPhase::Retired { .. } => 9,
-                WorkerPhase::ShutDown => 10,
+                WorkerPhase::Retired { .. } => 8,
+                WorkerPhase::ShutDown => 9,
             },
-            Self::Ended(..) => 11,
+            Self::Ended(..) => 10,
         }
     }
 
@@ -139,21 +138,5 @@ impl SourceRow<'_> {
                 .unwrap_or(0.0),
             Self::Ended(..) => 0.0,
         }
-    }
-}
-
-fn phase_label(phase: &WorkerPhase) -> String {
-    match phase {
-        WorkerPhase::Idle => "idle".to_string(),
-        WorkerPhase::Connecting => "connecting".to_string(),
-        WorkerPhase::HandshakingPeer => "handshake".to_string(),
-        WorkerPhase::WaitingForSlot => "queued".to_string(),
-        WorkerPhase::RequestingHashSet => "hashset".to_string(),
-        WorkerPhase::RequestingPart { part_index } => format!("req p{part_index}"),
-        WorkerPhase::ReceivingPart { part_index, .. } => format!("recv p{part_index}"),
-        WorkerPhase::VerifyingPart { part_index } => format!("verify p{part_index}"),
-        WorkerPhase::Releasing => "releasing".to_string(),
-        WorkerPhase::Retired { .. } => "retired".to_string(),
-        WorkerPhase::ShutDown => "shutdown".to_string(),
     }
 }

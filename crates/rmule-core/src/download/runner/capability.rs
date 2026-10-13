@@ -54,7 +54,7 @@ impl CallbackFacts {
 
 #[cfg(test)]
 mod tests {
-    use rmule_primitives::{ClientId, SourceSighting};
+    use rmule_primitives::{ClientId, Informant, SourceSighting};
 
     use super::*;
     use crate::KadReachLevel;
@@ -83,7 +83,7 @@ mod tests {
 
     fn low_id_candidate() -> LowIdCandidate {
         LowIdCandidate::from_sighting(
-            SourceSighting::plain(PeerSource::new(ClientId::from_u32(9), 4662)),
+            SourceSighting::plain(PeerSource::new(ClientId::from_u32(9), 4662), Informant::Own),
             None,
         )
         .expect("a Low-ID source is a candidate")

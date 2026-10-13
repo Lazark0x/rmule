@@ -4,11 +4,16 @@
 //! dials an aMule directly for Secure User Identification, serves an aMule's
 //! download, or holds an aMule queued across the `FILEREASKTIME` window to draw
 //! — or emit — a peer-UDP source reask, or re-asks a Low-ID one through its
-//! callback road.
+//! callback road, or serves one as a Low-ID node it dialed back on the
+//! server's relay, or downloads one file from several partial aMule seeds, or
+//! serves an aMule a download it is still fetching.
 
 pub(crate) mod direct_sui;
 pub(crate) mod lowid_callback_reask;
+pub(crate) mod partial_share;
 pub(crate) mod serve;
+pub(crate) mod server_callback_serve;
+pub(crate) mod streaming_window;
 pub(crate) mod sx1_gate;
 pub(crate) mod two_hellos;
 pub(crate) mod udp_reask;
@@ -19,7 +24,16 @@ pub use self::lowid_callback_reask::verdict::score_run_dir as score_lowid_callba
 pub use self::lowid_callback_reask::{
     PeerLowIdCallbackReaskOptions, run_peer_lowid_callback_reask,
 };
+pub use self::partial_share::{
+    PartialShareOptions, run_partial_share, score_run_dir as score_partial_share,
+};
 pub use self::serve::run_rmule_serves_amule_downloads;
+pub use self::server_callback_serve::verdict::score_run_dir as score_server_callback_serve;
+pub use self::server_callback_serve::{ServerCallbackServeOptions, run_server_callback_serve};
+pub use self::streaming_window::{
+    SeedHolding, StreamingWindowOptions, collect_kept_run as collect_streaming_window_run,
+    default_seeds, run_streaming_window, score_run_dir as score_streaming_window, seed_holding_arg,
+};
 pub use self::sx1_gate::{Sx1GateOptions, run_sx1_gate};
 pub use self::two_hellos::{TwoHellosOptions, run_two_hellos};
 pub use self::udp_reask::{

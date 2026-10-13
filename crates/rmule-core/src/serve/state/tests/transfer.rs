@@ -23,6 +23,7 @@ fn parts_requests_read_only_unserved_ranges_and_serve_blocks_with_credit() {
             start: offset,
             end,
         },
+        check: None,
     };
     let parts_requested =
         |ranges| ServeInput::Server(ServerEvent::PartsRequested { file_hash, ranges });
@@ -267,6 +268,7 @@ fn aich_recovery_builds_the_tree_once_and_answers_from_the_cache() {
             offset: 0,
             len: file_size,
             purpose: ReadPurpose::AichRecovery { file_hash, part: 0 },
+            check: None,
         }],
     );
 
@@ -351,6 +353,7 @@ fn aich_master_root_answers_share_the_cache() {
         offset: 0,
         len: file_size,
         purpose: ReadPurpose::AichMasterRoot { file_hash },
+        check: None,
     };
 
     assert_eq!(

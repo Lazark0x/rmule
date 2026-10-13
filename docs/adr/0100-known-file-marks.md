@@ -13,7 +13,7 @@ A search result carries at most one of six marks, by this precedence:
 
 | Mark | Meaning | Drawn |
 |---|---|---|
-| Downloading | a running, waiting or paused download | mark colour, bold |
+| Downloading | a running, waiting, paused or completing download | mark colour, bold |
 | Failed | a download whose run ended in an error; it still holds the file's place | `mark_failed`, bold and underlined |
 | Have | in the Shared File Registry and offered — on disk now | mark colour, dim |
 | Withheld | in the registry, but rmule cannot read the file now | `mark_withheld`, underlined |

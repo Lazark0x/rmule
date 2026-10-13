@@ -14,8 +14,8 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, PeerEndpoint, PeerSource, ServerEndpoint, SourceLookupTarget,
-    SourceSighting,
+    ClientId, Ed2kFileLink, Informant, PeerEndpoint, PeerSource, ServerEndpoint,
+    SourceLookupTarget, SourceSighting,
 };
 use rmule_testkit::HANG_GUARD;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -442,6 +442,7 @@ async fn startup_recovery_emits_recovered_without_source_lookup() {
                 failure: None,
                 file_hash,
                 metadata,
+                ..
             }) if *download_id == expected_id
                 && *file_hash == file_link().file_hash
                 && metadata.name == file_link().name
@@ -733,10 +734,10 @@ impl SourceLookupService for RecordingSourceLookup {
         self.calls.lock().unwrap().push(target);
         Ok(SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![SourceSighting::plain(PeerSource::new(
-                ClientId::from_u32(0x0100_007F),
-                4663,
-            ))],
+            sources: vec![SourceSighting::plain(
+                PeerSource::new(ClientId::from_u32(0x0100_007F), 4663),
+                Informant::Own,
+            )],
         })
     }
 }
@@ -748,13 +749,18 @@ impl PeerTransferService for PendingPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(8);
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
+                if matches!(command, PeerWorkerCommand::AskSlot) {
+                    let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                }
                 if matches!(command, PeerWorkerCommand::Shutdown { .. }) {
                     break;
                 }

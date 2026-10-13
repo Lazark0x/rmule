@@ -15,7 +15,8 @@ use rmule_core::{
     open_durable_store,
 };
 use rmule_primitives::{
-    ClientId, ED2K_PART_SIZE, PeerSource, ServerEndpoint, SourceLookupTarget, SourceSighting,
+    ClientId, ED2K_PART_SIZE, Informant, PeerSource, ServerEndpoint, SourceLookupTarget,
+    SourceSighting,
 };
 use rmule_testkit::{
     PendingPeerTransfer, PlanAssertingPeerTransfer, StaticPeerTransfer, file_link,
@@ -332,10 +333,10 @@ impl SourceLookupService for RecordingSourceLookup {
         self.calls.lock().unwrap().push(target);
         Ok(SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![SourceSighting::plain(PeerSource::new(
-                ClientId::from_u32(0x0100_007F),
-                4663,
-            ))],
+            sources: vec![SourceSighting::plain(
+                PeerSource::new(ClientId::from_u32(0x0100_007F), 4663),
+                Informant::Own,
+            )],
         })
     }
 }

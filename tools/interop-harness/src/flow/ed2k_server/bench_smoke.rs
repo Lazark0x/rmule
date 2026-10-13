@@ -45,6 +45,9 @@ pub struct BenchSmokeOptions<'a> {
     /// Ride `CT_EMULE_UDPPORTS` (`0xF9`, ADR-0091) on the probe's login, naming
     /// this client-UDP port — the tag a running core sends on every login.
     pub udp_ports_advert: Option<u16>,
+    /// Ride `CT_MOD_IP_V6` (`0xAE`) with its `SRVCAP_IPV6` bit, naming this
+    /// address; beside `udp_ports_advert` the login carries six tags.
+    pub advertise_ipv6: Option<std::net::Ipv6Addr>,
 }
 
 /// Start `rmule/interop-eserver:local` and probe its advertised capabilities
@@ -78,7 +81,11 @@ pub fn run_bench_smoke(options: BenchSmokeOptions<'_>) -> Result<()> {
         let probe = options.rmule_client_container.probe_command(
             bench.staging(options.layout),
             &bench.names.server_endpoint(),
-            options.udp_ports_advert,
+            crate::rmule::ProbeAsks {
+                udp_ports_advert: options.udp_ports_advert,
+                advertise_ipv6: options.advertise_ipv6,
+                holepunch_target: None,
+            },
         );
         fs::create_dir_all(options.layout.probe_dir()).with_context(|| {
             format!("create probe dir {}", options.layout.probe_dir().display())
@@ -135,6 +142,10 @@ pub(crate) struct BenchSmokeSummary {
     /// `0xF9` word it carried (`none` for aMule 2.3.3's four-tag login).
     pub(crate) login_accepted: String,
     pub(crate) udp_ports_advert: String,
+    /// The `CT_MOD_IP_V6` address the login carried (`none` without one),
+    /// and how many tags it carried in all.
+    pub(crate) advertised_ipv6: String,
+    pub(crate) login_tags: String,
 }
 
 impl BenchSmokeSummary {
@@ -167,6 +178,8 @@ impl BenchSmokeSummary {
                 .map(|value| value.starts_with("true").to_string())
                 .unwrap_or_else(|| "false".to_owned()),
             udp_ports_advert: last("udp_ports_advert:").unwrap_or_else(|| "none".to_owned()),
+            advertised_ipv6: last("advertised_ipv6:").unwrap_or_else(|| "none".to_owned()),
+            login_tags: last("login_tags:").unwrap_or_else(|| "UNKNOWN".to_owned()),
         }
     }
 
@@ -179,7 +192,9 @@ impl BenchSmokeSummary {
              tcp_flags = \"{}\"\n\
              udp_flags = \"{}\"\n\
              login_accepted = \"{}\"\n\
-             udp_ports_advert = \"{}\"\n",
+             udp_ports_advert = \"{}\"\n\
+             advertised_ipv6 = \"{}\"\n\
+             login_tags = \"{}\"\n",
             self.compression_advert,
             self.crypt_advert,
             self.crypt_ping_answered,
@@ -187,6 +202,8 @@ impl BenchSmokeSummary {
             self.udp_flags,
             self.login_accepted,
             self.udp_ports_advert,
+            self.advertised_ipv6,
+            self.login_tags,
         )
     }
 
@@ -202,8 +219,43 @@ impl BenchSmokeSummary {
             self.crypt_advert, self.udp_flags, self.crypt_ping_answered
         );
         println!(
-            "bench-smoke: login_accepted={} (udp_ports_advert={})",
-            self.login_accepted, self.udp_ports_advert
+            "bench-smoke: login_accepted={} (udp_ports_advert={}, advertised_ipv6={}, \
+             login_tags={})",
+            self.login_accepted, self.udp_ports_advert, self.advertised_ipv6, self.login_tags
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BenchSmokeSummary;
+
+    /// The six-tag login reads back as the probe stated it — its address and
+    /// its tag count beside the answer — and a bare login as aMule 2.3.3's
+    /// four with no address.
+    #[test]
+    fn the_summary_names_what_the_login_carried_beside_its_answer() {
+        let six = BenchSmokeSummary::from_probe_stdout(
+            "udp_ports_advert: 0x00001240\nadvertised_ipv6: 2001:db8::9\nlogin_tags: 6\n\
+             login_accepted: true client_id=16777343\n",
+        );
+        assert_eq!(
+            (
+                six.login_accepted.as_str(),
+                six.advertised_ipv6.as_str(),
+                six.login_tags.as_str()
+            ),
+            ("true", "2001:db8::9", "6")
+        );
+        let bare = BenchSmokeSummary::from_probe_stdout("login_tags: 4\nlogin_accepted: false\n");
+        assert_eq!(
+            (
+                bare.login_accepted.as_str(),
+                bare.advertised_ipv6.as_str(),
+                bare.udp_ports_advert.as_str(),
+                bare.login_tags.as_str()
+            ),
+            ("false", "none", "none", "4")
         );
     }
 }

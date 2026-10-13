@@ -31,8 +31,9 @@ pub struct DownloadDiagnostics {
   `InFlight`, pending → `Missing`, tracked by neither → `Verified`. No `Requested`,
   `Corrupt` or `Paused`: the scheduler does not distinguish them, and a state no writer
   can populate makes a surface lie.
-- **Empty means unknown, not zero.** A row between `StartDownload` and the runner's
-  first settle carries an empty vector, which a consumer renders as "no map yet".
+- **Empty means unknown, not zero.** A row opens with every part `Missing` (ADR-0094),
+  so a row core holds is never empty; a consumer with no row for a download yet renders
+  "no map yet".
 - **One source.** `DownloadScheduler::part_states()` walks `0..total_parts` once over the
   two maps it owns; it is the only place a part's status is decided. The runner
   republishes the whole vector, never patching an index, whenever the scheduler settles

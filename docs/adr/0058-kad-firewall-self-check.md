@@ -51,6 +51,14 @@ socket-free.
   window-guarded, bridged from the accept path as `KadCommand::TcpFirewallAck`) or the
   legacy UDP `0x59`. **Two acks mean open**
   ([Prefs.cpp#L185](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/kademlia/kademlia/Prefs.cpp#L185)).
+  A `0x59` counts only from an IP holding a live check window, the same gate the TCP ack
+  passes: an ack we asked for, from the contact we asked, within its 180 s. aMule counts
+  any well-formed `0x59`
+  ([KademliaUDPListener.cpp#L1412](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/kademlia/net/KademliaUDPListener.cpp#L1412)),
+  so two spoofed datagrams would read Kad TCP open, feed the dialable verdict and gate
+  buddy recruitment. A genuine helper acks from the IP it was asked at, so no
+  counterparty sees a difference; an unasked `0x59` is diagnosed as an unrequested
+  firewall response.
 - Buddy search waits at least five minutes past a recheck
   ([Kademlia.cpp#L328](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/kademlia/kademlia/Kademlia.cpp#L328)),
   so a buddy is never recruited on a stale verdict.
@@ -59,11 +67,16 @@ socket-free.
 
 - `0x50` must be exactly 2 bytes, `0x53` at least 19. rmule answers `0x58` with the
   requester's IP at once, then asks core to dial back the requester's TCP port. On
-  connect it sends `OP_KAD_FWTCPCHECK_ACK` on that link (v7+) or `0x59` (older), and the
-  session ends.
-- **Guards.** Self-connect, read against the live public IPv4 from Address Learning
-  (`OwnListenEndpoint`: the full endpoint once known, the port alone until then); a busy
-  client; and an IP rmule is itself checking.
+  connect it sends `OP_KAD_FWTCPCHECK_ACK` on that link, and the session ends. A legacy
+  `0x50` gets its `0x58` and nothing more: rmule neither dials back nor sends the `0x59`
+  aMule sends a requester below v7
+  ([ClientList.cpp#L602](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/ClientList.cpp#L602)).
+- **Guards.** Self-connect, read against the live public address from Address Learning
+  (`OwnListenEndpoint`): a requester is us only at our public address and our TCP port,
+  so with no public address known nothing matches, as aMule's
+  `theApp->GetPublicIP() == nContactIP && thePrefs::GetPort() == contact->GetTCPPort()` test
+  ([ClientList.cpp#L848](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/ClientList.cpp#L848));
+  a busy client; and an IP rmule is itself checking.
 - **The dial-back's crypt.** The `0x53`'s connect options and User Hash ride the chain to
   `DialBackVerdict::Dial` as the requester's `PeerCrypt`, and the dial meets our policy
   through `PeerCrypt::outbound` (ADR-0049). A `0x50` carries neither and is dialed
@@ -143,11 +156,18 @@ a full inbox turned it away, so a dropped level is restated rather than lost.
   conclude firewalled having proved nothing. eMule guards the same invariant from the
   other side (`RequestTCP` refuses an existing socket). rmule sends the `0x58` even when it
   refuses the dial-back, where aMule returns without answering; this costs a datagram.
+- **The legacy connect-back is a ruled divergence of the `unprovable` class** (ADR-0045).
+  rmule answers a `0x50` without the dial-back and the `0x59`, because no pinned body is
+  below Kad v7: aMule 2.3.3 and every reference send a v8 node the `0x53`, so a `0x50`
+  only ever comes from an extinct client and any code for it could never be proven.
+- **rmule's `0x59` consume is stricter than aMule's.** It counts only inside a check
+  window rmule opened toward that IP; aMule counts any `0x59`.
 - rmule releases a buddy when Kad TCP opens, where aMule keeps it and stops pinging it.
 - The deterministic tier covers the verdict machines (two-ack rule, recheck snapshot,
   180 s window, six-minute timeout, port preference and its 10 s correction), the
-  responder guards and parse sizes, helper bias, candidate selection, legacy `0x50` and
-  `0x59` in both directions, and the extern-port round.
+  responder guards and parse sizes, helper bias, candidate selection, the legacy `0x50`
+  in both directions, the `0x59` consume inside and outside its window, and the
+  extern-port round.
 - On the bench, a firewalled Core behind a pinned full-cone gateway finds two helpers in
   its first Helper Lookup and reads UDP open within seconds, including behind a gateway
   that remaps its Kad port, where the `0xA7` names the learned extern port.
@@ -156,7 +176,10 @@ a full inbox turned it away, so a dropped level is restated rather than lost.
 
 - **The Kad runtime dialing TCP itself.** Rejected: it drags the peer handshake into the
   Kad crate when a broker pattern already exists.
-- **Emitting only the modern forms** (`0x53` and the TCP ack). Rejected: the legacy branch
+- **Requesting only the modern check** (`0x53`). Rejected: the requester's legacy branch
   is the same one-switch `kadVersion` gate aMule carries.
+- **Answering a `0x50` with aMule's legacy connect-back** (dial, then `0x59`). Rejected:
+  no counterparty can send rmule a `0x50`, so the dial-back path would be untestable
+  against anything but rmule itself.
 - **Trusting the server High ID alone.** Rejected: it proves TCP only, needs a connected
   server, and says nothing about UDP.

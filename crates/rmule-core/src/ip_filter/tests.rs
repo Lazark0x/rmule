@@ -3,7 +3,8 @@
 //! accepted but inert, the level threshold applied at build time, a later file
 //! punching an allow hole through an earlier block, boundary-exact lookups,
 //! the per-surface config switches, directory loading tolerating absence and
-//! non-UTF-8 descriptions, and source admission by client ID kind.
+//! non-UTF-8 descriptions, source admission by client ID kind, and the IPv6
+//! table: mixed files, prefix bounds, and each family judged by its own rules.
 
 use super::*;
 
@@ -63,6 +64,7 @@ fn malformed_lines_are_counted_and_skipped_without_killing_the_load() {
         stats[0],
         IpFilterLoadStats {
             accepted: 1,
+            ipv6: 0,
             malformed: 5,
         }
     );
@@ -84,6 +86,7 @@ fn a_reversed_range_counts_as_accepted_but_never_blocks() {
         stats[0],
         IpFilterLoadStats {
             accepted: 1,
+            ipv6: 0,
             malformed: 0,
         }
     );
@@ -267,35 +270,101 @@ fn admits_source_drops_filtered_high_id_rows_and_passes_low_id_rows() {
     );
 }
 
-/// A peer claiming a mapped address (`::ffff:a.b.c.d`) hits the v4 table for
-/// its embedded IPv4 — without the unmap, writing a blocked
-/// address as a v6 literal was a bypass. A native v6 peer still passes
-/// through unchecked (no v6 filter format exists), so the two verdicts must
-/// differ even though both arrive through the same `V6` variant.
-#[test]
-fn a_mapped_peer_hits_the_v4_table_and_a_native_v6_peer_still_passes_through() {
-    use rmule_primitives::{Ipv6Endpoint, PeerEndpoint};
-
-    let filter = filter_of("203.0.113.0-203.0.113.255,0,blocked\n");
-
-    let mapped_blocked = PeerEndpoint::V6(Ipv6Endpoint::new(
-        "::ffff:203.0.113.9".parse().unwrap(),
+fn v6_peer(address: &str) -> rmule_primitives::PeerEndpoint {
+    rmule_primitives::PeerEndpoint::V6(rmule_primitives::Ipv6Endpoint::new(
+        address.parse().unwrap(),
         4662,
-    ));
+    ))
+}
+
+/// A peer claiming a mapped address (`::ffff:a.b.c.d`) hits the v4 table for
+/// its embedded IPv4 — without the unmap, writing a blocked address as a v6
+/// literal was a bypass — and a native IPv6 peer hits the IPv6 table
+/// (ADR-0085), so the two verdicts come from different rules even though both
+/// arrive through the same `V6` variant.
+#[test]
+fn a_mapped_peer_hits_the_v4_table_and_a_native_v6_peer_the_v6_table() {
+    let filter = filter_of("203.0.113.0-203.0.113.255,0,blocked\n2001:db8::/32,0,v6 blocked\n");
+
     assert!(
-        filter.is_filtered_peer(mapped_blocked),
+        filter.is_filtered_peer(v6_peer("::ffff:203.0.113.9")),
         "::ffff:203.0.113.9 is 203.0.113.9 wearing a v6 literal"
     );
+    assert!(!filter.is_filtered_peer(v6_peer("::ffff:198.51.100.9")));
+    assert!(filter.is_filtered_peer(v6_peer("2001:db8::1")));
+    assert!(!filter.is_filtered_peer(v6_peer("2a01:4f8::1")));
 
-    let mapped_allowed = PeerEndpoint::V6(Ipv6Endpoint::new(
-        "::ffff:198.51.100.9".parse().unwrap(),
-        4662,
-    ));
-    assert!(!filter.is_filtered_peer(mapped_allowed));
-
-    let native = PeerEndpoint::V6(Ipv6Endpoint::new("2001:db8::1".parse().unwrap(), 4662));
+    let v4_only = filter_of("203.0.113.0-203.0.113.255,0,blocked\n");
     assert!(
-        !filter.is_filtered_peer(native),
-        "a native v6 peer still passes — no v6 filter format is defined yet"
+        !v4_only.is_filtered_peer(v6_peer("2001:db8::1")),
+        "an IPv4 range never judges a native IPv6 peer"
     );
+    let gate_off = IpFilter::from_texts(
+        &[b"2001:db8::/32,0,v6 blocked\n".as_slice()],
+        127,
+        false,
+        true,
+    )
+    .0;
+    assert!(
+        !gate_off.is_filtered_peer(v6_peer("2001:db8::1")),
+        "client filtering off"
+    );
+}
+
+/// One file holding both families loads both tables, and its load report
+/// counts the IPv6 rules among the accepted rows.
+#[test]
+fn a_mixed_file_loads_both_tables() {
+    let text = b"10.0.0.0-10.0.0.255,0,v4 range\n\
+        Evil Corp:2001:db8:1::/48\n\
+        2001:db8:2::1 - 2001:db8:2::ff , 50 , v6 range\n\
+        2001:db8::/129,0,no such prefix\n";
+    let (filter, stats) = IpFilter::from_texts(&[text.as_slice()], 127, true, true);
+    assert_eq!(
+        stats[0],
+        IpFilterLoadStats {
+            accepted: 3,
+            ipv6: 2,
+            malformed: 1,
+        }
+    );
+    assert!(filter.is_filtered_client(ip(10, 0, 0, 9)));
+    assert!(filter.is_filtered_peer(v6_peer("2001:db8:1::77")));
+    assert!(filter.is_filtered_peer(v6_peer("2001:db8:2::ff")));
+    assert!(!filter.is_filtered_peer(v6_peer("2001:db8:2::100")));
+}
+
+/// A `/33` splits the third group's top bit: its first and last address are
+/// blocked, and the addresses on either side are not.
+#[test]
+fn an_ipv6_prefix_blocks_exactly_its_own_bits() {
+    let filter = filter_of("2001:db8:8000::/33,0,half a /32\n");
+    assert!(!filter.is_filtered_peer(v6_peer("2001:db8:7fff:ffff:ffff:ffff:ffff:ffff")));
+    assert!(filter.is_filtered_peer(v6_peer("2001:db8:8000::")));
+    assert!(filter.is_filtered_peer(v6_peer("2001:db8:ffff:ffff:ffff:ffff:ffff:ffff")));
+    assert!(!filter.is_filtered_peer(v6_peer("2001:db9::")));
+}
+
+/// The IPv6 table keeps the IPv4 table's rules: the level threshold applies
+/// at build time, and a later file's rule punches an allow hole through an
+/// earlier block.
+#[test]
+fn an_ipv6_rule_follows_the_level_threshold_and_the_later_file() {
+    let (filter, _) = IpFilter::from_texts(
+        &[
+            b"2001:db8::/32,0,block\n2a01:4f8::/32,200,above the level\n".as_slice(),
+            b"2001:db8:1::/48,200,static allows\n".as_slice(),
+        ],
+        127,
+        true,
+        true,
+    );
+    assert!(filter.is_filtered_peer(v6_peer("2001:db8::1")));
+    assert!(
+        !filter.is_filtered_peer(v6_peer("2001:db8:1::1")),
+        "static wins"
+    );
+    assert!(filter.is_filtered_peer(v6_peer("2001:db8:2::1")));
+    assert!(!filter.is_filtered_peer(v6_peer("2a01:4f8::1")));
 }

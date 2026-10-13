@@ -87,6 +87,7 @@ fn a_waiters_udp_reask_restates_the_parts_its_source_answer_is_filtered_by() {
             PeerSource::new(high_id_client(octets), 4662),
             Some(user(hash_byte)),
             None,
+            rmule_primitives::Informant::Party(p.ip()),
         ));
     }
 

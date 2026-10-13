@@ -14,8 +14,8 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, PeerEndpoint, PeerSource, ServerEndpoint, SourceLookupTarget,
-    SourceSighting,
+    ClientId, Ed2kFileLink, Informant, PeerEndpoint, PeerSource, ServerEndpoint,
+    SourceLookupTarget, SourceSighting,
 };
 use rmule_testkit::HANG_GUARD;
 use rmule_testkit::file_link_without_part_hash_set;
@@ -84,8 +84,9 @@ impl PeerTransferService for ScriptedPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         assert_eq!(
             peer, self.expected_peer,
             "only the admitted source is ever dialed"
@@ -95,8 +96,13 @@ impl PeerTransferService for ScriptedPeerTransfer {
         let outcome = self.outcome.clone();
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
                 match command {
+                    PeerWorkerCommand::AskSlot => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::RequestHashSet => {}
                     PeerWorkerCommand::RequestPart {
                         plan,
                         resume_offset,
@@ -173,8 +179,8 @@ async fn a_filtered_server_snapshot_source_never_reaches_the_pool() {
             outcome: SourceLookupOutcome {
                 client_id: ClientId::from_u32(0x0100_007F),
                 sources: vec![
-                    SourceSighting::plain(filtered_source(4662)),
-                    SourceSighting::plain(admitted),
+                    SourceSighting::plain(filtered_source(4662), Informant::Own),
+                    SourceSighting::plain(admitted, Informant::Own),
                 ],
             },
         })

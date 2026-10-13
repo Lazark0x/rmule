@@ -10,7 +10,7 @@ use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 
 use crate::theme::Theme;
-use crate::wrap::{clamp_u16, wrapped_lines};
+use crate::wrap::{clamp_u16, wrap_text, wrapped_lines};
 
 /// The selected row's values in the columns that gave way at `widths`, each
 /// as `Label value`, left to right.
@@ -29,20 +29,34 @@ pub(crate) fn hidden<'a>(
         .collect()
 }
 
+/// The lines the `Off-screen:` line of `parts` takes at the bottom of `body`:
+/// none when there is nothing off screen, and at most half the body, so the
+/// rows it speaks of stay in sight.
+#[must_use]
+pub(crate) fn height(body: Rect, parts: &[String]) -> u16 {
+    if parts.is_empty() || body.height < 2 || body.width == 0 {
+        return 0;
+    }
+    clamp_u16(wrap_text(&text(parts), usize::from(body.width)).len()).min(body.height / 2)
+}
+
+fn text(parts: &[String]) -> String {
+    format!("Off-screen: {}", parts.join(" · "))
+}
+
 /// Draw `parts` as the `Off-screen:` line at the bottom of `body`, wrapped
 /// rather than cut, and return what is left of `body` above it — all of it
-/// when there is nothing off screen. The line takes at most half the body, so
-/// the rows it speaks of stay in sight.
+/// when there is nothing off screen ([`height`]).
 pub(crate) fn draw(frame: &mut Frame, body: Rect, parts: &[String], theme: &Theme) -> Rect {
-    if parts.is_empty() || body.height < 2 || body.width == 0 {
+    let height = height(body, parts);
+    if height == 0 {
         return body;
     }
     let lines = wrapped_lines(
-        &format!("Off-screen: {}", parts.join(" · ")),
+        &text(parts),
         usize::from(body.width),
         Style::new().fg(theme.fg),
     );
-    let height = clamp_u16(lines.len()).min(body.height / 2);
     let line_area = Rect::new(body.x, body.bottom() - height, body.width, height);
     frame.render_widget(Paragraph::new(lines), line_area);
     Rect::new(body.x, body.y, body.width, body.height - height)

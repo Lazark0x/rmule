@@ -123,7 +123,21 @@ impl AichHashTree {
     /// Recursively build the subtree covering `data` (aMule `FindHash` split +
     /// `SetBlockHash` leaves + `ReCalculateHash` fold, done eagerly top-down).
     fn build(data: &[u8], is_left_branch: bool) -> Self {
-        let data_size = data.len() as u64;
+        Self::build_over(0, data.len() as u64, is_left_branch, &|start, size| {
+            sha1_bytes(&data[start as usize..(start + size) as usize])
+        })
+    }
+
+    /// Build the subtree covering the `data_size` bytes at file offset `start`,
+    /// taking each leaf block's hash from `leaf_hash(start, size)`. The split
+    /// rule alone shapes the tree, so a tree over a file too large to hold in
+    /// memory is the same shape as one built from its bytes.
+    fn build_over(
+        start: u64,
+        data_size: u64,
+        is_left_branch: bool,
+        leaf_hash: &impl Fn(u64, u64) -> [u8; HASHSIZE],
+    ) -> Self {
         let base_size = Self::base_size_for(data_size);
 
         if data_size <= base_size {
@@ -131,16 +145,20 @@ impl AichHashTree {
                 data_size,
                 base_size,
                 is_left_branch,
-                hash: Some(sha1_bytes(data)),
+                hash: Some(leaf_hash(start, data_size)),
                 left: None,
                 right: None,
             };
         }
 
         let n_left = Self::split_left_size(data_size, base_size, is_left_branch);
-        let (left_data, right_data) = data.split_at(n_left as usize);
-        let left = Box::new(Self::build(left_data, true));
-        let right = Box::new(Self::build(right_data, false));
+        let left = Box::new(Self::build_over(start, n_left, true, leaf_hash));
+        let right = Box::new(Self::build_over(
+            start + n_left,
+            data_size - n_left,
+            false,
+            leaf_hash,
+        ));
         let hash = sha1_pair(
             &left.hash.expect("built leaf/node has a hash"),
             &right.hash.expect("built leaf/node has a hash"),
@@ -382,7 +400,9 @@ impl AichHashSet {
     /// for a file too small to have an AICH tree (one block or less) or an
     /// out-of-range part. Wire layout:
     /// `[u16 count16][(u16 ident, hash20)…][u16 count32][(u32 ident, hash20)…]`,
-    /// with 32-bit identifiers only for large (> 4 GiB) files.
+    /// with 32-bit identifiers only for a large file (aMule
+    /// `bUse32BitIdentifier = IsLargeFile()`, `SHAHashSet.cpp:495`; see
+    /// [`is_large_file`](crate::is_large_file)).
     #[must_use]
     pub fn create_part_recovery_data(&self, part_start_pos: u64) -> Option<Vec<u8>> {
         let file_size = self.tree.data_size;
@@ -393,7 +413,7 @@ impl AichHashSet {
         let level = self.tree.find_level(part_start_pos, part_size, 0)?;
         let n_blocks = part_size.div_ceil(EMBLOCKSIZE);
         let n_hashs = (u64::from(level) - 1) + n_blocks;
-        let use_32 = is_large_file(file_size);
+        let use_32 = crate::is_large_file(file_size);
 
         let mut out = Vec::new();
         if use_32 {
@@ -487,13 +507,6 @@ impl AichHashSet {
     }
 }
 
-/// Whether a file needs 32-bit AICH hash identifiers — eMule ties this to large
-/// (> 4 GiB) files (`IsLargeFile`). Confirm the exact `OLD_MAX_FILE_SIZE`
-/// constant before relying on the 32-bit path.
-fn is_large_file(file_size: u64) -> bool {
-    file_size > 0xFFFF_FFFF
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -548,6 +561,48 @@ mod tests {
         );
         // 2 (count16) + 3 × (2 ident + 20 hash) + 2 (count32).
         assert_eq!(rec.len(), 2 + 3 * (2 + HASHSIZE) + 2);
+    }
+
+    #[test]
+    fn a_file_one_byte_past_old_max_file_size_writes_32_bit_identifiers() {
+        // aMule `CreatePartRecoveryData` keys the identifier width on
+        // `IsLargeFile()` (`SHAHashSet.cpp:495`), strictly past
+        // OLD_MAX_FILE_SIZE. A large file writes `[u16 0]`, `[u16 n]` and n ×
+        // (u32 ident, hash20); any other file writes `[u16 n]`, n × (u16
+        // ident, hash20) and `[u16 0]`. Part 0 of either size sits ten levels
+        // down (442 or 441 parts, then 221, 111, 56, 28, 14, 7, 4, 2, 1 under
+        // the left-branch split), so n is 9 sibling hashes plus its 53 block
+        // hashes. Leaf hashes are synthetic: the width and the count follow
+        // from the tree's shape alone, and 4 GiB of bytes would not.
+        let synthetic =
+            |start: u64, size: u64| sha1_bytes(&[start.to_le_bytes(), size.to_le_bytes()].concat());
+        let part_zero = |file_size| {
+            AichHashSet {
+                tree: AichHashTree::build_over(0, file_size, true, &synthetic),
+            }
+            .create_part_recovery_data(0)
+            .expect("a multi-part file has recovery data")
+        };
+        let count = 9 + 53;
+        let word = |data: &[u8], at: usize| u16::from_le_bytes([data[at], data[at + 1]]);
+
+        let large = part_zero(crate::OLD_MAX_FILE_SIZE + 1);
+        assert_eq!(word(&large, 0), 0, "no 16-bit hashes");
+        assert_eq!(usize::from(word(&large, 2)), count);
+        assert_eq!(
+            large.len(),
+            4 + count * (4 + HASHSIZE),
+            "nothing trails the 32-bit list"
+        );
+
+        let old_max = part_zero(crate::OLD_MAX_FILE_SIZE);
+        assert_eq!(usize::from(word(&old_max, 0)), count);
+        assert_eq!(old_max.len(), 2 + count * (2 + HASHSIZE) + 2);
+        assert_eq!(word(&old_max, old_max.len() - 2), 0, "no 32-bit hashes");
+
+        // Both name the same first tree position, in their own width.
+        let ident32 = u32::from_le_bytes(large[4..8].try_into().expect("four bytes"));
+        assert_eq!(ident32, u32::from(word(&old_max, 2)));
     }
 
     #[test]

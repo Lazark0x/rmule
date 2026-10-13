@@ -173,7 +173,11 @@ mod tests {
                 emule_qt(),
             ),
             identified(
-                worker(1, WorkerPhase::WaitingForSlot, Some(peer_endpoint(9))),
+                worker(
+                    1,
+                    WorkerPhase::WaitingForSlot { rank: None },
+                    Some(peer_endpoint(9)),
+                ),
                 amule_233(),
             ),
             worker(2, WorkerPhase::Connecting, Some(peer_endpoint(2))),

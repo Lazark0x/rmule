@@ -7,7 +7,7 @@
 use rmule_peer::PeerIdentity;
 use rmule_primitives::{Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, UserHash};
 
-use super::record::{DialRoad, Lane, Live, RecordId, Stage};
+use super::record::{DialRoad, Heard, Lane, Live, RecordId, Stage};
 use super::road::PendingRoad;
 use super::standing::ReaskFacts;
 use super::{Adopted, DialEnd, NextDial, Release, SourceBook, WorkerEnd};
@@ -128,7 +128,7 @@ impl SourceBook {
             && let Stage::Dialing(live) = record.stage
             && live.endpoint == endpoint
         {
-            record.stage = Stage::Worker(live, None);
+            record.stage = Stage::Worker(live, Heard::default());
         }
     }
 
@@ -218,6 +218,17 @@ impl SourceBook {
             }
             DialRoad::Callback => unreachable!("a called-back worker's end is taken above"),
         }))
+    }
+
+    /// The worker at `endpoint`'s source said it lacks the file (ADR-0090):
+    /// its record is spent under every name it holds and leaves the book,
+    /// whichever road reached it — a called-back source does not return to its
+    /// Low-ID lane, and a standing it held ends.
+    pub(crate) fn lacked_file(&mut self, endpoint: PeerEndpoint) -> Option<WorkerEnd> {
+        let id = self.aliases.endpoint(endpoint)?;
+        self.records.get(&id)?.live_at(endpoint)?;
+        self.spend_lacking(id);
+        Some(WorkerEnd::Release(Release::Gone))
     }
 
     /// A called-back source's worker ended without a queue rank (ADR-0090): its
@@ -478,7 +489,14 @@ impl SourceBook {
         let hash = identity.user_hash();
         let support = identity.source_exchange();
         let buddy = identity.serving_buddy();
-        record.stage = Stage::Worker(live, Some(Box::new(identity)));
+        let answered = matches!(&record.stage, Stage::Worker(_, heard) if heard.answered);
+        record.stage = Stage::Worker(
+            live,
+            Heard {
+                identity: Some(Box::new(identity)),
+                answered,
+            },
+        );
         self.learned(endpoint, support);
         if let Some(buddy) = buddy {
             self.hello_buddy(hash, buddy.buddy_udp);

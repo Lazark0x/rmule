@@ -74,6 +74,15 @@ use registrations::{CallbackRoad, ClaimRoad, Landing, LetGo, Registrations, Road
 /// server's hello encodes `0.0.0.0:0` → `None`; such a callback simply
 /// degrades to the timeout.
 ///
+/// `kad_port` is `Some` for a **Kad source row** alone, which is in no
+/// server's namespace: `low_id` is then read from the address its publisher
+/// was observed at, and the Kad UDP port beside it tells two publishers behind
+/// one address apart, as aMule tells Low IDs apart by IP and Kad port
+/// (`CClientList::FindMatchingClient`, stock 2.3.3 `ClientList.cpp:264-280`;
+/// ADR-0090). A server-assigned id leaves it `None`: its server tells it
+/// apart. An inbound hello reports `None` too, so a Kad row's key never
+/// matches a reported one.
+///
 /// It lives here, not in `download::state`, so that the vocabulary it shares
 /// with this registry and `PeerWorkerEvent`/`PeerWorkerCommand` has one home
 /// and the `download::state -> adapters` dependency direction holds; the
@@ -82,6 +91,7 @@ use registrations::{CallbackRoad, ClaimRoad, Landing, LetGo, Registrations, Road
 pub(crate) struct CallbackKey {
     pub(crate) server: Option<Ipv4Endpoint>,
     pub(crate) low_id: ClientId,
+    pub(crate) kad_port: Option<u16>,
 }
 
 /// Where an adopted worker is handed back, tagged with the brain's key of the

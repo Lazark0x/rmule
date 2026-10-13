@@ -27,12 +27,13 @@ mod peer_transfer;
 // answer fed back, the diagnostics level republished.
 mod port_mapping;
 mod serve_runtime;
+mod served_link;
 mod source_lookup;
 mod udp_ports_advert;
 mod udp_transport;
 
 pub use kad_runtime::{
-    ClientUdpBind, KadCells, KadEnableConfig, KadNodeIdentity, KadRuntimeFactory,
+    ClientUdpBind, KadCells, KadEnableConfig, KadNodeIdentity, KadPumpStandIn, KadRuntimeFactory,
     KadShutdownHandle, KadShutdownSlot, KadSourceChannel, RuntimeKadChannel, RuntimeKadFactory,
 };
 pub use peer_transfer::{
@@ -72,6 +73,7 @@ pub(crate) use port_mapping::{
     SharedPeerPin, await_listener_mapping, spawn_port_mapping,
 };
 pub(crate) use serve_runtime::SharedTunnelAdmit;
+pub(crate) use served_link::SharedServedLinks;
 // The admit channel's payload and the router behind it, named where a test
 // drives the inbound path without a bound listener; the production path
 // reaches both through the serve adapter.

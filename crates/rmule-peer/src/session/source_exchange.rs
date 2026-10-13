@@ -161,6 +161,7 @@ impl PeerSession {
         };
         let sources = crate::source_exchange::sanitize_and_route(
             entries,
+            rmule_primitives::Informant::Party(self.peer.ip()),
             own_endpoint,
             self.ctx.connected_server,
             flow.sources_forwarded,
@@ -233,7 +234,7 @@ impl PeerSession {
             ServedSourcesVersion::Sx1(_) | ServedSourcesVersion::Sx2(_) => classic_entries(sources),
             ServedSourcesVersion::Ext { .. } => sources
                 .into_iter()
-                .map(crate::source_exchange::SourceExchangeEntry::plain)
+                .map(|source| crate::source_exchange::SourceExchangeEntry::plain(source.claim()))
                 .collect(),
         };
         if entries.is_empty() {
@@ -296,6 +297,6 @@ fn classic_entries(
                 .as_peer_endpoint()
                 .is_none_or(|endpoint| endpoint.ed2k_wire_form().is_some())
         })
-        .map(crate::source_exchange::SourceExchangeEntry::plain)
+        .map(|source| crate::source_exchange::SourceExchangeEntry::plain(source.claim()))
         .collect()
 }

@@ -5,7 +5,7 @@
 //! # Core's keys and the front end's
 //!
 //! Core owns every preference that changes what core does — the download
-//! directory, the ports, obfuscation, port mapping, the server policy,
+//! directory, the Temp Directory, the ports, obfuscation, port mapping, the server policy,
 //! `Remember peers`, the mirrors — and an edit to one goes through **Core
 //! Settings**: the handle validates it, persists it, takes up a live key in
 //! the running core, and answers when it takes effect. The receipt reads that
@@ -13,9 +13,9 @@
 //! core gave reaches it; one opened on the store alone, before attach or
 //! without a core, answers that every key waits for the next start.
 //!
-//! The front end keeps five keys of its own — the theme, the table sorts, the
-//! Run Log level, connect at start and the last server — in the same store,
-//! and applies them itself.
+//! The front end keeps six keys of its own — the theme, the table sorts, the
+//! Run Log level, connect at start, the last server and the Player Command —
+//! in the same store, and applies them itself.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -29,6 +29,7 @@ use rmule_primitives::{ServerEndpoint, UserHash};
 
 use crate::table_sort::{Direction, TableSorts};
 use crate::theme::Theme;
+use crate::words::app as words;
 
 mod front_end_key;
 
@@ -83,8 +84,9 @@ impl SharedConfig {
     /// own key is never refused.
     ///
     /// # Errors
-    /// The refusal core's `set` would answer.
-    pub fn check(&self, edit: &PrefEdit) -> Result<(), rmule_core::SettingRefusal> {
+    /// The refusal core's `set` would answer, or the store's failure to read
+    /// what core judges the value against.
+    pub fn check(&self, edit: &PrefEdit) -> Result<(), SettingError> {
         match edit.keeper() {
             Keeper::Core(setting) => self.settings.check(&setting),
             Keeper::FrontEnd(_) => Ok(()),
@@ -93,8 +95,9 @@ impl SharedConfig {
 
     /// Persist one edit and answer when it takes effect, reporting the store's
     /// own refusal verbatim. A core key's answer is core's; a front-end key's
-    /// is this app's own: the theme, the Run Log level, a sort and the last
-    /// server apply at once, connect at start only at a start.
+    /// is this app's own: the theme, the Run Log level, a sort, the last
+    /// server and the Player Command apply at once, connect at start only at
+    /// a start.
     pub fn commit(&self, edit: &PrefEdit) -> Result<TakesEffect, SettingError> {
         #[cfg(test)]
         if self
@@ -123,6 +126,10 @@ impl SharedConfig {
                 FrontEndKey::LastServer,
                 &format!("{}:{}", server.host(), server.port()),
             )?,
+            // Empty text is the stored unset: every launch reads the key.
+            FrontEndEdit::PlayerCommand(command) => {
+                set(FrontEndKey::PlayerCommand, command.unwrap_or(""))?;
+            }
             // Every table shares one value: re-read it so the write keeps the
             // other tables' entries as the store has them.
             FrontEndEdit::TableSort {
@@ -155,6 +162,7 @@ impl SharedConfig {
         let text = |key: FrontEndKey| self.settings.front_end_value(key.key());
         Ok(Preferences {
             download_dir: core.download_dir,
+            temp_dir: core.temp_dir,
             data_dir,
             nickname: core.nickname,
             tcp_port: core.tcp_port,
@@ -179,6 +187,7 @@ impl SharedConfig {
             remember_peers: core.remember_peers,
             last_server: text(FrontEndKey::LastServer)?
                 .and_then(|value| ServerEndpoint::parse_host_port(&value).ok()),
+            player_command: text(FrontEndKey::PlayerCommand)?.filter(|text| !text.is_empty()),
             user_hash: Some(identity.user_hash()),
             kad_node_id: Some(kad.id),
         })
@@ -319,6 +328,10 @@ impl ObfuscationChoice {
 pub struct Preferences {
     /// Where downloads are written; `None` until something chooses one.
     pub download_dir: Option<PathBuf>,
+    /// The **Temp Directory** new downloads keep their part files in
+    /// (ADR-0115); `None` until the operator chooses one, and core then
+    /// reads the default in the data directory.
+    pub temp_dir: Option<PathBuf>,
     /// Where the databases live and which rule picked it — `--data-dir`,
     /// `RMULE_DATA`, `XDG_DATA_HOME`, `HOME` or `LOCALAPPDATA`, resolved at
     /// startup, so it cannot be stored in the store it locates.
@@ -358,6 +371,10 @@ pub struct Preferences {
     pub run_log_full: bool,
     /// The server the operator last connected to, if any.
     pub last_server: Option<ServerEndpoint>,
+    /// The **Player Command** (ADR-0114): the text Preview splits into the
+    /// player's words. `None` until the operator sets one, and then Preview
+    /// opens the **Default App**.
+    pub player_command: Option<String>,
     /// The **Dead Server Limit** (ADR-0052): failed tries in a row after
     /// which a listed server is dead. Live — core takes it up at once.
     pub dead_server_retries: u32,
@@ -389,6 +406,7 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             download_dir: None,
+            temp_dir: None,
             data_dir: None,
             nickname: rmule_core::DEFAULT_NICKNAME.to_string(),
             tcp_port: rmule_core::DEFAULT_TCP_PORT,
@@ -404,6 +422,7 @@ impl Default for Preferences {
             connect_at_start: false,
             run_log_full: false,
             last_server: None,
+            player_command: None,
             dead_server_retries: rmule_core::DEFAULT_DEAD_AFTER,
             withhold_shares: false,
             remember_peers: rmule_core::RememberPeers::DEFAULT,
@@ -427,6 +446,7 @@ impl Preferences {
     pub fn apply(&mut self, edit: &PrefEdit) {
         match edit {
             PrefEdit::DownloadDir(dir) => self.download_dir = Some(dir.clone()),
+            PrefEdit::TempDir(dir) => self.temp_dir = dir.clone(),
             PrefEdit::Nickname(name) => self.nickname = name.clone(),
             PrefEdit::TcpPort(port) => self.tcp_port = *port,
             PrefEdit::UdpPort(port) => self.udp_port = *port,
@@ -440,6 +460,7 @@ impl Preferences {
             PrefEdit::ConnectAtStart(on) => self.connect_at_start = *on,
             PrefEdit::RunLogFull(on) => self.run_log_full = *on,
             PrefEdit::LastServer(server) => self.last_server = Some(server.clone()),
+            PrefEdit::PlayerCommand(command) => self.player_command = command.clone(),
             PrefEdit::DeadServerRetries(limit) => self.dead_server_retries = *limit,
             PrefEdit::WithholdShares(on) => self.withhold_shares = *on,
             PrefEdit::RememberPeers(peers) => self.remember_peers = *peers,
@@ -458,6 +479,11 @@ impl Preferences {
 pub enum PrefEdit {
     /// Validated by [`validate_download_dir`]; the next download reads it.
     DownloadDir(PathBuf),
+    /// Validated by [`validate_temp_dir`]; a running core places the next
+    /// download's part file there, and every download already placed keeps
+    /// its own. `None`, the field left empty, clears the one set: the default
+    /// in the data directory is in force again.
+    TempDir(Option<PathBuf>),
     /// Takes effect at the next start — the running session already sent its
     /// identity.
     Nickname(String),
@@ -493,6 +519,9 @@ pub enum PrefEdit {
     WithholdShares(bool),
     /// `Remember peers`; core's next seed write keeps that many.
     RememberPeers(rmule_core::RememberPeers),
+    /// The **Player Command**, its text already split once
+    /// ([`crate::player::split`]); `None` clears it. The next launch reads it.
+    PlayerCommand(Option<String>),
     /// The server the operator just connected to, written by the app on the
     /// `Connected` edge rather than by the Settings form.
     LastServer(ServerEndpoint),
@@ -527,6 +556,8 @@ pub enum FrontEndEdit<'a> {
     RunLogFull(bool),
     /// See [`PrefEdit::LastServer`].
     LastServer(&'a ServerEndpoint),
+    /// See [`PrefEdit::PlayerCommand`].
+    PlayerCommand(Option<&'a str>),
     /// See [`PrefEdit::TableSort`].
     TableSort {
         /// The table's stored key.
@@ -551,6 +582,7 @@ impl PrefEdit {
                 dir: dir.clone(),
                 share_confirmed: true,
             },
+            Self::TempDir(dir) => Setting::TempDir(dir.clone()),
             Self::Nickname(name) => Setting::Nickname(name.clone()),
             Self::TcpPort(port) => Setting::TcpPort(*port),
             Self::UdpPort(port) => Setting::UdpPort(*port),
@@ -573,6 +605,9 @@ impl PrefEdit {
             }
             Self::RunLogFull(on) => return Keeper::FrontEnd(FrontEndEdit::RunLogFull(*on)),
             Self::LastServer(server) => return Keeper::FrontEnd(FrontEndEdit::LastServer(server)),
+            Self::PlayerCommand(command) => {
+                return Keeper::FrontEnd(FrontEndEdit::PlayerCommand(command.as_deref()));
+            }
             Self::TableSort {
                 table,
                 column,
@@ -597,16 +632,43 @@ impl PrefEdit {
 /// a typo the operator wants to hear about now rather than at the first
 /// completed download.
 pub fn validate_download_dir(path: &str) -> Result<PathBuf, String> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return Err("download directory is required".to_string());
+    if path.trim().is_empty() {
+        return Err(words::DOWNLOAD_DIR_REQUIRED.to_string());
     }
+    directory(path).map_err(|unfit| words::download_dir_unfit(&unfit))
+}
+
+/// A Temp Directory as an operator types it, by the same rule as
+/// [`validate_download_dir`]: core judges where it lies at the set, and makes
+/// it. Empty text is `None`, which clears the one set back to the default.
+pub fn validate_temp_dir(path: &str) -> Result<Option<PathBuf>, String> {
+    if path.trim().is_empty() {
+        return Ok(None);
+    }
+    directory(path)
+        .map(Some)
+        .map_err(|unfit| words::temp_dir_unfit(&unfit))
+}
+
+/// Why typed text does not name a directory a Paths row takes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UnfitDirectory {
+    /// The path is relative.
+    Relative,
+    /// The path exists and is not a directory; the text as typed, trimmed.
+    NotADirectory(String),
+}
+
+/// The text `path`, trimmed, as a directory: absolute, and not an existing
+/// non-directory.
+fn directory(path: &str) -> Result<PathBuf, UnfitDirectory> {
+    let trimmed = path.trim();
     let path = Path::new(trimmed);
     if !path.is_absolute() {
-        return Err("download directory must be an absolute path".to_string());
+        return Err(UnfitDirectory::Relative);
     }
     if path.exists() && !path.is_dir() {
-        return Err(format!("'{trimmed}' exists and is not a directory"));
+        return Err(UnfitDirectory::NotADirectory(trimmed.to_string()));
     }
     Ok(path.to_path_buf())
 }

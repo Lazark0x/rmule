@@ -14,6 +14,8 @@
 mod aliases;
 mod asks;
 mod blocks;
+mod exchange;
+mod frequency;
 mod gate;
 mod lanes;
 mod purge;
@@ -34,6 +36,7 @@ use rmule_primitives::{Ipv4Endpoint, PeerCrypt, PeerEndpoint, UserHash};
 
 use self::aliases::Aliases;
 use self::blocks::Blocks;
+use self::frequency::PartFrequency;
 pub(crate) use self::gate::Gate;
 use self::lanes::Lanes;
 #[cfg(test)]
@@ -71,6 +74,9 @@ pub(crate) enum Sighted {
 /// Why a sighting pooled nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Blocked {
+    /// Every address it named lies in a Reserved Range its Informant cannot
+    /// vouch for (ADR-0085; aMule `IsGoodIP`).
+    Reserved,
     /// The IP filter refuses every address it named (aMule
     /// `CPartFile::AddSources`).
     IpFiltered,
@@ -168,12 +174,15 @@ pub(crate) struct SourceBook {
     /// When a purge last let a source go, or the run started: `None` before
     /// the first tick.
     purged_at: Option<Instant>,
+    /// Part Frequency over the records' Advertised Parts (ADR-0112).
+    frequency: PartFrequency,
 }
 
 impl SourceBook {
     /// The empty book a run starts with, holding the distrust the download's
-    /// record carries. Every source reaches it as a sighting.
-    pub(crate) fn new(distrusted: HashSet<UserHash>) -> Self {
+    /// record carries, for a file of `part_count` parts. Every source reaches
+    /// it as a sighting.
+    pub(crate) fn new(distrusted: HashSet<UserHash>, part_count: u32) -> Self {
         Self {
             records: HashMap::new(),
             minted: 0,
@@ -184,6 +193,7 @@ impl SourceBook {
             file_asks: FileAskClock::default(),
             own_server: None,
             purged_at: None,
+            frequency: PartFrequency::new(part_count),
         }
     }
 
@@ -360,11 +370,15 @@ impl SourceBook {
         id
     }
 
-    /// Take `id` out of the book: its aliases, its lane, the record. What its
-    /// source asks stamped stays under its names for the run.
+    /// Take `id` out of the book: its aliases, its lane, the record, and its
+    /// Advertised Parts out of Part Frequency. What its source asks stamped
+    /// stays under its names for the run.
     fn remove(&mut self, id: RecordId) -> Option<Record> {
         self.keep_asks(id);
         let record = self.records.remove(&id)?;
+        if let Some(parts) = &record.advertised {
+            self.frequency.subtract(parts);
+        }
         for &endpoint in &record.endpoints {
             self.aliases.unbind_endpoint(endpoint, id);
         }
@@ -375,6 +389,27 @@ impl SourceBook {
             self.lanes.remove(lane, id);
         }
         Some(record)
+    }
+
+    /// Spend `id` under every **Ask Name** it holds — its endpoints, its
+    /// Low-ID key, the User Hashes it knows, the one its standing keeps from
+    /// the hello it queued under among them — and take it out of the book: its
+    /// source said it lacks the file (ADR-0090). A sighting under any of those
+    /// names is refused for the spent period.
+    fn spend_lacking(&mut self, id: RecordId) {
+        let Some(record) = self.records.get(&id) else {
+            return;
+        };
+        let mut hashes = self.user_hashes(record);
+        if let Some(queued_under) = record.standing.and_then(|standing| standing.crypt())
+            && !hashes.contains(&queued_under.user_hash)
+        {
+            hashes.push(queued_under.user_hash);
+        }
+        for name in self.ask_names(record, &hashes) {
+            self.blocks.spend(name);
+        }
+        self.remove(id);
     }
 
     /// Bind `endpoint` to `id`, if the record has room and nothing else

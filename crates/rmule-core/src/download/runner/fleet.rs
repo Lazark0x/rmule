@@ -23,6 +23,7 @@ use crate::hashing::{
     ResolvedHashSet, hash_set_proves_file, proven_link_hash_set, resolve_hash_set_authority,
 };
 use crate::peer_roster::{PeerRelation, RelationLease};
+use crate::scheduler::PartOrder;
 use crate::service::{
     DownloadEvent, DownloadId, SourceWait, VerificationAuthority, send_download_event,
 };
@@ -87,6 +88,8 @@ pub(super) struct FleetStart<'a> {
     pub(super) peer_concurrency: usize,
     /// Parts an earlier run already verified on disk; they are never re-fetched.
     pub(super) verified_part_indexes: Vec<u32>,
+    /// How the download ranks its parts (ADR-0112 §5).
+    pub(super) order: PartOrder,
     /// The run's first sightings, by channel.
     pub(super) sources: StartSources,
     /// Where the **Callback Capability** is re-read from for the rest of the run.
@@ -124,7 +127,7 @@ pub(super) struct StartSources {
 pub(super) async fn apply_peer_workers_download<'a, S, P>(
     start: FleetStart<'a>,
     runner: &'a RunnerContext<S, P>,
-) -> Result<(), DownloadFailure>
+) -> Result<Vec<u32>, DownloadFailure>
 where
     S: SourceLookupService,
     P: PeerTransferService,
@@ -135,6 +138,7 @@ where
         ctx,
         peer_concurrency,
         verified_part_indexes,
+        order,
         sources,
         callback_facts,
         posture,
@@ -227,6 +231,10 @@ where
     // run holds the inbox for its life, so none is taken by a repair's rerun
     // while this one still runs.
     let mut later_links = runner.later_links.lock().await;
+    // The peers that ask us about this file while it downloads (ADR-0113):
+    // the serve side hands each to this run as a candidate source. A run
+    // with no lease — a download of one part — takes none.
+    let mut askers = runner.served.as_ref().and_then(|lease| lease.take_askers());
     // `fact_tx` is moved in and kept alive for the whole run so a worker
     // backfilled mid-download can join the shared event stream by cloning it
     // (ADR-0030).
@@ -239,8 +247,8 @@ where
     // The sans-I/O scheduling brain (ADR-0026/0029/0030): it owns the
     // candidate pool, the free diagnostics slots, the scheduler, and the
     // cross-peer assembly, and turns each worker event into an ordered
-    // `Vec<Decision>` the runner enacts. Parts are assigned on the `Connected`
-    // event, not up front, so a failed handshake never strands a part.
+    // `Vec<Decision>` the runner enacts. Parts are assigned on each worker's
+    // probe answer, not up front, so a failed handshake never strands a part.
     let mut state = DownloadState::new(
         download_id,
         ContentFacts {
@@ -250,6 +258,7 @@ where
             resolved,
             trusted_aich_root: file.aich_root,
             verified_parts: verified_part_indexes,
+            order,
         },
         StartingFacts {
             distrusted: sources.distrusted,
@@ -305,6 +314,7 @@ where
     let mut queue: VecDeque<Decision> = ctx.state.start(now()).into();
     enact_drain(&mut queue, &mut ctx).await?;
     publish_seeds(&ctx);
+    publish_exchange_pool(&ctx);
     if ctx.command_channels.is_empty()
         && !ctx.state.has_pending_callbacks()
         && !ctx.state.is_complete()
@@ -370,8 +380,9 @@ where
                 // shutdown, and the fact-stream drain, then returns the failure.
                 // `Fail` short-circuits before the diagnostics refresh inside
                 // `enact_drain`, so the stop path skips it exactly as before.
-                let mut q: VecDeque<Decision> = ctx.state.on_stop(failure).into();
-                return enact_drain(&mut q, &mut ctx).await;
+                let mut q: VecDeque<Decision> = ctx.state.on_stop(failure.clone()).into();
+                enact_drain(&mut q, &mut ctx).await?;
+                return Err(failure);
             }
             () = sleep_until_optional(next_wake) => {
                 // Something the brain holds fell due: a callback road's
@@ -406,7 +417,7 @@ where
             Some((source_server, sources)) = global_sources_rx.recv() => {
                 // Server-UDP global sources (ADR-0051): a Low-ID row is held
                 // for a per-server callback to `source_server`.
-                let taken = intake::sight(ctx.runner, &mut ctx.state, Channel::Global(source_server), sources.into_iter().map(SourceSighting::plain));
+                let taken = intake::sight(ctx.runner, &mut ctx.state, Channel::Global(source_server), intake::global_answer(source_server, sources));
                 let mut q: VecDeque<Decision> = taken.decisions.into();
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
@@ -446,6 +457,14 @@ where
                     },
                 )
                 .await;
+                let mut q: VecDeque<Decision> = taken.decisions.into();
+                enact_drain(&mut q, &mut ctx).await?;
+                continue;
+            }
+            Some(sighting) = recv_asker(&mut askers) => {
+                // A peer asked us about the file: one more candidate, under
+                // the run's source cap.
+                let taken = intake::sight(ctx.runner, &mut ctx.state, Channel::Prober, [sighting]);
                 let mut q: VecDeque<Decision> = taken.decisions.into();
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
@@ -499,6 +518,7 @@ where
                 enact_drain(&mut q, &mut ctx).await?;
                 told_wait = retell_wait(&ctx, &discovery, lookup_owed, told_wait).await;
                 publish_seeds(&ctx);
+                publish_exchange_pool(&ctx);
                 continue;
             }
             Some((udp_src, datagram)) = reask_reply_rx.recv() => {
@@ -572,10 +592,10 @@ where
             publish_seeds(&ctx);
         }
     }
-    // Completion is enacted by the `Finalize` decision (worker shutdown +
-    // `finalize_download`) the moment the last part verifies; the loop then
-    // observes `is_complete` and exits.
-    Ok(())
+    // The `Finalize` decision shuts the fleet down the moment the last part
+    // verifies; the loop then observes `is_complete` and exits, handing the
+    // run the parts its completion move verifies by the file hash.
+    Ok(std::mem::take(&mut ctx.file_hash_only_parts))
 }
 
 #[cfg(test)]
@@ -621,6 +641,15 @@ fn source_wait(discovery: &super::DiscoveryLiveness, lookup_owed: bool) -> Optio
 /// Publish the run's **Source Seeds** ranking for the actor's next write
 /// (ADR-0109): after the first fill, then each sample tick, so it is one
 /// sweep old at most.
+/// Hand the serve side the run's source-exchange pool (ADR-0113): after the
+/// first fill, then each sample tick — aMule builds its answer from the
+/// source list at the ask, and a pool a second old is that list.
+fn publish_exchange_pool<S, P>(ctx: &LoopCtx<'_, S, P>) {
+    if let Some(lease) = &ctx.runner.served {
+        lease.record_pool(ctx.state.exchange_pool());
+    }
+}
+
 fn publish_seeds<S, P>(ctx: &LoopCtx<'_, S, P>) {
     let ranking = ctx.state.source_seeds();
     ctx.runner.seeds_tx.send_if_modified(|held| {
@@ -630,6 +659,15 @@ fn publish_seeds<S, P>(ctx: &LoopCtx<'_, S, P>) {
         }
         moved
     });
+}
+
+/// The next asker the serve side handed this run; pending forever for a run
+/// with no inbox.
+async fn recv_asker(askers: &mut Option<mpsc::Receiver<SourceSighting>>) -> Option<SourceSighting> {
+    match askers {
+        Some(askers) => askers.recv().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// Sleep until `deadline`, or never while the brain names none (ADR-0026).

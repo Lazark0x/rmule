@@ -28,6 +28,7 @@ mod direct_ipv6;
 mod remote_queued;
 mod seeds;
 mod sightings;
+mod slot_ask;
 mod slots;
 #[cfg(test)]
 mod tests;
@@ -58,7 +59,7 @@ use crate::dialable::DialPosition;
 use crate::download::source_book::SourceBook;
 use crate::download::source_seeds::SeedLedger;
 use crate::hashing::ResolvedHashSet;
-use crate::scheduler::DownloadScheduler;
+use crate::scheduler::{DownloadScheduler, PartOrder};
 use crate::service::{DownloadEvent, DownloadId, PartReleaseReason};
 
 /// One effect the async runner must enact, drained in order from a
@@ -88,8 +89,10 @@ pub(crate) enum Decision {
     /// End the live worker on `peer`: the brain released it. Every
     /// retirement — whatever its reason — ends its worker through this one
     /// decision (ADR-0090 "Source ownership"); the runner sends it
-    /// `PeerWorkerCommand::Shutdown { cancel: false }`.
-    EndWorker { peer: PeerEndpoint },
+    /// `PeerWorkerCommand::Shutdown { cancel }`. `cancel` is true for a
+    /// source that holds nothing we need, so a slot it granted is given back
+    /// with `OP_CANCELTRANSFER` (ADR-0056, ADR-0112).
+    EndWorker { peer: PeerEndpoint, cancel: bool },
     /// Credit `user_hash` for serving `bytes`; the runner holds the
     /// ledger lock.
     RecordCredit { user_hash: UserHash, bytes: u64 },
@@ -225,17 +228,21 @@ pub(crate) enum Decision {
     /// Resolving a connected-server `None` to the live server it was filed
     /// under is the runner's concern.
     EndCallback { key: CallbackKey },
-    /// Send `ping`, a source's `OP_REASKFILEPING` (`0x90`), out the shared
+    /// Send `ping`, a source's `OP_REASKFILEPING` (`0x90`) or the
+    /// `OP_REASKCALLBACKUDP` (`0x94`) its buddy relays, out the shared
     /// client-UDP socket (ADR-0057). The brain framed it for the source
     /// standing at `peer` and set its one-in-flight latch; the runner claims
-    /// the endpoint in the **Reask Routes** first (ADR-0107) and, when another
-    /// download's ping holds it, hands it back through
+    /// `answered_from` in the **Reask Routes** first (ADR-0107) and, when
+    /// another download's ping holds it, hands it back through
     /// [`DownloadState::on_ping_held`].
     SendReaskPing {
         /// The endpoint the source's record stands at.
         peer: PeerEndpoint,
         /// The datagram, its client-UDP destination and crypt target.
         ping: crate::client_udp::ClientUdpSend,
+        /// The source's client-UDP endpoint its answer comes from: the
+        /// ping's destination, or past a buddy, the source's own.
+        answered_from: PeerEndpoint,
     },
     /// Every part is verified — assemble and finalize the file.
     Finalize,
@@ -262,6 +269,10 @@ pub(crate) struct ContentFacts {
     pub(crate) trusted_aich_root: Option<AichRootHash>,
     /// Parts an earlier run already verified; they are never re-fetched.
     pub(crate) verified_parts: Vec<u32>,
+    /// How its parts are ranked: with the Preview Band and the Streaming
+    /// Window when it is Streaming Priority (`DownloadMetadata::
+    /// is_streaming_priority`, ADR-0112 §5).
+    pub(crate) order: PartOrder,
 }
 
 /// How a Low-ID candidate is to be reached — the three callback roads and the
@@ -417,6 +428,9 @@ pub(crate) struct DownloadState {
     /// channel for each peer stays in the runner, whether it has completed its
     /// handshake in the **Source Book**; the brain owns only the slot number.
     worker_slots: HashMap<PeerEndpoint, WorkerSlot>,
+    /// Where each worker's slot ask stands at its uploader, and the download's
+    /// one hash-set ask in flight (ADR-0026).
+    slot_asks: slot_ask::SlotAsks,
     /// The link's own part hash set, if the ed2k link carried one. Held so a
     /// peer-supplied hash set can be re-resolved against it (ADR-0027).
     link_part_hash_set: Option<PartHashSet>,
@@ -512,12 +526,13 @@ impl DownloadState {
             resolved,
             trusted_aich_root,
             verified_parts,
+            order,
         } = content;
         let StartingFacts {
             distrusted,
             seeds_written,
         } = facts;
-        let mut sources = SourceBook::new(distrusted);
+        let mut sources = SourceBook::new(distrusted, rmule_primitives::part_count(file_size));
         sources.logged_into(posture.callback_capability.server());
         let seeds = SeedLedger::default();
         let our_udp_version = if posture.client_udp {
@@ -530,11 +545,12 @@ impl DownloadState {
             download_id,
             file_hash,
             file_size,
-            scheduler: DownloadScheduler::new(file_size, verified_parts),
+            scheduler: DownloadScheduler::new(file_size, verified_parts, order),
             assembly: HashMap::new(),
             pending_persist: HashMap::new(),
             awaiting_recovery: HashMap::new(),
             worker_slots: HashMap::new(),
+            slot_asks: slot_ask::SlotAsks::default(),
             link_part_hash_set,
             resolved,
             trusted_aich_root,
@@ -558,8 +574,8 @@ impl DownloadState {
 
     /// Spawn the initial fleet of workers from the candidate pool, up to
     /// `peer_concurrency`. The runner enacts each [`Decision::Spawn`] by
-    /// putting that peer on the wire; the worker is assigned its first part on
-    /// its own `Connected` event (ADR-0030).
+    /// putting that peer on the wire; the worker asks its slot on its probe's
+    /// answer and is handed its first part at the grant (ADR-0030, ADR-0026).
     pub(crate) fn start(&mut self, now: Instant) -> Vec<Decision> {
         self.started = true;
         self.sources.turn_spent(now);
@@ -604,10 +620,32 @@ impl DownloadState {
     /// source-reask ping's body (ADR-0057: rides the `0x90` when the source's
     /// UDP version is `> 3`) and a new worker's connect-time name ask,
     /// telling the uploader which parts we still need.
+    ///
+    /// A part verified while no whole part hash set was held is left out until
+    /// one is: it is outside the Verified Range, which the serve side reads
+    /// (ADR-0113 rule 2), and aMule never holds such a part. A file of one part
+    /// has no set; its file hash proves its part.
     pub(crate) fn our_part_status(&self) -> PartBitmap {
+        let set_held = match PartHashSet::expected_hash_count(self.file_size) {
+            Ok(0) => true,
+            Ok(expected) => self.resolved.hashes.len() == expected,
+            Err(_) => false,
+        };
         PartBitmap::downloader(self.file_size, |part| {
-            self.scheduler.is_part_verified(part.value())
+            set_held && self.scheduler.is_part_verified(part.value())
         })
+    }
+
+    /// The pool a source-exchange answer for this file is drawn from while it
+    /// downloads (ADR-0113): the sources we download from or wait at that are
+    /// not queue-full, and how many sources the book knows.
+    pub(crate) fn exchange_pool(&self) -> crate::served_downloads::ExchangePool {
+        crate::served_downloads::ExchangePool {
+            sources: self
+                .sources
+                .exchange_pool(|endpoint| self.scheduler.is_working(endpoint)),
+            known: self.sources.counts().known,
+        }
     }
 
     /// The live facts behind our **Callback Capability** moved:

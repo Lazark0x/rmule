@@ -125,6 +125,10 @@ _Avoid_: bootstrap dial (a self-lookup queries, it doesn't bootstrap), keepalive
 A routing-table contact whose IP has been proven not spoofed — by a hello carrying a valid receiver key, by the `HELLO_RES_ACK` three-way handshake, or by arriving pre-verified from a bootstrap file. Only verified contacts are served in routing answers or seed own lookup walks; unverified contacts wait in their bins until a verification path completes.
 _Avoid_: responded contact (liveness, not identity), trusted node, known peer
 
+**Admission Cap**:
+One of the three limits on how much of the routing table one address or one /24 may hold (aMule's `CRoutingBin` caps, ADR-0064): one contact per IPv4 address and ten per /24 across the table, two per /24 inside one bucket. The table-wide counts are tallies the table keeps in step with every stored contact's IP; a newcomer, a `Failed` contact's replacement and a move to a new IP all pass the caps, and a refused move leaves the entry as it was. The private ranges and loopback are exempt from the /24 caps, loopback from the per-IP cap too. A deterministic mesh gives each member its own /24 for this reason.
+_Avoid_: IP limit, subnet filter (the IP filter is the **Kad Node Start**'s contact admission, a different gate)
+
 **Kad Node Start**:
 The one value a `KadNode` is built from: start instant, contact admission, join cadence, firewall self-check, and obfuscation with its optional verify keys. The node orders it internally (admission before any traffic, obfuscation before its keys), and verify keys exist only inside the obfuscation, because their trailer rides inside the crypt header — a keyed node with plaintext sends cannot be started.
 _Avoid_: arming, enable calls, post-construction setup

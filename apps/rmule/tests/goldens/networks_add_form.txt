@@ -1,13 +1,13 @@
 ┌ Servers (4) · 10.0.0.1:4661 HighID ─────── c disconnect · a add · U update ┐
-│   Name ▲   Address        Port Desc   Ping Users Files Age Prio Fail Static│
-│▸● eDonkey  10.0.0.1       4661 Main   42ms    1M   24M 12s Norm    0 no    │
+│   Name ▲   Address        Port Desc  Ping Users Files Age Prio Fail Static▲│
+│▸● eDonkey  10.0.0.1       4661 Main  42ms    1M   24M 12s Norm    0 no    █│
 │   Prime                        hub,                                        │
 │                                no                                          │
-│                                fakes                                       │
+│                                fakes                                      ▼│
 │Grants at┌ Add server ────────────────────────────────────────────┐search,  │
 │large fil│ Name                                                   │ew tags, │
 │unicode, │ Address      10.0.0.300▮                               │on       │
-└─────────│ Port         1–65535                                   │─────────┘
+└─────────│ Port         1–65535                                   │── 1 / 4 ┘
 ┌ Log (0) │                                                        │ K start ┐
 │no core e│ ✗ '10.0.0.300' is not a valid IPv4 address             │         │
 │         │                                                        │)        │

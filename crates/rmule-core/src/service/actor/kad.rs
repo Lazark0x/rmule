@@ -230,6 +230,7 @@ where
                         Arc::clone(&channel),
                         Arc::clone(&self.wiring.registry),
                         self.registry_check.withheld.clone(),
+                        self.wiring.served_downloads.clone(),
                         share_changed_rx,
                     )
                     .run(),

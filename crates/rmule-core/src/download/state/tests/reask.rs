@@ -12,7 +12,14 @@ use crate::download::source_book::{NO_NEEDED_PARTS_MULTIPLIER, REASK_RECHECK, UD
 use crate::own_identity::ConnectedSession;
 use crate::service::IgnoredReaskReply;
 
+mod buddy;
+mod exchange_pool;
+mod given_back;
+mod no_file;
+mod no_needed_parts;
+mod on_queue;
 mod purge;
+mod redial;
 
 /// The port every test source advertises for client UDP.
 const UDP_PORT: u16 = 5000;
@@ -84,7 +91,7 @@ fn queue_and_hang_up_as(
     rank: u16,
     at: Instant,
 ) {
-    let _ = state.on_worker_event(at, peer, PeerWorkerEvent::Connected);
+    let _ = connect(state, at, peer);
     if let Some(identity) = identity {
         let _ = state.on_worker_event(at, peer, PeerWorkerEvent::Identity(identity));
     }
@@ -94,7 +101,7 @@ fn queue_and_hang_up_as(
         hung_up.iter().any(|d| matches!(
             d,
             Decision::Emit(DownloadEvent::SourceRemoteQueued { peer: p, rank: r, .. })
-                if *p == peer && *r == rank
+                if *p == peer && *r == Some(rank)
         )),
         "a queued worker that hangs up keeps its standing: {hung_up:?}"
     );
@@ -174,11 +181,20 @@ fn the_udp_ping_fires_first_and_the_latch_bars_a_second_ping() {
     let mut state = standing();
     let due = state.on_tick(t0() + udp_due());
     assert_eq!(pinged(&due), vec![contact(peer(1))]);
-    let Some(Decision::SendReaskPing { peer: at, ping }) = due.first() else {
+    let Some(Decision::SendReaskPing {
+        peer: at,
+        ping,
+        answered_from,
+    }) = due.first()
+    else {
         panic!("one ping: {due:?}");
     };
     assert_eq!(*at, peer(1));
     assert_eq!(ping.datagram[..2], [0xC5, 0x90]);
+    assert_eq!(
+        *answered_from, ping.to,
+        "a direct ping is answered where it went"
+    );
 
     assert!(
         pinged(&state.on_tick(t0() + udp_due() + Duration::from_secs(5))).is_empty(),
@@ -334,6 +350,22 @@ fn a_reask_ack_holding_no_part_we_lack_makes_the_source_no_needed_parts() {
     );
 }
 
+/// A UDPv4 `0x91`'s part status is the source's Advertised Parts now: it
+/// replaces what its worker's probe wrote on the record (ADR-0112), and Part
+/// Frequency follows.
+#[test]
+fn a_reask_acks_part_status_replaces_the_records_parts() {
+    let (mut state, window) = three_part_standing();
+    assert_eq!(state.sources.part_frequency(), [1, 1, 1]);
+    let middle = PartBitmap::decode(3, &[0b0000_0010]).expect("three parts");
+    let _ = state.on_reask_reply(window, contact(peer(1)), &v4_ack_with(middle.clone(), 2));
+    assert_eq!(state.sources.parts(peer(1)), Some(&middle));
+    assert_eq!(
+        (state.sources.part_frequency(), state.sources.parts_known()),
+        (&[0, 1, 0][..], 1)
+    );
+}
+
 /// A status counting other than the file's parts is aMule's
 /// `ProcessFileStatus` throw (stock 2.3.3 `DownloadClient.cpp:416-424`),
 /// which drops the whole `0x91` before its rank is read: the reply is ignored,
@@ -378,11 +410,12 @@ fn a_queue_full_reply_keeps_the_source_and_refreshes_the_clock() {
     ));
 }
 
-/// A `0x92` drops the source dead: its record leaves the book, nothing is
-/// reasked, and a later sighting pools it anew — it answered, so it is not
-/// spent.
+/// A `0x92` spends the source for this download, as aMule dead-lists it
+/// (ADR-0090): its record leaves the book, nothing is reasked, and a sighting
+/// of it — at its endpoint or by the User Hash its hello named — is refused
+/// until two spent turns have passed.
 #[test]
-fn a_file_not_found_reply_drops_the_source_dead() {
+fn a_file_not_found_reply_spends_the_source_for_the_re_ask_period() {
     let mut state = standing();
     let dropped = state.on_reask_reply(t0(), contact(peer(1)), &file_not_found_datagram());
     assert!(matches!(
@@ -395,9 +428,37 @@ fn a_file_not_found_reply_drops_the_source_dead() {
         Some(t0() + FILE_REASK_TIME),
         "the spent turn alone"
     );
+    assert!(
+        spawned(&take(&mut state, Channel::Server, plain_sightings(&[peer(1)])).decisions)
+            .is_empty(),
+        "its endpoint is spent"
+    );
+    let elsewhere = SourceSighting::new(
+        rmule_primitives::PeerSource::HighId(Ipv4Endpoint::new(
+            Ipv4Addr::new(45, 55, 200, 9),
+            4662,
+        )),
+        Some(SOURCE),
+        None,
+        rmule_primitives::Informant::Own,
+    );
+    assert_eq!(
+        take(&mut state, Channel::Server, [elsewhere]).tally.fresh,
+        0,
+        "its User Hash is spent too"
+    );
+
+    let _ = state.on_tick(t0() + FILE_REASK_TIME);
+    assert!(
+        spawned(&take(&mut state, Channel::Server, plain_sightings(&[peer(1)])).decisions)
+            .is_empty(),
+        "one turn later it is still spent"
+    );
+    let _ = state.on_tick(t0() + FILE_REASK_TIME * 2);
     assert_eq!(
         spawned(&take(&mut state, Channel::Server, plain_sightings(&[peer(1)])).decisions),
-        vec![peer(1)]
+        vec![peer(1)],
+        "two turns later it is a source again"
     );
 }
 
@@ -606,26 +667,6 @@ fn a_source_exchange_due_source_prefers_the_tcp_full_ask() {
     ));
 }
 
-/// A source refused for parts while queued (`OP_OUTOFPARTREQS`) holds none we
-/// need: it reasks at twice the period, over TCP only (aMule
-/// `DS_NONEEDEDPARTS`).
-#[test]
-fn a_no_needed_parts_source_reasks_at_double_the_period_over_tcp() {
-    let mut state = started(&[peer(1)], live_posture());
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
-    let identity = reaskable(SOURCE).identity();
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Identity(identity));
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Queued { rank: 5 });
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotRejected);
-
-    assert!(state.on_tick(t0() + udp_due()).is_empty());
-    assert!(state.on_tick(t0() + FILE_REASK_TIME).is_empty());
-    assert_eq!(
-        asked_by_tcp(&state.on_tick(t0() + FILE_REASK_TIME * NO_NEEDED_PARTS_MULTIPLIER)),
-        vec![peer(1)]
-    );
-}
-
 /// One sweep reasks every standing in the order the book first held them:
 /// the two with a contact ping, and at the period all three fall to TCP.
 #[test]
@@ -650,7 +691,7 @@ fn a_tick_sweeps_every_source_in_book_order() {
 #[test]
 fn a_granted_source_keeps_no_standing() {
     let mut state = started(&[peer(1)], live_posture());
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(1));
     let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Queued { rank: 2 });
     let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotGranted);
     let ended = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
@@ -738,7 +779,7 @@ fn the_captured_amule_reask_ack_lands_on_its_source() {
     let read = |name: &str| std::fs::read(format!("{DIR}{name}")).expect("captured datagram");
     let sharer = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(192, 0, 2, 6), 4662));
     let mut state = started(&[sharer], live_posture());
-    let _ = state.on_worker_event(t0(), sharer, PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), sharer);
     let hello = HelloFacts {
         udp_port: 4672,
         udp_version: 4,

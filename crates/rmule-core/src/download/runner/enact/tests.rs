@@ -92,10 +92,11 @@ mod buddy_hash_spelling {
             },
             Some(UserHash::from_bytes([0xAB; UserHash::BYTE_LEN])),
             Some(SourceCryptOptions::from_byte(0x00)),
+            rmule_primitives::Informant::Own,
         )
     }
 
-    fn file() -> Ed2kFileLink {
+    pub(super) fn file() -> Ed2kFileLink {
         Ed2kFileLink {
             name: Ed2kText::from_utf8("issue-433"),
             size: 1_000,
@@ -109,7 +110,7 @@ mod buddy_hash_spelling {
 
     /// A one-part, callback-capable download state — the brain half of the
     /// harness, matching `download::state::tests::callback_state`.
-    fn download_state() -> DownloadState {
+    pub(super) fn download_state() -> DownloadState {
         let mut state = DownloadState::new(
             DownloadId::from_u64(1),
             ContentFacts {
@@ -122,6 +123,7 @@ mod buddy_hash_spelling {
                 },
                 trusted_aich_root: None,
                 verified_parts: Vec::new(),
+                order: crate::scheduler::PartOrder::Rarest,
             },
             StartingFacts {
                 distrusted: std::collections::HashSet::new(),
@@ -158,7 +160,7 @@ mod buddy_hash_spelling {
     /// A `RunnerContext` wired just enough for
     /// `RequestBuddyCallback`/`RequestFallbackBuddyCallback`/
     /// the brain's ticks to enact: no real store, network or worker fleet.
-    fn runner_context(
+    pub(super) fn runner_context(
         diagnostics: crate::diagnostics::DiagnosticsState,
     ) -> (
         RunnerContext<NeverLooksUp, NeverTransfers>,
@@ -362,6 +364,63 @@ mod buddy_hash_spelling {
     }
 }
 
+/// A server's relay that never left ends its road in the drain that tried
+/// it: the brain hears it at once and hands the candidate to its next road,
+/// rather than holding the slot for a callback nobody carried.
+mod server_callback_never_left {
+    use rmule_primitives::{ClientId, PeerSource, SourceSighting};
+
+    use super::buddy_hash_spelling::{download_state, file, runner_context};
+    use super::*;
+    use crate::callback::{CallbackSilence, DownloadAsk};
+    use crate::download::runner::test_context::loop_ctx;
+    use crate::download::source_book::Gate;
+    use crate::download::state::Channel;
+    use crate::ip_filter::IpFilter;
+
+    #[tokio::test]
+    async fn with_no_live_session_the_candidate_takes_its_next_road_in_the_same_drain() {
+        let (runner, mut download_reach_rx) =
+            runner_context(crate::diagnostics::DiagnosticsState::default());
+        let file = file();
+        let mut ctx = loop_ctx(&runner, &file, download_state());
+        let filter = IpFilter::default();
+        let gate = Gate {
+            filter: &filter,
+            dial: crate::dialable::DialPosition::default(),
+        };
+        let row = SourceSighting::plain(
+            PeerSource::new(ClientId::from_u32(7), 4662),
+            rmule_primitives::Informant::Own,
+        );
+        let opened = ctx
+            .state
+            .on_sightings(std::time::Instant::now(), Channel::Server, vec![row], &gate)
+            .decisions;
+        assert!(
+            opened
+                .iter()
+                .any(|d| matches!(d, Decision::RequestCallback { .. })),
+            "{opened:?}"
+        );
+
+        let mut queue = VecDeque::from(opened);
+        enact_drain(&mut queue, &mut ctx)
+            .await
+            .expect("the ask enacts cleanly");
+        let next = download_reach_rx
+            .try_recv()
+            .expect("the next road is asked in the same drain");
+        assert!(
+            matches!(
+                next.pending.road,
+                DownloadAsk::Traversal(CallbackSilence::NoCallbackPossible)
+            ),
+            "the punch, with no callback to wait out"
+        );
+    }
+}
+
 /// The Peer Roster's `Queued` leg (ADR-0059 "Roster relations") follows the
 /// Source Book's RemoteQueued stage, however a record leaves it — here by a
 /// merge, where the wire proves a queued source the same peer as a live
@@ -424,6 +483,7 @@ mod queued_roster {
                 },
                 trusted_aich_root: None,
                 verified_parts: Vec::new(),
+                order: crate::scheduler::PartOrder::Rarest,
             },
             StartingFacts {
                 distrusted: std::collections::HashSet::new(),
@@ -474,7 +534,10 @@ mod queued_roster {
         // the RemoteQueued stage, and the relation is held.
         sighted(
             &mut ctx.state,
-            vec![SourceSighting::plain(PeerSource::HighId(QUEUED))],
+            vec![SourceSighting::plain(
+                PeerSource::HighId(QUEUED),
+                rmule_primitives::Informant::Own,
+            )],
         );
         connected(&mut ctx.state, queued);
         let now = std::time::Instant::now();
@@ -496,13 +559,17 @@ mod queued_roster {
         // halves: the queued record gives way to the live one.
         sighted(
             &mut ctx.state,
-            vec![SourceSighting::plain(PeerSource::Ipv6(live_half()))],
+            vec![SourceSighting::plain(
+                PeerSource::Ipv6(live_half()),
+                rmule_primitives::Informant::Own,
+            )],
         );
         connected(&mut ctx.state, live);
         sighted(
             &mut ctx.state,
             vec![
-                SourceSighting::plain(PeerSource::HighId(QUEUED)).with_ipv6_half(Some(live_half())),
+                SourceSighting::plain(PeerSource::HighId(QUEUED), rmule_primitives::Informant::Own)
+                    .with_ipv6_half(Some(live_half())),
             ],
         );
         enact_drain(&mut VecDeque::new(), &mut ctx)

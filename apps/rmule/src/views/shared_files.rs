@@ -32,6 +32,7 @@ use ratatui::widgets::Paragraph;
 use rmule_primitives::FileHash;
 
 use super::{DrawnRows, ViewOutcome, rate_cell};
+use crate::row_selection::viewport::{BAR_W, Viewport};
 use crate::state::UiState;
 use crate::table_sort::{RowCursor, RowMove, TableSort};
 use crate::theme::Theme;
@@ -66,10 +67,10 @@ pub struct SharedView {
     /// The selected upload peer, by endpoint; `peers_selected` is its
     /// position in the current order.
     peer_cursor: RowCursor<rmule_primitives::PeerEndpoint>,
-    /// Each table's first drawn row: moved at draw only as far as keeps the
-    /// selection on screen.
-    files_offset: usize,
-    peers_offset: usize,
+    /// What part of each table, and of the directory strip, is on screen.
+    files_viewport: Viewport,
+    peers_viewport: Viewport,
+    strip_viewport: Viewport,
     /// "Active uploads only" (spec §3.5): default on; `a` toggles.
     active_only: bool,
     /// Row menu on the FILES table (spec §3.5), when open.
@@ -81,6 +82,9 @@ pub struct SharedView {
     /// so each closes before core's next scan edge clears it, and a later
     /// question about the same directory is still asked.
     answered: std::collections::BTreeSet<u64>,
+    /// What part of a disclosure question is on screen, in a frame too
+    /// short for it.
+    consent_viewport: std::cell::Cell<Viewport>,
     /// The directory the strip filters the files table to; `None` shows
     /// every shared file.
     dir_filter: Option<std::path::PathBuf>,
@@ -109,12 +113,14 @@ impl Default for SharedView {
             peers_selected: 0,
             peer_sort: TableSort::default(),
             peer_cursor: RowCursor::default(),
-            files_offset: 0,
-            peers_offset: 0,
+            files_viewport: Viewport::default(),
+            peers_viewport: Viewport::default(),
+            strip_viewport: Viewport::default(),
             active_only: true,
             menu: None,
             confirm: None,
             answered: std::collections::BTreeSet::new(),
+            consent_viewport: std::cell::Cell::default(),
             dir_filter: None,
             files_area: Rect::default(),
             peers_area: Rect::default(),
@@ -135,10 +141,15 @@ enum Pane {
 }
 
 /// Column widths for a pane's table: the greedy column absorbs everything
-/// the fixed ones leave over, after the selection gutter, and no
-/// header is split.
-fn table_widths(area: Rect, table: &TableColumns<'_>) -> Vec<usize> {
-    greedy_widths(usize::from(area.width).saturating_sub(GUTTER_W), table, 1)
+/// the fixed ones leave over, after the selection gutter and the Viewport's
+/// bar column while it has a `bar`, and no header is split.
+fn table_widths(area: Rect, bar: bool, table: &TableColumns<'_>) -> Vec<usize> {
+    let bar = if bar { usize::from(BAR_W) } else { 0 };
+    greedy_widths(
+        usize::from(area.width).saturating_sub(GUTTER_W + bar),
+        table,
+        1,
+    )
 }
 
 fn pane_border(theme: &Theme, focused: bool) -> Style {
@@ -180,7 +191,11 @@ impl SharedView {
             return ViewOutcome::Ignored;
         }
         if let Some(consent) = scan::open_consent(state, &self.answered, false) {
-            return scan::consent_key(key, consent, &mut self.answered);
+            return scan::consent_key(
+                key,
+                consent,
+                (&mut self.answered, &mut self.consent_viewport),
+            );
         }
         if self.confirm.is_some() {
             return self.handle_confirm_key(key);
@@ -313,7 +328,7 @@ impl SharedView {
             draw_confirm(frame, area, confirm, theme);
         }
         if let Some(consent) = self.pending_consent(state) {
-            scan::draw_consent(frame, area, consent, theme);
+            scan::draw_consent(frame, area, consent, theme, &self.consent_viewport);
         }
     }
 

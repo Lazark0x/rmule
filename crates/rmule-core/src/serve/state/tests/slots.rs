@@ -221,7 +221,10 @@ fn transfer_cancelled_wipes_served_ranges_so_a_fresh_ask_re_reads() {
             start: 0,
             end: 100,
         },
+        check: None,
     };
+    let slot = ServeInput::Server(ServerEvent::SlotRequested { file_hash });
+    let _ = state.on_conn_event(t, p, slot.clone(), &no_modifiers());
     assert_eq!(
         state.on_conn_event(
             t,
@@ -240,6 +243,7 @@ fn transfer_cancelled_wipes_served_ranges_so_a_fresh_ask_re_reads() {
         ServeInput::Server(ServerEvent::TransferCancelled { file_hash }),
         &no_modifiers(),
     );
+    let _ = state.on_conn_event(t, p, slot, &no_modifiers());
     assert_eq!(
         state.on_conn_event(
             t,
@@ -248,7 +252,7 @@ fn transfer_cancelled_wipes_served_ranges_so_a_fresh_ask_re_reads() {
             &no_modifiers(),
         ),
         vec![read],
-        "the same range reads again: nothing is stranded as already-served"
+        "the same range reads again on the next slot: nothing is stranded as already-served"
     );
 }
 

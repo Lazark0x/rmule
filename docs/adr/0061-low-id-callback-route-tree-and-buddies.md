@@ -154,6 +154,26 @@ in no server's namespace, so the server road is refused for it.
   pair is refused before a socket and counted apart, and there is no plaintext re-dial.
   The body names no address, so the requester is the datagram's source, and an IPv6
   requester is dialed back directly.
+- **`0x35` and `0x26`, the server-relayed callback**: a peer on our server asked it to
+  invite us (`OP_CALLBACKREQUEST`), and the server names that peer to us, `0x26` for an
+  IPv6 one. The peer wants to download from us, so the dial-back feeds the serve
+  pipeline, not a download: aMule's `OP_CALLBACKREQUESTED` arm builds a `CUpDownClient`
+  with no file and calls `TryToConnect`
+  ([ServerSocket.cpp#L554](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/ServerSocket.cpp#L554)).
+  rmule dials back when all of these hold, read at the request and stored nowhere:
+  - the session is Low-ID, by the id its latest `OP_IDCHANGE` assigned;
+  - the requester's address passes the Reserved Range check with the server as its
+    Informant (ADR-0085), which is also the whole `0x26` address gate;
+  - the requester is not our own listen endpoint (`OwnListenEndpoint`, ADR-0058);
+  - the node is serving, so a dialed link has a hello to write;
+  - no callback dial to that endpoint is in flight, and fewer than eight are.
+
+  The `0x35` crypt extension's connect-options and User Hash are the requester's stance
+  for this one dial (ADR-0049); the 6-byte form and every `0x26` state none and dial
+  plaintext; a pair that cannot meet is refused before a socket. aMule has no Low-ID
+  test, because its server sends the opcode only to a Low-ID client, and keeps one socket
+  per client rather than an in-flight cap; both bounds are rmule's own, on one server's
+  word.
 - **A callback dial-back is an inbound peer** and enters by the inbound path:
   `Connection::dial_stream` runs the crypt handshake when there is a key (the initiator's
   act) and hands the stream to the serve pipeline's admit seam as the dialer's side, so the
@@ -231,9 +251,9 @@ one**:
 - Still source-derived: the fallback-spelling `0x52` (it needs an eMule 0.70b or eMuleAI
   body; emule-qt writes aMule's spelling), a `0x99` relayed by aMule over a link rmule
   serves, and a `TAG_FILESIZE` above 4 GiB.
-- The server-relayed `0x35` callback is decoded, crypt extension included, but rmule
-  adopts none: the opcode names a peer and no file, and there is no policy for offering one
-  peer to every active download (ADR-0049).
+- The server-relayed callback is decoded from a capture (`0x35`'s 6-byte form); its
+  dial-back is still source-derived until a High-ID stock aMule downloads from a Low-ID
+  rmule through ed2k-server on the bench, and `0x26` stays single-oracle (eNode-go).
 - A two-node swarm pings its one contact every 15 s while the extern port is unknown and
   trips both sides' flood bans; a flow that needs a held link places routing contacts.
 - The two buddy-hash families' incompatibility is an upstream matter for eMule 0.70b and

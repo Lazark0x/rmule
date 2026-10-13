@@ -1,0 +1,14 @@
+┌ Shared Files · 0 files · 0.0 KB ───────────────────────────────────────────┐
+│  /srv/media · not watched: the system's limit on watched files is reached ▲│
+│  (on Linux, raise fs.inotify.max_user_watches) · 1 file, 700.0 MB         █│
+│▸ /srv/books (being added) · hashing 37/100, 36 % · no files shared yet    ▼│
+│  [ ] filter by directory · add or remove in Settings                 4 / 4 │
+│         nothing shared under /srv/books — [ ] for another directory        │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+┌ Uploads · active only ────────────────────────────────── s sort  S reverse ┐
+│  Peer ▲                Software     State             Speed File           │
+│▸ 10.0.0.1:4662         aMule v2.3.3 Uploading             — album.flac     │
+│                                                                            │
+│  2 hidden queued                                                           │
+└───────────────────────────────────────────────────────────────────── 1 / 1 ┘

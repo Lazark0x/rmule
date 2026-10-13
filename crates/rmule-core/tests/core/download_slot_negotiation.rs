@@ -141,7 +141,7 @@ async fn core_keeps_remote_queue_standing_when_a_slot_is_never_granted() {
             CoreEvent::Download(DownloadEvent::PeerSlotTimeout { .. }) => saw_slot_timeout = true,
             CoreEvent::Download(DownloadEvent::SourceRemoteQueued { rank, .. }) => {
                 assert!(
-                    rank > 0,
+                    rank.is_some_and(|rank| rank > 0),
                     "remote-queued standing carries the last known rank"
                 );
                 saw_remote_queued = true;

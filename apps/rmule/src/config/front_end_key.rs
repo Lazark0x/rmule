@@ -26,6 +26,10 @@ pub enum FrontEndKey {
     /// that writes the Run Log, under core's
     /// [`PREFERENCE_KEY`](rmule_core::run_log::PREFERENCE_KEY).
     RunLogFull,
+    /// The **Player Command** (ADR-0114): the operator's player as text,
+    /// split into words at each Preview launch; unset when absent or empty,
+    /// and Preview is then off.
+    PlayerCommand,
 }
 
 impl FrontEndKey {
@@ -39,6 +43,7 @@ impl FrontEndKey {
             Self::ConnectAtStart => "connect_at_start",
             Self::LastServer => "last_server",
             Self::RunLogFull => rmule_core::run_log::PREFERENCE_KEY,
+            Self::PlayerCommand => "player_command",
         }
     }
 }

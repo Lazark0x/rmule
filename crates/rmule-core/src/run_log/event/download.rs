@@ -15,24 +15,28 @@ impl DownloadEvent {
                 download_id,
                 file_hash,
                 metadata,
+                file_path,
             } => Record::new("download.queued")
                 .count("id", download_id.as_u64())
                 .file_hash("file_hash", file_hash)
                 .file_name("name", &metadata.name.to_display_string())
-                .file_size("size", metadata.size),
+                .file_size("size", metadata.size)
+                .path("file_path", file_path),
             D::DownloadRecovered {
                 download_id,
                 state,
                 failure,
                 file_hash,
                 metadata,
+                file_path,
             } => {
                 let record = Record::new("download.recovered")
                     .count("id", download_id.as_u64())
                     .code("state", codes::lifecycle(*state))
                     .file_hash("file_hash", file_hash)
                     .file_name("name", &metadata.name.to_display_string())
-                    .file_size("size", metadata.size);
+                    .file_size("size", metadata.size)
+                    .path("file_path", file_path);
                 match failure {
                     Some(failure) => codes::failure(record, failure),
                     None => record,
@@ -69,6 +73,14 @@ impl DownloadEvent {
                 ),
                 *lost,
             ),
+            D::PartsDisproved {
+                download_id,
+                parts,
+                bytes,
+            } => Record::new("download.parts_disproved")
+                .count("id", download_id.as_u64())
+                .count("parts", *parts)
+                .count("bytes", *bytes),
             D::FinishedFileRejected {
                 download_id,
                 parts_dropped,
@@ -176,10 +188,15 @@ impl DownloadEvent {
                 download_id,
                 peer,
                 rank,
-            } => Record::new("download.source_remote_queued")
-                .count("id", download_id.as_u64())
-                .peer_address("peer", peer)
-                .count("rank", *rank),
+            } => {
+                let record = Record::new("download.source_remote_queued")
+                    .count("id", download_id.as_u64())
+                    .peer_address("peer", peer);
+                match rank {
+                    Some(rank) => record.count("rank", *rank),
+                    None => record.code("rank", "unknown"),
+                }
+            }
             D::SourceReaskAcked {
                 download_id,
                 peer,
@@ -315,6 +332,20 @@ impl DownloadEvent {
             D::WaitingForConnection { download_id } => {
                 Record::new("download.waiting_for_connection").count("id", download_id.as_u64())
             }
+            D::HoleLessDestination {
+                download_id,
+                directory,
+            } => Record::new("download.hole_less_destination")
+                .count("id", download_id.as_u64())
+                .path("directory", directory),
+            D::Completing {
+                download_id,
+                to,
+                step,
+            } => Record::new("download.completing")
+                .count("id", download_id.as_u64())
+                .path("to", to)
+                .code("step", codes::completion_step(*step)),
         }
     }
 }

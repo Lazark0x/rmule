@@ -35,6 +35,7 @@ use rmule_primitives::{Ed2kText, KeywordQuery};
 
 use super::ViewOutcome;
 use crate::action::Action;
+use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
 use crate::table_sort::{RowMove, TableSort, TableSorts};
 use crate::theme::Theme;
@@ -65,9 +66,13 @@ pub struct SearchesView {
     input_focused: bool,
     query: String,
     method: SearchMethod,
-    /// Drawing state only: the offset the viewport scrolled to and, each
-    /// frame, the row the current Held Search's cursor was placed on.
+    /// Drawing state only: the row the current Held Search's cursor was
+    /// placed on each frame, and the Viewport's offset.
     results_state: TableState,
+    /// What part of the results table is on screen.
+    viewport: Viewport,
+    /// What part of the row menu is on screen, in a frame too short for it.
+    menu_viewport: std::cell::Cell<Viewport>,
     /// The results' order. Per table and durable, not per search.
     sort: TableSort<ResultsTable>,
     /// Every search of the run, each with its query and its own cursor.
@@ -332,7 +337,7 @@ impl SearchesView {
         self.draw_results(frame, results_area, state, theme);
 
         if let Some(cursor) = self.menu {
-            draw_menu(frame, area, cursor, state, theme);
+            draw_menu(frame, area, (cursor, &self.menu_viewport), state, theme);
         }
         self.draw_readd(frame, area, theme);
     }

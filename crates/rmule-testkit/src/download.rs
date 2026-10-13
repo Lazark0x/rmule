@@ -16,8 +16,8 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, Ed2kText, FileHash, FileHashSummary, Ipv4Endpoint, PeerEndpoint,
-    PeerSource, SafeFileName, ServerEndpoint, SourceLookupTarget, SourceSighting,
+    ClientId, Ed2kFileLink, Ed2kText, FileHash, FileHashSummary, Informant, Ipv4Endpoint,
+    PeerEndpoint, PeerSource, SafeFileName, ServerEndpoint, SourceLookupTarget, SourceSighting,
 };
 use tokio::time::{Duration, timeout};
 
@@ -77,8 +77,13 @@ pub fn loopback_peer(last_octet: u8) -> PeerEndpoint {
 
 /// Wrap plain server-lookup sources as candidates: a `0x42` reply carries no
 /// crypt provenance, so every source is `SourceSighting::plain` (ADR-0046).
+/// A scripted lookup answer is the test's own word, so a loopback peer passes
+/// the Reserved Range check (ADR-0085).
 pub fn plain_sources(sources: Vec<PeerSource>) -> Vec<SourceSighting> {
-    sources.into_iter().map(SourceSighting::plain).collect()
+    sources
+        .into_iter()
+        .map(|source| SourceSighting::plain(source, Informant::Own))
+        .collect()
 }
 
 /// A `SourceLookupService` that answers every lookup with the same outcome.
@@ -139,10 +144,11 @@ impl PeerTransferService for StaticPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
         Ok(scripted_worker(
             peer,
+            file.size,
             self.outcome.clone(),
             PlanExpectation::Count(self.expected_plan_count),
         ))
@@ -164,18 +170,20 @@ impl PeerTransferService for PlanAssertingPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
         Ok(scripted_worker(
             peer,
+            file.size,
             self.outcome.clone(),
             PlanExpectation::Indexes(self.expected_plan_indexes.clone()),
         ))
     }
 }
 
-/// A `PeerTransferService` whose workers connect and then do nothing: the
-/// download reaches `PeerSelected` and stays there until a command moves it.
+/// A `PeerTransferService` whose workers connect, are granted the slot they
+/// ask and then stream nothing: the download holds a part in flight until a
+/// command moves it.
 pub struct PendingPeerTransfer;
 
 impl PeerTransferService for PendingPeerTransfer {
@@ -183,19 +191,39 @@ impl PeerTransferService for PendingPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(8);
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
-                if matches!(command, PeerWorkerCommand::Shutdown { .. }) {
-                    break;
+                match command {
+                    PeerWorkerCommand::AskSlot => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::Shutdown { .. } => break,
+                    _ => {}
                 }
             }
         });
         Ok(PeerWorker::new(peer, command_tx, event_rx))
+    }
+}
+
+/// A probe answer spelling out every part of a `file_size`-byte file — not
+/// the complete-source sentinel, so the source-ask gate reads it as it reads
+/// a source that never advertised (ADR-0108). What an in-process fake sends
+/// after `Connected`, before its first part is assigned (ADR-0030, ADR-0112).
+#[must_use]
+pub fn every_part(file_size: u64) -> PeerWorkerEvent {
+    PeerWorkerEvent::PartsAdvertised {
+        parts: Some(rmule_peer::PartBitmap::all_present(
+            rmule_primitives::part_count(file_size),
+        )),
+        complete: false,
     }
 }
 
@@ -228,11 +256,14 @@ enum PlanExpectation {
     Indexes(Vec<u32>),
 }
 
-/// A `PeerWorker` that connects, answers the first `RequestPart` with the
-/// outcome's hash set (when it has one), streams whichever assigned part it
-/// holds, and asserts `expectation` once the runner shuts it down.
+/// A `PeerWorker` that connects, is granted its slot the moment it asks —
+/// an uploader with a free slot — answers the hash-set ask, or else its first
+/// `RequestPart`, with the outcome's hash set (when it has one), streams
+/// whichever assigned part it holds, and asserts `expectation` once the
+/// runner shuts it down.
 fn scripted_worker(
     peer: PeerEndpoint,
+    file_size: u64,
     outcome: PeerDownloadOutcome,
     expectation: PlanExpectation,
 ) -> PeerWorker {
@@ -240,10 +271,24 @@ fn scripted_worker(
     let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
     tokio::spawn(async move {
         let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+        let _ = event_tx.send(every_part(file_size)).await;
         let mut requested = Vec::new();
         let mut sent_hashes = false;
         while let Some(command) = command_rx.recv().await {
             match command {
+                PeerWorkerCommand::AskSlot => {
+                    let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                }
+                PeerWorkerCommand::RequestHashSet => {
+                    if !sent_hashes && !outcome.peer_hashes.is_empty() {
+                        sent_hashes = true;
+                        let _ = event_tx
+                            .send(PeerWorkerEvent::HashSetReceived {
+                                part_hashes: outcome.peer_hashes.clone(),
+                            })
+                            .await;
+                    }
+                }
                 PeerWorkerCommand::RequestPart {
                     plan,
                     resume_offset,

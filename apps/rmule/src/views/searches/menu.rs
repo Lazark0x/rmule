@@ -5,6 +5,8 @@
 //! instead of emitting a command nothing would take. *Search related* is dimmed with its reason while the connected
 //! server cannot answer it, read off the level on every frame.
 
+use std::cell::Cell;
+
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -15,6 +17,7 @@ use rmule_primitives::SearchResult;
 use super::SearchesView;
 use super::ViewOutcome;
 use crate::action::Action;
+use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
 use crate::theme::Theme;
 use crate::views::modal::Modal;
@@ -84,7 +87,7 @@ fn ed2k_link(result: &SearchResult) -> String {
 pub(super) fn draw_menu(
     frame: &mut Frame,
     area: Rect,
-    cursor: usize,
+    (cursor, viewport): (usize, &Cell<Viewport>),
     state: &UiState,
     theme: &Theme,
 ) {
@@ -103,27 +106,34 @@ pub(super) fn draw_menu(
         .unwrap_or(0)
         + 2;
     let width = clamp_u16(natural.max(48)).min(area.width);
-    let text_w = usize::from(width).saturating_sub(4).max(1);
-
-    let lines: Vec<Line> = items
-        .iter()
-        .enumerate()
-        .flat_map(|(index, item)| {
-            let selected = index == cursor && item.selectable(state);
-            let marker = if selected { "▸ " } else { "  " };
-            let (text, style) = match item.reason(state) {
-                Some(reason) => (format!("{} ({reason})", item.label()), theme.dim_text()),
-                None if selected => (
-                    item.label().to_string(),
-                    Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
-                ),
-                None => (item.label().to_string(), Style::new().fg(theme.fg)),
-            };
-            labeled_lines(Span::styled(marker, style), &text, style, text_w)
-        })
-        .collect();
-
-    Modal::new(" Result actions ", theme).draw(frame, area, width, theme, lines);
+    let rows = |width: u16| -> Vec<Vec<Line<'static>>> {
+        let text_w = usize::from(width).saturating_sub(4).max(1);
+        items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let selected = index == cursor && item.selectable(state);
+                let marker = if selected { "▸ " } else { "  " };
+                let (text, style) = match item.reason(state) {
+                    Some(reason) => (format!("{} ({reason})", item.label()), theme.dim_text()),
+                    None if selected => (
+                        item.label().to_string(),
+                        Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+                    ),
+                    None => (item.label().to_string(), Style::new().fg(theme.fg)),
+                };
+                labeled_lines(Span::styled(marker, style), &text, style, text_w)
+            })
+            .collect()
+    };
+    Modal::new(" Result actions ", theme).draw_list(
+        frame,
+        area,
+        (width, cursor),
+        theme,
+        viewport,
+        rows,
+    );
 }
 
 impl SearchesView {

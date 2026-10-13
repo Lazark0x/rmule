@@ -68,27 +68,19 @@ mod tests {
         let state = three_downloads();
         // download_id(2): no `DownloadQueued`/`DownloadRecovered` edge has landed.
         assert_eq!(
-            menu_items(
-                DownloadStatus::Paused,
-                state.downloads.get(&download_id(2)),
-                &state
-            )
-            .iter()
-            .find(|item| item.label == "Copy eD2k link")
-            .and_then(|item| item.reason),
+            menu_items(DownloadStatus::Paused, download_id(2), &state)
+                .iter()
+                .find(|item| item.label == "Copy eD2k link")
+                .and_then(|item| item.reason),
             Some("no metadata yet"),
         );
         // download_id(3): metadata landed, but its name is empty (Unknown-origin
         // backfill) — a different, more specific reason.
         assert_eq!(
-            menu_items(
-                DownloadStatus::Completed,
-                state.downloads.get(&download_id(3)),
-                &state
-            )
-            .iter()
-            .find(|item| item.label == "Copy eD2k link")
-            .and_then(|item| item.reason),
+            menu_items(DownloadStatus::Completed, download_id(3), &state)
+                .iter()
+                .find(|item| item.label == "Copy eD2k link")
+                .and_then(|item| item.reason),
             Some("file name unknown"),
         );
     }

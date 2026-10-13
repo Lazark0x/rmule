@@ -23,6 +23,7 @@ use crate::tui::{Surface, Tui};
 use views::Views;
 
 mod history;
+mod preview;
 mod reduce;
 mod related;
 mod views;
@@ -61,6 +62,9 @@ pub struct App {
     /// login, and on the operator's `K`. `None` on a UI-only run, where there
     /// is no join to start.
     kad_start: Option<crate::kad::KadStarter>,
+    /// The player lane: each Preview sends one launch on it. `None` on a
+    /// UI-only run, where no player is started.
+    player: Option<crate::player::PlayerLauncher>,
     /// Whether the first-login start is still owed: spent by that login, or
     /// by the operator's own `K` first, so a login never re-starts a Kad the
     /// operator stopped.
@@ -102,6 +106,7 @@ impl App {
             client: None,
             pending_commands: Vec::new(),
             kad_start: None,
+            player: None,
             kad_first_login_owed: false,
             kad_join_ended_told: false,
             last_server_unsaved_told: false,
@@ -167,6 +172,15 @@ impl App {
     pub fn with_kad_start(mut self, start: crate::kad::KadStarter) -> Self {
         self.kad_start = Some(start);
         self.kad_first_login_owed = true;
+        self
+    }
+
+    /// Install the player lane (ADR-0114): each Preview hands its launch to
+    /// the task on the lane's other half. Without one a Preview flashes that
+    /// no core is attached.
+    #[must_use]
+    pub fn with_player(mut self, player: crate::player::PlayerLauncher) -> Self {
+        self.player = Some(player);
         self
     }
 

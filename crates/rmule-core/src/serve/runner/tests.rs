@@ -243,6 +243,7 @@ async fn reask_loopback(crypt: Option<rmule_net::peer::ObfuscationPolicy>, shape
         peer_roster: crate::peer_roster::SharedPeerRoster::default(),
         withheld: crate::registry_check::WithheldRows::default(),
         read_failed_tx: None,
+        served: Default::default(),
     };
     let serve = tokio::spawn(task.run());
 
@@ -477,6 +478,7 @@ async fn a_dropped_stop_sender_ends_the_serve_task() {
             peer_roster: crate::peer_roster::SharedPeerRoster::default(),
             withheld: crate::registry_check::WithheldRows::default(),
             read_failed_tx: None,
+            served: Default::default(),
         }
         .run(),
     );
@@ -555,6 +557,7 @@ async fn the_fifth_asker_from_one_address_is_served_silence_and_a_counter() {
             peer_roster: crate::peer_roster::SharedPeerRoster::default(),
             withheld: crate::registry_check::WithheldRows::default(),
             read_failed_tx: None,
+            served: Default::default(),
         }
         .run(),
     );
@@ -687,6 +690,7 @@ async fn a_hash_only_name_ask_from_a_claimant_closes_the_connection_and_is_count
             peer_roster: crate::peer_roster::SharedPeerRoster::default(),
             withheld: crate::registry_check::WithheldRows::default(),
             read_failed_tx: None,
+            served: Default::default(),
         }
         .run(),
     );
@@ -799,4 +803,6 @@ fn self_position_follows_a_mid_session_reassignment() {
     );
 }
 
+mod part_file;
 mod roster;
+mod served;

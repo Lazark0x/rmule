@@ -54,11 +54,19 @@ impl Ed2kFileClass {
     /// unclassified, matching `wxFileName`.
     #[must_use]
     pub fn from_file_name(name: &str) -> Option<Self> {
-        let (stem, extension) = name.rsplit_once('.')?;
-        if stem.is_empty() {
+        Self::from_name_bytes(name.as_bytes())
+    }
+
+    /// [`Ed2kFileClass::from_file_name`] over a name's raw bytes, so a name
+    /// that is not valid UTF-8 keeps its class: every listed extension is
+    /// ASCII, and the bytes before the last `.` are never decoded.
+    #[must_use]
+    pub fn from_name_bytes(name: &[u8]) -> Option<Self> {
+        let dot = name.iter().rposition(|byte| *byte == b'.')?;
+        if dot == 0 {
             return None;
         }
-        Self::from_extension(extension)
+        Self::from_extension(std::str::from_utf8(&name[dot + 1..]).ok()?)
     }
 
     /// Classify a bare extension (no leading dot, any case).

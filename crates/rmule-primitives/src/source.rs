@@ -7,7 +7,7 @@ mod sentinel;
 mod sighting;
 
 pub use sentinel::SourceListTail;
-pub use sighting::{SightedBuddy, SourceRoad, SourceSighting};
+pub use sighting::{SightedBuddy, SourceClaim, SourceRoad, SourceSighting};
 
 use crate::{ClientId, CryptStance, FileHash, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint};
 

@@ -423,16 +423,22 @@ impl PeerTransferService for HoldingPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let hashes = self.part_hashes.clone();
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             let mut sent_hashes = false;
             while let Some(command) = command_rx.recv().await {
                 match command {
+                    PeerWorkerCommand::AskSlot => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::RequestHashSet => {}
                     PeerWorkerCommand::RequestPart { .. } => {
                         if !sent_hashes {
                             sent_hashes = true;
@@ -464,8 +470,9 @@ impl PeerTransferService for PartialSuccessThenHold {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let hashes = self.part_hashes.clone();
@@ -473,9 +480,14 @@ impl PeerTransferService for PartialSuccessThenHold {
         let completed_part = self.completed_part.clone();
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             let mut sent_hashes = false;
             while let Some(command) = command_rx.recv().await {
                 match command {
+                    PeerWorkerCommand::AskSlot => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::RequestHashSet => {}
                     PeerWorkerCommand::RequestPart {
                         plan,
                         resume_offset,

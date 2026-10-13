@@ -69,6 +69,27 @@ outbound, because the `0x22` consume checks it.
   verified duplicate at a different IP rejects the candidate
   ([RoutingZone.cpp#L897](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/kademlia/routing/RoutingZone.cpp#L897)).
   Bootstrap-file contacts may enter verified (ADR-0066).
+- **Admission caps** (aMule `CRoutingBin::AddContact`, `CheckGlobalIPLimits` and
+  `ChangeContactIPAddress`,
+  [RoutingBin.cpp#L84](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/kademlia/routing/RoutingBin.cpp#L84),
+  [#L269](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/kademlia/routing/RoutingBin.cpp#L269),
+  [#L366](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/kademlia/routing/RoutingBin.cpp#L366)).
+  The table holds at most **one contact per IPv4 address** and **ten per /24**, both
+  counted **table-wide** (aMule's two static tracking maps), and at most **two per /24
+  inside one bucket**. The two table-wide counts are tallies the routing table owns,
+  keyed by the address and by the address masked to its /24. A stored contact is counted
+  exactly once, under its current endpoint IP, from the moment it is stored until it is
+  evicted, replaced as a `Failed` contact, or moves; the per-bucket count is read off the
+  bucket. The gate runs on every add, including the replacement of a `Failed` contact
+  (which leaves the tallies first), and on every endpoint move to a new IP; an update at
+  the same IP passes untouched. A refusal is `KadRoutingUpdate::RejectedAdmissionCap`,
+  naming the cap (`KadAdmissionCap`: the address, the /24 across the table, or the /24 in
+  the bucket); a refused add stores nothing, a refused move leaves the entry exactly as it
+  was, and the node diagnoses both (`ContactOverAdmissionCap`). The private ranges
+  and loopback are exempt from both /24 caps, as aMule exempts `IsLanIP`. Loopback is
+  also exempt from the per-IP cap, which aMule never needs: it refuses loopback contacts
+  outright, while rmule admits one from an informant on this host (ADR-0085), and
+  several nodes on one host share 127.0.0.1 by port.
 - **Verification paths:** a hello whose trailer carries a valid receiver key verifies on
   add. Otherwise, the `0x22` three-way: our `HELLO_RES` sets misc-options bit 2 exactly
   when `addedOrUpdated && !validReceiverKey` toward a Kad v8+ contact
@@ -95,16 +116,26 @@ outbound, because the `0x22` consume checks it.
 - The `0x22` rows are scored against an emule-qt capture, which holds only stimulus status
   for Kad (ADR-0045); an aMule-authored capture of the same exchange would make them
   parity.
-- rmule does not implement the Kad v<7 legacy challenge or the v7 ping-with-key
-  workaround
+- rmule does not implement the Kad v<7 legacy challenge (the `KADEMLIA2_REQ` spoof
+  challenge aMule sends a contact below v7 that has no valid receiver key) or the v7
+  ping-with-key workaround
   ([KademliaUDPListener.cpp#L560](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/kademlia/net/KademliaUDPListener.cpp#L560)).
-  Unkeyed ancient contacts stay unverified, never served and never seeding; other contacts
-  are served instead, and v<8 clients are pre-2010.
+  This is a deliberate divergence of the `unprovable` class (ADR-0045): aMule 2.3.3 is
+  v8 and no pinned body speaks below v7, so no counterparty could ever answer the
+  challenge. Unkeyed ancient contacts stay unverified, never served and never seeding;
+  other contacts are served instead, and v<8 clients are pre-2010.
+- A bucket stands in for aMule's bin. rmule buckets by the leading-zero count of the
+  distance, so its far-half bucket covers ID space aMule's zone tree splits into several
+  bins, and the two-per-/24 bucket cap binds harder than aMule's on a
+  swarm concentrated in one /24. A deterministic mesh therefore gives every member its
+  own /24, and a bench swarm keeps the nodes rmule must hold in its table off a shared
+  /24 when more than two of them fall into one bucket.
 - The deterministic tier covers the flood matrix per opcode (allow at rate, drop above,
   offender at 5×), the decay arithmetic, the cleanup sweep, the LAN bypass, the port-53
   pair, the solicitation edges, the `0x22` state machine, verified gating with the
-  anti-hijack duplicate, the misc-options truth table and mesh-sim flood, handshake and
-  banned-peer scenarios.
+  anti-hijack duplicate, the admission caps (per IP, per /24 table-wide and per bucket,
+  the LAN exemption, a refused move), the misc-options truth table and mesh-sim flood,
+  handshake and banned-peer scenarios.
 - Captures use inverted roles with absence plus a positive control against the same pinned
   counterparty: rmule's fourth `HELLO_REQ` in a minute draws no answer while the first
   three do, a flood past 5× draws sustained silence and then a refused eD2k dial, and a

@@ -79,14 +79,13 @@ impl WorkerChannels {
         }
     }
 
-    /// End the live worker at `peer`: tell it `Shutdown { cancel: false }` and
-    /// drop its channel, so its later facts read as stale.
-    pub(super) async fn end(&mut self, peer: PeerEndpoint) {
+    /// End the live worker at `peer`: tell it `Shutdown { cancel }` and drop
+    /// its channel, so its later facts read as stale. `cancel` gives back a
+    /// slot the peer granted with `OP_CANCELTRANSFER` (ADR-0056).
+    pub(super) async fn end(&mut self, peer: PeerEndpoint, cancel: bool) {
         if let Some(at) = self.live.iter().position(|c| c.peer == peer) {
             let channel = self.live.swap_remove(at);
-            channel
-                .send(PeerWorkerCommand::Shutdown { cancel: false })
-                .await;
+            channel.send(PeerWorkerCommand::Shutdown { cancel }).await;
         }
     }
 
@@ -237,7 +236,7 @@ mod tests {
         let mut channels = WorkerChannels::default();
         let (ended_tx, mut ended_rx) = mpsc::channel(4);
         let ended = channels.register(peer, slot, ended_tx);
-        channels.end(peer).await;
+        channels.end(peer, false).await;
         let (live_tx, mut live_rx) = mpsc::channel(4);
         let live = channels.register(peer, slot, live_tx);
 

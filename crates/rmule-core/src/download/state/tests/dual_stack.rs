@@ -6,7 +6,7 @@
 
 use std::net::Ipv4Addr;
 
-use rmule_primitives::{Ipv4Endpoint, Ipv6Endpoint, PeerSource, SourceSighting};
+use rmule_primitives::{Informant, Ipv4Endpoint, Ipv6Endpoint, PeerSource, SourceSighting};
 
 use super::*;
 
@@ -44,7 +44,8 @@ fn exchanging_state(dial: DialPosition) -> DownloadState {
 /// `peer(1)` hands over the dual-stack record ([`v4`] with [`v6`] beside it,
 /// as an ExtSX `CT_MOD_IP_V6` names it); what gets dialed.
 fn sight(state: &mut DownloadState) -> Vec<PeerEndpoint> {
-    let source = SourceSighting::plain(PeerSource::HighId(v4())).with_ipv6_half(Some(v6()));
+    let source =
+        SourceSighting::plain(PeerSource::HighId(v4()), Informant::Own).with_ipv6_half(Some(v6()));
     spawned(&via_exchange(state, peer(1), vec![source]))
 }
 
@@ -247,7 +248,7 @@ fn a_dual_stack_dial_that_fails_to_start_falls_to_its_other_family() {
 
 /// `peer(1)` hands over a plain IPv4 record; what gets dialed.
 fn sight_single(state: &mut DownloadState) -> Vec<PeerEndpoint> {
-    let source = SourceSighting::plain(PeerSource::HighId(v4()));
+    let source = SourceSighting::plain(PeerSource::HighId(v4()), Informant::Own);
     spawned(&via_exchange(state, peer(1), vec![source]))
 }
 
@@ -267,7 +268,7 @@ fn a_single_address_source_whose_dial_failed_is_not_redialled() {
 }
 
 /// A source that completed its handshake is alive, however its session ended
-/// — a refused slot here — so it is never spent.
+/// — a slot wait that timed out here — so it is never spent.
 #[test]
 fn a_source_that_connected_is_redialled_when_sighted_again() {
     let mut state = exchanging_state(DialPosition::default());
@@ -280,7 +281,7 @@ fn a_source_that_connected_is_redialled_when_sighted_again() {
     let _ = end(
         &mut state,
         PeerEndpoint::V4(v4()),
-        PeerWorkerEvent::SlotRejected,
+        PeerWorkerEvent::SlotTimeout,
     );
 
     assert_eq!(sight_single(&mut state), vec![PeerEndpoint::V4(v4())]);

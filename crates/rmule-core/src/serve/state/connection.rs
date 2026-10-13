@@ -10,14 +10,13 @@ use rmule_peer::{
     BundleCut, BundledAsk, ConnectionEvent, FileSizedStatus, IdentityChange, PartStatusTail,
     ServerCommand, ServerEvent,
 };
-use rmule_primitives::{Ed2kText, FileHash, PeerEndpoint};
+use rmule_primitives::{FileHash, PeerEndpoint};
 
 use crate::WaiterLeaveCause;
 use crate::adapters::ServeInput;
 use crate::service::ServeEvent;
 use crate::upload_queue::{Admission, LowIdAbuseFacts, refuses_as_low_id_abuse};
 
-use super::reask::full_bitmap;
 use super::transfer::answer_aich_recovery;
 use super::{ReadPurpose, ServeDecision, ServeState};
 
@@ -25,7 +24,10 @@ impl ServeState {
     /// Answer a standalone name ask (`OP_REQUESTFILENAME`) as aMule's
     /// uploader does (stock 2.3.3 `4e8f2b3c` `ClientTCPSocket.cpp:428-470`),
     /// keeping the asker's status for the source-exchange answer (ADR-0055
-    /// §Name-ask surface).
+    /// §Name-ask surface). A Served Download is named from the download's
+    /// start; only an offered file moves the asker, and a running download
+    /// keeps the asker as a candidate source before its status is read, as
+    /// aMule adds it before the read that may throw (`:449-458`).
     fn answer_name_ask(
         &mut self,
         peer: PeerEndpoint,
@@ -35,14 +37,15 @@ impl ServeState {
         // A file we do not share is not answered and the connection stays up
         // (`:442-447` `break`s before any reply); the asker learns it from
         // its status ask or its bundle.
-        let Some(entry) = self.shared.get(&file_hash) else {
+        let Some(found) = self.lookup(file_hash) else {
             return Vec::new();
         };
         let command = ServerCommand::AnswerFileName {
             file_hash,
-            file_name: Ed2kText::from_utf8(entry.name.as_str()),
+            file_name: found.name(),
         };
-        let file_size = entry.file_size;
+        let file_size = found.file_size();
+        let kept = self.keep_asker(peer, file_hash);
         let moved = self.follow_asked_file(peer, file_hash);
         let claims_status = self
             .identities
@@ -60,7 +63,10 @@ impl ServeState {
                 // no answer, the bits read standing.
                 FileSizedStatus::Cut(partial) => {
                     self.record_part_status(peer, file_hash, file_size, partial);
-                    return self.malformed_name_ask(peer);
+                    return kept
+                        .into_iter()
+                        .chain(self.malformed_name_ask(peer))
+                        .collect();
                 }
             }
         } else {
@@ -71,16 +77,22 @@ impl ServeState {
         self.record_part_status(peer, file_hash, file_size, part_status);
         std::iter::once(ServeDecision::Send { peer, command })
             .chain(moved)
+            .chain(kept)
             .collect()
     }
 
     /// Move a waiter to the file it just asked about, and report the move so a
-    /// consumer's row names the file the waiter now waits for.
+    /// consumer's row names the file the waiter now waits for. Only an
+    /// offered file moves one: a download not yet offered can grant no slot
+    /// (ADR-0113).
     fn follow_asked_file(
         &mut self,
         peer: PeerEndpoint,
         file_hash: FileHash,
     ) -> Option<ServeDecision> {
+        if !self.in_share_set(file_hash) {
+            return None;
+        }
         let rank = self.queue.follow_asked_file(peer, file_hash)?;
         Some(ServeDecision::Emit(ServeEvent::PeerQueued {
             peer,
@@ -98,7 +110,8 @@ impl ServeState {
     /// bundle cut short inside a sub-ask throws in aMule's walk after the gate
     /// and the packet handler disconnects (`:2018-2047`): nothing is answered,
     /// the statuses read stand, the connection ends, counted as a malformed
-    /// name ask.
+    /// name ask. A running Served Download keeps the asker as a candidate
+    /// source past the gate, before any sub is walked (`:1092-1096`).
     fn answer_bundle(
         &mut self,
         now: Instant,
@@ -108,15 +121,15 @@ impl ServeState {
         asks: Vec<BundledAsk>,
         cut: Option<BundleCut>,
     ) -> Vec<ServeDecision> {
-        let entry = self
-            .shared
-            .get(&file_hash)
-            .filter(|entry| file_size.is_none_or(|size| size == entry.file_size));
-        let Some(entry) = entry else {
+        let found = self
+            .lookup(file_hash)
+            .filter(|found| file_size.is_none_or(|size| size == found.file_size()));
+        let Some(found) = found else {
             let command = ServerCommand::AnswerFileNotFound { file_hash };
             return vec![ServeDecision::Send { peer, command }];
         };
-        let (name, size) = (Ed2kText::from_utf8(entry.name.as_str()), entry.file_size);
+        let (name, size) = (found.name(), found.file_size());
+        let kept = self.keep_asker(peer, file_hash);
         // The file is set before any sub is walked (`:1103`).
         let moved = self.follow_asked_file(peer, file_hash);
         if let Some(cut) = cut {
@@ -131,9 +144,12 @@ impl ServeState {
             for part_status in statuses.chain(cut_status) {
                 self.record_part_status(peer, file_hash, size, part_status);
             }
-            return self.malformed_name_ask(peer);
+            return kept
+                .into_iter()
+                .chain(self.malformed_name_ask(peer))
+                .collect();
         }
-        let mut decisions: Vec<ServeDecision> = moved.into_iter().collect();
+        let mut decisions: Vec<ServeDecision> = moved.into_iter().chain(kept).collect();
         for ask in asks {
             match ask {
                 // Every name ask restates the asker's status; one the file
@@ -166,17 +182,19 @@ impl ServeState {
         ]
     }
 
-    /// Answer a status ask (`OP_SETREQFILEID`): the file's bitmap, or
-    /// `OP_FILEREQANSNOFIL` for a file we do not share
-    /// (`ClientTCPSocket.cpp:503-533`).
+    /// Answer a status ask (`OP_SETREQFILEID`): the parts we hold of the
+    /// file — every one of a row's, a Served Download's Verified Range, all
+    /// zero before its first part — or `OP_FILEREQANSNOFIL` for a file we do
+    /// not share (`ClientTCPSocket.cpp:503-533`). Only an offered file moves
+    /// the asker.
     fn answer_file_status(
         &mut self,
         peer: PeerEndpoint,
         file_hash: FileHash,
     ) -> Vec<ServeDecision> {
-        let (command, moved) = match self.shared.get(&file_hash) {
-            Some(entry) => {
-                let bitmap = full_bitmap(entry.file_size);
+        let (command, moved) = match self.lookup(file_hash) {
+            Some(found) => {
+                let bitmap = found.status();
                 let moved = self.follow_asked_file(peer, file_hash);
                 (ServerCommand::AnswerFileStatus { file_hash, bitmap }, moved)
             }
@@ -188,10 +206,11 @@ impl ServeState {
     }
 
     /// Answer an AICH master-hash ask from the file's tree, building it first
-    /// when it is not cached (ADR-0038).
+    /// when it is not cached (ADR-0038). A Served Download answers nothing:
+    /// its tree is whole only once the file is (ADR-0113).
     fn answer_aich_root(&self, peer: PeerEndpoint, file_hash: FileHash) -> Vec<ServeDecision> {
-        let Some(entry) = self.shared.get(&file_hash) else {
-            return Vec::new(); // not shared
+        let Some(entry) = self.lookup(file_hash).and_then(|found| found.row()) else {
+            return Vec::new(); // not shared whole
         };
         match self.aich_cache.get(&file_hash) {
             Some(tree) => vec![ServeDecision::Send {
@@ -206,6 +225,7 @@ impl ServeState {
                 offset: 0,
                 len: entry.file_size,
                 purpose: ReadPurpose::AichMasterRoot { file_hash },
+                check: None,
             }],
         }
     }
@@ -259,20 +279,24 @@ impl ServeState {
             } => self.answer_bundle(now, peer, file_hash, file_size, asks, cut),
             ServerEvent::FileIdSet { file_hash } => self.answer_file_status(peer, file_hash),
             ServerEvent::HashSetRequested { file_hash } => {
-                // Not shared (e.g. unshared mid-probe): answer "no such file"
-                // rather than silently dropping the request (design §5).
-                let command = match self.shared.get(&file_hash) {
-                    Some(entry) => ServerCommand::AnswerHashSet {
+                // Not shared (e.g. unshared mid-probe), or a download whose
+                // set is not yet whole: answer "no such file" rather than
+                // silently dropping the request (design §5;
+                // `UploadClient.cpp:676-698`).
+                let part_hashes = self.lookup(file_hash).and_then(|found| found.hash_set());
+                let command = match part_hashes {
+                    Some(part_hashes) => ServerCommand::AnswerHashSet {
                         file_hash,
-                        part_hashes: entry.part_hashes.clone(),
+                        part_hashes,
                     },
                     None => ServerCommand::AnswerFileNotFound { file_hash },
                 };
                 vec![ServeDecision::Send { peer, command }]
             }
             ServerEvent::SlotRequested { file_hash } => {
-                if !self.shared.contains_key(&file_hash) {
-                    // We do not share it: nothing is sent, as aMule queues and
+                if !self.lookup(file_hash).is_some_and(|found| found.offered()) {
+                    // We do not offer it — unshared, or a download with no
+                    // verified part yet: nothing is sent, as aMule queues and
                     // answers only a file it finds (stock 2.3.3 `4e8f2b3c`
                     // `ClientTCPSocket.cpp:607-617`). `OP_OUTOFPARTREQS` ends
                     // an upload session; this asker never had one.
@@ -366,44 +390,17 @@ impl ServeState {
                 decisions
             }
             ServerEvent::PartsRequested { file_hash, ranges } => {
-                let Some(entry) = self.shared.get(&file_hash) else {
-                    return Vec::new();
-                };
-                let path = entry.path.clone();
-                let mut decisions = Vec::new();
-                // `PartRanges::as_array()` yields the fixed `[(u64,u64); 3]`;
-                // the `(0,0)` padding slots are skipped by the `e > s` filter.
-                for &(start, end) in ranges.as_array().iter().filter(|(s, e)| e > s) {
-                    let served = self.served_ranges.entry((peer, file_hash)).or_default();
-                    for (send_start, send_end) in subtract_served_ranges(start, end, served) {
-                        // Recorded at decision time, not on the read result: a
-                        // repeat request must not double-send a range whose
-                        // read is still in flight, and a failed read closes
-                        // the flow (its `Disconnected` wipes the peer's
-                        // ranges), so nothing is stranded.
-                        record_served_range(served, send_start, send_end);
-                        decisions.push(ServeDecision::ReadRange {
-                            peer,
-                            path: path.clone(),
-                            offset: send_start,
-                            len: send_end - send_start,
-                            purpose: ReadPurpose::Block {
-                                file_hash,
-                                start: send_start,
-                                end: send_end,
-                            },
-                        });
-                    }
-                }
-                decisions
+                self.on_parts_requested(now, peer, file_hash, &ranges, modifiers)
             }
             ServerEvent::AichRequested {
                 file_hash,
                 part,
                 root: _,
             } => {
-                let Some(entry) = self.shared.get(&file_hash) else {
-                    return Vec::new(); // not shared; let the requester fall back
+                // Not shared whole — a Served Download included, whose tree
+                // is whole only once the file is: let the requester fall back.
+                let Some(entry) = self.lookup(file_hash).and_then(|found| found.row()) else {
+                    return Vec::new();
                 };
                 // A cache hit answers pure; the first request round-trips one
                 // whole-file read to build the tree (ADR-0038). We answer with
@@ -417,6 +414,7 @@ impl ServeState {
                         offset: 0,
                         len: entry.file_size,
                         purpose: ReadPurpose::AichRecovery { file_hash, part },
+                        check: None,
                     }],
                 }
             }
@@ -485,8 +483,12 @@ impl ServeState {
     ) -> Vec<ServeDecision> {
         match fact {
             ConnectionEvent::Identified { identity } => {
+                let relinked = self.relink_waiter(peer, &identity);
                 self.identities.insert(peer, identity);
-                Vec::new()
+                if !relinked.is_empty() {
+                    self.stamp_udp_contact(peer);
+                }
+                relinked
             }
             // Only a peer the serve side already holds a hello for: the map is
             // keyed by live identified connections. A waiter already on the

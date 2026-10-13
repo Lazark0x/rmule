@@ -468,8 +468,14 @@ impl KadNode {
             }
             KadCommand::BootstrapFromPeer { endpoint } => self.handoff_from_peer(now, endpoint),
             KadCommand::MergeContacts { contacts } => {
+                // A merged contact is rmule's own: it passed the nodes.dat
+                // gate before the command was sent (ADR-0066).
                 for contact in contacts {
-                    self.store(now, contact.in_state(KadContactState::Responded));
+                    self.store(
+                        now,
+                        contact.in_state(KadContactState::Responded),
+                        rmule_primitives::Informant::Own,
+                    );
                 }
             }
             KadCommand::SearchSources { request } => self.start_source_search(now, request),

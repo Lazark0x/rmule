@@ -50,7 +50,8 @@ honestly and the row is corrected at that moment, not at the next start.**
   the offer at once: the file leaves the serve snapshot, and every peer queued or holding a slot for
   it is told `OP_FILEREQANSNOFIL` and released, waiters first, so the freed slot never goes to another
   asker of the same file. Then the row is looked at and ruled on. aMule drops the client and leaves the
-  file shared on a read error (`UploadDiskIOThread.cpp:318-364`, `UploadQueue.cpp:280-282`).
+  file shared on a read error (`UploadDiskIOThread.cpp:318-364`, `UploadQueue.cpp:280-282`). A
+  Partial Share (ADR-0113) is no row: a failed read ends its offer and is not looked at here.
 - **What is announced is what is offered.** The serve snapshot (the `OP_OFFERFILES` announce and every
   file request) and the Kad publisher read the offered rows. A row withheld is re-announced without
   it and its Kad republish withdrawn; Kad has no unpublish, so a storer keeps the entry up to its

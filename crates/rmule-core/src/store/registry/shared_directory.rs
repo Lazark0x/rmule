@@ -13,7 +13,7 @@ use rmule_primitives::{FileHash, PartHash};
 use rmule_store::{Indexed, Readable, Record, StoreError, UpgradeStep, WriteTransaction};
 use serde::{Deserialize, Serialize};
 
-use super::{DurableSharedFileRegistry, PART_HASHES, SHARED_FILES, file_name, part_hashes_of};
+use super::{DurableSharedFileRegistry, PART_HASHES, SHARED_FILES, part_hashes_of};
 use crate::CoreError;
 use crate::directory_scan::{FileIdentity, SetAside, SpareCopy};
 use crate::registry::{ShareSource, SharedFileEntry};
@@ -191,7 +191,7 @@ impl DurableSharedFileRegistry {
                 if let Some(spare) = elsewhere {
                     let mut moved = row;
                     moved.path.clone_from(&spare.path);
-                    moved.name = file_name(&spare.path);
+                    moved.name = SharedFileEntry::name_of(&spare.path);
                     moved.modified = Some(spare.stamp.modified);
                     moved.identity = spare.identity;
                     SHARED_FILES.set(txn, &content, &moved)?;
@@ -256,7 +256,7 @@ fn list(txn: &impl Readable) -> Result<Vec<SetAside>, CoreError> {
                 entry: SharedFileEntry {
                     file_hash: row.file_hash,
                     file_size: row.size,
-                    name: file_name(&path),
+                    name: SharedFileEntry::name_of(&path),
                     path,
                     source: ShareSource::DownloadDirectory,
                     part_hashes: row.part_hashes,

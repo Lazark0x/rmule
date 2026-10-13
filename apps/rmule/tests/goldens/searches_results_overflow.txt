@@ -1,0 +1,21 @@
+┌ Search ───────────────────────────────────── / focus  ←→ method  o options ┐
+│❯ episode                                                                   │
+│Method: eD2k server ▾  Kad ▾ (always on — every search also walks Kad)      │
+│Filters: none   o edit                                                      │
+└────────────────────────────────────────────────────────────────────────────┘
+[episode · 40]
+┌ Results · Completed · 40 ────────── [ ] search  x close  s sort  S reverse ┐
+│  Name ▲                                       Size      Sources Type      ▲│
+│  episode_10.mkv                            10.0 MB            3 Videos     │
+│  episode_11.mkv                            11.0 MB            3 Videos     │
+│  episode_12.mkv                            12.0 MB            3 Videos    ▄│
+│  episode_13.mkv                            13.0 MB            3 Videos    █│
+│  episode_14.mkv                            14.0 MB            3 Videos    █│
+│  episode_15.mkv                            15.0 MB            3 Videos    ▂│
+│  episode_16.mkv                            16.0 MB            3 Videos     │
+│  episode_17.mkv                            17.0 MB            3 Videos     │
+│  episode_18.mkv                            18.0 MB            3 Videos     │
+│  episode_19.mkv                            19.0 MB            3 Videos     │
+│  episode_20.mkv                            20.0 MB            3 Videos     │
+│▸ episode_21.mkv                            21.0 MB            3 Videos    ▼│
+└─────────────────────────────────────────────────────────────────── 21 / 40 ┘

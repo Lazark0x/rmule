@@ -13,7 +13,7 @@ mod search;
 mod source_ends;
 
 pub use buddy::BuddyDialFailure;
-pub use download::{DownloadEvent, PartsLost, RestartOutcome, SourceWait};
+pub use download::{CompletionStep, DownloadEvent, PartsLost, RestartOutcome, SourceWait};
 pub use lifecycle::{KadStopReason, QuitStep, ServeStopReason};
 pub use login::{
     DialFailure, IdAssignment, Ipv6Probe, LoginClaim, LoginCloseCause, LoginLink, LoginStep,
@@ -65,6 +65,32 @@ pub enum ServeEvent {
     FileOffered {
         /// The content identity offered again.
         file_hash: FileHash,
+    },
+    /// A download began to offer the parts it verified: a **Partial Share**
+    /// (ADR-0113). It is the download's own, never a registry row.
+    PartialOffered {
+        /// The content identity whose verified parts are offered.
+        file_hash: FileHash,
+    },
+    /// A Partial Share stopped being offered.
+    PartialWithdrawn {
+        /// The content identity no longer offered in part.
+        file_hash: FileHash,
+        /// Why.
+        cause: crate::PartialEnd,
+    },
+    /// A restarted download's **Offer Check** finished (ADR-0113 §"A paused
+    /// download"): the parts it recorded were read again and hashed against
+    /// their records before it may be offered. Said once for each check
+    /// whose result is applied, whatever it found, with what the read cost.
+    OfferChecked {
+        /// The content identity whose recorded parts were read.
+        file_hash: FileHash,
+        /// The bytes read from the part file.
+        bytes_read: u64,
+        /// How long the read took, from taking the scans' hashing turn to
+        /// its last part.
+        took: std::time::Duration,
     },
     /// The folders of the shared files outside the download directory cannot
     /// be watched; the log says why. A file that goes from one is noticed at
@@ -199,6 +225,19 @@ pub enum ServeEvent {
         peer: rmule_primitives::PeerEndpoint,
         /// Why it left.
         cause: crate::WaiterLeaveCause,
+    },
+    /// A waiter came back on a new link and keeps its place: the new link's
+    /// hello named the client waiting at `from`, whose link had ended or
+    /// came from the same address and listen port (aMule attaches the new
+    /// socket to the client it knows, `ClientList.cpp:371-412`, and a client
+    /// already queued keeps its place, `UploadQueue.cpp:395-431`). Every row
+    /// and mark keyed by `from` is now keyed by `to`; a `from` still live is
+    /// closed after this.
+    WaiterRelinked {
+        /// The link the waiter waited on.
+        from: rmule_primitives::PeerEndpoint,
+        /// The link it waits on now.
+        to: rmule_primitives::PeerEndpoint,
     },
     /// A peer's source-exchange request was answered with `count` sources
     /// (ADR-0055 §Serving) — the serve-side mirror of a download's
@@ -661,16 +700,6 @@ pub enum CoreEvent {
         /// What became of it.
         admission: PortTestLateAdmission,
     },
-}
-
-impl CoreEvent {
-    /// The CLI's sentence for [`Self::ClientUdpBindFailed`]. The TUI words the
-    /// event's port and error kind itself, since it owns every word it shows.
-    pub fn client_udp_bind_failed_message(port: u16, kind: std::io::ErrorKind) -> String {
-        format!(
-            "UDP port {port} could not be bound ({kind}) — Kad, reask and NAT traversal are off until restart"
-        )
-    }
 }
 
 impl From<DownloadEvent> for CoreEvent {

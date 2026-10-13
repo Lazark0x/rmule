@@ -1,4 +1,4 @@
-# Shared directories are the only way rmule shares: whole, recursive, guarded and confirmed
+# Shared directories are the only way rmule shares a whole file: whole directories, recursive, guarded and confirmed
 
 ## Context
 
@@ -15,7 +15,9 @@ citations are to 2.3.3 unless they say kno's fork; read, never ported (ADR-0082)
 
 **The operator shares whole directories, never a lone file.** Everything under a shared
 directory is hashed and enters the Shared File Registry, so Have is registry membership and
-needs no store of its own.
+needs no store of its own. The one other road is the download's own: a download, running or
+paused, offers the parts it has verified (ADR-0113), which is never a registry row and ends when
+its download completes into one, is cancelled or fails.
 
 - **The Shared Directory List** is ordered. Entry 0 is the download directory: it follows
   the download-directory Core Setting (ADR-0069) — scanned by core itself from attach, and
@@ -43,16 +45,17 @@ needs no store of its own.
   | rmule's data directory, anything inside it, or a directory holding it | the store, the identity keys and the credit file |
   | already in the list | nothing to add |
   | inside a listed directory, the download directory included | already shared |
+  | the Temp Directory, a directory holding it, or one inside it | rmule's unfinished part files (ADR-0115) |
 
   The home and data directories are handed to core by the front end at build time. A parent of
   an added entry is not refused: it replaces the entry after the confirm names it.
 
   The download directory passes the guards on what a directory is (UTF-8, home, root, data
-  directory) at the set: Core Settings refuses one that fails them with the guard's reason
-  (`SettingRefusal::DownloadDirRefused`, ADR-0069) and stores nothing. Core judges it again
-  whenever it names it — at attach and when the setting moves — and again when it appears after
-  missing, since the directory and the guards can change after the set. It need not exist yet,
-  so one not made is judged where it would be made. A download directory refused then
+  directory) at the set, and may neither be, hold nor lie inside the Temp Directory: Core Settings refuses
+  one that fails them with the guard's reason (`SettingRefusal::DownloadDirRefused`, ADR-0069)
+  and stores nothing. Core judges it again whenever it names it — at attach and when the setting
+  moves — and again when it appears after missing, since the directory and the guards can change
+  after the set. It need not exist yet, so one not made is judged where it would be made. A download directory refused then
   (`ScanEvent::DownloadDirectoryRefused`) stays the setting and where downloads finish, but is
   listed as refused, never scanned, and covers no other entry. A download that completes into it
   is recorded withheld (`folder refused`) as its row is written, and never offered.
@@ -121,7 +124,8 @@ starts, so the operator is asked once).
 
 - Nothing under a directory is offered before the operator's yes to it.
 - A deleted folder looks like an unmounted volume and stays withheld until unshared.
-- What is shared, and when, is ground any partial-sharing design inherits rather than decides again.
+- What is shared, and when, is ground the partial share inherits (ADR-0113): a download is
+  offered only where its finished file would be, never under a refused entry.
 
 ## Considered options
 

@@ -126,8 +126,9 @@ pub enum DownloadFailure {
     #[error("stored download content does not match its verified-part records: {0}")]
     StorageIntegrityFailed(StorageIntegrityFault),
     /// Every part verified and the whole file hashed, but a file already
-    /// stands at the final path, and rmule never overwrites one. The verified
-    /// parts are kept: a Restart once the path is free completes the file.
+    /// stood at the final path, and rmule never overwrites one. No longer
+    /// produced — a taken name now takes the next free one (ADR-0115) — and
+    /// still read from a row that holds it.
     #[error("a file already stands at the download's final path")]
     FinalPathTaken,
     /// Every part verified and the whole file hashed, but the part file could
@@ -142,32 +143,32 @@ pub enum DownloadFailure {
     /// the run could not keep what it earned or learn what it holds.
     #[error("the download's store record could not be read or written")]
     StoreFailed,
+    /// Every part verified and the whole file hashed, the destination lies on
+    /// another volume, and the Completion Copy onto it failed — a full disk,
+    /// an I/O error (ADR-0115). The partial copy is deleted, the part file
+    /// and every verified part are kept.
+    #[error("the finished file could not be copied to its final path{}", OsCode(*.os_code))]
+    CompletionCopyFailed {
+        /// The OS's error number, when there is one.
+        os_code: Option<i32>,
+    },
 }
 
-/// Why [`DownloadRepository::finalize`](crate::DownloadRepository::finalize)
-/// did not promote a download: each cause is its own, since only a file that
-/// does not hash is a matter for the parts.
+/// Why the completion move's check did not pass a finished file (ADR-0115,
+/// step 1): each cause is its own, since only a file that does not hash is a
+/// matter for the parts.
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum FinalizeError {
     /// The assembled file does not hash to the file's hash.
     #[error("the assembled file does not hash to the file's hash")]
     Mismatch,
-    /// A file already stands at the final path.
-    #[error("a file already stands at the final path")]
-    FinalPathTaken,
     /// The part file could not be read whole.
     #[error("the part file could not be read{}", OsCode(*.os_code))]
     Unreadable {
         /// The OS's error number, when there is one.
         os_code: Option<i32>,
     },
-    /// The rename onto the final path failed.
-    #[error("the part file could not be moved to its final path{}", OsCode(*.os_code))]
-    NotMoved {
-        /// The OS's error number, when there is one.
-        os_code: Option<i32>,
-    },
-    /// The store failed around the rename.
+    /// The store failed around the check.
     #[error(transparent)]
     Store(#[from] CoreError),
 }

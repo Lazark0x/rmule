@@ -179,7 +179,7 @@ fn bundled_serve_request_fans_in_identically_to_the_standalone_sequence() {
 fn bundled_answer_fans_in_identically_to_the_standalone_sequence() {
     let fh = FileHash::from_bytes([0xB2; FileHash::BYTE_LEN]);
     let name = Ed2kText::from_utf8("clip.mkv");
-    let bitmap = PartBitmap::decode(2, &[0b11]).unwrap();
+    let bitmap = PartBitmap::decode(3, &[0b011]).unwrap();
 
     // Both shapes solicit the probe first: an answer for a
     // never-solicited file is dropped — identically in both shapes, which is

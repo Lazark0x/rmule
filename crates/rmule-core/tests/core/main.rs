@@ -45,6 +45,7 @@ mod standing_session_search;
 mod content_files;
 mod download_attach;
 mod download_clear;
+mod download_completion;
 mod download_connection_wait;
 mod download_cross_peer_assembly;
 mod download_damaged_parts;
@@ -71,6 +72,7 @@ mod live_part_file_guard;
 mod credit_accounting;
 mod credit_store;
 mod download_directory_scan;
+mod partial_share;
 mod registry_against_disk;
 mod serve_lifecycle;
 mod serve_loopback;
@@ -85,6 +87,7 @@ mod upload_slot_queue;
 mod callback_loopback;
 mod direct_callback_route;
 mod global_callback_loopback;
+mod server_callback_serve;
 
 // Kad: source discovery without a server in the loop.
 mod kad_disable;

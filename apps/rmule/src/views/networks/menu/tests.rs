@@ -267,3 +267,24 @@ fn golden_networks_remove_confirm() {
         view.draw(frame, area, &state, &Theme::default_dark(), now);
     });
 }
+
+#[test]
+fn golden_networks_remove_confirm_scrolls_in_a_short_frame() {
+    let state = listed_servers();
+    let mut view = NetworksView::new();
+    menu_to(&mut view, &state, "Remove");
+    view.handle_key(press(KeyCode::Enter), &state);
+    let now = Instant::now();
+    let shown = |view: &mut NetworksView| {
+        crate::golden::render_to_lines(60, 5, |frame| {
+            let area = frame.area();
+            view.draw(frame, area, &state, &Theme::default_dark(), now);
+        })
+    };
+    assert_golden("networks_remove_confirm_short", 60, 5, |frame| {
+        let area = frame.area();
+        view.draw(frame, area, &state, &Theme::default_dark(), now);
+    });
+    view.handle_key(press(KeyCode::Char('G')), &state);
+    assert!(shown(&mut view).contains("Esc abort"));
+}

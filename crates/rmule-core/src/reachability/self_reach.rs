@@ -368,12 +368,13 @@ impl SharedSelfReach {
 
 /// A running Kad Activity's hold on the Kad half of Self Reach (ADR-0093):
 /// present exactly as long as this is, and nothing proven once it drops.
-/// Fields drop in declaration order: Kad Presence clears, then the verdicts
-/// reset.
+/// Fields drop in declaration order: the verdicts reset, then Kad Presence
+/// clears, so between the two a reader sees a running node that has proven
+/// nothing, never a stopped one with a live verdict.
 #[must_use = "dropping the lease is the Kad node's end"]
 pub(crate) struct KadRunLease {
-    _presence: KadPresenceLease,
     _verdicts: Option<KadVerdictsLease>,
+    _presence: KadPresenceLease,
 }
 
 /// A subscription to the **Reach Generation**.

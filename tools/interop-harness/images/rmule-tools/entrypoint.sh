@@ -25,7 +25,20 @@
 #
 #   RMULE_EXTRA_ADDRS          space-separated CIDRs for `ip addr add … dev eth0`
 #   RMULE_EXTRA_ADDRS_DEV      the interface they land on (default `eth0`)
+#
+# The third is the **forced Low ID**, `AMULE_FORCE_LOW_ID`'s twin: inbound TCP
+# to rmule's listener is dropped, so the server's High-ID probe fails and no
+# peer can dial it, while every connection rmule opens itself still runs. It
+# needs `NET_ADMIN`.
+#
+#   RMULE_FORCE_LOW_ID_TCP_PORT   the listener port whose inbound TCP is dropped
 set -eu
+
+if [ -n "${RMULE_FORCE_LOW_ID_TCP_PORT:-}" ]; then
+    iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    iptables -A INPUT -p tcp --dport "$RMULE_FORCE_LOW_ID_TCP_PORT" -j DROP
+    echo "rmule-tools-low-id-firewall-installed port=$RMULE_FORCE_LOW_ID_TCP_PORT"
+fi
 
 if [ -n "${RMULE_DEFAULT_ROUTE_VIA:-}" ]; then
     ip route replace default via "$RMULE_DEFAULT_ROUTE_VIA"

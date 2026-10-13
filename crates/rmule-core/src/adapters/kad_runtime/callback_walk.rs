@@ -41,6 +41,18 @@ pub(crate) struct CallbackWalkAsk {
     pub(crate) reply: CallbackWalkReply,
 }
 
+impl CallbackWalkAsk {
+    /// The command a running node is handed for this ask: the walk toward the
+    /// buddy ID.
+    pub(crate) fn node_command(&self) -> rmule_kad::KadCommand {
+        rmule_kad::KadCommand::CallbackWalk {
+            buddy_id: self.buddy_id,
+            file_hash: self.file_hash,
+            tcp_port: self.tcp_port,
+        }
+    }
+}
+
 /// Hand one Callback Walk to the running node, reporting whether a node was
 /// there to take it.
 pub(crate) fn request_kad_callback_walk(sink: &super::SharedKadPump, ask: CallbackWalkAsk) -> bool {

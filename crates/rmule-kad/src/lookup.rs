@@ -3,7 +3,7 @@
 //! sources and diagnostics a finished walk reports.
 
 use rmule_primitives::{
-    ClientId, Ipv4Endpoint, Ipv6Endpoint, PeerSource, SightedBuddy, SourceCryptOptions,
+    ClientId, Informant, Ipv4Endpoint, Ipv6Endpoint, PeerSource, SightedBuddy, SourceCryptOptions,
     SourceLookupTarget, SourceRoad, SourceSighting, UserHash,
 };
 
@@ -114,8 +114,8 @@ pub struct KadBuddyContact {
     /// The buddy relationship ID: `~publisherKadID`, in [`KadId`] wire order.
     pub buddy_id: KadId,
     /// The buddy's UDP endpoint, when the row carried both `TAG_SERVERIP` and
-    /// a non-zero `TAG_SERVERPORT`, and the address can be a remote unicast
-    /// host: both readers refuse `0.0.0.0`, loopback, link-local, multicast
+    /// a non-zero `TAG_SERVERPORT`, and the address lies in no Reserved Range
+    /// (ADR-0085): both readers refuse `0/8`, loopback, link-local, multicast
     /// and `240/4` (which holds `255.255.255.255`). `None` leaves a Kad walk
     /// toward [`Self::buddy_id`] as the only way to find it. That is where
     /// eMuleAI's IPv6-buddy row lands, since its `TAG_SERVERIP` is
@@ -374,11 +374,14 @@ impl KadSourceCandidate {
     /// from the bytes: a direct row is its record, a buddy row reaches its
     /// buddy, a type-6 row takes the `0x95` at its observed endpoint.
     ///
+    /// The row is `informant`'s word: the storer whose `0x3B` carried it
+    /// (ADR-0085).
+    ///
     /// `None` for a refusal, and for a buddy row whose publisher's Kad UDP
     /// endpoint the storer did not observe: that address is the one value that
     /// tells two firewalled publishers apart, so nothing could hold the row.
     #[must_use]
-    pub fn sighting(self) -> Option<SourceSighting> {
+    pub fn sighting(self, informant: Informant) -> Option<SourceSighting> {
         let facts = self.facts;
         let road = match self.repr {
             Repr::Direct(source) => SourceRoad::Record(source),
@@ -401,6 +404,7 @@ impl KadSourceCandidate {
                 road,
                 facts.map(|facts| facts.user_hash),
                 facts.and_then(|facts| facts.connect_options),
+                informant,
             )
             .with_ipv6_half(facts.and_then(|facts| facts.ipv6)),
         )

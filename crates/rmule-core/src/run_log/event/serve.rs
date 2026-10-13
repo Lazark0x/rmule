@@ -46,6 +46,20 @@ impl ServeEvent {
             S::FileOffered { file_hash } => {
                 Record::new("serve.file_offered").file_hash("file_hash", file_hash)
             }
+            S::PartialOffered { file_hash } => {
+                Record::new("serve.partial_offered").file_hash("file_hash", file_hash)
+            }
+            S::PartialWithdrawn { file_hash, cause } => Record::new("serve.partial_withdrawn")
+                .file_hash("file_hash", file_hash)
+                .code("cause", codes::partial_end(*cause)),
+            S::OfferChecked {
+                file_hash,
+                bytes_read,
+                took,
+            } => Record::new("serve.offer_checked")
+                .file_hash("file_hash", file_hash)
+                .count("bytes_read", *bytes_read)
+                .count("took_ms", took.as_millis()),
             S::SharesUnwatched => Record::new("serve.shares_unwatched"),
             S::ShareRejected { reason } => {
                 Record::new("serve.share_rejected").code("reason", codes::share_rejected(*reason))
@@ -105,6 +119,9 @@ impl ServeEvent {
             S::WaiterLeft { peer, cause } => Record::new("serve.waiter_left")
                 .peer_address("peer", peer)
                 .code("cause", codes::waiter_left(*cause)),
+            S::WaiterRelinked { from, to } => Record::new("serve.waiter_relinked")
+                .peer_address("from", from)
+                .peer_address("to", to),
             S::SourcesServed {
                 peer,
                 file_hash,

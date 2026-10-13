@@ -174,7 +174,10 @@ impl<T: ServerUdpTransport> DiscoveryChannel for GlobalDiscoveryChannel<T> {
             let askable: Vec<SourceLookupTarget> = targets
                 .iter()
                 .filter(|target| {
-                    u32::try_from(target.file_size()).is_ok() || flags.supports_large_files()
+                    // aMule `SendNextUDPPacket` skips an `IsLargeFile` file
+                    // toward a server without large-file UDP support.
+                    !rmule_primitives::is_large_file(target.file_size())
+                        || flags.supports_large_files()
                 })
                 .copied()
                 .collect();
@@ -543,8 +546,10 @@ mod tests {
         );
 
         let small = SourceLookupTarget::new(FileHash::from_bytes([0x11; 16]), 4096);
-        let large =
-            SourceLookupTarget::new(FileHash::from_bytes([0x22; 16]), 5 * 1024 * 1024 * 1024);
+        // Large is aMule's `IsLargeFile`: one byte past OLD_MAX_FILE_SIZE is
+        // large though a `u32` still holds it.
+        let large_size = rmule_primitives::OLD_MAX_FILE_SIZE + 1;
+        let large = SourceLookupTarget::new(FileHash::from_bytes([0x22; 16]), large_size);
         channel.ask(&[small, large]).await;
 
         let sends = transport.sends.lock().unwrap().clone();
@@ -559,7 +564,7 @@ mod tests {
         expected.extend_from_slice(&4096_u32.to_le_bytes());
         expected.extend_from_slice(&[0x22; 16]);
         expected.extend_from_slice(&0_u32.to_le_bytes());
-        expected.extend_from_slice(&(5_u64 * 1024 * 1024 * 1024).to_le_bytes());
+        expected.extend_from_slice(&large_size.to_le_bytes());
         assert_eq!(datagram, &expected);
 
         // The capability-less server stays on bare-hash 0x9A, without the

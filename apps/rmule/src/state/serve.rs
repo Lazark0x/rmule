@@ -107,22 +107,26 @@ fn seed_shared(state: &mut UiState, history: &FileHistory) {
         .collect();
 }
 
-/// A row's place in the State column's order: offered first, then the
-/// withheld ones from the likeliest to come back by itself (a moved file, a
-/// changed one being hashed again) to the least (an unplugged volume, a file
-/// that will not open, a folder the guards refuse). A rank, never the order
-/// of the words.
+/// A row's place in the State column's order: offered first, then a
+/// Partial Share ([`PARTIAL_RANK`]), then the withheld ones from the
+/// likeliest to come back by itself (a moved file, a changed one being hashed
+/// again) to the least (an unplugged volume, a file that will not open, a
+/// folder the guards refuse). A rank, never the order of the words.
 #[must_use]
 pub const fn withheld_rank(withheld: Option<WithheldReason>) -> u64 {
     match withheld {
         None => 0,
-        Some(WithheldReason::Missing) => 1,
-        Some(WithheldReason::Changed) => 2,
-        Some(WithheldReason::FolderMissing) => 3,
-        Some(WithheldReason::Unreadable(_)) => 4,
-        Some(WithheldReason::Refused) => 5,
+        Some(WithheldReason::Missing) => 2,
+        Some(WithheldReason::Changed) => 3,
+        Some(WithheldReason::FolderMissing) => 4,
+        Some(WithheldReason::Unreadable(_)) => 5,
+        Some(WithheldReason::Refused) => 6,
     }
 }
+
+/// A Partial Share's place in the State column's order: after the offered
+/// rows, before the withheld ones.
+pub const PARTIAL_RANK: u64 = 1;
 
 /// One upload-side peer's UI facts (spec §3.5 upload-peers pane). Per-peer
 /// speed is a level joined at render; the rest arrives on the grant and queue
@@ -289,6 +293,17 @@ pub(super) fn fold(state: &mut UiState, event: ServeEvent) -> bool {
             }
             note(state, words::OFFERED)
         }
+        E::PartialOffered { file_hash } => {
+            state.partial_shares.insert(file_hash);
+            note(state, words::PARTIAL_OFFERED)
+        }
+        E::PartialWithdrawn { file_hash, cause } => {
+            state.partial_shares.remove(&file_hash);
+            note(state, words::partial_withdrawn(cause))
+        }
+        // Each restored download's check at start: the log line says what it
+        // read, and `PartialOffered` says when it is offered.
+        E::OfferChecked { .. } => false,
         E::SharesUnwatched => note(state, words::UNWATCHED),
         E::ShareRejected { reason } => note(state, words::share_rejected(reason)),
         E::ServingStarted { listen_addr } => {
@@ -359,6 +374,16 @@ pub(super) fn fold(state: &mut UiState, event: ServeEvent) -> bool {
         // cancelled): the same row removal as a release, since it held only
         // a queue rank.
         E::WaiterLeft { peer, .. } => release_peer(state, peer),
+        // The same row on the waiter's new link: its place did not move.
+        E::WaiterRelinked { from, to } => match state.upload_peers.remove(&from) {
+            Some(row) => {
+                state
+                    .upload_peers
+                    .insert(to, UploadPeer { peer: to, ..row });
+                true
+            }
+            None => false,
+        },
         // A source-exchange answer is not an upload request: the Requests
         // column reads core's per-file counter instead, so this edge's whole
         // footprint is its log line.
@@ -390,6 +415,17 @@ fn release_peer(state: &mut UiState, peer: PeerEndpoint) -> bool {
 }
 
 impl UiState {
+    /// The download a Partial Share of `file_hash` belongs to: the one
+    /// whose name and size the Shared Files table lists it under. `None` for
+    /// a hash core offers in part for no download this state knows.
+    #[must_use]
+    pub fn partial_download(&self, file_hash: FileHash) -> Option<&super::DownloadRow> {
+        self.partial_shares.contains(&file_hash).then_some(())?;
+        self.downloads
+            .values()
+            .find(|row| row.file_hash == Some(file_hash))
+    }
+
     /// Peers holding an upload slot for `file_hash` right now — the Shared
     /// Files table's Uploading column, read off the upload peers so a grant
     /// that lands before the file's row does is still counted.

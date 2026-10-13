@@ -21,7 +21,6 @@ use super::after_meeting::{refusal_of, tap_of};
 use super::kno_dials::kno_amule;
 use super::transfer::add_download;
 use super::{EMULEQT_HASHED, EMULEQT_READY};
-use crate::docker::RunContainer;
 use crate::flow::bench::{Bench, CAPTURE_MOUNT};
 use crate::flow::evidence::write_pcap_all_matches;
 use crate::flow::gate::wait_for_container_log;
@@ -32,6 +31,7 @@ use crate::flow::nat::dialect::verdict::{Claim, Evidence};
 use crate::flow::nat::dialect::{BODY_PEER_TCP_PORT, ED2KSRV_TCP_PORT};
 use crate::flow::nat::synthetic::write_hashed;
 use crate::flow::pcap;
+use crate::flow::pinned_image::EMULEQT;
 use rmule_peer::HelloRefusalCode;
 
 /// The fresh emule-qt's host slot, on the one /24 this flow's network holds:
@@ -72,9 +72,11 @@ pub(super) fn kno_dials_emuleqt(
     let file = write_hashed(&dir, FRESH_QT_BYTES)?;
     let qt = container_name(options.layout, FRESH_QT_ROLE)?;
     let qt_v4 = stage.v4(FRESH_QT_HOST).to_owned();
+    let pinned = EMULEQT.check(&bench.docker, options.emuleqt_image)?;
     bench.start_extra(
         &qt,
-        RunContainer::new(options.emuleqt_image)
+        pinned
+            .container()
             .detach()
             .name(&qt)
             .network(&stage.network)

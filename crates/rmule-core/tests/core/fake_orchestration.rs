@@ -12,8 +12,8 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, ED2K_PART_SIZE, Ed2kFileLink, PeerCrypt, PeerEndpoint, PeerSource, ServerEndpoint,
-    SourceCryptOptions, SourceLookupTarget, SourceSighting, UserHash,
+    ClientId, ED2K_PART_SIZE, Ed2kFileLink, Informant, PeerCrypt, PeerEndpoint, PeerSource,
+    ServerEndpoint, SourceCryptOptions, SourceLookupTarget, SourceSighting, UserHash,
 };
 use rmule_testkit::file_link;
 use rmule_testkit::file_link_without_part_hash_set;
@@ -53,7 +53,10 @@ async fn fake_adapters_drive_happy_path_download_events() {
     let source = ScriptedSourceLookup {
         outcome: SourceLookupOutcome {
             client_id,
-            sources: vec![SourceSighting::plain(low), SourceSighting::plain(high)],
+            sources: vec![
+                SourceSighting::plain(low, Informant::Own),
+                SourceSighting::plain(high, Informant::Own),
+            ],
         },
     };
     let transfer = ScriptedPeerTransfer {
@@ -131,7 +134,7 @@ async fn streamed_worker_fact_verifies_first_part_before_worker_finishes() {
     let source = ScriptedSourceLookup {
         outcome: SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![SourceSighting::plain(high)],
+            sources: vec![SourceSighting::plain(high, Informant::Own)],
         },
     };
     let transfer = FirstPartThenBlocked {
@@ -287,17 +290,23 @@ impl PeerTransferService for ScriptedPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         assert_eq!(peer, self.expected_peer);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let outcome = self.outcome.clone();
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             let mut hashes_sent = false;
             while let Some(command) = command_rx.recv().await {
                 match command {
+                    PeerWorkerCommand::AskSlot => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::RequestHashSet => {}
                     PeerWorkerCommand::RequestPart {
                         plan,
                         resume_offset,
@@ -338,16 +347,22 @@ impl PeerTransferService for FirstPartThenBlocked {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let part_hashes = self.part_hashes.clone();
         let first_part = self.first_part.clone();
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
                 match command {
+                    PeerWorkerCommand::AskSlot => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::RequestHashSet => {}
                     PeerWorkerCommand::RequestPart {
                         plan,
                         resume_offset,
@@ -381,13 +396,18 @@ impl PeerTransferService for FirstPartThenBlocked {
 
 /// Spawn a worker that connects, streams `part` on request, and stops — the
 /// minimal delivery a one-part download needs to complete.
-fn spawn_delivering_worker(peer: PeerEndpoint, part: DownloadedPart) -> PeerWorker {
+fn spawn_delivering_worker(peer: PeerEndpoint, file_size: u64, part: DownloadedPart) -> PeerWorker {
     let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
     let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
     tokio::spawn(async move {
         let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+        let _ = event_tx.send(rmule_testkit::every_part(file_size)).await;
         while let Some(command) = command_rx.recv().await {
             match command {
+                PeerWorkerCommand::AskSlot => {
+                    let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                }
+                PeerWorkerCommand::RequestHashSet => {}
                 PeerWorkerCommand::RequestPart {
                     plan,
                     resume_offset,
@@ -418,23 +438,23 @@ impl PeerTransferService for CapturePeerCrypt {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
         // The runner always dials through `start_download_worker`; reaching
         // the plaintext base means the target was dropped en route.
         *self.captured.lock().unwrap() = Some(None);
-        Ok(spawn_delivering_worker(peer, self.part.clone()))
+        Ok(spawn_delivering_worker(peer, file.size, self.part.clone()))
     }
 
     async fn start_download_worker(
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
         brief: rmule_core::WorkerBrief,
     ) -> Result<PeerWorker, DownloadFailure> {
         *self.captured.lock().unwrap() = Some(Some(brief.peer_crypt));
-        Ok(spawn_delivering_worker(peer, self.part.clone()))
+        Ok(spawn_delivering_worker(peer, file.size, self.part.clone()))
     }
 }
 
@@ -452,6 +472,7 @@ async fn server_lookup_crypt_capable_source_is_obfuscate_dialed() {
         PeerSource::new(client_id, 4663),
         Some(dial_hash),
         Some(SourceCryptOptions::from_byte(0x01)),
+        Informant::Own,
     );
     let source = ScriptedSourceLookup {
         outcome: SourceLookupOutcome {

@@ -49,6 +49,10 @@ pub(super) struct DirectoryList {
     pub(super) turn: HashTurn,
     /// What the guards refuse beyond the filesystem's own facts.
     pub(super) guards: ShareGuards,
+    /// The Temp Directory (ADR-0115): where the next download placed keeps
+    /// its part file, and what no entry may be or hold. `None` on a core
+    /// given neither the setting nor a data directory.
+    pub(super) temp_dir: Option<PathBuf>,
 }
 
 /// One list entry: the directory its scan walks, its canonical form, what
@@ -60,6 +64,12 @@ struct Entry {
 }
 
 impl DirectoryList {
+    /// Judge `dir` by the guards on what a directory is, where its path
+    /// leads now ([`guard_in_place`]), the Temp Directory among them.
+    pub(super) fn guard_in_place(&self, dir: &Path) -> Result<(), DirectoryRefusal> {
+        guard_in_place(dir, &self.guards, self.temp_dir.as_deref())
+    }
+
     /// The download directory, unless the guards refuse it.
     fn shared_download_dir(&self) -> Option<&PathBuf> {
         self.download_dir
@@ -166,7 +176,7 @@ where
             }
         }
         for dir in self.directories.added.clone() {
-            if let Err(reason) = guard_in_place(&dir, &self.directories.guards) {
+            if let Err(reason) = self.directories.guard_in_place(&dir) {
                 self.directories
                     .added_refused
                     .insert(dir.clone(), reason.clone());
@@ -184,12 +194,14 @@ where
     /// their folder missing. Every row withheld as refused that no refused
     /// entry holds now — the download directory moved, or a passing entry
     /// covers it — is looked at by the Registry Check at once, since no look
-    /// touches it while it is refused.
+    /// touches it while it is refused. A Served Download whose destination
+    /// lies under a refused entry is held back the same way (ADR-0113).
     async fn match_refusals(&mut self) {
         let rows = match self.wiring.registry.list() {
             Ok(rows) => rows,
             Err(error) => {
                 tracing::warn!(%error, "rows under a refused directory not withheld; none is offered again while it is refused");
+                self.match_served_refusals().await;
                 return;
             }
         };
@@ -208,6 +220,7 @@ where
                     .tell(CheckInput::RefusalLifted(row.file_hash));
             }
         }
+        self.match_served_refusals().await;
     }
 
     /// The root of `dir`'s scan appeared after missing: judge it by the
@@ -222,7 +235,7 @@ where
                 self.refused_download_dir(dir).await;
                 false
             }
-            Some(ScanRole::Added) => match guard_in_place(dir, &self.directories.guards) {
+            Some(ScanRole::Added) => match self.directories.guard_in_place(dir) {
                 Ok(()) => true,
                 Err(reason) => {
                     self.refused_added(dir.to_path_buf(), reason).await;
@@ -251,7 +264,7 @@ where
     /// Name `dir` entry 0 and judge it by the guards, saying so when they
     /// refuse it; `true` when it passes.
     async fn name_download_dir(&mut self, dir: PathBuf) -> bool {
-        let refused = guard_in_place(&dir, &self.directories.guards).err();
+        let refused = self.directories.guard_in_place(&dir).err();
         self.directories.download_dir = Some(dir.clone());
         self.directories.download_refused.clone_from(&refused);
         let Some(reason) = refused else {
@@ -289,6 +302,58 @@ where
             .any(|(entry, by)| entry.role == ScanRole::DownloadDirectory && by.is_some());
         if !covered {
             self.start_scan(dir, ScanRole::DownloadDirectory).await;
+        }
+        self.match_refusals().await;
+        self.reconcile().await;
+        self.install_directories();
+    }
+
+    /// The Temp Directory moved (the operator's set on a running core,
+    /// ADR-0115): every entry is judged again against it, as at attach, so
+    /// one refused for the old Temp Directory is scanned once it passes, and
+    /// an add waiting on its confirm that now is, holds or lies inside the
+    /// new one is refused, its scan stopped and nothing stored.
+    pub(super) async fn temp_directory_moved(&mut self, dir: Option<PathBuf>) {
+        self.directories.temp_dir = dir;
+        let adding: Vec<PathBuf> = self
+            .activities
+            .scans()
+            .filter(|scan| matches!(scan.role, ScanRole::Adding { .. }))
+            .map(|scan| scan.dir.clone())
+            .collect();
+        for dir in adding {
+            if let Err(reason) = self.directories.guard_in_place(&dir) {
+                self.stop_scan(&dir).await;
+                self.refuse(dir, reason).await;
+            }
+        }
+        for dir in self.directories.added.clone() {
+            match self.directories.guard_in_place(&dir) {
+                Ok(()) => {
+                    self.directories.added_refused.remove(&dir);
+                }
+                Err(reason) => {
+                    let was = self
+                        .directories
+                        .added_refused
+                        .insert(dir.clone(), reason.clone());
+                    if was.as_ref() != Some(&reason) {
+                        self.stop_scan(&dir).await;
+                        self.refuse(dir, reason).await;
+                    }
+                }
+            }
+        }
+        if let Some(download) = self.directories.download_dir.clone() {
+            let refused = self.directories.guard_in_place(&download).err();
+            if refused != self.directories.download_refused {
+                if refused.is_some() {
+                    self.name_download_dir(download.clone()).await;
+                    self.refused_download_dir(&download).await;
+                } else {
+                    self.directories.download_refused = None;
+                }
+            }
         }
         self.match_refusals().await;
         self.reconcile().await;
@@ -343,7 +408,12 @@ where
                     .map(|scan| scan.dir.clone()),
             )
             .collect();
-        let dir = match admit(&path, &listed, &self.directories.guards) {
+        let dir = match admit(
+            &path,
+            &listed,
+            &self.directories.guards,
+            self.directories.temp_dir.as_deref(),
+        ) {
             Ok(dir) => dir,
             Err(reason) => return self.refuse(path, reason).await,
         };

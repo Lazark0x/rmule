@@ -2,7 +2,8 @@
 //! concurrency, cadences) and the verification stance a download's hash
 //! authority grants it. The operator's preferences are not here: they are
 //! **Core Settings** (ADR-0069). Every default here is aMule's, so a stock
-//! session behaves like a stock aMule.
+//! session behaves like a stock aMule — but for the streaming window, which
+//! aMule does not have (ADR-0112).
 
 use std::time::Duration;
 
@@ -37,8 +38,8 @@ pub const DEFAULT_SLOT_WAIT_TIMEOUT: Duration = Duration::from_secs(180);
 /// The engineering knobs one session runs against, fixed for the life of the
 /// [`Core`] it is built with — timeouts, concurrency, cadences. What the
 /// operator chooses is [`CoreSettings`](crate::CoreSettings), not this. Every
-/// default matches stock aMule, so a `CoreConfig` straight from `Default`
-/// behaves the way aMule would.
+/// default but [`CoreConfig::streaming_window_parts`] matches stock aMule, so
+/// a `CoreConfig` straight from `Default` behaves the way aMule would.
 ///
 /// [`Core`]: crate::Core
 #[derive(Clone, Debug)]
@@ -47,6 +48,12 @@ pub struct CoreConfig {
     /// connecting plus outstanding callbacks. `0` is read as `1`; see
     /// [`CoreConfig::effective_peer_concurrency_per_download`].
     pub peer_concurrency_per_download: usize,
+    /// How many parts from the lowest unverified one a **Streaming Priority**
+    /// download fetches in order before ranking the rest by rarity — the
+    /// **Streaming Window** (ADR-0112 §5). `0` is no window. aMule has none;
+    /// the default `8` is the width the bench against stock seeds measured to
+    /// grow the contiguous prefix soonest.
+    pub streaming_window_parts: u32,
     /// How long a peer worker keeps waiting for `OP_ACCEPTUPLOADREQ` after
     /// requesting a part before it gives up the slot and is retired.
     pub slot_wait_timeout: Duration,
@@ -232,6 +239,7 @@ impl Default for CoreConfig {
     fn default() -> Self {
         Self {
             peer_concurrency_per_download: 2,
+            streaming_window_parts: 8,
             slot_wait_timeout: DEFAULT_SLOT_WAIT_TIMEOUT,
             upload_slot_budget: 4,
             max_upload_queue_len: 64,

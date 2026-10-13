@@ -20,7 +20,7 @@
 │UDP: no status answer yet                                                     │
 │Health: dead since 45m ago — 7 tries in a row went unanswered (limit 3)       │
 │Shares: announced at its next login, as to every server                       │
-└──────────────────────────────────────────────────────────────────────────────┘
+└─────────────────────────────────────────────────────────────────────── 2 / 4 ┘
 ┌ Log (0) ─────────────────────────────┐┌ Kad ──────────────────────── K start ┐
 │no core events yet                    ││● Kad: off                            │
 │                                      ││Joined    — (node not started)        │

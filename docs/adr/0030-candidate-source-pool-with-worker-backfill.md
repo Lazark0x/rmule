@@ -26,8 +26,9 @@ workers from it; a worker's identification is an event, not a blocking call.
   own task dials and handshakes, then emits `PeerWorkerEvent::Connected` when the peer
   is usable, or `DialEnded` naming the cause followed by `Disconnected` (or
   `CryptIncompatible`) when it is not.
-- Core assigns a worker its first part on `Connected`, not at spawn, so a failed
-  handshake strands no part. A failed handshake is an ordinary worker failure and
+- Core assigns a worker its first part when its peer answers the file probe
+  (`PartsAdvertised`, ADR-0112), never at spawn or on `Connected`, so neither a failed
+  handshake nor a part the peer lacks strands a part. A failed handshake is an ordinary worker failure and
   takes the same retire-and-backfill path as a mid-download disconnect.
 - The download fails with `NoUsableSources` only when the pool is empty and no worker
   is active, connecting or awaiting a callback.
@@ -45,8 +46,8 @@ workers from it; a worker's identification is an event, not a blocking call.
   instead of depending on the first few entries being live.
 - `peer_concurrency_per_download` stays the one concurrency knob and bounds socket
   use.
-- In-process fakes return a worker at once and must emit `Connected` before a part
-  is assigned, the same contract the runtime adapter keeps.
+- In-process fakes return a worker at once and must emit `Connected` and then
+  `PartsAdvertised` before a part is assigned, the same contract the runtime adapter keeps.
 
 ## Considered options
 

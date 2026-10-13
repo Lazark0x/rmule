@@ -76,6 +76,9 @@ pub enum Action {
     /// `K` in Networks while Kad is off: the app asks its Kad join to
     /// start a node now, seeds and all, without a server connect.
     StartKad,
+    /// The Transfers row menu's *Preview*, or `v` (ADR-0114): the app reads
+    /// the download as the menu did and hands its file to the player lane.
+    Preview(rmule_core::DownloadId),
     /// `q` at the top level.
     Quit,
 }

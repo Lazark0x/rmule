@@ -4,13 +4,13 @@
 
 use rmule_core::file_history::HistoryPart;
 use rmule_core::{
-    ServeEvent, ServeStartFailure, ServeStopReason, ShareRejectReason, SharesWithheld,
+    PartialEnd, ServeEvent, ServeStartFailure, ServeStopReason, ShareRejectReason, SharesWithheld,
     WaiterLeaveCause, WithheldReason,
 };
 
 use super::Sentence;
 use super::os::kind_words;
-use super::units::address;
+use super::units::{address, human_size};
 
 /// Why a row is withheld: the Shared Files table's State cell.
 #[must_use]
@@ -23,6 +23,10 @@ pub const fn withheld_words(reason: WithheldReason) -> &'static str {
         WithheldReason::Refused => "folder refused",
     }
 }
+
+/// A download offering the parts it verified: the Shared Files table's
+/// State cell.
+pub const PARTIAL: &str = "partial";
 
 /// A withhold edge, in the status feed and the log.
 #[must_use]
@@ -65,6 +69,39 @@ pub fn history_unread(parts: &[HistoryPart]) -> Sentence {
 
 /// Offered again.
 pub const OFFERED: Sentence = Sentence::fixed("a shared file is readable again and offered again");
+
+/// A download began to offer the parts it verified.
+pub const PARTIAL_OFFERED: Sentence =
+    Sentence::fixed("a download offers the parts it has verified");
+
+/// A restarted download's Offer Check read its verified parts again before
+/// it may be offered: how much it read, and how long that took.
+#[must_use]
+pub fn offer_checked(bytes_read: u64, took: std::time::Duration) -> Sentence {
+    Sentence::owned(format!(
+        "a restarted download's verified parts were read again before it is offered: {} in {} ms",
+        human_size(bytes_read),
+        took.as_millis()
+    ))
+}
+
+/// A download stopped offering its parts, and why.
+#[must_use]
+pub const fn partial_withdrawn(cause: PartialEnd) -> Sentence {
+    Sentence::fixed(match cause {
+        PartialEnd::Completed => "a download finished and is shared whole",
+        PartialEnd::Ended => "a download no longer offers its parts: it ended",
+        PartialEnd::HeldBack => {
+            "a download no longer offers its parts: its folder leads where rmule will not share"
+        }
+        PartialEnd::Changed => {
+            "a download no longer offers its parts: its part file changed on disk"
+        }
+        PartialEnd::Unreadable => {
+            "a download no longer offers its parts: its part file cannot be read"
+        }
+    })
+}
 
 /// The folder watch's degrade.
 pub const UNWATCHED: Sentence = Sentence::fixed(
@@ -171,6 +208,11 @@ pub fn log_line(event: &ServeEvent) -> Sentence {
         Sv::FileUnshared { .. } => FILE_UNSHARED,
         Sv::FileWithheld { reason, .. } => withheld(*reason),
         Sv::FileOffered { .. } => OFFERED,
+        Sv::PartialOffered { .. } => PARTIAL_OFFERED,
+        Sv::PartialWithdrawn { cause, .. } => partial_withdrawn(*cause),
+        Sv::OfferChecked {
+            bytes_read, took, ..
+        } => offer_checked(*bytes_read, *took),
         Sv::SharesUnwatched => UNWATCHED,
         Sv::ShareRejected { reason } => share_rejected(*reason),
         Sv::ServingStarted { listen_addr } => serving_started(listen_addr.port()),
@@ -214,6 +256,11 @@ pub fn log_line(event: &ServeEvent) -> Sentence {
             };
             Sentence::owned(format!("{} {how}", address(*peer)))
         }
+        Sv::WaiterRelinked { from, to } => Sentence::owned(format!(
+            "upload peer {} came back as {} and keeps its place",
+            address(*from),
+            address(*to)
+        )),
         Sv::SourcesServed { peer, count, .. } => {
             Sentence::owned(format!("served {count} sources to {}", address(*peer)))
         }

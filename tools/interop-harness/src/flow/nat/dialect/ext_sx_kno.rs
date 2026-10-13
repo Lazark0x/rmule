@@ -33,7 +33,6 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::docker::RunContainer;
 use crate::flow::bench::Bench;
 use crate::flow::gate::wait_for_container_log;
 use crate::flow::nat::dialect::BODY_PEER_TCP_PORT;
@@ -45,6 +44,7 @@ use crate::flow::nat::dialect::ext_sx::{HOLD_SECS, QUEUED_USER_HASH, SLOT_MARKER
 use crate::flow::nat::dialect::legs::{RMULE_USER_HASH, hello_leg};
 use crate::flow::nat::dialect::verdict::{Body, Claim, DriverRow, Evidence};
 use crate::flow::nat::synthetic::write_hashed;
+use crate::flow::pinned_image::AMULE_KNO;
 
 /// One part, as in `ipv6-extsx`: the part-count check then compares a
 /// one-slot status against a one-part file.
@@ -84,9 +84,11 @@ pub(super) fn start(
     let shared = write_hashed(&dir, SHARED_BYTES)?;
 
     let kno = format!("rmule-interop-v6kno-{suffix}");
+    let pinned = AMULE_KNO.check(&bench.docker, options.amule_kno_image)?;
     bench.start_extra(
         &kno,
-        RunContainer::new(options.amule_kno_image)
+        pinned
+            .container()
             .detach()
             .name(&kno)
             .network(&stage.network)
@@ -102,7 +104,7 @@ pub(super) fn start(
     stage.bodies.push(Body {
         name: "amule-kno".to_owned(),
         image: options.amule_kno_image.to_owned(),
-        pin: "kno/amule integration/network-parity ab483654".to_owned(),
+        pin: pinned.pin(),
         address_v4: stage.v4(HOST_AMULE_KNO).to_owned(),
         address_v6: stage.v6(HOST_AMULE_KNO).to_owned(),
     });

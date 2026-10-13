@@ -27,13 +27,15 @@ fn run_ipv6_dialect_flow(flow: &str) -> PathBuf {
     let emuleqt = repo_root.join("tools/interop-harness/images/emuleqt");
     let amule = repo_root.join("tools/interop-harness/images/amule");
     let capture = repo_root.join("tools/interop-harness/images/capture");
-    let (repo_root, dockerfile, amule_kno, emuleqt, amule, capture) = (
+    let natgw = repo_root.join("tools/interop-harness/images/natgw");
+    let (repo_root, dockerfile, amule_kno, emuleqt, amule, capture, natgw) = (
         repo_root.to_str().unwrap().to_string(),
         dockerfile.to_str().unwrap().to_string(),
         amule_kno.to_str().unwrap().to_string(),
         emuleqt.to_str().unwrap().to_string(),
         amule.to_str().unwrap().to_string(),
         capture.to_str().unwrap().to_string(),
+        natgw.to_str().unwrap().to_string(),
     );
     let mut args = vec![
         flow,
@@ -48,6 +50,8 @@ fn run_ipv6_dialect_flow(flow: &str) -> PathBuf {
         &amule,
         "--capture-build-context",
         &capture,
+        "--natgw-build-context",
+        &natgw,
         "--rmule-tools-dockerfile",
         &dockerfile,
         "--rmule-tools-build-context",

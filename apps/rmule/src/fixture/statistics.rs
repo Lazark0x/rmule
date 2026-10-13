@@ -25,6 +25,7 @@ pub(crate) fn busy(base: Instant) -> UiState {
                 download_id: DownloadId::from_u64(n),
                 file_hash: file_hash(n as u8),
                 metadata: DownloadMetadata::unnamed(1024),
+                file_path: crate::fixture::part_file(),
             })),
             base,
         );

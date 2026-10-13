@@ -105,4 +105,14 @@ pub(crate) struct SharedRuntime<S, P> {
     /// The **Name Resolver** a link's named sources are resolved through
     /// (ADR-0089's amendment), off the actor and bounded.
     pub(crate) resolver: crate::name_resolver::SharedNameResolver,
+    /// The completion move's rename and delete (ADR-0115): the operating
+    /// system's, or a test's.
+    pub(crate) completion_fs: Arc<dyn crate::download::CompletionFs>,
+    /// The core's one **Completion Copy** turn (ADR-0115): copies across
+    /// volumes run one at a time, as aMule's completion tasks do.
+    pub(crate) copy_turn: Arc<tokio::sync::Semaphore>,
+    /// Where a run reports its finished file in place to the core actor,
+    /// which writes the registry row and ends the Served Download in one
+    /// step (ADR-0115, step 6).
+    pub(crate) in_place_tx: mpsc::Sender<crate::download::FinalFileInPlace>,
 }

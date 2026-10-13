@@ -91,7 +91,7 @@ naming the RFC 4787 mapping and filtering behaviour it claims (ADR-0092). A nega
 verdict (a failed punch, a refused mapping) also needs an RFC 5780 reflector probe in
 the same run. The reflector proves the bench, never a counterparty.
 
-**Two row classes cover surfaces with thin external evidence:**
+**Three row classes cover surfaces with thin external evidence:**
 
 - **`single-oracle`**: counterparty bytes exist from exactly one implementation. The row
   is captured and flagged, never proven at parity, and upgrades when a second pinned
@@ -99,6 +99,12 @@ the same run. The reflector proves the bench, never a counterparty.
 - **`rmule-only`**: no external bytes exist because both ends are rmule. The row is
   covered by the deterministic tier plus bench observation behind a proven NAT, scored
   exercised and never captured, and upgrades when a third party adopts the pairing.
+- **`unprovable`**: the counterparty behaviour lives only in a protocol generation no
+  pinned body speaks (Kad below v7, Kad1), so no counterparty can emit it toward rmule or
+  answer rmule's form of it. rmule records a deliberate divergence in the surface's ADR
+  instead of code it could never prove; the row is `exempt`, with `—` evidence and a
+  Note naming that ADR, and the deterministic tier pins what rmule does in its place. It
+  reopens only when a pinned body produces the behaviour.
 
 ## Consequences
 

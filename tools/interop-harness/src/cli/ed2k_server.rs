@@ -55,6 +55,11 @@ pub(crate) struct BenchSmokeArgs {
     /// login a running core sends.
     #[arg(long)]
     pub(crate) udp_ports_advert: Option<u16>,
+    /// Ride `CT_MOD_IP_V6` (`0xAE`) with its `SRVCAP_IPV6` bit on the
+    /// probe's login, naming this address. Beside `--udp-ports-advert` the
+    /// login carries six tags, the shape a dual-stack core sends.
+    #[arg(long)]
+    pub(crate) advertise_ipv6: Option<std::net::Ipv6Addr>,
 }
 
 #[derive(Debug, Serialize)]
@@ -72,6 +77,7 @@ pub(crate) struct BenchSmokeResolvedConfig {
     pub(crate) server_host_port: u16,
     pub(crate) server_env: Vec<String>,
     pub(crate) udp_ports_advert: Option<u16>,
+    pub(crate) advertise_ipv6: Option<std::net::Ipv6Addr>,
 }
 
 /// The eserver + one aMule shape every skeleton leg, the server cycle, the
@@ -243,6 +249,7 @@ pub(crate) fn bench_smoke(args: BenchSmokeArgs) -> Result<()> {
         server_host_port: args.eserver.server_host_port,
         server_env: args.eserver.server_env.clone(),
         udp_ports_advert: args.udp_ports_advert,
+        advertise_ipv6: args.advertise_ipv6,
     };
     write_resolved_config(&run_dir, &config)?;
     println!("run_dir={}", run_dir.display());
@@ -259,6 +266,7 @@ pub(crate) fn bench_smoke(args: BenchSmokeArgs) -> Result<()> {
         server_env: &args.eserver.server_env,
         rmule_client_container: &rmule_client_container,
         udp_ports_advert: args.udp_ports_advert,
+        advertise_ipv6: args.advertise_ipv6,
     })
 }
 

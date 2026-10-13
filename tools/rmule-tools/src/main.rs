@@ -105,6 +105,7 @@ async fn main() -> Result<()> {
                 DownloadCommand::Resume(args) => download::resume(args).await?,
                 DownloadCommand::Pause(args) => download::pause(args)?,
                 DownloadCommand::Status(args) => download::status(args)?,
+                DownloadCommand::Reopen(args) => download::reopen(args).await?,
             },
             Ed2kCommand::Packet { command } => match command {
                 PacketCommand::Inspect { path } => ed2k::inspect_packet(&path)?,

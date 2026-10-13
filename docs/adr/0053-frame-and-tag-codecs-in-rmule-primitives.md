@@ -30,6 +30,19 @@ holds such a packed answer from aMule.
 **Frame and tag codecs stay in `rmule-primitives`**, beside each other, with no separate
 codec crate. Kad keeps its own envelope and its own `0xE5` handling in `rmule-kad`.
 
+**A tag list steps past what the value model cannot hold.** `Tag::decode_or_step_prefix`
+reads one list entry: the tag when `TagValue` models its type, or nothing but the entry's
+width when the type is one eD2k defines and rmule never reads (`FLOAT32`, `BOOL`,
+`BOOLARRAY`, `BLOB`, `BSOB`, `STR17` to `STR22`) or the name is not UTF-8. aMule's and
+eMule's readers parse such a tag and ignore it. Only a truncated tag or a type byte eD2k
+does not define fails the message, because the next entry's offset is then unknowable.
+Every tolerant tag-list reader walks with it (the peer hello and every Kad tag loop), so
+the rule cannot drift between surfaces. `TAG_KADAICHHASHRESULT`, the `BSOB` an
+eMule-family storer writes into keyword answers, is stepped past and not kept: rmule
+speaks Kad v8, so no publisher sends it the v9 `TAG_KADAICHHASHPUB` a storer would
+re-serve (emule-qt `src/core/kademlia/KadSearch.cpp:143-144`), and nothing in rmule reads
+an AICH root from a keyword result.
+
 **One packed-frame mechanism, all policy per surface.** `rmule_primitives::packed_frame`
 provides:
 

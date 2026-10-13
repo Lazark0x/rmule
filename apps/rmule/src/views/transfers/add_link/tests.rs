@@ -200,3 +200,27 @@ fn golden_transfers_add_link_refused() {
         view.draw(frame, area, &state, &Theme::default_dark(), now);
     });
 }
+
+/// A one-line frame has no room for the key legend; the page keys reach it
+/// and typing pulls the field back.
+#[test]
+fn golden_transfers_add_link_scrolls_in_a_short_frame() {
+    let state = with_session();
+    let mut view = TransfersView::new();
+    view.handle_key(press(KeyCode::Char('L')), &state);
+    let shown = |view: &mut TransfersView| {
+        crate::golden::render_to_lines(70, 4, |frame| {
+            let area = frame.area();
+            view.draw(frame, area, &state, &Theme::default_dark(), Instant::now());
+        })
+    };
+    assert_golden("transfers_add_link_short", 70, 4, |frame| {
+        let area = frame.area();
+        view.draw(frame, area, &state, &Theme::default_dark(), Instant::now());
+    });
+    assert!(!shown(&mut view).contains("cancel"));
+    view.handle_key(press(KeyCode::End), &state);
+    assert!(shown(&mut view).contains("cancel"));
+    typed(&mut view, &state, "e");
+    assert!(shown(&mut view).contains("Link"), "{}", shown(&mut view));
+}

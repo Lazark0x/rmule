@@ -296,6 +296,17 @@ impl DurableAppConfig {
         self.set_value(preference.key(), value)
     }
 
+    /// Remove what `preference` holds, so it reads unset again.
+    pub(crate) fn clear_preference(&self, preference: Preference) -> Result<(), CoreError> {
+        self.store.write::<_, CoreError>(|txn| {
+            txn.open_table(PREFERENCES)
+                .map_err(StoreError::from)?
+                .remove(preference.key())
+                .map_err(StoreError::from)?;
+            Ok(())
+        })
+    }
+
     /// Replace the advertised nickname. Mints the identity first when none
     /// exists, so the edit can never land on a row that is not there.
     pub(crate) fn set_nickname(&self, nickname: &Ed2kText) -> Result<(), CoreError> {
@@ -317,14 +328,14 @@ impl DurableAppConfig {
         KAD_IDENTITY_SINGLETON.edit(&self.store, |record| record.udp_port = port)
     }
 
-    /// Persist the download directory. Fails with
-    /// [`CoreError::Repository`] on a path that is not valid UTF-8, since the
-    /// preferences column is text.
-    pub(crate) fn set_download_dir(&self, dir: &Path) -> Result<(), CoreError> {
+    /// Persist a directory — the download directory or the Temp Directory —
+    /// under `preference`. Fails with [`CoreError::Repository`] on a path
+    /// that is not valid UTF-8, since the preferences column is text.
+    pub(crate) fn set_dir(&self, preference: Preference, dir: &Path) -> Result<(), CoreError> {
         let value = dir
             .to_str()
-            .ok_or_else(|| CoreError::Repository("download dir is not valid UTF-8".to_owned()))?;
-        self.set_preference(Preference::DownloadDir, value)
+            .ok_or_else(|| CoreError::Repository("directory is not valid UTF-8".to_owned()))?;
+        self.set_preference(preference, value)
     }
 
     /// Read the decimal `u32` stored under `preference`, or mint one from OS

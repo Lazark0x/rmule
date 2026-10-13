@@ -7,7 +7,6 @@
 //! pinned by `captured_source_result`.
 
 use rmule_kad::KadNodeStart;
-use std::net::Ipv4Addr;
 
 use rmule_kad::{
     Kad2Message, KadCommand, KadContact, KadEvent, KadId, KadInstant, KadNode, KadNodeConfig,
@@ -15,7 +14,7 @@ use rmule_kad::{
 };
 use rmule_primitives::{ClientId, FileHash, PeerSource, SourceLookupTarget};
 use rmule_testkit::drain_split;
-use rmule_testkit::kad_node::{diagnostics_of, hello_req_from, lookup_res_bytes};
+use rmule_testkit::kad_node::{diagnostics_of, hello_req_from, host_ip, lookup_res_bytes};
 
 /// The captured `0x34` pair (docs/reference/notes/kad-source-lookup.md): the
 /// synthetic file hash and the wire target aMule searched for it.
@@ -117,7 +116,7 @@ pub(super) fn id_near(target: KadId, d: u8) -> KadId {
 }
 
 pub(super) fn endpoint_for(d: u8) -> KadNodeEndpoint {
-    KadNodeEndpoint::new(Ipv4Addr::new(203, 0, 113, d), 4_000 + u16::from(d))
+    KadNodeEndpoint::new(host_ip(d), 4_000 + u16::from(d))
 }
 
 pub(super) fn contact_near(target: KadId, d: u8) -> KadContact {
@@ -439,7 +438,10 @@ fn solicited_fixture_search_res_projects_through_the_sealed_boundary() {
 
     assert_eq!(datagrams, vec![]);
     assert_eq!(events.len(), 1);
-    let KadEvent::SourcesFound { target, candidates } = &events[0] else {
+    let KadEvent::SourcesFound {
+        target, candidates, ..
+    } = &events[0]
+    else {
         panic!("expected SourcesFound, got {events:?}");
     };
     assert_eq!(*target, fixture_request().target());

@@ -91,6 +91,7 @@ fn queued(id: u64) -> CoreEvent {
         download_id: DownloadId::from_u64(id),
         file_hash: FileHash::from_bytes([0; 16]),
         metadata: rmule_core::DownloadMetadata::unnamed(0),
+        file_path: crate::fixture::part_file(),
     })
 }
 
@@ -122,6 +123,9 @@ fn set_byte_levels(snapshot: &Arc<Mutex<DiagnosticsSnapshot>>, received: u64, se
             known_sources: 0,
             dials_ended: 0,
             dial_ends: Default::default(),
+            allocated_bytes: None,
+            hole_verdict: None,
+            completion: None,
             reask_replies_ignored: 0,
         },
     );

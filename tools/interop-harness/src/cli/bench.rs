@@ -27,7 +27,8 @@ pub(crate) const DEFAULT_FILE_SIZE: u64 = 64 * 1024;
 /// The per-step readiness budget most flows run under.
 pub(crate) const DEFAULT_TIMEOUT_SECS: u64 = 300;
 /// The rust image rmule containers compile and run `rmule-tools` in.
-pub(crate) const DEFAULT_RMULE_CLIENT_IMAGE: &str = "rust:1.94.0-bookworm";
+pub(crate) const DEFAULT_RMULE_CLIENT_IMAGE: &str =
+    rmule_interop_harness::rmule::DRIVER_PREBUILD_IMAGE;
 /// The project-owned Lugdunum eserver image and its recipe.
 pub(crate) const DEFAULT_ESERVER_IMAGE: &str = "rmule/interop-eserver:local";
 pub(crate) const DEFAULT_ESERVER_BUILD_CONTEXT: &str = "tools/interop-harness/images/server";

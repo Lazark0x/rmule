@@ -148,6 +148,7 @@ fn a_restart_that_fails_again_says_so_on_the_status_bar() {
                 size: 30_000_000,
                 origin: DownloadMetadataOrigin::Link,
             },
+            file_path: crate::fixture::part_file(),
         })),
         now,
     );
@@ -228,6 +229,7 @@ fn wheel_scroll_reaches_the_focused_table_as_arrows() {
                     download_id: rmule_core::DownloadId::from_u64(n),
                     file_hash: rmule_primitives::FileHash::from_bytes([n as u8; 16]),
                     metadata: rmule_core::DownloadMetadata::unnamed(0),
+                    file_path: crate::fixture::part_file(),
                 },
             )),
             Instant::now(),

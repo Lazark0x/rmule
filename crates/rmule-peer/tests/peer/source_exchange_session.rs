@@ -15,7 +15,7 @@ use rmule_peer::{
 use rmule_primitives::session::drain;
 use rmule_primitives::{
     ClientId, CryptStance, Ed2kText, FileHash, Ipv4Endpoint, OutboundCrypt, Packet, PacketProtocol,
-    PeerSource, SourceCryptOptions, SourceSighting, Tag, TagName, TagValue, UserHash,
+    PeerSource, SourceClaim, SourceCryptOptions, SourceSighting, Tag, TagName, TagValue, UserHash,
 };
 use rmule_testkit::peer_session::{ctx, events, file_hash, last_write_bytes, peer_at, writes};
 
@@ -112,7 +112,7 @@ fn peer_claimed_nibble_resolves_a_v3_answer_a_nibble_of_one_would_reject() {
     let h = file_hash(0x10);
     let mut session = solicited_session(3, h);
     let id = u32::from_le_bytes([1, 2, 3, 4]); // High-ID 1.2.3.4, ed2k order
-    let source = SourceSighting::plain(PeerSource::new(ClientId::from_u32(id), 4662));
+    let source = SourceClaim::plain(PeerSource::new(ClientId::from_u32(id), 4662));
     let packet = AnswerSources {
         file_hash: h,
         sources: vec![SourceExchangeEntry::plain(source)],
@@ -176,7 +176,7 @@ fn crypt_capable_v4_source_keeps_its_obfuscation_dial_hash_after_the_filter() {
     let id = u32::from_le_bytes([9, 8, 7, 6]); // High-ID, ed2k order
     let hash = UserHash::from_bytes([0xAB; UserHash::BYTE_LEN]);
     let crypt = SourceCryptOptions::from_byte(0b001); // supports_crypt
-    let source = SourceSighting::new(
+    let source = SourceClaim::new(
         PeerSource::new(ClientId::from_u32(id), 4662),
         Some(hash),
         Some(crypt),
@@ -546,7 +546,7 @@ fn request_sources_frames_op_requestsources_and_answer_projects_sources_received
     let id = u32::from_le_bytes([1, 2, 3, 4]);
     let answer = AnswerSources {
         file_hash: h,
-        sources: vec![SourceExchangeEntry::plain(SourceSighting::plain(
+        sources: vec![SourceExchangeEntry::plain(SourceClaim::plain(
             PeerSource::new(ClientId::from_u32(id), 4662),
         ))],
     }
@@ -625,7 +625,7 @@ fn an_extsx_dual_stack_record_surfaces_as_one_source_with_both_addresses() {
 
     let v4 = Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 7), 4662);
     let v6 = rmule_primitives::Ipv6Endpoint::new("3fff:ed2:1::7".parse().unwrap(), 4662);
-    let dual = SourceSighting::plain(PeerSource::HighId(v4)).with_ipv6_half(Some(v6));
+    let dual = SourceClaim::plain(PeerSource::HighId(v4)).with_ipv6_half(Some(v6));
     let answer = rmule_peer::AnswerSources2 {
         version: SourceExchangeVersion::V1,
         file_hash: hash,

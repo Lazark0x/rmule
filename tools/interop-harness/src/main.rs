@@ -7,6 +7,8 @@
 //! holds no orchestration of its own.
 #![warn(missing_docs)]
 
+use std::path::Path;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
@@ -22,6 +24,9 @@ use crate::cli::ed2k_server::{
     AmuleServesRmuleDownloadsArgs, BenchSmokeArgs, SearchSpacingArgs, SearchWireArgs,
     amule_low_id_callback, amule_serves_rmule_downloads, amule_serves_rmule_searches, bench_smoke,
     rmule_serves_amule_downloads, search_spacing, search_wire, server_cycle,
+};
+use crate::cli::holepunch_fail::{
+    HolepunchFailArgs, HolepunchFailScoreArgs, holepunch_fail, holepunch_fail_score,
 };
 use crate::cli::kad_buddy::{
     KadCoreBuddyArgs, KadDirectCallbackArgs, KadFirewalledBuddyArgs, KadRequiredCheckArgs,
@@ -50,6 +55,10 @@ use crate::cli::peer::{
     AmuleDirectSuiArgs, PeerUdpReaskArgs, PeerUdpReaskEmitArgs, PeerUdpReaskEmitScoreArgs,
     PeerUdpReaskScoreArgs, amule_direct_sui, peer_udp_reask, peer_udp_reask_emit,
     peer_udp_reask_emit_score, peer_udp_reask_score,
+};
+use crate::cli::server_callback_serve::{
+    ServerCallbackServeArgs, ServerCallbackServeScoreArgs, server_callback_serve,
+    server_callback_serve_score,
 };
 
 #[derive(Debug, Parser)]
@@ -314,10 +323,51 @@ enum HarnessCommand {
     /// its own taps and logs, without driving the flow again.
     #[command(name = "peer-lowid-callback-reask-score")]
     PeerLowIdCallbackReaskScore(PeerLowIdCallbackReaskScoreArgs),
+    /// The server-callback-serve flow: ed2ksrv, a Low-ID rmule sharer (its
+    /// listener's inbound TCP dropped) and a High-ID stock aMule downloading
+    /// the file through the server's callback relay: OP_CALLBACKREQUEST,
+    /// OP_CALLBACKREQUESTED, rmule's dial-back, a byte-equal upload. Taps in
+    /// the server's and rmule's namespaces.
+    #[command(name = "server-callback-serve")]
+    ServerCallbackServe(ServerCallbackServeArgs),
+    /// Score a finished or archived `server-callback-serve` run dir from its
+    /// own taps and the downloader's copy, without driving the flow again.
+    #[command(name = "server-callback-serve-score")]
+    ServerCallbackServeScore(ServerCallbackServeScoreArgs),
+    /// The holepunch-fail leg: ed2ksrv and one in-network server probe asking
+    /// a punch toward a Low ID nobody holds; ed2ksrv's OP_LOWID_HOLEPUNCH_FAIL
+    /// (0x62) is cut from the server tap for fixture promotion.
+    #[command(name = "ed2ksrv-holepunch-fail")]
+    Ed2ksrvHolepunchFail(HolepunchFailArgs),
+    /// Score a finished or archived `ed2ksrv-holepunch-fail` run dir from its
+    /// own tap, without driving the leg again.
+    #[command(name = "ed2ksrv-holepunch-fail-score")]
+    Ed2ksrvHolepunchFailScore(HolepunchFailScoreArgs),
     /// Score a finished (or archived) `peer-udp-reask-emit` run dir from its
     /// own tap and write its verdict file, without driving the flow again.
     #[command(name = "peer-udp-reask-emit-score")]
     PeerUdpReaskEmitScore(PeerUdpReaskEmitScoreArgs),
+    /// The streaming-window flow (ADR-0112): one Streaming Priority file held
+    /// in part by stock aMule seeds, downloaded by rmule with a chosen window;
+    /// scores the part filter, the rank, both status forms and NoNeededParts,
+    /// and measures the verified prefix over time.
+    #[command(name = "peer-streaming-window")]
+    PeerStreamingWindow(crate::cli::streaming_window::PeerStreamingWindowArgs),
+    /// Score a finished, kept (`--collect`) or archived `peer-streaming-window`
+    /// run dir from its own tap and logs.
+    #[command(name = "peer-streaming-window-score")]
+    PeerStreamingWindowScore(crate::cli::streaming_window::PeerStreamingWindowScoreArgs),
+    /// The partial-share flow (ADR-0113): stock aMule fetches a download
+    /// rmule is still fetching — probes before and after its first part, the
+    /// hash set, verified bytes only, a straddling request, the announce
+    /// markers, the reask, a pause, a restart's Offer Check, and the upload
+    /// carried across the completion move (ADR-0115).
+    #[command(name = "peer-partial-share")]
+    PeerPartialShare(Box<crate::cli::partial_share::PeerPartialShareArgs>),
+    /// Score a finished or archived `peer-partial-share` run dir from its own
+    /// tap and logs.
+    #[command(name = "peer-partial-share-score")]
+    PeerPartialShareScore(crate::cli::partial_share::PeerPartialShareScoreArgs),
     /// Two hellos, one client: from one address, two peer-TCP connections say
     /// the same user hash and listen port to a High-ID aMule (and, as the
     /// control, two different ports); records whether aMule closed the first
@@ -339,9 +389,51 @@ enum HarnessCommand {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let reads_only = cli.command.reads_only();
+    let scored = cli.command.scored_run_dir().map(Path::to_owned);
     let result = dispatch(cli.command);
-    sweep_dangling_bench_stage_images();
+    if !reads_only {
+        rmule_interop_harness::run_record::finish(result.is_err());
+        sweep_dangling_bench_stage_images();
+    } else if let (Some(run_dir), Ok(())) = (scored, &result) {
+        rmule_interop_harness::run_record::rescored(&run_dir);
+    }
     result
+}
+
+impl HarnessCommand {
+    /// The retained run dir a score subcommand reads, so the re-score can note
+    /// itself in that run's record.
+    fn scored_run_dir(&self) -> Option<&Path> {
+        match self {
+            Self::PeerUdpReaskScore(args) => Some(&args.run_dir),
+            Self::PeerLowIdCallbackReaskScore(args) => Some(&args.run_dir),
+            Self::ServerCallbackServeScore(args) => Some(&args.run_dir),
+            Self::Ed2ksrvHolepunchFailScore(args) => Some(&args.run_dir),
+            Self::PeerUdpReaskEmitScore(args) => Some(&args.run_dir),
+            Self::PeerStreamingWindowScore(args) => Some(&args.run_dir),
+            Self::PeerPartialShareScore(args) => Some(&args.run_dir),
+            _ => None,
+        }
+    }
+
+    /// Whether the subcommand only reads a retained run: it builds nothing,
+    /// so it leaves the image store alone. Its sweep would race a build
+    /// running beside it: the legacy builder's step images stay untagged
+    /// until the build's tag lands, and a prune removes them under it.
+    fn reads_only(&self) -> bool {
+        matches!(
+            self,
+            Self::Ed2kFrames { .. }
+                | Self::PeerUdpReaskScore(_)
+                | Self::PeerLowIdCallbackReaskScore(_)
+                | Self::ServerCallbackServeScore(_)
+                | Self::Ed2ksrvHolepunchFailScore(_)
+                | Self::PeerUdpReaskEmitScore(_)
+                | Self::PeerStreamingWindowScore(_)
+                | Self::PeerPartialShareScore(_)
+        )
+    }
 }
 
 /// Best-effort: run after every subcommand, success or failure. A harness
@@ -477,8 +569,32 @@ fn dispatch(command: HarnessCommand) -> Result<()> {
         HarnessCommand::PeerLowIdCallbackReaskScore(args) => {
             peer_lowid_callback_reask_score(args)?;
         }
+        HarnessCommand::ServerCallbackServe(args) => {
+            server_callback_serve(args)?;
+        }
+        HarnessCommand::ServerCallbackServeScore(args) => {
+            server_callback_serve_score(args)?;
+        }
+        HarnessCommand::Ed2ksrvHolepunchFail(args) => {
+            holepunch_fail(args)?;
+        }
+        HarnessCommand::Ed2ksrvHolepunchFailScore(args) => {
+            holepunch_fail_score(args)?;
+        }
         HarnessCommand::PeerUdpReaskEmitScore(args) => {
             peer_udp_reask_emit_score(args)?;
+        }
+        HarnessCommand::PeerStreamingWindow(args) => {
+            crate::cli::streaming_window::peer_streaming_window(args)?;
+        }
+        HarnessCommand::PeerStreamingWindowScore(args) => {
+            crate::cli::streaming_window::peer_streaming_window_score(args)?;
+        }
+        HarnessCommand::PeerPartialShare(args) => {
+            crate::cli::partial_share::peer_partial_share(*args)?;
+        }
+        HarnessCommand::PeerPartialShareScore(args) => {
+            crate::cli::partial_share::peer_partial_share_score(args)?;
         }
         HarnessCommand::Sx1Gate(args) => {
             crate::cli::peer::sx1_gate(args)?;

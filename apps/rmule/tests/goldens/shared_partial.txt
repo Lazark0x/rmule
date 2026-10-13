@@ -1,0 +1,21 @@
+┌ Shared Files · 3 files · 754.0 MB ────────────────────── s sort  S reverse ┐
+│  File       State ▲      Size Uploading   Requests   Accepted   Transferred│
+│▸ film.mkv   shared      700.0         1     3 (12)      1 (5)        1.0 MB│
+│                            MB                                              │
+│  song.mp3   shared     4.0 MB         0      0 (0)      0 (0)        0.0 KB│
+│  album.flac partial      50.0         0      0 (0)      0 (0)        0.0 KB│
+│                            MB                                              │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│Off-screen: Transferred 1.0 MB (4.0 MB)                                     │
+└───────────────────────────────────────────────────────────────────── 1 / 3 ┘
+┌ Uploads · active only ────────────────────────────────── s sort  S reverse ┐
+│  Peer ▲                Software     State             Speed File           │
+│▸ 10.0.0.1:4662         aMule v2.3.3 Uploading             — film.mkv       │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│  2 hidden queued                                                           │
+└───────────────────────────────────────────────────────────────────── 1 / 1 ┘

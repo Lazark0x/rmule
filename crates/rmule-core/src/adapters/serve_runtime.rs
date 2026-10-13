@@ -254,6 +254,9 @@ pub struct RuntimeServeRuntimeService {
     /// `Core::builder` shares the one instance the actor's serve and download
     /// arms keep current.
     file_known: crate::known_files::SharedFileKnown,
+    /// Where each served link is filed for a download of its peer to ride
+    /// (ADR-0107). Default/unshared off `Core::builder`: no download joins.
+    served_links: super::SharedServedLinks,
 }
 
 impl RuntimeServeRuntimeService {
@@ -323,6 +326,15 @@ impl RuntimeServeRuntimeService {
     #[must_use]
     pub(crate) fn with_awaited_inbound(mut self, awaited_inbound: AwaitedInbound) -> Self {
         self.awaited_inbound = awaited_inbound;
+        self
+    }
+
+    /// Share the **Served Links** a dial adapter joins (ADR-0107);
+    /// `Core::builder` shares the one instance through `adopt_cells`.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_served_links(mut self, served_links: super::SharedServedLinks) -> Self {
+        self.served_links = served_links;
         self
     }
 }
@@ -550,6 +562,7 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
                     file_known: self.file_known.clone(),
                     tunnel_admit: self.tunnel_admit.clone(),
                     hello_refusals: self.hello_refusals.clone(),
+                    served_links: self.served_links.clone(),
                 },
             );
             // A connection from the awaited server admitted as an ordinary
@@ -623,6 +636,7 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
         self.tunnel_admit = cells.tunnel_admit.clone();
         self.hello_refusals = cells.hello_refusals.clone();
         self.file_known = cells.file_known.clone();
+        self.served_links = cells.served_links.clone();
     }
 }
 

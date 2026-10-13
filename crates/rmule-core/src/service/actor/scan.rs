@@ -127,13 +127,6 @@ where
             ScanRole::Added => Some(true),
             ScanRole::Adding { .. } => None,
         };
-        let known = match self.known() {
-            Ok(known) => known,
-            Err(error) => {
-                tracing::warn!(dir = %dir.display(), %error, "scan not started: registry unreadable");
-                return;
-            }
-        };
         self.directories.ended.remove(&dir);
         self.activity_generation += 1;
         let generation = self.activity_generation;
@@ -179,7 +172,6 @@ where
                         missing_look,
                     },
                     &dir,
-                    &known,
                     consent,
                     &stop,
                     &progress,
@@ -255,8 +247,8 @@ where
                 Ok(known) => {
                     let _ = reply.send(known);
                 }
-                // A dropped reply ends the watch, and the operator is told.
-                Err(error) => tracing::warn!(%error, "registry unreadable for the watch"),
+                // A dropped reply ends the pass, or the watch with the operator told.
+                Err(error) => tracing::warn!(%error, "registry unreadable for the scan"),
             },
             ScanMessageKind::Ended(ScanEnd::Unwatched(reason)) => {
                 if let Some(scan) = self.activities.scan_mut(&dir) {

@@ -84,7 +84,10 @@ scheduling is (ADR-0026).
 - The registry lives in the typed store (ADR-0083): one record per shared file, keyed
   by its file hash, with its part hashes beside it, written in one transaction.
 - Shares arrive from the shared directories and the download directory (ADR-0101)
-  and from completed downloads; `ServeCommand::UnshareFile` withdraws one.
+  and from completed downloads; `ServeCommand::UnshareFile` withdraws one. Beside the
+  registry, the serve side answers for every running download larger than one part and
+  offers it from its first verified part (ADR-0113); that offer is the download's, never
+  a row.
 - The serve side answers probes and hash-set requests from it and announces it with
   `OP_OFFERFILES` (`Ed2kCommand::OfferFiles`) to the live server session and each one
   connected after it (ADR-0095).

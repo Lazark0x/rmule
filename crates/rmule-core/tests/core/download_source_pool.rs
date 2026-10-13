@@ -163,14 +163,16 @@ impl PeerTransferService for BackfillTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let failing = self.failing_peers.contains(&peer);
         let bytes = self.bytes.clone();
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             if failing {
                 // A peer from the initial batch that connects but then drops
                 // without delivering: an ordinary worker failure that must be
@@ -180,6 +182,10 @@ impl PeerTransferService for BackfillTransfer {
             }
             while let Some(command) = command_rx.recv().await {
                 match command {
+                    PeerWorkerCommand::AskSlot => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::RequestHashSet => {}
                     PeerWorkerCommand::RequestPart {
                         plan,
                         resume_offset,
@@ -212,14 +218,24 @@ impl PeerTransferService for AlwaysDisconnect {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
-            if let Some(PeerWorkerCommand::RequestPart { .. }) = command_rx.recv().await {
-                let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
+            let _ = event_tx.send(advertised).await;
+            // The AICH-root ask the handshake triggers comes first; the slot
+            // ask follows the probe's answer, and the part the grant.
+            while let Some(command) = command_rx.recv().await {
+                if matches!(command, PeerWorkerCommand::AskSlot) {
+                    let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                }
+                if let PeerWorkerCommand::RequestPart { .. } = command {
+                    let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
+                    break;
+                }
             }
         });
         Ok(PeerWorker::new(peer, command_tx, event_rx))

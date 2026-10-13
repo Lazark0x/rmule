@@ -44,9 +44,9 @@ errors on an IPv6 address.
 - **IPv4 stays a type** for Kad contacts (`KadNodeEndpoint`, `nodes.dat`, routing, verify
   keys), `ClientId`, the `0x58` / `0x61` observations, the `0x9B` record and the credit
   ledger's SUI v2 address. A type is exactly as wide as its wire meaning.
-- **State keyed by a peer widens:** the ban store keys `IpAddr`; the IP filter keeps its
-  IPv4 ranges and passes IPv6 through with a diagnostics note; diagnostics rows carry
-  `PeerEndpoint`. The store persists no peer endpoint.
+- **State keyed by a peer widens:** the ban store keys `IpAddr`; the IP filter holds an
+  IPv6 table beside its IPv4 ranges (below); diagnostics rows carry `PeerEndpoint`. The
+  store persists no peer endpoint.
 
 ### Sockets (`rmule-net`, the **Family Pair**)
 
@@ -130,6 +130,85 @@ For `OP_FOUNDSOURCES`, `OP_FOUNDSOURCES_OBFU` and `OP_GLOBFOUNDSOURCES`:
 - `OP_REASKCALLBACKTCP`'s IPv6 form is not a source-list sentinel: both counterparties write
   `<FFFFFFFF><ipv6 16><port 2>`, address before port (ADR-0087).
 
+### One intake check: Reserved Ranges, judged against the Informant
+
+- **A Reserved Range** is a range no remote host can be reached at
+  (`rmule_primitives::is_reserved_address`): IPv4 `0.0.0.0/8`, loopback `127/8`, link-local
+  `169.254/16`, multicast `224/4`, and `240/4`, which holds the broadcast `255.255.255.255`;
+  IPv6 `::`, `::1`, `fe80::/10` and `ff00::/8`, and a mapped address by its IPv4. Private
+  (RFC 1918), carrier-grade (RFC 6598) and documentation ranges each name one host and pass.
+  A LAN peer is a peer, and no setting changes that.
+- **Every address a Source Sighting names is judged once, at the Source Book gate**, through
+  `judge_halves` (ADR-0087): the record's address, its IPv6 half, and a Kad callback row's
+  observed `kad_udp`. Server, global-UDP, source-exchange, Kad, link, seed and asker
+  sightings all pass that gate, so no channel keeps a check of its own. A refused half drops
+  as a filtered one does, and a sighting left with no address is blocked as reserved. The
+  check runs before the IP filter, as aMule's `IsGoodIP` runs before `IsFiltered`
+  (`PartFile.cpp:1665-1668`).
+- **Loopback is judged against the Informant.** A loopback address names the host that reads
+  it, so it is a peer only when the party that stated it shares our host. Each sighting
+  carries its **Informant**: rmule itself (a link, a seed, a source an embedding program
+  injects through a `CoreBuilder` adapter) or a party at an address. That party is the server
+  at the address the session's TCP connection reached, the global-UDP server, the
+  source-exchange peer, the Kad storer whose `0x3B` it was, or the peer that asked us for the
+  file. The Informant is required: every constructor of a sighting names it and none
+  defaults to rmule's own, so a producer that forgets it does not compile. A wire reader that
+  cannot know who sent the bytes (a server's `0x42`/`0x44` list, a peer's source-exchange
+  entry) yields **Source Claims**, and the reader that knows the sender makes each a sighting
+  by naming it. Loopback passes only from rmule itself or from an informant at loopback, so
+  a remote party cannot aim rmule at its own host, and a loopback rig (the in-process tests,
+  a single-host lab) works with no switch. Every other Reserved Range is refused whoever
+  stated it.
+- **Kad's readers apply the same check where no informant is at hand.** The `0x3B` reader
+  keeps a row's `kad_udp` unless no informant could make it a host, and the gate then judges
+  it against the storer. It refuses a buddy `TAG_SERVERIP` in any Reserved Range: the buddy is
+  a third party the row names, and the walk toward its ID stays the road. As a storer rmule
+  refuses a reserved buddy endpoint in a `0x44` outright, because it re-serves the row to
+  remote searchers. The `nodes.dat` contact gate (ADR-0066) is this check plus aMule's LAN
+  filter, as `IsGoodIPPort` is (`NetworkFunctions.h:118-121`).
+- **The Kad routing table, a walk's answers and the server list take the same check.** A Kad
+  contact is judged against the party whose datagram named it: a hello's sender, a bootstrap
+  responder and the rows it sent, and a `KADEMLIA2_RES` responder's rows before any walk sees
+  them. aMule runs `IsGoodIPPort` before the IP filter at `CRoutingZone::Add`
+  (`RoutingZone.cpp:405-406`) and on every `KADEMLIA2_RES` row (`KademliaUDPListener.cpp:732-733`).
+  Its port rules come with it: port `0` names no endpoint, and port `53` on a contact older
+  than Kad version 6 is refused, since it could be a confused DNS reply. A contact merged from
+  `nodes.dat` is rmule's own and has passed that file's gate. A server.met row is judged
+  against the URL's host: loopback stands only when that host is a loopback address or
+  `localhost` (RFC 6761 §6.3). A server the operator adds is rmule's own, and a Reserved
+  Range other than loopback is refused with a reason the operator reads. aMule runs `IsGoodIP`
+  on every server it adds that has no dynamic IP (`ServerList.cpp:206`); a named server is
+  resolved when dialed and is not judged here. LAN addresses pass at all three, where
+  aMule's `IsGoodIPPort` and `FilterLanIPs` refuse them.
+- **Where this departs from aMule's `IsGoodIP`** (`NetworkFunctions.cpp:101-142`, called at
+  `PartFile.cpp:1665` and `:2794` and `DownloadQueue.cpp:728` and `:1583`). aMule refuses
+  LAN addresses by default (`/eMule/FilterLanIPs`, `Preferences.cpp:1176`); rmule never does.
+  aMule refuses loopback whoever stated it. Its table also holds eight more blocks. Four are
+  ones RFC 3330 listed as reserved but subject to allocation and IANA has since allocated
+  (`39/8`, `128.0/16`, `191.255/16`, `223.255.255/24`; RFC 6890), so refusing them drops
+  real peers. The other four are special-purpose unicast blocks (`192.0.0/24`, `192.0.2/24`,
+  `192.88.99/24`, `198.18/15`), each of which can name one host.
+
+### The IP filter judges IPv6 too
+
+- **IPv6 rules come from the same two files** (`ipfilter.dat`, then `ipfilter_static.dat`),
+  held in a second table beside the IPv4 ranges with the same last-line-wins overlap and the
+  same level threshold. A line is read as IPv6 when its first field holds a colon (amule-kno
+  `IPFilterMatch.h:221-228`), and a line that does not parse as IPv6 falls through to the
+  IPv4 grammar. The shapes both references read are accepted: a prefix `addr/len`, a bare
+  literal (`/128`), and emule-qt's `start - end` range and `description:` prefix
+  (`IPFilter.cpp:173-210`, `:658-708`), each with the optional `, level , description` tail.
+  A description is text: it holds no colon and is not only hex digits and dots, so a
+  malformed range never loads as a rule naming a fragment of itself.
+- **A missing level is 0**, blocked at every threshold. That is amule-kno's default
+  (`IPFilterMatch.h:233-235`) and the level rmule's IPv4 grammar already gives a line with no
+  level column (the AntiP2P form); emule-qt's is 100 (`IPFilter.h:56`).
+- **Each address is judged on its own.** A native IPv6 peer is judged by the IPv6 table
+  under the client gate, and a mapped one by the IPv4 table. A filtered IPv4 half never drops
+  the same source's IPv6 half, nor the reverse. Neither reference links them (emule-qt
+  `IPFilter.cpp:481-488`, amule-kno `IPFilter.h:68-84`), and a forged pairing would let one
+  claim drop an honest address.
+
 ## Consequences
 
 - Core maps and the callback triage of ADR-0039 need only `Copy + Ord + Hash` and work
@@ -143,6 +222,9 @@ For `OP_FOUNDSOURCES`, `OP_FOUNDSOURCES_OBFU` and `OP_GLOBFOUNDSOURCES`:
   `family::tests::a_listener_rebinds_its_port_at_once_after_it_closed_a_connection` and
   `a_second_listener_on_a_held_port_is_still_refused`. The capture tier runs on the IPv6
   network of ADR-0092.
+- A source that names loopback, broadcast, multicast or `0/8` is dropped at the gate,
+  whichever channel named it, while the in-process loopback tests keep downloading from each
+  other. A loaded `ipfilter.dat` that names IPv6 prefixes blocks those peers.
 
 ## Considered options
 
@@ -161,3 +243,13 @@ For `OP_FOUNDSOURCES`, `OP_FOUNDSOURCES_OBFU` and `OP_GLOBFOUNDSOURCES`:
   packet that names one IPv6 peer.
 - **A bounded bind retry.** Rejected: it cures nothing once `SO_REUSEADDR` is set and stalls
   the actor.
+- **Refuse loopback whoever stated it, as aMule does.** Rejected: loopback is relative to
+  the reader, so the refusal is right only for a remote informant. Every loopback rig would
+  then need a switch to admit it, and a switch that reaches production is a setting.
+- **A default Informant of rmule's own, which network producers stamp over.** Rejected: a
+  producer that forgets to stamp hands a remote party's loopback to the gate as rmule's own
+  word, and nothing catches it.
+- **aMule's whole reserved table.** Rejected: four of its blocks are allocated address
+  space today, and the other four can each name one host.
+- **One filter verdict for a source's two halves.** Rejected: neither reference links them,
+  and the pairing is the peer's own claim.

@@ -49,15 +49,40 @@ is `DownloadScheduler`.
 
 - `CoreConfig::peer_concurrency_per_download` (default 2; `0` reads as 1) caps a
   download's workers — active, connecting, and waiting on a callback together.
-- A worker holds at most one part at a time and keeps its connection across
-  assignments. A fresh assignment takes the lowest-indexed pending part; there is
-  no availability voting.
-- **Bounded racing.** When no pending part remains, a backup peer — one that has not
-  yet delivered a verified part in this download — joins an in-flight part, so
-  several peers can sit queued on the same scarce part. The first verified copy
-  wins and the losing racers are cleared; a loser's later failure is a no-op. A
-  peer that has already delivered a part idles instead of racing a healthy peer, so
+- **The slot ask.** A worker whose Advertised Parts hold a part we lack asks its
+  uploader for a slot (`OP_STARTUPLOADREQ`) at its probe answer, whether or not a part
+  is free, as aMule sends it to every source whose status names a needed part (stock
+  2.3.3 `DownloadClient.cpp:466-483`). Its part is chosen at the grant, never at the
+  ask, as aMule chooses blocks only on a granted slot (`ClientTCPSocket.cpp:640-643`):
+  a queued worker holds no part, so no part waits behind an uploader's queue, and a
+  released or refetched part goes to the next grant.
+- A worker holds at most one part at a time and keeps its connection and its granted
+  slot across assignments. An assignment — at the grant, and after each part it
+  streams — takes the first-ranked pending part the peer advertised (ADR-0112); outside
+  Streaming Priority, with every part advertised, that is the lowest index. A granted
+  worker with no part it can be handed gives the slot back (ADR-0056).
+- **Bounded racing.** When no pending part it advertised remains, a granted backup
+  peer — one that has not yet delivered a verified part in this download — joins the
+  first-ranked in-flight part it advertised (ADR-0112), so a busy primary's part has a
+  second source. The first verified copy wins and the losing racers are cleared and
+  handed their next part; a loser's later failure is a no-op. A peer that has already
+  delivered a part never races a healthy peer — it gives its slot back instead — so
   racing engages only on few-part files.
+- **One hash-set ask at a time, with a deadline.** While the download holds no whole
+  part hash set — no link `p=`, no proven peer set yet, a file of more than one hash —
+  one worker at a time asks for it (`OP_HASHSETREQUEST`): the first whose probe answer
+  names a part we lack. Its slot ask waits on the answer, as aMule's asker waits in
+  `DS_REQHASHSET` (`DownloadClient.cpp:467-483`, `:571-586`); every other worker asks
+  its slot at once. The ask passes to the next connected worker whose parts name a
+  part we lack — with none connected, to the next probe answer — when its worker ends
+  before an answer or answers with a set that is not the file's (aMule
+  `SetHashSetNeeded(true)`, `BaseClient.cpp:1305-1306`, `DownloadClient.cpp:583`), and
+  at the **Hash-Set Deadline**, 20 s after the ask, when its worker asks its slot
+  regardless: half aMule's 40 s idle close (`CONNECTION_TIMEOUT`, `Constants.h:34`), so
+  the slot ask still reaches an uploader that never answers the set and the source is
+  kept on its queue (ADR-0090). A worker the deadline passed is not asked again while
+  it lives. A held set asks nothing; a link already holding it never waits for its own
+  answer.
 - Racers share the part's bytes: every assignment starts at the part's assembled
   prefix, block by block (ADR-0029).
 - The candidate pool grows during the download and backfills retired workers
@@ -66,7 +91,8 @@ is `DownloadScheduler`.
   reassignment. A failed part verification retires its contributors (ADR-0029)
   unless AICH recovery can name the bad blocks (ADR-0038).
 - `CoreConfig::slot_wait_timeout` (default 180 s) bounds how long a worker waits for
-  a slot grant. The timer is the runtime's; the session stays clock-free. Queue
+  a slot grant: from its probe answer, or from its flow's return to the queue, with no
+  part streaming. The timer is the runtime's; the session stays clock-free. Queue
   state reaches the operator as `DownloadEvent::PeerQueued { rank }`,
   `PeerSlotGranted` and `PeerSlotTimeout`. The downloader sends no keep-alive: the
   eD2k peer protocol defines none, so staying connected and racing across peers is
@@ -75,8 +101,8 @@ is `DownloadScheduler`.
 **Verification.** Trust is download-wide, ranked by `VerificationAuthority`:
 
 - `LinkPartHashSet` — the link's `p=` hash set — is final when present.
-- Otherwise the first peer hash set becomes `PeerHashSet`, persisted with the
-  download as the provisional authority; parts verify against it and the whole-file
+- Otherwise the first peer hash set — asked of one link at a time, above — becomes
+  `PeerHashSet`, persisted with the download as the provisional authority; parts verify against it and the whole-file
   hash at finalize confirms it.
 - A peer hash set whose MD4 is not the file hash is refused, and its sender is
   retired and distrusted. A proven peer set that disagrees with the link's set
@@ -95,9 +121,9 @@ is `DownloadScheduler`.
 
 - Transport stays one-conversation-per-connection; the conversation graph, trust
   and disk policy live in one place that sees every peer.
-- Scheduler behaviour — assignment, racing, release, retirement, backfill,
-  persistence, pause, cancel, source exhaustion, the reask cadence and every callback
-  deadline — is asserted on `DownloadState`'s decisions without sockets, driven by the
+- Scheduler behaviour — the slot ask, the hash-set ask and its deadline, assignment,
+  racing, release, retirement, backfill, persistence, pause, cancel, source exhaustion,
+  the reask cadence and every callback deadline — is asserted on `DownloadState`'s decisions without sockets, driven by the
   instants a test hands in.
 - Racing spends some redundant bandwidth on scarce parts in exchange for a live
   backup when a busy peer stalls.

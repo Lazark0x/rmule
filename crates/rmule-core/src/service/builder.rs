@@ -422,7 +422,10 @@ where
         // The one obfuscation policy every hello and login states (ADR-0046),
         // settled before anything can send one; the actor alone writes it
         // after, and keeps no start copy of it.
-        let (settings, obfuscation) = super::actor::StartSettings::split(settings);
+        let (settings, obfuscation) = super::actor::StartSettings::split(
+            settings,
+            self.node.share_guards.data_dir.as_deref(),
+        );
         self.node.cells.hello_adverts.obfuscation.set(obfuscation);
         self.source_lookup.adopt_cells(&self.node.cells);
         self.peer_transfer.adopt_cells(&self.node.cells);
@@ -475,6 +478,7 @@ where
                 hello_adverts: cells.hello_adverts,
                 firewalled_front: cells.firewalled_front,
                 file_known: cells.file_known,
+                served_downloads: cells.served_downloads,
                 tunnel_admit: cells.tunnel_admit,
                 hello_refusals: cells.hello_refusals,
                 ip_filter: cells.ip_filter,
@@ -621,6 +625,9 @@ impl Core {
         // punched path meets the IP filter, the ban gate and the inbound
         // triage exactly as a TCP accept does.
         let tunnel_admit = crate::adapters::SharedTunnelAdmit::default();
+        // A server-relayed callback's dial-back enters by the same seam
+        // (ADR-0061), so the requester meets the gates an accept does.
+        session.dial_backs().install_admit(tunnel_admit.clone());
         // The **Awaited Inbound** registry (ADR-0039, ADR-0091): every
         // download files the roads its pending callbacks may be answered on,
         // and the serve adapter's triage asks it who gets a connection. One
@@ -686,11 +693,15 @@ impl Core {
             ip_filter,
             firewalled_front,
             file_known,
+            // The Served Downloads (ADR-0113): one cell the actor and every
+            // run write under its lease, for the serve side to read.
+            served_downloads: crate::served_downloads::ServedDownloads::default(),
             tunnel_admit,
             address_families: config.address_families,
             // One cell every peer connection's first reader reports a refused
             // hello to (ADR-0050); the actor's prologue installs its bus.
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
+            served_links: crate::adapters::SharedServedLinks::default(),
         };
         // One wiring path: the default adapters adopt the cells
         // exactly as an injected one does.

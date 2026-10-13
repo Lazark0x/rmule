@@ -194,7 +194,7 @@ pub(crate) fn env_value(run_line: &str, key: &str) -> String {
 }
 
 /// Drive the Kad capture flow against the fake docker, with the settle window
-/// disabled so the fake-docker test stays fast (real timing is only for live
+/// and search schedule zeroed so the fake-docker test stays fast (real timing is only for live
 /// runs). Asserts success.
 pub(crate) fn run_fake_kad_capture(
     docker: &Path,
@@ -205,6 +205,8 @@ pub(crate) fn run_fake_kad_capture(
     let mut command = Command::cargo_bin("rmule-interop-harness").unwrap();
     command
         .env("RMULE_KAD_SETTLE_WINDOW_SECS", "0")
+        .env("RMULE_KAD_SEARCH_CANCEL_GAP_SECS", "0")
+        .env("RMULE_KAD_SEARCH_RETRY_INTERVAL_SECS", "0")
         .args([
             "kad-source-lookup-capture",
             "--skip-build",

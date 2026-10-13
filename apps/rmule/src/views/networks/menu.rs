@@ -5,6 +5,8 @@
 //! would be rejected. Every action emits a `CoreCommand` and waits for the
 //! level to move.
 
+use std::cell::Cell;
+
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
@@ -18,9 +20,10 @@ use super::NetworksView;
 use super::form::{FORM_W, NOT_ATTACHED, ServerForm};
 use super::servers::{next_priority, priority_word, row_name};
 use crate::action::Action;
+use crate::row_selection::viewport::Viewport;
 use crate::state::{UiState, server_label};
 use crate::theme::Theme;
-use crate::views::modal::Modal;
+use crate::views::modal::{Modal, scroll_key};
 use crate::views::{ViewOutcome, connect_action};
 use crate::wrap::{clamp_u16, labeled_lines, wrap_text, wrapped_lines};
 
@@ -74,6 +77,8 @@ pub(super) enum MenuAction {
 pub(super) struct Menu {
     pub(super) items: Vec<MenuItem>,
     pub(super) sel: usize,
+    /// What part of the menu is on screen, in a frame too short for it.
+    pub(super) viewport: Cell<Viewport>,
 }
 
 impl Menu {
@@ -100,6 +105,8 @@ impl Menu {
 pub(super) struct Confirm {
     name: String,
     server: ServerEndpoint,
+    /// What part of the question is on screen, in a frame too short for it.
+    viewport: std::cell::Cell<Viewport>,
 }
 
 pub(super) fn draw_menu(frame: &mut Frame, area: Rect, menu: &Menu, theme: &Theme) {
@@ -119,71 +126,80 @@ pub(super) fn draw_menu(frame: &mut Frame, area: Rect, menu: &Menu, theme: &Them
         .unwrap_or(0)
         + 2;
     let width = clamp_u16(natural.max(48)).min(area.width);
-    let inner_w = usize::from(width).saturating_sub(2).max(1);
-
-    let lines: Vec<Line> = menu
-        .items
-        .iter()
-        .enumerate()
-        .flat_map(|(i, item)| match item.disabled.as_deref() {
-            None => {
-                let style = if i == menu.sel {
-                    Style::new().fg(theme.bg).bg(theme.accent)
-                } else {
-                    Style::new().fg(theme.fg)
-                };
-                // Full-width selection bar: pad each wrapped line out.
-                wrap_text(&format!(" {}", item.label), inner_w)
-                    .into_iter()
-                    .map(|part| Line::styled(format!("{part:<inner_w$}"), style))
-                    .collect::<Vec<_>>()
-            }
-            Some(reason) => labeled_lines(
-                Span::styled(format!(" {} ", item.label), theme.dim_text()),
-                reason,
-                theme.dim_text(),
-                inner_w
-                    .saturating_sub(item.label.chars().count() + 2)
-                    .max(1),
-            ),
-        })
-        .collect();
-
-    Modal::new(" Server actions ", theme).draw(frame, area, width, theme, lines);
+    let rows = |width: u16| -> Vec<Vec<Line<'static>>> {
+        let inner_w = usize::from(width).saturating_sub(2).max(1);
+        menu.items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| match item.disabled.as_deref() {
+                None => {
+                    let style = if i == menu.sel {
+                        Style::new().fg(theme.bg).bg(theme.accent)
+                    } else {
+                        Style::new().fg(theme.fg)
+                    };
+                    // Full-width selection bar: pad each wrapped line out.
+                    wrap_text(&format!(" {}", item.label), inner_w)
+                        .into_iter()
+                        .map(|part| Line::styled(format!("{part:<inner_w$}"), style))
+                        .collect::<Vec<_>>()
+                }
+                Some(reason) => labeled_lines(
+                    Span::styled(format!(" {} ", item.label), theme.dim_text()),
+                    reason,
+                    theme.dim_text(),
+                    inner_w
+                        .saturating_sub(item.label.chars().count() + 2)
+                        .max(1),
+                ),
+            })
+            .collect()
+    };
+    Modal::new(" Server actions ", theme).draw_list(
+        frame,
+        area,
+        (width, menu.sel),
+        theme,
+        &menu.viewport,
+        rows,
+    );
 }
 
 pub(super) fn draw_confirm(frame: &mut Frame, area: Rect, confirm: &Confirm, theme: &Theme) {
     let width = FORM_W.min(area.width);
-    let text_w = usize::from(width).saturating_sub(2).max(1);
-    // Both prose lines wrap: a long server name grows the modal.
-    let mut lines = wrapped_lines(
-        &format!(
-            "Remove '{}' ({})?",
-            confirm.name,
-            server_label(&confirm.server)
-        ),
-        text_w,
-        Style::new().fg(theme.fg),
-    );
-    // aMule's own posture, which core implements: the list entry goes, the
-    // session does not (ADR-0080).
-    lines.extend(wrapped_lines(
-        "The list entry goes; a session connected to it stays up.",
-        text_w,
-        theme.dim_text(),
-    ));
-    lines.push(Line::raw(""));
-    lines.push(Line::from(vec![
-        Span::styled("y", Style::new().fg(theme.accent)),
-        Span::styled(" confirm    ", Style::new().fg(theme.fg)),
-        Span::styled("Esc", Style::new().fg(theme.accent)),
-        Span::styled(" abort", Style::new().fg(theme.fg)),
-    ]));
+    let lines = |width: u16| {
+        let text_w = usize::from(width).saturating_sub(2).max(1);
+        // Both prose lines wrap: a long server name grows the modal.
+        let mut lines = wrapped_lines(
+            &format!(
+                "Remove '{}' ({})?",
+                confirm.name,
+                server_label(&confirm.server)
+            ),
+            text_w,
+            Style::new().fg(theme.fg),
+        );
+        // aMule's own posture, which core implements: the list entry goes, the
+        // session does not (ADR-0080).
+        lines.extend(wrapped_lines(
+            "The list entry goes; a session connected to it stays up.",
+            text_w,
+            theme.dim_text(),
+        ));
+        lines.push(Line::raw(""));
+        lines.push(Line::from(vec![
+            Span::styled("y", Style::new().fg(theme.accent)),
+            Span::styled(" confirm    ", Style::new().fg(theme.fg)),
+            Span::styled("Esc", Style::new().fg(theme.accent)),
+            Span::styled(" abort", Style::new().fg(theme.fg)),
+        ]));
+        lines
+    };
 
     Modal::new(" Remove server ", theme)
         .danger(theme)
         .at_least(6)
-        .draw(frame, area, width, theme, lines);
+        .draw_scrolled(frame, area, width, theme, &confirm.viewport, lines);
 }
 
 impl NetworksView {
@@ -221,7 +237,11 @@ impl NetworksView {
                 .iter()
                 .position(|item| item.disabled.is_none())
                 .unwrap_or(0);
-            self.menu = Some(Menu { items, sel });
+            self.menu = Some(Menu {
+                items,
+                sel,
+                viewport: Cell::default(),
+            });
             return ViewOutcome::Redraw;
         };
 
@@ -260,7 +280,11 @@ impl NetworksView {
             .iter()
             .position(|item| item.disabled.is_none())
             .unwrap_or(0);
-        self.menu = Some(Menu { items, sel });
+        self.menu = Some(Menu {
+            items,
+            sel,
+            viewport: Cell::default(),
+        });
         ViewOutcome::Redraw
     }
 
@@ -323,6 +347,7 @@ impl NetworksView {
                 self.confirm = Some(Confirm {
                     name: row_name(row),
                     server,
+                    viewport: std::cell::Cell::default(),
                 });
                 ViewOutcome::Redraw
             }
@@ -361,7 +386,12 @@ impl NetworksView {
                 self.confirm = None;
                 ViewOutcome::Redraw
             }
-            _ => ViewOutcome::Redraw,
+            code => {
+                if let Some(confirm) = self.confirm.as_mut() {
+                    scroll_key(&mut confirm.viewport, code);
+                }
+                ViewOutcome::Redraw
+            }
         }
     }
 }

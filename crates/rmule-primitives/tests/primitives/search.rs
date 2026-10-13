@@ -255,6 +255,18 @@ fn extensions_classify_into_the_seven_ed2k_classes() {
     }
 }
 
+/// A name that is not UTF-8 keeps its class: only the ASCII extension is
+/// read, so a Latin-1 stem from an old client does not lose it.
+#[test]
+fn a_name_that_is_not_utf8_classifies_by_its_extension() {
+    assert_eq!(
+        Ed2kFileClass::from_name_bytes(b"Cr\xe9dits.avi"),
+        Some(Ed2kFileClass::Video)
+    );
+    assert_eq!(Ed2kFileClass::from_name_bytes(b"\xff.\xfe"), None);
+    assert_eq!(Ed2kFileClass::from_name_bytes(b""), None);
+}
+
 /// The two wire vocabularies aMule keeps apart: what a search/publish may say
 /// (`GetED2KFileTypeSearchTerm` — archives and CD images ride `"Pro"`) and the
 /// internal label that keeps them distinct (`GetFileTypeByName`).

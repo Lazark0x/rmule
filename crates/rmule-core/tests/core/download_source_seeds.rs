@@ -18,7 +18,7 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, Ipv4Endpoint, PeerEndpoint, PeerSource, ServerEndpoint,
+    ClientId, Ed2kFileLink, Informant, Ipv4Endpoint, PeerEndpoint, PeerSource, ServerEndpoint,
     SourceLookupTarget, SourceSighting,
 };
 use rmule_testkit::{StaticPeerTransfer, StaticSourceLookup, file_link};
@@ -42,7 +42,7 @@ fn answering(sources: &[PeerEndpoint]) -> StaticSourceLookup {
                 .iter()
                 .map(|peer| {
                     let v4 = peer.as_v4().expect("IPv4 test source");
-                    SourceSighting::plain(PeerSource::HighId(v4))
+                    SourceSighting::plain(PeerSource::HighId(v4), Informant::Own)
                 })
                 .collect(),
         },
@@ -63,9 +63,9 @@ impl SourceLookupService for NeverAnswers {
     }
 }
 
-/// Workers that connect and wait, each dial written down; with `hellos`
-/// each reads the peer's hello first, and the dial at `hangs_up` ends before
-/// any.
+/// Workers that connect, are granted the slot they ask and wait, each dial
+/// written down; with `hellos` each reads the peer's hello first, and the dial
+/// at `hangs_up` ends before any.
 #[derive(Clone, Default)]
 struct DialLog {
     dials: Arc<Mutex<Vec<PeerEndpoint>>>,
@@ -78,8 +78,9 @@ impl PeerTransferService for DialLog {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, rmule_core::DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         self.dials.lock().unwrap().push(peer);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(8);
@@ -93,7 +94,11 @@ impl PeerTransferService for DialLog {
                 let _ = event_tx.send(hello_of(peer)).await;
             }
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
+                if matches!(command, PeerWorkerCommand::AskSlot) {
+                    let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                }
                 if matches!(command, PeerWorkerCommand::Shutdown { .. }) {
                     break;
                 }
@@ -407,7 +412,8 @@ async fn a_completed_download_keeps_no_seeds() {
     assert!(repo.source_seeds(id).unwrap().is_empty());
 }
 
-/// `Remember peers` at one keeps one peer of the two the run knew.
+/// `Remember peers` at one keeps one peer of the two the run knew: the best,
+/// the one whose grant handed it the part.
 #[tokio::test]
 async fn the_remember_peers_count_bounds_the_write() {
     let dir = tempfile::tempdir().unwrap();
@@ -424,7 +430,7 @@ async fn the_remember_peers_count_bounds_the_write() {
     let repo = DurableDownloadRepository::new(open_durable_store(dir.path()).unwrap());
     let seeds = repo.source_seeds(id).unwrap();
     assert_eq!(seeds.len(), 1, "{seeds:?}");
-    assert_eq!(seeds[0].rank, SeedRank::Known);
+    assert_eq!(seeds[0].rank, SeedRank::Ranked);
 }
 
 /// `Remember peers` changed on the running core bounds the next write: core
@@ -564,14 +570,19 @@ impl PeerTransferService for HelloStating {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, rmule_core::DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(8);
         tokio::spawn(async move {
             let _ = event_tx.send(hello_of(peer)).await;
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
+                if matches!(command, PeerWorkerCommand::AskSlot) {
+                    let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                }
                 if matches!(command, PeerWorkerCommand::Shutdown { .. }) {
                     break;
                 }

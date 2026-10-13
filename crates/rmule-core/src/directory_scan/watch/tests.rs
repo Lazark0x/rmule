@@ -520,7 +520,6 @@ fn scan(
     consent: Consent,
     starts: impl FnMut() -> Result<Box<dyn DirectoryWatch>, WatchFault>,
 ) -> ScanEnd {
-    let rows = harness.known();
     run_scan(
         ScanSeams {
             source: &harness.world,
@@ -531,7 +530,6 @@ fn scan(
             missing_look: crate::CoreConfig::default().missing_directory_look,
         },
         Path::new(ROOT),
-        &rows,
         consent,
         &harness.stop,
         &harness.progress,

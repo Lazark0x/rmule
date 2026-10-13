@@ -185,6 +185,36 @@ fn queuing_records_the_peers_rank_and_file() {
     ));
 }
 
+/// A waiter back on a new link is the same row at its new address, still at
+/// its rank, and no row is left at the old one.
+#[test]
+fn a_relinked_waiter_keeps_its_row_at_its_new_link() {
+    let mut state = UiState::default();
+    fold(
+        &mut state,
+        serve_event(ServeEvent::PeerQueued {
+            peer: peer_endpoint(2),
+            rank: 1,
+            file_hash: file_hash(4),
+            software: None,
+        }),
+    );
+    assert!(fold(
+        &mut state,
+        serve_event(ServeEvent::WaiterRelinked {
+            from: peer_endpoint(2),
+            to: peer_endpoint(3),
+        }),
+    ));
+    assert!(!state.upload_peers.contains_key(&peer_endpoint(2)));
+    let row = &state.upload_peers[&peer_endpoint(3)];
+    assert_eq!(row.peer, peer_endpoint(3));
+    assert!(matches!(
+        row.state,
+        UploadState::Queued { rank: 1, file } if file == file_hash(4),
+    ));
+}
+
 #[test]
 fn queue_full_notes_without_creating_a_peer_row() {
     let mut state = UiState::default();
@@ -284,5 +314,45 @@ fn the_list_edges_read_as_what_happened_to_the_directory() {
             files: 1,
         }),
         "/srv/media no longer shared: 1 file left the offer, still on disk"
+    );
+}
+
+/// A Partial Share is its download's: core's edges open and close it, a File
+/// History answer — the registry's — leaves it be, and it is named by the
+/// download it belongs to.
+#[test]
+fn a_partial_share_outlives_a_registry_answer_and_ends_on_its_withdrawal() {
+    let mut state = crate::fixture::partially_served();
+    assert_eq!(
+        state.notable.as_deref(),
+        Some("a download offers the parts it has verified")
+    );
+    history(&[(1, "/dl/film.mkv", 734_003_200)]).fold_into(&mut state);
+    let download = state
+        .partial_download(file_hash(3))
+        .expect("the share is its download's");
+    assert_eq!(
+        download
+            .metadata
+            .as_ref()
+            .map(|m| m.name.to_display_string()),
+        Some("album.flac".to_string())
+    );
+    assert!(
+        !state.shared.contains_key(&file_hash(3)),
+        "never a registry row"
+    );
+
+    fold(
+        &mut state,
+        serve_event(ServeEvent::PartialWithdrawn {
+            file_hash: file_hash(3),
+            cause: rmule_core::PartialEnd::Completed,
+        }),
+    );
+    assert!(state.partial_download(file_hash(3)).is_none());
+    assert_eq!(
+        state.notable.as_deref(),
+        Some("a download finished and is shared whole")
     );
 }

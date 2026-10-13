@@ -7,14 +7,13 @@
 //! guarantee than the link it came from.
 
 use std::future::Future;
-use std::path::PathBuf;
 
-use rmule_primitives::{Ed2kFileLink, Ed2kLink, FileHash, PartHash, ServerEndpoint};
+use rmule_primitives::{Ed2kFileLink, Ed2kLink, PartHash, ServerEndpoint};
 
 use crate::content::Revalidation;
 use crate::file_history::Ed2kIdentity;
 use crate::{
-    CoreError, DownloadId, DownloadLifecycle, DownloadPaths, DurableDownloadRecord, FinalizeError,
+    CoreError, DownloadId, DownloadLifecycle, DownloadPaths, DurableDownloadRecord,
     VerifiedPartRecord,
 };
 
@@ -38,6 +37,37 @@ pub enum ResolvedAuthority {
     FileHashOnly,
 }
 
+impl ResolvedAuthority {
+    /// The part hashes in force, in part order: none for
+    /// [`Self::FileHashOnly`].
+    #[must_use]
+    pub fn into_part_hashes(self) -> Vec<PartHash> {
+        match self {
+            Self::Link(hashes) | Self::Provisional(hashes) => hashes,
+            Self::FileHashOnly => Vec::new(),
+        }
+    }
+}
+
+/// The part hashes `store` holds in force for `download_id`, in part order:
+/// none when it holds none, and none when it cannot read them, which is said.
+pub(crate) fn recorded_part_hashes<R: DownloadRepository + ?Sized>(
+    store: &R,
+    download_id: DownloadId,
+) -> Vec<PartHash> {
+    match store.hash_authority(download_id) {
+        Ok(authority) => authority.into_part_hashes(),
+        Err(error) => {
+            tracing::warn!(
+                download_id = download_id.as_u64(),
+                %error,
+                "the part hash set could not be read from the store"
+            );
+            Vec::new()
+        }
+    }
+}
+
 /// The precedence rule behind [`DownloadRepository::hash_authority`], shared by
 /// both adapters so it resolves identically: the canonical link's `p=` set
 /// wins, else the recorded provisional hashes, else file-hash-only.
@@ -59,7 +89,7 @@ pub(crate) fn resolve_hash_authority(
 
 /// The download storage boundary (ADR-0083): persistence is wholly the
 /// repository's business. Callers hand verified bytes across the seam and ask
-/// for finalization or resume-time revalidation; where the rows live (a
+/// for resume-time revalidation; where the rows live (a
 /// `rmule.redb` file or the engine's in-memory backend) and that the bytes go
 /// to content files composed via [`ContentFileStore`](crate::ContentFileStore)
 /// are not observable. The
@@ -103,14 +133,15 @@ pub trait DownloadRepository: Send + Sync + 'static {
     /// to fetch. Ordered by part index.
     fn verified_parts(&self, id: DownloadId) -> Result<Vec<VerifiedPartRecord>, CoreError>;
 
-    /// Record a peer-supplied part hash set for the download. Only one may be
-    /// in force — a second, different set is
-    /// [`CoreError::ProvisionalAuthorityConflict`].
+    /// Record a peer-supplied part hash set for the download, and drop in the
+    /// same write every verified part whose recorded hash the set disproves —
+    /// returned, to be fetched again. Only one set may be in force — a
+    /// second, different set is [`CoreError::ProvisionalAuthorityConflict`].
     fn record_provisional_part_hashes(
         &self,
         id: DownloadId,
         hashes: &[PartHash],
-    ) -> Result<(), CoreError>;
+    ) -> Result<Vec<VerifiedPartRecord>, CoreError>;
 
     /// The recorded peer-supplied hashes in part order, or empty when none were
     /// recorded. Prefer [`hash_authority`](Self::hash_authority), which applies
@@ -128,19 +159,6 @@ pub trait DownloadRepository: Send + Sync + 'static {
     /// `Paused`, `Failed`), as the last process left it — read once at attach,
     /// which starts the running ones again (ADR-0094). Writes nothing.
     fn live_downloads(&self) -> Result<Vec<DurableDownloadRecord>, CoreError>;
-
-    /// Verify the assembled content against the expected ED2K file hash, then
-    /// promote the download to [`DownloadLifecycle::Completed`] (for
-    /// content-file storage, the `.part` → final rename) and answer where the
-    /// finished file now lies. On any refusal nothing is promoted, and the
-    /// cause comes back typed: only [`FinalizeError::Mismatch`] says the parts
-    /// are wrong.
-    fn finalize(
-        &self,
-        id: DownloadId,
-        expected: FileHash,
-        file_size: u64,
-    ) -> impl Future<Output = Result<PathBuf, FinalizeError>> + Send;
 
     /// Resume-time revalidation: re-hash the stored content against the
     /// durable verified-part records (ADR-0094, "Damaged parts"). A part that

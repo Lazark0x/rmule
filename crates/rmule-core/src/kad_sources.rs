@@ -21,6 +21,7 @@ use tokio::sync::mpsc;
 use crate::adapters::KadSourceChannel;
 use crate::registry::SharedFileRegistry;
 use crate::registry_check::WithheldRows;
+use crate::served_downloads::ServedDownloads;
 use crate::source_discovery::{DiscoveryChannel, DiscoveryRegistry};
 
 /// A Kad answer routed to a download: each row's **Source Sighting**, as the
@@ -63,7 +64,8 @@ impl<C: KadSourceChannel> DiscoveryChannel for KadDiscoveryChannel<C> {
 
 /// The **Kad Publisher** (`crates/rmule-core/CONTEXT.md`): the small Core task
 /// that keeps the Kad node's publications equal to the offered rows of the
-/// **Shared File Registry** — the node owns the 5-hour republish. It is
+/// **Shared File Registry** and the **Partial Share**s — the node owns the
+/// 5-hour republish. It is
 /// registry-driven, not download-driven, so it keeps running with zero active
 /// downloads — which is why it is its own task rather than part of Kad
 /// discovery. It sweeps the offered rows once at start and again on every
@@ -78,6 +80,9 @@ pub(crate) struct KadPublisher<C> {
     shared_files: Arc<dyn SharedFileRegistry>,
     /// The **Withheld Row**s, which are not offered and so not published.
     withheld: WithheldRows,
+    /// The **Served Downloads**, whose Partial Shares are published as any
+    /// offered file is (ADR-0113 §"Announce and Kad").
+    served: ServedDownloads,
     /// Fires once per share-set change (share, unshare, withhold, or offer);
     /// a `None` recv means every notifier dropped (Core shutting down), which
     /// ends the task.
@@ -89,12 +94,14 @@ impl<C: KadSourceChannel> KadPublisher<C> {
         channel: C,
         shared_files: Arc<R>,
         withheld: WithheldRows,
+        served: ServedDownloads,
         share_changed_rx: mpsc::Receiver<()>,
     ) -> Self {
         Self {
             channel,
             shared_files,
             withheld,
+            served,
             share_changed_rx,
         }
     }
@@ -122,9 +129,11 @@ impl<C: KadSourceChannel> KadPublisher<C> {
         }
     }
 
-    /// Publish every offered file not yet published, and withdraw every
-    /// published file no longer offered. `false` when the registry could not
-    /// be read: an unread registry says nothing about what is offered, so the
+    /// Publish every offered file not yet published — the offered rows and
+    /// the Partial Shares, as aMule's source loop takes every shared file
+    /// (`SharedFileList.cpp:835-856`) — and withdraw every published file no
+    /// longer offered. `false` when the registry could not be read: an
+    /// unread registry says nothing about what is offered, so the
     /// publications stand as they are.
     async fn sweep(&self, published: &mut HashMap<FileHash, SourceLookupTarget>) -> bool {
         let listed = match self.shared_files.list() {
@@ -134,7 +143,7 @@ impl<C: KadSourceChannel> KadPublisher<C> {
                 return false;
             }
         };
-        let offered: HashMap<FileHash, SourceLookupTarget> = self
+        let mut offered: HashMap<FileHash, SourceLookupTarget> = self
             .withheld
             .offered(listed)
             .into_iter()
@@ -143,6 +152,13 @@ impl<C: KadSourceChannel> KadPublisher<C> {
                 (entry.file_hash, target)
             })
             .collect();
+        for file_hash in self.served.offered() {
+            if let Some(served) = self.served.served(file_hash) {
+                offered
+                    .entry(file_hash)
+                    .or_insert_with(|| SourceLookupTarget::new(file_hash, served.file_size));
+            }
+        }
         let withdrawn: Vec<FileHash> = published
             .keys()
             .filter(|file_hash| !offered.contains_key(file_hash))

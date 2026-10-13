@@ -261,3 +261,33 @@ fn a_tag_cut_at_any_byte_is_a_truncation_for_every_shape() {
         }
     }
 }
+
+/// A list entry of a type eD2k defines and rmule never reads is stepped over
+/// by its width, a modelled one is decoded, and only truncation or a type
+/// byte eD2k does not define ends the walk (ADR-0053).
+#[test]
+fn a_list_entry_rmule_never_reads_is_stepped_over_by_its_width() {
+    // eMule's `TAG_KADAICHHASHRESULT`: a BSOB under the one-byte name 0x37,
+    // carrying one (popularity, AICH hash) pair.
+    let mut bsob = vec![0x0A, 0x01, 0x00, 0x37, 21, 0x01];
+    bsob.extend_from_slice(&[0xAB; 20]);
+    let u32_tag = [0x83, 0x01, 0x2A, 0x00, 0x00, 0x00];
+    let list = [bsob.as_slice(), &u32_tag].concat();
+
+    assert_eq!(
+        Tag::decode_or_step_prefix(&list).unwrap(),
+        (None, bsob.len())
+    );
+    let (tag, used) = Tag::decode_or_step_prefix(&list[bsob.len()..]).unwrap();
+    assert_eq!(used, u32_tag.len());
+    assert_eq!(tag.map(|tag| tag.value().clone()), Some(TagValue::U32(42)));
+
+    assert!(matches!(
+        Tag::decode_or_step_prefix(&bsob[..bsob.len() - 1]),
+        Err(PrimitiveError::TruncatedTag { .. })
+    ));
+    assert!(matches!(
+        Tag::decode_or_step_prefix(&[0x8C, 0x01, 0x00]),
+        Err(PrimitiveError::UnsupportedTagType { tag_type: 0x0C })
+    ));
+}

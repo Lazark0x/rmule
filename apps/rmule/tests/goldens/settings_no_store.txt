@@ -1,15 +1,16 @@
 ┌ Settings ──────────────────────────────────── j/k row  ←→ step  Enter edit ┐
-│Paths                                                                       │
-│ Download dir unset — downloads have nowhere to land                        │
-│ Data dir     —  (none: give --data-dir, or set RMULE_DATA or HOME)         │
-│                                                                            │
-│Shared directories                                                          │
-│ Share a dir  Enter, type an absolute path, Enter                           │
-│                                                                            │
-│Network                                                                     │
-│ Nickname     rmule  (on restart)                                           │
-│ eD2k port    4662  (on restart)                                            │
-│ UDP port     4672  (on restart)                                            │
+│Paths                                                                      ▲│
+│ Download dir unset — downloads have nowhere to land                       █│
+│ Temp dir     the default: Temp in the data dir                            █│
+│ Data dir     —  (none: give --data-dir, or set RMULE_DATA or HOME)        █│
+│                                                                           █│
+│Shared directories                                                         █│
+│ Share a dir  Enter, type an absolute path, Enter                          █│
+│                                                                           █│
+│Network                                                                    █│
+│ Nickname     rmule  (on restart)                                          █│
+│ eD2k port    4662  (on restart)                                           █│
+│ UDP port     4672  (on restart)                                           ▆│
 │ Obfuscation  off  peer TCP/UDP + Kad + server UDP                          │
 │ Port mapping on  opens router ports: UPnP, PCP, NAT-PMP  (on restart)      │
 │ Autoconnect  off  at start, to the last server — none yet  (on restart)    │
@@ -18,6 +19,5 @@
 │                                                                            │
 │Servers                                                                     │
 │ Dead after   3  failed tries in a row; a dead server stays listed          │
-│ Hide shares  off  from servers that answer related searches                │
-│                                                                            │
-└────────────────────────────────────────────────────────────────────────────┘
+│ Hide shares  off  from servers that answer related searches               ▼│
+└──────────────────────────────────────────────────────────────────── 1 / 19 ┘

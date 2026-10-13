@@ -314,6 +314,54 @@ async fn commands_naming_an_unlisted_server_are_refused() {
     }
 }
 
+/// A server the operator adds is rmule's own word (ADR-0085): an address no
+/// server can be at is refused by name and never listed, while a LAN server
+/// and a loopback one — a single-host lab's — are listed.
+#[tokio::test]
+async fn an_added_server_no_server_can_be_at_is_refused() {
+    let mut core = Core::builder(list_only(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
+
+    for host in [
+        "255.255.255.255",
+        "224.0.0.1",
+        "0.0.0.5",
+        "169.254.1.1",
+        "ff02::1",
+    ] {
+        send(
+            &core,
+            ServerListCommand::AddServer {
+                server: ManagedServer::listed(endpoint(host, 4661)),
+            },
+        )
+        .await;
+        assert_eq!(
+            next_rejection(&mut core).await,
+            CoreCommandRejectReason::ServerAddressReserved,
+            "{host}"
+        );
+    }
+    for host in ["192.168.1.10", "127.0.0.1"] {
+        send(
+            &core,
+            ServerListCommand::AddServer {
+                server: ManagedServer::listed(endpoint(host, 4661)),
+            },
+        )
+        .await;
+        assert!(
+            matches!(
+                next_edge(&mut core).await,
+                ServerListEvent::ServerAdded { .. }
+            ),
+            "{host}"
+        );
+    }
+    assert_eq!(listed(&core).len(), 2);
+}
+
 // --- the swept list follows the list ---------------------------------------
 
 /// A server-UDP socket standing in for a listed server, and the TCP endpoint
@@ -374,10 +422,12 @@ async fn the_search_sweep_follows_the_list_through_add_import_and_remove() {
         "a server added mid-run is swept"
     );
 
+    // The rig's servers are on loopback, so its list comes from a mirror on
+    // this host: a remote mirror's loopback row is refused (ADR-0085).
     send(
         &core,
         ServerListCommand::UpdateServerList {
-            url: "http://mirror/server.met".to_owned(),
+            url: "http://127.0.0.1/server.met".to_owned(),
         },
     )
     .await;

@@ -143,6 +143,7 @@ fn request_for<S, P>(
             60,
         ),
         verified_part_indexes: Vec::new(),
+        order: crate::scheduler::PartOrder::Rarest,
         peer_concurrency: 1,
         discovery: DiscoveryLiveness {
             global_servers: std::sync::Arc::default(),
@@ -150,6 +151,7 @@ fn request_for<S, P>(
             session: runner.rt.diagnostics.clone(),
         },
         remembered: Vec::new(),
+        recovered: None,
     }
 }
 

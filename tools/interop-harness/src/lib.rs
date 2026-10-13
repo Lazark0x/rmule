@@ -17,3 +17,4 @@ pub mod kad_seed;
 pub mod nat;
 pub mod readiness;
 pub mod rmule;
+pub mod run_record;

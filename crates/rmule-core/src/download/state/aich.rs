@@ -135,9 +135,6 @@ impl DownloadState {
         // Hand the re-pended part to a still-connected idle worker (slot order),
         // then backfill. Redundant with `release`'s own reassign when a bad
         // contributor was retired, but covers the case where none still are.
-        for p in self.connected_workers() {
-            self.assign(p, out);
-        }
-        self.fill(now, out);
+        self.reassign_workers(now, out);
     }
 }

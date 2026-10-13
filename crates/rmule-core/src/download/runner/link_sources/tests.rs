@@ -5,7 +5,7 @@
 use std::net::Ipv4Addr;
 
 use rmule_primitives::{
-    Ed2kFileLink, Ed2kLink, Ipv4Endpoint, PeerEndpoint, PeerSource, SourceCryptOptions,
+    Ed2kFileLink, Ed2kLink, Informant, Ipv4Endpoint, PeerEndpoint, PeerSource, SourceCryptOptions,
     SourceSighting, UserHash,
 };
 
@@ -78,6 +78,7 @@ async fn a_sources_crypt_byte_and_user_hash_ride_its_candidate() {
         PeerSource::HighId(Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 7), 4662)),
         Some(UserHash::from_hex("31D6CFE0D16AE931B73C59D7E0C089C0").unwrap()),
         Some(SourceCryptOptions::from_byte(129)),
+        Informant::Own,
     );
     assert_eq!(sources, [expected]);
 }

@@ -18,8 +18,8 @@ use anyhow::{Context, Result, bail};
 
 use crate::artifacts::RunLayout;
 use crate::bench_doctor::{
-    BenchDoctor, CAP_BR_NETFILTER, CAP_CONNTRACK, CAP_CONNTRACK_UDP_TIMEOUT, CAP_NFTABLES,
-    DoctorReport, SkipReason,
+    CAP_BR_NETFILTER, CAP_CONNTRACK, CAP_CONNTRACK_UDP_TIMEOUT, CAP_NFTABLES, DoctorReport,
+    SkipReason,
 };
 use crate::docker::{InternalNetwork, RunContainer};
 use crate::fake_public::{MAX_NODES_PER_SUBNET, fake_public_address, subnet_cidr};
@@ -28,6 +28,7 @@ use crate::flow::gate::wait_for_container_log;
 use crate::flow::nat::claims::{Body, Claim, label};
 use crate::flow::nat::natt::NattFlow;
 use crate::flow::nat::natt::verdict::{NattVerdict, WireRow, write};
+use crate::flow::pinned_image::AMULE_KNO;
 use crate::flow::taps::{Attachment, PerAttachmentTaps, TapRole, TapsRecord, write_taps_record};
 
 /// Every tap records all IP traffic on the body's own attachment. A NAT-T
@@ -161,26 +162,22 @@ pub(crate) fn run(options: NattOptions<'_>) -> Result<()> {
 
 fn drive(bench: &mut Bench, options: &NattOptions<'_>) -> Result<()> {
     let flow = options.flow;
-    build_images(bench, options)?;
-
     let suffix = run_suffix(options.layout)?;
-    // Recorded, never required: `natt-caps-utp` puts no gateway on the path,
-    // so it has no capability to be short of — and a capability list in the
-    // verdict is what lets a later reader tell this run's bench from the one a
-    // gateway flow needed.
-    let doctor: DoctorReport = BenchDoctor::new(&bench.docker, options.natgw_image, &suffix)
-        .examine()
-        .context("run the bench doctor")?;
-
-    let leg_dir = options.layout.nat_dir().join(flow.name());
-    fs::create_dir_all(&leg_dir).with_context(|| format!("create {}", leg_dir.display()))?;
-    fs::create_dir_all(options.layout.docker_dir())?;
-
+    // The doctor decides before anything but its own image is built. Recorded,
+    // never required, by `natt-caps-utp`: it puts no gateway on the path, so it
+    // has no capability to be short of — and a capability list in the verdict is
+    // what lets a later reader tell this run's bench from the one a gateway flow
+    // needed.
+    let doctor: DoctorReport = bench.examine_doctor(
+        "natgw",
+        options.natgw_image,
+        options.natgw_build_context,
+        &suffix,
+    )?;
     let subnet_v4 = subnet_cidr(super::WAN_SUBNET_INDEX)?;
-    if let Some(nat_type) = flow.nat_type() {
+    if flow.nat_type().is_some() {
         // A gateway-bearing row stands its own topology up: two LANs, two
-        // gateways and two long-lived driver containers, which is a different
-        // shape from the single shared WAN below rather than a variation of it.
+        // gateways and two long-lived driver containers.
         if let Err(skip) = doctor.require(
             &[
                 CAP_NFTABLES,
@@ -192,6 +189,14 @@ fn drive(bench: &mut Bench, options: &NattOptions<'_>) -> Result<()> {
         ) {
             return write_skip(options.layout, flow, &doctor, &skip, &subnet_v4);
         }
+    }
+    build_images(bench, options)?;
+
+    let leg_dir = options.layout.nat_dir().join(flow.name());
+    fs::create_dir_all(&leg_dir).with_context(|| format!("create {}", leg_dir.display()))?;
+    fs::create_dir_all(options.layout.docker_dir())?;
+
+    if let Some(nat_type) = flow.nat_type() {
         let (driven, wire, taps) = if flow == NattFlow::UdpSelfCheckAmule {
             super::buddy::selfcheck::amule::drive(bench, options, nat_type, &suffix, &leg_dir)?
         } else if flow == NattFlow::BuddyRecruitAmule {
@@ -397,8 +402,7 @@ pub(crate) struct Driven {
 fn build_images(bench: &Bench, options: &NattOptions<'_>) -> Result<()> {
     if options.build_images {
         if options.flow.needs_amule_kno() {
-            bench
-                .build_amule_kno_image(options.amule_kno_image, options.amule_kno_build_context)?;
+            AMULE_KNO.build(options.amule_kno_image, options.amule_kno_build_context)?;
         }
         if options.flow.needs_ed2ksrv() || options.low_id_buddy {
             crate::flow::ed2ksrv::build(
@@ -417,7 +421,6 @@ fn build_images(bench: &Bench, options: &NattOptions<'_>) -> Result<()> {
     // `COPY`s, so an edited `entrypoint.sh` or `natgw-proof.sh` reaches the
     // bench without `--build-images`.
     if options.flow.needs_natprobe() {
-        bench.build_image("natgw", options.natgw_image, options.natgw_build_context)?;
         bench.build_image(
             "natprobe",
             options.natprobe_image,
@@ -444,9 +447,10 @@ fn start_bodies(
     let mut observed = None;
     if options.flow.needs_amule_kno() {
         let name = format!("rmule-interop-nattkno-{suffix}");
+        let kno = AMULE_KNO.check(&bench.docker, options.amule_kno_image)?;
         bench.start_extra(
             &name,
-            RunContainer::new(options.amule_kno_image)
+            kno.container()
                 .detach()
                 .name(&name)
                 .network(&stage.network)
@@ -458,7 +462,7 @@ fn start_bodies(
         stage.bodies.push(Body {
             name: "amule-kno".to_owned(),
             image: options.amule_kno_image.to_owned(),
-            pin: "kno/amule integration/network-parity ab483654".to_owned(),
+            pin: kno.pin(),
             address_v4: stage.v4(HOST_AMULE_KNO).to_owned(),
             address_v6: String::new(),
         });

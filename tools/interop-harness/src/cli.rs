@@ -22,6 +22,7 @@ pub(crate) mod ask_budget;
 pub(crate) mod bench;
 pub(crate) mod bootstrap;
 pub(crate) mod ed2k_server;
+pub(crate) mod holepunch_fail;
 pub(crate) mod kad_buddy;
 pub(crate) mod kad_capture;
 pub(crate) mod kad_dialed_link;
@@ -29,7 +30,10 @@ pub(crate) mod kad_network;
 pub(crate) mod lowid_callback_reask;
 pub(crate) mod nat;
 pub(crate) mod packed_source_exchange;
+pub(crate) mod partial_share;
 pub(crate) mod peer;
+pub(crate) mod server_callback_serve;
+pub(crate) mod streaming_window;
 pub(crate) mod sweep_follows_list;
 
 /// A build context must be a directory; checked before the run dir exists so a
@@ -76,7 +80,10 @@ pub(crate) fn create_run_dir(run_root: &Path) -> Result<PathBuf> {
         };
         let run_dir = run_root.join(name);
         match std::fs::create_dir(&run_dir) {
-            Ok(()) => return Ok(run_dir),
+            Ok(()) => {
+                rmule_interop_harness::run_record::begin(&run_dir)?;
+                return Ok(run_dir);
+            }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
                 return Err(error).with_context(|| format!("create run dir {}", run_dir.display()));

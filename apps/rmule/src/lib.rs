@@ -24,6 +24,8 @@
 //! - [`connect`] — the connect at start (ADR-0095): off unless the operator
 //!   turned it on, and then the operator's own `ConnectToServer` to the
 //!   server they last connected to — nothing else in the app ever dials.
+//! - [`player`] — the Player Command (ADR-0114): the operator's player as
+//!   words split by POSIX rules, never a shell line.
 //! - [`config`] — front-end-owned configuration (ADR-0069): the app-config
 //!   seam over the one Durable Store that core's server-list seam and the
 //!   Settings tab share, the preference snapshot, and the edit vocabulary that
@@ -64,6 +66,7 @@ pub mod connect;
 pub(crate) mod form;
 pub mod input;
 pub mod kad;
+pub mod player;
 pub mod rates;
 pub mod row_selection;
 pub mod state;

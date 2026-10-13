@@ -13,7 +13,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::adapters::RuntimeServerUdpTransport;
-use crate::download::StopReason;
+use crate::download::{RunNumber, StopReason};
 use crate::server_capabilities::SharedServerCapabilities;
 
 use super::{DownloadId, SearchId};
@@ -69,7 +69,7 @@ pub(super) struct Activities<L> {
     /// retire (ADR-0093).
     downloads: HashMap<DownloadId, ActiveDownload>,
     /// The run number the next download run is given; never reused.
-    next_download_run: u64,
+    next_download_run: RunNumber,
     /// The downloads attach found running and has yet to start, in store
     /// order: one leaves per restore pace (ADR-0094). Not in the Download Set
     /// until then — a pause, cancel or resume reaches one here.
@@ -91,7 +91,7 @@ impl<L> Default for Activities<L> {
         Self {
             searches: Searches::default(),
             downloads: HashMap::new(),
-            next_download_run: 0,
+            next_download_run: RunNumber::default(),
             restoring: VecDeque::new(),
             remembered: HashMap::new(),
             serve: None,
@@ -115,9 +115,9 @@ impl<L> Activities<L> {
     }
 
     /// The run number for a download run about to start.
-    pub(super) const fn take_download_run(&mut self) -> u64 {
+    pub(super) const fn take_download_run(&mut self) -> RunNumber {
         let run = self.next_download_run;
-        self.next_download_run = run.wrapping_add(1);
+        self.next_download_run = run.next();
         run
     }
 
@@ -269,7 +269,7 @@ pub(super) struct ActiveDownload {
     /// Which run of this download this is: its finish notice carries it, so
     /// a notice from a run a stop already retired never retires the run a
     /// later start or resume put under the same id.
-    pub(super) run: u64,
+    pub(super) run: RunNumber,
     /// The file this run holds — the key of its **File-Known Predicate**
     /// entry, returned at its retire.
     pub(super) file_hash: FileHash,
@@ -280,12 +280,15 @@ pub(super) struct ActiveDownload {
     /// The run's latest **Source Seeds** ranking (ADR-0109), which the actor
     /// writes every ten minutes and at Quit.
     pub(super) seeds: watch::Receiver<Vec<crate::download::source_seeds::SourceSeed>>,
+    /// The run's **Completion Gate** (ADR-0115): a Pause or Cancel closes it,
+    /// or is refused once the finished file is in place.
+    pub(super) completion: std::sync::Arc<crate::download::CompletionGate>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FinishedActivity {
     /// A download run ended: the download and which run of it.
-    Download(DownloadId, u64),
+    Download(DownloadId, RunNumber),
     /// A search ended on its own: the search and which run of it.
     Search(SearchId, u64),
 }

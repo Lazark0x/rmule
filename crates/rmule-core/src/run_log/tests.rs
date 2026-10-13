@@ -89,6 +89,7 @@ fn session_events() -> Vec<CoreEvent> {
                 size: 734_003_200,
                 origin: crate::DownloadMetadataOrigin::Link,
             },
+            file_path: std::path::PathBuf::from("/home/ann/films/secret holiday film.avi.part"),
         }),
         CoreEvent::Download(DownloadEvent::PeerSelected {
             download_id: DownloadId::from_u64(3),
@@ -215,6 +216,7 @@ fn the_full_log_holds_the_same_events_with_what_lean_withholds() {
         "file_hash=ABABABABABABABABABABABABABABABAB",
         "user_hash=CDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCD",
         "dir=\"/home/ann/private-share\"",
+        "file_path=\"/home/ann/films/secret holiday film.avi.part\"",
         "software=\"amule\" software_version=\"2.3.3\"",
         "free-form line naming peer 198.51.100.9",
         "server.connected server=203.0.113.7:4661",

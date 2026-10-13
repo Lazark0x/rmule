@@ -164,6 +164,7 @@ impl ChromeState {
             | Action::ForgetSearch(_)
             | Action::SearchRelated(_)
             | Action::StartKad
+            | Action::Preview(_)
             | Action::Quit => false,
         }
     }

@@ -96,6 +96,7 @@ fn queue_clip(state: &mut UiState) {
                 size: CLIP_SIZE,
                 origin: DownloadMetadataOrigin::Link,
             },
+            file_path: crate::fixture::part_file(),
         }),
     );
 }
@@ -392,6 +393,7 @@ fn a_failed_download_from_before_reasons_were_kept_says_so() {
                 size: CLIP_SIZE,
                 origin: DownloadMetadataOrigin::Link,
             },
+            file_path: crate::fixture::part_file(),
         }),
     );
 
@@ -443,4 +445,38 @@ fn golden_searches_readd_have() {
     assert_golden("searches_readd_have", 78, 21, |frame| {
         view.draw(frame, frame.area(), &state, &theme(), Instant::now());
     });
+}
+
+#[test]
+fn golden_searches_readd_scrolls_in_a_short_frame() {
+    let mut view = SearchesView::new().having_sent("alpha");
+    let mut state = session_state();
+    fold(
+        &mut state,
+        search_event(SearchEvent::SearchResultsReceived {
+            search_id: search_id(1),
+            results: three_tier_results(),
+        }),
+    );
+    state.file_history = Some(history(
+        Some(PathBuf::from("/home/me/Downloads/clip_low.avi")),
+        false,
+        false,
+    ));
+    view.held.bind(&state);
+    download_clip(&mut view, &state);
+    let shown = |view: &mut SearchesView| {
+        crate::golden::render_to_lines(60, 6, |frame| {
+            view.draw(frame, frame.area(), &state, &theme(), Instant::now());
+        })
+    };
+    assert_golden("searches_readd_short", 60, 6, |frame| {
+        view.draw(frame, frame.area(), &state, &theme(), Instant::now());
+    });
+    view.handle_key(press(KeyCode::Char('G')), &state);
+    assert!(
+        shown(&mut view).contains("Esc keep"),
+        "{}",
+        shown(&mut view)
+    );
 }

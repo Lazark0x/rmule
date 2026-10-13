@@ -13,7 +13,7 @@ use crate::action::Action;
 use crate::state::UiState;
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
-use crate::views::modal::Modal;
+use crate::views::modal::{Modal, scroll_key};
 use crate::words::units::short_hash_or_dash;
 use crate::wrap::wrapped_lines;
 
@@ -33,7 +33,10 @@ impl TransfersView {
                 self.overlay = Overlay::None;
                 ViewOutcome::Redraw
             }
-            _ => ViewOutcome::Redraw,
+            code => {
+                scroll_key(&mut self.confirm_viewport, code);
+                ViewOutcome::Redraw
+            }
         }
     }
 
@@ -50,33 +53,36 @@ impl TransfersView {
             |id| short_hash_or_dash(state.downloads.get(&id).and_then(|r| r.file_hash)),
         );
         let width = 42u16.min(area.width);
-        let text_w = usize::from(width).saturating_sub(2).max(1);
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        // Both prose lines wrap rather than clip.
-        lines.extend(wrapped_lines(&short, text_w, Style::new().fg(theme.fg)));
-        lines.extend(wrapped_lines(
-            "This deletes the part file.",
-            text_w,
-            Style::new().fg(theme.bad),
-        ));
-        lines.push(Line::raw(""));
-        lines.push(Line::from(vec![
-            Span::styled(
-                "y",
-                Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" confirm    ", Style::new().fg(theme.fg)),
-            Span::styled(
-                "Esc",
-                Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" abort", Style::new().fg(theme.fg)),
-        ]));
+        let lines = |width: u16| {
+            let text_w = usize::from(width).saturating_sub(2).max(1);
+            let mut lines: Vec<Line<'static>> = Vec::new();
+            // Both prose lines wrap rather than clip.
+            lines.extend(wrapped_lines(&short, text_w, Style::new().fg(theme.fg)));
+            lines.extend(wrapped_lines(
+                "This deletes the part file.",
+                text_w,
+                Style::new().fg(theme.bad),
+            ));
+            lines.push(Line::raw(""));
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "y",
+                    Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" confirm    ", Style::new().fg(theme.fg)),
+                Span::styled(
+                    "Esc",
+                    Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" abort", Style::new().fg(theme.fg)),
+            ]));
+            lines
+        };
 
         Modal::new(" Cancel download ", theme)
             .flash_title(theme)
             .at_least(6)
-            .draw(frame, area, width, theme, lines);
+            .draw_scrolled(frame, area, width, theme, &self.confirm_viewport, lines);
     }
 }
 
@@ -133,5 +139,28 @@ mod tests {
             let area = frame.area();
             view.draw(frame, area, &state, &Theme::default_dark(), now());
         });
+    }
+
+    /// In a frame too short for the question, `G` scrolls to the legend and
+    /// the bottom border says where the operator is.
+    #[test]
+    fn golden_confirm_cancel_scrolls_in_a_short_frame() {
+        let mut view = TransfersView::new();
+        view.overlay = Overlay::ConfirmCancel;
+        let state = three_downloads();
+        let shown = |view: &mut TransfersView| {
+            crate::golden::render_to_lines(60, 5, |frame| {
+                let area = frame.area();
+                view.draw(frame, area, &state, &Theme::default_dark(), now());
+            })
+        };
+        assert_golden("transfers_confirm_cancel_short", 60, 5, |frame| {
+            let area = frame.area();
+            view.draw(frame, area, &state, &Theme::default_dark(), now());
+        });
+        assert!(!shown(&mut view).contains("abort"));
+        view.handle_key(press(KeyCode::Char('G')), &state);
+        let end = shown(&mut view);
+        assert!(end.contains("Esc abort") && end.contains("4 / 4"), "{end}");
     }
 }
