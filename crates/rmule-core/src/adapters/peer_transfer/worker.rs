@@ -585,12 +585,23 @@ async fn stream_part_download(
                     .await;
                 return Streamed::WindDown;
             }
-            PeerEvent::Requester(RequesterEvent::SlotReleased {
-                file_hash: released,
-                reason: SlotReleaseReason::QueueRejected,
-            }) if released == file_hash => {
-                let _ = event_tx.send(PeerWorkerEvent::SlotRejected).await;
-                return Streamed::WindDown;
+            // `OP_OUTOFPARTREQS` on the granted slot: the transfer is over,
+            // not the flow. The part goes back to the download, and the
+            // worker stays on the link for the next grant (ADR-0057).
+            PeerEvent::Requester(RequesterEvent::Requeued {
+                file_hash: requeued,
+            }) if requeued == file_hash => {
+                return match event_tx.send(PeerWorkerEvent::Requeued).await {
+                    Ok(()) => Streamed::Next,
+                    Err(_) => Streamed::WindDown,
+                };
+            }
+            PeerEvent::Requester(RequesterEvent::SlotAsked { file_hash: asked })
+                if asked == file_hash =>
+            {
+                if event_tx.send(PeerWorkerEvent::SlotAsked).await.is_err() {
+                    return Streamed::WindDown;
+                }
             }
             PeerEvent::Requester(RequesterEvent::SlotReleased {
                 file_hash: released,

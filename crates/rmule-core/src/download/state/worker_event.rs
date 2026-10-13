@@ -150,9 +150,6 @@ impl DownloadState {
                 // dial: the record leaves the book unspent.
                 self.release(now, peer, PeerRetirementReason::CryptIncompatible, &mut out);
             }
-            PeerWorkerEvent::SlotRejected => {
-                self.release(now, peer, PeerRetirementReason::SlotRejected, &mut out);
-            }
             PeerWorkerEvent::SlotTimeout => {
                 out.push(Decision::Emit(DownloadEvent::PeerSlotTimeout {
                     download_id: self.download_id,
@@ -160,6 +157,10 @@ impl DownloadState {
                 }));
                 self.release(now, peer, PeerRetirementReason::SlotTimeout, &mut out);
             }
+            // The upload request left: the source is on the uploader's queue,
+            // ranked or not, as aMule's `DS_ONQUEUE` (ADR-0090).
+            PeerWorkerEvent::SlotAsked => self.sources.on_queue(peer, now),
+            PeerWorkerEvent::Requeued => self.requeued(now, peer, &mut out),
             PeerWorkerEvent::Queued { rank } => {
                 // The rank earns or refreshes the record's standing, its clock
                 // started at ask time as aMule dates it, so a source that

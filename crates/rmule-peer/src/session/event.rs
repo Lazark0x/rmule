@@ -139,8 +139,6 @@ pub enum FileProbeStatus {
 pub enum SlotReleaseReason {
     /// All requested parts arrived and verified.
     DownloadComplete,
-    /// Peer refused the slot (`OP_OUTOFPARTREQS` or queue terminal).
-    QueueRejected,
     /// Peer closed the connection mid-slot.
     PeerClosed,
     /// Wire-level protocol violation forced session into terminal

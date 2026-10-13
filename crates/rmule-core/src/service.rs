@@ -345,6 +345,10 @@ pub enum PartReleaseReason {
     Paused,
     /// The download was cancelled by the caller.
     Cancelled,
+    /// The uploader ended our granted slot and put us back on its queue
+    /// (`OP_OUTOFPARTREQS`, ADR-0057): the worker stays on its link, queued,
+    /// and the part goes back for retry.
+    BackOnQueue,
 }
 
 /// Why a peer was retired from a download. The single retirement-reason
@@ -354,8 +358,6 @@ pub enum PartReleaseReason {
 pub enum PeerRetirementReason {
     /// The peer closed the connection, or the link failed under it.
     PeerDisconnected,
-    /// The peer refused the upload slot outright (`OP_OUTOFPARTREQS`).
-    SlotRejected,
     /// `slot_wait_timeout` elapsed with the peer still queueing us.
     SlotTimeout,
     /// A part this peer served did not match its hash — the peer is dropped,

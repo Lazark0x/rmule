@@ -434,20 +434,29 @@ impl PeerSession {
                 // Slot already held for this file: send another block
                 // request directly over it (ADR-0025, amended). Only once
                 // the slot is granted (`Downloading`); before the grant the
-                // first request is still pending and carries the ranges.
-                let downloading = self
-                    .per_file
-                    .get(&file_hash)
-                    .is_some_and(|flow| matches!(flow.slot, SlotState::Downloading));
-                if downloading {
-                    let width = PartOffsetWidth::for_file_size(file_size);
-                    let req = RequestPartsPacket { file_hash, ranges };
-                    match req.encode_packet(width) {
-                        Ok(p) => self.write_packet(p),
-                        Err(_) => {
-                            self.release_slot(file_hash, SlotReleaseReason::ProtocolViolation)
-                        }
+                // first request is still pending and carries the ranges. A
+                // flow queued again by `OP_OUTOFPARTREQS` holds none: this
+                // request waits for the next grant, as a first one does.
+                let width = PartOffsetWidth::for_file_size(file_size);
+                let Some(flow) = self.per_file.get_mut(&file_hash) else {
+                    return;
+                };
+                match flow.slot {
+                    SlotState::Downloading => {}
+                    SlotState::Queued if flow.pending_request.is_none() => {
+                        flow.pending_request = Some(PendingRequest {
+                            ranges,
+                            width,
+                            requestparts_sent: false,
+                        });
+                        return;
                     }
+                    _ => return,
+                }
+                let req = RequestPartsPacket { file_hash, ranges };
+                match req.encode_packet(width) {
+                    Ok(p) => self.write_packet(p),
+                    Err(_) => self.release_slot(file_hash, SlotReleaseReason::ProtocolViolation),
                 }
                 return;
             }
@@ -768,15 +777,30 @@ impl PeerSession {
         }
     }
 
+    /// `OP_OUTOFPARTREQS`: on a granted slot the uploader ended our transfer
+    /// and queued us again, so the flow goes back to queued on this link, the
+    /// blocks asked for dropped and its rank forgotten for the
+    /// `OP_QUEUERANKING` that follows (ADR-0025). aMule acts on it only while
+    /// downloading (`ClientTCPSocket.cpp:755-762`): while only queued it
+    /// changes nothing.
     pub(super) fn on_out_of_part_reqs(&mut self) {
         let Some(active) = self.active_slot else {
             return;
         };
+        let flow = self
+            .per_file
+            .get_mut(&active)
+            .expect("active_slot entry must exist");
+        if flow.slot != SlotState::Downloading {
+            return;
+        }
+        flow.slot = SlotState::Queued;
+        flow.pending_request = None;
+        flow.last_rank = None;
         self.core
-            .push_event(PeerEvent::Requester(RequesterEvent::QueueRejected {
+            .push_event(PeerEvent::Requester(RequesterEvent::Requeued {
                 file_hash: active,
             }));
-        self.release_slot(active, SlotReleaseReason::QueueRejected);
     }
 
     pub(super) fn on_queue_ranking(&mut self, rank: u16) {
@@ -825,6 +849,10 @@ impl PeerSession {
         }
         flow.slot = SlotState::Queued;
         self.write_packet(StartUploadReq { file_hash }.encode_packet());
+        self.core
+            .push_event(PeerEvent::Requester(RequesterEvent::SlotAsked {
+                file_hash,
+            }));
     }
 
     /// Terminate the active slot context for `file_hash` (ADR-0025): the

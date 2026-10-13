@@ -100,7 +100,8 @@ pub enum PeerPacket {
     /// `OP_CANCELTRANSFER` (`0x56`, ADR-0056): "stop sending, I no longer
     /// want this transfer." Symmetric — either capability may receive it.
     CancelTransfer(CancelTransfer),
-    /// `OP_OUTOFPARTREQS` (`0x57`): no slot, now or any longer.
+    /// `OP_OUTOFPARTREQS` (`0x57`): the granted transfer is over; back to the
+    /// queue.
     OutOfPartReqs(OutOfPartReqs),
     /// `OP_QUEUERANKING` (`0x60` under Emule): how far from the front the queued peer stands.
     QueueRanking(QueueRanking),

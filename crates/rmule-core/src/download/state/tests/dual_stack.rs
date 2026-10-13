@@ -267,7 +267,7 @@ fn a_single_address_source_whose_dial_failed_is_not_redialled() {
 }
 
 /// A source that completed its handshake is alive, however its session ended
-/// — a refused slot here — so it is never spent.
+/// — a slot wait that timed out here — so it is never spent.
 #[test]
 fn a_source_that_connected_is_redialled_when_sighted_again() {
     let mut state = exchanging_state(DialPosition::default());
@@ -280,7 +280,7 @@ fn a_source_that_connected_is_redialled_when_sighted_again() {
     let _ = end(
         &mut state,
         PeerEndpoint::V4(v4()),
-        PeerWorkerEvent::SlotRejected,
+        PeerWorkerEvent::SlotTimeout,
     );
 
     assert_eq!(sight_single(&mut state), vec![PeerEndpoint::V4(v4())]);

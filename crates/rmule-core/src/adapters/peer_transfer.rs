@@ -142,6 +142,9 @@ pub enum PeerWorkerEvent {
         /// The part hashes in part order.
         part_hashes: Vec<PartHash>,
     },
+    /// Our upload request (`OP_STARTUPLOADREQ`) left: the peer queues us,
+    /// ranked or not (aMule `DS_ONQUEUE`, ADR-0090).
+    SlotAsked,
     /// The peer answered our upload request with a queue position
     /// (`OP_QUEUERANKING`). Non-terminal: the worker stays connected and
     /// keeps waiting for `OP_ACCEPTUPLOADREQ`.
@@ -218,9 +221,11 @@ pub enum PeerWorkerEvent {
         /// The master root this peer proposes for the file.
         root: AichRootHash,
     },
-    /// The peer refused the upload request outright (`OP_OUTOFPARTREQS`).
-    /// Terminal for this worker.
-    SlotRejected,
+    /// The peer ended our granted slot and put us back on its queue
+    /// (`OP_OUTOFPARTREQS`, ADR-0057). Not terminal: the worker stays on its
+    /// link, queued, and waits for the next grant with whatever part it is
+    /// handed next.
+    Requeued,
     /// The connection ended, for any reason. Terminal — no further event
     /// follows, and core retires the worker.
     Disconnected,

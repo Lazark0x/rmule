@@ -230,9 +230,17 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
         D::PeerSlotTimeout { peer, .. } => {
             format!("peer {} took too long to grant a slot", address(*peer))
         }
-        D::SourceRemoteQueued { peer, rank, .. } => {
-            format!("peer {} keeps us queued at rank {rank}", address(*peer))
-        }
+        D::SourceRemoteQueued {
+            peer,
+            rank: Some(rank),
+            ..
+        } => format!("peer {} keeps us queued at rank {rank}", address(*peer)),
+        D::SourceRemoteQueued {
+            peer, rank: None, ..
+        } => format!(
+            "peer {} keeps us queued, at a rank not yet known",
+            address(*peer)
+        ),
         D::SourceReaskAcked { peer, rank, .. } => {
             format!("peer {} answered the reask: rank {rank}", address(*peer))
         }

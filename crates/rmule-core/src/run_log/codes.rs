@@ -192,7 +192,6 @@ pub(super) const fn authority(authority: VerificationAuthority) -> &'static str 
 pub(super) const fn retirement(reason: PeerRetirementReason) -> &'static str {
     match reason {
         PeerRetirementReason::PeerDisconnected => "peer_disconnected",
-        PeerRetirementReason::SlotRejected => "slot_rejected",
         PeerRetirementReason::SlotTimeout => "slot_timeout",
         PeerRetirementReason::PartVerificationFailed => "part_verification_failed",
         PeerRetirementReason::VerificationAuthorityMismatch => "verification_authority_mismatch",
@@ -211,6 +210,7 @@ pub(super) fn part_release(record: Record, reason: PartReleaseReason) -> Record 
             .code("retired", retirement(why)),
         PartReleaseReason::Paused => record.code("reason", "paused"),
         PartReleaseReason::Cancelled => record.code("reason", "cancelled"),
+        PartReleaseReason::BackOnQueue => record.code("reason", "back_on_queue"),
     }
 }
 

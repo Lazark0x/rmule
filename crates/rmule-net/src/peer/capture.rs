@@ -335,8 +335,12 @@ fn requester_toml(event: &RequesterEvent) -> String {
             "type = \"QueueProgress\"\nfile_hash = \"{}\"\nprevious_rank = {previous_rank}\nnew_rank = {new_rank}\n",
             file_hash.to_hex_upper(),
         ),
-        RequesterEvent::QueueRejected { file_hash } => format!(
-            "type = \"QueueRejected\"\nfile_hash = \"{}\"\n",
+        RequesterEvent::SlotAsked { file_hash } => format!(
+            "type = \"SlotAsked\"\nfile_hash = \"{}\"\n",
+            file_hash.to_hex_upper(),
+        ),
+        RequesterEvent::Requeued { file_hash } => format!(
+            "type = \"Requeued\"\nfile_hash = \"{}\"\n",
             file_hash.to_hex_upper(),
         ),
         RequesterEvent::SlotGranted { file_hash } => format!(
@@ -535,7 +539,6 @@ fn notice_toml(event: &NoticeEvent) -> String {
 pub(crate) const fn slot_release_reason_label(reason: SlotReleaseReason) -> &'static str {
     match reason {
         SlotReleaseReason::DownloadComplete => "DownloadComplete",
-        SlotReleaseReason::QueueRejected => "QueueRejected",
         SlotReleaseReason::PeerClosed => "PeerClosed",
         SlotReleaseReason::ProtocolViolation => "ProtocolViolation",
         SlotReleaseReason::FileNotFound => "FileNotFound",

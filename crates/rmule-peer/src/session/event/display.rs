@@ -120,11 +120,12 @@ impl fmt::Display for RequesterEvent {
                 "peer queue_progress file_hash={} previous_rank={previous_rank} new_rank={new_rank}",
                 file_hash.to_hex_upper()
             ),
-            RequesterEvent::QueueRejected { file_hash } => write!(
-                f,
-                "peer queue_rejected file_hash={}",
-                file_hash.to_hex_upper()
-            ),
+            RequesterEvent::SlotAsked { file_hash } => {
+                write!(f, "peer slot_asked file_hash={}", file_hash.to_hex_upper())
+            }
+            RequesterEvent::Requeued { file_hash } => {
+                write!(f, "peer requeued file_hash={}", file_hash.to_hex_upper())
+            }
             RequesterEvent::SlotGranted { file_hash } => {
                 write!(
                     f,

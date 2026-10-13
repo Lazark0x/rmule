@@ -15,7 +15,7 @@
 //! - A reply refreshes the clock and clears the latch: `0x91` records the rank
 //!   and clears the queue-full mark, and its part status, when it holds no
 //!   part we lack, sets the no-needed-parts mark; `0x93` sets the queue-full
-//!   mark (rank 0); `0x92` drops the source dead.
+//!   mark (rank 0); `0x92` spends the source for this download (ADR-0090).
 //! - A queue-full source is reasked on the same cadence; it and a
 //!   no-needed-parts source are among those the book lets go as the file
 //!   nears its source limit (the purges, aMule `CPartFile::Process`).
@@ -109,8 +109,11 @@ impl ReaskFacts {
 /// One record's queue standing at a remote uploader.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Standing {
-    /// The last queue rank we learned (0 when unknown or queue-full).
-    rank: u16,
+    /// The last queue rank we learned: `None` while the source has queued us
+    /// without ranking us yet — our `OP_STARTUPLOADREQ` out, or an
+    /// `OP_OUTOFPARTREQS` that put us back (ADR-0090) — and `0` when it said
+    /// its queue is full.
+    rank: Option<u16>,
     /// The source's client-UDP contact, or `None` when it advertised none.
     contact: Option<UdpContact>,
     /// The source's peer-UDP crypt target from the identity it queued under
@@ -254,6 +257,24 @@ impl SourceBook {
     /// and queue-full mark cleared — with the UDP contact and crypt target the
     /// identity it queued under stated.
     pub(crate) fn queued(&mut self, endpoint: PeerEndpoint, rank: u16, now: Instant) {
+        self.stand(endpoint, Some(rank), now);
+    }
+
+    /// The live worker at `endpoint` is on its uploader's queue at `now`
+    /// without a rank yet — its `OP_STARTUPLOADREQ` left, or an
+    /// `OP_OUTOFPARTREQS` put it back (ADR-0090, aMule `DS_ONQUEUE`): its
+    /// record earns a standing without a rank, or keeps the one it holds.
+    pub(crate) fn on_queue(&mut self, endpoint: PeerEndpoint, now: Instant) {
+        if self
+            .live_record_mut(endpoint)
+            .is_some_and(|record| record.standing.is_none())
+        {
+            self.stand(endpoint, None, now);
+        }
+    }
+
+    /// [`Self::queued`] at `rank`, or without one.
+    fn stand(&mut self, endpoint: PeerEndpoint, rank: Option<u16>, now: Instant) {
         let Some(record) = self.live_record_mut(endpoint) else {
             return;
         };
@@ -305,11 +326,10 @@ impl SourceBook {
         }
     }
 
-    /// The rank the record at `endpoint` stands at, if it holds a standing.
+    /// The rank the record at `endpoint` stands at, if it holds a standing
+    /// that was ranked.
     pub(crate) fn rank(&self, endpoint: PeerEndpoint) -> Option<u16> {
-        self.record_at(endpoint)?
-            .standing
-            .map(|standing| standing.rank)
+        self.record_at(endpoint)?.standing?.rank
     }
 
     /// The reask sweep at `now`, over every record in the RemoteQueued stage
@@ -426,14 +446,14 @@ impl SourceBook {
         {
             match answer {
                 Answer::Rank { rank, parts_needed } => {
-                    standing.rank = rank;
+                    standing.rank = Some(rank);
                     standing.queue_full = false;
                     if let Some(needed) = parts_needed {
                         standing.no_needed_parts = !needed;
                     }
                 }
                 Answer::QueueFull => {
-                    standing.rank = 0;
+                    standing.rank = Some(0);
                     standing.queue_full = true;
                 }
             }

@@ -188,10 +188,15 @@ impl DownloadEvent {
                 download_id,
                 peer,
                 rank,
-            } => Record::new("download.source_remote_queued")
-                .count("id", download_id.as_u64())
-                .peer_address("peer", peer)
-                .count("rank", *rank),
+            } => {
+                let record = Record::new("download.source_remote_queued")
+                    .count("id", download_id.as_u64())
+                    .peer_address("peer", peer);
+                match rank {
+                    Some(rank) => record.count("rank", *rank),
+                    None => record.code("rank", "unknown"),
+                }
+            }
             D::SourceReaskAcked {
                 download_id,
                 peer,

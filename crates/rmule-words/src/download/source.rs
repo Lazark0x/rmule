@@ -25,7 +25,6 @@ pub const NO_NETWORK_WAIT_NOTE: Sentence = Sentence::fixed(NO_NETWORK_WAIT);
 pub const fn retirement_words(reason: PeerRetirementReason) -> &'static str {
     match reason {
         PeerRetirementReason::PeerDisconnected => "it disconnected",
-        PeerRetirementReason::SlotRejected => "it refused an upload slot",
         PeerRetirementReason::SlotTimeout => "its queue took too long",
         PeerRetirementReason::PartVerificationFailed => "a part it sent failed its check",
         PeerRetirementReason::VerificationAuthorityMismatch => {
@@ -113,6 +112,7 @@ pub const fn release_words(reason: PartReleaseReason) -> &'static str {
         PartReleaseReason::PeerRetired(retired) => retirement_words(retired),
         PartReleaseReason::Paused => "the download was paused",
         PartReleaseReason::Cancelled => "the download was cancelled",
+        PartReleaseReason::BackOnQueue => "it put us back on its queue",
     }
 }
 

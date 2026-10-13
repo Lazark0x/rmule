@@ -10,31 +10,25 @@ use crate::PartPlan;
 /// Run [`stream_part_download`] over `bytes` with `notice` arriving before the
 /// part's one block, and return the worker events it reported.
 async fn events_after_notice(bytes: &[u8], notice: PeerError) -> Vec<PeerWorkerEvent> {
-    events_after(
-        bytes,
-        PeerEvent::Notice(NoticeEvent::CommandRejected { reason: notice }),
-    )
+    events_after(bytes, |_| {
+        PeerEvent::Notice(NoticeEvent::CommandRejected { reason: notice })
+    })
     .await
 }
 
-/// Run [`stream_part_download`] over `bytes` with `first` arriving before the
-/// part's one block, and return the worker events it reported.
-async fn events_after(bytes: &[u8], first: PeerEvent) -> Vec<PeerWorkerEvent> {
+/// Run [`stream_part_download`] over `bytes` with the event `first` makes of
+/// the file's hash arriving before the part's one block, and return the
+/// worker events it reported.
+async fn events_after(
+    bytes: &[u8],
+    first: impl FnOnce(rmule_primitives::FileHash) -> PeerEvent,
+) -> Vec<PeerWorkerEvent> {
     let file = rmule_testkit::file_link("notice.bin", bytes);
     let (events_tx, mut events) = mpsc::channel(8);
     let (cmd_tx, _cmd_rx) = mpsc::channel(8);
     let (event_tx, mut worker_events) = mpsc::channel(8);
     let (_worker_cmd_tx, mut worker_cmd_rx) = mpsc::channel(8);
-    let first = match first {
-        PeerEvent::Requester(RequesterEvent::FileProbed { status, .. }) => {
-            PeerEvent::Requester(RequesterEvent::FileProbed {
-                file_hash: file.file_hash,
-                status,
-            })
-        }
-        other => other,
-    };
-    events_tx.send(first).await.unwrap();
+    events_tx.send(first(file.file_hash)).await.unwrap();
     events_tx
         .send(PeerEvent::Requester(RequesterEvent::PartReceived {
             file_hash: file.file_hash,
@@ -80,21 +74,18 @@ async fn a_refused_download_command_still_ends_the_download() {
     assert_eq!(reported, vec![PeerWorkerEvent::Disconnected]);
 }
 
-/// The peer's no-file answer: a `FileProbed` naming no file of its own (the
-/// helpers aim it at the file under test).
-fn no_file() -> PeerEvent {
-    PeerEvent::Requester(RequesterEvent::FileProbed {
-        file_hash: rmule_primitives::FileHash::from_bytes([0; 16]),
-        status: FileProbeStatus::NotAvailable,
-    })
-}
-
 /// A mid-slot `OP_FILEREQANSNOFIL` is the peer lacking the file, reported as
 /// the probe reports it — no parts — and never as a disconnect the download
 /// would keep the source's standing on (ADR-0090).
 #[tokio::test]
 async fn a_mid_slot_no_file_answer_is_reported_as_no_parts() {
-    let reported = events_after(&[0x5A; 1024], no_file()).await;
+    let reported = events_after(&[0x5A; 1024], |file_hash| {
+        PeerEvent::Requester(RequesterEvent::FileProbed {
+            file_hash,
+            status: FileProbeStatus::NotAvailable,
+        })
+    })
+    .await;
     assert_eq!(
         reported,
         vec![PeerWorkerEvent::PartsAdvertised {
@@ -141,4 +132,16 @@ async fn a_probe_answered_with_no_file_reports_no_parts_and_nothing_after() {
             complete: false
         }]
     );
+}
+
+/// `OP_OUTOFPARTREQS` on the granted slot ends the transfer, not the worker:
+/// it reports being queued again and goes back for its next command, the
+/// block that would have followed left unread (ADR-0057).
+#[tokio::test]
+async fn a_requeue_reports_itself_and_leaves_the_worker_on_its_link() {
+    let reported = events_after(&[0x5A; 1024], |file_hash| {
+        PeerEvent::Requester(RequesterEvent::Requeued { file_hash })
+    })
+    .await;
+    assert_eq!(reported, vec![PeerWorkerEvent::Requeued]);
 }

@@ -38,6 +38,13 @@ pub enum RequesterEvent {
         /// every block that follows.
         part_hashes: Vec<PartHash>,
     },
+    /// Our `OP_STARTUPLOADREQ` for the file left: the uploader queues us, as
+    /// aMule sets `DS_ONQUEUE` when it sends one (stock 2.3.3
+    /// `DownloadClient.cpp:163-169`), whether or not a rank follows.
+    SlotAsked {
+        /// The file the upload was asked for.
+        file_hash: FileHash,
+    },
     /// Initial queue rank observation for a file. Subsequent improvements
     /// emit `QueueProgress` instead.
     QueueRanked {
@@ -55,10 +62,13 @@ pub enum RequesterEvent {
         /// The rank now — always nearer 0.
         new_rank: u16,
     },
-    /// Peer refused the slot via `OP_OUTOFPARTREQS` (TCP) or
-    /// equivalent terminal signal. Slot context clears.
-    QueueRejected {
-        /// The file the queue was for.
+    /// The uploader ended our granted slot with `OP_OUTOFPARTREQS` and put us
+    /// back on its queue (ADR-0025): the flow is queued again on the same
+    /// link, the blocks we asked for are dropped, and the `OP_QUEUERANKING`
+    /// that follows ranks it afresh. Not terminal: a later
+    /// `OP_ACCEPTUPLOADREQ` grants it again.
+    Requeued {
+        /// The file whose transfer ended.
         file_hash: FileHash,
     },
     /// Peer granted an upload slot via `OP_ACCEPTUPLOADREQ`.

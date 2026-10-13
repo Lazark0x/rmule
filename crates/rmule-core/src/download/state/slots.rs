@@ -174,19 +174,14 @@ impl DownloadState {
             }));
         }
         if let Some(slot) = self.worker_slots.remove(&peer) {
-            // A worker that hangs up, times out its slot wait or is refused
-            // for parts while queued keeps its standing (ADR-0057); refused,
-            // it holds no part we need and reasks at twice the period, over
-            // TCP (aMule `DS_NONEEDEDPARTS`). A source whose Advertised Parts
-            // hold nothing we lack keeps that mark on its standing, or earns
-            // one at rank 0 (ADR-0112). Any other end is the standing's.
+            // A worker that hangs up or times out its slot wait keeps its
+            // standing (ADR-0057). A source whose Advertised Parts hold
+            // nothing we lack keeps that mark on its standing, or earns one
+            // at rank 0, and reasks at twice the period, over TCP (aMule
+            // `DS_NONEEDEDPARTS`, ADR-0112). Any other end is the standing's
+            // (ADR-0090, "How a worker ends, and what its record keeps").
             match reason {
                 PeerRetirementReason::PeerDisconnected | PeerRetirementReason::SlotTimeout => {}
-                PeerRetirementReason::SlotRejected => {
-                    if self.sources.rank(peer).is_some() {
-                        self.sources.no_needed_parts(peer, now);
-                    }
-                }
                 PeerRetirementReason::NoNeededParts => self.sources.no_needed_parts(peer, now),
                 _ => self.sources.end_standing(peer),
             }
@@ -217,7 +212,7 @@ impl DownloadState {
                     out.push(Decision::Emit(DownloadEvent::SourceRemoteQueued {
                         download_id: self.download_id,
                         peer,
-                        rank: self.sources.rank(peer).unwrap_or_default(),
+                        rank: self.sources.rank(peer),
                     }));
                 }
                 self.note_worker_end(end);
@@ -243,6 +238,34 @@ impl DownloadState {
         // The released part goes to a still-connected idle worker whose own
         // probe answered; any other is assigned on that answer (ADR-0112).
         self.reassign_workers(now, out);
+    }
+
+    /// `peer`'s uploader ended its granted slot and put it back on the queue
+    /// (`OP_OUTOFPARTREQS`, ADR-0057): the worker stays, waiting for a slot;
+    /// the part it held goes back for retry (ADR-0026) and its record earns
+    /// a standing without a rank, which the `OP_QUEUERANKING` that follows
+    /// ranks. Every connected worker is then handed its next part — this one
+    /// included, which then waits for the next grant with it.
+    pub(super) fn requeued(&mut self, now: Instant, peer: PeerEndpoint, out: &mut Vec<Decision>) {
+        let Some(slot) = self.worker_slots.get(&peer).copied() else {
+            return;
+        };
+        if let Some(plan) = self.scheduler.release_for_retry(peer) {
+            out.push(Decision::Emit(DownloadEvent::PartReleased {
+                download_id: self.download_id,
+                peer,
+                part_index: plan.part_index,
+                reason: PartReleaseReason::BackOnQueue,
+            }));
+        }
+        self.sources.on_queue(peer, now);
+        self.reassign_workers(now, out);
+        if self.scheduler.is_working(peer) {
+            out.push(Decision::Phase {
+                slot,
+                phase: WorkerPhase::WaitingForSlot,
+            });
+        }
     }
 
     /// Hand every connected worker its next part and backfill the free

@@ -239,15 +239,16 @@ pub enum DownloadEvent {
     /// A source that queued us hung up and entered the **Remote-Queued Pool**
     /// (ADR-0057): its earned queue standing is now kept without a socket, on the
     /// `FILEREASKTIME` reask heartbeat, instead of being forfeited. `rank` is the
-    /// last position we learned before disconnecting.
+    /// last position we learned before disconnecting, `None` when it queued us
+    /// without ranking us yet.
     SourceRemoteQueued {
         /// The download the pooled source still owes bytes to.
         download_id: DownloadId,
         /// The source that hung up while queueing us.
         peer: rmule_primitives::PeerEndpoint,
-        /// The last rank learned before the disconnect; the reask cycle
-        /// refreshes it.
-        rank: u16,
+        /// The last rank learned before the disconnect, `None` when none was;
+        /// the reask cycle refreshes it.
+        rank: Option<u16>,
     },
     /// A pooled source answered our UDP reask ping with `OP_REASKACK` (`0x91`):
     /// the fresh `rank` was recorded and its standing refreshed (ADR-0057).
