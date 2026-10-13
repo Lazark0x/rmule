@@ -374,10 +374,12 @@ async fn the_search_sweep_follows_the_list_through_add_import_and_remove() {
         "a server added mid-run is swept"
     );
 
+    // The rig's servers are on loopback, so its list comes from a mirror on
+    // this host: a remote mirror's loopback row is refused (ADR-0085).
     send(
         &core,
         ServerListCommand::UpdateServerList {
-            url: "http://mirror/server.met".to_owned(),
+            url: "http://127.0.0.1/server.met".to_owned(),
         },
     )
     .await;
