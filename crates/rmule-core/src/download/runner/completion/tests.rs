@@ -472,6 +472,72 @@ async fn a_pause_while_the_copy_waits_its_turn_leaves_the_part_file_and_no_copy(
     assert!(!leg.paths.final_path().exists());
 }
 
+/// A Pause that stops the move after it let the held part file go leaves
+/// the Served Download checked against the file's length and time too, as
+/// any pause does: a part file that changes while paused is never read
+/// (ADR-0113, "A paused download").
+#[tokio::test]
+async fn a_part_file_that_changes_after_a_pause_stopped_its_copy_is_never_read() {
+    use crate::content::{CheckedReadError, ContentFileStore};
+    use crate::download::runner::served;
+    use crate::served_downloads::ServedDownloads;
+
+    let fs = TwoVolumes {
+        before: Box::new(|_| {}),
+    };
+    let mut leg = finished(ED2K_PART_SIZE + 5_000, Arc::new(fs));
+    let cell = ServedDownloads::default();
+    let record = leg.runner.rt.store.load_download(leg.id).unwrap();
+    let set = leg.file.part_hash_set.as_ref().unwrap().hashes().to_vec();
+    assert!(cell.install(&record, &set));
+    let hash = leg.file.file_hash;
+    leg.runner.served = cell.hand_to_run(hash, leg.runner.run);
+    crate::download::persist::hold_part_file(&leg.runner, leg.id)
+        .await
+        .unwrap();
+    served::lease_started(&leg.runner, leg.id).await;
+    let turn = Arc::clone(&leg.runner.rt.copy_turn)
+        .acquire_owned()
+        .await
+        .unwrap();
+    let mut events = std::mem::replace(&mut leg.held.evt_rx, mpsc::channel(1).1);
+    let pause = async {
+        while let Some(event) = events.recv().await {
+            if let CoreEvent::Download(DownloadEvent::Completing {
+                step: CompletionStep::QueuedForCopy,
+                ..
+            }) = event
+            {
+                break;
+            }
+        }
+        assert_eq!(leg.runner.completion.stop().await, StopAnswer::Stopped);
+        leg.held._stop_tx.send(StopReason::Pause).unwrap();
+    };
+    let (result, ()) = tokio::join!(complete(&leg.runner, leg.id, &leg.file, Vec::new()), pause);
+    drop(turn);
+    assert_eq!(result, Err(DownloadFailure::Paused));
+    served::let_go(&leg.runner).await;
+    cell.take_back(hash, leg.runner.run);
+
+    let (path, check) = cell.served(hash).unwrap().read_target();
+    assert_eq!(path, leg.paths.part_path());
+    let read = ContentFileStore::read_checked(&path, &check, 0, 64).await;
+    assert_eq!(
+        read.unwrap(),
+        leg.bytes[..64],
+        "the file the move let go reads"
+    );
+    let mut grown = leg.bytes.clone();
+    grown.extend_from_slice(b"appended while paused");
+    std::fs::write(leg.paths.part_path(), &grown).unwrap();
+    let read = ContentFileStore::read_checked(&path, &check, 0, 64).await;
+    assert!(
+        matches!(read, Err(CheckedReadError::Changed)),
+        "a part file of another length is not read: {read:?}"
+    );
+}
+
 #[tokio::test]
 async fn attach_resolves_a_completing_row_by_what_is_on_disk() {
     // Part file there, destination absent: it moves again, a leftover copy

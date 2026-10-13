@@ -6,11 +6,15 @@
 //! no name ask,
 //! reask or status the run sends names a part the serve side lacks. The
 //! **Part File Identity** is read from the held handle: its key at the
-//! lease's start, its key, length and time as a pause lets the handle go.
-//! A run with no lease — a download of one part — writes nothing.
+//! lease's start, its key, length and time as a pause or the completion
+//! move lets the handle go. A run with no lease — a download of one part —
+//! writes nothing.
+
+use std::path::Path;
 
 use rmule_primitives::PartHash;
 
+use crate::content::HeldPartFile;
 use crate::download::state::DownloadState;
 use crate::file_key::FileKey;
 use crate::served_downloads::PartFileIdentity;
@@ -84,29 +88,63 @@ pub(super) async fn in_place<S, P>(
         Ok(ResolvedAuthority::FileHashOnly) | Err(_) => Vec::new(),
     };
     rule_range(runner, download_id, &set);
+    lease.bytes_in_place(path, identity_at(path).await);
+}
+
+/// A pause lets the held part file go: the entry keeps the key, length and
+/// time read through the handle, which every read of a paused download is
+/// checked against. A pause that stops the completion move finds the handle
+/// let go already and keeps what the move recorded.
+pub(super) async fn let_go<S, P>(runner: &RunnerContext<S, P>) {
+    let held = runner.part_file.lock().await.take();
+    record_at_rest(runner, held, None).await;
+}
+
+/// The completion move lets the held part file go before it reads or moves
+/// it (ADR-0115), recording it as a pause does: nothing writes the file from
+/// here, so a Pause that stops the move leaves every read checked against
+/// its length and time too. A run that holds no handle — one attach found
+/// completing — reads them at `part_path`.
+pub(super) async fn let_go_to_move<S, P>(runner: &RunnerContext<S, P>, part_path: &Path) {
+    let held = runner.part_file.lock().await.take();
+    record_at_rest(runner, held, Some(part_path)).await;
+}
+
+/// Record the identity, at rest, of the file `held` holds — of the file at
+/// `unheld` when nothing is held — unless it cannot be read.
+async fn record_at_rest<S, P>(
+    runner: &RunnerContext<S, P>,
+    held: Option<HeldPartFile>,
+    unheld: Option<&Path>,
+) {
+    let Some(lease) = &runner.served else {
+        return;
+    };
+    let identity = match (held, unheld) {
+        (Some(file), _) => file
+            .held_metadata()
+            .await
+            .ok()
+            .and_then(|(key, meta)| PartFileIdentity::read(key, &meta, true)),
+        (None, Some(path)) => identity_at(path).await,
+        (None, None) => None,
+    };
+    if let Some(identity) = identity {
+        lease.record_identity(identity);
+    }
+}
+
+/// The identity, at rest, of the file at `path`; `None` when it cannot be
+/// read.
+async fn identity_at(path: &Path) -> Option<PartFileIdentity> {
     let owned = path.to_path_buf();
-    let identity = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         Some((FileKey::at(&owned).ok()?, std::fs::metadata(&owned).ok()?))
     })
     .await
     .ok()
     .flatten()
-    .and_then(|(key, meta)| PartFileIdentity::read(key, &meta, true));
-    lease.bytes_in_place(path, identity);
-}
-
-/// A pause lets the held part file go: the entry keeps the key, length and
-/// time read through the handle, which every read of a paused download is
-/// checked against.
-pub(super) async fn let_go<S, P>(runner: &RunnerContext<S, P>) {
-    let Some(lease) = &runner.served else {
-        return;
-    };
-    let identity = held_identity(runner, true).await;
-    *runner.part_file.lock().await = None;
-    if let Some(identity) = identity {
-        lease.record_identity(identity);
-    }
+    .and_then(|(key, meta)| PartFileIdentity::read(key, &meta, true))
 }
 
 /// The identity of the file the run holds, read through its handle; `None`

@@ -96,13 +96,13 @@ pub(super) async fn complete<S, P>(
     file: &Ed2kFileLink,
     file_hash_only_parts: Vec<u32>,
 ) -> Result<(), DownloadFailure> {
-    let_go_of_part_file(runner, download_id).await?;
     let record = runner
         .rt
         .store
         .load_download(download_id)
         .map_err(|_| DownloadFailure::StoreFailed)?;
     let paths = record.paths().clone();
+    let_go_of_part_file(runner, download_id, paths.part_path()).await?;
     let landed = own_file_at(runner, paths.final_path(), file).await?;
     if !landed {
         check(runner, download_id, file).await?;
@@ -174,14 +174,15 @@ pub(super) async fn recover<S, P>(
     finish(runner, download_id, &paths).await
 }
 
-/// The run hands its held part file over: still the file it held, and
-/// released before anything reads or moves it.
+/// The run hands its held part file at `part_path` over: still the file it
+/// held, and released before anything reads or moves it, its Served
+/// Download checked against it at rest from here.
 async fn let_go_of_part_file<S, P>(
     runner: &RunnerContext<S, P>,
     download_id: DownloadId,
+    part_path: &Path,
 ) -> Result<(), DownloadFailure> {
-    let mut held = runner.part_file.lock().await;
-    if let Some(part_file) = held.as_mut()
+    if let Some(part_file) = runner.part_file.lock().await.as_mut()
         && let Err(change) = part_file.check().await
     {
         return Err(crate::download::persist::part_file_changed(
@@ -192,7 +193,7 @@ async fn let_go_of_part_file<S, P>(
         )
         .await);
     }
-    *held = None;
+    served::let_go_to_move(runner, part_path).await;
     Ok(())
 }
 
