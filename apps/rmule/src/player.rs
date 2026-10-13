@@ -10,7 +10,7 @@
 //!
 //! What the menu shows and what a launch does are one reading,
 //! [`preview_target`], so the two cannot disagree. The launch itself runs on
-//! the player lane ([`launch`]).
+//! the player lane ([`lane`]).
 
 use std::ffi::OsString;
 use std::path::Path;
