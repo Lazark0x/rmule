@@ -168,9 +168,10 @@ fn note_offer(
     }
     offered.push(*file_hash);
     println!(
-        "download reoffered file_hash={} after_ms={} verified_bytes={}",
+        "download reoffered file_hash={} after_ms={} verified_bytes={} at_unix_ms={}",
         file_hash.to_hex_upper(),
         began.elapsed().as_millis(),
-        held.get(file_hash).copied().unwrap_or(0)
+        held.get(file_hash).copied().unwrap_or(0),
+        unix_ms()
     );
 }
