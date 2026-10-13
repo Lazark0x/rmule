@@ -46,6 +46,16 @@ pub(crate) struct DownloadStartArgs {
     /// Maximum concurrent High ID peer workers per download.
     #[arg(long)]
     peer_concurrency: Option<usize>,
+    /// The **Streaming Window**'s width `N` in parts
+    /// (`CoreConfig::streaming_window_parts`, ADR-0112); `0` for none.
+    #[arg(long)]
+    streaming_window: Option<u32>,
+    /// Every this many milliseconds, print each download's positional part
+    /// map (ADR-0079) off the diagnostics snapshot, one
+    /// `download parts_tick id=… at_unix_ms=… parts=…` line with one letter
+    /// per part: `V` verified, `I` in flight, `M` missing. Unset prints none.
+    #[arg(long)]
+    report_parts_every_ms: Option<u64>,
     /// Also bind the inbound peer listener on `0.0.0.0:<tcp-port>` while
     /// downloading. This makes rmule reachable (High ID) and callback-capable
     /// (ADR-0039), so a discovered Low-ID source can be called back and adopted.
@@ -114,6 +124,10 @@ pub(crate) struct DownloadResumeArgs {
     /// Maximum concurrent High ID peer workers per download.
     #[arg(long)]
     peer_concurrency: Option<usize>,
+    /// The **Streaming Window**'s width `N` in parts
+    /// (`CoreConfig::streaming_window_parts`, ADR-0112); `0` for none.
+    #[arg(long)]
+    streaming_window: Option<u32>,
     #[command(flatten)]
     identity: DownloadIdentityArgs,
 }
@@ -171,6 +185,9 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
     let mut config = CoreConfig::default();
     if let Some(concurrency) = args.peer_concurrency {
         config.peer_concurrency_per_download = concurrency;
+    }
+    if let Some(parts) = args.streaming_window {
+        config.streaming_window_parts = parts;
     }
     let settings = args.identity.settings(rmule_core::CoreSettings {
         udp_port: args.udp_port,
@@ -240,6 +257,11 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
         .map(|secs| tokio::time::Instant::now() + Duration::from_secs(secs));
     // Each download ends on its own; the run ends when every one has.
     let mut endings = Endings::new(args.out.len());
+    let mut parts_tick = args.report_parts_every_ms.map(|ms| {
+        let mut ticker = tokio::time::interval(Duration::from_millis(ms.max(1)));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ticker
+    });
     let result = loop {
         // Bounded-run mode: the Low-ID callback compatibility flow
         // can never byte-complete against the Lugdunum eserver (it never surfaces
@@ -258,6 +280,7 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
         enum Step {
             Deadline,
             Flip,
+            PartsTick,
             Event(Option<CoreEvent>),
         }
         let step = tokio::select! {
@@ -274,6 +297,12 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
                     None => std::future::pending().await,
                 }
             } => Step::Flip,
+            () = async {
+                match parts_tick.as_mut() {
+                    Some(ticker) => { ticker.tick().await; }
+                    None => std::future::pending().await,
+                }
+            } => Step::PartsTick,
             event = core.next_event() => Step::Event(event),
         };
         let event = match step {
@@ -286,6 +315,10 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
             }
             Step::Flip => {
                 crypt_flips.fire(&core)?;
+                continue;
+            }
+            Step::PartsTick => {
+                print_parts_tick(&core);
                 continue;
             }
             Step::Event(event) => event,
@@ -342,6 +375,31 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
     result
 }
 
+/// One `download parts_tick` line per download row: the positional part map
+/// (ADR-0079) as letters, stamped with the wall clock so a bench can lay it
+/// beside a capture taken on the same host.
+fn print_parts_tick(core: &rmule_core::Core) {
+    use rmule_core::diagnostics::PartState;
+    let at_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis());
+    for (id, row) in &core.diagnostics_snapshot().downloads {
+        let parts: String = row
+            .parts
+            .iter()
+            .map(|part| match part {
+                PartState::Verified => 'V',
+                PartState::InFlight => 'I',
+                PartState::Missing => 'M',
+            })
+            .collect();
+        println!(
+            "download parts_tick id={} at_unix_ms={at_unix_ms} parts={parts}",
+            id.as_u64()
+        );
+    }
+}
+
 pub(crate) async fn resume(args: DownloadResumeArgs) -> Result<()> {
     let server_override = args
         .server
@@ -365,6 +423,9 @@ pub(crate) async fn resume(args: DownloadResumeArgs) -> Result<()> {
     let mut config = CoreConfig::default();
     if let Some(concurrency) = args.peer_concurrency {
         config.peer_concurrency_per_download = concurrency;
+    }
+    if let Some(parts) = args.streaming_window {
+        config.streaming_window_parts = parts;
     }
     let mut core = args
         .identity
