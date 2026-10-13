@@ -291,9 +291,12 @@ pub fn run_streaming_window(options: StreamingWindowOptions<'_>) -> Result<()> {
                 .wait_secs
                 .unwrap_or(options.hold_secs + RMULE_MARGIN_SECS),
         );
-        if let Err(error) = wait_for_container_log(&bench.docker, &rmule, end, wait) {
+        if !wait_for_end(&bench.docker, &rmule, end, wait)? {
             if !options.keep_containers {
-                return Err(error.context("rmule's run did not end inside the wait"));
+                bail!(
+                    "rmule's run did not end inside the {} s wait",
+                    wait.as_secs()
+                );
             }
             println!(
                 "peer_streaming_window pending: rmule's run is still going; collect and score with \
@@ -428,14 +431,42 @@ fn wait_for_share(docker: &Docker, container: &str, timeout: Duration) -> Result
     }
 }
 
+/// Hold until rmule's log carries `end` (`true`) or the wait lapses
+/// (`false`); an `Error:` from rmule-tools ends the wait at once.
+fn wait_for_end(docker: &Docker, container: &str, end: &str, wait: Duration) -> Result<bool> {
+    let deadline = Instant::now() + wait;
+    loop {
+        let output = docker
+            .logs(container.to_owned())
+            .to_command()
+            .output()
+            .with_context(|| format!("docker logs {container}"))?;
+        let logs = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if logs.contains(end) {
+            return Ok(true);
+        }
+        if let Some(error) = logs.lines().find(|line| line.starts_with("Error:")) {
+            bail!("rmule-tools stopped: {error}");
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        thread::sleep(Duration::from_secs(2));
+    }
+}
+
 /// The link naming every seed as a source as well.
 fn with_sources(link: &str, seeds: &[SeedRow]) -> String {
     let sources: Vec<String> = seeds
         .iter()
         .map(|seed| format!("{}:{AMULE_PEER_TCP_PORT}", seed.ip))
         .collect();
-    let body = link.strip_suffix('/').unwrap_or(link);
-    format!("{body}|sources,{}|/", sources.join(","))
+    let body = link.strip_suffix("|/").unwrap_or(link);
+    format!("{body}|/|sources,{}|/", sources.join(","))
 }
 
 /// rmule's held `ed2k download start --serve`, bounded at `hold_secs`, with
@@ -484,3 +515,6 @@ fn rmule_download(
         RunContainer::arg,
     )
 }
+
+#[cfg(test)]
+mod tests;
