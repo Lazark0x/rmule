@@ -1,7 +1,9 @@
 //! Starting one run of a download, for every road that starts one — a new
 //! download, a Resume or a Restart, attach's restore and a row found
 //! `Completing`: its Served Download installed and leased to the run
-//! (ADR-0113), the runner spawned, and the run entered in the Download Set.
+//! (ADR-0113), the runner spawned, and the run entered in the Download Set —
+//! and stopping it for a Pause or a Cancel, through its Completion Gate
+//! (ADR-0115), its Served Download taken back.
 
 use std::sync::Arc;
 
@@ -16,7 +18,7 @@ use crate::adapters::{
 use crate::download::source_seeds::SourceSeed;
 use crate::download::{DownloadRequest, DownloadTask, RunnerContext, SharedRuntime, StopReason};
 use crate::service::activity::ActiveDownload;
-use crate::service::{DownloadId, FinishedActivity};
+use crate::service::{CoreCommandRejectReason, DownloadId, FinishedActivity};
 
 use super::super::CoreActor;
 
@@ -76,6 +78,26 @@ where
         });
         self.activities.download_started(download_id, active);
         self.served_moved().await;
+    }
+
+    /// Stop the run of `download_id` for `reason`, join it, and take back
+    /// its Served Download. A move whose file is in place is no longer the
+    /// operator's to stop: it refuses with
+    /// [`CoreCommandRejectReason::DownloadCompleting`]. `Ok(false)` when the
+    /// download has no run.
+    pub(in crate::service::actor) async fn stop_run(
+        &mut self,
+        download_id: DownloadId,
+        reason: StopReason,
+    ) -> Result<bool, CoreCommandRejectReason> {
+        self.stop_completion(download_id).await?;
+        let Some(active) = self.retire_download(download_id) else {
+            return Ok(false);
+        };
+        let _ = active.stop_tx.send(reason);
+        let _ = active.handle.await;
+        self.take_back_served(active.file_hash, active.run);
+        Ok(true)
     }
 }
 

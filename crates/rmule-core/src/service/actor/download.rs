@@ -130,18 +130,12 @@ where
                 self.start_run(&record, &link_set, start).await;
             }
             DownloadCommand::CancelDownload { download_id } => {
-                // A move whose file is in place is no longer the operator's
-                // to stop (ADR-0115).
-                if let Err(reason) = self.stop_completion(download_id).await {
-                    return self.reject(reason).await;
-                }
-                if let Some(active) = self.retire_download(download_id) {
-                    let _ = active.stop_tx.send(StopReason::Cancel);
-                    let _ = active.handle.await;
-                    self.take_back_served(active.file_hash, active.run);
-                } else if !self.holds_place(download_id) {
-                    self.reject(CoreCommandRejectReason::UnknownDownload).await;
-                    return;
+                match self.stop_run(download_id, StopReason::Cancel).await {
+                    Err(reason) => return self.reject(reason).await,
+                    Ok(false) if !self.holds_place(download_id) => {
+                        return self.reject(CoreCommandRejectReason::UnknownDownload).await;
+                    }
+                    Ok(_) => {}
                 }
                 // Running, waiting its turn or at rest alike: a download with
                 // no run is still the operator's to drop (ADR-0094).
@@ -149,18 +143,14 @@ where
                 self.cancel(download_id).await;
             }
             DownloadCommand::PauseDownload { download_id } => {
-                if let Err(reason) = self.stop_completion(download_id).await {
-                    return self.reject(reason).await;
-                }
                 // A paused download keeps its offer: its run hands the lease
                 // back as it lets its part file go (ADR-0113).
-                if let Some(active) = self.retire_download(download_id) {
-                    let _ = active.stop_tx.send(StopReason::Pause);
-                    let _ = active.handle.await;
-                    self.take_back_served(active.file_hash, active.run);
-                } else if self.activities.take_restoring(download_id).is_none() {
-                    self.reject(CoreCommandRejectReason::UnknownDownload).await;
-                    return;
+                match self.stop_run(download_id, StopReason::Pause).await {
+                    Err(reason) => return self.reject(reason).await,
+                    Ok(false) if self.activities.take_restoring(download_id).is_none() => {
+                        return self.reject(CoreCommandRejectReason::UnknownDownload).await;
+                    }
+                    Ok(_) => {}
                 }
                 let _ = self
                     .wiring
