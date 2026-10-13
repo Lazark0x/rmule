@@ -4,7 +4,7 @@
 //! every source through this one value, so no channel keeps a copy of its own.
 
 use super::{PeerSource, SourceCryptOptions};
-use crate::{ClientId, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, UserHash};
+use crate::{ClientId, Informant, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, UserHash};
 
 /// How a sighted source is reached: exactly one road, the one the channel that
 /// named it proved. A Kad row's two callback roads are unconstructible from an
@@ -63,6 +63,9 @@ pub struct SightedBuddy {
 /// whose hello named its IPv6, a Kad row's `ip6` — gives a source its **IPv6
 /// Half** (ADR-0087): one source with two addresses, never two sources, because
 /// both are the same peer and which one gets dialed is the Dial Chooser's call.
+///
+/// Every sighting also names its [`Informant`], the party whose word it is,
+/// which a loopback address is judged against (ADR-0085).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SourceSighting {
     road: SourceRoad,
@@ -70,6 +73,7 @@ pub struct SourceSighting {
     crypt_options: Option<SourceCryptOptions>,
     ipv6_half: Option<Ipv6Endpoint>,
     server: Option<Ipv4Endpoint>,
+    informant: Informant,
 }
 
 impl SourceSighting {
@@ -97,6 +101,7 @@ impl SourceSighting {
             crypt_options,
             ipv6_half: None,
             server: None,
+            informant: Informant::Own,
         }
     }
 
@@ -120,6 +125,15 @@ impl SourceSighting {
     #[must_use]
     pub const fn with_server(mut self, server: Option<Ipv4Endpoint>) -> Self {
         self.server = server;
+        self
+    }
+
+    /// The same sighting as `informant`'s word. A sighting is rmule's own
+    /// ([`Informant::Own`]) until the producer that read it off the network
+    /// names the party that sent it.
+    #[must_use]
+    pub const fn with_informant(mut self, informant: Informant) -> Self {
+        self.informant = informant;
         self
     }
 
@@ -153,6 +167,12 @@ impl SourceSighting {
     #[must_use]
     pub const fn server(self) -> Option<Ipv4Endpoint> {
         self.server
+    }
+
+    /// Whose word this sighting is ([`Self::with_informant`]).
+    #[must_use]
+    pub const fn informant(self) -> Informant {
+        self.informant
     }
 
     /// The eD2k source record underneath, or `None` for a Kad row reachable

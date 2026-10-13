@@ -205,7 +205,9 @@ fn port_53_is_dropped_at_or_below_version_5_but_kept_from_version_6() {
 fn is_good_ip_port_drops_port_zero_and_lan_ip_contacts_keeping_only_the_good_one() {
     // aMule's IsGoodIPPort gate (RoutingZone.cpp#L193, between the Kad2 and
     // port-53 filters): a contact is loadable only with a nonzero port and a
-    // routable IP. A port-0 row and a private/LAN-IP row are both dropped.
+    // routable IP. A port-0 row, a private/LAN-IP row and a row in a
+    // Reserved Range (aMule's `reserved_ranges`, `NetworkFunctions.cpp:101`)
+    // are all dropped.
     let bytes = file(
         1,
         None,
@@ -213,6 +215,8 @@ fn is_good_ip_port_drops_port_zero_and_lan_ip_contacts_keeping_only_the_good_one
             row_v1(id(1), ip(1), 4672, 4662, 8), // good: routable IP, nonzero port
             row_v1(id(2), ip(2), 0, 4662, 8),    // dropped: port 0
             row_v1(id(3), Ipv4Addr::new(10, 0, 0, 1), 4672, 4662, 8), // dropped: RFC1918 LAN IP
+            row_v1(id(4), Ipv4Addr::new(224, 0, 0, 1), 4672, 4662, 8), // dropped: multicast
+            row_v1(id(5), Ipv4Addr::new(0, 0, 0, 5), 4672, 4662, 8), // dropped: this network
         ],
     );
 

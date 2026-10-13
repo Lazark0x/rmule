@@ -8,6 +8,7 @@
 
 #![warn(missing_docs)]
 
+mod address;
 mod aich;
 mod capabilities;
 mod datagram_obfuscation;
@@ -34,6 +35,7 @@ mod tag;
 mod text;
 mod wire_reader;
 
+pub use address::{Informant, is_reserved_address, is_reserved_ipv4, is_reserved_ipv6};
 pub use aich::{AichHashSet, EMBLOCKSIZE};
 pub use capabilities::{Capabilities, CryptStance};
 pub use datagram_obfuscation::{

@@ -94,12 +94,13 @@ fn buddy_row(server_ip_tag: Tag, extra: &[Tag]) -> KadSourceCandidate {
     *row
 }
 
-/// A row that names loopback, link-local, multicast or broadcast as its
-/// buddy keeps its buddy by ID but gets no endpoint, so the road is the
-/// Callback Walk toward that ID and never a datagram to that address.
+/// A row that names a Reserved Range (ADR-0085) as its buddy keeps its buddy
+/// by ID but gets no endpoint, so the road is the Callback Walk toward that ID
+/// and never a datagram to that address.
 #[test]
 fn a_buddy_row_naming_an_unusable_address_yields_no_buddy_endpoint() {
     for refused in [
+        Ipv4Addr::new(0, 0, 0, 5),
         Ipv4Addr::LOCALHOST,
         Ipv4Addr::new(127, 9, 9, 9),
         Ipv4Addr::new(169, 254, 1, 1),
@@ -113,8 +114,8 @@ fn a_buddy_row_naming_an_unusable_address_yields_no_buddy_endpoint() {
         assert_eq!(buddy.buddy_udp, None, "{refused} is no buddy endpoint");
     }
 
-    // A public address and a private one stay the endpoint (the private
-    // ranges are a LAN policy no ADR has made).
+    // A public address and a private one stay the endpoint: a LAN peer is a
+    // peer (ADR-0085).
     for admitted in [Ipv4Addr::new(45, 55, 200, 9), Ipv4Addr::new(10, 0, 0, 8)] {
         let buddy = buddy_row(server_ip(admitted), &[]).buddy().unwrap();
         assert_eq!(
@@ -148,8 +149,9 @@ fn an_emuleai_ipv6_buddy_row_yields_the_bi6_endpoint() {
 }
 
 /// The type-6 `0x95` target is the storer's observation of the publish: an
-/// address that cannot be one host is refused there too, while loopback (a
-/// storer sharing a host with its publisher) stays an observation.
+/// address no informant could make a host is refused there too, while loopback
+/// (a storer sharing a host with its publisher) stays for the Source Book gate
+/// to judge against the storer that answered (ADR-0085).
 #[test]
 fn a_type6_row_observed_at_a_non_unicast_address_has_no_callback_endpoint() {
     let row = |source_ip: Ipv4Addr| {
@@ -166,7 +168,12 @@ fn a_type6_row_observed_at_a_non_unicast_address_has_no_callback_endpoint() {
         decode_source_result(&result_row(&tags)).unwrap()[0]
     };
 
-    for refused in [Ipv4Addr::BROADCAST, Ipv4Addr::new(239, 1, 1, 1)] {
+    for refused in [
+        Ipv4Addr::BROADCAST,
+        Ipv4Addr::new(239, 1, 1, 1),
+        Ipv4Addr::new(169, 254, 1, 1),
+        Ipv4Addr::new(0, 0, 0, 5),
+    ] {
         let candidate = row(refused);
         assert_eq!(candidate.facts().and_then(|facts| facts.kad_udp), None);
         assert_eq!(candidate.direct_udp_callback(), None, "{refused}");

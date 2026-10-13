@@ -624,6 +624,17 @@ async fn run_session<L: ServerLink>(
                                 "source list carried a malformed Sentinel Source tail"
                             );
                         }
+                        // The answer is this server's word, judged against the
+                        // address the session reached (ADR-0085). A session
+                        // over a stream its caller brought reached no address
+                        // of its own, and its answer stays rmule's word.
+                        let sources: Vec<_> = match server_ip {
+                            Some(ip) => sources
+                                .into_iter()
+                                .map(|source| source.with_informant(rmule_primitives::Informant::Party(ip)))
+                                .collect(),
+                            None => sources,
+                        };
                         for reply in pending.remove(&file_hash).into_iter().flatten() {
                             let _ = reply.send(Ok(sources.clone()));
                         }

@@ -114,8 +114,8 @@ pub struct KadBuddyContact {
     /// The buddy relationship ID: `~publisherKadID`, in [`KadId`] wire order.
     pub buddy_id: KadId,
     /// The buddy's UDP endpoint, when the row carried both `TAG_SERVERIP` and
-    /// a non-zero `TAG_SERVERPORT`, and the address can be a remote unicast
-    /// host: both readers refuse `0.0.0.0`, loopback, link-local, multicast
+    /// a non-zero `TAG_SERVERPORT`, and the address lies in no Reserved Range
+    /// (ADR-0085): both readers refuse `0/8`, loopback, link-local, multicast
     /// and `240/4` (which holds `255.255.255.255`). `None` leaves a Kad walk
     /// toward [`Self::buddy_id`] as the only way to find it. That is where
     /// eMuleAI's IPv6-buddy row lands, since its `TAG_SERVERIP` is

@@ -105,6 +105,7 @@ impl KadNode {
             candidates.truncate(accepted);
             self.emit_event(KadEvent::SourcesFound {
                 target: request.target(),
+                storer: from,
                 candidates,
             });
         }

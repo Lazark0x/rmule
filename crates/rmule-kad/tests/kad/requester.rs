@@ -439,7 +439,10 @@ fn solicited_fixture_search_res_projects_through_the_sealed_boundary() {
 
     assert_eq!(datagrams, vec![]);
     assert_eq!(events.len(), 1);
-    let KadEvent::SourcesFound { target, candidates } = &events[0] else {
+    let KadEvent::SourcesFound {
+        target, candidates, ..
+    } = &events[0]
+    else {
         panic!("expected SourcesFound, got {events:?}");
     };
     assert_eq!(*target, fixture_request().target());

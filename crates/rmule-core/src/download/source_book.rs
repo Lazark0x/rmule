@@ -74,6 +74,9 @@ pub(crate) enum Sighted {
 /// Why a sighting pooled nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Blocked {
+    /// Every address it named lies in a Reserved Range its Informant cannot
+    /// vouch for (ADR-0085; aMule `IsGoodIP`).
+    Reserved,
     /// The IP filter refuses every address it named (aMule
     /// `CPartFile::AddSources`).
     IpFiltered,

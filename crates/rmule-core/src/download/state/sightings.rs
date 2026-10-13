@@ -164,7 +164,7 @@ impl DownloadState {
             tally.received += 1;
             match sighted {
                 Sighted::Blocked(Blocked::FamilyUnreachable) => tally.family_unreachable += 1,
-                Sighted::Blocked(Blocked::IpFiltered) => {}
+                Sighted::Blocked(Blocked::IpFiltered | Blocked::Reserved) => {}
                 _ => {
                     tally.admitted += 1;
                     tally.dialable += usize::from(dialable.is_some());

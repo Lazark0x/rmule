@@ -152,7 +152,8 @@ impl ServeState {
 
     /// The asker `peer` of `file_hash`, handed to the download's run as a
     /// candidate source from its hello's source coordinate, when the file
-    /// keeps its askers.
+    /// keeps its askers. The coordinate is the asker's own word, judged
+    /// against the address it reached us from (ADR-0085).
     pub(super) fn keep_asker(
         &self,
         peer: PeerEndpoint,
@@ -163,7 +164,9 @@ impl ServeState {
             .and(self.identities.get(&peer))
             .map(|identity| ServeDecision::KeepAsker {
                 file_hash,
-                sighting: identity.source_coordinate(peer),
+                sighting: identity
+                    .source_coordinate(peer)
+                    .with_informant(rmule_primitives::Informant::Party(peer.ip())),
             })
     }
 }

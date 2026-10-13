@@ -555,7 +555,7 @@ fn row_facts(tags: &RowTags, source_type: u8) -> KadSourceRowFacts {
         kad_udp: endpoint(
             tags.source_ip_host_order.map(u32::swap_bytes),
             tags.udp_port,
-            crate::net::is_unicast_host,
+            crate::net::may_name_a_host,
         ),
         connect_options: tags.connect_options.map(SourceCryptOptions::from_byte),
         buddy: tags.buddy_id_be.map(|be| KadBuddyContact {

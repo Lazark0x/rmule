@@ -94,12 +94,15 @@ fn holding(parts: &[u32]) -> PartBitmap {
     PartBitmap::decode(4, &[bits]).unwrap()
 }
 
-/// What the run is handed for an asker at `link` identified by [`identify`].
+/// What the run is handed for an asker at `link` identified by [`identify`]:
+/// its coordinate, as the word of the party at `link` (ADR-0085).
 fn kept(file_hash: FileHash, link: PeerEndpoint, user_hash: UserHash) -> ServeDecision {
     let identity = hello_facts(user_hash, 0, 0, 2).identity();
     ServeDecision::KeepAsker {
         file_hash,
-        sighting: identity.source_coordinate(link),
+        sighting: identity
+            .source_coordinate(link)
+            .with_informant(rmule_primitives::Informant::Party(link.ip())),
     }
 }
 

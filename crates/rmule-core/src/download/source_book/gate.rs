@@ -1,8 +1,8 @@
-//! The **Source Book**'s intake gate: the IP filter and the address family,
-//! judged per half of one sighting before the book's other blocks (ADR-0090).
-//! The caller lends a [`Gate`] for the one call — the filter's current view and
-//! our Dial Position — so the book stays pure and a reload applies from the
-//! next sighting.
+//! The **Source Book**'s intake gate: the Reserved Range check, the IP filter
+//! and the address family, judged per half of one sighting before the book's
+//! other blocks (ADR-0085, ADR-0090). The caller lends a [`Gate`] for the one
+//! call — the filter's current view and our Dial Position — so the book stays
+//! pure and a reload applies from the next sighting.
 
 use rmule_primitives::{PeerEndpoint, SourceSighting};
 
@@ -24,18 +24,27 @@ pub(crate) struct Gate<'a> {
 impl Gate<'_> {
     /// The sighting with its addresses judged, or why nothing of it passes.
     ///
-    /// Each half is judged on its own ([`admit_halves`]): a refused IPv6 half
-    /// is dropped from the sighting, a refused client id leaves the source on
-    /// its IPv6 half, both refused blocks it. Then the one address left is
-    /// judged by family — an IPv6 address needs an IPv6 of ours to be dialed
-    /// from — and by the filter again, for a sighting that named no pair. A
-    /// Low-ID row has no address to judge and passes: its real address is
-    /// enforced later at the accept and dial gates (aMule's `!IsLowID`). A
-    /// Kad callback row is judged by the publisher address it was observed at.
+    /// Each half is judged on its own ([`admit_halves`]), first by the
+    /// Reserved Range check against the sighting's Informant (aMule's
+    /// `IsGoodIP`, which runs before its filter), then by the IP filter: a
+    /// refused IPv6 half is dropped from the sighting, a refused client id
+    /// leaves the source on its IPv6 half, both refused blocks it. Then the one
+    /// address left is judged by family — an IPv6 address needs an IPv6 of ours
+    /// to be dialed from — and by both checks again for a sighting that named no
+    /// pair, which is how a Kad callback row is judged by the publisher address
+    /// it was observed at. A Low-ID row has no address to judge and passes: its
+    /// real address is enforced later at the accept and dial gates (aMule's
+    /// `!IsLowID`).
     pub(crate) fn judge(&self, sighting: SourceSighting) -> Result<SourceSighting, Blocked> {
-        let judged = admit_halves(sighting, |half| admits_source(self.filter, Some(half)))
+        let informant = sighting.informant();
+        let stands = |half: PeerEndpoint| informant.admits(half.ip());
+        let judged = admit_halves(sighting, stands).ok_or(Blocked::Reserved)?;
+        let judged = admit_halves(judged, |half| admits_source(self.filter, Some(half)))
             .ok_or(Blocked::IpFiltered)?;
         let endpoint = judged.filter_endpoint();
+        if endpoint.is_some_and(|endpoint| !stands(endpoint)) {
+            return Err(Blocked::Reserved);
+        }
         if let Some(PeerEndpoint::V6(half)) = endpoint
             && !self.dial.can_dial_ipv6()
         {
@@ -54,5 +63,157 @@ impl Gate<'_> {
     /// Whether any half of `sighting` passes the gate.
     pub(crate) fn admits(&self, sighting: SourceSighting) -> bool {
         self.judge(sighting).is_ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use rmule_primitives::{
+        Informant, Ipv4Endpoint, Ipv6Endpoint, PeerSource, SightedBuddy, SourceCryptOptions,
+        SourceRoad, UserHash,
+    };
+
+    use super::*;
+
+    fn gate(filter: &IpFilter) -> Gate<'_> {
+        Gate {
+            filter,
+            dial: DialPosition {
+                known_ipv6: Some("2001:db8::1".parse().unwrap()),
+            },
+        }
+    }
+
+    fn at(ip: Ipv4Addr) -> Ipv4Endpoint {
+        Ipv4Endpoint::new(ip, 4662)
+    }
+
+    fn party(ip: [u8; 4]) -> Informant {
+        Informant::Party(IpAddr::V4(Ipv4Addr::from(ip)))
+    }
+
+    /// The shapes the channels hand the gate for a source at `ip`: a server
+    /// answer, a source-exchange row with its hash and server, a Kad direct
+    /// row with its connect options, and the two Kad callback rows, named by
+    /// the endpoint the storer observed.
+    fn shapes(ip: Ipv4Addr) -> [SourceSighting; 5] {
+        let hash = Some(UserHash::from_bytes([0x5A; 16]));
+        let observed = Ipv4Endpoint::new(ip, 4672);
+        let buddy = SightedBuddy {
+            buddy_id: [0xB0; 16],
+            buddy_udp: None,
+        };
+        [
+            SourceSighting::plain(PeerSource::HighId(at(ip))),
+            SourceSighting::new(PeerSource::HighId(at(ip)), hash, None)
+                .with_server(Some(at(Ipv4Addr::new(45, 55, 200, 1)))),
+            SourceSighting::new(
+                PeerSource::HighId(at(ip)),
+                hash,
+                Some(SourceCryptOptions::from_byte(0x01)),
+            ),
+            SourceSighting::by_road(
+                SourceRoad::DirectUdpCallback {
+                    kad_udp: observed,
+                    tcp_port: 4662,
+                },
+                hash,
+                Some(SourceCryptOptions::from_byte(0x08)),
+            ),
+            SourceSighting::by_road(
+                SourceRoad::Buddy {
+                    buddy,
+                    kad_udp: observed,
+                    tcp_port: 4662,
+                },
+                hash,
+                None,
+            ),
+        ]
+    }
+
+    /// Loopback, broadcast and `0.0.0.5` are blocked from every channel a
+    /// remote party speaks on; a public and a LAN address pass (ADR-0085).
+    #[test]
+    fn a_reserved_address_is_blocked_from_every_channel_and_a_lan_one_passes() {
+        let filter = IpFilter::default();
+        let remote = party([198, 51, 100, 9]);
+        for reserved in [
+            Ipv4Addr::LOCALHOST,
+            Ipv4Addr::BROADCAST,
+            Ipv4Addr::new(0, 0, 0, 5),
+        ] {
+            for sighting in shapes(reserved) {
+                assert_eq!(
+                    gate(&filter).judge(sighting.with_informant(remote)),
+                    Err(Blocked::Reserved),
+                    "{sighting:?}"
+                );
+            }
+        }
+        for host in [Ipv4Addr::new(45, 55, 200, 8), Ipv4Addr::new(10, 0, 0, 8)] {
+            for sighting in shapes(host) {
+                assert!(gate(&filter).admits(sighting.with_informant(remote)));
+            }
+        }
+    }
+
+    /// A loopback source passes from rmule itself and from a party on this
+    /// host, and from nobody else.
+    #[test]
+    fn loopback_passes_only_from_an_informant_on_this_host() {
+        let filter = IpFilter::default();
+        for sighting in shapes(Ipv4Addr::LOCALHOST) {
+            assert!(gate(&filter).admits(sighting), "rmule's own: {sighting:?}");
+            assert!(
+                gate(&filter).admits(sighting.with_informant(party([127, 0, 0, 1]))),
+                "a party on this host: {sighting:?}"
+            );
+            assert_eq!(
+                gate(&filter).judge(sighting.with_informant(party([45, 55, 200, 7]))),
+                Err(Blocked::Reserved)
+            );
+        }
+    }
+
+    /// Each half is judged on its own: a reserved half drops, and the source
+    /// stands on its other address.
+    #[test]
+    fn a_reserved_half_drops_and_its_sibling_stands() {
+        let filter = IpFilter::default();
+        let remote = party([198, 51, 100, 9]);
+        let public_v6 = Ipv6Endpoint::new("2a01:4f8::7".parse().unwrap(), 4662);
+        let loopback_v6 = Ipv6Endpoint::new(std::net::Ipv6Addr::LOCALHOST, 4662);
+        let dual = |v4: Ipv4Addr, v6| {
+            SourceSighting::plain(PeerSource::HighId(at(v4)))
+                .with_ipv6_half(Some(v6))
+                .with_informant(remote)
+        };
+
+        let judged = gate(&filter)
+            .judge(dual(Ipv4Addr::LOCALHOST, public_v6))
+            .expect("the IPv6 half stands");
+        assert_eq!(judged.peer_source(), Some(PeerSource::Ipv6(public_v6)));
+
+        let public_v4 = Ipv4Addr::new(45, 55, 200, 8);
+        let judged = gate(&filter)
+            .judge(dual(public_v4, loopback_v6))
+            .expect("the IPv4 half stands");
+        assert_eq!(
+            judged.peer_source(),
+            Some(PeerSource::HighId(at(public_v4)))
+        );
+        assert_eq!(judged.ipv6(), None, "the reserved half is dropped");
+
+        let low_id = SourceSighting::plain(PeerSource::new(
+            rmule_primitives::ClientId::from_u32(42),
+            4662,
+        ))
+        .with_ipv6_half(Some(loopback_v6))
+        .with_informant(remote);
+        let judged = gate(&filter).judge(low_id).expect("a Low ID's roads stand");
+        assert_eq!(judged.ipv6(), None, "its rung-0 half is dropped");
     }
 }

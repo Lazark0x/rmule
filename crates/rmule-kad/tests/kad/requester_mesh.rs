@@ -179,7 +179,10 @@ fn mesh_fake_storers_deliver_fixture_sources_and_noise_stays_diagnostic() {
         .collect();
     assert_eq!(sources.len(), 3, "one solicited batch per fake storer");
     for event in sources {
-        let KadEvent::SourcesFound { target, candidates } = event else {
+        let KadEvent::SourcesFound {
+            target, candidates, ..
+        } = event
+        else {
             unreachable!()
         };
         assert_eq!(*target, fixture_request().target());

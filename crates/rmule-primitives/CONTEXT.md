@@ -105,6 +105,14 @@ _Avoid_: sidecar, second source, dual-stack source (as a separate kind)
 An address arriving in a 16-byte tag, judged by whether it can stand as one at all (`IsUsableTagIdentity`, ADR-0087). A tag carries the address and nothing else — there is no room for a scope id — so a link-local peer is `fe80::1` in the tag and `fe80::1%3` on the socket, and two peers on two interfaces collapse into one identity. Only global unicast (`2000::/3`) survives the round trip, so only global unicast is admitted. Dropping the scope from the index is not the fix: `fe80::1%3` and `fe80::1%9` really are different peers.
 _Avoid_: valid address, routable check (this is about the tag, not the route)
 
+**Reserved Range**:
+A range no remote host can be reached at (`is_reserved_address`, ADR-0085): IPv4 `0/8`, loopback, link-local, multicast and `240/4` with the broadcast address; IPv6 unspecified, loopback, link-local and multicast. Every address a **Source Sighting** names is checked against it once, at the Source Book gate. Private, carrier-grade and documentation ranges are not reserved: a LAN peer is a peer.
+_Avoid_: bogon, bad IP, `IsGoodIP` (aMule's table holds more blocks and refuses LAN)
+
+**Informant**:
+Who stated a **Source Sighting**: rmule itself (a link, a seed, a source an embedding program injected) or the party at an address that sent it, as the producer that read it off the network stamps it. Loopback is relative to its reader, so a loopback address is a peer only when its Informant is on this host; every other **Reserved Range** is refused whoever stated it.
+_Avoid_: source, origin (a sighting's channel is its origin; the Informant is the party behind it)
+
 **Ed2k Wire Form**:
 The form an **Endpoint** takes in a 32-bit wire field — a `.part.met` seed, a classic source-exchange entry, a server source list — or its absence (`HasEd2kWireForm`, ADR-0087). A native-IPv6 peer is **omitted** from such a field, never written as `0`; `0.0.0.0` is refused for the same reason, being the absence of an address wearing one.
 _Avoid_: IPv4 projection, downcast

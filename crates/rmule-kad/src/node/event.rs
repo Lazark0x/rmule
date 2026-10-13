@@ -77,6 +77,10 @@ pub enum KadEvent {
         /// The file these rows answer, hash and size — the lookup the request
         /// carried, echoed back whole.
         target: SourceLookupTarget,
+        /// The storer that answered. Every address on its rows is its
+        /// observation, so a loopback one is a peer only when the storer
+        /// itself is on this host (ADR-0085).
+        storer: KadNodeEndpoint,
         /// The projected rows: a Peer Source per direct High-ID row, a
         /// diagnostic for every row the projection refused.
         candidates: Vec<KadSourceCandidate>,

@@ -96,7 +96,10 @@ fn indexed_by(trace: &[TraceEntry], label: &str) -> Vec<KadEvent> {
 /// sealed projection: the storer-substituted observed IP plus A's TCP port.
 fn assert_sources_are_a(founds: &[KadEvent]) {
     for event in founds {
-        let KadEvent::SourcesFound { target, candidates } = event else {
+        let KadEvent::SourcesFound {
+            target, candidates, ..
+        } = event
+        else {
             unreachable!()
         };
         assert_eq!(*target, search_request().target());
