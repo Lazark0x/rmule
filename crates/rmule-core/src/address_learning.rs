@@ -512,6 +512,9 @@ pub enum ObservationOutcome {
     /// needs and outrank that vote in the quorum count (kno's
     /// `PublicIPv6Corroboration.h` keeps no state for an unheld value).
     UnheldPeerVoteRefused,
+    /// Refused: the observation named port `0`, which is no port (ADR-0084).
+    /// Recorded, it would count as a dissenting observer in the Own Mapping.
+    PortZeroRefused,
 }
 
 /// What one `OP_IDCHANGE` established as our public IPv4, as the store took it.

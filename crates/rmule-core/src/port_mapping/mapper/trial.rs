@@ -272,7 +272,8 @@ impl PortMapper {
             ObservationOutcome::Recorded => MappingStatus::Mapped,
             ObservationOutcome::NotPubliclyUsable
             | ObservationOutcome::Ipv4PeerVoteRefused
-            | ObservationOutcome::UnheldPeerVoteRefused => MappingStatus::Degraded,
+            | ObservationOutcome::UnheldPeerVoteRefused
+            | ObservationOutcome::PortZeroRefused => MappingStatus::Degraded,
         }
     }
 }

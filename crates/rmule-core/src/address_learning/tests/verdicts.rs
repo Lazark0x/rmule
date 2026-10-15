@@ -361,11 +361,24 @@ fn a_grant_in_the_carrier_grade_range_names_the_isp_not_the_router() {
     );
 }
 
+/// A refused reflection is a hairpin only when it names an address this host
+/// holds: a private address somebody else's LAN uses says nothing about our
+/// path, and names no hint.
 #[test]
 fn a_reflection_of_our_own_lan_address_reads_as_a_hairpinned_path() {
     let mut store = bound_store();
     let now = Instant::now();
     let reflected = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
+    store.observe(
+        AddressObservation::kad_observed_address(ipv4(observer(1)), ipv4(reflected)),
+        now,
+    );
+    assert_eq!(
+        store.nat_hint(AddressFamily::V4, now),
+        None,
+        "nothing here holds that address"
+    );
+    store.refresh_interfaces(&[reflected]);
     store.observe(
         AddressObservation::kad_observed_address(ipv4(observer(1)), ipv4(reflected)),
         now,
@@ -381,8 +394,8 @@ fn a_reflection_of_our_own_lan_address_reads_as_a_hairpinned_path() {
 }
 
 /// ADR-0091's self-punch guard asks *exactly* "is this one of my addresses".
-/// Its sibling `interfaces_hold_locally` widens to loopback and site-local for
-/// hairpin detection; this one must not, or a node with nothing learned yet
+/// Its sibling `interfaces_hold_locally` widens to loopback and every
+/// enumerated address for hairpin detection; this one must not, or a node with nothing learned yet
 /// would call every private-looking punch target "ourselves" — the loopback
 /// comparison amule#1177 correction 4 is about.
 #[test]
@@ -395,4 +408,23 @@ fn the_self_punch_guard_matches_our_interfaces_exactly_and_nothing_wider() {
     assert!(!store.holds_interface(v4(8)));
     assert!(!store.holds_interface(IpAddr::V4(Ipv4Addr::LOCALHOST)));
     assert!(!store.holds_interface(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5))));
+}
+
+/// Port `0` is no port: refused at `observe`, so it can neither hold the Kad
+/// rung nor dissent in the Own Mapping.
+#[test]
+fn a_port_of_zero_is_refused() {
+    let mut store = bound_store();
+    let now = Instant::now();
+    for observer_ip in [observer(1), observer(2), observer(3)] {
+        assert_eq!(
+            store.observe(
+                AddressObservation::kad_observed_port(ipv4(observer_ip), 0),
+                now,
+            ),
+            ObservationOutcome::PortZeroRefused
+        );
+    }
+    assert_eq!(store.learned_port(SocketRole::Udp, now), None);
+    assert_eq!(store.own_mapping(SocketRole::Udp, now), OwnMapping::Unknown);
 }

@@ -230,17 +230,19 @@ impl<T: Copy + PartialEq> Ladder<T> {
         self.entries.is_empty()
     }
 
-    /// Every rung this ladder can offer, in no particular order — the caller's
-    /// family decides the ranking, because the same tier sits at different
-    /// heights on the IPv4 and IPv6 ladders.
-    pub(super) fn rungs(&self) -> Vec<Rung<T>> {
+    /// Every rung this ladder can offer at `now`, in no particular order — the
+    /// caller's family decides the ranking, because the same tier sits at
+    /// different heights on the IPv4 and IPv6 ladders. A quorum tier offers
+    /// what its fresh observations hold before anything lapsed ones held
+    /// (ADR-0084, "Freshness before ranking").
+    pub(super) fn rungs(&self, now: Instant) -> Vec<Rung<T>> {
         [
             self.single(ConfidenceTier::Override),
             self.single(ConfidenceTier::Server),
             self.single(ConfidenceTier::LowIdReport),
             self.single(ConfidenceTier::MappingGrant),
             self.two_agree(),
-            self.quorum(),
+            self.quorum(now),
         ]
         .into_iter()
         .flatten()
@@ -267,8 +269,12 @@ impl<T: Copy + PartialEq> Ladder<T> {
     /// is the candidate and each older report that *agrees* adds its
     /// observer; [`KAD_AGREEMENT`] distinct observers hold it. Under
     /// [`KadAgreement::Consecutive`] the first disagreement ends the search,
-    /// under [`KadAgreement::AnyEarlier`] it is skipped. The window slides
-    /// with the newest report.
+    /// under [`KadAgreement::AnyEarlier`] it is skipped.
+    ///
+    /// The window slides with every backer, not with the newest report alone:
+    /// the rung lapses when the [`KAD_AGREEMENT`]th distinct observer's
+    /// report — the newest one that can still make up the agreement — leaves
+    /// the window, so a backer that has lapsed never holds a fresh report.
     ///
     /// [`KadCheck`]: ConfidenceTier::KadCheck
     fn two_agree(&self) -> Option<Rung<T>> {
@@ -279,7 +285,11 @@ impl<T: Copy + PartialEq> Ladder<T> {
             .filter(|entry| entry.tier == ConfidenceTier::KadCheck);
         let newest = reports.next()?;
         let mut observers: Vec<IpAddr> = newest.observer.into_iter().collect();
+        let mut lapses = newest.at + OBSERVATION_WINDOW;
         for report in reports {
+            if observers.len() >= KAD_AGREEMENT {
+                break;
+            }
             if report.value != newest.value {
                 match self.agreement {
                     KadAgreement::Consecutive => break,
@@ -290,12 +300,13 @@ impl<T: Copy + PartialEq> Ladder<T> {
                 && !observers.contains(&observer)
             {
                 observers.push(observer);
+                lapses = lapses.min(report.at + OBSERVATION_WINDOW);
             }
         }
         (observers.len() >= KAD_AGREEMENT).then_some(Rung {
             tier: ConfidenceTier::KadCheck,
             value: newest.value,
-            expires: Some(newest.at + OBSERVATION_WINDOW),
+            expires: Some(lapses),
         })
     }
 
@@ -304,13 +315,27 @@ impl<T: Copy + PartialEq> Ladder<T> {
     /// is, when the `PEER_QUORUM`th-newest supporting vote leaves the window.
     /// The best-supported value wins a tie, then the most recent.
     ///
+    /// Only votes still inside the window at `now` are counted first, so
+    /// lapsed votes never outrank fresh ones; when no fresh quorum forms, the
+    /// lapsed votes still name the stale last-known.
+    ///
     /// [`PeerVote`]: ConfidenceTier::PeerVote
-    fn quorum(&self) -> Option<Rung<T>> {
-        let votes: Vec<&Entry<T>> = self
+    fn quorum(&self, now: Instant) -> Option<Rung<T>> {
+        let votes = self
             .entries
             .iter()
-            .filter(|entry| entry.tier == ConfidenceTier::PeerVote)
-            .collect();
+            .filter(|entry| entry.tier == ConfidenceTier::PeerVote);
+        Self::best_quorum(
+            votes
+                .clone()
+                .filter(|vote| vote.at + OBSERVATION_WINDOW > now)
+                .collect(),
+        )
+        .or_else(|| Self::best_quorum(votes.collect()))
+    }
+
+    /// The best-supported value [`PEER_QUORUM`] of `votes` name, if any.
+    fn best_quorum(votes: Vec<&Entry<T>>) -> Option<Rung<T>> {
         let mut best: Option<Rung<T>> = None;
         let mut best_support = 0usize;
         for candidate in &votes {
