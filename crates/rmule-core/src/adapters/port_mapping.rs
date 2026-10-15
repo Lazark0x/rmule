@@ -34,8 +34,8 @@ use tokio::sync::{mpsc, watch};
 use crate::address_learning::SharedAddressLearning;
 use crate::diagnostics::DiagnosticsState;
 use crate::port_mapping::{
-    DesiredMapping, GrantAnswer, MappingCommand, MappingDiagnostics, MappingResult, PortMapper,
-    PortMappingConfig, PortMappingMode, ProbeAnswer,
+    BACKEND_DEADLINE, DesiredMapping, GrantAnswer, MappingCommand, MappingDiagnostics,
+    MappingResult, PortMapper, PortMappingConfig, PortMappingMode, ProbeAnswer,
 };
 use crate::reachability::SharedSelfReach;
 
@@ -47,17 +47,6 @@ use super::kad_runtime::{SharedKadPump, request_kad_recheck};
 /// budget, not a guarantee.
 const RELEASE_BUDGET: Duration = Duration::from_secs(2);
 
-/// The deadline every backend call runs under.
-///
-/// A backend that never answers would strand the mapper: a trial is judged only
-/// once every mapping has answered, so one silent call holds the whole race
-/// open for the rest of the session. The two UDP backends bound themselves with
-/// their own retransmit ladder, but the UPnP one makes a blocking HTTP request
-/// to a device that can simply stop replying — and a cancelled `spawn_blocking`
-/// keeps running, so this bounds the *answer*, not the thread. Comfortably past
-/// the race's own 15-second cap, so it never pre-empts a slow-but-live gateway.
-const BACKEND_DEADLINE: Duration = Duration::from_secs(20);
-
 /// The runtime's clock period: a due-time backstop for the re-derivation
 /// that no event announces (a Known IPv6 verdict lapsing with nobody
 /// writing). The connected server's ID verdict is not polled on it — it is
@@ -66,6 +55,10 @@ const BACKEND_DEADLINE: Duration = Duration::from_secs(20);
 const RECHECK_PERIOD: Duration = Duration::from_secs(30);
 
 /// What the actor tells the mapping runtime.
+///
+/// The two travel apart: a [`Reprobe`](Self::Reprobe) is a coalesced flag
+/// that can never be lost, and a [`PinPeer`](Self::PinPeer) rides a bounded
+/// inbox where a full one drops the pin and nothing else.
 ///
 /// Deliberately *not* "a socket bound". The **Desired Mapping Set** is derived
 /// from the **Address Learning** bind table and nothing else, so the runtime
@@ -95,6 +88,9 @@ pub(crate) enum PortMappingControl {
 #[derive(Debug)]
 pub(crate) struct PortMappingHandle {
     control: mpsc::Sender<PortMappingControl>,
+    /// The operator's reprobe, coalesced: any number of requests before the
+    /// runtime looks are one re-race, and none waits behind a pin.
+    reprobe: Arc<tokio::sync::Notify>,
     task: tokio::task::JoinHandle<()>,
     /// The **Mapping Status** rows as the runtime last published them — the
     /// values the diagnostics level carries, on a watch so a waiter wakes on
@@ -103,11 +99,17 @@ pub(crate) struct PortMappingHandle {
 }
 
 impl PortMappingHandle {
-    /// Tell the runtime something happened. Best effort: a full inbox drops the
-    /// notice rather than blocking the actor, and every control here is
-    /// idempotent or re-derivable on the next one.
+    /// Tell the runtime something happened, never blocking the actor. A
+    /// reprobe is stored as one pending permit, so it survives any number of
+    /// pins; a pin meeting a full inbox is dropped, and its path's keepalive
+    /// carries it.
     pub(crate) fn notify(&self, control: PortMappingControl) {
-        let _ = self.control.try_send(control);
+        match control {
+            PortMappingControl::Reprobe => self.reprobe.notify_one(),
+            PortMappingControl::PinPeer(_) => {
+                let _ = self.control.try_send(control);
+            }
+        }
     }
 
     /// A **weak** sender for the NAT-T front's punched-path pins.
@@ -216,6 +218,7 @@ pub(crate) fn spawn_port_mapping(
         return None;
     }
     let (control_tx, control_rx) = mpsc::channel(8);
+    let reprobe = Arc::new(tokio::sync::Notify::new());
     let (rows_tx, rows_rx) = watch::channel(Vec::new());
     // The renewal jitter's seed. Per process rather than per install: it only
     // decorrelates renewal storms across clients, so any value no other client
@@ -236,10 +239,11 @@ pub(crate) fn spawn_port_mapping(
             routes: Vec::new(),
             rows: rows_tx,
         }
-        .run(control_rx),
+        .run(control_rx, Arc::clone(&reprobe)),
     );
     Some(PortMappingHandle {
         control: control_tx,
+        reprobe,
         task,
         rows: rows_rx,
     })
@@ -255,8 +259,10 @@ pub(crate) trait PortMappingPreferences: Send + Sync {
     /// The method that last won a race, or `None` — never raced, or the stored
     /// value names a protocol this build does not know.
     fn learned_method(&self) -> Option<MappingProtocol>;
-    /// Remember the method that just won.
-    fn set_learned_method(&self, method: MappingProtocol);
+    /// Remember the mapper's learned method; `None` clears the stored one,
+    /// so a method that stopped being worth probing alone is not probed
+    /// alone again next run.
+    fn set_learned_method(&self, method: Option<MappingProtocol>);
 }
 
 /// The task's own state: the mapper, the seams, and the cached route lookup.
@@ -288,7 +294,11 @@ struct Runtime {
 }
 
 impl Runtime {
-    async fn run(mut self, mut control_rx: mpsc::Receiver<PortMappingControl>) {
+    async fn run(
+        mut self,
+        mut control_rx: mpsc::Receiver<PortMappingControl>,
+        reprobe: Arc<tokio::sync::Notify>,
+    ) {
         let (results_tx, mut results_rx) = mpsc::channel(32);
         // Every socket records what it bound in **Address Learning**, and the
         // **Desired Mapping Set** is derived from exactly that table — so the
@@ -345,10 +355,10 @@ impl Runtime {
                 () = reach_generation.changed() => {
                     self.observe_server_id(Instant::now());
                 }
+                () = reprobe.notified() => self.mapper.reprobe(Instant::now()),
                 control = control_rx.recv() => {
-                    let now = Instant::now();
                     match control {
-                        Some(PortMappingControl::Reprobe) => self.mapper.reprobe(now),
+                        Some(PortMappingControl::Reprobe) => self.mapper.reprobe(Instant::now()),
                         Some(PortMappingControl::PinPeer(request)) => self.pin_peer(request),
                         // The actor dropped its handle: the core this served is
                         // gone.
@@ -371,28 +381,18 @@ impl Runtime {
         self.diagnostics.set_mappings(Vec::new());
     }
 
-    /// Write the method that just won a race, if it is not the one already
-    /// remembered — so the next run opens with one short probe instead of a
-    /// full three-protocol race.
+    /// Write the mapper's learned method when it moved — a win, so the next
+    /// run opens with one short probe, or a forgetting, so a stale method is
+    /// not probed alone first next run.
     fn persist_learned_method(&mut self) {
-        let Some(method) = self.mapper.learned_method() else {
-            return;
-        };
-        if self.learned == Some(method) {
+        let method = self.mapper.learned_method();
+        if self.learned == method {
             return;
         }
-        self.learned = Some(method);
+        self.learned = method;
         self.preferences.set_learned_method(method);
     }
 
-    /// Feed the connected server's current ID verdict to the mapper, so the
-    /// first LowID after a High-ID re-maps once (the references' "smart
-    /// LowID"): the mapping that earned the High-ID has evidently stopped
-    /// working, and nothing else would notice until the lease ran out.
-    ///
-    /// The verdict is **Self Reach**'s High-ID half (`IsConnectedED2K() &&
-    /// !IsLowID()`), not a second derivation of it from Address Learning's
-    /// `Server` tier (ADR-0060).
     /// Publish the rows to the diagnostics level and, when they moved, to the
     /// watch — the one write both readers see.
     fn publish_rows(&self) {
@@ -407,6 +407,14 @@ impl Runtime {
         self.diagnostics.set_mappings(rows);
     }
 
+    /// Feed the connected server's current ID verdict to the mapper, so the
+    /// first LowID after a High-ID re-maps once (the references' "smart
+    /// LowID"): the mapping that earned the High-ID has evidently stopped
+    /// working, and nothing else would notice until the lease ran out.
+    ///
+    /// The verdict is **Self Reach**'s High-ID half (`IsConnectedED2K() &&
+    /// !IsLowID()`), not a second derivation of it from Address Learning's
+    /// `Server` tier (ADR-0060).
     fn observe_server_id(&mut self, now: Instant) {
         let high_id = self.reach.server_high_id();
         self.mapper.on_server_id(high_id, now);
@@ -436,18 +444,24 @@ impl Runtime {
                     lease,
                 };
                 let Some((backend, gateway)) = self.route_mapping(protocol, mapping) else {
-                    let _ = results.try_send(MappingResult::Mapped {
-                        protocol,
-                        mapping,
-                        outcome: Err(MappingError::Unsupported(protocol)),
-                    });
+                    // Fed straight back: a call that never left has its
+                    // answer now, and no inbox can drop it.
+                    self.mapper.on_result(
+                        MappingResult::Mapped {
+                            protocol,
+                            mapping,
+                            outcome: Err(MappingError::Unsupported(protocol)),
+                        },
+                        Instant::now(),
+                    );
                     return;
                 };
                 let results = results.clone();
                 tokio::spawn(async move {
-                    let outcome = backend
-                        .map(gateway, request)
+                    let call = backend.map(gateway, request);
+                    let outcome = tokio::time::timeout(BACKEND_DEADLINE, call)
                         .await
+                        .unwrap_or(Err(MappingError::Timeout(protocol)))
                         .map(|grant| GrantAnswer {
                             external: grant.external,
                             lease: grant.lease,
@@ -518,10 +532,13 @@ impl Runtime {
     fn probe(&mut self, protocol: MappingProtocol, results: &mpsc::Sender<MappingResult>) {
         self.routes = self.gateways.gateways();
         let Some(backend) = self.backend(protocol) else {
-            let _ = results.try_send(MappingResult::Probed {
-                protocol,
-                outcome: Err(MappingError::Unsupported(protocol)),
-            });
+            self.mapper.on_result(
+                MappingResult::Probed {
+                    protocol,
+                    outcome: Err(MappingError::Unsupported(protocol)),
+                },
+                Instant::now(),
+            );
             return;
         };
         let reachable: Vec<Gateway> = self
@@ -681,13 +698,16 @@ impl PortMappingPreferences for DurablePortMappingPreferences {
             .and_then(MappingProtocol::from_persisted_name)
     }
 
-    fn set_learned_method(&self, method: MappingProtocol) {
+    fn set_learned_method(&self, method: Option<MappingProtocol>) {
         use crate::app_config::Preference;
-        if let Err(error) = self
-            .0
-            .set_preference(Preference::PortMapMethod, method.persisted_name())
-        {
-            tracing::warn!(%error, %method, "could not persist the learned port-mapping method");
+        let written = match method {
+            Some(method) => self
+                .0
+                .set_preference(Preference::PortMapMethod, method.persisted_name()),
+            None => self.0.clear_preference(Preference::PortMapMethod),
+        };
+        if let Err(error) = written {
+            tracing::warn!(%error, ?method, "could not persist the learned port-mapping method");
         }
     }
 }

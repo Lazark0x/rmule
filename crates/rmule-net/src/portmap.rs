@@ -132,6 +132,17 @@ impl MappingProtocol {
             (Self::NatPmp | Self::Upnp, AddressFamily::V6) => false,
         }
     }
+
+    /// Whether the gateway keys a mapping by its **external** port (ADR-0086,
+    /// "Every grant has one owner and one end"). UPnP does
+    /// (`DeletePortMapping` names `NewExternalPort`), so a renewal granted on
+    /// another external port is a second mapping beside the first. PCP and
+    /// NAT-PMP key it by the internal port, so the same answer moved the one
+    /// mapping, and a delete naming the old port would remove the new one.
+    #[must_use]
+    pub const fn keys_by_external_port(self) -> bool {
+        matches!(self, Self::Upnp)
+    }
 }
 
 impl fmt::Display for MappingProtocol {

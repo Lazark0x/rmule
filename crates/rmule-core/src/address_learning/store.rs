@@ -488,6 +488,27 @@ impl AddressLearning {
         }
     }
 
+    /// Withdraw what one ended port-mapping grant fed (ADR-0086, "Every grant
+    /// has one owner and one end"): `role`'s port-ladder grant when the row
+    /// is IPv4 — an IPv6 pinhole never fed one — and `family`'s address-ladder
+    /// grant unless `sibling_held`, another `Mapped` lease in that family
+    /// still standing behind the same gateway address.
+    pub(crate) fn withdraw_mapping_grant(
+        &mut self,
+        role: SocketRole,
+        family: AddressFamily,
+        sibling_held: bool,
+    ) {
+        if family == AddressFamily::V4
+            && let Some(ladder) = self.ports.get_mut(&role)
+        {
+            ladder.withdraw(ConfidenceTier::MappingGrant);
+        }
+        if !sibling_held && let Some(ladder) = self.addresses.get_mut(&family) {
+            ladder.withdraw(ConfidenceTier::MappingGrant);
+        }
+    }
+
     /// The external port for `role`: the best fresh port tier, else the port
     /// the role actually bound.
     pub(super) fn port(&self, role: SocketRole, now: Instant) -> Option<u16> {
@@ -821,6 +842,16 @@ impl SharedAddressLearning {
     /// again, instead of on a clock of its own.
     pub(crate) fn next_lapse(&self) -> Option<Instant> {
         self.with(|store, now| store.next_lapse(now))
+    }
+
+    /// See [`AddressLearning::withdraw_mapping_grant`].
+    pub(crate) fn withdraw_mapping_grant(
+        &self,
+        role: SocketRole,
+        family: AddressFamily,
+        sibling_held: bool,
+    ) {
+        self.write(|store, _| store.withdraw_mapping_grant(role, family, sibling_held));
     }
 
     /// See [`AddressLearning::forget_kad_port_round`].

@@ -55,6 +55,19 @@ mod tests;
 pub(crate) use desired::DesiredMappingSet;
 pub(crate) use mapper::PortMapper;
 
+/// The deadline every backend probe and map runs under (ADR-0086, "Every
+/// grant has one owner and one end"), answered as
+/// [`Timeout`](MappingError::Timeout) when it passes.
+///
+/// A trial is judged only once every row has answered, so one silent call
+/// would hold the whole race open for the rest of the session. The two UDP
+/// backends bound themselves with their own retransmit ladder, but the UPnP
+/// one makes a blocking HTTP request to a device that can simply stop
+/// replying — and a cancelled `spawn_blocking` keeps running, so this bounds
+/// the *answer*, not the thread. Comfortably past the race's own 15-second
+/// cap, so it never pre-empts a slow-but-live gateway.
+pub(crate) const BACKEND_DEADLINE: Duration = Duration::from_secs(20);
+
 /// Whether rmule maps its own ports at all (ADR-0086).
 ///
 /// **Auto is the default**, against aMule's off-by-default: the headless

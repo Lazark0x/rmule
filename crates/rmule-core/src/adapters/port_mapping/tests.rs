@@ -38,7 +38,7 @@ impl PortMappingPreferences for Forgetful {
         None
     }
 
-    fn set_learned_method(&self, _method: MappingProtocol) {}
+    fn set_learned_method(&self, _method: Option<MappingProtocol>) {}
 }
 
 /// An IPv4-only **Family Pair**, as a loopback bind reports.
