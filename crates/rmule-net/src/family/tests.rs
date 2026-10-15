@@ -307,3 +307,16 @@ async fn a_datagram_to_a_closed_port_leaves_the_next_receive_intact() {
         )
     );
 }
+
+/// A link-local source names no host without its scope id, so the receive and
+/// accept edges refuse it; every other source, IPv6 global or IPv4, passes as
+/// its endpoint.
+#[test]
+fn a_link_local_source_is_refused_at_the_edge() {
+    let link_local: SocketAddr = "[fe80::1%1]:4672".parse().expect("a scoped address");
+    assert_eq!(source_endpoint(link_local), None);
+    let global: SocketAddr = "[2001:db8::1]:4672".parse().expect("an address");
+    assert_eq!(source_endpoint(global), Some(endpoint_of(global)));
+    let v4: SocketAddr = "198.51.100.1:4672".parse().expect("an address");
+    assert_eq!(source_endpoint(v4), Some(endpoint_of(v4)));
+}

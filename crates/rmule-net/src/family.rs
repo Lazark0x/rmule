@@ -305,7 +305,8 @@ impl UdpFamilyPair {
 
     /// The next datagram from either socket, with the endpoint it truly came
     /// from. `scratch` is the caller's reused receive buffer — one pump owns
-    /// the receive side, so the buffer need not be per-datagram.
+    /// the receive side, so the buffer need not be per-datagram. A datagram
+    /// from a link-local IPv6 source is dropped here ([`source_endpoint`]).
     ///
     /// # Errors
     /// Whatever the underlying receive returned.
@@ -327,7 +328,13 @@ impl UdpFamilyPair {
                 (None, None) => return Err(refused_every_family(&self.binds)),
             };
             match socket.try_recv_from(scratch) {
-                Ok((len, from)) => return Ok((len, endpoint_of(from))),
+                Ok((len, from)) => match source_endpoint(from) {
+                    Some(peer) => return Ok((len, peer)),
+                    None => {
+                        tracing::trace!(%from, "datagram from a link-local source dropped");
+                        continue;
+                    }
+                },
                 // A readiness race with the other arm: the datagram went to
                 // whichever socket the select did not pick. Wait again.
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
@@ -352,6 +359,22 @@ pub fn endpoint_of(addr: SocketAddr) -> PeerEndpoint {
     match addr {
         SocketAddr::V4(addr) => PeerEndpoint::V4(Ipv4Endpoint::new(*addr.ip(), addr.port())),
         SocketAddr::V6(addr) => PeerEndpoint::V6(Ipv6Endpoint::new(*addr.ip(), addr.port())),
+    }
+}
+
+/// The endpoint a received datagram or an accepted connection came from, or
+/// `None` for a link-local IPv6 source (`fe80::/10`).
+///
+/// A link-local address means something only beside its scope id, and a
+/// [`PeerEndpoint`] carries none (ADR-0085): an answer to one would leave on
+/// whichever link the OS picks, and the address would reach every table as if
+/// it named one host. So the Family Pair's receive and accept edges drop it,
+/// before any consumer sees it.
+#[must_use]
+pub fn source_endpoint(from: SocketAddr) -> Option<PeerEndpoint> {
+    match from {
+        SocketAddr::V6(addr) if addr.ip().is_unicast_link_local() => None,
+        _ => Some(endpoint_of(from)),
     }
 }
 
@@ -628,20 +651,27 @@ impl TcpFamilyPair {
     }
 
     /// Accept the next inbound connection from either listener, with the
-    /// endpoint the dialer truly came from.
+    /// endpoint the dialer truly came from. A connection from a link-local
+    /// IPv6 source is closed unread ([`source_endpoint`]).
     ///
     /// # Errors
     /// Whatever the underlying accept returned.
     pub async fn accept(&self) -> io::Result<(tokio::net::TcpStream, PeerEndpoint)> {
-        let (stream, from) = match (&self.v4, &self.v6) {
-            (Some(v4), Some(v6)) => tokio::select! {
-                accepted = v4.accept() => accepted?,
-                accepted = v6.accept() => accepted?,
-            },
-            (Some(only), None) | (None, Some(only)) => only.accept().await?,
-            (None, None) => return Err(refused_every_family(&self.binds)),
-        };
-        Ok((stream, endpoint_of(from)))
+        loop {
+            let (stream, from) = match (&self.v4, &self.v6) {
+                (Some(v4), Some(v6)) => tokio::select! {
+                    accepted = v4.accept() => accepted?,
+                    accepted = v6.accept() => accepted?,
+                },
+                (Some(only), None) | (None, Some(only)) => only.accept().await?,
+                (None, None) => return Err(refused_every_family(&self.binds)),
+            };
+            match source_endpoint(from) {
+                Some(peer) => return Ok((stream, peer)),
+                // Dropping the stream closes it before a byte is read.
+                None => tracing::trace!(%from, "connection from a link-local source closed"),
+            }
+        }
     }
 }
 
