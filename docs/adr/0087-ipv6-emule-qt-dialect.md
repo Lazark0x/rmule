@@ -191,7 +191,7 @@ eMuleAI passes a plain `0xC5` through (`EncryptedDatagramSocket.cpp:181-188`): c
 stays obfuscated toward every peer that asks for it. The cost is a recorded **divergence**:
 over IPv6, an eMuleAI peer and rmule cannot exchange an obfuscated reask, Kad or NAT-T
 datagram in either direction, so IPv6 client-UDP reachability with eMuleAI is lost until
-eMuleAI writes offset 32. The upstream report is an attended step.
+eMuleAI writes offset 32.
 
 ### The server-UDP surface
 
