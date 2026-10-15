@@ -58,11 +58,13 @@ impl GatewaySource for FakeGateways {
 /// What a scripted backend does with a mapping request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GrantPolicy {
-    /// Grant the exact port asked for — the High-ID answer.
+    /// Grant the external port the request suggests — the internal port on a
+    /// first map, the granted one on a renewal: the High-ID answer.
     Exact,
-    /// Grant every mapping, but on the internal port plus this offset: the
-    /// router had the port taken, or simply reassigns. On the TCP listener this
-    /// is a silent LowID, which is the whole reason the grade exists.
+    /// Grant every mapping, but this far from the internal port — above it,
+    /// or below it where above would leave the port range: the router had the
+    /// port taken, or simply reassigns. On the TCP listener this is a silent
+    /// LowID, which is the whole reason the grade exists. Never port 0.
     Shifted(u16),
     /// Grant nothing.
     Refuse,
@@ -178,17 +180,31 @@ impl ScriptedBackend {
     fn answer(&self, request: MappingRequest) -> Result<MappingGrant, MappingError> {
         let mut script = self.script.lock().expect("script mutex");
         script.asked.push(request);
-        let external_port = match script.grants {
-            GrantPolicy::Exact => request.internal_port,
-            GrantPolicy::Shifted(offset) => request.internal_port.wrapping_add(offset),
-            GrantPolicy::Refuse => {
-                return Err(MappingError::Refused {
-                    protocol: self.protocol,
-                    refusal: rmule_net::portmap::MappingRefusal::NoResources,
-                    hold_off: None,
-                });
-            }
+        // A gateway maps only in the families its probe answered for.
+        if !script
+            .families
+            .as_ref()
+            .is_some_and(|families| families.contains(&request.family))
+        {
+            return Err(MappingError::Unsupported(self.protocol));
+        }
+        let refused = MappingError::Refused {
+            protocol: self.protocol,
+            refusal: rmule_net::portmap::MappingRefusal::NoResources,
+            hold_off: None,
         };
+        let external_port = match script.grants {
+            GrantPolicy::Exact => request.suggested_external_port,
+            GrantPolicy::Shifted(offset) => request
+                .internal_port
+                .checked_add(offset)
+                .or_else(|| request.internal_port.checked_sub(offset))
+                .unwrap_or(0),
+            GrantPolicy::Refuse => return Err(refused),
+        };
+        if external_port == 0 {
+            return Err(refused);
+        }
         let external = match script.external_address {
             IpAddr::V4(address) => PeerEndpoint::V4(Ipv4Endpoint::new(address, external_port)),
             IpAddr::V6(address) => {
