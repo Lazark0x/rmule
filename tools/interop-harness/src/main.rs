@@ -50,6 +50,9 @@ use crate::cli::nat::{
     SentinelSourcesLegacyArgs, ipv6_dialect, ipv6_net_accept, natgw_selfproof, natt, portmap,
     sentinel_sources_legacy,
 };
+use crate::cli::one_link::{
+    PeerOneLinkArgs, PeerOneLinkScoreArgs, peer_one_link, peer_one_link_score,
+};
 use crate::cli::packed_source_exchange::{PackedSourceExchangeArgs, packed_source_exchange};
 use crate::cli::peer::{
     AmuleDirectSuiArgs, PeerUdpReaskArgs, PeerUdpReaskEmitArgs, PeerUdpReaskEmitScoreArgs,
@@ -323,6 +326,15 @@ enum HarnessCommand {
     /// its own taps and logs, without driving the flow again.
     #[command(name = "peer-lowid-callback-reask-score")]
     PeerLowIdCallbackReaskScore(PeerLowIdCallbackReaskScoreArgs),
+    /// The one-link flow: the eserver, a High-ID stock aMule sharing two
+    /// files and one rmule core downloading both over one link (ADR-0107).
+    /// A tap in rmule's namespace.
+    #[command(name = "peer-one-link")]
+    PeerOneLink(PeerOneLinkArgs),
+    /// Score a finished or archived `peer-one-link` run dir from its tap, its
+    /// copies and rmule's log, without driving the flow again.
+    #[command(name = "peer-one-link-score")]
+    PeerOneLinkScore(PeerOneLinkScoreArgs),
     /// The server-callback-serve flow: ed2ksrv, a Low-ID rmule sharer (its
     /// listener's inbound TCP dropped) and a High-ID stock aMule downloading
     /// the file through the server's callback relay: OP_CALLBACKREQUEST,
@@ -409,6 +421,7 @@ impl HarnessCommand {
             Self::PeerUdpReaskScore(args) => Some(&args.run_dir),
             Self::PeerLowIdCallbackReaskScore(args) => Some(&args.run_dir),
             Self::ServerCallbackServeScore(args) => Some(&args.run_dir),
+            Self::PeerOneLinkScore(args) => Some(&args.run_dir),
             Self::Ed2ksrvHolepunchFailScore(args) => Some(&args.run_dir),
             Self::PeerUdpReaskEmitScore(args) => Some(&args.run_dir),
             Self::PeerStreamingWindowScore(args) => Some(&args.run_dir),
@@ -428,6 +441,7 @@ impl HarnessCommand {
                 | Self::PeerUdpReaskScore(_)
                 | Self::PeerLowIdCallbackReaskScore(_)
                 | Self::ServerCallbackServeScore(_)
+                | Self::PeerOneLinkScore(_)
                 | Self::Ed2ksrvHolepunchFailScore(_)
                 | Self::PeerUdpReaskEmitScore(_)
                 | Self::PeerStreamingWindowScore(_)
@@ -568,6 +582,12 @@ fn dispatch(command: HarnessCommand) -> Result<()> {
         }
         HarnessCommand::PeerLowIdCallbackReaskScore(args) => {
             peer_lowid_callback_reask_score(args)?;
+        }
+        HarnessCommand::PeerOneLink(args) => {
+            peer_one_link(args)?;
+        }
+        HarnessCommand::PeerOneLinkScore(args) => {
+            peer_one_link_score(args)?;
         }
         HarnessCommand::ServerCallbackServe(args) => {
             server_callback_serve(args)?;

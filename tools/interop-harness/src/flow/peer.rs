@@ -6,10 +6,12 @@
 //! — or emit — a peer-UDP source reask, or re-asks a Low-ID one through its
 //! callback road, or serves one as a Low-ID node it dialed back on the
 //! server's relay, or downloads one file from several partial aMule seeds, or
-//! serves an aMule a download it is still fetching.
+//! serves an aMule a download it is still fetching, or downloads two files
+//! from one aMule over one link.
 
 pub(crate) mod direct_sui;
 pub(crate) mod lowid_callback_reask;
+pub(crate) mod one_link;
 pub(crate) mod partial_share;
 pub(crate) mod serve;
 pub(crate) mod server_callback_serve;
@@ -23,6 +25,9 @@ pub use self::direct_sui::{DirectSuiOptions, run_amule_direct_sui};
 pub use self::lowid_callback_reask::verdict::score_run_dir as score_lowid_callback_reask;
 pub use self::lowid_callback_reask::{
     PeerLowIdCallbackReaskOptions, run_peer_lowid_callback_reask,
+};
+pub use self::one_link::{
+    PeerOneLinkOptions, run_peer_one_link, score_run_dir as score_peer_one_link,
 };
 pub use self::partial_share::{
     PartialShareOptions, run_partial_share, score_run_dir as score_partial_share,

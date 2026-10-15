@@ -53,8 +53,8 @@ const SHARER_MAX_UPLOAD_KIB: &str = "3";
 const SLOT_HOLDERS: [&str; 2] = ["holder-a", "holder-b"];
 /// The second file of the two-download leg, and its link, beside the
 /// synthetic file.
-const SECOND_FILE: &str = "second.bin";
-const SECOND_LINK: &str = "second.ed2k.txt";
+pub(crate) const SECOND_FILE: &str = "second.bin";
+pub(crate) const SECOND_LINK: &str = "second.ed2k.txt";
 
 /// Stage this flow's files in the synthetic dir: `shared.bin` (and, for the
 /// two-download leg, `second.bin`) of `size` bytes no compressor shrinks, and
