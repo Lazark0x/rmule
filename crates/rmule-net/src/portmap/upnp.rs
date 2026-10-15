@@ -23,7 +23,8 @@
 //!
 //! So the order is inverted: `AddPortMapping` on the port rmule actually wants,
 //! which is exact-or-error, and `add_any_port` only as the fallback that turns a
-//! conflict into a *graded* `Mismatched` grant rather than nothing. The one
+//! port conflict (UPnP error 718) into a *graded* `Mismatched` grant rather than
+//! nothing. Any other refusal stays a refusal. The one
 //! thing the ADR's order buys — not silently stealing another LAN host's
 //! mapping on the same external port — is the cost, and it is the smaller one: a
 //! conflicting entry is far more often our own stale mapping than a neighbour's.
@@ -204,8 +205,8 @@ struct Granted {
     lease: Option<Duration>,
 }
 
-/// Ask for the exact port; fall back to a permanent lease, then to whatever the
-/// gateway will give.
+/// Ask for the exact port; fall back to a permanent lease, or — on a port
+/// conflict alone — to whatever port the gateway will give.
 fn add_mapping(
     device: &igd_next::Gateway,
     protocol: PortMappingProtocol,
@@ -213,34 +214,73 @@ fn add_mapping(
     local: SocketAddr,
     lease: u32,
 ) -> Result<Granted, MappingError> {
-    match device.add_port(protocol, wanted, local, lease, DESCRIPTION) {
-        Ok(()) => Ok(Granted {
+    let Err(error) = device.add_port(protocol, wanted, local, lease, DESCRIPTION) else {
+        return Ok(Granted {
             port: wanted,
             lease: Some(Duration::from_secs(u64::from(lease))),
-        }),
-        // UPnP error 725. IGD1's lease of 0 *means* permanent, while IGD2
-        // forbids infinite leases outright — so the same request earns a
-        // permanent mapping on one class of router and a one-week one on
-        // another. Asking again with 0 is the only way to be mapped at all on
-        // the first class.
-        Err(AddPortError::OnlyPermanentLeasesSupported) => device
+        });
+    };
+    match next_step(error) {
+        NextStep::Permanent => device
             .add_port(protocol, wanted, local, 0, DESCRIPTION)
             .map(|()| Granted {
                 port: wanted,
                 lease: None,
             })
             .map_err(|error| refused(&error)),
-        // The port is taken, or the gateway insists on choosing. A grant on
-        // another port is still worth having on the UDP surfaces — it is the
-        // same fact Kad's extern-port rule learns — and the grade is what
-        // stops it being advertised on the TCP one.
-        Err(_) => device
+        NextStep::AnyPort => device
             .add_any_port(protocol, local, lease, DESCRIPTION)
             .map(|port| Granted {
                 port,
                 lease: Some(Duration::from_secs(u64::from(lease))),
             })
             .map_err(|error| refused(&error)),
+        NextStep::Fail(error) => Err(error),
+    }
+}
+
+/// What an `AddPortMapping` refusal leads to.
+#[derive(Debug)]
+enum NextStep {
+    /// Ask again with IGD1's lease of 0.
+    Permanent,
+    /// Take any port the gateway picks.
+    AnyPort,
+    /// Report the refusal.
+    Fail(MappingError),
+}
+
+/// Read one `AddPortMapping` refusal.
+///
+/// UPnP error 725 (`OnlyPermanentLeasesSupported`): IGD1's lease of 0 *means*
+/// permanent, while IGD2 forbids infinite leases outright — so asking again
+/// with 0 is the only way to be mapped at all on that class of router.
+///
+/// UPnP error 718 (`PortInUse`, `ConflictInMappingEntry`): the port is taken.
+/// A grant on another port is still worth having on the UDP surfaces — it is
+/// the same fact Kad's extern-port rule learns — and the grade stops it being
+/// advertised on the TCP one. Every other refusal is the device saying no, or
+/// not being reachable: a random-port grant would answer neither, and on the
+/// eD2k listener it would be a silent LowID taken for a transient fault.
+fn next_step(error: AddPortError) -> NextStep {
+    use igd_next::RequestError;
+    match error {
+        AddPortError::OnlyPermanentLeasesSupported => NextStep::Permanent,
+        AddPortError::PortInUse => NextStep::AnyPort,
+        AddPortError::ActionNotAuthorized => NextStep::Fail(refusal(
+            &error,
+            MappingRefusal::NotAuthorized,
+        )),
+        AddPortError::RequestError(
+            ref fault @ (RequestError::AttoHttpError(_) | RequestError::IoError(_)),
+        ) => NextStep::Fail(transport(fault)),
+        AddPortError::RequestError(RequestError::InvalidResponse(_)) => {
+            NextStep::Fail(refusal(&error, MappingRefusal::BadAnswer))
+        }
+        AddPortError::RequestError(RequestError::UnsupportedAction(_)) => {
+            NextStep::Fail(refusal(&error, MappingRefusal::Unsupported))
+        }
+        _ => NextStep::Fail(refused(&error)),
     }
 }
 
@@ -259,10 +299,16 @@ fn lease_seconds(lease: Duration) -> u32 {
 
 /// The device refused; what it said goes to the Run Log.
 fn refused(error: &dyn std::fmt::Display) -> MappingError {
+    refusal(error, MappingRefusal::DeviceRefused)
+}
+
+/// The device refused, for a reason it named; what it said goes to the Run
+/// Log.
+fn refusal(error: &dyn std::fmt::Display, refusal: MappingRefusal) -> MappingError {
     tracing::debug!(%error, "UPnP device refused");
     MappingError::Refused {
         protocol: MappingProtocol::Upnp,
-        refusal: MappingRefusal::DeviceRefused,
+        refusal,
         // UPnP carries no retry estimate, so the mapper's own backoff floor
         // paces a refusal.
         hold_off: None,
@@ -308,6 +354,34 @@ mod tests {
         assert!(matches!(
             backend.probe(gateway).await,
             Err(MappingError::Unsupported(MappingProtocol::Upnp))
+        ));
+    }
+
+    #[test]
+    fn only_a_port_conflict_falls_back_to_any_port() {
+        // A SOAP `ActionFailed` (501) is the device saying no, not "that port
+        // is taken": a random-port grant in its place is a silent LowID.
+        let action_failed = AddPortError::RequestError(igd_next::RequestError::ErrorCode(
+            501,
+            "ActionFailed".to_owned(),
+        ));
+        assert!(matches!(
+            next_step(action_failed),
+            NextStep::Fail(MappingError::Refused {
+                refusal: MappingRefusal::DeviceRefused,
+                ..
+            })
+        ));
+        assert!(matches!(
+            next_step(AddPortError::ActionNotAuthorized),
+            NextStep::Fail(MappingError::Refused {
+                refusal: MappingRefusal::NotAuthorized,
+                ..
+            })
+        ));
+        assert!(matches!(
+            next_step(AddPortError::PortInUse),
+            NextStep::AnyPort
         ));
     }
 
