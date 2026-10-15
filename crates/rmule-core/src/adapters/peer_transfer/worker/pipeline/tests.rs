@@ -1,3 +1,7 @@
+//! The request pipeline's rules (ADR-0029 "Request pipeline"): blocks asked
+//! ahead to the Request Depth, one request before the grant, arrivals credited
+//! by offset, and a reassignment's old blocks draining against the depth.
+
 use super::*;
 
 const BLOCK: u64 = EMBLOCKSIZE;

@@ -51,6 +51,9 @@ pub(crate) enum LinkEvent {
     Segment,
 }
 
+/// One connection's timed events, keyed by rmule's port on it.
+type Connection = (u16, Vec<(f64, LinkEvent)>);
+
 /// One seed's link, as the tap saw it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub(crate) struct LinkPace {
@@ -105,7 +108,7 @@ pub(crate) fn read(
     };
     let is_rmule = |address: SocketAddr| address.ip() == IpAddr::V4(rmule);
     // Per seed, per connection (keyed by rmule's port): the timed events.
-    let mut per_seed: Vec<Vec<(u16, Vec<(f64, LinkEvent)>)>> = vec![Vec::new(); seeds.len()];
+    let mut per_seed: Vec<Vec<Connection>> = vec![Vec::new(); seeds.len()];
     for stream in &capture.streams {
         let (seed, rmule_port) = match (seed_of(stream.source), seed_of(stream.destination)) {
             (Some(seed), None) if is_rmule(stream.destination) => (seed, stream.destination.port()),
