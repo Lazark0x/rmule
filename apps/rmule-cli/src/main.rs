@@ -14,12 +14,11 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use rmule_core::run_log::{self, Level, LevelHandle, RunLog, RunLogFailure};
 use rmule_core::{
-    AppConfigStore, Core, CoreBuilder, CoreCommand, CoreCommandRejectReason, CoreConfig, CoreEvent,
-    CoreSettings, CoreSettingsHandle, DirectoryRefusal, DownloadCommand, DownloadEvent, DownloadId,
-    DurableAppConfig, DurableStore, ManagedServer, NameTaken, RuntimeKadFactory,
-    RuntimePeerTransferService, RuntimeServeRuntimeService, RuntimeSourceLookupService, ScanEvent,
-    ServerListStore, ServerPriority, Setting, SettingError, SettingRefusal, ShareGuards,
-    open_durable_store,
+    AppConfigStore, Core, CoreBuilder, CoreCommand, CoreConfig, CoreEvent, CoreSettings,
+    CoreSettingsHandle, DownloadCommand, DownloadEvent, DownloadId, DurableAppConfig, DurableStore,
+    ManagedServer, NameTaken, RuntimeKadFactory, RuntimePeerTransferService,
+    RuntimeServeRuntimeService, RuntimeSourceLookupService, ScanEvent, ServerListStore,
+    ServerPriority, Setting, SettingError, SettingRefusal, ShareGuards, open_durable_store,
 };
 use rmule_primitives::{Ed2kLink, SafeFileName, ServerEndpoint};
 use rmule_words::download::{
@@ -260,7 +259,7 @@ async fn main() -> Result<()> {
                             anyhow::anyhow!(
                                 "{} is not set as the download directory: everything under it is shared, and {}",
                                 dir.display(),
-                                refusal_clause(&reason)
+                                rmule_words::scan::download_dir_refusal(&reason)
                             )
                         }
                         other => other.into(),
@@ -455,7 +454,7 @@ async fn drive_add(
                 println!("queued id={}", id.as_u64());
             }
             CoreEvent::CommandRejected { reason } => {
-                anyhow::bail!("{}", start_refused(&reason));
+                anyhow::bail!("{}", rmule_words::app::cli_command_rejected(&reason));
             }
             CoreEvent::Download(DownloadEvent::DownloadCompleted {
                 download_id: id,
@@ -475,14 +474,20 @@ async fn drive_add(
             // no operator to connect, so a wait would never end.
             CoreEvent::Download(DownloadEvent::WaitingForConnection { .. }) if serverless => {
                 anyhow::bail!(
-                    "download {} has no connection: none of the link's sources could be used, no server is configured and Kad is off",
-                    download_label(download_id)
+                    "{}",
+                    rmule_words::app::cli_no_connection(
+                        &download_label(download_id),
+                        rmule_words::app::NoConnection::NoSourceUsable
+                    )
                 );
             }
             CoreEvent::Download(DownloadEvent::WaitingForConnection { .. }) => {
                 anyhow::bail!(
-                    "download {} has no connection: the server did not answer and Kad is off",
-                    download_label(download_id)
+                    "{}",
+                    rmule_words::app::cli_no_connection(
+                        &download_label(download_id),
+                        rmule_words::app::NoConnection::ServerSilent
+                    )
                 );
             }
             CoreEvent::Download(DownloadEvent::DownloadCancelled { .. }) => {
@@ -520,44 +525,13 @@ async fn drive_add(
             // The download still finishes there; only the sharing is off.
             CoreEvent::Scan(ScanEvent::DownloadDirectoryRefused { dir, reason }) => {
                 println!(
-                    "the download directory {} is not shared: {}; choose another with `rmule-cli config set-download-dir <path>`",
-                    dir.display(),
-                    refusal_clause(&reason)
+                    "{}",
+                    rmule_words::app::cli_download_dir_not_shared(&dir, &reason)
                 );
             }
             _ => {}
         }
     }
-}
-
-/// Why core refused to start the download.
-fn start_refused(reason: &CoreCommandRejectReason) -> String {
-    match reason {
-        CoreCommandRejectReason::NoDownloadDir => {
-            "no download directory configured; run `rmule-cli config set-download-dir <path>`"
-                .to_owned()
-        }
-        CoreCommandRejectReason::DownloadDirRefused(guard) => format!(
-            "download refused: everything under the download directory is shared, and {}; choose another with `rmule-cli config set-download-dir <path>`",
-            refusal_clause(guard)
-        ),
-        CoreCommandRejectReason::DownloadPathConflict => {
-            "download refused: a file of that name is already in the download directory".to_owned()
-        }
-        CoreCommandRejectReason::DuplicateDownload => {
-            "download refused: this file is already being downloaded".to_owned()
-        }
-        CoreCommandRejectReason::DownloadStoreFailed => {
-            "download refused: the download store failed (see the run log)".to_owned()
-        }
-        _ => "download refused (see the run log)".to_owned(),
-    }
-}
-
-/// Why the share guards refuse the download directory, as a clause: the
-/// TUI's, which says each refusal its own way.
-fn refusal_clause(reason: &DirectoryRefusal) -> String {
-    rmule_words::scan::download_dir_refusal(reason)
 }
 
 /// The core `add` runs, but for its router backends: the builder's default

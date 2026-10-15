@@ -157,7 +157,7 @@ fn the_share_guards_refuse_the_data_dir_at_the_set_and_the_home_at_the_add() {
         )))
         .stdout(contains("queued id=").not())
         .stderr(contains(
-            "download refused: everything under the download directory is shared, and it is your home directory",
+            "download refused: everything under the download dir is shared, and it is your home directory",
         ));
     assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
 }
