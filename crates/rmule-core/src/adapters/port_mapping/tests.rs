@@ -12,9 +12,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rmule_net::family::FamilyBinds;
-use rmule_net::portmap::{MappingBackend, MappingProtocol};
+use rmule_net::portmap::{MappingBackend, MappingProtocol, PeerPinRequest};
 use rmule_primitives::AddressFamily;
-use rmule_testkit::{FakeGateways, ScriptedBackend};
+use rmule_testkit::{FakeGateways, GrantPolicy, ScriptedBackend};
 
 use crate::address_learning::{SharedAddressLearning, SocketRole};
 use crate::diagnostics::DiagnosticsState;
@@ -22,7 +22,7 @@ use crate::own_identity::{ConnectedSession, SharedOwnIdentity};
 use crate::port_mapping::{MappingDiagnostics, MappingStatus, PortMappingConfig};
 use crate::reachability::SharedSelfReach;
 
-use super::{PortMappingHandle, PortMappingPreferences, spawn_port_mapping};
+use super::{PortMappingControl, PortMappingHandle, PortMappingPreferences, spawn_port_mapping};
 
 /// The eD2k listener's port — the mapping that earns a High-ID.
 const TCP_PORT: u16 = 4662;
@@ -88,6 +88,25 @@ fn runtime_behind(
     diagnostics: &DiagnosticsState,
     own: &SharedOwnIdentity,
 ) -> PortMappingHandle {
+    runtime_remembering(
+        gateways,
+        addresses,
+        backend,
+        diagnostics,
+        own,
+        Arc::new(Forgetful),
+    )
+}
+
+/// [`runtime_behind`], remembering the learned method in `preferences`.
+fn runtime_remembering(
+    gateways: FakeGateways,
+    addresses: &SharedAddressLearning,
+    backend: &Arc<ScriptedBackend>,
+    diagnostics: &DiagnosticsState,
+    own: &SharedOwnIdentity,
+    preferences: Arc<dyn PortMappingPreferences>,
+) -> PortMappingHandle {
     spawn_port_mapping(
         crate::port_mapping::PortMappingMode::Auto,
         PortMappingConfig::default(),
@@ -96,7 +115,7 @@ fn runtime_behind(
         vec![Arc::clone(backend) as Arc<dyn MappingBackend>],
         crate::adapters::SharedKadPump::default(),
         diagnostics.clone(),
-        Arc::new(Forgetful),
+        preferences,
         SharedSelfReach::new(
             crate::KadReachLevel::fixed(false),
             own.clone(),
@@ -312,5 +331,91 @@ async fn a_session_reassigned_a_low_id_re_races_the_mappers_on_the_reach_generat
         dropped.elapsed() < Duration::from_secs(5),
         "the re-race fired on the Reach Generation, not the 30 s clock"
     );
+    drop(handle);
+}
+
+/// A preferences seam that holds the learned method in memory, so a test reads
+/// back what the runtime wrote.
+struct Remembering(std::sync::Mutex<Option<MappingProtocol>>);
+
+impl PortMappingPreferences for Remembering {
+    fn learned_method(&self) -> Option<MappingProtocol> {
+        *self.0.lock().expect("preferences mutex")
+    }
+
+    fn set_learned_method(&self, method: Option<MappingProtocol>) {
+        *self.0.lock().expect("preferences mutex") = method;
+    }
+}
+
+/// The operator's reprobe used to share the eight-slot inbox the punched-path
+/// pins ride, and a full inbox dropped it.
+#[tokio::test]
+async fn a_reprobe_behind_a_full_pin_inbox_still_re_races() {
+    let addresses = SharedAddressLearning::new();
+    addresses.record_bind(SocketRole::Udp, &v4(), CLIENT_UDP_PORT);
+    let pcp = Arc::new(ScriptedBackend::available(MappingProtocol::Pcp));
+    let diagnostics = DiagnosticsState::new();
+    let handle = runtime_over(&addresses, &pcp, &diagnostics);
+    rows_until(&diagnostics, |rows| {
+        rows.iter().any(|row| row.status == MappingStatus::Mapped)
+    })
+    .await;
+    let asked_before = pcp.asked().len();
+
+    // One thread, and no await until every notice is in: the runtime cannot
+    // drain any of them first.
+    let pin = PeerPinRequest {
+        internal_port: CLIENT_UDP_PORT,
+        suggested_external_port: None,
+        remote: std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(198, 51, 100, 9), 4672),
+        lease: Duration::from_secs(120),
+    };
+    for _ in 0..8 {
+        handle.notify(PortMappingControl::PinPeer(pin));
+    }
+    handle.notify(PortMappingControl::Reprobe);
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while pcp.asked().len() == asked_before {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the reprobe re-asked the gateway");
+    drop(handle);
+}
+
+/// A remembered method is probed alone first. When that short round wins
+/// short of Exact the mapper forgets it, and so must the store, or every
+/// next run opens with the same lone probe.
+#[tokio::test]
+async fn a_learned_method_that_wins_short_of_exact_is_cleared_from_the_store() {
+    let addresses = SharedAddressLearning::new();
+    addresses.record_bind(SocketRole::Tcp, &v4(), TCP_PORT);
+    addresses.record_bind(SocketRole::Udp, &v4(), CLIENT_UDP_PORT);
+    let pcp = Arc::new(
+        ScriptedBackend::available(MappingProtocol::Pcp).granting(GrantPolicy::Shifted(1000)),
+    );
+    let preferences = Arc::new(Remembering(std::sync::Mutex::new(Some(
+        MappingProtocol::Pcp,
+    ))));
+    let diagnostics = DiagnosticsState::new();
+    let handle = runtime_remembering(
+        FakeGateways::home_lan(),
+        &addresses,
+        &pcp,
+        &diagnostics,
+        &SharedOwnIdentity::default(),
+        Arc::clone(&preferences) as Arc<dyn PortMappingPreferences>,
+    );
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while preferences.learned_method().is_some() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the stored method was cleared");
     drop(handle);
 }
