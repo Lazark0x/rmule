@@ -9,11 +9,12 @@ use std::time::Duration;
 
 use rmule_net::peer::Connection as PeerConnection;
 use rmule_peer::{
-    ConnectionEvent, EMBLOCKSIZE, PartBitmap, PartRanges, PeerCommand, PeerEvent, PeerIdentity,
+    ConnectionEvent, PartBitmap, PartRanges, PeerCommand, PeerEvent, PeerIdentity,
     RequesterCommand, RequesterEvent,
 };
 use rmule_primitives::{AichRootHash, Ed2kFileLink, PeerEndpoint};
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 
 use crate::PartPlan;
 use crate::adapters::InboundPeerDeps;
@@ -24,6 +25,7 @@ use crate::adapters::peer_transfer::{PeerWorkerCommand, PeerWorkerEvent};
 use crate::adapters::serve_runtime::{ServeConnection, ServeInput};
 use crate::service::DialEnd;
 
+use self::pipeline::{Pipeline, RANGES_PER_REQUEST};
 use self::wait::{
     Ended, Idled, SlotNews, await_probe, forward_shared, forward_slot_news, idle_wait, next_event,
 };
@@ -249,6 +251,8 @@ async fn work_the_link(
         commands: &mut command_rx,
         deferred: VecDeque::new(),
     };
+    // The link's request pipeline, kept across parts (ADR-0029).
+    let mut pipeline = Pipeline::new();
     // The slot ask waits for the probe's answer (ADR-0112): the brain asks
     // on `PartsAdvertised` and hands the part at the grant, so a partial
     // source is never handed a part it lacks.
@@ -267,6 +271,7 @@ async fn work_the_link(
                 None => match idle_wait(&mut link, file.file_hash, slot_deadline).await {
                     Idled::Command(command) => command,
                     Idled::Requeued => {
+                        pipeline.requeued();
                         slot_deadline = tokio::time::Instant::now() + slot_wait_timeout;
                         continue;
                     }
@@ -291,6 +296,7 @@ async fn work_the_link(
                 } => {
                     let streamed = stream_part_download(
                         &mut link,
+                        &mut pipeline,
                         file,
                         plan,
                         resume_offset,
@@ -298,7 +304,7 @@ async fn work_the_link(
                     )
                     .await;
                     match streamed {
-                        Streamed::Next => {
+                        Streamed::Next | Streamed::Reassigned => {
                             slot_deadline = tokio::time::Instant::now() + slot_wait_timeout;
                         }
                         Streamed::WindDown => break,
@@ -488,12 +494,13 @@ async fn request_aich_recovery(
 }
 
 /// Stream one part's bytes from `resume_offset` to the part end in
-/// `<= EMBLOCKSIZE` blocks, emitting each block to core via `BlockReceived`.
-/// A real peer grants the slot but sends nothing for a request whose range
-/// exceeds one block, so the next block is requested only once every byte
-/// already requested has arrived. Core (not the worker) owns assembly and
-/// completion (ADR-0029): the worker forwards each block as it arrives and
-/// reports `PartStreamed` once it has delivered its whole assigned range.
+/// `<= EMBLOCKSIZE` blocks, emitting each to core via `BlockReceived`. The
+/// link's `pipeline` keeps the Request Depth's worth of blocks asked ahead,
+/// refilled at every arrival (ADR-0029 "Request pipeline"). Core (not the
+/// worker) owns assembly and completion (ADR-0029): the worker forwards each
+/// block as it arrives and reports `PartStreamed` once its whole assigned
+/// range has arrived. A part handed meanwhile ends the stream at once; the
+/// old blocks still asked drain through the next one.
 ///
 /// Every wait is bounded by `slot_wait_timeout` measured from the last
 /// sign of data progress: a busy peer may queue us (and rank us)
@@ -503,6 +510,7 @@ async fn request_aich_recovery(
 /// received block so a healthy slow transfer is not cut off.
 async fn stream_part_download(
     link: &mut WorkerLink<'_>,
+    pipeline: &mut Pipeline,
     file: &Ed2kFileLink,
     plan: PartPlan,
     resume_offset: u64,
@@ -510,13 +518,11 @@ async fn stream_part_download(
 ) -> Streamed {
     let (cmd_tx, event_tx) = (link.cmd_tx, link.event_tx);
     let file_hash = file.file_hash;
-    let part_end = plan.offset + plan.len;
-    let mut requested_until = resume_offset;
-    let mut received_until = resume_offset;
+    pipeline.begin(resume_offset, plan.offset + plan.len);
     let mut progress_deadline = tokio::time::Instant::now() + slot_wait_timeout;
 
     loop {
-        if received_until >= part_end {
+        if pipeline.streamed() {
             // Delivered the whole assigned range; core decides completion
             // once the shared per-part prefix reaches the part length.
             return match event_tx
@@ -530,14 +536,12 @@ async fn stream_part_download(
             };
         }
 
-        if requested_until < part_end && received_until >= requested_until {
-            let block_end = (requested_until + EMBLOCKSIZE).min(part_end);
-            let ranges = match PartRanges::new([(requested_until, block_end), (0, 0), (0, 0)]) {
-                Ok(ranges) => ranges,
-                Err(_) => {
-                    let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-                    return Streamed::WindDown;
-                }
+        while let Some(blocks) = pipeline.next_request(Instant::now().into_std()) {
+            let mut padded = [(0, 0); RANGES_PER_REQUEST];
+            padded[..blocks.len()].copy_from_slice(&blocks);
+            let Ok(ranges) = PartRanges::new(padded) else {
+                let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
+                return Streamed::WindDown;
             };
             if cmd_tx
                 .send(PeerCommand::Requester(RequesterCommand::RequestParts {
@@ -551,7 +555,6 @@ async fn stream_part_download(
                 let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
                 return Streamed::WindDown;
             }
-            requested_until = block_end;
         }
 
         // Bound every wait by the no-progress budget: a busy peer can
@@ -560,6 +563,8 @@ async fn stream_part_download(
         // arrives (below), so a healthy transfer is never cut off.
         let event = match next_event(link, file_hash, progress_deadline).await {
             Ok(event) => event,
+            // A new part: this one is no longer the worker's.
+            Err(Streamed::Reassigned) => return Streamed::Next,
             Err(end) => return end,
         };
         let event = match forward_shared(event_tx, file_hash, event).await {
@@ -573,7 +578,10 @@ async fn stream_part_download(
         match forward_slot_news(event_tx, file_hash, &event).await {
             Ok(None) => {}
             Ok(Some(SlotNews::Noted)) => continue,
-            Ok(Some(SlotNews::Requeued)) => return Streamed::Next,
+            Ok(Some(SlotNews::Requeued)) => {
+                pipeline.requeued();
+                return Streamed::Next;
+            }
             Err(Ended) => return Streamed::WindDown,
         }
         match event {
@@ -583,17 +591,19 @@ async fn stream_part_download(
                 bytes,
             }) if received == file_hash => {
                 // Data progress: extend the no-progress budget and forward
-                // the block to core, which merges it into the shared prefix.
-                progress_deadline = tokio::time::Instant::now() + slot_wait_timeout;
-                received_until = offset + bytes.len() as u64;
-                if event_tx
-                    .send(PeerWorkerEvent::BlockReceived {
-                        part_index: plan.part_index,
-                        offset,
-                        bytes,
-                    })
-                    .await
-                    .is_err()
+                // the part's bytes to core, which merges them into the shared
+                // prefix. Bytes of a part handed away drain here unforwarded.
+                let now = Instant::now();
+                progress_deadline = now + slot_wait_timeout;
+                if pipeline.arrived(now.into_std(), offset, bytes.len() as u64)
+                    && event_tx
+                        .send(PeerWorkerEvent::BlockReceived {
+                            part_index: plan.part_index,
+                            offset,
+                            bytes,
+                        })
+                        .await
+                        .is_err()
                 {
                     return Streamed::WindDown;
                 }
@@ -625,8 +635,12 @@ enum Streamed {
     WindDown,
     /// The download told this worker to stop mid-part.
     Shutdown { cancel: bool },
+    /// The download handed this worker a part while it waited on another:
+    /// the new part waits in `deferred`, served next.
+    Reassigned,
 }
 
+mod pipeline;
 #[cfg(test)]
 mod tests;
 mod wait;

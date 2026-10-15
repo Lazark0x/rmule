@@ -51,7 +51,15 @@ async fn events_after(
         commands: &mut worker_cmd_rx,
         deferred: VecDeque::new(),
     };
-    stream_part_download(&mut link, &file, plan, 0, Duration::from_secs(5)).await;
+    stream_part_download(
+        &mut link,
+        &mut Pipeline::new(),
+        &file,
+        plan,
+        0,
+        Duration::from_secs(5),
+    )
+    .await;
     drop(event_tx);
     let mut reported = Vec::new();
     while let Some(event) = worker_events.recv().await {
@@ -218,4 +226,141 @@ async fn the_wait_between_parts_hears_the_slot_and_the_links_end() {
 async fn a_silent_wait_between_parts_ends_at_the_slot_budget() {
     let reported = idled_over(Vec::new(), Duration::ZERO).await;
     assert_eq!(reported, vec![PeerWorkerEvent::SlotTimeout]);
+}
+
+/// The ranges of every `OP_REQUESTPARTS` the worker sent, in order.
+fn asked(cmd_rx: &mut mpsc::Receiver<PeerCommand>) -> Vec<Vec<(u64, u64)>> {
+    let mut asked = Vec::new();
+    while let Ok(command) = cmd_rx.try_recv() {
+        if let PeerCommand::Requester(RequesterCommand::RequestParts { ranges, .. }) = command {
+            asked.push(
+                ranges
+                    .as_array()
+                    .iter()
+                    .copied()
+                    .filter(|(start, end)| end > start)
+                    .collect(),
+            );
+        }
+    }
+    asked
+}
+
+/// A stream asks three blocks at once, then one more as each lands, so
+/// two stay queued at the uploader while one arrives (ADR-0029).
+#[tokio::test]
+async fn a_part_streams_with_blocks_asked_ahead() {
+    const BLOCK: u64 = rmule_peer::EMBLOCKSIZE;
+    let bytes = vec![0x5A; (5 * BLOCK) as usize];
+    let file = rmule_testkit::file_link("deep.bin", &bytes);
+    let (events_tx, mut events) = mpsc::channel(8);
+    let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+    let (event_tx, mut worker_events) = mpsc::channel(16);
+    let (_worker_cmd_tx, mut worker_cmd_rx) = mpsc::channel(8);
+    for block in 0..5u64 {
+        let start = (block * BLOCK) as usize;
+        events_tx
+            .send(PeerEvent::Requester(RequesterEvent::PartReceived {
+                file_hash: file.file_hash,
+                offset: block * BLOCK,
+                bytes: bytes[start..start + BLOCK as usize].to_vec(),
+            }))
+            .await
+            .unwrap();
+    }
+    let plan = PartPlan {
+        part_index: 0,
+        offset: 0,
+        len: 5 * BLOCK,
+    };
+    let mut link = WorkerLink {
+        events: &mut events,
+        cmd_tx: &cmd_tx,
+        event_tx: &event_tx,
+        commands: &mut worker_cmd_rx,
+        deferred: VecDeque::new(),
+    };
+    let streamed = stream_part_download(
+        &mut link,
+        &mut Pipeline::new(),
+        &file,
+        plan,
+        0,
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(matches!(streamed, Streamed::Next));
+    assert_eq!(
+        asked(&mut cmd_rx),
+        vec![
+            vec![(0, BLOCK), (BLOCK, 2 * BLOCK), (2 * BLOCK, 3 * BLOCK)],
+            vec![(3 * BLOCK, 4 * BLOCK)],
+            vec![(4 * BLOCK, 5 * BLOCK)],
+        ]
+    );
+    drop(event_tx);
+    let mut reported = Vec::new();
+    while let Some(event) = worker_events.recv().await {
+        reported.push(event);
+    }
+    assert_eq!(
+        reported.last(),
+        Some(&PeerWorkerEvent::PartStreamed { part_index: 0 })
+    );
+}
+
+/// A part handed mid-stream ends the old stream at once, without
+/// `PartStreamed`, the new part waiting to be served next (ADR-0026).
+#[tokio::test]
+async fn a_part_handed_mid_stream_ends_the_old_one() {
+    let file = rmule_testkit::file_link("handed.bin", &[0x5A; 1024]);
+    let (_events_tx, mut events) = mpsc::channel(8);
+    let (cmd_tx, _cmd_rx) = mpsc::channel(8);
+    let (event_tx, mut worker_events) = mpsc::channel(8);
+    let (worker_cmd_tx, mut worker_cmd_rx) = mpsc::channel(8);
+    let next = PartPlan {
+        part_index: 1,
+        offset: 512,
+        len: 512,
+    };
+    worker_cmd_tx
+        .send(PeerWorkerCommand::RequestPart {
+            plan: next,
+            resume_offset: 512,
+        })
+        .await
+        .unwrap();
+    let mut link = WorkerLink {
+        events: &mut events,
+        cmd_tx: &cmd_tx,
+        event_tx: &event_tx,
+        commands: &mut worker_cmd_rx,
+        deferred: VecDeque::new(),
+    };
+    let plan = PartPlan {
+        part_index: 0,
+        offset: 0,
+        len: 512,
+    };
+    let streamed = stream_part_download(
+        &mut link,
+        &mut Pipeline::new(),
+        &file,
+        plan,
+        0,
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(matches!(streamed, Streamed::Next));
+    assert!(matches!(
+        link.deferred.front(),
+        Some(PeerWorkerCommand::RequestPart { plan, .. }) if *plan == next
+    ));
+    drop(link);
+    drop(event_tx);
+    assert_eq!(
+        worker_events.recv().await,
+        None,
+        "no PartStreamed for the old part"
+    );
 }

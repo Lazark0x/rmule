@@ -33,6 +33,8 @@ pub(super) async fn await_probe(
     let status = loop {
         let event = match next_event(link, file_hash, deadline).await {
             Ok(event) => event,
+            // Never sent before the probe answers; served after it if it were.
+            Err(Streamed::Reassigned) => continue,
             Err(end) => return end,
         };
         match forward_shared(event_tx, file_hash, event).await {
@@ -66,8 +68,9 @@ pub(super) async fn await_probe(
 /// the way: the command channel is read first so a `Shutdown` is never
 /// starved by a busy peer and stops the wait at once (aMule's
 /// `CUpDownClient::Disconnected` aborts a transfer on the spot); an AICH root
-/// ask goes out as it comes (ADR-0038); anything else waits in `deferred`. No
-/// event by `deadline` reports `SlotTimeout`.
+/// ask goes out as it comes (ADR-0038); a part handed meanwhile waits in
+/// `deferred` and ends the wait as `Reassigned`; anything else waits in
+/// `deferred`. No event by `deadline` reports `SlotTimeout`.
 pub(super) async fn next_event(
     link: &mut WorkerLink<'_>,
     file_hash: FileHash,
@@ -84,6 +87,14 @@ pub(super) async fn next_event(
                     let _ = link.cmd_tx
                         .send(PeerCommand::Requester(RequesterCommand::RequestAichFileHash { file_hash }))
                         .await;
+                }
+                Some(later @ PeerWorkerCommand::RequestPart { .. }) => {
+                    // The download handed this worker a part while it works
+                    // another: its old part is no longer its own (ADR-0026
+                    // "Bounded racing"), so the wait ends and the new part is
+                    // served next.
+                    link.deferred.push_back(later);
+                    return Err(Streamed::Reassigned);
                 }
                 Some(later) => link.deferred.push_back(later),
                 None => return Err(Streamed::WindDown),

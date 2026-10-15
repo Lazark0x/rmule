@@ -41,6 +41,7 @@ mod clients_met;
 mod content;
 mod credit;
 mod data_dir;
+mod delivery_rate;
 pub mod diagnostics;
 mod dialable;
 mod directory_scan;
