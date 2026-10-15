@@ -60,14 +60,16 @@ async fn a_roster_peer_may_open_and_an_ipv6_source_never_does() {
     let mut harness = Harness::new();
     let now = Instant::now();
     let known = at(12, 4662);
-    harness
-        .front
-        .wiring
-        .roster
-        .mark_known(crate::peer_roster::PeerRelation::Queued(crate::DownloadId::from_u64(1)), known);
+    harness.front.wiring.roster.mark_known(
+        crate::peer_roster::PeerRelation::Queued(crate::DownloadId::from_u64(1)),
+        known,
+    );
     let from = PeerEndpoint::V4(Ipv4Endpoint::new(known.ip, 4672));
     harness.front.on_datagram(from, syn(), now).await;
-    assert_eq!(slot(&harness, from), Some(rmule_net::natt::TunnelSlot::Opening));
+    assert_eq!(
+        slot(&harness, from),
+        Some(rmule_net::natt::TunnelSlot::Opening)
+    );
 
     let v6 = PeerEndpoint::V6(rmule_primitives::Ipv6Endpoint::new(
         "2001:db8::7".parse().expect("an address"),

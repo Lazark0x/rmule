@@ -175,11 +175,21 @@ mod tests {
             .connect_options(rmule_primitives::PeerCrypt::unknown())
             .ipv6_follow
             .expect("every hello's options follow the advert");
-        assert!(!follow.changed.has_changed().expect("the store holds the sender"));
+        assert!(
+            !follow
+                .changed
+                .has_changed()
+                .expect("the store holds the sender")
+        );
 
         let moved: Ipv6Addr = "2001:db8:501::b".parse().expect("an IPv6 literal");
         addresses.refresh_interfaces(&[IpAddr::V6(moved)]);
-        assert!(follow.changed.has_changed().expect("the store holds the sender"));
+        assert!(
+            follow
+                .changed
+                .has_changed()
+                .expect("the store holds the sender")
+        );
         follow.changed.borrow_and_update();
         assert_eq!((follow.read)(), Some(moved));
     }

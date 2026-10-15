@@ -144,7 +144,12 @@ pub(crate) async fn run_caps_utp(args: NattCapsUtpArgs) -> Result<()> {
     );
 
     let arrivals = Arrivals::default();
-    spawn_pump(Arc::clone(&socket), Arc::clone(&demux), arrivals.clone(), peer.ip());
+    spawn_pump(
+        Arc::clone(&socket),
+        Arc::clone(&demux),
+        arrivals.clone(),
+        peer.ip(),
+    );
 
     // 1. The CAPS probe. Its recipient is the counterparty's own hash, which
     //    is the only form any conforming reader will answer; its crypt bits

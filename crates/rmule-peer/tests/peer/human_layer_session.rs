@@ -369,10 +369,8 @@ fn dialing_with_ipv6(named: std::net::Ipv6Addr, capable: bool) -> (PeerSession, 
     let mut session = PeerSession::new_outbound(peer_at(55), ctx()).with_ipv6_advertisement(named);
     session.start();
     let _ = drain(|| session.poll_output());
-    let mut tags = crate::fixture::plain_hello_body(rmule_primitives::UserHash::from_bytes(
-        [0x99; 16],
-    ))
-    .tags;
+    let mut tags =
+        crate::fixture::plain_hello_body(rmule_primitives::UserHash::from_bytes([0x99; 16])).tags;
     if capable {
         tags.push(rmule_peer::ModMiscOptions::rmule_claim().to_tag());
     }
@@ -410,11 +408,17 @@ fn an_ipv6_move_is_announced_once_to_a_capable_peer() {
     let _ = drain(|| session.poll_output());
 
     session.handle_command(announce(named));
-    assert!(announced(&drain(|| session.poll_output())).is_empty(), "the hello named it");
+    assert!(
+        announced(&drain(|| session.poll_output())).is_empty(),
+        "the hello named it"
+    );
     session.handle_command(announce(moved));
     assert_eq!(announced(&drain(|| session.poll_output())), vec![moved]);
     session.handle_command(announce(moved));
-    assert!(announced(&drain(|| session.poll_output())).is_empty(), "told once");
+    assert!(
+        announced(&drain(|| session.poll_output())).is_empty(),
+        "told once"
+    );
 }
 
 /// A peer whose hello claims no IPv6 is never sent `0xAC`, and the command is
@@ -440,7 +444,10 @@ fn an_ipv6_move_during_the_handshake_follows_the_answer() {
     let (mut session, answer) = dialing_with_ipv6(named, true);
     session.handle_command(announce(moved));
     let out = drain(|| session.poll_output());
-    assert!(writes(&out).is_empty() && events(&out).is_empty(), "{out:?}");
+    assert!(
+        writes(&out).is_empty() && events(&out).is_empty(),
+        "{out:?}"
+    );
     session.handle_bytes(&answer);
     assert_eq!(announced(&drain(|| session.poll_output())), vec![moved]);
 }

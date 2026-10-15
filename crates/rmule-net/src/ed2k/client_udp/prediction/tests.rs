@@ -256,22 +256,16 @@ async fn a_receive_error_leaves_the_fan_reader_listening() {
     let (peer, peer_addr) = bind_peer().await;
     let fan_socket: Arc<Mutex<Option<Arc<UdpSocket>>>> = Arc::new(Mutex::new(None));
     let kept = Arc::clone(&fan_socket);
-    fans.open_with(
-        peer_addr,
-        1,
-        ANSWER.to_vec(),
-        Arc::new(|_| {}),
-        move || {
-            let socket = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
-            // Connected, so the platform reports the ICMP answer to a
-            // datagram it sent as an error on the next receive.
-            socket.connect(peer_addr)?;
-            socket.set_nonblocking(true)?;
-            let socket = Arc::new(UdpSocket::from_std(socket)?);
-            *kept.lock().expect("fan socket") = Some(Arc::clone(&socket));
-            Ok(socket)
-        },
-    )
+    fans.open_with(peer_addr, 1, ANSWER.to_vec(), Arc::new(|_| {}), move || {
+        let socket = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
+        // Connected, so the platform reports the ICMP answer to a
+        // datagram it sent as an error on the next receive.
+        socket.connect(peer_addr)?;
+        socket.set_nonblocking(true)?;
+        let socket = Arc::new(UdpSocket::from_std(socket)?);
+        *kept.lock().expect("fan socket") = Some(Arc::clone(&socket));
+        Ok(socket)
+    })
     .expect("open the fan");
     let socket = fan_socket
         .lock()
@@ -285,7 +279,10 @@ async fn a_receive_error_leaves_the_fan_reader_listening() {
     // The peer's port closes, the Fan sends into it, and the ICMP answer
     // lands on the Fan socket's next receive.
     drop(peer);
-    socket.send(b"probe").await.expect("send into the closed port");
+    socket
+        .send(b"probe")
+        .await
+        .expect("send into the closed port");
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let peer = UdpSocket::bind(SocketAddr::V4(peer_addr))

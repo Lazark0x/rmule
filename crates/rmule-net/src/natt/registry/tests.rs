@@ -31,9 +31,15 @@ fn only(last: u8) -> impl Fn(IpAddr) -> bool {
 fn an_opening_packet_from_an_unexpected_ip_is_dropped() {
     let now = Instant::now();
     let mut registry = TunnelRegistry::new();
-    assert_eq!(registry.admit(endpoint(1), true, only(2), now), Admission::Drop);
+    assert_eq!(
+        registry.admit(endpoint(1), true, only(2), now),
+        Admission::Drop
+    );
     assert!(registry.is_empty());
-    assert_eq!(registry.admit(endpoint(2), true, only(2), now), Admission::Opened);
+    assert_eq!(
+        registry.admit(endpoint(2), true, only(2), now),
+        Admission::Opened
+    );
 }
 
 /// A flood of openers — spoofed from every port of one expected address and
@@ -94,7 +100,10 @@ fn the_node_wide_cap_holds_until_the_tick_prunes_the_lapsed_window() {
 fn a_non_opening_frame_from_an_unknown_endpoint_is_dropped_unanswered() {
     let now = Instant::now();
     let mut registry = TunnelRegistry::new();
-    assert_eq!(registry.admit(endpoint(1), false, expected, now), Admission::Drop);
+    assert_eq!(
+        registry.admit(endpoint(1), false, expected, now),
+        Admission::Drop
+    );
     assert!(registry.is_empty(), "a dropped frame leaves no trace");
 }
 
@@ -104,9 +113,15 @@ fn a_non_opening_frame_from_an_unknown_endpoint_is_dropped_unanswered() {
 fn an_opening_packet_admits_the_handshake_that_follows_it() {
     let now = Instant::now();
     let mut registry = TunnelRegistry::new();
-    assert_eq!(registry.admit(endpoint(1), true, expected, now), Admission::Opened);
+    assert_eq!(
+        registry.admit(endpoint(1), true, expected, now),
+        Admission::Opened
+    );
     assert_eq!(registry.slot(endpoint(1)), Some(TunnelSlot::Opening));
-    assert_eq!(registry.admit(endpoint(1), false, expected, now), Admission::Inject);
+    assert_eq!(
+        registry.admit(endpoint(1), false, expected, now),
+        Admission::Inject
+    );
 }
 
 /// A dial opens the slot from our side, because our own `ST_SYN` leaves
@@ -116,7 +131,10 @@ fn a_dial_opens_the_slot_so_the_answer_is_admitted() {
     let now = Instant::now();
     let mut registry = TunnelRegistry::new();
     registry.dialing(endpoint(1), now);
-    assert_eq!(registry.admit(endpoint(1), false, expected, now), Admission::Inject);
+    assert_eq!(
+        registry.admit(endpoint(1), false, expected, now),
+        Admission::Inject
+    );
 }
 
 /// An **inbound** opening slot expires; a held one does not. A forged
@@ -126,11 +144,20 @@ fn a_dial_opens_the_slot_so_the_answer_is_admitted() {
 fn an_opening_slot_ages_out_and_a_held_one_does_not() {
     let now = Instant::now();
     let mut registry = TunnelRegistry::new();
-    assert_eq!(registry.admit(endpoint(1), true, expected, now), Admission::Opened);
+    assert_eq!(
+        registry.admit(endpoint(1), true, expected, now),
+        Admission::Opened
+    );
     registry.held(endpoint(2), now);
     let later = now + OPENING_TTL;
-    assert_eq!(registry.admit(endpoint(1), false, expected, later), Admission::Drop);
-    assert_eq!(registry.admit(endpoint(2), false, expected, later), Admission::Inject);
+    assert_eq!(
+        registry.admit(endpoint(1), false, expected, later),
+        Admission::Drop
+    );
+    assert_eq!(
+        registry.admit(endpoint(2), false, expected, later),
+        Admission::Inject
+    );
     assert_eq!(registry.len(), 1);
 }
 
@@ -143,10 +170,19 @@ fn a_dials_own_slot_outlives_the_window_a_forged_opener_buys() {
     let now = Instant::now();
     let mut registry = TunnelRegistry::new();
     registry.dialing(endpoint(1), now);
-    assert_eq!(registry.admit(endpoint(2), true, expected, now), Admission::Opened);
+    assert_eq!(
+        registry.admit(endpoint(2), true, expected, now),
+        Admission::Opened
+    );
     let later = now + OPENING_TTL * 4;
-    assert_eq!(registry.admit(endpoint(1), false, expected, later), Admission::Inject);
-    assert_eq!(registry.admit(endpoint(2), false, expected, later), Admission::Drop);
+    assert_eq!(
+        registry.admit(endpoint(1), false, expected, later),
+        Admission::Inject
+    );
+    assert_eq!(
+        registry.admit(endpoint(2), false, expected, later),
+        Admission::Drop
+    );
 }
 
 /// The claim ends with the dial, however the dial ended — including the
@@ -189,7 +225,10 @@ fn a_released_endpoint_is_a_stranger_again() {
     registry.held(endpoint(1), now);
     registry.release(endpoint(1));
     assert_eq!(registry.slot(endpoint(1)), None);
-    assert_eq!(registry.admit(endpoint(1), false, expected, now), Admission::Drop);
+    assert_eq!(
+        registry.admit(endpoint(1), false, expected, now),
+        Admission::Drop
+    );
 }
 
 /// Two tunnels on one endpoint — our dial and the peer's, both completing
@@ -203,14 +242,20 @@ fn a_held_slot_lives_until_its_last_tunnel_drops() {
     drop(dialed);
     let now = Instant::now();
     assert_eq!(
-        registry.lock().unwrap().admit(endpoint(1), false, expected, now),
+        registry
+            .lock()
+            .unwrap()
+            .admit(endpoint(1), false, expected, now),
         Admission::Inject,
         "the surviving tunnel is still admitted"
     );
     drop(accepted);
     assert_eq!(registry.lock().unwrap().slot(endpoint(1)), None);
     assert_eq!(
-        registry.lock().unwrap().admit(endpoint(1), false, expected, now),
+        registry
+            .lock()
+            .unwrap()
+            .admit(endpoint(1), false, expected, now),
         Admission::Drop
     );
 }
