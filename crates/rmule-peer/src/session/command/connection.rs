@@ -19,12 +19,25 @@ pub enum ConnectionCommand {
     /// new address itself, and one already written is followed by the
     /// announcement when the peer identifies.
     AnnounceIpv6Change(std::net::Ipv6Addr),
+    /// Take the Client ID a [`ConnectionEvent::ClientIdOffered`](crate::ConnectionEvent::ClientIdOffered)
+    /// offered, on `server` when core knows the server it named. A Low ID
+    /// without a known server, or a High ID that is not the link's own
+    /// address, moves nothing.
+    TakeClientId {
+        /// The id offered.
+        client_id: rmule_primitives::ClientId,
+        /// The known server the peer is now on, at the port core knows it at.
+        server: Option<rmule_primitives::Ipv4Endpoint>,
+    },
 }
 
 impl PeerSession {
     pub(super) fn apply_connection(&mut self, command: ConnectionCommand) {
         match command {
             ConnectionCommand::Disconnect => self.close(PeerCloseReason::Local),
+            ConnectionCommand::TakeClientId { client_id, server } => {
+                self.take_client_id(client_id, server);
+            }
             ConnectionCommand::AnnounceIpv6Change(address) => {
                 self.ipv6_advert = Some(address);
                 if matches!(self.state, State::Identified) {

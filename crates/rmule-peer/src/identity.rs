@@ -45,11 +45,9 @@ pub struct PeerIdentity {
     tcp_port: u16,
     nickname: Option<Ed2kText>,
     protocol_version: Option<u32>,
+    /// The server the hello says the peer is logged in to, or the known
+    /// server an `OP_CHANGE_CLIENT_ID` moved it to.
     connected_server: Option<Ipv4Endpoint>,
-    /// The server an `OP_CHANGE_CLIENT_ID` named, once one has: the packet
-    /// carries an address and no port, and the claim it supersedes the hello's
-    /// (`None` until the peer revises its ID).
-    revised_server: Option<Ipv4Addr>,
     /// The peer's advertised **Kad** UDP port (`0` = none), the high half of
     /// `CT_EMULE_UDPPORTS` (ADR-0067).
     kad_udp_port: u16,
@@ -140,7 +138,6 @@ impl PeerIdentity {
             nickname,
             protocol_version,
             connected_server,
-            revised_server: None,
             // The ed2k→Kad handoff hint (ADR-0067): the Kad UDP port is the
             // high 16 bits of CT_EMULE_UDPPORTS, the Kad version the low nibble
             // of MiscOptions2 — the consume-side counterpart of the ADR-0047
@@ -231,12 +228,18 @@ impl PeerIdentity {
     }
 
     /// Take the Client ID an `OP_CHANGE_CLIENT_ID` says the peer now answers
-    /// to, and the server it named beside it, which then stands as the server
-    /// it claims; `true` when either changed.
-    pub(crate) fn revise_client_id(&mut self, client_id: ClientId, server: Ipv4Addr) -> bool {
-        let changed = self.client_id != client_id || self.revised_server != Some(server);
+    /// to, and — when the node knows the server named beside it — that
+    /// server, at the port the node knows it at, as the one it is on;
+    /// `true` when either changed.
+    pub(crate) fn revise_client_id(
+        &mut self,
+        client_id: ClientId,
+        server: Option<Ipv4Endpoint>,
+    ) -> bool {
+        let server = server.or(self.connected_server);
+        let changed = self.client_id != client_id || self.connected_server != server;
         self.client_id = client_id;
-        self.revised_server = Some(server);
+        self.connected_server = server;
         changed
     }
 
@@ -412,15 +415,11 @@ impl PeerIdentity {
     /// Whether the peer claims to be logged in to `server` — the "on our
     /// server" half of the **Low-ID abuse guard**. A claim of `0.0.0.0:0`
     /// is no server, so it never matches. After an `OP_CHANGE_CLIENT_ID` the
-    /// claim is the server that packet named, matched by address alone: it
-    /// names no port, and the server a node knows by that address is the one
-    /// whose port aMule takes (`ClientTCPSocket.cpp:751-776`).
+    /// claim is the known server that packet named
+    /// (`ClientTCPSocket.cpp:773-787`).
     #[must_use]
     pub fn is_on_server(&self, server: Ipv4Endpoint) -> bool {
-        match self.revised_server {
-            Some(named) => named == server.ip,
-            None => self.connected_server == Some(server),
-        }
+        self.connected_server == Some(server)
     }
 
     /// The peer's **Static Capability Claim** (`CT_MOD_MISCOPTIONS`,

@@ -287,6 +287,10 @@ fn connection_toml(event: &ConnectionEvent) -> String {
         ConnectionEvent::SecureIdentFailed { reason } => {
             format!("type = \"PeerSecureIdentFailed\"\nreason = \"{reason:?}\"\n")
         }
+        ConnectionEvent::ClientIdOffered { client_id, server } => format!(
+            "type = \"PeerClientIdOffered\"\nclient_id = {}\nserver = \"{server}\"\n",
+            client_id.as_u32()
+        ),
     }
 }
 

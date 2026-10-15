@@ -13,13 +13,15 @@
 //! dials or asks for a callback, and rides — or waits on — the link it finds.
 
 use std::collections::{HashMap, VecDeque};
+use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 
-use rmule_peer::{PeerCommand, PeerEvent, PeerIdentity};
+use rmule_peer::{ConnectionCommand, PeerCommand, PeerEvent, PeerIdentity};
 use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint, UserHash};
 use tokio::sync::{mpsc, oneshot};
 
 use super::peer_transfer::{PeerWorkerCommand, PeerWorkerEvent};
+use crate::server_list::SharedServerListStore;
 use crate::service::LinkTurn;
 
 /// One name a Peer Link is filed under: an **Ask Name** the link proves.
@@ -62,9 +64,13 @@ impl LinkName {
 }
 
 /// The Peer Links, each under every name it proves. One cell shared by the
-/// accept road and every dial (ADR-0048 "Identity ownership").
+/// accept road and every dial (ADR-0048 "Identity ownership"), with the
+/// server list a Low ID's server is checked against before it becomes a name.
 #[derive(Clone, Default)]
-pub(crate) struct SharedPeerLinks(Arc<Mutex<Book>>);
+pub(crate) struct SharedPeerLinks {
+    book: Arc<Mutex<Book>>,
+    servers: Option<SharedServerListStore>,
+}
 
 #[derive(Default)]
 struct Book {
@@ -125,6 +131,40 @@ pub(crate) enum Turn {
 }
 
 impl SharedPeerLinks {
+    /// Peer Links that check a changed Low ID's server against `servers`.
+    pub(crate) fn knowing(servers: SharedServerListStore) -> Self {
+        Self {
+            book: Arc::default(),
+            servers: Some(servers),
+        }
+    }
+
+    /// What a link answers an `OP_CHANGE_CLIENT_ID` offer of `client_id` on
+    /// `server`: aMule takes a Low ID only for a server in its list, at the
+    /// port it lists, and a High ID with the server when it knows it
+    /// (`ClientTCPSocket.cpp:773-787`). `None` leaves the peer as it was.
+    pub(crate) fn take_client_id(
+        &self,
+        client_id: ClientId,
+        server: Ipv4Addr,
+    ) -> Option<ConnectionCommand> {
+        let known = self.known_server(server);
+        (client_id.is_high_id() || known.is_some()).then_some(ConnectionCommand::TakeClientId {
+            client_id,
+            server: known,
+        })
+    }
+
+    /// The server the list holds at `ip`, with the port it lists. A
+    /// DNS-named row is no address a peer can name.
+    fn known_server(&self, ip: Ipv4Addr) -> Option<Ipv4Endpoint> {
+        let servers = self.servers.as_ref()?.servers().ok()?;
+        servers.into_iter().find_map(|server| {
+            let at = server.endpoint.host().parse::<Ipv4Addr>().ok()?;
+            (at == ip).then(|| Ipv4Endpoint::new(at, server.endpoint.port()))
+        })
+    }
+
     /// File a link from `remote` under `names` for as long as the returned
     /// filing lives. A link filed later under one of the names takes that
     /// name: aMule keeps a client on its newest socket.
@@ -134,7 +174,7 @@ impl SharedPeerLinks {
         names: Vec<LinkName>,
     ) -> (Filing, mpsc::Receiver<LinkJoin>) {
         let (join_tx, join_rx) = mpsc::channel(4);
-        let mut book = self.0.lock().expect("peer links lock");
+        let mut book = self.book.lock().expect("peer links lock");
         book.filed += 1;
         let filing = book.filed;
         let filed = Filed {
@@ -155,7 +195,7 @@ impl SharedPeerLinks {
 
     /// The link filed under the first of `names` that names one.
     pub(crate) fn find(&self, names: &[LinkName]) -> Option<FoundLink> {
-        let book = self.0.lock().expect("peer links lock");
+        let book = self.book.lock().expect("peer links lock");
         names.iter().find_map(|name| {
             book.links.get(name).map(|filed| FoundLink {
                 remote: filed.remote,
@@ -260,7 +300,7 @@ impl Filing {
         if names == self.names {
             return;
         }
-        if let Ok(mut book) = self.links.0.lock() {
+        if let Ok(mut book) = self.links.book.lock() {
             release(&mut book, self.filed.filing, &self.names);
             for name in &names {
                 book.links.insert(*name, self.filed.clone());
@@ -272,7 +312,7 @@ impl Filing {
 
 impl Drop for Filing {
     fn drop(&mut self) {
-        if let Ok(mut book) = self.links.0.lock() {
+        if let Ok(mut book) = self.links.book.lock() {
             release(&mut book, self.filed.filing, &self.names);
         }
     }

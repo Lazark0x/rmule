@@ -7,11 +7,14 @@ use std::net::Ipv4Addr;
 
 use crate::fixture::identified_session;
 use rmule_peer::{
-    ChangeClientIpV6, ConnectionEvent, IdentityChange, NoticeEvent, PartRanges, PeerCommand,
-    PeerEvent, PeerSession, RequesterCommand, RequesterEvent, SideEvent, SlotReleaseReason,
+    ChangeClientIpV6, ConnectionCommand, ConnectionEvent, IdentityChange, NoticeEvent, PartRanges,
+    PeerCommand, PeerEvent, PeerSession, RequesterCommand, RequesterEvent, SideEvent,
+    SlotReleaseReason,
 };
 use rmule_primitives::session::drain;
-use rmule_primitives::{Ed2kText, FileHash, Ipv4Endpoint, Packet, PacketProtocol, PartHash};
+use rmule_primitives::{
+    ClientId, Ed2kText, FileHash, Ipv4Endpoint, Packet, PacketProtocol, PartHash,
+};
 use rmule_testkit::peer_session::{ctx, events, file_hash, peer_at, writes};
 
 // --- Wire helpers -----------------------------------------------
@@ -277,62 +280,82 @@ fn file_comment_is_surfaced_with_no_reply() {
     );
 }
 
-/// `OP_CHANGE_CLIENT_ID` moves the identity the session keeps, with no reply:
-/// a High ID that is the address the peer connected from replaces the hello's
-/// ID (aMule `ClientTCPSocket.cpp:751`), a High ID that is some other address
-/// changes nothing, and a Low ID is taken.
+/// `OP_CHANGE_CLIENT_ID` is offered to core, with no reply: a High ID that
+/// is the address the peer connected from, and any Low ID, are offered with
+/// the server named beside them, and a High ID that is some other address is
+/// dropped (aMule `ClientTCPSocket.cpp:773-787`). Nothing moves until core
+/// answers.
 #[test]
-fn a_changed_client_id_revises_the_identity() {
+fn a_changed_client_id_is_offered_to_core() {
     let server = Ipv4Addr::new(198, 51, 100, 200);
     let mut session = identified_session();
     let own = u32::from_le_bytes(peer_at(55).as_v4().expect("v4 peer").ip.octets());
 
-    let revisions = |session: &mut PeerSession, id: u32| {
+    let offers = |session: &mut PeerSession, id: u32| {
         session.handle_bytes(&change_client_id(id, server));
         let out = drain(|| session.poll_output());
         assert!(writes(&out).is_empty(), "no reply expected, got {out:?}");
+        assert!(
+            !events(&out).iter().any(|e| matches!(
+                e,
+                PeerEvent::Connection(ConnectionEvent::IdentityRevised { .. })
+            )),
+            "nothing moves before core answers: {out:?}"
+        );
         events(&out)
             .into_iter()
             .filter_map(|e| match e {
-                PeerEvent::Connection(ConnectionEvent::IdentityRevised { identity, what }) => {
-                    Some((*what, identity.client_id().as_u32()))
+                PeerEvent::Connection(ConnectionEvent::ClientIdOffered { client_id, server }) => {
+                    Some((client_id.as_u32(), *server))
                 }
                 _ => None,
             })
             .collect::<Vec<_>>()
     };
 
-    assert!(revisions(&mut session, 0x0102_0304).is_empty());
-    assert_eq!(
-        revisions(&mut session, own),
-        vec![(IdentityChange::ClientId, own)]
-    );
-    assert!(revisions(&mut session, own).is_empty());
-    assert_eq!(
-        revisions(&mut session, 77),
-        vec![(IdentityChange::ClientId, 77)]
-    );
+    assert!(offers(&mut session, 0x0102_0304).is_empty());
+    assert_eq!(offers(&mut session, own), vec![(own, server)]);
+    assert_eq!(offers(&mut session, 77), vec![(77, server)]);
 }
 
-/// The server an `OP_CHANGE_CLIENT_ID` names stands as the server the peer is
-/// on: the "on our server" claim reads it, not the hello's.
+/// Core's answer moves the identity: a Low ID only with the known server it
+/// names, which then stands as the server the peer is on — the "on our
+/// server" claim reads it — and a High ID only when it is the peer's own
+/// address, whatever core says.
 #[test]
-fn a_changed_client_id_moves_the_on_our_server_claim() {
+fn a_taken_client_id_revises_the_identity_and_its_server() {
     let ours = Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 200), 4661);
+    let own = u32::from_le_bytes(peer_at(55).as_v4().expect("v4 peer").ip.octets());
     let mut session = identified_session();
-    session.handle_bytes(&change_client_id(77, ours.ip));
-    let out = drain(|| session.poll_output());
-    let identity = events(&out)
-        .into_iter()
-        .find_map(|e| match e {
-            PeerEvent::Connection(ConnectionEvent::IdentityRevised { identity, .. }) => {
+    let take = |session: &mut PeerSession, id: u32, server: Option<Ipv4Endpoint>| {
+        session.handle_command(PeerCommand::Connection(ConnectionCommand::TakeClientId {
+            client_id: ClientId::from_u32(id),
+            server,
+        }));
+        let out = drain(|| session.poll_output());
+        events(&out).into_iter().find_map(|e| match e {
+            PeerEvent::Connection(ConnectionEvent::IdentityRevised { identity, what }) => {
+                assert_eq!(*what, IdentityChange::ClientId);
                 Some(identity.clone())
             }
             _ => None,
         })
-        .expect("the revision is reported");
+    };
+
+    assert!(
+        take(&mut session, 77, None).is_none(),
+        "no server, no Low ID"
+    );
+    assert!(take(&mut session, 0x0102_0304, Some(ours)).is_none());
+    let identity = take(&mut session, 77, Some(ours)).expect("the revision is reported");
+    assert_eq!(identity.client_id().as_u32(), 77);
     assert!(identity.is_on_server(ours));
     assert!(!identity.is_on_server(Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 201), 4661)));
+    let identity = take(&mut session, own, None).expect("its own address is its High ID");
+    assert!(
+        identity.is_on_server(ours),
+        "an unknown server leaves the one it was on"
+    );
 }
 
 /// `OP_CHANGE_CLIENT_IP` moves the identity the session keeps: the one

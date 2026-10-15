@@ -156,6 +156,13 @@ pub(crate) async fn route_dialed_connection(mut conn: PeerConnection, route: Dia
                     Routed::Open => {}
                     Routed::Identified(identity) => link.identified(&deps, remote, identity),
                     Routed::Revised(identity) => link.revised(remote, identity),
+                    Routed::Offered(answer) => {
+                        if let Some(answer) = answer
+                            && conn.send(PeerCommand::Connection(answer)).await.is_err()
+                        {
+                            break;
+                        }
+                    }
                     Routed::Closed => break,
                 }
             }
@@ -217,6 +224,8 @@ enum Routed {
     Open,
     Identified(PeerIdentity),
     Revised(PeerIdentity),
+    /// The peer offered a changed Client ID; the answer, when it takes it.
+    Offered(Option<ConnectionCommand>),
     Closed,
 }
 
@@ -355,6 +364,11 @@ impl Halves<'_> {
             }
             // The rest is the download half's: the hello wait reads a refusal,
             // and nothing else here is kept by either half.
+            // Whether a changed Low ID stands is the node's to say: it
+            // knows the servers (ADR-0107).
+            ConnectionEvent::ClientIdOffered { client_id, server } => {
+                return Routed::Offered(self.deps.peer_links.take_client_id(client_id, server));
+            }
             ConnectionEvent::HelloSent
             | ConnectionEvent::HelloRefused { .. }
             | ConnectionEvent::SecureIdentFailed { .. } => {

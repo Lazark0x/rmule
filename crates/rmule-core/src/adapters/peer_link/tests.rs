@@ -129,3 +129,36 @@ fn the_oldest_waiter_still_running_takes_the_link_when_the_rider_leaves() {
     assert!(last_turn.try_recv().is_err(), "the last still waits");
     assert!(!riders.is_empty());
 }
+
+#[test]
+fn a_changed_low_id_stands_only_on_a_server_the_list_holds() {
+    use crate::server_list::{ManagedServer, ServerListStore};
+
+    let list = crate::DurableAppConfig::new(rmule_testkit::memory_store());
+    let listed = rmule_primitives::ServerEndpoint::new("198.51.100.7", 4661).expect("endpoint");
+    list.merge_server(ManagedServer::listed(listed))
+        .expect("the list takes it");
+    let links = SharedPeerLinks::knowing(std::sync::Arc::new(list));
+    let low_id = ClientId::from_u32(0x0000_1234);
+
+    assert_eq!(
+        links.take_client_id(low_id, Ipv4Addr::new(198, 51, 100, 7)),
+        Some(ConnectionCommand::TakeClientId {
+            client_id: low_id,
+            server: Some(server()),
+        })
+    );
+    assert_eq!(
+        links.take_client_id(low_id, Ipv4Addr::new(198, 51, 100, 9)),
+        None,
+        "a Low ID on a server the node does not know moves nothing"
+    );
+    let high_id = ClientId::from_u32(u32::from_le_bytes([203, 0, 113, 9]));
+    assert_eq!(
+        links.take_client_id(high_id, Ipv4Addr::new(198, 51, 100, 9)),
+        Some(ConnectionCommand::TakeClientId {
+            client_id: high_id,
+            server: None,
+        })
+    );
+}

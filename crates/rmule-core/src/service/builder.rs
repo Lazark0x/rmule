@@ -701,7 +701,9 @@ impl Core {
             // One cell every peer connection's first reader reports a refused
             // hello to (ADR-0050); the actor's prologue installs its bus.
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
-            peer_links: crate::adapters::SharedPeerLinks::default(),
+            // A changed Low ID is checked against the managed server list
+            // before a link is found under it (ADR-0107).
+            peer_links: crate::adapters::SharedPeerLinks::knowing(app_config.clone()),
         };
         // One wiring path: the default adapters adopt the cells
         // exactly as an injected one does.

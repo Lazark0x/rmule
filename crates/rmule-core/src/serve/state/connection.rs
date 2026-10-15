@@ -554,7 +554,8 @@ impl ServeState {
             // Facts the serve side keeps nothing of.
             ConnectionEvent::HelloSent
             | ConnectionEvent::HelloRefused { .. }
-            | ConnectionEvent::SecureIdentFailed { .. } => Vec::new(),
+            | ConnectionEvent::SecureIdentFailed { .. }
+            | ConnectionEvent::ClientIdOffered { .. } => Vec::new(),
         }
     }
 

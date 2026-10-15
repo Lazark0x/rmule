@@ -77,6 +77,11 @@ impl fmt::Display for ConnectionEvent {
             ConnectionEvent::SecureIdentFailed { reason } => {
                 write!(f, "peer secure_ident_failed reason={reason:?}")
             }
+            ConnectionEvent::ClientIdOffered { client_id, server } => write!(
+                f,
+                "peer client_id_offered client_id={} server={server}",
+                client_id.as_u32()
+            ),
         }
     }
 }

@@ -6,7 +6,9 @@
 //! it, as a dialed link does (ADR-0031).
 
 use rmule_net::peer::Connection as PeerConnection;
-use rmule_peer::{ConnectionEvent, PeerCommand, PeerEvent, PeerIdentity, RequesterEvent};
+use rmule_peer::{
+    ConnectionCommand, ConnectionEvent, PeerCommand, PeerEvent, PeerIdentity, RequesterEvent,
+};
 use rmule_primitives::PeerEndpoint;
 use tokio::sync::mpsc;
 
@@ -96,6 +98,13 @@ pub(super) async fn drive_served_link(
                 match routed {
                     Routed::Open => {}
                     Routed::Revised => filing.refile(LinkName::of(remote, &identity)),
+                    Routed::Offered(answer) => {
+                        if let Some(answer) = answer
+                            && conn.send(PeerCommand::Connection(answer)).await.is_err()
+                        {
+                            break close_reason(&mut conn).await;
+                        }
+                    }
                     Routed::ServeGone => {
                         if riders.is_empty() {
                             break PortTestClosedBy::Us;
@@ -124,6 +133,8 @@ enum Routed {
     Open,
     /// The session revised the peer's identity; the link's names follow it.
     Revised,
+    /// The peer offered a changed Client ID; the answer, when it takes it.
+    Offered(Option<ConnectionCommand>),
     /// The serve task is gone; the link lives on only for a download.
     ServeGone,
     /// The peer closed it, and this is who closed it.
@@ -147,6 +158,11 @@ async fn route(
     let mut revised_now = false;
     let input = match event {
         PeerEvent::Server(request) => ServeInput::Server(request),
+        // Whether a changed Low ID stands is the node's to say: it knows the
+        // servers (ADR-0107).
+        PeerEvent::Connection(ConnectionEvent::ClientIdOffered { client_id, server }) => {
+            return Routed::Offered(deps.peer_links.take_client_id(client_id, server));
+        }
         PeerEvent::Connection(fact) => {
             if let ConnectionEvent::IdentityRevised {
                 identity: revised, ..

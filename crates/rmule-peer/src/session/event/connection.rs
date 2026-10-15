@@ -60,6 +60,18 @@ pub enum ConnectionEvent {
         /// Which step of the proof failed.
         reason: SecureIdentFailure,
     },
+    /// An `OP_CHANGE_CLIENT_ID` (`0x4D`) says the peer now answers to
+    /// `client_id` on the server at `server`. Nothing moves yet: aMule takes
+    /// a Low ID only for a server it knows, and the server's port from its
+    /// own list (`ClientTCPSocket.cpp:773-787`), which only core holds — it
+    /// answers with [`ConnectionCommand::TakeClientId`](crate::ConnectionCommand::TakeClientId).
+    /// A High ID that is not the address the link came from is ignored here.
+    ClientIdOffered {
+        /// The id the peer says it holds now.
+        client_id: rmule_primitives::ClientId,
+        /// The server the packet names beside it.
+        server: std::net::Ipv4Addr,
+    },
     /// The last word about this session. Emitted exactly once, immediately
     /// before the close it explains (ADR-0044).
     Disconnected {
