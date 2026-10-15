@@ -333,9 +333,24 @@ where
     S: SourceLookupService,
     P: PeerTransferService,
 {
+    run_download_with(CoreConfig::default(), file, source, peer).await
+}
+
+/// [`run_download`] on a core built with `config`, for a test whose subject
+/// is a setting the default does not pin (the workers per download).
+pub async fn run_download_with<S, P>(
+    config: CoreConfig,
+    file: Ed2kFileLink,
+    source: S,
+    peer: P,
+) -> Vec<CoreEvent>
+where
+    S: SourceLookupService,
+    P: PeerTransferService,
+{
     let dir = tempfile::tempdir().unwrap();
     let identity = crate::test_identity(0x42, "rmule-core-test", 4662);
-    let mut core = Core::builder(CoreConfig::default(), crate::memory_store())
+    let mut core = Core::builder(config, crate::memory_store())
         .settings(in_download_dir(CoreSettings::default(), dir.path()))
         .user_hash(identity.user_hash())
         .source_lookup(source)

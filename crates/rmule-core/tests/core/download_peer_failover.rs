@@ -28,7 +28,7 @@ async fn core_completes_when_one_source_never_finishes_handshake() {
     let silent = FakePeer::bind().await;
     let good = FakePeer::bind().await;
     // Silent source listed first so it joins the initial spawn batch
-    // alongside the healthy one (peer_concurrency defaults to 2).
+    // alongside the healthy one.
     server
         .set_sources(vec![silent.source(), good.source()])
         .await;

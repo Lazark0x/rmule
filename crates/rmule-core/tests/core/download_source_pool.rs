@@ -4,7 +4,7 @@
 //! holding no usable High-ID source fails before any peer transfer starts.
 
 use rmule_core::{
-    CoreEvent, DownloadEvent, DownloadFailure, DownloadedPart, PeerDownloadOutcome,
+    CoreConfig, CoreEvent, DownloadEvent, DownloadFailure, DownloadedPart, PeerDownloadOutcome,
     PeerTransferService, PeerWorker, PeerWorkerCommand, PeerWorkerEvent, SourceLookupOutcome,
     SourceLookupService,
 };
@@ -14,7 +14,8 @@ use rmule_primitives::{
 };
 use rmule_testkit::{
     StaticPeerTransfer, StaticSourceLookup, emit_streamed_part, file_link,
-    file_link_without_part_hash_set, plain_sources, run_download, two_high_id_sources,
+    file_link_without_part_hash_set, plain_sources, run_download, run_download_with,
+    two_high_id_sources,
 };
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -54,7 +55,7 @@ async fn download_backfills_from_unused_sources_when_initial_peers_fail() {
     // source completes the download instead of aborting with
     // `NoUsableSources` after only the first `peer_concurrency` peers.
     let bytes = b"backfill payload".to_vec();
-    // Four usable High-ID sources; `peer_concurrency` defaults to 2.
+    // Four usable High-ID sources, two workers per download.
     let sources = plain_sources(vec![
         PeerSource::new(ClientId::from_u32(0x0100_007F), 5001),
         PeerSource::new(ClientId::from_u32(0x0200_007F), 5002),
@@ -68,7 +69,11 @@ async fn download_backfills_from_unused_sources_when_initial_peers_fail() {
         .map(|source| source.as_peer_endpoint().unwrap())
         .collect();
 
-    let events = run_download(
+    let events = run_download_with(
+        CoreConfig {
+            peer_concurrency_per_download: 2,
+            ..CoreConfig::default()
+        },
         file_link_without_part_hash_set("example.bin", &bytes),
         StaticSourceLookup {
             outcome: SourceLookupOutcome {

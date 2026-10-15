@@ -116,32 +116,39 @@ async fn core_retires_all_contributors_when_assembled_part_fails_verification() 
     let a_done = Arc::new(tokio::sync::Notify::new());
     let resume_offsets = Arc::new(StdMutex::new(HashMap::new()));
 
-    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
-        .settings(rmule_testkit::in_download_dir(
-            rmule_core::CoreSettings::default(),
-            out_dir.path(),
-        ))
-        .source_lookup(StaticSourceLookup {
-            outcome: SourceLookupOutcome {
-                client_id: ClientId::from_u32(0x0100_007F),
-                sources: plain_sources(vec![
-                    PeerSource::new(ClientId::from_u32(0x0100_007F), 4663),
-                    PeerSource::new(ClientId::from_u32(0x0200_007F), 4664),
-                    PeerSource::new(ClientId::from_u32(0x0300_007F), 4665),
-                ]),
-            },
-        })
-        .peer_transfer(CrossPeerVerifyFailTransfer {
-            partial_peer: peer_a,
-            corrupting_peer: peer_b,
-            drop_at,
-            correct: correct.clone(),
-            corrupt_tail,
-            part_hashes,
-            a_done: Arc::clone(&a_done),
-            resume_offsets: Arc::clone(&resume_offsets),
-        })
-        .build();
+    // Two workers race the part and the third source backfills.
+    let mut core = Core::builder(
+        CoreConfig {
+            peer_concurrency_per_download: 2,
+            ..CoreConfig::default()
+        },
+        rmule_testkit::memory_store(),
+    )
+    .settings(rmule_testkit::in_download_dir(
+        rmule_core::CoreSettings::default(),
+        out_dir.path(),
+    ))
+    .source_lookup(StaticSourceLookup {
+        outcome: SourceLookupOutcome {
+            client_id: ClientId::from_u32(0x0100_007F),
+            sources: plain_sources(vec![
+                PeerSource::new(ClientId::from_u32(0x0100_007F), 4663),
+                PeerSource::new(ClientId::from_u32(0x0200_007F), 4664),
+                PeerSource::new(ClientId::from_u32(0x0300_007F), 4665),
+            ]),
+        },
+    })
+    .peer_transfer(CrossPeerVerifyFailTransfer {
+        partial_peer: peer_a,
+        corrupting_peer: peer_b,
+        drop_at,
+        correct: correct.clone(),
+        corrupt_tail,
+        part_hashes,
+        a_done: Arc::clone(&a_done),
+        resume_offsets: Arc::clone(&resume_offsets),
+    })
+    .build();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: file_link_without_part_hash_set("example.bin", &correct),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),

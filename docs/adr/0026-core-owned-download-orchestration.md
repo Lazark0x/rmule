@@ -47,7 +47,7 @@ is `DownloadScheduler`.
   names the earliest instant anything falls due, so the runner sleeps until then. The
   brain reads no clock and holds no timer, so receiving time keeps it sans-I/O.
 
-- `CoreConfig::peer_concurrency_per_download` (default 2; `0` reads as 1) caps a
+- `CoreConfig::peer_concurrency_per_download` (default 20; `0` reads as 1) caps a
   download's workers — active, connecting, and waiting on a callback together.
 - **The slot ask.** A worker whose Advertised Parts hold a part we lack asks its
   uploader for a slot (`OP_STARTUPLOADREQ`) at its probe answer, whether or not a part

@@ -37,9 +37,12 @@ pub const DEFAULT_SLOT_WAIT_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// The engineering knobs one session runs against, fixed for the life of the
 /// [`Core`] it is built with — timeouts, concurrency, cadences. What the
-/// operator chooses is [`CoreSettings`](crate::CoreSettings), not this. Every
-/// default but [`CoreConfig::streaming_window_parts`] matches stock aMule, so
-/// a `CoreConfig` straight from `Default` behaves the way aMule would.
+/// operator chooses is [`CoreSettings`](crate::CoreSettings), not this. Four
+/// defaults differ from stock aMule by design, and each says why on its own
+/// field: [`CoreConfig::peer_concurrency_per_download`],
+/// [`CoreConfig::upload_slot_budget`], [`CoreConfig::max_upload_queue_len`] and
+/// [`CoreConfig::streaming_window_parts`]. The rest are engineering values;
+/// a field cites the aMule source where it follows one.
 ///
 /// [`Core`]: crate::Core
 #[derive(Clone, Debug)]
@@ -47,6 +50,15 @@ pub struct CoreConfig {
     /// How many peer workers one download runs at once — active plus
     /// connecting plus outstanding callbacks. `0` is read as `1`; see
     /// [`CoreConfig::effective_peer_concurrency_per_download`].
+    ///
+    /// Not aMule's: aMule has no per-download cap and bounds connections
+    /// node-wide (500 open, 20 new per 5 s). A worker here holds its slot while
+    /// it waits in a remote queue, so a small cap leaves free sources unused
+    /// behind the first few that queue, and a bench against stock seeds
+    /// showed throughput scaling with the workers. The default `20` is a
+    /// stopgap: it bounds one download's sockets and its in-flight part
+    /// buffers (at most 20 parts in memory) until a node-wide ask and socket
+    /// budget replaces the per-download cap.
     pub peer_concurrency_per_download: usize,
     /// How many parts from the lowest unverified one a **Streaming Priority**
     /// download fetches in order before ranking the rest by rarity — the
@@ -60,9 +72,17 @@ pub struct CoreConfig {
     /// Concurrent upload slots the serve side grants across all connections
     /// (ADR-0031: the cross-connection slot budget). FIFO admission fills
     /// these before queuing.
+    ///
+    /// Not aMule's: aMule sizes its slots from the configured upload rate (one
+    /// per 2 kB/s, at least 2). rmule has no upload-rate setting to size from,
+    /// so the default is a fixed, conservative `4`.
     pub upload_slot_budget: usize,
     /// Maximum waiting requesters before the serve side refuses new ones —
     /// in silence, as both references do.
+    ///
+    /// Not aMule's: aMule queues up to 5000. The default `64` keeps the wait
+    /// list, its re-ranking and the connections it holds small, which a node
+    /// serving a handful of slots has no use to exceed.
     pub max_upload_queue_len: usize,
     /// How often the serve activity re-ranks its idle waiters so a queued
     /// peer's reported `OP_QUEUERANKING` tracks elapsed wait and any credit it
@@ -238,7 +258,7 @@ pub struct NattConfig {
 impl Default for CoreConfig {
     fn default() -> Self {
         Self {
-            peer_concurrency_per_download: 2,
+            peer_concurrency_per_download: 20,
             streaming_window_parts: 8,
             slot_wait_timeout: DEFAULT_SLOT_WAIT_TIMEOUT,
             upload_slot_budget: 4,
@@ -297,14 +317,10 @@ impl CoreConfig {
 mod tests {
     use super::*;
 
-    /// Two workers per download is aMule's shape; a configured zero would
-    /// otherwise spawn no worker at all and stall the download forever.
+    /// A configured zero would otherwise spawn no worker at all and stall the
+    /// download forever.
     #[test]
-    fn peer_concurrency_defaults_to_two_and_normalizes_zero_to_one() {
-        assert_eq!(
-            CoreConfig::default().effective_peer_concurrency_per_download(),
-            2
-        );
+    fn peer_concurrency_normalizes_zero_to_one() {
         let none_configured = CoreConfig {
             peer_concurrency_per_download: 0,
             ..CoreConfig::default()

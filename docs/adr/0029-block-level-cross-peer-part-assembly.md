@@ -31,7 +31,9 @@ Part assembly lives in `rmule-core`, in one shared buffer per in-flight part.
   survives.
 - Assembly is in memory and per session. Pause, cancel and restart discard partial
   parts. Memory is bounded by `peer_concurrency_per_download × ED2K_PART_SIZE`: one
-  buffer per part in flight, however many peers race it.
+  buffer per part in flight, however many peers race it. At the default of 20 workers
+  that is at most 20 parts, about 186 MB, per download, and a buffer grows with what
+  has arrived, so a part still filling holds only its prefix.
 - **On a failed part hash:** with a trusted AICH root, core repairs the part block by
   block and retires only the peer that delivered a corrupt block (ADR-0038). Without
   one, nothing attributes the bad block, so core retires every contributor to that
