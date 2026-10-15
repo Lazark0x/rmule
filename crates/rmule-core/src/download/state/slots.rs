@@ -3,19 +3,21 @@
 //! peer its next part. The scheduling *policy* these three share is the
 //! candidate order — a slot is never held open for a peer that cannot work.
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use rmule_peer::natt::CALLBACK_SILENCE_FALLBACK;
 use rmule_primitives::PeerEndpoint;
 
-use crate::DownloadFailure;
 use crate::adapters::PeerWorkerCommand;
 use crate::assembly::PartAssembly;
 use crate::callback::CallbackSilence;
+use crate::delivery_rate::DeliveryRate;
 use crate::diagnostics::{WorkerPhase, WorkerSlot};
 use crate::download::source_book::{Deadline, DialEnd, NextDial, Release, WorkerEnd};
 use crate::scheduler::Assignment;
 use crate::service::{DownloadEvent, PartReleaseReason, PeerRetirementReason};
+use crate::{DownloadFailure, PartPlan};
 
 use super::{Decision, DownloadState, LowIdCandidate, LowIdRoad};
 
@@ -175,6 +177,7 @@ impl DownloadState {
             }));
         }
         let granted = self.slot_asks.granted(peer);
+        self.delivery.remove(&peer);
         if let Some(slot) = self.worker_slots.remove(&peer) {
             // A worker that hangs up or times out its slot wait keeps its
             // standing (ADR-0057). A source whose Advertised Parts hold
@@ -356,11 +359,16 @@ impl DownloadState {
         if !self.slot_asks.granted(peer) {
             return Handed::Queued;
         }
+        let pace = Pace {
+            delivery: &self.delivery,
+            assembly: &self.assembly,
+        };
         let plan = match self.scheduler.assign_next(
             peer,
             parts,
             self.sources.part_frequency(),
             self.sources.parts_known(),
+            &pace,
         ) {
             Assignment::Fresh(plan) | Assignment::Raced(plan) => plan,
             Assignment::Busy => return Handed::Assigned,
@@ -390,6 +398,27 @@ impl DownloadState {
             },
         });
         Handed::Assigned
+    }
+}
+
+/// What a Tail Race reads of this download (ADR-0026): each worker's
+/// Delivery Rate and each in-flight part's assembled prefix.
+struct Pace<'a> {
+    delivery: &'a HashMap<PeerEndpoint, DeliveryRate>,
+    assembly: &'a HashMap<u32, PartAssembly>,
+}
+
+impl crate::scheduler::Pace for Pace<'_> {
+    fn rate(&self, peer: PeerEndpoint) -> Option<u64> {
+        self.delivery.get(&peer)?.bytes_per_sec()
+    }
+
+    fn remaining(&self, plan: &PartPlan) -> u64 {
+        let assembled = self
+            .assembly
+            .get(&plan.part_index)
+            .map_or(0, PartAssembly::prefix_len);
+        plan.len.saturating_sub(assembled)
     }
 }
 

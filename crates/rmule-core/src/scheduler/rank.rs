@@ -6,6 +6,7 @@
 //! aMule draws `rand()` (stock 2.3.3 `PartFile.cpp:2025-2054`): the same
 //! inputs always give the same part.
 
+use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::ops::Range;
 
@@ -53,6 +54,31 @@ pub(super) fn rank(part: u32, inputs: &RankInputs<'_>) -> Rank {
         outside_window: !in_window,
         frequency: if in_window { 0 } else { frequency },
         part,
+    }
+}
+
+/// A Tail Race candidate's rank (ADR-0026, ADR-0112 §4): the rank's very
+/// rare, band and window positions, then the expected finish, latest first,
+/// then the rest of the rank, so the part index still breaks every tie.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct TailRank {
+    common: bool,
+    outside_band: bool,
+    outside_window: bool,
+    finish: Reverse<u64>,
+    rank: Rank,
+}
+
+/// `part`'s [`TailRank`], `finish` its expected finish in seconds of its
+/// one racer's rate.
+pub(super) fn tail_rank(part: u32, inputs: &RankInputs<'_>, finish: u64) -> TailRank {
+    let rank = rank(part, inputs);
+    TailRank {
+        common: rank.common,
+        outside_band: rank.outside_band,
+        outside_window: rank.outside_window,
+        finish: Reverse(finish),
+        rank,
     }
 }
 

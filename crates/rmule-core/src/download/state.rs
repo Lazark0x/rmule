@@ -54,6 +54,7 @@ use crate::DownloadFailure;
 use crate::adapters::{CallbackKey, PeerWorkerCommand};
 use crate::assembly::PartAssembly;
 use crate::callback::CallbackSilence;
+use crate::delivery_rate::DeliveryRate;
 use crate::diagnostics::{PartState, WorkerPhase, WorkerSlot};
 use crate::dialable::DialPosition;
 use crate::download::source_book::SourceBook;
@@ -428,6 +429,9 @@ pub(crate) struct DownloadState {
     /// channel for each peer stays in the runner, whether it has completed its
     /// handshake in the **Source Book**; the brain owns only the slot number.
     worker_slots: HashMap<PeerEndpoint, WorkerSlot>,
+    /// Each live worker's **Delivery Rate**, from its block arrivals: what a
+    /// Tail Race reads (ADR-0026 "Bounded racing").
+    delivery: HashMap<PeerEndpoint, DeliveryRate>,
     /// Where each worker's slot ask stands at its uploader, and the download's
     /// one hash-set ask in flight (ADR-0026).
     slot_asks: slot_ask::SlotAsks,
@@ -550,6 +554,7 @@ impl DownloadState {
             pending_persist: HashMap::new(),
             awaiting_recovery: HashMap::new(),
             worker_slots: HashMap::new(),
+            delivery: HashMap::new(),
             slot_asks: slot_ask::SlotAsks::default(),
             link_part_hash_set,
             resolved,

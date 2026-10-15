@@ -47,8 +47,9 @@ fn gave_back(decisions: &[Decision], peer: PeerEndpoint) -> bool {
     retired && cancelled
 }
 
-/// `peer(1)` verifies part 0 while part 1 is in flight on `peer(2)`; having
-/// delivered a part it may not race, so its granted slot goes back (aMule's
+/// `peer(1)` verifies part 0 while part 1 is in flight on `peer(2)`; its
+/// part arrived in one instant, so no Delivery Rate is measured and it runs
+/// no Tail Race (ADR-0026): its granted slot goes back (aMule's
 /// `OP_CANCELTRANSFER (no free blocks)`, `DownloadClient.cpp:641-693`) and its
 /// record waits unranked, pinged before the ordinary period — never the
 /// no-needed-parts doubling.

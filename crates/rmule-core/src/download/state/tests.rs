@@ -18,6 +18,7 @@ mod scheduling;
 mod seeds;
 mod slot_ask;
 mod sources;
+mod tail_race;
 
 use std::net::Ipv4Addr;
 

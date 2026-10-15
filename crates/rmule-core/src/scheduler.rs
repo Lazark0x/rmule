@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use rmule_peer::{PartBitmap, PartIndex};
 use rmule_primitives::PeerEndpoint;
 
-use self::rank::{RankInputs, preview_band, rank, very_rare_bound};
+use self::rank::{RankInputs, preview_band, rank, tail_rank, very_rare_bound};
 use crate::PartPlan;
 use crate::diagnostics::PartState;
 use crate::planning::{plan_missing_part_ranges, plan_part_ranges};
@@ -60,6 +60,26 @@ impl PartOrder {
             Self::Rarest => 0,
             Self::Streaming { window_parts } => window_parts,
         }
+    }
+}
+
+/// What a **Tail Race** reads of the download beside the part plan (ADR-0026
+/// "Bounded racing"): each worker's **Delivery Rate** and how much of an
+/// in-flight part is still to come. `()` measures nothing, so nobody runs a
+/// Tail Race.
+pub trait Pace {
+    /// `peer`'s Delivery Rate in bytes per second, `None` until measured.
+    fn rate(&self, peer: PeerEndpoint) -> Option<u64>;
+    /// The bytes of `plan` past its assembled prefix.
+    fn remaining(&self, plan: &PartPlan) -> u64;
+}
+
+impl Pace for () {
+    fn rate(&self, _: PeerEndpoint) -> Option<u64> {
+        None
+    }
+    fn remaining(&self, plan: &PartPlan) -> u64 {
+        plan.len
     }
 }
 
@@ -152,15 +172,16 @@ impl DownloadScheduler {
     /// part; when none is left a *backup* peer (one that has not yet
     /// completed a part) races the best-ranked in-flight part it holds and is
     /// not already on, so a surplus peer stays queued on a busy uploader
-    /// instead of idling (ADR-0026). A peer that has already delivered a part
-    /// idles rather than redundantly racing a healthy in-flight peer. A peer
-    /// that already holds a part is [`Assignment::Busy`].
+    /// instead of idling, and a peer that has delivered a part runs a **Tail
+    /// Race** over what `pace` measures (ADR-0026). A peer that already holds
+    /// a part is [`Assignment::Busy`].
     pub fn assign_next(
         &mut self,
         peer: PeerEndpoint,
         parts: &PartBitmap,
         frequency: &[u32],
         known: u32,
+        pace: &impl Pace,
     ) -> Assignment {
         if self.peer_part.contains_key(&peer) {
             return Assignment::Busy;
@@ -189,15 +210,15 @@ impl DownloadScheduler {
         }
 
         let lacked = self.lacks_any_of(parts);
-        if self.completed.contains(&peer) {
-            return Assignment::Nothing { lacked };
-        }
-        let raced = self
-            .racing
-            .iter()
-            .filter(|(part, racing)| held(part) && !racing.racers.contains(&peer))
-            .map(|(&part, _)| part)
-            .min_by_key(|&part| rank(part, &inputs));
+        let raced = if self.completed.contains(&peer) {
+            self.tail_race(peer, &held, &inputs, pace)
+        } else {
+            self.racing
+                .iter()
+                .filter(|(part, racing)| held(part) && !racing.racers.contains(&peer))
+                .map(|(&part, _)| part)
+                .min_by_key(|&part| rank(part, &inputs))
+        };
         let Some(part) = raced.and_then(|part_index| self.racing.get_mut(&part_index)) else {
             return Assignment::Nothing { lacked };
         };
@@ -205,6 +226,39 @@ impl DownloadScheduler {
         let plan = part.plan;
         self.peer_part.insert(peer, plan.part_index);
         Assignment::Raced(plan)
+    }
+
+    /// The **Tail Race** of `peer`, which has delivered a part (ADR-0026):
+    /// an in-flight part it holds and is not on, worked by one racer alone
+    /// whose Delivery Rate is below `peer`'s (an unmeasured one counts as
+    /// zero), chosen by the rank with the expected finish — the bytes still to
+    /// come over that racer's rate — latest first in its fourth position.
+    /// `None` when no part qualifies, or `peer` itself is unmeasured.
+    fn tail_race(
+        &self,
+        peer: PeerEndpoint,
+        held: &impl Fn(&u32) -> bool,
+        inputs: &RankInputs<'_>,
+        pace: &impl Pace,
+    ) -> Option<u32> {
+        let own = pace.rate(peer)?;
+        self.racing
+            .iter()
+            .filter(|(part, _)| held(part))
+            .filter_map(|(&part, racing)| {
+                let mut racers = racing.racers.iter();
+                let (Some(&holder), None) = (racers.next(), racers.next()) else {
+                    return None;
+                };
+                let rate = pace.rate(holder).unwrap_or(0);
+                (holder != peer && rate < own).then(|| {
+                    let remaining = pace.remaining(&racing.plan);
+                    let finish = remaining.checked_div(rate).unwrap_or(u64::MAX);
+                    (tail_rank(part, inputs, finish), part)
+                })
+            })
+            .min()
+            .map(|(_, part)| part)
     }
 
     /// Whether a source whose Advertised Parts are `parts` holds a part the

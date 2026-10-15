@@ -1,11 +1,12 @@
 //! Part assignment across a download's peers: whole ED2K parts in index
 //! order when every source holds every part, verified parts skipped on resume,
 //! one part in flight per peer, the end-game race that hands a single
-//! remaining part to every idle peer and clears the losers when one wins — and
+//! remaining part to every idle peer and clears the losers when one wins, the
+//! Tail Race of a peer that delivered a part — and
 //! the rank a peer's Advertised Parts are chosen by (ADR-0112): very rare
 //! first, then the Preview Band, then the Streaming Window, then rarest.
 use rmule_core::diagnostics::PartState;
-use rmule_core::{Assignment, DownloadScheduler, PartOrder, PartPlan};
+use rmule_core::{Assignment, DownloadScheduler, Pace, PartOrder, PartPlan};
 use rmule_peer::PartBitmap;
 use rmule_primitives::{ED2K_PART_SIZE, Ipv4Endpoint, PeerEndpoint, part_count};
 
@@ -18,7 +19,7 @@ fn rarest(file_size: u64, verified: impl IntoIterator<Item = u32>) -> DownloadSc
 /// source does, is handed: today's decision sequence.
 fn take(scheduler: &mut DownloadScheduler, peer: PeerEndpoint) -> Option<PartPlan> {
     let parts = PartBitmap::all_present(scheduler.part_states().len() as u32);
-    handed(scheduler.assign_next(peer, &parts, &[], 0))
+    handed(scheduler.assign_next(peer, &parts, &[], 0, &()))
 }
 
 fn handed(assignment: Assignment) -> Option<PartPlan> {
@@ -213,7 +214,7 @@ fn fresh_order(
     let parts = PartBitmap::all_present(part_count(file_size));
     (1..=u8::MAX)
         .map_while(
-            |n| match scheduler.assign_next(peer(n), &parts, frequency, known) {
+            |n| match scheduler.assign_next(peer(n), &parts, frequency, known, &()) {
                 Assignment::Fresh(plan) => Some(plan.part_index),
                 _ => None,
             },
@@ -299,31 +300,31 @@ fn a_peer_is_handed_only_parts_it_advertised() {
     let plan = |assignment: Assignment| handed(assignment).map(|plan| plan.part_index);
 
     assert_eq!(
-        plan(scheduler.assign_next(peer(1), &every, &[], 0)),
+        plan(scheduler.assign_next(peer(1), &every, &[], 0, &())),
         Some(0)
     );
-    let last_only = scheduler.assign_next(peer(2), &holding(3, &[2]), &[], 0);
+    let last_only = scheduler.assign_next(peer(2), &holding(3, &[2]), &[], 0, &());
     assert!(matches!(last_only, Assignment::Fresh(plan) if plan.part_index == 2));
     assert_eq!(
-        plan(scheduler.assign_next(peer(3), &every, &[], 0)),
+        plan(scheduler.assign_next(peer(3), &every, &[], 0, &())),
         Some(1)
     );
 
-    let racer = scheduler.assign_next(peer(4), &holding(3, &[1]), &[], 0);
+    let racer = scheduler.assign_next(peer(4), &holding(3, &[1]), &[], 0, &());
     assert!(matches!(racer, Assignment::Raced(plan) if plan.part_index == 1));
     assert_eq!(
-        scheduler.assign_next(peer(5), &holding(3, &[]), &[], 0),
+        scheduler.assign_next(peer(5), &holding(3, &[]), &[], 0, &()),
         Assignment::Nothing { lacked: false }
     );
 
     scheduler.complete_verified(peer(1)).unwrap();
     assert_eq!(
-        scheduler.assign_next(peer(1), &every, &[], 0),
+        scheduler.assign_next(peer(1), &every, &[], 0, &()),
         Assignment::Nothing { lacked: true },
         "a peer that delivered idles: the parts it holds are in flight"
     );
     assert_eq!(
-        scheduler.assign_next(peer(6), &holding(3, &[0]), &[], 0),
+        scheduler.assign_next(peer(6), &holding(3, &[0]), &[], 0, &()),
         Assignment::Nothing { lacked: false },
         "it holds only a verified part"
     );
@@ -334,4 +335,95 @@ fn peer(last_octet: u8) -> PeerEndpoint {
         format!("127.0.0.{last_octet}").parse().unwrap(),
         4663,
     ))
+}
+
+/// Delivery Rates by peer, every part still whole to come.
+struct Rates(Vec<(PeerEndpoint, u64)>);
+
+impl Pace for Rates {
+    fn rate(&self, peer: PeerEndpoint) -> Option<u64> {
+        self.0
+            .iter()
+            .find(|(p, _)| *p == peer)
+            .map(|(_, rate)| *rate)
+    }
+    fn remaining(&self, plan: &PartPlan) -> u64 {
+        plan.len
+    }
+}
+
+/// Three parts on `peer(1)`, `peer(2)` and `peer(3)`; `peer(1)` delivers its
+/// part, and every part left is in flight.
+fn tail(peers_on_last: &[u8]) -> DownloadScheduler {
+    let mut scheduler = rarest(ED2K_PART_SIZE * 3, []);
+    for n in 1..=3 {
+        take(&mut scheduler, peer(n)).unwrap();
+    }
+    for &n in peers_on_last {
+        let raced = scheduler.assign_next(peer(n), &holding(3, &[2]), &[], 0, &());
+        assert!(matches!(raced, Assignment::Raced(plan) if plan.part_index == 2));
+    }
+    scheduler.complete_verified(peer(1)).unwrap();
+    scheduler
+}
+
+fn every_part() -> PartBitmap {
+    PartBitmap::all_present(3)
+}
+
+/// A finished peer races the in-flight part whose lone worker would finish
+/// it last (ADR-0026 "Bounded racing"), and keeps its slot.
+#[test]
+fn a_finished_peer_races_the_part_that_would_finish_last() {
+    let mut scheduler = tail(&[]);
+    let rates = Rates(vec![
+        (peer(1), 1_000_000),
+        (peer(2), 100_000),
+        (peer(3), 10_000),
+    ]);
+    let raced = scheduler.assign_next(peer(1), &every_part(), &[], 0, &rates);
+    assert!(
+        matches!(raced, Assignment::Raced(plan) if plan.part_index == 2),
+        "{raced:?}"
+    );
+}
+
+/// A part's lone worker faster than the finished peer keeps its part alone:
+/// the finished peer has nothing it may race and gives its slot back.
+#[test]
+fn a_finished_peer_never_races_a_faster_worker() {
+    let mut scheduler = tail(&[]);
+    let rates = Rates(vec![
+        (peer(1), 50_000),
+        (peer(2), 100_000),
+        (peer(3), 60_000),
+    ]);
+    assert_eq!(
+        scheduler.assign_next(peer(1), &every_part(), &[], 0, &rates),
+        Assignment::Nothing { lacked: true }
+    );
+}
+
+/// A Tail Race never makes a part's third racer, and a finished peer whose
+/// own rate is unmeasured races nothing.
+#[test]
+fn a_tail_race_joins_only_a_lone_worker_and_only_when_measured() {
+    // `peer(4)` is a backup racer on part 2, the slowest.
+    let mut scheduler = tail(&[4]);
+    let rates = Rates(vec![
+        (peer(1), 1_000_000),
+        (peer(2), 100_000),
+        (peer(3), 10_000),
+    ]);
+    let raced = scheduler.assign_next(peer(1), &every_part(), &[], 0, &rates);
+    assert!(
+        matches!(raced, Assignment::Raced(plan) if plan.part_index == 1),
+        "part 2 already has two racers: {raced:?}"
+    );
+
+    let mut unmeasured = tail(&[]);
+    assert_eq!(
+        unmeasured.assign_next(peer(1), &every_part(), &[], 0, &()),
+        Assignment::Nothing { lacked: true }
+    );
 }

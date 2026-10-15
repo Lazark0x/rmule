@@ -132,7 +132,7 @@ impl DownloadState {
                 part_index,
                 offset,
                 bytes,
-            } => self.on_block(peer, part_index, offset, &bytes, &mut out),
+            } => self.on_block(now, peer, part_index, offset, &bytes, &mut out),
             // Why the dial ended before the hello; the terminal fact that
             // follows releases the worker.
             PeerWorkerEvent::DialEnded { cause } => {
@@ -334,6 +334,7 @@ impl DownloadState {
     /// verify and persist (a `PersistPart` round-trip).
     fn on_block(
         &mut self,
+        now: Instant,
         peer: PeerEndpoint,
         part_index: u32,
         offset: u64,
@@ -347,6 +348,20 @@ impl DownloadState {
                 user_hash,
                 bytes: bytes.len() as u64,
             });
+        }
+        if self.worker_slots.contains_key(&peer) {
+            self.delivery
+                .entry(peer)
+                .or_default()
+                .record(now, bytes.len() as u64);
+        }
+        // A race's loser still streaming a part another copy already
+        // assembled: its bytes open no buffer (ADR-0026 "Bounded racing").
+        if self.pending_persist.contains_key(&part_index)
+            || self.awaiting_recovery.contains_key(&part_index)
+            || self.scheduler.is_part_verified(part_index)
+        {
+            return;
         }
         let part = crate::planning::part_plan(self.file_size, part_index);
         let assembled = self.assembly.entry(part_index).or_default();
