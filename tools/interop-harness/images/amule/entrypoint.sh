@@ -303,6 +303,15 @@ run_ed2k_server_mode() {
     if [ -n "${AMULE_QUEUE_SIZE_PREF:-}" ]; then
         set_config QueueSizePref "$AMULE_QUEUE_SIZE_PREF"
     fi
+    # Optional upload-slot allocation pref (KB/s per slot): with a capped
+    # MaxUpload aMule keeps round(MaxUpload / SlotAllocation) slots
+    # (UploadQueue.cpp:297-320), so a high value holds a fast uploader to
+    # MIN_UP_CLIENTS_ALLOWED = 2 slots and its 10 MB session kick
+    # (UploadQueue.cpp:576-583) lands in a minute. A legal user preference;
+    # unset leaves aMule's default (2).
+    if [ -n "${AMULE_SLOT_ALLOCATION:-}" ]; then
+        set_config SlotAllocation "$AMULE_SLOT_ALLOCATION"
+    fi
     # Optional protocol-obfuscation knobs (ADR-0042). The peer-UDP crypt capture
     # runs its counterparties in THIS mode, not direct-peer, so the
     # documented recipe's env has to be honoured here too — aMule obfuscates its
