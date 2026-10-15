@@ -246,3 +246,52 @@ async fn fans_share_one_socket_budget() {
     fans.close(first, false);
     assert_eq!(fans.open_sockets(), 3);
 }
+
+/// A receive error on a Fan socket — here the ICMP port-unreachable a
+/// connected socket reports after sending to a closed port — is tolerated,
+/// and the peer's datagram that follows still arrives as a hit.
+#[tokio::test]
+async fn a_receive_error_leaves_the_fan_reader_listening() {
+    let fans = PredictionFans::default();
+    let (peer, peer_addr) = bind_peer().await;
+    let fan_socket: Arc<Mutex<Option<Arc<UdpSocket>>>> = Arc::new(Mutex::new(None));
+    let kept = Arc::clone(&fan_socket);
+    fans.open_with(
+        peer_addr,
+        1,
+        ANSWER.to_vec(),
+        Arc::new(|_| {}),
+        move || {
+            let socket = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
+            // Connected, so the platform reports the ICMP answer to a
+            // datagram it sent as an error on the next receive.
+            socket.connect(peer_addr)?;
+            socket.set_nonblocking(true)?;
+            let socket = Arc::new(UdpSocket::from_std(socket)?);
+            *kept.lock().expect("fan socket") = Some(Arc::clone(&socket));
+            Ok(socket)
+        },
+    )
+    .expect("open the fan");
+    let socket = fan_socket
+        .lock()
+        .expect("fan socket")
+        .clone()
+        .expect("the binder ran");
+    let SocketAddr::V4(fan_addr) = socket.local_addr().expect("fan addr") else {
+        unreachable!("loopback is IPv4")
+    };
+
+    // The peer's port closes, the Fan sends into it, and the ICMP answer
+    // lands on the Fan socket's next receive.
+    drop(peer);
+    socket.send(b"probe").await.expect("send into the closed port");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let peer = UdpSocket::bind(SocketAddr::V4(peer_addr))
+        .await
+        .expect("the peer's port binds again");
+    peer.send_to(b"answer", fan_addr).await.expect("peer send");
+    let (bytes, from) = inlet_next(&fans).await;
+    assert_eq!((bytes.as_slice(), from), (&b"answer"[..], v4(peer_addr)));
+}
