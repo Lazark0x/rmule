@@ -161,12 +161,12 @@ quinn-proto = { version = "0.11", default-features = false, features = ["rustls-
 # **MIT OR Apache-2.0** (manifest). The 2048-bit key itself comes from the `rsa`
 # crate already in the tree — ring cannot generate RSA keys, only sign with one
 # — so rcgen adds a certificate writer and not a second crypto stack.
-rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 # Confined to rmule-net: the QUIC handshake's TLS 1.3 parameters and the
 # accept-anything verifier ADR-0091 pins. **Apache-2.0 OR ISC OR MIT**
 # (manifest). Reached through `quinn`, but named directly because rmule writes
 # its own `ServerCertVerifier` and cipher/group order.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 percent-encoding = "2"
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 predicates = "3"
