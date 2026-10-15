@@ -79,6 +79,12 @@ impl RegistryCheckHandle {
         match tokio::time::timeout(grace, joined).await {
             Ok(Ok(Err(_))) => tracing::error!("the registry check ended in a panic"),
             Ok(Ok(Ok(()))) => {}
+            // The runtime ended before the join ran: the worker was told to
+            // stop and ends alone, which is what a front end that skips Quit
+            // looks like, not a failure of the check.
+            Ok(Err(error)) if error.is_cancelled() => {
+                tracing::warn!("the runtime ended before the registry check was joined")
+            }
             Ok(Err(error)) => tracing::error!(%error, "the registry check's join failed"),
             Err(_) => tracing::warn!("the registry check did not end within its grace"),
         }
