@@ -57,7 +57,8 @@ fn placed(dir: &Path, parts: &Path, name: &str) -> DownloadPaths {
 
 /// [`placed`] under `name`, or under the first free `stem (n).ext`
 /// ([`crate::free_name`]) for which neither the file nor its part file
-/// exists.
+/// exists, keeping `name` as the Download Name the completion move numbers
+/// from.
 fn free_paths(dir: &Path, parts: &Path, name: &SafeFileName) -> DownloadPaths {
     let free = |paths: &DownloadPaths| !paths.final_path().exists() && !paths.part_path().exists();
     let name = name.as_str();
@@ -66,7 +67,7 @@ fn free_paths(dir: &Path, parts: &Path, name: &SafeFileName) -> DownloadPaths {
         return plain;
     }
     (1..)
-        .map(|n| placed(dir, parts, &crate::free_name::numbered(name, n)))
+        .map(|n| placed(dir, parts, &crate::free_name::numbered(name, n)).named(name))
         .find(free)
         .expect("an unbounded range finds a free name")
 }

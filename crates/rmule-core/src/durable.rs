@@ -64,21 +64,26 @@ impl DownloadLifecycle {
 /// caller can pair a `.part` with the wrong destination. Chosen once, when
 /// the download is placed, and kept on its row: the part file in the Temp
 /// Directory (ADR-0115), or beside its final path for an older row or a core
-/// given no Temp Directory.
+/// given no Temp Directory. With them, the **Download Name** the command
+/// gave, which a numbered final path or destination counts from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DownloadPaths {
     final_path: PathBuf,
     part_path: PathBuf,
+    name: String,
 }
 
 impl DownloadPaths {
     /// The pair a placement chose: the destination and the partial file, in
-    /// whatever directories each lies in.
+    /// whatever directories each lies in, the Download Name the destination's
+    /// own file name. A numbered placement names its own with [`Self::named`].
     #[must_use]
-    pub const fn new(final_path: PathBuf, part_path: PathBuf) -> Self {
+    pub fn new(final_path: PathBuf, part_path: PathBuf) -> Self {
+        let name = file_name(&final_path);
         Self {
             final_path,
             part_path,
+            name,
         }
     }
 
@@ -90,10 +95,26 @@ impl DownloadPaths {
     pub fn from_final_path(final_path: PathBuf) -> Self {
         let mut part_path = final_path.clone().into_os_string();
         part_path.push(".part");
+        Self::new(final_path, PathBuf::from(part_path))
+    }
 
+    /// The same paths under the Download Name `name`: a placement that
+    /// numbered the paths because `name` was taken keeps it here.
+    #[must_use]
+    pub fn named(self, name: impl Into<String>) -> Self {
         Self {
-            final_path,
-            part_path: PathBuf::from(part_path),
+            name: name.into(),
+            ..self
+        }
+    }
+
+    /// The same part file and Download Name with the finished file at
+    /// `destination`, where a completion move landed it.
+    #[must_use]
+    pub fn landed_at(&self, destination: PathBuf) -> Self {
+        Self {
+            final_path: destination,
+            ..self.clone()
         }
     }
 
@@ -109,6 +130,21 @@ impl DownloadPaths {
     pub fn part_path(&self) -> &Path {
         &self.part_path
     }
+
+    /// The Download Name: what the command gave, before any number. The
+    /// completion move lands under it beside the final path when it is free,
+    /// and numbers from it when it is not (ADR-0115).
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// `path`'s file name as text, lossily; empty for a path with none.
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// Where core learned a download's [`DownloadMetadata`] (ADR-0078).

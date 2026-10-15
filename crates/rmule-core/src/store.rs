@@ -34,7 +34,7 @@ pub const DURABLE_STORE_FILE: &str = "rmule.redb";
 /// (ADR-0102 "Building the scan"), and so does a new table whose absence an
 /// older build would write past (ADR-0105 "The Had Set").
 pub(crate) const LADDER: Ladder = Ladder::new(
-    14,
+    15,
     &[
         registry::UPGRADE_FROM_V1,
         had_set::UPGRADE_FROM_V2,
@@ -49,6 +49,7 @@ pub(crate) const LADDER: Ladder = Ladder::new(
         UPGRADE_FROM_V11,
         download::UPGRADE_FROM_V12,
         UPGRADE_FROM_V13,
+        UPGRADE_FROM_V14,
     ],
 );
 
@@ -87,6 +88,14 @@ pub(crate) const UPGRADE_FROM_V11: UpgradeStep = UpgradeStep {
 pub(crate) const UPGRADE_FROM_V13: UpgradeStep = UpgradeStep {
     from: 13,
     run: app_config::grow_from_v13,
+};
+
+/// Store version 14 → 15 (ADR-0115, step 2): every download row keeps its
+/// Download Name, read from the name it was placed under. A version-14
+/// build refuses the store: it could not read the row.
+pub(crate) const UPGRADE_FROM_V14: UpgradeStep = UpgradeStep {
+    from: 14,
+    run: download::grow_from_v14,
 };
 
 /// Every table the durable seams own, merged for the one `Store::open`.

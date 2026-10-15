@@ -267,12 +267,16 @@ async fn hashes_to<S, P>(
     Ok(hashed.is_ok_and(|hash| hash == file.file_hash))
 }
 
-/// Step 2: the name the download was placed under, or the first free
-/// numbered name of it beside it: counted from that name each time, as
-/// aMule's is, so a move a past one numbered never numbers past the number.
+/// Step 2: the Download Name beside the row's final path, or the first free
+/// numbered name of it: counted from that name each time, as aMule's is, so
+/// neither a placement's number nor a past move's is numbered again.
 async fn free_destination(row: &DownloadPaths) -> PathBuf {
-    let placed = crate::free_name::placed(row);
-    on_pool(move || crate::free_name::first_free(&placed, Path::exists)).await
+    let named = if row.name().is_empty() {
+        row.final_path().to_path_buf()
+    } else {
+        row.final_path().with_file_name(row.name())
+    };
+    on_pool(move || crate::free_name::first_free(&named, Path::exists)).await
 }
 
 /// Store `Completing` with `destination`, in one write, before it is used.
@@ -293,7 +297,7 @@ fn store_destination<S, P>(
 
 /// Steps 3 to 5: rename the part file onto `destination`, wait while a
 /// program holds it, copy across volumes; a name taken meanwhile takes the
-/// next free one of the placed name, stored first. Answers the
+/// next free one of the Download Name, stored first. Answers the
 /// paths the finished file and the part file hold once the file is in place.
 async fn move_into_place<S, P>(
     runner: &RunnerContext<S, P>,
@@ -311,7 +315,7 @@ async fn move_into_place<S, P>(
     let mut waiting = false;
     loop {
         match land_free(runner, download_id, row, part_path, &mut destination).await? {
-            Ok(()) => return Ok(DownloadPaths::new(destination, part_path.to_owned())),
+            Ok(()) => return Ok(row.landed_at(destination)),
             Err(Refusal::InUse { os_code }) => {
                 if !waiting {
                     waiting = true;
@@ -329,7 +333,7 @@ async fn move_into_place<S, P>(
             Err(Refusal::CrossesDevices) => {
                 let destination =
                     copy_into_place(runner, download_id, file, row, destination).await?;
-                return Ok(DownloadPaths::new(destination, part_path.to_owned()));
+                return Ok(row.landed_at(destination));
             }
             // `Taken` never comes back from `land_free`, which takes the next
             // free name instead.
@@ -344,7 +348,7 @@ async fn move_into_place<S, P>(
 
 /// Land `from` under `destination` through the Completion Gate: a name a
 /// file took since it was named gives way to the next free one of the
-/// placed name, stored first, and the landing is tried again. `Ok(Err(_))`
+/// Download Name, stored first, and the landing is tried again. `Ok(Err(_))`
 /// when the system refused it; `Err` ends the run, a stop that closed the
 /// gate among them.
 async fn land_free<S, P>(

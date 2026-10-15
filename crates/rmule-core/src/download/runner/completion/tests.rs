@@ -39,6 +39,17 @@ fn bytes(len: u64) -> Vec<u8> {
 }
 
 fn finished(len: u64, fs: Arc<dyn CompletionFs>) -> Finished {
+    finished_at(len, fs, |dir| {
+        DownloadPaths::new(dir.join("dl/film.mkv"), dir.join("temp/film.mkv.part"))
+    })
+}
+
+/// [`finished`] at the paths `place` chooses under the test's directory.
+fn finished_at(
+    len: u64,
+    fs: Arc<dyn CompletionFs>,
+    place: impl FnOnce(&Path) -> DownloadPaths,
+) -> Finished {
     let (mut runner, held) = runner_context((), (), DiagnosticsState::default());
     Arc::get_mut(&mut runner.rt)
         .expect("the runtime is the test's alone")
@@ -48,10 +59,7 @@ fn finished(len: u64, fs: Arc<dyn CompletionFs>) -> Finished {
     std::fs::create_dir_all(dir.path().join("dl")).unwrap();
     let bytes = bytes(len);
     let file = rmule_testkit::file_link("film.mkv", &bytes);
-    let paths = DownloadPaths::new(
-        dir.path().join("dl/film.mkv"),
-        dir.path().join("temp/film.mkv.part"),
-    );
+    let paths = place(dir.path());
     std::fs::write(paths.part_path(), &bytes).unwrap();
     let store = &runner.rt.store;
     let id = store.create_download(&file, None, &paths).unwrap().id();
@@ -292,10 +300,10 @@ async fn a_file_that_comes_to_stand_at_the_destination_is_kept_and_the_move_numb
 }
 
 /// A move whose stored destination a past move numbered, that name taken
-/// since: the next free name counts from the name the download was placed
-/// under, as aMule's does, never on from the number.
+/// since: the next free name counts from the Download Name, as aMule's
+/// does, never on from the number.
 #[tokio::test]
-async fn a_move_numbered_once_counts_its_next_free_name_from_the_placed_name() {
+async fn a_move_numbered_once_counts_its_next_free_name_from_the_download_name() {
     let mut leg = finished(300_000, Arc::new(OsCompletionFs));
     let placed = leg.paths.final_path().to_path_buf();
     let first = placed.with_file_name("film (1).mkv");
@@ -793,4 +801,56 @@ async fn a_part_file_held_open_without_delete_sharing_completes_once_its_handle_
     result.unwrap();
     assert_eq!(std::fs::read(leg.paths.final_path()).unwrap(), leg.bytes);
     assert_eq!(leg.lifecycle(), DownloadLifecycle::Completed);
+}
+
+/// A download placed as `film (1).mkv` because `film.mkv` stood then.
+fn placed_numbered(len: u64) -> Finished {
+    finished_at(len, Arc::new(OsCompletionFs), |dir| {
+        DownloadPaths::new(
+            dir.join("dl/film (1).mkv"),
+            dir.join("temp/film (1).mkv.part"),
+        )
+        .named("film.mkv")
+    })
+}
+
+/// Its own name free again at completion, a download placed under a number
+/// lands under its own name, as aMule's numbering from the file's name does.
+#[tokio::test]
+async fn a_download_placed_under_a_number_lands_under_its_own_name_when_free() {
+    let mut leg = placed_numbered(300_000);
+    let own = leg.paths.final_path().with_file_name("film.mkv");
+    let mut rx = std::mem::replace(&mut leg.held.in_place_rx, mpsc::channel(1).1);
+    let (result, ()) = tokio::join!(
+        complete(&leg.runner, leg.id, &leg.file, Vec::new()),
+        answer(&mut rx, true, |report| assert_eq!(report.path, own)),
+    );
+    result.unwrap();
+    assert_eq!(leg.final_path(), own);
+    assert_eq!(std::fs::read(&own).unwrap(), leg.bytes);
+}
+
+/// Its own name and its placed number both taken at completion, a download
+/// placed under a number takes the next number of its own name, never a
+/// number on the number (`film (1) (1).mkv`).
+#[tokio::test]
+async fn a_download_placed_under_a_number_never_stacks_a_second_one() {
+    let mut leg = placed_numbered(300_000);
+    let placed = leg.paths.final_path().to_path_buf();
+    let own = placed.with_file_name("film.mkv");
+    let next = placed.with_file_name("film (2).mkv");
+    std::fs::write(&own, b"the operator's own file").unwrap();
+    std::fs::write(&placed, b"a file that came to stand there").unwrap();
+    let mut rx = std::mem::replace(&mut leg.held.in_place_rx, mpsc::channel(1).1);
+    let (result, ()) = tokio::join!(
+        complete(&leg.runner, leg.id, &leg.file, Vec::new()),
+        answer(&mut rx, true, |report| assert_eq!(report.path, next)),
+    );
+    result.unwrap();
+    assert_eq!(leg.final_path(), next);
+    assert_eq!(std::fs::read(&next).unwrap(), leg.bytes);
+    assert_eq!(
+        std::fs::read(&placed).unwrap(),
+        b"a file that came to stand there"
+    );
 }

@@ -14,9 +14,11 @@ mod part_path;
 mod rungs;
 
 pub(super) use part_path::PartPathSlot;
-pub(crate) use rungs::{UPGRADE_FROM_V5, UPGRADE_FROM_V6, UPGRADE_FROM_V7, grow_from_v8};
+pub(crate) use rungs::{
+    UPGRADE_FROM_V5, UPGRADE_FROM_V6, UPGRADE_FROM_V7, grow_from_v8, grow_from_v14,
+};
 #[cfg(test)]
-pub(crate) use rungs::{schema_v1, seed_v1};
+pub(crate) use rungs::{schema_v1, schema_v5_rows, seed_v1, seed_v5};
 
 use rmule_primitives::{
     Ed2kFileLink, Ed2kLink, Ed2kText, FileHash, PartHash, ServerEndpoint, UserHash,
@@ -50,11 +52,13 @@ pub(super) struct DownloadRow {
     /// Why the last run failed: set with the `Failed` lifecycle, cleared by
     /// any other (ADR-0094, "Failed"). A code, never a sentence.
     pub failure: Option<DownloadFailure>,
+    /// The Download Name: the command's, before any number (ADR-0115).
+    pub name: String,
 }
 
 impl Record for DownloadRow {
     const NAME: &'static str = "download";
-    const VERSION: u32 = 5;
+    const VERSION: u32 = 6;
 }
 
 /// One hash-checked part on disk, keyed by `(download id, part index)` so a
@@ -159,6 +163,7 @@ impl DownloadRow {
             file_name: metadata.name,
             metadata_origin: metadata.origin,
             failure: None,
+            name: paths.name().to_owned(),
         }
     }
 
@@ -192,12 +197,15 @@ impl DownloadRow {
         )
     }
 
-    /// Where this download's bytes live: the two paths it was created with.
+    /// Where this download's bytes live: the two paths it was created with,
+    /// the final one a completion move's destination once it has one, and
+    /// its Download Name.
     pub(super) fn paths(&self) -> DownloadPaths {
         DownloadPaths::new(
             self.final_path.clone().into(),
             self.part_path.index_text().into(),
         )
+        .named(self.name.clone())
     }
 
     /// The domain record this row stands for, under the id it is keyed by.

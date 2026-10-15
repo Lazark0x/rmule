@@ -312,7 +312,8 @@ async fn a_temp_directory_cleared_on_a_running_core_places_the_next_part_file_in
 
 /// A name whose part file is taken in the Temp Directory numbers, as one
 /// taken in the download directory does: the file and its part take the
-/// first `stem (n).ext` free in both, and the file there is left alone.
+/// first `stem (n).ext` free in both, the row keeps the name asked for as
+/// its Download Name, and the file there is left alone.
 #[tokio::test]
 async fn a_name_whose_part_is_taken_in_the_temp_directory_numbers() {
     let machine = Machine::new();
@@ -337,6 +338,7 @@ async fn a_name_whose_part_is_taken_in_the_temp_directory_numbers() {
             machine.downloads.join("have (1).bin"),
             temp.join("have (1).bin.part")
         )
+        .named("have.bin")
     );
     assert_eq!(
         std::fs::read(temp.join("have.bin.part")).unwrap(),

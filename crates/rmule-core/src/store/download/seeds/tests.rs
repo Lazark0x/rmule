@@ -2,7 +2,6 @@
 //! download's end, and the climb from a version-12 store.
 
 use std::net::Ipv4Addr;
-use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use rmule_primitives::{CryptStance, Ipv4Endpoint, PeerEndpoint, UserHash};
@@ -119,19 +118,18 @@ fn completion_cancel_and_clear_each_leave_no_seeds_and_refuse_later_writes() {
 fn upgrade_from_a_version_twelve_store_gives_no_seeds_and_keeps_every_download() {
     let dir = tempfile::tempdir().unwrap();
     let id = {
-        let v12 = Arc::new(
-            DurableStore::open(
-                dir.path().join(DURABLE_STORE_FILE),
-                &durable_schema_v12(),
-                &Ladder::new(12, &[]),
-            )
-            .unwrap(),
-        );
-        create(
-            &DurableDownloadRepository::new(v12),
-            dir.path(),
-            "carried.bin",
+        let v12 = DurableStore::open(
+            dir.path().join(DURABLE_STORE_FILE),
+            &durable_schema_v12(),
+            &Ladder::new(12, &[]),
         )
+        .unwrap();
+        let file = rmule_testkit::file_link("carried.bin", b"carried.bin");
+        let paths = DownloadPaths::from_final_path(dir.path().join("carried.bin"));
+        let key = v12
+            .write(|txn| crate::store::download::seed_v5(txn, &file, &paths))
+            .unwrap();
+        DownloadId::from_u64(key)
     };
     let repo = DurableDownloadRepository::new(open_durable_store(dir.path()).unwrap());
     assert_eq!(

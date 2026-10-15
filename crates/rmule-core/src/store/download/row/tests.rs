@@ -20,25 +20,34 @@ fn row() -> DownloadRow {
     DownloadRow::new(&file, None, &paths)
 }
 
-/// Every byte of the version-5 row: the record's postcard encoding the store
-/// wrote before the part path became a typed state.
-const HELD_ROW: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10a386564326b3a2f2f7c66696c657c612e62696e7c31307c41314131413141314131413141314131413141314131413141314131413141317c2f00092f646c2f612e62696e0e2f646c2f612e62696e2e70617274000005612e62696e0000";
-const RELEASED_ROW: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10a386564326b3a2f2f7c66696c657c612e62696e7c31307c41314131413141314131413141314131413141314131413141314131413141317c2f00092f646c2f612e62696e0b0072656c65617365643a37000005612e62696e0000";
+/// Every byte of the version-5 row: the record's postcard encoding store
+/// versions 9 to 14 wrote, held and released. The frozen version-5 shape
+/// encodes to them too (`rungs::tests`).
+pub(super) const HELD_ROW_V5: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10a386564326b3a2f2f7c66696c657c612e62696e7c31307c41314131413141314131413141314131413141314131413141314131413141317c2f00092f646c2f612e62696e0e2f646c2f612e62696e2e70617274000005612e62696e0000";
+pub(super) const RELEASED_ROW_V5: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10a386564326b3a2f2f7c66696c657c612e62696e7c31307c41314131413141314131413141314131413141314131413141314131413141317c2f00092f646c2f612e62696e0b0072656c65617365643a37000005612e62696e0000";
 
-fn hex(bytes: &[u8]) -> String {
+/// The Download Name `a.bin` as the version-6 row appends it: its length,
+/// then its bytes.
+const NAME_A_BIN: &str = "05612e62696e";
+
+pub(super) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// A held part path and a released one encode to the bytes version 9 has
-/// always written: the path's text, and the stand-in `"\0released:{key}"`.
+/// always written — the path's text, and the stand-in `"\0released:{key}"`
+/// — and the Download Name follows every field version 5 held.
 #[test]
-fn a_part_path_encodes_to_the_bytes_version_nine_writes() {
+fn a_row_encodes_its_part_path_as_version_nine_wrote_it_and_its_name_last() {
     let held = row();
-    assert_eq!(hex(&postcard::to_allocvec(&held).unwrap()), HELD_ROW);
+    assert_eq!(
+        hex(&postcard::to_allocvec(&held).unwrap()),
+        format!("{HELD_ROW_V5}{NAME_A_BIN}")
+    );
     let mut released = row();
     released.release_part_path(7);
     let bytes = postcard::to_allocvec(&released).unwrap();
-    assert_eq!(hex(&bytes), RELEASED_ROW);
+    assert_eq!(hex(&bytes), format!("{RELEASED_ROW_V5}{NAME_A_BIN}"));
     assert_eq!(
         postcard::from_bytes::<DownloadRow>(&bytes).unwrap(),
         released

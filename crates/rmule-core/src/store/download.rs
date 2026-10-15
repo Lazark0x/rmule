@@ -13,9 +13,11 @@
 mod row;
 mod seeds;
 
-pub(crate) use row::{UPGRADE_FROM_V5, UPGRADE_FROM_V6, UPGRADE_FROM_V7, grow_from_v8};
+pub(crate) use row::{
+    UPGRADE_FROM_V5, UPGRADE_FROM_V6, UPGRADE_FROM_V7, grow_from_v8, grow_from_v14,
+};
 #[cfg(test)]
-pub(crate) use row::{schema_v1, seed_v1};
+pub(crate) use row::{schema_v1, seed_v1, seed_v5};
 pub use seeds::LoadedSeeds;
 pub(crate) use seeds::UPGRADE_FROM_V12;
 
@@ -50,11 +52,11 @@ pub(crate) fn schema() -> Schema {
         .children(&seeds::SOURCE_SEEDS)
 }
 
-/// The tables this seam owned at store version 12, before the seeds table.
+/// The tables this seam owned at store version 12, before the seeds table,
+/// its rows of record version 5.
 #[cfg(test)]
 pub(crate) fn schema_v12() -> Schema {
-    Schema::new()
-        .indexed(&DOWNLOADS)
+    row::schema_v5_rows()
         .children(&VERIFIED_PARTS)
         .children(&PROVISIONAL_HASHES)
         .children(&DISTRUSTED_PEERS)

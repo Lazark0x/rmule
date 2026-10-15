@@ -2,12 +2,11 @@
 //! numbered `stem (n).ext` beside it, `n` counting from one, the first for
 //! which nothing stands. A placement and a completion move choose by the same
 //! rule, so a download that found its name taken at either end reads the
-//! same. A move numbers from the name its download was placed under, every
-//! time, as aMule does (`ThreadTasks.cpp`), so numbered names never stack.
+//! same. Both number from the download's own name, the Download Name its
+//! row keeps, every time, as aMule does (`ThreadTasks.cpp`): a placement's
+//! number is never numbered again at the move.
 
 use std::path::{Path, PathBuf};
-
-use crate::DownloadPaths;
 
 /// `name` as the `n`th numbered name: `stem (n).ext`, or `name (n)` for a
 /// name with no extension. Only a space, parentheses and digits are added,
@@ -36,22 +35,6 @@ pub(crate) fn first_free(path: &Path, taken: impl Fn(&Path) -> bool) -> PathBuf 
         .map(|n| path.with_file_name(numbered(&name, n)))
         .find(|candidate| !taken(candidate))
         .expect("an unbounded range finds a free name")
-}
-
-/// The final path a download was placed under, beside the one its row names
-/// now: its part file's name less `.part`, since a placement names the two
-/// alike and a move stores only its destination. A part file named any other
-/// way leaves the row's final path as it is.
-pub(crate) fn placed(paths: &DownloadPaths) -> PathBuf {
-    paths
-        .part_path()
-        .file_name()
-        .and_then(|name| name.to_str()?.strip_suffix(".part"))
-        .filter(|name| !name.is_empty())
-        .map_or_else(
-            || paths.final_path().to_path_buf(),
-            |name| paths.final_path().with_file_name(name),
-        )
 }
 
 #[cfg(test)]
