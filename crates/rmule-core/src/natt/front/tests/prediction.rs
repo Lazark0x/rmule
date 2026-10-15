@@ -256,7 +256,7 @@ async fn an_endpoint_independent_node_probes_after_the_fan_it_is_meant_to_meet()
 #[tokio::test]
 async fn a_peer_whose_observed_port_is_not_its_advert_vetoes_our_fan() {
     for (introduced_port, plans) in [(50_000, false), (4672, true)] {
-        let (mut front, _, _, _around) = predicting(&[31_004, 50_219]).await;
+        let (mut front, _, _, _around) = predicting(&[31_004, 50_219, 7_781]).await;
         let target_hash = hash(0x42);
         begun(&mut front, target_hash, 7, Some(4672)).await;
         front

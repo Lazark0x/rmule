@@ -242,21 +242,23 @@ fn the_next_lapse_is_where_a_lease_turns_the_verdict_stale() {
 
 // ------------------------------------------------------------- NAT hints
 
-/// Two Kad observers naming two ports learn no port, but say the NAT maps
+/// Three Kad observers naming three ports learn no port, but say the NAT maps
 /// per destination: the Own Mapping moves alone, and the Own Address
 /// Generation wakes for it.
 #[test]
 fn an_own_mapping_moved_alone_wakes_the_own_address_generation() {
     let store = SharedAddressLearning::new();
     let mut generation = store.own_address_changed();
-    store.observe(AddressObservation::kad_observed_port(
-        ipv4(observer(1)),
-        KAD_PORT,
-    ));
+    for (who, port) in [(1, KAD_PORT), (2, KAD_PORT + 1)] {
+        store.observe(AddressObservation::kad_observed_port(
+            ipv4(observer(who)),
+            port,
+        ));
+    }
     generation.borrow_and_update();
     store.observe(AddressObservation::kad_observed_port(
-        ipv4(observer(2)),
-        KAD_PORT + 1,
+        ipv4(observer(3)),
+        KAD_PORT + 2,
     ));
     assert_eq!(store.learned_port(SocketRole::Udp), None);
     assert_eq!(

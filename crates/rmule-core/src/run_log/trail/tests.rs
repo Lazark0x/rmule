@@ -185,6 +185,11 @@ async fn address_learning_writes_each_move_once_and_an_unmoved_write_never() {
         "one observer says nothing"
     );
     addresses.observe(AddressObservation::kad_observed_port(observer(2), 4673));
+    assert!(
+        written(&mut watched).await.is_empty(),
+        "two observers on two ports say nothing either"
+    );
+    addresses.observe(AddressObservation::kad_observed_port(observer(3), 4674));
     assert_eq!(
         written(&mut watched).await,
         ["reach.natt_own_mapping mapping=endpoint_dependent"]

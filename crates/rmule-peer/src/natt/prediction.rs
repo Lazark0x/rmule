@@ -13,7 +13,7 @@
 //! [`PredictionRng`] seeded by the caller, so a test pins an exact port set
 //! and production seeds from the OS.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::ops::RangeInclusive;
 use std::time::{Duration, Instant};
@@ -62,33 +62,43 @@ pub enum PortPrediction {
 
 /// What our own observers saw of our UDP mapping in the current Extern Port
 /// Round.
+///
+/// The port most observers name is the best-supported one; every other
+/// observer **dissents**. Dissent must be corroborated (ADR-0091): the Fan is
+/// the costly role, and one lying Kad contact must not be able to pick it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OwnMapping {
-    /// Two distinct observers saw two different external ports: the NAT
-    /// allocates per destination.
+    /// At least two observers dissent: the NAT allocates per destination. A
+    /// symmetric NAT shows it within one round, since each of aMule's three
+    /// asked observers sees its own port.
     EndpointDependent,
-    /// At least two distinct observers, all on the same port.
+    /// At least two observers name the best-supported port, and at most one
+    /// dissents.
     EndpointIndependent,
-    /// Fewer than two distinct observers.
+    /// Anything less: fewer than two observers, or two that disagree.
     Unknown,
 }
 
 impl OwnMapping {
     /// Judge the round's reports, each an observer's address and the external
-    /// port it saw. One observer counts once however often it reports: a
-    /// second report from the same address is no second opinion.
+    /// port it saw, oldest first. One observer counts once however often it
+    /// reports — its latest report stands: a second report from the same
+    /// address is no second opinion.
     #[must_use]
     pub fn from_reports(reports: impl IntoIterator<Item = (IpAddr, u16)>) -> Self {
-        let mut observers = HashSet::new();
-        let mut ports = HashSet::new();
-        for (observer, port) in reports {
-            observers.insert(observer);
-            ports.insert(port);
+        let latest: HashMap<IpAddr, u16> = reports.into_iter().collect();
+        let mut support: HashMap<u16, usize> = HashMap::new();
+        for port in latest.values() {
+            *support.entry(*port).or_default() += 1;
         }
-        match (observers.len(), ports.len()) {
-            (0 | 1, _) => Self::Unknown,
-            (_, 1) => Self::EndpointIndependent,
-            _ => Self::EndpointDependent,
+        let best = support.values().copied().max().unwrap_or(0);
+        let dissent = latest.len() - best;
+        if dissent >= 2 {
+            Self::EndpointDependent
+        } else if best >= 2 {
+            Self::EndpointIndependent
+        } else {
+            Self::Unknown
         }
     }
 }
@@ -296,7 +306,7 @@ mod tests {
     /// Only a second *observer* is a second opinion: one Kad contact
     /// reporting twice, even two different ports, decides nothing.
     #[test]
-    fn own_mapping_needs_two_observers_and_any_disagreement_is_dependence() {
+    fn own_mapping_needs_two_observers() {
         assert_eq!(OwnMapping::from_reports([]), OwnMapping::Unknown);
         assert_eq!(
             OwnMapping::from_reports([(observer(5), 4672), (observer(5), 31_000)]),
@@ -306,13 +316,40 @@ mod tests {
             OwnMapping::from_reports([(observer(5), 4672), (observer(6), 4672)]),
             OwnMapping::EndpointIndependent
         );
-        // aMule's 5000, 6000, 5000 adopts 5000; for the mapping it is still
-        // two ports from distinct observers.
+    }
+
+    /// One dissenter cannot pick the Fan: aMule's 5000, 6000, 5000 adopts
+    /// 5000, and the mapping stays independent; two observers on two ports are
+    /// no verdict either way. Dependence takes two dissenters — what a
+    /// symmetric NAT shows each of a round's three observers.
+    #[test]
+    fn dependence_takes_corroborated_dissent() {
         assert_eq!(
             OwnMapping::from_reports([
                 (observer(5), 5000),
                 (observer(6), 6000),
                 (observer(7), 5000),
+            ]),
+            OwnMapping::EndpointIndependent
+        );
+        assert_eq!(
+            OwnMapping::from_reports([(observer(5), 5000), (observer(6), 6000)]),
+            OwnMapping::Unknown
+        );
+        assert_eq!(
+            OwnMapping::from_reports([
+                (observer(5), 31_004),
+                (observer(6), 50_219),
+                (observer(7), 7_781),
+            ]),
+            OwnMapping::EndpointDependent
+        );
+        assert_eq!(
+            OwnMapping::from_reports([
+                (observer(5), 5000),
+                (observer(6), 5000),
+                (observer(7), 6000),
+                (observer(8), 7000),
             ]),
             OwnMapping::EndpointDependent
         );
