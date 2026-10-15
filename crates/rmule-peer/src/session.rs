@@ -167,6 +167,10 @@ pub struct PeerSession {
     /// Advertised Endpoints chooser. `None` omits the tag — the claim bit
     /// still rides, since it names a capability rather than an address.
     ipv6_advert: Option<std::net::Ipv6Addr>,
+    /// The IPv6 the peer has been told is ours: what our hello named, then
+    /// each `OP_CHANGE_CLIENT_IP` since. An announcement goes out only when
+    /// [`Self::ipv6_advert`] moves away from it (ADR-0087).
+    ipv6_told: Option<std::net::Ipv6Addr>,
     /// Our serving buddy for the hello's `CT_EMULE_BUDDYIP` / `BUDDYUDP` /
     /// `SERVINGBUDDYIPV6` tags (ADR-0061/0087), set via
     /// [`with_serving_buddy_advertisement`](Self::with_serving_buddy_advertisement).
@@ -214,6 +218,7 @@ impl PeerSession {
             crypt_advert: None,
             udp_ports_advert: None,
             ipv6_advert: None,
+            ipv6_told: None,
             serving_buddy_advert: None,
             direct_udp_callback_advert: false,
             source_exchange_capture_override: None,
@@ -300,6 +305,13 @@ impl PeerSession {
         self
     }
 
+    /// The hello tags of the hello or hello answer about to be written —
+    /// the moment the peer is told our IPv6.
+    fn hello_body_to_write(&mut self) -> PeerHelloBody {
+        self.ipv6_told = self.ipv6_advert;
+        self.advertised_hello_body()
+    }
+
     /// The hello tags this session sends, capture overrides applied.
     fn advertised_hello_body(&self) -> PeerHelloBody {
         let mut body = PeerHelloBody::from_handshake_context(&self.ctx, &self.hello_advert());
@@ -375,7 +387,7 @@ impl PeerSession {
         if !matches!(self.state, State::BeforeStart) {
             return;
         }
-        let bytes = Hello::new(self.advertised_hello_body())
+        let bytes = Hello::new(self.hello_body_to_write())
             .encode_packet()
             .encode();
         self.core

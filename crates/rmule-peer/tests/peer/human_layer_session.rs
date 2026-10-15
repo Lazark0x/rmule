@@ -362,6 +362,89 @@ fn a_changed_ipv6_revises_the_identity_once() {
     assert!(events(&out).is_empty(), "{out:?}");
 }
 
+/// A dialer whose hello named `named`, answered by a peer whose hello claims
+/// `MODMISC_IPV6` when `capable`. Returns the session still awaiting that
+/// answer, and the answer's bytes.
+fn dialing_with_ipv6(named: std::net::Ipv6Addr, capable: bool) -> (PeerSession, Vec<u8>) {
+    let mut session = PeerSession::new_outbound(peer_at(55), ctx()).with_ipv6_advertisement(named);
+    session.start();
+    let _ = drain(|| session.poll_output());
+    let mut tags = crate::fixture::plain_hello_body(rmule_primitives::UserHash::from_bytes(
+        [0x99; 16],
+    ))
+    .tags;
+    if capable {
+        tags.push(rmule_peer::ModMiscOptions::rmule_claim().to_tag());
+    }
+    let answer = rmule_peer::HelloAnswer::new(crate::fixture::hello_body(
+        rmule_primitives::UserHash::from_bytes([0x99; 16]),
+        0x20000002,
+        tags,
+    ))
+    .encode_packet()
+    .encode();
+    (session, answer)
+}
+
+fn announced(out: &[rmule_peer::PeerOutput]) -> Vec<std::net::Ipv6Addr> {
+    writes(out)
+        .iter()
+        .filter(|packet| packet.opcode() == 0xAC)
+        .filter_map(|packet| ChangeClientIpV6::decode_packet(packet).ok())
+        .map(ChangeClientIpV6::address)
+        .collect()
+}
+
+fn announce(address: std::net::Ipv6Addr) -> PeerCommand {
+    PeerCommand::Connection(rmule_peer::ConnectionCommand::AnnounceIpv6Change(address))
+}
+
+/// ADR-0087: a move of our Advertised IPv6 reaches an IPv6-capable peer once,
+/// and a restatement of what it was told says nothing.
+#[test]
+fn an_ipv6_move_is_announced_once_to_a_capable_peer() {
+    let named: std::net::Ipv6Addr = "2001:db8::1".parse().expect("an address");
+    let moved: std::net::Ipv6Addr = "2001:db8::2".parse().expect("an address");
+    let (mut session, answer) = dialing_with_ipv6(named, true);
+    session.handle_bytes(&answer);
+    let _ = drain(|| session.poll_output());
+
+    session.handle_command(announce(named));
+    assert!(announced(&drain(|| session.poll_output())).is_empty(), "the hello named it");
+    session.handle_command(announce(moved));
+    assert_eq!(announced(&drain(|| session.poll_output())), vec![moved]);
+    session.handle_command(announce(moved));
+    assert!(announced(&drain(|| session.poll_output())).is_empty(), "told once");
+}
+
+/// A peer whose hello claims no IPv6 is never sent `0xAC`, and the command is
+/// no error.
+#[test]
+fn a_legacy_peer_is_never_sent_an_ipv6_move() {
+    let named: std::net::Ipv6Addr = "2001:db8::1".parse().expect("an address");
+    let (mut session, answer) = dialing_with_ipv6(named, false);
+    session.handle_bytes(&answer);
+    let _ = drain(|| session.poll_output());
+    session.handle_command(announce("2001:db8::2".parse().expect("an address")));
+    let out = drain(|| session.poll_output());
+    assert!(writes(&out).is_empty(), "{out:?}");
+    assert!(events(&out).is_empty(), "{out:?}");
+}
+
+/// A move while our hello was already out and its answer not yet in is owed:
+/// it follows the answer.
+#[test]
+fn an_ipv6_move_during_the_handshake_follows_the_answer() {
+    let named: std::net::Ipv6Addr = "2001:db8::1".parse().expect("an address");
+    let moved: std::net::Ipv6Addr = "2001:db8::2".parse().expect("an address");
+    let (mut session, answer) = dialing_with_ipv6(named, true);
+    session.handle_command(announce(moved));
+    let out = drain(|| session.poll_output());
+    assert!(writes(&out).is_empty() && events(&out).is_empty(), "{out:?}");
+    session.handle_bytes(&answer);
+    assert_eq!(announced(&drain(|| session.poll_output())), vec![moved]);
+}
+
 // --- Pre-Identified guard ------------------------------------------
 
 #[test]
