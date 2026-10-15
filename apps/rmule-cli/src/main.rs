@@ -400,6 +400,26 @@ async fn run_add(data_dir: &std::path::Path, link_str: &str, verbose: bool) -> R
         .mapping_backends(rmule_core::live_mapping_backends(port_map_secret))
         .build();
 
+    // The Quit runs on every way out — completion, a refusal, a bail — so the
+    // credit checkpoint and `clients.met` are written before the process ends
+    // (ADR-0093), and its steps reach the Run Log like any other record.
+    let outcome = drive_add(&mut core, file, server, name, &log_level).await;
+    let mut quit = core.quit();
+    while let Some(event) = quit.recv().await {
+        run_log::write(&event.record(), log_level.get());
+    }
+    outcome
+}
+
+/// Start the download on `core` and follow it to its end: `Ok` once it is
+/// complete, an error naming why it is not. The caller quits the core.
+async fn drive_add(
+    core: &mut Core,
+    file: rmule_primitives::Ed2kFileLink,
+    server: Option<ServerEndpoint>,
+    name: SafeFileName,
+    log_level: &LevelHandle,
+) -> Result<()> {
     // The operator's word, given by running this command (ADR-0095,
     // "Connecting is the operator's act"): the one login — listener, mapping,
     // then the dial — and the download rides the session it makes. Both
