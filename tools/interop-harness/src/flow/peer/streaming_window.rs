@@ -19,6 +19,7 @@
 //! rmule runs its bounded `hold_secs`, which must outlast twice
 //! `FILEREASKTIME` for the wait claim.
 
+mod pace;
 mod prefix;
 mod replay;
 pub(crate) mod seed;
@@ -118,6 +119,9 @@ pub struct StreamingWindowOptions<'a> {
     /// How long this call waits for rmule's run to end before it returns a
     /// kept run for a later collection; `None` waits the whole `hold_secs`.
     pub wait_secs: Option<u64>,
+    /// A `tc netem` delay each seed's egress is held by, in ms, so the links
+    /// carry a WAN round trip (ADR-0029 "Request pipeline"); `None` for none.
+    pub seed_netem_delay_ms: Option<u32>,
 }
 
 /// Run the streaming-window flow and score it.
@@ -223,6 +227,9 @@ pub fn run_streaming_window(options: StreamingWindowOptions<'_>) -> Result<()> {
             bench.start_extra(&name, container, "run a seed aMule")?;
             wait_for_amule_ready(&bench.docker, options.layout, &name, timeout, AMULE_READY)?;
             wait_for_share(&bench.docker, &name, timeout)?;
+            if let Some(delay_ms) = options.seed_netem_delay_ms {
+                hold_seed_egress(&bench, options.rmule_tools_image, &name, delay_ms, &root)?;
+            }
             let ip = run_checked(bench.docker.container_ip(name.clone()), "inspect seed ip")?;
             println!(
                 "peer_streaming_window seed={} ip={} cap_kib={cap} holds={}",
@@ -260,6 +267,7 @@ pub fn run_streaming_window(options: StreamingWindowOptions<'_>) -> Result<()> {
             expect_complete,
             rmule_container: rmule.clone(),
             tap_container: tap.clone(),
+            seed_netem_delay_ms: options.seed_netem_delay_ms,
         };
         let topology_path = root.join(TOPOLOGY_FILE);
         fs::write(
@@ -320,6 +328,34 @@ pub fn run_streaming_window(options: StreamingWindowOptions<'_>) -> Result<()> {
         score_run_dir(options.layout.root())?;
     }
     Ok(())
+}
+
+/// Hold every packet `seed` sends by `delay_ms` with `tc netem`, from a
+/// side container in its namespace (the late-port-test's way), and keep what
+/// `tc` then shows beside the run.
+fn hold_seed_egress(
+    bench: &Bench,
+    rmule_tools_image: &str,
+    seed: &str,
+    delay_ms: u32,
+    root: &Path,
+) -> Result<()> {
+    let applied = run_checked(
+        bench.docker.run_container(
+            RunContainer::new(rmule_tools_image.to_owned())
+                .network(format!("container:{seed}"))
+                .cap_add("NET_ADMIN")
+                .entrypoint("sh")
+                .arg("-c")
+                .arg(format!(
+                    "tc qdisc add dev eth0 root netem delay {delay_ms}ms && tc qdisc show dev eth0"
+                ))
+                .remove_after_exit(),
+        ),
+        "hold a seed's egress with netem",
+    )?;
+    let path = root.join(format!("{seed}-tc.txt"));
+    fs::write(&path, format!("{applied}\n")).with_context(|| format!("write {}", path.display()))
 }
 
 /// Collect a kept run's logs off its still-standing containers, so

@@ -81,6 +81,10 @@ pub(crate) struct PeerStreamingWindowArgs {
     /// get-sources.
     #[arg(long)]
     pub(crate) link_sources: bool,
+    /// Hold every packet each seed sends by this many ms with `tc netem`, so
+    /// the links carry a WAN round trip.
+    #[arg(long)]
+    pub(crate) seed_netem_delay_ms: Option<u32>,
     /// Per-step readiness budget in seconds.
     #[arg(long, default_value_t = 600)]
     pub(crate) timeout: u64,
@@ -105,6 +109,7 @@ struct ResolvedConfig {
     hold_secs: u64,
     wait_secs: Option<u64>,
     link_sources: bool,
+    seed_netem_delay_ms: Option<u32>,
     timeout_secs: u64,
 }
 
@@ -140,6 +145,7 @@ pub(crate) fn peer_streaming_window(args: PeerStreamingWindowArgs) -> Result<()>
             hold_secs: args.hold_secs,
             wait_secs: args.wait_secs,
             link_sources: args.link_sources,
+            seed_netem_delay_ms: args.seed_netem_delay_ms,
             timeout_secs: args.timeout,
         },
     )?;
@@ -172,6 +178,7 @@ pub(crate) fn peer_streaming_window(args: PeerStreamingWindowArgs) -> Result<()>
         hold_secs: args.hold_secs,
         link_sources: args.link_sources,
         wait_secs: args.wait_secs,
+        seed_netem_delay_ms: args.seed_netem_delay_ms,
     })
 }
 

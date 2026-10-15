@@ -18,6 +18,7 @@ use rmule_primitives::{ED2K_PART_SIZE, part_count};
 use serde::{Deserialize, Serialize};
 
 use super::ROOT_DIR;
+use super::pace::{self, Pace};
 use super::prefix::{Measurement, measure, traced_verifies};
 use super::replay::{Pick, Replay, Topology, parse_log, replay};
 use super::wire::{StatusForm, Wire, read};
@@ -60,6 +61,9 @@ pub(crate) struct TopologyFile {
     pub(crate) rmule_container: String,
     /// The tap's container.
     pub(crate) tap_container: String,
+    /// `--seed-netem-delay-ms`; absent from a run before it existed.
+    #[serde(default)]
+    pub(crate) seed_netem_delay_ms: Option<u32>,
 }
 
 /// One seed in [`TopologyFile`].
@@ -94,6 +98,11 @@ struct Verdict<'a> {
     statuses: Vec<String>,
     first_requests: Vec<String>,
     measurement: Measurement,
+    /// The download's last verify over `pace.ideal_s`: 1.0 is every link at
+    /// its cap to the last byte.
+    tail_over_ideal: Option<f64>,
+    seed_netem_delay_ms: Option<u32>,
+    pace: Pace,
     claim: &'a [Claim],
 }
 
@@ -147,6 +156,26 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         &traced_verifies(&trace, DOWNLOAD_ID),
         topology.file_size,
     );
+    let mut pace = pace::read(
+        &root.join(RMULE_PCAP),
+        topology.rmule_ip,
+        &topology
+            .seeds
+            .iter()
+            .map(|seed| (seed.role.clone(), seed.ip))
+            .collect::<Vec<_>>(),
+        &file_hash,
+    )?;
+    let caps: u64 = topology
+        .seeds
+        .iter()
+        .map(|seed| u64::from(seed.max_upload_kib) * 1_024)
+        .sum();
+    pace.ideal_s = (caps > 0).then(|| topology.file_size as f64 / caps as f64);
+    let tail_over_ideal = measurement
+        .last_part_verified_s
+        .zip(pace.ideal_s)
+        .map(|(last, ideal)| last / ideal);
     let series_path = root.join("prefix-series.tsv");
     fs::write(&series_path, series).with_context(|| format!("write {}", series_path.display()))?;
 
@@ -200,6 +229,9 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
             .map(|(seed, parts)| format!("{} first asked for {}", role_of(*seed), list(parts)))
             .collect(),
         measurement,
+        tail_over_ideal,
+        seed_netem_delay_ms: topology.seed_netem_delay_ms,
+        pace,
         claim: &claims,
     })
     .context("serialize the streaming-window verdict")?;
