@@ -363,13 +363,26 @@ impl PeerIdentity {
     /// own address — is the link's address, whatever number the hello wrote:
     /// aMule takes the socket's address as the client's (`BaseClient.cpp:661`)
     /// and stores it as a High ID (`:678-680`), and that is where it dials the
-    /// client (`:1620`). A Low ID stays the callback it names. An IPv6 link
-    /// has no IPv4 address to read a claim against, so there the claim stands.
+    /// client (`:1620`). A Low ID stays the callback it names. Over IPv6 the
+    /// peer is a source at the link's own address with its listen port,
+    /// whatever ID it claims: kno's fork takes the socket's address as the
+    /// client's on either family (`BaseClient.cpp:812-813` at the Fork Pin),
+    /// and an IPv4 claim no link can check names nothing (ADR-0107).
     ///
     /// The sighting is the peer's own word, so its Informant is the party at
     /// the link's address (ADR-0085).
     #[must_use]
     pub fn source_coordinate(&self, link: PeerEndpoint) -> SourceSighting {
+        if let PeerEndpoint::V6(link6) = link {
+            let at = Ipv6Endpoint::new(link6.ip, self.tcp_port);
+            return SourceSighting::new(
+                PeerSource::Ipv6(at),
+                Some(self.user_hash),
+                None,
+                Informant::Party(link.ip()),
+            )
+            .with_ipv6_half(Some(at));
+        }
         let classic = match link.as_v4() {
             Some(link)
                 if self.client_id.is_high_id()

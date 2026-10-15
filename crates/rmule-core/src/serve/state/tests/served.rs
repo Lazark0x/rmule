@@ -395,6 +395,19 @@ fn an_asker_is_a_source_at_the_address_its_link_came_from_whatever_high_id_it_cl
 }
 
 #[test]
+fn an_ipv6_asker_is_a_source_at_its_links_address_whatever_id_it_claims() {
+    // kno takes the socket's address as the client's on either family
+    // (`BaseClient.cpp:812-813`); an IPv4 claim no link checks names nothing,
+    // so a download of the asker meets the link it came on (ADR-0107).
+    let address = std::net::Ipv6Addr::new(0x2001, 0x0db8, 0, 0, 0, 0, 0, 0x66);
+    let link = PeerEndpoint::V6(rmule_primitives::Ipv6Endpoint::new(address, 36126));
+    let socket = PeerSource::Ipv6(rmule_primitives::Ipv6Endpoint::new(address, 4662));
+    for claimed in [u32::from_le_bytes([192, 0, 2, 9]), 0, 77] {
+        assert_eq!(kept_at(link, ClientId::from_u32(claimed)), Some(socket));
+    }
+}
+
+#[test]
 fn an_aich_ask_for_a_served_download_decides_nothing() {
     let file = hash(0x02);
     let mut state = state_of(Vec::new(), vec![(file, download(true, &[0], true))]);
