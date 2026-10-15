@@ -173,6 +173,7 @@ where
             share_changed_rx,
             dialed_serve_rx: Some(dialed_serve_rx),
             credit: Arc::clone(&self.wiring.credit),
+            bans: self.wiring.kad_cells.adapters.ban_store.clone(),
             rerank_interval: self.wiring.config.queue_rerank_interval,
             // The live client-UDP front (ADR-0057): the demuxed
             // `0x90` reask stream feeds the serve reply matrix, and

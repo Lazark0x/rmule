@@ -103,3 +103,105 @@ fn a_new_link_from_where_the_live_one_is_replaces_it() {
     );
     assert_eq!(state.queue.waiting_len(), 1);
 }
+
+/// Prove `p`'s hello hash by Secure User Identification, the ledger binding
+/// it.
+fn bind(state: &mut ServeState, p: PeerEndpoint, user_hash: UserHash) {
+    state.on_identity_bound(p, user_hash, true);
+}
+
+#[test]
+fn a_pending_dial_back_grant_moves_with_its_client_to_the_link_it_came_back_on() {
+    // aMule hands a Low-ID client marked for its next connection the slot
+    // there (`m_bAddNextConnect`, `UploadQueue.cpp:410-425`).
+    let file = hash(0x34);
+    let t = Instant::now();
+    let (first, second) = (
+        peer_at([172, 19, 0, 5], 51318),
+        peer_at([172, 19, 0, 5], 50288),
+    );
+    let mut state = waiting(file, first, t);
+    let _ = state.on_conn_event(t, first, disconnected(), &no_modifiers());
+    // The slot frees while the waiter is away: it is granted for a dial back.
+    let freed = state.on_conn_event(t, peer(1), disconnected(), &no_modifiers());
+    assert!(freed.contains(&ServeDecision::DialBackGrant {
+        peer: first,
+        file_hash: file,
+    }));
+
+    assert_eq!(
+        hello_of(&mut state, second, user(0x0B)),
+        [ServeDecision::Emit(ServeEvent::WaiterRelinked {
+            from: first,
+            to: second,
+        })]
+    );
+    assert!(
+        slot_request(&mut state, second, file, t)
+            .contains(&send(second, ServerCommand::GrantSlot { file_hash: file })),
+        "its ask over the new link takes the slot it was granted"
+    );
+}
+
+#[test]
+fn a_second_link_naming_an_identified_linked_clients_hash_is_banned() {
+    // aMule: "Banreason: Userhash invalid" (`ClientList.cpp:384-392`).
+    let file = hash(0x35);
+    let t = Instant::now();
+    let held = peer_at([172, 19, 0, 5], 51318);
+    let mut state = waiting(file, held, t);
+    let elsewhere = peer_at([198, 51, 100, 7], 40000);
+    bind(&mut state, held, user(0x0B));
+
+    assert_eq!(
+        hello_of(&mut state, elsewhere, user(0x0B)),
+        [
+            ServeDecision::Ban { peer: elsewhere },
+            ServeDecision::Disconnect { peer: elsewhere },
+        ]
+    );
+    // Once the identified client's link is gone the same hash is welcome.
+    let _ = state.on_conn_event(t, held, disconnected(), &no_modifiers());
+    assert_eq!(
+        hello_of(&mut state, elsewhere, user(0x0B)),
+        [ServeDecision::Emit(ServeEvent::WaiterRelinked {
+            from: held,
+            to: elsewhere,
+        })]
+    );
+}
+
+#[test]
+fn a_hash_clash_drops_the_unidentified_waiter_and_answers_an_unidentified_asker_nothing() {
+    // aMule `UploadQueue.cpp:432-458`.
+    let file = hash(0x36);
+    let t = Instant::now();
+    let held = peer_at([172, 19, 0, 5], 51318);
+    let clash = peer_at([198, 51, 100, 7], 40000);
+
+    let mut state = waiting(file, held, t);
+    let _ = hello_of(&mut state, clash, user(0x0B));
+    assert_eq!(
+        slot_request(&mut state, clash, file, t),
+        [ServeDecision::Emit(ServeEvent::WaiterLeft {
+            peer: held,
+            cause: WaiterLeaveCause::UserHashClash,
+        })],
+        "neither is identified: the waiter leaves and the asker hears nothing"
+    );
+    assert_eq!(state.queue.waiting_len(), 0);
+
+    // An identified asker takes its place in the queue as the unidentified
+    // waiter leaves.
+    let mut state = waiting(file, held, t);
+    let _ = hello_of(&mut state, clash, user(0x0B));
+    bind(&mut state, clash, user(0x0B));
+    let decisions = slot_request(&mut state, clash, file, t);
+    assert!(
+        decisions.contains(&ServeDecision::Emit(ServeEvent::WaiterLeft {
+            peer: held,
+            cause: WaiterLeaveCause::UserHashClash,
+        }))
+    );
+    assert!(decisions.contains(&send(clash, ServerCommand::SetQueueRank { rank: 1 })));
+}

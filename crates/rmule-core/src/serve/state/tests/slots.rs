@@ -90,6 +90,7 @@ fn identity_proofs_bind_through_the_ledger_decision() {
                 &no_modifiers(),
             ),
             vec![ServeDecision::BindIdentity {
+                peer: p,
                 user_hash,
                 public_key: key.to_vec(),
             }],

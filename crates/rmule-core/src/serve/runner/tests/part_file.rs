@@ -83,6 +83,7 @@ async fn rig(paused: bool) -> Rig {
     let (read_failed_tx, read_failed_rx) = std::sync::mpsc::channel();
     let serve = tokio::spawn(
         ServeTask {
+            bans: Default::default(),
             registry: Arc::new(DurableSharedFileRegistry::new(store.clone())),
             serve_runtime: FakeServeRuntime {
                 bound: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 4662),

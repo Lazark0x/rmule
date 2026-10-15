@@ -24,6 +24,7 @@ async fn a_part_a_run_just_verified_is_answered_on_the_next_ask_and_the_asker_re
     let (_share_changed_tx, share_changed_rx) = mpsc::channel::<()>(1);
     let serve = tokio::spawn(
         ServeTask {
+            bans: Default::default(),
             registry: Arc::new(DurableSharedFileRegistry::new(store.clone())),
             serve_runtime: FakeServeRuntime {
                 bound: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 4662),

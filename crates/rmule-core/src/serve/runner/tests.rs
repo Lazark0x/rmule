@@ -220,6 +220,7 @@ async fn reask_loopback(crypt: Option<rmule_net::peer::ObfuscationPolicy>, shape
     let credit: SharedCreditStore = Arc::new(DurableCreditStore::new(store));
 
     let task = ServeTask {
+        bans: Default::default(),
         registry: Arc::new(registry),
         serve_runtime: FakeServeRuntime {
             bound: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 4662),
@@ -457,6 +458,7 @@ async fn a_dropped_stop_sender_ends_the_serve_task() {
 
     let serve = tokio::spawn(
         ServeTask {
+            bans: Default::default(),
             registry: Arc::new(registry),
             serve_runtime: FakeServeRuntime {
                 bound: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 4662),
@@ -534,6 +536,7 @@ async fn the_fifth_asker_from_one_address_is_served_silence_and_a_counter() {
 
     let serve = tokio::spawn(
         ServeTask {
+            bans: Default::default(),
             registry: Arc::new(registry),
             serve_runtime: FakeServeRuntime {
                 bound: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 4662),
@@ -669,6 +672,7 @@ async fn a_hash_only_name_ask_from_a_claimant_closes_the_connection_and_is_count
 
     let serve = tokio::spawn(
         ServeTask {
+            bans: Default::default(),
             registry: Arc::new(registry),
             serve_runtime: FakeServeRuntime {
                 bound: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 4662),

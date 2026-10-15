@@ -180,6 +180,9 @@ pub enum WaiterLeaveCause {
     /// It sent `OP_CANCELTRANSFER` while waiting (ADR-0056): a canceller keeps
     /// no queue standing.
     Cancelled,
+    /// Another client asked under its User Hash and it was not identified
+    /// (ADR-0107; aMule `UploadQueue.cpp:432-447`).
+    UserHashClash,
 }
 
 /// What a purge sweep removed, reclaimed, and promoted (ADR-0057).
@@ -451,21 +454,52 @@ impl UploadSlotQueue {
         self.waiting.iter().map(|q| (q.peer, q.connected))
     }
 
-    /// Move the wait-list entry of `from` to the link `to` the same client
-    /// came back on, keeping its place, its wait and its file, and marking
-    /// it linked: aMule's queue holds the client, not its socket
-    /// (`UploadQueue.cpp:395-431`). Returns whether an entry moved — never
-    /// onto a `to` that already holds a slot or a place.
+    /// The pending dial-back grants (ADR-0057): slots granted to a waiter
+    /// that had hung up, whose dial has not connected.
+    pub fn pending_dial_backs(&self) -> impl Iterator<Item = PeerEndpoint> + '_ {
+        self.granted
+            .iter()
+            .filter(|g| g.dial_back_since.is_some())
+            .map(|g| g.peer)
+    }
+
+    /// Whether `peer` holds a standing with no link under it: a waiter that
+    /// hung up, or a pending dial-back grant.
+    #[must_use]
+    pub fn is_unlinked(&self, peer: PeerEndpoint) -> bool {
+        self.waiting.iter().any(|q| q.peer == peer && !q.connected)
+            || self
+                .granted
+                .iter()
+                .any(|g| g.peer == peer && g.dial_back_since.is_some())
+    }
+
+    /// Move the standing of `from` to the link `to` the same client came
+    /// back on: a wait-list entry keeps its place, its wait and its file and
+    /// is marked linked, as aMule's queue holds the client, not its socket
+    /// (`UploadQueue.cpp:395-431`); a pending dial-back grant moves with it
+    /// and turns live at the client's next ask, as aMule hands a Low-ID
+    /// client marked for its next connection the slot there
+    /// (`m_bAddNextConnect`, `:410-425`). Returns whether a standing moved —
+    /// never onto a `to` that already holds a slot or a place.
     pub fn relink(&mut self, from: PeerEndpoint, to: PeerEndpoint) -> bool {
         if from == to || self.contains(to) {
             return false;
         }
-        let Some(entry) = self.waiting.iter_mut().find(|q| q.peer == from) else {
-            return false;
-        };
-        entry.peer = to;
-        entry.connected = true;
-        true
+        if let Some(entry) = self.waiting.iter_mut().find(|q| q.peer == from) {
+            entry.peer = to;
+            entry.connected = true;
+            return true;
+        }
+        if let Some(slot) = self
+            .granted
+            .iter_mut()
+            .find(|g| g.peer == from && g.dial_back_since.is_some())
+        {
+            slot.peer = to;
+            return true;
+        }
+        false
     }
 
     /// Record `peer`'s advertised UDP contact on its wait-list entry (from the

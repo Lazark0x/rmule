@@ -270,6 +270,9 @@ pub fn log_line(event: &ServeEvent) -> Sentence {
             let how = match cause {
                 WaiterLeaveCause::Purged => "dropped from the upload queue",
                 WaiterLeaveCause::Cancelled => "left the upload queue",
+                WaiterLeaveCause::UserHashClash => {
+                    "dropped from the upload queue: another client asked under its user hash"
+                }
             };
             Sentence::owned(format!("{} {how}", address(*peer)))
         }

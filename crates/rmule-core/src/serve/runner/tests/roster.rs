@@ -20,6 +20,7 @@ async fn a_granted_upload_marks_the_peer_roster_known_and_its_release_forgets_it
     let diagnostics = crate::diagnostics::DiagnosticsState::new();
     let peer_roster = crate::peer_roster::SharedPeerRoster::default();
     let sinks = super::super::ServeSinks {
+        bans: &Default::default(),
         credit: &credit,
         evt_tx: &evt_tx,
         client_udp_tx: &client_udp_tx,
@@ -108,6 +109,7 @@ async fn a_waiter_leaving_forgets_the_peer_roster_mark(cause: crate::WaiterLeave
     let diagnostics = crate::diagnostics::DiagnosticsState::new();
     let peer_roster = crate::peer_roster::SharedPeerRoster::default();
     let sinks = super::super::ServeSinks {
+        bans: &Default::default(),
         credit: &credit,
         evt_tx: &evt_tx,
         client_udp_tx: &client_udp_tx,
@@ -192,6 +194,7 @@ async fn a_waiter_leaving_forgets_the_peer_roster_mark(cause: crate::WaiterLeave
             ServeInput::Server(ServerEvent::TransferCancelled { file_hash: file }),
             &no_modifiers,
         ),
+        crate::WaiterLeaveCause::UserHashClash => unreachable!("driven by the purge or a cancel"),
     }
     .into();
     super::super::enact(
@@ -237,6 +240,7 @@ async fn a_stopped_serve_forgets_its_holder_and_its_waiter() {
 
     let serve = tokio::spawn(
         ServeTask {
+            bans: Default::default(),
             registry: Arc::new(registry),
             serve_runtime: FakeServeRuntime {
                 bound: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 4662),

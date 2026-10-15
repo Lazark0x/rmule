@@ -46,6 +46,9 @@ pub(crate) struct ServeTask<L> {
     /// The shared, `UserHash`-keyed credit ledger. The serve task records
     /// served bytes here and reads each waiter's modifier to rank the queue.
     pub(crate) credit: SharedCreditStore,
+    /// The node's peer bans (ADR-0064): where the address of a second link
+    /// naming an identified client's User Hash goes (ADR-0107).
+    pub(crate) bans: crate::ban_store::SharedBanStore,
     /// How often idle waiters are re-ranked by live credit.
     pub(crate) rerank_interval: Duration,
     /// Inbound `OP_REASKFILEPING` datagrams from the shared client-UDP front
@@ -148,6 +151,7 @@ where
             mut share_changed_rx,
             mut dialed_serve_rx,
             credit,
+            bans,
             rerank_interval,
             mut reask_rx,
             client_udp_tx,
@@ -183,6 +187,7 @@ where
         // The write-through handles every enactment shares, bound once.
         let sinks = ServeSinks {
             credit: &credit,
+            bans: &bans,
             evt_tx: &evt_tx,
             client_udp_tx: &client_udp_tx,
             diagnostics: &diagnostics,
@@ -400,6 +405,8 @@ where
 struct ServeSinks<'a> {
     /// The shared, `UserHash`-keyed credit ledger.
     credit: &'a SharedCreditStore,
+    /// The node's peer bans, where a hash thief's address goes.
+    bans: &'a crate::ban_store::SharedBanStore,
     evt_tx: &'a mpsc::Sender<CoreEvent>,
     /// The client-UDP send half reask replies ride out on; `None` until the
     /// live front binds.
@@ -434,6 +441,7 @@ async fn enact<L: ServeRuntimeService>(
 ) {
     let ServeSinks {
         credit,
+        bans,
         evt_tx,
         client_udp_tx,
         diagnostics,
@@ -523,6 +531,7 @@ async fn enact<L: ServeRuntimeService>(
                 let _ = credit.record_upload(user_hash, bytes);
             }
             ServeDecision::BindIdentity {
+                peer,
                 user_hash,
                 public_key,
             } => {
@@ -536,6 +545,15 @@ async fn enact<L: ServeRuntimeService>(
                         .send(CoreEvent::SecuredIdentityMismatch { user_hash })
                         .await;
                 }
+                let bound = matches!(binding, Ok(KeyBinding::Adopted | KeyBinding::AlreadyBound));
+                state.on_identity_bound(peer, user_hash, bound);
+            }
+            ServeDecision::Ban { peer } => {
+                tracing::info!(
+                    %peer,
+                    "a second link named an identified client's user hash; its address is banned"
+                );
+                bans.lock().await.ban(peer.ip(), std::time::Instant::now());
             }
             ServeDecision::ReadRange {
                 peer,

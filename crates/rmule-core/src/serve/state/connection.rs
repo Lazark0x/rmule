@@ -327,6 +327,13 @@ impl ServeState {
                         peer,
                     })];
                 }
+                // Two clients under one User Hash (ADR-0107): the ones not
+                // identified leave the wait list, and an asker not identified
+                // is answered nothing (`UploadQueue.cpp:432-458`).
+                let (cleared, refused) = self.settle_hash_clash(now, peer, modifiers);
+                if refused {
+                    return cleared;
+                }
                 // aMule counts the request before it decides, once the peer
                 // is past the per-address cap — and not for a waiter asking
                 // again, which returns earlier (`UploadQueue.cpp:401-431`).
@@ -387,7 +394,7 @@ impl ServeState {
                 if counted {
                     decisions.insert(0, ServeDecision::CountUploadRequest { file_hash });
                 }
-                decisions
+                cleared.into_iter().chain(decisions).collect()
             }
             ServerEvent::PartsRequested { file_hash, ranges } => {
                 self.on_parts_requested(now, peer, file_hash, &ranges, modifiers)
@@ -483,6 +490,12 @@ impl ServeState {
     ) -> Vec<ServeDecision> {
         match fact {
             ConnectionEvent::Identified { identity } => {
+                if self.refuses_hash_thief(peer, &identity) {
+                    return vec![
+                        ServeDecision::Ban { peer },
+                        ServeDecision::Disconnect { peer },
+                    ];
+                }
                 let relinked = self.relink_waiter(peer, &identity);
                 self.identities.insert(peer, identity);
                 if !relinked.is_empty() {
@@ -511,6 +524,7 @@ impl ServeState {
                 // different key — because only the ledger knows the stored
                 // key; its compare-and-set arbitrates at enactment (ADR-0041).
                 vec![ServeDecision::BindIdentity {
+                    peer,
                     user_hash,
                     public_key,
                 }]

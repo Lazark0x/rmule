@@ -64,10 +64,18 @@ pub(super) enum ServeDecision {
     /// The enactor (ledger-holder) performs the store's atomic
     /// compare-and-set; a `Mismatch` denies the claim (theft fact), never
     /// overwriting the key — the mirror of the download runner's arm.
+    /// The enactor reports the binding back
+    /// ([`ServeState::on_identity_bound`]), which is what makes the client on
+    /// `peer`'s link identified.
     BindIdentity {
+        peer: PeerEndpoint,
         user_hash: UserHash,
         public_key: Vec<u8>,
     },
+    /// Ban `peer`'s address: its hello named the User Hash of an identified
+    /// client still linked from elsewhere (ADR-0107; aMule bans it,
+    /// "Userhash invalid", `ClientList.cpp:384-392`).
+    Ban { peer: PeerEndpoint },
     /// Read `len` bytes at `offset` from the shared file at `path`. A
     /// fallible effect: the enactor feeds the outcome back through
     /// [`ServeState::on_read_result`] with this same `purpose`. A Served
@@ -207,6 +215,11 @@ pub(super) struct ServeState {
     /// queue standing, and shed in one place ([`Self::forget`]) when it
     /// holds none.
     identities: HashMap<PeerEndpoint, PeerIdentity>,
+    /// The links whose client is **identified**: its Secure User
+    /// Identification proved the hello's User Hash and the credit ledger
+    /// bound the key (ADR-0041) — aMule's `IS_IDENTIFIED`. Shed with the
+    /// identity.
+    identified: HashSet<PeerEndpoint>,
     /// Ranges already decided for a granted flow, so a re-request serves only
     /// the missing subranges.
     served_ranges: HashMap<(PeerEndpoint, FileHash), Vec<(u64, u64)>>,
@@ -239,6 +252,7 @@ impl ServeState {
             partials: HashSet::new(),
             queue,
             identities: HashMap::new(),
+            identified: HashSet::new(),
             served_ranges: HashMap::new(),
             aich_cache: HashMap::new(),
             sx_part_status: HashMap::new(),
@@ -270,6 +284,7 @@ impl ServeState {
     /// identity and the part statuses it wrote.
     fn forget(&mut self, peer: PeerEndpoint) {
         self.identities.remove(&peer);
+        self.identified.remove(&peer);
         self.sx_part_status
             .retain(|(held_by, _), _| *held_by != peer);
     }
