@@ -756,7 +756,8 @@ _Avoid_: inbound peer (that is any accepted connection; this is one routed to *d
 A live, identified link to a peer, whoever dialed it — an accepted link on the serve road, a
 link a download dialed, or an adopted callback — filed (`SharedPeerLinks`) under each **Ask
 Name** it proves: the dial endpoint (the link's own address with the hello's listen port, where
-the peer is a source), `(server, low_id)` for a Low ID under a known server, and the User Hash.
+the peer is a source; for a link rmule dialed, also where it dialed), `(server, low_id)` for a
+Low ID — moved by `OP_CHANGE_CLIENT_ID` only under a server the list holds — and the User Hash.
 A download about to dial a peer, or to ask it for a callback, looks its names up first and rides
 the link it finds instead (ADR-0107, "One peer, one link"): its requests go out on the link and
 the link's requester events come back to it, as aMule asks a client over the socket it already

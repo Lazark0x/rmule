@@ -109,23 +109,23 @@ downloads that ride it, one at a time.
 
 | Set | Key | Owner | Lifetime |
 |---|---|---|---|
-| **Peer Links** | each **Ask Name** the link proves: its dial endpoint (the link's own address with the hello's listen port), `(server, low_id)` when the hello names a Low ID and a known server, and the hello's User Hash | the link's driver — the accept road's or the dialing worker's router — by filing | from the hello (an adopted callback: from the adoption) to the link's end; a newer link filed under a name takes that name |
+| **Peer Links** | each **Ask Name** the link proves: its dial endpoint (the link's own address with the hello's listen port; for a link rmule dialed, also where it dialed), `(server, low_id)` when the hello names a Low ID and its server, and the hello's User Hash | the link's driver — the accept road's or the dialing worker's router — by filing | from the hello (an adopted callback: from the adoption) to the link's end; a newer link filed under a name takes that name |
 | **Link Riders** | one Peer Link: one rider, then the waiters in arrival order | the link's driver | a rider from its turn to its worker's end; a waiter from its join to its turn, its run's stop, or the link's end |
 
 Invariants every transition keeps:
 
 7. **A download never dials a peer it reaches a Peer Link of.** Before a dial or a callback ask it
-   looks the link up under the source's names — the dial endpoint, the callback's
-   `(server, low_id)`, the User Hash its record knows — and rides or waits on what it finds.
+   looks the link up under the source's names — a dial under the dial endpoint and the User Hash
+   its record knows, a callback under its `(server, low_id)` — and rides or waits on what it finds.
 8. **One download rides a link at a time**, as aMule's client has one `m_reqfile`. Another download
    of the peer waits on the link, not on a second socket, and the oldest waiter still running takes
    the link the moment the rider's worker ends.
 9. **The link lives while any half holds it**: its serve side, its rider or a waiter (ADR-0031). Its
    end hands every waiter back to its download, which dials as before.
 10. **A name is filed only from what the link proves or the node accepts**: the socket's address
-    (never an IPv4 claim on an IPv6 link), a Low ID only under a server the node knows, the
-    hello's User Hash. A name another client claims falsely is caught by the identified-client
-    rule below.
+    (never an IPv4 claim on an IPv6 link), the hello's `(server, low_id)` and User Hash, and a Low
+    ID an `OP_CHANGE_CLIENT_ID` moves only under a server the node's list holds. A hash another
+    client claims falsely is caught by the identified-client rule below.
 
 | Rule | aMule | rmule |
 |---|---|---|
