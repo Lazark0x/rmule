@@ -10,7 +10,7 @@ use rmule_core::diagnostics::{
 use rmule_primitives::PeerEndpoint;
 
 use crate::state::UiState;
-use crate::words::download::{REMEMBERED, dial_end_words, phase_words};
+use crate::words::download::{REMEMBERED, dial_end_words, link_turn_words, phase_words};
 
 /// What a source row is across frames: a slot by its peer (and its slot, for
 /// a slot that holds no peer yet), or a source whose dial ended by its peer.
@@ -71,7 +71,9 @@ impl SourceRow<'_> {
     }
 
     /// The Source cell: the peer's address, and — for a peer dialed from the
-    /// download's **Source Seeds** (ADR-0109) — the `remembered` mark.
+    /// download's **Source Seeds** (ADR-0109) — the `remembered` mark, and —
+    /// for a peer reached over its link rather than a dial of its own
+    /// (ADR-0107) — where the download stands on that link.
     pub(in crate::views::transfers) fn source_label(&self) -> String {
         let address = self
             .peer()
@@ -80,11 +82,17 @@ impl SourceRow<'_> {
             Self::Slot(worker, _) => worker.remembered(),
             Self::Ended(_, end) => end.remembered,
         };
-        if remembered {
+        let mut label = if remembered {
             format!("{address} · {REMEMBERED}")
         } else {
             address
+        };
+        if let Self::Slot(worker, None) = self
+            && let Some(turn) = worker.link_turn()
+        {
+            label = format!("{label} · {}", link_turn_words(turn));
         }
+        label
     }
 
     /// The client the peer named in its hello; a source whose dial ended

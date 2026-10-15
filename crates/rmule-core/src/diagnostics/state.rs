@@ -368,6 +368,19 @@ impl DiagnosticsState {
         }
     }
 
+    /// The slot of `download_id` holding `peer` reaches it over its Peer Link
+    /// at `turn` (ADR-0107): the Sources pane marks it.
+    pub fn link_turn(&self, download_id: DownloadId, peer: PeerEndpoint, turn: crate::LinkTurn) {
+        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        if let Some(row) = inner.downloads.get_mut(&download_id) {
+            for entry in row.workers.values_mut() {
+                if entry.peer_endpoint() == Some(peer) {
+                    entry.mark_link_turn(turn);
+                }
+            }
+        }
+    }
+
     /// Drop the download's row and everything under it. Its bytes stay counted
     /// in [`SessionCounters`], which is process-lifetime.
     pub fn remove_download(&self, download_id: DownloadId) {

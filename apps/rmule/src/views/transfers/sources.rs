@@ -324,6 +324,46 @@ mod tests {
         });
     }
 
+    /// A source another download of its peer holds the link to waits on that
+    /// link, and its row says so (ADR-0107).
+    #[test]
+    fn a_source_waiting_on_its_peers_link_says_so_on_its_row() {
+        let mut view = TransfersView::new();
+        let mut state = three_downloads();
+        let row = state
+            .diagnostics
+            .downloads
+            .get_mut(&download_id(1))
+            .expect("the first row");
+        let worker = row.workers.values_mut().next().expect("a slot");
+        let waiting = worker.peer_endpoint().expect("the slot holds a peer");
+        worker.mark_link_turn(rmule_core::LinkTurn::Waiting);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(200, 24)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                view.draw(frame, area, &state, &Theme::default_dark(), now());
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let shown: String = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            shown
+                .lines()
+                .any(|line| line.contains(&crate::words::units::address(waiting))
+                    && line.contains("waits for the link")),
+            "{shown}"
+        );
+    }
+
     /// A seed refused under a `required` policy for its unknown crypt stance
     /// says so on its own row after its slot took its next peer (ADR-0110,
     /// "The cause is the source's, not the slot's").

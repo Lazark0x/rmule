@@ -555,6 +555,14 @@ where
                 .diagnostics
                 .dial_ended(ctx.download_id, peer, *cause);
         }
+        // A source reached over its peer's link is marked on its slot for
+        // the Sources pane (ADR-0107).
+        if let PeerWorkerEvent::LinkShared { turn } = &event {
+            ctx.runner
+                .rt
+                .diagnostics
+                .link_turn(ctx.download_id, peer, *turn);
+        }
         // The Peer Roster's download leg (ADR-0059): the hello
         // completing (`Connected`, right after `Identity`) is the one mark
         // site; the brain releasing the worker (`EndWorker`, every retirement)

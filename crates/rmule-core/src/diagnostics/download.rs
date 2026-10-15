@@ -97,6 +97,7 @@ pub struct WorkerEntry {
     transition_count: u32,
     software: Option<ClientSoftware>,
     remembered: bool,
+    link_turn: Option<crate::LinkTurn>,
 }
 
 impl WorkerEntry {
@@ -112,6 +113,7 @@ impl WorkerEntry {
             transition_count: 0,
             software: None,
             remembered: false,
+            link_turn: None,
         }
     }
 
@@ -163,6 +165,7 @@ impl WorkerEntry {
         self.peer_endpoint = Some(peer);
         self.software = None;
         self.remembered = false;
+        self.link_turn = None;
     }
 
     /// Whether the slot's peer was dialed from the download's **Source
@@ -176,6 +179,19 @@ impl WorkerEntry {
     /// Mark the slot's peer as dialed from a seed.
     pub fn mark_remembered(&mut self) {
         self.remembered = true;
+    }
+
+    /// Where the slot's download stands on its peer's **Peer Link**, when it
+    /// reaches the peer over a link another holds rather than a dial of its
+    /// own (ADR-0107).
+    #[must_use]
+    pub const fn link_turn(&self) -> Option<crate::LinkTurn> {
+        self.link_turn
+    }
+
+    /// Mark the slot's download as waiting on, or riding, its peer's link.
+    pub fn mark_link_turn(&mut self, turn: crate::LinkTurn) {
+        self.link_turn = Some(turn);
     }
 
     /// Record the client the slot's peer named in its hello.
