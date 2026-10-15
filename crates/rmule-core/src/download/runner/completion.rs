@@ -2,7 +2,8 @@
 //! scheduling brain's last decision. The run checks the part file against the
 //! file hash, names the destination — the row's final path or the first free
 //! `stem (n).ext` beside it — and stores `Completing` with it before anything
-//! moves. It renames the part file onto the destination; while another
+//! moves. It renames the part file onto the destination exclusively, so a
+//! file that came to stand there is never replaced; while another
 //! program holds the file it waits and retries; across volumes it makes the
 //! **Completion Copy**. With the finished file in place it points its Served
 //! Download at it and reports to the core actor, which writes the registry
@@ -330,7 +331,10 @@ async fn move_into_place<S, P>(
                     copy_into_place(runner, download_id, file, row, destination).await?;
                 return Ok(DownloadPaths::new(destination, part_path.to_owned()));
             }
-            Err(Refusal::Other { os_code }) => {
+            // `Taken` never comes back from `land_free`, which takes the next
+            // free name instead.
+            Err(refusal @ (Refusal::Other { .. } | Refusal::Taken)) => {
+                let os_code = refusal.os_code();
                 tracing::warn!(?os_code, "the finished file could not be moved into place");
                 return Err(DownloadFailure::CompletedFileNotMoved { os_code });
             }
@@ -375,18 +379,15 @@ enum Landed {
     Refused(Refusal),
 }
 
-/// Rename `from` onto `to` unless a file stands there now.
+/// Rename `from` onto `to` exclusively: a file standing there now, however
+/// recently it came, is never replaced.
 async fn land<S, P>(runner: &RunnerContext<S, P>, from: &Path, to: &Path) -> Landed {
     let fs = Arc::clone(&runner.rt.completion_fs);
     let (from, to) = (from.to_owned(), to.to_owned());
-    on_pool(move || {
-        if to.exists() {
-            return Landed::Taken;
-        }
-        match fs.rename(&from, &to) {
-            Ok(()) => Landed::InPlace,
-            Err(refusal) => Landed::Refused(refusal),
-        }
+    on_pool(move || match fs.rename_exclusive(&from, &to) {
+        Ok(()) => Landed::InPlace,
+        Err(Refusal::Taken) => Landed::Taken,
+        Err(refusal) => Landed::Refused(refusal),
     })
     .await
 }

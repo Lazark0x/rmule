@@ -166,9 +166,9 @@ struct TwoVolumes {
 }
 
 impl CompletionFs for TwoVolumes {
-    fn rename(&self, from: &Path, to: &Path) -> Result<(), Refusal> {
+    fn rename_exclusive(&self, from: &Path, to: &Path) -> Result<(), Refusal> {
         if from.parent() == to.parent() {
-            return OsCompletionFs.rename(from, to);
+            return OsCompletionFs.rename_exclusive(from, to);
         }
         (self.before)(from);
         Err(Refusal::CrossesDevices)
@@ -187,11 +187,11 @@ struct HeldFor {
 }
 
 impl CompletionFs for HeldFor {
-    fn rename(&self, from: &Path, to: &Path) -> Result<(), Refusal> {
+    fn rename_exclusive(&self, from: &Path, to: &Path) -> Result<(), Refusal> {
         if self.renames.fetch_add(1, Ordering::SeqCst) < self.held {
             return Err(Refusal::InUse { os_code: 32 });
         }
-        OsCompletionFs.rename(from, to)
+        OsCompletionFs.rename_exclusive(from, to)
     }
 
     fn remove(&self, path: &Path) -> Result<(), Refusal> {
@@ -244,6 +244,51 @@ async fn a_taken_destination_completes_under_the_first_free_numbered_name() {
         b"the operator's own file"
     );
     assert_eq!(completed_at(&leg.events()), Some(numbered.as_path()));
+}
+
+/// The first rename finds a file another program wrote at its target after
+/// the move named it, as in the window between naming and landing; every
+/// rename is the system's exclusive one.
+struct CameToStand {
+    renames: AtomicUsize,
+}
+
+impl CompletionFs for CameToStand {
+    fn rename_exclusive(&self, from: &Path, to: &Path) -> Result<(), Refusal> {
+        if self.renames.fetch_add(1, Ordering::SeqCst) == 0 {
+            std::fs::write(to, b"a file that came to stand there").unwrap();
+        }
+        OsCompletionFs.rename_exclusive(from, to)
+    }
+
+    fn remove(&self, path: &Path) -> Result<(), Refusal> {
+        OsCompletionFs.remove(path)
+    }
+}
+
+/// A file created at the destination between its naming and the rename is
+/// never replaced: the rename itself refuses, and the move lands under the
+/// next free name, stored first.
+#[tokio::test]
+async fn a_file_that_comes_to_stand_at_the_destination_is_kept_and_the_move_numbers() {
+    let fs = Arc::new(CameToStand {
+        renames: AtomicUsize::new(0),
+    });
+    let mut leg = finished(300_000, fs);
+    let named = leg.paths.final_path().to_path_buf();
+    let numbered = named.with_file_name("film (1).mkv");
+    let mut rx = std::mem::replace(&mut leg.held.in_place_rx, mpsc::channel(1).1);
+    let (result, ()) = tokio::join!(
+        complete(&leg.runner, leg.id, &leg.file, Vec::new()),
+        answer(&mut rx, true, |report| assert_eq!(report.path, numbered)),
+    );
+    result.unwrap();
+    assert_eq!(leg.final_path(), numbered);
+    assert_eq!(std::fs::read(&numbered).unwrap(), leg.bytes);
+    assert_eq!(
+        std::fs::read(&named).unwrap(),
+        b"a file that came to stand there"
+    );
 }
 
 /// A move whose stored destination a past move numbered, that name taken
