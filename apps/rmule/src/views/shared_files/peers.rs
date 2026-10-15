@@ -118,8 +118,8 @@ fn peers_row(
 fn peer_columns(peer: &UploadPeer, state: &UiState, bps: f64, theme: &Theme) -> Vec<Column> {
     let addr = crate::words::units::address(peer.peer);
     let (state_text, file) = match peer.state {
-        UploadState::Uploading { file } => ("Uploading".to_string(), file),
-        UploadState::Queued { rank, file } => (format!("Queued #{rank}"), file),
+        UploadState::Uploading { file } => (crate::words::serve::UPLOADING.to_string(), file),
+        UploadState::Queued { rank, file } => (crate::words::serve::queued_words(rank), file),
     };
     let (file_text, named) = file_label(state, file);
     let dim = theme.dim_text();
@@ -195,7 +195,8 @@ impl SharedView {
         let visible = self.ordered_peers(state);
         // Filtered-out peers are counted, never silently truncated (spec §3.5).
         let hidden = state.upload_peers.len() - visible.len();
-        let footer = (hidden > 0).then(|| format!("  {hidden} hidden queued"));
+        let footer =
+            (hidden > 0).then(|| format!("  {}", crate::words::serve::hidden_queued(hidden)));
 
         let (body, footer_area) = match &footer {
             Some(_) if inner.height >= 2 => {
@@ -383,7 +384,12 @@ mod tests {
             let drawn = render_to_lines(GOLDEN_W, GOLDEN_H, |frame| {
                 view.draw(frame, frame.area(), &state, &theme(), Instant::now());
             });
-            let expected = format!("Queued #{} ", view.peers_selected + 1);
+            let expected = format!(
+                "{} ",
+                crate::words::serve::queued_words(
+                    u16::try_from(view.peers_selected + 1).expect("a small rank")
+                )
+            );
             assert!(
                 drawn.lines().any(|line| line.contains('▸')
                     && line.contains(&expected)

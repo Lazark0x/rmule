@@ -28,6 +28,23 @@ pub const fn withheld_words(reason: WithheldReason) -> &'static str {
 /// State cell.
 pub const PARTIAL: &str = "partial";
 
+/// A peer holding an upload slot: the Shared Files peers table's State cell.
+pub const UPLOADING: &str = "Uploading";
+
+/// A peer waiting in the upload queue at `rank`: the peers table's State
+/// cell.
+#[must_use]
+pub fn queued_words(rank: u16) -> String {
+    format!("Queued #{rank}")
+}
+
+/// What the peers table says of the waiters its filter left out, so none is
+/// silently dropped.
+#[must_use]
+pub fn hidden_queued(count: usize) -> String {
+    format!("{count} hidden queued")
+}
+
 /// A withhold edge, in the status feed and the log.
 #[must_use]
 pub fn withheld(reason: WithheldReason) -> Sentence {
