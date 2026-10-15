@@ -91,8 +91,11 @@ verdict and the Advertised Endpoints chooser).**
   complete file is written for an `EXTXS` asker under the **Placeholder Low ID** `1` —
   emule-qt's own IPv6-only marker (`kNoIPv4SourceId`) — and omitted from a classic answer,
   whose fixed stride has no field for the half.
-- `OP_CHANGE_CLIENT_IP 0xAC` (`0xE3`, 16 raw bytes) is sent on an established session when
-  the Known IPv6 changes. `CT_EMULE_SERVINGBUDDYIPV6 0xA0` carries the buddy's IPv6 where
+- `OP_CHANGE_CLIENT_IP 0xAC` (`0xE3`, 16 raw bytes) is sent when the Advertised IPv6 moves
+  to a new address, once, on every identified session whose peer's hello claims
+  `MODMISC_IPV6`, and never on any other (emule-qt `CoreSession.cpp:1510-1520`,
+  `UpDownClient.cpp:4670-4697`). A move before identification rides our hello, or follows it
+  when the peer identifies. A move to no address sends nothing: there is nothing to name. `CT_EMULE_SERVINGBUDDYIPV6 0xA0` carries the buddy's IPv6 where
   ADR-0061 carries its IPv4, from the held buddy link under emule-qt's gate (firewalled and
   a buddy, `UpDownClient.cpp:1197-1210`), read per hello so it drops with the link.
 
@@ -183,6 +186,12 @@ only when that stack byte happens to be `0x5B`. rmule keeps emule-qt's derivatio
 and counts the miss (`ipv6_undecryptable_datagrams_total`); a 256-candidate search would cost
 256 setups per miss, raise false-sync odds from 2⁻³² to about 2⁻²⁴, and still leave rmule's
 sends unreadable to eMuleAI. Pinned by `datagram_obfuscation::ipv6_key_kat`.
+rmule does not work around it by sending eMuleAI plaintext on the IPv6 half, although
+eMuleAI passes a plain `0xC5` through (`EncryptedDatagramSocket.cpp:181-188`): client-UDP
+stays obfuscated toward every peer that asks for it. The cost is a recorded **divergence**:
+over IPv6, an eMuleAI peer and rmule cannot exchange an obfuscated reask, Kad or NAT-T
+datagram in either direction, so IPv6 client-UDP reachability with eMuleAI is lost until
+eMuleAI writes offset 32. The upstream report is an attended step.
 
 ### The server-UDP surface
 
@@ -252,8 +261,8 @@ written.
   the spec's asymmetry stands.
 - Per-`/64` accounting reaches the flood limiter (ADR-0064), the `0x95` window and the
   upload-queue cap (ADR-0088).
-- An eMuleAI peer's obfuscated IPv6 datagrams mostly fail until eMuleAI writes offset 32; the
-  misses are counted.
+- An eMuleAI peer's obfuscated IPv6 datagrams mostly fail, both ways, until eMuleAI writes
+  offset 32; the misses are counted, and no plaintext fallback hides them.
 - The kno transfer row turns from documented absence to measured on the first kno pin whose
   hello answer carries the tag it counts, admissible under ADR-0045's Fork Pin rule.
 
