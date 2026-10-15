@@ -192,29 +192,30 @@ fn a_cancelled_download_directory_warning_asks_again() {
 }
 
 /// The two ports must not collide: aMule binds them separately and a
-/// shared number silently costs the operator one of the two surfaces.
+/// shared number silently costs the operator one of the two surfaces. The
+/// refusal names the row that was being edited against the one it met.
 #[test]
 fn the_two_listen_ports_may_not_be_set_to_each_other() {
-    let mut view = SettingsView::new();
+    use crate::words::app::{PortClash, port_clash};
+
     let state = state();
-    focus_on(&mut view, Row::UdpPort);
-    view.handle_key(press(KeyCode::Enter), &state);
-    for _ in 0..4 {
-        view.handle_key(press(KeyCode::Backspace), &state);
+    let prefs = &state.preferences;
+    for (row, other, clash) in [
+        (Row::UdpPort, prefs.tcp_port, PortClash::UdpAgainstTcp),
+        (Row::TcpPort, prefs.udp_port, PortClash::TcpAgainstUdp),
+    ] {
+        let mut view = SettingsView::new();
+        focus_on(&mut view, row);
+        view.handle_key(press(KeyCode::Enter), &state);
+        for _ in 0..6 {
+            view.handle_key(press(KeyCode::Backspace), &state);
+        }
+        for c in other.to_string().chars() {
+            view.handle_key(press(KeyCode::Char(c)), &state);
+        }
+        view.handle_key(press(KeyCode::Enter), &state);
+        assert_eq!(view.form.error, Some(port_clash(clash)));
     }
-    for c in "4662".chars() {
-        view.handle_key(press(KeyCode::Char(c)), &state);
-    }
-    view.handle_key(press(KeyCode::Enter), &state);
-    assert!(
-        view.form
-            .error
-            .as_deref()
-            .unwrap_or_default()
-            .contains("must differ"),
-        "{:?}",
-        view.form.error
-    );
 }
 
 /// The dead-server limit takes aMule's range and nothing else, and a kept

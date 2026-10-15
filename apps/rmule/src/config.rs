@@ -29,6 +29,7 @@ use rmule_primitives::{ServerEndpoint, UserHash};
 
 use crate::table_sort::{Direction, TableSorts};
 use crate::theme::Theme;
+use crate::words::Sentence;
 use crate::words::app as words;
 
 mod front_end_key;
@@ -631,9 +632,9 @@ impl PrefEdit {
 /// a lie about what rmule can do. A path that exists as a **file**, though, is
 /// a typo the operator wants to hear about now rather than at the first
 /// completed download.
-pub fn validate_download_dir(path: &str) -> Result<PathBuf, String> {
+pub fn validate_download_dir(path: &str) -> Result<PathBuf, Sentence> {
     if path.trim().is_empty() {
-        return Err(words::DOWNLOAD_DIR_REQUIRED.to_string());
+        return Err(words::DOWNLOAD_DIR_REQUIRED);
     }
     directory(path).map_err(|unfit| words::download_dir_unfit(&unfit))
 }
@@ -641,7 +642,7 @@ pub fn validate_download_dir(path: &str) -> Result<PathBuf, String> {
 /// A Temp Directory as an operator types it, by the same rule as
 /// [`validate_download_dir`]: core judges where it lies at the set, and makes
 /// it. Empty text is `None`, which clears the one set back to the default.
-pub fn validate_temp_dir(path: &str) -> Result<Option<PathBuf>, String> {
+pub fn validate_temp_dir(path: &str) -> Result<Option<PathBuf>, Sentence> {
     if path.trim().is_empty() {
         return Ok(None);
     }
@@ -675,13 +676,15 @@ fn directory(path: &str) -> Result<PathBuf, UnfitDirectory> {
 
 /// A nickname as it will travel on the wire: non-empty, and free of the
 /// control characters an `Ed2kText` would carry into a hello packet.
-pub fn validate_nickname(nickname: &str) -> Result<String, String> {
+pub fn validate_nickname(nickname: &str) -> Result<String, Sentence> {
     let trimmed = nickname.trim();
     if trimmed.is_empty() {
-        return Err("nickname is required".to_string());
+        return Err(words::nickname_refusal(words::NicknameRefusal::Required));
     }
     if trimmed.chars().any(char::is_control) {
-        return Err("nickname must not contain control characters".to_string());
+        return Err(words::nickname_refusal(
+            words::NicknameRefusal::ControlCharacter,
+        ));
     }
     Ok(trimmed.to_string())
 }

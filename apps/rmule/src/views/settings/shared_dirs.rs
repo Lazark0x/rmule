@@ -23,7 +23,9 @@ use crate::state::UiState;
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
 use crate::views::modal::{Modal, scroll_key};
-use crate::words::scan::{refusal, remove_confirm, role_words, state_words, under_words};
+use crate::words::Sentence;
+use crate::words::app::{self as words, AddDirectoryRefusal};
+use crate::words::scan::{remove_confirm, role_words, state_words, under_words};
 use crate::wrap::{clamp_u16, wrapped_lines};
 
 /// The section's heading.
@@ -112,7 +114,9 @@ impl SettingsView {
                 role: DirectoryRole::DownloadDirectory,
                 ..
             }) => {
-                self.form.error = Some(refusal(&DirectoryRefusal::DownloadDirectory));
+                self.form.error = Some(words::shared_directory_refusal(
+                    &DirectoryRefusal::DownloadDirectory,
+                ));
                 ViewOutcome::Redraw
             }
             Some(Slot::Dir {
@@ -154,14 +158,14 @@ impl SettingsView {
 }
 
 /// The typed path, if it can be sent: core does every other check.
-fn directory_to_add(text: &str) -> Result<PathBuf, String> {
+fn directory_to_add(text: &str) -> Result<PathBuf, Sentence> {
     let text = text.trim();
     if text.is_empty() {
-        return Err(crate::words::scan::ADD_EMPTY.to_string());
+        return Err(words::add_directory_refusal(AddDirectoryRefusal::Empty));
     }
     let path = PathBuf::from(text);
     if !path.is_absolute() {
-        return Err(crate::words::scan::ADD_RELATIVE.to_string());
+        return Err(words::add_directory_refusal(AddDirectoryRefusal::Relative));
     }
     Ok(path)
 }

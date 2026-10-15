@@ -27,8 +27,8 @@ pub const fn refusal_words(refusal: Unsplittable) -> &'static str {
 
 /// Why a typed Player Command is refused, as the line under the field.
 #[must_use]
-pub fn field_refusal(refusal: Unsplittable) -> String {
-    format!("player: {}", refusal_words(refusal))
+pub fn field_refusal(refusal: Unsplittable) -> Sentence {
+    Sentence::owned(format!("player: {}", refusal_words(refusal)))
 }
 
 /// A Preview whose stored Player Command does not split.

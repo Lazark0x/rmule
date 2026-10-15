@@ -90,7 +90,9 @@ fn no_rendered_line_ever_exceeds_the_width_it_was_given() {
             .in_section("Appearance"),
         Field::display("User hash", "2a".repeat(16)),
     ]);
-    form.error = Some("a rejection long enough to need wrapping of its own".into());
+    form.error = Some(crate::words::Sentence::for_test(
+        "a rejection long enough to need wrapping of its own",
+    ));
     for width in MIN_WIDTH..=120 {
         for caret in [false, true] {
             for line in form.render(width, &theme, caret).lines {
@@ -108,7 +110,7 @@ fn no_rendered_line_ever_exceeds_the_width_it_was_given() {
 #[test]
 fn the_render_reports_where_the_focused_field_landed() {
     let mut form = form();
-    form.error = Some("nope".to_string());
+    form.error = Some(crate::words::Sentence::for_test("nope"));
     let rendered = form.render(40, &Theme::default_dark(), true);
     let text: Vec<String> = rendered.lines.iter().map(ToString::to_string).collect();
     let focused = &text[rendered.focus.clone()];

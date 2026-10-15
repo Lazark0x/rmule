@@ -58,6 +58,8 @@ use crate::row_selection::viewport::{self, Viewport};
 use crate::state::UiState;
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
+use crate::words::Sentence;
+use crate::words::app as words;
 use crate::words::front_door;
 use crate::wrap::clamp_u16;
 use shared_dirs::Slot;
@@ -137,26 +139,26 @@ impl Row {
 
 /// The **Dead Server Limit** as an operator types it: a whole number from 1
 /// to 10, aMule's own spin box's range (`muuli_wdr.cpp:1659`).
-fn validate_dead_after(text: &str) -> Result<u32, String> {
+fn validate_dead_after(text: &str) -> Result<u32, Sentence> {
     text.trim()
         .parse::<u32>()
         .ok()
         .filter(|limit| (1..=10).contains(limit))
-        .ok_or_else(|| "dead after: a whole number of tries from 1 to 10".to_string())
+        .ok_or(words::DEAD_AFTER_REFUSED)
 }
 
 /// `Remember peers` as an operator types it: a whole number from 1 to 255
 /// (ADR-0109, "Source Seeds").
-fn validate_remember_peers(text: &str) -> Result<rmule_core::RememberPeers, String> {
+fn validate_remember_peers(text: &str) -> Result<rmule_core::RememberPeers, Sentence> {
     text.trim()
         .parse::<std::num::NonZeroU8>()
         .map(rmule_core::RememberPeers::new)
-        .map_err(|_| crate::words::download::REMEMBER_PEERS_REFUSED.to_string())
+        .map_err(|_| words::REMEMBER_PEERS_REFUSED)
 }
 
 /// The **Player Command** as an operator types it (ADR-0114): empty clears
 /// it; any other text must split into a player's words.
-fn player_command(text: &str) -> Result<Option<String>, String> {
+fn player_command(text: &str) -> Result<Option<String>, Sentence> {
     let text = text.trim();
     if text.is_empty() {
         return Ok(None);
@@ -401,7 +403,7 @@ impl SettingsView {
     /// Validate the focused field into the edit it names, or the reason it is
     /// not one. Cross-field checks live here because this is the only place
     /// that can see the other fields.
-    fn commit(&self, prefs: &Preferences) -> Result<Option<PrefEdit>, String> {
+    fn commit(&self, prefs: &Preferences) -> Result<Option<PrefEdit>, Sentence> {
         let index = self.form.focus;
         let text = self.form.text(index);
         let row = match self.slots.get(index) {
@@ -415,14 +417,14 @@ impl SettingsView {
             Some(Row::TcpPort) => {
                 let port = validate_port(text)?;
                 if port == prefs.udp_port {
-                    return Err("the eD2k port must differ from the UDP port".to_string());
+                    return Err(words::port_clash(words::PortClash::TcpAgainstUdp));
                 }
                 PrefEdit::TcpPort(port)
             }
             Some(Row::UdpPort) => {
                 let port = validate_port(text)?;
                 if port == prefs.tcp_port {
-                    return Err("the UDP port must differ from the eD2k port".to_string());
+                    return Err(words::port_clash(words::PortClash::UdpAgainstTcp));
                 }
                 PrefEdit::UdpPort(port)
             }
@@ -563,10 +565,7 @@ impl SettingsView {
     /// The share guards pass `dir`: say that everything under it will be
     /// offered, and let the next `Enter` commit it.
     pub fn warn_share(&mut self, dir: std::path::PathBuf) {
-        self.form.error = Some(format!(
-            "everything under {} will be offered to the network — Enter to confirm, Esc to cancel",
-            dir.display()
-        ));
+        self.form.error = Some(words::share_warning(&dir));
         self.warned_dir = Some(dir);
     }
 

@@ -26,6 +26,8 @@ use crate::state::UiState;
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
 use crate::views::modal::{Modal, release_form, scroll_form};
+use crate::words::Sentence;
+use crate::words::app as words;
 use crate::wrap::clamp_u16;
 
 /// Floor width of a modal form; a longer entry grows it (see [`draw_form`]).
@@ -97,13 +99,13 @@ impl ServerForm {
 
     /// Validate the typed fields into the command they name, or the reason
     /// they do not (rendered in the form, never as a vanished modal).
-    fn commit(&self) -> Result<CoreCommand, String> {
+    fn commit(&self) -> Result<CoreCommand, Sentence> {
         match self.kind {
             FormKind::AddServer => {
                 let host = validate_host(self.form.text(1))?;
                 let port = validate_port(self.form.text(2))?;
                 let endpoint = ServerEndpoint::new(host, port)
-                    .map_err(|_| crate::words::server::INVALID_ADDRESS.to_string())?;
+                    .map_err(|_| words::host_refusal(&words::HostRefusal::NoServerThere))?;
                 let mut server = ManagedServer::listed(endpoint);
                 server.name = Ed2kText::from_utf8(self.form.text(0));
                 Ok(CoreCommand::ServerList(ServerListCommand::AddServer {
@@ -124,9 +126,9 @@ impl ServerForm {
 /// A dotted-quad shape must actually *be* one — `999.1.2.3` is a typo, not a
 /// hostname — while anything else is left to the endpoint primitive, because
 /// the managed list keys DNS-named rows in their own right (ADR-0080).
-fn validate_host(host: &str) -> Result<&str, String> {
+fn validate_host(host: &str) -> Result<&str, Sentence> {
     if host.is_empty() {
-        return Err("address is required (IPv4 or hostname)".to_string());
+        return Err(words::host_refusal(&words::HostRefusal::Required));
     }
     let labels: Vec<&str> = host.split('.').collect();
     let dotted_quad = labels.len() == 4
@@ -135,7 +137,7 @@ fn validate_host(host: &str) -> Result<&str, String> {
             .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()));
     if dotted_quad {
         host.parse::<Ipv4Addr>()
-            .map_err(|_| format!("'{host}' is not a valid IPv4 address"))?;
+            .map_err(|_| words::host_refusal(&words::HostRefusal::NotIpv4(host.to_string())))?;
         return Ok(host);
     }
     let hostname = !host.is_empty()
@@ -146,7 +148,9 @@ fn validate_host(host: &str) -> Result<&str, String> {
     if hostname {
         Ok(host)
     } else {
-        Err(format!("'{host}' is not an IPv4 address or a hostname"))
+        Err(words::host_refusal(&words::HostRefusal::NotIpv4OrHostname(
+            host.to_string(),
+        )))
     }
 }
 

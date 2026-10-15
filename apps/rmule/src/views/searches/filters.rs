@@ -17,7 +17,7 @@ use super::ViewOutcome;
 use crate::form::{Field, Form, FormKey};
 use crate::state::UiState;
 use crate::theme::Theme;
-use crate::words::search::{FilterError, SizeFault, filter_error_words};
+use crate::words::search::{FilterError, SizeFault};
 use crate::wrap::wrap_text;
 
 /// The parsed form of [`Filters`] — what actually reaches the query.
@@ -237,7 +237,7 @@ impl SearchesView {
                     }
                 }
                 Err(reason) => {
-                    self.filters.form.error = Some(filter_error_words(&reason));
+                    self.filters.form.error = Some(crate::words::app::filter_refusal(&reason));
                     ViewOutcome::Redraw
                 }
             },

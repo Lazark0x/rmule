@@ -151,7 +151,7 @@ impl TransfersView {
                         outcome
                     }
                     Err(refusal) => {
-                        entry.form.error = Some(words::link_refused(&refusal).to_string());
+                        entry.form.error = Some(words::link_refused(&refusal));
                         ViewOutcome::Redraw
                     }
                 }
