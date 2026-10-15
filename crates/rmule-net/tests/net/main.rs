@@ -34,6 +34,7 @@ mod buddy_relay_loopback;
 mod compressed_frame_loopback;
 mod connection_loopback;
 mod dial_back_loopback;
+mod ipv6_follow;
 mod multipacket_reverse_harness;
 mod obfuscated_accept;
 mod obfuscated_dial;

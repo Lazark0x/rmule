@@ -5,7 +5,8 @@
 //! [`SpawnHandles`].
 
 use rmule_peer::{
-    ConnectionEvent, PeerCommand, PeerEvent, PeerHandshakeContext, PeerIdentity, PeerSession,
+    ConnectionCommand, ConnectionEvent, PeerCommand, PeerEvent, PeerHandshakeContext, PeerIdentity,
+    PeerSession,
 };
 use rmule_primitives::{OutboundCrypt, PeerEndpoint, UserHash};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -332,14 +333,25 @@ impl Connection {
                 }),
             }
         });
+        let (ended_tx, ended_rx) = tokio::sync::oneshot::channel::<()>();
         let handles = spawn_connection(
             stream,
             PeerDriven::new(session),
             ChannelCaps::default(),
             Some(options.hello_timeout),
             capture,
-            move |driver| async move { driver.await.map_err(PeerNetError::from) }.instrument(span),
+            move |driver| {
+                async move {
+                    let outcome = driver.await.map_err(PeerNetError::from);
+                    drop(ended_tx);
+                    outcome
+                }
+                .instrument(span)
+            },
         );
+        if let Some(follow) = options.ipv6_follow {
+            tokio::spawn(follow_ipv6(follow, handles.commands.downgrade(), ended_rx));
+        }
         Self { peer, handles }
     }
 
@@ -386,5 +398,35 @@ impl Connection {
     /// not exit in time is reported as `DriverDied` and aborted.
     pub async fn shutdown(self) -> Result<(), PeerNetError> {
         self.handles.shutdown().await
+    }
+}
+
+/// Hand the session our Advertised IPv6 on every wake, until the link ends
+/// (ADR-0087). Commands go through a weak sender, so following never keeps a
+/// link open that its owners have let go.
+async fn follow_ipv6(
+    mut follow: crate::peer::Ipv6Follow,
+    commands: mpsc::WeakSender<PeerCommand>,
+    mut ended: tokio::sync::oneshot::Receiver<()>,
+) {
+    loop {
+        tokio::select! {
+            _ = &mut ended => return,
+            changed = follow.changed.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+            }
+        }
+        let Some(address) = (follow.read)() else {
+            continue;
+        };
+        let Some(commands) = commands.upgrade() else {
+            return;
+        };
+        let announce = PeerCommand::Connection(ConnectionCommand::AnnounceIpv6Change(address));
+        if commands.send(announce).await.is_err() {
+            return;
+        }
     }
 }

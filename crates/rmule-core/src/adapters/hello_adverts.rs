@@ -111,6 +111,8 @@ impl HelloAdverts {
             // hello built from a cached one would name an address we no longer
             // hold (ADR-0087).
             ipv6: self.ipv6.get(),
+            // And a move after the hello reaches the peer as `0xAC`.
+            ipv6_follow: Some(self.ipv6.follow()),
             // The buddy link is held and lost on the firewalled front's task,
             // and the tag must not outlive it.
             serving_buddy: self.serving_buddy(),

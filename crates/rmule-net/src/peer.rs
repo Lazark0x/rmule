@@ -32,4 +32,4 @@ pub use listener::{Admitted, PeerListener};
 pub use obfuscation::{
     AwaitedTesters, ObfuscationConfig, ObfuscationPolicy, PeerObfuscationTransport,
 };
-pub use options::{CaptureMode, ConnectOptions};
+pub use options::{CaptureMode, ConnectOptions, Ipv6Follow};

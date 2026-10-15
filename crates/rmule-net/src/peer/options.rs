@@ -3,7 +3,9 @@
 //! the stream it keeps, and the Secure User Identification and obfuscation
 //! material the session negotiates with.
 
+use std::net::Ipv6Addr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use rmule_peer::{SecureIdentConfig, ServingBuddyAdvert, UdpPortsAdvert};
@@ -97,6 +99,28 @@ pub struct ConnectOptions {
     /// we accept an `OP_DIRECTCALLBACKREQ` (`0x95`). Core sets it from its
     /// Self Reach per connection.
     pub direct_udp_callback: bool,
+    /// How this link follows our Advertised IPv6 after its hello, or `None`
+    /// for a link that never announces a move. Each wake hands the session
+    /// the address read then, as `AnnounceIpv6Change`; the session decides
+    /// whether the peer is owed an `OP_CHANGE_CLIENT_IP` (ADR-0087).
+    pub ipv6_follow: Option<Ipv6Follow>,
+}
+
+/// What a live link follows our Advertised IPv6 by: a wake on every move of
+/// what [`Self::read`] can answer, and the read itself. The link holds only a
+/// receiver, so following ends with the link and keeps nothing alive.
+#[derive(Clone)]
+pub struct Ipv6Follow {
+    /// Changes whenever the address [`Self::read`] answers may have moved.
+    pub changed: tokio::sync::watch::Receiver<u64>,
+    /// The address to name now, or `None` while there is none to name.
+    pub read: Arc<dyn Fn() -> Option<Ipv6Addr> + Send + Sync>,
+}
+
+impl std::fmt::Debug for Ipv6Follow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Ipv6Follow").finish_non_exhaustive()
+    }
 }
 
 /// Per ADR-0024 `ProtocolOnly` is the default to keep captures small
@@ -129,6 +153,7 @@ impl Default for ConnectOptions {
             ipv6: None,
             serving_buddy: None,
             direct_udp_callback: false,
+            ipv6_follow: None,
         }
     }
 }

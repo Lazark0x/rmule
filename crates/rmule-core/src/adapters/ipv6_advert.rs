@@ -48,6 +48,19 @@ impl SharedIpv6Advert {
     pub(crate) fn get(&self) -> Option<Ipv6Addr> {
         self.addresses.advertised_ipv6(self.probe.get())
     }
+
+    /// How a live link follows this verdict after its hello: woken by the
+    /// **Own Address Generation** and reading the verdict then, so a link's
+    /// peer is told when our address moves (`0xAC`, ADR-0087). As in
+    /// emule-qt (`CoreSession.cpp:1510-1520`), a move of the address is what
+    /// wakes it; the probe gate is read at that moment.
+    pub(crate) fn follow(&self) -> rmule_net::peer::Ipv6Follow {
+        let advert = self.clone();
+        rmule_net::peer::Ipv6Follow {
+            changed: self.addresses.own_address_changed(),
+            read: std::sync::Arc::new(move || advert.get()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -136,5 +149,38 @@ mod tests {
             Some(rotated),
             "the next hello, not a stale copy"
         );
+    }
+
+    /// A link opened under one address is woken when the address moves and
+    /// reads the new one (ADR-0087's `0xAC`): the follow every hello's options
+    /// carry is the owner's, not a copy taken when the link opened.
+    #[test]
+    fn a_links_follow_wakes_on_a_move_and_reads_the_new_address() {
+        let addresses = SharedAddressLearning::new();
+        let adverts = crate::adapters::HelloAdverts {
+            ipv6: SharedIpv6Advert::over(addresses.clone(), SharedIpv6Probe::default()),
+            ..crate::adapters::HelloAdverts::default()
+        };
+        addresses.record_bind(
+            SocketRole::Tcp,
+            &FamilyBinds {
+                bound: vec![AddressFamily::V4, AddressFamily::V6],
+                refused: Vec::new(),
+            },
+            4662,
+        );
+        let first: Ipv6Addr = "2001:db8:501::a".parse().expect("an IPv6 literal");
+        addresses.refresh_interfaces(&[IpAddr::V6(first)]);
+        let mut follow = adverts
+            .connect_options(rmule_primitives::PeerCrypt::unknown())
+            .ipv6_follow
+            .expect("every hello's options follow the advert");
+        assert!(!follow.changed.has_changed().expect("the store holds the sender"));
+
+        let moved: Ipv6Addr = "2001:db8:501::b".parse().expect("an IPv6 literal");
+        addresses.refresh_interfaces(&[IpAddr::V6(moved)]);
+        assert!(follow.changed.has_changed().expect("the store holds the sender"));
+        follow.changed.borrow_and_update();
+        assert_eq!((follow.read)(), Some(moved));
     }
 }
