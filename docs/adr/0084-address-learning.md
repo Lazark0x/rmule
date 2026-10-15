@@ -130,7 +130,7 @@ hint.
   tags, and the Kad publish tags. No advert site reads either store ad hoc.
 - **Interface enumeration** is an I/O seam in `rmule-net` behind `InterfaceSource`,
   polled at startup, on every server connect and every five minutes; the testkit fakes it.
-- **Override** is a per-family `SessionConfig` field. **Diagnostics** publishes, per
+- **Override** is the per-family `CoreConfig::external_address` field. **Diagnostics** publishes, per
   (family, role), the verdict, tier, freshness and any NAT hint.
 
 ### One owner of the Own Address

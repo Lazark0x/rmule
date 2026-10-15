@@ -104,6 +104,53 @@ its own address and a new row is mapped, as RFC 6887 §8.4 recommends.
 - Mappings are released on exit (configurable). A pinhole whose Known IPv6 lapsed entirely
   has no row left to diff and is left to its lease.
 
+### Every grant has one owner and one end
+
+A gateway grant lives in exactly one of four places inside rmule, and each place names its
+key and every way the grant leaves it.
+
+| holder | key | holds |
+|---|---|---|
+| **lease table** | the desired row (role, family, internal port, pinhole) | the installed protocol, external endpoint, lease and renewal rung |
+| **open trial** (the one in flight and the completed ones of the open race) | (protocol, desired row) | grants a race has not installed yet |
+| **challenger** | (protocol, desired row) | a re-race's trials, while the incumbent stays in the lease table |
+| **`MappingGrant` observation** (ADR-0084) | the family's address ladder; the role's port ladder, IPv4 rows only | what a `Mapped` lease fed Address Learning, fresh for its lease |
+
+A gateway keys its own mapping differently per protocol. PCP and NAT-PMP key it by internal
+port and transport: a renewal granted on another external port **moved** the one mapping,
+and a delete names the internal port. UPnP keys it by external port and transport: a
+renewal granted on another external port is a **second** mapping, so the old external port
+is released when the lease moves.
+
+Ends, each with what it does to every holder:
+
+- **Renewal answered**: the lease and the observation take the new grant; under UPnP a moved
+  external port releases the old one.
+- **Departure** (the row left the set, including the set emptying): release, drop the lease,
+  withdraw the observation.
+- **Reprobe** (operator recheck, smart-LowID, three renewal failures): drop the lease with no
+  release (above) and withdraw the observation.
+- **Set change** for a surviving row: the lease stays until the race installs; an install
+  that does not re-grant it releases it and withdraws the observation.
+- **Interrupted race** (a set change, reprobe or quit while trials are open): every grant the
+  open trials and the challenger hold is released. An answer that lands for a trial no
+  longer open, and names no held lease of its protocol, is released on arrival.
+- **Quit**: release when release-on-exit is set; withdraw always.
+
+A withdrawal takes the role's port-ladder grant (an IPv6 row never fed one), and the family's
+address-ladder grant only when no other `Mapped` lease in that family remains. The learned
+method is the mapper's current value: a race that remembers none (a non-Exact win, a failed
+short round, a backoff) clears the stored row as well.
+
+Every call and phase has a deadline. The runtime runs every probe and map under a 20 s
+backend deadline, answered as `Timeout`. A probe round closes at 3 s or 15 s. A trial
+closes 25 s after its maps went out, its unanswered rows counted as `Timeout`. A renewal
+advances its rung when it is sent and never waits. A release is fire-and-forget, and the
+exit pass gives the releases 2 s. Nothing the runtime answers can be lost: a call that
+never left (no route) is fed back to the mapper directly, the result inbox is awaited, and
+the operator's reprobe is a coalesced flag rather than a slot in the 8-deep punched-path
+pin inbox.
+
 ### Acting on Reachability
 
 A fresh lead-family `Exact` grant, and an epoch reset that re-added the set, each issue a
@@ -168,9 +215,10 @@ aMule binds its listener, then its UDP socket, then maps both, and only then aut
   validation, the retransmit ladder, IPv6 source pinning, one socket per attempt.
 - **`GatewaySource`** (`rmule-net`): default-gateway lookup via `netdev`, with the scope id
   of a link-local gateway; faked in the testkit.
-- **Config** on `CoreConfig`: `PortMappingMode` `Off | Auto` (default **Auto**), a protocol
-  mask in emule-qt's encoding (1 = PCP, 2 = NAT-PMP, 4 = UPnP; all by default), lease
-  seconds, release on exit.
+- **Config**: `PortMappingMode` `Off | Auto` (default **Auto**) is the operator's setting,
+  `CoreSettings::port_mapping`; the engineering knobs are `CoreConfig::port_mapping`: a
+  protocol mask in emule-qt's encoding (1 = PCP, 2 = NAT-PMP, 4 = UPnP; all by default),
+  lease seconds, release on exit.
 - **Diagnostics** per mapping: `NotMapped | Probing | Mapped | Degraded | Failed`, method,
   external endpoint, lease, next renewal, last error; the TUI and CLI read this level, and
   the Run Log writes it.
