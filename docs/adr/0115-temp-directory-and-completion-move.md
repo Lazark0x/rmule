@@ -37,8 +37,9 @@ different volumes. The part file is deleted only after the finished file is in p
 - **Placement.** `place_download` chooses both paths at once: the final path in the download
   directory and the part path `<temp dir>/<final file name>.part`, under one free-name rule — the
   numbered `stem (n).ext` is taken until neither the final path nor the part path exists. Both are
-  stored on the row, as today. Changing either setting moves nothing: running, paused and recovered
-  downloads keep the paths their rows hold.
+  stored on the row, with the **Download Name**: the name the command gave, before any number.
+  Changing either setting moves nothing: running, paused and recovered downloads keep the paths
+  their rows hold.
 - **Refused at the set**, nothing stored, as `SettingRefusal::TempDirRefused(DirectoryRefusal)`:
   the download directory itself; a directory inside any shared directory, the download directory
   included, or holding one; the home directory itself; a filesystem root or mount point; a path not
@@ -75,17 +76,29 @@ The move is the run's last step (ADR-0093), on the blocking pool, after the sche
 last decision; Download State holds no clock and takes no part.
 
 1. **Check.** The run hashes the part file, as today; a mismatch repairs (ADR-0094).
-2. **Name.** The destination is the final path the download was placed under or, when a file
-   stands there, the first free `stem (n).ext` beside it, numbered from the placed name every time
-   as aMule's move is (`ThreadTasks.cpp`), so a move that numbered once never stacks a second
-   number on the first (`film (2).mkv`, never `film (1) (1).mkv`). The placed name is the part
-   file's less `.part`: a placement names the two alike, and a move stores only its destination.
+2. **Name.** The destination is the Download Name beside the row's final path or, when a file
+   stands there, the first free `stem (n).ext` of it, numbered from the Download Name every time as
+   aMule's move is (`ThreadTasks.cpp:455-460`). A download placed as `film (1).mkv` because
+   `film.mkv` stood then lands as `film.mkv` when that name is free at completion, and as
+   `film (2).mkv` when both are taken: numbers never stack (`film (1) (1).mkv`), whether the
+   placement or a past move chose the first. The row keeps the Download Name because neither path
+   can give it back: a placement may already have numbered both, and a move stores only its
+   destination. A row stored before the name was kept reads it as the part file's name less
+   `.part`, the name it was placed under (store rung 14 → 15).
    The run stores `Completing` and the destination in one write before anything moves. A file at
    the row's final path of the file's size that hashes to the file hash (one read, before the
    check) is the download's own — a past move landed it and a Pause or a stop came before its row
    was written — so the run takes step 6 there, numbering nothing past it; a file of another size
    or hash is someone else's and is left as it is.
-3. **Rename.** The run renames the part file onto the destination.
+3. **Rename.** The run renames the part file onto the destination **exclusively**: the call
+   itself refuses when a file stands there (`rmule_os::fs::rename_exclusive`, ADR-0111), so a file
+   another program created after step 2 named the destination is never replaced. That refusal
+   takes the next free name, stored first, and the rename is tried again. Std's `rename` replaces
+   on every platform, Windows included, and a check before it leaves the window open, as aMule's
+   `FileExists` loop does (`ThreadTasks.cpp:455-469`). A filesystem that refuses the exclusive flag
+   itself (an SMB or exFAT volume on macOS, a Linux filesystem without `RENAME_NOREPLACE`) answers
+   `Unsupported`, and for that volume the run checks the destination and renames, the window open
+   there alone.
 4. **In use.** When the OS refuses the rename because another program holds the file (Windows
    `ERROR_SHARING_VIOLATION` 32 or `ERROR_LOCK_VIOLATION` 33), the download stays `Completing`
    with the step `WaitingForRelease`, and the run retries on a backoff of 1 s doubling to 30 s,
@@ -97,8 +110,8 @@ last decision; Download State holds no clock and takes no part.
    It copies the part file to `.<destination name>.completing` beside the destination
    (`Copying`); the dot prefix keeps the scan and its watch off it (ADR-0101). It hashes the bytes
    it reads, and a hash that differs discards the copy and repairs. It `fsync`s the copy and
-   renames it onto the destination (a name taken meanwhile takes the next free name, stored
-   first), and syncs the directory where the platform allows it.
+   renames it onto the destination exclusively, as step 3 does (a name taken meanwhile takes the
+   next free name, stored first), and syncs the directory where the platform allows it.
 6. **In place.** The finished file is now at the destination. The run, which holds the download's
    Served Download lease (ADR-0113), points the entry's bytes path at the destination, with the
    identity of the file now there, at the swap itself, and reports the final file in place to the
@@ -126,6 +139,8 @@ decode and read as before.
   registry row written.
 - At every instant the verified bytes are at the path the Served Download names: the part file
   until the swap, the finished file from then on.
+- No move replaces a file it did not write: every landing is an exclusive rename, except on a
+  volume whose filesystem refuses the flag (step 3).
 - Every move starts from a stored `Completing` row that names its destination, so the one file
   rmule may have put at that name is known.
 - No half-copied file ever carries the finished name, and the scan never hashes a completing
@@ -168,6 +183,8 @@ written, a Completing download's Known-File Mark is an active download's (ADR-01
 - A file previewed on Windows when its last part lands completes when the player closes, instead of
   failing.
 - A taken final name no longer stops a finished download.
+- The download row carries the Download Name (record version 6, store version 15); a version-14
+  build refuses the upgraded store.
 
 ## Considered options
 
@@ -180,5 +197,13 @@ written, a Completing download's Known-File Mark is an active download's (ADR-01
   delete would wait anyway, and a copy of gigabytes is the wrong price for waiting out a player.
 - **Failing on a taken final name.** Rejected: aMule numbers the name, and a finished download should
   not wait on one.
+- **Numbering from the placed name**, keeping a placement's number. Rejected: a download placed as
+  `film (1).mkv` then numbers to `film (1) (1).mkv`, and a name freed since placement goes unused;
+  aMule numbers from the file's own name every time.
+- **Checking the destination, then renaming**, the move before the exclusive rename. Rejected where
+  the filesystem offers the flag: a file created between the two is replaced on every platform.
+- **A hard link to the destination, then unlinking the part file.** Safe in std and exclusive, but
+  rejected: a crash between the two calls leaves both names, and recovery reads a destination that
+  then looks taken and numbers a second copy; FAT and exFAT have no hard links.
 - **The operating system's temporary directory as the default.** Rejected: it is cleared at reboot
   on common systems, and a part file is days of work.

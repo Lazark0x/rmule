@@ -156,12 +156,18 @@ before completion, and the finished file is never pre-sized either.
   borrowed `&std::fs::File`: `set_sparse` (a no-op off Windows), `punch_hole(offset, len)` and
   `allocated_bytes`. What to punch, the probe and the verdict are core's. Module `default_app`
   answers which app the system opens a file-name extension with, on macOS and Windows; what
-  to start it on is the TUI's (ADR-0114).
+  to start it on is the TUI's (ADR-0114). Module `fs` holds `rename_exclusive(from, to)`, the
+  completion move's rename that refuses with `AlreadyExists` when a file stands at `to`, and
+  answers `Unsupported` where the filesystem refuses the flag (ADR-0115, step 3); what to do then
+  is core's.
 - **Safe where a safe call exists:** the Linux punch goes through `rustix`, the Unix reading through
-  std. The waived functions are the macOS punch (`libc`'s `F_PUNCHHOLE` and `fpunchhole_t`), the
+  std, and the exclusive rename on Linux and macOS through `rustix`'s `renameat_with` with
+  `RenameFlags::NOREPLACE` (`renameat2(RENAME_NOREPLACE)`, `renameatx_np(RENAME_EXCL)`). The
+  waived functions are the macOS punch (`libc`'s `F_PUNCHHOLE` and `fpunchhole_t`), the
   three Windows calls (`DeviceIoControl` with `FSCTL_SET_SPARSE` and with `FSCTL_SET_ZERO_DATA`,
-  `GetFileInformationByHandleEx` with `FileStandardInfo`), `WSAIoctl`, and the default-app
-  lookups ADR-0114 lists. `libc`, `rustix` and
+  `GetFileInformationByHandleEx` with `FileStandardInfo`), the Windows exclusive rename
+  (`MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` or `MOVEFILE_COPY_ALLOWED`), `WSAIoctl`, and
+  the default-app lookups ADR-0114 lists. `libc`, `rustix` and
   `windows-sys` are already in the dependency graph: no crate is added.
 - **How the compiler and the guards hold it.** The crate's own lint table repeats
   `[workspace.lints]` but relaxes `unsafe_code` to `deny`; every other crate keeps `forbid`, which
@@ -179,8 +185,8 @@ before completion, and the finished file is never pre-sized either.
   run. With the default Temp Directory on the data directory's volume, that happens mostly where
   the operator moved the Temp Directory to such a disk, or for an older row whose part file lies
   in the download directory.
-- Tests of the punch, the reading and the probe run natively on Linux ext4, macOS APFS and Windows
-  NTFS in CI's test matrix, so a change of platform behaviour fails a build.
+- Tests of the punch, the reading, the probe and the exclusive rename run natively on Linux ext4,
+  macOS APFS and Windows NTFS in CI's test matrix, so a change of platform behaviour fails a build.
 - Not measured: whether the sparse flag fails cleanly on FAT and exFAT under Windows, what SMB and
   NFS 4.2 mounts report, whether ZFS's late reading can make a hole-holding dataset read
   `HoleLess`, and what the punch costs on the blocking pool.

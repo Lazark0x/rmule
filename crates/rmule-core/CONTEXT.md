@@ -623,12 +623,16 @@ A directory whose **Hole Verdict** is `HoleLess`; `DownloadEvent::HoleLessDestin
 _Avoid_: non-sparse disk
 
 **Completion Move**:
-A run's last step, after its last verified part (ADR-0115): the part file checked against the file hash, the destination named — the row's final path or its **Free Name** — and stored with `Completing` before anything moves, then a rename, waiting while a program holds the file, or the **Completion Copy** across volumes; with the finished file in place the core actor writes its registry row, and only then is the part file deleted and `Completed` stored. Each step that waits or copies is told as `DownloadEvent::Completing`.
+A run's last step, after its last verified part (ADR-0115): the part file checked against the file hash, the destination named — the **Download Name** or its **Free Name** — and stored with `Completing` before anything moves, then an exclusive rename that never replaces a file, waiting while a program holds the file, or the **Completion Copy** across volumes; with the finished file in place the core actor writes its registry row, and only then is the part file deleted and `Completed` stored. Each step that waits or copies is told as `DownloadEvent::Completing`.
 _Avoid_: completion (alone), rename (one of its steps)
 
 **Free Name**:
-The numbered `stem (n).ext` beside a name that is taken, `n` counting from one, the first for which nothing stands (ADR-0115, `free_name`). A placement and a **Completion Move** choose by the one rule, and a move numbers from the name its download was placed under, every time, as aMule does, so numbered names never stack.
+The numbered `stem (n).ext` beside a name that is taken, `n` counting from one, the first for which nothing stands (ADR-0115, `free_name`). A placement and a **Completion Move** choose by the one rule, both numbering from the **Download Name**, every time, as aMule does, so numbered names never stack.
 _Avoid_: unique name, collision suffix
+
+**Download Name**:
+The name a download's command gave, before any number, kept on its row (ADR-0115): what a **Completion Move** lands under when it is free and numbers its **Free Name** from when it is not.
+_Avoid_: placed name, original name
 
 **Completing**:
 The durable lifecycle between the last verified part and the finished file in place (ADR-0115): renaming, waiting for a program to release the file, or copying across volumes. Attach resumes the move; a Pause or Cancel stops it until the file is in place and is refused after.
