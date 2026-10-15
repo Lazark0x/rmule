@@ -5,8 +5,8 @@
 //! table, and not the `MappingGrant` observation in **Address Learning**.
 
 use super::{
-    DesiredMapping, DesiredMappingSet, GrantAnswer, MappingCommand, MappingError,
-    MappingProtocol, MappingStatus, Phase, PortMapper,
+    DesiredMapping, DesiredMappingSet, GrantAnswer, MappingCommand, MappingError, MappingProtocol,
+    MappingStatus, Phase, PortMapper,
 };
 
 impl PortMapper {

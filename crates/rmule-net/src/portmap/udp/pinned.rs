@@ -16,7 +16,11 @@ impl UdpMappingBackend {
     /// The `MAP` this backend sends over IPv6 for `request`: from the
     /// gateway's local address, under the derived nonce — the same nonce the
     /// `crab_nat` path uses, so a mapping made before a restart is still ours.
-    pub(super) fn pinned_request(&self, gateway: Gateway, request: MappingRequest) -> Option<MapRequest> {
+    pub(super) fn pinned_request(
+        &self,
+        gateway: Gateway,
+        request: MappingRequest,
+    ) -> Option<MapRequest> {
         let IpAddr::V6(client) = gateway.local_address else {
             return None;
         };

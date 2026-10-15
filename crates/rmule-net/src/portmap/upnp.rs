@@ -267,10 +267,9 @@ fn next_step(error: AddPortError) -> NextStep {
     match error {
         AddPortError::OnlyPermanentLeasesSupported => NextStep::Permanent,
         AddPortError::PortInUse => NextStep::AnyPort,
-        AddPortError::ActionNotAuthorized => NextStep::Fail(refusal(
-            &error,
-            MappingRefusal::NotAuthorized,
-        )),
+        AddPortError::ActionNotAuthorized => {
+            NextStep::Fail(refusal(&error, MappingRefusal::NotAuthorized))
+        }
         AddPortError::RequestError(
             ref fault @ (RequestError::AttoHttpError(_) | RequestError::IoError(_)),
         ) => NextStep::Fail(transport(fault)),

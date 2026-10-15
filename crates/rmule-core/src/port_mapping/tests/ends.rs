@@ -157,7 +157,11 @@ fn an_interrupted_race_releases_every_grant_its_trials_hold() {
                 row(SocketRole::Tcp, TCP_PORT),
                 TCP_PORT + 1000
             ),
-            (MappingProtocol::Pcp, row(SocketRole::Udp, UDP_PORT), UDP_PORT),
+            (
+                MappingProtocol::Pcp,
+                row(SocketRole::Udp, UDP_PORT),
+                UDP_PORT
+            ),
         ],
         "the completed trial's grants go back"
     );
@@ -234,8 +238,7 @@ fn a_renewal_on_a_moved_external_port_releases_the_old_one_only_under_upnp() {
     // UPnP keys a mapping by its external port, so the old one is a second
     // forwarding; PCP keys it by the internal port, so a release would take
     // down the mapping that just moved.
-    for (protocol, releases_old) in [(MappingProtocol::Upnp, true), (MappingProtocol::Pcp, false)]
-    {
+    for (protocol, releases_old) in [(MappingProtocol::Upnp, true), (MappingProtocol::Pcp, false)] {
         let (mut mapper, store, t0) = mapped_over(protocol, Some(HOUR));
         let due = t0 + HOUR;
         mapper.tick(due);
