@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 use rmule_net::peer::{Connection as PeerConnection, ObfuscationPolicy, PeerNetError};
 use rmule_peer::{PartBitmap, PeerCommand, PeerHandshakeContext, PeerIdentity, SideCommand};
 use rmule_primitives::{
-    AichRootHash, Ed2kFileLink, Ipv4Endpoint, PartHash, PeerCrypt, PeerEndpoint, SourceSighting,
-    UserHash,
+    AichRootHash, ClientId, Ed2kFileLink, Ipv4Endpoint, PartHash, PeerCrypt, PeerEndpoint,
+    SourceSighting, UserHash,
 };
 use tokio::sync::mpsc;
 
@@ -27,6 +27,7 @@ use crate::{DownloadFailure, PartPlan};
 use super::HelloAdverts;
 use super::dialed_serve::SharedDialedServeSink;
 use super::kad_runtime::{KadPresenceView, SharedKadBootstrap, SharedKadPump};
+use super::peer_link::{LinkName, Turn};
 use super::peer_transfer::worker::{drive_joined_worker, drive_peer_worker};
 use super::{InboundPeerDeps, SharedTunnelAdmit};
 use crate::buddy_link::SharedBuddySlot;
@@ -245,6 +246,14 @@ pub enum PeerWorkerEvent {
         /// Why the dial ended.
         cause: crate::service::DialEnd,
     },
+    /// The download reaches the peer over its **Peer Link** rather than a
+    /// dial of its own (ADR-0107, "One peer, one link"): `Waiting` while
+    /// another download of the peer rides it, then `Riding` at its turn, just
+    /// before `Identity` and `Connected`. Not terminal.
+    LinkShared {
+        /// Where the download stands on the link.
+        turn: crate::service::LinkTurn,
+    },
     /// The dial was refused before any socket: the peer's stated crypt
     /// stance and ours cannot meet (ADR-0049's outbound rule).
     /// Terminal like [`Self::Disconnected`], but core retires the source for
@@ -367,6 +376,25 @@ pub trait PeerTransferService: Send + 'static {
         self.start_peer_worker(peer, ctx, file)
     }
 
+    /// Reach the Low-ID peer `low_id` of `server` over its **Peer Link** —
+    /// the link it opened to us, or one an earlier callback brought in
+    /// (ADR-0107, "One peer, one link") — with the download's `brief`. The
+    /// worker rides the link, or waits on it while another download does,
+    /// and no callback is asked: the peer's `TryToConnect` toward a client it
+    /// holds a socket for opens nothing (`BaseClient.cpp:1489-1496`), so the
+    /// callback would only lapse. `None` when no link is filed under that
+    /// callback. The default holds no link.
+    fn ride_callback_link(
+        &mut self,
+        low_id: ClientId,
+        server: Ipv4Endpoint,
+        file: Ed2kFileLink,
+        brief: WorkerBrief,
+    ) -> Option<PeerWorker> {
+        let _ = (low_id, server, file, brief);
+        None
+    }
+
     /// Adopt the builder's one set of `AdapterCells`
     /// (ADR-0048 "Identity ownership"): `Core::builder`
     /// weaves its own adapter through this, and `CoreBuilder::peer_transfer`
@@ -466,7 +494,7 @@ pub struct RuntimePeerTransferService {
     side: SideServices,
     /// The **Served Links** a download joins before it dials (ADR-0107).
     /// Default/unshared off `Core::builder`: every download dials.
-    served_links: super::SharedServedLinks,
+    peer_links: super::SharedPeerLinks,
 }
 
 /// The cells only a link's side-channel frames reach (Kad firewall checks, the
@@ -497,7 +525,7 @@ impl RuntimePeerTransferService {
             file_known: self.side.file_known.clone(),
             tunnel_admit: self.side.tunnel_admit.clone(),
             hello_refusals: self.hello_refusals.clone(),
-            served_links: self.served_links.clone(),
+            peer_links: self.peer_links.clone(),
         }
     }
 }
@@ -516,7 +544,7 @@ impl RuntimePeerTransferService {
             ip_filter: SharedIpFilter::default(),
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
             side: SideServices::default(),
-            served_links: super::SharedServedLinks::default(),
+            peer_links: super::SharedPeerLinks::default(),
         }
     }
 
@@ -540,7 +568,7 @@ impl RuntimePeerTransferService {
             ip_filter: SharedIpFilter::default(),
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
             side: SideServices::default(),
-            served_links: super::SharedServedLinks::default(),
+            peer_links: super::SharedPeerLinks::default(),
         }
     }
 
@@ -583,8 +611,8 @@ impl RuntimePeerTransferService {
     /// `adopt_cells`.
     #[cfg(test)]
     #[must_use]
-    pub(crate) fn with_served_links(mut self, served_links: super::SharedServedLinks) -> Self {
-        self.served_links = served_links;
+    pub(crate) fn with_peer_links(mut self, peer_links: super::SharedPeerLinks) -> Self {
+        self.peer_links = peer_links;
         self
     }
 }
@@ -609,7 +637,7 @@ impl PeerTransferService for RuntimePeerTransferService {
         self.side.peer_roster = cells.peer_roster.clone();
         self.side.file_known = cells.file_known.clone();
         self.side.tunnel_admit = cells.tunnel_admit.clone();
-        self.served_links = cells.served_links.clone();
+        self.peer_links = cells.peer_links.clone();
     }
 
     fn set_kad_presence(&mut self, kad_presence: KadPresenceView) {
@@ -626,6 +654,43 @@ impl PeerTransferService for RuntimePeerTransferService {
         self.start_download_worker(peer, ctx, file, brief).await
     }
 
+    fn ride_callback_link(
+        &mut self,
+        low_id: ClientId,
+        server: Ipv4Endpoint,
+        file: Ed2kFileLink,
+        brief: WorkerBrief,
+    ) -> Option<PeerWorker> {
+        let found = self
+            .peer_links
+            .find(&[LinkName::Callback { server, low_id }])?;
+        let remote = found.remote;
+        let slot_wait_timeout = self.slot_wait_timeout;
+        let (command_tx, mut command_rx) = mpsc::channel(8);
+        let (event_tx, event_rx) = mpsc::channel(16);
+        tokio::spawn(async move {
+            match found.take_turn(&event_tx, &mut command_rx).await {
+                Turn::Seated(joined) => {
+                    drive_joined_worker(
+                        *joined,
+                        file,
+                        brief.own_status,
+                        brief.want_sources,
+                        command_rx,
+                        event_tx,
+                        slot_wait_timeout,
+                    )
+                    .await;
+                }
+                Turn::LinkEnded => {
+                    let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
+                }
+                Turn::Stopped => {}
+            }
+        });
+        Some(PeerWorker::new(remote, command_tx, event_rx))
+    }
+
     async fn start_download_worker(
         &mut self,
         peer: PeerEndpoint,
@@ -640,7 +705,7 @@ impl PeerTransferService for RuntimePeerTransferService {
         } = brief;
         let ban_store = self.ban_store.clone();
         let ip_filter = self.ip_filter.clone();
-        let served_links = self.served_links.clone();
+        let peer_links = self.peer_links.clone();
         let deps = self.link_deps();
         // Every advert read now, per dial: what is true when the
         // peer is met is what the hello says — the SUI keypair included, with
@@ -651,7 +716,7 @@ impl PeerTransferService for RuntimePeerTransferService {
         // obfuscated, plaintext, or refused before any socket.
         let options = self.adverts.connect_options(peer_crypt);
         let ours = ObfuscationPolicy::stance_of(options.obfuscation.map(|config| config.policy));
-        let (command_tx, command_rx) = mpsc::channel(8);
+        let (command_tx, mut command_rx) = mpsc::channel(8);
         let (event_tx, event_rx) = mpsc::channel(16);
         tokio::spawn(async move {
             // The IP filter, aMule `CUpDownClient::TryToConnect` /
@@ -681,20 +746,30 @@ impl PeerTransferService for RuntimePeerTransferService {
             // One peer, one link (ADR-0107): a peer linked to us already is
             // asked over that link, as aMule asks a client over the socket it
             // holds (`BaseClient.cpp:1489-1496`); a second link would make it
-            // drop the first (`ClientList.cpp:400-403`).
-            if let Some(joined) = served_links.join(peer, &event_tx).await {
-                tracing::debug!(?peer, "download rides the peer's served link");
-                drive_joined_worker(
-                    joined,
-                    file,
-                    own_status,
-                    want_sources,
-                    command_rx,
-                    event_tx,
-                    deps.slot_wait_timeout,
-                )
-                .await;
-                return;
+            // drop the first (`ClientList.cpp:400-403`). Busy with another
+            // download, the link is waited on, not dialed around.
+            let mut names = vec![LinkName::Endpoint(peer)];
+            names.extend(peer_crypt.user_hash().map(LinkName::User));
+            if let Some(found) = peer_links.find(&names) {
+                match found.take_turn(&event_tx, &mut command_rx).await {
+                    Turn::Seated(joined) => {
+                        tracing::debug!(?peer, "download rides the peer's link");
+                        drive_joined_worker(
+                            *joined,
+                            file,
+                            own_status,
+                            want_sources,
+                            command_rx,
+                            event_tx,
+                            deps.slot_wait_timeout,
+                        )
+                        .await;
+                        return;
+                    }
+                    Turn::Stopped => return,
+                    // The link ended before this download's turn: dial.
+                    Turn::LinkEnded => {}
+                }
             }
             // Connect + identify run inside the worker task, off the runner's
             // critical path (ADR-0030). A connect or handshake failure becomes

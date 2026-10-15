@@ -13,6 +13,7 @@ mod search;
 mod source_ends;
 
 pub use buddy::BuddyDialFailure;
+pub use download::LinkTurn;
 pub use download::{CompletionStep, DownloadEvent, PartsLost, RestartOutcome, SourceWait};
 pub use lifecycle::{KadStopReason, QuitStep, ServeStopReason};
 pub use login::{

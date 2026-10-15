@@ -3,6 +3,7 @@
 //! answer changed nothing, what a download with no source to try waits on,
 //! and the remembered peers a restart dials first (ADR-0109).
 
+use rmule_core::LinkTurn;
 use rmule_core::diagnostics::WorkerPhase;
 use rmule_core::{
     DialEnd, IgnoredReaskReply, PartReleaseReason, PeerRetirementReason, PurgedSource,
@@ -164,6 +165,16 @@ pub fn phase_words(phase: &WorkerPhase) -> String {
 /// the Sources pane (ADR-0109): a peer the last run knew, dialed before
 /// anyone was asked.
 pub const REMEMBERED: &str = "remembered";
+
+/// The mark a source reached over its peer's link, rather than a dial of its
+/// own, carries in the Sources pane (ADR-0107).
+#[must_use]
+pub const fn link_turn_words(turn: LinkTurn) -> &'static str {
+    match turn {
+        LinkTurn::Waiting => "waits for the link",
+        LinkTurn::Riding => "shared link",
+    }
+}
 
 /// What a saved `Remember peers` keeps, for the Settings receipt.
 #[must_use]

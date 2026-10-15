@@ -29,10 +29,11 @@ use super::kad_runtime::{
     SharedKadBootstrap, SharedKadPump, broker_peer_kad_handoff, report_kad_firewall_ack,
     report_kad_udp_firewall_request,
 };
+use super::peer_link::SharedPeerLinks;
 use super::peer_transfer::PeerWorker;
 use super::peer_transfer::worker::drive_peer_worker;
 use super::serve_runtime::{ServeInput, ServeOutput};
-use super::served_link::{SharedServedLinks, drive_served_link};
+use super::served_link::drive_served_link;
 
 /// The runtime handles the inbound accept path threads as **one value** —
 /// accept → triage → adopt/serve — instead of a positional parade. Grouped so
@@ -73,7 +74,7 @@ pub(crate) struct InboundPeerDeps {
     pub(crate) hello_refusals: crate::hello_refusals::SharedHelloRefusals,
     /// The **Served Links** (ADR-0107): where a served link is filed, and
     /// where a download about to dial its peer joins it instead.
-    pub(crate) served_links: SharedServedLinks,
+    pub(crate) peer_links: SharedPeerLinks,
 }
 
 /// How an accepted connection left [`triage_inbound_connection`].

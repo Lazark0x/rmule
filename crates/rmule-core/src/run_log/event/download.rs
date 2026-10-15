@@ -256,6 +256,14 @@ impl DownloadEvent {
                 *cause,
             )
             .peer_address("peer", peer),
+            D::LinkShared {
+                download_id,
+                peer,
+                turn,
+            } => Record::new("download.link_shared")
+                .count("id", download_id.as_u64())
+                .code("turn", codes::link_turn(*turn))
+                .peer_address("peer", peer),
             D::HashSetReceived {
                 download_id,
                 part_count,

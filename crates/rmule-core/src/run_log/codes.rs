@@ -19,6 +19,7 @@ use crate::{
 use rmule_primitives::AddressFamily;
 
 use super::record::Record;
+use crate::LinkTurn;
 
 /// An address family's code.
 #[must_use]
@@ -707,6 +708,14 @@ pub(super) const fn ignored_reask_reply(reason: IgnoredReaskReply) -> &'static s
         IgnoredReaskReply::NoPooledSource => "no_pooled_source",
         IgnoredReaskReply::Misframed => "misframed",
         IgnoredReaskReply::PartCountMismatch => "part_count_mismatch",
+    }
+}
+
+/// Where a download stands on a peer's link (ADR-0107).
+pub(super) const fn link_turn(turn: LinkTurn) -> &'static str {
+    match turn {
+        LinkTurn::Waiting => "waiting",
+        LinkTurn::Riding => "riding",
     }
 }
 

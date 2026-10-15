@@ -259,3 +259,106 @@ async fn a_side_frame_read_on_a_dialed_link_reaches_the_node_wide_service() {
     assert!(matches!(command, KadPumpCommand::TcpFirewallAck(ip) if ip == *bound.ip()));
     mock.abort();
 }
+
+/// Two downloads of one peer rmule dialed: the second waits on the first's
+/// link and rides it at its turn (ADR-0107, "One peer, one link") — the peer
+/// is dialed once, and the second file request reaches it on that same
+/// connection once the first download let go. A second dial would make aMule
+/// drop the first link (`ClientList.cpp:400-403`).
+#[tokio::test]
+async fn a_second_download_of_a_dialed_peer_waits_and_rides_the_same_link() {
+    use crate::adapters::PeerWorkerEvent;
+    use crate::service::LinkTurn;
+
+    let dummy = |seed: u8| Ed2kFileLink {
+        name: Ed2kText::from_utf8("dummy"),
+        size: 4096,
+        file_hash: FileHashSummary::digest_bytes(&[seed; 4096]).file_hash(),
+        part_hash_set: None,
+        aich_root: None,
+        ipv6_sources: Vec::new(),
+        sources: Default::default(),
+    };
+    let (first_file, second_file) = (dummy(0xA1), dummy(0xA2));
+    let listener = PeerListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let bound = SocketAddrV4::new(Ipv4Addr::LOCALHOST, listener.local_port());
+    let (asked_tx, mut asked_rx) = mpsc::channel(8);
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let first_hash = first_file.file_hash;
+    // The peer: every link it accepts reports the files asked on it, tagged
+    // with the link's number, and the first file is refused once the test
+    // says so.
+    let mock = tokio::spawn(async move {
+        let mut release = Some(release_rx);
+        let mut link = 0_u32;
+        loop {
+            let mut conn = listener
+                .accept(dialed_serve_ctx(), PeerConnectOptions::default())
+                .await
+                .unwrap();
+            link += 1;
+            let asked_tx = asked_tx.clone();
+            let release = release.take();
+            tokio::spawn(async move {
+                let mut release = release;
+                while let Some(event) = conn.next_event().await {
+                    let asked = match event {
+                        PeerEvent::Server(
+                            ServerEvent::FileRequested { file_hash, .. }
+                            | ServerEvent::FileBundleRequested { file_hash, .. },
+                        ) => file_hash,
+                        _ => continue,
+                    };
+                    let _ = asked_tx.send((link, asked)).await;
+                    if asked == first_hash
+                        && let Some(release) = release.take()
+                    {
+                        let _ = release.await;
+                        let _ = conn
+                            .send(PeerCommand::Server(ServerCommand::AnswerFileNotFound {
+                                file_hash: asked,
+                            }))
+                            .await;
+                    }
+                }
+            });
+        }
+    });
+
+    let mut transfer = RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT);
+    let peer = PeerEndpoint::V4(Ipv4Endpoint::new(*bound.ip(), bound.port()));
+    let _first = transfer
+        .start_peer_worker(peer, dialed_serve_ctx(), first_file.clone())
+        .await
+        .unwrap();
+    let asked = timeout(Duration::from_secs(5), asked_rx.recv()).await;
+    assert_eq!(asked.ok().flatten(), Some((1, first_file.file_hash)));
+
+    let mut second = transfer
+        .start_peer_worker(peer, dialed_serve_ctx(), second_file.clone())
+        .await
+        .unwrap();
+    let waiting = timeout(Duration::from_secs(5), second.next_event()).await;
+    assert!(matches!(
+        waiting,
+        Ok(Some(PeerWorkerEvent::LinkShared {
+            turn: LinkTurn::Waiting
+        }))
+    ));
+    release_tx.send(()).unwrap();
+    let asked = timeout(Duration::from_secs(5), asked_rx.recv()).await;
+    assert_eq!(
+        asked.ok().flatten(),
+        Some((1, second_file.file_hash)),
+        "the second file is asked on the first link"
+    );
+    assert!(matches!(
+        second.next_event().await,
+        Some(PeerWorkerEvent::LinkShared {
+            turn: LinkTurn::Riding
+        })
+    ));
+    mock.abort();
+}

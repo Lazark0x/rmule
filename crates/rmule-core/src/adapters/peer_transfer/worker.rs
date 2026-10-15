@@ -19,9 +19,9 @@ use crate::PartPlan;
 use crate::adapters::InboundPeerDeps;
 use crate::adapters::dialed_serve::{DialedRoute, bridge_dialed_serve, route_dialed_connection};
 use crate::adapters::hello_wait::{Opening, await_hello};
+use crate::adapters::peer_link::{DownloadHalf, JoinedLink};
 use crate::adapters::peer_transfer::{PeerWorkerCommand, PeerWorkerEvent};
 use crate::adapters::serve_runtime::{ServeConnection, ServeInput};
-use crate::adapters::served_link::JoinedLink;
 use crate::service::DialEnd;
 
 use self::wait::{
@@ -53,12 +53,15 @@ pub(crate) async fn drive_peer_worker(
     let slot_wait_timeout = deps.slot_wait_timeout;
     let hello_refusals = deps.hello_refusals.clone();
     let dialed_serve_sink = deps.dialed_serve_sink.clone();
-    // Split the one socket into the two consumers: the router owns the
-    // connection, fans events to the download (requester) half and the serve
-    // (Server Capability) half, and frames commands from both back onto the
-    // socket.
+    // Split the one socket into its consumers: the router owns the
+    // connection, fans events to the download riding it (the requester) and
+    // the serve half (Server Capability), and frames each one's commands back
+    // onto the socket. This download is the link's first rider; once the
+    // peer is identified another download of it may wait for the next turn
+    // (ADR-0107, "One peer, one link").
     let (peer_cmd_tx, peer_cmd_rx) = mpsc::channel(16);
     let (requester_tx, mut requester_rx) = mpsc::channel(64);
+    let (serve_cmd_tx, serve_cmd_rx) = mpsc::channel(16);
     // Server Capability events arriving before the serve bridge attaches
     // (below, post-identify) buffer here; the handshake ordering means no
     // serve burst precedes `Identified`, so this depth is ample.
@@ -68,9 +71,9 @@ pub(crate) async fn drive_peer_worker(
     // revision the router forwards follows it. A dialed worker's comes from
     // the router at the peer's hello.
     let adopted = identified.is_some();
-    if let Some(identity) = identified
+    if let Some(identity) = &identified
         && event_tx
-            .send(PeerWorkerEvent::Identity(identity))
+            .send(PeerWorkerEvent::Identity(identity.clone()))
             .await
             .is_err()
     {
@@ -78,12 +81,16 @@ pub(crate) async fn drive_peer_worker(
     }
     tokio::spawn(route_dialed_connection(
         conn,
-        peer_cmd_rx,
         DialedRoute {
-            requester_tx,
+            rider: DownloadHalf {
+                requester_tx,
+                worker_evt_tx: event_tx.clone(),
+                peer_cmd_rx,
+            },
             server_tx,
-            worker_evt_tx: event_tx.clone(),
+            serve_cmd_rx,
             deps,
+            identified,
         },
     ));
     if !adopted
@@ -91,7 +98,7 @@ pub(crate) async fn drive_peer_worker(
     {
         super::end_dial(&event_tx, cause).await;
         let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-        return; // dropping peer_cmd_tx winds the router (and socket) down
+        return; // dropping both command senders winds the router (and socket) down
     }
     work_the_link(
         WorkerHalves {
@@ -101,6 +108,7 @@ pub(crate) async fn drive_peer_worker(
         Some(ServeHalf {
             peer,
             server_rx,
+            serve_cmd_tx,
             sink: dialed_serve_sink,
         }),
         &file,
@@ -168,6 +176,8 @@ struct WorkerHalves {
 struct ServeHalf {
     peer: PeerEndpoint,
     server_rx: mpsc::Receiver<ServeInput>,
+    /// Where the serve half's commands are framed onto the link.
+    serve_cmd_tx: mpsc::Sender<PeerCommand>,
     sink: crate::adapters::SharedDialedServeSink,
 }
 
@@ -225,7 +235,7 @@ async fn work_the_link(
     // cross-connection UploadSlotQueue exactly like an accepted connection; a
     // joined link's serve half never left it.
     if let Some(half) = serve_half {
-        hand_over_serve_half(half, &peer_cmd_tx).await;
+        hand_over_serve_half(half).await;
     }
 
     // Set once the download signals a local-reason abandon (ADR-0056): the
@@ -340,9 +350,8 @@ async fn work_the_link(
     // Wind the held slot down (a no-op if none): a local-reason abandon emits
     // `OP_CANCELTRANSFER` (the requester-side counterpart to a silent release,
     // ADR-0056), a completion or peer-initiated end releases silently. Then drop
-    // `peer_cmd_tx`: if the serve bridge still holds a clone the router keeps
-    // serving until the peer disconnects; otherwise the router sees its command
-    // channel close and shuts the socket down (ADR-0025 release).
+    // `peer_cmd_tx`: the link's next waiter takes it, and with none the link
+    // stays up only while its serve half holds it (ADR-0025 release).
     let teardown = if cancel {
         PeerCommand::Requester(RequesterCommand::CancelTransfer {
             file_hash: file.file_hash,
@@ -358,26 +367,27 @@ async fn work_the_link(
 
 /// While the serve activity is running, hand `half` to it so the peer's pull
 /// is admitted to the one cross-connection UploadSlotQueue exactly like an
-/// accepted connection; its commands are framed onto the link through
-/// `peer_cmd_tx`. When not serving the sink is empty and the router drops
-/// Server Capability requests.
-async fn hand_over_serve_half(half: ServeHalf, peer_cmd_tx: &mpsc::Sender<PeerCommand>) {
+/// accepted connection; its commands are framed onto the link through its own
+/// sender. When not serving the sink is empty, the router drops Server
+/// Capability requests, and the serve half lets the link go at once.
+async fn hand_over_serve_half(half: ServeHalf) {
     let ServeHalf {
         peer,
         server_rx,
+        serve_cmd_tx,
         sink,
     } = half;
     if let Some(serve_sink) = sink.sender() {
-        let (serve_cmd_tx, serve_cmd_rx) = mpsc::channel(16);
+        let (bridge_cmd_tx, bridge_cmd_rx) = mpsc::channel(16);
         let (serve_evt_tx, serve_evt_rx) = mpsc::channel(16);
         tokio::spawn(bridge_dialed_serve(
             server_rx,
-            serve_cmd_rx,
-            peer_cmd_tx.clone(),
+            bridge_cmd_rx,
+            serve_cmd_tx,
             serve_evt_tx,
         ));
         let _ = serve_sink
-            .send(ServeConnection::new(peer, serve_cmd_tx, serve_evt_rx))
+            .send(ServeConnection::new(peer, bridge_cmd_tx, serve_evt_rx))
             .await;
     } else {
         // Not serving: nobody drains the serve half. Close it now so the

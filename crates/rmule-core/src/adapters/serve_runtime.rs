@@ -256,7 +256,7 @@ pub struct RuntimeServeRuntimeService {
     file_known: crate::known_files::SharedFileKnown,
     /// Where each served link is filed for a download of its peer to ride
     /// (ADR-0107). Default/unshared off `Core::builder`: no download joins.
-    served_links: super::SharedServedLinks,
+    peer_links: super::SharedPeerLinks,
 }
 
 impl RuntimeServeRuntimeService {
@@ -333,8 +333,8 @@ impl RuntimeServeRuntimeService {
     /// `Core::builder` shares the one instance through `adopt_cells`.
     #[cfg(test)]
     #[must_use]
-    pub(crate) fn with_served_links(mut self, served_links: super::SharedServedLinks) -> Self {
-        self.served_links = served_links;
+    pub(crate) fn with_peer_links(mut self, peer_links: super::SharedPeerLinks) -> Self {
+        self.peer_links = peer_links;
         self
     }
 }
@@ -562,7 +562,7 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
                     file_known: self.file_known.clone(),
                     tunnel_admit: self.tunnel_admit.clone(),
                     hello_refusals: self.hello_refusals.clone(),
-                    served_links: self.served_links.clone(),
+                    peer_links: self.peer_links.clone(),
                 },
             );
             // A connection from the awaited server admitted as an ordinary
@@ -636,7 +636,7 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
         self.tunnel_admit = cells.tunnel_admit.clone();
         self.hello_refusals = cells.hello_refusals.clone();
         self.file_known = cells.file_known.clone();
-        self.served_links = cells.served_links.clone();
+        self.peer_links = cells.peer_links.clone();
     }
 }
 

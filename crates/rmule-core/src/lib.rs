@@ -220,6 +220,7 @@ pub use scheduler::{Assignment, DownloadScheduler, PartOrder};
 pub use search::{KadKeywordSink, MORE_RESULTS_ASKS, RelatedSearchRefusal, ServerMoreResults};
 pub use served_downloads::PartialEnd;
 pub use server_session::build_peer_handshake_context;
+pub use service::LinkTurn;
 pub use service::{
     BuddyDialFailure, ClientCredentials, CompletionStep, Core, CoreBuilder, CoreCommand,
     CoreCommandRejectReason, CoreConfig, CoreEvent, DEFAULT_SLOT_WAIT_TIMEOUT, DialEnd,

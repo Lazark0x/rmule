@@ -98,7 +98,7 @@ fn deps() -> InboundPeerDeps {
         file_known: crate::known_files::SharedFileKnown::default(),
         tunnel_admit: crate::adapters::SharedTunnelAdmit::default(),
         hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
-        served_links: crate::adapters::SharedServedLinks::default(),
+        peer_links: crate::adapters::SharedPeerLinks::default(),
     }
 }
 

@@ -281,6 +281,13 @@ where
                     want_sources,
                 };
                 ctx.callbacks.await_callback(key, brief);
+                // A Low-ID peer linked to us already is ridden over that link
+                // (ADR-0107, "One peer, one link"): asked for a callback it
+                // would open nothing, its `TryToConnect` finding the socket
+                // it holds.
+                if ride_callback_link(ctx, key, want_sources).await {
+                    continue;
+                }
                 let session = {
                     let slot = ctx.runner.rt.server_session.slot().lock().await;
                     slot.as_ref().filter(|handle| handle.is_alive()).cloned()
@@ -650,3 +657,31 @@ async fn await_worker_shutdown(
 
 #[cfg(test)]
 mod tests;
+
+/// Hand the run a worker riding `key`'s peer over its Peer Link, when one is
+/// filed under the callback the key names; whether one was.
+async fn ride_callback_link<S, P>(
+    ctx: &mut LoopCtx<'_, S, P>,
+    key: CallbackKey,
+    want_sources: bool,
+) -> bool
+where
+    S: SourceLookupService,
+    P: PeerTransferService,
+{
+    let Some(server) = ctx.callbacks.routing_key(key).server else {
+        return false;
+    };
+    let brief = WorkerBrief {
+        peer_crypt: rmule_primitives::PeerCrypt::unknown(),
+        own_status: ctx.state.our_part_status(),
+        want_sources,
+    };
+    let ridden = ctx.runner.rt.peer_transfer.lock().await.ride_callback_link(
+        key.low_id,
+        server,
+        ctx.file.clone(),
+        brief,
+    );
+    ridden.is_some_and(|worker| ctx.callbacks.hand_ridden(key, worker).is_ok())
+}

@@ -385,6 +385,7 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
         | E::SourceReaskDropped { .. }
         | E::ReaskReplyIgnored { .. }
         | E::DialEnded { .. }
+        | E::LinkShared { .. }
         | E::PartReleased { .. }
         | E::PeerRetired { .. } => false,
     }

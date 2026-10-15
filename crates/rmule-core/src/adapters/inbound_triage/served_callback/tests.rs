@@ -178,7 +178,7 @@ async fn a_served_links_callback_dials_the_requester_back_and_counts_each_drop()
             file_known,
             tunnel_admit,
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
-            served_links: crate::adapters::SharedServedLinks::default(),
+            peer_links: crate::adapters::SharedPeerLinks::default(),
         },
         diagnostics,
     )

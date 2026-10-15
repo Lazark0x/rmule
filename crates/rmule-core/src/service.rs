@@ -24,6 +24,7 @@ pub use self::command::{
     ScanCommand, SearchCommand, ServeCommand, ServerListCommand,
 };
 pub use self::config::{CoreConfig, DEFAULT_SLOT_WAIT_TIMEOUT, NattConfig, VerificationAuthority};
+pub use self::event::LinkTurn;
 pub use self::event::{
     BuddyDialFailure, CompletionStep, CoreEvent, DialEnd, DialFailure, DownloadEvent, IdAssignment,
     IgnoredReaskReply, Ipv6Probe, KadStopReason, LegNotSent, LoginClaim, LoginCloseCause,

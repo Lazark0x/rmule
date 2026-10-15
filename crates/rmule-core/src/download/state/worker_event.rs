@@ -142,6 +142,15 @@ impl DownloadState {
                     cause,
                 }));
             }
+            // The worker reaches its peer over a link another holds: told,
+            // the source's standing unchanged until its `Connected`.
+            PeerWorkerEvent::LinkShared { turn } => {
+                out.push(Decision::Emit(DownloadEvent::LinkShared {
+                    download_id: self.download_id,
+                    peer,
+                    turn,
+                }));
+            }
             PeerWorkerEvent::Disconnected => {
                 self.release(now, peer, PeerRetirementReason::PeerDisconnected, &mut out);
             }

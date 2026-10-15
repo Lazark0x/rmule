@@ -25,6 +25,7 @@ mod peer_transfer;
 // The **Port Mapping** runtime (ADR-0086): the task that gives the sans-I/O
 // `PortMapper` its sockets — one spawned backend call per emitted command, the
 // answer fed back, the diagnostics level republished.
+mod peer_link;
 mod port_mapping;
 mod serve_runtime;
 mod served_link;
@@ -67,13 +68,13 @@ pub(crate) use kad_runtime::{
     KadPresenceView, SharedKadBootstrap, SharedKadPump, request_kad_buddy_callback,
     request_kad_callback_walk, request_kad_recheck,
 };
+pub(crate) use peer_link::SharedPeerLinks;
 pub(crate) use peer_transfer::advertises_complete;
 pub(crate) use port_mapping::{
     DurablePortMappingPreferences, PortMappingControl, PortMappingHandle, PortMappingPreferences,
     SharedPeerPin, await_listener_mapping, spawn_port_mapping,
 };
 pub(crate) use serve_runtime::SharedTunnelAdmit;
-pub(crate) use served_link::SharedServedLinks;
 // The admit channel's payload and the router behind it, named where a test
 // drives the inbound path without a bound listener; the production path
 // reaches both through the serve adapter.

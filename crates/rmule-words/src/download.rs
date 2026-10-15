@@ -37,6 +37,7 @@ pub use part_file::{
     damaged_parts, finished_file_rejected, part_file_change_words, part_file_lost, parts_disproved,
     parts_lost_words, parts_to_fetch_again, restart_words, restarted,
 };
+pub use source::link_turn_words;
 use source::purged_source_words;
 pub use source::{
     NO_NETWORK_WAIT, NO_NETWORK_WAIT_NOTE, REMEMBER_PEERS_NOTE, REMEMBER_PEERS_REFUSED, REMEMBERED,
@@ -266,6 +267,15 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
             address(*peer),
             ignored_reask_reply_words(*reason)
         ),
+        D::LinkShared { peer, turn, .. } => match turn {
+            rmule_core::LinkTurn::Waiting => format!(
+                "{} is busy with another download; this one waits for its link",
+                address(*peer)
+            ),
+            rmule_core::LinkTurn::Riding => {
+                format!("asks {} over the link already open to it", address(*peer))
+            }
+        },
         D::DialEnded { peer, cause, .. } => format!(
             "dial to {} ended before its hello: {}",
             address(*peer),

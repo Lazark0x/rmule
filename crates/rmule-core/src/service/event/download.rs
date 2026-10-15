@@ -320,6 +320,17 @@ pub enum DownloadEvent {
         /// Why the dial ended.
         cause: super::DialEnd,
     },
+    /// The download reaches `peer` over its **Peer Link** rather than a dial
+    /// of its own (ADR-0107, "One peer, one link"): waiting while another
+    /// download of the peer rides it, then riding at its turn.
+    LinkShared {
+        /// The download on the link.
+        download_id: DownloadId,
+        /// The source the download meant to reach.
+        peer: rmule_primitives::PeerEndpoint,
+        /// Where the download stands on the link.
+        turn: LinkTurn,
+    },
     /// The part hash set the run verifies against is settled — from the link,
     /// from a peer, or from the store. Every later `PartVerified` is checked
     /// against it.
@@ -548,4 +559,15 @@ pub enum PartsLost {
     /// The store could not say which parts were lost, so no count is told;
     /// the download fails as a store failure.
     NotCounted,
+}
+
+/// A download's turn on a **Peer Link** another download or the serve side
+/// holds (ADR-0107, "One peer, one link"), ranked by how far it got.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LinkTurn {
+    /// Another download of the peer rides the link; this one waits for it to
+    /// let go, dialing nothing.
+    Waiting,
+    /// The download rides the link: its requests go out on it.
+    Riding,
 }

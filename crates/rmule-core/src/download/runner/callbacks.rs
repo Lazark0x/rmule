@@ -21,7 +21,8 @@ use rmule_peer::PartBitmap;
 use rmule_primitives::Ed2kFileLink;
 
 use crate::adapters::{
-    AdoptSender, AdoptionBrief, AwaitedInbound, AwaitedInboundHandle, CallbackKey, RetireSender,
+    AdoptSender, AdoptionBrief, AwaitedInbound, AwaitedInboundHandle, CallbackKey, PeerWorker,
+    RetireSender,
 };
 use crate::download::state::LowIdCandidate;
 
@@ -85,6 +86,20 @@ impl CallbackContext {
     pub(super) fn await_callback(&mut self, key: CallbackKey, brief: AdoptionBrief) {
         let routing = self.routing_key(key);
         self.registration(key).await_callback(routing, brief);
+    }
+
+    /// Hand `worker`, which reaches `key`'s peer over its Peer Link
+    /// (ADR-0107), to the fleet's adopt arm under the key the peer would
+    /// report, as a callback's connection would be; `Err` gives it back when
+    /// the arm is full, and the callback is asked for as before.
+    pub(super) fn hand_ridden(
+        &self,
+        key: CallbackKey,
+        worker: PeerWorker,
+    ) -> Result<(), PeerWorker> {
+        self.adopt_tx
+            .try_send((self.routing_key(key), worker))
+            .map_err(|refused| refused.into_inner().1)
     }
 
     /// Claim the **Dialer Tunnel** `candidate`'s punch may raise, so it comes

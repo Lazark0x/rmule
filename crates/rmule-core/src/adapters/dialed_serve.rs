@@ -3,13 +3,16 @@
 //! to the one upload slot queue exactly like an accepted connection.
 
 use rmule_net::peer::Connection as PeerConnection;
-use rmule_peer::{ConnectionCommand, ConnectionEvent, PeerCommand, PeerEvent, RequesterEvent};
+use rmule_peer::{
+    ConnectionCommand, ConnectionEvent, PeerCommand, PeerEvent, PeerIdentity, RequesterEvent,
+};
 use rmule_primitives::PeerEndpoint;
 use tokio::sync::mpsc;
 
 use super::InboundPeerDeps;
 use super::inbound_triage::serve_side;
 use super::kad_runtime::broker_peer_kad_handoff;
+use super::peer_link::{DownloadHalf, Filing, LinkJoin, LinkName, Riders, recv_join};
 use super::peer_transfer::PeerWorkerEvent;
 use super::serve_runtime::{ServeConnection, ServeInput, ServeOutput};
 
@@ -24,77 +27,136 @@ use super::serve_runtime::{ServeConnection, ServeInput, ServeOutput};
 pub(crate) type SharedDialedServeSink = crate::mailbox::Mailbox<ServeConnection>;
 
 /// Where a dialed connection's router sends what the socket reads, built by
-/// the worker that owns the connection: the download half, the serve half,
-/// the worker event stream, and the node-wide folds a hello feeds.
+/// the worker that owns the connection: the download that dialed it — the
+/// link's first rider — the serve half, and the node-wide folds a hello
+/// feeds.
 pub(crate) struct DialedRoute {
-    /// Requester Capability events and the facts the download waits on, to
-    /// the download half.
-    pub(crate) requester_tx: mpsc::Sender<PeerEvent>,
+    /// The download that dialed or adopted the link: its Requester
+    /// Capability events and the facts it waits on go to it, and its
+    /// commands come from it.
+    pub(crate) rider: DownloadHalf,
     /// Server Capability requests and the connection facts the serve side
     /// keeps, to the serve half.
     pub(crate) server_tx: mpsc::Sender<ServeInput>,
-    /// Connection facts the download keeps: the peer's identity, whole at
-    /// every revision, and its source asks.
-    pub(crate) worker_evt_tx: mpsc::Sender<PeerWorkerEvent>,
+    /// The serve half's commands, framed onto the link; closed when serving
+    /// ends, or at once when the node does not serve.
+    pub(crate) serve_cmd_rx: mpsc::Receiver<PeerCommand>,
     /// The node-wide services a hello feeds (the ed2k→Kad handoff, the IPv6
     /// quorum) and a side-channel frame is carried to — the same ones an
-    /// accepted link reaches, since aMule's handlers do not ask who dialed.
+    /// accepted link reaches, since aMule's handlers do not ask who dialed —
+    /// and the Peer Links the link is filed in once identified.
     pub(crate) deps: InboundPeerDeps,
+    /// The identity an adopted link's accept side read off its hello; `None`
+    /// for a dialed link, whose hello is still to come.
+    pub(crate) identified: Option<PeerIdentity>,
 }
 
 /// Own one dialed `PeerConnection` and split it into the two consumers
 /// ADR-0031 names: every inbound `PeerEvent` is routed by its group — the
-/// **download** half takes the Requester group (Requester Capability), the
-/// **serve** half the Server group (Server Capability), the connection facts
-/// go where each is kept — and `PeerCommand`s from either half are framed onto
-/// the one socket. The concrete "two consumers over one connection" for a
-/// dialed connection — the session is already bidirectional, so this is pure
-/// orchestration.
+/// **download** riding the link takes the Requester group, the **serve** half
+/// the Server group, the connection facts go where each is kept — and
+/// `PeerCommand`s from either half are framed onto the one socket.
 ///
-/// The socket is shut down when every command sender is dropped (the download
-/// worker finished and — if serving — the serve bridge closed) or the peer
-/// disconnects. `Disconnected` is delivered to **both** halves so each frees
-/// its per-connection state.
+/// Once the peer is identified the link is a **Peer Link** (ADR-0107, "One
+/// peer, one link"): filed under every name its hello proves, so another
+/// download of the peer rides it in turn instead of dialing a second link
+/// aMule would answer by dropping this one. One download rides at a time;
+/// when the rider's worker lets go, the oldest waiter takes the link.
 ///
-/// The router is the one sender of the peer's identity to the download once
-/// the connection is up, so it reaches the download in the session's order:
+/// The socket is shut down when the serve half and every download let it go,
+/// or the peer disconnects. `Disconnected` is delivered to the rider and the
+/// serve half so each frees its per-connection state; a waiter learns the
+/// link ended and dials.
+///
+/// The router is the one sender of the peer's identity to the rider once the
+/// connection is up, so it reaches the download in the session's order:
 /// whole at `Identified` (an adopted connection's worker sends the one the
 /// accept side read before this router starts), then whole again at each
 /// `IdentityRevised` — the source-exchange facts the Source Ask Clock reads
 /// among them (ADR-0108).
-pub(crate) async fn route_dialed_connection(
-    mut conn: PeerConnection,
-    mut peer_cmd_rx: mpsc::Receiver<PeerCommand>,
-    route: DialedRoute,
-) {
-    // Set once every command sender let go: the session was told to close
-    // after the last command, and the events it read before closing are still
+pub(crate) async fn route_dialed_connection(mut conn: PeerConnection, route: DialedRoute) {
+    let DialedRoute {
+        rider,
+        server_tx,
+        mut serve_cmd_rx,
+        deps,
+        identified,
+    } = route;
+    let remote = conn.peer_endpoint();
+    let mut riders = Riders::seated(rider);
+    // A link rmule dialed reaches the peer where it was dialed, whatever
+    // listen port its hello names; an adopted link's remote end is the
+    // peer's own dial out, which no dial reaches.
+    let dialed_at = identified.is_none().then_some(remote);
+    let mut link = DialedLink {
+        dialed_at,
+        identity: None,
+        filing: None,
+        joins: None,
+    };
+    if let Some(identity) = identified {
+        link.identified(&deps, remote, identity);
+    }
+    let halves = Halves {
+        server_tx,
+        deps: &deps,
+    };
+    let mut serving = true;
+    // Set once every half let go: the session was told to close after the
+    // last command, and the events it read before closing are still
     // forwarded — a file request's report among them — until it stops or the
     // grace runs out.
     let mut closing: Option<tokio::time::Instant> = None;
     loop {
+        let open = closing.is_none();
         tokio::select! {
-            command = peer_cmd_rx.recv(), if closing.is_none() => {
-                // None: every sender dropped (download done and not serving) —
-                // close the session behind the commands it already has.
-                let Some(command) = command else {
-                    let disconnect = PeerCommand::Connection(ConnectionCommand::Disconnect);
-                    if conn.send(disconnect).await.is_err() {
+            command = riders.next_command(), if open => match command {
+                Some(command) => {
+                    if conn.send(command).await.is_err() {
                         break;
                     }
-                    closing = Some(tokio::time::Instant::now() + rmule_net::driver::SHUTDOWN_GRACE);
-                    continue;
-                };
-                if conn.send(command).await.is_err() {
-                    break;
                 }
-            }
+                None => {
+                    riders.rider_left(link.identity.as_ref());
+                    if !serving && riders.is_empty() {
+                        closing = close(&mut conn).await;
+                        if closing.is_none() {
+                            break;
+                        }
+                    }
+                }
+            },
+            command = serve_cmd_rx.recv(), if open && serving => match command {
+                Some(command) => {
+                    if conn.send(command).await.is_err() {
+                        break;
+                    }
+                }
+                None => {
+                    serving = false;
+                    if riders.is_empty() {
+                        closing = close(&mut conn).await;
+                        if closing.is_none() {
+                            break;
+                        }
+                    }
+                }
+            },
+            join = recv_join(&mut link.joins), if open && link.joins.is_some() => match (join, &link.identity) {
+                (Some(join), Some(identity)) => riders.take(join, identity),
+                (Some(_), None) => {}
+                // Every name of the link went to newer links.
+                (None, _) => link.joins = None,
+            },
             () = tokio::time::sleep_until(closing.unwrap_or_else(tokio::time::Instant::now)),
                 if closing.is_some() => break,
             event = conn.next_event() => {
                 let Some(event) = event else { break }; // driver/peer gone
-                if route.dispatch(conn.peer_endpoint(), event).await == Routed::Closed {
-                    break;
+                match halves.dispatch(remote, event, riders.rider()).await {
+                    Routed::Open => {}
+                    Routed::Identified(identity) => link.identified(&deps, remote, identity),
+                    Routed::Revised(identity) => link.revised(remote, identity),
+                    Routed::Closed => break,
                 }
             }
         }
@@ -102,24 +164,88 @@ pub(crate) async fn route_dialed_connection(
     let _ = conn.shutdown().await;
 }
 
-/// Whether the connection is still open after an event was routed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Tell the session to close behind the commands it already has; the grace
+/// deadline, or `None` when the driver is gone already.
+async fn close(conn: &mut PeerConnection) -> Option<tokio::time::Instant> {
+    let disconnect = PeerCommand::Connection(ConnectionCommand::Disconnect);
+    conn.send(disconnect).await.ok()?;
+    Some(tokio::time::Instant::now() + rmule_net::driver::SHUTDOWN_GRACE)
+}
+
+/// What a dialed link knows of its peer and where it is filed.
+struct DialedLink {
+    /// Where rmule dialed the peer, for a link it dialed.
+    dialed_at: Option<PeerEndpoint>,
+    identity: Option<PeerIdentity>,
+    filing: Option<Filing>,
+    joins: Option<mpsc::Receiver<LinkJoin>>,
+}
+
+impl DialedLink {
+    /// The peer identified: file the link under its names.
+    fn identified(&mut self, deps: &InboundPeerDeps, remote: PeerEndpoint, identity: PeerIdentity) {
+        let (filing, joins) = deps.peer_links.file(remote, self.names(remote, &identity));
+        self.filing = Some(filing);
+        self.joins = Some(joins);
+        self.identity = Some(identity);
+    }
+
+    /// The names the link proves: its hello's, and where it was dialed.
+    fn names(&self, remote: PeerEndpoint, identity: &PeerIdentity) -> Vec<LinkName> {
+        let mut names = LinkName::of(remote, identity);
+        if let Some(dialed_at) = self.dialed_at
+            && !names.contains(&LinkName::Endpoint(dialed_at))
+        {
+            names.push(LinkName::Endpoint(dialed_at));
+        }
+        names
+    }
+
+    /// The session revised the peer: its names follow.
+    fn revised(&mut self, remote: PeerEndpoint, identity: PeerIdentity) {
+        let names = self.names(remote, &identity);
+        if let Some(filing) = &mut self.filing {
+            filing.refile(names);
+        }
+        self.identity = Some(identity);
+    }
+}
+
+/// Whether the connection is still open after an event was routed, and what
+/// it learned of the peer.
 enum Routed {
     Open,
+    Identified(PeerIdentity),
+    Revised(PeerIdentity),
     Closed,
 }
 
-impl DialedRoute {
-    /// Send one event to the half that keeps its group.
-    async fn dispatch(&self, peer: PeerEndpoint, event: PeerEvent) -> Routed {
+/// The halves a dialed link's events reach besides its rider.
+struct Halves<'a> {
+    server_tx: mpsc::Sender<ServeInput>,
+    deps: &'a InboundPeerDeps,
+}
+
+impl Halves<'_> {
+    /// Send one event to the half that keeps its group: the rider's, when
+    /// one rides.
+    async fn dispatch(
+        &self,
+        peer: PeerEndpoint,
+        event: PeerEvent,
+        rider: Option<&DownloadHalf>,
+    ) -> Routed {
         match event {
-            PeerEvent::Connection(fact) => return self.connection_fact(peer, fact).await,
+            PeerEvent::Connection(fact) => return self.connection_fact(peer, fact, rider).await,
             // Whether the file request carried a source ask (ADR-0108): the
-            // download half alone stamps it. The facts it was framed under
+            // riding download alone stamps it. The facts it was framed under
             // are the identity's, which reached the download first.
             PeerEvent::Requester(RequesterEvent::FileRequestSent { sources_asked, .. }) => {
-                if sources_asked {
-                    let _ = self.worker_evt_tx.send(PeerWorkerEvent::SourcesAsked).await;
+                if sources_asked && let Some(rider) = rider {
+                    let _ = rider
+                        .worker_evt_tx
+                        .send(PeerWorkerEvent::SourcesAsked)
+                        .await;
                 }
             }
             // A closed serve half (not serving / serve task gone) just drops
@@ -131,19 +257,25 @@ impl DialedRoute {
             // `0x99`) go where an accepted link's go: aMule's
             // `ClientTCPSocket.cpp` handlers run on whichever socket they
             // arrive on, whoever dialed it.
-            PeerEvent::Side(side) => serve_side(&self.deps, peer, side),
-            // A gone download worker drops its events; the socket stays up
-            // for the serve half until every `peer_cmd_tx` is dropped or the
-            // peer disconnects.
+            PeerEvent::Side(side) => serve_side(self.deps, peer, side),
+            // With no download riding, the link's own pull concerns nobody;
+            // the socket stays up for the serve half and the waiters.
             event @ (PeerEvent::Requester(_) | PeerEvent::Notice(_)) => {
-                let _ = self.requester_tx.send(event).await;
+                if let Some(rider) = rider {
+                    let _ = rider.requester_tx.send(event).await;
+                }
             }
         }
         Routed::Open
     }
 
     /// Route one fact about the link to every half that keeps it.
-    async fn connection_fact(&self, peer: PeerEndpoint, fact: ConnectionEvent) -> Routed {
+    async fn connection_fact(
+        &self,
+        peer: PeerEndpoint,
+        fact: ConnectionEvent,
+        rider: Option<&DownloadHalf>,
+    ) -> Routed {
         match fact {
             ConnectionEvent::Identified { identity } => {
                 // ed2k→Kad handoff (ADR-0067): a dialed peer that carries a
@@ -162,24 +294,31 @@ impl DialedRoute {
                 // The identity, to the download ahead of the `Identified` its
                 // worker waits on, so it precedes the worker's `Connected`
                 // and every revision the session reads after it.
-                let _ = self
-                    .worker_evt_tx
-                    .send(PeerWorkerEvent::Identity(identity.clone()))
-                    .await;
-                // Both halves need identify: the download half to proceed past
-                // the handshake, the serve half to key credit.
-                let fact = ConnectionEvent::Identified { identity };
-                let _ = self
-                    .requester_tx
-                    .send(PeerEvent::Connection(fact.clone()))
-                    .await;
+                let fact = ConnectionEvent::Identified {
+                    identity: identity.clone(),
+                };
+                if let Some(rider) = rider {
+                    let _ = rider
+                        .worker_evt_tx
+                        .send(PeerWorkerEvent::Identity(identity.clone()))
+                        .await;
+                    // Both halves need identify: the download half to proceed
+                    // past the handshake, the serve half to key credit.
+                    let _ = rider
+                        .requester_tx
+                        .send(PeerEvent::Connection(fact.clone()))
+                        .await;
+                }
                 let _ = self.server_tx.send(ServeInput::Connection(fact)).await;
+                return Routed::Identified(identity);
             }
             ConnectionEvent::Disconnected { .. } => {
-                let _ = self
-                    .requester_tx
-                    .send(PeerEvent::Connection(fact.clone()))
-                    .await;
+                if let Some(rider) = rider {
+                    let _ = rider
+                        .requester_tx
+                        .send(PeerEvent::Connection(fact.clone()))
+                        .await;
+                }
                 let _ = self.server_tx.send(ServeInput::Connection(fact)).await;
                 return Routed::Closed;
             }
@@ -191,29 +330,37 @@ impl DialedRoute {
                 user_hash,
                 public_key,
             } => {
-                let _ = self
-                    .worker_evt_tx
-                    .send(PeerWorkerEvent::IdentityVerified {
-                        user_hash,
-                        public_key,
-                    })
-                    .await;
+                if let Some(rider) = rider {
+                    let _ = rider
+                        .worker_evt_tx
+                        .send(PeerWorkerEvent::IdentityVerified {
+                            user_hash,
+                            public_key,
+                        })
+                        .await;
+                }
             }
             // A revision, whole, to both halves that keep the identity: the
-            // download's record and the serve side's connection.
+            // riding download's record and the serve side's connection.
             ConnectionEvent::IdentityRevised { ref identity, .. } => {
-                let _ = self
-                    .worker_evt_tx
-                    .send(PeerWorkerEvent::Identity(identity.clone()))
-                    .await;
+                let identity = identity.clone();
+                if let Some(rider) = rider {
+                    let _ = rider
+                        .worker_evt_tx
+                        .send(PeerWorkerEvent::Identity(identity.clone()))
+                        .await;
+                }
                 let _ = self.server_tx.send(ServeInput::Connection(fact)).await;
+                return Routed::Revised(identity);
             }
             // The rest is the download half's: the hello wait reads a refusal,
             // and nothing else here is kept by either half.
             ConnectionEvent::HelloSent
             | ConnectionEvent::HelloRefused { .. }
             | ConnectionEvent::SecureIdentFailed { .. } => {
-                let _ = self.requester_tx.send(PeerEvent::Connection(fact)).await;
+                if let Some(rider) = rider {
+                    let _ = rider.requester_tx.send(PeerEvent::Connection(fact)).await;
+                }
             }
         }
         Routed::Open

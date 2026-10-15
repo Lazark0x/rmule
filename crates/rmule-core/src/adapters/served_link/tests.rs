@@ -20,7 +20,8 @@ use crate::adapters::peer_transfer::{PeerTransferService, WorkerBrief};
 use crate::adapters::serve_runtime::ServeOutput;
 use crate::adapters::serve_runtime::{RuntimeServeRuntimeService, ServeRuntimeService};
 use crate::adapters::tests::dialed_serve_ctx;
-use crate::adapters::{PeerWorkerEvent, RuntimePeerTransferService};
+use crate::adapters::{PeerWorkerEvent, RuntimePeerTransferService, SharedPeerLinks};
+use crate::service::LinkTurn;
 
 use super::*;
 
@@ -73,7 +74,7 @@ async fn asked_for(asker: &mut PeerConnection, file_hash: FileHash, within: Dura
 }
 
 /// An asker linked to a serving node, and a dial adapter sharing the node's
-/// Served Links.
+/// Peer Links.
 struct Linked {
     asker: PeerConnection,
     /// The asker's listen port, where a second link would arrive.
@@ -85,8 +86,13 @@ struct Linked {
 
 impl Linked {
     async fn up() -> Self {
-        let links = SharedServedLinks::default();
-        let mut serve = RuntimeServeRuntimeService::new().with_served_links(links.clone());
+        Self::up_as(asker_ctx).await
+    }
+
+    /// An asker whose hello `ctx` states, given its listen port.
+    async fn up_as(ctx: fn(u16) -> PeerHandshakeContext) -> Self {
+        let links = SharedPeerLinks::default();
+        let mut serve = RuntimeServeRuntimeService::new().with_peer_links(links.clone());
         let bound = serve
             .start(
                 dialed_serve_ctx().identity,
@@ -100,7 +106,7 @@ impl Linked {
         let listen_port = listen.local_addr().expect("bound").port();
         let asker = PeerConnection::connect(
             PeerEndpoint::V4(Ipv4Endpoint::new(*bound.ip(), bound.port())),
-            asker_ctx(listen_port),
+            ctx(listen_port),
             ConnectOptions::default(),
         )
         .await
@@ -117,7 +123,7 @@ impl Linked {
             )))
         ));
         let dialer = RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT)
-            .with_served_links(links);
+            .with_peer_links(links);
         Self {
             asker,
             listen,
@@ -194,6 +200,12 @@ async fn a_download_of_a_peer_linked_to_us_rides_its_link_and_dials_nothing() {
     linked.rode_the_link(file.file_hash).await;
     assert!(matches!(
         worker.next_event().await,
+        Some(PeerWorkerEvent::LinkShared {
+            turn: LinkTurn::Riding
+        })
+    ));
+    assert!(matches!(
+        worker.next_event().await,
         Some(PeerWorkerEvent::Identity(identity))
             if identity.user_hash() == asker_ctx(0).identity.user_hash()
     ));
@@ -255,4 +267,82 @@ async fn the_serve_side_letting_go_leaves_the_link_to_the_download_riding_it() {
             .await
             .unwrap_or(false)
     );
+}
+
+#[tokio::test]
+async fn a_second_download_waits_on_the_busy_link_and_takes_it_when_the_first_lets_go() {
+    let mut linked = Linked::up().await;
+    let first_file = file();
+    let second_file = Ed2kFileLink {
+        file_hash: FileHash::from_bytes([0x5B; FileHash::BYTE_LEN]),
+        ..file()
+    };
+    let mut first = linked.download(&first_file).await;
+    linked.rode_the_link(first_file.file_hash).await;
+
+    let mut second = linked.download(&second_file).await;
+    assert!(matches!(
+        timeout(Duration::from_secs(5), second.next_event()).await,
+        Ok(Some(PeerWorkerEvent::LinkShared {
+            turn: LinkTurn::Waiting
+        }))
+    ));
+    assert!(
+        !asked_for(
+            &mut linked.asker,
+            second_file.file_hash,
+            Duration::from_millis(300)
+        )
+        .await,
+        "the waiter asks nothing while the first rides"
+    );
+
+    linked.has_no_such_file(first_file.file_hash).await;
+    let _ = until_disconnected(&mut first).await;
+    linked.rode_the_link(second_file.file_hash).await;
+    assert!(matches!(
+        second.next_event().await,
+        Some(PeerWorkerEvent::LinkShared {
+            turn: LinkTurn::Riding
+        })
+    ));
+}
+
+/// A Low-ID asker's link is found by the callback its hello names: a
+/// download of it rides the link and asks no callback, which the peer would
+/// answer with nothing (`BaseClient.cpp:1489-1496`).
+#[tokio::test]
+async fn a_low_id_askers_link_is_ridden_by_its_callback() {
+    const LOW_ID: ClientId = ClientId::from_u32(0x0000_2A2A);
+    fn server() -> Ipv4Endpoint {
+        Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 7), 4661)
+    }
+    fn low_id_asker(listen_port: u16) -> PeerHandshakeContext {
+        PeerHandshakeContext {
+            client_id: LOW_ID,
+            ed2k_client_id: LOW_ID,
+            connected_server: Some(server()),
+            ..asker_ctx(listen_port)
+        }
+    }
+    let mut linked = Linked::up_as(low_id_asker).await;
+    let file = file();
+    let other_server = Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 8), 4661);
+    assert!(
+        linked
+            .dialer
+            .ride_callback_link(
+                LOW_ID,
+                other_server,
+                file.clone(),
+                WorkerBrief::fresh(&file)
+            )
+            .is_none(),
+        "the same id on another server is another peer"
+    );
+    let _worker = linked
+        .dialer
+        .ride_callback_link(LOW_ID, server(), file.clone(), WorkerBrief::fresh(&file))
+        .expect("the link is filed under its callback");
+    linked.rode_the_link(file.file_hash).await;
 }
