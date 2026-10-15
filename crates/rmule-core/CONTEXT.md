@@ -662,6 +662,18 @@ _Avoid_: media file, playable
 The sans-I/O scheduling brain for one download (`download/state.rs`). It owns every channel-free decision — which part a peer works, how cross-peer blocks assemble (ADR-0029), when a raced part completes and clears its losers (ADR-0026), which candidate backfills a retired worker (ADR-0030), when a pooled source is reasked and when a callback road lapses — and returns an ordered `Vec<Decision>` the async runner *enacts* (the only async surface). Time is an argument: each entry takes `now`, `on_tick(now)` runs the reask sweep, turns the spent period and expires deadlines, and `next_wake()` names when the runner wakes it next. Persistence is a fallible effect, so it round-trips through `on_persist_result`. Touching no socket, clock, store, or channel is what makes the racing / resume / retire-all / backfill / reask behaviours assertable as plain decision sequences instead of only through a live Tokio actor.
 _Avoid_: download manager, actor, scheduler (the `DownloadScheduler` is one of the bags it owns)
 
+**Request Depth**:
+How many blocks a worker has asked of its uploader and not yet received (ADR-0029 "Request pipeline"): `3 + ⌊2 × rate × rtt / EMBLOCKSIZE⌋`, held between 3 and 24, refilled at every arrival so the link never runs dry between blocks. The pipeline is the link's, not the part's: a reassignment leaves its asked blocks draining.
+_Avoid_: window, queue size, pipelining factor
+
+**Delivery Rate**:
+What core measures of one worker from its block arrivals at the instants it is handed — bytes over windows of at least one second, smoothed by a quarter per window (ADR-0026). Scheduling input for the **Tail Race** only; never published, so it is not a counter (ADR-0077).
+_Avoid_: speed, bandwidth, throughput
+
+**Tail Race**:
+A granted worker that has delivered a part, with no pending part left it can work, joining an in-flight part held alone by a worker of lower **Delivery Rate** instead of giving its slot back (ADR-0026 "Bounded racing"): the rank of ADR-0112 §4 with the expected finish, latest first, in its fourth position. Never a part's third racer; the first verified copy wins.
+_Avoid_: end game, steal, swap
+
 **Preview Band**:
 aMule's head-and-tail set (`PartFile.cpp:1958-1972`): part `0`, the last, and the last-but-one when the last part's length plus one is below `PARTSIZE / 3`. Only for **Streaming Priority**; ranks below a very rare part, above the **Streaming Window**; no latch (ADR-0112).
 _Avoid_: first and last chunks, preview parts

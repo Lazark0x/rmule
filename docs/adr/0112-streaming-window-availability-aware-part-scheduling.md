@@ -94,9 +94,12 @@ one tuple wins; `i` sits in every key, so no two tie:
   and very rare is a part only this source holds. Inside the very-rare zone aMule orders by
   frequency before preview; the tuple keeps the band ahead, the same order whenever the
   bound is 1.
-- **Racing** keeps ADR-0026's rule, filtered: with no pending part its Advertised Parts hold
+- **Racing** keeps ADR-0026's rules, filtered: with no pending part its Advertised Parts hold
   left, a backup peer races the minimum-ranked in-flight part they hold and it is not on —
-  other pending parts it lacks do not keep it off the race.
+  other pending parts it lacks do not keep it off the race. A peer that has delivered a
+  part runs ADR-0026's **Tail Race** over the same filter and the same tuple, its fourth
+  position read as the expected finish, latest first: positions 1–3 still put a very rare,
+  band or window part ahead, and the part index still breaks every tie.
 - No randomness: the same inputs give the same part, so every decision sequence is
   assertable. aMule's completion criterion is not taken: a released part keeps its assembled
   prefix (ADR-0029) and resumes there whenever it is next chosen.
@@ -153,8 +156,8 @@ one tuple wins; `i` sits in every key, so no two tie:
   reported for it.
 - A worker whose Advertised Parts hold a part the file lacks asks its slot at its probe
   answer even when every such part is in flight elsewhere (ADR-0026): its part is chosen at
-  the grant. Granted with none it may be handed — every one in flight, and it may not race
-  because it has delivered a part — it gives the slot back with `OP_CANCELTRANSFER` and is
+  the grant. Granted with none it may be handed — every one in flight, and none it may race
+  (ADR-0026) — it gives the slot back with `OP_CANCELTRANSFER` and is
   retired **`NoFreePart`**, its record waiting in the RemoteQueued stage on the ordinary
   cadence (ADR-0056, ADR-0057): it still holds a part we lack.
 - A worker slot is never held by a source that holds nothing we need, nor a granted slot by

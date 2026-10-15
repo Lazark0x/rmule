@@ -3,9 +3,10 @@
 ## Context
 
 Core assigns ED2K parts to peers and counts only a verified, complete part as
-durable progress (ADR-0026). A worker requests a part one `EMBLOCKSIZE` block at a
-time. If each worker kept its own bytes, a peer that dropped mid-part would take
-them with it and the next peer would restart at block 0. Busy peers do exactly
+durable progress (ADR-0026). A worker requests a part in `EMBLOCKSIZE` blocks, a few
+asked ahead ("Request pipeline" below). If each worker kept its own bytes, a peer that
+dropped mid-part would take them with it and the next peer would restart at block 0.
+Busy peers do exactly
 that: they grant a few blocks and drop. A live server-sourced part raced by seven
 such peers never finished, because every racer restarted from zero.
 
@@ -34,6 +35,41 @@ Part assembly lives in `rmule-core`, in one shared buffer per in-flight part.
   buffer per part in flight, however many peers race it. At the default of 20 workers
   that is at most 20 parts, about 186 MB, per download, and a buffer grows with what
   has arrived, so a part still filling holds only its prefix.
+- **Request pipeline.** A worker keeps its link busy by keeping blocks asked ahead of
+  the bytes, as stock 2.3.3 keeps `STANDARD_BLOCKS_REQUEST` (3) blocks pending
+  (`updownclient.h:102`, `DownloadClient.cpp:619-641`) and amule-kno sizes the
+  pending count to the bandwidth-delay product (amule-kno `DownloadClient.cpp:613-630`).
+  An uploader reads a block only once its request is queued and then sleeps between
+  sends (`UploadClient.cpp:189-197`), so one block in flight leaves the link idle at
+  every block.
+  - **A block is one range** of at most `EMBLOCKSIZE` inside the worker's part, the
+    blocks consecutive from its resume offset. No range exceeds three blocks: a stock
+    uploader ends the session on one (`UploadClient.cpp:221-224`).
+  - **The Request Depth** — how many blocks are asked and not yet arrived — is
+    `3 + ⌊2 × rate × rtt / EMBLOCKSIZE⌋`, held between 3 and 24. `rate` is the link's
+    delivery rate (bytes over windows of at least one second, smoothed by a quarter
+    per window); `rtt` the least time from a request to its block's first byte. With no
+    sample yet it is 3. At 24 a link has at most 24 × 184,320 B (about 4.4 MB) asked.
+  - **Refill before the link drains.** At every arrival the worker asks the shortfall
+    to its depth at once, up to three new blocks per `OP_REQUESTPARTS`. A block is asked
+    once: a stock uploader drops a range it already holds or has sent
+    (`UploadClient.cpp:503-521`).
+  - **One request before the grant.** A stream's first `OP_REQUESTPARTS` carries at
+    most three blocks, and a second goes out only after the stream's first byte: the
+    session holds a single request until `OP_ACCEPTUPLOADREQ` (ADR-0025), and a stock
+    uploader drops a request from a client outside its upload slots
+    (`UploadClient.cpp:497-501`).
+  - **Arrivals are credited by offset** to the asked block they fall in; the uploader
+    serves its queue in order (`UploadClient.cpp:197`), so blocks still complete in
+    order and the prefix stays contiguous. Bytes inside no asked block are dropped. A
+    stream ends when every block of its range has arrived.
+  - **The pipeline is the link's.** `OP_OUTOFPARTREQS` empties it: the uploader dropped
+    every queued block. A worker handed a new part stops asking for its old one at
+    once; the old blocks already asked still arrive, count against the depth while they
+    drain, and are dropped — at most one depth of bytes per reassignment.
+  - **A part boundary drains it.** A worker is handed its next part only after its
+    range has streamed (ADR-0026), so each part starts on an empty pipeline: one round
+    trip per part. Block-level assignment across parts would remove it.
 - **On a failed part hash:** with a trusted AICH root, core repairs the part block by
   block and retires only the peer that delivered a corrupt block (ADR-0038). Without
   one, nothing attributes the bad block, so core retires every contributor to that
@@ -50,6 +86,9 @@ Part assembly lives in `rmule-core`, in one shared buffer per in-flight part.
 - Assembly behaviour — prefix growth across a drop, resume offsets, retirement on
   failure, buffers freed on success and failure — is asserted with deterministic fake
   workers, without sockets.
+- A link no longer idles between blocks: a fast uploader's measured 18–58% idle share
+  with one block in flight is what the depth buys back. The depth rule is a pure
+  function of instants handed in, asserted without sockets.
 
 ## Considered options
 
@@ -64,3 +103,11 @@ Part assembly lives in `rmule-core`, in one shared buffer per in-flight part.
 - **Retire only the last contributor, or keep per-block provenance with staged
   re-verification.** Rejected: the first lets an early-block poisoner escape and can
   loop on the same bad peer; the second reinvents AICH badly.
+- **One block in flight.** Rejected: every block waits out the uploader's wake after
+  its request lands, so a fast link idles for a large share of each block.
+- **aMule's fixed three.** Rejected as the rule, kept as the floor: three blocks cover a
+  slow slot, but not a fast one behind a long round trip.
+- **A time budget of queued data** (libtorrent's request queue time). Not taken: the
+  bandwidth-delay product with amule-kno's headroom and bounds is the same idea in the
+  counterparty's own terms, and the cap of 24 already covers a default socket
+  buffer's worth.

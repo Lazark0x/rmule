@@ -61,13 +61,28 @@ is `DownloadScheduler`.
   streams — takes the first-ranked pending part the peer advertised (ADR-0112); outside
   Streaming Priority, with every part advertised, that is the lowest index. A granted
   worker with no part it can be handed gives the slot back (ADR-0056).
-- **Bounded racing.** When no pending part it advertised remains, a granted backup
-  peer — one that has not yet delivered a verified part in this download — joins the
-  first-ranked in-flight part it advertised (ADR-0112), so a busy primary's part has a
-  second source. The first verified copy wins and the losing racers are cleared and
-  handed their next part; a loser's later failure is a no-op. A peer that has already
-  delivered a part never races a healthy peer — it gives its slot back instead — so
-  racing engages only on few-part files.
+- **Bounded racing.** When no pending part it advertised remains, a granted peer races
+  an in-flight part instead of giving its slot back, by one of two rules:
+  - A **backup** peer — one that has not yet delivered a verified part in this
+    download — joins the first-ranked in-flight part it advertised (ADR-0112), so a
+    busy primary's part has a second source.
+  - A peer that has delivered a part runs a **Tail Race**: it joins an in-flight part
+    it advertised and is not on, held by exactly one racer whose **Delivery Rate** is
+    below its own (a racer not yet measured counts as zero). Among those parts the rank
+    of ADR-0112 §4 chooses, with its fourth position read as the expected finish — the
+    bytes past the part's assembled prefix over that racer's rate — latest first. A tail
+    race never makes a part's third racer, and it is run only by a peer measured faster
+    than the one it races, so its duplicate bytes are at most the rest of one part per
+    in-flight part. With no such part it gives its slot back (ADR-0056).
+  - A **Delivery Rate** is what core measures of each worker from its block arrivals
+    at the instants it is handed: bytes over windows of at least one second, smoothed
+    by a quarter per window, kept for the worker's life. It is scheduling input only,
+    never a published figure (ADR-0077).
+  - The first verified copy wins. Every racer is cleared at once and handed its next
+    part or gives its slot back; a loser handed a part stops its old stream at once
+    (ADR-0029 "Request pipeline"), and a block that arrives for a part already
+    assembled or verified is dropped without opening a buffer. A loser's later
+    failure is a no-op.
 - **One hash-set ask at a time, with a deadline.** While the download holds no whole
   part hash set — no link `p=`, no proven peer set yet, a file of more than one hash —
   one worker at a time asks for it (`OP_HASHSETREQUEST`): the first whose probe answer
@@ -126,7 +141,10 @@ is `DownloadScheduler`.
   the reask cadence and every callback deadline — is asserted on `DownloadState`'s decisions without sockets, driven by the
   instants a test hands in.
 - Racing spends some redundant bandwidth on scarce parts in exchange for a live
-  backup when a busy peer stalls.
+  backup when a busy peer stalls. The Tail Race spends at most the rest of a part per
+  in-flight part to stop the slowest granted source from setting the download's end,
+  and keeps a fast granted slot working instead of handing it back to a stock
+  uploader that would queue us again.
 
 ## Considered options
 
@@ -140,3 +158,11 @@ is `DownloadScheduler`.
   a boundary with no second consumer.
 - **Strictly one peer per part.** Rejected: on few-part files it leaves backup peers
   idle until busy uploaders drop them.
+- **A finished peer gives its slot back.** Rejected: the download's last parts then
+  ride on its slowest sources while its fastest hand back slots they waited a queue
+  for. aMule 2.3.3 swaps a slower source out only behind the default-off
+  `DropSlowSources` (`DownloadClient.cpp:645-675`); amule-kno takes the same
+  steal at the end game, four parts or fewer left (amule-kno `DownloadClient.cpp:666-674`).
+- **Cancelling the slower source instead of racing it** (aMule's swap). Rejected: it
+  throws away the slower source's slot and its assembled share for a guess at
+  speed; the race keeps both and lets the first verified copy decide.
