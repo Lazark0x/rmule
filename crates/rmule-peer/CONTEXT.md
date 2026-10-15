@@ -93,7 +93,7 @@ One source's NAT-T budget, sans-I/O and explicit-time with the jitter handed in:
 _Avoid_: retry policy, backoff timer (it is both and the cap), NAT-T state machine
 
 **Own Mapping**:
-What our own observers saw of our UDP mapping in the current Extern Port Round (ADR-0091's amendment): *Endpoint-Dependent* when two distinct Kad observers saw two different external ports, *Endpoint-Independent* when two or more saw one, *Unknown* otherwise. The only input that can start **Port Prediction**, and the one narrow exception to "no NAT-type gate" — it is a measurement of our own mapping, never a label or a peer's claim.
+What our own observers saw of our UDP mapping in the current Extern Port Round (ADR-0091's amendment): each distinct Kad observer counted once; *Endpoint-Dependent* when at least two observers dissent from the port most of them name, *Endpoint-Independent* when two or more name that port and at most one dissents, *Unknown* otherwise. Dissent needs corroboration so one lying contact cannot pick the Fan. The only input that can start **Port Prediction**, and the one narrow exception to "no NAT-type gate" — it is a measurement of our own mapping, never a label or a peer's claim.
 _Avoid_: NAT type, symmetric verdict, NAT classification
 
 **Peer Mapping**:
