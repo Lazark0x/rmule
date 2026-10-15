@@ -61,6 +61,7 @@ async fn predicting(
             admit: crate::adapters::SharedTunnelAdmit::default(),
             claims: crate::adapters::AwaitedInbound::default(),
             peer_pin: crate::adapters::SharedPeerPin::default(),
+            roster: crate::peer_roster::SharedPeerRoster::default(),
             diagnostics: diagnostics.clone(),
             events: None,
             prediction: Some(PredictionWiring {

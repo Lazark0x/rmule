@@ -762,6 +762,7 @@ async fn a_server_punch_reaches_the_session_as_a_0x60_through_a_running_front() 
                 admit: crate::adapters::SharedTunnelAdmit::default(),
                 claims: crate::adapters::AwaitedInbound::default(),
                 peer_pin: crate::adapters::SharedPeerPin::default(),
+                roster: crate::peer_roster::SharedPeerRoster::default(),
                 diagnostics: DiagnosticsState::default(),
                 prediction: None,
                 events: None,

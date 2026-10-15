@@ -332,6 +332,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
                         admit: wiring.tunnel_admit.clone(),
                         claims: wiring.awaited_inbound.clone(),
                         peer_pin: peer_pin.clone(),
+                        roster: wiring.peer_roster.clone(),
                         events: evt_tx.downgrade(),
                         hello_adverts: wiring.hello_adverts.clone(),
                         firewalled_front: wiring.firewalled_front.clone(),

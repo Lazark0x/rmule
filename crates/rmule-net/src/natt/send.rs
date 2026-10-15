@@ -165,12 +165,14 @@ impl<S: NattDatagramSink> NattSender<S> {
         self.crypt.as_ref().map_or(0, |crypt| crypt.crypt_options())
     }
 
-    /// Adopt the hash an inbound KEY frame carried.
-    pub fn learn_key(&self, peer: PeerEndpoint, hash: UserHash, now: Instant) {
+    /// Adopt the hash an inbound KEY frame carried, unless `held` — the
+    /// endpoint holds a tunnel — and the hash contradicts the live one.
+    /// Returns whether it was adopted.
+    pub fn learn_key(&self, peer: PeerEndpoint, hash: UserHash, held: bool, now: Instant) -> bool {
         self.keys
             .lock()
             .expect("the NAT-T key table is never poisoned")
-            .learn(peer, hash, now);
+            .learn(peer, hash, held, now)
     }
 
     /// The hash a send to `peer` would obfuscate under, if any — the
@@ -494,7 +496,7 @@ mod tests {
     async fn a_learned_key_turns_the_very_next_transport_frame_obfuscated() {
         let (recorder, sender) = armed_sender();
         let now = Instant::now();
-        sender.learn_key(peer(), hash(0x99), now);
+        sender.learn_key(peer(), hash(0x99), false, now);
         let sent = sender
             .send_transport(peer(), NattFrameType::Utp, &[0x41, 0x00], false, now)
             .await
@@ -516,7 +518,7 @@ mod tests {
     async fn a_caps_frame_stays_plaintext_even_with_a_key_in_hand() {
         let (recorder, sender) = armed_sender();
         let now = Instant::now();
-        sender.learn_key(peer(), hash(0x99), now);
+        sender.learn_key(peer(), hash(0x99), false, now);
         let frame = NattFrame::Key(hash(0x11));
         sender.send_frame(peer(), &frame).await.expect("recorded");
         let log = recorder.sent.lock().expect("recorder").clone();
@@ -539,7 +541,7 @@ mod tests {
             })),
         );
         let now = Instant::now();
-        sender.learn_key(peer(), hash(0x99), now);
+        sender.learn_key(peer(), hash(0x99), false, now);
         let sent = sender
             .send_transport(peer(), NattFrameType::Utp, &[0x41], false, now)
             .await
@@ -589,7 +591,7 @@ mod tests {
             })),
         );
         let now = Instant::now();
-        sender.learn_key(peer(), hash(0x99), now);
+        sender.learn_key(peer(), hash(0x99), false, now);
         let send = || sender.send_transport(peer(), NattFrameType::Utp, &[0x41], true, now);
 
         assert!(send().await.expect("recorded").obfuscated);
@@ -613,7 +615,7 @@ mod tests {
     fn the_poll_send_reports_the_payload_length_not_the_datagrams() {
         let (recorder, sender) = armed_sender();
         let now = Instant::now();
-        sender.learn_key(peer(), hash(0x99), now);
+        sender.learn_key(peer(), hash(0x99), false, now);
         let waker = std::task::Waker::noop();
         let mut cx = Context::from_waker(waker);
         let payload = [0x41u8, 0x00, 0x01, 0x02];

@@ -191,6 +191,15 @@ impl AwaitedInbound {
         let _ = self.risen.set(risen);
     }
 
+    /// Whether a **Dial-Back Claim** stands anywhere: a source asked to dial
+    /// us back may open a Tunnel from an address nothing here knows, since a
+    /// Low-ID callback names no address for it (ADR-0091, security rule 10).
+    pub(crate) fn awaits_dial_back(&self) -> bool {
+        self.registrations
+            .lock()
+            .is_ok_and(|registrations| registrations.awaits_dial_back())
+    }
+
     /// Open a download's registration for the pending callback `callback` (the
     /// brain's key). It is reachable by no key until a road is filed through
     /// the handle.

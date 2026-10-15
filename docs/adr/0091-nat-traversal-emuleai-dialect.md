@@ -263,12 +263,14 @@ re-dials for its whole 120 s budget and each `librqbit-utp` opener is sent once.
     header) from an endpoint the Tunnel Registry holds no slot for opens one only when its
     source IP is expected, and is otherwise dropped before the engine: no `ST_STATE`, no KEY
     frame. The key is the IP because a hint, an introduction or an acted rendezvous names the
-    peer's address while a NAT, or a prediction leg, leaves its port open. Two facts expect an
-    IP: a **Punch Expectation** the NAT-T Front holds for it, and a live relation in the **Peer
+    peer's address while a NAT, or a prediction leg, leaves its port open. Three facts expect an
+    IP: a **Punch Expectation** the NAT-T Front holds for it; a live relation in the **Peer
     Roster** (ADR-0059) — kno dials uTP to every peer whose hello claims bit 1
     (`UtpDialPolicy.h:103-139`, `BaseClient.cpp:2271`), so a peer we already deal with may come
-    back over uTP with no rendezvous. eMuleAI gates the same way, on its expected-peer table
-    with an IP-only fallback (`eMuleAI/UtpSocket.cpp:683-1040`). An IPv6 source is never
+    back over uTP with no rendezvous; and, for any IPv4 address, a standing **Dial-Back Claim**
+    — eMuleAI answers a buddy callback with a uTP dial (`ListenSocket.cpp:2480-2494`) and a
+    Low-ID callback names no address for the dialer. eMuleAI gates the same way, on its
+    expected-peer table with an IP-only fallback (`eMuleAI/UtpSocket.cpp:683-1040`). An IPv6 source is never
     expected: the dialect names IPv4 only and core adopts no IPv6 tunnel. `Opening` slots are
     capped at 4 per IP and 64 per node, so a flood spoofing one expected address cannot crowd
     out another, and they age out on the front's one-second tick rather than on every admit.

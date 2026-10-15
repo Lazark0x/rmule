@@ -144,7 +144,7 @@ pub(crate) async fn run_caps_utp(args: NattCapsUtpArgs) -> Result<()> {
     );
 
     let arrivals = Arrivals::default();
-    spawn_pump(Arc::clone(&socket), Arc::clone(&demux), arrivals.clone());
+    spawn_pump(Arc::clone(&socket), Arc::clone(&demux), arrivals.clone(), peer.ip());
 
     // 1. The CAPS probe. Its recipient is the counterparty's own hash, which
     //    is the only form any conforming reader will answer; its crypt bits
@@ -273,10 +273,14 @@ pub(crate) async fn run_caps_utp(args: NattCapsUtpArgs) -> Result<()> {
 /// The pump is the only reader of the socket, so it — not the demux — is where
 /// a datagram becomes evidence: the demux consumes a frame and answers it,
 /// while the row needs the bytes exactly as they arrived.
+///
+/// The counterparty is the one address this driver expects a tunnel opener
+/// from, as a node expects one only from a peer it punched toward.
 fn spawn_pump(
     socket: Arc<ClientUdpSocket>,
     demux: Arc<NattDemux<ClientUdpNattSink>>,
     arrivals: Arrivals,
+    counterparty: IpAddr,
 ) {
     tokio::spawn(async move {
         loop {
@@ -288,7 +292,10 @@ fn spawn_pump(
                 bytes: datagram.clone(),
             });
             if datagram.first() == Some(&rmule_peer::natt::NATT_PROTOCOL) {
-                demux.on_datagram(from, &datagram, Instant::now()).await;
+                let expects = |ip: IpAddr| ip == counterparty;
+                demux
+                    .on_datagram(from, &datagram, &expects, Instant::now())
+                    .await;
             }
         }
     });

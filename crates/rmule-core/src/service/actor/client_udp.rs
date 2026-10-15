@@ -175,6 +175,8 @@ pub(super) struct NattFrontWiring<'a> {
     /// reaches the download that was waiting on it.
     pub(super) claims: crate::adapters::AwaitedInbound,
     pub(super) peer_pin: crate::adapters::SharedPeerPin,
+    /// The **Peer Roster**: an IP it knows may open a Tunnel unannounced.
+    pub(super) roster: crate::peer_roster::SharedPeerRoster,
     pub(super) events: mpsc::WeakSender<CoreEvent>,
     /// The **firewalled front**'s two cells (ADR-0061) — its slot
     /// rides the one Hello Adverts read its buddy dial states.
@@ -236,6 +238,7 @@ fn spawn_natt_front(
         admit: natt.admit,
         claims: natt.claims,
         peer_pin: natt.peer_pin,
+        roster: natt.roster,
         diagnostics: diagnostics.clone(),
         // Off is `None`: no Own Mapping is read and no socket is ever
         // consulted for a route, so the knob off is today's behaviour exactly.

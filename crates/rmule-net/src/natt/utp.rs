@@ -25,7 +25,9 @@ use rmule_peer::natt::NattFrameType;
 use rmule_primitives::PeerEndpoint;
 use tokio::sync::mpsc;
 
-use super::registry::{Admission, DialingSlot, HeldSlot, TunnelRegistry, TunnelSlot};
+use super::registry::{
+    Admission, DialingSlot, ExpectsSource, HeldSlot, TunnelRegistry, TunnelSlot,
+};
 use super::send::{NattDatagramSink, NattSender};
 use super::tunnel::Tunnel;
 use crate::peer::PeerStreamRole;
@@ -209,14 +211,21 @@ impl<S: NattDatagramSink> UtpEngine<S> {
     /// a tunnel is dropped here — before injection — and never answered: no
     /// `ST_RESET` goes to an unverified address (aMule's A2; the registry's
     /// module docs say why the gate stays although `librqbit-utp` itself
-    /// drops such a packet). Returns the admission so the demux can trace and
-    /// count it.
-    pub fn inject(&self, peer: PeerEndpoint, packet: &[u8], now: Instant) -> Admission {
+    /// drops such a packet). An `ST_SYN` opens a slot only from an IP
+    /// `expects` names (ADR-0091, security rule 10). Returns the admission so
+    /// the demux can trace and count it.
+    pub fn inject(
+        &self,
+        peer: PeerEndpoint,
+        packet: &[u8],
+        expects: &ExpectsSource<'_>,
+        now: Instant,
+    ) -> Admission {
         let admission = self
             .registry
             .lock()
             .expect("the NAT-T tunnel registry is never poisoned")
-            .admit(peer, is_utp_syn(packet), now);
+            .admit(peer, is_utp_syn(packet), expects, now);
         if admission == Admission::Drop {
             return admission;
         }

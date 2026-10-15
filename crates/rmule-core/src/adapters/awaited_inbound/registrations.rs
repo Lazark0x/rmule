@@ -69,6 +69,14 @@ pub(super) struct LetGo {
 }
 
 impl Registrations {
+    /// Whether any registration holds a **Dial-Back Claim** — a peer that
+    /// will dial us with nothing here having aimed at it.
+    pub(super) fn awaits_dial_back(&self) -> bool {
+        self.held
+            .values()
+            .any(|held| held.claim.as_ref().is_some_and(|claim| claim.dial_back))
+    }
+
     pub(super) fn open(
         &mut self,
         callback: CallbackKey,
