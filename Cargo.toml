@@ -52,8 +52,10 @@ crypto-bigint = "0.5"
 # file lies on, so the Download Directory Scan carries a hash across a rename only
 # where file identities are stable (ADR-0104, "What the scan remembers"). Also
 # `rmule-os`'s Linux punch, a safe `fallocate(PUNCH_HOLE | KEEP_SIZE)`
-# (ADR-0111). Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT, already in the
-# graph through `tempfile`, `fs` only: no crate added.
+# (ADR-0111), and its exclusive rename on Linux and macOS, a safe
+# `renameat_with(NOREPLACE)` (ADR-0115). Apache-2.0 WITH LLVM-exception OR
+# Apache-2.0 OR MIT, already in the graph through `tempfile`, `fs` only: no
+# crate added.
 rustix = { version = "1", default-features = false, features = ["fs", "std"] }
 # Windows only, confined to rmule-core's `file_key.rs`: the volume serial number
 # and file index `GetFileInformationByHandle` reports, which stable std does not
@@ -65,7 +67,8 @@ winapi-util = "0.1.11"
 # `SIO_UDP_NETRESET`, which neither std nor socket2 exposes, and the part file's
 # sparse flag, punch and allocated size (`DeviceIoControl` with
 # `FSCTL_SET_SPARSE` / `FSCTL_SET_ZERO_DATA`, `GetFileInformationByHandleEx`,
-# ADR-0111), and Preview's Default App, `AssocQueryStringW` (`Win32_UI_Shell`,
+# ADR-0111), the completion move's exclusive rename (`MoveFileExW`, ADR-0115),
+# and Preview's Default App, `AssocQueryStringW` (`Win32_UI_Shell`,
 # ADR-0114). MIT OR Apache-2.0, already in the Windows graph through socket2 and
 # mio: no crate added.
 windows-sys = { version = "0.61", features = [

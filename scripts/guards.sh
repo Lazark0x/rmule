@@ -342,6 +342,7 @@ src/sparse/macos.rs:punch_hole
 src/sparse/windows.rs:set_sparse
 src/sparse/windows.rs:punch_hole
 src/sparse/windows.rs:allocated_bytes
+src/fs/windows.rs:rename_exclusive
 src/default_app/macos.rs:drop
 src/default_app/macos.rs:cf_string
 src/default_app/macos.rs:content_type

@@ -6,6 +6,8 @@
 //! - [`sparse`]: the sparse flag, the punch and the allocated size behind
 //!   `rmule-core`'s part file. What to punch, and what a reading means, are
 //!   core's.
+//! - [`fs`]: the exclusive rename the completion move lands a finished file
+//!   with, which never replaces one standing at its target.
 //! - `default_app`, on macOS and Windows: which app the system opens a
 //!   file-name extension with, for the TUI's Preview.
 //!
@@ -19,5 +21,6 @@
 
 #[cfg(any(target_os = "macos", windows))]
 pub mod default_app;
+pub mod fs;
 pub mod sparse;
 pub mod winsock;
