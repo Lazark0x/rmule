@@ -752,15 +752,24 @@ connection here at accept time; unmatched inbound connections go to the serve pa
 before.
 _Avoid_: inbound peer (that is any accepted connection; this is one routed to *download*), dialed worker (the opposite construction)
 
-**Served Link**:
-An accepted connection that took the serve road, filed (`SharedServedLinks`) under the
-address a dial would reach its peer at: the link's own address with the hello's listen port,
-where the peer is a source. A download about to dial that address joins the link instead of
-dialing (ADR-0107, "One peer, one link"): its requests go out on the link and the link's
-requester events come back to it, as aMule asks a client over the socket it already holds.
-The link lives while its serve side or its download holds it, takes one download at a time,
-and is taken again by a later one; a newer link of the same peer replaces its filing.
-_Avoid_: shared connection (every link is bidirectional; this is the accepted one a download rides), second link
+**Peer Link**:
+A live, identified link to a peer, whoever dialed it — an accepted link on the serve road, a
+link a download dialed, or an adopted callback — filed (`SharedPeerLinks`) under each **Ask
+Name** it proves: the dial endpoint (the link's own address with the hello's listen port, where
+the peer is a source), `(server, low_id)` for a Low ID under a known server, and the User Hash.
+A download about to dial a peer, or to ask it for a callback, looks its names up first and rides
+the link it finds instead (ADR-0107, "One peer, one link"): its requests go out on the link and
+the link's requester events come back to it, as aMule asks a client over the socket it already
+holds. The link lives while its serve side, its rider or a waiter holds it; a newer link filed
+under a name takes that name.
+_Avoid_: served link (the accepted kind only), shared connection (every link is bidirectional), second link
+
+**Link Rider**:
+A download working a peer over its **Peer Link**. One rides at a time — aMule's one
+`m_reqfile` — and the others wait on the link in arrival order, aMule's A4AF list; the oldest
+waiter still running takes the link when the rider's worker ends. A waiter dials nothing and
+asks the peer nothing; the Run Log names each turn (`download.link_shared`).
+_Avoid_: A4AF source (aMule's client-side list; rmule waits on the link)
 
 **Callback Capability**:
 Our own half of the **Low-ID Admission** — aMule's `CanDoCallback`: whether we
@@ -1346,7 +1355,7 @@ _Avoid_: offline mode (peers are very much online), Kad-only mode (a config post
 ## Relationships
 
 - The core actor owns the unified set of live peer **Connection**s; the **download scheduler** and the **Upload Slot Queue** are two consumers over that one set (a connection may both pull and serve — wired on accepted connections first, dialed connections later).
-- The inbound accept loop routes by asking the **Awaited Inbound** registry (ADR-0039, ADR-0091): an accepted connection whose identified `(server, low id)` matches a **Pending Callback**, or whose hello confirms a **Pending Tunnel Claim**, becomes an **Adopted Inbound Worker** for that download; every other accepted connection flows to the serve path as a **Served Link**, which a later download of its peer rides instead of dialing it. So the accept stream is a third reader of the unified connection set, feeding the download scheduler — not only serve.
+- The inbound accept loop routes by asking the **Awaited Inbound** registry (ADR-0039, ADR-0091): an accepted connection whose identified `(server, low id)` matches a **Pending Callback**, or whose hello confirms a **Pending Tunnel Claim**, becomes an **Adopted Inbound Worker** for that download; every other accepted connection flows to the serve path as a **Peer Link**, which a later download of its peer rides instead of dialing it. So the accept stream is a third reader of the unified connection set, feeding the download scheduler — not only serve.
 - A **Search Activity** consumes search support from the eD2k server protocol service and presents app-facing result streams; selecting a result starts a separate download workflow rather than mutating the search.
 - Search uses its own `SearchCommand` / `SearchEvent` vocabulary under `CoreCommand::Search` / `CoreEvent::Search`; it is not a hidden phase of `DownloadCommand`.
 - A **Search Result Set** is process-local state for one **Search Activity**; durable search history and searchable local result indexes are later product features.

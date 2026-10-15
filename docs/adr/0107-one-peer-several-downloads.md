@@ -91,32 +91,72 @@ download takes and cannot use says why (`runt`, `unexpected_opcode`, `no_pooled_
 
 | Rule | aMule | rmule |
 |---|---|---|
-| one peer is one client object | a new source merges into the known client (`DownloadQueue.cpp:610-704`, `ClientList.cpp:253-347`) | one worker per (peer, download) |
-| a second connect to a connected client opens nothing | `TryToConnect` on a live socket only calls `ConnectionEstablished` (`BaseClient.cpp:1489-1496`) | the second download's claim waits for a later connection or lapses at its deadline |
+| one peer is one client object | a new source merges into the known client (`DownloadQueue.cpp:610-704`, `ClientList.cpp:253-347`) | one worker per (peer, download), the workers of one peer riding one Peer Link |
+| a second connect to a connected client opens nothing | `TryToConnect` on a live socket only calls `ConnectionEstablished` (`BaseClient.cpp:1489-1496`) | a download that reaches the peer's Peer Link asks no callback; a claim filed before the link came up waits for a later connection or lapses at its deadline |
 | the connection serves the requested file | `m_reqfile` | the oldest claim on the key takes it |
-| the other file learns over that connection by swap | `SwapToAnotherFile` | departs: the other download reaches the peer on its next candidate turn |
+| the other file learns over that connection by swap | `SwapToAnotherFile` | the other download waits on the adopted link and takes it when the first one's worker ends |
 
-Handing one adopted connection to two downloads would need one worker serving two files — aMule's
-A4AF — which rmule does not have; the cost is one lapsed callback deadline for the second download,
-bounded and visible.
+An adopted connection is a Peer Link like any other, so a second download of the peer rides it in
+turn rather than holding a second connection; the cost is the second claim's own deadline, bounded
+and visible.
 
-### One peer, one link (the Served Link)
+### One peer, one link (the Peer Link)
 
-A peer that dialed us — an asker of a Served Download (ADR-0113) or of a registry row — is
-already linked to us, and a download of it rides that link rather than open a second.
+aMule holds one client per peer and that client one socket: every download of the peer asks over
+it, one file at a time, and the other files wait on the client's A4AF list. rmule holds the same
+shape as a **Peer Link** — every live, identified link to a peer, whoever dialed it — and the
+downloads that ride it, one at a time.
+
+| Set | Key | Owner | Lifetime |
+|---|---|---|---|
+| **Peer Links** | each **Ask Name** the link proves: its dial endpoint (the link's own address with the hello's listen port), `(server, low_id)` when the hello names a Low ID and a known server, and the hello's User Hash | the link's driver — the accept road's or the dialing worker's router — by filing | from the hello (an adopted callback: from the adoption) to the link's end; a newer link filed under a name takes that name |
+| **Link Riders** | one Peer Link: one rider, then the waiters in arrival order | the link's driver | a rider from its turn to its worker's end; a waiter from its join to its turn, its run's stop, or the link's end |
+
+Invariants every transition keeps:
+
+7. **A download never dials a peer it reaches a Peer Link of.** Before a dial or a callback ask it
+   looks the link up under the source's names — the dial endpoint, the callback's
+   `(server, low_id)`, the User Hash its record knows — and rides or waits on what it finds.
+8. **One download rides a link at a time**, as aMule's client has one `m_reqfile`. Another download
+   of the peer waits on the link, not on a second socket, and the oldest waiter still running takes
+   the link the moment the rider's worker ends.
+9. **The link lives while any half holds it**: its serve side, its rider or a waiter (ADR-0031). Its
+   end hands every waiter back to its download, which dials as before.
+10. **A name is filed only from what the link proves or the node accepts**: the socket's address
+    (never an IPv4 claim on an IPv6 link), a Low ID only under a server the node knows, the
+    hello's User Hash. A name another client claims falsely is caught by the identified-client
+    rule below.
 
 | Rule | aMule | rmule |
 |---|---|---|
-| a client met inbound is one client with the link it came on | the new socket is attached to the client the hello names (`ClientList.cpp:371-412`) | an accepted link that takes the serve road is a **Served Link**, filed under the address a dial would reach its peer at: the link's own address with the hello's listen port |
-| a download from a connected client asks over its socket | `TryToConnect` on a live socket only calls `ConnectionEstablished` (`BaseClient.cpp:1489-1496`), which sends the file request (`:1692-1698`) | a download about to dial that address joins the Served Link: its requests go out on the link and the link's requester events come back to it; nothing is dialed |
-| where a client met inbound is dialed | its socket's address (`BaseClient.cpp:661`, `:1620`); a High-ID claim is overwritten by it (`:678-680`) | the peer as a source is read against its link (`PeerIdentity::source_coordinate`), so the sighting and the filing name one address |
-| a second link from the same address and port replaces the first | the old socket is dropped (`ClientList.cpp:400-403`), and what it carried ends | not opened while a Served Link is filed there |
+| a client is found by its address and port, then by `(low_id, server)`, then by its hash | `FindMatchingClient` (`ClientList.cpp:253-347`) | a Peer Link is filed under each name; a download looks up every name its source has |
+| a download from a connected client asks over its socket | `TryToConnect` on a live socket only calls `ConnectionEstablished` (`BaseClient.cpp:1489-1496`), which sends the file request (`:1692-1698`) | the download rides the link: its requests go out on it and the link's requester events come back to it; nothing is dialed |
+| another file of a connected client waits on the client | `AddRequestForAnotherFile` (`DownloadClient.cpp:496-507`) | the download waits on the link (a **Link Rider** waiting); nothing is dialed |
+| a downloading source is never swapped away | `SwapToAnotherFile` refuses `DS_DOWNLOADING` (`DownloadClient.cpp:1411-1421`) | the rider keeps the link until its worker ends |
+| the client swaps when its file is gone, needs nothing, or stops | `ClientTCPSocket.cpp:555-561`, `PartFile.cpp:1423-1426`, `:2203-2206` | each of these ends the rider's worker, and the oldest waiter takes the link |
+| an A4AF-auto file pulls a queued client every 15 min | `PartFile.cpp:1490-1502` | departs: rmule has no A4AF-auto preference; a rider waiting in the peer's queue holds the link until its slot budget (ADR-0026) ends its worker |
+| the uploader grants at once a client asking another file while it downloads | `UploadQueue.cpp:486-493` | a waiter that takes the link from a rider holding a slot asks and is granted on that slot |
+| a Low-ID client is found by `(low_id, server)` | `ClientList.cpp:265-300` | a callback source whose `(server, low_id)` names a link rides it, and no callback is asked: the peer's `TryToConnect` would open nothing, so the callback would lapse |
+| an IPv6 client's address is its socket's | `SetAddress(m_socket->GetPeerAddress())` (kno `BaseClient.cpp:812-813`) | on an IPv6 link the peer is a source at the link's address with its listen port (`PeerIdentity::source_coordinate`); the hello's IPv4 claim names nothing |
+| a client met inbound is dialed where its socket came from | `BaseClient.cpp:661`, `:678-680`, `:1620` | the link is filed under that address, the one its sighting names |
+| a second link from the same address and port replaces the first | the old socket is dropped (`ClientList.cpp:400-403`), and what it carried ends | not opened by a download; a newer accepted link takes the filing |
+| a second link under an identified, connected client's hash from elsewhere is a thief | the newcomer is banned, "Userhash invalid" (`ClientList.cpp:384-392`) | the serve side bans the newcomer's address and closes its link; a client identified is one whose Secure User Identification the credit ledger bound (ADR-0041) |
+| two queued clients under one hash | the unidentified one leaves the queue, and an unidentified asker gets no answer (`UploadQueue.cpp:432-458`) | at a slot ask, a waiter under the asker's hash on another link that is not identified leaves the wait list; an asker not identified is answered nothing and not queued |
+| a Low-ID client's pending grant follows it to its next connection | `m_bAddNextConnect` (`UploadQueue.cpp:410-425`) | a pending dial-back grant (ADR-0057) moves with the waiter's place onto the link its hello came back on |
+| a Low ID in `OP_CHANGE_CLIENT_ID` is taken only from a known server | `ClientTCPSocket.cpp:773-787` | the session holds the claim; core takes it only for a server in its server list, with that server's port |
 
-The link lives while either half holds it, as a dialed link does (ADR-0031): the serve side letting
-go leaves it to the download, the download's end leaves it to the serve side, and a later download
-joins it again. A newer link filed under the same address replaces the older filing. One download
-rides a link at a time; a second download of the same peer dials, the departure below. A Low-ID
-asker is a callback source, which no dial reaches, so its link is not joined.
+The swap rule, settled: a waiter takes the link when the rider's worker ends, for whatever reason it
+ends — the peer lacks the file, has nothing the download needs, the slot budget ran out, the run
+stopped, paused, finished or was cancelled. A waiter whose run stops leaves the line without a turn.
+The rider's teardown (`OP_CANCELTRANSFER` or the silent release, ADR-0056) goes out before the next
+rider's file request, so the peer reads the hand-over as aMule's `SetUploadFileID` switch.
+
+A download that rides or waits on a link is told so, and the operator sees it: a Run Log record
+(`download.link_shared`, the turn `waiting` or `riding`) and the Sources pane's mark on the slot.
+
+A Low-ID peer's callback claims are unchanged (ADR-0039): one connection answers the oldest claim.
+A second download whose claim the connection did not take rides the link at its next candidate turn,
+and its claim lapses at its own deadline.
 
 ### Citations in two trees
 
@@ -135,12 +175,15 @@ rows carry the same code in both (the fork only widens tick counts to 64 bits). 
 - A peer queued for two of our files holds two honest standings, or one standing and one TCP reask,
   never one standing read twice.
 - Two downloads falling back on the same Low-ID peer no longer strand each other.
-- **Two downloads dial one High-ID peer twice.** A stock aMule 2.3.3 answers the second hello from the
-  same client and closes the first socket silently (`AttachToAlreadyKnown`, `ClientList.cpp:386-403`),
-  which can leave the first download with no usable source. A Served Link takes one download, so a
-  second download of a peer linked to us dials it the same way. The remedy is aMule's model — one
-  connection per peer that several downloads ride, re-targeted between files — which rmule does not
-  have.
+- **Two downloads of one peer share one link.** A stock aMule 2.3.3 answers a second hello from the
+  same client by closing the first socket silently (`AttachToAlreadyKnown`, `ClientList.cpp:386-403`),
+  which left the first download with no usable source; the second download now waits on the first's
+  link instead, so the peer meets one connection, re-targeted between files as aMule re-targets
+  its own.
+- A download waiting on a link holds a worker slot of its own download while it waits, as aMule's
+  A4AF source counts among the file's sources; it dials nothing and asks the peer nothing.
+- The links rmule dials are filed too, so a download of a peer another download dialed rides that
+  link; a Low-ID asker's link is found by its callback name, an IPv6 asker's by its own address.
 - An asker downloading from us is asked for our download over its own link, so our upload to it
   survives our download from it.
 - The reask attribution is proven against fakes and the captured `0x91`; a bench topology with a
