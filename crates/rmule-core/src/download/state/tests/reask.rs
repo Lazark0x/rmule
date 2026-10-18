@@ -8,7 +8,9 @@ use rmule_peer::{ReaskAck, file_not_found_datagram, queue_full_datagram};
 use rmule_primitives::Ipv6Endpoint;
 
 use super::*;
-use crate::download::source_book::{NO_NEEDED_PARTS_MULTIPLIER, REASK_RECHECK, UDP_REASK_LEAD};
+use crate::download::source_book::{
+    LOW_ID_REASK_TIME, NO_NEEDED_PARTS_MULTIPLIER, REASK_RECHECK, UDP_REASK_LEAD,
+};
 use crate::own_identity::ConnectedSession;
 use crate::service::IgnoredReaskReply;
 
@@ -36,6 +38,12 @@ fn contact(peer: PeerEndpoint) -> PeerEndpoint {
 /// The instant, past a standing's clock origin, its UDP ping falls due.
 fn udp_due() -> Duration {
     FILE_REASK_TIME - UDP_REASK_LEAD
+}
+
+/// [`udp_due`] while we are firewalled: the **Low-ID Reask**'s window
+/// (ADR-0116).
+fn low_id_udp_due() -> Duration {
+    LOW_ID_REASK_TIME - UDP_REASK_LEAD
 }
 
 /// Our own reask position fully live: a client-UDP socket bound and a server
@@ -534,7 +542,8 @@ fn our_udp_disabled_takes_every_reask_straight_to_the_tcp_full_ask() {
 
 /// A server Low ID and no open Kad verdict: a source cannot answer by UDP a
 /// downloader no route reaches, so no ping leaves — but the window is looked
-/// at again a second later, since reachability can arrive in it.
+/// at again a second later, since reachability can arrive in it. The TCP
+/// full ask comes at the **Low-ID Reask** (ADR-0116).
 #[test]
 fn a_firewalled_downloader_never_udp_pings() {
     let mut state = started(
@@ -545,12 +554,43 @@ fn a_firewalled_downloader_never_udp_pings() {
         },
     );
     queue_and_hang_up(&mut state, peer(1), true, 5);
-    let window = t0() + udp_due();
+    let window = t0() + low_id_udp_due();
     assert!(state.on_tick(window).is_empty());
     assert_eq!(state.next_wake(), Some(window + REASK_RECHECK));
     assert_eq!(
-        asked_by_tcp(&state.on_tick(t0() + FILE_REASK_TIME)),
+        asked_by_tcp(&state.on_tick(t0() + LOW_ID_REASK_TIME)),
         vec![peer(1)]
+    );
+}
+
+/// While we are firewalled the TCP full ask comes at 15 minutes, not
+/// `FILEREASKTIME`: a Low-ID waiter's slot opens only at its next
+/// connection (ADR-0116). Reachable again, the period is aMule's 1300 s.
+#[test]
+fn a_firewalled_downloader_asks_a_queued_source_again_at_fifteen_minutes() {
+    let mut state = started(
+        &[peer(1)],
+        SourcingPosture {
+            callback_capability: low_id_session(),
+            ..live_posture()
+        },
+    );
+    queue_and_hang_up(&mut state, peer(1), true, 5);
+    assert_eq!(state.next_wake(), Some(t0() + low_id_udp_due()));
+    assert!(
+        asked_by_tcp(&state.on_tick(t0() + LOW_ID_REASK_TIME - Duration::from_secs(1))).is_empty()
+    );
+    assert_eq!(
+        asked_by_tcp(&state.on_tick(t0() + LOW_ID_REASK_TIME)),
+        vec![peer(1)]
+    );
+
+    let mut reachable = started(&[peer(2)], live_posture());
+    queue_and_hang_up(&mut reachable, peer(2), true, 5);
+    assert!(asked_by_tcp(&reachable.on_tick(t0() + LOW_ID_REASK_TIME)).is_empty());
+    assert_eq!(
+        asked_by_tcp(&reachable.on_tick(t0() + FILE_REASK_TIME)),
+        vec![peer(2)]
     );
 }
 

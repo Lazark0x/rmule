@@ -23,6 +23,9 @@
 //!   nears its source limit (the purges, aMule `CPartFile::Process`).
 //! - A **no-needed-parts** source reasks at ×[`NO_NEEDED_PARTS_MULTIPLIER`] the
 //!   period, over TCP only (aMule `PartFile.cpp`).
+//! - While we are firewalled, the ordinary period is the **Low-ID Reask**,
+//!   [`LOW_ID_REASK_TIME`] (ADR-0116): a Low-ID downloader's slot opens only
+//!   at its next connection, so its TCP full ask comes sooner.
 //!
 //! Every clock read is an instant the brain hands in.
 
@@ -40,6 +43,15 @@ use super::record::{Lane, Live, RecordId, Stage};
 /// aMule `FILEREASKTIME` (`Constants.h`): 1,300,000 ms — the source-reask
 /// period, ≈ 21.7 minutes, and the spent endpoints' period (ADR-0090).
 pub(crate) const FILE_REASK_TIME: Duration = Duration::from_millis(1_300_000);
+
+/// The **Low-ID Reask** (ADR-0116): the ordinary period while we are
+/// firewalled, 900 s. A Low-ID waiter's slot opens only at its next connection
+/// (aMule `UploadQueue.cpp:136-138`, `:405-425`) and no direct ping leaves a
+/// firewalled node (`DownloadClient.cpp:1269`), so the TCP full ask is its one
+/// road to a slot. kno's `SourceReaskMinutes` floor and eMuleAI's
+/// `FILEREASKTIME` are both 15 minutes; aMule penalises an ask under 590 s
+/// (`MIN_REQUESTTIME`, `Constants.h:67`; `UploadClient.cpp:795-822`).
+pub(crate) const LOW_ID_REASK_TIME: Duration = Duration::from_secs(900);
 
 /// The UDP ping leads the TCP full ask by 20 s (aMule `DownloadClient.cpp`: the
 /// UDP reask fires at `FILEREASKTIME − 20 s`, the TCP full ask at
@@ -162,13 +174,17 @@ impl Standing {
         self.crypt = Some(facts.crypt);
     }
 
-    /// The reask period: the base [`FILE_REASK_TIME`], doubled for a
-    /// no-needed-parts source.
-    fn period(&self) -> Duration {
+    /// The reask period while we are `reachable` or not: the base
+    /// [`FILE_REASK_TIME`], the **Low-ID Reask** while firewalled, and twice
+    /// the base for a no-needed-parts source, which asks for parts, not a
+    /// slot (ADR-0116).
+    fn period(&self, reachable: bool) -> Duration {
         if self.no_needed_parts {
             FILE_REASK_TIME * NO_NEEDED_PARTS_MULTIPLIER
-        } else {
+        } else if reachable {
             FILE_REASK_TIME
+        } else {
+            LOW_ID_REASK_TIME
         }
     }
 
@@ -192,8 +208,8 @@ impl Standing {
     }
 
     /// When this standing next wants a look.
-    fn wake(&self, socket: bool) -> Instant {
-        let full_ask = self.last_reask + self.period();
+    fn wake(&self, socket: bool, reachable: bool) -> Instant {
+        let full_ask = self.last_reask + self.period(reachable);
         if !self.pingable(socket) {
             return full_ask;
         }
@@ -389,7 +405,7 @@ impl SourceBook {
             else {
                 continue;
             };
-            let period = standing.period();
+            let period = standing.period(gates.reachable);
             let elapsed = now.saturating_duration_since(standing.last_reask);
             if elapsed >= period {
                 self.full_ask(id, peer);
@@ -461,14 +477,14 @@ impl SourceBook {
             })
     }
 
-    /// When the earliest standing next wants a look; `socket` says whether
-    /// any ping can leave at all.
-    pub(crate) fn next_reask(&self, socket: bool) -> Option<Instant> {
+    /// When the earliest standing next wants a look; `gates` say whether any
+    /// ping can leave at all and which period is in force.
+    pub(crate) fn next_reask(&self, gates: ReaskGates) -> Option<Instant> {
         self.records
             .values()
             .filter(|record| matches!(record.stage, Stage::RemoteQueued(_)))
             .filter_map(|record| record.standing)
-            .map(|standing| standing.wake(socket))
+            .map(|standing| standing.wake(gates.socket, gates.reachable))
             .min()
     }
 

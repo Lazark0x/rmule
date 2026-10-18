@@ -54,7 +54,9 @@ pub(crate) use self::run_tier::CLIENT_LIST_CLEANUP;
 use self::run_tier::RunTier;
 pub(crate) use self::standing::{Answer, Reask, ReaskGates, UDP_REASK_LEAD};
 #[cfg(test)]
-pub(crate) use self::standing::{FILE_REASK_TIME, NO_NEEDED_PARTS_MULTIPLIER, REASK_RECHECK};
+pub(crate) use self::standing::{
+    FILE_REASK_TIME, LOW_ID_REASK_TIME, NO_NEEDED_PARTS_MULTIPLIER, REASK_RECHECK,
+};
 use crate::adapters::CallbackKey;
 use crate::download::source_ask_clock::{FileAskClock, SourceCounts};
 use crate::download::state::{LowIdCandidate, LowIdRoad};

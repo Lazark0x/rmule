@@ -68,7 +68,7 @@ impl DownloadState {
             self.sources.next_deadline(),
             self.callback_capability
                 .connected()
-                .then(|| self.sources.next_reask(self.our_udp_enabled))
+                .then(|| self.sources.next_reask(self.reask_gates()))
                 .flatten(),
             self.sources
                 .next_purge(&self.callback_capability, self.dial),

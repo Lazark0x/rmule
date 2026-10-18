@@ -21,11 +21,18 @@ impl DownloadState {
     /// a firewalled source is reasked by through its buddy, leaves as a
     /// [`Decision::SendReaskPing`], and each TCP full ask hands its record to
     /// its road, which the fill that follows opens.
-    pub(super) fn reask_sweep(&mut self, now: Instant, out: &mut Vec<Decision>) {
-        let gates = ReaskGates {
+    /// What our own position says of the reask this instant: whether a ping
+    /// can leave, and whether we are reachable — which also picks the period
+    /// (ADR-0057, ADR-0116).
+    pub(super) fn reask_gates(&self) -> ReaskGates {
+        ReaskGates {
             socket: self.our_udp_enabled,
             reachable: self.callback_capability.reachable(),
-        };
+        }
+    }
+
+    pub(super) fn reask_sweep(&mut self, now: Instant, out: &mut Vec<Decision>) {
+        let gates = self.reask_gates();
         let mut asked_by_tcp = false;
         for reask in self.sources.sweep(now, gates) {
             match reask {

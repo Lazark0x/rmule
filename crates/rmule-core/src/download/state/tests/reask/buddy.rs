@@ -87,7 +87,7 @@ fn a_firewalled_downloader_reasks_a_low_id_source_through_its_buddy() {
     let mut state = standing_called_back(true);
     let _ = state.on_callback_capability(t0(), firewalled());
 
-    let due = state.on_tick(t0() + udp_due());
+    let due = state.on_tick(t0() + low_id_udp_due());
     assert_eq!(
         the_reask(&due),
         (
@@ -104,7 +104,7 @@ fn a_firewalled_downloader_reasks_a_low_id_source_through_its_buddy() {
     assert_eq!(ping.crypt_target, None, "a buddy is sent plaintext");
 
     assert!(
-        pinged(&state.on_tick(t0() + udp_due() + Duration::from_secs(5))).is_empty(),
+        pinged(&state.on_tick(t0() + low_id_udp_due() + Duration::from_secs(5))).is_empty(),
         "one reask in flight"
     );
 }
@@ -116,9 +116,9 @@ fn a_firewalled_downloader_with_no_buddy_endpoint_waits_for_the_full_ask() {
     let mut state = standing_called_back(false);
     let _ = state.on_callback_capability(t0(), firewalled());
 
-    assert!(pinged(&state.on_tick(t0() + udp_due())).is_empty());
+    assert!(pinged(&state.on_tick(t0() + low_id_udp_due())).is_empty());
     assert_eq!(
-        asked_by_tcp(&state.on_tick(t0() + FILE_REASK_TIME)),
+        asked_by_tcp(&state.on_tick(t0() + LOW_ID_REASK_TIME)),
         vec![called_in()]
     );
 }
