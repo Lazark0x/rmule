@@ -267,10 +267,10 @@ impl ManagedServer {
         if !fresh.description.as_bytes().is_empty() {
             self.description = fresh.description;
         }
-        // The later answer's figures win: an import dated after the
-        // last answer rmule heard replaces them, an older one does not.
-        let answered = |figures: &Option<ServerFigures>| figures.as_ref().map(|f| f.answered_at);
-        if answered(&fresh.figures) > answered(&self.figures) {
+        // The later-dated figures win, by the later of each side's two
+        // dates: an import dated after what rmule last heard replaces them,
+        // an older one does not.
+        if dated(fresh.figures.as_ref()) > dated(self.figures.as_ref()) {
             self.figures = fresh.figures;
         }
         // The obfuscation TCP port a downloaded row states is the server's
@@ -315,13 +315,18 @@ impl ManagedServer {
             self.priority = listed.priority;
         }
         self.is_static |= listed.is_static;
-        let answered = |figures: &Option<ServerFigures>| figures.as_ref().map(|f| f.answered_at);
-        if answered(&listed.figures) > answered(&self.figures) {
+        if dated(listed.figures.as_ref()) > dated(self.figures.as_ref()) {
             self.figures = listed.figures;
         }
         self.grants = self.grants.or(listed.grants);
         self.udp_crypt = self.udp_crypt.or(listed.udp_crypt);
     }
+}
+
+/// When `figures` were last dated, by the later of their two dates; `None`
+/// for a row with none — older than any dated figures.
+fn dated(figures: Option<&ServerFigures>) -> Option<u64> {
+    figures.and_then(ServerFigures::dated)
 }
 
 /// What [`ServerListStore::merge_server`] did with the row it was handed.
