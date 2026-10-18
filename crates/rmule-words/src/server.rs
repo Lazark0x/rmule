@@ -143,6 +143,8 @@ pub const AUTO_UPDATE_LABEL: &str = "Update lists";
 pub const AUTO_UPDATE_NOTE: &str = "merge every address below at start  (on restart)";
 /// The Settings row holding the auto-update addresses.
 pub const AUTO_UPDATE_URLS_LABEL: &str = "List URLs";
+/// The auto-update addresses row while none is set.
+pub const AUTO_UPDATE_URLS_NONE: &str = "none set";
 /// What the auto-update addresses are, and how they are typed.
 pub const AUTO_UPDATE_URLS_NOTE: &str = "server.met addresses, space between  (on restart)";
 

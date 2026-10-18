@@ -18,6 +18,8 @@ fn state() -> UiState {
             udp_port: 4672,
             server_met_url: rmule_bootstrap::DEFAULT_SERVER_MET_URL.to_string(),
             auto_fetch_server_met: true,
+            auto_update_server_met: false,
+            server_met_auto_update_urls: Vec::new(),
             nodes_dat_url: rmule_bootstrap::DEFAULT_NODES_DAT_URL.to_string(),
             auto_fetch_nodes_dat: true,
             theme: ThemeChoice::Auto,
@@ -247,6 +249,42 @@ fn the_dead_server_limit_takes_one_to_ten_tries() {
             "{refused} was taken"
         );
     }
+}
+
+/// The auto-update addresses are typed on one line, a space between: each
+/// must be an `http` or `https` URL, and an empty line sets none.
+#[test]
+fn the_auto_update_addresses_split_on_spaces_and_each_must_be_a_url() {
+    let mut view = SettingsView::new();
+    let state = state();
+    let mut typed = |text: &str| {
+        focus_on(&mut view, Row::ServerMetAutoUpdateUrls);
+        view.handle_key(press(KeyCode::Enter), &state);
+        for c in text.chars() {
+            view.handle_key(press(KeyCode::Char(c)), &state);
+        }
+        let outcome = view.handle_key(press(KeyCode::Enter), &state);
+        view.handle_key(press(KeyCode::Esc), &state);
+        outcome
+    };
+    let urls = vec![
+        "http://one.example/server.met".to_owned(),
+        "https://two.example/server.met".to_owned(),
+    ];
+    assert!(matches!(
+        typed(" http://one.example/server.met  https://two.example/server.met "),
+        ViewOutcome::Emit(Action::Preference(PrefEdit::ServerMetAutoUpdateUrls(typed)))
+            if typed == urls
+    ));
+    assert!(matches!(
+        typed(""),
+        ViewOutcome::Emit(Action::Preference(PrefEdit::ServerMetAutoUpdateUrls(typed)))
+            if typed.is_empty()
+    ));
+    assert!(matches!(
+        typed("http://one.example/server.met ftp://two.example/server.met"),
+        ViewOutcome::Redraw
+    ));
 }
 
 /// `Remember peers` takes 1 to 255; a refusal says the range.

@@ -41,6 +41,11 @@ fn every_edit_persists_and_reloads_as_itself() {
         PrefEdit::UdpPort(4722),
         PrefEdit::ServerMetUrl("https://example.invalid/server.met".to_string()),
         PrefEdit::AutoFetchServerMet(false),
+        PrefEdit::AutoUpdateServerMet(true),
+        PrefEdit::ServerMetAutoUpdateUrls(vec![
+            "https://one.invalid/server.met".to_string(),
+            "https://two.invalid/server.met".to_string(),
+        ]),
         PrefEdit::NodesDatUrl("https://example.invalid/nodes.dat".to_string()),
         PrefEdit::AutoFetchNodesDat(false),
         PrefEdit::Theme(ThemeChoice::Light),

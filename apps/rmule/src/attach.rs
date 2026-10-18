@@ -21,6 +21,11 @@
 //! act (ADR-0095), and a listed server is what they connect to — so the gate
 //! reads eD2k as on. The fetch dials no server, and it is one-shot like
 //! amuled's: a failure waits for the operator.
+//!
+//! The server.met auto-update walk (ADR-0065), when the operator turned it
+//! on, goes the same way as the `AutoUpdateServerList` command. Both share
+//! the actor's one update slot, so when a first run is due too its mirror
+//! goes in front of the walk's addresses and one walk runs.
 
 use std::sync::Arc;
 
@@ -188,6 +193,8 @@ pub async fn attach<D: Deployment>(
     // operator can turn back off — as are both mirror URLs.
     let bootstrap = BootstrapConfig {
         auto_fetch_server_met: preferences.auto_fetch_server_met,
+        auto_update_enabled: preferences.auto_update_server_met,
+        auto_update_urls: preferences.server_met_auto_update_urls.clone(),
         auto_fetch_nodes_dat: preferences.auto_fetch_nodes_dat,
         server_met_url: preferences.server_met_url.clone(),
         nodes_dat_url: preferences.nodes_dat_url.clone(),
@@ -237,14 +244,13 @@ pub async fn attach<D: Deployment>(
     // live key is taken up at once (ADR-0069).
     let config = SharedConfig::new(core.settings(), store.clone());
 
-    // ADR-0065's first-run fetch, through the actor (see the module docs).
-    if should_auto_fetch_server_met(true, listed.is_empty(), bootstrap.auto_fetch_server_met) {
-        let url = bootstrap.server_met_url.clone();
-        let update = CoreCommand::ServerList(ServerListCommand::UpdateServerList { url });
+    // ADR-0065's first-run fetch and auto-update walk, through the actor
+    // (see the module docs).
+    if let Some(acquisition) = list_acquisition_at_start(&bootstrap, listed.is_empty()) {
         // A core that cannot take its first command is gone; the bridge
         // reports the closed core, so the run still opens.
-        if let Err(error) = core.send(update).await {
-            tracing::warn!(%error, "first-run server list fetch could not be sent");
+        if let Err(error) = core.send(CoreCommand::ServerList(acquisition)).await {
+            tracing::warn!(%error, "the server list acquisition at start could not be sent");
         }
     }
 
@@ -271,5 +277,27 @@ pub async fn attach<D: Deployment>(
         preferences,
         kad,
         at_start,
+    })
+}
+
+/// What the app sends core at start to grow the server list (ADR-0065): the
+/// auto-update walk when its switch is on, with the first-run mirror in
+/// front of its addresses when a first run is due too, so one acquisition
+/// runs; else the first-run fetch alone when it is due; else nothing.
+fn list_acquisition_at_start(
+    bootstrap: &BootstrapConfig,
+    list_empty: bool,
+) -> Option<ServerListCommand> {
+    let first_run = should_auto_fetch_server_met(true, list_empty, bootstrap.auto_fetch_server_met);
+    if bootstrap.auto_update_enabled {
+        let urls = first_run
+            .then(|| bootstrap.server_met_url.clone())
+            .into_iter()
+            .chain(bootstrap.auto_update_urls.iter().cloned())
+            .collect();
+        return Some(ServerListCommand::AutoUpdateServerList { urls });
+    }
+    first_run.then(|| ServerListCommand::UpdateServerList {
+        url: bootstrap.server_met_url.clone(),
     })
 }

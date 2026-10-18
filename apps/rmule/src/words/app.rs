@@ -30,6 +30,14 @@ pub fn receipt(edit: &PrefEdit, effect: rmule_core::TakesEffect) -> Sentence {
         PrefEdit::AutoFetchServerMet(on) => {
             format!("server.met fetch at start → {}", on_off(*on))
         }
+        PrefEdit::AutoUpdateServerMet(on) => {
+            format!("server list auto-update at start → {}", on_off(*on))
+        }
+        PrefEdit::ServerMetAutoUpdateUrls(urls) => match urls.len() {
+            0 => "server list auto-update addresses → none".to_string(),
+            1 => "server list auto-update addresses → 1".to_string(),
+            n => format!("server list auto-update addresses → {n}"),
+        },
         PrefEdit::NodesDatUrl(url) => format!("nodes.dat URL → {url}"),
         PrefEdit::AutoFetchNodesDat(on) => format!("nodes.dat auto-fetch → {}", on_off(*on)),
         PrefEdit::Theme(choice) => format!("theme → {}", choice.name()),

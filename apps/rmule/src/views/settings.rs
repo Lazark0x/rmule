@@ -61,6 +61,7 @@ use crate::views::ViewOutcome;
 use crate::words::Sentence;
 use crate::words::app as words;
 use crate::words::front_door;
+use crate::words::server as server_words;
 use crate::wrap::clamp_u16;
 use shared_dirs::Slot;
 
@@ -82,6 +83,8 @@ pub(super) enum Row {
     ConnectAtStart,
     ServerMetUrl,
     AutoFetchServerMet,
+    AutoUpdateServerMet,
+    ServerMetAutoUpdateUrls,
     DeadServerRetries,
     WithholdShares,
     RememberPeers,
@@ -95,7 +98,7 @@ pub(super) enum Row {
 }
 
 impl Row {
-    const ALL: [Row; 21] = [
+    const ALL: [Row; 23] = [
         Row::DownloadDir,
         Row::TempDir,
         Row::DataDir,
@@ -107,6 +110,8 @@ impl Row {
         Row::ConnectAtStart,
         Row::ServerMetUrl,
         Row::AutoFetchServerMet,
+        Row::AutoUpdateServerMet,
+        Row::ServerMetAutoUpdateUrls,
         Row::DeadServerRetries,
         Row::WithholdShares,
         Row::RememberPeers,
@@ -285,6 +290,18 @@ fn build(prefs: &Preferences, state: &UiState) -> (Form, Vec<Slot>) {
                 usize::from(prefs.auto_fetch_server_met),
             )
             .with_note("server.met at start when the list is empty  (on restart)"),
+            Row::AutoUpdateServerMet => Field::choice(
+                server_words::AUTO_UPDATE_LABEL,
+                ON_OFF.to_vec(),
+                usize::from(prefs.auto_update_server_met),
+            )
+            .with_note(server_words::AUTO_UPDATE_NOTE),
+            Row::ServerMetAutoUpdateUrls => Field::text(
+                server_words::AUTO_UPDATE_URLS_LABEL,
+                prefs.server_met_auto_update_urls.join(" "),
+            )
+            .with_placeholder(server_words::AUTO_UPDATE_URLS_NONE)
+            .with_note(server_words::AUTO_UPDATE_URLS_NOTE),
             Row::UdpPort => {
                 Field::text("UDP port", prefs.udp_port.to_string()).with_note(ON_RESTART)
             }
@@ -429,6 +446,11 @@ impl SettingsView {
                 PrefEdit::UdpPort(port)
             }
             Some(Row::ServerMetUrl) => PrefEdit::ServerMetUrl(validate_url(text)?.to_string()),
+            Some(Row::ServerMetAutoUpdateUrls) => PrefEdit::ServerMetAutoUpdateUrls(
+                text.split_whitespace()
+                    .map(|url| validate_url(url).map(str::to_owned))
+                    .collect::<Result<_, _>>()?,
+            ),
             Some(Row::DeadServerRetries) => PrefEdit::DeadServerRetries(validate_dead_after(text)?),
             Some(Row::RememberPeers) => PrefEdit::RememberPeers(validate_remember_peers(text)?),
             Some(Row::PlayerCommand) => PrefEdit::PlayerCommand(player_command(text)?),
@@ -439,6 +461,9 @@ impl SettingsView {
             Some(Row::WithholdShares) => PrefEdit::WithholdShares(self.form.choice(index) == 1),
             Some(Row::AutoFetchServerMet) => {
                 PrefEdit::AutoFetchServerMet(self.form.choice(index) == 1)
+            }
+            Some(Row::AutoUpdateServerMet) => {
+                PrefEdit::AutoUpdateServerMet(self.form.choice(index) == 1)
             }
             Some(Row::AutoFetchNodesDat) => {
                 PrefEdit::AutoFetchNodesDat(self.form.choice(index) == 1)

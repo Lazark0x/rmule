@@ -200,6 +200,63 @@ async fn the_settings_tab_edits_through_the_attached_core() {
     );
 }
 
+/// The auto-update walk (ADR-0065), turned on in Settings: attaching walks
+/// every address once through the actor, the first-run mirror in front when
+/// the list is empty too, so one acquisition runs and none is refused for
+/// another in flight.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_auto_update_walk_runs_once_at_attach_with_the_first_run_in_front() {
+    let urls = vec![
+        "http://one.example/server.met".to_owned(),
+        "http://two.example/server.met".to_owned(),
+    ];
+    let dir = data_dir(|_, settings| {
+        settings
+            .set(Setting::AutoUpdateServerMet(true))
+            .expect("turn the walk on");
+        settings
+            .set(Setting::ServerMetAutoUpdateUrls(urls.clone()))
+            .expect("set the addresses");
+    });
+    let fetch = CannedFetch {
+        body: Some(Arc::new(server_met(&[(
+            Ipv4Addr::new(198, 51, 100, 7),
+            4661,
+        )]))),
+        ..CannedFetch::default()
+    };
+    let deployment = Scratch {
+        fetch: fetch.clone(),
+        ..Scratch::default()
+    };
+
+    let Attachment { mut core, .. } = attach_in(&dir, &deployment).await;
+    let total = tokio::time::timeout(HANG_GUARD, async {
+        loop {
+            match core.next_event().await.expect("core alive") {
+                CoreEvent::ServerList(ServerListEvent::ServerListUpdated { total, .. }) => {
+                    return total;
+                }
+                CoreEvent::CommandRejected { reason } => panic!("refused: {reason:?}"),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("the walk lands");
+
+    assert_eq!(total, 1);
+    assert_eq!(
+        fetch.asked(),
+        [
+            rmule_bootstrap::DEFAULT_SERVER_MET_URL,
+            urls[0].as_str(),
+            urls[1].as_str()
+        ],
+        "one walk: the first-run mirror, then each address in order"
+    );
+}
+
 /// The off switch: with `auto_fetch_server_met` off, a fresh data directory
 /// starts with its empty list and nothing is fetched.
 #[tokio::test(flavor = "multi_thread")]

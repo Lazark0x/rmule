@@ -11,13 +11,13 @@ re-run it after editing a table and paste its output here.
 
 | Surface | Rows | At parity | Partial | Missing | Exempt | Fixture-proven | Code only | No evidence | At parity, fixture-proven |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| server-tcp | 22 | 21 | 1 | 0 | 0 | 15 | 7 | 0 | 14 |
+| server-tcp | 22 | 22 | 0 | 0 | 0 | 15 | 7 | 0 | 15 |
 | server-udp | 12 | 12 | 0 | 0 | 0 | 9 | 3 | 0 | 9 |
 | peer-tcp | 46 | 44 | 1 | 0 | 1 | 24 | 21 | 1 | 23 |
 | peer-udp | 8 | 7 | 1 | 0 | 0 | 7 | 1 | 0 | 7 |
 | kad-udp | 39 | 28 | 3 | 0 | 8 | 24 | 7 | 8 | 23 |
-| bootstrap | 19 | 12 | 2 | 0 | 5 | 7 | 9 | 3 | 5 |
-| **Total** | **146** | **124** | **8** | **0** | **14** | **86** | **48** | **12** | **81** |
+| bootstrap | 19 | 14 | 0 | 0 | 5 | 7 | 9 | 3 | 5 |
+| **Total** | **146** | **127** | **5** | **0** | **14** | **86** | **48** | **12** | **82** |
 
 The script counts every table row that has both a `Status` and an `Evidence`
 column. The detail tables in `peer-tcp.md` (*Client identification*, *Hello read

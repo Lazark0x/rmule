@@ -5,4 +5,4 @@
 │Downloads                                                                  ▂│
 │ Remember peers 10  per download, dialled first after a restart             │
 │ Player       unset — Preview opens the default app                        ▼│
-└─────────────────────────────────────────────────────────────────── 15 / 19 ┘
+└─────────────────────────────────────────────────────────────────── 17 / 21 ┘

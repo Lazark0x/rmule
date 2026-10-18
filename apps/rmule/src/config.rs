@@ -170,6 +170,8 @@ impl SharedConfig {
             udp_port: core.udp_port,
             server_met_url: core.server_met_url,
             auto_fetch_server_met: core.auto_fetch_server_met,
+            auto_update_server_met: core.auto_update_server_met,
+            server_met_auto_update_urls: core.server_met_auto_update_urls,
             nodes_dat_url: core.nodes_dat_url,
             auto_fetch_nodes_dat: core.auto_fetch_nodes_dat,
             theme: ThemeChoice::parse(text(FrontEndKey::Theme)?.as_deref()),
@@ -350,6 +352,12 @@ pub struct Preferences {
     /// [`server_met_url`](Self::server_met_url) once (ADR-0065). On by
     /// default; read at start.
     pub auto_fetch_server_met: bool,
+    /// Whether a start walks
+    /// [`server_met_auto_update_urls`](Self::server_met_auto_update_urls)
+    /// (ADR-0065's auto-update). Off by default; read at start.
+    pub auto_update_server_met: bool,
+    /// The server.met addresses the auto-update walks, in order.
+    pub server_met_auto_update_urls: Vec<String>,
     /// Where a Kad bootstrap fetch pulls `nodes.dat` from.
     pub nodes_dat_url: String,
     /// Whether a Kad start with no contacts may fetch that file itself
@@ -414,6 +422,8 @@ impl Default for Preferences {
             udp_port: rmule_core::DEFAULT_UDP_PORT,
             server_met_url: rmule_bootstrap::DEFAULT_SERVER_MET_URL.to_string(),
             auto_fetch_server_met: true,
+            auto_update_server_met: false,
+            server_met_auto_update_urls: Vec::new(),
             nodes_dat_url: rmule_bootstrap::DEFAULT_NODES_DAT_URL.to_string(),
             auto_fetch_nodes_dat: true,
             theme: ThemeChoice::Auto,
@@ -453,6 +463,10 @@ impl Preferences {
             PrefEdit::UdpPort(port) => self.udp_port = *port,
             PrefEdit::ServerMetUrl(url) => self.server_met_url = url.clone(),
             PrefEdit::AutoFetchServerMet(on) => self.auto_fetch_server_met = *on,
+            PrefEdit::AutoUpdateServerMet(on) => self.auto_update_server_met = *on,
+            PrefEdit::ServerMetAutoUpdateUrls(urls) => {
+                self.server_met_auto_update_urls = urls.clone();
+            }
             PrefEdit::NodesDatUrl(url) => self.nodes_dat_url = url.clone(),
             PrefEdit::AutoFetchNodesDat(on) => self.auto_fetch_nodes_dat = *on,
             PrefEdit::Theme(choice) => self.theme = *choice,
@@ -497,6 +511,11 @@ pub enum PrefEdit {
     /// Takes effect at the next start: the first-run fetch is decided once,
     /// at attach.
     AutoFetchServerMet(bool),
+    /// Takes effect at the next start: the auto-update walk is decided once,
+    /// at attach.
+    AutoUpdateServerMet(bool),
+    /// Takes effect at the next start, for the same reason.
+    ServerMetAutoUpdateUrls(Vec<String>),
     /// Takes effect at the next start: bootstrap config is read once.
     NodesDatUrl(String),
     /// Takes effect at the next start, for the same reason.
@@ -589,6 +608,8 @@ impl PrefEdit {
             Self::UdpPort(port) => Setting::UdpPort(*port),
             Self::ServerMetUrl(url) => Setting::ServerMetUrl(url.clone()),
             Self::AutoFetchServerMet(on) => Setting::AutoFetchServerMet(*on),
+            Self::AutoUpdateServerMet(on) => Setting::AutoUpdateServerMet(*on),
+            Self::ServerMetAutoUpdateUrls(urls) => Setting::ServerMetAutoUpdateUrls(urls.clone()),
             Self::NodesDatUrl(url) => Setting::NodesDatUrl(url.clone()),
             Self::AutoFetchNodesDat(on) => Setting::AutoFetchNodesDat(*on),
             Self::Obfuscation(choice) => Setting::Obfuscation(choice.policy()),

@@ -16,15 +16,15 @@
 │ Autoconnect  off  at start, to the last server — none yet  (on restart)   █│
 │ server.met   http://upd.emule-security.org/server.met  (Networks: U)      █│
 │ Fetch list   on  server.met at start when the list is empty  (on restart) █│
-│                                                                           █│
-│Servers                                                                    ▆│
+│ Update lists off  merge every address below at start  (on restart)        ▄│
+│ List URLs    none set  server.met addresses, space between  (on restart)   │
+│                                                                            │
+│Servers                                                                     │
 │ Dead after   3  failed tries in a row; a dead server stays listed          │
 │ Hide shares  off  from servers that answer related searches                │
 │                                                                            │
 │Downloads                                                                   │
 │ Remember peers 10  per download, dialled first after a restart             │
-│ Player       unset — Preview opens the default app                         │
-│                                                                            │
-│Kad                                                                        ▼│
+│ Player       unset — Preview opens the default app                        ▼│
 │ ✗ nickname is required                                                     │
-└──────────────────────────────────────────────────────────────────── 4 / 19 ┘
+└──────────────────────────────────────────────────────────────────── 4 / 21 ┘
