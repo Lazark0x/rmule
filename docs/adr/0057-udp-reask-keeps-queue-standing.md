@@ -203,7 +203,10 @@ aMule's `FILEREASKTIME` of 1 300 000 ms
   closed for the new one (`:400-403`); a live link from anywhere else keeps its client.
   `ServeEvent::WaiterRelinked` carries every row and mark keyed by the old link to the
   new one, and the new link's slot ask is answered at the place it kept. A pending
-  dial-back grant does not move yet: it is reclaimed by the purge.
+  dial-back grant moves the same way and turns live at the client's next ask on the new
+  link, as aMule hands a client marked for its next connection the slot there
+  (`m_bAddNextConnect`, `UploadQueue.cpp:410-425`); one whose client never comes back is
+  reclaimed by the purge.
 - **Promotion dials back.** Promoting a disconnected waiter dials its TCP endpoint and
   sends `OP_ACCEPTUPLOADREQ` on connect
   ([UploadQueue.cpp#L169](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/UploadQueue.cpp#L169)),
