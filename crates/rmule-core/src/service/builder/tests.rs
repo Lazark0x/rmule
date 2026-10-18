@@ -233,6 +233,23 @@ impl crate::adapters::SourceLookupService for RefusingLookup {
     }
 }
 
+/// A server lookup that never answers, except for one file it refuses at
+/// once: that file's download dies on its own while every other stays alive.
+#[derive(Clone)]
+struct SilentExcept(FileHash);
+
+impl crate::adapters::SourceLookupService for SilentExcept {
+    async fn lookup_sources(
+        &mut self,
+        target: SourceLookupTarget,
+    ) -> Result<crate::SourceLookupOutcome, crate::DownloadFailure> {
+        if target.file_hash() == self.0 {
+            return Err(crate::DownloadFailure::ServerFiltered);
+        }
+        std::future::pending().await
+    }
+}
+
 fn start_download(seed: u8) -> CoreCommand {
     let file_hash = FileHash::from_bytes([seed; FileHash::BYTE_LEN]);
     CoreCommand::Download(crate::DownloadCommand::StartDownload {
@@ -268,20 +285,35 @@ async fn queued(core: &mut Core) -> crate::DownloadId {
     }
 }
 
-/// A command round trip, several times over: the actor's `select!` picks a
-/// ready arm at random, so after this any finish notice queued before it has
-/// almost surely been drained.
-async fn settle(core: &mut Core) {
-    for _ in 0..8 {
-        core.send(CoreCommand::DumpDiagnostics)
-            .await
-            .expect("core alive");
-        next_expected(core, |event| {
-            matches!(event, CoreEvent::DiagnosticsSnapshot { .. })
-        })
-        .await;
-    }
+/// The cancelled download's terminal event. The cancel returned its
+/// **file-known** entry before it said so, and the run's task has ended, so its
+/// finish notice is already queued for the actor.
+async fn cancelled(core: &mut Core, download_id: crate::DownloadId) {
+    next_expected(core, |event| {
+        matches!(
+            event,
+            CoreEvent::Download(crate::DownloadEvent::DownloadCancelled { download_id: id })
+                if *id == download_id
+        )
+    })
+    .await;
 }
+
+/// Wait until `known` has taken `hash` back. A run that dies on its own is
+/// retired by the finish notice it queues, after the event that says it
+/// failed, so the entry coming back is the only sign the notice was taken.
+async fn until_released(known: &crate::known_files::SharedFileKnown, hash: FileHash) {
+    tokio::time::timeout(rmule_testkit::HANG_GUARD, async {
+        while known.contains(hash) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the download's file-known entry was returned");
+}
+
+/// The file whose download [`SilentExcept`] refuses.
+const SENTINEL: u8 = 0xEE;
 
 /// ADR-0093's download stop: the stop returns the file-known entry the start
 /// stamped, so a cancelled download's late finish notice can no longer clear
@@ -300,7 +332,7 @@ async fn a_stopped_download_returns_its_file_known_entry_and_its_late_finish_cle
         download_dir: Some(dir.path().to_path_buf()),
         ..crate::CoreSettings::default()
     })
-    .source_lookup(SilentLookup);
+    .source_lookup(SilentExcept(FileHash::from_bytes([SENTINEL; FileHash::BYTE_LEN])));
     let known = builder.node.cells.file_known.clone();
     let mut core = builder.build();
 
@@ -318,13 +350,18 @@ async fn a_stopped_download_returns_its_file_known_entry_and_its_late_finish_cle
         .expect("cancel");
         core.send(start_download(seed)).await.expect("start");
         running = queued(&mut core).await;
-        settle(&mut core).await;
-        assert!(
-            known.contains(FileHash::from_bytes([seed; FileHash::BYTE_LEN])),
-            "the running download's hash survives the cancelled one's finish"
-        );
+        assert!(known.contains(FileHash::from_bytes([seed; FileHash::BYTE_LEN])));
         assert!(!known.contains(FileHash::from_bytes([seed - 1; FileHash::BYTE_LEN])));
     }
+    // Each cancelled run queued its finish notice on the channel the sentinel's
+    // death will use, ahead of it: once the sentinel's entry is back, every
+    // late notice has been taken.
+    core.send(start_download(SENTINEL)).await.expect("start");
+    until_released(&known, FileHash::from_bytes([SENTINEL; FileHash::BYTE_LEN])).await;
+    assert!(
+        known.contains(FileHash::from_bytes([7; FileHash::BYTE_LEN])),
+        "the running download's hash survives every cancelled run's late finish"
+    );
 }
 
 /// The **Download Set**: every running download's file is
@@ -363,7 +400,7 @@ async fn retiring_one_of_several_downloads_leaves_the_others_known() {
     ))
     .await
     .expect("cancel");
-    settle(&mut core).await;
+    cancelled(&mut core, ids[1]).await;
     assert!(!known.contains(hash(2)), "the cancelled download's entry");
     assert!(known.contains(hash(1)) && known.contains(hash(3)));
 }
@@ -390,8 +427,7 @@ async fn a_dead_download_returns_its_file_known_entry() {
         )
     })
     .await;
-    settle(&mut core).await;
-    assert!(!known.contains(FileHash::from_bytes([9; FileHash::BYTE_LEN])));
+    until_released(&known, FileHash::from_bytes([9; FileHash::BYTE_LEN])).await;
 }
 
 /// An adapter injected through `CoreBuilder::peer_transfer`
