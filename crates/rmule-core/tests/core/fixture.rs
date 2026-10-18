@@ -33,7 +33,7 @@ mod session;
 pub use dual_stack::{
     host_binds_ipv6, reserve_dual_stack_port, reserve_dual_stack_port_from, skip_without_ipv6,
 };
-pub use kad::StubKad;
+pub use kad::{StubKad, until_kad_holds_a_contact};
 pub use search_server::LoopbackSearchServer;
 pub use session::{
     connect_and_settle, connect_server, list_and_connect, list_server, search_result, start_search,

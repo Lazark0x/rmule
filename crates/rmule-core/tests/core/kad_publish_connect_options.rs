@@ -110,8 +110,8 @@ async fn a_reachable_rmule_publishes_the_connect_options_it_holds() {
     .await
     .unwrap();
     // The publish fires once, on the share; the storer must already be in
-    // the routing table (same fixed settle as the serverless E2E).
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    // the routing table.
+    crate::fixture::until_kad_holds_a_contact(&core).await;
     rmule_testkit::share_directory(&mut core, dir.path()).await;
     let drain = tokio::spawn(async move { while core.next_event().await.is_some() {} });
 
