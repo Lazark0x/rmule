@@ -278,8 +278,10 @@ pub(crate) enum PeerTransferCommand {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum DownloadCommand {
-    /// Start a diagnostic durable download.
-    Start(DownloadStartArgs),
+    /// Start a diagnostic durable download. Boxed: its arguments dwarf the
+    /// other variants' (past `clippy::large_enum_variant` where paths are
+    /// wide, as on Windows).
+    Start(Box<DownloadStartArgs>),
     /// Resume a diagnostic durable download.
     Resume(DownloadResumeArgs),
     /// Mark a diagnostic durable download paused.
