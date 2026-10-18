@@ -2,7 +2,7 @@
 # Machine-checkable subset of the repository's code and docs conventions.
 #
 # Walks crates/ apps/ tools/ docs/ (and, for the two text checks, every public
-# tracked file) and reports every violation of the fourteen
+# tracked file) and reports every violation of the fifteen
 # guards below. A violation is suppressed when its exact `<check>:<path>` line appears
 # in scripts/guards-allow.txt (the ratchet — debt drained over time, never
 # grown without justification in the PR).
@@ -39,6 +39,11 @@
 #              private tree, in any public tracked file
 #   sentence   a `Sentence` made outside a words module: rmule-words, or the
 #              TUI's own words (apps/rmule/src/words.rs and words/)
+#   refconst   a constant declared under an eMule symbol name whose value the
+#              Reference Source gives otherwise (scripts/audit-reference-
+#              constants.py); run only when the pinned tree is present, which
+#              CI's reference-constants job provides — one line says so when
+#              it is not
 #
 # Exit 0 when every violation is suppressed, 1 otherwise.
 
@@ -693,6 +698,29 @@ while IFS= read -r f; do
 done <<EOF
 $(rs_files)
 EOF
+
+# 15. refconst — a constant rmule declares under eMule's own symbol name
+# carries eMule's value (ADR-0082). The Reference Source is a pinned clone no
+# checkout carries, so the audit runs here only when it is present; CI's
+# reference-constants job fetches it and runs the same script, so a tree that
+# is absent here skips nothing that matters.
+REF_TREE="docs/reference/emule-source/eMule/srchybrid"
+if [ -d "$REF_TREE" ]; then
+    audit="$(python3 scripts/audit-reference-constants.py 2>&1)"
+    audit_status=$?
+    if [ "$audit_status" -eq 1 ]; then
+        while IFS="$(printf '\t')" read -r path finding; do
+            [ -n "$path" ] || continue
+            report refconst "$path" "$finding"
+        done <<EOF
+$(printf '%s\n' "$audit" | sed -n 's/^  \([A-Z][A-Z0-9_]*: rmule .*\)  \[\(.*\)\]$/\2	\1/p')
+EOF
+    elif [ "$audit_status" -ne 0 ]; then
+        report refconst scripts/audit-reference-constants.py "the audit did not run (exit $audit_status)"
+    fi
+else
+    echo "refconst: not run here — no Reference Source at $REF_TREE (CI's reference-constants job runs it)"
+fi
 
 echo
 if [ "$suppressed" -gt 0 ]; then
