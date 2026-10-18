@@ -395,7 +395,11 @@ mod tests {
             ("http://198.51.100.7:8080/server.met", &remote),
             ("http://127.0.0.1:8080/server.met", &on_this_host),
             ("http://localhost/server.met", &on_this_host),
+            ("http://lab.localhost./server.met", &on_this_host),
             ("http://[::1]:8080/server.met", &on_this_host),
+            // A name is a remote party whatever it resolves to: a hosts-file
+            // alias for loopback outside `localhost` vouches for nothing.
+            ("http://ip6-localhost/server.met", &remote),
         ] {
             let fetcher = FakeFetcher::serving(met_bytes(&rows));
 
@@ -407,6 +411,38 @@ mod tests {
             assert_eq!(&names, expected, "{url}");
             assert_eq!(install.added(), expected.len(), "{url}");
         }
+    }
+
+    /// A row is judged on the address it would be dialed at (ADR-0085): a
+    /// dual-stack row's IPv4, never the `ST_IPV6` the list does not dial —
+    /// a reserved IPv4 drops the row whatever its IPv6, and a reserved IPv6
+    /// beside a good IPv4 drops nothing.
+    #[tokio::test]
+    async fn a_dual_stack_row_is_judged_on_the_ipv4_it_would_dial() {
+        let routable: std::net::Ipv6Addr = "2a01:4f8::1".parse().unwrap();
+        let fetcher = FakeFetcher::serving(met_bytes(&[
+            RowSpec::new(Ipv4Addr::new(224, 0, 0, 1), 4661)
+                .name("Multicast v4")
+                .ipv6(routable),
+            RowSpec::new(Ipv4Addr::new(45, 55, 200, 1), 4661)
+                .name("Loopback v6")
+                .ipv6(std::net::Ipv6Addr::LOCALHOST),
+            RowSpec::new(Ipv4Addr::UNSPECIFIED, 4661)
+                .name("Only v6")
+                .ipv6(routable),
+        ]));
+
+        let install = fetch_server_met(
+            &fetcher,
+            "http://mirror.example/server.met",
+            CAP,
+            Vec::new(),
+        )
+        .await
+        .expect("acquisition");
+
+        let names: Vec<_> = install.servers().iter().map(name_of).collect();
+        assert_eq!(names, vec!["Loopback v6", "Only v6"]);
     }
 
     #[tokio::test]
