@@ -128,8 +128,6 @@ impl DurableDownloadRepository {
         })
     }
 
-    /// Where one download's bytes live, without assembling the rest of the
-    /// record around them — what the two content-file methods need.
     /// Distrust `peer` for the download's life: it served this file bad data
     /// (ADR-0090 "Source ownership"). A peer already distrusted is left
     /// as it is.

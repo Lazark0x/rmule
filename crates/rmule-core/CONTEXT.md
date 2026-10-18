@@ -419,7 +419,7 @@ a Kad source row, a peer that asked us about the file — hands the **Source Boo
 _Avoid_: exchanged source, Kad source (each was one channel's copy)
 
 **Distrusted Peer**:
-A peer proven to have served a download's file bad data — the AICH recovery pinned corrupt blocks on it, or it alone sent a part that failed its hash. Keyed by **User Hash**, not address, and held for the download's life beside its durable record, so a resumed run starts from it: a source whose record names it is never pooled, and one reached without its hash is retired at its hello (ADR-0090 "Source ownership"). A per-file avoidance, not the core-wide, IP-keyed, expiring ban.
+A peer proven to have served a download's file bad data — the AICH recovery pinned corrupt blocks on it, it alone sent a part that failed its hash, or it sent a part hash set that is not the file's own. Keyed by **User Hash**, not address, and held for the download's life beside its durable record, so a resumed run starts from it: a source whose record names it is never pooled, and one reached without its hash is retired at its hello (ADR-0090 "Source ownership"). A per-file avoidance, not the core-wide, IP-keyed, expiring ban.
 _Avoid_: banned peer (that is `BanStore`), blacklist, bad source
 
 **Reask Routes**:
