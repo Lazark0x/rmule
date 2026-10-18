@@ -137,6 +137,18 @@ impl GatewayRecord {
     pub(crate) fn released(&self) -> Option<bool> {
         Some(empty(self.table_v4_after.as_deref()?) && empty(self.table_v6_after.as_deref()?))
     }
+
+    /// The rows the IPv4 table still held after the driver exited, or `None`
+    /// when it could not be read.
+    pub(crate) fn rows_v4_after(&self) -> Option<Vec<LeaseRow>> {
+        Some(
+            self.table_v4_after
+                .as_deref()?
+                .lines()
+                .filter_map(|line| parse_lease(line, "v4"))
+                .collect(),
+        )
+    }
 }
 
 /// Polls the gateway's tables while a flow runs and folds them into one record.

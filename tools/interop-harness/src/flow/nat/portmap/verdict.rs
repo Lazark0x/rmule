@@ -202,6 +202,35 @@ fn release_claim(gateway: &GatewayRecord) -> Claim {
     )
 }
 
+/// `the-shifted-grants-end-on-exit` (`portmap-mismatch`): UPnP keys a mapping
+/// by its external port, so the release at quit must name the ports the
+/// gateway granted, not the ones rmule asked for — those name the second
+/// host's rows. Held when no row for rmule survives the exit and both
+/// pre-claim rows do; `blocked` on an unread table.
+fn shifted_release_claim(gateway: &GatewayRecord) -> Claim {
+    const NAME: &str = "the-shifted-grants-end-on-exit";
+    let note = format!(
+        "after the driver exited the gateway's IPv4 table read {} and it logged {} \
+         DeletePortMapping",
+        after_table(gateway.table_v4_after.as_ref()),
+        gateway.delete_port_mapping,
+    );
+    match gateway.rows_v4_after() {
+        None => Claim::blocked(NAME, note),
+        Some(rows) => {
+            let ours = rows
+                .iter()
+                .filter(|row| row.internal_address == DRIVER_LAN_ADDRESS)
+                .count();
+            let preclaimed = rows
+                .iter()
+                .filter(|row| row.description.contains("preclaim"))
+                .count();
+            Claim::about(NAME, ours == 0 && preclaimed == 2, note)
+        }
+    }
+}
+
 /// `the-pinhole-is-withdrawn-on-exit`, `blocked` on an unread table.
 fn pinhole_withdrawn_claim(gateway: &GatewayRecord) -> Claim {
     const NAME: &str = "the-pinhole-is-withdrawn-on-exit";
@@ -465,6 +494,7 @@ fn mismatch_claims(gateway: &GatewayRecord, rmule: &DriverRow) -> Vec<Claim> {
                 rmule.every_row_exact, rmule.kad_recheck_observed,
             ),
         ),
+        shifted_release_claim(gateway),
     ]
 }
 
@@ -651,7 +681,7 @@ pub(crate) fn write(layout: &RunLayout, verdict: &PortMapVerdict) -> Result<()> 
 
 #[cfg(test)]
 mod tests {
-    use super::{gateway_claim, pinhole_withdrawn_claim, release_claim};
+    use super::{gateway_claim, pinhole_withdrawn_claim, release_claim, shifted_release_claim};
     use crate::flow::nat::portmap::gateway::GatewayRecord;
 
     /// A post-exit table that could not be read used to read as emptied, so
@@ -679,6 +709,27 @@ mod tests {
         assert_eq!(pinhole_withdrawn_claim(&kept).outcome, "absent");
     }
     use crate::nat::{NatType, NatTypeProof, PinnedPortReach};
+
+    /// A shifted grant ends only when the release names the granted port: a
+    /// delete by the asked-for port leaves rmule's row and, on a gateway that
+    /// did not check the caller, would take the second host's.
+    #[test]
+    fn a_shifted_grant_ends_on_its_granted_port() {
+        let after = |table: &str| GatewayRecord {
+            table_v4_after: Some(table.to_owned()),
+            ..GatewayRecord::default()
+        };
+        let preclaims = "TCP:4662:10.77.0.5:4662:1:preclaim\nUDP:4672:10.77.0.5:4672:1:preclaim\n";
+        assert_eq!(shifted_release_claim(&after(preclaims)).outcome, "held");
+        let kept = format!("{preclaims}TCP:57641:10.77.0.4:4662:1:rmule\n");
+        assert_eq!(shifted_release_claim(&after(&kept)).outcome, "absent");
+        let taken = "UDP:4672:10.77.0.5:4672:1:preclaim\n";
+        assert_eq!(shifted_release_claim(&after(taken)).outcome, "absent");
+        assert_eq!(
+            shifted_release_claim(&GatewayRecord::default()).outcome,
+            "blocked"
+        );
+    }
 
     /// The proof used to land only in the TOML; a gateway that probed as
     /// another type now fails the portmap row it stands under.
