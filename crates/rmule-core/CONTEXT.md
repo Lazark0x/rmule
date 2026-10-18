@@ -475,7 +475,7 @@ that peer again, is cleared when a run starts, and the row keeps the newest 64 (
 _Avoid_: dial failure (`DialFailure` is a server dial's)
 
 **Remote-Queued Pool**:
-The **Source Book** records in their RemoteQueued stage, each holding its queue standing at a remote uploader **without a connection**: the rank, the UDP contact and peer-UDP crypt target the identity it queued under stated, the reask clock and its one-ping latch (ADR-0057, ADR-0090). Entered when a worker on the uploader's queue — its upload request out, ranked or not yet — hangs up, when a granted worker gives back a slot it has no part for (`0x56`, `NoFreePart`, the ordinary cadence), or when a worker's **Advertised Parts** hold no part we lack (rank 0, the no-needed-parts mark, ADR-0112); kept alive by the reask heartbeat the brain's tick runs while we are connected to a server or Kad (UDP ping first — a called-back source's at the address it called in from, or through its buddy while we are firewalled — TCP full ask as fallback, a called-back source's by its callback road); left on grant (the uploader dials back), file-not-found (which spends it), the TCP full ask, or — queue-full or holding no part we lack, while the file holds 80 % of aMule's default source limit — one of the book's purges. Queue standing is a fact about the remote peer, not about a socket.
+The **Source Book** records in their RemoteQueued stage, each holding its queue standing at a remote uploader **without a connection**: the rank, the UDP contact and peer-UDP crypt target the identity it queued under stated, the reask clock and its one-ping latch (ADR-0057, ADR-0090). Entered when a worker on the uploader's queue — its upload request out, ranked or not yet — hangs up (a rank without a grant always hangs it up, the **Queued Hang-Up**), when a granted worker gives back a slot it has no part for (`0x56`, `NoFreePart`, the ordinary cadence), or when a worker's **Advertised Parts** hold no part we lack (rank 0, the no-needed-parts mark, ADR-0112); kept alive by the reask heartbeat the brain's tick runs while we are connected to a server or Kad (UDP ping first — a called-back source's at the address it called in from, or through its buddy while we are firewalled — TCP full ask as fallback, a called-back source's by its callback road); left on grant (the uploader dials back), file-not-found (which spends it), the TCP full ask, or — queue-full or holding no part we lack, while the file holds 80 % of aMule's default source limit — one of the book's purges. Queue standing is a fact about the remote peer, not about a socket.
 _Avoid_: waiting workers (no worker exists while pooled), source cache, reconnect list, pool (as a list apart from the book)
 
 **Awaited Grant**:
@@ -484,9 +484,67 @@ A **Remote-Queued Pool** record filed in the **Peer Links** (`SharedPeerLinks`) 
 held to the RemoteQueued stage after every brain step (ADR-0107). A link nobody rides that reads
 an unasked `OP_ACCEPTUPLOADREQ` — the uploader's promotion by dial-back, or on a link it held —
 offers it to the oldest Awaited Grant under its names; that download opens the record's worker on
-the link at once, past its worker cap, and the worker asks as any rider does (ADR-0057). With none
+the link at once, with no admission by the **Connection Budget**, and the worker asks as any rider
+does (ADR-0057, ADR-0116). With none
 to take it, the link gives the slot back with `0x56` (ADR-0056).
 _Avoid_: pending grant (that is the serve side's dial-back), standing (the record's own facts)
+
+**Asking**:
+The activity that wins a source a queue place: a road opened to it — a dial, a rung-0 dial, a
+callback or a punch — its hello, file request, probe and **Slot Ask**, until the answer. A rank ends
+it with the **Queued Hang-Up**, a grant turns it into **Transferring**. Paced by the node's
+**Connection Budget**; never counted against a download's transfers (ADR-0116).
+_Avoid_: probing, connecting (a phase of it), worker slot
+
+**Transferring**:
+The activity of a worker holding a granted slot — granted on its own ask or by an **Awaited Grant**.
+Every grant transfers; no count per download bounds it, and a grant is never admitted by the
+**Connection Budget**: its link is open already (ADR-0116).
+_Avoid_: downloading source (aMule's `DS_DOWNLOADING` is one state of it), active worker
+
+**Queued Hang-Up**:
+A worker whose slot ask is answered with a rank, and which holds no grant, ends at once: its record
+waits in the **Remote-Queued Pool** with the standing the rank earned, and the reask keeps its place
+(ADR-0116, ADR-0057). Its retirement reads `queued`.
+_Avoid_: slot timeout (that is an ask nobody answered)
+
+**Source Activity**:
+Which of pooled, asking, queued, transferring or retired one source of a download is, read off its
+**Source Book** stage and its worker's **Slot Ask**. The operator reads each running download's asking,
+queued and transferring counts (`DownloadDiagnostics::source_activity`, ADR-0116).
+_Avoid_: worker phase (a slot row's, finer and per connection)
+
+**Connection Budget**:
+The node's pace for **Asking**, shared by every run of the **Download Set**: the **Dial Window** — at
+most `peer_connections.dials_per_window` (20) roads opened per 5-second window — and the **Connection
+Ceiling** — at most `peer_connections.max_connections` (500) connections the downloads hold at once,
+each run republishing its own count after every step. A fill it refuses takes nothing and wakes at the
+window's turn; a grant never asks it (ADR-0116, aMule `TooManySockets`).
+_Avoid_: worker cap, concurrency (no per-download count exists), Source Ask Budget (that paces `OP_GETSOURCES`)
+
+**Source Limit**:
+The 300 sources one download's **Source Book** holds at most, aMule's `MaxSourcesPerFile`: no channel's
+sighting is taken past it (ADR-0116).
+_Avoid_: prober cap (it holds every channel)
+
+**Low-ID Reask**:
+The TCP full ask's period while rmule is firewalled: 900 s instead of `FILEREASKTIME`'s 1300 s, since
+a Low-ID downloader's slot opens only at its next connection and no direct ping leaves a firewalled
+node. A no-needed-parts source keeps twice the ordinary period (ADR-0116).
+_Avoid_: fast reask (High ID keeps 1300 s)
+
+**Held Places**:
+The peers at whose upload queues the node's downloads stand, by the User Hash and address their
+records know — a **Remote-Queued Pool** record, or a worker whose **Slot Ask** is out — published by each
+run after every step and read by the serve side when it ranks its queue (ADR-0116).
+_Avoid_: friends (aMule's friend list is the operator's)
+
+**Reciprocity Factor**:
+18/7, aMule's Very High over Normal upload priority: the factor a waiter in our upload queue scores by
+when its link's address and its hello's User Hash both name one of the **Held Places**, so what we
+upload to it raises our credit where we wait. It composes with the credit modifier and changes nothing
+else a stock downloader relies on (ADR-0116).
+_Avoid_: friend slot (that grants outright), boost
 
 **Slot Ask**:
 A download worker's `OP_STARTUPLOADREQ`, sent at its probe answer when its **Advertised Parts** hold a part we lack — whether or not one is free — and the queue standing it earns its record (ADR-0026, ADR-0090). The part is chosen at the grant, never at the ask; a grant with no part to hand gives the slot back with `OP_CANCELTRANSFER` and retires the worker `NoFreePart` (ADR-0056). There is no slotless standby: no worker stays connected after giving a slot back.

@@ -147,7 +147,7 @@ Invariants every transition keeps:
 | a client whose connect fails is a dead source for every file | `DS_CONNECTING` on disconnect: `AddDeadSource` and delete (`BaseClient.cpp:1340-1346`), which removes it from every file and A4AF list (`:419`, `DownloadQueue.cpp:763-786`) | the dial's cause retires every download waiting on it, as it retires the one that dialed |
 | a downloading source is never swapped away | `SwapToAnotherFile` refuses `DS_DOWNLOADING` (`DownloadClient.cpp:1411-1421`) | the rider keeps the link until its worker ends |
 | the client swaps when its file is gone, needs nothing, or stops | `ClientTCPSocket.cpp:555-561`, `PartFile.cpp:1423-1426`, `:2203-2206` | each of these ends the rider's worker, and the oldest waiter takes the link |
-| an A4AF-auto file pulls a queued client every 15 min | `PartFile.cpp:1490-1502` | departs: rmule has no A4AF-auto preference; a rider waiting in the peer's queue holds the link until its slot budget (ADR-0026) ends its worker |
+| an A4AF-auto file pulls a queued client every 15 min | `PartFile.cpp:1490-1502` | departs: rmule has no A4AF-auto preference; a rider waiting in the peer's queue holds the link until its rank, at which it hangs up (ADR-0116) |
 | the uploader grants at once a client asking another file while it downloads | `UploadQueue.cpp:486-493` | a waiter that takes the link from a rider that released its slot silently asks and is granted on that slot |
 | a Low-ID client is found by `(low_id, server)` | `ClientList.cpp:265-300` | a callback source whose `(server, low_id)` names a link rides it, and no callback is asked: the peer's `TryToConnect` would open nothing, so the callback would lapse |
 | an IPv6 client's address is its socket's | `SetAddress(m_socket->GetPeerAddress())` (kno `BaseClient.cpp:812-813`) | on an IPv6 link the peer is a source at the link's address with its listen port (`PeerIdentity::source_coordinate`); the hello's IPv4 claim names nothing |
@@ -158,11 +158,11 @@ Invariants every transition keeps:
 | a Low-ID client's pending grant follows it to its next connection | `m_bAddNextConnect` (`UploadQueue.cpp:410-425`) | a pending dial-back grant (ADR-0057) moves with the waiter's place onto the link its hello came back on |
 | a Low ID in `OP_CHANGE_CLIENT_ID` is taken only from a known server | `ClientTCPSocket.cpp:773-787` | the session holds the claim; core takes it only for a server in its server list, with that server's port |
 | an uploader promotes a waiter by dialing it, or on the link it holds | `AddUpNextClient` (`UploadQueue.cpp:206-217`), `OP_ACCEPTUPLOADREQ` on connect (`BaseClient.cpp:1707-1716`) | a link nobody rides that reads an unasked grant hands it to the oldest **Awaited Grant** under its names; that download rides the link and asks, and is granted at once (`UploadQueue.cpp:486-493`) |
-| the downloader takes a grant for its queued file at once, and cancels one it does not want | `DS_ONQUEUE` → `DS_DOWNLOADING`, else `OP_CANCELTRANSFER` once (`ClientTCPSocket.cpp:635-659`) | the Awaited Grant's worker opens on the link past the per-download cap (ADR-0057); with none the link gives the grant back with `0x56` (ADR-0056) |
+| the downloader takes a grant for its queued file at once, and cancels one it does not want | `DS_ONQUEUE` → `DS_DOWNLOADING`, else `OP_CANCELTRANSFER` once (`ClientTCPSocket.cpp:635-659`) | the Awaited Grant's worker opens on the link with no admission by the Connection Budget (ADR-0116); with none the link gives the grant back with `0x56` (ADR-0056) |
 
 The swap rule, settled: a waiter takes the link when the rider's worker ends, for whatever reason it
-ends — the peer lacks the file, has nothing the download needs, the slot budget ran out, the run
-stopped, paused, finished or was cancelled. A waiter whose run stops leaves the line without a turn.
+ends — the peer lacks the file, has nothing the download needs, ranked it without a grant
+(ADR-0116), its slot wait ran out, the run stopped, paused, finished or was cancelled. A waiter whose run stops leaves the line without a turn.
 The rider's teardown (`OP_CANCELTRANSFER` or the silent release, ADR-0056) goes out before the next
 rider's file request, so the peer reads the hand-over as aMule's `SetUploadFileID` switch.
 
@@ -185,7 +185,7 @@ A grant nobody asked for on the link, settled: aMule grants a waiter it promotes
 holds or on one it dials to it, and the `0x55` names no file. A link a download rides leaves it to
 the rider, whose own ask is about to be granted. A link nobody rides offers it to the **Awaited
 Grants** under its names, oldest first: the download that takes it opens the record's worker on that link at
-once, whatever its worker cap (ADR-0057), and the worker rides the link as any rider does, asking
+once, with no admission by the Connection Budget (ADR-0116), and the worker rides the link as any rider does, asking
 for its file. With no Awaited Grant to take it, the link gives the slot back with `0x56` (ADR-0056).
 
 A download that rides or waits on a link is told so, and the operator sees it: a Run Log record

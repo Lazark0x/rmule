@@ -132,9 +132,8 @@ one tuple wins; `i` sits in every key, so no two tie:
   Priority. It slides as the anchor verifies; a resumed run anchors at its lowest unverified
   part, since the scheduler seeds only the missing ones.
 - `N` is an engineering knob: no operator chooses a look-ahead, so it sits in `CoreConfig`
-  beside `peer_concurrency_per_download` (ADR-0069), not in Core Settings and never per
-  download. aMule has no window, so its default is the one `CoreConfig` default that is not
-  aMule's. The default `8` is measured: against stock aMule 2.3.3 seeds (three partial
+  beside the Connection Budget's knobs (ADR-0069, ADR-0116), not in Core Settings and never per
+  download. aMule has no window, so its default is not aMule's. The default `8` is measured: against stock aMule 2.3.3 seeds (three partial
   seeds, one worker each, no source leaving), the verified prefix reached half the file about
   30 s sooner at `8` than at `4` (≈189 s against ≈219 s) and the time-averaged out-of-order
   lag fell from 13.0 to 11.2 MB, while `2`, narrower than the workers, lagged 40 % more than
@@ -176,8 +175,7 @@ one tuple wins; `i` sits in every key, so no two tie:
 ## Considered options
 
 - **Availability per worker, held by Download State.** Rejected: a second per-source table
-  beside the Source Book, and a frequency over at most `peer_concurrency_per_download`
-  workers that knows nothing of the queued sources aMule counts.
+  beside the Source Book, and a frequency over the live workers alone that knows nothing of the queued sources aMule counts.
 - **An unknown status read as every part, the first part on `Connected`.** Rejected: the
   first part is chosen blind and the worker cannot give it back.
 - **A later status merged into the last, add-only.** Rejected: aMule rebuilds it, and a

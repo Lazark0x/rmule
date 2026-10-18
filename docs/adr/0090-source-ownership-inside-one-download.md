@@ -28,8 +28,11 @@ construction:
 | RemoteQueued | the Source Book; the record's standing holds rank, UDP contact and reask clock | endpoint, and a called-back source's `CallbackKey` | until granted, spent by a `0x92`, or re-asked by TCP |
 
 Every channel's sighting arrives as one **Source Sighting** through the book's one entry,
-which merges a held source rather than pooling it twice. Slots in use are read off the
-stages; the next dial is the book's to pick, in lane order — High ID, then Low ID on the
+which merges a held source rather than pooling it twice, and takes none while it holds 300
+records, aMule's `MaxSourcesPerFile` (ADR-0116's Source Limit). The connections a download
+holds are read off the stages — Dialing, Worker and CallbackPending — for the node's
+Connection Ceiling, and a source's **Source Activity** with them (ADR-0116); the next dial is
+the book's to pick, once the Connection Budget admits it, in lane order — High ID, then Low ID on the
 connected server, then Low ID global — under the Low-ID admission rule (ADR-0091).
 
 **A Low-ID Candidate Record is keyed by its namespace, its id and the port that tells two
@@ -77,6 +80,7 @@ hash-set ask leaves the book, as aMule deletes a `DS_REQHASHSET` source
 | a dial that ends short of a handshake | ends | a High ID falls to its other half once, a rung-0 half to the candidate's callback roads, an adopted callback back to its Low-ID lane; anything else leaves | the endpoint it dialed |
 | the peer hanging up, or the link failing | kept | waits in RemoteQueued when it holds a standing; else a called-back source returns to its Low-ID lane and any other leaves | no |
 | its slot wait timing out | kept | as a hang-up | no |
+| a rank while its slot is not granted: the **Queued Hang-Up** (ADR-0116) | kept, ranked | waits in RemoteQueued | no |
 | `OP_OUTOFPARTREQS` (`0x57`) on a granted slot | the worker does not end: its flow is queued again on the same link, as aMule turns `DS_DOWNLOADING` back into `DS_ONQUEUE` (`ClientTCPSocket.cpp:755-762`); the part it held is released for retry (ADR-0026) and a standing is earned without a rank, which the `0x60` that follows ranks (ADR-0057) | stays Worker | no |
 | `OP_OUTOFPARTREQS` while only queued | ignored, as aMule acts on it only while downloading | stays Worker | no |
 | Advertised Parts holding no part we lack | kept, or earned at rank 0, with the no-needed-parts mark: asked again at twice the period, over TCP | waits in RemoteQueued | no |

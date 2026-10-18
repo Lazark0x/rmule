@@ -122,3 +122,4 @@ where a rejected alternative would otherwise come back.
 | [0113](0113-partial-share-from-the-first-verified-part.md) | A download offers its verified parts from the first one, running or paused: the download's own, never a registry row |
 | [0114](0114-preview-action.md) | Preview hands a download's own file to the operator's player as one argument, once its first part is verified |
 | [0115](0115-temp-directory-and-completion-move.md) | Part files live in a Temp Directory apart from finished files; completion moves the file into the download directory, waits while a program holds it, and copies only across volumes |
+| [0116](0116-asking-and-transferring.md) | A download asks for queue places under one Connection Budget and transfers from every slot it is granted; a Low-ID rmule reasks at 15 minutes; an uploader we queue at is preferred within aMule's score |

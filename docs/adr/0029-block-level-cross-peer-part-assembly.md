@@ -31,10 +31,11 @@ Part assembly lives in `rmule-core`, in one shared buffer per in-flight part.
   buffer across the hop. A mid-part drop never resets progress while any contributor
   survives.
 - Assembly is in memory and per session. Pause, cancel and restart discard partial
-  parts. Memory is bounded by `peer_concurrency_per_download × ED2K_PART_SIZE`: one
-  buffer per part in flight, however many peers race it. At the default of 20 workers
-  that is at most 20 parts, about 186 MB, per download, and a buffer grows with what
-  has arrived, so a part still filling holds only its prefix.
+  parts. Memory is bounded by the parts in flight × `ED2K_PART_SIZE`: one buffer per part
+  in flight, however many peers race it, and at most one part in flight per
+  transferring source (ADR-0116), so twenty transfers hold at most 20 parts, about
+  186 MB, per download. A buffer grows with what has arrived, so a part still filling
+  holds only its prefix.
 - **Request pipeline.** A worker keeps its link busy by keeping blocks asked ahead of
   the bytes, as stock 2.3.3 keeps `STANDARD_BLOCKS_REQUEST` (3) blocks pending
   (`updownclient.h:102`, `DownloadClient.cpp:619-641`) and amule-kno sizes the

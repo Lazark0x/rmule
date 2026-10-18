@@ -47,8 +47,8 @@ is `DownloadScheduler`.
   names the earliest instant anything falls due, so the runner sleeps until then. The
   brain reads no clock and holds no timer, so receiving time keeps it sans-I/O.
 
-- `CoreConfig::peer_concurrency_per_download` (default 20; `0` reads as 1) caps a
-  download's workers — active, connecting, and waiting on a callback together.
+- A download has no worker cap: asking is paced by the node's **Connection Budget**
+  and every grant transfers (ADR-0116).
 - **The slot ask.** A worker whose Advertised Parts hold a part we lack asks its
   uploader for a slot (`OP_STARTUPLOADREQ`) at its probe answer, whether or not a part
   is free, as aMule sends it to every source whose status names a needed part (stock
@@ -88,9 +88,9 @@ is `DownloadScheduler`.
   one worker at a time asks for it (`OP_HASHSETREQUEST`): the first whose probe answer
   names a part we lack. Its slot ask waits on the answer, as aMule's asker waits in
   `DS_REQHASHSET` (`DownloadClient.cpp:467-483`, `:571-586`); every other worker asks
-  its slot at once. The ask passes to the next connected worker whose parts name a
-  part we lack — with none connected, to the next probe answer — when its worker ends
-  before an answer or answers with a set that is not the file's (aMule
+  its slot at once. The ask passes to the next transferring worker whose parts
+  name a part we lack — with none, to the next probe answer, so a worker that hangs up
+  at its rank never holds it (ADR-0116) — when its worker ends before an answer or answers with a set that is not the file's (aMule
   `SetHashSetNeeded(true)`, `BaseClient.cpp:1305-1306`, `DownloadClient.cpp:583`), and
   at the **Hash-Set Deadline**, 20 s after the ask, when its worker asks its slot
   regardless: half aMule's 40 s idle close (`CONNECTION_TIMEOUT`, `Constants.h:34`), so
@@ -106,12 +106,14 @@ is `DownloadScheduler`.
   reassignment. A failed part verification retires its contributors (ADR-0029)
   unless AICH recovery can name the bad blocks (ADR-0038).
 - `CoreConfig::slot_wait_timeout` (default 180 s) bounds how long a worker waits for
-  a slot grant: from its probe answer, or from its flow's return to the queue, with no
-  part streaming. The timer is the runtime's; the session stays clock-free. Queue
-  state reaches the operator as `DownloadEvent::PeerQueued { rank }`,
-  `PeerSlotGranted` and `PeerSlotTimeout`. The downloader sends no keep-alive: the
-  eD2k peer protocol defines none, so staying connected and racing across peers is
-  how a download survives a busy uploader's queue.
+  the answer to its slot ask: from its probe answer, or from its flow's return to the
+  queue, with no part streaming. A rank answers it, and a worker that is not granted
+  hangs up at its rank, its record keeping the standing (ADR-0116, the **Queued
+  Hang-Up**). The timer is the runtime's; the session stays clock-free. Queue state
+  reaches the operator as `DownloadEvent::PeerQueued { rank }`, `PeerSlotGranted` and
+  `PeerSlotTimeout`. The downloader sends no keep-alive: the eD2k peer protocol defines
+  none, so a download holds its place in a busy uploader's queue by the reask
+  (ADR-0057), not by a connection.
 
 **Verification.** Trust is download-wide, ranked by `VerificationAuthority`:
 

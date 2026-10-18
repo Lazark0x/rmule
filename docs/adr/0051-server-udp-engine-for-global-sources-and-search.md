@@ -108,8 +108,8 @@ snapshots it when it starts; a server added mid-sweep joins the next one.
   bodies.
 - A join with eD2k switched off skips only the fetch and hand-over; a core whose store
   lists servers still sweeps them.
-- Re-advertisement of an already-adopted Low-ID global is bounded by the concurrency cap
-  and the per-callback timeout rather than skipped by endpoint.
+- Re-advertisement of an already-adopted Low-ID global is bounded by the Connection Budget
+  (ADR-0116) and the per-callback timeout rather than skipped by endpoint.
 
 ## Considered options
 

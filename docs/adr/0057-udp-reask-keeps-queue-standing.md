@@ -76,11 +76,13 @@ quartet as aMule does.
 
 A worker's `OP_STARTUPLOADREQ` earns the source's **Source Book** record its queue standing,
 without a rank until a `0x60` ranks it (ADR-0090, "How a worker ends, and what its record
-keeps"). When the worker ends holding it, the record moves to its RemoteQueued stage, the
+keeps"). A worker without a grant ends at its rank (the **Queued Hang-Up**, ADR-0116), and
+any worker that ends holding a standing moves its record to the RemoteQueued stage, the
 standing riding the record: the rank, the UDP contact its hello stated, the reask clock
 and the one-ping latch, held without a socket. The download's brain runs the cycle on its tick (ADR-0026). Per pooled source, on
 aMule's `FILEREASKTIME` of 1 300 000 ms
-([Constants.h#L35](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/include/protocol/ed2k/Constants.h#L35)):
+([Constants.h#L35](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/include/protocol/ed2k/Constants.h#L35)),
+900 s while rmule is firewalled (the **Low-ID Reask**, ADR-0116):
 
 - **UDP first.** At `FILEREASKTIME` − 20 s, send `0x90 <hash16>` plus version-gated extras
   (UDP version above 3: our part status; above 2: the complete-source count), as aMule
@@ -136,7 +138,8 @@ aMule's `FILEREASKTIME` of 1 300 000 ms
   no-needed-parts source to another download (`SwapToAnotherFile`); rmule's downloads
   share no source, so none takes it over. The brain reports each as `SourcePurged`, with
   its reason.
-- **Silence:** the TCP full ask fires at `FILEREASKTIME`
+- **Silence:** the TCP full ask fires at `FILEREASKTIME` (900 s while we are firewalled,
+  ADR-0116, whose road is the only one that opens a Low-ID downloader's slot)
   ([PartFile.cpp#L1476](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/PartFile.cpp#L1476))
   and resets the one-in-flight latch, so a lost datagram costs 20 seconds, never the
   standing. It reaches a High ID at its endpoint and a called-back Low ID by its callback
@@ -148,8 +151,8 @@ aMule's `FILEREASKTIME` of 1 300 000 ms
   ours rides: the record waits in RemoteQueued with no worker. aMule's downloader holds the
   client `DS_ONQUEUE` and takes the grant at once (`ClientTCPSocket.cpp:635-645`). rmule's
   link hands the unasked grant to the download standing at its peer (ADR-0107, the
-  Awaited Grants), whose brain opens the record's worker on that link at once, past the
-  per-download cap (ADR-0030): a granted slot is a transfer, not a dial. The worker asks as
+  Awaited Grants), whose brain opens the record's worker on that link at once, with no
+  admission by the Connection Budget (ADR-0116): a granted slot is a transfer, not a dial. The worker asks as
   any rider does — the file request, then `OP_STARTUPLOADREQ` on the probe's answer — and
   the uploader, uploading to the client already, grants it at once (`UploadQueue.cpp:486-493`),
   well inside the 40 s it keeps an idle link (`CONNECTION_TIMEOUT`, `Constants.h:34`). A
