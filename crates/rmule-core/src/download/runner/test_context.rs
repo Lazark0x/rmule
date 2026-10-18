@@ -85,6 +85,9 @@ pub(in crate::download) fn runner_context<S, P>(
         )),
         source_lookup: Arc::new(Mutex::new(source_lookup)),
         source_asks: Arc::default(),
+        connection_budget: crate::download::connection_budget::ConnectionBudget::shared(
+            crate::PeerConnections::default(),
+        ),
         peer_transfer: Arc::new(Mutex::new(peer_transfer)),
         credit: Arc::new(crate::store::credit::DurableCreditStore::new(store)),
         evt_tx,

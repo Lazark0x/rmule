@@ -95,9 +95,10 @@ pub(crate) struct PeerPartialShareArgs {
     /// the road of a waiter coming back on a new link.
     #[arg(long, requires = "queued")]
     pub(crate) drop_reask_acks: bool,
-    /// rmule's peer workers per download; unset keeps the core's.
+    /// rmule's Connection Ceiling (ADR-0116), the connections its downloads
+    /// hold at once; unset keeps the core's.
     #[arg(long)]
-    pub(crate) peer_concurrency: Option<usize>,
+    pub(crate) max_connections: Option<usize>,
     /// Log rmule and the seeds in to ed2k-server instead of Lugdunum (the
     /// downloaders stay on Lugdunum): the seeds then hold High IDs, so
     /// rmule's download pool has sources to exchange, and the announce is
@@ -174,7 +175,7 @@ struct ResolvedConfig {
     downloader_link_kbit: u32,
     dial_downloaders: bool,
     drop_reask_acks: bool,
-    peer_concurrency: Option<usize>,
+    max_connections: Option<usize>,
     rmule_on_ed2ksrv: bool,
     prober: bool,
     queued: bool,
@@ -226,7 +227,7 @@ pub(crate) fn peer_partial_share(args: PeerPartialShareArgs) -> Result<()> {
             downloader_link_kbit: args.downloader_link_kbit,
             dial_downloaders: !args.drop_downloader_dials,
             drop_reask_acks: args.drop_reask_acks,
-            peer_concurrency: args.peer_concurrency,
+            max_connections: args.max_connections,
             rmule_on_ed2ksrv: args.rmule_on_ed2ksrv,
             prober: !args.no_prober,
             queued: args.queued,
@@ -271,7 +272,7 @@ pub(crate) fn peer_partial_share(args: PeerPartialShareArgs) -> Result<()> {
         downloader_link_kbit: args.downloader_link_kbit,
         dial_downloaders: !args.drop_downloader_dials,
         drop_reask_acks: args.drop_reask_acks,
-        peer_concurrency: args.peer_concurrency,
+        max_connections: args.max_connections,
         rmule_on_ed2ksrv: args
             .rmule_on_ed2ksrv
             .then_some((args.ed2ksrv_image.as_str(), args.ed2ksrv_config.as_path())),

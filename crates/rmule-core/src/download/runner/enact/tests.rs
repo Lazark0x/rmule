@@ -136,7 +136,7 @@ mod buddy_hash_spelling {
                 client_udp: false,
             },
             Duration::from_secs(30),
-            1,
+            crate::download::connection_budget::BudgetSeat::ceiling(1),
         );
         let _ = state.start(std::time::Instant::now());
         state
@@ -530,7 +530,7 @@ mod queued_roster {
                 client_udp: false,
             },
             Duration::from_secs(30),
-            1,
+            crate::download::connection_budget::BudgetSeat::ceiling(1),
         );
         let _ = state.start(std::time::Instant::now());
         state

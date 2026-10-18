@@ -4,6 +4,7 @@
 
 mod aich;
 mod ask_cadence;
+mod asking;
 mod buddy_callback;
 mod buddy_hash_fallback;
 mod callback_walk;
@@ -249,7 +250,7 @@ fn state_from(
         facts,
         posture,
         CALLBACK_TIMEOUT,
-        peer_concurrency,
+        crate::download::connection_budget::BudgetSeat::ceiling(peer_concurrency),
     );
     for (channel, sightings) in batches {
         take(&mut state, channel, sightings);

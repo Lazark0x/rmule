@@ -188,7 +188,7 @@ impl DownloadState {
                     peer,
                     rank,
                 }));
-                self.ranked(peer, rank, &mut out);
+                self.ranked(now, peer, rank, &mut out);
             }
             PeerWorkerEvent::SlotGranted => {
                 // A grant ends the standing: the source is live, not queued.
@@ -240,7 +240,7 @@ impl DownloadState {
         if self.scheduler.lacks_any_of(parts) {
             self.ask_on_probe(now, peer, out);
         } else {
-            self.retire_unworkable(now, peer, PeerRetirementReason::NoNeededParts, out);
+            self.retire(now, peer, PeerRetirementReason::NoNeededParts, out);
         }
     }
     /// Resume after the runner has verified-and-persisted (or failed to) the
@@ -266,7 +266,7 @@ impl DownloadState {
                     self.settle_seed_dials(&mut out);
                 }
                 for (peer, reason) in unworkable {
-                    self.retire_unworkable(now, peer, reason, &mut out);
+                    self.retire(now, peer, reason, &mut out);
                 }
             }
             Err(_) => {

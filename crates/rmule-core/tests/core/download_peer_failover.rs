@@ -102,7 +102,10 @@ async fn core_single_part_completes_through_the_grant_while_another_peer_queues_
     let fast_task = fast.spawn(PeerScript::serving(file_hash, bytes));
 
     let config = CoreConfig {
-        peer_concurrency_per_download: 2,
+        peer_connections: rmule_core::PeerConnections {
+            max_connections: 2,
+            ..rmule_core::PeerConnections::default()
+        },
         ..CoreConfig::default()
     };
     let out = tempfile::tempdir().unwrap();
@@ -191,7 +194,10 @@ async fn core_finishes_a_part_from_a_second_peer_after_the_first_drops_mid_part(
     let finish_task = finishing.spawn(PeerScript::serving(file_hash, bytes.clone()));
 
     let config = CoreConfig {
-        peer_concurrency_per_download: 1,
+        peer_connections: rmule_core::PeerConnections {
+            max_connections: 1,
+            ..rmule_core::PeerConnections::default()
+        },
         ..CoreConfig::default()
     };
     let out = tempfile::tempdir().unwrap();

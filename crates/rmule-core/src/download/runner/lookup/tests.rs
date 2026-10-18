@@ -144,7 +144,6 @@ fn request_for<S, P>(
         ),
         verified_part_indexes: Vec::new(),
         order: crate::scheduler::PartOrder::Rarest,
-        peer_concurrency: 1,
         discovery: DiscoveryLiveness {
             global_servers: std::sync::Arc::default(),
             reach: runner.rt.reach.clone(),

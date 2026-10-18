@@ -38,16 +38,17 @@ pub(crate) enum Channel {
     /// Low-ID row is read in the server it names.
     Exchanged(PeerEndpoint),
     /// A peer that asked us about the file, from its hello's source
-    /// coordinate (ADR-0113): taken only while the file holds fewer than
-    /// [`PROBER_SOURCE_CAP`] sources, as aMule's `CheckAndAddKnownSource`
-    /// is reached (`ClientTCPSocket.cpp:449-455`).
+    /// coordinate (ADR-0113), as aMule's `CheckAndAddKnownSource` is reached
+    /// (`ClientTCPSocket.cpp:449-455`).
     Prober,
 }
 
-/// aMule's default `MaxSourcesPerFile` (stock 2.3.3 `Preferences.cpp:1027`):
-/// a file holding this many sources takes no prober as one more
-/// (`ClientTCPSocket.cpp:452`).
-pub(crate) const PROBER_SOURCE_CAP: u32 = 300;
+/// The **Source Limit** (ADR-0116): aMule's default `MaxSourcesPerFile`
+/// (stock 2.3.3 `Preferences.cpp:1027`). A file holding this many sources
+/// takes no sighting from any channel, as every aMule intake reads it
+/// (`DownloadQueue.cpp:1556`, `ClientTCPSocket.cpp:452`, `:1095`,
+/// `PartFile.cpp:1677`, `:2814`).
+pub(crate) const SOURCE_LIMIT: u32 = 300;
 
 impl Channel {
     /// The server whose namespace `sighting`, a Low-ID row of this channel,
@@ -154,7 +155,7 @@ impl DownloadState {
         let mut tally = Tally::default();
         let mut seeded = Vec::new();
         for sighting in sightings {
-            if channel == Channel::Prober && self.sources.counts().known >= PROBER_SOURCE_CAP {
+            if self.sources.counts().known >= SOURCE_LIMIT {
                 tally.received += 1;
                 continue;
             }

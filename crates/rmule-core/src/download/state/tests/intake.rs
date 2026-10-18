@@ -39,7 +39,7 @@ fn unstarted(peer_concurrency: usize) -> DownloadState {
         no_facts(),
         QUIET_POSTURE,
         CALLBACK_TIMEOUT,
-        peer_concurrency,
+        crate::download::connection_budget::BudgetSeat::ceiling(peer_concurrency),
     )
 }
 
@@ -419,39 +419,29 @@ fn nth_source(n: u32) -> SourceSighting {
     )
 }
 
+/// The **Source Limit** holds every channel (ADR-0116 invariant 6): a
+/// prober joins once, and at 300 sources no channel's sighting is taken, as
+/// every aMule intake reads `MaxSourcesPerFile`.
 #[test]
-fn a_prober_joins_the_pool_once_and_never_past_the_source_cap() {
-    use crate::download::state::sightings::PROBER_SOURCE_CAP;
+fn no_channel_joins_past_the_source_limit() {
+    use crate::download::state::sightings::SOURCE_LIMIT;
 
     let mut state = unstarted(1);
-    let below: Vec<SourceSighting> = (0..PROBER_SOURCE_CAP - 1).map(nth_source).collect();
+    let below: Vec<SourceSighting> = (0..SOURCE_LIMIT - 1).map(nth_source).collect();
     take(&mut state, Channel::Server, below);
-    let prober = nth_source(PROBER_SOURCE_CAP);
+    let prober = nth_source(SOURCE_LIMIT);
     for _ in 0..2 {
         take(&mut state, Channel::Prober, vec![prober]);
     }
     assert_eq!(
         state.known_sources(),
-        PROBER_SOURCE_CAP,
+        SOURCE_LIMIT,
         "the prober joined once"
     );
 
-    let taken = take(
-        &mut state,
-        Channel::Prober,
-        vec![nth_source(PROBER_SOURCE_CAP + 1)],
-    );
-    assert_eq!(
-        state.known_sources(),
-        PROBER_SOURCE_CAP,
-        "none past the cap"
-    );
-    assert_eq!((taken.tally.received, taken.tally.admitted), (1, 0));
-    // Another channel's source still joins: the cap is the prober's.
-    take(
-        &mut state,
-        Channel::Server,
-        vec![nth_source(PROBER_SOURCE_CAP + 2)],
-    );
-    assert_eq!(state.known_sources(), PROBER_SOURCE_CAP + 1);
+    for channel in [Channel::Prober, Channel::Server, Channel::Kad] {
+        let taken = take(&mut state, channel, vec![nth_source(SOURCE_LIMIT + 1)]);
+        assert_eq!(state.known_sources(), SOURCE_LIMIT, "none past the limit");
+        assert_eq!((taken.tally.received, taken.tally.admitted), (1, 0));
+    }
 }

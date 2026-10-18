@@ -83,7 +83,7 @@ fn brain(sightings: Vec<SourceSighting>, peer_concurrency: usize, at: Instant) -
             client_udp: false,
         },
         std::time::Duration::from_secs(30),
-        peer_concurrency,
+        crate::download::connection_budget::BudgetSeat::ceiling(peer_concurrency),
     );
     let filter = IpFilter::default();
     let gate = Gate {

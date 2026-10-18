@@ -57,6 +57,7 @@ use crate::callback::CallbackSilence;
 use crate::delivery_rate::DeliveryRate;
 use crate::diagnostics::{PartState, WorkerPhase, WorkerSlot};
 use crate::dialable::DialPosition;
+use crate::download::connection_budget::BudgetSeat;
 use crate::download::source_book::SourceBook;
 use crate::download::source_seeds::SeedLedger;
 use crate::hashing::ResolvedHashSet;
@@ -458,11 +459,15 @@ pub(crate) struct DownloadState {
     /// asks it; the brain keeps what the book does not — slot numbers, the
     /// callbacks' deadlines and the part scheduler.
     sources: SourceBook,
-    /// Free diagnostics slots (`0..peer_concurrency`); a backfilled worker
-    /// reuses a slot freed by a retired one.
+    /// Diagnostics slot numbers a retired worker or road freed; a new one
+    /// takes the lowest of them before a number past every one in use, so the
+    /// rows stay as many as the most held at once (ADR-0116).
     free_slots: BTreeSet<usize>,
-    /// Caps active + connecting workers (one socket-use knob, ADR-0030).
-    peer_concurrency: usize,
+    /// This run's seat in the node's **Connection Budget** (ADR-0116): every
+    /// road a fill opens is admitted by it first; a grant never asks it.
+    budget: BudgetSeat,
+    /// When a fill the budget refused fills again: the Dial Window's turn.
+    budget_wake: Option<Instant>,
     /// The diagnostics slot every callback in flight holds (ADR-0039 /
     /// ADR-0051) — connected-server (`CallbackKey.server` = `None`) and
     /// per-server global alike — until the inbound peer is adopted
@@ -513,15 +518,15 @@ pub(crate) struct DownloadState {
 impl DownloadState {
     /// Build the scheduling state from what the run knows up front — the
     /// content, the candidate sources and rmule's own sourcing posture — plus
-    /// the slot economy: how many workers or pending callbacks may hold a slot
-    /// at once, and how long a callback holds one before it lapses.
+    /// the slot economy: the run's seat in the node's **Connection Budget**,
+    /// and how long a callback holds a slot before it lapses.
     pub(crate) fn new(
         download_id: DownloadId,
         content: ContentFacts,
         facts: StartingFacts,
         posture: SourcingPosture,
         callback_timeout: Duration,
-        peer_concurrency: usize,
+        budget: BudgetSeat,
     ) -> Self {
         let ContentFacts {
             file_hash,
@@ -562,8 +567,9 @@ impl DownloadState {
             aich_root_votes: HashMap::new(),
             retired_peers: 0,
             sources,
-            free_slots: (0..peer_concurrency).collect(),
-            peer_concurrency,
+            free_slots: BTreeSet::new(),
+            budget,
+            budget_wake: None,
             callback_slots: HashMap::new(),
             callback_capability: posture.callback_capability,
             dial: posture.dial,
@@ -577,8 +583,8 @@ impl DownloadState {
         }
     }
 
-    /// Spawn the initial fleet of workers from the candidate pool, up to
-    /// `peer_concurrency`. The runner enacts each [`Decision::Spawn`] by
+    /// Spawn the initial fleet of workers from the candidate pool, as the
+    /// **Connection Budget** admits them (ADR-0116). The runner enacts each [`Decision::Spawn`] by
     /// putting that peer on the wire; the worker asks its slot on its probe's
     /// answer and is handed its first part at the grant (ADR-0030, ADR-0026).
     pub(crate) fn start(&mut self, now: Instant) -> Vec<Decision> {

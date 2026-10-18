@@ -518,6 +518,7 @@ where
     // without refreshing — matching the stop path's prior behaviour (the
     // diagnostics row is removed on teardown regardless).
     refresh_parts(&ctx.runner.rt.diagnostics, ctx.download_id, &ctx.state);
+    ctx.state.hold_connections();
     hold_queued_relations(ctx);
     ctx.awaited_grants.hold(&ctx.state);
     Ok(())

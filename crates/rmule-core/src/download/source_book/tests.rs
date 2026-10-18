@@ -93,7 +93,7 @@ fn blocking(hosts: &[u8]) -> IpFilter {
 
 /// The next dial, under any capability and our Known IPv6.
 fn dial(book: &mut SourceBook) -> Option<NextDial> {
-    book.next_dial(8, &CallbackCapability::server_high_id(), ours())
+    book.next_dial(&CallbackCapability::server_high_id(), ours())
 }
 
 /// Dial `book`'s next High ID and complete its handshake.
@@ -179,7 +179,6 @@ fn a_sighting_of_a_held_source_merges_and_never_duplicates() {
     // The dual-stack source is dialed first; the candidate's callback next.
     let callback = std::iter::from_fn(|| {
         book.next_dial(
-            8,
             &CallbackCapability::server_high_id(),
             DialPosition::default(),
         )
@@ -397,7 +396,6 @@ fn a_callback_in_flight_outranks_a_pooled_record_of_the_same_peer() {
     let mut book = empty_book();
     let _ = sight(&mut book, low_id(7));
     let Some(NextDial::Callback { candidate, .. }) = book.next_dial(
-        8,
         &CallbackCapability::server_high_id(),
         DialPosition::default(),
     ) else {
@@ -425,7 +423,6 @@ fn a_callback_in_flight_outranks_a_pooled_record_of_the_same_peer() {
     assert_eq!(book.counts().known, 1);
     assert_eq!(
         book.next_dial(
-            8,
             &CallbackCapability::server_high_id(),
             DialPosition::default()
         ),

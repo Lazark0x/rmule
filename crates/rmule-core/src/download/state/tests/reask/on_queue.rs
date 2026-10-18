@@ -8,9 +8,9 @@ use super::*;
 /// `OP_OUTOFPARTREQS` on a granted slot puts the source back on its
 /// uploader's queue (ADR-0057): the worker stays, its part goes back for
 /// retry, it waits for its next grant holding none (ADR-0026), and the rank
-/// that follows is its standing.
-/// Hung up, it reasks on the ordinary cadence — a UDP ping before
-/// `FILEREASKTIME`, never the no-needed-parts doubling: it holds parts we lack.
+/// that follows is its standing and hangs the worker up (ADR-0116). It
+/// reasks on the ordinary cadence — a UDP ping before `FILEREASKTIME`, never
+/// the no-needed-parts doubling: it holds parts we lack.
 #[test]
 fn a_source_put_back_on_queue_stays_queued_at_its_new_rank() {
     let mut state = started(&[peer(1)], live_posture());
@@ -49,8 +49,7 @@ fn a_source_put_back_on_queue_stays_queued_at_its_new_rank() {
         "the worker stays on its link: {requeued:?}"
     );
 
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Queued { rank: 3 });
-    let hung_up = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
+    let hung_up = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Queued { rank: 3 });
     assert!(
         hung_up.iter().any(|d| matches!(
             d,
@@ -58,6 +57,13 @@ fn a_source_put_back_on_queue_stays_queued_at_its_new_rank() {
                 if *p == peer(1)
         )),
         "{hung_up:?}"
+    );
+    assert!(
+        hung_up.iter().any(|d| matches!(
+            d,
+            Decision::EndWorker { peer: p, cancel: false } if *p == peer(1)
+        )),
+        "the rank ends the worker, silently: {hung_up:?}"
     );
     assert_eq!(
         pinged(&state.on_tick(t0() + udp_due())),

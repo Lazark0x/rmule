@@ -3,6 +3,7 @@
 //! drives every member of the **Download Set** through this module, side by
 //! side (ADR-0107).
 
+pub(crate) mod connection_budget;
 pub(crate) mod persist;
 mod reask_routes;
 mod runner;

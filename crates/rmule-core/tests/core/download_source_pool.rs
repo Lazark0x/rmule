@@ -71,7 +71,10 @@ async fn download_backfills_from_unused_sources_when_initial_peers_fail() {
 
     let events = run_download_with(
         CoreConfig {
-            peer_concurrency_per_download: 2,
+            peer_connections: rmule_core::PeerConnections {
+                max_connections: 2,
+                ..rmule_core::PeerConnections::default()
+            },
             ..CoreConfig::default()
         },
         file_link_without_part_hash_set("example.bin", &bytes),

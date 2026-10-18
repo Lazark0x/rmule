@@ -40,6 +40,7 @@ pub const fn retirement_words(reason: PeerRetirementReason) -> &'static str {
             "every part it has that we need is coming from another source"
         }
         PeerRetirementReason::FileNotFound => "it does not have this file",
+        PeerRetirementReason::Queued => "it queued us; we hung up and keep our place",
     }
 }
 

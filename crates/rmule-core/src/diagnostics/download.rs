@@ -10,9 +10,10 @@ use crate::content::HoleVerdict;
 use crate::service::{CompletionStep, DialEnd};
 
 /// Stable identifier for one peer worker slot inside one download.
-/// Slot index is `0..peer_concurrency_per_download` and is assigned at
-/// worker construction time; the peer the slot is bound to may change as
-/// peers are retired.
+/// A new worker or callback road takes the lowest number a retirement freed,
+/// else the first past every number in use (ADR-0116), so the numbers run
+/// from zero to the most held at once; the peer the slot is bound to may
+/// change as peers are retired.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WorkerSlot(usize);
 

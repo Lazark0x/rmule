@@ -23,7 +23,9 @@ pub use self::command::{
     CoreCommand, CoreCommandRejectReason, DownloadCommand, KadUnavailableReason, NameTaken,
     ScanCommand, SearchCommand, ServeCommand, ServerListCommand,
 };
-pub use self::config::{CoreConfig, DEFAULT_SLOT_WAIT_TIMEOUT, NattConfig, VerificationAuthority};
+pub use self::config::{
+    CoreConfig, DEFAULT_SLOT_WAIT_TIMEOUT, NattConfig, PeerConnections, VerificationAuthority,
+};
 pub use self::event::LinkTurn;
 pub use self::event::{
     BuddyDialFailure, CompletionStep, CoreEvent, DialEnd, DialFailure, DownloadEvent, IdAssignment,
@@ -361,6 +363,10 @@ pub enum PeerRetirementReason {
     PeerDisconnected,
     /// `slot_wait_timeout` elapsed with the peer still queueing us.
     SlotTimeout,
+    /// The peer queued us and gave us a rank, and no slot: the ask is
+    /// answered, so the worker hung up, and the source keeps its place by the
+    /// reask (the **Queued Hang-Up**, ADR-0116). Alive and honest.
+    Queued,
     /// A part this peer served did not match its hash — the peer is dropped,
     /// not just the part, since the bytes cannot be trusted.
     PartVerificationFailed,

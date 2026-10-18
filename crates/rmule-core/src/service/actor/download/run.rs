@@ -109,7 +109,6 @@ pub(in crate::service::actor) struct DownloadRuntime<S, P> {
     /// The handles every run shares. Its `download_reach_tx` clone is the
     /// actor's own, which keeps the reach arm from ever closing.
     pub(in crate::service::actor) shared: Arc<SharedRuntime<S, P>>,
-    pub(in crate::service::actor) peer_concurrency: usize,
     /// The Streaming Window's width every Streaming Priority run ranks by
     /// (`CoreConfig::streaming_window_parts`, ADR-0112).
     pub(in crate::service::actor) streaming_window_parts: u32,
@@ -185,7 +184,6 @@ where
                 file,
                 identity,
                 verified_part_indexes,
-                peer_concurrency: runtime.peer_concurrency,
                 order: crate::PartOrder::of(streaming_priority, runtime.streaming_window_parts),
                 discovery: runtime.discovery.clone(),
                 remembered,

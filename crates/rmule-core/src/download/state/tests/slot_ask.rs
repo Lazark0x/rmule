@@ -64,8 +64,8 @@ fn a_download_holding_its_set_asks_no_link_for_it() {
 /// A download without the set asks it of its first link alone, whose slot ask
 /// waits on the answer; the second asks its slot at once (aMule
 /// `IsHashSetNeeded`, `DownloadClient.cpp:467-483`). An answer that is not
-/// the file's own retires its sender, and the ask passes to the queued link
-/// (`DownloadClient.cpp:583`).
+/// the file's own retires its sender, and the ask passes to the link the
+/// uploader granted (`DownloadClient.cpp:583`, ADR-0116).
 #[test]
 fn only_one_link_asks_the_set_and_a_refused_answer_passes_it_on() {
     let mut state = two_workers(file_hash_only_content(THREE_PARTS));
@@ -80,6 +80,7 @@ fn only_one_link_asks_the_set_and_a_refused_answer_passes_it_on() {
     let second = probed(&mut state, t0(), peer(2));
     assert!(asks_slot(&second, peer(2)), "{second:?}");
     assert!(!asks_hash_set(&second, peer(2)), "{second:?}");
+    let _ = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::SlotGranted);
 
     let hashes = set_held_content(THREE_PARTS, Vec::new()).resolved.hashes;
     let answered = state.on_worker_event(
@@ -132,13 +133,14 @@ fn a_proven_answer_sends_the_askers_slot_ask() {
 }
 
 /// An asker that never answers asks its slot at the **Hash-Set Deadline**
-/// regardless, and the ask passes to the next link; the deadline is what the
-/// brain wakes for. A link the deadline passed is not asked again.
+/// regardless, and the ask passes to the next transferring link; the deadline
+/// is what the brain wakes for. A link the deadline passed is not asked again.
 #[test]
 fn the_deadline_sends_the_askers_slot_ask_and_passes_the_set_on() {
     let mut state = two_workers(file_hash_only_content(THREE_PARTS));
     let _ = probed(&mut state, t0(), peer(1));
     let _ = probed(&mut state, t0(), peer(2));
+    let _ = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::SlotGranted);
     let deadline = t0() + HASH_SET_DEADLINE;
     assert_eq!(state.next_wake(), Some(deadline));
     assert!(sent(&state.on_tick(deadline - Duration::from_millis(1))).is_empty());
@@ -159,17 +161,39 @@ fn the_deadline_sends_the_askers_slot_ask_and_passes_the_set_on() {
     assert_eq!(state.slot_asks.next_deadline(), None);
 }
 
-/// The asker's link closing before an answer passes the ask to a connected
-/// link, as aMule's `Disconnected` sets the set needed again
+/// The asker's link closing before an answer passes the ask to a
+/// transferring link, as aMule's `Disconnected` sets the set needed again
 /// (`BaseClient.cpp:1305-1306`).
 #[test]
 fn the_askers_end_passes_the_set_on() {
     let mut state = two_workers(file_hash_only_content(THREE_PARTS));
     let _ = probed(&mut state, t0(), peer(1));
     let _ = probed(&mut state, t0(), peer(2));
+    let _ = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::SlotGranted);
 
     let ended = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
     assert!(asks_hash_set(&ended, peer(2)), "{ended:?}");
+}
+
+/// A link only queued is never passed the ask: its rank will hang it up and
+/// drop the answer in flight (ADR-0116 invariant 3). With no link
+/// transferring, the next probe answer takes it.
+#[test]
+fn a_queued_link_is_not_passed_the_set() {
+    let mut state = two_workers(file_hash_only_content(THREE_PARTS));
+    let _ = probed(&mut state, t0(), peer(1));
+    let _ = probed(&mut state, t0(), peer(2));
+
+    let ended = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
+    assert!(!asks_hash_set(&ended, peer(2)), "{ended:?}");
+    let ranked = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Queued { rank: 4 });
+    assert!(
+        ranked.iter().any(|d| matches!(
+            d,
+            Decision::EndWorker { peer: p, cancel: false } if *p == peer(2)
+        )),
+        "{ranked:?}"
+    );
 }
 
 /// A queued worker whose parts all verify elsewhere holds nothing we need: it

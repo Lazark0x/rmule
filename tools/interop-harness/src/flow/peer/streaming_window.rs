@@ -105,8 +105,8 @@ pub struct StreamingWindowOptions<'a> {
     pub seeds: &'a [SeedHolding],
     /// rmule's Streaming Window width `N`.
     pub window_parts: u32,
-    /// rmule's peer workers per download; `None` keeps the default.
-    pub peer_concurrency: Option<usize>,
+    /// rmule's Connection Ceiling (ADR-0116); `None` keeps the default.
+    pub max_connections: Option<usize>,
     /// The seeds' upload caps, KiB/s, so the prefix grows over minutes: one
     /// for every seed, or one per seed in start order.
     pub seed_max_upload_kib: &'a [u32],
@@ -261,7 +261,7 @@ pub fn run_streaming_window(options: StreamingWindowOptions<'_>) -> Result<()> {
             file_size: options.file_size,
             file_hash: stream.summary.file_hash().to_hex_upper(),
             window_parts: options.window_parts,
-            peer_concurrency: options.peer_concurrency.unwrap_or(0),
+            max_connections: options.max_connections.unwrap_or(0),
             rmule_ip: rmule_ip.trim().parse().context("rmule address")?,
             seeds: rows,
             expect_complete,
@@ -535,8 +535,8 @@ fn rmule_download(
         "--report-parts-every-ms".to_owned(),
         options.parts_every_ms.to_string(),
     ];
-    if let Some(concurrency) = options.peer_concurrency {
-        args.extend(["--peer-concurrency".to_owned(), concurrency.to_string()]);
+    if let Some(concurrency) = options.max_connections {
+        args.extend(["--max-connections".to_owned(), concurrency.to_string()]);
     }
     args.into_iter().fold(
         hold_image_until_released(

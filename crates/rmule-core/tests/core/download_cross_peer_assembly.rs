@@ -35,7 +35,10 @@ async fn core_resumes_a_part_from_another_peer_after_a_mid_part_drop() {
 
     let mut core = Core::builder(
         CoreConfig {
-            peer_concurrency_per_download: 1,
+            peer_connections: rmule_core::PeerConnections {
+                max_connections: 1,
+                ..rmule_core::PeerConnections::default()
+            },
             ..CoreConfig::default()
         },
         rmule_testkit::memory_store(),
@@ -119,7 +122,10 @@ async fn core_retires_all_contributors_when_assembled_part_fails_verification() 
     // Two workers race the part and the third source backfills.
     let mut core = Core::builder(
         CoreConfig {
-            peer_concurrency_per_download: 2,
+            peer_connections: rmule_core::PeerConnections {
+                max_connections: 2,
+                ..rmule_core::PeerConnections::default()
+            },
             ..CoreConfig::default()
         },
         rmule_testkit::memory_store(),

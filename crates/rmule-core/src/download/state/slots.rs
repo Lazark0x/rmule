@@ -22,22 +22,27 @@ use crate::{DownloadFailure, PartPlan};
 use super::{Decision, DownloadState, LowIdCandidate, LowIdRoad};
 
 impl DownloadState {
-    /// Spawn workers from the candidate pool until the fleet (active +
-    /// connecting, and every callback in flight) reaches `peer_concurrency` or
-    /// nothing reachable is left. The **Source Book** picks each next dial in
-    /// lane order and moves it to its stage; the brain claims a free
-    /// diagnostics slot for it and has the runner enact it. The same path
-    /// serves the initial fill and the on-retirement backfill (ADR-0030).
+    /// Spawn workers from the candidate pool while the node's **Connection
+    /// Budget** admits them and something reachable is left (ADR-0116). The
+    /// **Source Book** picks each next dial in lane order and moves it to its
+    /// stage; the brain claims a diagnostics slot for it and has the runner
+    /// enact it. A refused fill takes nothing from its lane and wakes at the
+    /// Dial Window's turn. The same path serves the initial fill, the
+    /// on-retirement backfill (ADR-0030) and a TCP full ask.
     pub(super) fn fill(&mut self, now: Instant, out: &mut Vec<Decision>) {
-        while let Some(&slot_idx) = self.free_slots.first() {
-            let Some(dial) =
-                self.sources
-                    .next_dial(self.peer_concurrency, &self.callback_capability, self.dial)
-            else {
+        while self
+            .sources
+            .has_next_dial(&self.callback_capability, self.dial)
+        {
+            if let Err(look_again) = self.budget.admit(now, self.sources.slots_in_use()) {
+                self.budget_wake = look_again;
+                return;
+            }
+            let Some(dial) = self.sources.next_dial(&self.callback_capability, self.dial) else {
+                self.budget.give_back(now);
                 break;
             };
-            self.free_slots.remove(&slot_idx);
-            let slot = WorkerSlot::from_usize(slot_idx);
+            let slot = self.claim_slot();
             match dial {
                 // A High-ID candidate, or a Low-ID candidate's IPv6 half
                 // (rung 0): dial it now.
@@ -49,7 +54,31 @@ impl DownloadState {
                 }
             }
         }
+        self.budget_wake = None;
     }
+
+    /// A diagnostics slot number for a new worker or road: the lowest one a
+    /// retirement freed, else the first past every number in use.
+    pub(super) fn claim_slot(&mut self) -> WorkerSlot {
+        if let Some(free) = self.free_slots.pop_first() {
+            return WorkerSlot::from_usize(free);
+        }
+        let highest = self
+            .worker_slots
+            .values()
+            .chain(self.callback_slots.values())
+            .map(|slot| slot.as_usize())
+            .max();
+        WorkerSlot::from_usize(highest.map_or(0, |highest| highest + 1))
+    }
+
+    /// Republish the connections this run holds to the node's **Connection
+    /// Budget**: every dial, worker and callback road its book holds
+    /// (ADR-0116 invariant 5). The runner calls it after every drain.
+    pub(crate) fn hold_connections(&self) {
+        self.budget.hold(self.sources.slots_in_use());
+    }
+
     /// Put a worker on `peer` in `slot`: register it as connecting and have
     /// the runner dial it, with the source ask its record's facts call for at
     /// `now`. A High-ID candidate and a Low-ID candidate's IPv6 half (rung 0)
@@ -179,8 +208,8 @@ impl DownloadState {
         let granted = self.slot_asks.granted(peer);
         self.delivery.remove(&peer);
         if let Some(slot) = self.worker_slots.remove(&peer) {
-            // A worker that hangs up or times out its slot wait keeps its
-            // standing (ADR-0057). A source whose Advertised Parts hold
+            // A worker that hangs up, times out its slot wait or was ranked
+            // without a grant keeps its standing (ADR-0057, ADR-0116). A source whose Advertised Parts hold
             // nothing we lack keeps that mark on its standing, or earns one
             // at rank 0, and reasks at twice the period, over TCP (aMule
             // `DS_NONEEDEDPARTS`, ADR-0112). One that gave back a granted
@@ -188,7 +217,9 @@ impl DownloadState {
             // Any other end is the standing's (ADR-0090, "How a worker ends,
             // and what its record keeps").
             match reason {
-                PeerRetirementReason::PeerDisconnected | PeerRetirementReason::SlotTimeout => {}
+                PeerRetirementReason::PeerDisconnected
+                | PeerRetirementReason::SlotTimeout
+                | PeerRetirementReason::Queued => {}
                 PeerRetirementReason::NoNeededParts => self.sources.no_needed_parts(peer, now),
                 PeerRetirementReason::NoFreePart => self.sources.on_queue(peer, now),
                 _ => self.sources.end_standing(peer),
@@ -286,7 +317,7 @@ impl DownloadState {
             out.push(Decision::Fail(DownloadFailure::NoUsableSources));
         }
         for (peer, reason) in unworkable {
-            self.retire_unworkable(now, peer, reason, out);
+            self.retire(now, peer, reason, out);
         }
     }
 
@@ -336,7 +367,7 @@ impl DownloadState {
     /// granted one with nothing free gives the slot back, `NoFreePart`.
     pub(super) fn assign(&mut self, now: Instant, peer: PeerEndpoint, out: &mut Vec<Decision>) {
         if let Some(reason) = self.assign_or_lacking(peer, out).unworkable() {
-            self.retire_unworkable(now, peer, reason, out);
+            self.retire(now, peer, reason, out);
         }
     }
 

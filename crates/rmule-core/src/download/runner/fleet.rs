@@ -85,8 +85,6 @@ pub(super) struct FleetStart<'a> {
     /// The peer-side handshake identity every worker dials with — server-login
     /// capability tags deliberately excluded (ADR-0047).
     pub(super) ctx: PeerHandshakeContext,
-    /// The fleet cap: active + connecting workers plus outstanding callbacks.
-    pub(super) peer_concurrency: usize,
     /// Parts an earlier run already verified on disk; they are never re-fetched.
     pub(super) verified_part_indexes: Vec<u32>,
     /// How the download ranks its parts (ADR-0112 §5).
@@ -137,7 +135,6 @@ where
         download_id,
         file,
         ctx,
-        peer_concurrency,
         verified_part_indexes,
         order,
         sources,
@@ -267,7 +264,10 @@ where
         },
         posture,
         runner.rt.callback_timeout,
-        peer_concurrency,
+        crate::download::connection_budget::BudgetSeat::new(
+            std::sync::Arc::clone(&runner.rt.connection_budget),
+            download_id,
+        ),
     );
     // The snapshot is sighted in the order a pool is built; nothing fills a
     // slot until `start`.

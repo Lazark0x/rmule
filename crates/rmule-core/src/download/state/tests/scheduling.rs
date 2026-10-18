@@ -100,8 +100,9 @@ fn an_exchanged_source_records_the_crypt_side_its_dial_meets() {
 /// A worker's slot ask waits for its probe's answer (ADR-0112) and its part
 /// for the grant (ADR-0026): the handshake alone asks nothing while the file
 /// is asked, a release meanwhile passes the worker over, its Advertised Parts
-/// ask its slot whether or not a part is free, a rank says its place, and the
-/// grant hands it the part — each step on its slot's phase (ADR-0028).
+/// ask its slot whether or not a part is free, and the grant that answers the
+/// ask hands it the part — each step on its slot's phase (ADR-0028). A rank
+/// instead hangs it up (`asking.rs`).
 #[test]
 fn a_worker_asks_its_slot_at_its_probe_answer_and_is_handed_its_part_at_the_grant() {
     let mut state = two_peer_state();
@@ -135,12 +136,6 @@ fn a_worker_asks_its_slot_at_its_probe_answer_and_is_handed_its_part_at_the_gran
         vec![WorkerPhase::WaitingForSlot { rank: None }]
     );
     assert!(!state.is_working(peer(1)), "a queued worker holds no part");
-
-    let ranked = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Queued { rank: 7 });
-    assert_eq!(
-        phases(&ranked),
-        vec![WorkerPhase::WaitingForSlot { rank: Some(7) }]
-    );
 
     let granted = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotGranted);
     assert!(

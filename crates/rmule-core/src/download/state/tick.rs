@@ -2,8 +2,9 @@
 //! [`DownloadState::next_wake`] named, and [`DownloadState::on_tick`] runs what
 //! has fallen due by then — the spent endpoints' period turn (ADR-0090), the
 //! **Hash-Set Deadline** (ADR-0026), the callback roads' deadlines earliest
-//! first (ADR-0039, ADR-0091), the purges, and the reask sweep over every
-//! queue standing (ADR-0057). Each sits on the record or block it governs, so a road or a
+//! first (ADR-0039, ADR-0091), the purges, the reask sweep over every
+//! queue standing (ADR-0057), and a fill the **Connection Budget** refused
+//! once its Dial Window turns (ADR-0116). Each sits on the record or block it governs, so a road or a
 //! standing that ends by any route takes its clock with it.
 
 use std::time::Instant;
@@ -50,6 +51,10 @@ impl DownloadState {
         if self.callback_capability.connected() {
             self.reask_sweep(now, &mut out);
         }
+        if self.started && self.budget_wake.is_some_and(|turn| turn <= now) {
+            self.budget_wake = None;
+            self.fill(now, &mut out);
+        }
         out
     }
 
@@ -67,6 +72,7 @@ impl DownloadState {
                 .flatten(),
             self.sources
                 .next_purge(&self.callback_capability, self.dial),
+            self.budget_wake,
         ]
         .into_iter()
         .flatten()

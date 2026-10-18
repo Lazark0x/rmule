@@ -117,17 +117,18 @@ impl DownloadState {
         });
     }
 
-    /// Pass the hash-set ask to the next connected worker, in slot order,
+    /// Pass the hash-set ask to the next transferring worker, in slot order,
     /// whose parts name a part we lack and that the deadline never passed;
     /// with none, the next probe answer takes it (aMule
-    /// `SetHashSetNeeded(true)`, ADR-0026).
+    /// `SetHashSetNeeded(true)`, ADR-0026). A worker only queued hangs up at
+    /// its rank, so it never holds the ask (ADR-0116).
     fn pass_hash_set_ask(&mut self, now: Instant, out: &mut Vec<Decision>) {
         self.slot_asks.hash_set = None;
         if !self.hash_set_wanted() {
             return;
         }
         let next = self.connected_workers().into_iter().find(|&peer| {
-            self.slot_asks.by_worker.contains_key(&peer)
+            self.slot_asks.granted(peer)
                 && !self.slot_asks.passed.contains(&peer)
                 && self
                     .sources
@@ -186,12 +187,23 @@ impl DownloadState {
         self.phase(peer, WorkerPhase::WaitingForSlot { rank: None }, out);
     }
 
-    /// An `OP_QUEUERANKING` placed `peer` at `rank`: a queued worker's phase
-    /// says it.
-    pub(super) fn ranked(&mut self, peer: PeerEndpoint, rank: u16, out: &mut Vec<Decision>) {
-        if !self.slot_asks.granted(peer) {
-            self.phase(peer, WorkerPhase::WaitingForSlot { rank: Some(rank) }, out);
+    /// An `OP_QUEUERANKING` placed `peer` at `rank`: a worker without a grant
+    /// has its answer, and hangs up — the **Queued Hang-Up** (ADR-0116). Its
+    /// record keeps the standing the rank earned and waits in the RemoteQueued
+    /// stage; the reask keeps its place (ADR-0057). A granted worker's rank
+    /// changes nothing.
+    pub(super) fn ranked(
+        &mut self,
+        now: Instant,
+        peer: PeerEndpoint,
+        rank: u16,
+        out: &mut Vec<Decision>,
+    ) {
+        if self.slot_asks.granted(peer) {
+            return;
         }
+        self.phase(peer, WorkerPhase::WaitingForSlot { rank: Some(rank) }, out);
+        self.retire(now, peer, PeerRetirementReason::Queued, out);
     }
 
     /// `peer`'s uploader granted it a slot: hand it its part, or give the slot
@@ -204,13 +216,14 @@ impl DownloadState {
         self.assign(now, peer, out);
     }
 
-    /// Retire `peer`, which cannot work a slot: its parts hold nothing we lack
+    /// Retire `peer` for `reason`, a live source's: it was ranked without a
+    /// grant (`Queued`, ADR-0116), its parts hold nothing we lack
     /// (`NoNeededParts`), or a granted slot found every part it holds that we
     /// lack in flight (`NoFreePart`). Its record waits in the RemoteQueued
     /// stage, unspent, and a granted slot goes back (ADR-0112 §6, ADR-0056).
     /// A worker an earlier retirement in the same batch already ended is
     /// left alone: one retirement's backfill can retire the next in turn.
-    pub(super) fn retire_unworkable(
+    pub(super) fn retire(
         &mut self,
         now: Instant,
         peer: PeerEndpoint,

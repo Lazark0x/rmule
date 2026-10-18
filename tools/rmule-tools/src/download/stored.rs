@@ -28,9 +28,15 @@ pub(crate) struct DownloadResumeArgs {
     /// Optional eD2k server endpoint override as `host:port`.
     #[arg(long)]
     server: Option<String>,
-    /// Maximum concurrent High ID peer workers per download.
+    /// The **Dial Window** (ADR-0116): roads the downloads open per 5 s
+    /// (`CoreConfig::peer_connections.dials_per_window`, default 20).
     #[arg(long)]
-    peer_concurrency: Option<usize>,
+    dials_per_window: Option<u32>,
+    /// The **Connection Ceiling** (ADR-0116): connections the downloads hold
+    /// at once, asking and transferring
+    /// (`CoreConfig::peer_connections.max_connections`, default 500).
+    #[arg(long)]
+    max_connections: Option<usize>,
     /// The **Streaming Window**'s width `N` in parts
     /// (`CoreConfig::streaming_window_parts`, ADR-0112); `0` for none.
     #[arg(long)]
@@ -79,8 +85,11 @@ pub(crate) async fn resume(args: DownloadResumeArgs) -> Result<()> {
             .context("the download records no server; name one with --server")?,
     };
     let mut config = CoreConfig::default();
-    if let Some(concurrency) = args.peer_concurrency {
-        config.peer_concurrency_per_download = concurrency;
+    if let Some(dials) = args.dials_per_window {
+        config.peer_connections.dials_per_window = dials;
+    }
+    if let Some(connections) = args.max_connections {
+        config.peer_connections.max_connections = connections;
     }
     if let Some(parts) = args.streaming_window {
         config.streaming_window_parts = parts;

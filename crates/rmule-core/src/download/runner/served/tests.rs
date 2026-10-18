@@ -140,7 +140,7 @@ fn working(link: &Ed2kFileLink, record: &DurableDownloadRecord) -> (DownloadStat
             client_udp: false,
         },
         Duration::from_secs(30),
-        1,
+        crate::download::connection_budget::BudgetSeat::ceiling(1),
     );
     let now = Instant::now();
     let _ = state.start(now);

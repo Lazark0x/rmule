@@ -122,8 +122,8 @@ pub struct PartialShareOptions<'a> {
     /// Drop rmule's client-UDP datagrams to the queued downloader on rmule's
     /// link, so its reask goes unanswered and it reasks over a new TCP link.
     pub drop_reask_acks: bool,
-    /// rmule's peer workers per download; `None` keeps the core's.
-    pub peer_concurrency: Option<usize>,
+    /// rmule's Connection Ceiling (ADR-0116); `None` keeps the core's.
+    pub max_connections: Option<usize>,
     /// Log rmule and the seeds in to ed2k-server (this image and config)
     /// instead: the seeds then hold High IDs, so rmule's download pool has
     /// sources to exchange, and the downloaders' Lugdunum still knows none
@@ -351,7 +351,7 @@ pub fn run_partial_share(options: PartialShareOptions<'_>) -> Result<()> {
             whole: whole.is_some().then_some(WHOLE_FILE_NAME),
             whole_after_pause: options.pause,
             upload_slots: options.queued.then_some(1),
-            peer_concurrency: options.peer_concurrency,
+            max_connections: options.max_connections,
             pause: options.pause,
             restart: options.restart || options.reopen_after_completion,
             hold_secs: 3 * 3600,

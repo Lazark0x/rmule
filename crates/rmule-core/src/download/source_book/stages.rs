@@ -16,20 +16,34 @@ use crate::dialable::{DialPosition, choose_dial};
 use crate::download::state::{CallbackCapability, LowIdCandidate, LowIdRoute};
 
 impl SourceBook {
-    /// Take the next dial for a free slot, while the stages hold fewer than
-    /// `cap`: the High-ID lane's first record, else the first Low-ID candidate
-    /// the admission rule admits — the connected server's lane before the
-    /// global one, a skipped candidate keeping its place. The record moves to
-    /// Dialing or CallbackPending here.
+    /// Whether a fill would find a next dial: a High-ID record pooled, or a
+    /// Low-ID candidate the admission rule admits. Asked before the
+    /// **Connection Budget** is, so a fill with nothing to open spends no road.
+    pub(crate) fn has_next_dial(
+        &self,
+        capability: &CallbackCapability,
+        dial: DialPosition,
+    ) -> bool {
+        !self.lanes.is_empty(Lane::HighId)
+            || [Lane::LowIdConnected, Lane::LowIdGlobal]
+                .into_iter()
+                .any(|lane| {
+                    self.lanes
+                        .iter(lane)
+                        .any(|id| self.low_id_route(id, capability, dial).is_some())
+                })
+    }
+
+    /// Take the next dial for a road the **Connection Budget** admitted
+    /// (ADR-0116): the High-ID lane's first record, else the first Low-ID
+    /// candidate the admission rule admits — the connected server's lane before
+    /// the global one, a skipped candidate keeping its place. The record moves
+    /// to Dialing or CallbackPending here.
     pub(crate) fn next_dial(
         &mut self,
-        cap: usize,
         capability: &CallbackCapability,
         dial: DialPosition,
     ) -> Option<NextDial> {
-        if self.slots_in_use() >= cap {
-            return None;
-        }
         if let Some(id) = self.lanes.pop_front(Lane::HighId) {
             let record = self.records.get_mut(&id)?;
             let endpoint = *record.endpoints.first()?;

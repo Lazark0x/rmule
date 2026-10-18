@@ -458,6 +458,9 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
             store: Arc::clone(&wiring.store),
             source_lookup: Arc::clone(&wiring.source_lookup),
             source_asks: Arc::default(),
+            connection_budget: crate::download::connection_budget::ConnectionBudget::shared(
+                wiring.config.peer_connections,
+            ),
             peer_transfer: Arc::clone(&wiring.peer_transfer),
             credit: Arc::clone(&wiring.credit),
             evt_tx: evt_tx.clone(),
@@ -481,7 +484,6 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
             copy_turn: Arc::new(tokio::sync::Semaphore::new(1)),
             in_place_tx,
         }),
-        peer_concurrency: wiring.config.effective_peer_concurrency_per_download(),
         streaming_window_parts: wiring.config.streaming_window_parts,
         finished_tx: finished_tx.clone(),
         discovery: crate::download::DiscoveryLiveness {

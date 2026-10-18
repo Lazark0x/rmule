@@ -49,8 +49,10 @@ pub(crate) struct TopologyFile {
     pub(crate) file_hash: String,
     /// `--streaming-window`.
     pub(crate) window_parts: u32,
-    /// `--peer-concurrency`.
-    pub(crate) peer_concurrency: usize,
+    /// `--max-connections`; a run from before the Connection Budget wrote
+    /// its per-download worker cap here, which one download read the same.
+    #[serde(alias = "peer_concurrency")]
+    pub(crate) max_connections: usize,
     /// rmule's address on the tap.
     pub(crate) rmule_ip: Ipv4Addr,
     /// Every seed, in start order.
@@ -90,7 +92,7 @@ struct Verdict<'a> {
     file_size: u64,
     part_count: u32,
     window_parts: u32,
-    peer_concurrency: usize,
+    max_connections: usize,
     seeds: Vec<String>,
     /// Seeds rmule sent a part request to: fewer than the seeds is a run
     /// that lost one, and is not its topology's measurement.
@@ -193,7 +195,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         file_size: topology.file_size,
         part_count: part_count(topology.file_size),
         window_parts: topology.window_parts,
-        peer_concurrency: topology.peer_concurrency,
+        max_connections: topology.max_connections,
         seeds: topology
             .seeds
             .iter()

@@ -55,8 +55,8 @@ pub(crate) struct Legs<'a> {
     pub(crate) whole_after_pause: bool,
     /// rmule's upload slots; `None` keeps the core's.
     pub(crate) upload_slots: Option<usize>,
-    /// rmule's peer workers per download; `None` keeps the core's.
-    pub(crate) peer_concurrency: Option<usize>,
+    /// rmule's Connection Ceiling (ADR-0116); `None` keeps the core's.
+    pub(crate) max_connections: Option<usize>,
     /// Watch the pause gate.
     pub(crate) pause: bool,
     /// Run a second leg, `download reopen`, once the first ends.
@@ -135,8 +135,8 @@ impl Legs<'_> {
         if self.pause {
             args.extend(["--pause-gate".to_owned(), self.at(PAUSE_GATE)]);
         }
-        if let Some(workers) = self.peer_concurrency {
-            args.extend(["--peer-concurrency".to_owned(), workers.to_string()]);
+        if let Some(workers) = self.max_connections {
+            args.extend(["--max-connections".to_owned(), workers.to_string()]);
         }
         if let Some(whole) = self.whole_path() {
             let flag = if self.pause && self.whole_after_pause {

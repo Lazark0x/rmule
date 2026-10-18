@@ -82,7 +82,6 @@ pub(crate) struct DownloadRequest {
     /// build-time hash (ADR-0048 "Identity ownership").
     pub(crate) identity: rmule_primitives::ClientIdentity,
     pub(crate) verified_part_indexes: Vec<u32>,
-    pub(crate) peer_concurrency: usize,
     /// How the download ranks its parts: Streaming Priority, read off its
     /// stored metadata, ranks by a window of
     /// `CoreConfig::streaming_window_parts` (ADR-0112 §5).
@@ -424,7 +423,6 @@ where
             download_id: request.download_id,
             file: request.file,
             ctx,
-            peer_concurrency: request.peer_concurrency,
             verified_part_indexes: request.verified_part_indexes,
             order: request.order,
             sources: StartSources {

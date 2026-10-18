@@ -25,6 +25,9 @@ pub(crate) struct SharedRuntime<S, P> {
     pub(crate) source_lookup: Arc<Mutex<S>>,
     /// The core's **Source Ask Budget** (ADR-0107), shared by every run.
     pub(crate) source_asks: crate::download::source_asks::SharedSourceAskBudget,
+    /// The node's **Connection Budget** (ADR-0116), shared by every run: each
+    /// run's brain holds a seat in it and asks it before opening any road.
+    pub(crate) connection_budget: crate::download::connection_budget::SharedConnectionBudget,
     pub(crate) peer_transfer: Arc<Mutex<P>>,
     pub(crate) credit: SharedCreditStore,
     pub(crate) evt_tx: mpsc::Sender<CoreEvent>,

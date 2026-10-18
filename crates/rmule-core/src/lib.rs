@@ -228,13 +228,14 @@ pub use service::{
     DialFailure, DownloadCommand, DownloadEvent, DownloadId, IdAssignment, IgnoredReaskReply,
     Ipv6Probe, KadStopReason, KadUnavailableReason, LegNotSent, LoginClaim, LoginCloseCause,
     LoginLink, LoginStep, NameTaken, NatTraversalUnavailableReason, NattConfig, PartReleaseReason,
-    PartsLost, PeerBuddy, PeerReach, PeerReachDropReason, PeerReachRoute, PeerRetirementReason,
-    PlainLinkReason, PortTestAdmission, PortTestClosedBy, PortTestEnd, PortTestLateAdmission,
-    PurgedSource, QuitStep, RECONNECT_ATTEMPTS, ReconnectEnd, RestartOutcome, ScanCommand,
-    ScanEvent, SearchCommand, SearchEvent, SearchFailure, SearchId, SearchLegState, SearchLegs,
-    ServeCommand, ServeEvent, ServeStartFailure, ServeStopReason, ServerConnectFailure,
-    ServerConnectionEvent, ServerListCommand, ServerListEvent, ShareRejectReason, SharesWithheld,
-    SourcePurgeReason, SourceWait, SweepTally, VerificationAuthority,
+    PartsLost, PeerBuddy, PeerConnections, PeerReach, PeerReachDropReason, PeerReachRoute,
+    PeerRetirementReason, PlainLinkReason, PortTestAdmission, PortTestClosedBy, PortTestEnd,
+    PortTestLateAdmission, PurgedSource, QuitStep, RECONNECT_ATTEMPTS, ReconnectEnd,
+    RestartOutcome, ScanCommand, ScanEvent, SearchCommand, SearchEvent, SearchFailure, SearchId,
+    SearchLegState, SearchLegs, ServeCommand, ServeEvent, ServeStartFailure, ServeStopReason,
+    ServerConnectFailure, ServerConnectionEvent, ServerListCommand, ServerListEvent,
+    ShareRejectReason, SharesWithheld, SourcePurgeReason, SourceWait, SweepTally,
+    VerificationAuthority,
 };
 pub use storage::{DownloadRepository, ResolvedAuthority};
 pub use store::app_config::DurableAppConfig;
