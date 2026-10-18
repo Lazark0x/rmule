@@ -270,10 +270,11 @@ together for the same round trip:
 The TUI's Servers table has an **Age** column (`59s`, `59m`, `47h`, `99d`, then weeks)
 sorted as a quantity, with a never-answered server last in both directions; it reads the
 later of the figures' two dates and is the last figure to give way, so no figure shows
-without its age. The **Ping** cell reads the Ping State: the round trip, or its reason in one
-word, `soon` (not asked yet), `asked` (awaiting) or `lost` (unanswered). A missing user or
-file count says the same word as that row's ping, or `unset` when the server answered
-without one. Ping sorts by the state's rank, measured (by round trip), awaiting, not asked,
+without its age; a row nothing has dated says the same word as its ping there. The
+**Ping** cell reads the Ping State: the round trip, or its reason in one word of at most
+four cells, `soon` (not asked yet), `wait` (awaiting) or `lost` (unanswered). A missing
+user or file count says the same word as that row's ping, or `unset` when the server
+answered without one. Ping sorts by the state's rank, measured (by round trip), awaiting, not asked,
 unanswered (by how long), never by the word. Under the table, a detail
 pane says for the selected row, one sentence each: **Grants** (the last login's TCP
 grants and their age, or never logged in), **UDP** (the last status answer's flags with

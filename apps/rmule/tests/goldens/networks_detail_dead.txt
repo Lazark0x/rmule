@@ -1,16 +1,16 @@
 ┌ Servers (4) · 10.0.0.1:4661 HighID ─── c connect · a add · U update · m menu ┐
-│   Name ▲   Address          Port Desc   Ping Users Files Age Prio Fail Static│
-│ ● eDonkey  10.0.0.1         4661 Main   42ms    1M   24M 12s Norm    0 no    │
-│   Prime                          hub,                                        │
-│                                  no                                          │
-│                                  fakes                                       │
-│▸  Flaky    172.16.9.9       5000 —      lost  lost  lost  3d Low  dead no    │
+│   Name ▲  Address          Port Desc   Ping Users Files  Age Prio Fail Static│
+│ ● eDonkey 10.0.0.1         4661 Main   42ms    1M   24M  12s Norm    0 no    │
+│   Prime                         hub,                                         │
+│                                 no                                           │
+│                                 fakes                                        │
+│▸  Flaky   172.16.9.9       5000 —      lost  lost  lost   3d Low  dead no    │
 │   Mirror                                                                     │
-│   Static   10.0.0.2         4242 Opera  1.2s  9812  431k  2h High    0 yes   │
-│   Pin                            tor                                         │
-│                                  pinne                                       │
-│                                  d                                           │
-│   —        192.168.4.4      4661 —      soon  soon  soon   — Norm    0 no    │
+│   Static  10.0.0.2         4242 Opera  1.2s  9812  431k   2h High    0 yes   │
+│   Pin                           tor                                          │
+│                                 pinne                                        │
+│                                 d                                            │
+│   —       192.168.4.4      4661 —      soon  soon  soon soon Norm    0 no    │
 │                                                                              │
 │                                                                              │
 │                                                                              │

@@ -43,8 +43,11 @@ use crate::wrap::{
 /// an address split across lines reads as two rows, not one host (a hands-on
 /// run's finding). The slack came out of the description column,
 /// whose header shortened to `Desc` to keep the header-fits-floor invariant,
-/// and Age took the rest of the description's floor above its header.
-const SERVER_COLS: [usize; 11] = [8, 15, 5, 4, 5, 5, 5, 3, 4, 4, 6];
+/// and Age took the rest of the description's floor above its header. Age
+/// then took one cell of Name's floor, so a row nothing has dated says why in
+/// a four-cell word (ADR-0080); Name is greedy and wins it back from any
+/// slack.
+const SERVER_COLS: [usize; 11] = [7, 15, 5, 4, 5, 5, 5, 4, 4, 4, 6];
 /// The greedy pair's indices in [`SERVER_COLS`].
 const SERVER_NAME_COL: usize = 0;
 const SERVER_DESC_COL: usize = 3;
@@ -119,13 +122,18 @@ pub(super) fn next_priority(priority: ServerPriority) -> ServerPriority {
     }
 }
 
+/// How long ago a server's figures were dated, in a row's Age cell: the
+/// age, or for a row nothing has dated the word its ping gives for why.
+fn age_cell(age: Option<Duration>, ping: &PingState) -> String {
+    age.map_or_else(
+        || crate::words::server::undated_word(ping).to_string(),
+        format_age,
+    )
+}
+
 /// How long ago a server last answered, three cells: seconds under a minute,
-/// then minutes, hours under two days, days under a hundred, then weeks — a
-/// dash for one that never answered.
-fn format_age(age: Option<Duration>) -> String {
-    let Some(age) = age else {
-        return "—".to_string();
-    };
+/// then minutes, hours under two days, days under a hundred, then weeks.
+fn format_age(age: Duration) -> String {
     let secs = age.as_secs();
     match secs {
         0..60 => format!("{secs}s"),
@@ -162,7 +170,7 @@ fn detail(
         return (Vec::new(), 0);
     }
     let width = usize::from(body.width);
-    let age = |ago| format_age(Some(ago));
+    let age = format_age;
     let told = state
         .diagnostics
         .share_announcement
@@ -512,7 +520,7 @@ fn server_columns(row: &ServerDiagnostics, base: Style, theme: &Theme) -> Vec<Co
         Column::right(format_ping(&row.ping), known(row.ping.measured().is_some())),
         Column::right(count_cell(row.users, &row.ping), known(row.users.is_some())),
         Column::right(count_cell(row.files, &row.ping), known(row.files.is_some())),
-        Column::right(format_age(row.age), known(row.age.is_some())),
+        Column::right(age_cell(row.age, &row.ping), known(row.age.is_some())),
         Column::left(priority_word(row.server.priority), base),
         // A climbing tally is the row's own bad news; the number says
         // it and the colour only underlines it.

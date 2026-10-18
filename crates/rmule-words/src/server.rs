@@ -427,14 +427,26 @@ pub const DEAD_CELL: &str = "dead";
 
 /// The Ping cell's word for a row with no measured round trip — why there is
 /// none (ADR-0080, "The Ping State"); `None` for a measured one, whose cell
-/// is the round trip itself.
+/// is the round trip itself. Four cells at most, so the Age cell can say it
+/// too.
 #[must_use]
 pub const fn unmeasured_ping_word(ping: &PingState) -> Option<&'static str> {
     match ping {
         PingState::Measured(_) => None,
         PingState::NotAskedYet => Some("soon"),
-        PingState::Awaiting => Some("asked"),
+        PingState::Awaiting => Some("wait"),
         PingState::Unanswered { .. } => Some("lost"),
+    }
+}
+
+/// The Age cell's word for a row nothing has dated — no status answer and no
+/// count report came: the row's ping word. A measured round trip always
+/// comes dated, so `none` stands only for a row whose figures carry no date.
+#[must_use]
+pub const fn undated_word(ping: &PingState) -> &'static str {
+    match unmeasured_ping_word(ping) {
+        Some(word) => word,
+        None => "none",
     }
 }
 

@@ -38,10 +38,11 @@ fn the_greedy_pair_share_the_slack_and_the_row_always_fits() {
 }
 
 /// Each Ping State renders its own cell: the round trip, or the word for
-/// why there is none — never a bare dash — and a missing count says the
-/// same word as the row's ping, or that the answer left it unset.
+/// why there is none — never a bare dash — and a missing count or age says
+/// the same word as the row's ping, or that the answer left a count unset;
+/// every word fits its column.
 #[test]
-fn each_ping_state_renders_its_own_cell_and_counts_follow_it() {
+fn each_ping_state_renders_its_own_cell_and_counts_and_age_follow_it() {
     let unanswered = PingState::Unanswered {
         since: Duration::from_secs(600),
     };
@@ -57,7 +58,7 @@ fn each_ping_state_renders_its_own_cell_and_counts_follow_it() {
             "unset",
         ),
         (PingState::NotAskedYet, "soon", "soon"),
-        (PingState::Awaiting, "asked", "asked"),
+        (PingState::Awaiting, "wait", "wait"),
         (unanswered, "lost", "lost"),
     ] {
         assert_eq!(format_ping(&ping), cell);
@@ -67,12 +68,17 @@ fn each_ping_state_renders_its_own_cell_and_counts_follow_it() {
         );
         assert_eq!(count_cell(None, &ping), count);
         assert_eq!(count_cell(Some(431_004), &ping), "431k");
+        let age = age_cell(None, &ping);
+        assert!(age.chars().count() <= SERVER_COLS[7], "{age} overflows Age");
+        if ping.measured().is_none() {
+            assert_eq!(age, cell, "an undated row's age says why, as its ping");
+        }
+        assert_eq!(age_cell(Some(Duration::from_secs(59)), &ping), "59s");
     }
 }
 
 #[test]
 fn dynamics_render_as_dashes_until_a_server_reports_them() {
-    assert_eq!(format_age(None), "—", "never answered");
     for (secs, cell) in [
         (0, "0s"),
         (59, "59s"),
@@ -84,7 +90,7 @@ fn dynamics_render_as_dashes_until_a_server_reports_them() {
         (8_639_999, "99d"),
         (8_640_000, "14w"),
     ] {
-        assert_eq!(format_age(Some(Duration::from_secs(secs))), cell);
+        assert_eq!(format_age(Duration::from_secs(secs)), cell);
     }
     assert_eq!(short_count(None), "—");
     assert_eq!(short_count(Some(0)), "0", "zero users is a measurement");
@@ -106,8 +112,8 @@ fn the_connected_row_is_marked_by_a_glyph_beside_the_selection_arrow() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    // Short names so each row is one display line and the gutter reads
-    // straight down.
+    // Each row's gutter is read on the row's first line, whatever its
+    // cells wrap to.
     let state = UiState {
         diagnostics: DiagnosticsSnapshot {
             servers: vec![
@@ -140,10 +146,11 @@ fn the_connected_row_is_marked_by_a_glyph_beside_the_selection_arrow() {
             .map(|x| buffer.cell((x, y)).map_or(" ", |cell| cell.symbol()))
             .collect()
     };
+    let y1 = view.server_rows.line_of(1).expect("row 1 drawn");
     // Row 0 is selected but not connected; row 1 is connected, not selected.
     assert_eq!(gutter(y0), "▸  ", "selection arrow only");
-    assert_eq!(gutter(y0 + 1), " ● ", "connected dot only");
-    let dot = buffer.cell((2u16, y0 + 1)).expect("connected dot");
+    assert_eq!(gutter(y1), " ● ", "connected dot only");
+    let dot = buffer.cell((2u16, y1)).expect("connected dot");
     assert_eq!(dot.style().fg, Some(theme.good));
 }
 
