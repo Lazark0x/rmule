@@ -247,10 +247,12 @@ one**:
   `OP_BUDDYPING`; route 4 end to end (rmule's `0x52`, rmule's buddy relaying to a
   firewalled aMule, aMule's dial-back carrying a byte-equal transfer); a stock aMule
   requester's own `0x52` in both the endpoint and FINDSOURCE forms, plain and keyed under
-  the buddy's Kad ID, relayed by rmule; and both type-6 rows.
+  the buddy's Kad ID, relayed by rmule; both type-6 rows; and a firewalled aMule's type-5
+  row for a file past 4 GiB, its `TAG_FILESIZE` a `UINT64`, which rmule writes back byte
+  for byte.
 - Still source-derived: the fallback-spelling `0x52` (it needs an eMule 0.70b or eMuleAI
-  body; emule-qt writes aMule's spelling), a `0x99` relayed by aMule over a link rmule
-  serves, and a `TAG_FILESIZE` above 4 GiB.
+  body; emule-qt writes aMule's spelling), and a `0x99` relayed by aMule over a link rmule
+  serves.
 - The server-relayed callback is decoded from a capture (`0x35`'s 6-byte form), and its
   dial-back is proven on the bench: a High-ID stock aMule downloaded a byte-equal file from
   a Low-ID rmule through ed2k-server over rmule's dial-back alone (`server-callback-serve`,
