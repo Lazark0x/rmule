@@ -252,6 +252,13 @@ IPv6 block is read. `OP_CALLBACKREQUESTED_IPV6 0x26` (16 bytes and a little-endi
 consumed. The `s6=` link token (§6.2) and `ST_IPV6 0x99` in `server.met` are parsed and
 written.
 
+A `server.met` row that carries `ST_IPV6` beside a non-zero header IP is kept whole: one row
+with two endpoints at the header's port, and the dialer takes the IPv4 half, because a High ID
+is the packed public IPv4 and dialing a dual-stack server over IPv6 would cost it. This is a
+recorded **divergence** from emule-qt, whose reader applies the tag only while the entry holds
+no address (`Server.cpp:190-196`) and whose writer writes it only for an IPv6-only entry
+(`Server.cpp:295-298`); it drops the IPv6 half of such a row, rmule keeps it and writes it back.
+
 ## Consequences
 
 - A dual-stack rmule exchanges IPv6 sources with emule-qt and kno, dials them under the AND,

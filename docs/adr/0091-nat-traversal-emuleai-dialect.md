@@ -98,6 +98,7 @@ exception, Port prediction, gated on our own observed mapping.**
   only with an IPv4 client-UDP bind and its send half: its presence is the capability claim,
   and the server refuses to introduce a client that sent none. The login then carries five
   tags, not aMule 2.3.3's four; Lugdunum accepts it with the same High ID and flags.
+  `0xF9` follows `CT_MOD_IP_V6` (`0xAE`) when both ride; that six-tag login is unmeasured.
   `OP_SERVER_NATT_KEEPALIVE 0x9F` (our hash) leaves the client-UDP socket every **60 s** —
   the server trusts an observed port for 600 s, so the cadence is a correctness invariant.
   `OP_LOWID_HOLEPUNCH_REQUEST 0x60 <target_id 4><our_udp 2>`, `OP_LOWID_HOLEPUNCH_INFO 0x61` to

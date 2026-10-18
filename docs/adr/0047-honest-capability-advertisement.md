@@ -64,7 +64,9 @@ grants nothing on that claim.
 **The login matches aMule's shape.** Four tags in aMule's order, and no `CT_PORT` tag.
 With a bound IPv4 client-UDP socket, `CT_EMULE_UDPPORTS` (`0xF9`,
 `kadUDP << 16 | clientUDP`) rides as a fifth tag after them: its presence is the NAT-T
-capability claim a server introduction is gated on (ADR-0091). The Kad half is read
+capability claim a server introduction is gated on (ADR-0091). `0xF9` follows `CT_MOD_IP_V6`
+(`0xAE`, ADR-0087) when both ride, which makes it the sixth tag; a six-tag login is
+unmeasured against Lugdunum. The Kad half is read
 fresh from `SharedUdpPortsAdvert` on every login and hello and cleared the moment the Kad
 node stops.
 
