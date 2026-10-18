@@ -103,7 +103,9 @@ the **IP filter** and **address family** (the intake gate, below), the spent nam
 construction from the download's record, where each new one is persisted as a child table
 (ADR-0083), never expiring in the download's life. The book hands a new distrust back as an
 outcome for the brain to persist. A record the store cannot read ends the start as a store
-failure: a run that began without it would forget every distrust the download earned.
+failure: a run that began without it would forget every distrust the download earned. A
+write the store refuses ends the run the same way, and the run never goes on believing the
+peer persisted.
 
 **The intake gate** is the first two blocks, applied inside the book's one entry to every
 sighting from every channel. Each is judged per half: a filtered half is dropped while its

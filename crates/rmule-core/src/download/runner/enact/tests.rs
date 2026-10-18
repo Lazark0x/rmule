@@ -281,6 +281,40 @@ mod buddy_hash_spelling {
         );
     }
 
+    /// A store that cannot keep a newly distrusted peer fails the run through
+    /// the one whole-fleet terminal: a run that went on would hold a distrust
+    /// no resumed run could read back.
+    #[tokio::test(start_paused = true)]
+    async fn a_store_error_on_a_distrusted_peer_shuts_the_fleet_down() {
+        let diagnostics = crate::diagnostics::DiagnosticsState::default();
+        let (runner, _download_reach_rx) = runner_context(diagnostics);
+        let file = file();
+        let mut ctx = loop_ctx(&runner, &file, download_state());
+        let peer = Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 31), 4662);
+        let (worker_tx, mut worker_rx) = mpsc::channel(4);
+        ctx.command_channels.register(
+            PeerEndpoint::V4(peer),
+            crate::diagnostics::WorkerSlot::from_usize(0),
+            worker_tx,
+        );
+
+        // No record for this download exists, so the store refuses the write.
+        let mut queue = VecDeque::from([Decision::DistrustPeer {
+            user_hash: rmule_primitives::UserHash::from_bytes([0x5B; 16]),
+        }]);
+        assert_eq!(
+            enact_drain(&mut queue, &mut ctx).await,
+            Err(DownloadFailure::StoreFailed)
+        );
+        assert!(
+            matches!(
+                worker_rx.try_recv(),
+                Ok(PeerWorkerCommand::Shutdown { cancel: false })
+            ),
+            "the live worker is told to shut down"
+        );
+    }
+
     #[tokio::test]
     async fn a_silent_primary_buddy_callback_earns_one_fallback_spelling_send() {
         let diagnostics = crate::diagnostics::DiagnosticsState::default();

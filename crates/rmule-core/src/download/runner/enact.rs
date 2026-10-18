@@ -179,9 +179,11 @@ where
                 }
             }
             Decision::DistrustPeer { user_hash } => {
-                // Durable beside the download's record; the brain
-                // already holds it for this run, so a failed write costs only
-                // a resumed run's memory of it.
+                // Durable beside the download's record. A write that fails
+                // fails the run through the one whole-fleet terminal, as a
+                // provisional set the store cannot keep does: a run that
+                // went on believing the peer persisted would let a resumed
+                // one dial it again.
                 if let Err(error) = ctx
                     .runner
                     .rt
@@ -189,6 +191,7 @@ where
                     .distrust_peer(ctx.download_id, user_hash)
                 {
                     tracing::warn!(%error, "could not persist a distrusted peer");
+                    queue.push_front(Decision::Fail(DownloadFailure::StoreFailed));
                 }
             }
             Decision::Spawn {
