@@ -212,6 +212,14 @@ pub fn run_peer_one_link(options: PeerOneLinkOptions<'_>) -> Result<()> {
         Ok(())
     })();
 
+    if result.is_err() {
+        // A readiness wait or a completion wait that ran out is the run's
+        // most telling moment: what rmule and the sharer logged up to it.
+        bench.collect_failure_logs(options.layout);
+        if let Err(error) = collect_amule_logs(&bench.docker, options.layout, &sharer) {
+            eprintln!("warning: failed to collect the sharer logs: {error:#}");
+        }
+    }
     if options.keep_containers {
         println!("kept_capture_dir={}", capture_dir.display());
     }
