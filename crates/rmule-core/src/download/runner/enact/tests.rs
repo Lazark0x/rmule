@@ -616,4 +616,62 @@ mod queued_roster {
             "the merged standing's endpoint is no longer queued"
         );
     }
+
+    /// A source that queues us and hangs up is awaited in the Peer Links
+    /// (ADR-0057): a link at its endpoint that reads an unasked grant finds
+    /// this run, and once its worker opens on the grant it is awaited no
+    /// more.
+    #[tokio::test]
+    async fn a_source_waiting_in_the_queue_is_awaited_until_its_grant_opens_its_worker() {
+        use crate::adapters::LinkName;
+
+        let diagnostics = crate::diagnostics::DiagnosticsState::default();
+        let (runner, _held) = crate::download::runner::test_context::runner_context(
+            NeverLooksUp,
+            NeverTransfers,
+            diagnostics,
+        );
+        let file = file();
+        let mut ctx = loop_ctx(&runner, &file, download_state());
+        let queued = PeerEndpoint::V4(QUEUED);
+        let names = [LinkName::Endpoint(queued)];
+        sighted(
+            &mut ctx.state,
+            vec![SourceSighting::plain(
+                PeerSource::HighId(QUEUED),
+                rmule_primitives::Informant::Own,
+            )],
+        );
+        connected(&mut ctx.state, queued);
+        let now = std::time::Instant::now();
+        let _ = ctx
+            .state
+            .on_worker_event(now, queued, PeerWorkerEvent::Queued { rank: 3 });
+        let _ = ctx
+            .state
+            .on_worker_event(now, queued, PeerWorkerEvent::Disconnected);
+        enact_drain(&mut VecDeque::new(), &mut ctx)
+            .await
+            .expect("nothing to enact");
+        assert!(
+            runner.rt.peer_links.offer_grant(&names),
+            "the run awaits the queued source's grant"
+        );
+        assert_eq!(ctx.awaited_grants.next().await, Some(queued));
+
+        let mut opened: VecDeque<Decision> = ctx.state.on_slot_offered(now, queued).into();
+        assert!(
+            opened
+                .iter()
+                .any(|d| matches!(d, Decision::Spawn { peer, .. } if *peer == queued))
+        );
+        opened.retain(|d| !matches!(d, Decision::Spawn { .. }));
+        enact_drain(&mut opened, &mut ctx)
+            .await
+            .expect("the grant's events");
+        assert!(
+            !runner.rt.peer_links.offer_grant(&names),
+            "a source whose worker opened awaits no grant"
+        );
+    }
 }

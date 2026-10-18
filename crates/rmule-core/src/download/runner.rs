@@ -27,6 +27,7 @@ use rmule_primitives::{Ed2kFileLink, Ed2kLink, SourceSighting};
 use tokio::sync::{Mutex, mpsc, watch};
 
 mod adopt;
+mod awaited_grants;
 mod callbacks;
 mod capability;
 mod completion;

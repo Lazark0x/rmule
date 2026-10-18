@@ -215,6 +215,9 @@ impl DownloadEvent {
                     .count("id", download_id.as_u64())
                     .peer_address("peer", peer)
             }
+            D::SlotOffered { download_id, peer } => Record::new("download.slot_offered")
+                .count("id", download_id.as_u64())
+                .peer_address("peer", peer),
             D::SourcePurged {
                 download_id,
                 source,

@@ -474,6 +474,7 @@ where
                 shared_server_session: cells.session,
                 dialed_serve_sink: cells.dialed_serve_sink,
                 awaited_inbound: cells.awaited_inbound,
+                peer_links: cells.peer_links,
                 buddy_slot: cells.buddy_slot,
                 hello_adverts: cells.hello_adverts,
                 firewalled_front: cells.firewalled_front,

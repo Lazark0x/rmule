@@ -91,6 +91,7 @@ pub(in crate::download) fn runner_context<S, P>(
         diagnostics,
         server_session: crate::server_session::SharedServerSession::default(),
         awaited_inbound: crate::adapters::AwaitedInbound::default(),
+        peer_links: crate::adapters::SharedPeerLinks::default(),
         source_lookup_timeout: Duration::from_secs(5),
         callback_timeout: Duration::from_secs(30),
         global_source_registry: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -185,5 +186,6 @@ pub(super) fn loop_ctx<'a, S, P>(
             runner.rt.awaited_inbound.clone(),
         ),
         queued_relations: std::collections::HashSet::new(),
+        awaited_grants: super::awaited_grants::AwaitedGrants::new(runner.rt.peer_links.clone()),
     }
 }

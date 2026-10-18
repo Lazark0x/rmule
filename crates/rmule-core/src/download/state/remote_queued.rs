@@ -13,6 +13,7 @@ use rmule_primitives::PeerEndpoint;
 use super::{Decision, DownloadState};
 use crate::adapters::advertises_complete;
 use crate::client_udp::ClientUdpSend;
+use crate::diagnostics::WorkerSlot;
 use crate::download::source_book::{Answer, Reask, ReaskGates};
 use crate::service::{DownloadEvent, IgnoredReaskReply};
 
@@ -78,6 +79,43 @@ impl DownloadState {
         if asked_by_tcp {
             self.fill(now, out);
         }
+    }
+
+    /// The uploader at `peer` granted a slot on a link no worker of ours rides
+    /// — it promoted the source from its queue by dialing us back, or on a
+    /// link it held (ADR-0057, "A grant by dial-back is taken"): the record
+    /// waiting there opens its worker at once, on a slot of its own when the
+    /// cap is full. A granted slot is a transfer, not a dial (ADR-0030), and
+    /// the worker rides the link the grant came on. Nothing waits at an
+    /// endpoint with no record in the RemoteQueued stage.
+    pub(crate) fn on_slot_offered(&mut self, now: Instant, peer: PeerEndpoint) -> Vec<Decision> {
+        let mut out = Vec::new();
+        if !self.sources.take_grant(peer) {
+            return out;
+        }
+        let slot = match self.free_slots.pop_first() {
+            Some(free) => WorkerSlot::from_usize(free),
+            None => self.slot_past_the_cap(),
+        };
+        out.push(Decision::Emit(DownloadEvent::SlotOffered {
+            download_id: self.download_id,
+            peer,
+        }));
+        self.spawn_worker(now, peer, slot, &mut out);
+        out
+    }
+
+    /// A slot number no worker, callback or free slot holds: the first past
+    /// every one in use.
+    fn slot_past_the_cap(&self) -> WorkerSlot {
+        let highest = self
+            .worker_slots
+            .values()
+            .chain(self.callback_slots.values())
+            .map(|slot| slot.as_usize())
+            .chain(self.free_slots.iter().copied())
+            .max();
+        WorkerSlot::from_usize(highest.map_or(0, |highest| highest + 1))
     }
 
     /// The ping to `peer` could not leave at `now`: another download's ping

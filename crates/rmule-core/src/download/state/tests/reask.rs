@@ -13,6 +13,7 @@ use crate::own_identity::ConnectedSession;
 use crate::service::IgnoredReaskReply;
 
 mod buddy;
+mod dial_back;
 mod exchange_pool;
 mod given_back;
 mod no_file;

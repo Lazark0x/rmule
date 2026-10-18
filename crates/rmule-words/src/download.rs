@@ -254,6 +254,10 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
         D::SourceReaskedOverTcp { peer, .. } => {
             format!("peer {} is asked again over TCP", address(*peer))
         }
+        D::SlotOffered { peer, .. } => format!(
+            "peer {} offered us an upload slot from its queue; downloading over its connection",
+            address(*peer)
+        ),
         D::SourcePurged { source, reason, .. } => format!(
             "{} {} while the file neared its source limit; dropped",
             purged_source_words(*source),

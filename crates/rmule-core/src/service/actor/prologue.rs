@@ -464,6 +464,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
             diagnostics: diagnostics.clone(),
             server_session: wiring.shared_server_session.clone(),
             awaited_inbound: wiring.awaited_inbound.clone(),
+            peer_links: wiring.peer_links.clone(),
             global_source_registry,
             global_callback_tx,
             kad_source_registry: kad_source_registry.clone(),

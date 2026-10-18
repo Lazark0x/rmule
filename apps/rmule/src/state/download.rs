@@ -381,6 +381,7 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
         | E::SourceReaskAcked { .. }
         | E::SourceReaskQueueFull { .. }
         | E::SourceReaskedOverTcp { .. }
+        | E::SlotOffered { .. }
         | E::SourcePurged { .. }
         | E::SourceReaskDropped { .. }
         | E::ReaskReplyIgnored { .. }

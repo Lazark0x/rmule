@@ -63,7 +63,7 @@ impl SharedPeerLinks {
 
     /// Hand an unasked grant read on a link proving `names` to the oldest wait
     /// filed under any of them whose run still takes it; whether one did.
-    pub(in crate::adapters) fn offer_grant(&self, names: &[LinkName]) -> bool {
+    pub(crate) fn offer_grant(&self, names: &[LinkName]) -> bool {
         let mut awaiting: Vec<Awaiting> = {
             let book = self.book.lock().expect("peer links lock");
             names

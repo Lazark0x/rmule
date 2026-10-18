@@ -279,6 +279,16 @@ pub enum DownloadEvent {
         /// The endpoint the source stood at.
         peer: rmule_primitives::PeerEndpoint,
     },
+    /// The uploader the source at `peer` names granted a slot on a link of its
+    /// own — it promoted us from its queue by dialing us back, or on a link it
+    /// held — and the source's worker opens on that link at once, past the
+    /// worker cap (ADR-0057, "A grant by dial-back is taken").
+    SlotOffered {
+        /// The download the grant is for.
+        download_id: DownloadId,
+        /// The endpoint the source stood at.
+        peer: rmule_primitives::PeerEndpoint,
+    },
     /// A source was let go to make room: the file holds as many sources as
     /// aMule purges at, and one source goes at a time, on one clock per file
     /// (ADR-0057).

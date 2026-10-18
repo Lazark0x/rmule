@@ -39,6 +39,10 @@ pub(crate) struct SharedRuntime<S, P> {
     /// hands the connection to this download instead of serving it. A
     /// callback's end releases both roads at once.
     pub(crate) awaited_inbound: crate::adapters::AwaitedInbound,
+    /// The **Peer Links** (ADR-0107): the runner files each source waiting in
+    /// its RemoteQueued stage as an **Awaited Grant**, so a link that reads
+    /// the uploader's unasked grant hands it to this download (ADR-0057).
+    pub(crate) peer_links: crate::adapters::SharedPeerLinks,
     /// How long the initial source lookup waits on the connected server
     /// before giving up (`CoreConfig::source_lookup_timeout`):
     /// bounds a sourceless file's `download start` so it terminates by

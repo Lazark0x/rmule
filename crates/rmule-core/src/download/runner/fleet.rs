@@ -31,6 +31,7 @@ use crate::source_discovery::register;
 use crate::storage::DownloadRepository;
 
 use super::adopt::adopt;
+use super::awaited_grants::AwaitedGrants;
 use super::callbacks::CallbackContext;
 use super::enact::{LoopCtx, enact_drain};
 use super::intake;
@@ -294,6 +295,9 @@ where
 
     // The `PeerHandshakeContext` binding `ctx` was consumed into `worker_pool`
     // above, so the name is free for the loop-carried state here.
+    // The sources the run waits in an uploader's queue for, filed so a link
+    // that reads the uploader's unasked grant hands it here (ADR-0057).
+    let awaited_grants = AwaitedGrants::new(runner.rt.peer_links.clone());
     let mut ctx = LoopCtx {
         state,
         runner,
@@ -306,6 +310,7 @@ where
         fact_rx,
         callbacks,
         queued_relations: std::collections::HashSet::new(),
+        awaited_grants,
     };
 
     // Enact the initial fill: one `Spawn` per candidate up to concurrency.
@@ -466,6 +471,13 @@ where
                 // the run's source cap.
                 let taken = intake::sight(ctx.runner, &mut ctx.state, Channel::Prober, [sighting]);
                 let mut q: VecDeque<Decision> = taken.decisions.into();
+                enact_drain(&mut q, &mut ctx).await?;
+                continue;
+            }
+            Some(peer) = ctx.awaited_grants.next() => {
+                // An uploader granted a source waiting in its queue a slot on
+                // a link of its own (ADR-0057): the record's worker rides it.
+                let mut q: VecDeque<Decision> = ctx.state.on_slot_offered(now(), peer).into();
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
             }

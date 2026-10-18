@@ -49,6 +49,9 @@ pub(super) struct LoopCtx<'a, S, P> {
     /// the RemoteQueued stage of its Source Book as the last drain left it
     /// ([`hold_queued_relations`]).
     pub(super) queued_relations: HashSet<Ipv4Endpoint>,
+    /// The sources this run awaits an uploader's grant from, filed in the
+    /// Peer Links and held to the same stage (ADR-0057).
+    pub(super) awaited_grants: super::awaited_grants::AwaitedGrants,
 }
 
 /// Carry out one `Vec<Decision>` against the live runtime — the only async
@@ -516,6 +519,7 @@ where
     // diagnostics row is removed on teardown regardless).
     refresh_parts(&ctx.runner.rt.diagnostics, ctx.download_id, &ctx.state);
     hold_queued_relations(ctx);
+    ctx.awaited_grants.hold(&ctx.state);
     Ok(())
 }
 

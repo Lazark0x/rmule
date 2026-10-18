@@ -175,6 +175,9 @@ pub(super) struct CoreWiring<S, P, L, K> {
     /// every download, asked by the serve adapter's triage, told of a retired
     /// attempt by the NAT-T front.
     pub(super) awaited_inbound: crate::adapters::AwaitedInbound,
+    /// The **Peer Links** (ADR-0107): every download files the sources it
+    /// awaits a grant from in them, beside the links the adapters file.
+    pub(super) peer_links: crate::adapters::SharedPeerLinks,
     pub(super) udp_ports_advert: SharedUdpPortsAdvert,
     /// The **Advertised IPv6** (ADR-0087): the Advertised Endpoints chooser's
     /// IPv6 verdict, published once and read by the hello tag, the Kad publish
