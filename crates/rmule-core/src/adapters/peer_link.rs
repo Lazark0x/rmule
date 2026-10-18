@@ -111,7 +111,7 @@ pub(super) struct LinkJoin {
 /// What a waiting download is answered.
 enum Seat {
     /// Its turn: the peer as the link knows it.
-    Riding(PeerIdentity),
+    Riding(Box<PeerIdentity>),
     /// The Dial in Flight it waited on failed before the hello, for this
     /// cause.
     DialEnded(DialEnd),
@@ -324,7 +324,7 @@ impl FoundLink {
             tokio::select! {
                 seat = &mut turn => {
                     let identity = match seat {
-                        Ok(Seat::Riding(identity)) => identity,
+                        Ok(Seat::Riding(identity)) => *identity,
                         Ok(Seat::DialEnded(cause)) => return Turn::DialEnded(cause),
                         Err(_) => return Turn::LinkEnded,
                     };

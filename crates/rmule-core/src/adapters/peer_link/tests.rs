@@ -146,11 +146,10 @@ fn a_dial_in_flight_is_found_by_the_next_download_and_its_failure_retires_the_wa
     };
     assert_eq!(found.remote, at);
     let (waiter, _told, mut turn) = join();
-    found
-        .join_tx
-        .try_send(waiter)
-        .ok()
-        .expect("the dial takes the join");
+    assert!(
+        found.join_tx.try_send(waiter).is_ok(),
+        "the dial takes the join"
+    );
 
     dial.failed(DialEnd::ConnectionRefused);
     assert!(matches!(

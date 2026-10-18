@@ -93,7 +93,11 @@ impl Riders {
     }
 
     fn seat(&mut self, waiter: Waiter, identity: &PeerIdentity) -> bool {
-        if waiter.seated.send(Seat::Riding(identity.clone())).is_ok() {
+        if waiter
+            .seated
+            .send(Seat::Riding(Box::new(identity.clone())))
+            .is_ok()
+        {
             self.rider = Some(waiter.half);
             self.departed = false;
             true
