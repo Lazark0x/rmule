@@ -62,7 +62,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     // The managed server list is a level from the actor's first instant
     // (ADR-0080): a consumer that snapshots before sending any command still
     // sees what the store holds, exactly as it sees a recovered download.
-    match wiring.server_list.servers() {
+    match super::server::load_server_list(&wiring.server_list, &evt_tx).await {
         Ok(servers) => diagnostics.set_servers(servers),
         Err(error) => {
             tracing::warn!(%error, "managed server list unreadable at start; surfacing it empty");

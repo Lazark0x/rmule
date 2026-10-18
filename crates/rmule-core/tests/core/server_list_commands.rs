@@ -666,6 +666,43 @@ async fn a_second_update_is_refused_while_the_first_is_still_fetching() {
 
 // --- the level --------------------------------------------------------------
 
+/// The stored list is rmule's own word, judged when the core loads it
+/// (ADR-0085): a row in a Reserved Range other than loopback, which an older
+/// intake let in, leaves the store and the Run Log says so; a loopback row
+/// stands, since the operator may have typed it, and so does a public one.
+#[tokio::test]
+async fn a_stored_row_no_server_can_be_at_is_dropped_at_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open_store(dir.path());
+    let list = DurableAppConfig::new(Arc::clone(&store));
+    for host in ["224.0.0.1", "127.0.0.1", "45.55.200.1"] {
+        list.merge_server(ManagedServer::listed(endpoint(host, 4661)))
+            .unwrap();
+    }
+
+    let mut core = Core::builder(list_only(), Arc::clone(&store))
+        .settings(rmule_core::CoreSettings::default())
+        .build();
+
+    assert_eq!(
+        next_edge(&mut core).await,
+        ServerListEvent::ReservedServerDropped {
+            server: endpoint("224.0.0.1", 4661)
+        }
+    );
+    let hosts = |rows: Vec<ManagedServer>| -> Vec<String> {
+        rows.iter()
+            .map(|row| row.endpoint.host().to_string())
+            .collect()
+    };
+    assert_eq!(hosts(listed(&core)), ["127.0.0.1", "45.55.200.1"]);
+    assert_eq!(
+        hosts(list.servers().unwrap()),
+        ["127.0.0.1", "45.55.200.1"],
+        "the store no longer holds it"
+    );
+}
+
 /// The list is a level from the actor's first instant: a consumer that snapshots
 /// before sending anything already sees what the store held, with the dynamic
 /// facts honestly unknown.

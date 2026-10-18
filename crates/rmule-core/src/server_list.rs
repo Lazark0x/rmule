@@ -186,6 +186,17 @@ impl ManagedServer {
         })
     }
 
+    /// Whether `informant`'s word cannot make this row a server: it is listed
+    /// by an address in a Reserved Range that informant cannot vouch for
+    /// (ADR-0085). A row listed by name is judged when it is dialed, not here.
+    #[must_use]
+    pub fn is_reserved_for(&self, informant: rmule_primitives::Informant) -> bool {
+        self.endpoint
+            .host()
+            .parse()
+            .is_ok_and(|ip| !informant.admits(ip))
+    }
+
     /// The server's UDP flags: its last status answer's word, else the one a
     /// server.met row named for it.
     #[must_use]

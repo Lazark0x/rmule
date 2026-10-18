@@ -106,7 +106,7 @@ An address arriving in a 16-byte tag, judged by whether it can stand as one at a
 _Avoid_: valid address, routable check (this is about the tag, not the route)
 
 **Reserved Range**:
-A range no remote host can be reached at (`is_reserved_address`, ADR-0085): IPv4 `0/8`, loopback, link-local, multicast and `240/4` with the broadcast address; IPv6 unspecified, loopback, link-local and multicast. Every address a **Source Sighting** names is checked against it once, at the Source Book gate, and so is every Kad contact and every server rmule lists, each against the party that named it. Private, carrier-grade and documentation ranges are not reserved: a LAN peer is a peer.
+A range no remote host can be reached at (`is_reserved_address`, ADR-0085): IPv4 `0/8`, loopback, link-local, multicast and `240/4` with the broadcast address; IPv6 unspecified, loopback, link-local and multicast. Every address a **Source Sighting** names is checked against it once, at the Source Book gate, and so is every Kad contact and every server rmule lists, each against the party that named it (the stored list as rmule's own word, when the core loads it). Private, carrier-grade and documentation ranges are not reserved: a LAN peer is a peer.
 _Avoid_: bogon, bad IP, `IsGoodIP` (aMule's table holds more blocks and refuses LAN)
 
 **Informant**:

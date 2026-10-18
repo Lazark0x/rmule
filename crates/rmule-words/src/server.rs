@@ -303,6 +303,10 @@ pub fn list_log_line(event: &ServerListEvent) -> Sentence {
         L::ServerRemoved { server } => {
             Sentence::owned(format!("server removed: {}", server_label(server)))
         }
+        L::ReservedServerDropped { server } => Sentence::owned(format!(
+            "server dropped from the list: no server can be at {}",
+            server_label(server)
+        )),
         L::ServerPriorityChanged { server, priority } => Sentence::owned(format!(
             "{}: priority {}",
             server_label(server),

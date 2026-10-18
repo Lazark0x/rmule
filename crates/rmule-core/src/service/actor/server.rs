@@ -230,12 +230,7 @@ async fn handle_server_list_command(command: ServerListCommand, ctx: ServerListC
             // The operator's word, judged as aMule's `AddServer` judges every
             // server with no dynamic IP (`ServerList.cpp:206`, ADR-0085). A
             // named server is resolved when dialed.
-            let reserved = server
-                .endpoint
-                .host()
-                .parse()
-                .is_ok_and(|ip| !rmule_primitives::Informant::Own.admits(ip));
-            if reserved {
+            if server.is_reserved_for(rmule_primitives::Informant::Own) {
                 send_event(
                     ctx.evt_tx,
                     CoreEvent::CommandRejected {
@@ -365,6 +360,44 @@ async fn report_row_mutation(
         }
         Err(error) => reject_server_list_store(evt_tx, &error).await,
     }
+}
+
+/// The managed list as the core loads it at start (ADR-0085). The stored
+/// list is rmule's own word, judged as an operator's add is: a row in a
+/// Reserved Range other than loopback — which an intake from before that
+/// check let in — leaves the store with a Run Log line, as aMule's own
+/// `server.met` load passes every row through `AddServer`'s `IsGoodIP`
+/// (`ServerList.cpp:154`, `:206`). A row the store will not let go stays
+/// listed.
+pub(super) async fn load_server_list(
+    store: &SharedServerListStore,
+    evt_tx: &mpsc::Sender<CoreEvent>,
+) -> Result<Vec<crate::server_list::ManagedServer>, CoreError> {
+    let mut rows = store.servers()?;
+    let mut dropped = Vec::new();
+    rows.retain(|row| {
+        if !row.is_reserved_for(rmule_primitives::Informant::Own) {
+            return true;
+        }
+        match store.remove_server(&row.endpoint) {
+            Ok(_) => {
+                dropped.push(row.endpoint.clone());
+                false
+            }
+            Err(error) => {
+                tracing::warn!(%error, host = %row.endpoint.host(), "a reserved server row could not be dropped");
+                true
+            }
+        }
+    });
+    for server in dropped {
+        send_event(
+            evt_tx,
+            ServerListEvent::ReservedServerDropped { server }.into(),
+        )
+        .await;
+    }
+    Ok(rows)
 }
 
 /// A storage fault, not a caller mistake: the store's own reason is traced,

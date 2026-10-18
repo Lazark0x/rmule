@@ -21,6 +21,9 @@ impl ServerListEvent {
             L::ServerRemoved { server } => {
                 Record::new("server_list.removed").server_endpoint("server", server)
             }
+            L::ReservedServerDropped { server } => {
+                Record::new("server_list.reserved_dropped").server_endpoint("server", server)
+            }
             L::ServerPriorityChanged { server, priority } => {
                 Record::new("server_list.priority_changed")
                     .server_endpoint("server", server)

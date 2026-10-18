@@ -333,6 +333,13 @@ pub enum ServerListEvent {
         /// The server that left the list.
         server: ServerEndpoint,
     },
+    /// A stored row no server can be at left the list as the core loaded it
+    /// (ADR-0085): its address lies in a Reserved Range other than loopback,
+    /// which an intake from before that check let in.
+    ReservedServerDropped {
+        /// The row that left the list.
+        server: ServerEndpoint,
+    },
     /// A listed server's `ST_PREFERENCE` was set, which is what auto-connect
     /// server ordering reads.
     ServerPriorityChanged {
