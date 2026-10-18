@@ -175,11 +175,21 @@ For `OP_FOUNDSOURCES`, `OP_FOUNDSOURCES_OBFU` and `OP_GLOBFOUNDSOURCES`:
   than Kad version 6 is refused, since it could be a confused DNS reply. A contact merged from
   `nodes.dat` is rmule's own and has passed that file's gate. A server.met row is judged
   against the URL's host: loopback stands only when that host is a loopback address or
-  `localhost` (RFC 6761 §6.3). A server the operator adds is rmule's own, and a Reserved
-  Range other than loopback is refused with a reason the operator reads. aMule runs `IsGoodIP`
-  on every server it adds that has no dynamic IP (`ServerList.cpp:206`); a named server is
-  resolved when dialed and is not judged here. LAN addresses pass at all three, where
-  aMule's `IsGoodIPPort` and `FilterLanIPs` refuse them.
+  `localhost` (RFC 6761 §6.3). Any other host name is a remote party, even one that resolves
+  to loopback: the fetch never surfaces the address it reached, and with a proxy configured
+  that address would be the proxy's. A row is judged on the address it would be dialed at,
+  the header IPv4 whenever it carries one (ADR-0087 §4.7): a dual-stack row whose IPv4 is
+  reserved is dropped even when its `ST_IPV6` names a host, and a reserved `ST_IPV6` beside
+  a good IPv4 drops nothing, because the list never dials that IPv6 (aMule judges the IPv4
+  alone; emule-qt reads `ST_IPV6` only on a zero header, `Server.cpp:194`). A server the
+  operator adds is rmule's own, and a Reserved Range other than loopback is refused with a
+  reason the operator reads. The stored list is rmule's own word too, judged the same way
+  when the core loads it at start: a row in a Reserved Range other than loopback, which an
+  intake from before this check let in, is dropped with a Run Log line, and a loopback row
+  stands, since the operator may have typed it. aMule runs `IsGoodIP` on every server it adds
+  that has no dynamic IP (`ServerList.cpp:206`), its own `server.met` load included (`ServerList.cpp:154`); a named
+  server is resolved when dialed and is not judged here. LAN addresses pass at all three,
+  where aMule's `IsGoodIPPort` and `FilterLanIPs` refuse them.
 - **Where this departs from aMule's `IsGoodIP`** (`NetworkFunctions.cpp:101-142`, called at
   `PartFile.cpp:1665` and `:2794` and `DownloadQueue.cpp:728` and `:1583`). aMule refuses
   LAN addresses by default (`/eMule/FilterLanIPs`, `Preferences.cpp:1176`); rmule never does.
