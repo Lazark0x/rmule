@@ -2946,6 +2946,7 @@ dependencies = [
  "rmule-peer",
  "rmule-primitives",
  "rmule-testkit",
+ "rmule-words",
  "tempfile",
  "tokio",
  "toml",

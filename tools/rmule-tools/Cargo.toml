@@ -23,6 +23,7 @@ rmule-peer = { path = "../../crates/rmule-peer" }
 rmule-kad = { path = "../../crates/rmule-kad" }
 rmule-net = { path = "../../crates/rmule-net" }
 rmule-primitives = { path = "../../crates/rmule-primitives" }
+rmule-words = { path = "../../crates/rmule-words" }
 # The throwaway directory a driver shares its files from.
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs", "signal"] }
