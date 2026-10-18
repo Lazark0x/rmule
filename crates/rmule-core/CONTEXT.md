@@ -781,6 +781,16 @@ holds. The link lives while its serve side, its rider or a waiter holds it; a ne
 under a name takes that name.
 _Avoid_: served link (the accepted kind only), shared connection (every link is bidirectional), second link
 
+**Dial in Flight**:
+A **Peer Link** before its hello: a download's dial, filed under where it dials and the User Hash
+its record knows from the moment the dial is decided — in the same step as the look-up that found
+nothing — until the hello refiles it under every name it proves. Another download of the peer that
+finds it waits on it as a **Link Rider** and takes its turn after the hello; a dial that fails
+retires every waiter with the dial's cause, as aMule's one connecting client is a dead source for
+every file (ADR-0107 invariant 11). A dial the IP filter, a ban or the crypt rule refuses opens no
+socket and is never one.
+_Avoid_: pending connection, half-open link
+
 **Link Rider**:
 A download working a peer over its **Peer Link**. One rides at a time — aMule's one
 `m_reqfile` — and the others wait on the link in arrival order, aMule's A4AF list; the oldest

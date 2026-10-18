@@ -104,19 +104,21 @@ and visible.
 
 aMule holds one client per peer and that client one socket: every download of the peer asks over
 it, one file at a time, and the other files wait on the client's A4AF list. rmule holds the same
-shape as a **Peer Link** — every live, identified link to a peer, whoever dialed it — and the
-downloads that ride it, one at a time.
+shape as a **Peer Link** — every live, identified link to a peer, whoever dialed it, and every
+dial rmule has in flight to one — and the downloads that ride it, one at a time.
 
 | Set | Key | Owner | Lifetime |
 |---|---|---|---|
-| **Peer Links** | each **Ask Name** the link proves: its dial endpoint (the link's own address with the hello's listen port; for a link rmule dialed, also where it dialed), `(server, low_id)` when the hello names a Low ID and its server, and the hello's User Hash | the link's driver — the accept road's or the dialing worker's router — by filing | from the hello (an adopted callback: from the adoption) to the link's end; a newer link filed under a name takes that name |
+| **Peer Links** | each **Ask Name** the link proves: its dial endpoint (the link's own address with the hello's listen port; for a link rmule dialed, also where it dialed), `(server, low_id)` when the hello names a Low ID and its server, and the hello's User Hash; a **Dial in Flight**, before its hello, under where it dials and the User Hash the dialing source's record knows | the link's driver — the accept road's or the dialing worker's router, and before the socket the dialing worker — by filing | a link rmule dials: from the dial, as a Dial in Flight, refiled under its hello's names at the hello; an accepted link: from the hello (an adopted callback: from the adoption); to the link's end or the dial's failure; a newer link filed under a name takes that name |
 | **Link Riders** | one Peer Link: one rider, then the waiters in arrival order | the link's driver | a rider from its turn to its worker's end; a waiter from its join to its turn, its run's stop, or the link's end |
 
 Invariants every transition keeps:
 
-7. **A download never dials a peer it reaches a Peer Link of.** Before a dial or a callback ask it
-   looks the link up under the source's names — a dial under the dial endpoint and the User Hash
-   its record knows, a callback under its `(server, low_id)` — and rides or waits on what it finds.
+7. **A download never dials a peer it reaches a Peer Link of**, a Dial in Flight among them. Before
+   a dial or a callback ask it looks the link up under the source's names — a dial under the dial
+   endpoint and the User Hash its record knows, a callback under its `(server, low_id)` — and rides
+   or waits on what it finds. The look-up and a dial's filing are one step, so of two downloads
+   that start together one dials and the other finds its dial.
 8. **One download rides a link at a time**, as aMule's client has one `m_reqfile`. Another download
    of the peer waits on the link, not on a second socket, and the oldest waiter still running takes
    the link the moment the rider's worker ends.
@@ -126,16 +128,26 @@ Invariants every transition keeps:
     (never an IPv4 claim on an IPv6 link), the hello's `(server, low_id)` and User Hash, and a Low
     ID an `OP_CHANGE_CLIENT_ID` moves only under a server the node's list holds. A hash another
     client claims falsely is caught by the identified-client rule below.
+11. **A Dial in Flight is a link not yet up.** The download that dials it rides it from the dial;
+    another download that finds it waits on it, is told it waits once the socket is up, and takes
+    its turn on the link after the hello. A dial that fails — refused, timed out, reset, closed
+    before the hello — retires the dialing download and every waiter with the dial's one cause, as
+    aMule's one client in `DS_CONNECTING` is a dead source deleted from every file's source and
+    A4AF lists (`BaseClient.cpp:1340-1346`, `:419`, `DownloadQueue.cpp:763-786`). A dial refused
+    before any socket — by the IP filter, a ban or the outbound crypt rule (ADR-0049) — is no Dial
+    in Flight and files nothing: each download meets those gates with what its own record knows.
 
 | Rule | aMule | rmule |
 |---|---|---|
 | a client is found by its address and port, then by `(low_id, server)`, then by its hash | `FindMatchingClient` (`ClientList.cpp:253-347`) | a Peer Link is filed under each name; a download looks up every name its source has |
 | a download from a connected client asks over its socket | `TryToConnect` on a live socket only calls `ConnectionEstablished` (`BaseClient.cpp:1489-1496`), which sends the file request (`:1692-1698`) | the download rides the link: its requests go out on it and the link's requester events come back to it; nothing is dialed |
 | another file of a connected client waits on the client | `AddRequestForAnotherFile` (`DownloadClient.cpp:496-507`) | the download waits on the link (a **Link Rider** waiting); nothing is dialed |
+| a client being connected to is the client every file of it asks | one `CUpDownClient`, found by address and port while `DS_CONNECTING` (`DownloadQueue.cpp:610-704`, `ClientList.cpp:253-347`) | the Dial in Flight is filed at the dial; another download of the peer waits on it and dials nothing |
+| a client whose connect fails is a dead source for every file | `DS_CONNECTING` on disconnect: `AddDeadSource` and delete (`BaseClient.cpp:1340-1346`), which removes it from every file and A4AF list (`:419`, `DownloadQueue.cpp:763-786`) | the dial's cause retires every download waiting on it, as it retires the one that dialed |
 | a downloading source is never swapped away | `SwapToAnotherFile` refuses `DS_DOWNLOADING` (`DownloadClient.cpp:1411-1421`) | the rider keeps the link until its worker ends |
 | the client swaps when its file is gone, needs nothing, or stops | `ClientTCPSocket.cpp:555-561`, `PartFile.cpp:1423-1426`, `:2203-2206` | each of these ends the rider's worker, and the oldest waiter takes the link |
 | an A4AF-auto file pulls a queued client every 15 min | `PartFile.cpp:1490-1502` | departs: rmule has no A4AF-auto preference; a rider waiting in the peer's queue holds the link until its slot budget (ADR-0026) ends its worker |
-| the uploader grants at once a client asking another file while it downloads | `UploadQueue.cpp:486-493` | a waiter that takes the link from a rider holding a slot asks and is granted on that slot |
+| the uploader grants at once a client asking another file while it downloads | `UploadQueue.cpp:486-493` | a waiter that takes the link from a rider that released its slot silently asks and is granted on that slot |
 | a Low-ID client is found by `(low_id, server)` | `ClientList.cpp:265-300` | a callback source whose `(server, low_id)` names a link rides it, and no callback is asked: the peer's `TryToConnect` would open nothing, so the callback would lapse |
 | an IPv6 client's address is its socket's | `SetAddress(m_socket->GetPeerAddress())` (kno `BaseClient.cpp:812-813`) | on an IPv6 link the peer is a source at the link's address with its listen port (`PeerIdentity::source_coordinate`); the hello's IPv4 claim names nothing |
 | a client met inbound is dialed where its socket came from | `BaseClient.cpp:661`, `:678-680`, `:1620` | the link is filed under that address, the one its sighting names |
@@ -150,6 +162,21 @@ ends — the peer lacks the file, has nothing the download needs, the slot budge
 stopped, paused, finished or was cancelled. A waiter whose run stops leaves the line without a turn.
 The rider's teardown (`OP_CANCELTRANSFER` or the silent release, ADR-0056) goes out before the next
 rider's file request, so the peer reads the hand-over as aMule's `SetUploadFileID` switch.
+
+What the uploader reads, settled: the next rider's file request is the one any new source gets —
+`OP_REQUESTFILENAME`, `OP_SETREQFILEID` for a file of more than one part, then `OP_STARTUPLOADREQ`
+on the probe's answer. aMule takes the first two as a file switch, `SetUploadFileID` re-targeting
+the client (`ClientTCPSocket.cpp:487-530`), and answers the ask by the client's upload state, not by
+the file (`:592-616`, `UploadQueue.cpp:395-519`):
+
+| The rider ended | The client at aMule | The next rider's ask |
+|---|---|---|
+| holding a slot, released silently (its last part streamed, the download finished) | still uploading | granted at once, `OP_ACCEPTUPLOADREQ` (`UploadQueue.cpp:486-493`) |
+| holding a slot, with `OP_CANCELTRANSFER` (cancel, pause, nothing to work, ADR-0056) | out of the upload list and not queued (`ClientTCPSocket.cpp:673-680`) | a fresh admission: granted at once only when a slot is free and nobody waits, else queued with its wait from zero (`UploadQueue.cpp:500-518`) |
+| waiting in the queue | on the queue, its wait kept | answered with its rank (`UploadQueue.cpp:402-430`), the wait per client, not per file |
+
+The next rider asks the same way in all three and reads what comes back, a grant or a rank, as any
+worker does; nothing is asked twice and nothing is skipped.
 
 A download that rides or waits on a link is told so, and the operator sees it: a Run Log record
 (`download.link_shared`, the turn `waiting` or `riding`) and the Sources pane's mark on the slot.
@@ -180,6 +207,10 @@ rows carry the same code in both (the fork only widens tick counts to 64 bits). 
   which left the first download with no usable source; the second download now waits on the first's
   link instead, so the peer meets one connection, re-targeted between files as aMule re-targets
   its own.
+- **Two downloads that start together dial once.** The first dial is filed before its socket, so
+  the second, finding it, waits instead of racing a second hello that would make aMule close the
+  first socket; a dial that fails costs both downloads the source at once, as aMule loses its one
+  client.
 - A download waiting on a link holds a worker slot of its own download while it waits, as aMule's
   A4AF source counts among the file's sources; it dials nothing and asks the peer nothing.
 - The links rmule dials are filed too, so a download of a peer another download dialed rides that
