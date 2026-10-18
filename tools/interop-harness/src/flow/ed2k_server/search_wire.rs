@@ -543,7 +543,8 @@ fn run_leg(
 }
 
 /// Hold until the tap shows `sharer` has offered the server every file in
-/// `share`: aMule offers at most 200 a minute, so a large share reaches the
+/// `share` (a directory an aMule shares whole, or the one file a sharer
+/// names): aMule offers at most 200 a minute, so a large share reaches the
 /// server over minutes, and a search sent before then is answered short.
 /// `flow` prefixes the progress line.
 pub(crate) fn wait_for_offers(
@@ -553,9 +554,13 @@ pub(crate) fn wait_for_offers(
     share: &Path,
     timeout: Duration,
 ) -> Result<()> {
-    let held = fs::read_dir(share)
-        .with_context(|| format!("list {}", share.display()))?
-        .count() as u64;
+    let held = if share.is_file() {
+        1
+    } else {
+        fs::read_dir(share)
+            .with_context(|| format!("list {}", share.display()))?
+            .count() as u64
+    };
     let deadline = Instant::now() + timeout;
     loop {
         let offered = server_tap::offered_files(pcap, sharer)?;

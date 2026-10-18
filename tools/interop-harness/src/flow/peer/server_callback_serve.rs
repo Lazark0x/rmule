@@ -198,7 +198,7 @@ pub fn run_server_callback_serve(options: ServerCallbackServeOptions<'_>) -> Res
             verdict::FLOW,
             &root.join(SERVER_PCAP),
             RMULE_IP,
-            &options.layout.synthetic_dir(),
+            &options.layout.synthetic_shared_file(),
             timeout,
         )?;
 
