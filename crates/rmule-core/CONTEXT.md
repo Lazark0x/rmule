@@ -1069,8 +1069,12 @@ row also carries **Dead Since**: how long ago the level saw it die, or that it w
 run started — a run-time fact, never stored.
 
 **Server Figures**:
-What a server last reported about itself and when: its ping, user and file counts, soft and hard file limits and version, and `answered_at`, the wall-clock time of its last answer. Durable on the **Managed Server List** row (store version 9), as aMule keeps them in server.met. A `0x97` answer writes and dates them, `OP_SERVERSTATUS` and a tagged `0xA3` fill in without re-dating, and an import brings its own `ST_LASTPING` date or no figures. The surfaced row carries their age.
+What a server last reported about itself and when: its ping, user and file counts, soft and hard file limits and version, and two wall-clock dates: `answered_at`, its last status answer (a challenge-matched `0x97` or an import's `ST_LASTPING`, nothing else), and `counted_at`, when its counts were last reported. Durable on the **Managed Server List** row (store version 9; the two dates since version 15), as aMule keeps them in server.met. A `0x97` answer writes them and dates both, `OP_SERVERSTATUS` writes the counts and dates only them, a tagged `0xA3` dates nothing, and an import brings its own `ST_LASTPING` date or no figures. The surfaced row carries the age of the later date, and the status answer's own.
 _Avoid_: dynamics, measurements (they are not kept beside the list), server stats
+
+**Ping State**:
+What core knows of a server's status ping, on the surfaced row (ADR-0080, `diagnostics::PingState`): `Measured(rtt)` from the **Server Figures**, else `NotAskedYet`, `Awaiting` (a probe is out) or `Unanswered { since }` (its last plain probe was judged silent; outranks an older measured round trip). The **Status Ping Sweep** writes the probe half as a run-time fact on the level, never stored; a challenge-matched `0x97` clears it.
+_Avoid_: ping status, latency (a round trip is only one of its states)
 
 **Server Facts**:
 The write side of what happened with a server (ADR-0080 amendments, `server_list::ServerFacts`)
@@ -1117,12 +1121,12 @@ _Avoid_: selected server (the *choice*, which outlives a failed connect), curren
 
 **Status Ping Sweep**:
 The `0x96` pacing loop (ADR-0052 breakdown 3, `server_udp::StatusPingSweep`) with two paces:
-a server with no answer younger than the 20 min window gets its *first contact* at one per 250 ms (at attach the burst takes only the rows whose **Server Figures** are absent or stale), and every
+a server with no answer younger than the 20 min window gets its *first contact* at one per 250 ms (at attach the burst takes only the rows whose status-answer date is absent or stale; dated counts from a login do not count), and every
 later *refresh* is due once a 20 min window lapses (aMule `UDPSERVSTATMINREASKTIME`) and paced at one
 per 5 s across the list (aMule `UDPSERVERSTATTIME`); DNS-named rows walked past. It walks the **Managed Server List** re-read from the store
 each tick — this is list health, not download sourcing — while **Global Source Discovery** stays on
-the command-set list. Every probe counts a failure through **Server Facts** at send and the gated
-reply clears it, so an unanswered ping needs no timer: the tally reads *tries since this server last
+the command-set list. It reports each row's **Ping State** to the level. A silent probe counts a failure through **Server Facts** at its verdict and the gated
+reply clears it: the tally reads *tries since this server last
 answered*. A ping is judged 20 s after it left, and a silence counts only when a ping sent within
 60 s of it was answered (the offline guard, ADR-0052's dead-server amendment): when every ping of a pass goes unanswered
 the network is down, and no tally moves. A lone living silence with no neighbour is inconclusive: one

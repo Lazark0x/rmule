@@ -41,8 +41,13 @@ pub struct ManagedServer {
   (`Normal = 0`, `High = 1`, `Low = 2`, out of range → `Normal`) is also the persisted
   mapping, so the file format and the store cannot drift.
 - **Server Figures** (`ServerFigures`): ping, users, files, soft and hard file limits,
-  version, the UDP flags word of the last challenge-matched `0x97`, and `answered_at`,
-  the wall-clock time the server last answered. aMule keeps the same figures in
+  version, the UDP flags word of the last challenge-matched `0x97`, and two wall-clock
+  dates. `answered_at` is the server's last **status answer**: a challenge-matched `0x97`,
+  or an import's `ST_LASTPING`, and nothing else (aMule's `SetLastPingedTime`,
+  `ServerUDPSocket.cpp:191`, which `OP_SERVERSTATUS` never moves, `ServerSocket.cpp:465-479`).
+  `counted_at` is when the user and file counts were last reported: by a status answer, a
+  login's `OP_SERVERSTATUS` or an import. Each is `None` until something dated it, so a
+  server only a login reported on has dated counts and no status answer. aMule keeps the same figures in
   server.met (`SaveServerMet`, `ServerList.cpp:776-789`; read back by
   `CServer::AddTagFromFile`, `Server.cpp:182-270`), so they survive a restart.
 - **Grants** (`ServerGrantsReport`): the raw `SRV_TCPFLG_*` word of the server's last
@@ -90,7 +95,7 @@ standard endpoint is `standard_endpoint()`.
 duplicate branch and its `AddServer` for a known server: **the name always takes the
 fresh value, the description only when the fresh one is non-empty, and priority, the
 static pin, the failure tally and the grants stay ours.** Figures keep whichever side
-answered later. An imported server.met fills figures only when it carries a last-ping
+is dated later, by the later of its two dates. An imported server.met fills figures only when it carries a last-ping
 time that is non-zero and not in the future (aMule rejects a future `ST_LASTPING`,
 `Server.cpp:196-200`), because a figure with no time behind it cannot say how old it is.
 Both the list update and an operator re-add go through `merge_server` and the one
@@ -176,10 +181,11 @@ id is named at once.
 ```rust
 pub struct ServerDiagnostics {
     pub server: ManagedServer,
-    pub ping: Option<Duration>,
+    pub ping: PingState,
     pub users: Option<u32>,
     pub files: Option<u32>,
-    pub age: Option<Duration>,          // since the server last answered
+    pub age: Option<Duration>,          // since the later of the figures' two dates
+    pub status_age: Option<Duration>,   // since the last status answer
     pub health: ServerHealth,           // ADR-0052
     pub grants_age: Option<Duration>,
     pub resolved_address: Option<ResolvedAddress>,
@@ -192,6 +198,25 @@ pub struct ServerDiagnostics {
 actor round trip. It is republished whole, never patched, and always read back from the
 store under the same lock as the mutation that changed it; the actor publishes once
 before taking its first command. `None` means never measured, never zero.
+
+**The Ping State** (`PingState`) is what core knows of a row's status ping, so the ping
+is never a bare blank:
+
+- `Measured(rtt)`: the round trip of the last challenge-matched `0x97`, durable with the
+  figures, so a restart shows it.
+- `NotAskedYet`: no measured round trip, and the Status Ping Sweep has sent the row nothing
+  this run.
+- `Awaiting`: no measured round trip, and a probe is out. A crypt ping and its plain
+  fallback are one wait.
+- `Unanswered { since }`: the row's last plain probe was judged silent (ADR-0052, 20 s after
+  it left) and nothing has been answered since; `since` dates the first silence of that
+  run of silences. It outranks an older measured round trip, because the newest fact about
+  the ping is that it went unanswered. A name that gives no address is a silent probe.
+
+The sweep writes the probe half as a run-time fact on the level, keyed by the row as
+listed and never stored, as it writes the Resolved Address: a probe sent, a probe judged
+silent. A challenge-matched `0x97` clears it. The offline guard decides only the tally: a
+silence the network caused is still a ping that went unanswered.
 
 **The connected server is one fact, not a flag on N rows:**
 `DiagnosticsSnapshot::connected_server: Option<ServerEndpoint>`, raised by an accepted
@@ -207,18 +232,17 @@ together for the same round trip:
 
 | Surface | Writes | aMule |
 |---|---|---|
-| Status-ping sweep, at send | `fail_count += 1` | `ServerStats` → `AddFailedCount` |
-| `0x97` challenge gate, on a match | ping, users, files, limits, UDP flags, dated now; `fail_count = 0` | `ProcessPacket` → `SetPing` / `SetUserCount` / `SetFileCount` / `ResetFailedCount`, `SetLastPingedTime` |
-| Connected session's `OP_SERVERSTATUS` | users, files; date unchanged (figures with none are dated now) | `CServerSocket::ProcessPacket` |
+| Status-ping sweep, at a silent verdict | `fail_count += 1` (ADR-0052's offline guard) | `ServerStats` → `AddFailedCount` |
+| `0x97` challenge gate, on a match | ping, users, files, limits, UDP flags; `answered_at` and `counted_at` now; `fail_count = 0` | `ProcessPacket` → `SetPing` / `SetUserCount` / `SetFileCount` / `ResetFailedCount`, `SetLastPingedTime` |
+| Connected session's `OP_SERVERSTATUS` | users, files; `counted_at` now; `answered_at` never moves | `CServerSocket::ProcessPacket` (`ServerSocket.cpp:465-479`) |
 | Connected session's `OP_SERVERIDENT` | name, description | `SetListName` / `SetDescription` |
-| Tagged `0xA3` | version; date unchanged | ADR-0068 |
+| Tagged `0xA3` | version; no date moves | ADR-0068 |
 | Failed TCP connect | `fail_count += 1` | `ConnectionFailed` |
 | Accepted login, `OP_IDCHANGE` | grants, dated; `fail_count = 0` | `ResetFailedCount` |
 
-- **A ping is counted as a failure the moment it leaves, and the answer clears the whole
-  tally.** A UDP ping has no failure event, so this needs no timer and leaves no window
-  in which a ping is outstanding but uncounted. A crypt ping and its plain fallback
-  (ADR-0046) are two probes and count two. `fail_count` reads *consecutive failures to
+- **A ping counts as a failure at its silent verdict, and an answer clears the whole
+  tally** (ADR-0052). A crypt ping is never judged alone; its plain fallback is.
+  `fail_count` reads *consecutive failures to
   reach this server, by any means, since it was last reached*, on aMule's single
   `m_failedcount`.
 - A connect refused by the IP filter reports its edge and leaves the tally alone: the
@@ -233,22 +257,28 @@ together for the same round trip:
 - A reply from an unlisted server is inert, because the store edits only rows it holds;
   removing a server drops its figures, so a re-added endpoint starts unknown.
 - **The status sweep walks the managed list**, re-read from the store each tick, at
-  ADR-0052's cadence (one server per 5 s tick, each at most once per 4.5 h, the first
-  probe one tick after start). The global source sweep walks a projection of the same
+  ADR-0052's cadence (a first-contact burst, then one refresh per 5 s tick, each server
+  at most once per 20 min, the first probe one tick after start). The global source sweep walks a projection of the same
   list (ADR-0051).
 - A login measures no UDP round trip, so a connected server with no `0x97` yet shows
-  counts and no ping.
+  dated counts, no status answer, and the Ping State the sweep reports for it.
 - Health follows the tally under the Server Policy of ADR-0052: dead servers are marked,
   never removed, and `is_static` is the operator's pin against any future cleanup.
 
 ### Presentation of a row
 
 The TUI's Servers table has an **Age** column (`59s`, `59m`, `47h`, `99d`, then weeks)
-sorted as a quantity, with a never-answered server last in both directions; it is the
-last figure to give way, so no figure shows without its age. Under the table, a detail
+sorted as a quantity, with a never-answered server last in both directions; it reads the
+later of the figures' two dates and is the last figure to give way, so no figure shows
+without its age. The **Ping** cell reads the Ping State: the round trip, or its reason in one
+word, `soon` (not asked yet), `asked` (awaiting) or `lost` (unanswered). A missing user or
+file count says the same word as that row's ping, or `unset` when the server answered
+without one. Ping sorts by the state's rank, measured (by round trip), awaiting, not asked,
+unanswered (by how long), never by the word. Under the table, a detail
 pane says for the selected row, one sentence each: **Grants** (the last login's TCP
-grants and their age, or never logged in), **UDP** (the last status answer's flags, none
-named, or no answer yet), **Health** (answered with age; not reached; failing, with the
+grants and their age, or never logged in), **UDP** (the last status answer's flags with
+its own age, none named, or no status answer yet with the Ping State's reason; counts a
+login reported are not a status answer), **Health** (answered with age; not reached; failing, with the
 tally out of the Dead Server Limit; or dead since when — a row already dead when the list
 was read says it was dead before this run), and **Shares** (for the connected server,
 what it was told; for any other, what its next login would do under the Announce Policy).
