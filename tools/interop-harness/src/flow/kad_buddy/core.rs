@@ -66,6 +66,7 @@ use crate::flow::bench::{
 use crate::flow::gate::{sit_tap_window, wait_for_kad_log};
 use crate::flow::identity::{hex_lower, ipv4_string, parse_ipv4_octets};
 use crate::flow::kad_buddy::amule_requester::{AmuleRequesterPlan, requester_seed};
+use crate::flow::kad_buddy::buddy_reask::ReaskPlan;
 use crate::flow::kad_buddy::core_swarm::{CoreSwarmInputs, plan_core_swarm};
 use crate::flow::kad_buddy::core_verdict::assert_kad_core_buddy;
 use crate::flow::kad_buddy::core_wire::{
@@ -81,7 +82,7 @@ use crate::flow::mesh::{
 };
 use crate::rmule::CONTAINER_RUN_ROOT;
 
-pub use crate::flow::kad_buddy::core_options::KadCoreBuddyOptions;
+pub use crate::flow::kad_buddy::core_options::{BuddyReaskServer, KadCoreBuddyOptions};
 pub(crate) use crate::flow::kad_buddy::core_options::{
     KAD_CORE_BUDDY_AMULE_KAD_ID, KAD_CORE_BUDDY_RMULE_KAD_ID,
 };
@@ -126,6 +127,14 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
     }
     if options.findsource_transfer && !options.omit_buddy_endpoint {
         bail!("--findsource-transfer carries the ID-only road: pass --omit-buddy-endpoint");
+    }
+    if options.buddy_reask.is_some()
+        && (!options.publish_source || options.callback_downloader || options.amule_requester)
+    {
+        bail!(
+            "--buddy-reask needs --publish-source and replaces --callback-downloader and \
+             --amule-requester"
+        );
     }
     if options.requester_kad_crypt && !options.amule_requester {
         bail!("--requester-kad-crypt arms the aMule requester: pass --amule-requester");
@@ -201,6 +210,13 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
     // its dial-back, any packet it refuses.
     if options.third_party() {
         amule_env.push("AMULE_DEBUG_PEER_CATEGORIES=1".to_owned());
+    }
+    // Two slots, both held by the leg's holders, so the downloader is queued.
+    if options.buddy_reask.is_some() {
+        amule_env.push(format!(
+            "AMULE_MAX_UPLOAD={}",
+            crate::flow::kad_buddy::buddy_reask::AMULE_MAX_UPLOAD_KIB
+        ));
     }
     amule_env.extend(base.amule_env.iter().cloned());
 
@@ -420,7 +436,13 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
                         // its `--id-hex`; bootstrapping only gives it a table.
                         bootstrap: Some(&rmule_endpoint),
                         host_dir: &dir,
-                        run_secs: options.window_secs + base.timeout_secs + 120,
+                        run_secs: options.window_secs
+                            + base.timeout_secs
+                            + 120
+                            + options
+                                .buddy_reask
+                                .as_ref()
+                                .map_or(0, |_| crate::flow::kad_buddy::buddy_reask::LEG_SECS),
                     }
                     .container_spec(),
                 ),
@@ -560,6 +582,39 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
                     kad_crypt: options.requester_kad_crypt,
                     findsource_transfer: options.findsource_transfer,
                 }),
+                buddy_reask: options
+                    .buddy_reask
+                    .as_ref()
+                    .map(|server| -> Result<ReaskPlan<'_>> {
+                        let address = |offset: usize| -> Result<String> {
+                            Ok(crate::fake_public::fake_public_address(
+                                2 + options.helper_count + options.mesh_members + offset,
+                            )?
+                            .ip)
+                        };
+                        Ok(ReaskPlan {
+                            image: options.rmule_tools_image,
+                            capture_image: base.capture_image,
+                            ed2ksrv_image: server.image,
+                            ed2ksrv_config: server.config,
+                            downloader_v4: address(0)?,
+                            holders_v4: [address(1)?, address(2)?],
+                            ed2ksrv_v4: address(3)?,
+                            amule_v4: ipv4_string(amule_ip),
+                            seed: crate::flow::kad_buddy::callback::seed(
+                                (
+                                    &hex_lower(&KAD_CORE_BUDDY_RMULE_KAD_ID),
+                                    &ipv4_string(rmule_ip),
+                                    KAD_RMULE_UDP_PORT,
+                                ),
+                                &member_plans,
+                            ),
+                            link: fs::read_to_string(base.layout.synthetic_ed2k_file())?
+                                .trim()
+                                .to_owned(),
+                        })
+                    })
+                    .transpose()?,
                 id_only_row: options.omit_buddy_endpoint.then(|| IdOnlyRowPlan {
                     image: options.rmule_tools_image,
                     address_v4: walker_v4.clone(),

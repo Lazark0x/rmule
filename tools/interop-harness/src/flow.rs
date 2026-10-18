@@ -53,9 +53,10 @@ pub use self::ed2k_server::{HolepunchFailOptions, run_holepunch_fail, score_hole
 pub use self::evidence::flush_golden_files;
 pub use self::gate::start_rmule_serve_with_login_retry;
 pub use self::kad_buddy::{
-    DialedLinkVerdict, KadCoreBuddyOptions, KadDialedLinkOptions, KadDirectCallbackOptions,
-    KadFirewalledBuddyOptions, KadRequiredCheckOptions, RequiredCheckVerdict, run_kad_core_buddy,
-    run_kad_dialed_link, run_kad_direct_callback, run_kad_firewalled_buddy, run_kad_required_check,
+    BuddyReaskServer, DialedLinkVerdict, KadCoreBuddyOptions, KadDialedLinkOptions,
+    KadDirectCallbackOptions, KadFirewalledBuddyOptions, KadRequiredCheckOptions,
+    RequiredCheckVerdict, run_kad_core_buddy, run_kad_dialed_link, run_kad_direct_callback,
+    run_kad_firewalled_buddy, run_kad_required_check,
 };
 pub use self::kad_capture::{
     KadFakePublicSourceOptions, KadSourceCaptureOptions, run_kad_distance_ordering_capture,

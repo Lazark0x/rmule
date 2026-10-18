@@ -15,6 +15,7 @@ use crate::flow::wire_filter::WireFilter;
 use crate::rmule::RMULE_SERVE_TCP_PORT;
 
 pub(crate) mod amule_requester;
+pub(crate) mod buddy_reask;
 pub(crate) mod callback;
 pub(crate) mod callback_walk;
 pub(crate) mod core;
@@ -33,7 +34,7 @@ pub(crate) mod required_check;
 pub(crate) mod third_party;
 pub(crate) mod verify_keys;
 
-pub use self::core::{KadCoreBuddyOptions, run_kad_core_buddy};
+pub use self::core::{BuddyReaskServer, KadCoreBuddyOptions, run_kad_core_buddy};
 pub use self::dialed_link::{DialedLinkVerdict, KadDialedLinkOptions, run_kad_dialed_link};
 pub use self::direct_callback::{KadDirectCallbackOptions, run_kad_direct_callback};
 pub use self::firewalled::{KadFirewalledBuddyOptions, run_kad_firewalled_buddy};

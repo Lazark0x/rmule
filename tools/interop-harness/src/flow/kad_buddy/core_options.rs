@@ -166,6 +166,21 @@ pub struct KadCoreBuddyOptions<'a> {
     /// takes the `FINDSOURCE` road to a body that shares the file. Requires
     /// [`omit_buddy_endpoint`](Self::omit_buddy_endpoint).
     pub findsource_transfer: bool,
+    /// Run the buddy reask leg
+    /// ([`buddy_reask`](crate::flow::kad_buddy::buddy_reask)) as the third
+    /// party: two holders take the aMule's upload slots, a downloader on an
+    /// `ed2ksrv` High ID is queued, the server stops, and the downloader's
+    /// reask must take the buddy road. Requires
+    /// [`publish_source`](Self::publish_source); excludes the other askers.
+    pub buddy_reask: Option<BuddyReaskServer<'a>>,
+}
+
+/// The `ed2ksrv` the buddy reask leg's downloader logs in to.
+pub struct BuddyReaskServer<'a> {
+    /// Its image, refused unless its commit label matches the pin.
+    pub image: &'a str,
+    /// Its bench config; `this_ip` is rendered per run.
+    pub config: &'a std::path::Path,
 }
 
 impl KadCoreBuddyOptions<'_> {
@@ -176,8 +191,8 @@ impl KadCoreBuddyOptions<'_> {
         self.block_udp || self.helper_count > 0
     }
 
-    /// Whether a third party asks for a relay — either asker.
+    /// Whether a third party asks for a relay — any asker.
     pub(crate) fn third_party(&self) -> bool {
-        self.callback_downloader || self.amule_requester
+        self.callback_downloader || self.amule_requester || self.buddy_reask.is_some()
     }
 }

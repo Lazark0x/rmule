@@ -3,7 +3,8 @@
 //! ([`callback`](super::callback)) and the ID-only walk fold-in
 //! ([`callback_walk`](super::callback_walk)), or instead a stock aMule
 //! requester ([`amule_requester`](super::amule_requester)), whose
-//! row may be ID-only ([`id_only_row`]). Flow M
+//! row may be ID-only ([`id_only_row`]), or the buddy reask leg
+//! ([`buddy_reask`](super::buddy_reask)). Flow M
 //! hands this module its bench, taps and addresses and replaces its fixed tap
 //! window with [`drive`].
 
@@ -18,6 +19,7 @@ use crate::flow::bench::{KadMeshNames, KadResources};
 use crate::flow::gate::wait_for_host_file;
 use crate::flow::identity::{hex_lower, parse_ed2k_file_hash};
 use crate::flow::kad_buddy::amule_requester::{AmuleRequesterLeg, AmuleRequesterPlan};
+use crate::flow::kad_buddy::buddy_reask::{ReaskLeg, ReaskPlan};
 use crate::flow::kad_buddy::callback::{CallbackLeg, DownloaderPlan, Judged, await_indexed};
 use crate::flow::kad_buddy::callback_walk::{WalkLeg, WalkPlan, WalkTaps};
 use crate::flow::kad_buddy::id_only_row::{self, IdOnlyRowPlan};
@@ -51,6 +53,8 @@ pub(crate) struct ThirdParty<'a> {
     /// `Some` publishes the requester's row ID-only from rmule;
     /// the publisher takes `walker_v4`.
     pub(crate) id_only_row: Option<IdOnlyRowPlan<'a>>,
+    /// `Some` runs the buddy reask leg in place of either asker.
+    pub(crate) buddy_reask: Option<ReaskPlan<'a>>,
 }
 
 /// Who asked for the relay.
@@ -60,6 +64,9 @@ enum Asker {
     /// The stock aMule requester (`kad-core-buddy --amule-requester`); `None`
     /// when no row was indexed.
     Amule(Option<AmuleRequesterLeg>),
+    /// The buddy reask leg (`kad-core-buddy --buddy-reask`); `None` when no
+    /// row was indexed.
+    Reask(Option<ReaskLeg>),
 }
 
 /// The legs that ran.
@@ -102,6 +109,15 @@ pub(crate) fn drive(party: &ThirdParty<'_>, resources: &mut KadResources<'_>) ->
     } else {
         await_indexed(&party.storer_events, party.window)?
     };
+    if let Some(plan) = &party.buddy_reask {
+        let leg = indexed
+            .then(|| ReaskLeg::run(party.docker, party.layout, party.names, resources, plan))
+            .transpose()?;
+        return Ok(Legs {
+            asker: Asker::Reask(leg),
+            walk: None,
+        });
+    }
     if let Some(plan) = &party.amule_requester {
         let leg = indexed
             .then(|| {
@@ -211,6 +227,10 @@ impl Legs {
                 }
                 requester.judge(&judged)
             }
+            Asker::Reask(Some(leg)) => leg.judge(&judged),
+            Asker::Reask(None) => Err(anyhow::anyhow!(
+                "kad-buddy-reask: the placed storer indexed no source, so no body ran"
+            )),
             Asker::Amule(None) => Err(anyhow::anyhow!(
                 "kad-amule-requester: the placed storer indexed no source, so no requester ran"
             )),
