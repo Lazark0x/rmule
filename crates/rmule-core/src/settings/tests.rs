@@ -54,6 +54,11 @@ fn every_setting_set_on_the_store_alone_persists_for_the_next_start() {
         Setting::WithholdShares(policy.withhold_from_related_search),
         Setting::ServerMetUrl("http://mirror.example/server.met".to_owned()),
         Setting::AutoFetchServerMet(false),
+        Setting::AutoUpdateServerMet(true),
+        Setting::ServerMetAutoUpdateUrls(vec![
+            " http://one.example/server.met".to_owned(),
+            "https://two.example/server.met".to_owned(),
+        ]),
         Setting::NodesDatUrl("http://mirror.example/nodes.dat".to_owned()),
         Setting::AutoFetchNodesDat(false),
     ] {
@@ -73,6 +78,11 @@ fn every_setting_set_on_the_store_alone_persists_for_the_next_start() {
             server_policy: policy,
             server_met_url: "http://mirror.example/server.met".to_owned(),
             auto_fetch_server_met: false,
+            auto_update_server_met: true,
+            server_met_auto_update_urls: vec![
+                "http://one.example/server.met".to_owned(),
+                "https://two.example/server.met".to_owned(),
+            ],
             nodes_dat_url: "http://mirror.example/nodes.dat".to_owned(),
             auto_fetch_nodes_dat: false,
         }
@@ -116,6 +126,13 @@ fn a_value_the_key_cannot_take_is_refused_and_nothing_is_written() {
         ),
         (
             Setting::ServerMetUrl(" ".to_owned()),
+            SettingRefusal::UrlBlank,
+        ),
+        (
+            Setting::ServerMetAutoUpdateUrls(vec![
+                "http://one.example/server.met".to_owned(),
+                " ".to_owned(),
+            ]),
             SettingRefusal::UrlBlank,
         ),
     ] {

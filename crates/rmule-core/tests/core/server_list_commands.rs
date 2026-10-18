@@ -457,6 +457,75 @@ async fn the_search_sweep_follows_the_list_through_add_import_and_remove() {
 
 // --- the on-demand update ---------------------------------------------------
 
+/// The auto-update walk on the actor (ADR-0065): one accept naming every
+/// URL, each URL's outcome in walk order, then one install's total; with no
+/// URL set the walk says so and fetches nothing, so it holds no update slot.
+#[tokio::test]
+async fn an_auto_update_walks_every_url_then_installs_once() {
+    let mut core = Core::builder(list_only(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .server_list_fetcher(FakeFetcher::serving(met_bytes(&[(
+            Ipv4Addr::new(1, 2, 3, 4),
+            4661,
+            "Walked",
+            "",
+        )])))
+        .build();
+    let urls = vec![
+        "http://one.example/server.met".to_owned(),
+        "http://two.example/server.met".to_owned(),
+    ];
+
+    send(
+        &core,
+        ServerListCommand::AutoUpdateServerList { urls: urls.clone() },
+    )
+    .await;
+    assert_eq!(
+        next_edge(&mut core).await,
+        ServerListEvent::ServerListAutoUpdateStarted { urls: urls.clone() }
+    );
+    for (url, added, updated) in [(&urls[0], 1, 0), (&urls[1], 0, 1)] {
+        assert_eq!(
+            next_edge(&mut core).await,
+            ServerListEvent::ServerListAutoUpdateFetched {
+                url: url.clone(),
+                outcome: rmule_core::AutoUpdateFetch::Merged { added, updated },
+            }
+        );
+    }
+    assert_eq!(
+        next_edge(&mut core).await,
+        ServerListEvent::ServerListUpdated {
+            added: 1,
+            updated: 1,
+            total: 1,
+        }
+    );
+    assert_eq!(listed(&core)[0].name.to_display_string(), "Walked");
+
+    send(
+        &core,
+        ServerListCommand::AutoUpdateServerList { urls: Vec::new() },
+    )
+    .await;
+    assert_eq!(
+        next_edge(&mut core).await,
+        ServerListEvent::ServerListAutoUpdateStarted { urls: Vec::new() }
+    );
+    send(
+        &core,
+        ServerListCommand::UpdateServerList {
+            url: urls[0].clone(),
+        },
+    )
+    .await;
+    assert!(matches!(
+        next_edge(&mut core).await,
+        ServerListEvent::ServerListUpdateStarted { .. }
+    ));
+}
+
 /// aMule's "update server.met from URL", on the actor: the download appends
 /// what is new, folds what is known — keeping the operator's priority, pin and
 /// failure tally — and the level carries the result.

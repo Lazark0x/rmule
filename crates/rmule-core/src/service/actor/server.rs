@@ -14,7 +14,7 @@ use crate::adapters::{
 };
 use crate::server_list::{
     ErasedFetcher, ServerListFetcher, ServerListUpdateError, ServerMerge, SharedServerListStore,
-    acquire_server_met, install_server_met_plan, mutate_and_publish,
+    acquire_server_met, acquire_server_met_walk, install_server_met_plan, mutate_and_publish,
 };
 use crate::service::{
     CoreCommandRejectReason, CoreEvent, LoginStep, ServerListCommand, ServerListEvent,
@@ -297,6 +297,47 @@ async fn handle_server_list_command(command: ServerListCommand, ctx: ServerListC
             )
             .await;
         }
+        ServerListCommand::AutoUpdateServerList { urls } => {
+            let Some(fetcher) = ctx.fetcher else {
+                send_event(
+                    ctx.evt_tx,
+                    CoreEvent::CommandRejected {
+                        reason: CoreCommandRejectReason::ServerListFetchUnavailable,
+                    },
+                )
+                .await;
+                return;
+            };
+            // aMule logs an empty `addresses.dat` and fetches nothing
+            // (`ServerList.cpp:873-876`): no slot is taken.
+            if !urls.is_empty() && ctx.in_flight.swap(true, Ordering::SeqCst) {
+                send_event(
+                    ctx.evt_tx,
+                    CoreEvent::CommandRejected {
+                        reason: CoreCommandRejectReason::ServerListUpdateInFlight,
+                    },
+                )
+                .await;
+                return;
+            }
+            send_event(
+                ctx.evt_tx,
+                ServerListEvent::ServerListAutoUpdateStarted { urls: urls.clone() }.into(),
+            )
+            .await;
+            if urls.is_empty() {
+                return;
+            }
+            tokio::spawn(run_server_list_walk(
+                Arc::clone(ctx.store),
+                Arc::clone(fetcher),
+                urls,
+                ctx.max_server_met_bytes,
+                ctx.diagnostics.clone(),
+                ctx.evt_tx.clone(),
+                Arc::clone(ctx.in_flight),
+            ));
+        }
         ServerListCommand::UpdateServerList { url } => {
             let Some(fetcher) = ctx.fetcher else {
                 send_event(
@@ -440,6 +481,67 @@ async fn run_server_list_update(
             },
         );
     in_flight.store(false, Ordering::SeqCst);
+    send_event(&evt_tx, outcome.into()).await;
+}
+
+/// The auto-update walk off the actor (ADR-0065): the installed list read,
+/// every URL fetched and merged in order, each URL's outcome reported, then
+/// one install and republish — the same two store transactions an update
+/// takes, never one across a fetch.
+async fn run_server_list_walk(
+    store: SharedServerListStore,
+    fetcher: Arc<dyn ServerListFetcher>,
+    urls: Vec<String>,
+    max_server_met_bytes: usize,
+    diagnostics: crate::diagnostics::DiagnosticsState,
+    evt_tx: mpsc::Sender<CoreEvent>,
+    in_flight: Arc<std::sync::atomic::AtomicBool>,
+) {
+    let installed = match store.servers() {
+        Ok(installed) => installed,
+        Err(error) => {
+            tracing::warn!(%error, "the server list auto-update could not read the list");
+            in_flight.store(false, Ordering::SeqCst);
+            let reason = ServerListUpdateError::from(error).failure();
+            send_event(
+                &evt_tx,
+                ServerListEvent::ServerListUpdateFailed { reason }.into(),
+            )
+            .await;
+            return;
+        }
+    };
+    let walk = acquire_server_met_walk(
+        &ErasedFetcher(Arc::clone(&fetcher)),
+        &urls,
+        max_server_met_bytes,
+        &installed,
+    )
+    .await;
+    for (url, outcome) in walk.fetched {
+        send_event(
+            &evt_tx,
+            ServerListEvent::ServerListAutoUpdateFetched { url, outcome }.into(),
+        )
+        .await;
+    }
+    let installed = mutate_and_publish(&store, &diagnostics, |store| {
+        install_server_met_plan(store, &walk.plan)
+    });
+    in_flight.store(false, Ordering::SeqCst);
+    let outcome = match installed {
+        Ok(update) => ServerListEvent::ServerListUpdated {
+            added: update.added,
+            updated: update.updated,
+            total: update.total,
+        },
+        Err(error) => {
+            tracing::warn!(%error, "the server list auto-update could not be installed");
+            ServerListEvent::ServerListUpdateFailed {
+                reason: ServerListUpdateError::from(error).failure(),
+            }
+        }
+    };
     send_event(&evt_tx, outcome.into()).await;
 }
 

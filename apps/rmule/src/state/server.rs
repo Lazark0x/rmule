@@ -70,6 +70,13 @@ pub(super) fn fold_list(state: &mut UiState, event: rmule_core::ServerListEvent)
             state.server_list_updating = true;
             note(state, words::LIST_UPDATE_STARTED)
         }
+        // A walk with no address fetches nothing, so no update runs.
+        E::ServerListAutoUpdateStarted { urls } => {
+            state.server_list_updating = !urls.is_empty();
+            note(state, words::auto_update_started(urls.len()))
+        }
+        // Each address is a line in the log; the walk's total is the note.
+        E::ServerListAutoUpdateFetched { .. } => false,
         E::ServerListUpdated {
             added,
             updated,

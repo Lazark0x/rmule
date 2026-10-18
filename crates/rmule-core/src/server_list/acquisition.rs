@@ -21,7 +21,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use rmule_bootstrap::{FetchError, Fetcher, ServerMetInstall, ServerMetPipelineError};
+use rmule_bootstrap::{
+    FetchError, Fetcher, ServerMetInstall, ServerMetPipelineError, UrlWalkOutcome,
+};
 use thiserror::Error;
 
 use crate::CoreError;
@@ -145,6 +147,70 @@ pub enum ServerListUpdateFailure {
     NotServerMet,
     /// The list was good but the store would not take it.
     StoreFailed,
+}
+
+/// What one URL of a server.met auto-update walk gave (ADR-0065): what its
+/// list merged, or why it gave none. The walk goes on either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AutoUpdateFetch {
+    /// Its list merged into the walk's.
+    Merged {
+        /// Rows whose endpoint the list had not held.
+        added: usize,
+        /// Rows folded into an already-listed endpoint.
+        updated: usize,
+    },
+    /// It gave no list, for this reason.
+    Failed(ServerListUpdateFailure),
+}
+
+/// A server.met auto-update walk, acquired: each URL with what it gave, in
+/// walk order, and the plan every list that merged adds up to.
+pub(crate) struct AutoUpdateWalk {
+    /// Each URL walked, with what it gave.
+    pub(crate) fetched: Vec<(String, AutoUpdateFetch)>,
+    /// What [`install_server_met_plan`] folds into the list.
+    pub(crate) plan: ServerMetInstall,
+}
+
+/// Step 1 of an auto-update — **acquire** every URL of `urls` in order:
+/// `rmule-bootstrap`'s walk, each URL merged onto the rows before it, one
+/// failure not stopping it, and every row judged by its own URL's host
+/// (ADR-0085). Touches no store, as [`acquire_server_met`] does not.
+pub(crate) async fn acquire_server_met_walk<F>(
+    fetcher: &F,
+    urls: &[String],
+    max_bytes: usize,
+    installed: &[ManagedServer],
+) -> AutoUpdateWalk
+where
+    F: Fetcher + Sync,
+{
+    let installed = installed.iter().filter_map(ManagedServer::to_met).collect();
+    let walk =
+        rmule_bootstrap::fetch_server_met_auto_update(fetcher, urls, max_bytes, installed).await;
+    let fetched = urls
+        .iter()
+        .cloned()
+        .zip(walk.per_url)
+        .map(|(url, outcome)| {
+            let fetch = match outcome {
+                UrlWalkOutcome::Ok(install) => AutoUpdateFetch::Merged {
+                    added: install.added(),
+                    updated: install.updated(),
+                },
+                UrlWalkOutcome::Err(error) => {
+                    tracing::warn!(%error, %url, "a server list auto-update address gave no list");
+                    AutoUpdateFetch::Failed(ServerListUpdateError::from(error).failure())
+                }
+            };
+            (url, fetch)
+        })
+        .collect();
+    AutoUpdateWalk {
+        fetched,
+        plan: walk.merged,
+    }
 }
 
 /// Step 1 of an update — **acquire**: run `rmule-bootstrap`'s server.met

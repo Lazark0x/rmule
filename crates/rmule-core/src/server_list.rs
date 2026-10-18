@@ -39,10 +39,12 @@ use rmule_primitives::{Ed2kText, Ipv4Endpoint, ServerEndpoint};
 
 use crate::CoreError;
 
-pub(crate) use acquisition::{ErasedFetcher, acquire_server_met, install_server_met_plan};
+pub(crate) use acquisition::acquire_server_met_walk;
 pub use acquisition::{
-    ServerListFetcher, ServerListUpdate, ServerListUpdateError, ServerListUpdateFailure,
+    AutoUpdateFetch, ServerListFetcher, ServerListUpdate, ServerListUpdateError,
+    ServerListUpdateFailure,
 };
+pub(crate) use acquisition::{ErasedFetcher, acquire_server_met, install_server_met_plan};
 pub use aux_ports::ServerAuxPorts;
 pub(crate) use facts::{ServerFacts, mutate_and_publish};
 #[cfg(test)]

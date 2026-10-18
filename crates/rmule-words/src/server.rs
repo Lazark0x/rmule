@@ -5,7 +5,7 @@
 use rmule_core::diagnostics::PingState;
 use rmule_core::port_mapping::{MappingDiagnostics, MappingStatus};
 use rmule_core::{
-    ReconnectEnd, ServerConnectFailure, ServerConnectionEvent, ServerListEvent,
+    AutoUpdateFetch, ReconnectEnd, ServerConnectFailure, ServerConnectionEvent, ServerListEvent,
     ServerListUpdateFailure, ServerPriority, SocketRole,
 };
 use rmule_primitives::{AddressFamily, ClientId, ServerEndpoint};
@@ -109,6 +109,42 @@ pub fn list_update_failed(reason: ServerListUpdateFailure) -> Sentence {
         list_update_failure_words(reason)
     ))
 }
+
+/// A server-list auto-update walk began over `urls` addresses, or found none
+/// set (ADR-0065).
+#[must_use]
+pub fn auto_update_started(urls: usize) -> Sentence {
+    match urls {
+        0 => Sentence::fixed(
+            "server list auto-update: no address is set — add one in Settings, Servers",
+        ),
+        1 => Sentence::fixed("server list auto-update started: 1 address"),
+        n => Sentence::owned(format!("server list auto-update started: {n} addresses")),
+    }
+}
+
+/// What one address of a server-list auto-update walk gave.
+#[must_use]
+pub fn auto_update_fetched(url: &str, outcome: AutoUpdateFetch) -> Sentence {
+    Sentence::owned(match outcome {
+        AutoUpdateFetch::Merged { added, updated } => {
+            format!("server list from {url}: {added} new, {updated} refreshed")
+        }
+        AutoUpdateFetch::Failed(reason) => format!(
+            "server list from {url} gave no list: {}",
+            list_update_failure_words(reason)
+        ),
+    })
+}
+
+/// The Settings row that turns the auto-update walk on.
+pub const AUTO_UPDATE_LABEL: &str = "Update lists";
+/// What the auto-update switch does.
+pub const AUTO_UPDATE_NOTE: &str = "merge every address below at start  (on restart)";
+/// The Settings row holding the auto-update addresses.
+pub const AUTO_UPDATE_URLS_LABEL: &str = "List URLs";
+/// What the auto-update addresses are, and how they are typed.
+pub const AUTO_UPDATE_URLS_NOTE: &str = "server.met addresses, space between  (on restart)";
 
 /// The dial to a server started.
 #[must_use]
@@ -330,6 +366,8 @@ pub fn list_log_line(event: &ServerListEvent) -> Sentence {
             total,
         } => list_updated(*added, *updated, *total),
         L::ServerListUpdateFailed { reason } => list_update_failed(*reason),
+        L::ServerListAutoUpdateStarted { urls } => auto_update_started(urls.len()),
+        L::ServerListAutoUpdateFetched { url, outcome } => auto_update_fetched(url, *outcome),
     }
 }
 

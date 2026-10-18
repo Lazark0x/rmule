@@ -48,6 +48,21 @@ impl ServerListEvent {
             L::ServerListUpdateFailed { reason } => {
                 codes::list_update_failure(Record::new("server_list.update_failed"), *reason)
             }
+            L::ServerListAutoUpdateStarted { urls } => {
+                Record::new("server_list.auto_update_started").count("urls", urls.len())
+            }
+            L::ServerListAutoUpdateFetched { url, outcome } => {
+                let record = Record::new("server_list.auto_update_fetched").url("url", url);
+                match outcome {
+                    crate::AutoUpdateFetch::Merged { added, updated } => record
+                        .code("outcome", "merged")
+                        .count("added", *added)
+                        .count("updated", *updated),
+                    crate::AutoUpdateFetch::Failed(reason) => {
+                        codes::list_update_failure(record.code("outcome", "failed"), *reason)
+                    }
+                }
+            }
         }
     }
 }

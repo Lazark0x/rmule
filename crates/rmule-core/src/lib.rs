@@ -167,8 +167,8 @@ pub use durable::{
 };
 pub use error::{CoreError, DownloadFailure, FinalizeError, PartFault, StorageIntegrityFault};
 pub use join::{
-    FirstRunFetch, JoinCommandSink, JoinConfig, JoinOutcome, KadSeedOutcome, SeedReadFault,
-    acquire_kad_seeds, run_join_sequence,
+    AutoUpdateOutcome, FirstRunFetch, JoinCommandSink, JoinConfig, JoinOutcome, KadSeedOutcome,
+    SeedReadFault, acquire_kad_seeds, run_join_sequence,
 };
 pub use kad_sources::KadAnswer;
 pub use planning::PartPlan;
@@ -176,7 +176,7 @@ pub use reachability::KadReachLevel;
 /// Why a search row was skipped: the code a `SearchResultSkipped` event carries.
 pub use rmule_ed2k::SearchResultSkipReason;
 pub use server_list::{
-    DEFAULT_DEAD_AFTER, DeadSince, ManagedServer, ResolvedAddress, ServerFigures,
+    AutoUpdateFetch, DEFAULT_DEAD_AFTER, DeadSince, ManagedServer, ResolvedAddress, ServerFigures,
     ServerGrantsReport, ServerHealth, ServerListFetcher, ServerListStore, ServerListUpdate,
     ServerListUpdateError, ServerListUpdateFailure, ServerMerge, ServerPolicy,
 };

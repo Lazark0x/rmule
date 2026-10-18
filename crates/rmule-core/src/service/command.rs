@@ -371,6 +371,25 @@ pub enum ServerListCommand {
         /// The server.met URL to fetch and merge.
         url: String,
     },
+    /// Walk `urls` in order, fetching and merging each — the server.met
+    /// auto-update (ADR-0065, aMule's `AutoUpdate` over `addresses.dat`), for
+    /// a front end whose actor owns the list and so does not run the Join
+    /// Sequence whole.
+    ///
+    /// Answered with
+    /// [`ServerListEvent::ServerListAutoUpdateStarted`](crate::ServerListEvent::ServerListAutoUpdateStarted);
+    /// the walk runs off the actor, one URL failing not stopping it, and lands
+    /// as one
+    /// [`ServerListEvent::ServerListAutoUpdateFetched`](crate::ServerListEvent::ServerListAutoUpdateFetched)
+    /// per URL, then the install's
+    /// [`ServerListEvent::ServerListUpdated`](crate::ServerListEvent::ServerListUpdated).
+    /// An empty list is answered and fetches nothing. Rejected as
+    /// [`UpdateServerList`](Self::UpdateServerList) is: no fetch capability,
+    /// or an update already running.
+    AutoUpdateServerList {
+        /// The server.met URLs, in walk order.
+        urls: Vec<String>,
+    },
 }
 /// Why the actor refused a [`CoreCommand`] outright, reported as
 /// [`CoreEvent::CommandRejected`](crate::CoreEvent::CommandRejected)(crate::CoreEvent::CommandRejected). A refusal

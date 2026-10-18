@@ -373,6 +373,22 @@ pub enum ServerListEvent {
         /// The list's size after the install.
         total: usize,
     },
+    /// An [`AutoUpdateServerList`](crate::ServerListCommand::AutoUpdateServerList)
+    /// walk was accepted (ADR-0065): these URLs are walked in order, none when
+    /// the list is empty, which fetches nothing.
+    ServerListAutoUpdateStarted {
+        /// The URLs the walk fetches, in order.
+        urls: Vec<String>,
+    },
+    /// One URL of an auto-update walk was fetched: what its list merged, or
+    /// why it gave none. The walk goes on either way, and installs once after
+    /// its last URL ([`ServerListUpdated`](Self::ServerListUpdated)).
+    ServerListAutoUpdateFetched {
+        /// The URL fetched.
+        url: String,
+        /// What it gave.
+        outcome: crate::server_list::AutoUpdateFetch,
+    },
     /// The update produced no new list. The old one is untouched — the fetch
     /// parses before it installs (ADR-0065).
     ServerListUpdateFailed {

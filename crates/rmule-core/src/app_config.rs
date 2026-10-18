@@ -85,6 +85,14 @@ pub enum Preference {
     /// (`"true"`/`"false"`, on when unset — ADR-0065's first-run fetch,
     /// `rmule_bootstrap::BootstrapConfig::auto_fetch_server_met`).
     AutoFetchServerMet,
+    /// Whether a session start walks
+    /// [`ServerMetAutoUpdateUrls`](Self::ServerMetAutoUpdateUrls) (ADR-0065's
+    /// auto-update, aMule's `AutoServerlist`; `"true"`/`"false"`, off when
+    /// unset).
+    AutoUpdateServerMet,
+    /// The server.met auto-update URL list (aMule's `addresses.dat`), one URL
+    /// per line, empty when unset.
+    ServerMetAutoUpdateUrls,
     /// The `nodes.dat` mirror a Kad seed acquisition fetches
     /// (`rmule_bootstrap::DEFAULT_NODES_DAT_URL` when unset).
     NodesDatUrl,
@@ -129,11 +137,13 @@ pub enum Preference {
 
 impl Preference {
     /// Every core-owned key, so the front end's raw surface can refuse them.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 16] = [
         Self::DownloadDir,
         Self::TempDir,
         Self::ServerMetUrl,
         Self::AutoFetchServerMet,
+        Self::AutoUpdateServerMet,
+        Self::ServerMetAutoUpdateUrls,
         Self::NodesDatUrl,
         Self::AutoFetchNodesDat,
         Self::PortMapSecret,
@@ -155,6 +165,8 @@ impl Preference {
             Self::TempDir => "temp_dir",
             Self::ServerMetUrl => "server_met_url",
             Self::AutoFetchServerMet => "auto_fetch_server_met",
+            Self::AutoUpdateServerMet => "auto_update_server_met",
+            Self::ServerMetAutoUpdateUrls => "server_met_auto_update_urls",
             Self::NodesDatUrl => "nodes_dat_url",
             Self::AutoFetchNodesDat => "auto_fetch_nodes_dat",
             Self::PortMapSecret => "port_map_secret",

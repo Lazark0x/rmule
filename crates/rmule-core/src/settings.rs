@@ -96,6 +96,13 @@ pub struct CoreSettings {
     /// Whether a start with an empty server list fetches `server.met` from
     /// [`server_met_url`](Self::server_met_url) once (ADR-0065). On by default.
     pub auto_fetch_server_met: bool,
+    /// Whether a session start walks
+    /// [`server_met_auto_update_urls`](Self::server_met_auto_update_urls)
+    /// (ADR-0065's auto-update, aMule's `AutoServerlist`). Off by default.
+    pub auto_update_server_met: bool,
+    /// The server.met auto-update URL list, walked in order (aMule's
+    /// `addresses.dat`). Empty by default.
+    pub server_met_auto_update_urls: Vec<String>,
     /// The `nodes.dat` mirror a Kad seed acquisition fetches.
     pub nodes_dat_url: String,
     /// Whether a Kad start with no contacts may fetch `nodes.dat` itself
@@ -120,6 +127,8 @@ impl Default for CoreSettings {
             server_policy: ServerPolicy::default(),
             server_met_url: rmule_bootstrap::DEFAULT_SERVER_MET_URL.to_owned(),
             auto_fetch_server_met: true,
+            auto_update_server_met: false,
+            server_met_auto_update_urls: Vec::new(),
             nodes_dat_url: rmule_bootstrap::DEFAULT_NODES_DAT_URL.to_owned(),
             auto_fetch_nodes_dat: true,
         }
@@ -209,6 +218,10 @@ pub enum Setting {
     ServerMetUrl(String),
     /// The first-run `server.met` fetch.
     AutoFetchServerMet(bool),
+    /// The server.met auto-update walk at start.
+    AutoUpdateServerMet(bool),
+    /// The server.met auto-update URL list, in walk order; no URL blank.
+    ServerMetAutoUpdateUrls(Vec<String>),
     /// The `nodes.dat` mirror; not blank.
     NodesDatUrl(String),
     /// The Kad cold start's `nodes.dat` fetch.

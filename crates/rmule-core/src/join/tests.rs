@@ -382,3 +382,110 @@ async fn both_networks_disabled_is_an_inert_no_op() {
     assert_eq!(fetcher.calls(), 0);
     assert!(sink.commands().is_empty());
 }
+
+/// The auto-update walk (ADR-0065), once its switch is on: every URL walked
+/// in order over the list as loaded, each URL's outcome reported, the merged
+/// rows persisted before the joins, and a failing URL leaving the walk and
+/// the joins going.
+#[tokio::test]
+async fn the_auto_update_walk_runs_at_start_behind_its_switch() {
+    let persisted = ServerEndpoint::new("9.9.9.9", 4661).unwrap();
+    let acquired = ServerEndpoint::new("1.2.3.4", 4661).unwrap();
+    let store = seeded_store(std::slice::from_ref(&persisted));
+    let fetcher = FakeFetcher::serving(met_one(Ipv4Addr::new(1, 2, 3, 4), 4661, "Walked"));
+    let sink = RecordingSink::default();
+    let urls = vec![
+        "http://one.example/server.met".to_owned(),
+        "http://two.example/server.met".to_owned(),
+    ];
+    let bootstrap = BootstrapConfig {
+        auto_update_enabled: true,
+        auto_update_urls: urls.clone(),
+        ..BootstrapConfig::default()
+    };
+
+    let outcome = run_join_sequence(
+        &store,
+        &fetcher,
+        &bootstrap,
+        &JoinConfig::default(),
+        kad_config(),
+        own_id(),
+        &sink,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(outcome.first_run, FirstRunFetch::Skipped);
+    assert_eq!(
+        outcome.auto_update,
+        AutoUpdateOutcome::Walked {
+            fetched: vec![
+                (
+                    urls[0].clone(),
+                    AutoUpdateFetch::Merged {
+                        added: 1,
+                        updated: 0
+                    }
+                ),
+                (
+                    urls[1].clone(),
+                    AutoUpdateFetch::Merged {
+                        added: 0,
+                        updated: 1
+                    }
+                ),
+            ]
+        }
+    );
+    assert_eq!(fetcher.calls(), 2, "each URL fetched once");
+    assert_eq!(outcome.servers, vec![persisted.clone(), acquired.clone()]);
+    assert_eq!(
+        ed2k_servers(&sink.commands()),
+        vec![persisted.clone(), acquired]
+    );
+
+    let failing = FakeFetcher::failing(FetchError::Timeout {
+        url: urls[0].clone(),
+    });
+    let sink = RecordingSink::default();
+    let outcome = run_join_sequence(
+        &seeded_store(std::slice::from_ref(&persisted)),
+        &failing,
+        &bootstrap,
+        &JoinConfig::default(),
+        kad_config(),
+        own_id(),
+        &sink,
+    )
+    .await
+    .unwrap();
+    let timed_out = AutoUpdateFetch::Failed(crate::ServerListUpdateFailure::TimedOut);
+    assert_eq!(
+        outcome.auto_update,
+        AutoUpdateOutcome::Walked {
+            fetched: vec![(urls[0].clone(), timed_out), (urls[1].clone(), timed_out)]
+        }
+    );
+    assert_eq!(
+        sink.commands().len(),
+        2,
+        "the joins go on after a failed walk"
+    );
+
+    let off = run_join_sequence(
+        &seeded_store(std::slice::from_ref(&persisted)),
+        &failing,
+        &BootstrapConfig {
+            auto_update_enabled: false,
+            ..bootstrap.clone()
+        },
+        &JoinConfig::default(),
+        kad_config(),
+        own_id(),
+        &RecordingSink::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(off.auto_update, AutoUpdateOutcome::Skipped);
+}

@@ -41,6 +41,13 @@ pub(super) fn read(store: &DurableAppConfig) -> Result<CoreSettings, CoreError> 
         // ADR-0065's first-run fetch, on unless the operator turned it off.
         auto_fetch_server_met: text(Preference::AutoFetchServerMet)?
             .is_none_or(|value| value == "true"),
+        // ADR-0065's auto-update, off unless the operator turned it on, as
+        // aMule's `AutoServerlist`.
+        auto_update_server_met: text(Preference::AutoUpdateServerMet)?
+            .is_some_and(|value| value == "true"),
+        server_met_auto_update_urls: text(Preference::ServerMetAutoUpdateUrls)?
+            .map(|urls| urls.lines().map(str::to_owned).collect())
+            .unwrap_or_default(),
         nodes_dat_url: text(Preference::NodesDatUrl)?
             .unwrap_or_else(|| rmule_bootstrap::DEFAULT_NODES_DAT_URL.to_owned()),
         // The ADR-0067 amendment's opt-in, on unless the operator turned it off.
@@ -76,6 +83,9 @@ pub(super) fn validate(setting: &Setting) -> Result<(), SettingRefusal> {
         Setting::TcpPort(0) | Setting::UdpPort(0) => Err(SettingRefusal::PortZero),
         Setting::DeadServerRetries(0) => Err(SettingRefusal::DeadServerRetriesZero),
         Setting::ServerMetUrl(url) | Setting::NodesDatUrl(url) if url.trim().is_empty() => {
+            Err(SettingRefusal::UrlBlank)
+        }
+        Setting::ServerMetAutoUpdateUrls(urls) if urls.iter().any(|url| url.trim().is_empty()) => {
             Err(SettingRefusal::UrlBlank)
         }
         _ => Ok(()),
@@ -136,6 +146,18 @@ pub(super) fn persist(store: &DurableAppConfig, setting: &Setting) -> Result<(),
         Setting::AutoFetchServerMet(on) => {
             store.set_preference(Preference::AutoFetchServerMet, flag(*on))
         }
+        Setting::AutoUpdateServerMet(on) => {
+            store.set_preference(Preference::AutoUpdateServerMet, flag(*on))
+        }
+        // One URL per line, as aMule's `addresses.dat` holds them.
+        Setting::ServerMetAutoUpdateUrls(urls) => store.set_preference(
+            Preference::ServerMetAutoUpdateUrls,
+            &urls
+                .iter()
+                .map(|url| url.trim())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
         Setting::NodesDatUrl(url) => store.set_preference(Preference::NodesDatUrl, url.trim()),
         Setting::AutoFetchNodesDat(on) => {
             store.set_preference(Preference::AutoFetchNodesDat, flag(*on))
