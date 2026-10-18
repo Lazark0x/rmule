@@ -538,6 +538,7 @@ impl DiagnosticsState {
                         ServerDiagnostics::at(server.clone(), now, health.policy())
                             .resolved_at(health.resolved_address(&server.endpoint))
                             .died(health.dead_since(&server.endpoint))
+                            .probed(health.probe(&server.endpoint))
                     })
                     .collect()
             },

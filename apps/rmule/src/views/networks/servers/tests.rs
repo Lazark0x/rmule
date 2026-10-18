@@ -37,11 +37,41 @@ fn the_greedy_pair_share_the_slack_and_the_row_always_fits() {
     assert!(wide[SERVER_DESC_COL] > SERVER_COLS[SERVER_DESC_COL]);
 }
 
+/// Each Ping State renders its own cell: the round trip, or the word for
+/// why there is none — never a bare dash — and a missing count says the
+/// same word as the row's ping, or that the answer left it unset.
+#[test]
+fn each_ping_state_renders_its_own_cell_and_counts_follow_it() {
+    let unanswered = PingState::Unanswered {
+        since: Duration::from_secs(600),
+    };
+    for (ping, cell, count) in [
+        (
+            PingState::Measured(Duration::from_millis(42)),
+            "42ms",
+            "unset",
+        ),
+        (
+            PingState::Measured(Duration::from_millis(2_500)),
+            "2.5s",
+            "unset",
+        ),
+        (PingState::NotAskedYet, "soon", "soon"),
+        (PingState::Awaiting, "asked", "asked"),
+        (unanswered, "lost", "lost"),
+    ] {
+        assert_eq!(format_ping(&ping), cell);
+        assert!(
+            cell.chars().count() <= SERVER_COLS[4],
+            "{cell} overflows Ping"
+        );
+        assert_eq!(count_cell(None, &ping), count);
+        assert_eq!(count_cell(Some(431_004), &ping), "431k");
+    }
+}
+
 #[test]
 fn dynamics_render_as_dashes_until_a_server_reports_them() {
-    assert_eq!(format_ping(None), "—");
-    assert_eq!(format_ping(Some(Duration::from_millis(42))), "42ms");
-    assert_eq!(format_ping(Some(Duration::from_millis(2_500))), "2.5s");
     assert_eq!(format_age(None), "—", "never answered");
     for (secs, cell) in [
         (0, "0s"),

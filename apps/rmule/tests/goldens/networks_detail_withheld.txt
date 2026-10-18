@@ -4,13 +4,13 @@
 │   Prime                          hub,                                        │
 │                                  no                                          │
 │                                  fakes                                       │
-│   Flaky    172.16.9.9       5000 —         —     —     —   — Low  dead no    │
+│   Flaky    172.16.9.9       5000 —      lost  lost  lost   — Low  dead no    │
 │   Mirror                                                                     │
 │   Static   10.0.0.2         4242 Opera  1.2s  9812  431k  2h High    0 yes   │
 │   Pin                            tor                                         │
 │                                  pinne                                       │
 │                                  d                                           │
-│   —        192.168.4.4      4661 —         —     —     —   — Norm    0 no    │
+│   —        192.168.4.4      4661 —      soon  soon  soon   — Norm    0 no    │
 │                                                                              │
 │Grants at login (14m ago): compression, new tags, unicode, related search,    │
 │large files, obfuscation                                                      │

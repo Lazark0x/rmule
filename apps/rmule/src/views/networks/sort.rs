@@ -7,7 +7,7 @@
 use std::borrow::Cow;
 
 use rmule_core::ServerPriority;
-use rmule_core::diagnostics::ServerDiagnostics;
+use rmule_core::diagnostics::{PingState, ServerDiagnostics};
 use rmule_primitives::ServerEndpoint;
 
 use super::{NetworksView, servers};
@@ -80,9 +80,15 @@ impl SortedTable for ServersTable {
             ServerColumn::Address => Some(SortValue::Text(Cow::Borrowed(server.endpoint.host()))),
             ServerColumn::Port => Some(SortValue::Quantity(u64::from(server.endpoint.port()))),
             ServerColumn::Description => text(server.description.to_display_string()),
-            ServerColumn::Ping => row
-                .ping
-                .map(|rtt| SortValue::Quantity(u64::try_from(rtt.as_micros()).unwrap_or(u64::MAX))),
+            // Within its rank ([`Self::rank`]): the round trip, or how
+            // long the pings have gone unanswered.
+            ServerColumn::Ping => match row.ping {
+                PingState::Measured(rtt) => Some(SortValue::Quantity(
+                    u64::try_from(rtt.as_micros()).unwrap_or(u64::MAX),
+                )),
+                PingState::Unanswered { since } => Some(SortValue::Quantity(since.as_secs())),
+                PingState::NotAskedYet | PingState::Awaiting => None,
+            },
             ServerColumn::Users => row.users.map(|n| SortValue::Quantity(u64::from(n))),
             ServerColumn::Files => row.files.map(|n| SortValue::Quantity(u64::from(n))),
             // A quantity, in seconds; a server that never answered has none
@@ -95,6 +101,15 @@ impl SortedTable for ServersTable {
             })),
             ServerColumn::Fails => Some(SortValue::Quantity(u64::from(server.fail_count))),
             ServerColumn::Static => Some(SortValue::Quantity(u64::from(!server.is_static))),
+        }
+    }
+
+    /// A Ping State groups by its rank in both directions — measured,
+    /// awaiting, not asked, unanswered — never by the word its cell reads.
+    fn rank(column: ServerColumn, row: &ServerDiagnostics) -> u8 {
+        match column {
+            ServerColumn::Ping => row.ping.rank(),
+            _ => 0,
         }
     }
 
@@ -244,11 +259,13 @@ mod tests {
                 [PRIME, PIN, FLAKY, UNNAMED],
                 [PIN, PRIME, FLAKY, UNNAMED],
             ),
-            // 1.2 s is slower than 42 ms, not "1.2" against "42".
+            // 1.2 s is slower than 42 ms, not "1.2" against "42"; a ping
+            // with no round trip follows every measured one both ways, by
+            // its state's rank: not asked yet, then unanswered.
             (
                 ServerColumn::Ping,
-                [PIN, PRIME, FLAKY, UNNAMED],
-                [PRIME, PIN, FLAKY, UNNAMED],
+                [PIN, PRIME, UNNAMED, FLAKY],
+                [PRIME, PIN, UNNAMED, FLAKY],
             ),
             (
                 ServerColumn::Users,
@@ -330,7 +347,7 @@ mod tests {
             .iter_mut()
             .find(|row| row.server.endpoint.host() == FLAKY)
             .expect("flaky listed")
-            .ping = Some(Duration::from_secs(9));
+            .ping = PingState::Measured(Duration::from_secs(9));
         draw(&mut view, &state, 78);
         assert_eq!(view.server_sel, 0);
         assert_eq!(selected(&view, &state).as_deref(), Some(FLAKY));

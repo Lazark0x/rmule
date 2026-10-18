@@ -13,6 +13,7 @@ use super::super::tests::{
 use super::*;
 use crate::server_list::{ManagedServer, ServerAuxPorts, test_facts, test_facts_rows};
 
+mod ping_state;
 mod sealed;
 mod vouch;
 

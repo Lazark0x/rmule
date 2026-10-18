@@ -2,6 +2,7 @@
 //! and its reconnects, why a login landed Low ID, and every server event's
 //! line in the Networks log.
 
+use rmule_core::diagnostics::PingState;
 use rmule_core::port_mapping::{MappingDiagnostics, MappingStatus};
 use rmule_core::{
     ReconnectEnd, ServerConnectFailure, ServerConnectionEvent, ServerListEvent,
@@ -379,6 +380,30 @@ pub const LAST_SERVER_UNLISTED: Sentence =
 
 /// A **Dead Server**'s Fail cell, in place of its tally.
 pub const DEAD_CELL: &str = "dead";
+
+/// The Ping cell's word for a row with no measured round trip — why there is
+/// none (ADR-0080, "The Ping State"); `None` for a measured one, whose cell
+/// is the round trip itself.
+#[must_use]
+pub const fn unmeasured_ping_word(ping: &PingState) -> Option<&'static str> {
+    match ping {
+        PingState::Measured(_) => None,
+        PingState::NotAskedYet => Some("soon"),
+        PingState::Awaiting => Some("asked"),
+        PingState::Unanswered { .. } => Some("lost"),
+    }
+}
+
+/// The Users or Files cell's word for a count the server never reported: the
+/// row's ping word while no status answer came — a status answer or a login
+/// is what reports one — or `unset` when an answer came without it.
+#[must_use]
+pub const fn unreported_count_word(ping: &PingState) -> &'static str {
+    match unmeasured_ping_word(ping) {
+        Some(word) => word,
+        None => "unset",
+    }
+}
 
 /// A server's failure tally reached the dead-server limit.
 #[must_use]

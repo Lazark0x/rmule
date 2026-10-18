@@ -127,7 +127,7 @@ async fn a_swept_round_trip_fills_the_listed_rows_ping_and_load() {
     .await
     .expect("core accepts the add");
 
-    let row = settled_row(&core, &listed, |row| row.ping.is_some()).await;
+    let row = settled_row(&core, &listed, |row| row.ping.measured().is_some()).await;
 
     assert_eq!(row.users, Some(FakeStatusServer::USERS));
     assert_eq!(row.files, Some(FakeStatusServer::FILES));
@@ -136,7 +136,7 @@ async fn a_swept_round_trip_fills_the_listed_rows_ping_and_load() {
         "the answer absolved the probe's tally"
     );
     assert!(
-        row.ping.expect("measured") < Duration::from_secs(10),
+        row.ping.measured().expect("measured") < Duration::from_secs(10),
         "the round trip is a loopback measurement, not a stopped clock"
     );
 }

@@ -124,13 +124,16 @@ impl Default for SweepState {
 }
 
 impl SweepState {
-    /// The walk state at attach: a server whose durable figures are
-    /// younger than the re-ask window counts as pinged when it last answered,
-    /// so it is refreshed at the steady pace once that window lapses; one
-    /// with none, or older ones, is a first contact and joins the burst. The
-    /// burst therefore takes only the stale and the never-answered — at most
-    /// one probe per server per window, as ADR-0052 already allows for every
-    /// row at start. `wall` dates the figures; `now` is the sweep's clock.
+    /// The walk state at attach: a server whose last status answer is
+    /// younger than the re-ask window counts as pinged when it answered, so
+    /// it is refreshed at the steady pace once that window lapses; one with
+    /// none, or an older one, is a first contact and joins the burst. Only
+    /// the status-answer date seeds (ADR-0052): counts a login reported are
+    /// no ping, so a server only logged into gets its first contact at once.
+    /// The burst therefore takes only the stale and the never-answered — at
+    /// most one probe per server per window, as ADR-0052 already allows for
+    /// every row at start. `wall` dates the figures; `now` is the sweep's
+    /// clock.
     pub(crate) fn seeded(
         servers: &[crate::server_list::ManagedServer],
         wall: std::time::SystemTime,
@@ -140,7 +143,7 @@ impl SweepState {
         let schedule = servers
             .iter()
             .filter_map(|row| {
-                let age = row.figures.as_ref()?.age(wall);
+                let age = row.figures.as_ref()?.status_age(wall)?;
                 (age < reask).then(|| {
                     let at = now.checked_sub(age).unwrap_or(now);
                     (row.endpoint.clone(), PingSchedule::Pinged(at))
@@ -354,11 +357,12 @@ impl<T: ServerUdpTransport> StatusPingSweep<T> {
                     }
                     let Some(key) = self.reached_at(row).await else {
                         // A name with no address: this pass's silence.
-                        state.schedule.insert(
-                            server.clone(),
-                            PingSchedule::Pinged(tokio::time::Instant::now()),
-                        );
+                        let now = tokio::time::Instant::now();
+                        state
+                            .schedule
+                            .insert(server.clone(), PingSchedule::Pinged(now));
                         state.verdicts.unresolved(&server, stake);
+                        self.facts.probe_silent(&server, now.into_std());
                         return;
                     };
                     if crypt_active {
@@ -417,6 +421,7 @@ impl<T: ServerUdpTransport> StatusPingSweep<T> {
         state
             .verdicts
             .sent(server, key, ping.challenge(), ProbeKind::Plain, stake);
+        self.facts.probe_sent(server);
         self.seal.send(key, ping.encode_packet().encode_udp()).await;
     }
 
@@ -439,6 +444,7 @@ impl<T: ServerUdpTransport> StatusPingSweep<T> {
         state
             .verdicts
             .sent(server, key, nonce.challenge, ProbeKind::Crypt, stake);
+        self.facts.probe_sent(server);
         self.seal
             .send_crypt_ping(key, encode_crypt_ping(&nonce))
             .await;
@@ -450,6 +456,9 @@ impl<T: ServerUdpTransport> StatusPingSweep<T> {
     /// when they await a vouching ping not yet sent.
     async fn judge(&self, state: &mut SweepState) -> Option<Vec<ServerEndpoint>> {
         let judgement = state.verdicts.judge(&self.challenges);
+        for (server, sent_at) in &judgement.silenced {
+            self.facts.probe_silent(server, sent_at.into_std());
+        }
         for server in &judgement.counted {
             if let Err(error) = self.facts.silent(server).await {
                 tracing::warn!(%error, host = %server.host(), "an unanswered status ping not tallied");
@@ -476,7 +485,7 @@ fn voucher<'a>(
     servers
         .iter()
         .filter(|row| !policy.is_dead(row) && !silent.contains(&row.endpoint))
-        .filter_map(|row| Some((row.figures.as_ref()?.answered_at, row)))
+        .filter_map(|row| Some((row.figures.as_ref()?.answered_at?, row)))
         .max_by_key(|&(answered_at, _)| answered_at)
         .map(|(_, row)| row)
 }

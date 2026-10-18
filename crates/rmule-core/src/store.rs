@@ -90,12 +90,17 @@ pub(crate) const UPGRADE_FROM_V13: UpgradeStep = UpgradeStep {
     run: app_config::grow_from_v13,
 };
 
-/// Store version 14 → 15 (ADR-0115, step 2): every download row keeps its
-/// Download Name, read from the name it was placed under. A version-14
-/// build refuses the store: it could not read the row.
+/// Store version 14 → 15, one rung for two seams: every download row keeps
+/// its Download Name, read from the name it was placed under (ADR-0115,
+/// step 2), and every managed server row's figures date the status answer
+/// apart from the counts (ADR-0080). A version-14 build refuses the store:
+/// it could not read either row.
 pub(crate) const UPGRADE_FROM_V14: UpgradeStep = UpgradeStep {
     from: 14,
-    run: download::grow_from_v14,
+    run: |txn| {
+        download::grow_from_v14(txn)?;
+        app_config::grow_from_v14(txn)
+    },
 };
 
 /// Every table the durable seams own, merged for the one `Store::open`.

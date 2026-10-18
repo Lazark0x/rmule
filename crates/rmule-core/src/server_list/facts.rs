@@ -132,6 +132,19 @@ impl ServerFacts {
         self.count_a_failure(endpoint).await
     }
 
+    /// The Status Ping Sweep sent `row` a probe (ADR-0080, "The Ping
+    /// State"): a run-time fact on the level, never stored.
+    pub(crate) fn probe_sent(&self, row: &ServerEndpoint) {
+        self.diagnostics.record_probe_sent(row);
+    }
+
+    /// A plain probe to `row` that left at `sent_at` was judged silent, or
+    /// its name gave no address: the ping went unanswered, whatever the
+    /// offline guard makes of the tally.
+    pub(crate) fn probe_silent(&self, row: &ServerEndpoint, sent_at: std::time::Instant) {
+        self.diagnostics.record_probe_silent(row, sent_at);
+    }
+
     /// `row`'s host name answered `address` (ADR-0052's amendment): a
     /// run-time fact beside the row, published with it and projected into the
     /// swept list at once.
@@ -275,9 +288,11 @@ impl ServerFacts {
         let crypt = super::ServerUdpCrypt::from_status(status, key_ip);
         self.write(|store| store.set_server_udp_crypt(endpoint, crypt))?;
         let now = super::unix_seconds(std::time::SystemTime::now());
+        self.diagnostics.record_probe_answered(endpoint);
         self.edit_figures(endpoint, |figures| {
             let figures = figures.get_or_insert_with(|| ServerFigures::answered(now));
-            figures.answered_at = now;
+            figures.answered_at = Some(now);
+            figures.counted_at = Some(now);
             figures.ping = Some(ping);
             figures.users = Some(status.users());
             figures.files = Some(status.files());
@@ -291,15 +306,18 @@ impl ServerFacts {
     }
 
     /// The connected server reported its own load in the login welcome burst
-    /// (`OP_SERVERSTATUS`). Counts only — a TCP session measures no UDP ping,
-    /// and reaching a server over TCP says nothing about the UDP port the
-    /// failure tally is about, so neither the ping nor the tally moves. Nor
-    /// does the time of the last answer, as in aMule, whose `ST_LASTPING` is
-    /// the status ping's: figures that had none are dated now.
+    /// (`OP_SERVERSTATUS`). Counts only, dated as counts — a TCP session
+    /// measures no UDP ping, and reaching a server over TCP says nothing about
+    /// the UDP port the failure tally is about, so neither the ping nor the
+    /// tally moves. Nor does the status-answer date, as in aMule, whose
+    /// `ST_LASTPING` is the status ping's and which this packet never moves
+    /// (`ServerSocket.cpp:465-479`): figures that had none get no status
+    /// answer, so the next start's sweep still makes a first contact.
     pub(crate) fn reported(&self, endpoint: &ServerEndpoint, users: u32, files: u32) {
         let now = super::unix_seconds(std::time::SystemTime::now());
         let written = self.edit_figures(endpoint, |figures| {
-            let figures = figures.get_or_insert_with(|| ServerFigures::answered(now));
+            let figures = figures.get_or_insert_with(|| ServerFigures::reported(now));
+            figures.counted_at = Some(now);
             figures.users = Some(users);
             figures.files = Some(files);
         });
@@ -617,7 +635,11 @@ mod tests {
         let servers = diagnostics.snapshot().servers;
         assert_eq!(servers.len(), 1, "no phantom row appeared");
         assert_eq!(servers[0].server.endpoint, endpoint("1.2.3.4", 4661));
-        assert_eq!(servers[0].ping, None, "the stranger's ping is not ours");
+        assert_eq!(
+            servers[0].ping,
+            crate::diagnostics::PingState::NotAskedYet,
+            "the stranger's ping is not ours"
+        );
     }
 
     /// An answer is kept on the durable row, dated, so the snapshot
@@ -641,7 +663,7 @@ mod tests {
         assert_eq!(
             (row.ping, row.users, row.files),
             (
-                Some(std::time::Duration::from_millis(42)),
+                crate::diagnostics::PingState::Measured(std::time::Duration::from_millis(42)),
                 Some(10),
                 Some(20)
             )

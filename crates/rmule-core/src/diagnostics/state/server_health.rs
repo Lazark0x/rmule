@@ -23,6 +23,7 @@ use rmule_ed2k::ServerUdpFlags;
 use rmule_primitives::{Ipv4Endpoint, ServerEndpoint};
 
 use super::{DiagnosticsInner, DiagnosticsState};
+use crate::diagnostics::PingProbe;
 use crate::global_sources::SharedServerList;
 use crate::ip_filter::SharedIpFilter;
 use crate::server_list::{
@@ -44,6 +45,9 @@ pub(super) struct ServerHealthLevel {
     /// When each dead row died: `None` for one already dead when the level
     /// first saw it.
     died: HashMap<ServerEndpoint, Option<Instant>>,
+    /// The Status Ping Sweep's probe fact for each row it has a word on this
+    /// run (ADR-0080, "The Ping State").
+    probes: HashMap<ServerEndpoint, PingProbe>,
     /// The rows of the last projection, so a row the level already knew is
     /// told apart from one it sees for the first time.
     known: HashSet<ServerEndpoint>,
@@ -79,6 +83,12 @@ impl ServerHealthLevel {
         })
     }
 
+    /// The Status Ping Sweep's probe fact for `row`; `None` for a row it has
+    /// sent nothing this run, or whose last probe was answered.
+    pub(super) fn probe(&self, row: &ServerEndpoint) -> Option<PingProbe> {
+        self.probes.get(row).copied()
+    }
+
     /// Date every death `rows` show under the policy: a row the level knew
     /// alive dies now; one dead at first sight died before this run, since
     /// only the list read at start can bring a tally (an import's is ours).
@@ -101,6 +111,8 @@ impl ServerHealthLevel {
 
     pub(super) fn project(&mut self, rows: &[ManagedServer], connected: Option<&ServerEndpoint>) {
         self.resolved.keep_only(rows);
+        self.probes
+            .retain(|row, _| rows.iter().any(|server| &server.endpoint == row));
         self.date_deaths(rows);
         let Some((swept, ip_filter)) = &self.swept else {
             return;
@@ -294,6 +306,40 @@ impl DiagnosticsState {
     /// then (ADR-0051's amendment; aMule `DownloadQueue.cpp:870`).
     pub(crate) fn server_session_up(&self) -> bool {
         self.with_health(|inner| inner.connected_server.is_some())
+    }
+
+    /// The Status Ping Sweep sent `row` a probe: it awaits an answer, unless
+    /// its earlier probes already went unanswered, whose run this one
+    /// continues until something is answered.
+    pub(crate) fn record_probe_sent(&self, row: &ServerEndpoint) {
+        self.with_health(|inner| {
+            inner
+                .server_health
+                .probes
+                .entry(row.clone())
+                .or_insert(PingProbe::Out);
+        });
+    }
+
+    /// A plain probe to `row`, sent at `sent_at`, was judged silent: the
+    /// first silence of a run dates it.
+    pub(crate) fn record_probe_silent(&self, row: &ServerEndpoint, sent_at: Instant) {
+        self.with_health(|inner| {
+            let probe = inner
+                .server_health
+                .probes
+                .entry(row.clone())
+                .or_insert(PingProbe::Silent(sent_at));
+            if *probe == PingProbe::Out {
+                *probe = PingProbe::Silent(sent_at);
+            }
+        });
+    }
+
+    /// `row` gave a challenge-matched status answer: its round trip, now on
+    /// its figures, is the ping again.
+    pub(crate) fn record_probe_answered(&self, row: &ServerEndpoint) {
+        self.with_health(|inner| inner.server_health.probes.remove(row));
     }
 
     /// Whether the Status Ping Sweep's latest verdict found nobody answering.

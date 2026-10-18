@@ -714,7 +714,11 @@ async fn a_handed_over_list_is_on_the_level_before_any_command() {
     assert_eq!(row.server.priority, ServerPriority::Low);
     assert!(row.server.is_static);
     assert_eq!(row.server.fail_count, 9);
-    assert_eq!(row.ping, None, "never measured is unknown, not zero");
+    assert_eq!(
+        row.ping,
+        rmule_core::diagnostics::PingState::NotAskedYet,
+        "never measured is unknown, not zero"
+    );
     assert_eq!(row.users, None);
     assert_eq!(row.files, None);
 }

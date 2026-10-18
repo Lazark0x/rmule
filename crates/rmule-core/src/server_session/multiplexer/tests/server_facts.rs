@@ -70,7 +70,16 @@ async fn the_welcome_burst_lands_the_connected_servers_load_on_its_row() {
     let row = settled_row(&diagnostics, |row| row.users.is_some()).await;
     assert_eq!(row.users, Some(120_000));
     assert_eq!(row.files, Some(5_000_000));
-    assert_eq!(row.ping, None, "a TCP session measures no UDP round trip");
+    assert_eq!(
+        row.ping,
+        crate::diagnostics::PingState::NotAskedYet,
+        "a TCP session measures no UDP round trip"
+    );
+    assert_eq!(
+        row.status_age, None,
+        "counts a login reported are no status answer"
+    );
+    assert!(row.age.is_some(), "the counts carry their own date");
     assert_eq!(row.server.fail_count, 0);
 }
 

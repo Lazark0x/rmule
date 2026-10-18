@@ -14,7 +14,7 @@
 
 mod servers;
 
-pub(crate) use servers::{grow_from_v8, grow_from_v9, grow_from_v11, grow_from_v13};
+pub(crate) use servers::{grow_from_v8, grow_from_v9, grow_from_v11, grow_from_v13, grow_from_v14};
 
 use std::path::Path;
 use std::sync::Arc;

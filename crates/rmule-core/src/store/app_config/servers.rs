@@ -27,7 +27,7 @@ mod rung;
 
 #[cfg(test)]
 pub(super) use rung::{add_v1, schema_v1, schema_v13};
-pub(crate) use rung::{grow_from_v8, grow_from_v9, grow_from_v11, grow_from_v13};
+pub(crate) use rung::{grow_from_v8, grow_from_v9, grow_from_v11, grow_from_v13, grow_from_v14};
 
 /// One managed-server row. The priority is stored as aMule's raw
 /// `ST_PREFERENCE` word — the same mapping the wire uses, which
@@ -42,7 +42,7 @@ pub(super) struct ServerRecord {
     is_static: bool,
     fail_count: u32,
     /// What the server last reported and when: kept since store
-    /// version 9.
+    /// version 9, with its two dates since version 15.
     figures: Option<FiguresRecord>,
     /// What the server granted at its last login and when: kept since store
     /// version 10.
@@ -60,7 +60,7 @@ pub(super) struct ServerRecord {
 
 impl Record for ServerRecord {
     const NAME: &'static str = "app_config.server";
-    const VERSION: u32 = 5;
+    const VERSION: u32 = 6;
 }
 
 /// A server's aux-ports relation as the row keeps it.
@@ -126,10 +126,12 @@ struct GrantsRecord {
     reported_at: u64,
 }
 
-/// A server's figures as the row keeps them: the ping in whole milliseconds.
+/// A server's figures as the row keeps them: the ping in whole milliseconds,
+/// the status-answer date apart from the counts' date (store version 15).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct FiguresRecord {
-    answered_at: u64,
+    answered_at: Option<u64>,
+    counted_at: Option<u64>,
     ping_ms: Option<u64>,
     users: Option<u32>,
     files: Option<u32>,
@@ -144,6 +146,7 @@ impl From<ServerFigures> for FiguresRecord {
     fn from(figures: ServerFigures) -> Self {
         Self {
             answered_at: figures.answered_at,
+            counted_at: figures.counted_at,
             ping_ms: figures
                 .ping
                 .map(|ping| u64::try_from(ping.as_millis()).unwrap_or(u64::MAX)),
@@ -161,6 +164,7 @@ impl From<FiguresRecord> for ServerFigures {
     fn from(record: FiguresRecord) -> Self {
         Self {
             answered_at: record.answered_at,
+            counted_at: record.counted_at,
             ping: record.ping_ms.map(std::time::Duration::from_millis),
             users: record.users,
             files: record.files,

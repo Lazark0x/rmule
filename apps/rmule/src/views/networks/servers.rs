@@ -14,7 +14,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use rmule_core::diagnostics::ServerDiagnostics;
+use rmule_core::diagnostics::{PingState, ServerDiagnostics};
 use rmule_core::{ServerHealth, ServerPriority};
 use rmule_primitives::ServerEndpoint;
 
@@ -202,13 +202,25 @@ fn draw_detail(frame: &mut Frame, body: Rect, (lines, height): (Vec<Line<'static
     Rect::new(body.x, body.y, body.width, body.height - height)
 }
 
-/// A measured UDP round trip, five columns wide at most.
-fn format_ping(ping: Option<Duration>) -> String {
-    match ping {
-        None => "—".to_string(),
+/// A row's **Ping State** in its five-column cell: the measured UDP round
+/// trip, or the word for why there is none.
+fn format_ping(ping: &PingState) -> String {
+    match ping.measured() {
         Some(rtt) if rtt.as_millis() < 1000 => format!("{}ms", rtt.as_millis()),
         Some(rtt) => format!("{:.1}s", rtt.as_secs_f64()),
+        None => crate::words::server::unmeasured_ping_word(ping)
+            .unwrap_or_default()
+            .to_string(),
     }
+}
+
+/// A user or file count, or why the server has not reported one — the
+/// row's ping says whether a status answer is still to come.
+fn count_cell(count: Option<u32>, ping: &PingState) -> String {
+    count.map_or_else(
+        || crate::words::server::unreported_count_word(ping).to_string(),
+        |count| short_count(Some(count)),
+    )
 }
 
 impl NetworksView {
@@ -497,9 +509,9 @@ fn server_columns(row: &ServerDiagnostics, base: Style, theme: &Theme) -> Vec<Co
             },
             known(has_description),
         ),
-        Column::right(format_ping(row.ping), known(row.ping.is_some())),
-        Column::right(short_count(row.users), known(row.users.is_some())),
-        Column::right(short_count(row.files), known(row.files.is_some())),
+        Column::right(format_ping(&row.ping), known(row.ping.measured().is_some())),
+        Column::right(count_cell(row.users, &row.ping), known(row.users.is_some())),
+        Column::right(count_cell(row.files, &row.ping), known(row.files.is_some())),
         Column::right(format_age(row.age), known(row.age.is_some())),
         Column::left(priority_word(row.server.priority), base),
         // A climbing tally is the row's own bad news; the number says
