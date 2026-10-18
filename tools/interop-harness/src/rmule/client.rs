@@ -185,6 +185,38 @@ impl RmuleClientContainer {
         ))
     }
 
+    /// [`Self::download_start_detached_command`], plain (no obfuscation
+    /// policy), with `extra` flags after the body's own — the bench knobs a
+    /// flow measures under, such as `--report-parts-every-ms`,
+    /// `--max-connections` or `--share`.
+    ///
+    /// # Errors
+    /// If the cache directory cannot be created.
+    pub fn download_start_detached_with_args(
+        &self,
+        staging: BenchStaging<'_>,
+        name: &str,
+        server_endpoint: &str,
+        ed2k_links: &[&str],
+        serve: bool,
+        extra: &[String],
+    ) -> Result<DockerCommand> {
+        let body = extra.iter().fold(
+            self.download_start_body(
+                staging.layout,
+                server_endpoint,
+                ed2k_links,
+                serve,
+                DownloadCrypt::default(),
+                true,
+            )?,
+            |container, arg| container.arg(arg),
+        );
+        Ok(staging
+            .docker
+            .run_container(body.detach().name(name).network(staging.network)))
+    }
+
     /// The shared `ed2k download start …` body for both dispositions: the
     /// trace-level env and the fixed CLI flags, `--serve` last (the foreground
     /// caller may add `--max-seconds` after). The serve-side tracing knob

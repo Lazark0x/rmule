@@ -63,6 +63,12 @@ use crate::cli::peer::{
     PeerUdpReaskScoreArgs, amule_direct_sui, peer_udp_reask, peer_udp_reask_emit,
     peer_udp_reask_emit_score, peer_udp_reask_score,
 };
+use crate::cli::queue_fanout::{
+    PeerQueueFanoutArgs, PeerQueueFanoutScoreArgs, peer_queue_fanout, peer_queue_fanout_score,
+};
+use crate::cli::reciprocity::{
+    PeerReciprocityArgs, PeerReciprocityScoreArgs, peer_reciprocity, peer_reciprocity_score,
+};
 use crate::cli::server_callback_serve::{
     ServerCallbackServeArgs, ServerCallbackServeScoreArgs, server_callback_serve,
     server_callback_serve_score,
@@ -349,6 +355,26 @@ enum HarnessCommand {
     /// tap, its copy and rmule's log, without driving the flow again.
     #[command(name = "peer-dial-back-grant-score")]
     PeerDialBackGrantScore(PeerDialBackGrantScoreArgs),
+    /// The queue fan-out flow: the eserver, many High-ID stock aMule sharers
+    /// of one file, some held to their two slots by stock aMule holders, and
+    /// one rmule core asking them all; some holders stop and their sharers
+    /// grant rmule late (ADR-0116). A tap in rmule's namespace.
+    #[command(name = "peer-queue-fanout")]
+    PeerQueueFanout(PeerQueueFanoutArgs),
+    /// Score a finished or archived `peer-queue-fanout` run dir from its tap,
+    /// its copy and rmule's log, without driving the flow again.
+    #[command(name = "peer-queue-fanout-score")]
+    PeerQueueFanoutScore(PeerQueueFanoutScoreArgs),
+    /// The reciprocity flow: a stock aMule sharer that queues rmule and
+    /// honours credits — rmule's upload preference and the credit it earns
+    /// (`--leg credit`), or a Low-ID rmule's 15-minute reask (`--leg
+    /// low-id`) (ADR-0116). Taps in rmule's and the sharer's namespaces.
+    #[command(name = "peer-reciprocity")]
+    PeerReciprocity(PeerReciprocityArgs),
+    /// Score a finished or archived `peer-reciprocity` run dir from its taps,
+    /// its copy and rmule's log, without driving the flow again.
+    #[command(name = "peer-reciprocity-score")]
+    PeerReciprocityScore(PeerReciprocityScoreArgs),
     /// The server-callback-serve flow: ed2ksrv, a Low-ID rmule sharer (its
     /// listener's inbound TCP dropped) and a High-ID stock aMule downloading
     /// the file through the server's callback relay: OP_CALLBACKREQUEST,
@@ -437,6 +463,8 @@ impl HarnessCommand {
             Self::ServerCallbackServeScore(args) => Some(&args.run_dir),
             Self::PeerOneLinkScore(args) => Some(&args.run_dir),
             Self::PeerDialBackGrantScore(args) => Some(&args.run_dir),
+            Self::PeerQueueFanoutScore(args) => Some(&args.run_dir),
+            Self::PeerReciprocityScore(args) => Some(&args.run_dir),
             Self::Ed2ksrvHolepunchFailScore(args) => Some(&args.run_dir),
             Self::PeerUdpReaskEmitScore(args) => Some(&args.run_dir),
             Self::PeerStreamingWindowScore(args) => Some(&args.run_dir),
@@ -458,6 +486,8 @@ impl HarnessCommand {
                 | Self::ServerCallbackServeScore(_)
                 | Self::PeerOneLinkScore(_)
                 | Self::PeerDialBackGrantScore(_)
+                | Self::PeerQueueFanoutScore(_)
+                | Self::PeerReciprocityScore(_)
                 | Self::Ed2ksrvHolepunchFailScore(_)
                 | Self::PeerUdpReaskEmitScore(_)
                 | Self::PeerStreamingWindowScore(_)
@@ -610,6 +640,18 @@ fn dispatch(command: HarnessCommand) -> Result<()> {
         }
         HarnessCommand::PeerDialBackGrantScore(args) => {
             peer_dial_back_grant_score(args)?;
+        }
+        HarnessCommand::PeerQueueFanout(args) => {
+            peer_queue_fanout(args)?;
+        }
+        HarnessCommand::PeerQueueFanoutScore(args) => {
+            peer_queue_fanout_score(args)?;
+        }
+        HarnessCommand::PeerReciprocity(args) => {
+            peer_reciprocity(args)?;
+        }
+        HarnessCommand::PeerReciprocityScore(args) => {
+            peer_reciprocity_score(args)?;
         }
         HarnessCommand::ServerCallbackServe(args) => {
             server_callback_serve(args)?;

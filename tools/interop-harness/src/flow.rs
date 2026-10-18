@@ -84,12 +84,20 @@ pub use self::peer::{
     score_run_dir as score_peer_udp_reask, score_streaming_window, seed_holding_arg,
     stage_reask_emit_files,
 };
+pub use self::peer::{
+    FanoutShape, PeerQueueFanoutOptions, run_peer_queue_fanout, score_peer_queue_fanout,
+    stage_queue_fanout_files,
+};
 pub use self::peer::{PartialShareOptions, run_partial_share, score_partial_share};
 pub use self::peer::{
     PeerDialBackGrantOptions, run_peer_dial_back_grant, score_peer_dial_back_grant,
     stage_dial_back_files,
 };
 pub use self::peer::{PeerOneLinkOptions, run_peer_one_link, score_peer_one_link};
+pub use self::peer::{
+    PeerReciprocityOptions, ReciprocityLeg, ReciprocityShape, run_peer_reciprocity,
+    score_peer_reciprocity, stage_reciprocity_files,
+};
 pub use self::peer::{
     ServerCallbackServeOptions, run_server_callback_serve, score_server_callback_serve,
 };
