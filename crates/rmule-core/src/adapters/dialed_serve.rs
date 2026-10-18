@@ -5,7 +5,7 @@
 use rmule_net::peer::Connection as PeerConnection;
 use rmule_peer::{
     ConnectionCommand, ConnectionEvent, PeerCloseReason, PeerCommand, PeerEvent, PeerIdentity,
-    RequesterEvent,
+    RequesterCommand, RequesterEvent,
 };
 use rmule_primitives::PeerEndpoint;
 use tokio::sync::mpsc;
@@ -179,6 +179,19 @@ pub(crate) async fn route_dialed_connection(mut conn: PeerConnection, route: Dia
                         link.identified(&deps, remote, identity);
                     }
                     Routed::Revised(identity) => link.revised(remote, identity),
+                    // An uploader's grant nobody on the link asked for: the
+                    // download awaiting it rides the link, or it goes back
+                    // (ADR-0057).
+                    Routed::SlotOffered => {
+                        let taken = riders.is_ridden()
+                            || link.identity.as_ref().is_some_and(|identity| {
+                                deps.peer_links.offer_grant(&link.names(remote, identity))
+                            });
+                        let decline = PeerCommand::Requester(RequesterCommand::DeclineSlot);
+                        if !taken && conn.send(decline).await.is_err() {
+                            break;
+                        }
+                    }
                     Routed::Offered(answer) => {
                         if let Some(answer) = answer
                             && conn.send(PeerCommand::Connection(answer)).await.is_err()
@@ -262,6 +275,8 @@ enum Routed {
     Revised(PeerIdentity),
     /// The peer offered a changed Client ID; the answer, when it takes it.
     Offered(Option<ConnectionCommand>),
+    /// The peer granted a slot nobody on the link asked for.
+    SlotOffered,
     /// The session closed, for this reason.
     Closed(PeerCloseReason),
 }
@@ -294,6 +309,7 @@ impl Halves<'_> {
                         .await;
                 }
             }
+            PeerEvent::Requester(RequesterEvent::SlotOffered) => return Routed::SlotOffered,
             // A closed serve half (not serving / serve task gone) just drops
             // the request; the download half keeps running.
             PeerEvent::Server(request) => {

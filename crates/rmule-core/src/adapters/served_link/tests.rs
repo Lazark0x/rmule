@@ -81,6 +81,7 @@ struct Linked {
     listen: TcpListener,
     served: crate::adapters::ServeConnection,
     dialer: RuntimePeerTransferService,
+    links: SharedPeerLinks,
     _serve: RuntimeServeRuntimeService,
 }
 
@@ -123,12 +124,13 @@ impl Linked {
             )))
         ));
         let dialer = RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT)
-            .with_peer_links(links);
+            .with_peer_links(links.clone());
         Self {
             asker,
             listen,
             served,
             dialer,
+            links,
             _serve: serve,
         }
     }
@@ -345,4 +347,75 @@ async fn a_low_id_askers_link_is_ridden_by_its_callback() {
         .ride_callback_link(LOW_ID, server(), file.clone(), WorkerBrief::fresh(&file))
         .expect("the link is filed under its callback");
     linked.rode_the_link(file.file_hash).await;
+}
+
+/// Whether the asker's link reads our `OP_CANCELTRANSFER` within `within`.
+async fn given_back(asker: &mut PeerConnection, within: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + within;
+    while let Ok(Some(event)) = tokio::time::timeout_at(deadline, asker.next_event()).await {
+        if matches!(
+            event,
+            PeerEvent::Server(ServerEvent::TransferCancelled { .. })
+        ) {
+            return true;
+        }
+    }
+    false
+}
+
+/// The asker promotes rmule from its queue by dialing it back, granting once
+/// the hellos are done (`UploadQueue.cpp:206-210`, `BaseClient.cpp:1707-1716`).
+async fn grant_unasked(asker: &mut PeerConnection) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while let Ok(Some(event)) = tokio::time::timeout_at(deadline, asker.next_event()).await {
+        if matches!(
+            event,
+            PeerEvent::Connection(ConnectionEvent::Identified { .. })
+        ) {
+            break;
+        }
+    }
+    asker
+        .send(PeerCommand::Server(rmule_peer::ServerCommand::GrantSlot {
+            file_hash: file().file_hash,
+        }))
+        .await
+        .expect("the link is up");
+}
+
+/// An uploader's unasked grant on a link it opened reaches the download
+/// awaiting a grant from it (ADR-0057, "A grant by dial-back is taken"), and
+/// is not given back.
+#[tokio::test]
+async fn an_unasked_grant_on_an_accepted_link_reaches_the_download_awaiting_it() {
+    let mut linked = Linked::up().await;
+    let at = linked.at();
+    let (grants, mut granted) = tokio::sync::mpsc::channel(1);
+    let _awaiting = linked
+        .links
+        .await_grant(at, vec![LinkName::Endpoint(at)], grants);
+    grant_unasked(&mut linked.asker).await;
+
+    assert_eq!(
+        timeout(Duration::from_secs(5), granted.recv())
+            .await
+            .ok()
+            .flatten(),
+        Some(at),
+        "the grant reaches the download waiting at the asker"
+    );
+    assert!(
+        !given_back(&mut linked.asker, Duration::from_millis(300)).await,
+        "a grant taken is not given back"
+    );
+}
+
+/// An unasked grant no download awaits goes back with `OP_CANCELTRANSFER`,
+/// as aMule's downloader cancels an accept it does not want
+/// (`ClientTCPSocket.cpp:646-659`, ADR-0056).
+#[tokio::test]
+async fn an_unasked_grant_nobody_awaits_is_given_back() {
+    let mut linked = Linked::up().await;
+    grant_unasked(&mut linked.asker).await;
+    assert!(given_back(&mut linked.asker, Duration::from_secs(5)).await);
 }

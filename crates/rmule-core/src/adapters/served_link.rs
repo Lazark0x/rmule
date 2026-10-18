@@ -7,7 +7,8 @@
 
 use rmule_net::peer::Connection as PeerConnection;
 use rmule_peer::{
-    ConnectionCommand, ConnectionEvent, PeerCommand, PeerEvent, PeerIdentity, RequesterEvent,
+    ConnectionCommand, ConnectionEvent, PeerCommand, PeerEvent, PeerIdentity, RequesterCommand,
+    RequesterEvent,
 };
 use rmule_primitives::PeerEndpoint;
 use tokio::sync::mpsc;
@@ -111,6 +112,20 @@ pub(super) async fn drive_served_link(
                         }
                         serving = false;
                     }
+                    // An uploader's grant nobody on the link asked for: the
+                    // download awaiting it rides the link, or it goes back
+                    // (ADR-0057). A riding download's own ask is about to be
+                    // granted.
+                    Routed::SlotOffered => {
+                        if !riders.is_ridden()
+                            && !deps.peer_links.offer_grant(&LinkName::of(remote, &identity))
+                        {
+                            let decline = PeerCommand::Requester(RequesterCommand::DeclineSlot);
+                            if conn.send(decline).await.is_err() {
+                                break close_reason(&mut conn).await;
+                            }
+                        }
+                    }
                     Routed::Closed(closed_by) => break closed_by,
                 }
             }
@@ -137,6 +152,8 @@ enum Routed {
     Offered(Option<ConnectionCommand>),
     /// The serve task is gone; the link lives on only for a download.
     ServeGone,
+    /// The peer granted a slot nobody on the link asked for.
+    SlotOffered,
     /// The peer closed it, and this is who closed it.
     Closed(PortTestClosedBy),
 }
@@ -196,6 +213,7 @@ async fn route(
             serve_side(deps, remote, side);
             return Routed::Open;
         }
+        PeerEvent::Requester(RequesterEvent::SlotOffered) => return Routed::SlotOffered,
         // Whether the joined download's file request carried a source ask
         // (ADR-0108), as a dialed link's router reports it.
         PeerEvent::Requester(RequesterEvent::FileRequestSent { sources_asked, .. }) => {

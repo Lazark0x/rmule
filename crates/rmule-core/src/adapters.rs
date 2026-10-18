@@ -68,7 +68,7 @@ pub(crate) use kad_runtime::{
     KadPresenceView, SharedKadBootstrap, SharedKadPump, request_kad_buddy_callback,
     request_kad_callback_walk, request_kad_recheck,
 };
-pub(crate) use peer_link::SharedPeerLinks;
+pub(crate) use peer_link::{AwaitedGrant, GrantSender, LinkName, SharedPeerLinks};
 pub(crate) use peer_transfer::advertises_complete;
 pub(crate) use port_mapping::{
     DurablePortMappingPreferences, PortMappingControl, PortMappingHandle, PortMappingPreferences,

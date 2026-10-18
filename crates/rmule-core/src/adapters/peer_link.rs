@@ -31,6 +31,10 @@ use super::peer_transfer::{PeerWorkerCommand, PeerWorkerEvent};
 use crate::server_list::SharedServerListStore;
 use crate::service::{DialEnd, LinkTurn};
 
+mod awaited_grants;
+
+pub(crate) use awaited_grants::{AwaitedGrant, GrantSender};
+
 /// One name a Peer Link is filed under: an **Ask Name** the link proves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum LinkName {
@@ -83,6 +87,7 @@ pub(crate) struct SharedPeerLinks {
 struct Book {
     filed: u64,
     links: HashMap<LinkName, Filed>,
+    awaited: HashMap<LinkName, Vec<awaited_grants::Awaiting>>,
 }
 
 #[derive(Clone)]
@@ -505,7 +510,8 @@ impl Riders {
         }
     }
 
-    fn is_ridden(&self) -> bool {
+    /// Whether a download rides the link now.
+    pub(super) fn is_ridden(&self) -> bool {
         self.rider.is_some() && !self.departed
     }
 
