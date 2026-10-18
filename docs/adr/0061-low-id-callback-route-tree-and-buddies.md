@@ -251,9 +251,11 @@ one**:
 - Still source-derived: the fallback-spelling `0x52` (it needs an eMule 0.70b or eMuleAI
   body; emule-qt writes aMule's spelling), a `0x99` relayed by aMule over a link rmule
   serves, and a `TAG_FILESIZE` above 4 GiB.
-- The server-relayed callback is decoded from a capture (`0x35`'s 6-byte form); its
-  dial-back is still source-derived until a High-ID stock aMule downloads from a Low-ID
-  rmule through ed2k-server on the bench, and `0x26` stays single-oracle (eNode-go).
+- The server-relayed callback is decoded from a capture (`0x35`'s 6-byte form), and its
+  dial-back is proven on the bench: a High-ID stock aMule downloaded a byte-equal file from
+  a Low-ID rmule through ed2k-server over rmule's dial-back alone (`server-callback-serve`,
+  `PASS`, 8 of 8). The `0x35` crypt extension stays source-derived, and `0x26` stays
+  single-oracle (eNode-go).
 - A two-node swarm pings its one contact every 15 s while the extern port is unknown and
   trips both sides' flood bans; a flow that needs a held link places routing contacts.
 - The two buddy-hash families' incompatibility is an upstream matter for eMule 0.70b and
