@@ -107,10 +107,10 @@ impl KadRuntimeFactory for StubKad {
 /// the wait ends when the bootstrap answer lands, however long the host takes.
 pub async fn until_kad_holds_a_contact(core: &Core) {
     timeout(HANG_GUARD, async {
-        while !core
+        while core
             .diagnostics_snapshot()
             .kad
-            .is_some_and(|kad| kad.contacts > 0)
+            .is_none_or(|kad| kad.contacts == 0)
         {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
