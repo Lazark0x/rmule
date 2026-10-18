@@ -66,6 +66,7 @@ mod verify_keys_trailer;
 
 // Datagram crypt: the obfuscation layer every message above can ride.
 mod kad_udp_crypt;
+mod opened_messages_reader;
 
 // Sources: publishing one, storing it, and walking the network to find it.
 mod buddy_endpoint_gate;
