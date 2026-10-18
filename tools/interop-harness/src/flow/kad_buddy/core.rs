@@ -599,7 +599,16 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
                             ed2ksrv_config: server.config,
                             downloader_v4: address(0)?,
                             holders_v4: [address(1)?, address(2)?],
-                            ed2ksrv_v4: address(3)?,
+                            // Past the routable Kad nodes, on the same `/24`:
+                            // a server is no Kad contact, and the next node
+                            // index would open the next documentation range.
+                            ed2ksrv_v4: format!(
+                                "{}.200",
+                                amule_addr
+                                    .ip
+                                    .rsplit_once('.')
+                                    .map_or("203.0.113", |(prefix, _)| prefix)
+                            ),
                             amule_v4: ipv4_string(amule_ip),
                             seed: crate::flow::kad_buddy::callback::seed(
                                 (
