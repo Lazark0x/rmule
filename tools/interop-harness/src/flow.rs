@@ -85,6 +85,10 @@ pub use self::peer::{
     stage_reask_emit_files,
 };
 pub use self::peer::{PartialShareOptions, run_partial_share, score_partial_share};
+pub use self::peer::{
+    PeerDialBackGrantOptions, run_peer_dial_back_grant, score_peer_dial_back_grant,
+    stage_dial_back_files,
+};
 pub use self::peer::{PeerOneLinkOptions, run_peer_one_link, score_peer_one_link};
 pub use self::peer::{
     ServerCallbackServeOptions, run_server_callback_serve, score_server_callback_serve,

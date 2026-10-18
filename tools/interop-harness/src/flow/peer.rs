@@ -7,8 +7,10 @@
 //! callback road, or serves one as a Low-ID node it dialed back on the
 //! server's relay, or downloads one file from several partial aMule seeds, or
 //! serves an aMule a download it is still fetching, or downloads two files
-//! from one aMule over one link.
+//! from one aMule over one link, or takes the slot an aMule grants it by
+//! dialing it back.
 
+pub(crate) mod dial_back_grant;
 pub(crate) mod direct_sui;
 pub(crate) mod lowid_callback_reask;
 pub(crate) mod one_link;
@@ -21,6 +23,10 @@ pub(crate) mod two_hellos;
 pub(crate) mod udp_reask;
 pub(crate) mod udp_reask_emit;
 
+pub use self::dial_back_grant::{
+    PeerDialBackGrantOptions, run_peer_dial_back_grant,
+    score_run_dir as score_peer_dial_back_grant, stage_dial_back_files,
+};
 pub use self::direct_sui::{DirectSuiOptions, run_amule_direct_sui};
 pub use self::lowid_callback_reask::verdict::score_run_dir as score_lowid_callback_reask;
 pub use self::lowid_callback_reask::{

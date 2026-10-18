@@ -21,6 +21,7 @@ pub(crate) mod announce_switch;
 pub(crate) mod ask_budget;
 pub(crate) mod bench;
 pub(crate) mod bootstrap;
+pub(crate) mod dial_back_grant;
 pub(crate) mod ed2k_server;
 pub(crate) mod holepunch_fail;
 pub(crate) mod kad_buddy;

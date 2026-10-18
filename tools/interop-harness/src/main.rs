@@ -20,6 +20,10 @@ use crate::cli::bootstrap::{
     Ed2kKadHandoffArgs, V2NodesDatHarvestArgs, ed2k_kad_handoff, http_bootstrap_cold_start,
     http_bootstrap_goldens, v2_nodes_dat_harvest,
 };
+use crate::cli::dial_back_grant::{
+    PeerDialBackGrantArgs, PeerDialBackGrantScoreArgs, peer_dial_back_grant,
+    peer_dial_back_grant_score,
+};
 use crate::cli::ed2k_server::{
     AmuleServesRmuleDownloadsArgs, BenchSmokeArgs, SearchSpacingArgs, SearchWireArgs,
     amule_low_id_callback, amule_serves_rmule_downloads, amule_serves_rmule_searches, bench_smoke,
@@ -335,6 +339,16 @@ enum HarnessCommand {
     /// copies and rmule's log, without driving the flow again.
     #[command(name = "peer-one-link-score")]
     PeerOneLinkScore(PeerOneLinkScoreArgs),
+    /// The dial-back grant flow: the eserver, a High-ID stock aMule sharer
+    /// held to two slots by two stock aMule holders, and one rmule core
+    /// queued behind them; one holder stops and the sharer dials rmule back
+    /// with a grant (ADR-0057). A tap in rmule's namespace.
+    #[command(name = "peer-dial-back-grant")]
+    PeerDialBackGrant(PeerDialBackGrantArgs),
+    /// Score a finished or archived `peer-dial-back-grant` run dir from its
+    /// tap, its copy and rmule's log, without driving the flow again.
+    #[command(name = "peer-dial-back-grant-score")]
+    PeerDialBackGrantScore(PeerDialBackGrantScoreArgs),
     /// The server-callback-serve flow: ed2ksrv, a Low-ID rmule sharer (its
     /// listener's inbound TCP dropped) and a High-ID stock aMule downloading
     /// the file through the server's callback relay: OP_CALLBACKREQUEST,
@@ -422,6 +436,7 @@ impl HarnessCommand {
             Self::PeerLowIdCallbackReaskScore(args) => Some(&args.run_dir),
             Self::ServerCallbackServeScore(args) => Some(&args.run_dir),
             Self::PeerOneLinkScore(args) => Some(&args.run_dir),
+            Self::PeerDialBackGrantScore(args) => Some(&args.run_dir),
             Self::Ed2ksrvHolepunchFailScore(args) => Some(&args.run_dir),
             Self::PeerUdpReaskEmitScore(args) => Some(&args.run_dir),
             Self::PeerStreamingWindowScore(args) => Some(&args.run_dir),
@@ -442,6 +457,7 @@ impl HarnessCommand {
                 | Self::PeerLowIdCallbackReaskScore(_)
                 | Self::ServerCallbackServeScore(_)
                 | Self::PeerOneLinkScore(_)
+                | Self::PeerDialBackGrantScore(_)
                 | Self::Ed2ksrvHolepunchFailScore(_)
                 | Self::PeerUdpReaskEmitScore(_)
                 | Self::PeerStreamingWindowScore(_)
@@ -588,6 +604,12 @@ fn dispatch(command: HarnessCommand) -> Result<()> {
         }
         HarnessCommand::PeerOneLinkScore(args) => {
             peer_one_link_score(args)?;
+        }
+        HarnessCommand::PeerDialBackGrant(args) => {
+            peer_dial_back_grant(args)?;
+        }
+        HarnessCommand::PeerDialBackGrantScore(args) => {
+            peer_dial_back_grant_score(args)?;
         }
         HarnessCommand::ServerCallbackServe(args) => {
             server_callback_serve(args)?;
