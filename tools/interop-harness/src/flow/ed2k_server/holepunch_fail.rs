@@ -36,8 +36,9 @@ pub(crate) const ROOT_DIR: &str = "holepunch-fail";
 pub(crate) const SERVER_PCAP: &str = "server.pcap";
 /// The refusal, cut whole from the tap.
 pub(crate) const REFUSAL_FRAME: &str = "holepunch_fail_0x62.bin";
-/// A Low ID no client holds: the server has nobody to introduce.
-pub(crate) const GHOST_LOW_ID: u32 = 0x00FF_FF00;
+/// A Low ID no client holds: the server has nobody to introduce. Its four
+/// bytes differ, so the refusal's byte order is read, not assumed.
+pub(crate) const GHOST_LOW_ID: u32 = 0x00FE_DCBA;
 /// The client-UDP port the probe's `0xF9` names.
 const PROBE_UDP_PORT: u16 = 4672;
 
