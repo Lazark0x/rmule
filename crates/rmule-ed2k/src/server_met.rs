@@ -8,10 +8,10 @@
 //!
 //! The decoder, the row model and the duplicate-merge rule live here, one
 //! contract: the merge rule is aMule's `LoadServerMet` duplicate branch, and
-//! which field a fresh row may overwrite is only meaningful beside the decoder
-//! that produced it. The writer is the `encode` submodule's, and a row's empty name is
-//! materialised there by the same rule the reader applies
-//! (`synthesize_name`). The figure and obfuscation tags are their own
+//! which field a fresh row may overwrite is only meaningful beside the
+//! decoder that produced it. The writer is the `encode` submodule's, and a
+//! row's empty name is materialised there by the same rule the reader
+//! applies (`synthesize_name`). The figure and obfuscation tags are their own
 //! submodules.
 
 use std::io::Read;
