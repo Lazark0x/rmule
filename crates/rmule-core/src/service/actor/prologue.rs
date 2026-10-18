@@ -461,6 +461,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
             connection_budget: crate::download::connection_budget::ConnectionBudget::shared(
                 wiring.config.peer_connections,
             ),
+            held_places: crate::held_places::SharedHeldPlaces::default(),
             peer_transfer: Arc::clone(&wiring.peer_transfer),
             credit: Arc::clone(&wiring.credit),
             evt_tx: evt_tx.clone(),

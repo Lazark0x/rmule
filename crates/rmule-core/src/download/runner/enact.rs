@@ -52,6 +52,9 @@ pub(super) struct LoopCtx<'a, S, P> {
     /// The sources this run awaits an uploader's grant from, filed in the
     /// Peer Links and held to the same stage (ADR-0057).
     pub(super) awaited_grants: super::awaited_grants::AwaitedGrants,
+    /// This run's **Held Places**, republished after every drain and
+    /// withdrawn when the run ends (ADR-0116).
+    pub(super) held_places: crate::held_places::HeldPlacesSeat,
 }
 
 /// Carry out one `Vec<Decision>` against the live runtime — the only async
@@ -519,6 +522,7 @@ where
     // diagnostics row is removed on teardown regardless).
     refresh_parts(&ctx.runner.rt.diagnostics, ctx.download_id, &ctx.state);
     ctx.state.hold_connections();
+    ctx.held_places.hold(ctx.state.held_places());
     hold_queued_relations(ctx);
     ctx.awaited_grants.hold(&ctx.state);
     Ok(())

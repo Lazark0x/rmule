@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 use rmule_kad::KadId;
 use rmule_peer::PeerIdentity;
 use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
-use rmule_primitives::{Ipv4Endpoint, PeerEndpoint};
+use rmule_primitives::{Ipv4Endpoint, PeerEndpoint, UserHash};
 
 use super::SourceBook;
 use super::purge::PurgeKind;
@@ -465,6 +465,28 @@ impl SourceBook {
             standing.udp_pending = false;
             standing.recheck_at = Some(now + REASK_RECHECK);
         }
+    }
+
+    /// Where each record holding a queue standing stands — a RemoteQueued
+    /// record's endpoint, or the live worker whose slot ask earned one — and
+    /// the User Hash the identity it queued under named: the **Held Places**
+    /// (ADR-0116).
+    pub(crate) fn standing_at(
+        &self,
+    ) -> impl Iterator<Item = (PeerEndpoint, Option<UserHash>)> + '_ {
+        self.records.values().filter_map(|record| {
+            let standing = record.standing?;
+            let at = match record.stage {
+                Stage::RemoteQueued(at) => at,
+                _ => record.stage.live()?.endpoint,
+            };
+            let user_hash = record
+                .stage
+                .identity()
+                .map(PeerIdentity::user_hash)
+                .or_else(|| standing.crypt().map(|crypt| crypt.user_hash));
+            Some((at, user_hash))
+        })
     }
 
     /// The endpoint each record in the RemoteQueued stage stands at.

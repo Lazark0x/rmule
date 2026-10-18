@@ -60,6 +60,7 @@ mod free_name;
 mod firewalled;
 mod global_sources;
 mod hashing;
+mod held_places;
 #[cfg(test)]
 mod hello_facts;
 mod interval_limiter;

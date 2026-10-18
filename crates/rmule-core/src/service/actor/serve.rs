@@ -173,6 +173,8 @@ where
             share_changed_rx,
             dialed_serve_rx: Some(dialed_serve_rx),
             credit: Arc::clone(&self.wiring.credit),
+            // The Held Places every download run publishes (ADR-0116).
+            held_places: self.download_runtime.shared.held_places.clone(),
             bans: self.wiring.kad_cells.adapters.ban_store.clone(),
             rerank_interval: self.wiring.config.queue_rerank_interval,
             // The live client-UDP front (ADR-0057): the demuxed

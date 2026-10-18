@@ -161,3 +161,28 @@ fn the_ceiling_is_shared_by_every_download() {
     first.hold_connections();
     assert_eq!(spawned(&second.on_tick(t0() + DIAL_WINDOW)), vec![peer(3)]);
 }
+
+/// A source queued with us is one of the **Held Places**, under the User Hash
+/// its hello named and the address it stands at; a grant ends the standing
+/// and the place with it (ADR-0116).
+#[test]
+fn a_queued_source_is_a_held_place_until_it_grants() {
+    let shared = budget(u32::MAX, 500);
+    let mut state = seated(&shared, 1, &[peer(1)]);
+    let _ = state.start(t0());
+    let user_hash = UserHash::from_bytes([1; 16]);
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = state.on_worker_event(t0(), peer(1), identified(user_hash));
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::every_part(FIVE_PARTS));
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Queued { rank: 3 });
+    let place = crate::held_places::HeldPlace {
+        user_hash,
+        ip: peer(1).ip(),
+    };
+    assert_eq!(state.held_places(), vec![place]);
+
+    let _ = state.on_slot_offered(t0(), peer(1));
+    let _ = probed(&mut state, t0(), peer(1));
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotGranted);
+    assert!(state.held_places().is_empty(), "a transfer holds no place");
+}

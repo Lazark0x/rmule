@@ -311,9 +311,11 @@ where
         callbacks,
         queued_relations: std::collections::HashSet::new(),
         awaited_grants,
+        held_places: runner.rt.held_places.seat(download_id),
     };
 
-    // Enact the initial fill: one `Spawn` per candidate up to concurrency.
+    // Enact the initial fill: one `Spawn` per candidate the Connection Budget
+    // admits (ADR-0116).
     // The wait this run last told, while it still waits on it.
     let mut told_wait: Option<SourceWait> = None;
     let mut queue: VecDeque<Decision> = ctx.state.start(now()).into();

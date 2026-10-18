@@ -19,6 +19,7 @@ use crate::adapters::{
 use crate::client_udp::{ClientUdpDatagram, ClientUdpSend};
 use crate::content::{CheckedReadError, ContentFileStore};
 use crate::credit::{KeyBinding, SharedCreditStore};
+use crate::held_places::{RECIPROCITY_FACTOR, SharedHeldPlaces};
 use crate::peer_roster::{PeerRelation, RelationLease};
 use crate::registry::{SharedFileEntry, SharedFileRegistry};
 use crate::serve::state::{ServeDecision, ServeSelfPosition, ServeState};
@@ -46,6 +47,9 @@ pub(crate) struct ServeTask<L> {
     /// The shared, `UserHash`-keyed credit ledger. The serve task records
     /// served bytes here and reads each waiter's modifier to rank the queue.
     pub(crate) credit: SharedCreditStore,
+    /// The node's **Held Places** (ADR-0116): a waiter at whose queue one of
+    /// our downloads stands ranks by the Reciprocity Factor too.
+    pub(crate) held_places: SharedHeldPlaces,
     /// The node's peer bans (ADR-0064): where the address of a second link
     /// naming an identified client's User Hash goes (ADR-0107).
     pub(crate) bans: crate::ban_store::SharedBanStore,
@@ -151,6 +155,7 @@ where
             mut share_changed_rx,
             mut dialed_serve_rx,
             credit,
+            held_places,
             bans,
             rerank_interval,
             mut reask_rx,
@@ -187,6 +192,7 @@ where
         // The write-through handles every enactment shares, bound once.
         let sinks = ServeSinks {
             credit: &credit,
+            held_places: &held_places,
             bans: &bans,
             evt_tx: &evt_tx,
             client_udp_tx: &client_udp_tx,
@@ -256,7 +262,7 @@ where
                     if changed.is_none() {
                         break;
                     }
-                    let modifiers = current_modifiers(&credit, state.identities()).await;
+                    let modifiers = current_modifiers(&credit, &held_places, state.identities()).await;
                     refresh_served(&served, &mut served_seen, &mut state);
                     let mut decisions: VecDeque<ServeDecision> = state
                         .on_share_set(read_share_set(&registry, &withheld), Instant::now(), &modifiers)
@@ -308,7 +314,7 @@ where
                 fact = fact_rx.recv() => {
                     let Some((peer, event)) = fact else { continue };
                     let closing = event.is_disconnect() || event == ServeInput::Readopted;
-                    let modifiers = current_modifiers(&credit, state.identities()).await;
+                    let modifiers = current_modifiers(&credit, &held_places, state.identities()).await;
                     // Our own position, read fresh from the session's
                     // self-facts. A synchronous cell read, not a round
                     // trip: it must be current at the decision, because a
@@ -334,7 +340,7 @@ where
                     }
                 }
                 _ = rerank_tick.tick() => {
-                    let modifiers = current_modifiers(&credit, state.identities()).await;
+                    let modifiers = current_modifiers(&credit, &held_places, state.identities()).await;
                     let mut decisions: VecDeque<ServeDecision> =
                         state.on_rerank_tick(Instant::now(), &modifiers).into();
                     enact(
@@ -349,7 +355,7 @@ where
                 _ = purge_tick.tick() => {
                     // Reap waiters silent past the reask deadline or whose file
                     // stopped being shared (ADR-0057 disconnected standing).
-                    let modifiers = current_modifiers(&credit, state.identities()).await;
+                    let modifiers = current_modifiers(&credit, &held_places, state.identities()).await;
                     let mut decisions: VecDeque<ServeDecision> = state
                         .on_purge(Instant::now(), purge_after, &modifiers)
                         .into();
@@ -405,6 +411,8 @@ where
 struct ServeSinks<'a> {
     /// The shared, `UserHash`-keyed credit ledger.
     credit: &'a SharedCreditStore,
+    /// The node's **Held Places**, read with the credit at every rank.
+    held_places: &'a SharedHeldPlaces,
     /// The node's peer bans, where a hash thief's address goes.
     bans: &'a crate::ban_store::SharedBanStore,
     evt_tx: &'a mpsc::Sender<CoreEvent>,
@@ -441,6 +449,7 @@ async fn enact<L: ServeRuntimeService>(
 ) {
     let ServeSinks {
         credit,
+        held_places,
         bans,
         evt_tx,
         client_udp_tx,
@@ -566,7 +575,8 @@ async fn enact<L: ServeRuntimeService>(
                 Ok(bytes) => decisions.extend(state.on_read_result(peer, purpose, bytes)),
                 Err(error) => {
                     tracing::warn!(%error, ?purpose, path = %path.display(), "serve read failed; the file is no longer offered");
-                    let modifiers = current_modifiers(credit, state.identities()).await;
+                    let modifiers =
+                        current_modifiers(credit, held_places, state.identities()).await;
                     decisions.extend(state.on_read_failed(
                         Instant::now(),
                         peer,
@@ -587,7 +597,8 @@ async fn enact<L: ServeRuntimeService>(
             } => match ContentFileStore::read_checked(&path, &check, offset, len).await {
                 Ok(bytes) => decisions.extend(state.on_read_result(peer, purpose, bytes)),
                 Err(refused) => {
-                    let modifiers = current_modifiers(credit, state.identities()).await;
+                    let modifiers =
+                        current_modifiers(credit, held_places, state.identities()).await;
                     decisions.extend(match refused {
                         CheckedReadError::Changed => {
                             tracing::warn!(?purpose, path = %path.display(), "a download's part file changed; its parts are no longer offered");
@@ -785,20 +796,27 @@ async fn send_serve_event(evt_tx: &mpsc::Sender<CoreEvent>, event: ServeEvent) {
     let _ = evt_tx.send(CoreEvent::Serve(event)).await;
 }
 
-/// Read the current credit modifier for every peer rmule has identified, so the
-/// brain can rank its queue by `wait * modifier`. One store read per
-/// peer; the map covers a superset of the waiting set, which is all the queue
-/// needs.
+/// Read the current score modifier for every peer rmule has identified, so the
+/// brain can rank its queue by `wait * modifier`: its credit (ADR-0041), times
+/// the **Reciprocity Factor** when its link's address and its User Hash name
+/// one of the node's **Held Places** (ADR-0116). One store read per peer; the
+/// map covers a superset of the waiting set, which is all the queue needs.
 async fn current_modifiers(
     credit: &SharedCreditStore,
+    held_places: &SharedHeldPlaces,
     identities: &HashMap<PeerEndpoint, PeerIdentity>,
 ) -> HashMap<PeerEndpoint, f64> {
     let store = &**credit;
     identities
         .iter()
         .map(|(peer, identity)| {
-            let modifier = store.modifier(identity.user_hash()).unwrap_or(1.0);
-            (*peer, modifier)
+            let credit = store.modifier(identity.user_hash()).unwrap_or(1.0);
+            let place = if held_places.holds(identity.user_hash(), peer.ip()) {
+                RECIPROCITY_FACTOR
+            } else {
+                1.0
+            };
+            (*peer, credit * place)
         })
         .collect()
 }

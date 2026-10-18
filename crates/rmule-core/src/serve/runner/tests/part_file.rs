@@ -96,6 +96,7 @@ async fn rig(paused: bool) -> Rig {
             share_changed_rx,
             dialed_serve_rx: None,
             credit: Arc::new(DurableCreditStore::new(store)),
+            held_places: crate::held_places::SharedHeldPlaces::default(),
             rerank_interval: Duration::from_secs(3600),
             reask_rx: None,
             client_udp_tx: None,

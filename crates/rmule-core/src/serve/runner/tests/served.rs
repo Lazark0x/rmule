@@ -37,6 +37,7 @@ async fn a_part_a_run_just_verified_is_answered_on_the_next_ask_and_the_asker_re
             share_changed_rx,
             dialed_serve_rx: None,
             credit: Arc::new(DurableCreditStore::new(store)),
+            held_places: crate::held_places::SharedHeldPlaces::default(),
             rerank_interval: Duration::from_secs(3600),
             reask_rx: None,
             client_udp_tx: None,

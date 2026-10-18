@@ -88,6 +88,7 @@ pub(in crate::download) fn runner_context<S, P>(
         connection_budget: crate::download::connection_budget::ConnectionBudget::shared(
             crate::PeerConnections::default(),
         ),
+        held_places: crate::held_places::SharedHeldPlaces::default(),
         peer_transfer: Arc::new(Mutex::new(peer_transfer)),
         credit: Arc::new(crate::store::credit::DurableCreditStore::new(store)),
         evt_tx,
@@ -190,5 +191,6 @@ pub(super) fn loop_ctx<'a, S, P>(
         ),
         queued_relations: std::collections::HashSet::new(),
         awaited_grants: super::awaited_grants::AwaitedGrants::new(runner.rt.peer_links.clone()),
+        held_places: runner.rt.held_places.seat(DownloadId::from_u64(1)),
     }
 }

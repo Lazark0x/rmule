@@ -205,6 +205,21 @@ impl DownloadState {
         self.sources.remote_queued()
     }
 
+    /// The **Held Places** this run publishes (ADR-0116): every source holding
+    /// a queue standing whose User Hash the identity it queued under named, at
+    /// the address it stands at.
+    pub(crate) fn held_places(&self) -> Vec<crate::held_places::HeldPlace> {
+        self.sources
+            .standing_at()
+            .filter_map(|(at, user_hash)| {
+                Some(crate::held_places::HeldPlace {
+                    user_hash: user_hash?,
+                    ip: at.ip(),
+                })
+            })
+            .collect()
+    }
+
     /// Sources this run knows now — aMule's source count, republished beside
     /// the part map: every record the **Source Book** holds, once.
     pub(crate) fn known_sources(&self) -> u32 {
