@@ -415,18 +415,8 @@ where
     };
     check_stop(&runner.stop_rx)?;
 
-    // The peers this download distrusts, as its durable record holds
-    // them: a resumed run does not dial again a peer that served it bad data.
-    let distrusted = runner
-        .rt
-        .store
-        .distrusted_peers(request.download_id)
-        .unwrap_or_else(|error| {
-            tracing::warn!(%error, "could not read the download's distrusted peers");
-            Vec::new()
-        })
-        .into_iter()
-        .collect();
+    // The peers this download distrusts, as its durable record holds them.
+    let distrusted = crate::download::persist::distrusted_at_start(runner, request.download_id)?;
 
     let file_hash_only_parts = apply_peer_workers_download(
         FleetStart {

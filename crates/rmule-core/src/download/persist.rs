@@ -1,6 +1,7 @@
 //! Persisting what a download earned: one verified part written through the
-//! run's **Held Part File** and recorded against the download, and the
-//! repair a finished file that does not hash asks for. Fallible effects, so
+//! run's **Held Part File** and recorded against the download, the distrusted
+//! peers a resumed run starts with, and the repair a finished file that does
+//! not hash asks for. Fallible effects, so
 //! the sans-I/O brain asks for them as decisions and resumes on the result;
 //! the completion move itself is the runner's (ADR-0115).
 //!
@@ -13,10 +14,11 @@
 //! The completion move's check repairs the same way when the whole file does
 //! not hash.
 
+use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 
 use ed2k::digest::Digest;
-use rmule_primitives::{Ed2kFileLink, PartHash};
+use rmule_primitives::{Ed2kFileLink, PartHash, UserHash};
 use tokio::sync::mpsc;
 
 use crate::adapters::{PeerTransferService, SourceLookupService};
@@ -106,6 +108,25 @@ pub(super) async fn hold_part_file<S, P>(
             ))
         }
     }
+}
+
+/// The peers the download's record distrusts, for the run to start with: a
+/// resumed run does not dial again a peer that served it bad data. A record
+/// the store cannot read ends the start as a store failure — a run that
+/// started without it would forget every distrust the download earned.
+pub(super) fn distrusted_at_start<S, P>(
+    runner: &RunnerContext<S, P>,
+    download_id: DownloadId,
+) -> Result<HashSet<UserHash>, DownloadFailure> {
+    runner
+        .rt
+        .store
+        .distrusted_peers(download_id)
+        .map(|peers| peers.into_iter().collect())
+        .map_err(|error| {
+            tracing::warn!(%error, "could not read the download's distrusted peers");
+            DownloadFailure::StoreFailed
+        })
 }
 
 /// How often a run that waits — for a connection, or for sources with no
