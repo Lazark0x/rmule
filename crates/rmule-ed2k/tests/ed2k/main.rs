@@ -50,6 +50,7 @@ mod captured_ed2ksrv_callback;
 mod captured_ed2ksrv_crypt_ping;
 mod captured_ed2ksrv_glob_search;
 mod captured_ed2ksrv_holepunch;
+mod captured_ed2ksrv_holepunch_fail;
 mod captured_enode_crypt;
 mod captured_fixture_round_trip;
 mod captured_search_wire;
