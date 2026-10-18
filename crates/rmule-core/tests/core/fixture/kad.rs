@@ -7,7 +7,8 @@
 use std::sync::{Arc, Mutex};
 
 use rmule_core::{
-    ClientUdpBind, Core, CoreError, KadEnableConfig, KadKeywordSink, KadRuntimeFactory, KadSourceChannel,
+    ClientUdpBind, Core, CoreError, KadEnableConfig, KadKeywordSink, KadRuntimeFactory,
+    KadSourceChannel,
 };
 use rmule_primitives::{FileHash, KeywordQuery, SearchResult, SourceLookupTarget, SourceSighting};
 use rmule_testkit::HANG_GUARD;

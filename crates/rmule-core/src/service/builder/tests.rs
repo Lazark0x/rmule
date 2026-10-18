@@ -332,7 +332,9 @@ async fn a_stopped_download_returns_its_file_known_entry_and_its_late_finish_cle
         download_dir: Some(dir.path().to_path_buf()),
         ..crate::CoreSettings::default()
     })
-    .source_lookup(SilentExcept(FileHash::from_bytes([SENTINEL; FileHash::BYTE_LEN])));
+    .source_lookup(SilentExcept(FileHash::from_bytes(
+        [SENTINEL; FileHash::BYTE_LEN],
+    )));
     let known = builder.node.cells.file_known.clone();
     let mut core = builder.build();
 
