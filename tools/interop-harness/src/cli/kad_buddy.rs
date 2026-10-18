@@ -7,8 +7,8 @@
 use std::path::PathBuf;
 
 use crate::cli::bench::{
-    BenchArgs, DEFAULT_FILE_SIZE, DEFAULT_RMULE_CLIENT_IMAGE, DEFAULT_TIMEOUT_SECS, KadBenchArgs,
-    RmuleNodeArgs, stage_synthetic,
+    BenchArgs, DEFAULT_FILE_SIZE, DEFAULT_RMULE_CLIENT_IMAGE, DEFAULT_TIMEOUT_SECS, FileContent,
+    KadBenchArgs, RmuleNodeArgs, stage_synthetic_content,
 };
 use crate::cli::write_resolved_config;
 use anyhow::{Context, Result, bail};
@@ -134,6 +134,11 @@ pub(crate) struct CorePumpedArgs {
     /// Deterministic synthetic file size in bytes (the stimulus's shared file).
     #[arg(long, default_value_t = DEFAULT_FILE_SIZE)]
     pub(crate) file_size: u64,
+    /// What the synthetic file holds: `sparse` stages a file past 4 GiB as
+    /// one hole the sharer hashes as zeros, `incompressible` one a throttled
+    /// sharer cannot send compressed.
+    #[arg(long, value_enum, default_value_t = FileContent::Pattern)]
+    pub(crate) file_content: FileContent,
     /// Also drop the aMule's Kad UDP port.
     #[arg(long)]
     pub(crate) block_udp: bool,
@@ -155,7 +160,12 @@ impl CorePumpedArgs {
     fn stage(&self, flow: &'static str) -> Result<(RunLayout, RmuleServeContainer)> {
         self.bench.prepare(&self.kad.build_contexts())?;
         let (run_dir, layout) = self.bench.create_run()?;
-        stage_synthetic(&layout, self.file_size, self.ed2k_hash_command.as_deref())?;
+        stage_synthetic_content(
+            &layout,
+            self.file_size,
+            self.file_content,
+            self.ed2k_hash_command.as_deref(),
+        )?;
         std::fs::create_dir_all(layout.amule_dir())
             .with_context(|| format!("create {}", layout.amule_dir().display()))?;
         write_resolved_config(

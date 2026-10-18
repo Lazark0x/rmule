@@ -347,6 +347,15 @@ pub fn write_synthetic_file(layout: &RunLayout, size: u64) -> Result<()> {
         .with_context(|| format!("flush {}", path.display()))
 }
 
+/// Write `size` zero bytes to `path` as one hole: the length is set and no
+/// block is written, so a file past 4 GiB is staged without the disk holding
+/// it, and a reader sees zeros.
+pub fn write_sparse_file(path: &Path, size: u64) -> Result<()> {
+    let file = File::create(path).with_context(|| format!("create {}", path.display()))?;
+    file.set_len(size)
+        .with_context(|| format!("set the length of {}", path.display()))
+}
+
 /// Write `size` bytes to `path` that no compressor shrinks: a xorshift
 /// stream from `seed`. A peer compresses a part it sends when that saves
 /// bytes, so a patterned file crosses a throttled link at many times its cap.

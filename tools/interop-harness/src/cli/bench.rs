@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
 use clap::Args;
 use rmule_interop_harness::artifacts::{
-    Ed2kHashCommand, RunLayout, write_synthetic_ed2k_link, write_synthetic_file,
+    Ed2kHashCommand, RunLayout, write_incompressible_file, write_sparse_file,
+    write_synthetic_ed2k_link, write_synthetic_file,
 };
 use rmule_interop_harness::flow::KadCaptureOptions;
 use serde::Serialize;
@@ -92,6 +93,20 @@ impl BenchArgs {
     }
 }
 
+/// What the **Synthetic File** holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum FileContent {
+    /// The `offset % 251` pattern every flow defaults to.
+    #[default]
+    Pattern,
+    /// One hole of zero bytes: no block on disk, so a file past 4 GiB costs
+    /// nothing to stage.
+    Sparse,
+    /// A xorshift stream no compressor shrinks, so a throttled sharer cannot
+    /// send it compressed at many times its cap.
+    Incompressible,
+}
+
 /// Stage the **Synthetic File** and its ed2k link in the run dir; `hash_hook`
 /// is the test seam that replaces `cargo run -p rmule-tools -- ed2k hash-file`.
 pub(crate) fn stage_synthetic(
@@ -99,7 +114,22 @@ pub(crate) fn stage_synthetic(
     file_size: u64,
     hash_hook: Option<&Path>,
 ) -> Result<()> {
-    write_synthetic_file(layout, file_size)?;
+    stage_synthetic_content(layout, file_size, FileContent::Pattern, hash_hook)
+}
+
+/// [`stage_synthetic`] with the file's `content` chosen.
+pub(crate) fn stage_synthetic_content(
+    layout: &RunLayout,
+    file_size: u64,
+    content: FileContent,
+    hash_hook: Option<&Path>,
+) -> Result<()> {
+    let path = layout.synthetic_shared_file();
+    match content {
+        FileContent::Pattern => write_synthetic_file(layout, file_size)?,
+        FileContent::Sparse => write_sparse_file(&path, file_size)?,
+        FileContent::Incompressible => write_incompressible_file(&path, file_size, 0x5EED_0531)?,
+    }
     let hash_command = hash_hook.map_or_else(Ed2kHashCommand::cargo_rmule_tools, |path| {
         Ed2kHashCommand::new(path)
     });
