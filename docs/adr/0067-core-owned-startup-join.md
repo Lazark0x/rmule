@@ -35,7 +35,14 @@ start it runs, in order:
 1. **Load persisted state** — the managed server list from rmule's store.
 2. **First-run server.met fetch** (ADR-0065) — only when the list is empty, eD2k is
    being joined, and the operator switch is on. A failed fetch is one-shot and
-   non-fatal: the joins still proceed and eD2k idles on an empty list.
+   non-fatal: the joins still proceed and eD2k idles on an empty list. Then the
+   **server.met auto-update walk** (ADR-0065), only when its switch is on, over the
+   list as the first run left it, as aMule's `CServerList::Init` runs `AutoUpdate`
+   after loading the list (`ServerList.cpp:77-78`). A URL that fails is reported and
+   the walk goes on; the joins never wait on a failure. A front end that does not run
+   the sequence whole (its actor owns the list) sends the same walk as the
+   `AutoUpdateServerList` command, folding the first-run URL in front of the list when
+   both apply, so one walk runs.
 3. **Kad seed resolution** (`acquire_kad_seeds`) — read the persisted `nodes.dat`
    the running node writes and merge its contacts straight into the routing table;
    only if nothing seeded it, run the one-shot `nodes.dat` acquisition, gated by

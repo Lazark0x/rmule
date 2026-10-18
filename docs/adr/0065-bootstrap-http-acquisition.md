@@ -43,7 +43,18 @@ deterministic and return a plan, never an applied effect, behind one I/O seam:
   hold it across the fetch. Connecting is the Join Sequence's step (ADR-0067).
 - **Auto-update** (`fetch_server_met_auto_update`): the `addresses.dat` role as a
   configured URL list (`auto_update_urls`), walked in order, each URL merged, one failure
-  not stopping the walk. The toggle `auto_update_enabled` defaults off.
+  not stopping the walk, and every row judged as the word of its own URL's host
+  (ADR-0085). The toggle `auto_update_enabled` defaults off. It runs once per session
+  start, after the first-run fetch, as aMule's `CServerList::Init` runs `AutoUpdate`
+  (`ServerList.cpp:77-78`, the walk `:868-923`): the Join Sequence's step (ADR-0067), or,
+  for a front end whose actor already owns the list, the `AutoUpdateServerList` command,
+  which runs off the actor as an on-demand update does and shares its one-at-a-time
+  guard. The walk installs once, after its last URL. Each URL's outcome (what it added
+  and folded, or why it gave no list) is a Run Log line of its own, then the walk's
+  total; with no URL set the walk says so and fetches nothing, as aMule logs an empty
+  `addresses.dat`. Both are Core Settings the operator sets in Settings, taken up at the
+  next start: `auto_update_server_met` and `server_met_auto_update_urls`, kept one URL
+  per line as `addresses.dat` holds them.
 - **nodes.dat** (`fetch_nodes_dat`, `decode_nodes_dat`): a bounded GET, the normal reader
   with a fallback to the v3 bootstrap-edition reader (ADR-0066), then a `NodesDatInstall`
   plan whose contacts become the Kad node's seeds (ADR-0067). There is no file swap and no

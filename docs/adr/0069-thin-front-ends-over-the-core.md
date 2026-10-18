@@ -47,7 +47,8 @@ subcommands).
 - **The key split.** Core's keys are the download directory, the Temp Directory,
   obfuscation, port mapping (with the learned method and the PCP secret), the Kad UDP
   Key, `Remember peers`, the Dead Server Limit, the Announce Policy, both mirror URLs
-  with their fetch switches, the nickname and both ports. The nickname and the ports stay
+  with their fetch switches, the server.met auto-update switch and its URL list
+  (ADR-0065), the nickname and both ports. The nickname and the ports stay
   in the identity rows; the handle hides where each value is kept. `CoreSettings::credentials` turns the
   nickname and the TCP port into what every login, hello and Kad dial presents. Core
   reads them itself, so no command carries credentials and a front end never composes
