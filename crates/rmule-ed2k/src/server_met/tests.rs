@@ -11,7 +11,7 @@ use std::net::Ipv4Addr;
 
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use rmule_primitives::TagName;
+use rmule_primitives::{TagName, ipv6_address_tag_compact};
 
 use super::*;
 fn name_tag(value: &str) -> Tag {
