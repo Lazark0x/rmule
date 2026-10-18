@@ -70,7 +70,7 @@ pub(super) async fn drive_served_link(
                 }
             },
             join = recv_join(&mut joins), if joins.is_some() => match join {
-                Some(join) => riders.take(join, &identity),
+                Some(join) => riders.take(join, Some(&identity)),
                 // Every name of the link went to newer links.
                 None => joins = None,
             },

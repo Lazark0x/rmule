@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use rmule_net::peer::Connection as PeerConnection;
 use rmule_peer::{
-    ConnectionEvent, PartBitmap, PartRanges, PeerCommand, PeerEvent, PeerIdentity,
-    RequesterCommand, RequesterEvent,
+    ConnectionEvent, PartBitmap, PartRanges, PeerCommand, PeerEvent, RequesterCommand,
+    RequesterEvent,
 };
 use rmule_primitives::{AichRootHash, Ed2kFileLink, PeerEndpoint};
 use tokio::sync::mpsc;
@@ -18,7 +18,9 @@ use tokio::time::Instant;
 
 use crate::PartPlan;
 use crate::adapters::InboundPeerDeps;
-use crate::adapters::dialed_serve::{DialedRoute, bridge_dialed_serve, route_dialed_connection};
+use crate::adapters::dialed_serve::{
+    DialedRoute, LinkOrigin, bridge_dialed_serve, route_dialed_connection,
+};
 use crate::adapters::hello_wait::{Opening, await_hello};
 use crate::adapters::peer_link::{DownloadHalf, JoinedLink};
 use crate::adapters::peer_transfer::{PeerWorkerCommand, PeerWorkerEvent};
@@ -32,11 +34,11 @@ use self::wait::{
 
 /// Drive a peer worker over an established `conn` — the body shared by a dialed
 /// worker ([`RuntimePeerTransferService`](crate::RuntimePeerTransferService)'s `start_peer_worker`) and an adopted
-/// inbound worker (a called-back Low-ID peer, ADR-0039). `identified` is `None`
-/// for a dialed worker (wait for the peer's hello) and `Some(identity)` for an
-/// adopted one — the inbound hello already identified it during accept, so the
-/// wait is skipped, the worker enters the requester flow directly, and that
-/// identity is what the download keeps.
+/// inbound worker (a called-back Low-ID peer, ADR-0039). `origin` is the
+/// dial's **Dial in Flight** for a dialed worker (wait for the peer's hello)
+/// and the identity for an adopted one — the inbound hello already identified
+/// it during accept, so the wait is skipped, the worker enters the requester
+/// flow directly, and that identity is what the download keeps.
 /// `own_status` is what rmule holds of `file`; the connect-time name ask
 /// carries it. `want_sources` is the download's source-ask
 /// decision for this connection (ADR-0108).
@@ -47,7 +49,7 @@ pub(crate) async fn drive_peer_worker(
     file: Ed2kFileLink,
     own_status: PartBitmap,
     want_sources: bool,
-    identified: Option<PeerIdentity>,
+    origin: LinkOrigin,
     command_rx: mpsc::Receiver<PeerWorkerCommand>,
     event_tx: mpsc::Sender<PeerWorkerEvent>,
     deps: InboundPeerDeps,
@@ -72,8 +74,8 @@ pub(crate) async fn drive_peer_worker(
     // its identity reaches the download before the router starts, so every
     // revision the router forwards follows it. A dialed worker's comes from
     // the router at the peer's hello.
-    let adopted = identified.is_some();
-    if let Some(identity) = &identified
+    let adopted = matches!(origin, LinkOrigin::Adopted(_));
+    if let LinkOrigin::Adopted(identity) = &origin
         && event_tx
             .send(PeerWorkerEvent::Identity(identity.clone()))
             .await
@@ -92,7 +94,7 @@ pub(crate) async fn drive_peer_worker(
             server_tx,
             serve_cmd_rx,
             deps,
-            identified,
+            origin,
         },
     ));
     if !adopted

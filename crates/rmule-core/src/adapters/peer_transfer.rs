@@ -3,7 +3,7 @@
 //! source, runs the eD2k handshake — SUI, obfuscation, buddy posture — and
 //! hands back a live [`PeerWorker`].
 
-mod dial_end;
+pub(super) mod dial_end;
 pub(super) mod worker;
 
 use std::future::Future;
@@ -25,9 +25,9 @@ use crate::service::DialEnd;
 use crate::{DownloadFailure, PartPlan};
 
 use super::HelloAdverts;
-use super::dialed_serve::SharedDialedServeSink;
+use super::dialed_serve::{LinkOrigin, SharedDialedServeSink};
 use super::kad_runtime::{KadPresenceView, SharedKadBootstrap, SharedKadPump};
-use super::peer_link::{LinkName, Turn};
+use super::peer_link::{LinkName, Reach, Turn};
 use super::peer_transfer::worker::{drive_joined_worker, drive_peer_worker};
 use super::{InboundPeerDeps, SharedTunnelAdmit};
 use crate::buddy_link::SharedBuddySlot;
@@ -685,6 +685,13 @@ impl PeerTransferService for RuntimePeerTransferService {
                 Turn::LinkEnded => {
                     let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
                 }
+                // Only a dial is ever in flight, and none is filed under a
+                // callback: a link found here is live, but its end is read
+                // the way a dial's is.
+                Turn::DialEnded(cause) => {
+                    end_dial(&event_tx, cause).await;
+                    let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
+                }
                 Turn::Stopped => {}
             }
         });
@@ -747,10 +754,16 @@ impl PeerTransferService for RuntimePeerTransferService {
             // asked over that link, as aMule asks a client over the socket it
             // holds (`BaseClient.cpp:1489-1496`); a second link would make it
             // drop the first (`ClientList.cpp:400-403`). Busy with another
-            // download, the link is waited on, not dialed around.
+            // download — or still being dialed by one — the link is waited
+            // on, not dialed around; finding nothing files this dial in the
+            // same step, so the next download finds it.
             let mut names = vec![LinkName::Endpoint(peer)];
             names.extend(peer_crypt.user_hash().map(LinkName::User));
-            if let Some(found) = peer_links.find(&names) {
+            let dial = loop {
+                let found = match peer_links.reach(peer, &names) {
+                    Reach::Dial(dial) => break dial,
+                    Reach::Found(found) => found,
+                };
                 match found.take_turn(&event_tx, &mut command_rx).await {
                     Turn::Seated(joined) => {
                         tracing::debug!(?peer, "download rides the peer's link");
@@ -767,26 +780,39 @@ impl PeerTransferService for RuntimePeerTransferService {
                         return;
                     }
                     Turn::Stopped => return,
-                    // The link ended before this download's turn: dial.
+                    // The dial it waited on failed: the source is gone for
+                    // this download too, for the same cause.
+                    Turn::DialEnded(cause) => {
+                        end_dial(&event_tx, cause).await;
+                        let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
+                        return;
+                    }
+                    // The link ended before this download's turn: look again.
                     Turn::LinkEnded => {}
                 }
-            }
+            };
             // Connect + identify run inside the worker task, off the runner's
             // critical path (ADR-0030). A connect or handshake failure becomes
             // an ordinary `Disconnected` worker event so the runner backfills
-            // a replacement instead of aborting the whole download.
+            // a replacement instead of aborting the whole download — and
+            // every download waiting on the dial is retired with its cause.
             let conn = match PeerConnection::connect(peer, ctx, options).await {
                 Ok(conn) => conn,
                 // The stances cannot meet: named apart from a
                 // dead source, so the brain retires the source for that
-                // reason rather than as unreachable.
+                // reason rather than as unreachable. No socket opened, so
+                // no dial was in flight: a download waiting on it meets the
+                // rule with what its own record knows.
                 Err(PeerNetError::CryptIncompatible) => {
+                    drop(dial);
                     end_dial(&event_tx, dial_end::crypt_refusal(peer_crypt, ours)).await;
                     let _ = event_tx.send(PeerWorkerEvent::CryptIncompatible).await;
                     return;
                 }
                 Err(error) => {
-                    end_dial(&event_tx, dial_end::connect_failure(&error)).await;
+                    let cause = dial_end::connect_failure(&error);
+                    dial.failed(cause);
+                    end_dial(&event_tx, cause).await;
                     let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
                     return;
                 }
@@ -800,7 +826,7 @@ impl PeerTransferService for RuntimePeerTransferService {
                 file,
                 own_status,
                 want_sources,
-                None,
+                LinkOrigin::Dialed(dial),
                 command_rx,
                 event_tx,
                 deps,

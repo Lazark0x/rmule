@@ -39,7 +39,7 @@ pub(super) fn connect_failure(error: &PeerNetError) -> DialEnd {
 }
 
 /// Why the session closed before the peer's hello.
-pub(super) fn closed_before_hello(reason: PeerCloseReason) -> DialEnd {
+pub(in crate::adapters) fn closed_before_hello(reason: PeerCloseReason) -> DialEnd {
     match reason {
         PeerCloseReason::Local => DialEnd::ClosedLocally,
         PeerCloseReason::ProtocolViolation => DialEnd::ProtocolViolation,

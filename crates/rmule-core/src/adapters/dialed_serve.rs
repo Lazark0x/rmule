@@ -4,7 +4,8 @@
 
 use rmule_net::peer::Connection as PeerConnection;
 use rmule_peer::{
-    ConnectionCommand, ConnectionEvent, PeerCommand, PeerEvent, PeerIdentity, RequesterEvent,
+    ConnectionCommand, ConnectionEvent, PeerCloseReason, PeerCommand, PeerEvent, PeerIdentity,
+    RequesterEvent,
 };
 use rmule_primitives::PeerEndpoint;
 use tokio::sync::mpsc;
@@ -12,9 +13,11 @@ use tokio::sync::mpsc;
 use super::InboundPeerDeps;
 use super::inbound_triage::serve_side;
 use super::kad_runtime::broker_peer_kad_handoff;
-use super::peer_link::{DownloadHalf, Filing, LinkJoin, LinkName, Riders, recv_join};
+use super::peer_link::{DialInFlight, DownloadHalf, Filing, LinkJoin, LinkName, Riders, recv_join};
 use super::peer_transfer::PeerWorkerEvent;
+use super::peer_transfer::dial_end::closed_before_hello;
 use super::serve_runtime::{ServeConnection, ServeInput, ServeOutput};
+use crate::service::DialEnd;
 
 /// The slot through which dialed connections reach the serve activity.
 /// `RuntimePeerTransferService` pushes each dialed connection's serve half
@@ -46,9 +49,18 @@ pub(crate) struct DialedRoute {
     /// accepted link reaches, since aMule's handlers do not ask who dialed —
     /// and the Peer Links the link is filed in once identified.
     pub(crate) deps: InboundPeerDeps,
-    /// The identity an adopted link's accept side read off its hello; `None`
-    /// for a dialed link, whose hello is still to come.
-    pub(crate) identified: Option<PeerIdentity>,
+    /// How the link came up.
+    pub(crate) origin: LinkOrigin,
+}
+
+/// How a link a download holds came up.
+pub(crate) enum LinkOrigin {
+    /// rmule dialed it: the **Dial in Flight** filed at the dial
+    /// (ADR-0107 invariant 11), its hello still to come.
+    Dialed(DialInFlight),
+    /// An adopted inbound link (ADR-0039): the identity its accept side read
+    /// off the hello.
+    Adopted(PeerIdentity),
 }
 
 /// Own one dialed `PeerConnection` and split it into the two consumers
@@ -66,7 +78,8 @@ pub(crate) struct DialedRoute {
 /// The socket is shut down when the serve half and every download let it go,
 /// or the peer disconnects. `Disconnected` is delivered to the rider and the
 /// serve half so each frees its per-connection state; a waiter learns the
-/// link ended and dials.
+/// link ended and dials — or, when the link closed before the hello, is
+/// retired with the cause its dialer reads (ADR-0107 invariant 11).
 ///
 /// The router is the one sender of the peer's identity to the rider once the
 /// connection is up, so it reaches the download in the session's order:
@@ -80,23 +93,31 @@ pub(crate) async fn route_dialed_connection(mut conn: PeerConnection, route: Dia
         server_tx,
         mut serve_cmd_rx,
         deps,
-        identified,
+        origin,
     } = route;
     let remote = conn.peer_endpoint();
     let mut riders = Riders::seated(rider);
-    // A link rmule dialed reaches the peer where it was dialed, whatever
-    // listen port its hello names; an adopted link's remote end is the
-    // peer's own dial out, which no dial reaches.
-    let dialed_at = identified.is_none().then_some(remote);
     let mut link = DialedLink {
-        dialed_at,
+        dialed_at: None,
         identity: None,
         filing: None,
         joins: None,
     };
-    if let Some(identity) = identified {
-        link.identified(&deps, remote, identity);
+    match origin {
+        // A link rmule dialed reaches the peer where it was dialed, whatever
+        // listen port its hello names, and keeps the filing its dial took.
+        LinkOrigin::Dialed(dial) => {
+            let (filing, joins) = dial.into_parts();
+            link.dialed_at = Some(remote);
+            link.filing = Some(filing);
+            link.joins = Some(joins);
+        }
+        // An adopted link's remote end is the peer's own dial out, which no
+        // dial reaches.
+        LinkOrigin::Adopted(identity) => link.identified(&deps, remote, identity),
     }
+    // Why the link closed, for the downloads waiting on it before its hello.
+    let mut closed = DialEnd::ClosedBeforeHello;
     let halves = Halves {
         server_tx,
         deps: &deps,
@@ -142,11 +163,10 @@ pub(crate) async fn route_dialed_connection(mut conn: PeerConnection, route: Dia
                     }
                 }
             },
-            join = recv_join(&mut link.joins), if open && link.joins.is_some() => match (join, &link.identity) {
-                (Some(join), Some(identity)) => riders.take(join, identity),
-                (Some(_), None) => {}
+            join = recv_join(&mut link.joins), if open && link.joins.is_some() => match join {
+                Some(join) => riders.take(join, link.identity.as_ref()),
                 // Every name of the link went to newer links.
-                (None, _) => link.joins = None,
+                None => link.joins = None,
             },
             () = tokio::time::sleep_until(closing.unwrap_or_else(tokio::time::Instant::now)),
                 if closing.is_some() => break,
@@ -154,7 +174,10 @@ pub(crate) async fn route_dialed_connection(mut conn: PeerConnection, route: Dia
                 let Some(event) = event else { break }; // driver/peer gone
                 match halves.dispatch(remote, event, riders.rider()).await {
                     Routed::Open => {}
-                    Routed::Identified(identity) => link.identified(&deps, remote, identity),
+                    Routed::Identified(identity) => {
+                        riders.identified(&identity);
+                        link.identified(&deps, remote, identity);
+                    }
                     Routed::Revised(identity) => link.revised(remote, identity),
                     Routed::Offered(answer) => {
                         if let Some(answer) = answer
@@ -163,10 +186,16 @@ pub(crate) async fn route_dialed_connection(mut conn: PeerConnection, route: Dia
                             break;
                         }
                     }
-                    Routed::Closed => break,
+                    Routed::Closed(reason) => {
+                        closed = closed_before_hello(reason);
+                        break;
+                    }
                 }
             }
         }
+    }
+    if link.identity.is_none() {
+        riders.dial_ended(closed);
     }
     let _ = conn.shutdown().await;
 }
@@ -189,11 +218,18 @@ struct DialedLink {
 }
 
 impl DialedLink {
-    /// The peer identified: file the link under its names.
+    /// The peer identified: file the link under its names — a dial's filing
+    /// moves to them, an adopted link is filed now.
     fn identified(&mut self, deps: &InboundPeerDeps, remote: PeerEndpoint, identity: PeerIdentity) {
-        let (filing, joins) = deps.peer_links.file(remote, self.names(remote, &identity));
-        self.filing = Some(filing);
-        self.joins = Some(joins);
+        let names = self.names(remote, &identity);
+        match &mut self.filing {
+            Some(filing) => filing.refile(names),
+            None => {
+                let (filing, joins) = deps.peer_links.file(remote, names);
+                self.filing = Some(filing);
+                self.joins = Some(joins);
+            }
+        }
         self.identity = Some(identity);
     }
 
@@ -226,7 +262,8 @@ enum Routed {
     Revised(PeerIdentity),
     /// The peer offered a changed Client ID; the answer, when it takes it.
     Offered(Option<ConnectionCommand>),
-    Closed,
+    /// The session closed, for this reason.
+    Closed(PeerCloseReason),
 }
 
 /// The halves a dialed link's events reach besides its rider.
@@ -321,7 +358,7 @@ impl Halves<'_> {
                 let _ = self.server_tx.send(ServeInput::Connection(fact)).await;
                 return Routed::Identified(identity);
             }
-            ConnectionEvent::Disconnected { .. } => {
+            ConnectionEvent::Disconnected { reason } => {
                 if let Some(rider) = rider {
                     let _ = rider
                         .requester_tx
@@ -329,7 +366,7 @@ impl Halves<'_> {
                         .await;
                 }
                 let _ = self.server_tx.send(ServeInput::Connection(fact)).await;
-                return Routed::Closed;
+                return Routed::Closed(reason);
             }
             // A connection-lifecycle fact (ADR-0041), forwarded straight to the
             // worker event stream: the transfer loops drain requester events

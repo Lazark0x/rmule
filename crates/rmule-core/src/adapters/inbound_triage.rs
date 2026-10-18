@@ -23,7 +23,7 @@ use crate::service::PortTestClosedBy;
 use super::awaited_inbound::{
     AdoptionBrief, AwaitedInbound, CallbackKey, InboundArrival, InboundVerdict,
 };
-use super::dialed_serve::SharedDialedServeSink;
+use super::dialed_serve::{LinkOrigin, SharedDialedServeSink};
 use super::hello_wait::{Opening, await_hello};
 use super::kad_runtime::{
     SharedKadBootstrap, SharedKadPump, broker_peer_kad_handoff, report_kad_firewall_ack,
@@ -279,7 +279,7 @@ fn adopt_inbound_worker(
             file,
             own_status,
             want_sources,
-            Some(identity),
+            LinkOrigin::Adopted(identity),
             command_rx,
             event_tx,
             // The adopted peer already identified during accept, where the

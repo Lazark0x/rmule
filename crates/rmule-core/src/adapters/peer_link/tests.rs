@@ -93,11 +93,7 @@ fn half() -> (DownloadHalf, mpsc::Sender<PeerCommand>) {
     (half, peer_cmd_tx)
 }
 
-fn join() -> (
-    LinkJoin,
-    oneshot::Receiver<()>,
-    oneshot::Receiver<PeerIdentity>,
-) {
+fn join() -> (LinkJoin, oneshot::Receiver<()>, oneshot::Receiver<Seat>) {
     let (waiting, told) = oneshot::channel();
     let (seated, turn) = oneshot::channel();
     let join = LinkJoin {
@@ -116,18 +112,85 @@ fn the_oldest_waiter_still_running_takes_the_link_when_the_rider_leaves() {
     let (gone, mut gone_told, gone_turn) = join();
     let (next, mut next_told, mut next_turn) = join();
     let (last, mut last_told, mut last_turn) = join();
-    riders.take(gone, &identity);
-    riders.take(next, &identity);
-    riders.take(last, &identity);
+    riders.take(gone, Some(&identity));
+    riders.take(next, Some(&identity));
+    riders.take(last, Some(&identity));
     for told in [&mut gone_told, &mut next_told, &mut last_told] {
         assert_eq!(told.try_recv(), Ok(()), "a waiter is told it waits");
     }
     drop(gone_turn);
 
     riders.rider_left(Some(&identity));
-    assert!(next_turn.try_recv().is_ok(), "the oldest live waiter rides");
+    assert!(
+        matches!(next_turn.try_recv(), Ok(Seat::Riding(_))),
+        "the oldest live waiter rides"
+    );
     assert!(last_turn.try_recv().is_err(), "the last still waits");
     assert!(!riders.is_empty());
+}
+
+/// Two downloads of one peer that start together (ADR-0107 invariant 11):
+/// the first finds nothing and its dial is filed in the same step, the second
+/// finds that dial and waits on it, and the dial failing before the hello
+/// retires the waiter with the dial's cause and leaves nothing filed.
+#[test]
+fn a_dial_in_flight_is_found_by_the_next_download_and_its_failure_retires_the_waiter() {
+    let links = SharedPeerLinks::default();
+    let at = v4([203, 0, 113, 7], 4662);
+    let names = [LinkName::Endpoint(at), LinkName::User(user(0x41))];
+    let Reach::Dial(dial) = links.reach(at, &names) else {
+        panic!("nothing is filed: the first download dials");
+    };
+    let Reach::Found(found) = links.reach(at, &names) else {
+        panic!("the second download finds the first one's dial");
+    };
+    assert_eq!(found.remote, at);
+    let (waiter, _told, mut turn) = join();
+    found
+        .join_tx
+        .try_send(waiter)
+        .ok()
+        .expect("the dial takes the join");
+
+    dial.failed(DialEnd::ConnectionRefused);
+    assert!(matches!(
+        turn.try_recv(),
+        Ok(Seat::DialEnded(DialEnd::ConnectionRefused))
+    ));
+    assert!(links.find(&names).is_none(), "a failed dial is unfiled");
+}
+
+/// A link that closes before its hello retires the downloads waiting on it,
+/// and one whose hello came seats the oldest of them when nobody rides it.
+#[test]
+fn waiters_before_the_hello_take_the_dials_outcome() {
+    let identity = HelloFacts::of(user(0x51)).identity();
+    let (rider, _rider_cmd) = half();
+    let mut riders = Riders::seated(rider);
+    let (early, mut early_told, mut early_turn) = join();
+    riders.take(early, None);
+    assert_eq!(
+        early_told.try_recv(),
+        Ok(()),
+        "a join before the hello waits"
+    );
+    riders.dial_ended(DialEnd::NoHelloInTime);
+    assert!(matches!(
+        early_turn.try_recv(),
+        Ok(Seat::DialEnded(DialEnd::NoHelloInTime))
+    ));
+
+    let (rider, _rider_cmd) = half();
+    let mut riders = Riders::seated(rider);
+    let (waiter, _told, mut turn) = join();
+    riders.take(waiter, None);
+    riders.rider_left(None);
+    assert!(
+        turn.try_recv().is_err(),
+        "nobody is seated before the hello"
+    );
+    riders.identified(&identity);
+    assert!(matches!(turn.try_recv(), Ok(Seat::Riding(_))));
 }
 
 #[test]
