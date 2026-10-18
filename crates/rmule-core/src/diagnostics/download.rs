@@ -298,6 +298,10 @@ pub struct DownloadDiagnostics {
     /// A level, republished with the part map at every settle; a source that
     /// failed and was retired has left it.
     pub known_sources: u32,
+    /// How many of those sources are asking, queued and transferring now — the
+    /// run's **Source Activity** (ADR-0116). A level, republished with the part
+    /// map at every settle; zero at rest.
+    pub source_activity: SourceActivity,
     /// Dials that ended before the peer's hello over the row's life —
     /// refused by policy, never dialed, or lost before the peer identified.
     /// Monotonic.
@@ -326,6 +330,21 @@ pub struct DownloadDiagnostics {
     /// Where the run's completion move stands (ADR-0115): `None` until the
     /// move begins, and again once its run has ended.
     pub completion: Option<CompletionProgress>,
+}
+
+/// How many of a running download's sources are in each activity (ADR-0116):
+/// winning a queue place, holding one with no connection, and transferring on
+/// a granted slot. A pooled source not yet asked is in none.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SourceActivity {
+    /// Dialing, called back, or connected with its slot ask not yet answered
+    /// by a grant.
+    pub asking: u32,
+    /// Waiting in a remote uploader's queue with no connection: the
+    /// **Remote-Queued Pool**.
+    pub queued: u32,
+    /// Holding a granted slot.
+    pub transferring: u32,
 }
 
 /// A completion move's step and the bytes its copy has written, as levels

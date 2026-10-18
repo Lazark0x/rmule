@@ -220,6 +220,12 @@ impl DownloadState {
             .collect()
     }
 
+    /// How many of this run's sources are asking, queued and transferring —
+    /// its **Source Activity**, republished beside the part map (ADR-0116).
+    pub(crate) fn source_activity(&self) -> crate::diagnostics::SourceActivity {
+        self.sources.activity(|peer| self.slot_asks.granted(peer))
+    }
+
     /// Sources this run knows now — aMule's source count, republished beside
     /// the part map: every record the **Source Book** holds, once.
     pub(crate) fn known_sources(&self) -> u32 {

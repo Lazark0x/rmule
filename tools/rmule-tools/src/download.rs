@@ -64,7 +64,9 @@ pub(crate) struct DownloadStartArgs {
     /// Every this many milliseconds, print each download's positional part
     /// map (ADR-0079) off the diagnostics snapshot, one
     /// `download parts_tick id=… at_unix_ms=… parts=…` line with one letter
-    /// per part: `V` verified, `I` in flight, `M` missing. Unset prints none.
+    /// per part: `V` verified, `I` in flight, `M` missing, and a
+    /// `download sources_tick id=… at_unix_ms=… known=… asking=… queued=…
+    /// transferring=…` line of its sources (ADR-0116). Unset prints none.
     #[arg(long)]
     report_parts_every_ms: Option<u64>,
     /// Also bind the inbound peer listener on `0.0.0.0:<tcp-port>` while
@@ -391,7 +393,9 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
 
 /// One `download parts_tick` line per download row: the positional part map
 /// (ADR-0079) as letters, stamped with the wall clock so a bench can lay it
-/// beside a capture taken on the same host.
+/// beside a capture taken on the same host; and one `download sources_tick`
+/// line beside it: the sources the run knows and its **Source Activity**
+/// (ADR-0116).
 fn print_parts_tick(core: &rmule_core::Core) {
     use rmule_core::diagnostics::PartState;
     let at_unix_ms = std::time::SystemTime::now()
@@ -410,6 +414,15 @@ fn print_parts_tick(core: &rmule_core::Core) {
         println!(
             "download parts_tick id={} at_unix_ms={at_unix_ms} parts={parts}",
             id.as_u64()
+        );
+        let activity = row.source_activity;
+        println!(
+            "download sources_tick id={} at_unix_ms={at_unix_ms} known={} asking={} queued={} transferring={}",
+            id.as_u64(),
+            row.known_sources,
+            activity.asking,
+            activity.queued,
+            activity.transferring,
         );
     }
 }

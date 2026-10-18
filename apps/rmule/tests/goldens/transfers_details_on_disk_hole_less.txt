@@ -1,14 +1,14 @@
 ┌ Downloads (3) ─────────── s sort  S reverse  C clear completed  L add link ┐
 │  File ▲      Size       Done Progress   Speed      ETA    Src   Status     │
-│▸ bunny.mp4   87.7 MB    42%  ██░█▓░█▓░░ 123.4 KB/s 7m00s  8 (1) Downloading│
-│  ABABABABAB┌ File details ────────────────────────────────────┐ Paused     │
-│  5C5C5C5C5C│ name    bunny.mp4                                │ Completed  │
-│            │ hash    07070707070707070707070707070707         │            │
+│▸ bunny.mp4 ┌ File details ────────────────────────────────────┐ Downloading│
+│  ABABABABAB│ name    bunny.mp4                                │ Paused     │
+│  5C5C5C5C5C│ hash    07070707070707070707070707070707         │ Completed  │
 │            │ size    87.7 MB                                  │            │
 │            │ origin  link                                     │            │
 │            │ done    42%  (4/10 parts)                        │            │
 │            │ speed   123.4 KB/s                               │            │
-│            │ sources 8 known, 1 sending                       │            │
+│            │ sources 8 known: 1 asking, 3 queued, 1           │            │
+│            │         transferring                             │            │
 │            │ on disk 64.9 MB allocated; this disk holds no    │            │
 └────────────│         holes, so the part file takes its full   │───── 1 / 3 ┘
 ┌ Sources · b│         length on disk up to its last verified   │  S reverse ┐

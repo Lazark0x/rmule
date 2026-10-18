@@ -336,6 +336,29 @@ impl SourceBook {
         }
     }
 
+    /// The book's sources by **Source Activity** (ADR-0116): every dial,
+    /// callback in flight and worker `granted` does not name is asking; every
+    /// RemoteQueued record is queued; every worker `granted` names is
+    /// transferring.
+    pub(crate) fn activity(
+        &self,
+        granted: impl Fn(PeerEndpoint) -> bool,
+    ) -> crate::diagnostics::SourceActivity {
+        let mut activity = crate::diagnostics::SourceActivity::default();
+        for record in self.records.values() {
+            let tally = match &record.stage {
+                Stage::RemoteQueued(_) => &mut activity.queued,
+                Stage::Worker(live, _) if granted(live.endpoint) => &mut activity.transferring,
+                Stage::Dialing(_) | Stage::Worker(..) | Stage::CallbackPending(_) => {
+                    &mut activity.asking
+                }
+                Stage::Pooled(_) => continue,
+            };
+            *tally = tally.saturating_add(1);
+        }
+        activity
+    }
+
     /// How many worker slots the stages hold: every dial, worker and callback
     /// in flight.
     pub(crate) fn slots_in_use(&self) -> usize {

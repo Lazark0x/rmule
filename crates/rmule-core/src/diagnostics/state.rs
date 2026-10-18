@@ -222,6 +222,7 @@ impl DiagnosticsState {
                 workers: BTreeMap::new(),
                 received_bytes: 0,
                 known_sources: 0,
+                source_activity: crate::diagnostics::SourceActivity::default(),
                 dials_ended: 0,
                 reask_replies_ignored: 0,
                 dial_ends: BTreeMap::new(),
@@ -330,23 +331,25 @@ impl DiagnosticsState {
             .saturating_add(1);
     }
 
-    /// Republish `download_id`'s whole part map plus its retired-peer tally
-    /// and its known-source count (ADR-0079). One call for all three because
-    /// the download runner observes them at one point — the settle after a
-    /// drain — and one lock keeps the snapshot from ever showing a
-    /// half-updated row.
+    /// Republish `download_id`'s whole part map plus its retired-peer tally,
+    /// its known-source count and its **Source Activity** (ADR-0079,
+    /// ADR-0116). One call for all four because the download runner observes
+    /// them at one point — the settle after a drain — and one lock keeps the
+    /// snapshot from ever showing a half-updated row.
     pub fn set_part_map(
         &self,
         download_id: DownloadId,
         parts: Vec<PartState>,
         retired: u32,
         known_sources: u32,
+        source_activity: crate::diagnostics::SourceActivity,
     ) {
         let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
         if let Some(dd) = inner.downloads.get_mut(&download_id) {
             dd.parts = parts;
             dd.retired_peers = retired;
             dd.known_sources = known_sources;
+            dd.source_activity = source_activity;
         }
     }
 

@@ -1,10 +1,10 @@
-//! The words for a download's sources: what a worker slot is doing, why one
-//! left, why a dial ended before its hello, why one was let go or a reask
+//! The words for a download's sources: how many ask, wait and transfer, what
+//! a worker slot is doing, why one left, why a dial ended before its hello, why one was let go or a reask
 //! answer changed nothing, what a download with no source to try waits on,
 //! and the remembered peers a restart dials first (ADR-0109).
 
 use rmule_core::LinkTurn;
-use rmule_core::diagnostics::WorkerPhase;
+use rmule_core::diagnostics::{SourceActivity, WorkerPhase};
 use rmule_core::{
     DialEnd, IgnoredReaskReply, PartReleaseReason, PeerRetirementReason, PurgedSource,
     SourcePurgeReason, SourceWait,
@@ -13,6 +13,19 @@ use rmule_primitives::PeerEndpoint;
 
 use super::super::Sentence;
 use super::super::units::{address, count};
+
+/// A running download's sources as the operator reads them (ADR-0116): how
+/// many it knows, and of those how many are asking for a queue place, waiting
+/// in one with no connection, and transferring on a granted slot.
+#[must_use]
+pub fn source_activity_words(known: u32, activity: SourceActivity) -> String {
+    let SourceActivity {
+        asking,
+        queued,
+        transferring,
+    } = activity;
+    format!("{known} known: {asking} asking, {queued} queued, {transferring} transferring")
+}
 
 /// What a download waiting for a connection needs to move on (ADR-0097): no
 /// server session and no Kad node exist to ask for sources on.

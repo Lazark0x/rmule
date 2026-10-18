@@ -10,7 +10,7 @@ use rmule_core::DownloadId;
 use rmule_primitives::FileHash;
 
 use super::chunks::chunk_bar;
-use super::downloads::{diag_counts, diag_parts, origin_label, source_counts};
+use super::downloads::{diag_counts, diag_parts, origin_label};
 use super::sort::DownloadLine;
 use super::{Overlay, TransfersView, selected_id};
 use crate::rates::format_rate;
@@ -19,7 +19,9 @@ use crate::table_sort::RowMove;
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
 use crate::views::modal::Modal;
-use crate::words::download::{completion_progress, on_disk, source_wait_words};
+use crate::words::download::{
+    completion_progress, on_disk, source_activity_words, source_wait_words,
+};
 use crate::wrap::labeled_lines;
 
 /// Width of the details modal's label column (`" {label:<8}"`).
@@ -83,9 +85,9 @@ impl TransfersView {
         } else {
             format!("{percent_done}  ({}/{total_parts} parts)", counts.verified)
         };
-        let sources = source_counts(diag).map_or_else(
+        let sources = diag.map_or_else(
             || "— (not running)".to_string(),
-            |(known, sending)| format!("{known} known, {sending} sending"),
+            |diag| source_activity_words(diag.known_sources, diag.source_activity),
         );
 
         // Key-value rows wrap under their value column: the full hash

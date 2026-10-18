@@ -9,12 +9,12 @@
 │            │ origin  link                                     │            │
 │            │ done    42%  (4/10 parts)                        │            │
 │            │ speed   123.4 KB/s                               │            │
-│            │ sources 8 known, 1 sending                       │            │
-└────────────│ on disk 95.4 MB allocated; —                     │───── 1 / 3 ┘
-┌ Sources · b│                                                  │  S reverse ┐
-│  Source ▲  │██████████░░░░░█████▓▓▓▓▓░░░░░█████▓▓▓▓▓░░░░░░░░░░│  Speed     │
-│▸ 10.0.0.1:4└──────────────────────────────────────────────────┘  98.7 KB/s │
-│  10.0.0.2:4662 · remembered —                   queued #3        —         │
+│            │ sources 8 known: 1 asking, 3 queued, 1           │            │
+└────────────│         transferring                             │───── 1 / 3 ┘
+┌ Sources · b│ on disk 95.4 MB allocated; —                     │  S reverse ┐
+│  Source ▲  │                                                  │  Speed     │
+│▸ 10.0.0.1:4│██████████░░░░░█████▓▓▓▓▓░░░░░█████▓▓▓▓▓░░░░░░░░░░│  98.7 KB/s │
+│  10.0.0.2:4└──────────────────────────────────────────────────┘  —         │
 │                                                                            │
 │                                                                            │
 │                                                                            │

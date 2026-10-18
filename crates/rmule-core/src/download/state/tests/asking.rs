@@ -186,3 +186,23 @@ fn a_queued_source_is_a_held_place_until_it_grants() {
     let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotGranted);
     assert!(state.held_places().is_empty(), "a transfer holds no place");
 }
+
+/// The operator's counts read the stages (ADR-0116): a granted worker is
+/// transferring, a hung-up one queued, a dial not yet answered asking, and a
+/// source the budget has not reached yet in none.
+#[test]
+fn the_source_activity_counts_each_source_once_by_its_activity() {
+    let shared = budget(3, 500);
+    let mut state = seated(&shared, 1, &[peer(1), peer(2), peer(3), peer(4)]);
+    let _ = state.start(t0());
+    let _ = connect(&mut state, t0(), peer(1));
+    let _ = ranked(&mut state, peer(2), 6);
+    assert_eq!(
+        state.source_activity(),
+        crate::diagnostics::SourceActivity {
+            asking: 1,
+            queued: 1,
+            transferring: 1,
+        }
+    );
+}

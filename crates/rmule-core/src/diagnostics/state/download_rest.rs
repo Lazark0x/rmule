@@ -9,7 +9,7 @@ use std::time::Instant;
 use rmule_primitives::{FileHash, part_count};
 
 use super::DiagnosticsState;
-use crate::diagnostics::{DownloadDiagnostics, PartState};
+use crate::diagnostics::{DownloadDiagnostics, PartState, SourceActivity};
 use crate::{DownloadId, DownloadMetadata};
 
 impl DiagnosticsState {
@@ -48,6 +48,7 @@ impl DiagnosticsState {
                 workers: BTreeMap::new(),
                 received_bytes: 0,
                 known_sources: 0,
+                source_activity: SourceActivity::default(),
                 dials_ended: 0,
                 reask_replies_ignored: 0,
                 dial_ends: BTreeMap::new(),
@@ -58,6 +59,7 @@ impl DiagnosticsState {
         row.parts = parts;
         row.workers.clear();
         row.known_sources = 0;
+        row.source_activity = SourceActivity::default();
         row.dial_ends.clear();
         row.allocated_bytes = None;
         row.hole_verdict = None;
@@ -101,6 +103,7 @@ impl DiagnosticsState {
         }
         row.workers.clear();
         row.known_sources = 0;
+        row.source_activity = SourceActivity::default();
         row.completion = None;
     }
 }

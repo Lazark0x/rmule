@@ -52,6 +52,7 @@ fn downloading(received_bytes: u64, slots: &[(usize, WorkerPhase)]) -> Diagnosti
             workers,
             received_bytes,
             known_sources: 0,
+            source_activity: rmule_core::diagnostics::SourceActivity::default(),
             dials_ended: 0,
             dial_ends: Default::default(),
             allocated_bytes: None,

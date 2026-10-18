@@ -86,6 +86,7 @@ pub(crate) fn diag(
         workers: workers.into_iter().map(|w| (w.slot(), w)).collect(),
         received_bytes,
         known_sources: 0,
+        source_activity: rmule_core::diagnostics::SourceActivity::default(),
         dials_ended: 0,
         dial_ends: Default::default(),
         allocated_bytes: None,
@@ -170,6 +171,16 @@ pub(crate) fn three_downloads() -> UiState {
     for (id, known) in [(1, 8), (2, 0), (3, 1)] {
         diags.get_mut(&download_id(id)).expect("diag").known_sources = known;
     }
+    // Of the active run's eight: one transferring, one still asking, three
+    // waiting in remote queues with no connection (ADR-0116).
+    diags
+        .get_mut(&download_id(1))
+        .expect("diag")
+        .source_activity = rmule_core::diagnostics::SourceActivity {
+        asking: 1,
+        queued: 3,
+        transferring: 1,
+    };
 
     let mut download_bps = BTreeMap::new();
     download_bps.insert(download_id(1), 123.4 * 1024.0);

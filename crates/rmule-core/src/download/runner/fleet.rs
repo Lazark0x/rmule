@@ -72,7 +72,13 @@ pub(super) fn refresh_parts(
     state: &DownloadState,
 ) {
     let (parts, retired) = state.part_map();
-    diagnostics.set_part_map(download_id, parts, retired, state.known_sources());
+    diagnostics.set_part_map(
+        download_id,
+        parts,
+        retired,
+        state.known_sources(),
+        state.source_activity(),
+    );
 }
 
 /// Everything one download run starts from, bundled so the fleet entry point

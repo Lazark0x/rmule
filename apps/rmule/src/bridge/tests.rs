@@ -121,6 +121,7 @@ fn set_byte_levels(snapshot: &Arc<Mutex<DiagnosticsSnapshot>>, received: u64, se
             workers,
             received_bytes: received,
             known_sources: 0,
+            source_activity: rmule_core::diagnostics::SourceActivity::default(),
             dials_ended: 0,
             dial_ends: Default::default(),
             allocated_bytes: None,
