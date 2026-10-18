@@ -141,6 +141,22 @@ aMule's `FILEREASKTIME` of 1 300 000 ms
   and resets the one-in-flight latch, so a lost datagram costs 20 seconds, never the
   standing. It reaches a High ID at its endpoint and a called-back Low ID by its callback
   road, the one a fresh Low-ID candidate takes (ADR-0090).
+- **A grant by dial-back is taken.** An uploader promotes a waiter it is not connected to by
+  dialing its listen port and sending `OP_ACCEPTUPLOADREQ` once the hellos are done
+  (`UploadQueue.cpp:206-210`, `BaseClient.cpp:1707-1716`), and a waiter it is connected to on
+  that link (`UploadQueue.cpp:211-217`). Either way the `0x55` lands on a link no download of
+  ours rides: the record waits in RemoteQueued with no worker. aMule's downloader holds the
+  client `DS_ONQUEUE` and takes the grant at once (`ClientTCPSocket.cpp:635-645`). rmule's
+  link hands the unasked grant to the download standing at its peer (ADR-0107, the
+  Awaited Grants), whose brain opens the record's worker on that link at once, past the
+  per-download cap (ADR-0030): a granted slot is a transfer, not a dial. The worker asks as
+  any rider does — the file request, then `OP_STARTUPLOADREQ` on the probe's answer — and
+  the uploader, uploading to the client already, grants it at once (`UploadQueue.cpp:486-493`),
+  well inside the 40 s it keeps an idle link (`CONNECTION_TIMEOUT`, `Constants.h:34`). A
+  dropped grant costs the standing: the uploader times the link out, takes the client out of
+  its upload list without queueing it again (`BaseClient.cpp:1278-1281`,
+  `UploadQueue.cpp:522-546`), and the next ask starts the wait from zero (`:501`). An
+  unasked grant no download stands for is given back with `0x56` (ADR-0056).
 - **A held window looks again a second later.** While the ping is due but cannot leave —
   we are unreachable, a source ask is due, or another download's ping holds the endpoint
   (ADR-0107) — the brain names a wake one second on, as aMule's once-a-second `Process`

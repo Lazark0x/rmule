@@ -478,6 +478,16 @@ _Avoid_: dial failure (`DialFailure` is a server dial's)
 The **Source Book** records in their RemoteQueued stage, each holding its queue standing at a remote uploader **without a connection**: the rank, the UDP contact and peer-UDP crypt target the identity it queued under stated, the reask clock and its one-ping latch (ADR-0057, ADR-0090). Entered when a worker on the uploader's queue — its upload request out, ranked or not yet — hangs up, when a granted worker gives back a slot it has no part for (`0x56`, `NoFreePart`, the ordinary cadence), or when a worker's **Advertised Parts** hold no part we lack (rank 0, the no-needed-parts mark, ADR-0112); kept alive by the reask heartbeat the brain's tick runs while we are connected to a server or Kad (UDP ping first — a called-back source's at the address it called in from, or through its buddy while we are firewalled — TCP full ask as fallback, a called-back source's by its callback road); left on grant (the uploader dials back), file-not-found (which spends it), the TCP full ask, or — queue-full or holding no part we lack, while the file holds 80 % of aMule's default source limit — one of the book's purges. Queue standing is a fact about the remote peer, not about a socket.
 _Avoid_: waiting workers (no worker exists while pooled), source cache, reconnect list, pool (as a list apart from the book)
 
+**Awaited Grant**:
+A **Remote-Queued Pool** record filed in the **Peer Links** (`SharedPeerLinks`) under its
+**Ask Names** — its dial endpoint and the User Hash its record knows — by its download's run,
+held to the RemoteQueued stage after every brain step (ADR-0107). A link nobody rides that reads
+an unasked `OP_ACCEPTUPLOADREQ` — the uploader's promotion by dial-back, or on a link it held —
+offers it to the oldest Awaited Grant under its names; that download opens the record's worker on
+the link at once, past its worker cap, and the worker asks as any rider does (ADR-0057). With none
+to take it, the link gives the slot back with `0x56` (ADR-0056).
+_Avoid_: pending grant (that is the serve side's dial-back), standing (the record's own facts)
+
 **Slot Ask**:
 A download worker's `OP_STARTUPLOADREQ`, sent at its probe answer when its **Advertised Parts** hold a part we lack — whether or not one is free — and the queue standing it earns its record (ADR-0026, ADR-0090). The part is chosen at the grant, never at the ask; a grant with no part to hand gives the slot back with `OP_CANCELTRANSFER` and retires the worker `NoFreePart` (ADR-0056). There is no slotless standby: no worker stays connected after giving a slot back.
 _Avoid_: slot request (the codec is `StartUploadReq`), upload request (that is the uploader's view), standby

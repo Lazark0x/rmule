@@ -18,7 +18,10 @@ workers from it; a worker's identification is an event, not a blocking call.
 
 - All usable sources go into the pool. The runner spawns workers from it to keep
   `peer_concurrency_per_download` in play — active, connecting and awaiting a
-  callback together — at start and after every retirement.
+  callback together — at start and after every retirement. One worker opens past it: the one
+  an uploader's grant opens for a source waiting in its queue, on the link the grant
+  came on (ADR-0057). A granted slot is a transfer, not a dial; refusing it for the cap
+  would cost the source's queue standing.
 - The pool grows while the download runs: server-UDP global sources (ADR-0051), Kad
   sources (ADR-0043), source exchange (ADR-0055), and Low-ID sources reached by
   callback (ADR-0039) all feed it.
@@ -44,8 +47,8 @@ workers from it; a worker's identification is an event, not a blocking call.
 
 - Any download with at least one live, granting peer among its sources completes,
   instead of depending on the first few entries being live.
-- `peer_concurrency_per_download` stays the one concurrency knob and bounds socket
-  use.
+- `peer_concurrency_per_download` stays the one concurrency knob and bounds the dials
+  a download makes; a grant an uploader makes by dialing back adds its one link.
 - In-process fakes return a worker at once and must emit `Connected` and then
   `PartsAdvertised` before a part is assigned, the same contract the runtime adapter keeps.
 

@@ -61,12 +61,17 @@ and nothing left to request from this source
    few upload slots while requesting nothing is the incivility aMule's
    `DS_NONEEDEDPARTS` cancel avoids. A worker that holds no granted slot sends no
    `0x56`.
-3. **At most one `0x56` per ask cycle** per connection, reset by the next ask and by
+3. **An unasked grant nobody stands for.** An `OP_ACCEPTUPLOADREQ` on a link no download
+   asked a slot on — an uploader's promotion by dial-back, or on a link it held (ADR-0057)
+   — that no download of the peer takes (ADR-0107, the Awaited Grants) is given back with
+   `0x56`, as aMule's downloader cancels an accept for a file it no longer wants
+   (`ClientTCPSocket.cpp:646-659`). The link stays up for whatever else holds it.
+4. **At most one `0x56` per ask cycle** per connection, reset by the next ask and by
    teardown.
 
 The codec is the empty `0xE3` frame in `rmule_peer`. The session's serve half raises the
-event; its download half owns the emit, and core decides when (both triggers end the
-worker). Core maps the
+event; its download half owns the emit, and core decides when (the first two triggers end
+the worker; the third is the link's, since no worker holds it). Core maps the
 event onto the serve state's release and promote batch.
 
 ## Consequences

@@ -111,6 +111,7 @@ dial rmule has in flight to one — and the downloads that ride it, one at a tim
 |---|---|---|---|
 | **Peer Links** | each **Ask Name** the link proves: its dial endpoint (the link's own address with the hello's listen port; for a link rmule dialed, also where it dialed), `(server, low_id)` when the hello names a Low ID and its server, and the hello's User Hash; a **Dial in Flight**, before its hello, under where it dials and the User Hash the dialing source's record knows | the link's driver — the accept road's or the dialing worker's router, and before the socket the dialing worker — by filing | a link rmule dials: from the dial, as a Dial in Flight, refiled under its hello's names at the hello; an accepted link: from the hello (an adopted callback: from the adoption); to the link's end or the dial's failure; a newer link filed under a name takes that name |
 | **Link Riders** | one Peer Link: one rider, then the waiters in arrival order | the link's driver | a rider from its turn to its worker's end; a waiter from its join to its turn, its run's stop, or the link's end |
+| **Awaited Grants** | each Ask Name of a source whose record waits in the RemoteQueued stage (ADR-0057): its dial endpoint and the User Hash its record knows; several downloads under one name in the order they filed | the download's run, held to its Source Book's RemoteQueued stage after every brain step | from the record entering the stage to its leaving it, or the run's end |
 
 Invariants every transition keeps:
 
@@ -156,6 +157,8 @@ Invariants every transition keeps:
 | two queued clients under one hash | the unidentified one leaves the queue, and an unidentified asker gets no answer (`UploadQueue.cpp:432-458`) | at a slot ask, a waiter under the asker's hash on another link that is not identified leaves the wait list; an asker not identified is answered nothing and not queued |
 | a Low-ID client's pending grant follows it to its next connection | `m_bAddNextConnect` (`UploadQueue.cpp:410-425`) | a pending dial-back grant (ADR-0057) moves with the waiter's place onto the link its hello came back on |
 | a Low ID in `OP_CHANGE_CLIENT_ID` is taken only from a known server | `ClientTCPSocket.cpp:773-787` | the session holds the claim; core takes it only for a server in its server list, with that server's port |
+| an uploader promotes a waiter by dialing it, or on the link it holds | `AddUpNextClient` (`UploadQueue.cpp:206-217`), `OP_ACCEPTUPLOADREQ` on connect (`BaseClient.cpp:1707-1716`) | a link nobody rides that reads an unasked grant hands it to the oldest **Awaited Grant** under its names; that download rides the link and asks, and is granted at once (`UploadQueue.cpp:486-493`) |
+| the downloader takes a grant for its queued file at once, and cancels one it does not want | `DS_ONQUEUE` → `DS_DOWNLOADING`, else `OP_CANCELTRANSFER` once (`ClientTCPSocket.cpp:635-659`) | the Awaited Grant's worker opens on the link past the per-download cap (ADR-0057); with none the link gives the grant back with `0x56` (ADR-0056) |
 
 The swap rule, settled: a waiter takes the link when the rider's worker ends, for whatever reason it
 ends — the peer lacks the file, has nothing the download needs, the slot budget ran out, the run
@@ -178,8 +181,16 @@ the file (`:592-616`, `UploadQueue.cpp:395-519`):
 The next rider asks the same way in all three and reads what comes back, a grant or a rank, as any
 worker does; nothing is asked twice and nothing is skipped.
 
+A grant nobody asked for on the link, settled: aMule grants a waiter it promotes on the link it
+holds or on one it dials to it, and the `0x55` names no file. A link a download rides leaves it to
+the rider, whose own ask is about to be granted. A link nobody rides offers it to the **Awaited
+Grants** under its names, oldest first: the download that takes it opens the record's worker on that link at
+once, whatever its worker cap (ADR-0057), and the worker rides the link as any rider does, asking
+for its file. With no Awaited Grant to take it, the link gives the slot back with `0x56` (ADR-0056).
+
 A download that rides or waits on a link is told so, and the operator sees it: a Run Log record
-(`download.link_shared`, the turn `waiting` or `riding`) and the Sources pane's mark on the slot.
+(`download.link_shared`, the turn `waiting` or `riding`) and the Sources pane's mark on the slot. A
+grant taken this way is a Run Log record of its own (`download.slot_offered`).
 
 A Low-ID peer's callback claims are unchanged (ADR-0039): one connection answers the oldest claim.
 A second download whose claim the connection did not take rides the link at its next candidate turn,
