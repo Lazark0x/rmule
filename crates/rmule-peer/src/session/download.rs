@@ -769,7 +769,12 @@ impl PeerSession {
     }
 
     pub(super) fn on_accept_upload(&mut self) {
+        // A grant no ask of ours on this link earned: whose it is, if
+        // anyone's, is core's to say (ADR-0057).
         let Some(active) = self.active_slot else {
+            self.slot_offered = true;
+            self.core
+                .push_event(PeerEvent::Requester(RequesterEvent::SlotOffered));
             return;
         };
         let flow = self
@@ -874,6 +879,7 @@ impl PeerSession {
             return;
         }
         flow.slot = SlotState::Queued;
+        self.slot_offered = false;
         self.write_packet(StartUploadReq { file_hash }.encode_packet());
         self.core
             .push_event(PeerEvent::Requester(RequesterEvent::SlotAsked {

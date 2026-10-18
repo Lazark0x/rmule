@@ -132,6 +132,12 @@ pub enum RequesterCommand {
         /// The file whose slot to cancel.
         file_hash: FileHash,
     },
+    /// Give back a slot the peer offered unasked (`SlotOffered`) that no
+    /// download takes: `OP_CANCELTRANSFER` once, as aMule's downloader
+    /// cancels an accept it does not want (`ClientTCPSocket.cpp:646-659`,
+    /// ADR-0056). A no-op once an ask of ours went out on the link, or with
+    /// no offer pending.
+    DeclineSlot,
 }
 
 impl PeerSession {
@@ -180,6 +186,11 @@ impl PeerSession {
             RequesterCommand::ReleaseSlot { file_hash } => {
                 if self.active_slot == Some(file_hash) {
                     self.release_slot(file_hash, SlotReleaseReason::DownloadComplete);
+                }
+            }
+            RequesterCommand::DeclineSlot => {
+                if std::mem::take(&mut self.slot_offered) && self.active_slot.is_none() {
+                    self.write_packet(CancelTransfer.encode_packet());
                 }
             }
             RequesterCommand::CancelTransfer { file_hash } => {

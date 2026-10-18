@@ -95,6 +95,10 @@ pub struct PeerSession {
     /// `FileFlow::compressed_blocks` — can move it.
     compressed_blocks_in_flight: CompressedBlocksInFlight,
     active_slot: Option<FileHash>,
+    /// The peer sent `OP_ACCEPTUPLOADREQ` with no slot asked on this link —
+    /// an uploader promoting us by dial-back, or on a link it held — and
+    /// nothing has answered it yet: neither an ask of ours nor a decline.
+    slot_offered: bool,
     /// `Some` once the Server Capability has granted this connection an
     /// upload slot for a file (set by `GrantSlot`, cleared when the peer
     /// cancels it). The serve-side mirror of `active_slot`; the
@@ -203,6 +207,7 @@ impl PeerSession {
             per_file: HashMap::new(),
             compressed_blocks_in_flight: CompressedBlocksInFlight::default(),
             active_slot: None,
+            slot_offered: false,
             served_slot: None,
             served_multipacket: HashMap::new(),
             served_aich_request: None,

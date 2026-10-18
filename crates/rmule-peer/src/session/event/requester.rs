@@ -71,6 +71,11 @@ pub enum RequesterEvent {
         /// The file whose transfer ended.
         file_hash: FileHash,
     },
+    /// The peer sent `OP_ACCEPTUPLOADREQ` on a link where no slot was asked:
+    /// an uploader promoting us by dial-back, or on a link it held, from its
+    /// queue (ADR-0057). It names no file; the link's owner hands it to the
+    /// download it is for, or gives it back with `DeclineSlot`.
+    SlotOffered,
     /// Peer granted an upload slot via `OP_ACCEPTUPLOADREQ`.
     SlotGranted {
         /// The file the slot is for.

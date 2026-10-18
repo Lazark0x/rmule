@@ -673,3 +673,54 @@ fn request_parts_with_mismatched_file_size_is_rejected() {
         })
     )));
 }
+
+/// An `OP_ACCEPTUPLOADREQ` on a link where no slot was asked — an uploader
+/// promoting us by dial-back (ADR-0057) — is reported, not dropped, and moves
+/// no flow; a `DeclineSlot` gives it back with one `OP_CANCELTRANSFER`, as
+/// aMule's downloader cancels an accept it does not want
+/// (`ClientTCPSocket.cpp:646-659`), and a second decline sends nothing.
+#[test]
+fn an_unasked_grant_is_reported_and_a_decline_gives_it_back_once() {
+    let mut session = identified_session();
+    session.handle_bytes(&acceptuploadreq());
+    let offered = drain(|| session.poll_output());
+    assert!(writes(&offered).is_empty(), "{offered:?}");
+    assert!(
+        events(&offered)
+            .iter()
+            .any(|e| matches!(e, PeerEvent::Requester(RequesterEvent::SlotOffered))),
+        "{offered:?}"
+    );
+
+    session.handle_command(PeerCommand::Requester(RequesterCommand::DeclineSlot));
+    let declined = drain(|| session.poll_output());
+    let opcodes: Vec<u8> = writes(&declined).iter().map(Packet::opcode).collect();
+    assert_eq!(opcodes, vec![0x56], "OP_CANCELTRANSFER");
+    session.handle_command(PeerCommand::Requester(RequesterCommand::DeclineSlot));
+    assert!(writes(&drain(|| session.poll_output())).is_empty());
+}
+
+/// An unasked grant a download takes is answered by its ask: the decline
+/// that might follow sends nothing, and the uploader's grant to the ask
+/// grants the asking file.
+#[test]
+fn an_unasked_grant_a_download_asks_on_is_not_declined() {
+    let h = file_hash(0xC7);
+    let mut session = identified_session();
+    session.handle_bytes(&acceptuploadreq());
+    let _ = drain(|| session.poll_output());
+    file_request_answered(&mut session, h, ED2K_PART_SIZE + 1);
+    session.handle_command(PeerCommand::Requester(RequesterCommand::AskSlot {
+        file_hash: h,
+    }));
+    let _ = drain(|| session.poll_output());
+
+    session.handle_command(PeerCommand::Requester(RequesterCommand::DeclineSlot));
+    assert!(writes(&drain(|| session.poll_output())).is_empty());
+    session.handle_bytes(&acceptuploadreq());
+    let granted = drain(|| session.poll_output());
+    assert!(events(&granted).iter().any(|e| matches!(
+        e,
+        PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash }) if *file_hash == h
+    )));
+}

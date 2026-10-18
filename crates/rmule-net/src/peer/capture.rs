@@ -347,6 +347,7 @@ fn requester_toml(event: &RequesterEvent) -> String {
             "type = \"Requeued\"\nfile_hash = \"{}\"\n",
             file_hash.to_hex_upper(),
         ),
+        RequesterEvent::SlotOffered => "type = \"SlotOffered\"\n".to_owned(),
         RequesterEvent::SlotGranted { file_hash } => format!(
             "type = \"SlotGranted\"\nfile_hash = \"{}\"\n",
             file_hash.to_hex_upper(),
