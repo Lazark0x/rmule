@@ -109,7 +109,7 @@ struct StandingVerdict<'a> {
 
 /// Every slot ask and UDP reask rmule sent the sharer in `run`'s tap, in
 /// capture order, with whether the sharer answered it.
-fn asks(run: &StandingRun<'_>) -> Result<Vec<Ask>> {
+pub(super) fn asks(run: &StandingRun<'_>) -> Result<Vec<Ask>> {
     let mut asks = Vec::new();
     let streams = tcp_streams(run.pcap)?;
     let answers: Vec<f64> = streams
@@ -189,7 +189,7 @@ fn file_hash(body: &[u8]) -> Option<[u8; 16]> {
 }
 
 /// aMule's aggressiveness after each of `asks`, replayed from its rule.
-fn aggressiveness(asks: &[Ask]) -> Vec<u32> {
+pub(super) fn aggressiveness(asks: &[Ask]) -> Vec<u32> {
     let mut score = 0_u32;
     let mut last: Option<f64> = None;
     asks.iter()

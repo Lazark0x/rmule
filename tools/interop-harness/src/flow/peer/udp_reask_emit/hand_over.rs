@@ -13,17 +13,28 @@
 //! kick at 10 MiB (`UploadQueue.cpp:580-581`) ends a slot that carries more,
 //! so the leg runs with files whose sum stays under it.
 //!
+//! rmule holds a link aMule 2 ranked it on until aMule's idle close, 40 s
+//! after the last byte (`ListenSocket.cpp:127-135`), and a promotion while it
+//! stands is written on that link. The slot-holder is stopped only after that
+//! close, so the grant comes by dial-back (`UploadQueue.cpp:206-210`), where
+//! aMule's own downloader answers `OP_ACCEPTUPLOADREQ` with block requests and
+//! no slot ask (`BaseClient.cpp:1692-1706`, `ClientTCPSocket.cpp:635-644`);
+//! every slot ask under 590 s after the last adds 3 to aMule's score, and 10
+//! bans (`UploadClient.cpp:795-825`).
+//!
 //! The claims: the waiter's `download.link_shared` turns read `waiting` then
 //! `riding` (rmule-only); on the granted link, after the holder's last part,
 //! the waiter's file request and `OP_STARTUPLOADREQ` drew the sharer's
 //! `OP_ACCEPTUPLOADREQ` (the "already downloading" branch, `UploadQueue.cpp:486-493`)
-//! and its parts followed; both copies are byte-equal.
+//! and its parts followed; both copies are byte-equal; on the sharer's
+//! dial-back rmule answered the grant with block requests and no slot ask;
+//! aMule's replayed score over every slot ask stays at 6 or under.
 
 use std::ffi::OsString;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -32,15 +43,20 @@ use crate::flow::bench::{AMULE_PEER_TCP_PORT, Bench, run_checked};
 use crate::flow::gate::wait_for_container_log;
 use crate::flow::identity::parse_ed2k_file_hash;
 use crate::flow::nat::claims::{Claim, Evidence, label};
-use crate::flow::pcap::{TcpCapture, records, tcp_capture};
+use crate::flow::pcap::{Ed2kFrame, TcpCapture, records, tcp_capture};
 use crate::flow::peer::one_link::verdict::{Switch, link_switch};
+use crate::flow::wire_filter::{OP_EDONKEYPROT, OP_EMULEPROT};
 use crate::rmule::RMULE_SERVE_TCP_PORT;
+
+use super::standing::{StandingRun, aggressiveness, asks};
 
 /// The verdict file this leg writes beside the others.
 pub(crate) const VERDICT: &str = "peer-udp-reask-emit-hand-over-verdict.toml";
-/// Seconds from rmule's first rank to the slot-holder's stop: both downloads
-/// have met the sharer and filed under one standing by then.
-const SETTLE_SECS: u64 = 20;
+/// Seconds from rmule's first rank before the slot-holder may stop: past
+/// aMule 2's 40 s idle close of the link rmule holds (`ListenSocket.cpp:127-135`),
+/// with the 41–44 s the bench has measured and a margin, so the promotion
+/// comes by dial-back rather than on the held link.
+const PAST_IDLE_CLOSE_SECS: u64 = 50;
 /// Seconds `docker stop` waits before it kills the slot-holder.
 const HOLDER_STOP_GRACE_SECS: u64 = 10;
 
@@ -50,6 +66,22 @@ pub(crate) const WAITED: &str = "the-waiter-waited-on-the-holders-link-then-rode
 pub(crate) const GRANTED_AT_ONCE: &str = "the-sharer-granted-the-waiter-at-once-on-the-link";
 /// The copies.
 pub(crate) const BYTE_EQUAL: &str = "both-downloads-completed-byte-equal";
+/// The grant by dial-back, taken without a slot ask.
+pub(crate) const TAKEN_UNASKED: &str = "the-dial-back-grant-drew-block-requests-and-no-slot-ask";
+/// aMule's replayed score over every slot ask.
+pub(crate) const SCORE: &str = "the-replayed-score-stays-at-six-or-under";
+/// The score [`SCORE`] allows: the two downloads' first asks before either
+/// stood (3) and the waiter's ask at the switch (3 more); one ask more on
+/// the dial-back reaches 9.
+const SCORE_CEILING: u32 = 6;
+/// `OP_STARTUPLOADREQ`: the slot ask, its body the file hash.
+const OP_STARTUPLOADREQ: u8 = 0x54;
+/// `OP_ACCEPTUPLOADREQ`: the grant.
+const OP_ACCEPTUPLOADREQ: u8 = 0x55;
+/// The block requests: `OP_REQUESTPARTS` (eD2k) and `OP_REQUESTPARTS_I64`
+/// (eMule).
+const OP_REQUESTPARTS: u8 = 0x47;
+const OP_REQUESTPARTS_I64: u8 = 0xA3;
 
 /// What [`drive`] acts on.
 pub(crate) struct Drive<'a> {
@@ -73,7 +105,23 @@ pub(crate) struct Drive<'a> {
 /// If the slot-holder cannot be stopped, no grant reaches rmule in the window
 /// or the sharer refuses the new cap.
 pub(crate) fn drive(bench: &Bench, at: &Drive<'_>) -> Result<()> {
-    std::thread::sleep(Duration::from_secs(SETTLE_SECS));
+    let ranked = Instant::now();
+    // The held link's close: rmule files the source queued at its rank.
+    let closed = wait_for_container_log(
+        &bench.docker,
+        at.rmule,
+        "download.source_remote_queued",
+        at.window,
+    )
+    .is_ok();
+    let floor = Duration::from_secs(PAST_IDLE_CLOSE_SECS);
+    if let Some(left) = floor.checked_sub(ranked.elapsed()) {
+        std::thread::sleep(left);
+    }
+    println!(
+        "peer_udp_reask_emit hand_over held_link_closed={closed} secs_after_rank={}",
+        ranked.elapsed().as_secs()
+    );
     run_checked(
         bench
             .docker
@@ -135,6 +183,66 @@ struct Rows {
     parts_after_switch: usize,
     /// Each copy's length, `-1` when never written.
     copy_bytes: [i64; 2],
+    /// On the sharer's dial-back that granted: rmule's slot asks before its
+    /// first block request there, and that request's delay after the grant
+    /// (`-1` without a dial-back grant or a block request).
+    dial_back_slot_asks: i64,
+    dial_back_blocks_ms: f64,
+    /// aMule's score after each of rmule's slot asks, replayed.
+    aggressiveness: Vec<u32>,
+}
+
+/// What rmule sent on the sharer's first dial-back that carried a grant.
+#[derive(Debug, PartialEq)]
+struct DialBackTake {
+    /// `OP_STARTUPLOADREQ` frames after the grant and before rmule's first
+    /// block request on the link (all of them when it asked no block).
+    slot_asks: usize,
+    /// Milliseconds from the grant to that block request.
+    blocks_after_ms: Option<f64>,
+}
+
+/// rmule's answer to the first grant the sharer wrote on a link it dialed to
+/// rmule's listener; `None` when no dial-back carried one.
+fn dial_back_take(capture: &TcpCapture, rmule: Ipv4Addr, sharer: Ipv4Addr) -> Option<DialBackTake> {
+    let listener = SocketAddr::from((rmule, RMULE_SERVE_TCP_PORT));
+    capture
+        .streams
+        .iter()
+        .filter(|stream| stream.source.ip() == IpAddr::V4(sharer) && stream.destination == listener)
+        .find_map(|from_sharer| {
+            let granted = from_sharer
+                .ed2k_frames()
+                .into_iter()
+                .find(|frame| {
+                    (frame.protocol, frame.opcode) == (OP_EDONKEYPROT, OP_ACCEPTUPLOADREQ)
+                })?
+                .at;
+            let back = capture.streams.iter().find(|stream| {
+                stream.source == from_sharer.destination && stream.destination == from_sharer.source
+            })?;
+            Some(answer_to_grant(&back.ed2k_frames(), granted))
+        })
+}
+
+/// What rmule `sent` on a link after the grant at `granted`.
+fn answer_to_grant(sent: &[Ed2kFrame], granted: f64) -> DialBackTake {
+    let after: Vec<&Ed2kFrame> = sent.iter().filter(|frame| frame.at >= granted).collect();
+    let blocks = after
+        .iter()
+        .find(|frame| {
+            (frame.protocol, frame.opcode) == (OP_EDONKEYPROT, OP_REQUESTPARTS)
+                || (frame.protocol, frame.opcode) == (OP_EMULEPROT, OP_REQUESTPARTS_I64)
+        })
+        .map(|frame| frame.at);
+    DialBackTake {
+        slot_asks: after
+            .iter()
+            .filter(|frame| blocks.is_none_or(|first| frame.at < first))
+            .filter(|frame| (frame.protocol, frame.opcode) == (OP_EDONKEYPROT, OP_STARTUPLOADREQ))
+            .count(),
+        blocks_after_ms: blocks.map(|first| (first - granted) * 1000.0),
+    }
 }
 
 /// The verdict file.
@@ -244,7 +352,7 @@ pub(crate) fn write(root: &Path, rmule: Ipv4Addr, sharer: Ipv4Addr) -> Result<&'
             .filter(|open| open.source.ip() == IpAddr::V4(from) && open.destination == to)
             .count()
     };
-    let claims = vec![
+    let mut claims = vec![
         Claim::about(
             WAITED,
             turns.is_some_and(|(_, rode)| rode),
@@ -286,6 +394,37 @@ pub(crate) fn write(root: &Path, rmule: Ipv4Addr, sharer: Ipv4Addr) -> Result<&'
             ),
         ),
     ];
+    let take = dial_back_take(&capture, rmule, sharer);
+    let scores = aggressiveness(&asks(&StandingRun {
+        pcap: &root.join("emit-reask-capture").join("emit-reask.pcap"),
+        rmule,
+        sharer,
+    })?);
+    let peak = scores.iter().copied().max().unwrap_or(0);
+    claims.push(match &take {
+        Some(take) => Claim::about(
+            TAKEN_UNASKED,
+            take.slot_asks == 0 && take.blocks_after_ms.is_some(),
+            Evidence::RmuleOnly,
+            format!(
+                "after the sharer's OP_ACCEPTUPLOADREQ on its dial-back rmule sent {} \
+                 OP_STARTUPLOADREQ before its first block request, {} ms after the grant",
+                take.slot_asks,
+                take.blocks_after_ms
+                    .map_or_else(|| "never".to_owned(), |ms| format!("{ms:.1}"))
+            ),
+        ),
+        None => Claim::blocked(
+            TAKEN_UNASKED,
+            "no link the sharer dialed to rmule's listener carried a grant",
+        ),
+    });
+    claims.push(Claim::about(
+        SCORE,
+        !scores.is_empty() && peak <= SCORE_CEILING,
+        Evidence::RmuleOnly,
+        format!("aMule's score after each slot ask, replayed: {scores:?}; peak {peak}"),
+    ));
     let rows = Rows {
         waiter: turns.map_or(0, |(id, _)| id),
         rmule_dials: dials(rmule, SocketAddr::from((sharer, AMULE_PEER_TCP_PORT))),
@@ -298,6 +437,14 @@ pub(crate) fn write(root: &Path, rmule: Ipv4Addr, sharer: Ipv4Addr) -> Result<&'
             .unwrap_or(-1.0),
         parts_after_switch: switch.as_ref().map_or(0, |switch| switch.parts_after),
         copy_bytes: [copies[0].1, copies[1].1],
+        dial_back_slot_asks: take
+            .as_ref()
+            .map_or(-1, |take| i64::try_from(take.slot_asks).unwrap_or(i64::MAX)),
+        dial_back_blocks_ms: take
+            .as_ref()
+            .and_then(|take| take.blocks_after_ms)
+            .unwrap_or(-1.0),
+        aggressiveness: scores,
     };
     let (verdict, detail) = label(&claims);
     let text = toml::to_string_pretty(&Verdict {
@@ -317,7 +464,58 @@ pub(crate) fn write(root: &Path, rmule: Ipv4Addr, sharer: Ipv4Addr) -> Result<&'
 
 #[cfg(test)]
 mod tests {
-    use super::waiter_turns;
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    use super::{
+        DialBackTake, Ed2kFrame, OP_EDONKEYPROT, OP_REQUESTPARTS, OP_STARTUPLOADREQ,
+        answer_to_grant, waiter_turns,
+    };
+
+    fn sent(at: f64, opcode: u8) -> Ed2kFrame {
+        Ed2kFrame {
+            at,
+            source: SocketAddr::from((Ipv4Addr::new(172, 18, 0, 6), 4663)),
+            destination: SocketAddr::from((Ipv4Addr::new(172, 18, 0, 3), 40_000)),
+            protocol: OP_EDONKEYPROT,
+            opcode,
+            bytes: vec![OP_EDONKEYPROT, 1, 0, 0, 0, opcode],
+        }
+    }
+
+    /// The BW-R answer (`0x54` 215 ms after the dial-back's grant) is a slot
+    /// ask; the waiter's own ask at the switch, after the holder's blocks,
+    /// is not this grant's answer.
+    #[test]
+    fn a_slot_ask_before_the_first_block_request_answers_the_grant() {
+        let hello = sent(9.9, 0x4C);
+        let asked = answer_to_grant(
+            &[
+                hello.clone(),
+                sent(10.25, OP_STARTUPLOADREQ),
+                sent(10.5, OP_REQUESTPARTS),
+            ],
+            10.0,
+        );
+        assert_eq!(asked.slot_asks, 1);
+        assert_eq!(asked.blocks_after_ms, Some(500.0));
+        let taken = answer_to_grant(
+            &[
+                hello,
+                sent(10.05, OP_REQUESTPARTS),
+                sent(40.0, OP_STARTUPLOADREQ),
+            ],
+            10.0,
+        );
+        assert_eq!(taken.slot_asks, 0);
+        assert!(taken.blocks_after_ms.is_some());
+        assert_eq!(
+            answer_to_grant(&[sent(10.2, OP_STARTUPLOADREQ)], 10.0),
+            DialBackTake {
+                slot_asks: 1,
+                blocks_after_ms: None,
+            }
+        );
+    }
 
     #[test]
     fn the_waiter_is_the_last_download_to_wait_and_rides_only_after_it() {
