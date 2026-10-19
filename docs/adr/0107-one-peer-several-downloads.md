@@ -248,8 +248,8 @@ Which file the standing names, settled: the holder's — the file of the downloa
 peer read last, which is the file aMule's entry holds and so the one file a ping is answered for. A
 slot ask, first or a TCP full ask's, earns the standing for its download, and the downloads it
 passes over wait. aMule ranks A4AF files by download priority when it swaps; rmule's downloads
-carry none, so the next waiter is the oldest, a waiter that may need a part before one that needs
-none.
+carry none, so the next holder is the download added first, one that may need a part before one
+that needs none.
 
 How a grant hands over, settled: a grant the holder takes — unasked on a link nobody rides, or on
 its own ask — transfers the holder's file. The holder's run then calls every Awaited Grant filed

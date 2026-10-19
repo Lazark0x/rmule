@@ -244,6 +244,7 @@ impl SourceBook {
             self.aliases.bind_key(candidate.key(), keep);
         }
         keeper.standing = keeper.standing.or(folded.standing);
+        keeper.last_ask = keeper.last_ask.max(folded.last_ask);
         // The folded record's parts left the count with it; the keeper takes
         // them only when it advertised none.
         if keeper.advertised.is_none()

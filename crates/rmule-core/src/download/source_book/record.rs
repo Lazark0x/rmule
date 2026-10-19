@@ -5,6 +5,8 @@
 //! in its Worker stage, so what the hello stated ends with that worker
 //! (ADR-0049).
 
+use std::time::Instant;
+
 use rmule_peer::{PartBitmap, PeerIdentity};
 use rmule_primitives::{Ipv4Endpoint, PeerCrypt, PeerEndpoint};
 
@@ -151,6 +153,11 @@ pub(super) struct Record {
     pub(super) candidate: Option<LowIdCandidate>,
     /// The queue standing a worker of it earned (ADR-0057).
     pub(super) standing: Option<Standing>,
+    /// When a slot ask of its worker last earned the standing: the claim its
+    /// download holds on the peer's **Queue Standing** (ADR-0107). It
+    /// outlives the standing, so a holder out on its TCP full ask still
+    /// outranks the downloads waiting on it.
+    pub(super) last_ask: Option<Instant>,
     /// The endpoint it was restored at from a **Source Seed** (ADR-0109).
     pub(super) seed: Option<PeerEndpoint>,
     /// What the download's source asks stamped on this peer (ADR-0108).
@@ -169,6 +176,7 @@ impl Record {
             endpoints: Vec::new(),
             candidate: None,
             standing: None,
+            last_ask: None,
             seed: None,
             asks: AskFacts::default(),
             advertised: None,

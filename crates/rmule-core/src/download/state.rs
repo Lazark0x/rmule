@@ -58,6 +58,7 @@ use crate::delivery_rate::DeliveryRate;
 use crate::diagnostics::{PartState, WorkerPhase, WorkerSlot};
 use crate::dialable::DialPosition;
 use crate::download::connection_budget::BudgetSeat;
+use crate::download::queue_standings::StandingSeat;
 use crate::download::source_book::SourceBook;
 use crate::download::source_seeds::SeedLedger;
 use crate::hashing::ResolvedHashSet;
@@ -245,6 +246,14 @@ pub(crate) enum Decision {
         /// The source's client-UDP endpoint its answer comes from: the
         /// ping's destination, or past a buddy, the source's own.
         answered_from: PeerEndpoint,
+    },
+    /// The worker at `peer` holds a granted slot: call every other
+    /// download's record waiting on the peer's **Queue Standing** to this
+    /// link, where each waits as a Link Rider and the swap rule hands the link
+    /// on (ADR-0107).
+    CallStandingWaiters {
+        /// The granted worker's endpoint.
+        peer: PeerEndpoint,
     },
     /// Every part is verified — assemble and finalize the file.
     Finalize,
@@ -468,6 +477,9 @@ pub(crate) struct DownloadState {
     budget: BudgetSeat,
     /// When a fill the budget refused fills again: the Dial Window's turn.
     budget_wake: Option<Instant>,
+    /// This run's seat in the node's **Queue Standings** (ADR-0107): which of
+    /// the downloads queued at a peer re-asks it, and the peer's clock.
+    standings: StandingSeat,
     /// The diagnostics slot every callback in flight holds (ADR-0039 /
     /// ADR-0051) — connected-server (`CallbackKey.server` = `None`) and
     /// per-server global alike — until the inbound peer is adopted
@@ -570,6 +582,7 @@ impl DownloadState {
             free_slots: BTreeSet::new(),
             budget,
             budget_wake: None,
+            standings: StandingSeat::alone(download_id),
             callback_slots: HashMap::new(),
             callback_capability: posture.callback_capability,
             dial: posture.dial,
@@ -581,6 +594,14 @@ impl DownloadState {
             our_udp_enabled: posture.client_udp,
             our_udp_version,
         }
+    }
+
+    /// Seat the run in the node's shared **Queue Standings** (ADR-0107) rather
+    /// than in a registry of its own.
+    #[must_use]
+    pub(crate) fn with_standings(mut self, seat: StandingSeat) -> Self {
+        self.standings = seat;
+        self
     }
 
     /// Spawn the initial fleet of workers from the candidate pool, as the

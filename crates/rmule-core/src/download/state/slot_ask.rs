@@ -207,13 +207,18 @@ impl DownloadState {
     }
 
     /// `peer`'s uploader granted it a slot: hand it its part, or give the slot
-    /// back (ADR-0026, ADR-0056).
+    /// back (ADR-0026, ADR-0056). A slot the worker keeps is a grant on the
+    /// peer's **Queue Standing**: the downloads waiting on it are called to
+    /// this link, to take it by the swap rule (ADR-0107).
     pub(super) fn granted(&mut self, now: Instant, peer: PeerEndpoint, out: &mut Vec<Decision>) {
         if !self.worker_slots.contains_key(&peer) {
             return;
         }
         self.slot_asks.by_worker.insert(peer, SlotAsk::Granted);
         self.assign(now, peer, out);
+        if self.slot_asks.granted(peer) {
+            out.push(Decision::CallStandingWaiters { peer });
+        }
     }
 
     /// Retire `peer` for `reason`, a live source's: it was ranked without a

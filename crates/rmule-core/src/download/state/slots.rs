@@ -14,6 +14,7 @@ use crate::assembly::PartAssembly;
 use crate::callback::CallbackSilence;
 use crate::delivery_rate::DeliveryRate;
 use crate::diagnostics::{WorkerPhase, WorkerSlot};
+use crate::download::queue_standings::Role;
 use crate::download::source_book::{Deadline, DialEnd, NextDial, Release, WorkerEnd};
 use crate::scheduler::Assignment;
 use crate::service::{DownloadEvent, PartReleaseReason, PeerRetirementReason};
@@ -28,7 +29,9 @@ impl DownloadState {
     /// stage; the brain claims a diagnostics slot for it and has the runner
     /// enact it. A refused fill takes nothing from its lane and wakes at the
     /// Dial Window's turn. The same path serves the initial fill, the
-    /// on-retirement backfill (ADR-0030) and a TCP full ask.
+    /// on-retirement backfill (ADR-0030) and a TCP full ask. A record whose
+    /// peer stands in another download's **Queue Standing** is not dialed: it
+    /// waits on that standing (ADR-0107).
     pub(super) fn fill(&mut self, now: Instant, out: &mut Vec<Decision>) {
         while self
             .sources
@@ -42,6 +45,12 @@ impl DownloadState {
                 self.budget.give_back(now);
                 break;
             };
+            if let NextDial::Worker(peer) = dial
+                && self.waits_on_standing(now, peer, out)
+            {
+                self.budget.give_back(now);
+                continue;
+            }
             let slot = self.claim_slot();
             match dial {
                 // A High-ID candidate, or a Low-ID candidate's IPv6 half
@@ -77,6 +86,40 @@ impl DownloadState {
     /// (ADR-0116 invariant 5). The runner calls it after every drain.
     pub(crate) fn hold_connections(&self) {
         self.budget.hold(self.sources.slots_in_use());
+    }
+
+    /// Republish the places this run's records hold in the node's **Queue
+    /// Standings** (ADR-0107): every record holding a standing. The runner
+    /// calls it after every drain.
+    pub(crate) fn hold_standings(&self) {
+        self.standings.publish(self.sources.places());
+    }
+
+    /// The fill took the record at `peer` to dial it, but another download
+    /// holds that peer's **Queue Standing**: the record waits on it, asking
+    /// nothing and opening nothing, as aMule's A4AF file waits on its client
+    /// (`AddRequestForAnotherFile`, stock 2.3.3 `DownloadClient.cpp:496-507`;
+    /// ADR-0107 invariant 13). Whether it waits.
+    fn waits_on_standing(
+        &mut self,
+        now: Instant,
+        peer: PeerEndpoint,
+        out: &mut Vec<Decision>,
+    ) -> bool {
+        let Some(place) = self.sources.dial_place(peer) else {
+            return false;
+        };
+        let Role::Waits { asked_at } = self.standings.role(&place) else {
+            return false;
+        };
+        if !self.sources.wait_on_standing(peer, asked_at, now) {
+            return false;
+        }
+        out.push(Decision::Emit(DownloadEvent::SourceWaitsOnStanding {
+            download_id: self.download_id,
+            peer,
+        }));
+        true
     }
 
     /// Put a worker on `peer` in `slot`: register it as connecting and have

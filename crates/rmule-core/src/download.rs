@@ -5,6 +5,7 @@
 
 pub(crate) mod connection_budget;
 pub(crate) mod persist;
+pub(crate) mod queue_standings;
 mod reask_routes;
 mod runner;
 mod runtime;

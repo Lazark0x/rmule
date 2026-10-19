@@ -393,7 +393,7 @@ async fn an_unasked_grant_on_an_accepted_link_reaches_the_download_awaiting_it()
     let (grants, mut granted) = tokio::sync::mpsc::channel(1);
     let _awaiting = linked
         .links
-        .await_grant(at, vec![LinkName::Endpoint(at)], grants);
+        .await_grant(at, vec![LinkName::Endpoint(at)], true, grants);
     grant_unasked(&mut linked.asker).await;
 
     assert_eq!(
@@ -401,7 +401,7 @@ async fn an_unasked_grant_on_an_accepted_link_reaches_the_download_awaiting_it()
             .await
             .ok()
             .flatten(),
-        Some(at),
+        Some(crate::adapters::LinkOffer::Grant(at)),
         "the grant reaches the download waiting at the asker"
     );
     assert!(

@@ -34,7 +34,7 @@ impl DownloadState {
     pub(super) fn reask_sweep(&mut self, now: Instant, out: &mut Vec<Decision>) {
         let gates = self.reask_gates();
         let mut asked_by_tcp = false;
-        for reask in self.sources.sweep(now, gates) {
+        for reask in self.sources.sweep(now, gates, &self.standings) {
             match reask {
                 Reask::Ping {
                     peer,
@@ -106,6 +106,28 @@ impl DownloadState {
         }));
         self.spawn_worker(now, peer, slot, &mut out);
         out
+    }
+
+    /// Another download holding the **Queue Standing** of the peer at `peer`
+    /// was granted a slot, and calls this run's record waiting there to its
+    /// link (ADR-0107): the record opens its worker at once, unadmitted by the
+    /// **Connection Budget** as a grant is (ADR-0116), and the worker waits on
+    /// the link as a Link Rider until the swap rule hands it over. Nothing
+    /// waits at an endpoint with no record in the RemoteQueued stage.
+    pub(crate) fn on_link_called(&mut self, now: Instant, peer: PeerEndpoint) -> Vec<Decision> {
+        let mut out = Vec::new();
+        if !self.sources.take_grant(peer) {
+            return out;
+        }
+        let slot = self.claim_slot();
+        self.spawn_worker(now, peer, slot, &mut out);
+        out
+    }
+
+    /// Whether this run's record waiting at `at` holds its peer's **Queue
+    /// Standing** rather than waiting on another download's (ADR-0107).
+    pub(crate) fn holds_standing(&self, at: PeerEndpoint) -> bool {
+        self.sources.holds_standing(at)
     }
 
     /// The ping to `peer` could not leave at `now`: another download's ping

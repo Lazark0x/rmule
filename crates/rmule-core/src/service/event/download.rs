@@ -250,6 +250,16 @@ pub enum DownloadEvent {
         /// the reask cycle refreshes it.
         rank: Option<u16>,
     },
+    /// A source this download would have dialed already queues another of our
+    /// downloads: it waits on that download's place in the peer's queue — the
+    /// peer's **Queue Standing** (ADR-0107) — and asks the peer nothing until
+    /// the standing passes to it or a grant calls it to the holder's link.
+    SourceWaitsOnStanding {
+        /// The download whose source waits.
+        download_id: DownloadId,
+        /// The source it waits at.
+        peer: rmule_primitives::PeerEndpoint,
+    },
     /// A pooled source answered our UDP reask ping with `OP_REASKACK` (`0x91`):
     /// the fresh `rank` was recorded and its standing refreshed (ADR-0057).
     SourceReaskAcked {

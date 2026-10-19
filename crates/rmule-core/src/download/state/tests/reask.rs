@@ -23,6 +23,7 @@ mod no_needed_parts;
 mod on_queue;
 mod purge;
 mod redial;
+mod standing;
 
 /// The port every test source advertises for client UDP.
 const UDP_PORT: u16 = 5000;

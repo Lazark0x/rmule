@@ -657,7 +657,10 @@ mod queued_roster {
             runner.rt.peer_links.offer_grant(&names),
             "the run awaits the queued source's grant"
         );
-        assert_eq!(ctx.awaited_grants.next().await, Some(queued));
+        assert_eq!(
+            ctx.awaited_grants.next().await,
+            Some(crate::adapters::LinkOffer::Grant(queued))
+        );
 
         let mut opened: VecDeque<Decision> = ctx.state.on_slot_offered(now, queued).into();
         assert!(

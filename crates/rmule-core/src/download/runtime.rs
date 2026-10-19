@@ -28,6 +28,10 @@ pub(crate) struct SharedRuntime<S, P> {
     /// The node's **Connection Budget** (ADR-0116), shared by every run: each
     /// run's brain holds a seat in it and asks it before opening any road.
     pub(crate) connection_budget: crate::download::connection_budget::SharedConnectionBudget,
+    /// The node's **Queue Standings** (ADR-0107), shared by every run: each
+    /// run's brain holds a seat in it, so a peer queued for several downloads
+    /// is re-asked by one.
+    pub(crate) queue_standings: crate::download::queue_standings::SharedQueueStandings,
     /// The node's **Held Places** (ADR-0116): each run publishes the peers it
     /// stands queued at, and the serve activity ranks its queue by them.
     pub(crate) held_places: crate::held_places::SharedHeldPlaces,

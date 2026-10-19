@@ -11,7 +11,7 @@ use rmule_primitives::{Ed2kFileLink, SourceSighting, UserHash};
 use tokio::sync::mpsc;
 
 use crate::adapters::{
-    CallbackKey, PeerTransferService, PeerWorker, PeerWorkerEvent, SourceLookupService,
+    CallbackKey, LinkOffer, PeerTransferService, PeerWorker, PeerWorkerEvent, SourceLookupService,
 };
 use crate::client_udp::ClientUdpDatagram;
 use crate::download::state::{
@@ -274,7 +274,11 @@ where
             std::sync::Arc::clone(&runner.rt.connection_budget),
             download_id,
         ),
-    );
+    )
+    .with_standings(crate::download::queue_standings::StandingSeat::new(
+        std::sync::Arc::clone(&runner.rt.queue_standings),
+        download_id,
+    ));
     // The snapshot is sighted in the order a pool is built; nothing fills a
     // slot until `start`.
     let found = [
@@ -482,10 +486,16 @@ where
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
             }
-            Some(peer) = ctx.awaited_grants.next() => {
+            Some(offer) = ctx.awaited_grants.next() => {
                 // An uploader granted a source waiting in its queue a slot on
                 // a link of its own (ADR-0057): the record's worker rides it.
-                let mut q: VecDeque<Decision> = ctx.state.on_slot_offered(now(), peer).into();
+                // Or the download holding that peer's Queue Standing was
+                // granted, and the record's worker joins its link (ADR-0107).
+                let decisions = match offer {
+                    LinkOffer::Grant(peer) => ctx.state.on_slot_offered(now(), peer),
+                    LinkOffer::Call(peer) => ctx.state.on_link_called(now(), peer),
+                };
+                let mut q: VecDeque<Decision> = decisions.into();
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
             }

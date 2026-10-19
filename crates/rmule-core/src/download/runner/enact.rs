@@ -261,6 +261,19 @@ where
                     let _ = tx.send(ping).await;
                 }
             }
+            Decision::CallStandingWaiters { peer } => {
+                // A grant on the peer's Queue Standing: every other download
+                // waiting on it joins this link (ADR-0107), found under the
+                // names the granted worker's hello proved.
+                let mut names = vec![crate::adapters::LinkName::Endpoint(peer)];
+                names.extend(
+                    ctx.state
+                        .peer_crypt(peer)
+                        .user_hash()
+                        .map(crate::adapters::LinkName::User),
+                );
+                ctx.runner.rt.peer_links.call_waiters(&names);
+            }
             Decision::Finalize => {
                 // Normal completion: release each held slot silently, no
                 // `OP_CANCELTRANSFER` (ADR-0056). The fleet loop sees every
@@ -522,6 +535,7 @@ where
     // diagnostics row is removed on teardown regardless).
     refresh_parts(&ctx.runner.rt.diagnostics, ctx.download_id, &ctx.state);
     ctx.state.hold_connections();
+    ctx.state.hold_standings();
     ctx.held_places.hold(ctx.state.held_places());
     hold_queued_relations(ctx);
     ctx.awaited_grants.hold(&ctx.state);

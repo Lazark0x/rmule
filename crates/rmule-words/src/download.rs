@@ -242,6 +242,10 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
             "peer {} keeps us queued, at a rank not yet known",
             address(*peer)
         ),
+        D::SourceWaitsOnStanding { peer, .. } => format!(
+            "peer {} already queues us for another download; this one waits on that place and asks nothing",
+            address(*peer)
+        ),
         D::SourceReaskAcked { peer, rank, .. } => {
             format!("peer {} answered the reask: rank {rank}", address(*peer))
         }

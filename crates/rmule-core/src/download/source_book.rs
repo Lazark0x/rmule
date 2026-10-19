@@ -19,6 +19,7 @@ mod frequency;
 mod gate;
 mod grant;
 mod lanes;
+mod peer_standing;
 mod purge;
 mod record;
 mod road;
@@ -36,6 +37,7 @@ use rmule_peer::PeerIdentity;
 use rmule_primitives::{Ipv4Endpoint, PeerCrypt, PeerEndpoint, UserHash};
 
 use self::aliases::Aliases;
+pub(crate) use self::asks::AskName;
 use self::blocks::Blocks;
 use self::frequency::PartFrequency;
 pub(crate) use self::gate::Gate;
@@ -291,13 +293,18 @@ impl SourceBook {
     }
 
     /// The crypt side `endpoint` stated — its stance and User Hash — by the
-    /// ADR-0049 precedence: the live worker's own hello, else what a record
-    /// stated, else, for a dial at a Low-ID candidate's half, the candidate's,
-    /// else nothing stated.
+    /// ADR-0049 precedence: the live worker's own hello, else the hello the
+    /// standing it waits on kept, else what a record stated, else, for a dial
+    /// at a Low-ID candidate's half, the candidate's, else nothing stated.
     pub(crate) fn peer_crypt(&self, endpoint: PeerEndpoint) -> PeerCrypt {
         let record = self.record_at(endpoint);
         self.identity(endpoint)
             .map(stated_crypt)
+            .or_else(|| {
+                record
+                    .filter(|record| record.stage == Stage::RemoteQueued(endpoint))
+                    .and_then(|record| record.standing?.stated_crypt())
+            })
             .or_else(|| self.run.record_crypt(endpoint))
             .or_else(|| {
                 let record = record?;

@@ -14,6 +14,7 @@ use rmule_primitives::{
 
 use super::*;
 use crate::dialable::DialPosition;
+use crate::download::queue_standings::StandingSeat;
 use crate::download::source_book::FILE_REASK_TIME;
 use crate::download::state::CallbackCapability;
 use crate::hello_facts::HelloFacts;
@@ -140,7 +141,7 @@ fn a_source_has_one_owner_from_its_worker_to_its_standing_and_back() {
         reachable: false,
     };
     assert_eq!(
-        book.sweep(queued_at + FILE_REASK_TIME, gates),
+        book.sweep(queued_at + FILE_REASK_TIME, gates, &alone()),
         vec![Reask::FullAsk { peer: high(1) }]
     );
     assert_eq!(dial(&mut book), Some(NextDial::Worker(high(1))));
@@ -235,7 +236,7 @@ fn a_queued_source_is_dialed_at_the_ipv6_its_session_revised() {
     assert_eq!(book.rank(moved), Some(3));
     assert!(!book.holds(old), "the standing moved off the old address");
     assert_eq!(
-        book.sweep(at + FILE_REASK_TIME, gates),
+        book.sweep(at + FILE_REASK_TIME, gates, &alone()),
         vec![Reask::FullAsk { peer: moved }]
     );
 
@@ -244,7 +245,7 @@ fn a_queued_source_is_dialed_at_the_ipv6_its_session_revised() {
     assert_eq!(work(&mut book), high(1));
     let at = queue(&mut book, high(1));
     assert_eq!(
-        book.sweep(at + FILE_REASK_TIME, gates),
+        book.sweep(at + FILE_REASK_TIME, gates, &alone()),
         vec![Reask::FullAsk { peer: high(1) }]
     );
 }
@@ -495,4 +496,10 @@ fn an_ipv6_only_source_needs_an_ipv6_of_our_own() {
         sight_through(&mut book, ipv6_only, &filter, ours()),
         Sighted::Pooled(Some(PeerEndpoint::V6(v6(1))))
     );
+}
+
+/// A seat in a registry no other download shares: the book's own standing
+/// is always the holder.
+fn alone() -> StandingSeat {
+    StandingSeat::alone(crate::service::DownloadId::from_u64(0))
 }

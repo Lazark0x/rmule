@@ -196,12 +196,16 @@ impl SourceBook {
             .collect()
     }
 
-    /// The User Hashes `record` knows: its live worker's identity's, its
-    /// candidate's, and the one a record stated with its crypt at any of its
-    /// endpoints.
+    /// The User Hashes `record` knows: its live worker's identity's, the one
+    /// the hello its standing kept named (ADR-0049), its candidate's, and the
+    /// one a record stated with its crypt at any of its endpoints.
     pub(super) fn user_hashes(&self, record: &Record) -> Vec<UserHash> {
         let mut hashes = Vec::new();
         let identified = record.stage.identity().map(PeerIdentity::user_hash);
+        let queued_under = record
+            .standing
+            .and_then(|standing| standing.crypt())
+            .map(|crypt| crypt.user_hash);
         let stated = record.endpoints.iter().map(|&endpoint| {
             self.run
                 .record_crypt(endpoint)
@@ -212,6 +216,7 @@ impl SourceBook {
             .as_ref()
             .and_then(|candidate| candidate.user_hash);
         let named = std::iter::once(identified)
+            .chain(std::iter::once(queued_under))
             .chain(stated)
             .chain(std::iter::once(candidate));
         for hash in named.flatten() {

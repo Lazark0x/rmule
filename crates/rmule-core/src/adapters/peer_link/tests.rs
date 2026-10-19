@@ -224,3 +224,30 @@ fn a_changed_low_id_stands_only_on_a_server_the_list_holds() {
         })
     );
 }
+
+/// An unasked grant goes to the download holding the peer's Queue Standing
+/// though another filed first, found by the User Hash from wherever the peer
+/// came back; a grant on the standing calls the other download to the link
+/// (ADR-0107).
+#[test]
+fn an_unasked_grant_goes_to_the_standing_holder_and_the_waiter_is_called() {
+    let links = SharedPeerLinks::default();
+    let at = v4([203, 0, 113, 9], 4662);
+    let names = vec![LinkName::Endpoint(at), LinkName::User(user(0x61))];
+    let (waiter_tx, mut waiter_rx) = mpsc::channel(4);
+    let (holder_tx, mut holder_rx) = mpsc::channel(4);
+    let _waiter = links.await_grant(at, names.clone(), false, waiter_tx);
+    let holder = links.await_grant(at, names.clone(), true, holder_tx);
+
+    let moved = v4([203, 0, 113, 99], 4662);
+    assert!(links.offer_grant(&[LinkName::Endpoint(moved), LinkName::User(user(0x61))]));
+    assert_eq!(holder_rx.try_recv(), Ok(LinkOffer::Grant(at)));
+    assert!(
+        waiter_rx.try_recv().is_err(),
+        "the waiter does not take the holder's grant"
+    );
+
+    drop(holder);
+    links.call_waiters(&names);
+    assert_eq!(waiter_rx.try_recv(), Ok(LinkOffer::Call(at)));
+}

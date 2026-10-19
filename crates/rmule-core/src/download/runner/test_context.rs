@@ -88,6 +88,7 @@ pub(in crate::download) fn runner_context<S, P>(
         connection_budget: crate::download::connection_budget::ConnectionBudget::shared(
             crate::PeerConnections::default(),
         ),
+        queue_standings: crate::download::queue_standings::QueueStandings::shared(),
         held_places: crate::held_places::SharedHeldPlaces::default(),
         peer_transfer: Arc::new(Mutex::new(peer_transfer)),
         credit: Arc::new(crate::store::credit::DurableCreditStore::new(store)),
