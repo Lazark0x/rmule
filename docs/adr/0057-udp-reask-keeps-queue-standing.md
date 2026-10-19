@@ -237,7 +237,9 @@ brain's next wake. The purge clock and dial-back promotion belong to serve state
 - Captures live in `crates/rmule-peer/tests/fixtures/peer_udp_reask/captured/`: aMule's
   replies to rmule's pings, plain and encrypted, and aMule's own ping to rmule as an
   uploader. `0x92` is provoked by unsharing mid-queue and `0x93` by a queue-size
-  preference below 51.
+  preference below 51. The reask through the buddy is captured too: a firewalled aMule
+  queued rmule while rmule stood on a server High ID, the server went away, and rmule's
+  `0x94` reached the buddy, crossed the held link as `0x9A`, and drew the aMule's `0x91`.
 - A buddy recruited over Kad now observes the same mapping a Tunnel rides, so an endpoint
   hint naming rmule is right (ADR-0091).
 - One socket failing takes the reask surface, NAT-T and Kad down together, which is why
