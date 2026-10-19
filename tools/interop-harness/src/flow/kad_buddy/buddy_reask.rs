@@ -386,7 +386,7 @@ impl ReaskLeg {
             docker,
             (judged.amule_tap, judged.amule_pcap),
             &AMULE_ROWS[0].2.map_bpf(substitute),
-            &self.dir.join("reask-ack-0x91.pcap"),
+            &judged.amule_host_dir.join("reask-ack-0x91.pcap"),
         )?;
 
         let count = |key: &str| {

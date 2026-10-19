@@ -201,6 +201,7 @@ impl Legs {
             buddy_host_dir: buddy.2,
             amule_tap: amule.0,
             amule_pcap: amule.1,
+            amule_host_dir: amule.2,
             amule_ip: &party.amule_ip,
             rmule_ip: &party.rmule_ip,
         };

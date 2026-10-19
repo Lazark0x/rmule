@@ -497,6 +497,8 @@ pub(crate) struct Judged<'a> {
     /// Flow M's tap on aMule's own netns (tcp and udp under this leg).
     pub(crate) amule_tap: &'a str,
     pub(crate) amule_pcap: &'a str,
+    /// Where that tap writes on the host: a body lifted off it lands there.
+    pub(crate) amule_host_dir: &'a Path,
     pub(crate) amule_ip: &'a str,
     pub(crate) rmule_ip: &'a str,
 }
