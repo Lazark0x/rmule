@@ -1,4 +1,5 @@
-//! The rank replay over hand-built logs and statuses: each seed's first part, the reading bounds, retirements and the log format.
+//! The rank replay over hand-built logs and statuses: each seed's first part,
+//! the reading bounds, shared parts, retirements and the log format.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::Ipv4Addr;
@@ -194,12 +195,14 @@ fn a_departed_seed_stops_counting() {
     assert!(run.decisions[1].matched());
 }
 
-/// A seed that delivered its part, with nothing pending it holds, joins a
-/// part one other racer is on: the Tail Race (ADR-0026) is a pick the
-/// scheduler may make, and so is giving the slot back.
+/// A seed may be handed a part another worker started when it ranks ahead
+/// of every part nobody holds (ADR-0117: its unclaimed blocks are invisible
+/// to the log), and the first part nobody holds — the band's last part here;
+/// skipping part 1 for part 3 is not the rank's.
 #[test]
-fn a_seed_that_delivered_may_race_a_lone_part() {
-    let advertised = BTreeMap::from([(A, set(&[0, 1])), (B, set(&[0, 1]))]);
+fn a_seed_shares_a_started_part_ranked_ahead_of_every_untouched_one() {
+    let every = set(&[0, 1, 2, 3, 4, 5]);
+    let advertised = BTreeMap::from([(A, every.clone()), (B, every)]);
     let first_status_at = BTreeMap::from([(A, 1.0), (B, 1.1)]);
     let topology = Topology {
         size: SIZE,
@@ -210,14 +213,40 @@ fn a_seed_that_delivered_may_race_a_lone_part() {
     let events = [
         tick(10.0),
         assigned(A, 0),
-        assigned(B, 1),
-        LogEvent::Verified { part: 0 },
-        assigned(A, 1),
+        assigned(B, 0),
+        assigned(A, 5),
+        assigned(B, 3),
         tick(20.0),
     ];
     let run = replay(&events, &topology);
-    let race = run.decisions.last().unwrap();
-    assert_eq!(race.actual, Pick::Raced(1));
-    assert!(race.matched());
-    assert!(race.expected.contains(&Pick::Nothing));
+    let picks: Vec<(Pick, bool)> = run
+        .decisions
+        .iter()
+        .map(|d| (d.actual, d.matched()))
+        .collect();
+    assert_eq!(
+        picks,
+        vec![
+            (Pick::Fresh(0), true),
+            (Pick::Shared(0), true),
+            (Pick::Fresh(5), true),
+            (Pick::Fresh(3), false),
+        ]
+    );
+}
+
+/// The End Game's sets are read off the log as rmule-tools prints them.
+#[test]
+fn an_end_game_set_reads_off_the_log() {
+    let log =
+        "download.end_game_blocks id=1 peer=10.0.0.2:4662 part_index=4 blocks=3 bytes=552960\n";
+    assert_eq!(
+        parse_log(log, 1),
+        vec![LogEvent::EndGame {
+            peer: A,
+            part: 4,
+            blocks: 3,
+            bytes: 552_960
+        }]
+    );
 }

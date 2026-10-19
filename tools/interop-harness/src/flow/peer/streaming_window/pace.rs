@@ -1,6 +1,6 @@
 //! How busy each seed's link kept, read off the tap: the measurement the
-//! request depth (ADR-0029 "Request pipeline") and the Tail Race (ADR-0026
-//! "Bounded racing") are scored by. Per seed: the payload it sent and over
+//! request depth (ADR-0029 "Request pipeline") and the End Game (ADR-0117)
+//! are scored by. Per seed: the payload it sent and over
 //! what span, the share of that span its link sat idle (gaps over 50 ms
 //! between data frames), the time from each `OP_REQUESTPARTS` to the seed's
 //! next data, how many asked blocks waited behind the one arriving, and the
@@ -82,7 +82,7 @@ pub(crate) struct LinkPace {
 pub(crate) struct Pace {
     pub(crate) links: Vec<LinkPace>,
     /// Uncompressed bytes that landed on an offset another frame had already
-    /// delivered — what racing spent.
+    /// delivered — what the End Game's duplicates spent.
     pub(crate) duplicate_bytes: u64,
     /// The file over the sum of the seeds' caps: the end if every link ran
     /// at its cap to the last byte.

@@ -14,7 +14,7 @@ use std::net::Ipv4Addr;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use rmule_primitives::{ED2K_PART_SIZE, part_count};
+use rmule_primitives::{ED2K_PART_SIZE, EMBLOCKSIZE, part_count};
 use serde::{Deserialize, Serialize};
 
 use super::ROOT_DIR;
@@ -150,8 +150,6 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
             first_status_at: &first_status_at,
         },
     );
-    let claims = claims(&topology, &wire, &advertised, &run);
-    let (verdict, detail) = label(&claims);
     let trace = fs::read_to_string(run_dir.join("rmule/stderr.log")).unwrap_or_default();
     let (measurement, series) = measure(
         &run,
@@ -174,6 +172,9 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         .map(|seed| u64::from(seed.max_upload_kib) * 1_024)
         .sum();
     pace.ideal_s = (caps > 0).then(|| topology.file_size as f64 / caps as f64);
+    let mut claims = claims(&topology, &wire, &advertised, &run);
+    claims.push(end_game_bound(&run, &pace));
+    let (verdict, detail) = label(&claims);
     let tail_over_ideal = measurement
         .last_part_verified_s
         .zip(pace.ideal_s)
@@ -326,6 +327,37 @@ fn claims(
     claims
 }
 
+/// The End Game's bound, ADR-0117: every Duplicate Set is at most three
+/// blocks and three `EMBLOCKSIZE`, and the bytes the tap saw land twice are no
+/// more than the sets asked. A run with no set — an older build, or a swarm
+/// that never ran short — makes no claim.
+pub(crate) fn end_game_bound(run: &Replay, pace: &Pace) -> Claim {
+    const NAME: &str = "every-end-game-set-is-three-blocks-at-most-and-bounds-the-bytes-twice";
+    if run.end_game_sets.is_empty() {
+        return Claim::blocked(NAME, "the run handed no Duplicate Set");
+    }
+    let asked: u64 = run.end_game_sets.iter().map(|&(_, bytes)| bytes).sum();
+    let widest = run.end_game_sets.iter().map(|&(blocks, _)| blocks).max();
+    let largest = run.end_game_sets.iter().map(|&(_, bytes)| bytes).max();
+    let within = run
+        .end_game_sets
+        .iter()
+        .all(|&(blocks, bytes)| blocks <= 3 && bytes <= 3 * EMBLOCKSIZE);
+    Claim::about(
+        NAME,
+        within && pace.duplicate_bytes <= asked,
+        Evidence::Captured,
+        format!(
+            "{} sets, the widest {} blocks, the largest {} bytes; {} bytes asked twice, {} landed twice",
+            run.end_game_sets.len(),
+            widest.unwrap_or(0),
+            largest.unwrap_or(0),
+            asked,
+            pace.duplicate_bytes
+        ),
+    )
+}
+
 /// Claim 1, ADR-0112 §4: every request names only parts the seed's own status
 /// advertised before it.
 fn advertised_only(wire: &Wire, advertised: &BTreeMap<Ipv4Addr, BTreeSet<u32>>) -> Claim {
@@ -382,9 +414,7 @@ fn first_ask(wire: &Wire, run: &Replay) -> Claim {
     let mut notes = Vec::new();
     let mut held = !firsts.is_empty();
     for decision in &firsts {
-        let (Pick::Fresh(part) | Pick::Raced(part)) = decision.actual else {
-            continue;
-        };
+        let (Pick::Fresh(part) | Pick::Shared(part)) = decision.actual;
         // A seed that never granted a slot was never asked on the wire.
         let agrees = first_on_wire
             .get(&decision.peer)

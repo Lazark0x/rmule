@@ -3,12 +3,17 @@
 //!
 //! The log orders every `download.part_assigned`, `part_released`,
 //! `part_verified` and `peer_retired` exactly as the scheduler made them; the
-//! wire says what each seed advertised. Replaying the one against the other
-//! gives, at each assignment, the part the rank names: the minimum of
-//! `(very rare, band, window, key)` over the pending parts the worker's seed
-//! advertised, `key = (0, i)` inside the **Streaming Window** and
-//! `(frequency, i)` outside it. The scheduler's own rank is not called: the
-//! bench restates it from the ADR, so a drift in either shows.
+//! wire says what each seed advertised. An assignment is a worker's first
+//! handout in a part (ADR-0117): every handout fills from the first-ranked
+//! part that still has an unclaimed block, by the minimum of `(very rare,
+//! band, window, key)` over the parts the worker's seed advertised, `key =
+//! (0, i)` inside the **Streaming Window** and `(frequency, i)` outside it.
+//! The log does not say when a started part's blocks are all claimed, so a
+//! part nobody started is the bound: an assignment matches when its part ranks
+//! no lower than every unverified part the seed advertised that no worker
+//! holds — a started part ahead of them, or the first of them. The
+//! scheduler's own rank is not called: the bench restates it from the ADR, so
+//! a drift in either shows.
 //!
 //! **Part Frequency** counts the sources whose status rmule has read. The log
 //! carries no time, so the `download parts_tick` lines around an assignment
@@ -47,6 +52,17 @@ pub(crate) enum LogEvent {
         part: u32,
         /// Why the worker was retired, when that released the part.
         retired: Option<String>,
+    },
+    /// `download.end_game_blocks`: a Duplicate Set handed (ADR-0117).
+    EndGame {
+        /// The worker's peer.
+        peer: Ipv4Addr,
+        /// The part.
+        part: u32,
+        /// How many blocks.
+        blocks: u32,
+        /// Their bytes.
+        bytes: u64,
     },
     /// `download.part_verified`.
     Verified {
@@ -115,6 +131,12 @@ pub(crate) fn parse_log(text: &str, id: u64) -> Vec<LogEvent> {
                     part: part()?,
                     retired: fields.get("retired").map(|why| (*why).to_owned()),
                 },
+                "end_game_blocks" => LogEvent::EndGame {
+                    peer: peer()?,
+                    part: part()?,
+                    blocks: fields.get("blocks")?.parse().ok()?,
+                    bytes: fields.get("bytes")?.parse().ok()?,
+                },
                 "part_verified" => LogEvent::Verified { part: part()? },
                 "peer_retired" => LogEvent::Retired {
                     peer: peer()?,
@@ -148,12 +170,10 @@ pub(crate) struct Topology<'a> {
 /// What the scheduler may hand a worker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Pick {
-    /// A pending part.
+    /// A part no worker holds blocks of.
     Fresh(u32),
-    /// An in-flight part another worker is on.
-    Raced(u32),
-    /// Nothing.
-    Nothing,
+    /// A part another worker started, whose blocks it shares (ADR-0117).
+    Shared(u32),
 }
 
 /// One assignment, replayed.
@@ -163,8 +183,10 @@ pub(crate) struct Decision {
     pub(crate) peer: Ipv4Addr,
     /// What it was handed.
     pub(crate) actual: Pick,
-    /// What the rank names, one per distinct reading of what rmule knew.
+    /// What the rank allows, over every reading of what rmule knew.
     pub(crate) expected: BTreeSet<Pick>,
+    /// The readings disagree on what the rank allows.
+    pub(crate) readings_disagree: bool,
     /// The peer's first assignment.
     pub(crate) first_for_peer: bool,
     /// The part lay in the Streaming Window.
@@ -183,7 +205,7 @@ impl Decision {
 
     /// The readings disagree.
     pub(crate) fn ambiguous(&self) -> bool {
-        self.expected.len() > 1
+        self.readings_disagree
     }
 }
 
@@ -207,6 +229,8 @@ pub(crate) struct Replay {
     pub(crate) decisions: Vec<Decision>,
     /// Every `NoNeededParts` retirement, in order.
     pub(crate) retirements: Vec<Retirement>,
+    /// Every Duplicate Set the End Game handed, in order: blocks and bytes.
+    pub(crate) end_game_sets: Vec<(u32, u64)>,
     /// Sources that entered the Remote-Queued Pool.
     pub(crate) remote_queued: BTreeSet<Ipv4Addr>,
     /// Sources the Remote-Queued Pool re-asked by the TCP full ask.
@@ -221,34 +245,37 @@ pub(crate) struct Replay {
     pub(crate) completed: bool,
 }
 
-/// The scheduler's partition as the log moves it.
+/// The scheduler's partition as the log moves it: the verified parts, and
+/// who started each part not yet verified and has not let it go.
 #[derive(Default)]
 struct Parts {
     verified: BTreeSet<u32>,
-    racing: BTreeMap<u32, BTreeSet<Ipv4Addr>>,
-    peer_part: BTreeMap<Ipv4Addr, u32>,
-    /// Peers known to have delivered a part, so they may not race.
-    completed: BTreeSet<Ipv4Addr>,
-    /// Peers that raced a part someone delivered — which one is unknown.
-    maybe_completed: BTreeSet<Ipv4Addr>,
+    holders: BTreeMap<u32, BTreeSet<Ipv4Addr>>,
 }
 
 impl Parts {
-    fn release(&mut self, peer: Ipv4Addr) {
-        if let Some(part) = self.peer_part.remove(&peer)
-            && let Some(racers) = self.racing.get_mut(&part)
-        {
-            racers.remove(&peer);
-            if racers.is_empty() {
-                self.racing.remove(&part);
+    /// `peer` let `part` go.
+    fn release(&mut self, peer: Ipv4Addr, part: u32) {
+        if let Some(holders) = self.holders.get_mut(&part) {
+            holders.remove(&peer);
+            if holders.is_empty() {
+                self.holders.remove(&part);
             }
         }
+    }
+
+    /// `peer`'s worker ended: it holds nothing.
+    fn leave(&mut self, peer: Ipv4Addr) {
+        self.holders.retain(|_, holders| {
+            holders.remove(&peer);
+            !holders.is_empty()
+        });
     }
 
     fn letter(&self, part: u32) -> char {
         if self.verified.contains(&part) {
             'V'
-        } else if self.racing.contains_key(&part) {
+        } else if self.holders.contains_key(&part) {
             'I'
         } else {
             'M'
@@ -282,8 +309,7 @@ pub(crate) fn replay(events: &[LogEvent], topology: &Topology<'_>) -> Replay {
                 departed.remove(peer);
                 let Some(held) = topology.advertised.get(peer) else {
                     out.unjudged += 1;
-                    parts.racing.entry(*part).or_default().insert(*peer);
-                    parts.peer_part.insert(*peer, *part);
+                    parts.holders.entry(*part).or_default().insert(*peer);
                     continue;
                 };
                 let known = known_bounds(
@@ -296,9 +322,10 @@ pub(crate) fn replay(events: &[LogEvent], topology: &Topology<'_>) -> Replay {
                 );
                 let window = window(&parts, total, topology.window_parts);
                 let mut expected = BTreeSet::new();
+                let mut allowed_by_reading: Vec<BTreeSet<Pick>> = Vec::new();
                 let mut class = None;
-                let actual = if parts.racing.contains_key(part) {
-                    Pick::Raced(*part)
+                let actual = if parts.holders.contains_key(part) {
+                    Pick::Shared(*part)
                 } else {
                     Pick::Fresh(*part)
                 };
@@ -316,54 +343,41 @@ pub(crate) fn replay(events: &[LogEvent], topology: &Topology<'_>) -> Replay {
                             candidate,
                         )
                     };
-                    let completed = if parts.maybe_completed.contains(peer) {
-                        vec![false, true]
-                    } else {
-                        vec![parts.completed.contains(peer)]
-                    };
-                    for delivered in completed {
-                        for pick in picks(&parts, *peer, held, total, delivered, rank) {
-                            if pick == actual && class.is_none() {
-                                class = Some(frequency[*part as usize] <= bound);
-                            }
-                            expected.insert(pick);
-                        }
+                    let allowed = picks(&parts, held, total, rank);
+                    if allowed.contains(&actual) && class.is_none() {
+                        class = Some(frequency[*part as usize] <= bound);
                     }
+                    expected.extend(allowed.iter().copied());
+                    allowed_by_reading.push(allowed);
                 }
                 out.decisions.push(Decision {
                     peer: *peer,
                     actual,
                     expected,
+                    readings_disagree: allowed_by_reading.windows(2).any(|pair| pair[0] != pair[1]),
                     first_for_peer: !assigned_peers.contains(peer),
                     in_window: window.contains(part),
                     very_rare: class.unwrap_or(false),
                     band: band.contains(part),
                 });
                 assigned_peers.insert(*peer);
-                parts.racing.entry(*part).or_default().insert(*peer);
-                parts.peer_part.insert(*peer, *part);
+                parts.holders.entry(*part).or_default().insert(*peer);
             }
             LogEvent::Released {
                 peer,
                 part,
                 retired,
             } => {
-                if parts.peer_part.get(peer) == Some(part) {
-                    parts.release(*peer);
-                }
+                parts.release(*peer, *part);
                 if retired.as_deref().is_some_and(|why| why != NO_NEEDED_PARTS) {
                     departed.insert(*peer);
                 }
             }
+            LogEvent::EndGame { blocks, bytes, .. } => {
+                out.end_game_sets.push((*blocks, *bytes));
+            }
             LogEvent::Verified { part } => {
-                let racers = parts.racing.remove(part).unwrap_or_default();
-                for racer in &racers {
-                    parts.peer_part.remove(racer);
-                }
-                match racers.len() {
-                    1 => parts.completed.extend(racers),
-                    _ => parts.maybe_completed.extend(racers),
-                }
+                parts.holders.remove(part);
                 parts.verified.insert(*part);
             }
             LogEvent::Retired { peer, reason } => {
@@ -382,7 +396,7 @@ pub(crate) fn replay(events: &[LogEvent], topology: &Topology<'_>) -> Replay {
                         not_after: tick_after(index),
                     });
                 }
-                parts.release(*peer);
+                parts.leave(*peer);
             }
             LogEvent::ReaskedOverTcp { peer } => {
                 out.reasked_over_tcp.insert(*peer);
@@ -464,50 +478,37 @@ fn frequency(
     frequency
 }
 
-/// What the scheduler may hand `peer` (`Scheduler::assign_next`): the
-/// best-ranked pending part it advertised; else, unless it delivered a part
-/// already, the best-ranked in-flight part it advertised and is not on. A
-/// peer that delivered runs a Tail Race (ADR-0026): it joins a part it
-/// advertised and is not on that exactly one racer holds, when that racer's
-/// Delivery Rate is below its own, else it gets nothing. The log carries no
-/// rates, so every such part, and nothing, is a pick the scheduler may make.
+/// What the scheduler may open for a worker whose seed advertised `held`
+/// (ADR-0117): an unverified part it advertised that ranks no lower than every
+/// such part nobody holds — the first of those, or a started part ahead of
+/// them, whose unclaimed blocks the log cannot see. With every such part
+/// started, any of them.
 fn picks(
     parts: &Parts,
-    peer: Ipv4Addr,
     held: &BTreeSet<u32>,
     total: u32,
-    delivered: bool,
     rank: impl Fn(u32) -> (bool, bool, bool, u32, u32),
-) -> Vec<Pick> {
-    if parts.peer_part.contains_key(&peer) {
-        return vec![Pick::Nothing];
-    }
-    let fresh = (0..total)
-        .filter(|part| held.contains(part))
-        .filter(|part| !parts.verified.contains(part) && !parts.racing.contains_key(part))
-        .min_by_key(|part| rank(*part));
-    if let Some(part) = fresh {
-        return vec![Pick::Fresh(part)];
-    }
-    let joinable = parts
-        .racing
+) -> BTreeSet<Pick> {
+    let candidates: Vec<u32> = (0..total)
+        .filter(|part| held.contains(part) && !parts.verified.contains(part))
+        .collect();
+    let bound = candidates
         .iter()
-        .filter(|(part, racers)| held.contains(part) && !racers.contains(&peer));
-    if delivered {
-        return std::iter::once(Pick::Nothing)
-            .chain(
-                joinable
-                    .filter(|(_, racers)| racers.len() == 1)
-                    .map(|(part, _)| Pick::Raced(*part)),
-            )
-            .collect();
-    }
-    vec![
-        joinable
-            .map(|(part, _)| *part)
-            .min_by_key(|part| rank(*part))
-            .map_or(Pick::Nothing, Pick::Raced),
-    ]
+        .copied()
+        .filter(|part| !parts.holders.contains_key(part))
+        .map(&rank)
+        .min();
+    candidates
+        .into_iter()
+        .filter(|&part| bound.is_none_or(|bound| rank(part) <= bound))
+        .map(|part| {
+            if parts.holders.contains_key(&part) {
+                Pick::Shared(part)
+            } else {
+                Pick::Fresh(part)
+            }
+        })
+        .collect()
 }
 
 /// The Streaming Window: `n` parts from the lowest unverified one.
