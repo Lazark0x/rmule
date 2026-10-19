@@ -95,10 +95,10 @@ pub(crate) fn may_name_a_host(ip: Ipv4Addr) -> bool {
 /// buddy is a third party the row names, judged with no informant at hand, and
 /// a row whose buddy has no endpoint is still walked to by the buddy's ID.
 ///
-/// The private ranges are admitted: a LAN peer is a peer (ADR-0085). aMule
-/// applies no filter to the buddy address (`DownloadQueue.cpp:1714` filters
-/// only the source IP), and eMuleAI applies only its user IP filter
-/// (`DownloadQueue.cpp:4932-4942`).
+/// The private ranges are admitted, by ruling (ADR-0087): a LAN peer is a
+/// peer (ADR-0085). aMule applies no filter to the buddy address
+/// (`DownloadQueue.cpp:1617`; `:1563` filters only the source IP), and
+/// eMuleAI applies only its user IP filter (`DownloadQueue.cpp:4932-4942`).
 pub(crate) fn is_claimed_udp_target(ip: Ipv4Addr) -> bool {
     !rmule_primitives::is_reserved_ipv4(ip)
 }

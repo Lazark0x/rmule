@@ -235,11 +235,17 @@ capabilities and never enters the global-source rotation, as a DNS-named server.
   only a type-3/5 row indexes a buddy contact.
 - **The buddy's IPv4 gate** on both readers (`0x44`, `0x3B`): a `TAG_SERVERIP` that cannot name
   one remote host (`0.0.0.0`, loopback, link-local, multicast, `240/4`) gives the contact no
-  IPv4 endpoint, so the road is the Callback Walk toward the buddy ID; private ranges stay
-  admitted. `TAG_SOURCEIP` refuses only `0.0.0.0` and `224/3`. eMuleAI's IPv6-buddy row writes
-  `TAG_SERVERIP` as a `UINT_MAX` stand-in (`Search.cpp:886`, `Address.cpp:91-92`) and pairs
-  `bi6` with `TAG_SERVERPORT`; rmule keeps that pair as the contact's `buddy_udp_ipv6`, which no
-  road dials, and re-serves the port beside `bi6` without the stand-in.
+  IPv4 endpoint, so the road is the Callback Walk toward the buddy ID. Private ranges stay
+  admitted, by ruling. aMule reads the buddy IP and keeps it unjudged (`Search.cpp:889-890`,
+  `DownloadQueue.cpp:1617`); the one IP-filter consult on that path is the source's own IP
+  (`DownloadQueue.cpp:1563`). eMuleAI judges the buddy IP only through the user's IP filter
+  (`DownloadQueue.cpp:4932-4942`), which passes private addresses when told not to filter
+  them (`IPFilter.cpp:535`). rmule's Kad serves LAN peers, because a LAN contact is a contact
+  (ADR-0085), so a buddy on the LAN is a buddy. `TAG_SOURCEIP` refuses only `0.0.0.0` and
+  `224/3`. eMuleAI's IPv6-buddy row writes `TAG_SERVERIP` as a `UINT_MAX` stand-in
+  (`Search.cpp:886`, `Address.cpp:91-92`) and pairs `bi6` with `TAG_SERVERPORT`; rmule keeps
+  that pair as the contact's `buddy_udp_ipv6`, which no road dials, and re-serves the port
+  beside `bi6` without the stand-in.
 
 ### The server half
 
