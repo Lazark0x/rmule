@@ -44,6 +44,11 @@ const SHARER_MAX_UPLOAD_KIB: &str = "64";
 /// How long the silent leg waits, past both completions, for rmule to end its
 /// dial to the frozen sharer: more than the 40 s crypt timeout from any start.
 const SILENT_DIAL_END_WAIT_SECS: u64 = 120;
+/// How long the silent sharer runs, once ready, before it is frozen: aMule
+/// offers its shared files to the server on a one-minute publish tick
+/// (`SharedFileList.cpp:757-765`, `ED2KREPUBLISHTIME`), so a sharer frozen at
+/// once may never have been offered, and the server would not name it.
+const SILENT_OFFER_WAIT_SECS: u64 = 65;
 
 /// Options for [`run_peer_one_link`].
 pub struct PeerOneLinkOptions<'a> {
@@ -187,6 +192,7 @@ pub fn run_peer_one_link(options: PeerOneLinkOptions<'_>) -> Result<()> {
                 bench.docker.container_ip(silent.clone()),
                 "inspect silent sharer ip",
             )?;
+            std::thread::sleep(Duration::from_secs(SILENT_OFFER_WAIT_SECS));
             run_checked(
                 bench.docker.pause_container(silent.clone()),
                 "freeze the silent sharer",
