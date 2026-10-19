@@ -5,8 +5,9 @@
 //! eserver's bridge: the **sharer** S, a stock aMule sharing rmule's file,
 //! held to two slots by two **holders** and with two **waiters** queued ahead
 //! of rmule; **rmule**, High ID, downloading S's file and sharing a gift file
-//! with one upload slot; **X**, a stock aMule holding that slot; **W**, a stock
-//! aMule queued at rmule first. Then S asks rmule for the gift too, and X
+//! and a slot file with one upload slot; **X**, a stock aMule holding that
+//! slot on the slot file; **W**, a stock aMule queued at rmule for the gift
+//! first. Then S asks rmule for the gift too, and X
 //! stops: rmule's freed slot goes to S, whose queue it stands in, ahead of W,
 //! which waited longer — inside the Reciprocity Factor of 18/7. Once S holds
 //! the gift, its credit for rmule is aMule's `sqrt(MB + 2)`
@@ -49,10 +50,18 @@ pub use self::verdict::score_run_dir;
 const HOLDER_FILE: &str = "holder.bin";
 /// Its link.
 const HOLDER_LINK: &str = "holder.ed2k.txt";
-/// The gift rmule shares, which X, W and S download from it.
+/// The gift rmule shares, which W and S download from it.
 const GIFT_FILE: &str = "gift.bin";
 /// Its link.
 const GIFT_LINK: &str = "gift.ed2k.txt";
+/// The file X holds rmule's slot on. It is not the gift: aMule shares a
+/// download's verified parts, so an X fetching the gift becomes S's source
+/// for it, and the blocks S asks of X stay reserved to X once X stops, until
+/// aMule's 100 s download timeout (`DownloadClient.cpp:1189`); S then finds
+/// no free block on rmule's link and cancels it (`:693`).
+const SLOT_FILE: &str = "slot.bin";
+/// Its link.
+const SLOT_LINK: &str = "slot.ed2k.txt";
 /// How long a stopped body gets to close its links.
 const STOP_GRACE_SECS: u64 = 10;
 
@@ -96,8 +105,9 @@ pub struct ReciprocityShape {
     pub run_window_secs: u64,
 }
 
-/// Stage rmule's `shared.bin`, S's holder file and rmule's gift, none of them
-/// a compressor shrinks, with their ed2k links hashed by `command`.
+/// Stage rmule's `shared.bin`, S's holder file, rmule's gift and X's slot
+/// file, none of them a compressor shrinks, with their ed2k links hashed by
+/// `command`.
 ///
 /// # Errors
 /// If a file cannot be written or hashed.
@@ -119,6 +129,7 @@ pub fn stage_reciprocity_files(
     for (name, link, size, seed) in [
         (HOLDER_FILE, HOLDER_LINK, holder_size, 0x5EED_0E02),
         (GIFT_FILE, GIFT_LINK, gift_size, 0x5EED_0E03),
+        (SLOT_FILE, SLOT_LINK, gift_size, 0x5EED_0E04),
     ] {
         write_incompressible_file(&dir.join(name), size, seed)?;
         write_ed2k_link(command, &dir.join(name), &dir.join(link))?;
@@ -269,6 +280,8 @@ fn rmule_flags(shape: &ReciprocityShape, timeout_secs: u64) -> Vec<String> {
         flags.extend([
             "--share".to_owned(),
             format!("{CONTAINER_RUN_ROOT}/synthetic/{GIFT_FILE}"),
+            "--share".to_owned(),
+            format!("{CONTAINER_RUN_ROOT}/synthetic/{SLOT_FILE}"),
             "--upload-slots".to_owned(),
             "1".to_owned(),
             "--linger".to_owned(),
@@ -459,6 +472,11 @@ pub fn run_peer_reciprocity(options: PeerReciprocityOptions<'_>) -> Result<()> {
             &rmule_ip.to_string(),
             RMULE_SERVE_TCP_PORT,
         );
+        let slot_at_rmule = ed2k_link_with_source(
+            &read_link(SLOT_LINK)?,
+            &rmule_ip.to_string(),
+            RMULE_SERVE_TCP_PORT,
+        );
         let ask_for_gift = |bench: &Bench| {
             run_checked(
                 bench.docker.exec(
@@ -484,8 +502,8 @@ pub fn run_peer_reciprocity(options: PeerReciprocityOptions<'_>) -> Result<()> {
                 &mut bench,
                 &options,
                 &slot_holder,
-                &gift_at_rmule,
-                GIFT_FILE,
+                &slot_at_rmule,
+                SLOT_FILE,
                 Some(shape.x_kib),
             )?;
             start_downloader(
