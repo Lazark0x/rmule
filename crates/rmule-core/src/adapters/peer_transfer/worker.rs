@@ -2,7 +2,8 @@
 //! waits on, the wait between handouts that hears the slot's answers and the
 //! link's end, the block request loop that turns handed blocks into bytes
 //! (ADR-0117), the identity wait the dialer blocks on, and the AICH recovery
-//! detour a corrupt part triggers.
+//! asks a corrupt part triggers, answered while the worker keeps hearing its
+//! link.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -25,7 +26,6 @@ use crate::adapters::peer_transfer::{PeerWorkerCommand, PeerWorkerEvent, WorkerO
 use crate::adapters::serve_runtime::{ServeConnection, ServeInput};
 use crate::service::DialEnd;
 
-use self::aich::await_aich_answer;
 use self::pipeline::{Pipeline, RANGES_PER_REQUEST};
 use self::wait::{
     Ended, Idled, SlotNews, await_probe, forward_shared, forward_slot_news, idle_wait, next_event,
@@ -283,11 +283,6 @@ async fn work_the_link(
         // (ADR-0026).
         let mut slot_deadline = tokio::time::Instant::now() + slot_wait_timeout;
         loop {
-            // An AICH ask a stream sent is answered before the worker idles:
-            // the download holds the part until it is (ADR-0038).
-            if link.aich.is_some() && !await_aich_answer(&mut link, file.file_hash).await {
-                break;
-            }
             let command = match link.deferred.pop_front() {
                 Some(command) => command,
                 None => {
@@ -348,10 +343,11 @@ async fn work_the_link(
                         }
                     }
                 }
+                // Its answer is forwarded by whichever wait reads it, so a
+                // rank, the grant, a requeue or the peer's end reach the
+                // download meanwhile (ADR-0038, ADR-0117).
                 PeerWorkerCommand::RequestAich { part, root } => {
-                    if !link.ask_aich(file.file_hash, part, root).await
-                        || !await_aich_answer(&mut link, file.file_hash).await
-                    {
+                    if !link.ask_aich(file.file_hash, part, root).await {
                         break;
                     }
                 }
@@ -609,8 +605,8 @@ fn hand_deferred(link: &mut WorkerLink<'_>, pipeline: &mut Pipeline) {
 /// The worker's ends of its channels, lent to every wait on the peer: the
 /// peer's events, the commands sent it, the events sent the download, and
 /// the download's commands, read so a wait hears a `Shutdown`. A command a
-/// wait reads but cannot act on there (a next part, an AICH detour) waits in
-/// `deferred`, served in arrival order before the channel is read again.
+/// wait reads but cannot act on there (a next handout) waits in `deferred`,
+/// served in arrival order before the channel is read again.
 struct WorkerLink<'a> {
     events: &'a mut mpsc::Receiver<PeerEvent>,
     cmd_tx: &'a mpsc::Sender<PeerCommand>,
@@ -620,6 +616,9 @@ struct WorkerLink<'a> {
     /// The AICH recovery asked and not yet answered: its part, and when an
     /// empty answer stands in for the peer's (ADR-0038).
     aich: Option<(u16, tokio::time::Instant)>,
+    /// The AICH recoveries handed while one is out, each asked once the one
+    /// before it settles.
+    aich_queued: VecDeque<(u16, rmule_primitives::AichRootHash)>,
     /// How long an AICH ask waits for its answer: the slot budget.
     aich_budget: Duration,
 }
@@ -639,6 +638,7 @@ impl<'a> WorkerLink<'a> {
             commands,
             deferred: VecDeque::new(),
             aich: None,
+            aich_queued: VecDeque::new(),
             aich_budget,
         }
     }

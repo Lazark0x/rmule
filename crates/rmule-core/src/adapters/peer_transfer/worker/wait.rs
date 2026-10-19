@@ -70,8 +70,9 @@ pub(super) async fn await_probe(
 /// starved by a busy peer and stops the wait at once (aMule's
 /// `CUpDownClient::Disconnected` aborts a transfer on the spot); an AICH root
 /// ask (ADR-0038), the download's hash-set ask, which only a granted
-/// worker is handed (ADR-0026), and an AICH recovery ask go out as they come,
-/// the recovery answer forwarded when it arrives; blocks handed meanwhile wait in
+/// worker is handed (ADR-0026), and an AICH recovery ask go out as they come
+/// (a recovery ask while one is out after it), the recovery answer forwarded
+/// when it arrives; blocks handed meanwhile wait in
 /// `deferred` and end the wait as `Handed`; anything else waits in
 /// `deferred`. No event by `deadline` reports `SlotTimeout` and ends the
 /// wait as `Stalled`.
@@ -81,7 +82,7 @@ pub(super) async fn next_event(
     deadline: tokio::time::Instant,
 ) -> Result<Option<PeerEvent>, Streamed> {
     loop {
-        let aich_due = link.aich.map(|(_, due)| due);
+        let aich_due = link.aich_due();
         tokio::select! {
             biased;
             command = link.commands.recv() => match command {
@@ -91,7 +92,7 @@ pub(super) async fn next_event(
                 // An AICH ask leaves at once, while blocks stream: a worker
                 // runs from part to part, so it cannot wait for a drain
                 // (ADR-0038, ADR-0117). Its answer comes back below.
-                Some(PeerWorkerCommand::RequestAich { part, root }) if link.aich.is_none() => {
+                Some(PeerWorkerCommand::RequestAich { part, root }) => {
                     if !link.ask_aich(file_hash, part, root).await {
                         return Err(Streamed::WindDown);
                     }
@@ -116,7 +117,7 @@ pub(super) async fn next_event(
                 None => return Err(Streamed::WindDown),
             },
             () = tokio::time::sleep_until(aich_due.unwrap_or(deadline)), if aich_due.is_some() => {
-                if !link.give_up_aich().await {
+                if !link.give_up_aich(file_hash).await {
                     return Err(Streamed::WindDown);
                 }
             }
@@ -162,9 +163,11 @@ pub(super) enum Idled {
 /// Wait between handouts for the download's next command, reading the link
 /// meanwhile, so a queued worker hears its rank and grant and any worker hears
 /// its link close at once (ADR-0026): the shared arms ([`forward_shared`]) and
-/// the slot's answers ([`forward_slot_news`]) are forwarded as they come. No
-/// command and no grant by `deadline` reports `SlotTimeout`. A grant hands
-/// `pipeline` the link's Asked Ranges.
+/// the slot's answers ([`forward_slot_news`]) are forwarded as they come, and
+/// so is the answer to an AICH ask out, or the empty one at its budget
+/// (ADR-0038) — the wait for it is this wait. No command and no grant by
+/// `deadline` reports `SlotTimeout`. A grant hands `pipeline` the link's
+/// Asked Ranges.
 pub(super) async fn idle_wait(
     link: &mut WorkerLink<'_>,
     pipeline: &mut Pipeline,
@@ -172,10 +175,17 @@ pub(super) async fn idle_wait(
     deadline: tokio::time::Instant,
 ) -> Idled {
     loop {
+        let aich_due = link.aich_due();
         let waited = tokio::select! {
             biased;
             command = link.commands.recv() => {
                 return command.map_or(Idled::Ended, Idled::Command);
+            }
+            () = tokio::time::sleep_until(aich_due.unwrap_or(deadline)), if aich_due.is_some() => {
+                if !link.give_up_aich(file_hash).await {
+                    return Idled::Ended;
+                }
+                continue;
             }
             waited = tokio::time::timeout_at(deadline, link.events.recv()) => waited,
         };
@@ -183,6 +193,12 @@ pub(super) async fn idle_wait(
             let _ = link.event_tx.send(PeerWorkerEvent::SlotTimeout).await;
             return Idled::Stalled;
         };
+        if let Some(answer) = link.settle_aich(file_hash, &event).await {
+            if link.event_tx.send(answer).await.is_err() {
+                return Idled::Ended;
+            }
+            continue;
+        }
         let event = match forward_shared(link.event_tx, file_hash, event).await {
             Ok(Some(event)) => event,
             Ok(None) => continue,

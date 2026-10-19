@@ -732,3 +732,72 @@ async fn an_aich_ask_handed_mid_stream_leaves_at_once_and_its_answer_comes_back(
     );
     assert_eq!(reported.last(), Some(&DRAINED));
 }
+
+/// The peer's `OP_OUTOFPARTREQS` while an AICH ask waits for its answer
+/// reaches the download at once: the slot is over, so the download frees the
+/// worker's blocks, rather than the ask's budget holding a dead slot.
+#[tokio::test(start_paused = true)]
+async fn out_of_part_requests_during_an_aich_wait_end_the_slot_at_once() {
+    let bytes = [0x5A; 1024];
+    let file = rmule_testkit::file_link("aich-wait.bin", &bytes);
+    let root = rmule_primitives::AichRootHash::from_bytes([0xA7; 20]);
+    let (events_tx, requester_rx) = mpsc::channel(8);
+    let (peer_cmd_tx, _peer_cmd_rx) = mpsc::channel(32);
+    let (event_tx, worker_events) = mpsc::channel(32);
+    let (command_tx, command_rx) = mpsc::channel(8);
+    let file_hash = file.file_hash;
+    for event in [
+        RequesterEvent::FileProbed {
+            file_hash,
+            status: FileProbeStatus::Available {
+                file_name: rmule_primitives::Ed2kText::from_utf8("aich-wait.bin"),
+                bitmap: rmule_peer::PartBitmap::one_part_complete(),
+                complete: true,
+            },
+        },
+        RequesterEvent::SlotGranted {
+            file_hash,
+            asked: rmule_peer::AskedRanges::default(),
+        },
+        RequesterEvent::PartReceived {
+            file_hash,
+            offset: 0,
+            bytes: bytes.to_vec(),
+        },
+        RequesterEvent::Requeued { file_hash },
+    ] {
+        events_tx.send(PeerEvent::Requester(event)).await.unwrap();
+    }
+    for command in [
+        PeerWorkerCommand::RequestBlocks {
+            blocks: vec![block(0, 1024)],
+            handout: 1,
+        },
+        PeerWorkerCommand::RequestAich { part: 0, root },
+    ] {
+        command_tx.send(command).await.unwrap();
+    }
+    work_the_link(
+        WorkerHalves {
+            peer_cmd_tx,
+            requester_rx,
+        },
+        None,
+        &file,
+        rmule_peer::PartBitmap::downloader_empty(1024),
+        false,
+        command_rx,
+        event_tx,
+        Duration::from_secs(60),
+    )
+    .await;
+    drop((events_tx, command_tx));
+    let reported = drained(worker_events).await;
+    let at = |wanted: fn(&PeerWorkerEvent) -> bool| reported.iter().position(wanted);
+    let requeued = at(|e| matches!(e, PeerWorkerEvent::Requeued));
+    let answered = at(|e| matches!(e, PeerWorkerEvent::AichAnswerReceived { .. }));
+    assert!(
+        requeued.is_some() && requeued < answered,
+        "the requeue is reported before the ask's budget runs out: {reported:?}"
+    );
+}
