@@ -21,16 +21,18 @@
 //!   PCP may answer differently on each, so the runtime asks both and merges the
 //!   family lists into the one answer the mapper expects.
 
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rmule_net::portmap::{
     Gateway, GatewaySource, MappedTransport, MappingBackend, MappingError, MappingProtocol,
-    MappingRequest,
+    MappingRequest, ReleaseOutcome,
 };
 use rmule_primitives::AddressFamily;
 use tokio::sync::{mpsc, watch};
 
+use crate::CoreEvent;
 use crate::address_learning::SharedAddressLearning;
 use crate::diagnostics::DiagnosticsState;
 use crate::port_mapping::{
@@ -41,10 +43,10 @@ use crate::reachability::SharedSelfReach;
 
 use super::kad_runtime::{SharedKadPump, request_kad_recheck};
 
-/// How long a clean exit waits for its release datagrams. A release is
-/// fire-and-forget by design — at least one firmware never acknowledges a PCP
-/// delete, and the finite lease is the real cleanup — so this is a courtesy
-/// budget, not a guarantee.
+/// How long a clean exit waits for its releases, all of them together. A
+/// release is fire-and-forget by design — at least one firmware never
+/// acknowledges a PCP delete, and the finite lease is the real cleanup — so
+/// this is a courtesy budget, not a guarantee.
 const RELEASE_BUDGET: Duration = Duration::from_secs(2);
 
 /// The runtime's clock period: a due-time backstop for the re-derivation
@@ -213,6 +215,7 @@ pub(crate) fn spawn_port_mapping(
     diagnostics: DiagnosticsState,
     preferences: Arc<dyn PortMappingPreferences>,
     reach: SharedSelfReach,
+    events: mpsc::WeakSender<CoreEvent>,
 ) -> Option<PortMappingHandle> {
     if mode == PortMappingMode::Off || backends.is_empty() {
         return None;
@@ -236,6 +239,7 @@ pub(crate) fn spawn_port_mapping(
             preferences,
             learned,
             reach,
+            events,
             routes: Vec::new(),
             rows: rows_tx,
         }
@@ -284,6 +288,10 @@ struct Runtime {
     /// High ID", read for the smart-LowID edge (see
     /// [`observe_server_id`](Runtime::observe_server_id)).
     reach: SharedSelfReach,
+    /// Where a release that sent no delete is told (ADR-0086, "A release
+    /// takes down only rmule's own mapping"). Weak, like every runtime's
+    /// event sender: the actor's own sender is the stream's lifeline.
+    events: mpsc::WeakSender<CoreEvent>,
     /// Where the rows are published beside the diagnostics level.
     rows: watch::Sender<Vec<MappingDiagnostics>>,
     /// The default-route next hops, refreshed at the start of every probe
@@ -481,12 +489,8 @@ impl Runtime {
                 mapping,
                 external_port,
             } => {
-                if let Some((backend, gateway)) = self.route_mapping(protocol, mapping) {
-                    let request =
-                        release_request(mapping.family, mapping.transport(), mapping.internal_port);
-                    tokio::spawn(async move {
-                        backend.release(gateway, request, external_port).await;
-                    });
+                if let Some(release) = self.release(protocol, mapping, external_port) {
+                    tokio::spawn(release);
                 }
             }
             // The one command that does not reach a gateway (ADR-0086's
@@ -586,30 +590,57 @@ impl Runtime {
     /// Withdraw every mapping still held, within a courtesy budget.
     async fn release_on_exit(&mut self) {
         self.mapper.shutdown();
-        let mut pending = Vec::new();
+        let mut releases = tokio::task::JoinSet::new();
         while let Some(command) = self.mapper.next_command() {
             if let MappingCommand::Release {
                 protocol,
                 mapping,
                 external_port,
             } = command
-                && let Some((backend, gateway)) = self.route_mapping(protocol, mapping)
+                && let Some(release) = self.release(protocol, mapping, external_port)
             {
-                let request =
-                    release_request(mapping.family, mapping.transport(), mapping.internal_port);
-                pending.push(async move {
-                    backend.release(gateway, request, external_port).await;
-                });
+                releases.spawn(release);
             }
         }
-        // Awaited rather than spawned: the task is ending, and a spawned
-        // release would be cancelled before its datagram left.
+        // All at once, because a UPnP release is two round trips — its
+        // ownership check, then its delete — so the budget bounds the slowest
+        // release rather than their sum. Awaited inside the budget rather than
+        // left running: the task is ending, and a release left behind would be
+        // cancelled before its delete left.
         let _ = tokio::time::timeout(RELEASE_BUDGET, async {
-            for release in pending {
-                release.await;
-            }
+            while releases.join_next().await.is_some() {}
         })
         .await;
+    }
+
+    /// One release of `mapping`'s grant on `external_port`, ready to run, or
+    /// `None` when no route reaches its gateway. A release that sent no delete
+    /// is told as [`CoreEvent::MappingReleaseKept`].
+    fn release(
+        &self,
+        protocol: MappingProtocol,
+        mapping: DesiredMapping,
+        external_port: u16,
+    ) -> Option<impl Future<Output = ()> + Send + 'static> {
+        let (backend, gateway) = self.route_mapping(protocol, mapping)?;
+        let request = release_request(mapping.family, mapping.transport(), mapping.internal_port);
+        let events = self.events.clone();
+        Some(async move {
+            let ReleaseOutcome::Kept(kept) = backend.release(gateway, request, external_port).await
+            else {
+                return;
+            };
+            if let Some(events) = events.upgrade() {
+                let _ = events
+                    .send(CoreEvent::MappingReleaseKept {
+                        mapping,
+                        protocol,
+                        external_port,
+                        kept,
+                    })
+                    .await;
+            }
+        })
     }
 
     /// The backend speaking `protocol`, if one is installed.

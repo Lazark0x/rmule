@@ -76,6 +76,12 @@ impl CoreEvent {
             } => login::kad_helper_test_late(*helper, *late_by, *admission),
             CoreEvent::ObfuscationPolicyAtStart { policy } => Record::new("obfuscation.policy")
                 .code("policy", crate::obfuscation_policy::policy_name(*policy)),
+            CoreEvent::MappingReleaseKept {
+                mapping,
+                protocol,
+                external_port,
+                kept,
+            } => release_kept(mapping, *protocol, *external_port, kept),
             CoreEvent::ObfuscationPolicyChanged { policy } => {
                 Record::new("obfuscation.policy_changed")
                     .code("policy", crate::obfuscation_policy::policy_name(*policy))
@@ -155,4 +161,37 @@ fn hello_refused(refusal: &crate::HelloRefusal) -> Record {
     record
         .peer_software("client_mod", &text(&refusal.client_mod))
         .peer_software("client_name", &text(&refusal.name))
+}
+
+/// A release that sent no delete (ADR-0086, "A release takes down only
+/// rmule's own mapping"): the row, the external port, and why. The endpoint
+/// the entry forwards to is a LAN host's, so the full level's alone.
+fn release_kept(
+    mapping: &crate::port_mapping::DesiredMapping,
+    protocol: crate::port_mapping::MappingProtocol,
+    external_port: u16,
+    kept: &crate::port_mapping::ReleaseKept,
+) -> Record {
+    use crate::port_mapping::ReleaseKept;
+    let record = Record::new("port_mapping.release_kept")
+        .code("role", codes::role(mapping.role))
+        .code("family", codes::family(mapping.family))
+        .port("internal_port", mapping.internal_port);
+    let record = match mapping.pinhole {
+        Some(pinhole) => record.own_address("pinhole", &pinhole),
+        None => record,
+    }
+    .port("external_port", external_port);
+    match kept {
+        ReleaseKept::Absent => record
+            .code("kept", "absent")
+            .code("protocol", codes::protocol(protocol)),
+        ReleaseKept::ForwardsElsewhere(holder) => record
+            .code("kept", "forwards_elsewhere")
+            .code("protocol", codes::protocol(protocol))
+            .peer_address("holder", holder),
+        ReleaseKept::Unchecked(error) => {
+            codes::mapping_error(record.code("kept", "unchecked"), error)
+        }
+    }
 }

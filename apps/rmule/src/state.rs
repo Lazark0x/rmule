@@ -342,6 +342,9 @@ pub fn fold(state: &mut UiState, event: CoreEvent) -> bool {
         // So is a late Kad helper test: the TCP verdict is the level, and a
         // test that no longer counts leaves it where it was.
         CoreEvent::KadHelperTestLate { .. } => false,
+        // So is a release that left a router port standing: the mapping rows
+        // are the level, and the log pane says why the port was left alone.
+        CoreEvent::MappingReleaseKept { .. } => false,
         // Our own posture: the Settings tab holds the value, the log pane the
         // line `apply` pushed.
         CoreEvent::ObfuscationPolicyAtStart { .. } | CoreEvent::ObfuscationPolicyChanged { .. } => {

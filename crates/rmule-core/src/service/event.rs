@@ -751,6 +751,22 @@ pub enum CoreEvent {
         /// What became of it.
         admission: PortTestLateAdmission,
     },
+    /// A port-mapping release sent no delete (ADR-0086, "A release takes
+    /// down only rmule's own mapping"): the gateway's entry for the external
+    /// port did not name rmule's own internal address and port, and a UPnP
+    /// delete names no internal client, so it would have taken down whoever
+    /// holds the port. Written in session and at quit alike; no level moves
+    /// with it.
+    MappingReleaseKept {
+        /// The row the release was for.
+        mapping: crate::port_mapping::DesiredMapping,
+        /// The protocol that held the grant.
+        protocol: crate::port_mapping::MappingProtocol,
+        /// The external port the release named.
+        external_port: u16,
+        /// Why no delete went out.
+        kept: crate::port_mapping::ReleaseKept,
+    },
 }
 
 impl From<DownloadEvent> for CoreEvent {

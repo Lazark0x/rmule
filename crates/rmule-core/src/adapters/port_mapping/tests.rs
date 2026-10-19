@@ -12,10 +12,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rmule_net::family::FamilyBinds;
-use rmule_net::portmap::{MappingBackend, MappingProtocol, PeerPinRequest};
-use rmule_primitives::AddressFamily;
+use rmule_net::portmap::{
+    MappingBackend, MappingProtocol, PeerPinRequest, ReleaseKept, ReleaseOutcome,
+};
+use rmule_primitives::{AddressFamily, Ipv4Endpoint, PeerEndpoint};
 use rmule_testkit::{FakeGateways, GrantPolicy, ScriptedBackend};
+use tokio::sync::mpsc;
 
+use crate::CoreEvent;
 use crate::address_learning::{SharedAddressLearning, SocketRole};
 use crate::diagnostics::DiagnosticsState;
 use crate::own_identity::{ConnectedSession, SharedOwnIdentity};
@@ -107,6 +111,29 @@ fn runtime_remembering(
     own: &SharedOwnIdentity,
     preferences: Arc<dyn PortMappingPreferences>,
 ) -> PortMappingHandle {
+    // Nobody reads these events: the sender is gone before the first one.
+    let (events, _) = mpsc::channel(1);
+    runtime_telling(
+        gateways,
+        addresses,
+        backend,
+        diagnostics,
+        own,
+        preferences,
+        events.downgrade(),
+    )
+}
+
+/// [`runtime_remembering`], telling its events to `events`.
+fn runtime_telling(
+    gateways: FakeGateways,
+    addresses: &SharedAddressLearning,
+    backend: &Arc<ScriptedBackend>,
+    diagnostics: &DiagnosticsState,
+    own: &SharedOwnIdentity,
+    preferences: Arc<dyn PortMappingPreferences>,
+    events: mpsc::WeakSender<CoreEvent>,
+) -> PortMappingHandle {
     spawn_port_mapping(
         crate::port_mapping::PortMappingMode::Auto,
         PortMappingConfig::default(),
@@ -121,6 +148,7 @@ fn runtime_remembering(
             own.clone(),
             crate::natt::front::SharedNattFront::default(),
         ),
+        events,
     )
     .expect("a mapping runtime with a backend installed")
 }
@@ -418,4 +446,64 @@ async fn a_learned_method_that_wins_short_of_exact_is_cleared_from_the_store() {
     .await
     .expect("the stored method was cleared");
     drop(handle);
+}
+
+/// Quit's release pass tells every release the gateway kept — here a UPnP
+/// port another host now holds — and asks them all at once. Each takes most
+/// of the 2 s budget, as a check and a delete to a slow router can, so asked
+/// in turn the second would never be.
+#[tokio::test]
+async fn quit_tells_every_release_the_gateway_kept_and_asks_them_at_once() {
+    let addresses = SharedAddressLearning::new();
+    addresses.record_bind(SocketRole::Udp, &v4(), CLIENT_UDP_PORT);
+    addresses.record_bind(SocketRole::Tcp, &v4(), TCP_PORT);
+    let neighbour = PeerEndpoint::V4(Ipv4Endpoint::new(
+        std::net::Ipv4Addr::new(192, 168, 1, 77),
+        TCP_PORT,
+    ));
+    let upnp = Arc::new(ScriptedBackend::available(MappingProtocol::Upnp).releasing(
+        ReleaseOutcome::Kept(ReleaseKept::ForwardsElsewhere(neighbour)),
+        Duration::from_millis(1200),
+    ));
+    let diagnostics = DiagnosticsState::new();
+    let (events_tx, mut events) = mpsc::channel(8);
+    let handle = runtime_telling(
+        FakeGateways::home_lan(),
+        &addresses,
+        &upnp,
+        &diagnostics,
+        &SharedOwnIdentity::default(),
+        Arc::new(Forgetful),
+        events_tx.downgrade(),
+    );
+    rows_until(&diagnostics, |rows| {
+        rows.len() == 2 && rows.iter().all(|row| row.status == MappingStatus::Mapped)
+    })
+    .await;
+
+    handle.retire().await;
+
+    let mut kept = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let CoreEvent::MappingReleaseKept {
+            mapping,
+            protocol,
+            external_port,
+            kept: why,
+        } = event
+        {
+            assert_eq!(protocol, MappingProtocol::Upnp);
+            assert_eq!(why, ReleaseKept::ForwardsElsewhere(neighbour));
+            kept.push((mapping.role, external_port));
+        }
+    }
+    kept.sort();
+    assert_eq!(
+        kept,
+        vec![
+            (SocketRole::Tcp, TCP_PORT),
+            (SocketRole::Udp, CLIENT_UDP_PORT)
+        ]
+    );
+    drop(events_tx);
 }

@@ -73,8 +73,10 @@ impl PortMapper {
                 let mut moved = None;
                 if let Some(held) = self.leases.get_mut(&mapping) {
                     // UPnP keys a mapping by its external port: an answer on
-                    // another one is a second mapping, and the old one is
-                    // still forwarding with nothing here to renew it.
+                    // another one is a second mapping beside the old. The move
+                    // is the gateway's 718, so the old port is usually another
+                    // host's by now; the release checks the gateway's entry and
+                    // deletes it only while it still forwards here.
                     if held.protocol.keys_by_external_port()
                         && held.external.port() != grant.external.port()
                     {

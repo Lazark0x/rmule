@@ -307,7 +307,7 @@ How well one backend's trial served the **Desired Mapping Set**: Exact (every ma
 _Avoid_: score, success (too coarse)
 
 **Mapping Lease**:
-One granted mapping with the lifetime the router actually returned (clamped), its renewal timer, and its **Mapping Grade** contribution; released on exit. The lifetime *is* the freshness — an adopted grant's rung in **Address Learning** expires with the lease, so a mapping that stopped being renewed stops being advertised without anyone cancelling it.
+One granted mapping with the lifetime the router actually returned (clamped), its renewal timer, and its **Mapping Grade** contribution; released on exit, a UPnP one only while the gateway's entry still names rmule (a release that sends no delete is a Run Log record, `CoreEvent::MappingReleaseKept`). The lifetime *is* the freshness — an adopted grant's rung in **Address Learning** expires with the lease, so a mapping that stopped being renewed stops being advertised without anyone cancelling it.
 _Avoid_: forwarding, rule, port map (the whole subsystem)
 
 **Mapping Grant**:

@@ -34,7 +34,7 @@
 //! UPnP-IGD keys a mapping by external port and protocol, and
 //! `DeletePortMapping` names no internal client, so a gateway that obeys a
 //! delete from any LAN host removes whoever holds the port now. A release
-//! therefore asks `GetSpecificPortMappingEntry` first (the [`entry`] check,
+//! therefore asks `GetSpecificPortMappingEntry` first (the `entry` check,
 //! which `igd-next` does not issue) and deletes only an entry that still
 //! names this host's internal address and port (ADR-0086, "A release takes
 //! down only rmule's own mapping").

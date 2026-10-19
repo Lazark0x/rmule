@@ -36,10 +36,11 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 use rmule_net::portmap::MappedTransport;
-/// What a diagnostics row's failure is made of, re-exported so a front end
-/// words it without linking the net crate.
+/// What a diagnostics row's failure, and a release that sent no delete, are
+/// made of, re-exported so a front end words them without linking the net
+/// crate.
 pub use rmule_net::portmap::{
-    MappingError, MappingProtocol, MappingRefusal, MappingTransportFault,
+    MappingError, MappingProtocol, MappingRefusal, MappingTransportFault, ReleaseKept,
 };
 use rmule_primitives::{AddressFamily, PeerEndpoint};
 

@@ -92,7 +92,35 @@ fn reason_events() -> Vec<CoreEvent> {
             policy: Some(crate::ObfuscationPolicy::Required),
         },
         CoreEvent::ObfuscationPolicyChanged { policy: None },
+        CoreEvent::MappingReleaseKept {
+            mapping: listener_row(),
+            protocol: crate::port_mapping::MappingProtocol::Upnp,
+            external_port: 4662,
+            kept: crate::port_mapping::ReleaseKept::ForwardsElsewhere(peer_at(10, 77, 0, 5, 4662)),
+        },
+        CoreEvent::MappingReleaseKept {
+            mapping: listener_row(),
+            protocol: crate::port_mapping::MappingProtocol::Upnp,
+            external_port: 53906,
+            kept: crate::port_mapping::ReleaseKept::Unchecked(
+                crate::port_mapping::MappingError::Refused {
+                    protocol: crate::port_mapping::MappingProtocol::Upnp,
+                    refusal: crate::port_mapping::MappingRefusal::UnknownCode(501),
+                    hold_off: None,
+                },
+            ),
+        },
     ]
+}
+
+/// The eD2k listener's IPv4 mapping row.
+const fn listener_row() -> crate::port_mapping::DesiredMapping {
+    crate::port_mapping::DesiredMapping {
+        role: crate::SocketRole::Tcp,
+        family: rmule_primitives::AddressFamily::V4,
+        internal_port: 4662,
+        pinhole: None,
+    }
 }
 
 /// The bytes a fixed session's records leave in the file at `level`, each
@@ -158,6 +186,8 @@ const PINNED_LEAN: &str = r#" INFO run_log: server.connected server=203.0.113.7:
  INFO run_log: quit.step step=credit_checkpoint
  INFO run_log: obfuscation.policy policy=required
  INFO run_log: obfuscation.policy_changed policy=off
+ INFO run_log: port_mapping.release_kept role=tcp family=ipv4 internal_port=4662 external_port=4662 kept=forwards_elsewhere protocol=upnp
+ INFO run_log: port_mapping.release_kept role=tcp family=ipv4 internal_port=4662 external_port=53906 kept=unchecked protocol=upnp error=refused refusal=unknown_code refusal_code=501
  INFO run_log: setting.refused reason=download_dir_refused guard=home_directory"#;
 
 /// What `pinned_lines` returns at the full level.
@@ -204,6 +234,8 @@ const PINNED_FULL: &str = r#" INFO run_log: server.connected server=203.0.113.7:
  INFO run_log: quit.step step=credit_checkpoint
  INFO run_log: obfuscation.policy policy=required
  INFO run_log: obfuscation.policy_changed policy=off
+ INFO run_log: port_mapping.release_kept role=tcp family=ipv4 internal_port=4662 external_port=4662 kept=forwards_elsewhere protocol=upnp holder=10.77.0.5:4662
+ INFO run_log: port_mapping.release_kept role=tcp family=ipv4 internal_port=4662 external_port=53906 kept=unchecked protocol=upnp error=refused refusal=unknown_code refusal_code=501
  INFO run_log: setting.refused reason=download_dir_refused guard=home_directory"#;
 
 #[test]

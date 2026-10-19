@@ -408,6 +408,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
         diagnostics.clone(),
         Arc::clone(&wiring.port_mapping_preferences),
         self_reach.clone(),
+        evt_tx.downgrade(),
     );
     // A **Punched Path**'s one PCP `PEER` pin (ADR-0091) goes to the running
     // mapping runtime, which owns the backends and the route table. Weakly, so
