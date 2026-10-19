@@ -468,6 +468,12 @@ impl Docker {
         self.command(vec![OsString::from("pause"), container.into()])
     }
 
+    /// `docker unpause <container>` — thaws what [`Self::pause_container`]
+    /// froze, so its logs end and its stop runs its own handlers.
+    pub fn unpause_container(&self, container: impl Into<OsString>) -> DockerCommand {
+        self.command(vec![OsString::from("unpause"), container.into()])
+    }
+
     /// `docker stop --time <timeout_secs> <container>` — SIGTERM, then
     /// SIGKILL only after `timeout_secs` — never `docker kill`'s immediate
     /// SIGKILL. A container's own process needs its SIGTERM

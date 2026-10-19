@@ -38,6 +38,7 @@ pub use self::lowid_callback_reask::{
 pub use self::one_link::{
     PeerOneLinkOptions, run_peer_one_link, score_run_dir as score_peer_one_link,
     score_severed_run_dir as score_peer_one_link_severed,
+    score_silent_run_dir as score_peer_one_link_silent,
 };
 pub use self::partial_share::{
     PartialShareOptions, run_partial_share, score_run_dir as score_partial_share,

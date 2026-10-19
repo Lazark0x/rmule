@@ -96,6 +96,7 @@ pub use self::peer::{
 };
 pub use self::peer::{
     PeerOneLinkOptions, run_peer_one_link, score_peer_one_link, score_peer_one_link_severed,
+    score_peer_one_link_silent,
 };
 pub use self::peer::{
     PeerReciprocityOptions, ReciprocityLeg, ReciprocityShape, run_peer_reciprocity,

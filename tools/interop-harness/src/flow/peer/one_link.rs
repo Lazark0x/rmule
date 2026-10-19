@@ -25,18 +25,25 @@ use crate::flow::bench::{
     AMULE_PEER_TCP_PORT, Bench, CaptureSidecar, DEFAULT_TAP_INTERFACE, Eserver, run_checked,
 };
 use crate::flow::gate::{wait_for_amule_ready, wait_for_container_log};
-use crate::flow::logs::{collect_amule_logs, collect_rmule_logs, collect_server_logs};
+use crate::flow::logs::{
+    collect_amule_logs, collect_amule_role_logs, collect_rmule_logs, collect_server_logs,
+};
 use crate::rmule::{DownloadCrypt, RmuleClientContainer, release_held_download};
 
 mod severed;
+mod silent;
 pub(crate) mod verdict;
 
 pub use self::severed::score_run_dir as score_severed_run_dir;
+pub use self::silent::score_run_dir as score_silent_run_dir;
 pub use self::verdict::score_run_dir;
 
 /// The sharer's upload-rate cap (KiB/s): slow enough that the first file is
 /// still riding the link when the second download asks for the sharer.
 const SHARER_MAX_UPLOAD_KIB: &str = "64";
+/// How long the silent leg waits, past both completions, for rmule to end its
+/// dial to the frozen sharer: more than the 40 s crypt timeout from any start.
+const SILENT_DIAL_END_WAIT_SECS: u64 = 120;
 
 /// Options for [`run_peer_one_link`].
 pub struct PeerOneLinkOptions<'a> {
@@ -73,6 +80,10 @@ pub struct PeerOneLinkOptions<'a> {
     /// so its link ends mid-transfer, and watch rmule keep the source instead
     /// of waiting for the downloads (the severed leg).
     pub sever_after_secs: Option<u64>,
+    /// The silent leg: a second sharer is frozen once it has offered both
+    /// files and rmule dials under `--peer-crypt requested` (verdict
+    /// `peer-one-link-silent-verdict.toml`).
+    pub silent_sharer: bool,
 }
 
 /// Run the flow: the eserver, a High-ID aMule sharer of the two staged files
@@ -96,6 +107,7 @@ pub fn run_peer_one_link(options: PeerOneLinkOptions<'_>) -> Result<()> {
         .unwrap_or_default()
         .to_owned();
     let sharer = format!("rmule-interop-amule-sharer-{suffix}");
+    let silent = format!("rmule-interop-amule-silent-{suffix}");
     let capture = format!("rmule-interop-one-link-capture-{suffix}");
     if options.build_images {
         bench.build_image("server", options.server_image, options.server_build_context)?;
@@ -154,6 +166,36 @@ pub fn run_peer_one_link(options: PeerOneLinkOptions<'_>) -> Result<()> {
             bench.docker.container_ip(sharer.clone()),
             "inspect sharer ip",
         )?;
+        let silent_ip = if options.silent_sharer {
+            // Offered both files and logged in, then frozen: the server still
+            // names it, its kernel still takes a connect, and nothing answers.
+            let silent_container = bench
+                .amule_container(options.amule_image, &silent)
+                .volume(options.layout.synthetic_dir(), "/incoming")
+                .env("AMULE_SHARED_DIR", "/incoming")
+                .env("AMULE_MAX_UPLOAD", SHARER_MAX_UPLOAD_KIB)
+                .env_assignments(options.amule_env);
+            bench.start_extra(&silent, silent_container, "run the silent sharer aMule")?;
+            wait_for_amule_ready(
+                &bench.docker,
+                options.layout,
+                &silent,
+                timeout,
+                "rmule-amule-ready",
+            )?;
+            let ip = run_checked(
+                bench.docker.container_ip(silent.clone()),
+                "inspect silent sharer ip",
+            )?;
+            run_checked(
+                bench.docker.pause_container(silent.clone()),
+                "freeze the silent sharer",
+            )?;
+            println!("peer_one_link silent sharer_frozen ip={}", ip.trim());
+            Some(ip)
+        } else {
+            None
+        };
 
         // One rmule core, both downloads, held until the tap listens.
         let rmule_name = bench.names.rmule_container_name.clone();
@@ -164,7 +206,24 @@ pub fn run_peer_one_link(options: PeerOneLinkOptions<'_>) -> Result<()> {
             "prebuild rmule-tools for the download container",
         )?;
         let link_refs: Vec<&str> = links.iter().map(String::as_str).collect();
-        let download = if options.sever_after_secs.is_some() {
+        let download = if options.silent_sharer {
+            // Stamped records time the dial's end; `requested` obfuscates every
+            // dial to an aMule the server names with its User Hash.
+            options
+                .rmule_client_container
+                .download_start_detached_with_args(
+                    bench.staging(options.layout),
+                    &rmule_name,
+                    &bench.names.server_endpoint(),
+                    &link_refs,
+                    true,
+                    &[
+                        "--stamp-events".to_owned(),
+                        "--peer-crypt".to_owned(),
+                        "requested".to_owned(),
+                    ],
+                )?
+        } else if options.sever_after_secs.is_some() {
             // The severed verdict reads stamped records and per-download ticks.
             options
                 .rmule_client_container
@@ -217,6 +276,14 @@ pub fn run_peer_one_link(options: PeerOneLinkOptions<'_>) -> Result<()> {
             sharer: sharer_ip.trim().parse().context("sharer address")?,
         }
         .write(&capture_dir)?;
+        if let Some(ip) = &silent_ip {
+            silent::SilentAddresses {
+                rmule: rmule_ip.trim().parse().context("rmule address")?,
+                sharer: sharer_ip.trim().parse().context("sharer address")?,
+                silent: ip.trim().parse().context("silent sharer address")?,
+            }
+            .write(&capture_dir)?;
+        }
 
         if let Some(secs) = options.sever_after_secs {
             wait_for_container_log(
@@ -242,6 +309,25 @@ pub fn run_peer_one_link(options: PeerOneLinkOptions<'_>) -> Result<()> {
                 )?;
             }
         }
+        if let Some(ip) = &silent_ip {
+            // Another cause, or none inside the wait, is the verdict's to read.
+            let ended = wait_for_container_log(
+                &bench.docker,
+                &rmule_name,
+                "cause=crypt_unanswered",
+                Duration::from_secs(SILENT_DIAL_END_WAIT_SECS),
+            )
+            .is_ok();
+            println!(
+                "peer_one_link silent crypt_unanswered_logged={ended} silent={}",
+                ip.trim()
+            );
+            run_checked(
+                bench.docker.unpause_container(silent.clone()),
+                "thaw the silent sharer",
+            )?;
+            collect_amule_role_logs(&bench.docker, options.layout, "silent", &silent)?;
+        }
         collect_rmule_logs(&bench.docker, options.layout, &rmule_name)?;
         collect_amule_logs(&bench.docker, options.layout, &sharer)?;
         collect_server_logs(
@@ -265,6 +351,11 @@ pub fn run_peer_one_link(options: PeerOneLinkOptions<'_>) -> Result<()> {
     }
     bench.cleanup_best_effort();
     result?;
+    if options.silent_sharer {
+        let verdict = silent::score_run_dir(options.layout.root())?;
+        println!("peer_one_link silent_verdict={verdict}");
+        return Ok(());
+    }
     if options.sever_after_secs.is_some() {
         let verdict = severed::score_run_dir(options.layout.root())?;
         println!("peer_one_link severed_verdict={verdict}");
