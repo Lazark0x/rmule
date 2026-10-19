@@ -552,10 +552,10 @@ impl Drop for Filing {
 /// filed again when that link ends.
 fn release(book: &mut Book, filing: u64, names: &[LinkName]) {
     for name in names {
-        if !book
+        if book
             .links
             .get(name)
-            .is_some_and(|held| held.filing == filing)
+            .is_none_or(|held| held.filing != filing)
         {
             continue;
         }
