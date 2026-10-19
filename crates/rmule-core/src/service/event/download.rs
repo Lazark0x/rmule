@@ -364,8 +364,9 @@ pub enum DownloadEvent {
         /// provisional until the whole file's hash confirms it.
         authority: VerificationAuthority,
     },
-    /// A worker was handed its next part to fetch. Assignment happens on the
-    /// worker's `Connected` event, so a failed handshake never strands a part.
+    /// A worker was first handed blocks of a part it held none of (ADR-0117):
+    /// several workers can be assigned one part. Handouts start at the grant,
+    /// so a failed handshake never strands a block.
     PartAssigned {
         /// The download the part belongs to.
         download_id: DownloadId,
@@ -373,6 +374,21 @@ pub enum DownloadEvent {
         peer: rmule_primitives::PeerEndpoint,
         /// The zero-based part index within the file.
         part_index: u32,
+    },
+    /// The End Game handed a worker a **Duplicate Set** in a part: blocks a
+    /// slower worker is fetching, asked again of this one (ADR-0117). The copy
+    /// that arrives second is dropped.
+    EndGameBlocks {
+        /// The download the part belongs to.
+        download_id: DownloadId,
+        /// The worker asked the blocks again.
+        peer: rmule_primitives::PeerEndpoint,
+        /// The zero-based part index within the file.
+        part_index: u32,
+        /// How many blocks, at most three.
+        blocks: u32,
+        /// Their bytes, at most three `EMBLOCKSIZE`.
+        bytes: u64,
     },
     /// A part went back to the unassigned pool for another worker to take.
     PartReleased {

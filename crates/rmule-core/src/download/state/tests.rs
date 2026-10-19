@@ -12,6 +12,7 @@ mod callbacks;
 mod capability;
 mod direct_ipv6;
 mod dual_stack;
+mod end_game;
 mod intake;
 mod ownership;
 mod reask;

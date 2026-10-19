@@ -47,6 +47,9 @@ fn hand(scheduler: &mut DownloadScheduler, peer: PeerEndpoint, room: usize) -> V
 struct Arrived(BTreeMap<u32, ByteRanges>);
 
 impl Progress for Arrived {
+    fn rate(&self, _: PeerEndpoint) -> Option<u64> {
+        None
+    }
     fn arrived(&self, part_index: u32) -> Option<&ByteRanges> {
         self.0.get(&part_index)
     }
@@ -296,4 +299,90 @@ fn a_worker_is_handed_only_parts_it_advertised() {
         Handout::Nothing { lacked: false },
         "it holds only a verified part"
     );
+}
+
+/// Delivery Rates by worker; nothing arrived.
+struct Rates(Vec<(PeerEndpoint, u64)>);
+
+impl Progress for Rates {
+    fn rate(&self, peer: PeerEndpoint) -> Option<u64> {
+        self.0
+            .iter()
+            .find(|(p, _)| *p == peer)
+            .map(|&(_, rate)| rate)
+    }
+    fn arrived(&self, _: u32) -> Option<&ByteRanges> {
+        None
+    }
+}
+
+/// The blocks of a Duplicate Set, or nothing.
+fn duplicates(handout: Handout) -> Vec<(u64, u64)> {
+    match handout {
+        Handout::Blocks {
+            blocks,
+            duplicate: true,
+        } => blocks.iter().map(|b| (b.start, b.end)).collect(),
+        other => panic!("not a Duplicate Set: {other:?}"),
+    }
+}
+
+/// With nothing unclaimed left, a worker is handed at most three blocks a
+/// slower worker holds alone, latest expected first; a block is doubled once,
+/// a worker holds one set at a time, and an unmeasured worker or one slower
+/// than every holder doubles nothing (ADR-0117).
+#[test]
+fn the_end_game_duplicates_only_within_its_bound() {
+    let (slow, fast, worker, second) = (peer(1), peer(2), peer(3), peer(4));
+    let mut scheduler = rarest(7 * B, []);
+    assert_eq!(hand(&mut scheduler, slow, 5).len(), 5);
+    assert_eq!(
+        hand(&mut scheduler, fast, 2),
+        vec![(5 * B, 6 * B), (6 * B, 7 * B)]
+    );
+    let parts = PartBitmap::all_present(1);
+    let rates = Rates(vec![
+        (slow, 10),
+        (fast, 1_000),
+        (worker, 500),
+        (second, 600),
+    ]);
+
+    let set = duplicates(scheduler.hand(worker, 24, &parts, &[], 0, &rates));
+    assert_eq!(
+        set,
+        vec![(4 * B, 5 * B), (3 * B, 4 * B), (2 * B, 3 * B)],
+        "three of the slow worker's blocks, the last it would deliver first"
+    );
+    assert_eq!(
+        duplicates(scheduler.hand(second, 24, &parts, &[], 0, &rates)),
+        vec![(B, 2 * B), (0, B)],
+        "only the blocks nobody doubled yet"
+    );
+    assert_eq!(
+        scheduler.hand(worker, 24, &parts, &[], 0, &rates),
+        Handout::Nothing { lacked: true },
+        "one unsettled set at a time"
+    );
+    let unmeasured = peer(5);
+    assert_eq!(
+        scheduler.hand(unmeasured, 24, &parts, &[], 0, &rates),
+        Handout::Nothing { lacked: true }
+    );
+    let slowest = Rates(vec![(slow, 10), (fast, 1_000), (peer(6), 5)]);
+    assert_eq!(
+        scheduler.hand(peer(6), 24, &parts, &[], 0, &slowest),
+        Handout::Nothing { lacked: true },
+        "a worker slower than every holder doubles nothing"
+    );
+
+    // The first copy to arrive settles both claims: the worker's set is
+    // settled and it may be handed another.
+    let mut arrived = ByteRanges::default();
+    for (start, end) in set {
+        arrived.insert(start, end);
+    }
+    scheduler.settle(0, &arrived);
+    assert_eq!(scheduler.parts_of(slow), BTreeSet::from([0]));
+    assert!(!scheduler.holds_claims(worker), "its set settled");
 }

@@ -1,15 +1,18 @@
 //! Handing a granted worker its blocks (ADR-0117): the room its Request Depth
-//! reports, the handout that fills it from the first-ranked parts it
-//! advertised, and what a worker that can be handed nothing comes to.
+//! reports, the handout that fills it — unclaimed blocks of the first-ranked
+//! parts it advertised, or a Duplicate Set in the End Game — and what a worker
+//! that can be handed nothing comes to.
 
 use std::collections::HashMap;
 use std::time::Instant;
 
 use rmule_primitives::PeerEndpoint;
 
+use crate::BlockPlan;
 use crate::adapters::PeerWorkerCommand;
 use crate::assembly::PartAssembly;
 use crate::byte_ranges::ByteRanges;
+use crate::delivery_rate::DeliveryRate;
 use crate::diagnostics::WorkerPhase;
 use crate::scheduler::{Handout, Progress};
 use crate::service::{DownloadEvent, PeerRetirementReason};
@@ -103,6 +106,7 @@ impl DownloadState {
         };
         let held_before = self.scheduler.parts_of(peer);
         let progress = Measured {
+            delivery: &self.delivery,
             assembly: &self.assembly,
         };
         let handout = self.scheduler.hand(
@@ -113,7 +117,7 @@ impl DownloadState {
             self.sources.parts_known(),
             &progress,
         );
-        let Handout::Blocks { blocks, .. } = handout else {
+        let Handout::Blocks { blocks, duplicate } = handout else {
             return if want.drained {
                 Handed::NothingFree
             } else {
@@ -134,6 +138,9 @@ impl DownloadState {
                 part_index,
             }));
         }
+        if duplicate {
+            self.said_end_game(peer, &blocks, out);
+        }
         if held_before.is_empty() {
             out.push(Decision::Phase {
                 slot,
@@ -150,13 +157,36 @@ impl DownloadState {
     }
 }
 
-/// What the scheduler reads of this download (ADR-0117): each in-flight
-/// part's Arrived Ranges.
+impl DownloadState {
+    /// Say the Duplicate Set `blocks` handed to `peer`, one line per part.
+    fn said_end_game(&self, peer: PeerEndpoint, blocks: &[BlockPlan], out: &mut Vec<Decision>) {
+        let mut parts: Vec<u32> = blocks.iter().map(|block| block.part_index).collect();
+        parts.dedup();
+        for part_index in parts {
+            let of_part = blocks.iter().filter(|block| block.part_index == part_index);
+            out.push(Decision::Emit(DownloadEvent::EndGameBlocks {
+                download_id: self.download_id,
+                peer,
+                part_index,
+                blocks: u32::try_from(of_part.clone().count()).unwrap_or(u32::MAX),
+                bytes: of_part.map(|block| block.end - block.start).sum(),
+            }));
+        }
+    }
+}
+
+/// What the scheduler reads of this download (ADR-0117): each worker's
+/// Delivery Rate and each in-flight part's Arrived Ranges.
 struct Measured<'a> {
+    delivery: &'a HashMap<PeerEndpoint, DeliveryRate>,
     assembly: &'a HashMap<u32, PartAssembly>,
 }
 
 impl Progress for Measured<'_> {
+    fn rate(&self, peer: PeerEndpoint) -> Option<u64> {
+        self.delivery.get(&peer)?.bytes_per_sec()
+    }
+
     fn arrived(&self, part_index: u32) -> Option<&ByteRanges> {
         self.assembly.get(&part_index).map(PartAssembly::arrived)
     }

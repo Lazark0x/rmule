@@ -389,6 +389,7 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
         | E::DialEnded { .. }
         | E::LinkShared { .. }
         | E::PartReleased { .. }
+        | E::EndGameBlocks { .. }
         | E::PeerRetired { .. } => false,
     }
 }

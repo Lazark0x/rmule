@@ -8,6 +8,7 @@
 //! decision that reaches a socket.
 
 mod claims;
+mod end_game;
 mod rank;
 #[cfg(test)]
 mod tests;
@@ -22,6 +23,10 @@ use self::rank::{RankInputs, preview_band, very_rare_bound};
 use crate::byte_ranges::ByteRanges;
 use crate::diagnostics::PartState;
 use crate::planning::{BlockPlan, PartPlan, part_plan};
+
+/// The most blocks one **Duplicate Set** holds: 3 × `EMBLOCKSIZE` at most
+/// (ADR-0117).
+pub(crate) const DUPLICATE_SET_BLOCKS: usize = 3;
 
 /// How a download's parts are ordered past rarity (ADR-0112 §5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,14 +75,20 @@ impl PartOrder {
 }
 
 /// What the scheduler reads of the download beside its own bookkeeping: each
-/// part's **Arrived Ranges** (ADR-0117). `()` shows nothing arrived.
+/// part's **Arrived Ranges** and each worker's **Delivery Rate**, the End
+/// Game's input (ADR-0117). `()` shows nothing arrived and measures nobody.
 pub(crate) trait Progress {
+    /// `peer`'s Delivery Rate in bytes per second, `None` until measured.
+    fn rate(&self, peer: PeerEndpoint) -> Option<u64>;
     /// The Arrived Ranges of `part_index`, relative to the part's start;
     /// `None` when nothing of it arrived.
     fn arrived(&self, part_index: u32) -> Option<&ByteRanges>;
 }
 
 impl Progress for () {
+    fn rate(&self, _: PeerEndpoint) -> Option<u64> {
+        None
+    }
     fn arrived(&self, _: u32) -> Option<&ByteRanges> {
         None
     }
@@ -175,8 +186,15 @@ impl DownloadScheduler {
             window: self.window(),
         };
         let held = |part: u32| parts.has(PartIndex::new(part));
-        let blocks = self.fresh_blocks(room, &held, &inputs, progress);
-        let duplicate = false;
+        let fresh = self.fresh_blocks(room, &held, &inputs, progress);
+        let (blocks, duplicate) = if fresh.is_empty() {
+            (
+                self.duplicate_set(peer, room, &held, &inputs, progress),
+                true,
+            )
+        } else {
+            (fresh, false)
+        };
         if blocks.is_empty() {
             return Handout::Nothing {
                 lacked: self.lacks_any_of(parts),

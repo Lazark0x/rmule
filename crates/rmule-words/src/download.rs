@@ -295,6 +295,19 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
         D::PartAssigned {
             peer, part_index, ..
         } => format!("part {part_index} assigned to {}", address(*peer)),
+        D::EndGameBlocks {
+            peer,
+            part_index,
+            blocks,
+            ..
+        } => format!(
+            "end game: {} of part {part_index} asked of {} as well",
+            match blocks {
+                1 => "1 block".to_string(),
+                n => format!("{n} blocks"),
+            },
+            address(*peer)
+        ),
         D::PartReleased {
             part_index, reason, ..
         } => format!("part {part_index} released: {}", release_words(*reason)),

@@ -1,7 +1,7 @@
 //! The **Delivery Rate** of one link: bytes over windows of at least one
 //! second, smoothed by a quarter per window (ADR-0026, ADR-0029). Time is an
-//! argument, so the worker's request pipeline and the download's Tail Race
-//! read the same measure from the instants they are handed.
+//! argument, so the worker's request pipeline and the download's End Game
+//! read the same measure from the instants they are handed (ADR-0117).
 
 use std::time::{Duration, Instant};
 

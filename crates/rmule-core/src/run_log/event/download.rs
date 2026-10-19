@@ -288,6 +288,18 @@ impl DownloadEvent {
                 .count("id", download_id.as_u64())
                 .peer_address("peer", peer)
                 .count("part_index", *part_index),
+            D::EndGameBlocks {
+                download_id,
+                peer,
+                part_index,
+                blocks,
+                bytes,
+            } => Record::new("download.end_game_blocks")
+                .count("id", download_id.as_u64())
+                .peer_address("peer", peer)
+                .count("part_index", *part_index)
+                .count("blocks", *blocks)
+                .count("bytes", *bytes),
             D::PartReleased {
                 download_id,
                 peer,
