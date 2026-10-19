@@ -72,10 +72,11 @@ const X_KIB: u32 = 2;
 /// S's upload cap, KiB/s: rmule's 1 MiB download takes about 16 s.
 const SEED_MAX_UPLOAD_KIB: &str = "64";
 const STOP_GRACE_SECS: u64 = 10;
-/// The smallest IP packet that carries eD2k bytes rather than a bare ACK
-/// (20-byte IP and 32-byte TCP headers with timestamps): a data hold drops
-/// it and lets the handshake and the ACKs through.
-const DATA_HOLD_MIN_LEN: &str = "60:65535";
+/// IP packets longer than a bare ACK (20-byte IP and 32-byte TCP headers
+/// with timestamps): with the SYN excluded (a SYN with its options is 60
+/// bytes), a data hold drops what carries eD2k bytes and lets the handshake
+/// and the ACKs through.
+const DATA_HOLD_MIN_LEN: &str = "53:65535";
 
 /// Which race the flow stages.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -180,7 +181,9 @@ fn hold(to: Ipv4Addr, port: u16, syn: bool) -> Vec<String> {
     if syn {
         rule.push("--syn".to_owned());
     } else {
-        rule.extend(["-m", "length", "--length", DATA_HOLD_MIN_LEN].map(str::to_owned));
+        rule.extend(
+            ["!", "--syn", "-m", "length", "--length", DATA_HOLD_MIN_LEN].map(str::to_owned),
+        );
     }
     rule.extend(["-j", "DROP"].map(str::to_owned));
     rule
