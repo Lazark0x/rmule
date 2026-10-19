@@ -15,14 +15,18 @@
 //! external port; rmule's own row names that port; after the driver exited no
 //! row of rmule's survives (the release named the moved port); and the
 //! second host's row on the old port survives too — rmule withdrew only what
-//! it held.
+//! it held. Two more read who asked what: on the gateway's log, every
+//! `DeletePortMapping` rmule sent follows its own `GetSpecificPortMappingEntry`
+//! for that port (UPnP's delete names no internal client, so only the
+//! entry's answer says whose mapping it is); and rmule's Run Log carries
+//! `port_mapping.release_kept` for the port the second host holds.
 
 use anyhow::{Context, Result, bail};
 
 use crate::docker::RunContainer;
 use crate::flow::bench::Bench;
 use crate::flow::nat::NAT_LAN_GATEWAY;
-use crate::flow::nat::portmap::gateway::GatewayRecord;
+use crate::flow::nat::portmap::gateway::{GatewayRecord, SoapRequest};
 use crate::flow::nat::portmap::row::DriverRow;
 use crate::flow::nat::portmap::verdict::Claim;
 use crate::flow::nat::portmap::{DRIVER_LAN_ADDRESS, PEER_TCP_PORT, PRECLAIM_LAN_ADDRESS};
@@ -72,8 +76,39 @@ pub(crate) fn take_the_port(bench: &Bench, image: &str, lan_network: &str) -> Re
     Ok(())
 }
 
-/// The claims of `portmap-moved`.
-pub(crate) fn claims(gateway: &GatewayRecord, rmule: &DriverRow) -> Vec<Claim> {
+/// The Run Log record of a release the gateway kept.
+const RELEASE_KEPT: &str = "port_mapping.release_kept";
+
+/// rmule's `GetSpecificPortMappingEntry` asks, and the `DeletePortMapping`s
+/// it sent with no ask for the same port and protocol before them.
+fn unchecked_deletes(soap: &[SoapRequest]) -> (Vec<&SoapRequest>, Vec<&SoapRequest>) {
+    let ours: Vec<&SoapRequest> = soap
+        .iter()
+        .filter(|request| request.client == DRIVER_LAN_ADDRESS)
+        .collect();
+    let asks: Vec<&SoapRequest> = ours
+        .iter()
+        .copied()
+        .filter(|request| request.action == "GetSpecificPortMappingEntry")
+        .collect();
+    let unchecked = ours
+        .iter()
+        .enumerate()
+        .filter(|(_, request)| request.action == "DeletePortMapping")
+        .filter(|(index, delete)| {
+            ours[..*index].iter().all(|earlier| {
+                earlier.action != "GetSpecificPortMappingEntry"
+                    || earlier.port().is_none()
+                    || earlier.port() != delete.port()
+            })
+        })
+        .map(|(_, delete)| *delete)
+        .collect();
+    (asks, unchecked)
+}
+
+/// The claims of `portmap-moved`; `driver_log` is rmule's own output.
+pub(crate) fn claims(gateway: &GatewayRecord, rmule: &DriverRow, driver_log: &str) -> Vec<Claim> {
     let rows = |address: &str| -> Vec<String> {
         gateway
             .leases
@@ -126,6 +161,11 @@ pub(crate) fn claims(gateway: &GatewayRecord, rmule: &DriverRow) -> Vec<Claim> {
             |held| Claim::about(name, held, note.clone()),
         )
     };
+    let (asks, unchecked) = unchecked_deletes(&gateway.soap);
+    let kept: Vec<&str> = driver_log
+        .lines()
+        .filter_map(|line| line.split_once(RELEASE_KEPT).map(|(_, rest)| rest.trim()))
+        .collect();
     vec![
         Claim::about(
             "a-second-host-took-the-port-after-the-grant",
@@ -173,5 +213,81 @@ pub(crate) fn claims(gateway: &GatewayRecord, rmule: &DriverRow) -> Vec<Claim> {
             neighbour_after,
             format!("after the driver exited the gateway's IPv4 table read <{after_note}>"),
         ),
+        Claim::about(
+            "rmule-asked-whose-mapping-it-was-before-each-delete",
+            !asks.is_empty() && unchecked.is_empty(),
+            format!(
+                "rmule's GetSpecificPortMappingEntry answers: <{}>; its DeletePortMapping with \
+                 no ask for that port before it: <{}>",
+                details(&asks),
+                details(&unchecked)
+            ),
+        ),
+        Claim::about(
+            "the-run-log-says-the-second-hosts-port-was-left-alone",
+            kept.iter()
+                .any(|line| line.contains(&format!("external_port={PEER_TCP_PORT} "))),
+            format!("rmule's {RELEASE_KEPT} records: <{}>", kept.join(" | ")),
+        ),
     ]
+}
+
+/// Each request's detail line, or its action where the daemon wrote none.
+fn details(requests: &[&SoapRequest]) -> String {
+    requests
+        .iter()
+        .map(|request| {
+            request
+                .detail
+                .clone()
+                .unwrap_or_else(|| request.action.clone())
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SoapRequest, unchecked_deletes};
+
+    fn request(client: &str, action: &str, detail: &str) -> SoapRequest {
+        SoapRequest {
+            client: client.to_owned(),
+            action: action.to_owned(),
+            detail: Some(format!("{action}: {detail}")),
+        }
+    }
+
+    /// Run `1792392425`: the second host checked 4662, rmule deleted it
+    /// unchecked. A check rmule sent for the port before its delete clears it.
+    #[test]
+    fn a_delete_counts_as_checked_only_after_rmules_own_ask_for_its_port() {
+        let neighbours_check = request(
+            "10.77.0.5",
+            "GetSpecificPortMappingEntry",
+            "rhost='' 4662 TCP found => 10.77.0.5:4662 desc='preclaim' duration=600",
+        );
+        let delete = |port| {
+            request(
+                "10.77.0.4",
+                "DeletePortMapping",
+                &format!("external port: {port}, protocol: TCP"),
+            )
+        };
+        let blind = [neighbours_check.clone(), delete(4662)];
+        let (asks, unchecked) = unchecked_deletes(&blind);
+        assert!(asks.is_empty());
+        assert_eq!(unchecked.len(), 1);
+        let ours = request(
+            "10.77.0.4",
+            "GetSpecificPortMappingEntry",
+            "rhost='' 53906 TCP found => 10.77.0.4:4662 desc='rmule' duration=120",
+        );
+        let checked = [neighbours_check, ours, delete(53906)];
+        let (asks, unchecked) = unchecked_deletes(&checked);
+        assert_eq!(asks.len(), 1);
+        assert!(unchecked.is_empty());
+        let other_port = [checked[1].clone(), delete(4662)];
+        assert_eq!(unchecked_deletes(&other_port).1.len(), 1);
+    }
 }

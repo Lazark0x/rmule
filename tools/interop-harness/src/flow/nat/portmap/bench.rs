@@ -464,6 +464,7 @@ fn drive(bench: &mut Bench, options: &PortMapOptions<'_>) -> Result<()> {
 
     let proof = nat_type_proof(&leg_dir)?;
     let rmule = DriverRow::read(&leg_dir.join("portmap-row.toml"))?;
+    let driver_log = fs::read_to_string(leg_dir.join("driver.log")).context("read driver.log")?;
     let (label, detail, claims) = verdict::judge(
         flow,
         &proof,
@@ -471,6 +472,7 @@ fn drive(bench: &mut Bench, options: &PortMapOptions<'_>) -> Result<()> {
         &rmule,
         kad_wire.as_ref(),
         pcp_sources.as_ref(),
+        &driver_log,
     );
     verdict::write(
         options.layout,

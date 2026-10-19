@@ -133,12 +133,13 @@ pub(crate) fn judge(
     rmule: &DriverRow,
     kad_wire: Option<&KadHelperWire>,
     sources: Option<&PcpSources>,
+    driver_log: &str,
 ) -> (&'static str, String, Vec<Claim>) {
     let mut claims = vec![gateway_claim(proof)];
     claims.extend(match flow {
         PortMapFlow::HighId | PortMapFlow::NatPmp => high_id_claims(flow, gateway, rmule, kad_wire),
         PortMapFlow::Mismatch => mismatch_claims(gateway, rmule),
-        PortMapFlow::Moved => super::moved::claims(gateway, rmule),
+        PortMapFlow::Moved => super::moved::claims(gateway, rmule, driver_log),
         PortMapFlow::Ipv6Pinhole | PortMapFlow::Ipv6PinholeLinkLocal => {
             pinhole_claims(gateway, rmule)
         }
