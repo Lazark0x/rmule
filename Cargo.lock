@@ -2814,6 +2814,7 @@ dependencies = [
  "rmule-peer",
  "rmule-primitives",
  "serde",
+ "socket2",
  "tempfile",
  "toml",
 ]
