@@ -39,6 +39,7 @@ use crate::flow::logs::{
 };
 use crate::rmule::{DownloadCrypt, RmuleClientContainer, release_held_download};
 
+mod hand_over;
 mod known_sources;
 mod standing;
 mod verdict;
@@ -132,6 +133,11 @@ pub struct PeerUdpReaskEmitOptions<'a> {
     /// Timed policy flips the downloading rmule applies mid-run, each
     /// `<secs>:<policy>` from its login (`--peer-crypt-flip`).
     pub peer_crypt_flip: &'a [String],
+    /// Draw the Queue Standing's hand-over instead of sitting the reask
+    /// window: free a slot once rmule is queued, raise the sharer's upload cap
+    /// to this many KiB/s at the grant, and wait up to the window for both
+    /// downloads (needs `two_downloads`).
+    pub hand_over_upload_kib: Option<u64>,
 }
 
 /// The peer-UDP **reask EMIT** flow (flow L emit-leg, ADR-0057).
@@ -423,10 +429,23 @@ pub fn run_peer_udp_reask_emit(options: PeerUdpReaskEmitOptions<'_>) -> Result<(
 
         // Sit the FILEREASKTIME window. The tap records whatever rmule emits toward
         // the sharer; the operator lets the CLI run.
-        sit_tap_window(
-            "peer_udp_reask_emit",
-            Duration::from_secs(options.reask_window_secs),
-        );
+        if let Some(upload_kib) = options.hand_over_upload_kib {
+            hand_over::drive(
+                &bench,
+                &hand_over::Drive {
+                    sharer: &sharer,
+                    holder: &holders[0],
+                    rmule: &bench.names.rmule_container_name,
+                    upload_kib,
+                    window: Duration::from_secs(options.reask_window_secs),
+                },
+            )?;
+        } else {
+            sit_tap_window(
+                "peer_udp_reask_emit",
+                Duration::from_secs(options.reask_window_secs),
+            );
+        }
 
         // Harvest, source/dest swapped from consume: rmule → sharer is the 0x90
         // reask evidence; sharer → rmule is the 0x91/0x92/0x93 answer evidence.
@@ -557,6 +576,13 @@ pub fn run_peer_udp_reask_emit(options: PeerUdpReaskEmitOptions<'_>) -> Result<(
                     rmule: rmule_ip.trim().parse().context("rmule address")?,
                     sharer: sharer_ip.trim().parse().context("sharer address")?,
                 },
+            )?;
+        }
+        if options.hand_over_upload_kib.is_some() {
+            hand_over::write(
+                options.layout.root(),
+                rmule_ip.trim().parse().context("rmule address")?,
+                sharer_ip.trim().parse().context("sharer address")?,
             )?;
         }
         Ok(())

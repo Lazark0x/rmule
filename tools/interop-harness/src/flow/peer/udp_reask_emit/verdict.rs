@@ -408,6 +408,9 @@ pub fn score_run_dir(
         .context("stat synthetic/shared.bin")?
         .len();
     let pcap = root.join("emit-reask-capture/emit-reask.pcap");
+    if root.join(super::hand_over::VERDICT).exists() {
+        super::hand_over::write(root, rmule, sharer)?;
+    }
     if root.join("synthetic").join(super::SECOND_LINK).exists() {
         super::standing::write(
             root,

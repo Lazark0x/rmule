@@ -114,15 +114,15 @@ pub(crate) struct Rows {
 
 /// The file switch one link carried.
 #[derive(Debug, PartialEq)]
-struct Switch {
+pub(crate) struct Switch {
     /// `cancel` when rmule sent `OP_CANCELTRANSFER` between the riding file's
     /// last part frame and the next file's request, else `silent`.
-    release: &'static str,
+    pub(crate) release: &'static str,
     /// `accept`, `rank` or `none`, and how long after the ask it came.
-    answer: &'static str,
-    answer_ms: Option<f64>,
+    pub(crate) answer: &'static str,
+    pub(crate) answer_ms: Option<f64>,
     /// The next file's part frames after the switch.
-    parts_after: usize,
+    pub(crate) parts_after: usize,
 }
 
 /// The verdict file.
@@ -241,7 +241,7 @@ fn requested(frame: &Ed2kFrame) -> Option<[u8; 16]> {
 /// The switch on one link from the file `[from, to]` rode first to the other,
 /// read from the frames rmule `sent` and the frames it `heard`; `None` when
 /// rmule named `to` only before `from`'s last part, or never.
-fn link_switch(
+pub(crate) fn link_switch(
     sent: &[Ed2kFrame],
     heard: &[Ed2kFrame],
     [from, to]: [[u8; 16]; 2],
