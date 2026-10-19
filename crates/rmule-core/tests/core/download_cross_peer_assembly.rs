@@ -31,7 +31,7 @@ async fn a_dropped_workers_bytes_stay_and_the_next_is_handed_only_the_rest() {
     let drop_at = 40u64;
     let dropping_peer = loopback_peer(1);
     let resuming_peer = loopback_peer(2);
-    let resume_offsets = Arc::new(StdMutex::new(HashMap::new()));
+    let first_handed = Arc::new(StdMutex::new(HashMap::new()));
 
     let mut core = Core::builder(
         CoreConfig {
@@ -52,7 +52,7 @@ async fn a_dropped_workers_bytes_stay_and_the_next_is_handed_only_the_rest() {
         dropping_peer,
         drop_at,
         bytes: bytes.clone(),
-        resume_offsets: Arc::clone(&resume_offsets),
+        first_handed: Arc::clone(&first_handed),
     })
     .build();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
@@ -75,7 +75,7 @@ async fn a_dropped_workers_bytes_stay_and_the_next_is_handed_only_the_rest() {
         }
     }
 
-    let offsets = resume_offsets.lock().unwrap();
+    let offsets = first_handed.lock().unwrap();
     assert_eq!(
         offsets.get(&dropping_peer),
         Some(&0),
@@ -117,7 +117,7 @@ async fn core_retires_all_contributors_when_assembled_part_fails_verification() 
     let peer_b = loopback_peer(2);
     let peer_c = loopback_peer(3);
     let a_done = Arc::new(tokio::sync::Notify::new());
-    let resume_offsets = Arc::new(StdMutex::new(HashMap::new()));
+    let first_handed = Arc::new(StdMutex::new(HashMap::new()));
 
     // Two workers race the part and the third source backfills.
     let mut core = Core::builder(
@@ -152,7 +152,7 @@ async fn core_retires_all_contributors_when_assembled_part_fails_verification() 
         corrupt_tail,
         part_hashes,
         a_done: Arc::clone(&a_done),
-        resume_offsets: Arc::clone(&resume_offsets),
+        first_handed: Arc::clone(&first_handed),
     })
     .build();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
@@ -201,10 +201,10 @@ async fn core_retires_all_contributors_when_assembled_part_fails_verification() 
         "a surviving peer must finish the part after the contributors are retired"
     );
     assert_eq!(
-        resume_offsets.lock().unwrap().get(&peer_c),
+        first_handed.lock().unwrap().get(&peer_c),
         Some(&0),
         "the surviving peer must be handed offset 0 (buffer cleared), got {:?}",
-        resume_offsets.lock().unwrap().get(&peer_c),
+        first_handed.lock().unwrap().get(&peer_c),
     );
 }
 
@@ -212,7 +212,7 @@ struct ResumeAfterDropTransfer {
     dropping_peer: PeerEndpoint,
     drop_at: u64,
     bytes: Vec<u8>,
-    resume_offsets: Arc<StdMutex<HashMap<PeerEndpoint, u64>>>,
+    first_handed: Arc<StdMutex<HashMap<PeerEndpoint, u64>>>,
 }
 
 impl PeerTransferService for ResumeAfterDropTransfer {
@@ -228,7 +228,7 @@ impl PeerTransferService for ResumeAfterDropTransfer {
         let dropping_peer = self.dropping_peer;
         let drop_at = self.drop_at as usize;
         let bytes = self.bytes.clone();
-        let resume_offsets = Arc::clone(&self.resume_offsets);
+        let first_handed = Arc::clone(&self.first_handed);
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
             let _ = event_tx.send(advertised).await;
@@ -239,7 +239,7 @@ impl PeerTransferService for ResumeAfterDropTransfer {
                     }
                     PeerWorkerCommand::RequestHashSet => {}
                     PeerWorkerCommand::RequestBlocks { blocks, handout } => {
-                        resume_offsets
+                        first_handed
                             .lock()
                             .unwrap()
                             .entry(peer)
@@ -282,7 +282,7 @@ struct CrossPeerVerifyFailTransfer {
     corrupt_tail: Vec<u8>,
     part_hashes: Vec<PartHash>,
     a_done: Arc<tokio::sync::Notify>,
-    resume_offsets: Arc<StdMutex<HashMap<PeerEndpoint, u64>>>,
+    first_handed: Arc<StdMutex<HashMap<PeerEndpoint, u64>>>,
 }
 
 impl PeerTransferService for CrossPeerVerifyFailTransfer {
@@ -302,7 +302,7 @@ impl PeerTransferService for CrossPeerVerifyFailTransfer {
         let corrupt_tail = self.corrupt_tail.clone();
         let part_hashes = self.part_hashes.clone();
         let a_done = Arc::clone(&self.a_done);
-        let resume_offsets = Arc::clone(&self.resume_offsets);
+        let first_handed = Arc::clone(&self.first_handed);
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
             let _ = event_tx.send(advertised).await;
@@ -321,7 +321,7 @@ impl PeerTransferService for CrossPeerVerifyFailTransfer {
                             .await;
                     }
                     PeerWorkerCommand::RequestBlocks { blocks, handout } => {
-                        resume_offsets
+                        first_handed
                             .lock()
                             .unwrap()
                             .entry(peer)
