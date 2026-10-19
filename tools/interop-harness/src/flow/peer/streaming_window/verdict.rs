@@ -176,7 +176,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         &seeds,
         &file_hash,
     )?;
-    let mut pace = pace::read(&links, &roles);
+    let mut pace = pace::read(&links, &roles, &run.corrupt_parts);
     let blocks = blocks::read(&links, topology.file_size);
     let caps: u64 = topology
         .seeds
@@ -395,7 +395,8 @@ fn byte_equal(run_dir: &Path) -> Result<Claim> {
 
 /// The End Game's bound, ADR-0117: every Duplicate Set is at most three
 /// blocks and three `EMBLOCKSIZE`, and the bytes the tap saw land twice are no
-/// more than the sets asked. A run with no set — an older build, or a swarm
+/// more than the sets asked; a part fetched again after a failed check lands
+/// twice by design and is left out. A run with no set — an older build, or a swarm
 /// that never ran short — makes no claim.
 pub(crate) fn end_game_bound(run: &Replay, pace: &Pace) -> Claim {
     const NAME: &str = "every-end-game-set-is-three-blocks-at-most-and-bounds-the-bytes-twice";
@@ -414,12 +415,14 @@ pub(crate) fn end_game_bound(run: &Replay, pace: &Pace) -> Claim {
         within && pace.duplicate_bytes <= asked,
         Evidence::Captured,
         format!(
-            "{} sets, the widest {} blocks, the largest {} bytes; {} bytes asked twice, {} landed twice",
+            "{} sets, the widest {} blocks, the largest {} bytes; {} bytes asked twice, {} landed \
+             twice (and {} inside parts fetched again after a failed check)",
             run.end_game_sets.len(),
             widest.unwrap_or(0),
             largest.unwrap_or(0),
             asked,
-            pace.duplicate_bytes
+            pace.duplicate_bytes,
+            pace.refetched_bytes
         ),
     )
 }

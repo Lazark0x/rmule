@@ -12,10 +12,12 @@
 //! and `OP_COMPRESSEDPART_I64` (`0xC5 0xA1`); stock 2.3.3
 //! `UploadClient.cpp:246-341`.
 
+use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 
 use anyhow::Result;
+use rmule_primitives::ED2K_PART_SIZE;
 use serde::Serialize;
 
 use crate::flow::pcap::{Ed2kFrame, records, tcp_capture};
@@ -84,6 +86,9 @@ pub(crate) struct Pace {
     /// Uncompressed bytes that landed on an offset another frame had already
     /// delivered — what the End Game's duplicates spent.
     pub(crate) duplicate_bytes: u64,
+    /// The same, inside parts fetched again after they failed their check:
+    /// the refetch, not the End Game, landed these.
+    pub(crate) refetched_bytes: u64,
     /// The file over the sum of the seeds' caps: the end if every link ran
     /// at its cap to the last byte.
     pub(crate) ideal_s: Option<f64>,
@@ -155,8 +160,9 @@ pub(crate) fn links(
 }
 
 /// The pace of every seed's `links`, each under its role in `roles`.
-pub(crate) fn read(links: &SeedLinks, roles: &[String]) -> Pace {
+pub(crate) fn read(links: &SeedLinks, roles: &[String], refetched: &BTreeSet<u32>) -> Pace {
     let mut delivered: Vec<(u64, u64)> = Vec::new();
+    let mut again: Vec<(u64, u64)> = Vec::new();
     let mut paces = Vec::new();
     for (role, connections) in roles.iter().zip(links) {
         for events in connections {
@@ -167,7 +173,13 @@ pub(crate) fn read(links: &SeedLinks, roles: &[String]) -> Pace {
                     packed: false,
                 } = event
                 {
-                    delivered.push((*start, start + len));
+                    // A part frame never crosses a part's end.
+                    let part = u32::try_from(start / ED2K_PART_SIZE).unwrap_or(u32::MAX);
+                    if refetched.contains(&part) {
+                        again.push((*start, start + len));
+                    } else {
+                        delivered.push((*start, start + len));
+                    }
                 }
             }
         }
@@ -175,10 +187,14 @@ pub(crate) fn read(links: &SeedLinks, roles: &[String]) -> Pace {
         pace.role.clone_from(role);
         paces.push(pace);
     }
-    let payload: u64 = delivered.iter().map(|(start, end)| end - start).sum();
+    let twice = |intervals: &mut Vec<(u64, u64)>| {
+        let payload: u64 = intervals.iter().map(|(start, end)| end - start).sum();
+        payload.saturating_sub(union_len(intervals))
+    };
     Pace {
         links: paces,
-        duplicate_bytes: payload.saturating_sub(union_len(&mut delivered)),
+        duplicate_bytes: twice(&mut delivered),
+        refetched_bytes: twice(&mut again),
         ideal_s: None,
     }
 }
@@ -388,6 +404,28 @@ mod tests {
         assert_eq!(pace.most_blocks_asked_ahead, 3);
         assert_eq!(pace.idle_share, 0.0);
         assert_eq!(pace.cancels, 1);
+    }
+
+    /// A part fetched again after it failed its check lands its bytes twice
+    /// by design; those are not the End Game's.
+    #[test]
+    fn a_refetched_part_lands_twice_apart_from_the_end_game() {
+        let part_one = ED2K_PART_SIZE;
+        let links = vec![vec![vec![
+            data(0.1, 0),
+            data(0.2, 0),
+            data(0.3, part_one),
+            data(0.4, part_one),
+            data(0.5, part_one),
+        ]]];
+        let roles = ["a".to_owned()];
+        let pace = read(&links, &roles, &BTreeSet::from([1]));
+        assert_eq!(pace.duplicate_bytes, 10_240);
+        assert_eq!(pace.refetched_bytes, 20_480);
+        assert_eq!(
+            read(&links, &roles, &BTreeSet::new()).duplicate_bytes,
+            30_720
+        );
     }
 
     #[test]

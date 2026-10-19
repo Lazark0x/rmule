@@ -243,6 +243,8 @@ pub(crate) struct Replay {
     pub(crate) remote_queued: BTreeSet<Ipv4Addr>,
     /// Sources the Remote-Queued Pool re-asked by the TCP full ask.
     pub(crate) reasked_over_tcp: BTreeSet<Ipv4Addr>,
+    /// Parts that failed their check with no root and were fetched again.
+    pub(crate) corrupt_parts: BTreeSet<u32>,
     /// Every tick, in order: unix seconds and the part map.
     pub(crate) ticks: Vec<(f64, String)>,
     /// Ticks whose part map disagrees with the replayed one.
@@ -390,6 +392,7 @@ pub(crate) fn replay(events: &[LogEvent], topology: &Topology<'_>) -> Replay {
             }
             LogEvent::Corrupt { part } => {
                 parts.holders.remove(part);
+                out.corrupt_parts.insert(*part);
             }
             LogEvent::Retired { peer, reason } => {
                 if reason != NO_NEEDED_PARTS {
