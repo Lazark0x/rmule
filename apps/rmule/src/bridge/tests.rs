@@ -417,28 +417,6 @@ async fn grace_elapsed_sends_an_unconfirmed_flush_flash_before_the_ack() {
 /// Log as the core runs it, whether or not the UI is still there to hear it.
 #[tokio::test(start_paused = true)]
 async fn quit_steps_are_written_to_the_run_log_even_with_the_ui_gone() {
-    use std::io::Write;
-
-    #[derive(Clone, Default)]
-    struct Captured(Arc<Mutex<Vec<u8>>>);
-    impl Write for Captured {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().expect("captured").extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    let captured = Captured::default();
-    let sink = captured.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .with_writer(move || sink.clone())
-        .finish();
-    let _installed = tracing::subscriber::set_default(subscriber);
-
     let (events_tx, events_rx) = mpsc::channel(4);
     for step in [rmule_core::QuitStep::Search, rmule_core::QuitStep::Kad] {
         events_tx
@@ -449,16 +427,25 @@ async fn quit_steps_are_written_to_the_run_log_even_with_the_ui_gone() {
     drop(events_tx);
     let (action_tx, action_rx) = mpsc::channel(4);
     drop(action_rx);
-    forward_quit(events_rx, &action_tx, &Default::default()).await;
+    let written = Mutex::new(Vec::new());
+    forward_quit(
+        events_rx,
+        &action_tx,
+        &Default::default(),
+        |record, level| {
+            written.lock().expect("written").push(record.render(level));
+        },
+    )
+    .await;
 
-    let log = String::from_utf8(captured.0.lock().expect("captured").clone()).expect("utf8");
-    let steps: Vec<&str> = log
-        .lines()
+    let written = written.into_inner().expect("written");
+    let steps: Vec<&String> = written
+        .iter()
         .filter(|line| line.contains("quit.step"))
         .collect();
-    assert_eq!(steps.len(), 2, "{log}");
+    assert_eq!(steps.len(), 2, "{written:?}");
     assert!(
         steps[0].contains("step=search") && steps[1].contains("step=kad"),
-        "{log}"
+        "{written:?}"
     );
 }

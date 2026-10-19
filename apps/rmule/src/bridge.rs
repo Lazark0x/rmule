@@ -258,7 +258,7 @@ async fn run<H: CoreHandle>(
                 if let Ok(ack) = ack {
                     let drained = tokio::time::timeout(
                         CORE_SHUTDOWN_GRACE,
-                        forward_quit(core.quit(), &actions, &run_log),
+                        forward_quit(core.quit(), &actions, &run_log, rmule_core::run_log::write),
                     )
                     .await;
                     if drained.is_err() {
@@ -283,17 +283,18 @@ async fn run<H: CoreHandle>(
 }
 
 /// Drain quit's event stream to its end — the flush — writing every fact to
-/// the Run Log and forwarding it onto the bus, so the UI names each quit step
-/// as the core runs it. A UI already gone stops the forwarding, never the
-/// drain or the log.
+/// the Run Log through `write` and forwarding it onto the bus, so the UI names
+/// each quit step as the core runs it. A UI already gone stops the forwarding,
+/// never the drain or the log.
 async fn forward_quit(
     mut events: mpsc::Receiver<CoreEvent>,
     actions: &mpsc::Sender<Action>,
     run_log: &rmule_core::run_log::LevelHandle,
+    write: impl Fn(&rmule_core::run_log::Record, rmule_core::run_log::Level),
 ) {
     let mut forwarding = true;
     while let Some(event) = events.recv().await {
-        rmule_core::run_log::write(&event.record(), run_log.get());
+        write(&event.record(), run_log.get());
         if forwarding {
             forwarding = actions.send(Action::Core(event)).await.is_ok();
         }
