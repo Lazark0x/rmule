@@ -449,9 +449,10 @@ source's UDP reask gives way to the TCP ask (ADR-0108).
 _Avoid_: SX throttle (that is the serving side's)
 
 **Ask Name**:
-One of the names the **Source Ask Clock** knows a peer by: its **Source Book** record's
-aliases — its TCP endpoint, a Low-ID callback's `(server, low_id)` when the server that
-assigned the id is known — and the User Hash the record knows. A stamp lands on the record; a read merges what the run kept under each of its
+One of the names the **Source Ask Clock** knows a peer by, and the **Queue Standings** find it
+by: its **Source Book** record's aliases — its TCP endpoint, a Low-ID callback's
+`(server, low_id)` when the server that assigned the id is known — and the User Hash the record
+knows, a record's statement or the hello its standing kept past the worker. A stamp lands on the record; a read merges what the run kept under each of its
 names and every live record sharing its User Hash, so a peer is the same peer to the gate
 across connections — aMule's `FindMatchingClient` (ADR-0108).
 _Avoid_: peer key (several names, one peer)
@@ -475,19 +476,38 @@ that peer again, is cleared when a run starts, and the row keeps the newest 64 (
 _Avoid_: dial failure (`DialFailure` is a server dial's)
 
 **Remote-Queued Pool**:
-The **Source Book** records in their RemoteQueued stage, each holding its queue standing at a remote uploader **without a connection**: the rank, the UDP contact and peer-UDP crypt target the identity it queued under stated, the reask clock and its one-ping latch (ADR-0057, ADR-0090). Entered when a worker on the uploader's queue — its upload request out, ranked or not yet — hangs up (a rank without a grant always hangs it up, the **Queued Hang-Up**), when a granted worker gives back a slot it has no part for (`0x56`, `NoFreePart`, the ordinary cadence), or when a worker's **Advertised Parts** hold no part we lack (rank 0, the no-needed-parts mark, ADR-0112); kept alive by the reask heartbeat the brain's tick runs while we are connected to a server or Kad (UDP ping first — a called-back source's at the address it called in from, or through its buddy while we are firewalled — TCP full ask as fallback, a called-back source's by its callback road); left on grant (the uploader dials back), file-not-found (which spends it), the TCP full ask, or — queue-full or holding no part we lack, while the file holds 80 % of aMule's default source limit — one of the book's purges. Queue standing is a fact about the remote peer, not about a socket.
+The **Source Book** records in their RemoteQueued stage, each holding its queue standing at a remote uploader **without a connection**: the rank, the UDP contact and peer-UDP crypt target the identity it queued under stated, the reask clock and its one-ping latch (ADR-0057, ADR-0090). Entered when a worker on the uploader's queue — its upload request out, ranked or not yet — hangs up (a rank without a grant always hangs it up, the **Queued Hang-Up**), when a granted worker gives back a slot it has no part for (`0x56`, `NoFreePart`, the ordinary cadence), or when a worker's **Advertised Parts** hold no part we lack (rank 0, the no-needed-parts mark, ADR-0112), or when a fill takes a pooled record of a peer standing in another download's **Queue Standing** (it waits there with no rank and no contact); kept alive, when its download holds the peer's Queue Standing, by the reask heartbeat the brain's tick runs while we are connected to a server or Kad (UDP ping first — a called-back source's at the address it called in from, or through its buddy while we are firewalled — TCP full ask as fallback, a called-back source's by its callback road); left on grant (the uploader dials back), a call to the standing holder's link, file-not-found (which spends it), the TCP full ask, or — queue-full or holding no part we lack, while the file holds 80 % of aMule's default source limit — one of the book's purges. Queue standing is a fact about the remote peer, not about a socket.
 _Avoid_: waiting workers (no worker exists while pooled), source cache, reconnect list, pool (as a list apart from the book)
 
 **Awaited Grant**:
 A **Remote-Queued Pool** record filed in the **Peer Links** (`SharedPeerLinks`) under its
-**Ask Names** — its dial endpoint and the User Hash its record knows — by its download's run,
-held to the RemoteQueued stage after every brain step (ADR-0107). A link nobody rides that reads
-an unasked `OP_ACCEPTUPLOADREQ` — the uploader's promotion by dial-back, or on a link it held —
-offers it to the oldest Awaited Grant under its names; that download opens the record's worker on
+**Ask Names** — its dial endpoint and the User Hash its record knows, a record's statement or the
+hello its standing kept past the worker — by its download's run, held to the RemoteQueued stage
+and to its **Queue Standing**'s holder after every brain step (ADR-0107). A link nobody rides that
+reads an unasked `OP_ACCEPTUPLOADREQ` — the uploader's promotion by dial-back, or on a link it
+held — offers it to the holder's Awaited Grant under its names, else the oldest, so a peer back
+from a new address is found by its User Hash; that download opens the record's worker on
 the link at once, with no admission by the **Connection Budget**, and the worker asks as any rider
 does (ADR-0057, ADR-0116). With none
-to take it, the link gives the slot back with `0x56` (ADR-0056).
+to take it, the link gives the slot back with `0x56` (ADR-0056). A grant the holder takes, by
+this road or on its own ask, calls every other Awaited Grant under the peer's names to its link.
 _Avoid_: pending grant (that is the serve side's dial-back), standing (the record's own facts)
+
+**Queue Standing**:
+rmule's one place in a remote uploader's queue, per peer across the **Download Set**, as aMule's
+uploader holds one queue entry per client and re-targets it between files (`SetUploadFileID`).
+The core's **Queue Standings** file every record holding a standing under its **Ask Names**, each
+run republishing its places after every step, and keep per name a stamp of the peer's last ask.
+Held by the download whose **Slot Ask** the peer read last (one that may need a part of the peer
+before one holding no part we need): its record alone re-asks, the ping naming its file or the TCP
+full ask, once per cycle. Every other download with a record at the peer waits on it — aMule's
+A4AF file — and asks nothing: no ping, no TCP full ask, no first ask; a fill reaching such a
+peer's pooled record parks it in the RemoteQueued stage instead. A holder whose standing ends
+leaves it to the next waiter, which pings nothing (the peer holds the other file) and asks first
+by TCP a period after the last stamp; a grant the holder takes calls the waiters to its link,
+where the swap rule hands it on (ADR-0107). The rank, contact and clock a record carries are its
+facts of the standing.
+_Avoid_: per-download standing, A4AF source (rmule waits on the standing, then on the link)
 
 **Asking**:
 The activity that wins a source a queue place: a road opened to it — a dial, a rung-0 dial, a

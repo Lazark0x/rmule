@@ -51,7 +51,7 @@ its worker's slot ask (ADR-0026):
 |---|---|---|---|
 | pooled | Pooled | no | when a fill takes it |
 | asking | Dialing, CallbackPending, a Worker whose slot is not granted | yes (a callback holds its road) | at the answer or the record's end |
-| queued | RemoteQueued | no | at a grant on a link, a TCP full ask (back to asking), a `0x92`, a purge |
+| queued | RemoteQueued: holding the peer's Queue Standing, or waiting on another download's (ADR-0107) | no | at a grant on a link, a call to the standing holder's link, a TCP full ask (back to asking), a `0x92`, a purge |
 | transferring | a Worker whose slot is granted | yes | at the worker's end; a `0x57` makes it asking again until its rank |
 | retired | none: the record left the book or is spent | no | — |
 
@@ -70,8 +70,9 @@ The operator reads the asking, queued and transferring counts of every running d
 
 Invariants every transition keeps:
 
-1. **A grant is never admitted.** A grant on a live worker, and an Awaited Grant on a link nobody rides,
-   take a slot whatever the Dial Window and the Ceiling read. Neither opens a connection.
+1. **A grant is never admitted.** A grant on a live worker, an Awaited Grant on a link nobody rides, and
+   a waiter called to its standing holder's link (ADR-0107) take a slot whatever the Dial Window and the
+   Ceiling read. None opens a connection.
 2. **No road opens without the budget.** A fill asks the Dial Window and the Ceiling before it takes a
    record from its lane. A refused fill takes nothing; the brain names a wake at the window's turn and
    fills again then, as aMule re-reads `TooManySockets` on its process loop. A token admitted for a fill
@@ -80,7 +81,9 @@ Invariants every transition keeps:
    (ADR-0057) and holds no connection. The download's one hash-set ask passes only to a transferring
    worker, so no hang-up drops a hash set in flight (ADR-0026).
 4. **A queued source is asked again only by its reask.** Its next slot ask comes with the TCP full ask
-   at the reask period, never sooner than aMule's 590 s.
+   at the reask period, never sooner than aMule's 590 s. A peer queued for several downloads is asked
+   once per cycle, by the download holding its Queue Standing; the others wait on it and ask nothing
+   (ADR-0107 invariants 12-14).
 5. **The Ceiling counts what the stages hold.** Each run republishes its count, read off its Source
    Book, after every step; a run's end withdraws it. Nothing is incremented and decremented by hand.
 6. **A file holds at most 300 sources.** A sighting from any channel is not taken while the book holds
@@ -106,7 +109,9 @@ ping (`DownloadClient.cpp:1269`), so its TCP full ask is its only road to a slot
 rmule keeps 1300 s: its promotion reaches it by dial-back, so an earlier ask buys no score. A
 no-needed-parts source asks for parts, not a slot, and keeps twice the ordinary period. The period is
 read at each sweep from the reach then in force, so a standing dated under one reach falls due by the
-other's period once the reach moves.
+other's period once the reach moves. The cycle is the peer's: only the download holding a peer's Queue
+Standing re-asks it, and a download the standing passes to asks first by TCP, a period after the
+standing's last ask (ADR-0107).
 
 **The upload preference.** A waiter in our upload queue whose link's address and hello's User Hash
 both name a source one of our downloads stands queued at — a record in the RemoteQueued stage holding
@@ -139,8 +144,8 @@ The factor stays inside the rules a stock downloader waiting at rmule relies on:
 - A process held at 256 descriptors — the macOS shell default — meets its descriptor limit before a
   Ceiling of 500; aMule lowers its default to the limit less 10 there. The Dial Window keeps the asks
   in flight near 100 at worst. Reading the limit is an operating-system call (ADR-0111) not taken here.
-- A Low-ID rmule asks each queued source about 44% more often (1300 / 900), each ask still 310 s clear
-  of the aggressive-request floor.
+- A Low-ID rmule asks each queued peer about 44% more often (1300 / 900), each ask still 310 s clear
+  of the aggressive-request floor, and once per cycle however many downloads queue there.
 - Not yet measured against stock peers: the throughput and connections of the split, the slot wait at
   the Low-ID cadence, and the Reciprocity Factor's effect on our rank at a credit-honouring uploader.
   The bench legs are written (`peer-queue-fanout`, `peer-reciprocity`) and wait for a bench window.

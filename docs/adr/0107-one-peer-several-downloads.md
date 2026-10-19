@@ -1,4 +1,4 @@
-# One peer, several downloads: every per-peer set is keyed so two downloads never share a standing, a claim or an answer
+# One peer, several downloads: one link and one queue standing per peer, and every claim and answer keyed to the download it serves
 
 ## Context
 
@@ -12,8 +12,8 @@ claim.
 aMule has one `CUpDownClient` per peer with one requested file (`m_reqfile`) and an A4AF
 list of the other files the peer also has (`DownloadClient.cpp:496-517`); every question it
 asks a peer is for `m_reqfile` alone. rmule runs one worker per (peer, download): two
-downloads of files one peer holds are two conversations. That is the departure every rule
-below is measured against.
+downloads of files one peer holds are two conversations, carried on the peer's one link and its
+one place in the peer's queue. That is the departure every rule below is measured against.
 
 Every `file:line` is stock aMule 2.3.3 (`4e8f2b3c`), the counterparty the bench runs; the
 same rules in kno's Fork Pin `ab483654` are mapped in "Citations in two trees". aMule facts
@@ -54,7 +54,9 @@ Invariants every transition keeps:
 4. **A reask reply goes to the download whose ping it answers, or to nobody.** At most one `0x90`
    is in flight per peer client-UDP endpoint; a download whose peer has another download's ping in
    flight defers to the next sweep, and the one that loses the 20 s window rides its TCP full ask.
-   A reply matching no ping in flight is dropped and counted per session.
+   A reply matching no ping in flight is dropped and counted per session. Only a peer's standing
+   holder pings it (invariant 12); this rule holds any ping that slips past that, one sent as the
+   standing passed between two runs' sweeps among them.
 5. **One connection answers one claim.** A callback or a punch opens one connection, and the
    oldest claim on that key takes it; the others stay pending to their own deadlines. A traversal
    retirement reaches every claimant of its target. Only a claim's owner retracts it.
@@ -79,7 +81,7 @@ Invariants every transition keeps:
 | the reply answers the client's one requested file | `UDPReaskACK` / `UDPReaskFNF` act on `m_reqfile` (`DownloadClient.cpp:1220-1247`) | the reply reaches only the download that sent the ping |
 | only the requested file is pinged | `UDPReaskForDownload` sends `m_reqfile`'s hash (`DownloadClient.cpp:1249-1323`) | one ping in flight per endpoint; a second download defers |
 | the uploader answers only for the client's current upload file | `ClientUDPSocket.cpp:196` | a ping for the other file draws no reply and ends at the 20 s lead |
-| a file the peer also has waits on A4AF and is swapped to over TCP | `SwapToAnotherFile` (`DownloadClient.cpp:1411-1520`) | departs: each download holds its own standing and reasks over its own TCP full ask |
+| a file the peer also has waits on A4AF and is swapped to over TCP | `SwapToAnotherFile` (`DownloadClient.cpp:1411-1520`) | the download waits on the peer's Queue Standing and asks first by TCP when the standing passes to it ("One peer, one queue standing") |
 
 The pool decodes a `0x91` by the UDP version both sides stated: aMule writes the status when the
 *pinger* advertised UDP v4 (`ClientUDPSocket.cpp:213-221`), so rmule reads its own version from the
@@ -111,7 +113,7 @@ dial rmule has in flight to one — and the downloads that ride it, one at a tim
 |---|---|---|---|
 | **Peer Links** | each **Ask Name** the link proves: its dial endpoint (the link's own address with the hello's listen port; for a link rmule dialed, also where it dialed), `(server, low_id)` when the hello names a Low ID and its server, and the hello's User Hash; a **Dial in Flight**, before its hello, under where it dials and the User Hash the dialing source's record knows | the link's driver — the accept road's or the dialing worker's router, and before the socket the dialing worker — by filing | a link rmule dials: from the dial, as a Dial in Flight, refiled under its hello's names at the hello; an accepted link: from the hello (an adopted callback: from the adoption); to the link's end or the dial's failure; a newer link filed under a name takes that name |
 | **Link Riders** | one Peer Link: one rider, then the waiters in arrival order | the link's driver | a rider from its turn to its worker's end; a waiter from its join to its turn, its run's stop, or the link's end |
-| **Awaited Grants** | each Ask Name of a source whose record waits in the RemoteQueued stage (ADR-0057): its dial endpoint and the User Hash its record knows; several downloads under one name in the order they filed | the download's run, held to its Source Book's RemoteQueued stage after every brain step | from the record entering the stage to its leaving it, or the run's end |
+| **Awaited Grants** | each Ask Name of a source whose record waits in the RemoteQueued stage (ADR-0057): its dial endpoint and the User Hash its record knows — a record's statement, or the hello its standing kept past the worker (ADR-0049); several downloads under one name, the peer's standing holder first, then in the order they filed | the download's run, held to its Source Book's RemoteQueued stage and its standing's holder after every brain step | from the record entering the stage to its leaving it, or the run's end |
 
 Invariants every transition keeps:
 
@@ -157,7 +159,7 @@ Invariants every transition keeps:
 | two queued clients under one hash | the unidentified one leaves the queue, and an unidentified asker gets no answer (`UploadQueue.cpp:432-458`) | at a slot ask, a waiter under the asker's hash on another link that is not identified leaves the wait list; an asker not identified is answered nothing and not queued |
 | a Low-ID client's pending grant follows it to its next connection | `m_bAddNextConnect` (`UploadQueue.cpp:410-425`) | a pending dial-back grant (ADR-0057) moves with the waiter's place onto the link its hello came back on |
 | a Low ID in `OP_CHANGE_CLIENT_ID` is taken only from a known server | `ClientTCPSocket.cpp:773-787` | the session holds the claim; core takes it only for a server in its server list, with that server's port |
-| an uploader promotes a waiter by dialing it, or on the link it holds | `AddUpNextClient` (`UploadQueue.cpp:206-217`), `OP_ACCEPTUPLOADREQ` on connect (`BaseClient.cpp:1707-1716`) | a link nobody rides that reads an unasked grant hands it to the oldest **Awaited Grant** under its names; that download rides the link and asks, and is granted at once (`UploadQueue.cpp:486-493`) |
+| an uploader promotes a waiter by dialing it, or on the link it holds | `AddUpNextClient` (`UploadQueue.cpp:206-217`), `OP_ACCEPTUPLOADREQ` on connect (`BaseClient.cpp:1707-1716`) | a link nobody rides that reads an unasked grant hands it to the **Awaited Grant** of the peer's standing holder under its names, else the oldest; that download rides the link and asks, and is granted at once (`UploadQueue.cpp:486-493`); a peer back from a new address is found by its User Hash (`ClientList.cpp:253-347`) |
 | the downloader takes a grant for its queued file at once, and cancels one it does not want | `DS_ONQUEUE` → `DS_DOWNLOADING`, else `OP_CANCELTRANSFER` once (`ClientTCPSocket.cpp:635-659`) | the Awaited Grant's worker opens on the link with no admission by the Connection Budget (ADR-0116); with none the link gives the grant back with `0x56` (ADR-0056) |
 
 The swap rule, settled: a waiter takes the link when the rider's worker ends, for whatever reason it
@@ -179,12 +181,13 @@ the file (`:592-616`, `UploadQueue.cpp:395-519`):
 | waiting in the queue | on the queue, its wait kept | answered with its rank (`UploadQueue.cpp:402-430`), the wait per client, not per file |
 
 The next rider asks the same way in all three and reads what comes back, a grant or a rank, as any
-worker does; nothing is asked twice and nothing is skipped.
+worker does; nothing is skipped. The third row is the one place a hand-over asks the peer twice in
+a cycle, and "One peer, one queue standing" says when it happens.
 
 A grant nobody asked for on the link, settled: aMule grants a waiter it promotes on the link it
 holds or on one it dials to it, and the `0x55` names no file. A link a download rides leaves it to
 the rider, whose own ask is about to be granted. A link nobody rides offers it to the **Awaited
-Grants** under its names, oldest first: the download that takes it opens the record's worker on that link at
+Grants** under its names, the peer's standing holder first, then oldest first: the download that takes it opens the record's worker on that link at
 once, with no admission by the Connection Budget (ADR-0116), and the worker rides the link as any rider does, asking
 for its file. With no Awaited Grant to take it, the link gives the slot back with `0x56` (ADR-0056).
 
@@ -196,10 +199,79 @@ A Low-ID peer's callback claims are unchanged (ADR-0039): one connection answers
 A second download whose claim the connection did not take rides the link at its next candidate turn,
 and its claim lapses at its own deadline.
 
+### One peer, one queue standing
+
+aMule's uploader holds one queue entry per client whatever file it asks for: a client already
+queued is answered with its rank (`AddClientToQueue`, `UploadQueue.cpp:395-430`), and a request
+for another file re-targets the entry (`SetUploadFileID`, `ClientTCPSocket.cpp:462`, `:521`,
+`:613`). A UDP reask is answered only for the file the entry holds (`ClientUDPSocket.cpp:196-228`).
+Every slot ask and every reask, answered or not, is scored (`CheckForAggressive`,
+`UploadClient.cpp:795-825`, called at `ClientTCPSocket.cpp:601` and `ClientUDPSocket.cpp:194`):
+one under `MIN_REQUESTTIME` (590 s) after the last adds 3, a polite one takes 1 off, and 10 bans.
+aMule's downloader asks a client for one file and reasks it on the client's one clock
+(`m_dwLastAskedTime`, `DownloadClient.cpp:156`, `:1225`). Two downloads each keeping a place of
+their own and reasking on their own clocks net about 2 points a cycle: a ban in about four. rmule
+holds aMule's shape as a **Queue Standing**: one per peer across the Download Set, naming one file.
+
+| Set | Key | Owner | Lifetime |
+|---|---|---|---|
+| **Queue Standings** | each Ask Name (ADR-0108) of a record holding a standing: the endpoint it stands at and the User Hash its record knows; per name, a **stamp** — the peer's last ask and the download whose slot ask it last read | the core, shared by the Download Set; each run republishes its places after every step and stamps each ping and TCP full ask its sweep sends | a place: from its record earning a standing (a slot ask, ADR-0057) to the standing's end; a stamp: until no place carries its name and two reask periods have passed |
+
+Invariants every transition keeps:
+
+12. **A peer is asked once per cycle.** Its standing is held by one download: the one whose slot
+    ask the peer read last, a download that may need a part of the peer before one holding no part
+    we need. Only the holder's record re-asks — the ping naming its file, or the TCP full ask — on
+    its own clock (ADR-0116).
+13. **A waiter asks nothing.** Every other download with a record at the peer waits on the
+    standing, as aMule's A4AF file waits on its client: no ping, no TCP full ask and no first ask.
+    A fill that takes a pooled record of a peer standing in another download's standing dials
+    nothing; the record waits in the RemoteQueued stage, holding no rank and no contact of its own.
+14. **The standing's clock is the peer's.** Each ping and TCP full ask a sweep sends stamps the
+    peer, and so does each slot ask a record earns its standing by. A download the standing passes
+    to pings nothing — the peer holds the other file — and its TCP full ask falls due a period after
+    the last stamp, never sooner. A waiter's own clock follows the stamps, so it wakes when the
+    standing would next be asked.
+
+| Rule | aMule | rmule |
+|---|---|---|
+| one queue entry per client | `AddClientToQueue` (`UploadQueue.cpp:395-430`) | one Queue Standing per peer, found under any Ask Name a place carries |
+| the entry names one file | `SetUploadFileID` at each file request (`ClientTCPSocket.cpp:462`, `:521`, `:613`) | the holder is the download whose slot ask the peer read last |
+| the client is reasked once a cycle, for its requested file | `UDPReaskForDownload` sends `m_reqfile` (`DownloadClient.cpp:1249-1323`) on the client's clock (`PartFile.cpp:1449-1483`) | the holder's record re-asks; every other download's record waits |
+| another file of a queued client waits on the client | `AddRequestForAnotherFile` (`DownloadClient.cpp:496-507`) | a pooled record of a peer standing elsewhere waits on that standing and is not dialed |
+| a source holding nothing we need, or not the file, swaps to an A4AF file | `PartFile.cpp:1423-1426`, `ClientTCPSocket.cpp:555-561`, `PartFile.cpp:2203-2206` | a holder holding no part we need yields to a waiter that may need one; a holder whose standing ends — a `0x92`, the TCP no-file answer, a purge, a failed road, its run's stop, pause or end — leaves it to the next waiter |
+| a swapped client asks by TCP on the client's clock | `SwapToAnotherFile` leaves `DS_NONE` (`DownloadClient.cpp:1499`), which only the TCP ask serves, at the last ask plus `FILEREASKTIME` (`PartFile.cpp:1472-1483`) | the new holder's first re-ask is the TCP full ask, a period after the standing's last stamp |
+| a promoted client takes the grant for its requested file | `OP_ACCEPTUPLOADREQ` names no file; `DS_ONQUEUE` becomes `DS_DOWNLOADING` for `m_reqfile` (`ClientTCPSocket.cpp:635-645`) | an unasked grant goes to the holder's Awaited Grant first |
+| the A4AF files take the socket after the transfer | `SwapToAnotherFile` over the client's one socket, granted at once while it uploads (`UploadQueue.cpp:486-493`) | a grant on the standing calls every waiter to the holder's link |
+
+Which file the standing names, settled: the holder's — the file of the download whose slot ask the
+peer read last, which is the file aMule's entry holds and so the one file a ping is answered for. A
+slot ask, first or a TCP full ask's, earns the standing for its download, and the downloads it
+passes over wait. aMule ranks A4AF files by download priority when it swaps; rmule's downloads
+carry none, so the next waiter is the oldest, a waiter that may need a part before one that needs
+none.
+
+How a grant hands over, settled: a grant the holder takes — unasked on a link nobody rides, or on
+its own ask — transfers the holder's file. The holder's run then calls every Awaited Grant filed
+under the peer's names: the waiters, whose records still wait in the RemoteQueued stage. Each opens
+its record's worker on the holder's link at once, unadmitted by the Connection Budget as a grant is
+(ADR-0116), and waits there as a Link Rider. When the holder's worker ends, the swap rule hands the
+link to the oldest waiter: after a silent release its ask is granted at once
+(`UploadQueue.cpp:486-493`), after a cancel it is admitted afresh, and a rank makes it the holder.
+A waiter whose call comes after the link ended dials, as any download does that finds no link.
+rmule has no A4AF-auto preference, so nothing else swaps a standing.
+
+Two downloads that reach a peer before either stands, departs: the second waits on the first's
+link (invariant 8) and, when the first hangs up at its rank, takes its turn and asks — the swap
+table's third row. The peer reads two asks seconds apart once, 3 points; the standing then asks
+once per cycle and each polite ask takes one off, so no ban follows. A called waiter whose holder
+ends ranked rather than released (`OP_OUTOFPARTREQS` and then a rank) costs the same once.
+
 ### Citations in two trees
 
 Every citation here and in ADR-0108 is checked against stock 2.3.3 and kno's fork. Twenty
-rows carry the same code in both (the fork only widens tick counts to 64 bits). Three differ:
+rows carry the same code in both (the fork only widens tick counts to 64 bits). Three differ; the
+rows of "One peer, one queue standing" are read in 2.3.3 alone:
 
 | Rule | kno `ab483654` | 2.3.3 `4e8f2b3c` | What rmule follows |
 |---|---|---|---|
@@ -210,8 +282,9 @@ rows carry the same code in both (the fork only widens tick counts to 64 bits). 
 ## Consequences
 
 - A download added while another looks up sources asks at once; the lookup bound is its own.
-- A peer queued for two of our files holds two honest standings, or one standing and one TCP reask,
-  never one standing read twice.
+- A peer queued for two of our files holds one standing and is re-asked once per cycle, for the file
+  it holds; the other download waits on it and takes the link by the swap rule once the standing is
+  granted. Each re-ask costs the peer one datagram or one connection, not one per download.
 - Two downloads falling back on the same Low-ID peer no longer strand each other.
 - **Two downloads of one peer share one link.** A stock aMule 2.3.3 answers a second hello from the
   same client by closing the first socket silently (`AttachToAlreadyKnown`, `ClientList.cpp:386-403`),

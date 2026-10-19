@@ -113,7 +113,7 @@ where a rejected alternative would otherwise come back.
 | [0104](0104-spare-copies-and-renames.md) | Spare copies and renames carry a stored hash only when the file's identity proves it |
 | [0105](0105-had-set.md) | The Had Set remembers content that left the disk, by hash, and a move never passes through it |
 | [0106](0106-registry-against-the-disk.md) | The registry against the disk: what is offered is readable now, and a peer is answered honestly when it is not |
-| [0107](0107-one-peer-several-downloads.md) | One peer, several downloads: every per-peer set is keyed so two downloads never share a standing, a claim or an answer |
+| [0107](0107-one-peer-several-downloads.md) | One peer, several downloads: one link and one queue standing per peer, and every claim and answer keyed to the download it serves |
 | [0108](0108-source-exchange-ask-cadence.md) | The source-exchange ask follows aMule's gate, per peer and download, under every name the peer is known by |
 | [0109](0109-source-seeds.md) | Source Seeds: a restart dials first the peers the last run knew, without asking anyone |
 | [0110](0110-dial-end-cause.md) | A dial that ends before the hello says why, and the cause outlives the slot |
