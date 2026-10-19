@@ -130,7 +130,9 @@ Invariants every transition keeps:
    buddy link (ADR-0031, ADR-0061). A link its last rider leaves with no other half holding it closes
    then: a rider's Queued Hang-Up (ADR-0116) sends the FIN well inside the uploader's 40 s
    silent-link close (`ClientTCPSocket.cpp:201-229`). Its end hands every waiter back to its
-   download, which dials as before.
+   download, which dials as before. A link its last rider leaves with an unasked grant still
+   standing — the rider ended before its own ask — gives that grant back with `0x56` before it
+   stays up or closes (ADR-0056 item 3).
 10. **A name is filed only from what the link proves or the node accepts**: the socket's address
     (never an IPv4 claim on an IPv6 link), the hello's `(server, low_id)` and User Hash, and a Low
     ID an `OP_CHANGE_CLIENT_ID` moves only under a server the node's list holds. A hash another

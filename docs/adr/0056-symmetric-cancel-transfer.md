@@ -69,13 +69,25 @@ and nothing left to request from this source
    that takes it opens a worker that asks as any rider does (ADR-0107); until that ask leaves,
    the grant is the rider's to give back. A worker retired before it — its probe naming no
    part we lack (`NoNeededParts`, ADR-0112), or its run stopping — sends the same `0x56`, so
-   the uploader never holds a slot for a source that asks nothing on it.
-4. **At most one `0x56` per ask cycle** per connection, reset by the next ask and by
+   the uploader never holds a slot for a source that asks nothing on it. A worker that ends
+   silently before its ask — its probe unanswered, its link to the download gone — leaves the
+   grant to the link: when its last rider leaves and no waiter takes the link, the link gives
+   back an offer still standing with the same `0x56`, whether its serve half or the buddy slot
+   then keeps it up (ADR-0107 invariant 9) or it closes. Kept up, the slot would otherwise be
+   held until the uploader's 40 s silent-link close (`ClientTCPSocket.cpp:201-229`).
+4. **A granted slot that stalls.** A worker whose granted slot delivers no byte for the slot
+   budget sends `0x56` and gives the slot back, as aMule's downloader does when a
+   `DS_DOWNLOADING` client sends nothing for `DOWNLOADTIMEOUT` (`DownloadClient.cpp:1188-1196`,
+   100 s, `Constants.h:64`); its record keeps the source, standing without a rank (ADR-0090).
+   rmule's budget is the slot wait's, not aMule's 100 s. A slot wait that times out while
+   only queued holds no slot and sends nothing.
+5. **At most one `0x56` per ask cycle** per connection, reset by the next ask and by
    teardown.
 
 The codec is the empty `0xE3` frame in `rmule_peer`. The session's serve half raises the
 event; its download half owns the emit, and core decides when (the first two triggers end
-the worker; the third is the link's, since no worker holds it). Core maps the
+the worker; the third is the link's, since no worker holds it; the fourth is the worker's own
+timeout, which ends it). Core maps the
 event onto the serve state's release and promote batch.
 
 ## Consequences
