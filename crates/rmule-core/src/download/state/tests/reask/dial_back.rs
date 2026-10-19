@@ -56,3 +56,37 @@ fn a_grant_with_a_slot_free_takes_it() {
     let granted = state.on_slot_offered(t0() + Duration::from_secs(90), peer(1));
     assert_eq!(spawned(&granted), [(peer(1), 0)]);
 }
+
+/// A taken grant is the worker's to give back until its own ask leaves
+/// (ADR-0056 item 3): a probe naming no part we lack retires the worker
+/// `NoNeededParts` and ends it with `OP_CANCELTRANSFER`, so the uploader
+/// does not hold a slot for a source that will ask nothing on it.
+#[test]
+fn a_taken_grant_whose_probe_names_nothing_we_lack_goes_back() {
+    let mut state = pooled_state(
+        file_hash_only_content(THREE_PARTS),
+        &[peer(1)],
+        live_posture(),
+        1,
+    );
+    let _ = state.start(t0());
+    queue_and_hang_up(&mut state, peer(1), true, 5);
+    let later = t0() + Duration::from_secs(90);
+    assert_eq!(
+        spawned(&state.on_slot_offered(later, peer(1))),
+        [(peer(1), 0)]
+    );
+    let _ = state.on_worker_event(later, peer(1), PeerWorkerEvent::Connected);
+    let nothing = PeerWorkerEvent::PartsAdvertised {
+        parts: Some(PartBitmap::decode(3, &[0]).expect("three parts")),
+        complete: false,
+    };
+    let answered = state.on_worker_event(later, peer(1), nothing);
+    assert!(
+        answered.iter().any(|d| matches!(
+            d,
+            Decision::EndWorker { peer: p, cancel: true } if *p == peer(1)
+        )),
+        "the grant goes back: {answered:?}"
+    );
+}

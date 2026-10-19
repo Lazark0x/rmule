@@ -125,8 +125,10 @@ pub enum RequesterCommand {
     /// torn down by `CancelDownload`, `PauseDownload`, or complete-overshoot
     /// while `file_hash` holds the connection's active slot context sends
     /// `OP_CANCELTRANSFER` before releasing it — the requester-side
-    /// counterpart to `ReleaseSlot`'s silent local clear. A `CancelTransfer`
-    /// for a file that does not hold the active slot is a no-op (nothing to
+    /// counterpart to `ReleaseSlot`'s silent local clear. With no slot
+    /// active, it gives back a slot the peer offered unasked that no ask of
+    /// ours answered since, as [`Self::DeclineSlot`] does: the rider that took
+    /// the grant stops before asking. Anything else is a no-op (nothing to
     /// cancel); this also makes the emit idempotent within one ask-cycle.
     CancelTransfer {
         /// The file whose slot to cancel.
@@ -188,12 +190,7 @@ impl PeerSession {
                     self.release_slot(file_hash, SlotReleaseReason::DownloadComplete);
                 }
             }
-            RequesterCommand::DeclineSlot => {
-                if std::mem::take(&mut self.slot_offered) && self.active_slot.is_none() {
-                    self.write_packet(CancelTransfer.encode_packet());
-                    self.forget_asked_ranges();
-                }
-            }
+            RequesterCommand::DeclineSlot => self.decline_offered_slot(),
             RequesterCommand::CancelTransfer { file_hash } => {
                 if self.active_slot == Some(file_hash) {
                     self.write_packet(CancelTransfer.encode_packet());
@@ -211,8 +208,22 @@ impl PeerSession {
                             file_hash,
                             reason: SlotReleaseReason::Cancelled,
                         }));
+                } else {
+                    // The rider took an unasked grant and stops before its
+                    // own ask leaves: the grant is its to give back
+                    // (ADR-0056 item 3).
+                    self.decline_offered_slot();
                 }
             }
+        }
+    }
+
+    /// Give back a slot the peer offered unasked, once: `OP_CANCELTRANSFER`
+    /// while the offer stands and no ask of ours went out since.
+    fn decline_offered_slot(&mut self) {
+        if std::mem::take(&mut self.slot_offered) && self.active_slot.is_none() {
+            self.write_packet(CancelTransfer.encode_packet());
+            self.forget_asked_ranges();
         }
     }
 }

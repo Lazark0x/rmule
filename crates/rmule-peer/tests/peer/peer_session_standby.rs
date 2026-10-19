@@ -209,3 +209,32 @@ fn cancel_latch_prevents_double_emit_in_same_cycle() {
     // (We don't after RequestParts goes to start-upload, so this is just verifying
     // the latch was reset; a full test would need to grant the slot first.)
 }
+
+/// ADR-0056 item 3: the rider that took an unasked grant and stops before
+/// its own ask leaves — its probe naming nothing it needs — gives the grant
+/// back with one `0x56`, as the link would have had nobody taken it.
+#[test]
+fn a_cancel_before_the_ask_gives_an_unasked_grant_back() {
+    let h = file_hash(0xAD);
+    let size = 1_000_000;
+    let mut session = identified_session();
+    session.handle_bytes(&acceptuploadreq());
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
+        file_hash: h,
+        file_size: size,
+        want_sources: false,
+        want_aich_root: false,
+        own_status: rmule_peer::PartBitmap::downloader_empty(size),
+    }));
+    session.handle_bytes(&reqfilename_answer(h, "granted.bin"));
+    let _ = drain(|| session.poll_output());
+
+    for (cancel, expected) in [("first", 1), ("second", 0)] {
+        session.handle_command(PeerCommand::Requester(RequesterCommand::CancelTransfer {
+            file_hash: h,
+        }));
+        let sent = writes(&drain(|| session.poll_output()));
+        assert_eq!(sent.len(), expected, "{cancel} cancel: {sent:?}");
+        assert!(sent.iter().all(|packet| packet.opcode() == 0x56));
+    }
+}

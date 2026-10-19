@@ -327,3 +327,35 @@ fn a_status_counting_other_parts_than_the_file_has_closes_the_session() {
         );
     }
 }
+
+/// The next worker of a download on a link that stayed up — at an Awaited
+/// Grant or a TCP full ask — asks the file again, and its probe settles as
+/// the first did: a one-part file's on the name answer alone (ADR-0107).
+#[test]
+fn a_one_part_file_asked_again_on_the_link_settles_on_its_name_answer() {
+    let h = file_hash(0xC1);
+    let size = 1_000_000;
+    let mut session = identified_session();
+    for round in ["first", "again"] {
+        session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
+            file_hash: h,
+            file_size: size,
+            want_sources: false,
+            want_aich_root: false,
+            own_status: PartBitmap::downloader_empty(size),
+        }));
+        let _ = drain(|| session.poll_output());
+        session.handle_bytes(&reqfilename_answer(h, "one.bin"));
+        let out = drain(|| session.poll_output());
+        assert!(
+            events(&out).iter().any(|e| matches!(
+                e,
+                PeerEvent::Requester(RequesterEvent::FileProbed {
+                    file_hash,
+                    status: FileProbeStatus::Available { .. },
+                }) if *file_hash == h
+            )),
+            "{round}: the name answer settles the probe"
+        );
+    }
+}

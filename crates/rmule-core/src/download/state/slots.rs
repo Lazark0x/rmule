@@ -248,7 +248,7 @@ impl DownloadState {
                 reason: PartReleaseReason::PeerRetired(reason),
             }));
         }
-        let granted = self.slot_asks.granted(peer);
+        let holds_slot = self.slot_asks.holds_slot(peer);
         self.delivery.remove(&peer);
         if let Some(slot) = self.worker_slots.remove(&peer) {
             // A worker that hangs up, times out its slot wait or was ranked
@@ -308,7 +308,7 @@ impl DownloadState {
             );
             out.push(Decision::EndWorker {
                 peer,
-                cancel: granted && unworkable,
+                cancel: holds_slot && unworkable,
             });
             // The row keeps the reason until the slot dials again (ADR-0028):
             // `ShutDown` is the whole download's stop, never one worker's.

@@ -38,12 +38,21 @@ pub(super) struct SlotAsks {
     hash_set: Option<(PeerEndpoint, Instant)>,
     /// Workers the deadline passed: not asked the set again while they live.
     passed: HashSet<PeerEndpoint>,
+    /// Workers opened on a grant their uploader gave unasked (ADR-0057), until
+    /// their own ask leaves: the slot is theirs to give back (ADR-0056).
+    offered: HashSet<PeerEndpoint>,
 }
 
 impl SlotAsks {
     /// Whether `peer`'s uploader granted it a slot.
     pub(super) fn granted(&self, peer: PeerEndpoint) -> bool {
         self.by_worker.get(&peer) == Some(&SlotAsk::Granted)
+    }
+
+    /// Whether `peer` holds a slot at its uploader: granted on its own ask,
+    /// or given unasked with no ask of its own out yet.
+    pub(super) fn holds_slot(&self, peer: PeerEndpoint) -> bool {
+        self.granted(peer) || self.offered.contains(&peer)
     }
 
     /// The instant the hash-set ask in flight passes on, if one is.
@@ -56,6 +65,7 @@ impl SlotAsks {
     fn forget(&mut self, peer: PeerEndpoint) -> bool {
         self.by_worker.remove(&peer);
         self.passed.remove(&peer);
+        self.offered.remove(&peer);
         let asking = self.hash_set.is_some_and(|(asker, _)| asker == peer);
         if asking {
             self.hash_set = None;
@@ -83,8 +93,15 @@ impl DownloadState {
         }
     }
 
+    /// `peer`'s worker opened on a grant its uploader gave unasked: until its
+    /// own ask leaves, the slot is its to give back (ADR-0056 item 3).
+    pub(super) fn holds_offered_slot(&mut self, peer: PeerEndpoint) {
+        self.slot_asks.offered.insert(peer);
+    }
+
     /// Send `peer`'s slot ask: it waits queued, its part chosen at the grant.
     fn ask_slot(&mut self, peer: PeerEndpoint, out: &mut Vec<Decision>) {
+        self.slot_asks.offered.remove(&peer);
         self.slot_asks.by_worker.insert(peer, SlotAsk::Queued);
         out.push(Decision::Send {
             peer,

@@ -349,7 +349,10 @@ impl PeerSession {
         // save it.
         flow.file_size = Some(file_size);
         flow.own_status = Some(own_status);
-        if matches!(flow.probe, ProbeState::NotIssued) {
+        // A probe settled on this link for an earlier worker is asked again
+        // and read afresh, as on a new link (ADR-0107): the next worker waits
+        // on this answer, not on the one before.
+        if !matches!(flow.probe, ProbeState::Pending { .. }) {
             flow.probe = ProbeState::Pending {
                 name: None,
                 bitmap: (!multi_part).then(PartBitmap::one_part_complete),

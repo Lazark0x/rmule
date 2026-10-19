@@ -92,8 +92,9 @@ impl DownloadState {
     /// link it held (ADR-0057, "A grant by dial-back is taken"): the record
     /// waiting there opens its worker at once. A granted slot is a transfer,
     /// never admitted by the **Connection Budget** (ADR-0116), and the worker
-    /// rides the link the grant came on. Nothing waits at an endpoint with no
-    /// record in the RemoteQueued stage.
+    /// rides the link the grant came on, and gives the slot back should it end
+    /// unable to work before its own ask leaves (ADR-0056 item 3). Nothing
+    /// waits at an endpoint with no record in the RemoteQueued stage.
     pub(crate) fn on_slot_offered(&mut self, now: Instant, peer: PeerEndpoint) -> Vec<Decision> {
         let mut out = Vec::new();
         if !self.sources.take_grant(peer) {
@@ -105,6 +106,7 @@ impl DownloadState {
             peer,
         }));
         self.spawn_worker(now, peer, slot, &mut out);
+        self.holds_offered_slot(peer);
         out
     }
 
