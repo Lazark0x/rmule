@@ -225,6 +225,7 @@ async fn send_ranges(
                     start: at,
                     end: stop,
                     bytes: block,
+                    compressible: true,
                 }))
                 .await
                 .is_err()

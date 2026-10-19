@@ -181,6 +181,7 @@ async fn a_dialed_connection_serves_the_peer_it_dialed_on_the_same_socket() {
                                 start,
                                 end,
                                 bytes: bytes[start as usize..end as usize].to_vec(),
+                                compressible: true,
                             }))
                             .await
                             .unwrap();

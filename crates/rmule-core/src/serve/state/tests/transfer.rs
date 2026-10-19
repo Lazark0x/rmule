@@ -58,6 +58,7 @@ fn parts_requests_read_only_unserved_ranges_and_serve_blocks_with_credit() {
                     start: 0,
                     end: 100,
                     bytes,
+                    compressible: true,
                 }
             ),
         ],
@@ -111,6 +112,7 @@ fn parts_requests_read_only_unserved_ranges_and_serve_blocks_with_credit() {
                 start: 0,
                 end: 100,
                 bytes: vec![0xEE_u8; 100],
+                compressible: true,
             }
         )],
     );
@@ -490,4 +492,40 @@ fn a_withdrawn_files_waiters_leaving_move_the_rest_up_at_once() {
         ServeDecision::Emit(ServeEvent::PeerQueued { peer: queued, rank: 1, .. })
             if *queued == peer(3)
     )));
+}
+
+/// aMule never compresses an archive's block (`UploadClient.cpp:252`): core
+/// marks it plain by the name the file is offered under, and any other
+/// block may cross compressed (ADR-0031).
+#[test]
+fn an_archives_block_is_marked_plain_and_any_other_may_be_compressed() {
+    for (name, compressible) in [
+        ("backup.rar", false),
+        ("sources.tar.gz", false),
+        ("ubuntu.iso", true),
+        ("film.mkv", true),
+        ("README", true),
+    ] {
+        let file_hash = hash(0x5E);
+        let mut state = serving_state(1, vec![entry(file_hash, 512, name)]);
+        let p = peer(5);
+        let _ = slot_request(&mut state, p, file_hash, Instant::now());
+        let block = BlockRead {
+            file_hash,
+            start: 0,
+            end: 100,
+        };
+
+        let decisions = state.on_read_result(p, block, vec![0; 100]);
+        assert!(
+            matches!(
+                decisions.as_slice(),
+                [ServeDecision::Send {
+                    command: ServerCommand::SendBlock { compressible: marked, .. },
+                    ..
+                }] if *marked == compressible
+            ),
+            "{name}: {decisions:?}"
+        );
+    }
 }

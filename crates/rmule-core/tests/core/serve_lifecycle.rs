@@ -593,6 +593,7 @@ async fn assert_send_block(
         start: actual_start,
         end: actual_end,
         bytes,
+        ..
     }) = command
     else {
         panic!("expected SendBlock, got {command:?}");

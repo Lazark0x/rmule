@@ -151,14 +151,20 @@ impl PeerSession {
     }
 
     /// Serve one block as aMule's uploader cuts it (ADR-0031): a run of
-    /// `OP_SENDINGPART` of about 10 KiB, or — when the peer advertised
-    /// compression and the zlib stream is smaller, as eMule does — a run of
-    /// `OP_COMPRESSEDPART` sharing the block's start and the stream's length.
-    /// A stock downloader restarts its download timeout only on a whole
-    /// packet (`DownloadClient.cpp:848`), so one block-sized packet would
-    /// starve a slow link. `bytes` is the block; its range is
+    /// `OP_SENDINGPART` of about 10 KiB, or — when core left the block
+    /// `compressible`, the peer advertised compression and the zlib stream is
+    /// smaller — a run of `OP_COMPRESSEDPART` sharing the block's start and
+    /// the stream's length. A stock downloader restarts its download timeout
+    /// only on a whole packet (`DownloadClient.cpp:848`), so one block-sized
+    /// packet would starve a slow link. `bytes` is the block; its range is
     /// `start..start + bytes.len()`.
-    pub(super) fn send_block(&mut self, file_hash: FileHash, start: u64, bytes: Vec<u8>) {
+    pub(super) fn send_block(
+        &mut self,
+        file_hash: FileHash,
+        start: u64,
+        bytes: Vec<u8>,
+        compressible: bool,
+    ) {
         if !self.require_identified() {
             return;
         }
@@ -170,9 +176,10 @@ impl PeerSession {
             .peer_misc_options
             .is_some_and(|m| m.data_compression_version() > 0);
         // `nBlockSize` is a u32: a stream it cannot name goes plain.
-        let compressed = peer_compresses
-            .then(|| crate::compress::deflate(&bytes))
-            .filter(|c| c.len() < bytes.len() && u32::try_from(c.len()).is_ok());
+        let compressed = (compressible && peer_compresses)
+            .then(|| crate::compress::deflate_smaller(&bytes))
+            .flatten()
+            .filter(|c| u32::try_from(c.len()).is_ok());
         let end = start + bytes.len() as u64;
         match compressed {
             Some(stream) => {

@@ -53,6 +53,7 @@ fn serve(server: &mut PeerSession, file: FileHash, start: u64, bytes: &[u8]) -> 
         start,
         end: start + bytes.len() as u64,
         bytes: bytes.to_vec(),
+        compressible: true,
     }));
     drain(|| server.poll_output())
 }

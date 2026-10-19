@@ -91,6 +91,7 @@ fn an_in_range_request_reads_its_part_file_and_a_re_request_checks_only_the_unse
                 start: 0,
                 end: 100,
                 bytes,
+                compressible: true,
             }
         ))
     );

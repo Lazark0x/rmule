@@ -544,6 +544,7 @@ pub async fn serve_called_back(
                             start,
                             end,
                             bytes: file_bytes[start as usize..end as usize].to_vec(),
+                            compressible: true,
                         }))
                         .await
                         .unwrap();

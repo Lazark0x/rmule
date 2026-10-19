@@ -138,6 +138,7 @@ async fn serve_once_with_sui(
                             start,
                             end,
                             bytes: bytes[start as usize..end as usize].to_vec(),
+                            compressible: true,
                         }))
                         .await;
                 }

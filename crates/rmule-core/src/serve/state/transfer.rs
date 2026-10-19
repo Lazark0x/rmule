@@ -140,7 +140,8 @@ impl ServeState {
     /// A read lands after the state it was asked under may have moved on: a
     /// file no longer offered sends nothing, and a block goes only to a peer
     /// still holding a slot, as aMule drops a block ask from a client it is
-    /// not uploading to (`UploadClient.cpp:497-500`).
+    /// not uploading to (`UploadClient.cpp:497-500`). An archive's block is
+    /// marked plain (`Found::compressible`).
     pub(crate) fn on_read_result(
         &mut self,
         peer: PeerEndpoint,
@@ -155,6 +156,9 @@ impl ServeState {
         if !self.in_share_set(file_hash) || !self.queue.is_granted(peer) {
             return Vec::new();
         }
+        let compressible = self
+            .lookup(file_hash)
+            .is_some_and(|found| found.compressible());
         let mut decisions = Vec::new();
         if let Some(identity) = self.identities.get(&peer) {
             decisions.push(ServeDecision::RecordCredit {
@@ -169,6 +173,7 @@ impl ServeState {
                 start,
                 end,
                 bytes,
+                compressible,
             },
         });
         decisions

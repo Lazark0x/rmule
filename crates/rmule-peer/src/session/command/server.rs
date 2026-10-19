@@ -92,6 +92,11 @@ pub enum ServerCommand {
         end: u64,
         /// The block, read by core from the content store.
         bytes: Vec<u8>,
+        /// Whether the block may cross compressed: core's call from the name
+        /// its file is offered under, `false` for an archive's (ADR-0031).
+        /// The session compresses it only when this holds, the peer
+        /// advertised compression and the stream is smaller.
+        compressible: bool,
     },
     /// Answer a peer's source-exchange request (ADR-0055) with the
     /// filtered, capped `sources` core picked from its pools. The session
@@ -174,7 +179,8 @@ impl PeerSession {
                 start,
                 end: _,
                 bytes,
-            } => self.send_block(file_hash, start, bytes),
+                compressible,
+            } => self.send_block(file_hash, start, bytes, compressible),
             ServerCommand::AnswerSources { file_hash, sources } => {
                 if self.require_identified() {
                     self.answer_sources(file_hash, sources);

@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 
 use rmule_peer::PartBitmap;
-use rmule_primitives::{Ed2kText, FileHash, PartHash, PeerEndpoint};
+use rmule_primitives::{Ed2kFileClass, Ed2kText, FileHash, PartHash, PeerEndpoint};
 
 use super::reask::full_bitmap;
 use super::{ServeDecision, ServeState};
@@ -38,6 +38,19 @@ impl<'a> Found<'a> {
             Self::Row(entry) => Ed2kText::from_utf8(entry.name.as_str()),
             Self::Download { look, .. } => look.served.name.clone(),
         }
+    }
+
+    /// Whether its blocks may cross compressed: every file's but an
+    /// archive's, by the name it is offered under, as aMule never compresses
+    /// an archive (`UploadClient.cpp:252`, ADR-0031).
+    pub(super) fn compressible(&self) -> bool {
+        let class = match self {
+            Self::Row(entry) => Ed2kFileClass::from_file_name(&entry.name),
+            Self::Download { look, .. } => {
+                Ed2kFileClass::from_name_bytes(look.served.name.as_bytes())
+            }
+        };
+        class != Some(Ed2kFileClass::Archive)
     }
 
     /// The file's exact size.
