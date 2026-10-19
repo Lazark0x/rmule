@@ -70,6 +70,37 @@ scheduling is (ADR-0026).
   self-facts cell (ADR-0032) and clear when the session ends, because a node between
   sessions is Low-ID and shares a server with nobody.
 
+**A block request is judged whole before anything is read.**
+
+- A peer holding a slot asks up to three ranges in one `OP_REQUESTPARTS` or
+  `OP_REQUESTPARTS_I64`. Every live range is checked as asked, before the ranges
+  already served are taken off it: one range that ends past the file's end, or is
+  longer than three blocks (`3 × EMBLOCKSIZE`, 552,960 bytes), ends the peer's slot.
+  Nothing of the request is read or sent, the slot goes to the next waiter, and the
+  peer leaves the queue: a later ask queues it afresh. Its link stays and its address
+  is not banned. aMule throws on either range while it cuts the block, and its handler
+  only takes the client out of the upload queue (`UploadClient.cpp:211-224`,
+  `:270-281`); it bans nobody for it. A Partial Share's range outside its Verified
+  Range ends the slot the same way (ADR-0113).
+- A range whose end is not past its start is skipped, as aMule skips one in
+  `OP_REQUESTPARTS` (`UploadClient.cpp:871-882`); the `(0, 0)` padding is one. A pair
+  that runs backwards fails the request's decode, so core never sees it.
+- **Where rmule departs.** aMule judges each range as its turn comes, so ranges ahead
+  of a bad one may already be sent; rmule judges the request whole and sends none of
+  it. aMule 3.1.0 and eMule AI drop such a range at the ask and keep the slot
+  (aMule 3.1.0 `UploadClient.cpp:317-328`, eMule AI
+  `srchybrid/UploadClient.cpp:711-721`); rmule keeps 2.3.3's rule, because no stock
+  downloader asks a range longer than one block, so a peer that asks one is not one a
+  slot should wait on.
+- The refusal is its own serve event, `BlockAskRefused`, naming the fault — past the
+  end, longer than three blocks, outside the Verified Range — ahead of the slot's
+  release, so the run log and the operator read why the peer lost its slot.
+- **No read is longer than three blocks.** The content store refuses a read longer
+  than `3 × EMBLOCKSIZE` before it allocates a byte, whoever asks; the check above
+  means the serve state never asks one. A shared file's AICH tree (ADR-0038) is built
+  from the file one block at a time, so a build holds one block however large the
+  file is.
+
 **A served block crosses in packets of about 10 KiB, as aMule cuts it.**
 
 - A stock aMule downloader restarts its 100 s download timeout only when a whole
