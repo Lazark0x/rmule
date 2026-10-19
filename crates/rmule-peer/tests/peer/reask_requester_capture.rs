@@ -3,7 +3,9 @@
 //! (`amule-233-reask-ack-to-rmule-20261001`) holds both directions: the ping
 //! rmule framed and the ack aMule wrote back. aMule's refusals come from
 //! `amule-233-reask-answers-20260729`, and the rank-only ack shape from
-//! `amule-233-peer-udp-reask-20260727`.
+//! `amule-233-peer-udp-reask-20260727`. The reask through a buddy, and the
+//! firewalled aMule's answer to it, come from
+//! `amule-233-reask-via-buddy-20261019`.
 
 use crate::fixture::load;
 use rmule_peer::PartBitmap;
@@ -14,6 +16,7 @@ const AMULE_ACK_DIR: &str =
     "fixtures/peer_udp_reask/captured/amule-233-reask-ack-to-rmule-20261001/";
 const ANSWERS_DIR: &str = "fixtures/peer_udp_reask/captured/amule-233-reask-answers-20260729/";
 const RANK_ONLY_DIR: &str = "fixtures/peer_udp_reask/captured/amule-233-peer-udp-reask-20260727/";
+const VIA_BUDDY_DIR: &str = "fixtures/peer_udp_reask/captured/amule-233-reask-via-buddy-20261019/";
 
 /// The file rmule was downloading in the bench run: 40 MiB, five ED2K parts.
 const FILE_HASH: [u8; 16] = [
@@ -55,6 +58,43 @@ fn the_reask_through_a_buddy_relays_the_captured_ping() {
     assert_eq!(
         rmule_peer::peer_udp::responder::relayed_ping(&relayed.forwarded),
         load(AMULE_ACK_DIR, "reask_ping_0x90.bin")
+    );
+}
+
+/// The bench run where rmule, queued at a firewalled stock aMule and then
+/// unreachable, reasked it through its buddy: the `0x94` is what the
+/// requester frames for that run's file and buddy, and the aMule's answer to
+/// the relayed reask reads as rank 1 (stock 2.3.3 `ClientTCPSocket.cpp:1695-1760`).
+#[test]
+fn the_firewalled_amule_answers_the_reask_relayed_through_its_buddy() {
+    let buddy_id = [
+        0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,
+        0x00,
+    ];
+    let file_hash = [
+        0x47, 0xAA, 0xA3, 0xAA, 0x0E, 0x7E, 0x07, 0x1F, 0xFF, 0xF6, 0xCC, 0x9A, 0xF5, 0xEB, 0x1E,
+        0xCA,
+    ];
+    assert_eq!(
+        requester::ping_via_buddy(
+            buddy_id,
+            FileHash::from_bytes(file_hash),
+            UDP_V4,
+            UDP_V4,
+            || PartBitmap::downloader_empty(30 * 1024 * 1024),
+        ),
+        load(VIA_BUDDY_DIR, "reask_callback_udp_0x94.bin")
+    );
+    assert_eq!(
+        requester::read_reply(
+            &load(VIA_BUDDY_DIR, "reask_ack_0x91.bin"),
+            UDP_V4,
+            Some(UDP_V4)
+        ),
+        HeardReply::Rank {
+            rank: 1,
+            part_status: Some(PartBitmap::complete_source_sentinel()),
+        }
     );
 }
 
