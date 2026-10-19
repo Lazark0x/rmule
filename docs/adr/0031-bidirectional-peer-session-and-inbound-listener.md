@@ -70,6 +70,42 @@ scheduling is (ADR-0026).
   self-facts cell (ADR-0032) and clear when the session ends, because a node between
   sessions is Low-ID and shares a server with nobody.
 
+**A served block crosses in packets of about 10 KiB, as aMule cuts it.**
+
+- A stock aMule downloader restarts its 100 s download timeout only when a whole
+  part packet lands (`DownloadClient.cpp:848`, `DOWNLOADTIMEOUT` in
+  `Constants.h:64`) and sends `OP_CANCELTRANSFER` when none has
+  (`DownloadClient.cpp:1189-1193`). A block of 184,320 bytes framed as one packet
+  needs more than 1.8 KiB/s to cross inside that window, so a slower link can
+  never finish one. The session therefore writes each `SendBlock` as aMule's
+  uploader does.
+- **Packet size.** A payload of `n` bytes larger than 10,240 is cut into packets of
+  `n / (n / 10240)` bytes, integer division, and the last packet takes whatever is
+  left once less than two packets' worth remains; a payload of at most 10,240 bytes
+  goes whole (`UploadClient.cpp:290-299`, `:349-358`). A full 184,320-byte block is
+  eighteen packets of 10,240 bytes, and a payload of more than 10,240 bytes never
+  yields a packet under 10,240 or of 20,480 and over.
+- **Plain.** Each packet is an `OP_SENDINGPART` naming its own range; the ranges
+  tile the block in order. Each packet picks its offset width on its own offsets
+  (`UploadClient.cpp:307`).
+- **Compressed.** The block is deflated whole and sent compressed only when that is
+  smaller (above). The one zlib stream is cut by the same rule into a run of
+  `OP_COMPRESSEDPART`, every one carrying the block's start and the stream's total
+  length, its offset width picked on the block's offsets
+  (`UploadClient.cpp:361-370`).
+- **What meters it.** rmule paces no upload bytes: TCP back-pressure on the
+  connection writer is the only brake. The slot budget counts slots, and the credit
+  and upload counters count the block's uncompressed bytes at `SendBlock`, in core,
+  before the session cuts it (ADR-0077). The cut happens after every one of those
+  decisions, so it changes neither slot fairness nor the budget. One block's packets
+  are queued back to back; nothing else of that connection lands between them.
+- **Receiving.** rmule's requester already reads a block in several packets of
+  either kind: each `OP_SENDINGPART` is its own range, merged into the part
+  (ADR-0029), and `OP_COMPRESSEDPART` chunks for one start are buffered until the
+  declared total arrives, then inflated as one block.
+- Each packet is framed straight from its slice of the one block buffer (or the
+  one compressed buffer); no packet copies the block.
+
 **The listener is in `rmule-net`; core holds one connection registry.**
 
 - `PeerListener` in `rmule-net` binds the advertised TCP port and yields accepted

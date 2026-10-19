@@ -125,7 +125,7 @@ The 37-byte `EAQN1 ‖ sender hash ‖ expected hash` that must be accepted befo
 _Avoid_: authentication, SUI (**Secure User Identification** is a different, signed proof, unaffected by the tunnel)
 
 **Compressed Part**:
-A part transfer whose payload is compressed (`OP_COMPRESSEDPART`) rather than raw (`OP_SENDINGPART`). Negotiated *per direction* through each side's **Capability Block**: a peer sends us compressed parts only if our block advertised data compression, and we send compressed only if the downloading peer's block did. Independent per direction, so "accept compressed, send raw" is a valid state.
+A part transfer whose payload is compressed (`OP_COMPRESSEDPART`) rather than raw (`OP_SENDINGPART`). Negotiated *per direction* through each side's **Capability Block**: a peer sends us compressed parts only if our block advertised data compression, and we send compressed only if the downloading peer's block did. Independent per direction, so "accept compressed, send raw" is a valid state. One block's zlib stream crosses as a run of `OP_COMPRESSEDPART` packets of about 10 KiB, each carrying the block's start and the stream's total length (ADR-0031).
 _Avoid_: compressed file (the file content is unchanged; only the on-wire part payload is compressed)
 
 **Asked Ranges**:
