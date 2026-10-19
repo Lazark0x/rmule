@@ -178,3 +178,6 @@ impl DialBackRoad {
             drive_served_link(conn, identity, command_rx, event_tx, deps, Some(in_flight)).await;
     }
 }
+
+#[cfg(test)]
+mod tests;
