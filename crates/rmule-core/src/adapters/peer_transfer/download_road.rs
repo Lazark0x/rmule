@@ -115,12 +115,12 @@ impl DownloadRoad {
                     Reach::Found(link) => Onto { link, behind: None },
                     Reach::Dial(mut dial) => {
                         // Connect + identify run inside the worker task, off
-                        // the runner's critical path (ADR-0030). The connect
-                        // ends with the hello on the wire; before that the
-                        // peer's own link overtakes the dial.
-                        let connected = tokio::select! {
+                        // the runner's critical path (ADR-0030). Until the
+                        // hello goes out the peer's own link overtakes the
+                        // dial.
+                        let opened = tokio::select! {
                             biased;
-                            connected = PeerConnection::connect(peer, ctx.clone(), options.clone()) => connected,
+                            opened = PeerConnection::open(peer, options.clone()) => opened,
                             link = dial.overtaken() => {
                                 tracing::debug!(
                                     ?peer,
@@ -131,8 +131,8 @@ impl DownloadRoad {
                                 continue;
                             }
                         };
-                        let conn = match connected {
-                            Ok(conn) => conn,
+                        let opened = match opened {
+                            Ok(opened) => opened,
                             // The stances cannot meet: named apart from a
                             // dead source, so the brain retires the source for
                             // that reason rather than as unreachable. No
@@ -158,6 +158,17 @@ impl DownloadRoad {
                                 return;
                             }
                         };
+                        // Overtaken while the socket came up: the peer never
+                        // reads a hello on it.
+                        if let Err(link) = dial.claim_hello() {
+                            drop(opened);
+                            yielded = Some(Onto {
+                                link,
+                                behind: Some(dial.yielded()),
+                            });
+                            continue;
+                        }
+                        let conn = opened.hello(ctx.clone());
                         // A dialed worker has not identified yet, so the drive
                         // body waits for the peer's hello.
                         drive_peer_worker(

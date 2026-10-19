@@ -122,6 +122,39 @@ fn the_link_the_peer_opened_during_a_dial_keeps_every_name_past_the_dials_hello(
     }
 }
 
+#[test]
+fn a_dial_overtaken_while_its_socket_came_up_sends_no_hello() {
+    // The far side keeps the socket it reads our hello on
+    // (`ClientList.cpp:400-403`): a download's dial the peer's own link
+    // overtook before its hello went out gives way, socket up or not, and
+    // one that claimed its hello first is not overtaken.
+    let links = SharedPeerLinks::default();
+    let at = v4([203, 0, 113, 4], 4662);
+    let names = [LinkName::Endpoint(at), LinkName::User(user(0x24))];
+    let Reach::Dial(mut overtaken) = links.reach(at, &names) else {
+        panic!("nothing is filed yet: the look-up files the dial");
+    };
+    let came_back = v4([203, 0, 113, 4], 50_289);
+    let (_inbound, _joins, moving) = links.file(came_back, names.to_vec());
+    assert!(moving.coming(), "the dial's downloads move over");
+    let Err(link) = overtaken.claim_hello() else {
+        panic!("an overtaken dial claims no hello");
+    };
+    assert_eq!(link.remote, came_back);
+
+    let other = v4([203, 0, 113, 5], 4662);
+    let names = [LinkName::Endpoint(other), LinkName::User(user(0x25))];
+    let Reach::Dial(mut claimed) = links.reach(other, &names) else {
+        panic!("nothing is filed yet: the look-up files the dial");
+    };
+    assert!(claimed.claim_hello().is_ok());
+    let (_inbound, _joins, moving) = links.file(v4([203, 0, 113, 5], 50_290), names.to_vec());
+    assert!(
+        !moving.coming(),
+        "a dial whose hello went out is not overtaken"
+    );
+}
+
 fn half() -> (DownloadHalf, mpsc::Sender<PeerCommand>) {
     let (peer_cmd_tx, peer_cmd_rx) = mpsc::channel(1);
     let half = DownloadHalf {

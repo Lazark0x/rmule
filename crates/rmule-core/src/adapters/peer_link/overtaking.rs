@@ -9,6 +9,9 @@
 //! opened (`BaseClient.cpp:1692-1698`). Once the dial's hello is out the far
 //! side keeps the dial, and so does rmule.
 //!
+//! The hello is claimed under the same lock an overtaking link files under,
+//! so a link filed while the dial's socket came up still overtakes it.
+//!
 //! An uploader dialing a waiter it promoted grants at its hello
 //! (`BaseClient.cpp:1707-1716`), so the link holds an unasked grant read
 //! before the moving downloads have joined it until they have.
@@ -93,6 +96,33 @@ impl DialInFlight {
         }
         self.overtaken = None;
         std::future::pending().await
+    }
+
+    /// Claim the hello for a dial whose socket came up: from here the dial no
+    /// longer yields. `Err` with the peer's own link when that link overtook
+    /// the dial first, while its socket came up: no byte of the hello may go
+    /// out then, and the dial gives way as before its socket was up. A dial
+    /// that does not yield claims it always.
+    pub(in crate::adapters) fn claim_hello(&mut self) -> Result<(), FoundLink> {
+        let Some(told) = self.overtaken.as_mut() else {
+            return Ok(());
+        };
+        let claimed = self
+            .filing
+            .links
+            .book
+            .lock()
+            .is_ok_and(|mut book| book.yielding.remove(&self.filing.filing).is_some());
+        if claimed {
+            self.overtaken = None;
+            return Ok(());
+        }
+        // The overtaking link was told under the same lock that took the
+        // dial off the yielding list.
+        match told.try_recv() {
+            Ok(link) => Err(link),
+            Err(_) => Ok(()),
+        }
     }
 
     /// Give the dial up for the link that overtook it: unfiled, nobody
