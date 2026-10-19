@@ -202,6 +202,7 @@ impl PeerSession {
                         flow.slot = SlotState::Standby;
                         flow.pending_request = None;
                     }
+                    self.drop_compressed_blocks(file_hash);
                     self.active_slot = None;
                     self.core
                         .push_event(PeerEvent::Requester(RequesterEvent::SlotReleased {

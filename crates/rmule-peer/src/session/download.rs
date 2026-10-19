@@ -50,8 +50,9 @@ pub(super) struct FileFlow {
 /// The running count of `FileFlow::compressed_blocks` entries across every
 /// per-file flow — what a hostile peer can hold buffered session-wide.
 /// The field is private to this module, so only
-/// [`PeerSession::on_compressed_part`] can move it: up when a block opens,
-/// down when one is inflated or dropped.
+/// [`PeerSession::on_compressed_part`] and
+/// [`PeerSession::drop_compressed_blocks`] can move it: up when a block opens,
+/// down when one is inflated or dropped, or its slot ends.
 #[derive(Debug, Default)]
 pub(super) struct CompressedBlocksInFlight(usize);
 
@@ -140,10 +141,15 @@ impl PeerSession {
         // Parts are only ever solicited: our own RequestParts created the
         // flow before a legal peer sends one. An unsolicited hash must not
         // create per-file state — drop the chunk silently, as
-        // core drops parts for unknown hashes.
+        // core drops parts for unknown hashes. A chunk outside the granted
+        // slot, still in flight when it ended, opens nothing either (aMule
+        // reads no block outside `DS_DOWNLOADING`, `DownloadClient.cpp:836-838`).
         let Some(flow) = self.per_file.get_mut(&cp.file_hash) else {
             return;
         };
+        if flow.slot != SlotState::Downloading {
+            return;
+        }
         if cp.compressed_block_len as usize > COMPRESSED_INPUT_CEILING {
             // Drop any bytes an earlier, legal declaration buffered for this
             // offset — the peer has shown the block malformed either way.
@@ -200,6 +206,18 @@ impl PeerSession {
             }),
         };
         self.core.push_event(event);
+    }
+
+    /// Drop the compressed blocks `file_hash` holds mid-accumulation, because
+    /// its slot ended: their other chunks never come, and the same block asked
+    /// in a later slot starts a fresh stream (aMule drops its pending blocks'
+    /// zlib streams on leaving `DS_DOWNLOADING`, `DownloadClient.cpp:541-543`,
+    /// `BaseClient.cpp:1209-1245`).
+    pub(super) fn drop_compressed_blocks(&mut self, file_hash: FileHash) {
+        if let Some(flow) = self.per_file.get_mut(&file_hash) {
+            self.compressed_blocks_in_flight.0 -= flow.compressed_blocks.len();
+            flow.compressed_blocks.clear();
+        }
     }
 
     // --- Command handlers --------------------------------------
@@ -832,6 +850,7 @@ impl PeerSession {
         flow.slot = SlotState::Queued;
         flow.pending_request = None;
         flow.last_rank = None;
+        self.drop_compressed_blocks(active);
         self.core
             .push_event(PeerEvent::Requester(RequesterEvent::Requeued {
                 file_hash: active,
@@ -903,6 +922,7 @@ impl PeerSession {
         flow.slot = SlotState::Released;
         flow.pending_request = None;
         self.active_slot = None;
+        self.drop_compressed_blocks(file_hash);
         self.core
             .push_event(PeerEvent::Requester(RequesterEvent::SlotReleased {
                 file_hash,
