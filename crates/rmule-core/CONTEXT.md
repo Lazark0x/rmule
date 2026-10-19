@@ -537,9 +537,9 @@ _Avoid_: worker phase (a slot row's, finer and per connection)
 **Connection Budget**:
 The node's pace for **Asking**, shared by every run of the **Download Set**: the **Dial Window** — at
 most `peer_connections.dials_per_window` (20) roads opened per 5-second window — and the **Connection
-Ceiling** — at most `peer_connections.max_connections` (500, and never more than the process's
-open-descriptor limit leaves room for by aMule's `GetRecommendedMaxConnections`, which each binary
-reads once at its start) connections the downloads hold at once, each run republishing its own count
+Ceiling** — at most `peer_connections.max_connections` (500 by default, and never more than the
+process's open-descriptor limit less the reserve of aMule's `GetRecommendedMaxConnections`; each
+binary reads the limit once at its start) connections the downloads hold at once, each run republishing its own count
 after every step. A fill it refuses takes nothing and wakes at the
 window's turn; a grant never asks it (ADR-0116, aMule `TooManySockets`).
 _Avoid_: worker cap, concurrency (no per-download count exists), Source Ask Budget (that paces `OP_GETSOURCES`)

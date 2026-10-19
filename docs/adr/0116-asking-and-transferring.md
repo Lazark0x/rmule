@@ -72,15 +72,19 @@ The operator reads the asking, queued and transferring counts of every running d
 open-descriptor limit toward its hard limit and reads the limit then in force (`rmule-os`, ADR-0111).
 On macOS the soft limit goes no higher than `OPEN_MAX` (10240), above which the kernel refuses it; a
 refused raise keeps the limit as it was. Windows states no such limit. The Ceiling the binary hands the
-core is the lower of the configured one (the operator's, else 500) and what the limit leaves room for,
-by the four arms of aMule's `GetRecommendedMaxConnections` (`Preferences.cpp:1493-1509`):
+core is the configured one (the operator's, else 500), held under the room the limit leaves by the
+reserve of aMule's `GetRecommendedMaxConnections` (`Preferences.cpp:1493-1509`):
 
-| The limit | The Ceiling it leaves |
+| The limit | The room it leaves |
 |---|---|
-| unknown, or above 520 | 500 |
+| unknown | no bound |
 | under 20 | the limit |
 | 20 to 256 | the limit less 10 |
-| 257 to 520 | the limit less 20 |
+| above 256 | the limit less 20 |
+
+aMule's 500 for a limit above 520 or unknown is its default `MaxConnections`, which the user may set
+higher; in rmule it is the default Ceiling, and an operator's larger Ceiling stands wherever the room
+holds it.
 
 A Ceiling lowered so is said to the operator once, with the limit that lowered it. aMule raises its
 soft limit to the hard one the same way at start (`UnlimitResource`, `amule.cpp:126-134`, `:144`,

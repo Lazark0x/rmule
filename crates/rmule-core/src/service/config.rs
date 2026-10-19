@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use rmule_net::family::FamilySelection;
 
-pub use self::descriptors::{CeilingLowered, descriptor_ceiling};
+pub use self::descriptors::{CeilingLowered, descriptor_room};
 use crate::address_learning::ExternalAddressOverride;
 use crate::port_mapping::PortMappingConfig;
 use serde::{Deserialize, Serialize};

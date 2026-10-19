@@ -25,7 +25,7 @@ pub use self::command::{
 };
 pub use self::config::{
     CeilingLowered, CoreConfig, DEFAULT_SLOT_WAIT_TIMEOUT, NattConfig, PeerConnections,
-    VerificationAuthority, descriptor_ceiling,
+    VerificationAuthority, descriptor_room,
 };
 pub use self::event::LinkTurn;
 pub use self::event::{

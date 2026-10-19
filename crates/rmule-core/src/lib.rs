@@ -236,7 +236,7 @@ pub use service::{
     SearchLegState, SearchLegs, ServeCommand, ServeEvent, ServeStartFailure, ServeStopReason,
     ServerConnectFailure, ServerConnectionEvent, ServerListCommand, ServerListEvent,
     ShareRejectReason, SharesWithheld, SourcePurgeReason, SourceWait, SweepTally,
-    VerificationAuthority, descriptor_ceiling,
+    VerificationAuthority, descriptor_room,
 };
 pub use storage::{DownloadRepository, ResolvedAuthority};
 pub use store::app_config::DurableAppConfig;

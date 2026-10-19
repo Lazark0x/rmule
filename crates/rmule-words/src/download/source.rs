@@ -25,15 +25,10 @@ pub fn ceiling_lowered(lowered: rmule_core::CeilingLowered) -> Sentence {
         ceiling,
     } = lowered;
     let held = count(ceiling as u64, "peer connection", "peer connections");
-    Sentence::owned(match descriptors {
-        Some(limit) => format!(
-            "this process may hold {} open at once, so downloads hold at most {held}, not {configured}",
-            count(limit, "file", "files"),
-        ),
-        None => {
-            format!("downloads hold at most {held}, not {configured}: the most aMule recommends")
-        }
-    })
+    Sentence::owned(format!(
+        "this process may hold {} open at once, so downloads hold at most {held}, not {configured}",
+        count(descriptors, "file", "files"),
+    ))
 }
 
 /// A running download's sources as the operator reads them (ADR-0116): how

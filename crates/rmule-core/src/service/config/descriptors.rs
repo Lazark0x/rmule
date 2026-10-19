@@ -1,7 +1,7 @@
 //! The **Connection Ceiling** under the process's open-descriptor limit
 //! (ADR-0116, "The Ceiling under the descriptor limit"): a binary reads the
-//! limit once at its start and hands the core the lower of the configured
-//! Ceiling and what the limit leaves room for, by aMule's
+//! limit once at its start and hands the core the configured Ceiling, held
+//! under what the limit leaves room for by the reserve of aMule's
 //! `GetRecommendedMaxConnections` (stock 2.3.3 `Preferences.cpp:1493-1509`).
 
 use super::PeerConnections;
@@ -10,44 +10,45 @@ use super::PeerConnections;
 /// left no room for the configured one: said to the operator once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CeilingLowered {
-    /// The open-descriptor limit in force, `None` when the system states
-    /// none and aMule's default stood in for it.
-    pub descriptors: Option<u64>,
+    /// The open-descriptor limit in force.
+    pub descriptors: u64,
     /// The Ceiling configured: the operator's, else the default 500.
     pub configured: usize,
     /// The Ceiling in force.
     pub ceiling: usize,
 }
 
-/// The Ceiling an open-descriptor limit of `descriptors` leaves room for —
-/// `None` when the system states none — by the four arms of aMule's
-/// `GetRecommendedMaxConnections`: unknown or above 520, 500; under 20, the
-/// limit; up to 256, the limit less 10; above, the limit less 20.
+/// The connections an open-descriptor limit of `descriptors` leaves room
+/// for, `None` when the system states no limit: the limit itself under 20,
+/// the limit less 10 up to 256, the limit less 20 above — the reserve of
+/// aMule's `GetRecommendedMaxConnections`, whose 500 for a larger or unknown
+/// limit is the default Ceiling, not a bound.
 #[must_use]
-pub fn descriptor_ceiling(descriptors: Option<u64>) -> usize {
-    let room = match descriptors {
-        None => 500,
-        Some(limit) if limit > 520 => 500,
-        Some(limit) if limit < 20 => limit,
-        Some(limit) if limit <= 256 => limit - 10,
-        Some(limit) => limit - 20,
+pub fn descriptor_room(descriptors: Option<u64>) -> Option<usize> {
+    let room = match descriptors? {
+        limit if limit < 20 => limit,
+        limit if limit <= 256 => limit - 10,
+        limit => limit - 20,
     };
-    usize::try_from(room).unwrap_or(usize::MAX)
+    Some(usize::try_from(room).unwrap_or(usize::MAX))
 }
 
 impl PeerConnections {
     /// These knobs with the Ceiling held to what `descriptors`, the process's
-    /// open-descriptor limit, leaves room for ([`descriptor_ceiling`]): a
-    /// configured Ceiling that fits stands. When the limit lowered it, what
-    /// the operator is told.
+    /// open-descriptor limit, leaves room for ([`descriptor_room`]): a
+    /// configured Ceiling that fits stands, and so does every Ceiling when the
+    /// system states no limit. When the limit lowered it, what the operator
+    /// is told.
     #[must_use]
     pub fn within_descriptors(self, descriptors: Option<u64>) -> (Self, Option<CeilingLowered>) {
-        let room = descriptor_ceiling(descriptors);
+        let (Some(limit), Some(room)) = (descriptors, descriptor_room(descriptors)) else {
+            return (self, None);
+        };
         if self.max_connections <= room {
             return (self, None);
         }
         let lowered = CeilingLowered {
-            descriptors,
+            descriptors: limit,
             configured: self.max_connections,
             ceiling: room,
         };
@@ -63,17 +64,16 @@ impl PeerConnections {
 mod tests {
     use super::*;
 
-    /// aMule's four arms, at their edges.
+    /// aMule's reserve, at the edges of its arms.
     #[test]
-    fn the_ceiling_follows_amules_recommendation_over_the_limit() {
-        assert_eq!(descriptor_ceiling(None), 500);
-        assert_eq!(descriptor_ceiling(Some(521)), 500);
-        assert_eq!(descriptor_ceiling(Some(10_240)), 500);
-        assert_eq!(descriptor_ceiling(Some(19)), 19);
-        assert_eq!(descriptor_ceiling(Some(20)), 10);
-        assert_eq!(descriptor_ceiling(Some(256)), 246);
-        assert_eq!(descriptor_ceiling(Some(257)), 237);
-        assert_eq!(descriptor_ceiling(Some(520)), 500);
+    fn the_room_is_the_limit_less_amules_reserve() {
+        assert_eq!(descriptor_room(None), None);
+        assert_eq!(descriptor_room(Some(19)), Some(19));
+        assert_eq!(descriptor_room(Some(20)), Some(10));
+        assert_eq!(descriptor_room(Some(256)), Some(246));
+        assert_eq!(descriptor_room(Some(257)), Some(237));
+        assert_eq!(descriptor_room(Some(520)), Some(500));
+        assert_eq!(descriptor_room(Some(10_240)), Some(10_220));
     }
 
     /// A limit that leaves room for less lowers the default and says so; an
@@ -85,7 +85,7 @@ mod tests {
         assert_eq!(
             told,
             Some(CeilingLowered {
-                descriptors: Some(256),
+                descriptors: 256,
                 configured: 500,
                 ceiling: 246,
             })
@@ -95,5 +95,19 @@ mod tests {
             ..PeerConnections::default()
         };
         assert_eq!(operator.within_descriptors(Some(256)), (operator, None));
+    }
+
+    /// An operator's Ceiling past the default 500 stands wherever the limit
+    /// has room for it, and wherever the system states none.
+    #[test]
+    fn an_operator_ceiling_past_the_default_stands_where_the_limit_has_room() {
+        let operator = PeerConnections {
+            max_connections: 1_000,
+            ..PeerConnections::default()
+        };
+        assert_eq!(operator.within_descriptors(Some(10_240)), (operator, None));
+        assert_eq!(operator.within_descriptors(None), (operator, None));
+        let (held, _) = operator.within_descriptors(Some(1_000));
+        assert_eq!(held.max_connections, 980);
     }
 }
