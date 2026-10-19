@@ -236,7 +236,7 @@ fn a_queued_link_is_not_passed_the_set() {
 
 /// A queued worker whose parts all verify elsewhere holds nothing we need: it
 /// is retired `NoNeededParts`, with no `0x56`, since it holds no granted slot
-/// (ADR-0112 §6, ADR-0056), while the verifier takes its next part.
+/// (ADR-0112 §6, ADR-0056), while the verifier, drained, takes the next part.
 #[test]
 fn a_queued_worker_left_holding_nothing_we_lack_goes_with_no_slot_to_give_back() {
     let mut state = two_workers(set_held_content(THREE_PARTS, Vec::new()));
@@ -268,12 +268,20 @@ fn a_queued_worker_left_holding_nothing_we_lack_goes_with_no_slot_to_give_back()
         )),
         "{verified:?}"
     );
+    let next = state.on_worker_event(
+        t0(),
+        peer(1),
+        PeerWorkerEvent::BlocksWanted {
+            room: 3,
+            drained: true,
+        },
+    );
     assert!(
-        verified.iter().any(|d| matches!(
+        next.iter().any(|d| matches!(
             d,
             Decision::Emit(DownloadEvent::PartAssigned { part_index: 1, peer: p, .. }) if *p == peer(1)
         )),
-        "{verified:?}"
+        "{next:?}"
     );
 }
 

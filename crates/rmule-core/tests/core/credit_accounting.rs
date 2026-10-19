@@ -76,23 +76,13 @@ impl PeerTransferService for CreditingPeerTransfer {
                         let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
                     }
                     PeerWorkerCommand::RequestHashSet => {}
-                    PeerWorkerCommand::RequestPart {
-                        plan,
-                        resume_offset,
-                    } => {
-                        let start =
-                            (resume_offset.saturating_sub(plan.offset) as usize).min(bytes.len());
-                        let _ = event_tx
-                            .send(PeerWorkerEvent::BlockReceived {
-                                part_index: plan.part_index,
-                                offset: resume_offset,
-                                bytes: bytes[start..].to_vec(),
-                            })
-                            .await;
-                        let _ = event_tx
-                            .send(PeerWorkerEvent::PartStreamed {
-                                part_index: plan.part_index,
-                            })
+                    PeerWorkerCommand::RequestBlocks { blocks } => {
+                        let part = rmule_core::DownloadedPart {
+                            part_index: 0,
+                            offset: 0,
+                            bytes: bytes.clone(),
+                        };
+                        rmule_testkit::emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks)
                             .await;
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}

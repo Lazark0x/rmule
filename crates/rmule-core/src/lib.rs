@@ -174,7 +174,7 @@ pub use join::{
     SeedReadFault, acquire_kad_seeds, run_join_sequence,
 };
 pub use kad_sources::KadAnswer;
-pub use planning::PartPlan;
+pub use planning::{BlockPlan, PartPlan};
 pub use reachability::KadReachLevel;
 /// Why a search row was skipped: the code a `SearchResultSkipped` event carries.
 pub use rmule_ed2k::SearchResultSkipReason;
@@ -220,7 +220,6 @@ pub use rmule_net::portmap::live_backends as live_mapping_backends;
 /// port-prediction amendment).
 pub use rmule_peer::natt::{OwnMapping, PortPrediction};
 pub use rmule_peer::{HelloRefusal, HelloRefusalCode};
-pub use scheduler::{Assignment, DownloadScheduler, Pace, PartOrder};
 pub use search::{KadKeywordSink, MORE_RESULTS_ASKS, RelatedSearchRefusal, ServerMoreResults};
 pub use served_downloads::PartialEnd;
 pub use server_session::build_peer_handshake_context;

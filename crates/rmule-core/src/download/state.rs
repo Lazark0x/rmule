@@ -1,9 +1,9 @@
 //! The synchronous, sans-I/O core of the multi-peer download runner.
 //!
 //! [`DownloadState`] owns every channel-free scheduling decision for one
-//! in-flight download: which part a peer works, how cross-peer blocks
-//! assemble (ADR-0029), when a raced part completes and clears its losers
-//! (ADR-0026), which candidate backfills a retired worker (ADR-0030), and
+//! in-flight download: which blocks a peer is handed and when the End Game
+//! duplicates a slower peer's (ADR-0117), how cross-peer blocks assemble
+//! (ADR-0029), which candidate backfills a retired worker (ADR-0030), and
 //! when a source's ask or reask falls due. It never touches a socket, the
 //! store, or an `mpsc` channel, and reads no clock: time arrives as the `now`
 //! every entry takes, [`DownloadState::on_tick`] runs what has fallen due, and
@@ -13,7 +13,7 @@
 //! the state emits [`Decision::PersistPart`] and resumes on
 //! [`DownloadState::on_persist_result`].
 //!
-//! This split is what makes the racing / mid-part-resume / retire-all /
+//! This split is what makes the handout / mid-part-resume / retire-all /
 //! backfill behaviours assertable as plain `Vec<Decision>` values instead of
 //! only through a live Tokio actor with `timeout`-polled events.
 //!
@@ -25,6 +25,7 @@ mod candidate;
 mod candidates;
 mod capability;
 mod direct_ipv6;
+mod handout;
 mod remote_queued;
 mod seeds;
 mod sightings;
@@ -423,10 +424,16 @@ pub(crate) struct DownloadState {
     file_hash: FileHash,
     file_size: u64,
     scheduler: DownloadScheduler,
-    /// One shared contiguous-prefix buffer per in-flight part (ADR-0029),
+    /// One assembly per part holding an arrived byte (ADR-0029, ADR-0117),
     /// keyed by part index. Blocks from every contributing peer feed the
-    /// same buffer, so a mid-part drop preserves the prefix.
+    /// same Arrived Ranges, so a mid-part drop keeps every arrived byte.
     assembly: HashMap<u32, PartAssembly>,
+    /// Each granted worker's room it reported and the brain has not yet
+    /// answered (`BlocksWanted`, ADR-0117).
+    wants: HashMap<PeerEndpoint, handout::Want>,
+    /// The part each worker last delivered bytes of and how many: its
+    /// `ReceivingPart` row (ADR-0117 "What the operator reads").
+    delivered: HashMap<PeerEndpoint, (u32, u64)>,
     /// Assemblies removed from `assembly` when their `PersistPart` was
     /// emitted, held until `on_persist_result` so a verification failure can
     /// retire every contributor (ADR-0029's retire-all).
@@ -439,8 +446,8 @@ pub(crate) struct DownloadState {
     /// channel for each peer stays in the runner, whether it has completed its
     /// handshake in the **Source Book**; the brain owns only the slot number.
     worker_slots: HashMap<PeerEndpoint, WorkerSlot>,
-    /// Each live worker's **Delivery Rate**, from its block arrivals: what a
-    /// Tail Race reads (ADR-0026 "Bounded racing").
+    /// Each live worker's **Delivery Rate**, from its block arrivals: what the
+    /// End Game reads (ADR-0117).
     delivery: HashMap<PeerEndpoint, DeliveryRate>,
     /// Where each worker's slot ask stands at its uploader, and the download's
     /// one hash-set ask in flight (ADR-0026).
@@ -568,6 +575,8 @@ impl DownloadState {
             file_size,
             scheduler: DownloadScheduler::new(file_size, verified_parts, order),
             assembly: HashMap::new(),
+            wants: HashMap::new(),
+            delivered: HashMap::new(),
             pending_persist: HashMap::new(),
             awaiting_recovery: HashMap::new(),
             worker_slots: HashMap::new(),
@@ -675,7 +684,7 @@ impl DownloadState {
         crate::served_downloads::ExchangePool {
             sources: self
                 .sources
-                .exchange_pool(|endpoint| self.scheduler.is_working(endpoint)),
+                .exchange_pool(|endpoint| self.slot_asks.granted(endpoint)),
             known: self.sources.counts().known,
         }
     }
@@ -732,12 +741,12 @@ impl DownloadState {
         out
     }
 
-    /// Whether `peer` currently holds an in-flight part. A test affordance for
+    /// Whether `peer` currently holds a Claimed Block. A test affordance for
     /// asserting scheduling outcomes; the runner drives off `is_complete` and
     /// the decisions, never this read.
     #[cfg(test)]
     pub(crate) fn is_working(&self, peer: PeerEndpoint) -> bool {
-        self.scheduler.is_working(peer)
+        self.scheduler.holds_claims(peer)
     }
 
     /// The trusted AICH root in force (test affordance for asserting the
@@ -776,13 +785,11 @@ impl DownloadState {
             DownloadFailure::Paused => PartReleaseReason::Paused,
             _ => PartReleaseReason::Cancelled,
         };
-        let mut released = self.scheduler.take_in_flight();
-        released.sort_unstable_by_key(|(_, plan)| plan.part_index);
-        for (peer, plan) in released {
+        for (peer, part_index) in self.scheduler.take_in_flight() {
             out.push(Decision::Emit(DownloadEvent::PartReleased {
                 download_id: self.download_id,
                 peer,
-                part_index: plan.part_index,
+                part_index,
                 reason: release_reason,
             }));
         }

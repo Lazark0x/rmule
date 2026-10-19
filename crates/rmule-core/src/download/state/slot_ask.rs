@@ -206,8 +206,8 @@ impl DownloadState {
         self.retire(now, peer, PeerRetirementReason::Queued, out);
     }
 
-    /// `peer`'s uploader granted it a slot: hand it its part, or give the slot
-    /// back (ADR-0026, ADR-0056). A slot the worker keeps takes the
+    /// `peer`'s uploader granted it a slot: hand it its first blocks, or give
+    /// the slot back (ADR-0026, ADR-0056, ADR-0117). A slot the worker keeps takes the
     /// download's one hash-set ask when nobody asks it (ADR-0116 invariant 3),
     /// and is a grant on the peer's **Queue Standing**: the downloads waiting
     /// on it are called to this link, to take it by the swap rule (ADR-0107).
@@ -216,7 +216,8 @@ impl DownloadState {
             return;
         }
         self.slot_asks.by_worker.insert(peer, SlotAsk::Granted);
-        self.assign(now, peer, out);
+        self.want_at_grant(peer);
+        self.hand(now, peer, out);
         if self.may_ask_hash_set(peer) {
             self.ask_hash_set(now, peer, out);
         }
@@ -227,8 +228,8 @@ impl DownloadState {
 
     /// Retire `peer` for `reason`, a live source's: it was ranked without a
     /// grant (`Queued`, ADR-0116), its parts hold nothing we lack
-    /// (`NoNeededParts`), or a granted slot found every part it holds that we
-    /// lack in flight (`NoFreePart`). Its record waits in the RemoteQueued
+    /// (`NoNeededParts`), or a granted slot drained with every block it could
+    /// fetch claimed elsewhere (`NoFreePart`). Its record waits in the RemoteQueued
     /// stage, unspent, and a granted slot goes back (ADR-0112 §6, ADR-0056).
     /// A worker an earlier retirement in the same batch already ended is
     /// left alone: one retirement's backfill can retire the next in turn.

@@ -19,8 +19,8 @@ use rmule_primitives::{
     PeerEndpoint, ServerEndpoint,
 };
 use rmule_testkit::{
-    StaticPeerTransfer, emit_streamed_part, file_link, file_link_without_part_hash_set,
-    loopback_peer, next_event, run_download, source_with_high_id, two_high_id_sources,
+    StaticPeerTransfer, emit_blocks, file_link, file_link_without_part_hash_set, loopback_peer,
+    next_event, run_download, source_with_high_id, two_high_id_sources,
 };
 
 /// A file below one part has no part hash set: its one part is the whole file,
@@ -411,7 +411,7 @@ impl PeerTransferService for MismatchedThenSuccess {
                         let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
                     }
                     PeerWorkerCommand::RequestHashSet => {}
-                    PeerWorkerCommand::RequestPart { .. } if peer == mismatched_peer => {
+                    PeerWorkerCommand::RequestBlocks { .. } if peer == mismatched_peer => {
                         let _ = event_tx
                             .send(PeerWorkerEvent::HashSetReceived {
                                 part_hashes: mismatched_hashes.clone(),
@@ -419,25 +419,18 @@ impl PeerTransferService for MismatchedThenSuccess {
                             .await;
                         break;
                     }
-                    PeerWorkerCommand::RequestPart {
-                        plan,
-                        resume_offset,
-                    } => {
+                    PeerWorkerCommand::RequestBlocks { blocks } => {
                         let _ = event_tx
                             .send(PeerWorkerEvent::HashSetReceived {
                                 part_hashes: correct_hashes.clone(),
                             })
                             .await;
-                        emit_streamed_part(
-                            &event_tx,
-                            &DownloadedPart {
-                                part_index: plan.part_index,
-                                offset: plan.offset,
-                                bytes: bytes.clone(),
-                            },
-                            resume_offset,
-                        )
-                        .await;
+                        let part = DownloadedPart {
+                            part_index: 0,
+                            offset: 0,
+                            bytes: bytes.clone(),
+                        };
+                        emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks).await;
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}
                     PeerWorkerCommand::RequestAichFileHash => {}

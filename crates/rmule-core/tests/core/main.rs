@@ -59,7 +59,6 @@ mod download_pause_and_cancel;
 mod download_peer_failover;
 mod download_placement;
 mod download_resume;
-mod download_scheduler;
 mod download_second_link;
 mod download_slot_negotiation;
 mod download_source_pool;

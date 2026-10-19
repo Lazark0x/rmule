@@ -13,7 +13,7 @@ use rmule_primitives::{
     ClientId, ED2K_PART_SIZE, Ed2kFileLink, PeerEndpoint, PeerSource, SourceLookupTarget,
 };
 use rmule_testkit::{
-    StaticPeerTransfer, StaticSourceLookup, emit_streamed_part, file_link,
+    StaticPeerTransfer, StaticSourceLookup, emit_blocks, file_link,
     file_link_without_part_hash_set, plain_sources, run_download, run_download_with,
     two_high_id_sources,
 };
@@ -194,20 +194,13 @@ impl PeerTransferService for BackfillTransfer {
                         let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
                     }
                     PeerWorkerCommand::RequestHashSet => {}
-                    PeerWorkerCommand::RequestPart {
-                        plan,
-                        resume_offset,
-                    } => {
-                        emit_streamed_part(
-                            &event_tx,
-                            &DownloadedPart {
-                                part_index: plan.part_index,
-                                offset: plan.offset,
-                                bytes: bytes.clone(),
-                            },
-                            resume_offset,
-                        )
-                        .await;
+                    PeerWorkerCommand::RequestBlocks { blocks } => {
+                        let part = DownloadedPart {
+                            part_index: 0,
+                            offset: 0,
+                            bytes: bytes.clone(),
+                        };
+                        emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks).await;
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}
                     PeerWorkerCommand::RequestAichFileHash => {}

@@ -100,11 +100,6 @@ impl ByteRanges {
         }
         gaps
     }
-
-    /// How many bytes the set holds.
-    pub(crate) fn total(&self) -> u64 {
-        self.0.iter().map(|(s, e)| e - s).sum()
-    }
 }
 
 #[cfg(test)]
@@ -140,6 +135,5 @@ mod tests {
         assert_eq!(set.covered_within(30, 70), 20);
         assert!(set.covers(60, 100));
         assert!(!set.covers(39, 41));
-        assert_eq!(set.total(), 80);
     }
 }

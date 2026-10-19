@@ -1,7 +1,7 @@
-//! ADR-0029 block assembly across peers: a peer that drops mid-part leaves a
-//! prefix the next peer resumes from instead of restarting at zero, and a part
-//! assembled from several contributors that fails its MD4 hash retires every
-//! contributor and refetches the part from a cleared buffer.
+//! Block assembly across peers (ADR-0029, ADR-0117): a peer that drops
+//! mid-part leaves its arrived bytes, and the next peer is handed only what is
+//! missing; a part assembled from several contributors that fails its MD4 hash
+//! retires every contributor and is handed again from a cleared buffer.
 
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent, DownloadFailure,
@@ -14,19 +14,19 @@ use rmule_primitives::{
     ServerEndpoint,
 };
 use rmule_testkit::{
-    StaticSourceLookup, file_link_without_part_hash_set, loopback_peer, next_event, plain_sources,
-    two_high_id_sources,
+    StaticSourceLookup, emit_blocks, file_link_without_part_hash_set, loopback_peer, next_event,
+    plain_sources, two_high_id_sources,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 
 #[tokio::test]
-async fn core_resumes_a_part_from_another_peer_after_a_mid_part_drop() {
+async fn a_dropped_workers_bytes_stay_and_the_next_is_handed_only_the_rest() {
     let out_dir = tempfile::tempdir().unwrap();
-    // ADR-0029: peer A delivers [0, k) of the only part then drops; core
-    // preserves the shared prefix and hands peer B a resume offset of k, so B
-    // finishes [k, len) instead of restarting at block 0. peer_concurrency = 1
-    // makes the drop-then-backfill-then-resume sequence deterministic.
+    // ADR-0117: peer A delivers [0, k) of the only block then drops; core keeps
+    // the arrived bytes and hands peer B only [k, len), instead of the block
+    // from 0. One connection makes the drop-then-backfill sequence
+    // deterministic.
     let bytes: Vec<u8> = (0..100u32).map(|i| (i % 251) as u8).collect();
     let drop_at = 40u64;
     let dropping_peer = loopback_peer(1);
@@ -79,12 +79,12 @@ async fn core_resumes_a_part_from_another_peer_after_a_mid_part_drop() {
     assert_eq!(
         offsets.get(&dropping_peer),
         Some(&0),
-        "the first peer starts the part at offset 0"
+        "the first peer is handed the block from offset 0"
     );
     assert_eq!(
         offsets.get(&resuming_peer),
         Some(&drop_at),
-        "the second peer resumes at the dropped prefix end, not from 0"
+        "the second peer is handed only what did not arrive"
     );
 }
 
@@ -93,7 +93,7 @@ async fn core_retires_all_contributors_when_assembled_part_fails_verification() 
     let out_dir = tempfile::tempdir().unwrap();
     // ADR-0029: when a part assembled from blocks contributed by several peers
     // fails its MD4 part hash, core cannot attribute the bad block (no AICH),
-    // so it retires every contributor and refetches the part from offset 0.
+    // so it retires every contributor and hands the part again from offset 0.
     // peer A contributes [0, k) correctly and B contributes [k, len) corrupted;
     // both must be retired as PartVerificationFailed, the buffer cleared, and a
     // surviving peer C must finish the part from a fresh prefix (offset 0).
@@ -203,7 +203,7 @@ async fn core_retires_all_contributors_when_assembled_part_fails_verification() 
     assert_eq!(
         resume_offsets.lock().unwrap().get(&peer_c),
         Some(&0),
-        "the surviving peer must refetch from offset 0 (buffer cleared), got {:?}",
+        "the surviving peer must be handed offset 0 (buffer cleared), got {:?}",
         resume_offsets.lock().unwrap().get(&peer_c),
     );
 }
@@ -238,38 +238,31 @@ impl PeerTransferService for ResumeAfterDropTransfer {
                         let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
                     }
                     PeerWorkerCommand::RequestHashSet => {}
-                    PeerWorkerCommand::RequestPart {
-                        plan,
-                        resume_offset,
-                    } => {
-                        resume_offsets.lock().unwrap().insert(peer, resume_offset);
-                        let start = resume_offset as usize;
+                    PeerWorkerCommand::RequestBlocks { blocks } => {
+                        resume_offsets
+                            .lock()
+                            .unwrap()
+                            .entry(peer)
+                            .or_insert(blocks[0].start);
                         if peer == dropping_peer {
-                            // Deliver [start, drop_at) then drop mid-part; the
-                            // prefix core kept is what the next peer resumes at.
+                            // Deliver [0, drop_at) then drop mid-block; the
+                            // bytes core kept are what the next peer is spared.
                             let _ = event_tx
                                 .send(PeerWorkerEvent::BlockReceived {
-                                    part_index: plan.part_index,
-                                    offset: resume_offset,
-                                    bytes: bytes[start..drop_at].to_vec(),
+                                    part_index: 0,
+                                    offset: 0,
+                                    bytes: bytes[..drop_at].to_vec(),
                                 })
                                 .await;
                             let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
                             break;
                         }
-                        // Resume from the offset core handed us through to the end.
-                        let _ = event_tx
-                            .send(PeerWorkerEvent::BlockReceived {
-                                part_index: plan.part_index,
-                                offset: resume_offset,
-                                bytes: bytes[start..].to_vec(),
-                            })
-                            .await;
-                        let _ = event_tx
-                            .send(PeerWorkerEvent::PartStreamed {
-                                part_index: plan.part_index,
-                            })
-                            .await;
+                        let part = rmule_core::DownloadedPart {
+                            part_index: 0,
+                            offset: 0,
+                            bytes: bytes.clone(),
+                        };
+                        emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks).await;
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}
                     PeerWorkerCommand::RequestAichFileHash => {}
@@ -327,11 +320,12 @@ impl PeerTransferService for CrossPeerVerifyFailTransfer {
                             })
                             .await;
                     }
-                    PeerWorkerCommand::RequestPart {
-                        plan,
-                        resume_offset,
-                    } => {
-                        resume_offsets.lock().unwrap().insert(peer, resume_offset);
+                    PeerWorkerCommand::RequestBlocks { blocks } => {
+                        resume_offsets
+                            .lock()
+                            .unwrap()
+                            .entry(peer)
+                            .or_insert(blocks[0].start);
                         if peer == partial_peer {
                             // Establish the single part's hash as the
                             // PeerHashSet authority, contribute the correct
@@ -344,7 +338,7 @@ impl PeerTransferService for CrossPeerVerifyFailTransfer {
                                 .await;
                             let _ = event_tx
                                 .send(PeerWorkerEvent::BlockReceived {
-                                    part_index: plan.part_index,
+                                    part_index: 0,
                                     offset: 0,
                                     bytes: correct[..drop_at].to_vec(),
                                 })
@@ -356,27 +350,20 @@ impl PeerTransferService for CrossPeerVerifyFailTransfer {
                             a_done.notified().await;
                             let _ = event_tx
                                 .send(PeerWorkerEvent::BlockReceived {
-                                    part_index: plan.part_index,
+                                    part_index: 0,
                                     offset: drop_at as u64,
                                     bytes: corrupt_tail.clone(),
                                 })
                                 .await;
                         } else {
-                            // Survivor: serve the correct bytes from the offset
-                            // core hands it (a fresh prefix after retire-all).
-                            let start = (resume_offset as usize).min(correct.len());
-                            let _ = event_tx
-                                .send(PeerWorkerEvent::BlockReceived {
-                                    part_index: plan.part_index,
-                                    offset: resume_offset,
-                                    bytes: correct[start..].to_vec(),
-                                })
-                                .await;
-                            let _ = event_tx
-                                .send(PeerWorkerEvent::PartStreamed {
-                                    part_index: plan.part_index,
-                                })
-                                .await;
+                            // Survivor: serve the correct bytes of the blocks
+                            // core hands it (from 0 again after retire-all).
+                            let part = rmule_core::DownloadedPart {
+                                part_index: 0,
+                                offset: 0,
+                                bytes: correct.clone(),
+                            };
+                            emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks).await;
                         }
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}

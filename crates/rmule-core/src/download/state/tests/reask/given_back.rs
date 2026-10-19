@@ -11,8 +11,9 @@ use super::*;
 const TWO_PARTS: u64 = rmule_primitives::ED2K_PART_SIZE + 1;
 
 /// `peer(1)` and `peer(2)` granted on a two-part download that holds its
-/// set, `peer(1)` stating its client-UDP contact; part 0 on `peer(1)`,
-/// part 1 on `peer(2)`.
+/// set, `peer(1)` stating its client-UDP contact; `peer(2)` has room for the
+/// rest, so it holds every block but `peer(1)`'s first three, part 1's among
+/// them (ADR-0117).
 fn both_granted(posture: SourcingPosture) -> DownloadState {
     let mut state = pooled_state(
         set_held_content(TWO_PARTS, Vec::new()),
@@ -25,7 +26,27 @@ fn both_granted(posture: SourcingPosture) -> DownloadState {
     let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Identity(identity));
     let _ = connect(&mut state, t0(), peer(1));
     let _ = connect(&mut state, t0(), peer(2));
+    let _ = state.on_worker_event(
+        t0(),
+        peer(2),
+        PeerWorkerEvent::BlocksWanted {
+            room: 64,
+            drained: false,
+        },
+    );
     state
+}
+
+/// `peer(1)`'s pipeline has drained: it has room for three.
+fn drained(state: &mut DownloadState, now: Instant) -> Vec<Decision> {
+    state.on_worker_event(
+        now,
+        peer(1),
+        PeerWorkerEvent::BlocksWanted {
+            room: 3,
+            drained: true,
+        },
+    )
 }
 
 /// Whether `decisions` retire `peer` `NoFreePart`, giving its granted slot
@@ -47,9 +68,9 @@ fn gave_back(decisions: &[Decision], peer: PeerEndpoint) -> bool {
     retired && cancelled
 }
 
-/// `peer(1)` verifies part 0 while part 1 is in flight on `peer(2)`; its
-/// part arrived in one instant, so no Delivery Rate is measured and it runs
-/// no Tail Race (ADR-0026): its granted slot goes back (aMule's
+/// `peer(1)` verifies part 0 while part 1 is claimed by `peer(2)`; its part
+/// arrived in one instant, so no Delivery Rate is measured and it duplicates
+/// nothing (ADR-0117): once drained, its granted slot goes back (aMule's
 /// `OP_CANCELTRANSFER (no free blocks)`, `DownloadClient.cpp:641-693`) and its
 /// record waits unranked, pinged before the ordinary period — never the
 /// no-needed-parts doubling.
@@ -57,7 +78,8 @@ fn gave_back(decisions: &[Decision], peer: PeerEndpoint) -> bool {
 fn a_granted_worker_with_no_part_free_gives_its_slot_back_onto_the_ordinary_cadence() {
     let mut state = both_granted(live_posture());
 
-    let verified = deliver_verified(&mut state, peer(1), 0);
+    let _ = deliver_verified(&mut state, peer(1), 0);
+    let verified = drained(&mut state, t0());
     assert!(gave_back(&verified, peer(1)), "{verified:?}");
     assert_eq!(
         phases(&verified),
@@ -99,6 +121,7 @@ fn a_redialled_source_that_delivered_a_part_asks_its_slot_with_every_part_in_fli
         ..live_posture()
     });
     let _ = deliver_verified(&mut state, peer(1), 0);
+    let _ = drained(&mut state, t0());
 
     let asked = t0() + FILE_REASK_TIME;
     let redial = state.on_tick(asked);

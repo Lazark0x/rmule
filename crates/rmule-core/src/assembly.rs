@@ -81,11 +81,6 @@ impl PartAssembly {
         &self.arrived
     }
 
-    /// How many of the part's bytes have arrived.
-    pub(crate) fn arrived_len(&self) -> u64 {
-        self.arrived.total()
-    }
-
     /// Whether every byte of the part has arrived.
     pub(crate) fn is_complete(&self) -> bool {
         self.arrived.covers(0, self.len)
@@ -179,7 +174,6 @@ mod tests {
             len - (2 * EMBLOCKSIZE - 1)
         );
         assert!(a.is_complete());
-        assert_eq!(a.arrived_len(), len);
         assert_eq!(a.bytes(), slice(0, len));
         // Each cell names every worker that wrote into it: worker 2's block
         // spans cells 0 and 1, and the tail worker wrote only the byte it left.
@@ -199,7 +193,7 @@ mod tests {
         assert_eq!(&a.bytes()[2..5], &[1, 1, 1]);
         // Bytes past the part's end go nowhere.
         assert_eq!(a.merge(peer(2), 8, &[7, 7, 7, 7]), 2);
-        assert_eq!(a.arrived_len(), 5);
+        assert_eq!(a.arrived().gaps(0, 10), vec![(0, 2), (5, 8)]);
     }
 
     /// AICH repair forgets exactly the corrupt cells: the rest of the part

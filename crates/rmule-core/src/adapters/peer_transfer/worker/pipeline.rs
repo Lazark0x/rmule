@@ -1,14 +1,16 @@
-//! A worker's request pipeline (ADR-0029 "Request pipeline"): the blocks asked
-//! of the uploader and not yet arrived, the **Request Depth** they are held
-//! to, and the range of the part being streamed. Pure bookkeeping over the
-//! instants it is handed; the worker turns what it answers into
-//! `OP_REQUESTPARTS` and `BlockReceived`.
+//! A worker's request pipeline (ADR-0029 "Request pipeline", ADR-0117): the
+//! blocks it was handed and has not asked yet, the blocks asked of the
+//! uploader and not yet arrived, and the **Request Depth** they are held to.
+//! Pure bookkeeping over the instants it is handed; the worker turns what it
+//! answers into `OP_REQUESTPARTS`, `BlockReceived` and `BlocksWanted`.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use rmule_peer::{AskedRanges, EMBLOCKSIZE};
+use rmule_primitives::ED2K_PART_SIZE;
 
+use crate::BlockPlan;
 use crate::delivery_rate::DeliveryRate;
 
 /// aMule's `STANDARD_BLOCKS_REQUEST` (stock 2.3.3 `updownclient.h:102`): the
@@ -24,24 +26,20 @@ struct Asked {
     end: u64,
     received: u64,
     asked_at: Instant,
-    /// Whether it belongs to the part being streamed; a reassignment leaves
-    /// the old part's blocks draining (ADR-0029).
-    current: bool,
 }
 
 /// The link's pipeline, kept for the worker's life.
 #[derive(Debug)]
 pub(super) struct Pipeline {
     asked: VecDeque<Asked>,
+    /// The handed blocks not yet asked, as runs: consecutive blocks of one
+    /// part, `next..end`, asked from `next` in order.
+    runs: VecDeque<(u64, u64)>,
     rate: DeliveryRate,
     min_rtt: Option<Duration>,
-    /// The first offset of the streamed range not yet asked.
-    next: u64,
-    /// The streamed range's end, exclusive.
-    end: u64,
-    /// Whether this stream sent its first request.
+    /// Whether this grant's first request went out.
     requested: bool,
-    /// Whether a byte of this stream arrived: the slot is proven granted.
+    /// Whether a byte arrived since the grant: the slot is proven granted.
     flowing: bool,
     /// The link's **Asked Ranges** as of the last grant, and every block
     /// asked since: the uploader serves none of them again (ADR-0107).
@@ -49,28 +47,34 @@ pub(super) struct Pipeline {
     /// Whether the uploader holds a slot for this worker: from its grant to
     /// an `OP_OUTOFPARTREQS`.
     slot_held: bool,
+    /// The last room `BlocksWanted` reported, and whether it was drained, so
+    /// each is said once.
+    wanted: Option<(usize, bool)>,
 }
 
 impl Pipeline {
     pub(super) fn new() -> Self {
         Self {
             asked: VecDeque::new(),
+            runs: VecDeque::new(),
             rate: DeliveryRate::default(),
             min_rtt: None,
-            next: 0,
-            end: 0,
             requested: false,
             flowing: false,
             spent: AskedRanges::default(),
             slot_held: false,
+            wanted: None,
         }
     }
 
     /// The uploader granted the slot, still holding `asked` as asked of this
     /// link — what an earlier file asked before a silent release among them.
+    /// The grant's first request waits on its first byte again.
     pub(super) fn granted(&mut self, asked: &AskedRanges) {
         self.spent.extend(asked);
         self.slot_held = true;
+        self.requested = false;
+        self.flowing = false;
     }
 
     /// Whether the uploader holds a slot for this worker, one a timeout must
@@ -79,26 +83,35 @@ impl Pipeline {
         self.slot_held
     }
 
-    /// Stream `from..to` next. Blocks still asked of an earlier stream keep
-    /// draining and are no longer this stream's; the rate leaves the wait
-    /// between the two out.
-    pub(super) fn begin(&mut self, from: u64, to: u64) {
-        for asked in &mut self.asked {
-            asked.current = false;
+    /// Queue `blocks` behind what the worker holds; consecutive blocks of one
+    /// part join one run. A pipeline that had drained leaves the wait out of
+    /// its rate.
+    pub(super) fn hand(&mut self, blocks: &[BlockPlan]) {
+        if self.drained() {
+            self.rate.pause();
         }
-        self.next = from;
-        self.end = to.max(from);
-        self.requested = false;
-        self.flowing = false;
-        self.rate.pause();
+        for block in blocks {
+            match self.runs.back_mut() {
+                Some(run) if run.1 == block.start && block.start % ED2K_PART_SIZE != 0 => {
+                    run.1 = block.end;
+                }
+                _ => self.runs.push_back((block.start, block.end)),
+            }
+        }
+        self.wanted = None;
     }
 
     /// `OP_OUTOFPARTREQS`: the uploader dropped every block it held, and took
-    /// the client out of its upload slots, forgetting what it was asked.
+    /// the client out of its upload slots, forgetting what it was asked; core
+    /// frees what the worker held, the blocks not yet asked among them.
     pub(super) fn requeued(&mut self) {
         self.asked.clear();
+        self.runs.clear();
         self.spent.clear();
         self.slot_held = false;
+        self.requested = false;
+        self.flowing = false;
+        self.wanted = None;
         self.rate.pause();
     }
 
@@ -115,27 +128,34 @@ impl Pipeline {
             .min(MAX_DEPTH)
     }
 
-    /// The next request to send at `now`, up to three new blocks, or `None`
-    /// when the depth is full, the range is all asked, or the stream's first
-    /// request still waits on its first byte (the grant). Call until `None`.
+    /// The next request to send at `now`, up to three blocks from the runs, or
+    /// `None` when the depth is full, nothing handed is left to ask, or the
+    /// grant's first request still waits on its first byte. Call until `None`.
     pub(super) fn next_request(&mut self, now: Instant) -> Option<Vec<(u64, u64)>> {
         if self.requested && !self.flowing {
             return None;
         }
         let room = self.depth().saturating_sub(self.asked.len());
         let mut blocks = Vec::new();
-        while blocks.len() < room.min(RANGES_PER_REQUEST) && self.next < self.end {
-            let end = self.unspent_end(self.next, (self.next + EMBLOCKSIZE).min(self.end));
-            self.spent.insert(self.next, end);
-            blocks.push((self.next, end));
+        while blocks.len() < room.min(RANGES_PER_REQUEST) {
+            let Some(&(start, run_end)) = self.runs.front() else {
+                break;
+            };
+            let end = self.unspent_end(start, (start + EMBLOCKSIZE).min(run_end));
+            self.spent.insert(start, end);
+            blocks.push((start, end));
             self.asked.push_back(Asked {
-                start: self.next,
+                start,
                 end,
                 received: 0,
                 asked_at: now,
-                current: true,
             });
-            self.next = end;
+            match self.runs.front_mut() {
+                Some(run) if end < run_end => run.0 = end,
+                _ => {
+                    self.runs.pop_front();
+                }
+            }
         }
         if blocks.is_empty() {
             return None;
@@ -146,7 +166,7 @@ impl Pipeline {
 
     /// The end of the block from `start`, at most `end`: one byte shorter for
     /// each range the uploader already holds as asked, so the block — and
-    /// every later one of the stream — leaves the old grid (ADR-0107).
+    /// every later one of its run — leaves the old grid (ADR-0107).
     fn unspent_end(&self, start: u64, end: u64) -> u64 {
         let mut fitted = end;
         while self.spent.contains(start, fitted) && fitted - start > 1 {
@@ -156,11 +176,11 @@ impl Pipeline {
     }
 
     /// Credit `len` bytes at `offset` that arrived at `now` to the blocks they
-    /// fall in. Answers whether they belong to the streamed range: only those
-    /// go on to the download.
+    /// fall in. Answers whether they fall in an asked block: only those go on
+    /// to the download.
     pub(super) fn arrived(&mut self, now: Instant, offset: u64, len: u64) -> bool {
         let chunk_end = offset.saturating_add(len);
-        let mut current = false;
+        let mut asked_for = false;
         for asked in &mut self.asked {
             let overlap = chunk_end
                 .min(asked.end)
@@ -173,31 +193,47 @@ impl Pipeline {
                 self.min_rtt = Some(self.min_rtt.map_or(rtt, |least| least.min(rtt)));
             }
             asked.received += overlap;
-            current |= asked.current;
+            asked_for = true;
         }
         self.asked
             .retain(|asked| asked.received < asked.end - asked.start);
-        if current {
+        if asked_for {
             self.flowing = true;
         }
         self.rate.record(now, len);
-        current
+        asked_for
     }
 
     /// The block asked at `offset` will never arrive whole: the session could
-    /// not inflate it, or refused it. It stops counting against the depth.
-    /// Answers whether it was the streamed range's, a hole this slot cannot
-    /// fill (ADR-0029 "A lost block ends the stream").
-    pub(super) fn lost(&mut self, offset: u64) -> bool {
-        let Some(at) = self.asked.iter().position(|asked| asked.start == offset) else {
-            return false;
-        };
-        self.asked.remove(at).is_some_and(|asked| asked.current)
+    /// not inflate it, or refused it. It stops counting against the depth;
+    /// answers its range, for core to free (ADR-0029 "A lost block is freed").
+    /// The uploader sent it, so the slot is proven granted.
+    pub(super) fn lost(&mut self, offset: u64) -> Option<(u64, u64)> {
+        let at = self.asked.iter().position(|asked| asked.start == offset)?;
+        self.flowing = true;
+        self.asked.remove(at).map(|asked| (asked.start, asked.end))
     }
 
-    /// Whether every block of the streamed range has arrived.
-    pub(super) fn streamed(&self) -> bool {
-        self.next >= self.end && !self.asked.iter().any(|asked| asked.current)
+    /// What to tell core once everything handed is asked: the room the depth
+    /// leaves and whether the pipeline drained — each said once. `None` while
+    /// a handed block waits to be asked, the grant's first request waits on
+    /// its first byte, or the depth is full.
+    pub(super) fn want(&mut self) -> Option<(usize, bool)> {
+        if !self.runs.is_empty() || (self.requested && !self.flowing) {
+            return None;
+        }
+        let room = self.depth().saturating_sub(self.asked.len());
+        let want = (room, self.asked.is_empty());
+        if room == 0 || self.wanted == Some(want) {
+            return None;
+        }
+        self.wanted = Some(want);
+        Some(want)
+    }
+
+    /// Whether nothing handed is left to ask and nothing asked to arrive.
+    pub(super) fn drained(&self) -> bool {
+        self.runs.is_empty() && self.asked.is_empty()
     }
 }
 

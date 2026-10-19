@@ -308,18 +308,19 @@ impl PeerTransferService for CompletingPeerTransfer {
             // An uploader with a free slot grants it at once (ADR-0026).
             let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
             while let Some(command) = command_rx.recv().await {
-                if let crate::PeerWorkerCommand::RequestPart { plan, .. } = command {
+                if let crate::PeerWorkerCommand::RequestBlocks { blocks } = command {
                     deliver.notified().await;
                     let _ = event_tx
                         .send(PeerWorkerEvent::BlockReceived {
-                            part_index: plan.part_index,
-                            offset: plan.offset,
+                            part_index: blocks[0].part_index,
+                            offset: blocks[0].start,
                             bytes: SERVED.to_vec(),
                         })
                         .await;
                     let _ = event_tx
-                        .send(PeerWorkerEvent::PartStreamed {
-                            part_index: plan.part_index,
+                        .send(PeerWorkerEvent::BlocksWanted {
+                            room: 3,
+                            drained: true,
                         })
                         .await;
                 }

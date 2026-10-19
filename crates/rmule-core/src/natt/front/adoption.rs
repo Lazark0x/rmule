@@ -236,17 +236,17 @@ async fn send_ranges(
     }
 }
 
-/// Stream one part off `worker` and return what core would have assembled:
-/// every block it forwarded, written at the offset it named.
+/// Hand `worker` the file as blocks and return what core would have
+/// assembled: every block it forwarded, written at the offset it named, up to
+/// its pipeline's drain.
 async fn take_part(worker: &mut PeerWorker, file: &Ed2kFileLink) -> Vec<u8> {
     worker
-        .send(PeerWorkerCommand::RequestPart {
-            plan: crate::PartPlan {
+        .send(PeerWorkerCommand::RequestBlocks {
+            blocks: vec![crate::BlockPlan {
                 part_index: 0,
-                offset: 0,
-                len: file.size,
-            },
-            resume_offset: 0,
+                start: 0,
+                end: file.size,
+            }],
         })
         .await
         .expect("the adopted worker takes commands");
@@ -263,7 +263,7 @@ async fn take_part(worker: &mut PeerWorker, file: &Ed2kFileLink) -> Vec<u8> {
                 assembled[at..at + bytes.len()].copy_from_slice(&bytes);
                 delivered += bytes.len() as u64;
             }
-            PeerWorkerEvent::PartStreamed { .. } => {
+            PeerWorkerEvent::BlocksWanted { drained: true, .. } => {
                 assert_eq!(delivered, file.size, "the worker delivered its whole range");
                 return assembled;
             }

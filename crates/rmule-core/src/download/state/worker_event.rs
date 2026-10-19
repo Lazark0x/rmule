@@ -13,7 +13,9 @@ use crate::adapters::{PeerWorkerCommand, PeerWorkerEvent};
 use crate::assembly::PartAssembly;
 use crate::diagnostics::WorkerPhase;
 use crate::hashing::{hash_set_proves_file, resolve_hash_set_authority};
-use crate::service::{DownloadEvent, PeerRetirementReason, VerificationAuthority};
+use crate::service::{
+    DownloadEvent, PartReleaseReason, PeerRetirementReason, VerificationAuthority,
+};
 
 use super::{Decision, DownloadState};
 
@@ -200,15 +202,17 @@ impl DownloadState {
                 }));
                 self.granted(now, peer, &mut out);
             }
-            PeerWorkerEvent::PartStreamed { .. } => {
-                self.sources.end_standing(peer);
-                // The worker delivered its whole assigned range. If a co-racer
-                // already finished the part (it no longer holds one) give it the
-                // next, or give its slot back; otherwise its completing block
-                // reassigned it, so leave that assignment alone.
-                if !self.scheduler.is_working(peer) {
-                    self.assign(now, peer, &mut out);
-                }
+            // The worker has room for more blocks: hand them, or give a
+            // drained slot with nothing left for it back (ADR-0117).
+            PeerWorkerEvent::BlocksWanted { room, drained } => {
+                self.on_blocks_wanted(now, peer, room, drained, &mut out);
+            }
+            // A block that will not come on this slot is freed for the next
+            // worker with room; the slot is kept (ADR-0029 "A lost block is
+            // freed").
+            PeerWorkerEvent::BlockLost { start, end } => {
+                self.scheduler.lose(peer, start, end);
+                self.reassign_workers(now, &mut out);
             }
             PeerWorkerEvent::HashSetReceived { part_hashes } => {
                 self.on_hash_set(now, peer, &part_hashes, &mut out);
@@ -256,7 +260,7 @@ impl DownloadState {
         let assembled = self.pending_persist.remove(&part_index);
         match result {
             Ok(()) => {
-                self.scheduler.complete_verified(peer);
+                self.scheduler.complete_verified(part_index);
                 // The verifier and the racers it beat hold no part now: each
                 // granted one is handed its next or gives its slot back, and
                 // a worker left holding nothing we need goes (ADR-0112 §6).
@@ -273,6 +277,9 @@ impl DownloadState {
                 let Some(assembled) = assembled else {
                     return out;
                 };
+                // The part is fetched again: whatever its blocks come to
+                // below, it is missing and nobody holds a block of it.
+                self.scheduler.failed(part_index);
                 // With a trusted AICH root and the completing peer still
                 // connected, recover at block granularity (ADR-0038): ask that
                 // peer for the part's recovery data and hold the corrupt buffer
@@ -289,7 +296,20 @@ impl DownloadState {
                             },
                         });
                     }
-                    _ => self.retire_all_contributors(now, &assembled, &mut out),
+                    _ => {
+                        // Its bytes are dropped: the part goes back for any
+                        // worker to take, from its first byte.
+                        out.push(Decision::Emit(DownloadEvent::PartReleased {
+                            download_id: self.download_id,
+                            peer,
+                            part_index,
+                            reason: PartReleaseReason::PeerRetired(
+                                PeerRetirementReason::PartVerificationFailed,
+                            ),
+                        }));
+                        self.retire_all_contributors(now, &assembled, &mut out);
+                        self.reassign_workers(now, &mut out);
+                    }
                 }
             }
         }
@@ -329,9 +349,10 @@ impl DownloadState {
             );
         }
     }
-    /// Merge a delivered block into its part's shared prefix; when the prefix
-    /// reaches the part length, hand the assembled bytes to the runner to
-    /// verify and persist (a `PersistPart` round-trip).
+    /// Merge a delivered block into its part's Arrived Ranges and settle the
+    /// claims they now cover; when they cover the part, hand the assembled
+    /// bytes to the runner to verify and persist (a `PersistPart` round-trip).
+    /// The worker's row counts the bytes of the part it delivered (ADR-0117).
     fn on_block(
         &mut self,
         now: Instant,
@@ -349,14 +370,22 @@ impl DownloadState {
                 bytes: bytes.len() as u64,
             });
         }
-        if self.worker_slots.contains_key(&peer) {
+        let delivered = if self.worker_slots.contains_key(&peer) {
             self.delivery
                 .entry(peer)
                 .or_default()
                 .record(now, bytes.len() as u64);
-        }
-        // A race's loser still streaming a part another copy already
-        // assembled: its bytes open no buffer (ADR-0026 "Bounded racing").
+            let row = self.delivered.entry(peer).or_insert((part_index, 0));
+            if row.0 != part_index {
+                *row = (part_index, 0);
+            }
+            row.1 += bytes.len() as u64;
+            row.1
+        } else {
+            0
+        };
+        // A copy of a part already assembled or verified — a duplicate's, or a
+        // block still draining — opens no buffer (ADR-0117).
         if self.pending_persist.contains_key(&part_index)
             || self.awaiting_recovery.contains_key(&part_index)
             || self.scheduler.is_part_verified(part_index)
@@ -369,23 +398,23 @@ impl DownloadState {
             .entry(part_index)
             .or_insert_with(|| PartAssembly::new(part.len));
         assembled.merge(peer, offset.saturating_sub(part.offset), bytes);
-        let prefix_len = assembled.arrived_len();
         let complete = assembled.is_complete();
+        self.scheduler.settle(part_index, assembled.arrived());
         if let Some(slot) = self.worker_slots.get(&peer).copied() {
             out.push(Decision::Phase {
                 slot,
                 phase: WorkerPhase::ReceivingPart {
                     part_index,
-                    bytes_received: prefix_len,
+                    bytes_received: delivered,
                 },
             });
         }
         if !complete {
             return;
         }
-        // The prefix is complete: hand the assembled bytes to the runner to
-        // verify and persist. Hold the buffer (with its contributor set) until
-        // the result comes back, so a failure can retire-all (ADR-0029).
+        // The part is whole: hand the assembled bytes to the runner to verify
+        // and persist. Hold the buffer (with its writers) until the result
+        // comes back, so a failure can repair or retire-all (ADR-0029).
         let assembled = self
             .assembly
             .remove(&part_index)
@@ -398,6 +427,7 @@ impl DownloadState {
         }
         let bytes = assembled.bytes();
         self.pending_persist.insert(part_index, assembled);
+        self.scheduler.verifying(part_index);
         out.push(Decision::PersistPart {
             part_index,
             peer,

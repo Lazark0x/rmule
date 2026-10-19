@@ -1,7 +1,7 @@
-//! Driving one dialed or adopted peer worker to a downloaded part: the probe
-//! wait its slot ask waits on, the wait between parts that hears the slot's
-//! answers and the link's end, the block request loop that turns granted slots
-//! into bytes, the identity wait the dialer blocks on, and the AICH recovery
+//! Driving one dialed or adopted peer worker: the probe wait its slot ask
+//! waits on, the wait between handouts that hears the slot's answers and the
+//! link's end, the block request loop that turns handed blocks into bytes
+//! (ADR-0117), the identity wait the dialer blocks on, and the AICH recovery
 //! detour a corrupt part triggers.
 
 use std::collections::VecDeque;
@@ -12,11 +12,10 @@ use rmule_peer::{
     ConnectionEvent, PartBitmap, PartRanges, PeerCommand, PeerEvent, RequesterCommand,
     RequesterEvent,
 };
-use rmule_primitives::{AichRootHash, Ed2kFileLink, PeerEndpoint};
+use rmule_primitives::{AichRootHash, ED2K_PART_SIZE, Ed2kFileLink, PeerEndpoint};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
-use crate::PartPlan;
 use crate::adapters::InboundPeerDeps;
 use crate::adapters::dialed_serve::{
     DialedRoute, LinkOrigin, bridge_dialed_serve, route_dialed_connection,
@@ -253,7 +252,7 @@ async fn work_the_link(
         commands: &mut command_rx,
         deferred: VecDeque::new(),
     };
-    // The link's request pipeline, kept across parts (ADR-0029).
+    // The link's request pipeline, kept across handouts (ADR-0029).
     let mut pipeline = Pipeline::new();
     // The slot ask waits for the probe's answer (ADR-0112): the brain asks
     // on `PartsAdvertised` and hands the part at the grant, so a partial
@@ -302,28 +301,15 @@ async fn work_the_link(
                         break;
                     }
                 }
-                PeerWorkerCommand::RequestPart {
-                    plan,
-                    resume_offset,
-                } => {
-                    let streamed = stream_part_download(
-                        &mut link,
-                        &mut pipeline,
-                        file,
-                        plan,
-                        resume_offset,
-                        slot_wait_timeout,
-                    )
-                    .await;
+                PeerWorkerCommand::RequestBlocks { blocks } => {
+                    pipeline.hand(&blocks);
+                    let streamed =
+                        stream_blocks(&mut link, &mut pipeline, file, slot_wait_timeout).await;
                     match streamed {
-                        Streamed::Next | Streamed::Reassigned => {
+                        Streamed::Next | Streamed::Handed => {
                             slot_deadline = tokio::time::Instant::now() + slot_wait_timeout;
                         }
                         Streamed::WindDown => break,
-                        Streamed::Abandoned => {
-                            cancel = true;
-                            break;
-                        }
                         // No byte for the budget: a granted slot goes back,
                         // as aMule's `DOWNLOADTIMEOUT` cancels
                         // (`DownloadClient.cpp:1188-1196`, ADR-0056).
@@ -517,50 +503,32 @@ async fn request_aich_recovery(
     }
 }
 
-/// Stream one part's bytes from `resume_offset` to the part end in
-/// `<= EMBLOCKSIZE` blocks, emitting each to core via `BlockReceived`. The
-/// link's `pipeline` keeps the Request Depth's worth of blocks asked ahead,
-/// refilled at every arrival (ADR-0029 "Request pipeline"). Core (not the
-/// worker) owns assembly and completion (ADR-0029): the worker forwards each
-/// block as it arrives and reports `PartStreamed` once its whole assigned
-/// range has arrived. A part handed meanwhile ends the stream at once; the
-/// old blocks still asked drain through the next one. A block of the range
-/// the session could not inflate ends it too, the slot given back.
+/// Ask the blocks `pipeline` was handed and forward their bytes, in
+/// `<= EMBLOCKSIZE` steps up to the Request Depth, refilled at every arrival
+/// (ADR-0029 "Request pipeline"). Core (not the worker) owns assembly and
+/// completion (ADR-0117): the worker forwards each block's bytes as they
+/// arrive, tells core the room it has once everything handed is asked
+/// (`BlocksWanted`), and serves blocks handed meanwhile behind the rest. A
+/// block the session could not inflate is reported lost and freed; the slot is
+/// kept. The stream ends when the pipeline has drained, its last
+/// `BlocksWanted` saying so.
 ///
 /// Every wait is bounded by `slot_wait_timeout` measured from the last
-/// sign of data progress: a busy peer may queue us (and rank us)
-/// indefinitely, and a peer that grants a slot may then stall delivering
-/// nothing. Either way, if no part bytes arrive within the budget the
-/// worker gives up and reports `SlotTimeout`. The budget resets on each
-/// received block so a healthy slow transfer is not cut off.
-async fn stream_part_download(
+/// sign of data progress: a peer that grants a slot may stall delivering
+/// nothing, and if no part bytes arrive within the budget the worker gives
+/// up and reports `SlotTimeout`. The budget resets on each received block so
+/// a healthy slow transfer is not cut off.
+async fn stream_blocks(
     link: &mut WorkerLink<'_>,
     pipeline: &mut Pipeline,
     file: &Ed2kFileLink,
-    plan: PartPlan,
-    resume_offset: u64,
     slot_wait_timeout: Duration,
 ) -> Streamed {
     let (cmd_tx, event_tx) = (link.cmd_tx, link.event_tx);
     let file_hash = file.file_hash;
-    pipeline.begin(resume_offset, plan.offset + plan.len);
     let mut progress_deadline = tokio::time::Instant::now() + slot_wait_timeout;
 
     loop {
-        if pipeline.streamed() {
-            // Delivered the whole assigned range; core decides completion
-            // once the shared per-part prefix reaches the part length.
-            return match event_tx
-                .send(PeerWorkerEvent::PartStreamed {
-                    part_index: plan.part_index,
-                })
-                .await
-            {
-                Ok(()) => Streamed::Next,
-                Err(_) => Streamed::WindDown,
-            };
-        }
-
         while let Some(blocks) = pipeline.next_request(Instant::now().into_std()) {
             let mut padded = [(0, 0); RANGES_PER_REQUEST];
             padded[..blocks.len()].copy_from_slice(&blocks);
@@ -581,15 +549,30 @@ async fn stream_part_download(
                 return Streamed::WindDown;
             }
         }
+        if let Some((room, drained)) = pipeline.want() {
+            let room = u32::try_from(room).unwrap_or(u32::MAX);
+            if event_tx
+                .send(PeerWorkerEvent::BlocksWanted { room, drained })
+                .await
+                .is_err()
+            {
+                return Streamed::WindDown;
+            }
+            if drained {
+                return Streamed::Next;
+            }
+        }
 
-        // Bound every wait by the no-progress budget: a busy peer can
-        // queue us forever before a grant, and a peer that grants can then
-        // stall sending nothing. The deadline resets whenever a block
-        // arrives (below), so a healthy transfer is never cut off.
+        // Bound every wait by the no-progress budget: a peer that grants can
+        // stall sending nothing. The deadline resets whenever a block arrives
+        // (below), so a healthy transfer is never cut off.
         let event = match next_event(link, file_hash, progress_deadline).await {
             Ok(event) => event,
-            // A new part: this one is no longer the worker's.
-            Err(Streamed::Reassigned) => return Streamed::Next,
+            // Blocks handed meanwhile queue behind the rest.
+            Err(Streamed::Handed) => {
+                hand_deferred(link, pipeline);
+                continue;
+            }
             Err(end) => return end,
         };
         let event = match forward_shared(event_tx, file_hash, event).await {
@@ -598,8 +581,8 @@ async fn stream_part_download(
             Err(Ended) => return Streamed::WindDown,
         };
         // `OP_OUTOFPARTREQS` on the granted slot: the transfer is over, not
-        // the flow. The part goes back to the download, and the worker stays
-        // on the link for the next grant (ADR-0057).
+        // the flow. Core frees the worker's blocks, and the worker stays on
+        // the link for the next grant (ADR-0057).
         match forward_slot_news(event_tx, pipeline, file_hash, &event).await {
             Ok(None) => {}
             Ok(Some(SlotNews::Noted)) => continue,
@@ -616,14 +599,15 @@ async fn stream_part_download(
                 bytes,
             }) if received == file_hash => {
                 // Data progress: extend the no-progress budget and forward
-                // the part's bytes to core, which merges them into the shared
-                // prefix. Bytes of a part handed away drain here unforwarded.
+                // the bytes of an asked block to core, which merges them into
+                // the part's Arrived Ranges.
                 let now = Instant::now();
                 progress_deadline = now + slot_wait_timeout;
+                let part_index = u32::try_from(offset / ED2K_PART_SIZE).unwrap_or(u32::MAX);
                 if pipeline.arrived(now.into_std(), offset, bytes.len() as u64)
                     && event_tx
                         .send(PeerWorkerEvent::BlockReceived {
-                            part_index: plan.part_index,
+                            part_index,
                             offset,
                             bytes,
                         })
@@ -633,22 +617,38 @@ async fn stream_part_download(
                     return Streamed::WindDown;
                 }
             }
-            // A lost block of this range is a hole the prefix cannot pass,
-            // and a stock uploader never sends a block twice in one slot
-            // (ADR-0029 "A lost block ends the stream").
+            // A lost block will not come again on this slot (a stock uploader
+            // never sends a block twice in one slot): core frees it for
+            // another worker (ADR-0029 "A lost block is freed").
             PeerEvent::Requester(RequesterEvent::CompressedPartSkipped {
                 file_hash: received,
                 offset,
                 ..
             }) if received == file_hash => {
-                if pipeline.lost(offset) {
-                    let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-                    return Streamed::Abandoned;
+                if let Some((start, end)) = pipeline.lost(offset)
+                    && event_tx
+                        .send(PeerWorkerEvent::BlockLost { start, end })
+                        .await
+                        .is_err()
+                {
+                    return Streamed::WindDown;
                 }
             }
             _ => {}
         }
     }
+}
+
+/// Queue every `RequestBlocks` a wait set aside behind what `pipeline` holds,
+/// in arrival order; the other commands keep their place.
+fn hand_deferred(link: &mut WorkerLink<'_>, pipeline: &mut Pipeline) {
+    link.deferred.retain(|command| match command {
+        PeerWorkerCommand::RequestBlocks { blocks } => {
+            pipeline.hand(blocks);
+            false
+        }
+        _ => true,
+    });
 }
 
 /// The worker's ends of its channels, lent to every wait on the peer: the
@@ -664,10 +664,10 @@ struct WorkerLink<'a> {
     deferred: VecDeque<PeerWorkerCommand>,
 }
 
-/// How a wait on the peer ended: the probe's, or one part's stream.
+/// How a wait on the peer ended: the probe's, or a stream of handed blocks.
 enum Streamed {
-    /// The probe was answered, or the assigned range delivered; read the
-    /// next command.
+    /// The probe was answered, or the pipeline drained; read the next
+    /// command.
     Next,
     /// The peer or the core side went away; wind the worker down.
     WindDown,
@@ -676,12 +676,9 @@ enum Streamed {
     Stalled,
     /// The download told this worker to stop mid-part.
     Shutdown { cancel: bool },
-    /// The worker gave its slot up: the peer sent a block of the part it
-    /// cannot use, so the slot ends with `OP_CANCELTRANSFER` (ADR-0056).
-    Abandoned,
-    /// The download handed this worker a part while it waited on another:
-    /// the new part waits in `deferred`, served next.
-    Reassigned,
+    /// The download handed this worker blocks while it waited: they wait in
+    /// `deferred` until the stream takes them.
+    Handed,
 }
 
 mod pipeline;

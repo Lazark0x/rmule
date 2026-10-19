@@ -1,8 +1,8 @@
 //! The waits a worker shares between its connect-time probe, the wait between
-//! parts and each part's stream: reading the next peer event while serving the
+//! handouts and the stream of handed blocks: reading the next peer event while serving the
 //! commands that arrive first, the event arms all of them forward alike — the
 //! slot's answers among them — the probe wait the slot ask waits on
-//! (ADR-0112), and the wait between parts, which reads the link too (ADR-0026).
+//! (ADR-0112), and the wait between handouts, which reads the link too (ADR-0026).
 
 use std::time::Duration;
 
@@ -35,7 +35,7 @@ pub(super) async fn await_probe(
         let event = match next_event(link, file_hash, deadline).await {
             Ok(event) => event,
             // Never sent before the probe answers; served after it if it were.
-            Err(Streamed::Reassigned) => continue,
+            Err(Streamed::Handed) => continue,
             Err(end) => return end,
         };
         match forward_shared(event_tx, file_hash, event).await {
@@ -70,8 +70,8 @@ pub(super) async fn await_probe(
 /// starved by a busy peer and stops the wait at once (aMule's
 /// `CUpDownClient::Disconnected` aborts a transfer on the spot); an AICH root
 /// ask (ADR-0038) and the download's hash-set ask, which only a granted
-/// worker is handed (ADR-0026), go out as they come; a part handed meanwhile waits in
-/// `deferred` and ends the wait as `Reassigned`; anything else waits in
+/// worker is handed (ADR-0026), go out as they come; blocks handed meanwhile wait in
+/// `deferred` and end the wait as `Handed`; anything else waits in
 /// `deferred`. No event by `deadline` reports `SlotTimeout` and ends the
 /// wait as `Stalled`.
 pub(super) async fn next_event(
@@ -96,13 +96,11 @@ pub(super) async fn next_event(
                         .send(PeerCommand::Requester(RequesterCommand::RequestHashSet { file_hash }))
                         .await;
                 }
-                Some(later @ PeerWorkerCommand::RequestPart { .. }) => {
-                    // The download handed this worker a part while it works
-                    // another: its old part is no longer its own (ADR-0026
-                    // "Bounded racing"), so the wait ends and the new part is
-                    // served next.
+                Some(later @ PeerWorkerCommand::RequestBlocks { .. }) => {
+                    // Blocks handed while the worker waits: the stream queues
+                    // them behind what it holds (ADR-0117).
                     link.deferred.push_back(later);
-                    return Err(Streamed::Reassigned);
+                    return Err(Streamed::Handed);
                 }
                 Some(later) => link.deferred.push_back(later),
                 None => return Err(Streamed::WindDown),
@@ -124,7 +122,7 @@ pub(super) async fn next_event(
 /// the peer's side did.
 pub(super) struct Ended;
 
-/// How the wait between parts ended.
+/// How the wait between handouts ended.
 pub(super) enum Idled {
     /// The download sent a command.
     Command(PeerWorkerCommand),
@@ -138,7 +136,7 @@ pub(super) enum Idled {
     Stalled,
 }
 
-/// Wait between parts for the download's next command, reading the link
+/// Wait between handouts for the download's next command, reading the link
 /// meanwhile, so a queued worker hears its rank and grant and any worker hears
 /// its link close at once (ADR-0026): the shared arms ([`forward_shared`]) and
 /// the slot's answers ([`forward_slot_news`]) are forwarded as they come. No

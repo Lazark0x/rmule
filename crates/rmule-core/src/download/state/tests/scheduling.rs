@@ -1,9 +1,28 @@
-//! Slot occupancy and part scheduling: one worker per candidate up to the
-//! concurrency, a refilled pool taking a free slot, two peers racing one part,
-//! mid-part resume from a shared prefix, backfill on retirement, and what a
-//! stop does to the parts still in flight.
+//! Slot occupancy and block scheduling: one worker per candidate up to the
+//! concurrency, a refilled pool taking a free slot, two workers sharing one
+//! part's blocks, a freed block handed from its first missing byte, backfill
+//! on retirement, and what a stop does to the blocks still in flight.
 
 use super::*;
+
+/// A one-part file of five blocks, two workers' worth: the first grant takes
+/// three blocks and the second the other two.
+const FIVE_BLOCKS: u64 = 4 * rmule_primitives::EMBLOCKSIZE + 100;
+
+/// A started two-peer download of [`FIVE_BLOCKS`] whose workers both took
+/// their blocks at their grants.
+fn shared_part_state() -> DownloadState {
+    let mut state = pooled_state(
+        file_hash_only_content(FIVE_BLOCKS),
+        &[peer(1), peer(2)],
+        QUIET_POSTURE,
+        2,
+    );
+    let _ = state.start(t0());
+    let _ = connect(&mut state, t0(), peer(1));
+    let _ = connect(&mut state, t0(), peer(2));
+    state
+}
 
 #[test]
 fn start_spawns_one_worker_per_candidate_up_to_concurrency() {
@@ -114,7 +133,7 @@ fn a_worker_asks_its_slot_at_its_probe_answer_and_is_handed_its_part_at_the_gran
                 | Decision::Send {
                     command: PeerWorkerCommand::AskSlot
                         | PeerWorkerCommand::RequestHashSet
-                        | PeerWorkerCommand::RequestPart { .. },
+                        | PeerWorkerCommand::RequestBlocks { .. },
                     ..
                 }
         )),
@@ -153,20 +172,33 @@ fn a_worker_asks_its_slot_at_its_probe_answer_and_is_handed_its_part_at_the_gran
 
 /// A Streaming Priority download takes its head and its tail first — the
 /// Preview Band — then the rest; any other fills in index order (ADR-0112).
+/// One worker reporting room for a whole part at a time opens the parts in
+/// rank order.
 #[test]
 fn a_streaming_priority_download_fetches_its_head_and_tail_first() {
     let size = 2 * rmule_primitives::ED2K_PART_SIZE + rmule_primitives::ED2K_PART_SIZE / 2;
+    let part_blocks = rmule_primitives::ED2K_PART_SIZE.div_ceil(rmule_primitives::EMBLOCKSIZE);
     for (streaming_priority, order) in [(true, vec![0, 2, 1]), (false, vec![0, 1, 2])] {
         let content = ContentFacts {
             order: PartOrder::of(streaming_priority, 4),
             ..file_hash_only_content(size)
         };
-        let pool = [peer(1), peer(2), peer(3)];
-        let mut state = pooled_state(content, &pool, QUIET_POSTURE, 3);
+        let mut state = pooled_state(content, &[peer(1)], QUIET_POSTURE, 1);
         let _ = state.start(t0());
-        let assigned: Vec<u32> = pool
-            .iter()
-            .flat_map(|&at| connect(&mut state, t0(), at))
+        let mut decisions = connect(&mut state, t0(), peer(1));
+        // The rest of part 0, then two parts' worth.
+        for room in [part_blocks - 3, 2 * part_blocks] {
+            decisions.extend(state.on_worker_event(
+                t0(),
+                peer(1),
+                PeerWorkerEvent::BlocksWanted {
+                    room: room as u32,
+                    drained: false,
+                },
+            ));
+        }
+        let assigned: Vec<u32> = decisions
+            .into_iter()
             .filter_map(|d| match d {
                 Decision::Emit(DownloadEvent::PartAssigned { part_index, .. }) => Some(part_index),
                 _ => None,
@@ -176,23 +208,30 @@ fn a_streaming_priority_download_fetches_its_head_and_tail_first() {
     }
 }
 
+/// A grant that finds every block claimed and no slower worker to duplicate
+/// gives its slot back (ADR-0117, ADR-0056); the worker holding the block
+/// completes the part and the download finalizes.
 #[test]
-fn a_raced_part_completing_clears_the_losing_racer_and_finalizes() {
+fn a_grant_with_nothing_unclaimed_gives_its_slot_back() {
     let mut state = two_peer_state();
-
-    // peer 1 takes the only part; peer 2, idle with nothing fresh, races it.
     let _ = connect(&mut state, t0(), peer(1));
-    let assigned_two = connect(&mut state, t0(), peer(2));
+    let second = connect(&mut state, t0(), peer(2));
     assert!(
-        assigned_two.iter().any(|d| matches!(
+        second.iter().any(|d| matches!(
             d,
-            Decision::Emit(DownloadEvent::PartAssigned { part_index: 0, .. })
+            Decision::Emit(DownloadEvent::PeerRetired {
+                peer: p,
+                reason: PeerRetirementReason::NoFreePart,
+                ..
+            }) if *p == peer(2)
         )),
-        "the surplus peer races the only in-flight part: {assigned_two:?}"
+        "the one block is claimed: {second:?}"
     );
-    assert!(state.is_working(peer(2)), "peer 2 is racing part 0");
+    assert!(second.iter().any(|d| matches!(
+        d,
+        Decision::EndWorker { peer: p, cancel: true } if *p == peer(2)
+    )));
 
-    // peer 1 delivers the whole part: completion hands it off to persist.
     let part = crate::planning::part_plan(ONE_PART, 0);
     let completing = state.on_worker_event(
         t0(),
@@ -208,27 +247,20 @@ fn a_raced_part_completing_clears_the_losing_racer_and_finalizes() {
             d,
             Decision::PersistPart { part_index: 0, peer: p, .. } if *p == peer(1)
         )),
-        "a completed prefix round-trips through PersistPart: {completing:?}"
+        "a whole part round-trips through PersistPart: {completing:?}"
     );
-
-    // Persist succeeds: the part is verified, its losing racer is dropped,
-    // and with the only part done the download finalizes.
     let resumed = state.on_persist_result(t0(), 0, peer(1), Ok(()));
     assert!(
         resumed.iter().any(|d| matches!(d, Decision::Finalize)),
         "the last verified part finalizes the download: {resumed:?}"
     );
-    assert!(
-        !state.is_working(peer(2)),
-        "the losing racer is cleared when the part it raced is verified"
-    );
 }
 
+/// A block whose worker left after part of it arrived is handed again from
+/// its first missing byte, not its first byte (ADR-0117).
 #[test]
-fn racing_a_partially_assembled_part_resumes_from_the_shared_prefix() {
+fn a_freed_block_is_handed_from_its_first_missing_byte() {
     let mut state = two_peer_state();
-
-    // peer 1 takes part 0 and delivers a partial prefix, then stalls.
     let _ = connect(&mut state, t0(), peer(1));
     let part = crate::planning::part_plan(ONE_PART, 0);
     let _ = state.on_worker_event(
@@ -240,41 +272,26 @@ fn racing_a_partially_assembled_part_resumes_from_the_shared_prefix() {
             bytes: vec![0u8; 400],
         },
     );
-
-    // peer 2 races the same part: it must resume from the shared prefix
-    // end, not refetch from the part's first byte (ADR-0029).
-    let raced = connect(&mut state, t0(), peer(2));
-    let resume_offset = raced
-        .iter()
-        .find_map(|d| {
-            if let Decision::Send {
-                command: PeerWorkerCommand::RequestPart { resume_offset, .. },
-                ..
-            } = d
-            {
-                Some(*resume_offset)
-            } else {
-                None
-            }
-        })
-        .expect("the racer is told to request the part");
-    assert_eq!(
-        resume_offset,
-        part.offset + 400,
-        "a racer resumes from the cross-peer shared prefix, not block 0"
-    );
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
+    let handed = connect(&mut state, t0(), peer(2));
+    assert_eq!(handed_blocks(&handed, peer(2)), vec![(0, 400, ONE_PART)]);
 }
 
 #[test]
 fn a_retired_worker_frees_its_slot_and_backfills_a_pooled_candidate() {
     // Three candidates, room for two: peer 3 waits in the pool.
-    let mut state = file_hash_only_state(vec![peer(1), peer(2), peer(3)], 2);
+    let mut state = pooled_state(
+        file_hash_only_content(FIVE_BLOCKS),
+        &[peer(1), peer(2), peer(3)],
+        QUIET_POSTURE,
+        2,
+    );
     let _ = state.start(t0());
     let _ = connect(&mut state, t0(), peer(1));
     let _ = connect(&mut state, t0(), peer(2));
 
-    // peer 1 drops while peer 2 still races the part, so nothing is
-    // released, but the freed slot 0 is backfilled by the pooled peer 3.
+    // peer 1 drops while peer 2 still holds blocks of the part; the freed
+    // slot 0 is backfilled by the pooled peer 3.
     let retired = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
     assert!(
         retired.iter().any(|d| matches!(
@@ -389,13 +406,11 @@ fn an_armed_download_waits_instead_of_failing_when_its_pool_exhausts() {
 
 #[test]
 fn a_verification_failure_retires_every_contributor() {
-    let mut state = two_peer_state();
-    let _ = connect(&mut state, t0(), peer(1));
-    let _ = connect(&mut state, t0(), peer(2));
+    let mut state = shared_part_state();
 
-    // Two peers assemble the part across the cross-peer prefix: peer 1 the
-    // head, peer 2 the completing tail.
-    let part = crate::planning::part_plan(ONE_PART, 0);
+    // Two peers assemble the part: peer 1 the head, peer 2 the completing
+    // tail.
+    let part = crate::planning::part_plan(FIVE_BLOCKS, 0);
     let _ = state.on_worker_event(
         t0(),
         peer(1),
@@ -441,10 +456,8 @@ fn a_verification_failure_retires_every_contributor() {
 /// hung up on its own gets the same `EndWorker` — harmless on a gone worker.
 #[test]
 fn every_retirement_ends_its_worker() {
-    let mut state = two_peer_state();
-    let _ = connect(&mut state, t0(), peer(1));
-    let _ = connect(&mut state, t0(), peer(2));
-    let part = crate::planning::part_plan(ONE_PART, 0);
+    let mut state = shared_part_state();
+    let part = crate::planning::part_plan(FIVE_BLOCKS, 0);
     let _ = state.on_worker_event(
         t0(),
         peer(1),
@@ -494,5 +507,78 @@ fn on_stop_releases_in_flight_parts_and_fails_with_the_reason() {
         out.iter()
             .any(|d| matches!(d, Decision::Fail(DownloadFailure::Paused))),
         "the activity fails with the stop reason: {out:?}"
+    );
+}
+
+/// The blocks `decisions` hand `peer`, in order.
+fn handed_blocks(decisions: &[Decision], to: PeerEndpoint) -> Vec<(u32, u64, u64)> {
+    sent(decisions)
+        .into_iter()
+        .filter(|(peer, _)| *peer == to)
+        .flat_map(|(_, command)| match command {
+            PeerWorkerCommand::RequestBlocks { blocks } => blocks,
+            _ => Vec::new(),
+        })
+        .map(|block| (block.part_index, block.start, block.end))
+        .collect()
+}
+
+/// A part's blocks are handed to every granted worker that advertised it,
+/// one worker per block (ADR-0117): the second grant takes the blocks the
+/// first left unclaimed, the part assembles from both, and it verifies with
+/// both named as contributors.
+#[test]
+fn two_workers_share_one_parts_blocks() {
+    use rmule_primitives::EMBLOCKSIZE as B;
+    let size = 4 * B + 100;
+    let mut state = pooled_state(
+        file_hash_only_content(size),
+        &[peer(1), peer(2)],
+        QUIET_POSTURE,
+        2,
+    );
+    let _ = state.start(t0());
+    let first = connect(&mut state, t0(), peer(1));
+    let second = connect(&mut state, t0(), peer(2));
+    assert_eq!(
+        handed_blocks(&first, peer(1)),
+        vec![(0, 0, B), (0, B, 2 * B), (0, 2 * B, 3 * B)],
+        "the first grant takes the three blocks its first request may carry"
+    );
+    assert_eq!(
+        handed_blocks(&second, peer(2)),
+        vec![(0, 3 * B, 4 * B), (0, 4 * B, size)],
+        "the second grant takes what the first left of the same part"
+    );
+    for (decisions, to) in [(&first, peer(1)), (&second, peer(2))] {
+        assert!(decisions.iter().any(|d| matches!(
+            d,
+            Decision::Emit(DownloadEvent::PartAssigned { peer, part_index: 0, .. }) if *peer == to
+        )));
+    }
+
+    let deliver = |state: &mut DownloadState, from: PeerEndpoint, start: u64, end: u64| {
+        state.on_worker_event(
+            t0(),
+            from,
+            PeerWorkerEvent::BlockReceived {
+                part_index: 0,
+                offset: start,
+                bytes: vec![0x5A; (end - start) as usize],
+            },
+        )
+    };
+    assert!(
+        deliver(&mut state, peer(2), 3 * B, size)
+            .iter()
+            .all(|d| !matches!(d, Decision::PersistPart { .. }))
+    );
+    let last = deliver(&mut state, peer(1), 0, 3 * B);
+    assert!(
+        last.iter().any(|d| matches!(
+            d,
+            Decision::PersistPart { part_index: 0, offset: 0, bytes, .. } if bytes.len() as u64 == size
+        )),
+        "the part is whole once both workers' blocks are in: {last:?}"
     );
 }

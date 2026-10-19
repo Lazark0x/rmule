@@ -66,30 +66,8 @@ impl PeerTransferService for ScriptedPeerTransfer {
                         let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
                     }
                     PeerWorkerCommand::RequestHashSet => {}
-                    PeerWorkerCommand::RequestPart {
-                        plan,
-                        resume_offset,
-                    } => {
-                        if let Some(part) = outcome
-                            .parts
-                            .iter()
-                            .find(|part| part.part_index == plan.part_index)
-                        {
-                            let start = (resume_offset.saturating_sub(part.offset) as usize)
-                                .min(part.bytes.len());
-                            let _ = event_tx
-                                .send(PeerWorkerEvent::BlockReceived {
-                                    part_index: part.part_index,
-                                    offset: resume_offset,
-                                    bytes: part.bytes[start..].to_vec(),
-                                })
-                                .await;
-                            let _ = event_tx
-                                .send(PeerWorkerEvent::PartStreamed {
-                                    part_index: part.part_index,
-                                })
-                                .await;
-                        }
+                    PeerWorkerCommand::RequestBlocks { blocks } => {
+                        rmule_testkit::emit_blocks(&event_tx, &outcome.parts, &blocks).await;
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}
                     PeerWorkerCommand::RequestAichFileHash => {}

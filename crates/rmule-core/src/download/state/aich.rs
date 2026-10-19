@@ -65,10 +65,10 @@ impl DownloadState {
     }
     /// Resume after a peer answered our `OP_AICHREQUEST` for `part_index`
     /// (ADR-0038). Verify the recovery data against the trusted root; if it
-    /// localizes corrupt blocks, retire only those blocks' provenance-named
-    /// contributors, truncate the shared assembly to the earliest corrupt
-    /// block, return the part to pending (re-streaming from there reuses the
-    /// contiguous prefix), and reassign idle workers. Malformed/untrusted
+    /// localizes corrupt blocks, drop exactly those blocks from the part's
+    /// Arrived Ranges, retire the workers that wrote into them (distrusting a
+    /// block's sole writer), and hand the dropped blocks to workers with room
+    /// (ADR-0117). Malformed/untrusted
     /// recovery data — or a clean part whose MD4 still failed (root/file
     /// mismatch) — falls back to ADR-0029 retire-all.
     pub(super) fn on_aich_answer(
@@ -121,7 +121,7 @@ impl DownloadState {
         // Forget exactly the corrupt blocks; their bytes are fetched again.
         assembled.drop_blocks(&bad_blocks);
         self.assembly.insert(part_index, assembled);
-        self.scheduler.repend_part(part_index);
+        self.scheduler.failed(part_index);
 
         for (_, contributor) in bad {
             if proven.contains(&contributor) {
@@ -139,9 +139,10 @@ impl DownloadState {
                 out,
             );
         }
-        // Hand the re-pended part to a still-connected idle worker (slot order),
-        // then backfill. Redundant with `release`'s own reassign when a bad
-        // contributor was retired, but covers the case where none still are.
+        // Hand the dropped blocks to still-connected workers with room (slot
+        // order), then backfill. Redundant with `release`'s own reassign when
+        // a bad contributor was retired, but covers the case where none still
+        // are.
         self.reassign_workers(now, out);
     }
 }

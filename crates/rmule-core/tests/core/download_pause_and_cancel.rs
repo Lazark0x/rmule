@@ -14,8 +14,8 @@ use rmule_core::{
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{ED2K_PART_SIZE, Ed2kFileLink, PartHash, PeerEndpoint, ServerEndpoint};
 use rmule_testkit::{
-    PendingPeerTransfer, emit_streamed_part, file_link, file_link_without_part_hash_set,
-    loopback_peer, next_event, source_with_high_id, two_high_id_sources,
+    PendingPeerTransfer, file_link, file_link_without_part_hash_set, loopback_peer, next_event,
+    source_with_high_id, two_high_id_sources,
 };
 
 #[tokio::test]
@@ -439,7 +439,7 @@ impl PeerTransferService for HoldingPeerTransfer {
                         let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
                     }
                     PeerWorkerCommand::RequestHashSet => {}
-                    PeerWorkerCommand::RequestPart { .. } => {
+                    PeerWorkerCommand::RequestBlocks { .. } => {
                         if !sent_hashes {
                             sent_hashes = true;
                             let _ = event_tx
@@ -482,16 +482,14 @@ impl PeerTransferService for PartialSuccessThenHold {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
             let _ = event_tx.send(advertised).await;
             let mut sent_hashes = false;
+            let mut streamed = false;
             while let Some(command) = command_rx.recv().await {
                 match command {
                     PeerWorkerCommand::AskSlot => {
                         let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
                     }
                     PeerWorkerCommand::RequestHashSet => {}
-                    PeerWorkerCommand::RequestPart {
-                        plan,
-                        resume_offset,
-                    } => {
+                    PeerWorkerCommand::RequestBlocks { blocks } => {
                         if !sent_hashes {
                             sent_hashes = true;
                             let _ = event_tx
@@ -500,8 +498,26 @@ impl PeerTransferService for PartialSuccessThenHold {
                                 })
                                 .await;
                         }
-                        if peer == completing_peer && plan.part_index == completed_part.part_index {
-                            emit_streamed_part(&event_tx, &completed_part, resume_offset).await;
+                        // The completing peer streams its part whole on its
+                        // first handout of it, then holds what follows.
+                        let touches = blocks
+                            .iter()
+                            .any(|block| block.part_index == completed_part.part_index);
+                        if peer == completing_peer && touches && !streamed {
+                            streamed = true;
+                            let _ = event_tx
+                                .send(PeerWorkerEvent::BlockReceived {
+                                    part_index: completed_part.part_index,
+                                    offset: completed_part.offset,
+                                    bytes: completed_part.bytes.clone(),
+                                })
+                                .await;
+                            let _ = event_tx
+                                .send(PeerWorkerEvent::BlocksWanted {
+                                    room: 3,
+                                    drained: true,
+                                })
+                                .await;
                         }
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}

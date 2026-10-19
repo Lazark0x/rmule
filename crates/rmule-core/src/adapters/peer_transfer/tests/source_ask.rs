@@ -182,13 +182,12 @@ async fn a_dialed_worker_reports_a_peer_that_holds_the_whole_file() {
         .await
         .unwrap();
     worker
-        .send(PeerWorkerCommand::RequestPart {
-            plan: crate::PartPlan {
+        .send(PeerWorkerCommand::RequestBlocks {
+            blocks: vec![crate::BlockPlan {
                 part_index: 0,
-                offset: 0,
-                len: file.size,
-            },
-            resume_offset: 0,
+                start: 0,
+                end: file.size,
+            }],
         })
         .await
         .unwrap();

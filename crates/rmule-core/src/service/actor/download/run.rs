@@ -184,7 +184,10 @@ where
                 file,
                 identity,
                 verified_part_indexes,
-                order: crate::PartOrder::of(streaming_priority, runtime.streaming_window_parts),
+                order: crate::scheduler::PartOrder::of(
+                    streaming_priority,
+                    runtime.streaming_window_parts,
+                ),
                 discovery: runtime.discovery.clone(),
                 remembered,
                 recovered,

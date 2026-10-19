@@ -22,7 +22,7 @@ use crate::buddy::{BuddyServePosture, BuddyUdpPosture};
 use crate::ip_filter::SharedIpFilter;
 use crate::reachability::{SharedSelfReach, TcpReachability, UdpReachability};
 use crate::service::DialEnd;
-use crate::{DownloadFailure, PartPlan};
+use crate::{BlockPlan, DownloadFailure};
 
 use super::HelloAdverts;
 use super::dialed_serve::{LinkOrigin, SharedDialedServeSink};
@@ -70,16 +70,13 @@ pub enum PeerWorkerCommand {
     /// download's one hash-set ask, whose answer arrives as
     /// [`PeerWorkerEvent::HashSetReceived`] (ADR-0026).
     RequestHashSet,
-    /// Stream the bytes of `plan`'s part starting at `resume_offset` (the
-    /// absolute file offset of the shared prefix end), block by block, to
-    /// the end of the part. `resume_offset` equals `plan.offset` for a fresh
-    /// part and advances as cross-peer assembly fills the prefix (ADR-0029).
-    RequestPart {
-        /// The part to fetch and the byte range it spans.
-        plan: PartPlan,
-        /// The absolute file offset to start at — the end of the prefix other
-        /// peers already filled.
-        resume_offset: u64,
+    /// Ask `blocks` next, in order, behind whatever the worker already holds
+    /// (ADR-0117): its **Claimed Blocks**, each inside one part. The worker
+    /// asks them up to its Request Depth and says when it has room for more
+    /// ([`PeerWorkerEvent::BlocksWanted`]).
+    RequestBlocks {
+        /// The blocks, each an absolute range inside one part.
+        blocks: Vec<BlockPlan>,
     },
     /// Ask this peer for the AICH recovery data of `part`, quoting the trusted
     /// master `root` (ADR-0038). Core sends this after a part fails MD4 and a
@@ -168,8 +165,8 @@ pub enum PeerWorkerEvent {
     /// gave up. Terminal for this worker's current part.
     SlotTimeout,
     /// One block of `part_index` arrived at absolute file `offset`. Core
-    /// merges it into the shared per-part contiguous prefix (ADR-0029); the
-    /// worker neither accumulates bytes nor decides completion.
+    /// merges it into the part's **Arrived Ranges** (ADR-0117); the worker
+    /// neither accumulates bytes nor decides completion.
     BlockReceived {
         /// The zero-based part the block belongs to.
         part_index: u32,
@@ -178,12 +175,25 @@ pub enum PeerWorkerEvent {
         /// The block's contents.
         bytes: Vec<u8>,
     },
-    /// The worker delivered its whole assigned range for `part_index` and is
-    /// ready for the next assignment. Not a completion claim — core decides
-    /// completion when the shared prefix reaches the part length.
-    PartStreamed {
-        /// The part whose assigned range is fully delivered.
-        part_index: u32,
+    /// Every block handed has been asked and the Request Depth has `room` for
+    /// more (ADR-0117); `drained` when nothing asked is still to arrive. Sent
+    /// once per room reached and once at the drain. Core answers with
+    /// [`PeerWorkerCommand::RequestBlocks`], later when blocks free up, or —
+    /// drained with nothing left for it — by giving the slot back.
+    BlocksWanted {
+        /// How many more blocks the depth holds.
+        room: u32,
+        /// Whether every asked block has arrived.
+        drained: bool,
+    },
+    /// The asked range `start..end` will never arrive on this slot: the
+    /// session could not inflate it, or refused it (ADR-0029 "A lost block
+    /// is freed"). Core frees it for another worker; the slot is kept.
+    BlockLost {
+        /// Its first byte's offset in the file.
+        start: u64,
+        /// The offset just past its last byte.
+        end: u64,
     },
     /// The peer answered the connect-time file probe, once per worker
     /// (ADR-0112): the parts it holds, which its Source Book record keeps and

@@ -10,9 +10,10 @@ use ed2k::digest::Digest;
 use std::path::Path;
 
 use rmule_core::{
-    Core, CoreCommand, CoreConfig, CoreEvent, CoreSettings, DownloadCommand, DownloadEvent,
-    DownloadFailure, DownloadedPart, NameTaken, PeerDownloadOutcome, PeerTransferService,
-    PeerWorker, PeerWorkerCommand, PeerWorkerEvent, SourceLookupOutcome, SourceLookupService,
+    BlockPlan, Core, CoreCommand, CoreConfig, CoreEvent, CoreSettings, DownloadCommand,
+    DownloadEvent, DownloadFailure, DownloadedPart, NameTaken, PeerDownloadOutcome,
+    PeerTransferService, PeerWorker, PeerWorkerCommand, PeerWorkerEvent, SourceLookupOutcome,
+    SourceLookupService,
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
@@ -131,9 +132,9 @@ pub fn two_high_id_sources() -> StaticSourceLookup {
 }
 
 /// A `PeerTransferService` whose every worker serves `outcome` and asserts, at
-/// shutdown, that it was asked for exactly `expected_plan_count` parts.
+/// shutdown, that it was handed blocks of exactly `expected_plan_count` parts.
 pub struct StaticPeerTransfer {
-    /// How many `RequestPart` commands the worker must have received.
+    /// How many distinct parts the worker must have been handed blocks of.
     pub expected_plan_count: usize,
     /// The hash set and parts every worker answers with.
     pub outcome: PeerDownloadOutcome,
@@ -156,10 +157,10 @@ impl PeerTransferService for StaticPeerTransfer {
 }
 
 /// The stricter twin of [`StaticPeerTransfer`]: asserts *which* part indexes
-/// were requested, in order — the proof a resumed download skips what it
-/// already verified.
+/// were handed, in the order of each one's first block — the proof a resumed
+/// download skips what it already verified.
 pub struct PlanAssertingPeerTransfer {
-    /// The exact part indexes, in order, the worker must have been asked for.
+    /// The exact part indexes, in order, the worker must have been handed.
     pub expected_plan_indexes: Vec<u32>,
     /// The hash set and parts every worker answers with.
     pub outcome: PeerDownloadOutcome,
@@ -182,8 +183,8 @@ impl PeerTransferService for PlanAssertingPeerTransfer {
 }
 
 /// A `PeerTransferService` whose workers connect, are granted the slot they
-/// ask and then stream nothing: the download holds a part in flight until a
-/// command moves it.
+/// ask and then stream nothing: the download holds blocks in flight until a
+/// command moves them.
 pub struct PendingPeerTransfer;
 
 impl PeerTransferService for PendingPeerTransfer {
@@ -227,27 +228,42 @@ pub fn every_part(file_size: u64) -> PeerWorkerEvent {
     }
 }
 
-/// Stream a part's bytes from `resume_offset` to the end as one block, then
-/// report the assigned range delivered (ADR-0029 worker protocol). A fresh
-/// assignment has `resume_offset == part.offset` and serves the whole part.
-pub async fn emit_streamed_part(
+/// Deliver each handed block whose part `parts` hold, then — when every one
+/// was — report the pipeline drained with room for three more (ADR-0117 worker
+/// protocol): the download hands the next blocks, or takes the slot back. A
+/// handout holding a block of a part it lacks leaves the worker stalled on it.
+pub async fn emit_blocks(
     event_tx: &tokio::sync::mpsc::Sender<PeerWorkerEvent>,
-    part: &DownloadedPart,
-    resume_offset: u64,
+    parts: &[DownloadedPart],
+    blocks: &[BlockPlan],
 ) {
-    let start = (resume_offset.saturating_sub(part.offset) as usize).min(part.bytes.len());
-    let _ = event_tx
-        .send(PeerWorkerEvent::BlockReceived {
-            part_index: part.part_index,
-            offset: resume_offset,
-            bytes: part.bytes[start..].to_vec(),
-        })
-        .await;
-    let _ = event_tx
-        .send(PeerWorkerEvent::PartStreamed {
-            part_index: part.part_index,
-        })
-        .await;
+    let mut whole = true;
+    for block in blocks {
+        let Some(part) = parts
+            .iter()
+            .find(|part| part.part_index == block.part_index)
+        else {
+            whole = false;
+            continue;
+        };
+        let start = (block.start.saturating_sub(part.offset) as usize).min(part.bytes.len());
+        let end = (block.end.saturating_sub(part.offset) as usize).min(part.bytes.len());
+        let _ = event_tx
+            .send(PeerWorkerEvent::BlockReceived {
+                part_index: part.part_index,
+                offset: block.start,
+                bytes: part.bytes[start..end].to_vec(),
+            })
+            .await;
+    }
+    if whole {
+        let _ = event_tx
+            .send(PeerWorkerEvent::BlocksWanted {
+                room: 3,
+                drained: true,
+            })
+            .await;
+    }
 }
 
 /// What a [`scripted_worker`] asserts about the parts it was asked for.
@@ -258,9 +274,9 @@ enum PlanExpectation {
 
 /// A `PeerWorker` that connects, is granted its slot the moment it asks —
 /// an uploader with a free slot — answers the hash-set ask, or else its first
-/// `RequestPart`, with the outcome's hash set (when it has one), streams
-/// whichever assigned part it holds, and asserts `expectation` once the
-/// runner shuts it down.
+/// `RequestBlocks`, with the outcome's hash set (when it has one), delivers
+/// the handed blocks of the parts it holds, and asserts `expectation` once
+/// the runner shuts it down.
 fn scripted_worker(
     peer: PeerEndpoint,
     file_size: u64,
@@ -289,11 +305,12 @@ fn scripted_worker(
                             .await;
                     }
                 }
-                PeerWorkerCommand::RequestPart {
-                    plan,
-                    resume_offset,
-                } => {
-                    requested.push(plan.part_index);
+                PeerWorkerCommand::RequestBlocks { blocks } => {
+                    for block in &blocks {
+                        if !requested.contains(&block.part_index) {
+                            requested.push(block.part_index);
+                        }
+                    }
                     if !sent_hashes && !outcome.peer_hashes.is_empty() {
                         sent_hashes = true;
                         let _ = event_tx
@@ -302,13 +319,7 @@ fn scripted_worker(
                             })
                             .await;
                     }
-                    if let Some(part) = outcome
-                        .parts
-                        .iter()
-                        .find(|part| part.part_index == plan.part_index)
-                    {
-                        emit_streamed_part(&event_tx, part, resume_offset).await;
-                    }
+                    emit_blocks(&event_tx, &outcome.parts, &blocks).await;
                 }
                 PeerWorkerCommand::RequestAich { .. } => {}
                 PeerWorkerCommand::RequestAichFileHash => {}
