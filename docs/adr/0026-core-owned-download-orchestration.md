@@ -78,7 +78,8 @@ is `DownloadScheduler`.
   grant (ADR-0116 invariant 3). No slot ask waits on it: every worker asks its slot at
   its probe answer. aMule's downloader asks the set first and its slot after the answer
   (`DS_REQHASHSET`, `DownloadClient.cpp:467-483`, `:571-586`); rmule departs, because a
-  worker the uploader ranks hangs up at once (ADR-0116), and a `0x51` left unanswered on
+  worker the uploader ranks hangs up at once, or at aMule 2 holds its link only to the grant or
+  the uploader's close (ADR-0116), and a `0x51` left unanswered on
   a link the uploader then ranks costs that link at aMule's 40 s silent-link close
   (`ClientTCPSocket.cpp:201-229`). The ask leaves at once, while a part streams too, and
   its answer is read while parts stream. It passes to the next transferring worker whose
@@ -97,7 +98,8 @@ is `DownloadScheduler`.
   the answer to its slot ask: from its probe answer, or from its flow's return to the
   queue, with no part streaming. A rank answers it, and a worker that is not granted
   hangs up at its rank, its record keeping the standing (ADR-0116, the **Queued
-  Hang-Up**). The timer is the runtime's; the session stays clock-free. Queue state
+  Hang-Up**); at an uploader that misses our close it holds its link to the grant or that
+  uploader's close instead, the timer still bounding it. The timer is the runtime's; the session stays clock-free. Queue state
   reaches the operator as `DownloadEvent::PeerQueued { rank }`, `PeerSlotGranted` and
   `PeerSlotTimeout`. The downloader sends no keep-alive: the eD2k peer protocol defines
   none, so a download holds its place in a busy uploader's queue by the reask

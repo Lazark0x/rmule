@@ -72,6 +72,11 @@ rules at other lines. aMule facts are read, never ported (ADR-0004).
 - A handed block cannot be taken back: the worker asks the session for it at once. Assigning
   before the status would hand a partial source a part it lacks. aMule likewise chooses a part only once the
   status is known, and only on a granted slot.
+- A worker that takes a grant its link already carries (an Awaited Grant, ADR-0107) sends no
+  connect-time `RequestFile`: the Advertised Parts its record last heard — the probe before its
+  hang-up, or a reask answer's status — are its probe's answer, as aMule's downloader asks blocks
+  off the part status its client kept (`ClientTCPSocket.cpp:635-644`). A record that heard none is
+  probed first, and the grant waits for that answer instead of a slot ask.
 - An `OP_FILEREQANSNOFIL` answer ends the worker as it does today.
 - A release hands the freed blocks only to a granted worker; a queued one is handed its
   blocks at its grant.

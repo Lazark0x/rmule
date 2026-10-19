@@ -66,8 +66,8 @@ and nothing left to request from this source
    — that no download of the peer takes (ADR-0107, the Awaited Grants) is given back with
    `0x56`, as aMule's downloader cancels an accept for a file it no longer wants
    (`ClientTCPSocket.cpp:646-659`). The link stays up for whatever else holds it. A download
-   that takes it opens a worker that asks as any rider does (ADR-0107); until that ask leaves,
-   the grant is the rider's to give back. A worker retired before it — its probe naming no
+   that takes it opens a worker that takes the grant as its own, asking nothing first (ADR-0107);
+   until it takes it, the grant stands on the link for the rider to give back. A worker retired before it — its probe naming no
    part we lack (`NoNeededParts`, ADR-0112), or its run stopping — sends the same `0x56`, so
    the uploader never holds a slot for a source that asks nothing on it. A worker that ends
    silently before its ask — its probe unanswered, its link to the download gone — leaves the

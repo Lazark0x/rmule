@@ -140,9 +140,16 @@ Invariants every transition keeps:
    once the peer has asked it anything over the link — or from the dial, on a link the serve side
    dialed to grant a slot on (ADR-0057) — and the buddy slot while the link is the held
    buddy link (ADR-0031, ADR-0061). A link its last rider leaves with no other half holding it closes
-   then: a rider's Queued Hang-Up (ADR-0116) sends the FIN well inside the uploader's 40 s
-   silent-link close (`ClientTCPSocket.cpp:201-229`). Its end hands every waiter back to its
-   download, which dials as before. A link its last rider leaves with an unasked grant still
+   then: a rider's Queued Hang-Up (ADR-0116), made only at an uploader that notices our close,
+   sends the FIN well inside the uploader's 40 s silent-link close (`ClientTCPSocket.cpp:201-229`).
+   Its end hands every waiter back to its download, and the source stands: the record waits in the
+   RemoteQueued stage on the peer's Queue Standing, its clock the peer's last ask, and is asked at
+   the reask like the rider's — the link's end dials nothing. aMule keeps one client for both
+   files: a downloading client goes back on queue at the disconnect and is kept
+   (`BaseClient.cpp:1283-1284`, `:1322-1328`), its other file holding it as an A4AF source that
+   nothing dials before the reask. Where the rider was still asking, aMule's client is a dead
+   source for every file (`BaseClient.cpp:1289-1292`); rmule's waiter departs and waits for the
+   reask too, so one refused dial never fails its download. A link its last rider leaves with an unasked grant still
    standing — the rider ended before its own ask — gives that grant back with `0x56` before it
    stays up or closes (ADR-0056 item 3).
 10. **A name is filed only from what the link proves or the node accepts**: the socket's address
@@ -178,8 +185,9 @@ Invariants every transition keeps:
 | a client promoted while unconnected is granted on whichever link its hellos finish first | `US_CONNECTING` answered at `ConnectionEstablished` (`BaseClient.cpp:1707-1716`; `ClientTCPSocket.cpp:328`, `:417`) | a pending dial-back grant (ADR-0057) moves with the waiter's place onto the link its hello came back on, and `OP_ACCEPTUPLOADREQ` goes on it at once |
 | a Low-ID client marked for its next connection takes its slot there | `m_bAddNextConnect` (`UploadQueue.cpp:410-425`) | its slot ask on the link it came back on is granted, under the budget or one over it (ADR-0057) |
 | a Low ID in `OP_CHANGE_CLIENT_ID` is taken only from a known server | `ClientTCPSocket.cpp:773-787` | the session holds the claim; core takes it only for a server in its server list, with that server's port |
-| an uploader promotes a waiter by dialing it, or on the link it holds | `AddUpNextClient` (`UploadQueue.cpp:206-217`), `OP_ACCEPTUPLOADREQ` on connect (`BaseClient.cpp:1707-1716`) | a link nobody rides that reads an unasked grant hands it to the **Awaited Grant** of the peer's standing holder under its names, else the oldest; that download rides the link and asks, and is granted at once (`UploadQueue.cpp:486-493`); a peer back from a new address is found by its User Hash (`ClientList.cpp:253-347`) |
-| the downloader takes a grant for its queued file at once, and cancels one it does not want | `DS_ONQUEUE` → `DS_DOWNLOADING`, else `OP_CANCELTRANSFER` once (`ClientTCPSocket.cpp:635-659`) | the Awaited Grant's worker opens on the link with no admission by the Connection Budget (ADR-0116); with none the link gives the grant back with `0x56` (ADR-0056) |
+| an uploader promotes a waiter by dialing it, or on the link it holds | `AddUpNextClient` (`UploadQueue.cpp:206-217`), `OP_ACCEPTUPLOADREQ` on connect (`BaseClient.cpp:1707-1716`) | a link nobody rides that reads an unasked grant hands it to the **Awaited Grant** of the peer's standing holder under its names, else the oldest; that download rides the link and takes the grant, asking nothing first; a peer back from a new address is found by its User Hash (`ClientList.cpp:253-347`) |
+| the downloader takes a grant for its queued file at once, and cancels one it does not want | `DS_ONQUEUE` → `DS_DOWNLOADING` and its block requests, no file request on the uploader's dial-back (`BaseClient.cpp:1692-1706`), else `OP_CANCELTRANSFER` once (`ClientTCPSocket.cpp:635-659`) | the Awaited Grant's worker opens on the link with no admission by the Connection Budget (ADR-0116) and asks its blocks, no file request and no slot ask first; with none the link gives the grant back with `0x56` (ADR-0056) |
+| a client keeps its other file's place when its link drops | `DS_DOWNLOADING` → `DS_ONQUEUE` at the disconnect, the client kept and its A4AF file holding it (`BaseClient.cpp:1283-1284`, `:1322-1328`) | a waiter the link's end hands back stands on the peer's Queue Standing and waits for the reask (invariant 9) |
 
 The swap rule, settled: a waiter takes the link when the rider's worker ends, for whatever reason it
 ends — the peer lacks the file, has nothing the download needs, ranked it without a grant
@@ -202,8 +210,8 @@ the file (`:592-616`, `UploadQueue.cpp:395-519`):
 The next rider asks the same way in all three and reads what comes back, a grant or a rank, as any
 worker does; nothing is skipped. The third row is the one place a hand-over asks the peer twice in
 a cycle, and "One peer, one queue standing" says when it happens. A file the link already probed
-for an earlier worker — the same download's next worker on a link that stayed up, at an Awaited
-Grant or a TCP full ask — is probed again and its answer read afresh, as on a new link: a
+for an earlier worker — the same download's next worker on a link that stayed up, or at a TCP
+full ask — is probed again and its answer read afresh, as on a new link: a
 one-part file's probe settles on the name answer alone (aMule asks no `OP_SETREQFILEID` for it,
 `DownloadClient.cpp:241`), so no status is waited for.
 
@@ -211,15 +219,25 @@ A grant nobody asked for on the link, settled: aMule grants a waiter it promotes
 holds or on one it dials to it, and the `0x55` names no file. A link a download rides leaves it to
 the rider, whose own ask is about to be granted. A link nobody rides offers it to the **Awaited
 Grants** under its names, the peer's standing holder first, then oldest first: the download that takes it opens the record's worker on that link at
-once, with no admission by the Connection Budget (ADR-0116), and the worker rides the link as any rider does, asking
-for its file. With no Awaited Grant to take it, the link gives the slot back with `0x56` (ADR-0056).
+once, with no admission by the Connection Budget (ADR-0116), and the worker rides the link and
+takes the grant as its own: no file request and no slot ask go first. aMule's downloader sends
+neither on an uploader's dial-back while it waits on queue (`BaseClient.cpp:1692-1706`) and
+answers `OP_ACCEPTUPLOADREQ` with its block requests (`ClientTCPSocket.cpp:635-644`); a slot ask
+there is scored like any other (`CheckForAggressive`, `UploadClient.cpp:795-825`, from
+`ClientTCPSocket.cpp:601`), 3 points for a slot already held, and a hand-over that follows asks
+again. The worker's blocks come off the Advertised Parts its record last heard — the probe before
+its hang-up, or a reask answer's status — as aMule's come off the part status its client kept;
+a record that heard none is probed first, a file request aMule does not score, and handed its
+blocks at the answer (ADR-0112). The uploader serves the file each block request names
+(`UploadClient.cpp:198`), so the grant serves the file of the download that takes it. With no Awaited Grant to take it, the link gives the slot back with `0x56` (ADR-0056).
 A link is left with nobody riding it only while another half holds it (invariant 9): the peer's
-pull on our serve side, or the held buddy link. A waiter that hung up at its rank on a link nothing
-else held closed that link, so the uploader promotes it by dialing it — `AddUpNextClient` finds the
-client unconnected (`UploadQueue.cpp:206-210`) — and the grant comes on that new link, nobody
-riding it. A grant the uploader sent before our FIN reached it ends with its socket there
-(`BaseClient.cpp:1278-1280`); read on the closing link, it goes to the Awaited Grant as on any link
-nobody rides, and that worker, finding the link ended, dials.
+pull on our serve side, or the held buddy link. A worker that hung up at its rank on a link nothing
+else held closed that link — only where the uploader notices our close (ADR-0116 item 3) — so the
+uploader promotes it by dialing it: `AddUpNextClient` finds the client unconnected
+(`UploadQueue.cpp:206-210`), and the grant comes on that new link, nobody riding it. Where the
+uploader misses our close the ranked worker holds its link, and the grant comes on it to the
+rider's own ask; a grant written on a link we had closed is lost at the uploader, which drops the
+upload at our reset (`BaseClient.cpp:1278-1281`).
 
 A download that rides or waits on a link is told so, and the operator sees it: a Run Log record
 (`download.link_shared`, the turn `waiting` or `riding`) and the Sources pane's mark on the slot. A
@@ -307,9 +325,11 @@ around the Asked Ranges costs it nothing.
 A waiter whose call comes after the link ended dials, as any download does that finds no link.
 rmule has no A4AF-auto preference, so nothing else swaps a standing.
 
-Two downloads that reach a peer before either stands, departs: the second waits on the first's
-link (invariant 8) and, when the first hangs up at its rank, takes its turn and asks — the swap
-table's third row. The peer reads two asks seconds apart once, 3 points; the standing then asks
+Two downloads that reach a peer before either stands, departs where the uploader notices our close:
+the second waits on the first's link (invariant 8) and, when the first hangs up at its rank, takes
+its turn and asks — the swap table's third row. Where the uploader misses our close the first
+holds the link at its rank (ADR-0116 item 3), and the second waits on it to the grant or the
+link's end, asking nothing. The peer reads two asks seconds apart once, 3 points; the standing then asks
 once per cycle and each polite ask takes one off, so no ban follows. A called waiter whose holder
 ends ranked rather than released (`OP_OUTOFPARTREQS` and then a rank) costs the same once, and so
 does a Low-ID source a fill reaches by a callback road: its record has no address to wait at

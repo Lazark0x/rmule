@@ -152,10 +152,11 @@ aMule's `FILEREASKTIME` of 1 300 000 ms
   client `DS_ONQUEUE` and takes the grant at once (`ClientTCPSocket.cpp:635-645`). rmule's
   link hands the unasked grant to the download standing at its peer (ADR-0107, the
   Awaited Grants), whose brain opens the record's worker on that link at once, with no
-  admission by the Connection Budget (ADR-0116): a granted slot is a transfer, not a dial. The worker asks as
-  any rider does — the file request, then `OP_STARTUPLOADREQ` on the probe's answer — and
-  the uploader, uploading to the client already, grants it at once (`UploadQueue.cpp:486-493`),
-  well inside the 40 s it keeps an idle link (`CONNECTION_TIMEOUT`, `Constants.h:34`). A
+  admission by the Connection Budget (ADR-0116): a granted slot is a transfer, not a dial. The worker takes
+  the grant without asking — no file request, no `OP_STARTUPLOADREQ`, each of which aMule's
+  downloader leaves out there and the second of which the uploader scores (ADR-0107) — and asks
+  its blocks at once, well inside the 40 s it keeps an idle link (`CONNECTION_TIMEOUT`,
+  `Constants.h:34`). A
   dropped grant costs the standing: the uploader times the link out, takes the client out of
   its upload list without queueing it again (`BaseClient.cpp:1278-1281`,
   `UploadQueue.cpp:522-546`), and the next ask starts the wait from zero (`:501`). An

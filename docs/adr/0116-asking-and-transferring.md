@@ -35,9 +35,11 @@ aMule references are to 2.3.3 (`4e8f2b3c`) unless kno or eMuleAI is named; read,
 **A download runs two activities on its sources.**
 
 - **Asking**: a road opened to a source — a dial, a rung-0 dial, a callback or a punch — its hello,
-  file request, probe and slot ask, until the answer. A rank ends it: the worker hangs up at once (the
-  **Queued Hang-Up**) and its record waits in the RemoteQueued stage holding its standing, its place
-  kept by the reask (ADR-0057). A grant turns it into a transfer. Any other end is the record's, as
+  file request, probe and slot ask, until the answer. A rank ends it: the record holds the standing the
+  rank earned, and the worker hangs up at once (the **Queued Hang-Up**), its record waiting in the
+  RemoteQueued stage, its place kept by the reask (ADR-0057) — or, at an uploader that misses our
+  close, holds its link until the uploader grants on it or closes it (invariant 3). A grant turns it
+  into a transfer. Any other end is the record's, as
   ADR-0090's table says.
 - **Transferring**: a worker holding a granted slot, whether the grant answered its own slot ask or came
   unasked on a link (the Awaited Grant, ADR-0107). Every grant transfers. No count per download bounds
@@ -50,8 +52,8 @@ its worker's slot ask (ADR-0026):
 | State | Stages | Holds a connection | Ends |
 |---|---|---|---|
 | pooled | Pooled | no | when a fill takes it |
-| asking | Dialing, CallbackPending, a Worker whose slot is not granted | yes (a callback holds its road) | at the answer or the record's end |
-| queued | RemoteQueued: holding the peer's Queue Standing, or waiting on another download's (ADR-0107) | no | at a grant on a link, a call to the standing holder's link, a TCP full ask (back to asking), a `0x92`, a purge |
+| asking | Dialing, CallbackPending, a Worker whose slot is neither granted nor ranked | yes (a callback holds its road) | at the answer or the record's end |
+| queued | RemoteQueued: holding the peer's Queue Standing, or waiting on another download's (ADR-0107); a Worker ranked without a grant, holding its link (invariant 3) | no; the held link yes | at a grant on a link, a call to the standing holder's link, a TCP full ask (back to asking), a `0x92`, a purge |
 | transferring | a Worker whose slot is granted | yes | at the worker's end; a `0x57` makes it asking again until its rank |
 | retired | none: the record left the book or is spent | no | — |
 
@@ -101,12 +103,28 @@ Invariants every transition keeps:
    record from its lane. A refused fill takes nothing; the brain names a wake at the window's turn and
    fills again then, as aMule re-reads `TooManySockets` on its process loop. A token admitted for a fill
    that found nothing to dial is given back.
-3. **A ranked worker without a grant hangs up.** Its record keeps the standing the rank earned
-   (ADR-0057) and holds no connection: its link closes with it unless another download rides or
-   waits on it, or the peer pulls on our serve side over it (ADR-0107 invariant 9), so the FIN
-   leaves well before the uploader's 40 s silent-link close (`ClientTCPSocket.cpp:201-229`). The
-   uploader keeps the client on its waiting queue and promotes it by dial-back, or at its next
-   connection when rmule is Low ID (`UploadQueue.cpp:136-138`, `:206-217`). The download's one
+3. **A ranked worker without a grant hangs up where the uploader notices it go.** Its record keeps
+   the standing the rank earned (ADR-0057). At an uploader that notices our close at once — eMule
+   (eMuleAI `ListenSocket.cpp:711-720`), aMule 3 and later, whose socket layer turns a peer's close
+   into its own (3.1.0 `EMSocket.h:124`), and rmule — the worker hangs up at once and holds no
+   connection: its link closes with it unless another download rides or waits on it, or the peer
+   pulls on our serve side over it (ADR-0107 invariant 9), so the FIN leaves well before the
+   uploader's 40 s silent-link close (`ClientTCPSocket.cpp:201-229`). The uploader keeps the client
+   on its waiting queue and promotes it by dial-back, or at its next connection when rmule is Low ID
+   (`UploadQueue.cpp:136-138`, `:206-217`). At aMule 2, and at any client whose close handling we
+   have not read, the worker holds its link instead, queued, until the uploader grants on it or
+   closes it. aMule 2.3.3's Boost.Asio socket layer, the build Debian and Ubuntu ship, reads a
+   peer's FIN or reset and posts a lost event (`LibSocketAsio.cpp:476-501`) that the client socket
+   ignores: `CLibSocket::OnLost` is empty (`LibSocket.h:124`) and `CClientTCPSocket` does not
+   override it. The client stays connected until the idle close 40 s after the link's last packet,
+   checked on each listen-socket pass (`ListenSocket.cpp:127-135`). A promotion in that window
+   takes the connected branch and writes `OP_ACCEPTUPLOADREQ` on the closed link
+   (`UploadQueue.cpp:211-217`); our reset runs the disconnect, which drops the upload
+   (`BaseClient.cpp:1278-1281`), and the promotion had taken the client off the waiting list
+   (`UploadQueue.cpp:145`): the place is gone. A held link reads that grant and transfers, as aMule's own downloader keeps the
+   socket a rank came on; once the uploader closes the link the client is unconnected, and a
+   promotion dials back (`UploadQueue.cpp:206-210`). rmule's own idle close (300 s) never comes
+   first. Which uploader it is comes from the hello's client and version. The download's one
    hash-set ask is made only of a transferring worker, at its grant, so no hang-up drops a hash set
    in flight and no `0x51` waits on a link the uploader ranks (ADR-0026).
 4. **A queued source is asked again only by its reask.** Its next slot ask comes with the TCP full ask
@@ -174,7 +192,8 @@ The factor stays inside the rules a stock downloader waiting at rmule relies on:
   number is reused first, so the rows stay as many as the most held at once.
 - A process started at 256 descriptors — the macOS shell default — raises them to 10240 and keeps the
   Ceiling at 500; one whose raise is refused at 256 holds a Ceiling of 246, and the operator is told.
-  The Dial Window keeps the asks in flight near 100 at worst. The Ceiling counts only
+  The Dial Window keeps the asks in flight near 100 at worst, and a link held at aMule 2's rank
+  about 40 s more each. The Ceiling counts only
   the downloads' connections, so the serve side's and the server session's sockets ride in the 20 or
   10 descriptors the arms leave.
 - A Low-ID rmule asks each queued peer about 44% more often (1300 / 900), each ask still 310 s clear
@@ -185,7 +204,10 @@ The factor stays inside the rules a stock downloader waiting at rmule relies on:
   first part 901 s after the uploader freed a slot, against 1300 s before. Once rmule had given a
   credit-honouring uploader 32 MiB, that uploader promoted rmule ahead of two clients that had
   queued before it.
-- Not yet measured: the connections that closing a link at the Queued Hang-Up saves, and the
+- Hanging up at every rank cut the fan-out's link-seconds from 632 to 421 against four stock aMule
+  2.3.3 sharers (2026-10-19), and lost a place in two runs of two: a sharer wrote `OP_ACCEPTUPLOADREQ`
+  0.38–0.49 s after our FIN and dropped the upload at our reset. Holding the link at aMule 2 gives
+  that saving back there and keeps it at every uploader that notices our close. Not yet measured: the
   Reciprocity Factor's choice at rmule's own upload slots.
 
 ## Considered options
@@ -195,9 +217,24 @@ The factor stays inside the rules a stock downloader waiting at rmule relies on:
   ranks.
 - **A share of the Dial Window per download.** Rejected: aMule reserves none, and a share wastes the
   tokens of downloads with nothing to dial.
-- **Staying connected after a rank until the uploader closes the link.** Rejected: it holds a connection
-  for 40 s per queued source to catch a promotion the dial-back (High ID) or the next connection
-  (Low ID) delivers anyway.
+- **Hanging up at every rank.** Rejected: at aMule 2 every promotion in the 40 s the uploader keeps
+  our closed link is lost (invariant 3).
+- **Staying connected after every rank until the uploader closes the link.** Rejected: an uploader
+  that notices our close promotes by dial-back (High ID) or at the next connection (Low ID) anyway,
+  so the 40 s link buys nothing there.
+- **A half-close that reads on after the FIN, and a dial at a grant read there.** Rejected: the
+  grant cannot be answered on a link whose write side is shut, and the dial does not carry it. Its
+  hello merges into the uploader's client (`ClientList.cpp:400-403`), which keeps the upload, since
+  `Safe_Delete` unlinks the old socket without the disconnect (`ClientTCPSocket.cpp:278-289`); but
+  the new socket never joins the bandwidth throttler. Only a promotion adds a socket to its standard
+  list (`UploadQueue.cpp:221`, 3.1.0 `:218`), the old socket leaves it when destroyed
+  (`EMSocket.cpp:100-113`), and part data are standard packets (`UploadClient.cpp:328`, `:392`) the
+  throttler sends only to listed sockets (`UploadBandwidthThrottler.cpp:371-381`). The slot would
+  carry nothing until our slot budget gave it back.
+- **Holding only a rank near the front.** Rejected: aMule starts at most one upload a second
+  (`UploadQueue.cpp:248-258`), but each goes to the best waiter that is High ID or connected, past
+  every Low-ID waiter that is not (`UploadQueue.cpp:128-147`), so no rank bounds the waiters a
+  40 s window can promote.
 - **Reasking every source at 900 s.** Rejected for a High-ID rmule: faster reasks buy it no score, and
   each costs a connection or a datagram.
 - **Granting the next slot outright to a peer we queue at.** Rejected: it is aMule's friend slot
