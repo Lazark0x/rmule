@@ -41,6 +41,9 @@ impl RunNumber {
 // (`reachability::SharedSelfReach::callback_capability`).
 pub(crate) use state::CallbackCapability;
 
+// The **Qualified Kad Root** rule the Kad keyword projection reads (ADR-0038).
+pub(crate) use state::qualified_kad_root;
+
 // Where a reask reply goes when several downloads pool one peer (ADR-0107).
 pub(crate) use reask_routes::ReaskRoutes;
 

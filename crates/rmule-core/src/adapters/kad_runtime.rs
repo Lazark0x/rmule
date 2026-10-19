@@ -714,6 +714,10 @@ impl KadSourceChannel for RuntimeKadChannel {
 /// `m_sourceCount` (`Search.cpp:1033` → `SearchList.cpp`'s `FT_SOURCES` tag →
 /// `SearchFile.cpp:79`), and the app-facing meaning is the consumer's. The
 /// `> 65500` clamp is aMule's rogue-publisher guard from the same site.
+///
+/// The row's AICH roots become the result's Kad root only when they make a
+/// **Qualified Kad Root** (ADR-0038); the storer's version gate ran in the
+/// Kad node.
 pub(crate) fn project_keyword_result(
     row: &rmule_kad::KadKeywordResult,
 ) -> Result<SearchResult, SearchResultSkipReason> {
@@ -736,6 +740,10 @@ pub(crate) fn project_keyword_result(
         _ => SearchResultSkipReason::MissingFileName,
     })?
     .with_origin(SearchResultOrigin::Kad);
+    let result = match crate::download::qualified_kad_root(&row.aich_roots, row.publishers()) {
+        Some(root) => result.with_kad_aich_root(root),
+        None => result,
+    };
     let result = match row.complete_sources {
         Some(availability) if availability <= KAD_MAX_PLAUSIBLE_AVAILABILITY => {
             result.with_reported_availability(availability)

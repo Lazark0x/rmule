@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 use crate::service::{DownloadEvent, PeerRetirementReason};
+use rmule_kad::KadAichRootReport;
 use rmule_primitives::{AichHashSet, AichRootHash, PeerEndpoint};
 
 use super::{Decision, DownloadState};
@@ -17,6 +18,25 @@ use super::{Decision, DownloadState};
 /// IPs (ADR-0038).
 const MIN_UNIQUE_IPS_TO_TRUST: usize = 10;
 const MIN_PERCENTAGE_TO_TRUST: usize = 92;
+
+/// The **Qualified Kad Root** of a Kad keyword result (ADR-0038): its one
+/// AICH root, when the result carries exactly one and at least a third of the
+/// file's `publishers` reported it, and at least [`MIN_UNIQUE_IPS_TO_TRUST`] of
+/// them. The third is eMule's rule (`SearchList.cpp:785-803`), stated exactly
+/// rather than in its integer division; the floor is the peer vote's, because
+/// both counts are the storer's word.
+pub(crate) fn qualified_kad_root(
+    reports: &[KadAichRootReport],
+    publishers: Option<u8>,
+) -> Option<AichRootHash> {
+    let [report] = reports else {
+        return None;
+    };
+    let publishers = usize::from(publishers?);
+    let popularity = usize::from(report.popularity);
+    (publishers > 0 && popularity >= MIN_UNIQUE_IPS_TO_TRUST && popularity * 3 >= publishers)
+        .then_some(report.root)
+}
 
 /// The unique-IP key for trusted-set voting: aMule masks an IPv4 address to
 /// its 20 most significant bits (`dwIP &= 0x00F0FFFF`) so a single subnet

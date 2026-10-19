@@ -46,6 +46,7 @@ use rmule_primitives::{
     UserHash,
 };
 
+pub(crate) use aich::qualified_kad_root;
 pub(crate) use candidate::LowIdCandidate;
 pub(crate) use capability::CallbackCapability;
 pub(super) use direct_ipv6::LowIdRoute;
