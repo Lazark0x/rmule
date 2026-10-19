@@ -64,6 +64,19 @@ Part assembly lives in `rmule-core`, in one shared buffer per in-flight part.
     serves its queue in order (`UploadClient.cpp:197`), so blocks still complete in
     order and the prefix stays contiguous. Bytes inside no asked block are dropped. A
     stream ends when every block of its range has arrived.
+  - **A lost block ends the stream.** A compressed block the session cannot use leaves a
+    hole the prefix cannot pass: it failed to inflate, or the session refused it because its
+    declared size or the count of blocks mid-accumulation passed a ceiling. This slot cannot
+    fill that hole. A stock uploader drops an ask for a block it has already sent, for the
+    life of the slot (aMule `UploadClient.cpp:503-511`, cleared at slot end,
+    `UploadQueue.cpp:541`; eMuleAI `UploadClient.cpp:768-775` outside its NAT-traversal
+    recovery). aMule's own re-ask after an inflate failure (`DownloadClient.cpp:985-998`,
+    asked again at `:721` and `:772`) therefore never lands. aMule keeps the link anyway,
+    because its part file takes the blocks past the hole and frees the lost one for other
+    sources (`RemoveBlockFromList`, `:985`). rmule's prefix drops the bytes past a hole, so
+    the worker gives the slot back with `OP_CANCELTRANSFER` at once and reports the link
+    ended, and the part returns to the download with its prefix. A lost block of an earlier
+    part that is still draining only stops counting against the depth.
   - **The pipeline is the link's.** `OP_OUTOFPARTREQS` empties it: the uploader dropped
     every queued block. A worker handed a new part stops asking for its old one at
     once; the old blocks already asked still arrive, count against the depth while they
