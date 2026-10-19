@@ -39,6 +39,7 @@ use crate::flow::gate::wait_for_container_log;
 use crate::flow::nat::portmap::gateway::{GatewayRecord, GatewayWatch, PROOF_MOUNT};
 use crate::flow::nat::portmap::helper::{self, KadHelper};
 use crate::flow::nat::portmap::link_local::{self, PcpSources};
+use crate::flow::nat::portmap::moved;
 use crate::flow::nat::portmap::row::DriverRow;
 use crate::flow::nat::portmap::verdict::{self, Claim, PortMapVerdict};
 use crate::flow::nat::portmap::{
@@ -273,7 +274,11 @@ fn drive(bench: &mut Bench, options: &PortMapOptions<'_>) -> Result<()> {
             .volume(&leg_dir, PROOF_MOUNT)
             .env("MINIUPNPD_LAN_ADDR", NAT_LAN_GATEWAY)
             .env("NAT_WAN_ADDR", &gateway_wan)
-            .env("MINIUPNPD_LAN_CIDR", NAT_LAN_SUBNET),
+            .env("MINIUPNPD_LAN_CIDR", NAT_LAN_SUBNET)
+            .env(
+                "MINIUPNPD_SECURE_MODE",
+                if flow.takes_the_port() { "no" } else { "yes" },
+            ),
         "run miniupnpd port-mapping gateway",
     )?;
     run_checked(
@@ -373,8 +378,16 @@ fn drive(bench: &mut Bench, options: &PortMapOptions<'_>) -> Result<()> {
     let mut watch = GatewayWatch::new();
     let driver_deadline =
         Instant::now() + Duration::from_secs(flow.window_secs() + options.timeout_secs);
+    let mut port_taken = false;
     loop {
         watch.poll(&bench.docker, &gateway)?;
+        if flow.takes_the_port()
+            && !port_taken
+            && watch.has_seen_exact(DRIVER_LAN_ADDRESS, PEER_TCP_PORT)
+        {
+            moved::take_the_port(bench, options.miniupnpd_image, &lan_network)?;
+            port_taken = true;
+        }
         if !is_running(bench, &driver)? {
             break;
         }

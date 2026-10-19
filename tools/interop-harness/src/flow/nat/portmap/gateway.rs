@@ -169,6 +169,16 @@ impl GatewayWatch {
         Self::default()
     }
 
+    /// Whether any poll so far saw `internal_address:internal_port` forwarded
+    /// from the same external port.
+    pub(crate) fn has_seen_exact(&self, internal_address: &str, internal_port: u16) -> bool {
+        self.seen.values().any(|lease| {
+            lease.internal_address == internal_address
+                && lease.internal_port == internal_port
+                && lease.external_port == internal_port
+        })
+    }
+
     /// Read both tables once and fold them in.
     ///
     /// # Errors

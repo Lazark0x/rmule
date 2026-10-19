@@ -102,7 +102,7 @@ impl Claim {
         }
     }
 
-    fn blocked(name: &'static str, note: impl Into<String>) -> Self {
+    pub(super) fn blocked(name: &'static str, note: impl Into<String>) -> Self {
         Self {
             name,
             outcome: "blocked",
@@ -138,6 +138,7 @@ pub(crate) fn judge(
     claims.extend(match flow {
         PortMapFlow::HighId | PortMapFlow::NatPmp => high_id_claims(flow, gateway, rmule, kad_wire),
         PortMapFlow::Mismatch => mismatch_claims(gateway, rmule),
+        PortMapFlow::Moved => super::moved::claims(gateway, rmule),
         PortMapFlow::Ipv6Pinhole | PortMapFlow::Ipv6PinholeLinkLocal => {
             pinhole_claims(gateway, rmule)
         }

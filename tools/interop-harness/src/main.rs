@@ -291,7 +291,8 @@ enum HarnessCommand {
     /// real `miniupnpd` gateway and judge the GATEWAY's own lease table and log.
     /// `portmap-highid` asks for the exact port and watches it be renewed
     /// (`portmap-natpmp` the same over NAT-PMP), `portmap-mismatch` has a second LAN host claim the ports first so the
-    /// grant comes back shifted, and `portmap-ipv6-pinhole` asks for a PCP MAP
+    /// grant comes back shifted, `portmap-moved` has one take the exact port
+    /// between grant and renewal, and `portmap-ipv6-pinhole` asks for a PCP MAP
     /// on the `3fff` address; `portmap-ipv6-pinhole-link-local` asks for it
     /// through the gateway's `fe80::` next hop and judges each request's
     /// source. Every run attaches its NAT Type Proof.
