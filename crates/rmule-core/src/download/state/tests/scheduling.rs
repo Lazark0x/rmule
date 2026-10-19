@@ -290,25 +290,56 @@ fn a_retired_worker_frees_its_slot_and_backfills_a_pooled_candidate() {
 fn the_last_worker_retiring_with_an_empty_pool_fails_the_download() {
     let mut state = file_hash_only_state(vec![peer(1)], 1);
     let _ = state.start(t0());
-    let _ = connect(&mut state, t0(), peer(1));
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
 
-    // The sole worker drops: its part returns to the pool and, with no
-    // candidate left to backfill, the download fails (ADR-0030).
+    // The sole worker drops before it stands anywhere: with no candidate
+    // left to backfill, the download fails (ADR-0030).
     let retired = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
-    assert!(
-        retired.iter().any(|d| matches!(
-            d,
-            Decision::Emit(DownloadEvent::PartReleased { part_index: 0, peer: p, .. })
-                if *p == peer(1)
-        )),
-        "the sole holder's part returns to the pool: {retired:?}"
-    );
     assert!(
         retired
             .iter()
             .any(|d| matches!(d, Decision::Fail(DownloadFailure::NoUsableSources))),
         "an exhausted pool with no workers fails the download: {retired:?}"
     );
+}
+
+/// A source transferring on a granted slot whose link fails stays a source,
+/// as aMule turns `DS_DOWNLOADING` into `DS_ONQUEUE` at a disconnect and
+/// keeps the client (`BaseClient.cpp:1283-1284`): its part returns to the
+/// pool, its record waits in the RemoteQueued stage with a standing dated at
+/// its last ask, and the download does not fail (ADR-0090).
+#[test]
+fn a_transferring_source_whose_link_fails_waits_queued_rather_than_failing() {
+    let mut state = file_hash_only_state(vec![peer(1)], 1);
+    let _ = state.start(t0());
+    let _ = probed(&mut state, t0(), peer(1));
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotAsked);
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotGranted);
+
+    let later = t0() + Duration::from_secs(60);
+    let cut = state.on_worker_event(later, peer(1), PeerWorkerEvent::Disconnected);
+    assert!(
+        cut.iter().any(|d| matches!(
+            d,
+            Decision::Emit(DownloadEvent::PartReleased { part_index: 0, peer: p, .. })
+                if *p == peer(1)
+        )),
+        "its part returns to the pool: {cut:?}"
+    );
+    assert!(
+        cut.iter().any(|d| matches!(
+            d,
+            Decision::Emit(DownloadEvent::SourceRemoteQueued { peer: p, rank: None, .. })
+                if *p == peer(1)
+        )),
+        "the source waits queued: {cut:?}"
+    );
+    assert!(
+        !cut.iter()
+            .any(|d| matches!(d, Decision::Fail(DownloadFailure::NoUsableSources))),
+        "a source still stands: {cut:?}"
+    );
+    assert_eq!(state.remote_queued().collect::<Vec<_>>(), vec![peer(1)]);
 }
 
 #[test]

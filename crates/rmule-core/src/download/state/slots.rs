@@ -249,6 +249,7 @@ impl DownloadState {
             }));
         }
         let holds_slot = self.slot_asks.holds_slot(peer);
+        let granted = self.slot_asks.granted(peer);
         self.delivery.remove(&peer);
         if let Some(slot) = self.worker_slots.remove(&peer) {
             // A worker that hangs up, times out its slot wait or was ranked
@@ -256,10 +257,15 @@ impl DownloadState {
             // nothing we lack keeps that mark on its standing, or earns one
             // at rank 0, and reasks at twice the period, over TCP (aMule
             // `DS_NONEEDEDPARTS`, ADR-0112). One that gave back a granted
-            // slot with no part free earns a standing on the ordinary cadence.
-            // Any other end is the standing's (ADR-0090, "How a worker ends,
-            // and what its record keeps").
+            // slot with no part free earns a standing on the ordinary cadence,
+            // and so does one whose link failed while it transferred, dated at
+            // its last ask (aMule `DS_DOWNLOADING` → `DS_ONQUEUE`). Any other
+            // end is the standing's (ADR-0090, "How a worker ends, and what
+            // its record keeps").
             match reason {
+                PeerRetirementReason::PeerDisconnected if granted => {
+                    self.sources.transfer_cut(peer, now);
+                }
                 PeerRetirementReason::PeerDisconnected
                 | PeerRetirementReason::SlotTimeout
                 | PeerRetirementReason::Queued => {}

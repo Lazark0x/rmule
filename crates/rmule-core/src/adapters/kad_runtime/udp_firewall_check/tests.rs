@@ -366,7 +366,7 @@ impl PeerTransferService for DisconnectingPeerTransfer {
 }
 
 #[tokio::test]
-async fn a_download_workers_connect_marks_the_roster_and_disconnect_forgets_it() {
+async fn a_download_workers_connect_marks_the_roster_and_the_runs_end_forgets_it() {
     let out_dir = tempfile::tempdir().unwrap();
     // The download runner's fleet loop is the roster's other
     // writer. This drives a real worker session — a live `Core`, a scripted
@@ -483,24 +483,49 @@ async fn a_download_workers_connect_marks_the_roster_and_disconnect_forgets_it()
         "the same read the helper's bias consults still finds the peer known"
     );
 
-    // Let the worker hang up on its own. `on_worker_event(Disconnected)`
-    // releases its in-flight part before the pool's own terminal check —
-    // `PartReleased` fires strictly after the fleet's forget site runs, in
-    // the same iteration.
+    // Let the worker's link fail while it transfers. `on_worker_event
+    // (Disconnected)` releases its in-flight part, and its record stands
+    // queued without a rank, aMule's `DS_ONQUEUE` client known after its
+    // socket closed (ADR-0090): the worker's relation goes, the queued one
+    // holds the IP.
     disconnect.notify_one();
-    loop {
+    let download_id = loop {
         match next_core_event(&mut core).await {
-            CoreEvent::Download(DownloadEvent::PartReleased { .. }) => break,
+            CoreEvent::Download(DownloadEvent::PartReleased { download_id, .. }) => {
+                break download_id;
+            }
             CoreEvent::Download(DownloadEvent::DownloadCompleted { .. }) => {
                 panic!("the sole worker disconnected — nothing to complete")
             }
             _ => {}
         }
+    };
+    loop {
+        if let CoreEvent::Download(DownloadEvent::SourceRemoteQueued { .. }) =
+            next_core_event(&mut core).await
+        {
+            break;
+        }
     }
     assert!(
-        !roster.knows(peer_ip),
-        "the worker's Disconnected forgot the IP once it hung up"
+        roster.knows(peer_ip),
+        "the source standing queued is still known"
     );
+
+    // The run's end forgets every relation it held.
+    core.send(CoreCommand::Download(DownloadCommand::CancelDownload {
+        download_id,
+    }))
+    .await
+    .unwrap();
+    loop {
+        if let CoreEvent::Download(DownloadEvent::DownloadCancelled { .. }) =
+            next_core_event(&mut core).await
+        {
+            break;
+        }
+    }
+    assert!(!roster.knows(peer_ip), "the run's end forgot the IP");
 }
 
 /// Await the next fact from `core`, same as `Core::next_event` but with a

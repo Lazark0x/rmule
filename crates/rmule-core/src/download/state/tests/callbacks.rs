@@ -131,7 +131,7 @@ fn a_candidate_with_neither_callback_nor_coordinator_still_starves_the_download(
     // one behind it.
     let mut state = callback_state(vec![peer(1)], Vec::new(), false, 1);
     let _ = state.start(t0());
-    let _ = connect(&mut state, t0(), peer(1));
+    let _ = probed(&mut state, t0(), peer(1));
 
     let discovered = via_global(
         &mut state,
@@ -344,7 +344,7 @@ fn a_called_back_source_whose_worker_ends_without_a_rank_is_called_back_again() 
     let mut state = callback_state(Vec::new(), vec![low_candidate(7)], true, 1);
     let _ = state.start(t0());
     let _ = state.on_callback_connected(t0(), connected_key(low(7)), peer(9));
-    let _ = connect(&mut state, t0(), peer(9));
+    let _ = probed(&mut state, t0(), peer(9));
 
     let ended = state.on_worker_event(t0(), peer(9), PeerWorkerEvent::Disconnected);
 

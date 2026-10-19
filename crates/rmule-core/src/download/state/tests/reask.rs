@@ -728,22 +728,30 @@ fn a_tick_sweeps_every_source_in_book_order() {
     );
 }
 
-/// A queued worker granted a slot is live, not standing: when it ends, nothing
-/// is reasked.
+/// A queued worker granted a slot is live, not standing, and no reask falls
+/// due while it transfers; when its link fails it stands again without a
+/// rank, as aMule's `DS_DOWNLOADING` client turns `DS_ONQUEUE`
+/// (`BaseClient.cpp:1283-1284`), and is asked again a period after the ask
+/// that won the grant (`PartFile.cpp:1449-1483`, ADR-0090).
 #[test]
-fn a_granted_source_keeps_no_standing() {
+fn a_granted_source_whose_link_fails_is_asked_a_period_after_its_ask() {
     let mut state = started(&[peer(1)], live_posture());
-    let _ = connect(&mut state, t0(), peer(1));
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Queued { rank: 2 });
+    let _ = probed(&mut state, t0(), peer(1));
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotAsked);
     let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotGranted);
-    let ended = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
+    assert!(asked_by_tcp(&state.on_tick(t0() + FILE_REASK_TIME)).is_empty());
+
+    let cut_at = t0() + FILE_REASK_TIME + Duration::from_secs(60);
+    let ended = state.on_worker_event(cut_at, peer(1), PeerWorkerEvent::Disconnected);
     assert!(
-        !ended
-            .iter()
-            .any(|d| matches!(d, Decision::Emit(DownloadEvent::SourceRemoteQueued { .. }))),
+        ended.iter().any(|d| matches!(
+            d,
+            Decision::Emit(DownloadEvent::SourceRemoteQueued { peer: p, rank: None, .. })
+                if *p == peer(1)
+        )),
         "{ended:?}"
     );
-    assert!(asked_by_tcp(&state.on_tick(t0() + FILE_REASK_TIME)).is_empty());
+    assert_eq!(asked_by_tcp(&state.on_tick(cut_at)), vec![peer(1)]);
 }
 
 /// An IPv6 source holds its queue standing exactly as an IPv4 one does

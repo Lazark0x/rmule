@@ -130,7 +130,8 @@ fn a_peer_that_served_bad_data_is_not_redialled_and_a_clean_one_is() {
 
     let _ = hello(&mut state, bad, BAD);
     serve_bad_part(&mut state, bad);
-    let _ = hello(&mut state, clean, CLEAN);
+    let _ = state.on_worker_event(t0(), clean, identified(CLEAN));
+    let _ = probed(&mut state, t0(), clean);
     let _ = state.on_worker_event(t0(), clean, PeerWorkerEvent::Disconnected);
 
     assert_eq!(sight_hashed(&mut state, &both), vec![clean]);

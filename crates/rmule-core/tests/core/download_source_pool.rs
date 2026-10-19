@@ -235,12 +235,11 @@ impl PeerTransferService for AlwaysDisconnect {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
             let _ = event_tx.send(advertised).await;
             // The AICH-root ask the handshake triggers comes first; the slot
-            // ask follows the probe's answer, and the part the grant.
+            // ask follows the probe's answer, and the link fails at it, before
+            // the source stands anywhere: a source cut while it transfers would
+            // stay queued (ADR-0090), and the download would not exhaust.
             while let Some(command) = command_rx.recv().await {
                 if matches!(command, PeerWorkerCommand::AskSlot) {
-                    let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
-                }
-                if let PeerWorkerCommand::RequestPart { .. } = command {
                     let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
                     break;
                 }
