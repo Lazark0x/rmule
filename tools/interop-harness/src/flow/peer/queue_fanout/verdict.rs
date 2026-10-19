@@ -50,6 +50,8 @@ const OP_QUEUERANKING: u8 = 0x60;
 pub(crate) const FREE_TRANSFERRED: &str = "every-free-sharer-sent-parts";
 /// The claim on the sharers that queue rmule.
 pub(crate) const QUEUED_HUNG_UP: &str = "rmule-hung-up-on-every-sharer-that-ranked-it";
+/// The claim on the links those sharers ranked rmule on.
+pub(crate) const QUEUED_CLOSED: &str = "rmule-closed-each-ranked-link-before-the-sharer";
 /// The claim on the sharers that grant late.
 pub(crate) const LATE_TAKEN: &str = "every-late-grant-became-a-transfer";
 /// The claim on the copy.
@@ -92,6 +94,11 @@ pub(crate) struct Rows {
     pub(crate) rmule_dials: usize,
     /// Sharers' SYNs to rmule's listener: the grants by dial-back.
     pub(crate) dial_backs: usize,
+    /// The most links between rmule and the sharers open at once, and their
+    /// open seconds summed (a link still open at the capture's end counts to
+    /// its last segment): what holding a queued link costs.
+    pub(crate) links_open_peak: usize,
+    pub(crate) link_seconds: f64,
     /// The most sources asking, queued and transferring at once.
     pub(crate) peaks: ActivityPeaks,
     /// Sharers that sent part frames of rmule's file.
@@ -200,6 +207,89 @@ fn parts_from(capture: &TcpCapture, sharer: Ipv4Addr, hash: [u8; 16]) -> usize {
         .count()
 }
 
+/// The links between `rmule` and `sharers` as `(opened, closed)` times: a SYN
+/// opens one, the first FIN or RST of either side closes it, and one never
+/// closed ends at `end`.
+fn link_spans(
+    capture: &TcpCapture,
+    rmule: IpAddr,
+    sharers: &[Ipv4Addr],
+    end: f64,
+) -> Vec<(f64, f64)> {
+    let ours = |a: SocketAddr, b: SocketAddr| {
+        (a.ip() == rmule && sharers.iter().any(|&ip| b.ip() == IpAddr::V4(ip)))
+            || (b.ip() == rmule && sharers.iter().any(|&ip| a.ip() == IpAddr::V4(ip)))
+    };
+    let mut spans: Vec<((SocketAddr, SocketAddr), f64, Option<f64>)> = Vec::new();
+    for open in capture
+        .opens
+        .iter()
+        .filter(|open| ours(open.source, open.destination))
+    {
+        let key = (open.source, open.destination);
+        if !spans.iter().any(|(seen, _, _)| *seen == key) {
+            spans.push((key, open.at, None));
+        }
+    }
+    for close in &capture.closes {
+        if let Some(span) = spans.iter_mut().find(|((a, b), opened, closed)| {
+            closed.is_none()
+                && close.at >= *opened
+                && ((close.source, close.destination) == (*a, *b)
+                    || (close.source, close.destination) == (*b, *a))
+        }) {
+            span.2 = Some(close.at);
+        }
+    }
+    spans
+        .into_iter()
+        .map(|(_, opened, closed)| (opened, closed.unwrap_or(end).max(opened)))
+        .collect()
+}
+
+/// The most spans open at one instant.
+fn peak_open(spans: &[(f64, f64)]) -> usize {
+    let mut edges: Vec<(f64, i32)> = spans
+        .iter()
+        .flat_map(|&(opened, closed)| [(opened, 1), (closed, -1)])
+        .collect();
+    // A close sorts before an open at the same instant.
+    edges.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    let (mut open, mut peak) = (0_i32, 0_i32);
+    for (_, step) in edges {
+        open += step;
+        peak = peak.max(open);
+    }
+    usize::try_from(peak).unwrap_or(0)
+}
+
+/// Whether rmule closed the link `sharer` first ranked it on before the
+/// sharer did; `None` when no rank or no close crossed the tap.
+fn closed_after_rank(capture: &TcpCapture, sharer: Ipv4Addr, rmule: IpAddr) -> Option<bool> {
+    let (link, at) = capture
+        .streams
+        .iter()
+        .filter(|stream| {
+            stream.source.ip() == IpAddr::V4(sharer) && stream.destination.ip() == rmule
+        })
+        .flat_map(|stream| stream.ed2k_frames())
+        .filter(|frame| {
+            (frame.protocol, frame.opcode) == (OP_EDONKEYPROT, OP_QUEUERANK)
+                || (frame.protocol, frame.opcode) == (OP_EMULEPROT, OP_QUEUERANKING)
+        })
+        .map(|frame| ((frame.source, frame.destination), frame.at))
+        .min_by(|a, b| a.1.total_cmp(&b.1))?;
+    capture
+        .closes
+        .iter()
+        .find(|close| {
+            close.at >= at
+                && ((close.source, close.destination) == link
+                    || (close.destination, close.source) == link)
+        })
+        .map(|close| close.source == link.1)
+}
+
 /// Whether `sharer` sent rmule a rank, on any link.
 fn ranked(capture: &TcpCapture, sharer: Ipv4Addr) -> bool {
     capture
@@ -255,6 +345,17 @@ fn claims(at: &Topology, seen: &Observed) -> (Vec<Claim>, Rows) {
         .copied()
         .filter(|&ip| dialed_back(ip))
         .collect();
+    let closers: Vec<String> = queued
+        .iter()
+        .map(|&ip| {
+            let who = match closed_after_rank(&seen.capture, ip, rmule) {
+                Some(true) => "rmule",
+                Some(false) => "sharer",
+                None => "nobody",
+            };
+            format!("{ip}: {who}")
+        })
+        .collect();
     let shaped_queued = &at.sharers[..shape.queued.min(at.sharers.len())];
     let sending = |ip: Ipv4Addr| parts_from(&seen.capture, ip, seen.hash) > 0;
 
@@ -278,6 +379,16 @@ fn claims(at: &Topology, seen: &Observed) -> (Vec<Claim>, Rows) {
                     Some(("reason", "queued")),
                 )
             },
+        ),
+        over_all(
+            QUEUED_CLOSED,
+            &queued,
+            Evidence::RmuleOnly,
+            &format!(
+                "the first close on the link each sharer ranked rmule on ({})",
+                closers.join(", ")
+            ),
+            |ip| closed_after_rank(&seen.capture, ip, rmule) == Some(true),
         ),
         over_all(
             LATE_TAKEN,
@@ -317,6 +428,14 @@ fn claims(at: &Topology, seen: &Observed) -> (Vec<Claim>, Rows) {
                     .any(|&ip| open.source.ip() == IpAddr::V4(ip))
         })
         .count();
+    let end = seen
+        .capture
+        .streams
+        .iter()
+        .flat_map(|stream| stream.ed2k_frames())
+        .map(|frame| frame.at)
+        .fold(0.0, f64::max);
+    let spans = link_spans(&seen.capture, rmule, &at.sharers, end);
     let started = seen.log.first_at("download.part_assigned");
     let completed = seen.log.first_at("download.completed");
     let seconds = match (started, completed) {
@@ -333,6 +452,8 @@ fn claims(at: &Topology, seen: &Observed) -> (Vec<Claim>, Rows) {
         seconds_to_complete: seconds,
         rmule_dials,
         dial_backs,
+        links_open_peak: peak_open(&spans),
+        link_seconds: spans.iter().map(|(opened, closed)| closed - opened).sum(),
         peaks: seen.log.activity_peaks(),
         sharers_sending: at.sharers.iter().filter(|&&ip| sending(ip)).count(),
         sharers_ranking: queued.len(),
@@ -343,4 +464,16 @@ fn claims(at: &Topology, seen: &Observed) -> (Vec<Claim>, Rows) {
         copy_bytes: len,
     };
     (claims, rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::peak_open;
+
+    #[test]
+    fn the_peak_counts_links_open_together_and_a_close_frees_its_place_first() {
+        assert_eq!(peak_open(&[]), 0);
+        assert_eq!(peak_open(&[(0.0, 10.0), (1.0, 2.0), (3.0, 4.0)]), 2);
+        assert_eq!(peak_open(&[(0.0, 5.0), (5.0, 9.0)]), 1);
+    }
 }
