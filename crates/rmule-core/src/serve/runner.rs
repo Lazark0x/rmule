@@ -337,6 +337,10 @@ where
                     match dialed {
                         // A connection rmule dialed is also serving the peer:
                         // admit it to the same queue as an accepted one.
+                        // An adopted callback comes this way too, but its
+                        // hello was read on the accept side and never
+                        // reaches the serve side, so only a dialed hello
+                        // meets the mark.
                         Some(conn) => {
                             state.on_link_dialed(conn.peer());
                             register_serve_connection(conn, &mut conns, &fact_tx);

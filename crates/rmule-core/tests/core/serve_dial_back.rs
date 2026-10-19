@@ -3,7 +3,8 @@
 //! it where its hello said it listens and sends `OP_ACCEPTUPLOADREQ` once the
 //! hellos are done, as aMule's `AddUpNextClient` and `ConnectionEstablished`
 //! do (`UploadQueue.cpp:206-210`, `BaseClient.cpp:1707-1716`). A waiter no
-//! dial reaches hands the slot on to the next one.
+//! dial reaches hands the slot on to the next one, and a slot nobody could be
+//! reached for goes to the waiter whose link comes back.
 //!
 //! Every hop is a real socket through the production serve adapter; only the
 //! counterparties are fakes — rmule's side, not interop.
@@ -76,14 +77,15 @@ async fn serving_one_slot() -> (SocketAddrV4, FileHash, tempfile::TempDir) {
 /// A peer linked to the core and asking for the file's one part: it reads
 /// back the grant or the rank.
 async fn asking(at: SocketAddrV4, user_hash: UserHash, listen_port: u16, file: FileHash) -> Asker {
+    asking_as(at, ctx(user_hash, listen_port), file).await
+}
+
+/// A peer linked to the core under `hello`, its hellos done.
+async fn linked(at: SocketAddrV4, hello: PeerHandshakeContext) -> Connection {
     let endpoint = PeerEndpoint::V4(Ipv4Endpoint::new(*at.ip(), at.port()));
-    let mut link = Connection::connect(
-        endpoint,
-        ctx(user_hash, listen_port),
-        ConnectOptions::default(),
-    )
-    .await
-    .expect("the core accepts the peer");
+    let mut link = Connection::connect(endpoint, hello, ConnectOptions::default())
+        .await
+        .expect("the core accepts the peer");
     next_matching(&mut link, |event| {
         matches!(
             event,
@@ -91,6 +93,12 @@ async fn asking(at: SocketAddrV4, user_hash: UserHash, listen_port: u16, file: F
         )
     })
     .await;
+    link
+}
+
+/// `asking` under `hello`.
+async fn asking_as(at: SocketAddrV4, hello: PeerHandshakeContext, file: FileHash) -> Asker {
+    let link = linked(at, hello).await;
     let ranges = PartRanges::new([(0, 4096), (0, 0), (0, 0)]).unwrap();
     link.send(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: file,
@@ -235,4 +243,33 @@ async fn a_waiter_no_dial_reaches_hands_the_slot_to_the_next() {
 
     let _ = holder.link.shutdown().await;
     next.granted().await;
+}
+
+#[tokio::test]
+async fn a_slot_nobody_could_be_reached_for_goes_to_the_waiter_whose_link_comes_back() {
+    // aMule's `Process` fills a free slot within its next second with the
+    // best waiter it can reach (`UploadQueue.cpp:255-258`): a Low ID that
+    // hung up is reached again by its own link, granted there before it
+    // asks.
+    let (at, file, _share) = serving_one_slot().await;
+    let holder_hash = UserHash::from_bytes([0xA1; UserHash::BYTE_LEN]);
+    let low_hash = UserHash::from_bytes([0xB2; UserHash::BYTE_LEN]);
+    let low_id = || PeerHandshakeContext {
+        client_id: ClientId::from_u32(5),
+        ed2k_client_id: ClientId::from_u32(5),
+        ..ctx(low_hash, 4662)
+    };
+
+    let mut holder = asking(at, holder_hash, dead_port().await, file).await;
+    holder.granted().await;
+    let mut low = asking_as(at, low_id(), file).await;
+    low.ranked(1).await;
+    low.hang_up().await;
+    let _ = holder.link.shutdown().await;
+
+    let mut back = linked(at, low_id()).await;
+    next_matching(&mut back, |event| {
+        matches!(event, PeerEvent::Requester(RequesterEvent::SlotOffered))
+    })
+    .await;
 }
