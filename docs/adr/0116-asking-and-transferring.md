@@ -102,8 +102,13 @@ Invariants every transition keeps:
    fills again then, as aMule re-reads `TooManySockets` on its process loop. A token admitted for a fill
    that found nothing to dial is given back.
 3. **A ranked worker without a grant hangs up.** Its record keeps the standing the rank earned
-   (ADR-0057) and holds no connection. The download's one hash-set ask passes only to a transferring
-   worker, so no hang-up drops a hash set in flight (ADR-0026).
+   (ADR-0057) and holds no connection: its link closes with it unless another download rides or
+   waits on it, or the peer pulls on our serve side over it (ADR-0107 invariant 9), so the FIN
+   leaves well before the uploader's 40 s silent-link close (`ClientTCPSocket.cpp:201-229`). The
+   uploader keeps the client on its waiting queue and promotes it by dial-back, or at its next
+   connection when rmule is Low ID (`UploadQueue.cpp:136-138`, `:206-217`). The download's one
+   hash-set ask is made only of a transferring worker, at its grant, so no hang-up drops a hash set
+   in flight and no `0x51` waits on a link the uploader ranks (ADR-0026).
 4. **A queued source is asked again only by its reask.** Its next slot ask comes with the TCP full ask
    at the reask period, never sooner than aMule's 590 s. A peer queued for several downloads is asked
    once per cycle, by the download holding its Queue Standing; the others wait on it and ask nothing

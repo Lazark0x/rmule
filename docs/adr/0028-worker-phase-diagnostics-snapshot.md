@@ -21,9 +21,7 @@ point-in-time `DiagnosticsSnapshot`.
     phase is written;
   - `Connecting` — the dial and the hello, written when the slot dials;
   - `AskingFile` — the hello done and the file asked, written at `Connected`, until
-    the probe's answer asks a slot or the hash set, or retires the worker;
-  - `RequestingHashSet` — asked for the part hash set, its slot ask waiting on the
-    answer or the Hash-Set Deadline (ADR-0026);
+    the probe's answer asks a slot or retires the worker;
   - `WaitingForSlot { rank }` — the slot ask out, written when it is sent and when
     `OP_OUTOFPARTREQS` queues the flow again; its rank, once an `OP_QUEUERANKING`
     gives one, refreshed by each;

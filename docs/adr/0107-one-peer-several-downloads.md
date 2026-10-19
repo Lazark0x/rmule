@@ -125,8 +125,12 @@ Invariants every transition keeps:
 8. **One download rides a link at a time**, as aMule's client has one `m_reqfile`. Another download
    of the peer waits on the link, not on a second socket, and the oldest waiter still running takes
    the link the moment the rider's worker ends.
-9. **The link lives while any half holds it**: its serve side, its rider or a waiter (ADR-0031). Its
-   end hands every waiter back to its download, which dials as before.
+9. **The link lives while any half holds it**: its rider, a waiter, its serve side while it serves
+   once the peer has asked it anything over the link, and the buddy slot while the link is the held
+   buddy link (ADR-0031, ADR-0061). A link its last rider leaves with no other half holding it closes
+   then: a rider's Queued Hang-Up (ADR-0116) sends the FIN well inside the uploader's 40 s
+   silent-link close (`ClientTCPSocket.cpp:201-229`). Its end hands every waiter back to its
+   download, which dials as before.
 10. **A name is filed only from what the link proves or the node accepts**: the socket's address
     (never an IPv4 claim on an IPv6 link), the hello's `(server, low_id)` and User Hash, and a Low
     ID an `OP_CHANGE_CLIENT_ID` moves only under a server the node's list holds. A hash another
@@ -190,6 +194,13 @@ the rider, whose own ask is about to be granted. A link nobody rides offers it t
 Grants** under its names, the peer's standing holder first, then oldest first: the download that takes it opens the record's worker on that link at
 once, with no admission by the Connection Budget (ADR-0116), and the worker rides the link as any rider does, asking
 for its file. With no Awaited Grant to take it, the link gives the slot back with `0x56` (ADR-0056).
+A link is left with nobody riding it only while another half holds it (invariant 9): the peer's
+pull on our serve side, or the held buddy link. A waiter that hung up at its rank on a link nothing
+else held closed that link, so the uploader promotes it by dialing it — `AddUpNextClient` finds the
+client unconnected (`UploadQueue.cpp:206-210`) — and the grant comes on that new link, nobody
+riding it. A grant the uploader sent before our FIN reached it ends with its socket there
+(`BaseClient.cpp:1278-1280`); read on the closing link, it goes to the Awaited Grant as on any link
+nobody rides, and that worker, finding the link ended, dials.
 
 A download that rides or waits on a link is told so, and the operator sees it: a Run Log record
 (`download.link_shared`, the turn `waiting` or `riding`) and the Sources pane's mark on the slot. A

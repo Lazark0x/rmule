@@ -70,10 +70,7 @@ puts its source on the uploader's queue, as aMule's `SendStartupLoadReq` sets
 record earns a standing then, **without a rank** until a `0x60` ranks it, its clock dated
 at the ask. A rank on a live worker ranks or refreshes it, and so do Advertised Parts
 holding no part we lack (rank 0, ADR-0112). A grant or a transfer ends it — the source is
-live, not queued. A worker whose slot ask waits on its hash-set ask holds none until the
-ask leaves, at the answer or the Hash-Set Deadline (ADR-0026), so a link that ends at the
-hash-set ask leaves the book, as aMule deletes a `DS_REQHASHSET` source
-(`BaseClient.cpp:1305-1329`). How the worker ends decides the rest:
+live, not queued. How the worker ends decides the rest:
 
 | The worker ends by | Its standing | Its record | Spent |
 |---|---|---|---|

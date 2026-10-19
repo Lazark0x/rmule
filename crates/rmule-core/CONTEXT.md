@@ -529,7 +529,9 @@ _Avoid_: downloading source (aMule's `DS_DOWNLOADING` is one state of it), activ
 **Queued Hang-Up**:
 A worker whose slot ask is answered with a rank, and which holds no grant, ends at once: its record
 waits in the **Remote-Queued Pool** with the standing the rank earned, and the reask keeps its place
-(ADR-0116, ADR-0057). Its retirement reads `queued`.
+(ADR-0116, ADR-0057). Its link closes with it unless another download rides or waits on it, or the
+peer pulls on our serve side over it, so the FIN leaves before the uploader's 40 s silent-link close;
+the uploader promotes it by dial-back (ADR-0107 invariant 9). Its retirement reads `queued`.
 _Avoid_: slot timeout (that is an ask nobody answered)
 
 **Source Activity**:
@@ -577,8 +579,8 @@ A download worker's `OP_STARTUPLOADREQ`, sent at its probe answer when its **Adv
 _Avoid_: slot request (the codec is `StartUploadReq`), upload request (that is the uploader's view), standby
 
 **Hash-Set Deadline**:
-The 20 s a download's one `OP_HASHSETREQUEST` in flight waits for its answer before its worker asks its slot regardless and the ask passes to the next link (ADR-0026) — half aMule's 40 s idle close, so the slot ask still reaches an uploader that never answers the set. Only one link asks at a time, and only while the download holds no whole part hash set; a link with `p=` never asks.
-_Avoid_: hash-set timeout (nothing times out: the slot ask goes out and the ask moves)
+The 20 s a download's one `OP_HASHSETREQUEST` in flight waits for its answer before the ask passes to the next transferring link (ADR-0026) — half aMule's 40 s idle close. Only a link whose slot is granted asks, one at a time, from its grant, and only while the download holds no whole part hash set; no slot ask waits on it, and a link with `p=` never asks.
+_Avoid_: hash-set timeout (nothing times out: the ask moves)
 
 **Had Set**:
 The durable set of file hashes that were in the **Shared File Registry** and whose file has since left the disk, each with the name it last had and when it left (ADR-0105). A row joins it in the step that removes the row; a share of the same content, from any source, takes the hash out in the step that stores the row, and nothing else does. A renamed or copied file moves its row and never passes through it. It shares nothing and answers nothing on the wire; it exists so the operator can be told they once had a file.
@@ -871,8 +873,9 @@ Low ID — moved by `OP_CHANGE_CLIENT_ID` only under a server the list holds —
 A download about to dial a peer, or to ask it for a callback, looks its names up first and rides
 the link it finds instead (ADR-0107, "One peer, one link"): its requests go out on the link and
 the link's requester events come back to it, as aMule asks a client over the socket it already
-holds. The link lives while its serve side, its rider or a waiter holds it; a newer link filed
-under a name takes that name.
+holds. The link lives while its rider, a waiter, its serve side once the peer has asked it
+anything over the link, or the held buddy link's slot holds it; a link its last rider leaves with
+nothing else holding it closes then. A newer link filed under a name takes that name.
 _Avoid_: served link (the accepted kind only), shared connection (every link is bidirectional), second link
 
 **Dial in Flight**:

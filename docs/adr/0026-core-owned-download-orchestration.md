@@ -85,19 +85,21 @@ is `DownloadScheduler`.
     failure is a no-op.
 - **One hash-set ask at a time, with a deadline.** While the download holds no whole
   part hash set — no link `p=`, no proven peer set yet, a file of more than one hash —
-  one worker at a time asks for it (`OP_HASHSETREQUEST`): the first whose probe answer
-  names a part we lack. Its slot ask waits on the answer, as aMule's asker waits in
-  `DS_REQHASHSET` (`DownloadClient.cpp:467-483`, `:571-586`); every other worker asks
-  its slot at once. The ask passes to the next transferring worker whose parts
-  name a part we lack — with none, to the next probe answer, so a worker that hangs up
-  at its rank never holds it (ADR-0116) — when its worker ends before an answer or answers with a set that is not the file's (aMule
-  `SetHashSetNeeded(true)`, `BaseClient.cpp:1305-1306`, `DownloadClient.cpp:583`), and
-  at the **Hash-Set Deadline**, 20 s after the ask, when its worker asks its slot
-  regardless: half aMule's 40 s idle close (`CONNECTION_TIMEOUT`, `Constants.h:34`), so
-  the slot ask still reaches an uploader that never answers the set and the source is
-  kept on its queue (ADR-0090). A worker the deadline passed is not asked again while
-  it lives. A held set asks nothing; a link already holding it never waits for its own
-  answer.
+  one transferring worker at a time asks for it (`OP_HASHSETREQUEST`): the first that
+  keeps a granted slot, its part handed, and whose parts name a part we lack, at its
+  grant (ADR-0116 invariant 3). No slot ask waits on it: every worker asks its slot at
+  its probe answer. aMule's downloader asks the set first and its slot after the answer
+  (`DS_REQHASHSET`, `DownloadClient.cpp:467-483`, `:571-586`); rmule departs, because a
+  worker the uploader ranks hangs up at once (ADR-0116), and a `0x51` left unanswered on
+  a link the uploader then ranks costs that link at aMule's 40 s silent-link close
+  (`ClientTCPSocket.cpp:201-229`). The ask leaves at once, while a part streams too, and
+  its answer is read while parts stream. It passes to the next transferring worker whose
+  parts name a part we lack — with none, to the next grant — when its worker ends before
+  an answer or answers with a set that is not the file's (aMule `SetHashSetNeeded(true)`,
+  `BaseClient.cpp:1305-1306`, `DownloadClient.cpp:583`), and at the **Hash-Set
+  Deadline**, 20 s after the ask, so an uploader that never answers holds the one ask no
+  longer than half aMule's 40 s idle close (`CONNECTION_TIMEOUT`, `Constants.h:34`). A
+  worker the deadline passed is not asked again while it lives. A held set asks nothing.
 - Racers share the part's bytes: every assignment starts at the part's assembled
   prefix, block by block (ADR-0029).
 - The candidate pool grows during the download and backfills retired workers
