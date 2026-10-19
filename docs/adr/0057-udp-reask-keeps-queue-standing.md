@@ -219,10 +219,12 @@ aMule's `FILEREASKTIME` of 1 300 000 ms
 - **Two hellos of one client race.** The peer's own link wins, whichever hello finishes
   first, as aMule's newer socket replaces the one it held, connecting or connected
   (`ClientList.cpp:400-403`). The peer's hello during rmule's dial-back takes the pending
-  grant and calls the dial off: aMule deletes the socket it was connecting, so the peer
-  never reads a hello on it that would make it drop its own link. The peer's hello after
-  the dial-back's takes the slot from the dialed link, which is closed. Either way the
-  link the peer opened keeps every Peer Link name (ADR-0107 invariant 7) and the grant.
+  grant and calls the dial off: aMule deletes the socket it was connecting, so a dial the
+  peer has not read a hello on yet never makes it drop its own link for ours (the same
+  `:400-403` on its side). A dial past its hello is let go when that hello reaches the
+  serve side. The peer's hello after the dial-back's takes the slot from the dialed link,
+  which is closed. Either way the link the peer opened keeps every Peer Link name
+  (ADR-0107 invariant 7) and the grant.
 - **Promotion reaches the waiter.** Every freed slot promotes the best waiter rmule can
   reach, and the grant goes out as aMule's `AddUpNextClient` sends it
   (`UploadQueue.cpp:202-222`):
