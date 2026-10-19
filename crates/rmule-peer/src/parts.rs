@@ -24,6 +24,8 @@ use thiserror::Error;
 
 use crate::opcode::PeerOpcode;
 
+mod served_block;
+
 const RANGE_COUNT: usize = 3;
 
 /// Maximum byte length of a single `OP_REQUESTPARTS` block, matching
@@ -35,11 +37,12 @@ const RANGE_COUNT: usize = 3;
 /// block request streamed immediately.
 pub const EMBLOCKSIZE: u64 = 184_320;
 
-/// Selector for the part-transfer wire variant. aMule picks it per block, on
-/// the block's own offsets: the `_I64` opcodes once an offset passes
-/// `0xFFFFFFFF` (`UploadClient.cpp:307`, `:361`; `DownloadClient.cpp:745`),
+/// Selector for the part-transfer wire variant. aMule picks it on the
+/// offsets a packet names: the `_I64` opcodes once one passes `0xFFFFFFFF`
+/// — a request's block (`DownloadClient.cpp:745`), a plain packet's own range
+/// (`UploadClient.cpp:307`), a compressed packet's whole block (`:361`) —
 /// never on `IsLargeFile`, so the blocks of a large file below 4 GiB still
-/// ride the 32-bit opcodes. [`Self::for_file_size`] fed a block's highest
+/// ride the 32-bit opcodes. [`Self::for_file_size`] fed the highest such
 /// offset is that rule.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PartOffsetWidth {
@@ -58,6 +61,14 @@ impl PartOffsetWidth {
             Self::U32
         } else {
             Self::U64
+        }
+    }
+
+    /// The bytes one offset takes at this width.
+    const fn offset_len(self) -> usize {
+        match self {
+            Self::U32 => 4,
+            Self::U64 => 8,
         }
     }
 }

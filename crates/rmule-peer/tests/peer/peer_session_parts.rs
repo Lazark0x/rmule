@@ -4,11 +4,10 @@
 //! cap.
 
 use rmule_peer::{
-    InflateFailed, PartRanges, PeerCommand, PeerEvent, PeerOutput, PeerSession, RequesterCommand,
-    RequesterEvent, ServerCommand,
+    InflateFailed, PartRanges, PeerCommand, PeerEvent, PeerOutput, RequesterCommand, RequesterEvent,
 };
+use rmule_primitives::PartHash;
 use rmule_primitives::session::drain;
-use rmule_primitives::{PartHash, UserHash};
 use rmule_testkit::peer_session::*;
 
 #[test]
@@ -218,60 +217,6 @@ fn inflight_compressed_blocks_are_capped_session_wide() {
         )),
         "freed capacity admits a new in-flight block"
     );
-}
-
-#[test]
-fn served_compressed_block_round_trips_into_a_requester() {
-    // Cycle 7 loopback: a serving rmule session's REAL OP_COMPRESSEDPART wire
-    // bytes are consumed by a separate requesting rmule session and inflate
-    // back to the original block — proving serve-encode ↔ requester-decode
-    // are wire-compatible end to end.
-    use rmule_peer::{Hello, MiscOptions1};
-
-    let fh = file_hash(0xA1);
-    let plain: Vec<u8> = b"loopback compressible payload ".repeat(40);
-
-    // Server: an inbound rmule session whose peer advertised compression.
-    let mut server = PeerSession::new_inbound(peer(), ctx());
-    let mut peer_hello = answer_body(UserHash::from_bytes([0x55; 16]));
-    peer_hello
-        .tags
-        .push(MiscOptions1::rmule_advertised().to_tag());
-    server.handle_bytes(&Hello::new(peer_hello).encode_packet().encode());
-    let _ = drain(|| server.poll_output());
-    server.handle_command(PeerCommand::Server(ServerCommand::GrantSlot {
-        file_hash: fh,
-    }));
-    let _ = drain(|| server.poll_output());
-    server.handle_command(PeerCommand::Server(ServerCommand::SendBlock {
-        file_hash: fh,
-        start: 0,
-        end: plain.len() as u64,
-        bytes: plain.clone(),
-    }));
-    let compressed_wire = last_write_bytes(&drain(|| server.poll_output()));
-
-    // Requester: a separate rmule session driven to Downloading for `fh`.
-    let mut client = identified_session();
-    let ranges = PartRanges::new([(0, plain.len() as u64), (0, 0), (0, 0)]).unwrap();
-    client.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
-        file_hash: fh,
-        file_size: 1_000_000,
-        ranges,
-    }));
-    client.handle_bytes(&reqfilename_answer(fh, "x"));
-    client.handle_bytes(&file_status(fh, 1, &[0x01]));
-    client.handle_bytes(&hashset_answer(fh, &[PartHash::from_bytes([0; 16])]));
-    client.handle_bytes(&acceptuploadreq());
-    let _ = drain(|| client.poll_output());
-
-    client.handle_bytes(&compressed_wire);
-    let out = drain(|| client.poll_output());
-    assert!(events(&out).iter().any(|e| matches!(
-        e,
-        PeerEvent::Requester(RequesterEvent::PartReceived { file_hash, offset: 0, bytes })
-            if *file_hash == fh && bytes == &plain
-    )));
 }
 
 /// A compressed block cut short by the slot's end goes with the slot: a chunk

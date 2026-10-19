@@ -14,7 +14,7 @@ use crate::ServerEvent;
 use crate::file::PartBitmap;
 use crate::file_request::{FileReqAnsNoFil, FileStatus, PartStatusTail, ReqFileNameAnswer};
 use crate::parts::RequestParts as RequestPartsPacket;
-use crate::parts::{CompressedPart, PartOffsetWidth, SendingPart};
+use crate::parts::{CompressedPart, SendingPart};
 use crate::slot::{AcceptUploadReq, QueueRanking};
 
 impl PeerSession {
@@ -150,7 +150,15 @@ impl PeerSession {
         }
     }
 
-    pub(super) fn send_block(&mut self, file_hash: FileHash, start: u64, end: u64, bytes: Vec<u8>) {
+    /// Serve one block as aMule's uploader cuts it (ADR-0031): a run of
+    /// `OP_SENDINGPART` of about 10 KiB, or — when the peer advertised
+    /// compression and the zlib stream is smaller, as eMule does — a run of
+    /// `OP_COMPRESSEDPART` sharing the block's start and the stream's length.
+    /// A stock downloader restarts its download timeout only on a whole
+    /// packet (`DownloadClient.cpp:848`), so one block-sized packet would
+    /// starve a slow link. `bytes` is the block; its range is
+    /// `start..start + bytes.len()`.
+    pub(super) fn send_block(&mut self, file_hash: FileHash, start: u64, bytes: Vec<u8>) {
         if !self.require_identified() {
             return;
         }
@@ -158,36 +166,25 @@ impl PeerSession {
             self.reject(PeerError::ServeSlotNotGranted);
             return;
         }
-        let width = PartOffsetWidth::for_file_size(end.max(start));
-        // Compress only if the peer advertised data-compression support AND
-        // the result is actually smaller (matches eMule; most ed2k content
-        // is already-compressed media that does not shrink).
         let peer_compresses = self
             .peer_misc_options
             .is_some_and(|m| m.data_compression_version() > 0);
-        let compressed = if peer_compresses {
-            let c = crate::compress::deflate(&bytes);
-            (c.len() < bytes.len()).then_some(c)
-        } else {
-            None
-        };
-        let packet = match compressed {
-            Some(c) => CompressedPart {
-                file_hash,
-                start,
-                compressed_block_len: c.len() as u32,
-                compressed_chunk: c,
+        // `nBlockSize` is a u32: a stream it cannot name goes plain.
+        let compressed = peer_compresses
+            .then(|| crate::compress::deflate(&bytes))
+            .filter(|c| c.len() < bytes.len() && u32::try_from(c.len()).is_ok());
+        let end = start + bytes.len() as u64;
+        match compressed {
+            Some(stream) => {
+                for frame in CompressedPart::block_frames(file_hash, start, end, &stream) {
+                    self.core.push_write(frame.into());
+                }
             }
-            .encode_packet(width),
-            None => SendingPart {
-                file_hash,
-                start,
-                end,
-                data: bytes,
+            None => {
+                for frame in SendingPart::block_frames(file_hash, start, &bytes) {
+                    self.core.push_write(frame.into());
+                }
             }
-            .encode_packet(width),
         }
-        .expect("width derived from offsets always satisfies its own range check");
-        self.write_packet(packet);
     }
 }

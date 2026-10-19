@@ -77,16 +77,18 @@ pub enum ServerCommand {
         /// Places ahead of the peer in our queue.
         rank: u16,
     },
-    /// Push one block of part bytes to the granted
-    /// peer (`OP_SENDINGPART`). Core reads `bytes` from the Content Store;
-    /// the session frames it only when `served_slot` matches
+    /// Push one block of part bytes to the granted peer, cut into packets
+    /// of about 10 KiB as aMule's uploader does (`OP_SENDINGPART`, or a run
+    /// of `OP_COMPRESSEDPART`, ADR-0031). Core reads `bytes` from the Content
+    /// Store; the session frames it only when `served_slot` matches
     /// `file_hash`.
     SendBlock {
         /// The file the bytes come from.
         file_hash: FileHash,
         /// Absolute offset of the first byte.
         start: u64,
-        /// Absolute offset one past the last.
+        /// Absolute offset one past the last. Core reads exactly
+        /// `start..end`; the frames name the range `bytes` spans from `start`.
         end: u64,
         /// The block, read by core from the content store.
         bytes: Vec<u8>,
@@ -170,9 +172,9 @@ impl PeerSession {
             ServerCommand::SendBlock {
                 file_hash,
                 start,
-                end,
+                end: _,
                 bytes,
-            } => self.send_block(file_hash, start, end, bytes),
+            } => self.send_block(file_hash, start, bytes),
             ServerCommand::AnswerSources { file_hash, sources } => {
                 if self.require_identified() {
                     self.answer_sources(file_hash, sources);

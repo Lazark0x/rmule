@@ -54,6 +54,7 @@ mod source_exchange_session;
 
 // Serving through a session: the upload half of the same state machine.
 mod peer_serve_session;
+mod served_block_frames;
 mod source_exchange_serve;
 
 // Captures: aMule-authored bytes decoded, and rmule's answers re-encoded

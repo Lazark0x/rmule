@@ -157,12 +157,33 @@ impl Packet {
     /// Serialize as a TCP frame: `[protocol][length LE u32][opcode][payload]`.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let length = self.encoded_payload_len();
-        let mut encoded = Vec::with_capacity(PACKET_HEADER_LEN + length as usize);
-        encoded.push(self.protocol.as_byte());
-        encoded.extend_from_slice(&length.to_le_bytes());
-        encoded.push(self.opcode);
-        encoded.extend_from_slice(&self.payload);
+        Self::encode_with(self.protocol, self.opcode, self.payload.len(), |frame| {
+            frame.extend_from_slice(&self.payload);
+        })
+    }
+
+    /// Serialize a TCP frame whose payload `write` appends in place, so a
+    /// sender framing borrowed bytes copies them once, into the frame, rather
+    /// than into a payload first. `payload_len` sizes the one allocation; the
+    /// length field counts what `write` actually appended.
+    ///
+    /// # Panics
+    /// If the payload is larger than a `u32` can express.
+    #[must_use]
+    pub fn encode_with(
+        protocol: PacketProtocol,
+        opcode: u8,
+        payload_len: usize,
+        write: impl FnOnce(&mut Vec<u8>),
+    ) -> Vec<u8> {
+        let mut encoded = Vec::with_capacity(PACKET_HEADER_LEN + 1 + payload_len);
+        encoded.push(protocol.as_byte());
+        encoded.extend_from_slice(&[0; 4]);
+        encoded.push(opcode);
+        write(&mut encoded);
+        let length = u32::try_from(encoded.len() - PACKET_HEADER_LEN)
+            .expect("packet payload length exceeds u32");
+        encoded[1..PACKET_HEADER_LEN].copy_from_slice(&length.to_le_bytes());
         encoded
     }
 
