@@ -920,7 +920,8 @@ link's slot holds it; a link its last rider leaves with
 nothing else holding it closes then. A link filed later under a name takes that name — a dial at
 the dial, an accepted link at its hello — and a refiling never takes back a name a later link
 holds, so when the peer's own link races rmule's dial to it, the link the peer opened keeps the
-names (ADR-0107 invariant 7).
+names (ADR-0107 invariant 7); a name a link gives up goes back to the newest live link that proves
+it. An adopted callback's serve side holds the hello the accept side read, as any inbound link's does.
 _Avoid_: served link (the accepted kind only), shared connection (every link is bidirectional), second link
 
 **Dial in Flight**:
@@ -929,7 +930,11 @@ its record knows from the moment the dial is decided — in the same step as the
 nothing — until the hello refiles it under every name it proves that no link filed since holds. Another download of the peer that
 finds it waits on it as a **Link Rider** and takes its turn after the hello; a dial that fails
 retires every waiter with the dial's cause, as aMule's one connecting client is a dead source for
-every file (ADR-0107 invariant 11). A dial the IP filter, a ban or the crypt rule refuses opens no
+every file (ADR-0107 invariant 11). A download's dial whose hello has not gone out — its socket not
+up yet — yields to the peer's own link filed under one of its names: it closes, retiring nobody, and
+the dialing download and its waiters ride or wait on that link, as aMule deletes the socket it was
+connecting when the client's own arrives; once its hello is out the far side keeps it, and so does
+rmule (ADR-0107 invariant 7). A dial the IP filter, a ban or the crypt rule refuses opens no
 socket and is never one.
 _Avoid_: pending connection, half-open link
 
