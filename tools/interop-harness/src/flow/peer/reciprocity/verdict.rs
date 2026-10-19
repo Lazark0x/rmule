@@ -3,7 +3,9 @@
 //! **Credit**: the tap in rmule's namespace carries rmule's grant when its
 //! slot frees — rmule's own bytes; the tap in S's namespace carries S's grant
 //! when its slot frees — the counterparty's, the one that says S's credit
-//! for rmule outweighed the waiters that queued before it. **Low ID**: rmule's
+//! for rmule outweighed the waiters that queued before it; and X's own asks and
+//! cancels say whether a body capped far below rmule's link held rmule's slot
+//! until the flow stopped it (ADR-0031). **Low ID**: rmule's
 //! run log dates its rank and its TCP full ask, and the tap carries the part
 //! frames S sent on the connection that ask opened (ADR-0116).
 
@@ -14,14 +16,14 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::{ReciprocityLeg, ReciprocityShape};
+use super::{ReciprocityLeg, ReciprocityShape, SLOT_LINK};
 use crate::flow::bench::AMULE_PEER_TCP_PORT;
 use crate::flow::identity::parse_ed2k_file_hash;
 use crate::flow::nat::claims::{Claim, Evidence, label};
 use crate::flow::pcap::{Ed2kFrame, TcpCapture, records, tcp_capture};
 use crate::flow::peer::queue_fanout::run_log::RunLog;
 use crate::flow::peer::queue_fanout::verdict::part_of;
-use crate::flow::wire_filter::OP_EDONKEYPROT;
+use crate::flow::wire_filter::{OP_EDONKEYPROT, OP_EMULEPROT};
 
 /// The flow's name and its verdict file's stem.
 pub(crate) const FLOW: &str = "peer-reciprocity";
@@ -36,6 +38,16 @@ const TOPOLOGY: &str = "topology.toml";
 
 /// `OP_ACCEPTUPLOADREQ`.
 const OP_ACCEPTUPLOADREQ: u8 = 0x55;
+/// `OP_REQUESTPARTS`.
+const OP_REQUESTPARTS: u8 = 0x47;
+/// `OP_REQUESTPARTS_I64`, under `OP_EMULEPROT`.
+const OP_REQUESTPARTS_I64: u8 = 0xA3;
+/// `OP_CANCELTRANSFER`.
+const OP_CANCELTRANSFER: u8 = 0x56;
+/// aMule's download cap follows a 10 s average of the rate
+/// (`DownloadClient.cpp:1162-1177`), so X's first burst runs at link speed for
+/// no longer than this: an ask later than it is a block X finished at its cap.
+const BURST_SECS: f64 = 10.0;
 /// The Low-ID Reask the build under test asks at (ADR-0116), seconds.
 const LOW_ID_REASK_SECS: f64 = 900.0;
 /// How far the reask may land from it: a sweep runs on the brain's wake, and
@@ -56,6 +68,10 @@ pub(crate) const SLOT_ON_REASK: &str = "the-sharer-sent-parts-after-the-reask";
 pub(crate) const BYTE_EQUAL: &str = "the-download-completed-byte-equal";
 /// The claim the Low-ID leg stands on: the server gave rmule a Low ID.
 pub(crate) const LOW_ID_LOGIN: &str = "rmule-logged-in-with-a-low-id";
+/// The claim on X: capped far below rmule's link, it kept asking and never
+/// cancelled until the flow stopped it. A stock downloader cancels when no
+/// whole part packet lands for 100 s (`DownloadClient.cpp:848`, `:1189-1193`).
+pub(crate) const SLOT_KEPT: &str = "the-capped-holder-kept-rmules-slot-until-stopped";
 
 /// The instants a run marked, unix seconds.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -121,6 +137,12 @@ pub(crate) struct Rows {
     pub(crate) ranks_at_sharer: Vec<u64>,
     /// The copy's length, `-1` when never written.
     pub(crate) copy_bytes: i64,
+    /// Credit: seconds from X's first ask for the slot file to its last one
+    /// before the flow stopped it; `-1.0` when it asked nothing.
+    pub(crate) holder_asking_secs: f64,
+    /// Credit: seconds from X's first ask to its first `OP_CANCELTRANSFER`
+    /// before the flow stopped it; `-1.0` when it sent none.
+    pub(crate) holder_cancel_secs: f64,
 }
 
 /// The verdict file.
@@ -176,6 +198,8 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         copy_bytes: copy.1,
         ranks_at_sharer: log.ranks(std::net::SocketAddr::from((at.sharer, AMULE_PEER_TCP_PORT))),
         reask_after_rank_secs: -1.0,
+        holder_asking_secs: -1.0,
+        holder_cancel_secs: -1.0,
         ..Rows::default()
     };
     let mut claims = Vec::new();
@@ -192,6 +216,23 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
             rows.rmule_granted = format!("{rmule_granted:?}");
             rows.sharer_granted = format!("{sharer_granted:?}");
             claims.push(reciprocated(&at, rmule_granted));
+            let slot_link_path = synthetic.join(SLOT_LINK);
+            let slot = parse_ed2k_file_hash(
+                fs::read_to_string(&slot_link_path)
+                    .with_context(|| format!("read {}", slot_link_path.display()))?
+                    .trim(),
+            )?;
+            let holder = at
+                .marks
+                .slot_freed_at
+                .and_then(|stopped| holder_asks(&rmule_tap, at.rmule, slot, stopped));
+            if let Some(holder) = &holder {
+                rows.holder_asking_secs = holder.last_ask - holder.first_ask;
+                rows.holder_cancel_secs = holder
+                    .cancel
+                    .map_or(-1.0, |cancel| cancel - holder.first_ask);
+            }
+            claims.push(slot_kept(&at, holder.as_ref()));
             claims.push(Claim::about(
                 GIFTED,
                 at.marks.gift_complete,
@@ -278,6 +319,87 @@ fn reciprocated(at: &Topology, rmule_granted: Option<Ipv4Addr>) -> Claim {
             "rmule's first OP_ACCEPTUPLOADREQ after its slot freed went to \
              {rmule_granted:?}; S is {}, W is {:?}",
             at.sharer, at.marks.rival
+        ),
+    )
+}
+
+/// When X, the body asking rmule for the slot file, first and last asked for
+/// it and first sent `OP_CANCELTRANSFER`, before the flow stopped it.
+struct HolderAsks {
+    first_ask: f64,
+    last_ask: f64,
+    cancel: Option<f64>,
+}
+
+/// X's asks for `slot` on rmule's tap and its first cancel, before `stopped`;
+/// X is whoever asked rmule for `slot` first. `None` when nobody did.
+fn holder_asks(
+    tap: &TcpCapture,
+    rmule: Ipv4Addr,
+    slot: [u8; 16],
+    stopped: f64,
+) -> Option<HolderAsks> {
+    let to_rmule: Vec<Ed2kFrame> = frames(tap)
+        .into_iter()
+        .filter(|frame| frame.at < stopped && frame.destination.ip() == IpAddr::V4(rmule))
+        .collect();
+    let asks_slot = |frame: &Ed2kFrame| {
+        matches!(
+            (frame.protocol, frame.opcode),
+            (OP_EDONKEYPROT, OP_REQUESTPARTS) | (OP_EMULEPROT, OP_REQUESTPARTS_I64)
+        ) && frame.payload().get(..16) == Some(&slot[..])
+    };
+    let holder = to_rmule.iter().find(|frame| asks_slot(frame))?.source.ip();
+    let from_holder: Vec<&Ed2kFrame> = to_rmule
+        .iter()
+        .filter(|frame| frame.source.ip() == holder)
+        .collect();
+    let asks: Vec<f64> = from_holder
+        .iter()
+        .filter(|frame| asks_slot(frame))
+        .map(|frame| frame.at)
+        .collect();
+    Some(HolderAsks {
+        first_ask: *asks.first()?,
+        last_ask: *asks.last()?,
+        cancel: from_holder
+            .iter()
+            .find(|frame| (frame.protocol, frame.opcode) == (OP_EDONKEYPROT, OP_CANCELTRANSFER))
+            .map(|frame| frame.at),
+    })
+}
+
+/// The claim on X: it sent no cancel before the flow stopped it, and it asked
+/// again after its first burst, so a block finished at its cap.
+fn slot_kept(at: &Topology, holder: Option<&HolderAsks>) -> Claim {
+    if at.shape.gift_first {
+        return Claim::blocked(
+            SLOT_KEPT,
+            "the gift went first, on rmule's free slot: no capped body held it",
+        );
+    }
+    let Some(holder) = holder else {
+        return Claim::about(
+            SLOT_KEPT,
+            false,
+            Evidence::Captured,
+            "no body asked rmule for the slot file before the flow stopped X",
+        );
+    };
+    Claim::about(
+        SLOT_KEPT,
+        holder.cancel.is_none() && holder.last_ask - holder.first_ask > BURST_SECS,
+        Evidence::Captured,
+        format!(
+            "X at {} KiB/s asked for the slot file over {:.1} s (more than {BURST_SECS} s \
+             is a block finished at its cap); its first OP_CANCELTRANSFER before the \
+             stop came {}",
+            at.shape.x_kib,
+            holder.last_ask - holder.first_ask,
+            holder.cancel.map_or_else(
+                || "never".to_owned(),
+                |cancel| format!("{:.1} s after its first ask", cancel - holder.first_ask),
+            ),
         ),
     )
 }
