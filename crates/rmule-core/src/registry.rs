@@ -289,6 +289,7 @@ mod tests {
             link,
             Some(&server()),
             &DownloadPaths::from_final_path(dir.join(name)),
+            None,
         )
         .unwrap()
         .id();
@@ -371,6 +372,7 @@ mod tests {
             &link,
             Some(&server()),
             &DownloadPaths::from_final_path(dir.path().join("autoshare-provisional.bin")),
+            None,
         )
         .unwrap()
         .id();

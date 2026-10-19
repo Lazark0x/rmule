@@ -64,7 +64,7 @@ async fn persists_and_revalidates(repo: DurableDownloadRepository, paths: &Downl
     let link = file_link("contract.bin", &bytes);
     let hashes = link.part_hash_set.as_ref().unwrap().hashes().to_vec();
     let id = repo
-        .create_download(&link, Some(&stub_server("127.0.0.1")), paths)
+        .create_download(&link, Some(&stub_server("127.0.0.1")), paths, None)
         .unwrap()
         .id();
     repo.set_lifecycle(id, DownloadLifecycle::Active).unwrap();
@@ -103,7 +103,7 @@ async fn corrupted_bytes_fail_revalidation(repo: DurableDownloadRepository, path
     let link = file_link("contract.bin", &bytes);
     let hashes = link.part_hash_set.as_ref().unwrap().hashes().to_vec();
     let id = repo
-        .create_download(&link, Some(&stub_server("127.0.0.1")), paths)
+        .create_download(&link, Some(&stub_server("127.0.0.1")), paths, None)
         .unwrap()
         .id();
     repo.set_lifecycle(id, DownloadLifecycle::Active).unwrap();
@@ -183,7 +183,7 @@ async fn hash_authority_resolves_link_provisional_and_none<R: DownloadRepository
     let link_hashes = link.part_hash_set.as_ref().unwrap().hashes().to_vec();
     let link_paths = DownloadPaths::from_final_path(dir.join("link.bin"));
     let link_id = repo
-        .create_download(&link, Some(&stub_server("127.0.0.1")), &link_paths)
+        .create_download(&link, Some(&stub_server("127.0.0.1")), &link_paths, None)
         .unwrap()
         .id();
     assert!(repo.provisional_part_hashes(link_id).unwrap().is_empty());
@@ -209,7 +209,12 @@ async fn hash_authority_resolves_link_provisional_and_none<R: DownloadRepository
     };
     let prov_paths = DownloadPaths::from_final_path(dir.join("provisional.bin"));
     let prov_id = repo
-        .create_download(&hashless, Some(&stub_server("127.0.0.1")), &prov_paths)
+        .create_download(
+            &hashless,
+            Some(&stub_server("127.0.0.1")),
+            &prov_paths,
+            None,
+        )
         .unwrap()
         .id();
     repo.record_provisional_part_hashes(prov_id, &peer_hashes)
@@ -235,6 +240,7 @@ async fn hash_authority_resolves_link_provisional_and_none<R: DownloadRepository
             &hashless_small,
             Some(&stub_server("127.0.0.1")),
             &none_paths,
+            None,
         )
         .unwrap()
         .id();
@@ -295,7 +301,7 @@ fn a_distrusted_peer_survives_a_reopen() {
 
     let repo = store_on_file(dir.path());
     let id = repo
-        .create_download(&link, Some(&stub_server("127.0.0.1")), &paths)
+        .create_download(&link, Some(&stub_server("127.0.0.1")), &paths, None)
         .unwrap()
         .id();
     repo.distrust_peer(id, peer).unwrap();
@@ -305,5 +311,37 @@ fn a_distrusted_peer_survives_a_reopen() {
     assert_eq!(
         store_on_file(dir.path()).distrusted_peers(id).unwrap(),
         vec![peer]
+    );
+}
+
+/// A download keeps the Kad AICH root it was started from, and the contest
+/// that ends it, across a restart (ADR-0038).
+#[test]
+fn a_kad_aich_root_and_its_contest_survive_a_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = DownloadPaths::from_final_path(dir.path().join("rooted.bin"));
+    let link = file_link("rooted.bin", &fixture_bytes());
+    let root = rmule_primitives::AichRootHash::from_bytes([0xA1; 20]);
+
+    let repo = store_on_file(dir.path());
+    let id = repo
+        .create_download(&link, None, &paths, Some(root))
+        .unwrap()
+        .id();
+    drop(repo);
+    let repo = store_on_file(dir.path());
+    assert_eq!(
+        repo.load_download(id).unwrap().kad_aich_root(),
+        Some(rmule_core::KadAichRoot::Trusted(root))
+    );
+
+    repo.contest_kad_aich_root(id).unwrap();
+    drop(repo);
+    assert_eq!(
+        store_on_file(dir.path())
+            .load_download(id)
+            .unwrap()
+            .kad_aich_root(),
+        Some(rmule_core::KadAichRoot::Contested)
     );
 }

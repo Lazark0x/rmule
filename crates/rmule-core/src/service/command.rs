@@ -6,7 +6,9 @@ use std::net::SocketAddrV4;
 use std::path::PathBuf;
 
 use rmule_ed2k::ServerPriority;
-use rmule_primitives::{Ed2kFileLink, FileHash, SafeFileName, SearchQuery, ServerEndpoint};
+use rmule_primitives::{
+    AichRootHash, Ed2kFileLink, FileHash, SafeFileName, SearchQuery, ServerEndpoint,
+};
 
 use crate::adapters::KadEnableConfig;
 use crate::server_list::ManagedServer;
@@ -36,6 +38,11 @@ pub enum DownloadCommand {
         name: SafeFileName,
         /// What the start does when `name` is taken there.
         if_taken: NameTaken,
+        /// The Qualified Kad Root of the search result the download is started
+        /// from (`SearchResult::kad_aich_root`): trusted from the start, below
+        /// the link's own `h=` and open to the peers' vote (ADR-0038). `None`
+        /// for a pasted link or a result with no qualified root.
+        kad_aich_root: Option<AichRootHash>,
     },
     /// Stop the run but keep the verified parts and the store row, so a resume
     /// picks up where it left off.

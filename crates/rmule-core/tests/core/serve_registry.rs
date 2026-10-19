@@ -272,6 +272,7 @@ async fn completed_download_auto_registers_into_the_shared_file_registry() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("autoshare.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -368,6 +369,7 @@ async fn auto_share_persists_the_link_authority_part_hash_set() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("auto-share-link-authority.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -474,6 +476,7 @@ async fn a_had_file_downloaded_again_leaves_the_had_set_when_it_is_whole() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("had (1).bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -543,7 +546,7 @@ async fn complete_withheld(
     let store = rmule_testkit::memory_store();
     let repo = DurableDownloadRepository::new(Arc::clone(&store));
     let record = repo
-        .create_download(link, None, &DownloadPaths::from_final_path(output))
+        .create_download(link, None, &DownloadPaths::from_final_path(output), None)
         .unwrap();
     repo.set_lifecycle(record.id(), DownloadLifecycle::Paused)
         .unwrap();

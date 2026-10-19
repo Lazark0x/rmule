@@ -101,17 +101,21 @@ fn a_version_one_store_with_every_index_climbs_to_today_and_reads_back_whole() {
     );
     let other = rmule_testkit::file_link("other.bin", &[0x7E; 64]);
     assert_eq!(
-        repo.create_download(&other, None, &paths).unwrap_err(),
+        repo.create_download(&other, None, &paths, None)
+            .unwrap_err(),
         CoreError::PathConflict
     );
     // The identity index still names the row.
     let elsewhere = DownloadPaths::from_final_path(downloads.join("again.bin"));
     assert_eq!(
-        repo.create_download(&file, None, &elsewhere).unwrap_err(),
+        repo.create_download(&file, None, &elsewhere, None)
+            .unwrap_err(),
         CoreError::DuplicateDownloadIdentity
     );
     // The id counter goes on from the row it minted.
-    let next = repo.create_download(&other, None, &elsewhere).unwrap();
+    let next = repo
+        .create_download(&other, None, &elsewhere, None)
+        .unwrap();
     assert_eq!(next.id(), DownloadId::from_u64(key + 1));
 
     let registry = DurableSharedFileRegistry::new(Arc::clone(&store));

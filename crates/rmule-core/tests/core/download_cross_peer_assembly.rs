@@ -61,6 +61,7 @@ async fn a_dropped_workers_bytes_stay_and_the_next_is_handed_only_the_rest() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("resume-after-drop.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -141,6 +142,7 @@ async fn a_shared_part_failing_with_no_root_is_refetched_and_its_changed_cell_na
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("corrupt-once.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

@@ -45,14 +45,20 @@ fn repository_rejects_foreign_part_path_owner() {
     let dir = tempfile::tempdir().unwrap();
     let repo = DurableDownloadRepository::new(rmule_testkit::memory_store());
     let paths = DownloadPaths::from_final_path(dir.path().join("download.bin"));
-    repo.create_download(&file_link(), Some(&stub_server("example.org")), &paths)
-        .unwrap();
+    repo.create_download(
+        &file_link(),
+        Some(&stub_server("example.org")),
+        &paths,
+        None,
+    )
+    .unwrap();
 
     let err = repo
         .create_download(
             &other_file_link(),
             Some(&stub_server("example.org")),
             &paths,
+            None,
         )
         .unwrap_err();
 

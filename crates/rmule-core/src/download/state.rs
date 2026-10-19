@@ -46,7 +46,7 @@ use rmule_primitives::{
     UserHash,
 };
 
-pub(crate) use aich::qualified_kad_root;
+pub(crate) use aich::{AichRootAuthority, qualified_kad_root};
 pub(crate) use candidate::LowIdCandidate;
 pub(crate) use capability::CallbackCapability;
 pub(super) use direct_ipv6::LowIdRoute;
@@ -123,6 +123,9 @@ pub(crate) enum Decision {
     /// Persist that this download distrusts `user_hash`: it served this file
     /// bad data (ADR-0090 "Source ownership").
     DistrustPeer { user_hash: UserHash },
+    /// Persist that the peers' vote contested this download's Kad root, so a
+    /// resumed run trusts neither (ADR-0038).
+    ContestKadAichRoot,
     /// Backfill a retired worker: connect `peer` into the freed `slot`
     /// (ADR-0030).
     Spawn {
@@ -282,9 +285,10 @@ pub(crate) struct ContentFacts {
     /// The verification authority in force. The link-vs-persisted-provisional
     /// read is an async store effect, so the caller resolves it and injects it.
     pub(crate) resolved: ResolvedHashSet,
-    /// The trusted AICH master root from the link `h=`; `None` leaves the
-    /// root to the trusted-set vote.
-    pub(crate) trusted_aich_root: Option<AichRootHash>,
+    /// The AICH root authority the run starts under: the link's `h=`, the
+    /// Kad root its record keeps, or none, leaving the root to the vote
+    /// (ADR-0038).
+    pub(crate) aich_root: AichRootAuthority,
     /// Parts an earlier run already verified; they are never re-fetched.
     pub(crate) verified_parts: Vec<u32>,
     /// How its parts are ranked: with the Preview Band and the Streaming
@@ -473,16 +477,16 @@ pub(crate) struct DownloadState {
     /// The verification authority in force (ADR-0027), resolved up front and
     /// possibly upgraded by a peer hash set.
     resolved: ResolvedHashSet,
-    /// The trusted AICH master root for this download (ADR-0038). Set up front
-    /// from the link `h=`, or committed by the trusted-set vote
-    /// (`aich_root_votes`) when the link carried none. Its presence enables
-    /// block-level recovery on an MD4 failure; `None` leaves a failed part to
-    /// its refetch (ADR-0117 §1).
-    trusted_aich_root: Option<AichRootHash>,
+    /// Where this download's AICH root stands (ADR-0038): set up front from
+    /// the link `h=` or the record's Kad root, moved by the trusted-set vote
+    /// (`aich_root_votes`). A trusted root enables block-level recovery on an
+    /// MD4 failure; without one a failed part goes to its refetch (ADR-0117
+    /// §1).
+    aich_root: AichRootAuthority,
     /// Trusted-set tally for a rootless download: each proposed AICH master root
     /// → the set of distinct masked peer IPs that proposed it (ADR-0038, eMule
-    /// secure-AICH). A root is committed to `trusted_aich_root` once it clears
-    /// the agreement thresholds. Empty (and unused) when the link carried `h=`.
+    /// secure-AICH). A root is committed to `aich_root` once it clears the
+    /// agreement thresholds. Empty (and unused) once the vote is closed.
     aich_root_votes: HashMap<AichRootHash, HashSet<aich::AichVoter>>,
     retired_peers: u32,
     /// The download's sources, one record per source, and who owns each
@@ -567,7 +571,7 @@ impl DownloadState {
             file_size,
             link_part_hash_set,
             resolved,
-            trusted_aich_root,
+            aich_root,
             verified_parts,
             order,
         } = content;
@@ -601,7 +605,7 @@ impl DownloadState {
             slot_asks: slot_ask::SlotAsks::default(),
             link_part_hash_set,
             resolved,
-            trusted_aich_root,
+            aich_root,
             aich_root_votes: HashMap::new(),
             retired_peers: 0,
             sources,
@@ -770,7 +774,7 @@ impl DownloadState {
     /// trusted-set vote outcome).
     #[cfg(test)]
     pub(crate) fn trusted_aich_root(&self) -> Option<AichRootHash> {
-        self.trusted_aich_root
+        self.aich_root.trusted()
     }
 
     /// Whether every part is verified.

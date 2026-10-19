@@ -144,6 +144,7 @@ async fn start(core: &Core, link: &Ed2kFileLink) {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("partial.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -302,7 +303,7 @@ async fn resume_recorded(download_dir: &Path, home: Option<&Path>) -> (Vec<CoreE
     let store = rmule_testkit::memory_store();
     let repo = DurableDownloadRepository::new(Arc::clone(&store));
     let paths = DownloadPaths::from_final_path(download_dir.join("resumed.bin"));
-    let record = repo.create_download(&link, None, &paths).unwrap();
+    let record = repo.create_download(&link, None, &paths, None).unwrap();
     repo.record_verified_part(
         record.id(),
         VerifiedPartRecord {
@@ -388,7 +389,7 @@ async fn left_paused(
     let link = file_link(name, bytes);
     let hashes = link.part_hash_set.as_ref().unwrap().hashes().to_vec();
     let paths = DownloadPaths::from_final_path(dir.join(name));
-    let record = repo.create_download(&link, None, &paths).unwrap();
+    let record = repo.create_download(&link, None, &paths, None).unwrap();
     for part_index in 0..2 {
         let len = part(bytes, part_index).len() as u64;
         repo.record_verified_part(

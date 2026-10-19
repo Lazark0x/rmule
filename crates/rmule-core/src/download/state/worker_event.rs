@@ -61,10 +61,10 @@ impl DownloadState {
                         phase: WorkerPhase::AskingFile,
                     });
                 }
-                // No trusted AICH root yet (link carried no `h=`): ask this peer
-                // for the file's master hash to feed the trusted-set vote
-                // (ADR-0038). Once a root is committed we stop asking.
-                if self.trusted_aich_root.is_none() {
+                // While the vote runs — no root yet, or a Kad root it may
+                // contest — ask this peer for the file's master hash to feed it
+                // (ADR-0038). Once the vote commits we stop asking.
+                if self.aich_root.vote_runs() {
                     out.push(Decision::Send {
                         peer,
                         command: PeerWorkerCommand::RequestAichFileHash,
@@ -227,7 +227,7 @@ impl DownloadState {
                 recovery_data,
             } => self.on_aich_answer(now, u32::from(part), &recovery_data, &mut out),
             PeerWorkerEvent::AichFileHashReceived { root } => {
-                self.on_aich_file_hash_proposal(peer, root);
+                self.on_aich_file_hash_proposal(peer, root, &mut out);
             }
         }
         self.settle_seed_dials(&mut out);
@@ -293,7 +293,7 @@ impl DownloadState {
                 // (with its provenance) until `on_aich_answer`, the part still
                 // verifying so none of its blocks is handed meanwhile. Without
                 // a root, its refetch attributes it (ADR-0117 §1).
-                match self.trusted_aich_root {
+                match self.aich_root.trusted() {
                     Some(root) if self.worker_slots.contains_key(&peer) => {
                         self.awaiting_recovery.insert(part_index, (peer, assembled));
                         out.push(Decision::Send {

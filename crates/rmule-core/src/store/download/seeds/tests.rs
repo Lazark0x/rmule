@@ -30,7 +30,9 @@ fn seed(last: u8, rank: SeedRank) -> SourceSeed {
 fn create(repo: &DurableDownloadRepository, dir: &std::path::Path, name: &str) -> DownloadId {
     let file = rmule_testkit::file_link(name, name.as_bytes());
     let paths = DownloadPaths::from_final_path(dir.join(name));
-    repo.create_download(&file, None, &paths).unwrap().id()
+    repo.create_download(&file, None, &paths, None)
+        .unwrap()
+        .id()
 }
 
 fn hours_ago(hours: u64) -> SystemTime {

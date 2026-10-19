@@ -57,6 +57,7 @@ async fn the_live_download_folds_its_file_request_into_an_0xa4_bundle_for_an_ext
         source_hint: Some(server.endpoint()),
         name: rmule_testkit::file_name("bundled-negotiation.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -139,6 +140,7 @@ async fn a_multi_part_download_against_a_pre_multipacket_peer_keeps_the_standalo
         source_hint: Some(server.endpoint()),
         name: rmule_testkit::file_name("standalone-negotiation.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

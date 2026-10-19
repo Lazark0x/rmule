@@ -1,7 +1,7 @@
 //! **The version-5 row and the rung that names it**: the download row as
 //! record version 5 (store versions 9 to 14) wrote it, its frozen failure
 //! reason, and store version 14 → 15, which gives every row its Download
-//! Name (ADR-0115, step 2).
+//! Name (ADR-0115, step 2) and no Kad AICH root (ADR-0038).
 
 use std::path::Path;
 
@@ -103,7 +103,8 @@ impl DownloadFailureV5 {
 }
 
 /// The downloads' half of store version 14 → 15 (ADR-0115, step 2): every
-/// row keeps a Download Name, read from the name it was placed under. A row
+/// row keeps a Download Name, read from the name it was placed under, and
+/// holds no Kad AICH root, since none was kept before (ADR-0038). A row
 /// a placement numbered before the rung keeps that number in its name:
 /// nothing on the row tells a number rmule added from one the command gave.
 pub(crate) fn grow_from_v14(txn: &WriteTransaction) -> Result<(), StoreError> {
@@ -129,6 +130,7 @@ pub(crate) fn grow_from_v14(txn: &WriteTransaction) -> Result<(), StoreError> {
             metadata_origin: row.metadata_origin.grown(),
             failure: row.failure.map(DownloadFailureV5::grown),
             name,
+            kad_aich_root: None,
         };
         DOWNLOADS.set(txn, &key, &grown)?;
     }

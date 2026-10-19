@@ -15,6 +15,7 @@ mod direct_ipv6;
 mod dual_stack;
 mod end_game;
 mod intake;
+mod kad_root;
 mod ownership;
 mod reask;
 mod restart;
@@ -173,7 +174,7 @@ fn file_hash_only_content(file_size: u64) -> ContentFacts {
             authority: VerificationAuthority::FileHashOnly,
             hashes: Vec::new(),
         },
-        trusted_aich_root: None,
+        aich_root: crate::download::state::AichRootAuthority::Rootless,
         verified_parts: Vec::new(),
         order: PartOrder::Rarest,
     }
@@ -448,7 +449,7 @@ fn aich_state(
 ) -> DownloadState {
     pooled_state(
         ContentFacts {
-            trusted_aich_root: Some(root),
+            aich_root: crate::download::state::AichRootAuthority::Link(root),
             ..file_hash_only_content(file_size)
         },
         &pool,

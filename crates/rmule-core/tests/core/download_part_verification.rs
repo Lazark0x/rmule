@@ -278,6 +278,7 @@ async fn first_peer_hash_set_without_link_parts_is_persisted_as_provisional_auth
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("download.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -332,6 +333,7 @@ async fn resumed_download_retires_peer_that_mismatches_persisted_provisional_aut
             &link_without_parts,
             Some(&ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
             &DownloadPaths::from_final_path(dir.path().join("download.bin")),
+            None,
         )
         .unwrap();
     repo.record_provisional_part_hashes(record.id(), &hashes)

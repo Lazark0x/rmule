@@ -50,6 +50,7 @@ async fn core_download_completes_through_queue_ranking() {
         source_hint: Some(server.endpoint()),
         name: rmule_testkit::file_name("queued.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -133,6 +134,7 @@ async fn core_keeps_remote_queue_standing_when_a_slot_is_never_granted() {
         source_hint: Some(server.endpoint()),
         name: rmule_testkit::file_name("slot-timeout.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -217,6 +219,7 @@ async fn core_gives_back_a_slot_whose_peer_stalls_after_granting_it() {
         source_hint: Some(server.endpoint()),
         name: rmule_testkit::file_name("stall-after-grant.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -303,6 +306,7 @@ async fn core_cancel_emits_op_canceltransfer_to_the_slot_holding_peer() {
         source_hint: Some(server.endpoint()),
         name: rmule_testkit::file_name("cancel-before-teardown.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

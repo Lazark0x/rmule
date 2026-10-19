@@ -375,6 +375,7 @@ where
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: file_name("download-workflow.bin"),
         if_taken: NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

@@ -38,6 +38,7 @@ fn start(file: Ed2kFileLink, if_taken: NameTaken) -> CoreCommand {
         file,
         source_hint: None,
         if_taken,
+        kad_aich_root: None,
     })
 }
 
@@ -268,6 +269,7 @@ async fn a_new_download_fills_in_the_temp_directory_and_finishes_in_the_download
         source_hint: Some(server()),
         name: rmule_testkit::file_name("apart.bin"),
         if_taken: NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -298,6 +300,7 @@ async fn a_temp_directory_cleared_on_a_running_core_places_the_next_part_file_in
         source_hint: Some(server()),
         name: rmule_testkit::file_name("cleared.bin"),
         if_taken: NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -362,6 +365,7 @@ async fn an_older_row_with_its_part_beside_its_file_completes_in_place() {
             &file_link_without_part_hash_set("old.bin", &bytes),
             Some(&server()),
             &paths,
+            None,
         )
         .unwrap()
         .id();

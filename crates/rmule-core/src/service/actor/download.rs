@@ -49,6 +49,7 @@ where
                 source_hint,
                 name,
                 if_taken,
+                kad_aich_root,
             } => {
                 // A link for a file the Download Set already holds is a second
                 // link, not a second download (ADR-0089's amendment).
@@ -69,25 +70,25 @@ where
                 // The Download Set admits any number of downloads; the store
                 // refuses the one thing that cannot coexist — a second live
                 // row for the same file or the same output — and says which.
-                let record =
-                    match self
-                        .wiring
-                        .store
-                        .create_download(&file, source_hint.as_ref(), &paths)
-                    {
-                        Ok(record) => record,
-                        Err(error) => {
-                            let reason = start_refusal(&error);
-                            tracing::warn!(
-                                file_hash = %file.file_hash.to_hex_upper(),
-                                %error,
-                                ?reason,
-                                "download start refused",
-                            );
-                            send_event(&self.evt_tx, CoreEvent::CommandRejected { reason }).await;
-                            return;
-                        }
-                    };
+                let record = match self.wiring.store.create_download(
+                    &file,
+                    source_hint.as_ref(),
+                    &paths,
+                    kad_aich_root,
+                ) {
+                    Ok(record) => record,
+                    Err(error) => {
+                        let reason = start_refusal(&error);
+                        tracing::warn!(
+                            file_hash = %file.file_hash.to_hex_upper(),
+                            %error,
+                            ?reason,
+                            "download start refused",
+                        );
+                        send_event(&self.evt_tx, CoreEvent::CommandRejected { reason }).await;
+                        return;
+                    }
+                };
                 let download_id = record.id();
                 // The stored record is the one source of the name and
                 // size both surfaces report — never the command's copy

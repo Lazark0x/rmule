@@ -166,7 +166,7 @@ pub use directory_scan::{
 pub use download::source_seeds::{RememberPeers, SeedRank, SourceSeed};
 pub use durable::{
     DownloadLifecycle, DownloadMetadata, DownloadMetadataOrigin, DownloadPaths,
-    DurableDownloadRecord, VerifiedPartRecord,
+    DurableDownloadRecord, KadAichRoot, VerifiedPartRecord,
 };
 pub use error::{CoreError, DownloadFailure, FinalizeError, PartFault, StorageIntegrityFault};
 pub use join::{

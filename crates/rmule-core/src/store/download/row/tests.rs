@@ -17,7 +17,7 @@ fn row() -> DownloadRow {
         sources: Default::default(),
     };
     let paths = DownloadPaths::new("/dl/a.bin".into(), "/dl/a.bin.part".into());
-    DownloadRow::new(&file, None, &paths)
+    DownloadRow::new(&file, None, &paths, None)
 }
 
 /// Every byte of the version-5 row: the record's postcard encoding store
@@ -29,6 +29,9 @@ pub(super) const RELEASED_ROW_V5: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a10a3865
 /// The Download Name `a.bin` as the version-6 row appends it: its length,
 /// then its bytes.
 const NAME_A_BIN: &str = "05612e62696e";
+
+/// No Kad AICH root, as the version-6 row ends: postcard's `None`.
+const NO_KAD_AICH_ROOT: &str = "00";
 
 pub(super) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -42,12 +45,15 @@ fn a_row_encodes_its_part_path_as_version_nine_wrote_it_and_its_name_last() {
     let held = row();
     assert_eq!(
         hex(&postcard::to_allocvec(&held).unwrap()),
-        format!("{HELD_ROW_V5}{NAME_A_BIN}")
+        format!("{HELD_ROW_V5}{NAME_A_BIN}{NO_KAD_AICH_ROOT}")
     );
     let mut released = row();
     released.release_part_path(7);
     let bytes = postcard::to_allocvec(&released).unwrap();
-    assert_eq!(hex(&bytes), format!("{RELEASED_ROW_V5}{NAME_A_BIN}"));
+    assert_eq!(
+        hex(&bytes),
+        format!("{RELEASED_ROW_V5}{NAME_A_BIN}{NO_KAD_AICH_ROOT}")
+    );
     assert_eq!(
         postcard::from_bytes::<DownloadRow>(&bytes).unwrap(),
         released
@@ -99,4 +105,22 @@ fn the_completion_variants_are_appended_after_every_byte_a_store_holds() {
             failure
         );
     }
+}
+
+/// The Kad AICH root is encoded by position (ADR-0038): a trusted root's
+/// variant byte, then its 20 bytes; the contest one byte past it.
+#[test]
+fn a_kad_aich_root_encodes_its_variant_then_its_root() {
+    use crate::KadAichRoot;
+    use rmule_primitives::AichRootHash;
+
+    let root = AichRootHash::from_bytes([0xA1; AichRootHash::BYTE_LEN]);
+    assert_eq!(
+        hex(&postcard::to_allocvec(&Some(KadAichRoot::Trusted(root))).unwrap()),
+        format!("0100{}", "a1".repeat(AichRootHash::BYTE_LEN))
+    );
+    assert_eq!(
+        hex(&postcard::to_allocvec(&Some(KadAichRoot::Contested)).unwrap()),
+        "0101"
+    );
 }

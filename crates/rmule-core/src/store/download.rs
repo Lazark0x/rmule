@@ -24,7 +24,7 @@ pub(crate) use seeds::UPGRADE_FROM_V12;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rmule_primitives::{Ed2kFileLink, PartHash, ServerEndpoint, UserHash};
+use rmule_primitives::{AichRootHash, Ed2kFileLink, PartHash, ServerEndpoint, UserHash};
 use rmule_store::{Readable, Store};
 
 use super::Schema;
@@ -33,7 +33,7 @@ use crate::file_history::Ed2kIdentity;
 use crate::storage::{DownloadRepository, ResolvedAuthority, resolve_hash_authority};
 use crate::{
     CoreError, DownloadFailure, DownloadId, DownloadLifecycle, DownloadPaths,
-    DurableDownloadRecord, PartFault, VerificationAuthority, VerifiedPartRecord,
+    DurableDownloadRecord, KadAichRoot, PartFault, VerificationAuthority, VerifiedPartRecord,
 };
 use row::{
     DISTRUSTED_PEERS, DOWNLOAD_IDS, DOWNLOADS, DistrustedPeerRow, DownloadRow, IDENTITY, PART_PATH,
@@ -151,6 +151,25 @@ impl DurableDownloadRepository {
             }
             held.push(row);
             Ok(DISTRUSTED_PEERS.replace(txn, id.as_u64(), held)?)
+        })
+    }
+
+    /// Record that the peers' vote contested the download's Kad AICH root: a
+    /// resumed run trusts neither (ADR-0038). A row with no Kad root is left
+    /// as it is.
+    ///
+    /// # Errors
+    /// [`CoreError::UnknownDownload`] when the row is gone, or
+    /// [`CoreError::Repository`].
+    pub fn contest_kad_aich_root(&self, id: DownloadId) -> Result<(), CoreError> {
+        self.store.write(|txn| {
+            let mut row = read_row(txn, id)?;
+            if row.kad_aich_root.is_none() {
+                return Ok(());
+            }
+            row.kad_aich_root = Some(KadAichRoot::Contested);
+            DOWNLOADS.update(txn, &id.as_u64(), &row)?;
+            Ok(())
         })
     }
 
@@ -432,11 +451,12 @@ impl DownloadRepository for DurableDownloadRepository {
         file: &Ed2kFileLink,
         source_hint: Option<&ServerEndpoint>,
         paths: &DownloadPaths,
+        kad_aich_root: Option<AichRootHash>,
     ) -> Result<DurableDownloadRecord, CoreError> {
         if paths.final_path().exists() {
             return Err(CoreError::PathConflict);
         }
-        let new = DownloadRow::new(file, source_hint, paths);
+        let new = DownloadRow::new(file, source_hint, paths, kad_aich_root);
         self.store.write(|txn| {
             if let Some(holder) =
                 DOWNLOADS.by_unique(txn, &PART_PATH, new.part_path.index_text())?

@@ -24,6 +24,7 @@ async fn start(core: &mut Core, file: Ed2kFileLink, name: &str) -> DownloadId {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name(name),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

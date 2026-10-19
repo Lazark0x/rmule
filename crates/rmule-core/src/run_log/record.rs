@@ -273,6 +273,12 @@ impl Record {
         self.field(Kind::Hash, name, hash.to_hex_upper())
     }
 
+    /// An AICH master root, in the base32 a link's `h=` spells it.
+    #[must_use]
+    pub fn aich_root(self, name: &'static str, root: &rmule_primitives::AichRootHash) -> Self {
+        self.field(Kind::Hash, name, root.to_base32_upper())
+    }
+
     /// A part's hash.
     #[must_use]
     pub fn part_hash(self, name: &'static str, hash: &PartHash) -> Self {

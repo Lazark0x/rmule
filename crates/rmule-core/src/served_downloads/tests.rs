@@ -34,7 +34,7 @@ fn record(
 ) -> DurableDownloadRecord {
     let paths = DownloadPaths::from_final_path(PathBuf::from(format!("/downloads/{seed}.bin")));
     let id = store
-        .create_download(&link(seed, size), None, &paths)
+        .create_download(&link(seed, size), None, &paths, None)
         .unwrap()
         .id();
     let steps: &[DownloadLifecycle] = match lifecycle {

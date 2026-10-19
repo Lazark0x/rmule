@@ -118,6 +118,7 @@ fn own_part(store: &Arc<DurableStore>, root: &Path) {
             &stub_link("pending.iso", 7, 0x42),
             Some(&stub_server("example.org")),
             &DownloadPaths::from_final_path(root.join("pending.iso")),
+            None,
         )
         .unwrap();
 }

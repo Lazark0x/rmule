@@ -74,7 +74,7 @@ impl Leg {
         let repo = DurableDownloadRepository::new(Arc::clone(&store));
         let paths = DownloadPaths::from_final_path(dir.path().join("held.bin"));
         let id = repo
-            .create_download(&link, Some(&server.endpoint()), &paths)
+            .create_download(&link, Some(&server.endpoint()), &paths, None)
             .unwrap()
             .id();
         ContentFileStore::write_verified_part(&paths, 0, &bytes[..PART])

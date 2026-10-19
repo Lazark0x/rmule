@@ -50,6 +50,7 @@ mod download_connection_wait;
 mod download_cross_peer_assembly;
 mod download_damaged_parts;
 mod download_hello_port;
+mod download_kad_aich_root;
 mod download_loopback;
 mod download_multipacket_negotiation;
 mod download_part_assignment;

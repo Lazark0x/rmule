@@ -68,7 +68,7 @@ fn brain(sightings: Vec<SourceSighting>, peer_concurrency: usize, at: Instant) -
                 authority: VerificationAuthority::FileHashOnly,
                 hashes: Vec::new(),
             },
-            trusted_aich_root: None,
+            aich_root: crate::download::state::AichRootAuthority::Rootless,
             verified_parts: Vec::new(),
             order: crate::scheduler::PartOrder::Rarest,
         },

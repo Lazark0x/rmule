@@ -118,6 +118,7 @@ async fn start(core: &mut Core, file: Ed2kFileLink) -> DownloadId {
         file,
         source_hint: Some(ServerEndpoint::new("203.0.113.9", 4661).unwrap()),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -264,7 +265,7 @@ async fn a_seed_written_twenty_five_hours_ago_is_dropped_unread() {
         let repo = DurableDownloadRepository::new(open_durable_store(dir.path()).unwrap());
         let paths = rmule_core::DownloadPaths::from_final_path(dir.path().join("stale"));
         let id = repo
-            .create_download(&link("stale"), None, &paths)
+            .create_download(&link("stale"), None, &paths, None)
             .unwrap()
             .id();
         repo.set_lifecycle(id, DownloadLifecycle::Active).unwrap();
@@ -317,7 +318,7 @@ async fn a_paused_download_resumed_by_hand_dials_its_seeds() {
         let repo = DurableDownloadRepository::new(open_durable_store(dir.path()).unwrap());
         let paths = rmule_core::DownloadPaths::from_final_path(dir.path().join("paused"));
         let id = repo
-            .create_download(&link("paused"), None, &paths)
+            .create_download(&link("paused"), None, &paths, None)
             .unwrap()
             .id();
         repo.set_lifecycle(id, DownloadLifecycle::Active).unwrap();
@@ -480,7 +481,10 @@ async fn a_remembered_peer_serves_the_file_with_no_server_and_no_kad() {
     let id = {
         let repo = DurableDownloadRepository::new(open_durable_store(dir.path()).unwrap());
         let paths = rmule_core::DownloadPaths::from_final_path(output_path.clone());
-        let id = repo.create_download(&file, None, &paths).unwrap().id();
+        let id = repo
+            .create_download(&file, None, &paths, None)
+            .unwrap()
+            .id();
         repo.set_lifecycle(id, DownloadLifecycle::Active).unwrap();
         let seed = SourceSeed {
             endpoint: PeerEndpoint::V4(Ipv4Endpoint::new(*at.ip(), at.port())),

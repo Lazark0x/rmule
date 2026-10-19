@@ -21,7 +21,7 @@ pub(crate) use rungs::{
 pub(crate) use rungs::{schema_v1, schema_v5_rows, seed_v1, seed_v5};
 
 use rmule_primitives::{
-    Ed2kFileLink, Ed2kLink, Ed2kText, FileHash, PartHash, ServerEndpoint, UserHash,
+    AichRootHash, Ed2kFileLink, Ed2kLink, Ed2kText, FileHash, PartHash, ServerEndpoint, UserHash,
 };
 use rmule_store::{Children, Indexed, MultimapIndex, Record, Sequence, UniqueIndex};
 use serde::{Deserialize, Serialize};
@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use crate::durable::DurableDownloadRecordInput;
 use crate::{
     DownloadFailure, DownloadId, DownloadLifecycle, DownloadMetadata, DownloadMetadataOrigin,
-    DownloadPaths, DurableDownloadRecord, VerificationAuthority, VerifiedPartRecord,
+    DownloadPaths, DurableDownloadRecord, KadAichRoot, VerificationAuthority, VerifiedPartRecord,
 };
 
 /// One download as the store holds it, keyed by its [`DownloadId`]'s `u64`.
@@ -54,6 +54,9 @@ pub(super) struct DownloadRow {
     pub failure: Option<DownloadFailure>,
     /// The Download Name: the command's, before any number (ADR-0115).
     pub name: String,
+    /// The Qualified Kad Root the download was started from, or the contest
+    /// that ended it (ADR-0038).
+    pub kad_aich_root: Option<KadAichRoot>,
 }
 
 impl Record for DownloadRow {
@@ -135,11 +138,12 @@ pub(super) static DOWNLOAD_IDS: Sequence = Sequence::new("download");
 
 impl DownloadRow {
     /// The row a `create_download` writes: every fact taken from the caller's
-    /// link, source hint and paths, queued and unverified.
+    /// link, source hint, paths and Kad root, queued and unverified.
     pub(super) fn new(
         file: &Ed2kFileLink,
         source_hint: Option<&ServerEndpoint>,
         paths: &DownloadPaths,
+        kad_aich_root: Option<AichRootHash>,
     ) -> Self {
         let metadata = DownloadMetadata::from_link(file);
         // A link set that is not the file's own is never recorded: the
@@ -164,6 +168,7 @@ impl DownloadRow {
             metadata_origin: metadata.origin,
             failure: None,
             name: paths.name().to_owned(),
+            kad_aich_root: kad_aich_root.map(KadAichRoot::Trusted),
         }
     }
 
@@ -224,6 +229,7 @@ impl DownloadRow {
             lifecycle: self.lifecycle,
             verification_authority: self.verification_authority,
             failure: self.failure.clone(),
+            kad_aich_root: self.kad_aich_root,
         })
     }
 }

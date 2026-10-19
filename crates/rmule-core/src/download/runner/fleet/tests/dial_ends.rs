@@ -59,6 +59,7 @@ async fn a_required_policy_tells_each_stanceless_source_s_refusal_once() {
             &rmule_primitives::FileHash::from_bytes([0; 16]),
         ),
         if_taken: crate::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

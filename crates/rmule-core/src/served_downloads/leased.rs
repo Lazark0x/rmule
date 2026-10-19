@@ -49,7 +49,7 @@ pub(crate) fn leased(file_hash: FileHash, final_path: PathBuf) -> Leased {
     };
     let paths = DownloadPaths::from_final_path(final_path);
     let record = DurableDownloadRepository::new(store.clone())
-        .create_download(&link, None, &paths)
+        .create_download(&link, None, &paths, None)
         .unwrap();
     let cell = ServedDownloads::default();
     assert!(cell.install(&record, &set));

@@ -417,11 +417,15 @@ where
 
     // The peers this download distrusts, as its durable record holds them.
     let distrusted = crate::download::persist::distrusted_at_start(runner, request.download_id)?;
+    // The Kad AICH root its record keeps, under the link's `h=` (ADR-0038).
+    let kad_aich_root =
+        crate::download::persist::kad_aich_root_at_start(runner, request.download_id)?;
 
     let file_hash_only_parts = apply_peer_workers_download(
         FleetStart {
             download_id: request.download_id,
             file: request.file,
+            kad_aich_root,
             ctx,
             verified_part_indexes: request.verified_part_indexes,
             order: request.order,

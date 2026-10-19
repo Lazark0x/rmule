@@ -47,7 +47,7 @@ impl LiveDownload {
         let link = file_link("live.bin", LIVE_BYTES);
         let paths = DownloadPaths::from_final_path(dir.join("live.bin"));
         let id = repo
-            .create_download(&link, Some(&stub_server("127.0.0.1")), &paths)
+            .create_download(&link, Some(&stub_server("127.0.0.1")), &paths, None)
             .unwrap()
             .id();
         // Bytes on disk and no part recorded: the run has its one part left
@@ -120,6 +120,7 @@ fn paused_neighbour(repo: &DurableDownloadRepository, dir: &Path) -> (DownloadId
             &file_link("neighbour.bin", b"neighbour bytes"),
             Some(&stub_server("127.0.0.1")),
             &paths,
+            None,
         )
         .unwrap()
         .id();
@@ -186,6 +187,7 @@ async fn clearing_completed_downloads_leaves_the_live_part_file() {
                 &file_link("done.bin", b"done bytes"),
                 Some(&stub_server("127.0.0.1")),
                 &paths,
+                None,
             )
             .unwrap()
             .id();

@@ -227,6 +227,7 @@ async fn downloading_core(row: SourceSighting, bytes: &[u8], dir: &std::path::Pa
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 1).expect("server endpoint")),
         name: rmule_testkit::file_name("buddy-sourced.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .expect("download started");
@@ -357,6 +358,7 @@ async fn a_callable_downloader_adopts_the_publishers_dial_back_and_completes_the
         source_hint: Some(server_ep),
         name: rmule_testkit::file_name("buddy-callback.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -527,6 +529,7 @@ async fn a_kad_only_open_downloader_takes_the_buddy_callback_road() {
         source_hint: Some(no_server),
         name: rmule_testkit::file_name("kad-only-callback.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -614,6 +617,7 @@ async fn a_kad_row_with_the_direct_callback_bit_draws_a_0x95_toward_its_own_endp
         source_hint: Some(server_ep),
         name: rmule_testkit::file_name("direct-udp.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -800,6 +804,7 @@ async fn a_published_type_6_row_served_back_by_a_storer_takes_the_direct_udp_roa
         source_hint: Some(server_ep),
         name: rmule_testkit::file_name("type-6.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

@@ -6,7 +6,9 @@
 
 use std::path::{Path, PathBuf};
 
-use rmule_primitives::{Ed2kFileClass, Ed2kFileLink, Ed2kText, FileHash, PartHash, ServerEndpoint};
+use rmule_primitives::{
+    AichRootHash, Ed2kFileClass, Ed2kFileLink, Ed2kText, FileHash, PartHash, ServerEndpoint,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{DownloadFailure, DownloadId, VerificationAuthority};
@@ -147,6 +149,18 @@ fn file_name(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// The Kad AICH root a download was started from, as its record keeps it
+/// (ADR-0038): the **Qualified Kad Root** of the search result the operator
+/// started it from, until the peers' vote contests it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KadAichRoot {
+    /// Trusted from the start; the peers' vote may still contest it.
+    Trusted(AichRootHash),
+    /// The peers' vote committed another root: the download trusts neither,
+    /// for its life.
+    Contested,
+}
+
 /// Where core learned a download's [`DownloadMetadata`] (ADR-0078).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DownloadMetadataOrigin {
@@ -271,6 +285,7 @@ pub struct DurableDownloadRecord {
     lifecycle: DownloadLifecycle,
     verification_authority: Option<VerificationAuthority>,
     failure: Option<DownloadFailure>,
+    kad_aich_root: Option<KadAichRoot>,
 }
 
 impl DurableDownloadRecord {
@@ -285,6 +300,7 @@ impl DurableDownloadRecord {
             lifecycle: input.lifecycle,
             verification_authority: input.verification_authority,
             failure: input.failure,
+            kad_aich_root: input.kad_aich_root,
         }
     }
 
@@ -368,6 +384,15 @@ impl DurableDownloadRecord {
     pub const fn failure(&self) -> Option<&DownloadFailure> {
         self.failure.as_ref()
     }
+
+    /// The Kad AICH root the download was started from, or the contest that
+    /// ended it (ADR-0038); `None` for a download started from a link or a
+    /// result with no qualified root. A link's `h=` lives in the canonical
+    /// link and ranks above it.
+    #[must_use]
+    pub const fn kad_aich_root(&self) -> Option<KadAichRoot> {
+        self.kad_aich_root
+    }
 }
 
 pub(crate) struct DurableDownloadRecordInput {
@@ -380,6 +405,7 @@ pub(crate) struct DurableDownloadRecordInput {
     pub lifecycle: DownloadLifecycle,
     pub verification_authority: Option<VerificationAuthority>,
     pub failure: Option<DownloadFailure>,
+    pub kad_aich_root: Option<KadAichRoot>,
 }
 
 #[cfg(test)]

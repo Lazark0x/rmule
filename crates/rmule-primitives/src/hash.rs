@@ -298,6 +298,7 @@ macro_rules! empty_body_codec {
 /// Wider than the eD2k hashes and written in base32 rather than hex, because
 /// that is the form eMule's `ed2k://` link carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AichRootHash([u8; 20]);
 
 impl AichRootHash {

@@ -15,7 +15,8 @@ use crate::adapters::{
 };
 use crate::client_udp::ClientUdpDatagram;
 use crate::download::state::{
-    Channel, ContentFacts, Decision, DownloadState, SourcingPosture, StartingFacts, Tally,
+    AichRootAuthority, Channel, ContentFacts, Decision, DownloadState, SourcingPosture,
+    StartingFacts, Tally,
 };
 use crate::download::worker_pool::{WorkerChannels, WorkerPool};
 use crate::error::DownloadFailure;
@@ -88,6 +89,9 @@ pub(super) struct FleetStart<'a> {
     pub(super) download_id: DownloadId,
     /// The link the run is pinned to: file hash, size, part hash set and AICH root.
     pub(super) file: Ed2kFileLink,
+    /// The Kad AICH root the download's record keeps, or the contest that
+    /// ended it (ADR-0038).
+    pub(super) kad_aich_root: Option<crate::KadAichRoot>,
     /// The peer-side handshake identity every worker dials with — server-login
     /// capability tags deliberately excluded (ADR-0047).
     pub(super) ctx: PeerHandshakeContext,
@@ -140,6 +144,7 @@ where
     let FleetStart {
         download_id,
         file,
+        kad_aich_root,
         ctx,
         verified_part_indexes,
         order,
@@ -260,7 +265,7 @@ where
             file_size: file.size,
             link_part_hash_set: link_hash_set,
             resolved,
-            trusted_aich_root: file.aich_root,
+            aich_root: AichRootAuthority::at_start(file.aich_root, kad_aich_root),
             verified_parts: verified_part_indexes,
             order,
         },

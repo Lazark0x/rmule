@@ -200,6 +200,15 @@ where
                     queue.push_front(Decision::Fail(DownloadFailure::StoreFailed));
                 }
             }
+            Decision::ContestKadAichRoot => {
+                // Durable beside the download's record, as a distrusted peer
+                // is: a resumed run that trusted the contested root again
+                // would let its recovery data blame honest cells.
+                if let Err(error) = ctx.runner.rt.store.contest_kad_aich_root(ctx.download_id) {
+                    tracing::warn!(%error, "could not persist a contested Kad AICH root");
+                    queue.push_front(Decision::Fail(DownloadFailure::StoreFailed));
+                }
+            }
             Decision::Spawn {
                 peer,
                 slot,

@@ -1,7 +1,7 @@
 //! Persisting what a download earned: one verified part written through the
 //! run's **Held Part File** and recorded against the download, the distrusted
-//! peers a resumed run starts with, and the repair a finished file that does
-//! not hash asks for. Fallible effects, so
+//! peers and the Kad AICH root a resumed run starts with, and the repair a
+//! finished file that does not hash asks for. Fallible effects, so
 //! the sans-I/O brain asks for them as decisions and resumes on the result;
 //! the completion move itself is the runner's (ADR-0115).
 //!
@@ -125,6 +125,25 @@ pub(super) fn distrusted_at_start<S, P>(
         .map(|peers| peers.into_iter().collect())
         .map_err(|error| {
             tracing::warn!(%error, "could not read the download's distrusted peers");
+            DownloadFailure::StoreFailed
+        })
+}
+
+/// The Kad AICH root the download's record keeps, or the contest that ended
+/// it, for the run to start under (ADR-0038). A record the store cannot read
+/// ends the start as a store failure, as the distrusted peers do: a run that
+/// started without it would trust a root its peers already contested.
+pub(super) fn kad_aich_root_at_start<S, P>(
+    runner: &RunnerContext<S, P>,
+    download_id: DownloadId,
+) -> Result<Option<crate::KadAichRoot>, DownloadFailure> {
+    runner
+        .rt
+        .store
+        .load_download(download_id)
+        .map(|record| record.kad_aich_root())
+        .map_err(|error| {
+            tracing::warn!(%error, "could not read the download's Kad AICH root");
             DownloadFailure::StoreFailed
         })
 }

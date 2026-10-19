@@ -27,6 +27,7 @@ fn create(repo: &DurableDownloadRepository, dir: &Path, name: &str) -> DurableDo
         &stub_link(name, 1234, 0x01),
         Some(&stub_server("example.org")),
         &DownloadPaths::from_final_path(dir.join(name)),
+        None,
     )
     .unwrap()
 }
@@ -54,6 +55,7 @@ fn download_name_and_exact_size_survive_a_store_reopen() {
             &file,
             Some(&stub_server("example.org")),
             &DownloadPaths::from_final_path(dir.path().join("download.bin")),
+            None,
         )
         .unwrap();
     drop(repo);
@@ -85,6 +87,7 @@ fn duplicate_live_download_uses_file_hash_and_size_not_filename() {
         &stub_link("first.bin", 1234, 0x01),
         Some(&server),
         &DownloadPaths::from_final_path(dir.path().join("first.bin")),
+        None,
     )
     .unwrap();
 
@@ -93,6 +96,7 @@ fn duplicate_live_download_uses_file_hash_and_size_not_filename() {
             &stub_link("renamed.bin", 1234, 0x01),
             Some(&server),
             &DownloadPaths::from_final_path(dir.path().join("renamed.bin")),
+            None,
         )
         .unwrap_err();
 
@@ -109,6 +113,7 @@ fn a_part_path_another_row_already_writes_is_refused() {
         &stub_link("first.bin", 1234, 0x01),
         Some(&stub_server("a.org")),
         &paths,
+        None,
     )
     .unwrap();
 
@@ -119,6 +124,7 @@ fn a_part_path_another_row_already_writes_is_refused() {
             &stub_link("other.bin", 5678, 0x02),
             Some(&stub_server("a.org")),
             &paths,
+            None,
         )
         .unwrap_err();
 
@@ -139,6 +145,7 @@ fn created_download_persists_canonical_file_link() {
             &file,
             Some(&stub_server("example.org")),
             &DownloadPaths::from_final_path(dir.path().join("download.bin")),
+            None,
         )
         .unwrap();
 
@@ -160,6 +167,7 @@ fn existing_final_output_path_is_rejected_before_creating_record() {
             &stub_link("already-there.bin", 1234, 0x01),
             Some(&stub_server("example.org")),
             &DownloadPaths::from_final_path(final_path.clone()),
+            None,
         )
         .unwrap_err();
     assert_eq!(err, CoreError::PathConflict);
@@ -170,6 +178,7 @@ fn existing_final_output_path_is_rejected_before_creating_record() {
             &stub_link("already-there.bin", 1234, 0x01),
             Some(&stub_server("example.org")),
             &DownloadPaths::from_final_path(final_path),
+            None,
         )
         .unwrap();
     // The refused create consumed no id: the counter only moves on success.
@@ -301,6 +310,7 @@ fn the_restart_read_keeps_each_row_as_the_last_process_left_it() {
             &stub_link("paused.bin", 5678, 0x02),
             Some(&stub_server("example.org")),
             &DownloadPaths::from_final_path(dir.path().join("paused.bin")),
+            None,
         )
         .unwrap();
     repo.set_lifecycle(paused.id(), DownloadLifecycle::Paused)
@@ -481,6 +491,7 @@ fn link_part_hash_authority_does_not_duplicate_hashes_as_child_rows() {
             &file,
             Some(&stub_server("example.org")),
             &DownloadPaths::from_final_path(dir.path().join("download.bin")),
+            None,
         )
         .unwrap();
 

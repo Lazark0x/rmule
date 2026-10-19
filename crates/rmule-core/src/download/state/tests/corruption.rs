@@ -235,7 +235,7 @@ fn an_unshared_part_whose_recovery_ask_goes_unanswered_is_fetched_again() {
     let root = AichHashSet::from_bytes(&truth).master_root();
     let mut state = writers_of(
         ContentFacts {
-            trusted_aich_root: Some(root),
+            aich_root: crate::download::state::AichRootAuthority::Link(root),
             ..file_hash_only_content(file)
         },
         2,

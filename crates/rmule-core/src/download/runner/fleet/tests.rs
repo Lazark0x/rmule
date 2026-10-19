@@ -147,6 +147,7 @@ async fn cancelling_a_download_forgets_a_still_connected_workers_roster_ip() {
             &rmule_primitives::FileHash::from_bytes([0; 16]),
         ),
         if_taken: crate::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -225,6 +226,7 @@ async fn a_disconnect_already_racing_into_fact_rx_at_stop_is_not_lost() {
             &rmule_primitives::FileHash::from_bytes([0; 16]),
         ),
         if_taken: crate::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -365,6 +367,7 @@ async fn a_completed_download_forgets_its_still_connected_workers_roster_ip() {
             &rmule_primitives::FileHash::from_bytes([0; 16]),
         ),
         if_taken: crate::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -443,6 +446,7 @@ async fn a_remote_queued_peer_stays_known_after_its_worker_retires() {
             &rmule_primitives::FileHash::from_bytes([0; 16]),
         ),
         if_taken: crate::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

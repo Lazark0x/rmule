@@ -40,7 +40,7 @@ fn queued_under_a_hello() -> DownloadState {
                 authority: VerificationAuthority::FileHashOnly,
                 hashes: Vec::new(),
             },
-            trusted_aich_root: None,
+            aich_root: crate::download::state::AichRootAuthority::Rootless,
             verified_parts: Vec::new(),
             order: crate::scheduler::PartOrder::Rarest,
         },

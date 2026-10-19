@@ -427,6 +427,7 @@ async fn a_download_workers_connect_marks_the_roster_and_the_runs_end_forgets_it
             &rmule_primitives::FileHash::from_bytes([0; 16]),
         ),
         if_taken: crate::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

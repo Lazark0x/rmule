@@ -28,7 +28,9 @@ fn seed_one(data_dir: &std::path::Path, name: &str) -> u64 {
     };
     let server = ServerEndpoint::new("example.invalid", 4661).unwrap();
     let paths = DownloadPaths::from_final_path(data_dir.join(name));
-    let record = repo.create_download(&file, Some(&server), &paths).unwrap();
+    let record = repo
+        .create_download(&file, Some(&server), &paths, None)
+        .unwrap();
     record.id().as_u64()
 }
 

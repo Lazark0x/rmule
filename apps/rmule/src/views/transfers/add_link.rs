@@ -111,6 +111,7 @@ fn start(
         file,
         source_hint: state.active_server(),
         if_taken: NameTaken::Refuse,
+        kad_aich_root: None,
     }));
     Ok(ViewOutcome::Emit(
         match words::link_fields_skipped(skipped) {

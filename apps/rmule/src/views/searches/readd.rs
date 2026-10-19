@@ -214,6 +214,7 @@ fn start_download(result: &SearchResult, state: &UiState, again: bool) -> ViewOu
             } else {
                 NameTaken::Refuse
             },
+            kad_aich_root: result.kad_aich_root(),
         },
     )))
 }

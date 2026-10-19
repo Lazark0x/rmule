@@ -100,6 +100,7 @@ fn start(file: Ed2kFileLink) -> CoreCommand {
         source_hint: Some(stub_server("127.0.0.1")),
         name: rmule_testkit::file_name("second.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     })
 }
 

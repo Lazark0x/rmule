@@ -92,7 +92,11 @@ async fn run_of<P: PeerTransferService>(
         crate::diagnostics::DiagnosticsState::default(),
     );
     let paths = DownloadPaths::from_final_path(dir.join("served.bin"));
-    let record = runner.rt.store.create_download(link, None, &paths).unwrap();
+    let record = runner
+        .rt
+        .store
+        .create_download(link, None, &paths, None)
+        .unwrap();
     let set = link
         .part_hash_set
         .as_ref()
@@ -125,7 +129,7 @@ fn working(link: &Ed2kFileLink, record: &DurableDownloadRecord) -> (DownloadStat
             file_size: link.size,
             link_part_hash_set: link.part_hash_set.clone(),
             resolved,
-            trusted_aich_root: None,
+            aich_root: crate::download::state::AichRootAuthority::Rootless,
             verified_parts: Vec::new(),
             order: crate::scheduler::PartOrder::Rarest,
         },

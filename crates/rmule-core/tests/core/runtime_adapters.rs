@@ -26,6 +26,7 @@ async fn default_core_waits_for_a_connection_when_its_server_is_not_there() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", port).unwrap()),
         name: rmule_testkit::file_name("example.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

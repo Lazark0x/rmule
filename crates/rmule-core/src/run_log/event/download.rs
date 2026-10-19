@@ -300,6 +300,14 @@ impl DownloadEvent {
                 .count("part_index", *part_index)
                 .count("blocks", *blocks)
                 .count("bytes", *bytes),
+            D::KadAichRootContested {
+                download_id,
+                kad_root,
+                voted_root,
+            } => Record::new("download.kad_aich_root_contested")
+                .count("id", download_id.as_u64())
+                .aich_root("kad_root", kad_root)
+                .aich_root("voted_root", voted_root),
             D::PartCorrupt {
                 download_id,
                 part_index,

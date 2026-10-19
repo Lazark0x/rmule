@@ -162,6 +162,7 @@ async fn rmule_b_discovers_and_downloads_rmule_a_via_kad_with_no_server() {
             source_hint: Some(dead_server),
             name: rmule_testkit::file_name("downloaded.bin"),
             if_taken: rmule_core::NameTaken::Refuse,
+            kad_aich_root: None,
         }))
         .await
         .unwrap();

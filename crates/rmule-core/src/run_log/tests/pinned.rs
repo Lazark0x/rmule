@@ -31,6 +31,11 @@ fn reason_events() -> Vec<CoreEvent> {
             part_index: 5,
             reason: crate::PartReleaseReason::PeerRetired(crate::PeerRetirementReason::SlotTimeout),
         }),
+        CoreEvent::Download(DownloadEvent::KadAichRootContested {
+            download_id,
+            kad_root: rmule_primitives::AichRootHash::from_bytes([0xA1; 20]),
+            voted_root: rmule_primitives::AichRootHash::from_bytes([0xB2; 20]),
+        }),
         CoreEvent::Serve(ServeEvent::FileWithheld {
             file_hash: file_hash(0xAB),
             reason: crate::WithheldReason::Unreadable(std::io::ErrorKind::PermissionDenied),
@@ -172,6 +177,7 @@ const PINNED_LEAN: &str = r#" INFO run_log: server.connected server=203.0.113.7:
  INFO run_log: kad.helper_test_late late_by_ms=3400 admission=refused
  INFO run_log: download.failed id=4 failure=storage_integrity_failed fault=no_part_holds recorded_parts=7 part_fault=hash_mismatch part_index=2
  INFO run_log: download.part_released id=4 part_index=5 reason=peer_retired retired=slot_timeout
+ INFO run_log: download.kad_aich_root_contested id=4
  INFO run_log: serve.file_withheld reason=unreadable error=permission_denied os_code=none
  INFO run_log: serve.serving_failed reason=bind error=address_in_use os_code=none
  INFO run_log: shared_directory.refused reason=inside_shared
@@ -220,6 +226,7 @@ const PINNED_FULL: &str = r#" INFO run_log: server.connected server=203.0.113.7:
  INFO run_log: kad.helper_test_late helper=198.51.100.31 late_by_ms=3400 admission=refused
  INFO run_log: download.failed id=4 failure=storage_integrity_failed fault=no_part_holds recorded_parts=7 part_fault=hash_mismatch part_index=2 expected=11111111111111111111111111111111 found=22222222222222222222222222222222
  INFO run_log: download.part_released id=4 peer=198.51.100.9:4662 part_index=5 reason=peer_retired retired=slot_timeout
+ INFO run_log: download.kad_aich_root_contested id=4 kad_root=UGQ2DINBUGQ2DINBUGQ2DINBUGQ2DINB voted_root=WKZLFMVSWKZLFMVSWKZLFMVSWKZLFMVS
  INFO run_log: serve.file_withheld file_hash=ABABABABABABABABABABABABABABABAB reason=unreadable error=permission_denied os_code=none
  INFO run_log: serve.serving_failed reason=bind error=address_in_use os_code=none
  INFO run_log: shared_directory.refused dir="/home/ann/films/new" reason=inside_shared parent="/home/ann/films"

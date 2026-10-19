@@ -235,6 +235,7 @@ fn a_version_eight_download_row_keeps_its_server_as_a_source_hint() {
             &rmule_testkit::file_link("kad-only.bin", b"kad only"),
             None,
             &crate::DownloadPaths::from_final_path(dir.path().join("kad-only.bin")),
+            None,
         )
         .unwrap();
     assert_eq!(

@@ -308,6 +308,9 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
             },
             address(*peer)
         ),
+        D::KadAichRootContested { .. } => "its sources agree on another AICH root than the Kad \
+             search named; trusting neither, a part that fails its check is fetched again whole"
+            .to_string(),
         D::PartCorrupt {
             part_index,
             writers,

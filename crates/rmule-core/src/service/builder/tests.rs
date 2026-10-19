@@ -265,6 +265,7 @@ fn start_download(seed: u8) -> CoreCommand {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 1).expect("server endpoint")),
         name: rmule_primitives::SafeFileName::clean(&format!("lifecycle-{seed}.bin"), &file_hash),
         if_taken: crate::NameTaken::Refuse,
+        kad_aich_root: None,
     })
 }
 

@@ -8,7 +8,7 @@
 
 use std::future::Future;
 
-use rmule_primitives::{Ed2kFileLink, Ed2kLink, PartHash, ServerEndpoint};
+use rmule_primitives::{AichRootHash, Ed2kFileLink, Ed2kLink, PartHash, ServerEndpoint};
 
 use crate::content::Revalidation;
 use crate::file_history::Ed2kIdentity;
@@ -104,13 +104,16 @@ pub(crate) fn resolve_hash_authority(
 /// `Arc<R>` between the actor and every runner with no lock around it.
 pub trait DownloadRepository: Send + Sync + 'static {
     /// Mint a row for a new download and hand back the record, including the id
-    /// it was given. Refuses a `file` whose identity or `paths` another row
-    /// already holds, so two downloads never race for one output file.
+    /// it was given, with the Qualified Kad Root of the search result it was
+    /// started from, if any (ADR-0038). Refuses a `file` whose identity or
+    /// `paths` another row already holds, so two downloads never race for one
+    /// output file.
     fn create_download(
         &self,
         file: &Ed2kFileLink,
         source_hint: Option<&ServerEndpoint>,
         paths: &DownloadPaths,
+        kad_aich_root: Option<AichRootHash>,
     ) -> Result<DurableDownloadRecord, CoreError>;
 
     /// Read one row back. [`CoreError::UnknownDownload`] when there is none.

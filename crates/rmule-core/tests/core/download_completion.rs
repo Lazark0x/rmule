@@ -33,7 +33,7 @@ fn completing(
     link: &Ed2kFileLink,
     paths: &DownloadPaths,
 ) -> DownloadId {
-    let id = repo.create_download(link, None, paths).unwrap().id();
+    let id = repo.create_download(link, None, paths, None).unwrap().id();
     let hashes = link.part_hash_set.as_ref().unwrap().hashes();
     for (index, hash) in hashes.iter().enumerate() {
         let part_index = u32::try_from(index).unwrap();

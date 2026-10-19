@@ -127,6 +127,7 @@ async fn kad_fed_sources_fill_the_pool_and_the_scheduler_dials_them() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 1).unwrap()),
         name: rmule_testkit::file_name("kad-fed.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -246,6 +247,7 @@ async fn with_no_server_at_all_a_kad_search_row_downloads_over_kad() {
         source_hint: None,
         name: rmule_testkit::file_name("kad-only.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

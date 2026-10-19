@@ -31,6 +31,7 @@ async fn start(core: &mut Core, file: Ed2kFileLink) -> DownloadId {
         file,
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -212,6 +213,7 @@ async fn attach_restores_a_paused_downloads_part_picture() {
             &link,
             Some(&ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
             &DownloadPaths::from_final_path(dir.path().join("held.bin")),
+            None,
         )
         .unwrap();
     repo.set_lifecycle(record.id(), DownloadLifecycle::Paused)
@@ -264,6 +266,7 @@ async fn a_failed_download_holds_its_place_and_restarts_in_place() {
             &link,
             Some(&ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
             &DownloadPaths::from_final_path(dir.path().join("failed.bin")),
+            None,
         )
         .unwrap();
     repo.set_lifecycle(record.id(), DownloadLifecycle::Failed)
@@ -283,6 +286,7 @@ async fn a_failed_download_holds_its_place_and_restarts_in_place() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("failed (1).bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -386,6 +390,7 @@ async fn a_download_attach_cannot_start_is_told_as_failed() {
             &link,
             Some(&ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
             &DownloadPaths::from_final_path(dir.path().join("stuck.bin")),
+            None,
         )
         .unwrap()
         .id();
@@ -457,6 +462,7 @@ async fn the_queued_edge_names_the_part_file_the_store_recorded() {
         file: two_part_link("film.mkv", 0xE5),
         source_hint: None,
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -494,7 +500,7 @@ async fn attach_names_the_part_file_or_the_finished_file_by_lifecycle() {
     let seeded = |name: &str, fill: u8, steps: &[DownloadLifecycle]| {
         let paths = DownloadPaths::from_final_path(dir.path().join(name));
         let record = repo
-            .create_download(&two_part_link(name, fill), None, &paths)
+            .create_download(&two_part_link(name, fill), None, &paths, None)
             .unwrap();
         for step in steps {
             repo.set_lifecycle(record.id(), *step).unwrap();

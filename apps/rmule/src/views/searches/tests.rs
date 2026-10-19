@@ -231,3 +231,32 @@ fn clicks_focus_the_input_or_select_a_result_row() {
         Some("distro_hot.iso".to_string())
     );
 }
+
+/// A row a Kad answer qualified an AICH root for starts its download with
+/// that root, beside the link and never in it (ADR-0038).
+#[test]
+fn a_download_started_from_a_kad_rooted_row_carries_its_root() {
+    let root = rmule_primitives::AichRootHash::from_bytes([0xA1; 20]);
+    let mut results = three_tier_results();
+    for result in &mut results {
+        *result = result.clone().with_kad_aich_root(root);
+    }
+    let mut state = state_with(results, SearchStatus::Completed { total: 3 });
+    state.session = session_state().session;
+    let mut view = SearchesView::new();
+    view.handle_key(press(KeyCode::Char('g')), &state);
+    view.handle_key(press(KeyCode::Char('m')), &state);
+    match view.handle_key(press(KeyCode::Enter), &state) {
+        ViewOutcome::Emit(Action::Command(CoreCommand::Download(
+            rmule_core::DownloadCommand::StartDownload {
+                file,
+                kad_aich_root,
+                ..
+            },
+        ))) => {
+            assert_eq!(kad_aich_root, Some(root));
+            assert_eq!(file.aich_root, None);
+        }
+        other => panic!("expected StartDownload, got {other:?}"),
+    }
+}

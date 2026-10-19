@@ -437,6 +437,7 @@ async fn drive_add(
         source_hint: server,
         name,
         if_taken: NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await?;
 

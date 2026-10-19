@@ -48,6 +48,7 @@ async fn core_completes_when_one_source_never_finishes_handshake() {
         source_hint: Some(server.endpoint()),
         name: rmule_testkit::file_name("silent-source.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -121,6 +122,7 @@ async fn core_single_part_completes_through_the_grant_while_another_peer_queues_
         source_hint: Some(server.endpoint()),
         name: rmule_testkit::file_name("race.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -213,6 +215,7 @@ async fn core_finishes_a_part_from_a_second_peer_after_the_first_drops_mid_part(
         source_hint: Some(server.endpoint()),
         name: rmule_testkit::file_name("drop-resume.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

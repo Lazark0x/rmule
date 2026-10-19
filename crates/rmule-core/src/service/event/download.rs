@@ -390,6 +390,18 @@ pub enum DownloadEvent {
         /// Their bytes, at most three `EMBLOCKSIZE`.
         bytes: u64,
     },
+    /// The peers' vote committed an AICH root other than the **Qualified Kad
+    /// Root** the download was started from (ADR-0038): the download trusts
+    /// neither for its life, and a part that fails its check takes the
+    /// rootless path (ADR-0117 §1).
+    KadAichRootContested {
+        /// The download whose roots disagree.
+        download_id: DownloadId,
+        /// The root the Kad search result named.
+        kad_root: rmule_primitives::AichRootHash,
+        /// The root the peers' vote committed.
+        voted_root: rmule_primitives::AichRootHash,
+    },
     /// A part failed its check with no Trusted AICH Root to name its corrupt
     /// cells (ADR-0117 §1): its bytes are dropped and it is fetched again.
     /// The failure names a writer only when the evidence points to it, and

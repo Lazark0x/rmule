@@ -62,7 +62,10 @@ fn finished_at(
     let paths = place(dir.path());
     std::fs::write(paths.part_path(), &bytes).unwrap();
     let store = &runner.rt.store;
-    let id = store.create_download(&file, None, &paths).unwrap().id();
+    let id = store
+        .create_download(&file, None, &paths, None)
+        .unwrap()
+        .id();
     store.set_lifecycle(id, DownloadLifecycle::Active).unwrap();
     for (index, part) in bytes.chunks(ED2K_PART_SIZE as usize).enumerate() {
         let part_index = u32::try_from(index).unwrap();
