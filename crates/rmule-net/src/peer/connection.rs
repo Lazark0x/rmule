@@ -43,7 +43,7 @@ pub enum PeerStreamRole {
 
 /// The stream shape a **callback dial-back** hands the serve pipeline: an
 /// `AsyncRead + AsyncWrite` the admit seam can own outright, whether the bytes
-/// ride plaintext TCP or a [`CryptStream`] above it.
+/// ride plaintext TCP or a `CryptStream` above it.
 ///
 /// A trait object rather than a generic return type, because the obfuscation
 /// decision is a *runtime* reading of one requester's connect-options: one call
@@ -147,7 +147,7 @@ impl Connection {
     /// an already-open stream, and ADR-0042's byte-0 discrimination stays
     /// exactly where it is — on the accept side, reading whatever the wire
     /// carries. The key is the **target's** User Hash, never ours
-    /// ([`PeerObfuscationTransport::initiator`]), which for a callback is the
+    /// (`PeerObfuscationTransport::initiator`), which for a callback is the
     /// requester's hash out of its own `0x95` body.
     ///
     /// There is no plaintext re-dial when the crypt handshake fails, as with
