@@ -9,10 +9,9 @@ use std::time::Duration;
 
 use rmule_net::peer::Connection as PeerConnection;
 use rmule_peer::{
-    ConnectionEvent, PartBitmap, PartRanges, PeerCommand, PeerEvent, RequesterCommand,
-    RequesterEvent,
+    PartBitmap, PartRanges, PeerCommand, PeerEvent, RequesterCommand, RequesterEvent,
 };
-use rmule_primitives::{AichRootHash, ED2K_PART_SIZE, Ed2kFileLink, FileHash, PeerEndpoint};
+use rmule_primitives::{ED2K_PART_SIZE, Ed2kFileLink, PeerEndpoint};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
@@ -26,6 +25,7 @@ use crate::adapters::peer_transfer::{PeerWorkerCommand, PeerWorkerEvent};
 use crate::adapters::serve_runtime::{ServeConnection, ServeInput};
 use crate::service::DialEnd;
 
+use self::aich::await_aich_answer;
 use self::pipeline::{Pipeline, RANGES_PER_REQUEST};
 use self::wait::{
     Ended, Idled, SlotNews, await_probe, forward_shared, forward_slot_news, idle_wait, next_event,
@@ -433,38 +433,6 @@ async fn wait_for_peer_identified(
     }
 }
 
-/// Wait for the answer to the AICH ask `link` holds and forward it to core
-/// (ADR-0038). The recovery data verifies against the trusted root core-side,
-/// so asking any connected peer is safe. At the ask's budget, or a disconnect,
-/// forwards an *empty* answer so the runner resolves the awaiting part via the
-/// MD4 retire-all fallback rather than stranding it. Other events meanwhile
-/// are not read for the download. Returns `false` (winding the worker down)
-/// only on disconnect.
-async fn await_aich_answer(link: &mut WorkerLink<'_>, file_hash: FileHash) -> bool {
-    let Some((_, due)) = link.aich else {
-        return true;
-    };
-    loop {
-        match tokio::time::timeout_at(due, link.events.recv()).await {
-            Ok(event) => {
-                let ended = matches!(
-                    event,
-                    None | Some(PeerEvent::Connection(ConnectionEvent::Disconnected { .. }))
-                );
-                let answer = link.settle_aich(file_hash, &event).await;
-                if ended {
-                    let _ = link.event_tx.send(PeerWorkerEvent::Disconnected).await;
-                    return false;
-                }
-                if let Some(answer) = answer {
-                    return link.event_tx.send(answer).await.is_ok();
-                }
-            }
-            Err(_) => return link.give_up_aich().await,
-        }
-    }
-}
-
 /// Ask the blocks `pipeline` was handed and forward their bytes, in
 /// `<= EMBLOCKSIZE` steps up to the Request Depth, refilled at every arrival
 /// (ADR-0029 "Request pipeline"). Core (not the worker) owns assembly and
@@ -654,68 +622,6 @@ impl<'a> WorkerLink<'a> {
             aich_budget,
         }
     }
-
-    /// Ask the peer for the AICH recovery data of `part`, quoting the trusted
-    /// master `root` (`OP_AICHREQUEST`, ADR-0038), and start its budget.
-    /// `false` when the link is gone, reported as `Disconnected`.
-    async fn ask_aich(&mut self, file_hash: FileHash, part: u16, root: AichRootHash) -> bool {
-        let ask = RequesterCommand::RequestAich {
-            file_hash,
-            part,
-            root,
-        };
-        if self.cmd_tx.send(PeerCommand::Requester(ask)).await.is_err() {
-            let _ = self.event_tx.send(PeerWorkerEvent::Disconnected).await;
-            return false;
-        }
-        self.aich = Some((part, tokio::time::Instant::now() + self.aich_budget));
-        true
-    }
-
-    /// What `event` does to the AICH ask held: the peer's answer for its part
-    /// ends it, returned for the caller to forward; the link's end ends it with
-    /// an empty answer, sent here, so the download falls back to retire-all.
-    async fn settle_aich(
-        &mut self,
-        file_hash: FileHash,
-        event: &Option<PeerEvent>,
-    ) -> Option<PeerWorkerEvent> {
-        let (part, _) = self.aich?;
-        match event {
-            Some(PeerEvent::Requester(RequesterEvent::AichAnswerReceived {
-                file_hash: answered,
-                part: answered_part,
-                recovery_data,
-                ..
-            })) if *answered == file_hash && *answered_part == part => {
-                self.aich = None;
-                Some(PeerWorkerEvent::AichAnswerReceived {
-                    part,
-                    recovery_data: recovery_data.clone(),
-                })
-            }
-            None | Some(PeerEvent::Connection(ConnectionEvent::Disconnected { .. })) => {
-                self.give_up_aich().await;
-                None
-            }
-            Some(_) => None,
-        }
-    }
-
-    /// The AICH ask held went unanswered: an empty answer stands in, so the
-    /// download falls back to retire-all. `false` when the download is gone.
-    async fn give_up_aich(&mut self) -> bool {
-        let Some((part, _)) = self.aich.take() else {
-            return true;
-        };
-        self.event_tx
-            .send(PeerWorkerEvent::AichAnswerReceived {
-                part,
-                recovery_data: Vec::new(),
-            })
-            .await
-            .is_ok()
-    }
 }
 
 /// How a wait on the peer ended: the probe's, or a stream of handed blocks.
@@ -735,6 +641,7 @@ enum Streamed {
     Handed,
 }
 
+mod aich;
 mod pipeline;
 #[cfg(test)]
 mod tests;
