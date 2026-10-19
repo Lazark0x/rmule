@@ -23,8 +23,9 @@ const FLOW: &str = "peer-queue-fanout";
 
 /// rmule's file: three parts, so several sharers carry it at once.
 const DEFAULT_RMULE_FILE_SIZE: u64 = 3 * 9_728_000;
-/// Each holder file: more than a holder fetches at its cap in a run.
-const DEFAULT_HOLDER_FILE_SIZE: u64 = 12 * 1024 * 1024;
+/// Each holder file: more than a holder fetches at its cap in a run (48 MiB
+/// at 50 KiB/s is over sixteen minutes).
+const DEFAULT_HOLDER_FILE_SIZE: u64 = 48 * 1024 * 1024;
 
 /// `peer-queue-fanout`: the eserver, `--sharers` High-ID stock aMule sharers
 /// of rmule's file, the first `--queued` of them held to their two slots by
@@ -65,8 +66,10 @@ pub(crate) struct PeerQueueFanoutArgs {
     /// Each sharer's upload slot, KiB/s; every sharer keeps two.
     #[arg(long, default_value_t = 50)]
     pub(crate) slot_kib: u32,
-    /// Each holder's download cap, KiB/s.
-    #[arg(long, default_value_t = 2)]
+    /// Each holder's download cap, KiB/s. A holder far below its slot keeps
+    /// the sharer's socket unwritable for 40 s and is dropped (`Reason was
+    /// Timeout`, `ClientTCPSocket.cpp:201-229`), freeing the slot it holds.
+    #[arg(long, default_value_t = 50)]
     pub(crate) holder_kib: u32,
     /// Seconds the flow waits for the download to complete.
     #[arg(long, default_value_t = 900)]

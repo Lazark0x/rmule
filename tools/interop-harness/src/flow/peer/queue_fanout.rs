@@ -11,8 +11,11 @@
 //!    `SlotAllocation` slot: `UploadQueue.cpp:296-318`).
 //! 3. Two slot-holders for each of the first `queued` sharers: stock aMules
 //!    downloading that sharer's own holder file from it at `holder_kib`, so
-//!    they never finish and the sharer queues rmule. The other sharers grant
-//!    at once.
+//!    they do not finish inside the run and the sharer queues rmule. The
+//!    other sharers grant at once. A holder capped far below its slot loses
+//!    it: the sharer's socket stays unwritable past aMule's 40 s timeout
+//!    (`ClientTCPSocket.cpp:201-229`), and at 2 KiB/s every queued sharer but
+//!    one had a free slot by rmule's ask.
 //! 4. **rmule**: `ed2k download start --serve --report-parts-every-ms 1000
 //!    --stamp-events`, High ID, with a tap in its namespace on both listeners.
 //!
