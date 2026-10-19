@@ -21,6 +21,21 @@ use crate::adapters::tests::dialed_serve_ctx;
 use super::*;
 
 mod dial_in_flight;
+mod hang_up;
+
+/// A one-part file of 4096 bytes no peer serves: a download target whose
+/// probe the peer's name answer completes.
+fn dummy_file(seed: u8) -> Ed2kFileLink {
+    Ed2kFileLink {
+        name: Ed2kText::from_utf8("dummy"),
+        size: 4096,
+        file_hash: FileHashSummary::digest_bytes(&[seed; 4096]).file_hash(),
+        part_hash_set: None,
+        aich_root: None,
+        ipv6_sources: Vec::new(),
+        sources: Default::default(),
+    }
+}
 
 /// A connection rmule *dialed* (to download) also serves the peer's pull on
 /// the same socket: the worker produces a serve half, and a file the peer
@@ -272,16 +287,7 @@ async fn a_second_download_of_a_dialed_peer_waits_and_rides_the_same_link() {
     use crate::adapters::PeerWorkerEvent;
     use crate::service::LinkTurn;
 
-    let dummy = |seed: u8| Ed2kFileLink {
-        name: Ed2kText::from_utf8("dummy"),
-        size: 4096,
-        file_hash: FileHashSummary::digest_bytes(&[seed; 4096]).file_hash(),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
-    let (first_file, second_file) = (dummy(0xA1), dummy(0xA2));
+    let (first_file, second_file) = (dummy_file(0xA1), dummy_file(0xA2));
     let listener = PeerListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
         .await
         .unwrap();

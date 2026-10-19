@@ -33,9 +33,11 @@ use crate::service::{DialEnd, LinkTurn};
 
 mod awaited_grants;
 mod riders;
+mod serve_hold;
 
 pub(crate) use awaited_grants::{AwaitedGrant, GrantSender, LinkOffer};
 pub(super) use riders::Riders;
+pub(super) use serve_hold::ServeHold;
 
 /// One name a Peer Link is filed under: an **Ask Name** the link proves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

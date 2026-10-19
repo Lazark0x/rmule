@@ -13,7 +13,9 @@ use tokio::sync::mpsc;
 use super::InboundPeerDeps;
 use super::inbound_triage::serve_side;
 use super::kad_runtime::broker_peer_kad_handoff;
-use super::peer_link::{DialInFlight, DownloadHalf, Filing, LinkJoin, LinkName, Riders, recv_join};
+use super::peer_link::{
+    DialInFlight, DownloadHalf, Filing, LinkJoin, LinkName, Riders, ServeHold, recv_join,
+};
 use super::peer_transfer::PeerWorkerEvent;
 use super::peer_transfer::dial_end::closed_before_hello;
 use super::serve_runtime::{ServeConnection, ServeInput, ServeOutput};
@@ -75,8 +77,12 @@ pub(crate) enum LinkOrigin {
 /// aMule would answer by dropping this one. One download rides at a time;
 /// when the rider's worker lets go, the oldest waiter takes the link.
 ///
-/// The socket is shut down when the serve half and every download let it go,
-/// or the peer disconnects. `Disconnected` is delivered to the rider and the
+/// The socket is shut down when every download lets it go and nothing else
+/// holds it — the serve half once the peer asked it anything, the held buddy
+/// link (ADR-0107 invariant 9) — or when the serve half and every download
+/// let it go, or the peer disconnects. A rider's Queued Hang-Up so closes a
+/// link nothing else holds at once, not at the uploader's 40 s timeout
+/// (ADR-0116). `Disconnected` is delivered to the rider and the
 /// serve half so each frees its per-connection state; a waiter learns the
 /// link ended and dials — or, when the link closed before the hello, is
 /// retired with the cause its dialer reads (ADR-0107 invariant 11).
@@ -122,7 +128,7 @@ pub(crate) async fn route_dialed_connection(mut conn: PeerConnection, route: Dia
         server_tx,
         deps: &deps,
     };
-    let mut serving = true;
+    let mut serve = ServeHold::new(remote, deps.buddy_slot.clone());
     // Set once every half let go: the session was told to close after the
     // last command, and the events it read before closing are still
     // forwarded — a file request's report among them — until it stops or the
@@ -139,7 +145,7 @@ pub(crate) async fn route_dialed_connection(mut conn: PeerConnection, route: Dia
                 }
                 None => {
                     riders.rider_left(link.identity.as_ref());
-                    if !serving && riders.is_empty() {
+                    if riders.is_empty() && !serve.holds() {
                         closing = close(&mut conn).await;
                         if closing.is_none() {
                             break;
@@ -147,14 +153,14 @@ pub(crate) async fn route_dialed_connection(mut conn: PeerConnection, route: Dia
                     }
                 }
             },
-            command = serve_cmd_rx.recv(), if open && serving => match command {
+            command = serve_cmd_rx.recv(), if open && serve.serving() => match command {
                 Some(command) => {
                     if conn.send(command).await.is_err() {
                         break;
                     }
                 }
                 None => {
-                    serving = false;
+                    serve.serve_ended();
                     if riders.is_empty() {
                         closing = close(&mut conn).await;
                         if closing.is_none() {
@@ -174,6 +180,7 @@ pub(crate) async fn route_dialed_connection(mut conn: PeerConnection, route: Dia
                 let Some(event) = event else { break }; // driver/peer gone
                 match halves.dispatch(remote, event, riders.rider()).await {
                     Routed::Open => {}
+                    Routed::Pulled => serve.pulled(),
                     Routed::Identified(identity) => {
                         riders.identified(&identity);
                         link.identified(&deps, remote, identity);
@@ -271,6 +278,8 @@ impl DialedLink {
 /// it learned of the peer.
 enum Routed {
     Open,
+    /// The peer asked the serve half something over the link.
+    Pulled,
     Identified(PeerIdentity),
     Revised(PeerIdentity),
     /// The peer offered a changed Client ID; the answer, when it takes it.
@@ -314,6 +323,7 @@ impl Halves<'_> {
             // the request; the download half keeps running.
             PeerEvent::Server(request) => {
                 let _ = self.server_tx.send(ServeInput::Server(request)).await;
+                return Routed::Pulled;
             }
             // The side-channel frames (Kad firewall checks, buddy keepalive,
             // `0x99`) go where an accepted link's go: aMule's

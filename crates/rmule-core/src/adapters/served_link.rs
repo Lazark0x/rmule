@@ -2,8 +2,9 @@
 //! (ADR-0107, "One peer, one link"): filed under every name its hello proves,
 //! so a download of its peer rides it rather than dial a second link aMule
 //! would answer by dropping this one (`ClientList.cpp:400-403`), ending our
-//! upload to it. The link stays up while its serve side or a download holds
-//! it, as a dialed link does (ADR-0031).
+//! upload to it. The link stays up while a download holds it, or its serve
+//! side once the peer asked it anything, or the buddy slot, as a dialed link
+//! does (ADR-0031, ADR-0107 invariant 9).
 
 use rmule_net::peer::Connection as PeerConnection;
 use rmule_peer::{
@@ -15,7 +16,7 @@ use tokio::sync::mpsc;
 
 use super::InboundPeerDeps;
 use super::inbound_triage::serve_side;
-use super::peer_link::{LinkName, Riders, recv_join};
+use super::peer_link::{LinkName, Riders, ServeHold, recv_join};
 use super::peer_transfer::PeerWorkerEvent;
 use super::serve_runtime::{ServeInput, ServeOutput};
 use crate::service::PortTestClosedBy;
@@ -26,7 +27,8 @@ use crate::service::PortTestClosedBy;
 /// the node-wide services, and the serve task's commands down to the session
 /// — and the riding download's commands down and its requester events back.
 /// Runs until the peer closes, or until neither the serve side nor a download
-/// holds the link any more.
+/// holds the link any more: a download's leaving closes a link the peer never
+/// asked anything over and the buddy slot does not hold (ADR-0107 invariant 9).
 ///
 /// Three buddy legs live here (socket unification, ADR-0061): an inbound
 /// `OP_BUDDYPING` routes to the buddy slot — which pongs back **on this same
@@ -49,11 +51,11 @@ pub(super) async fn drive_served_link(
         .peer_links
         .file(remote, LinkName::of(remote, &identity));
     let mut joins = Some(joins);
-    let mut serving = true;
+    let mut serve = ServeHold::new(remote, deps.buddy_slot.clone());
     let mut riders = Riders::default();
     let closed_by = loop {
         tokio::select! {
-            command = command_rx.recv(), if serving => match command {
+            command = command_rx.recv(), if serve.serving() => match command {
                 Some(ServeOutput::Server(command)) => {
                     if conn.send(PeerCommand::Server(command)).await.is_err() {
                         // The driver stopped first; its paired `Disconnected`
@@ -67,7 +69,7 @@ pub(super) async fn drive_served_link(
                     if riders.is_empty() {
                         break PortTestClosedBy::Us;
                     }
-                    serving = false;
+                    serve.serve_ended();
                 }
             },
             join = recv_join(&mut joins), if joins.is_some() => match join {
@@ -83,21 +85,25 @@ pub(super) async fn drive_served_link(
                 }
                 None => {
                     riders.rider_left(Some(&identity));
-                    if !serving && riders.is_empty() {
+                    if riders.is_empty() && !serve.holds() {
+                        if serve.serving() {
+                            let _ = event_tx.send(ServeInput::closed_here()).await;
+                        }
                         break PortTestClosedBy::Us;
                     }
                 }
             },
             event = conn.next_event() => {
                 let Some(event) = event else {
-                    if serving {
+                    if serve.serving() {
                         let _ = event_tx.send(ServeInput::closed_here()).await;
                     }
                     break PortTestClosedBy::DriverEnded;
                 };
-                let routed = route(&deps, remote, event, &mut identity, &event_tx, serving, riders.rider()).await;
+                let routed = route(&deps, remote, event, &mut identity, &event_tx, serve.serving(), riders.rider()).await;
                 match routed {
                     Routed::Open => {}
+                    Routed::Pulled => serve.pulled(),
                     Routed::Revised => filing.refile(LinkName::of(remote, &identity)),
                     Routed::Offered(answer) => {
                         if let Some(answer) = answer
@@ -110,7 +116,7 @@ pub(super) async fn drive_served_link(
                         if riders.is_empty() {
                             break PortTestClosedBy::Us;
                         }
-                        serving = false;
+                        serve.serve_ended();
                     }
                     // An uploader's grant nobody on the link asked for: the
                     // download awaiting it rides the link, or it goes back
@@ -146,6 +152,8 @@ pub(super) async fn drive_served_link(
 /// What routing one event left of the link.
 enum Routed {
     Open,
+    /// The peer asked the serve side something over the link.
+    Pulled,
     /// The session revised the peer's identity; the link's names follow it.
     Revised,
     /// The peer offered a changed Client ID; the answer, when it takes it.
@@ -174,7 +182,12 @@ async fn route(
 ) -> Routed {
     let mut revised_now = false;
     let input = match event {
-        PeerEvent::Server(request) => ServeInput::Server(request),
+        PeerEvent::Server(request) => {
+            if serving && event_tx.send(ServeInput::Server(request)).await.is_err() {
+                return Routed::ServeGone;
+            }
+            return Routed::Pulled;
+        }
         // Whether a changed Low ID stands is the node's to say: it knows the
         // servers (ADR-0107).
         PeerEvent::Connection(ConnectionEvent::ClientIdOffered { client_id, server }) => {

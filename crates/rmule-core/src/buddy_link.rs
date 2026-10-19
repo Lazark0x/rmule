@@ -473,6 +473,15 @@ impl BuddySlot {
         verdict
     }
 
+    /// Whether the connection at `remote` is the held buddy link, which keeps
+    /// it up when no download holds it any more (ADR-0107 invariant 9).
+    pub(crate) fn holds_link(&self, remote: PeerEndpoint) -> bool {
+        self.lock()
+            .link
+            .as_ref()
+            .is_some_and(|link| link.remote == remote)
+    }
+
     /// The accepted connection at `remote` closed: when it was the held buddy
     /// link, drop it and free the service slot at once — aMule frees `m_pBuddy`
     /// when the buddy's socket dies, so a fresh recruit can take the slot.

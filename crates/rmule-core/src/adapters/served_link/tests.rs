@@ -169,6 +169,39 @@ impl Linked {
         );
     }
 
+    /// The asker asks our serve side for a file over its link, as a peer
+    /// downloading from us does: its pull holds the link (ADR-0107 invariant 9).
+    async fn pulls(&mut self) {
+        self.asker
+            .send(PeerCommand::Requester(
+                rmule_peer::RequesterCommand::ProbeFile {
+                    file_hash: FileHash::from_bytes([0x5C; FileHash::BYTE_LEN]),
+                    file_size: 4096,
+                    own_status: rmule_peer::PartBitmap::one_part_complete(),
+                },
+            ))
+            .await
+            .expect("the asker's link is up");
+    }
+
+    /// Whether rmule closes the asker's link within five seconds.
+    async fn closed(&mut self) -> bool {
+        let closed = async {
+            while let Some(event) = self.asker.next_event().await {
+                if matches!(
+                    event,
+                    PeerEvent::Connection(ConnectionEvent::Disconnected { .. })
+                ) {
+                    return true;
+                }
+            }
+            true
+        };
+        timeout(Duration::from_secs(5), closed)
+            .await
+            .unwrap_or(false)
+    }
+
     /// The asker has no such file: the download riding the link lets it go.
     async fn has_no_such_file(&mut self, file_hash: FileHash) {
         self.asker
@@ -217,9 +250,12 @@ async fn a_download_of_a_peer_linked_to_us_rides_its_link_and_dials_nothing() {
     ));
 }
 
+/// A link the peer pulls on stays when its download lets go, and the next
+/// download of the peer rides it.
 #[tokio::test]
-async fn a_link_a_download_let_go_stays_and_takes_the_next_download() {
+async fn a_link_the_peer_pulls_on_stays_when_its_download_lets_go_and_takes_the_next() {
     let mut linked = Linked::up().await;
+    linked.pulls().await;
     let file = file();
     let mut first = linked.download(&file).await;
     linked.rode_the_link(file.file_hash).await;
@@ -231,6 +267,19 @@ async fn a_link_a_download_let_go_stays_and_takes_the_next_download() {
 
     let _second = linked.download(&file).await;
     linked.rode_the_link(file.file_hash).await;
+}
+
+/// A link the peer never asked anything over closes when its download lets
+/// go: nothing else holds it (ADR-0107 invariant 9).
+#[tokio::test]
+async fn a_link_nothing_else_holds_closes_when_its_download_lets_go() {
+    let mut linked = Linked::up().await;
+    let file = file();
+    let mut first = linked.download(&file).await;
+    linked.rode_the_link(file.file_hash).await;
+    linked.has_no_such_file(file.file_hash).await;
+    let _ = until_disconnected(&mut first).await;
+    assert!(linked.closed().await, "the link closes with its download");
 }
 
 #[tokio::test]
@@ -253,22 +302,7 @@ async fn the_serve_side_letting_go_leaves_the_link_to_the_download_riding_it() {
         "the answer reached the download over the link the serve side let go: {seen:?}"
     );
     // With both halves gone the link ends.
-    let closed = async {
-        while let Some(event) = linked.asker.next_event().await {
-            if matches!(
-                event,
-                PeerEvent::Connection(ConnectionEvent::Disconnected { .. })
-            ) {
-                return true;
-            }
-        }
-        true
-    };
-    assert!(
-        timeout(Duration::from_secs(5), closed)
-            .await
-            .unwrap_or(false)
-    );
+    assert!(linked.closed().await);
 }
 
 #[tokio::test]

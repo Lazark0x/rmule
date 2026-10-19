@@ -4,18 +4,6 @@
 
 use super::*;
 
-fn dummy_file(seed: u8) -> Ed2kFileLink {
-    Ed2kFileLink {
-        name: Ed2kText::from_utf8("dummy"),
-        size: 4096,
-        file_hash: FileHashSummary::digest_bytes(&[seed; 4096]).file_hash(),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    }
-}
-
 /// Two downloads of one peer that start together dial once (ADR-0107
 /// invariant 11): the second finds the first one's **Dial in Flight**, waits
 /// on it, and rides the one link once the first lets go. Two dials raced two
