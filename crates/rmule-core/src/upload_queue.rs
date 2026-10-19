@@ -258,6 +258,12 @@ pub enum Relinked {
         /// The file the slot serves.
         file_hash: FileHash,
     },
+    /// A live slot, riding on over the new link: aMule's client keeps its
+    /// upload when a newer socket replaces its own (`ClientList.cpp:400-403`).
+    Slot {
+        /// The file the slot serves.
+        file_hash: FileHash,
+    },
 }
 
 /// Global, cross-connection upload queue: a slot budget, a wait-list cap, and
@@ -421,9 +427,8 @@ impl UploadSlotQueue {
             // A marked waiter's ask on the link it came back on takes its
             // slot, one over the budget when the last slot went to a waiter
             // the queue could reach (`UploadQueue.cpp:410-425`). A slot left
-            // free because nobody ahead could be reached goes to any waiter
-            // asking from a link, as aMule's `Process` fills it with the best
-            // one it can reach (`UploadQueue.cpp:255-258`).
+            // free because nobody could be reached was filled already when
+            // the asker's link came up (`fill_free_slot`).
             let marked = self.waiting[index].next_connection;
             let room = self.budget + usize::from(marked && self.extra_slot_open);
             if self.granted.len() < room {
@@ -517,13 +522,14 @@ impl UploadSlotQueue {
         self.waiting.iter().map(|q| (q.peer, q.connected))
     }
 
-    /// The pending dial-back grants (ADR-0057): slots granted to a waiter
-    /// that had hung up, whose dial has not connected.
-    pub fn pending_dial_backs(&self) -> impl Iterator<Item = PeerEndpoint> + '_ {
+    /// Every standing the queue holds — a slot, a pending dial-back grant
+    /// (ADR-0057), a wait-list place — each with whether a live link holds
+    /// it: the slots first, then the waiters in rank order.
+    pub fn standings(&self) -> impl Iterator<Item = (PeerEndpoint, bool)> + '_ {
         self.granted
             .iter()
-            .filter(|g| g.dial_back_since.is_some())
-            .map(|g| g.peer)
+            .map(|g| (g.peer, g.dial_back_since.is_none()))
+            .chain(self.waiters())
     }
 
     /// Whether `peer` holds a standing with no link under it: a waiter that
@@ -543,8 +549,8 @@ impl UploadSlotQueue {
     /// (`UploadQueue.cpp:395-431`); a pending dial-back grant moves with it
     /// and is live from now on, as aMule grants a client it promoted
     /// unconnected on whichever link its hellos finish first
-    /// (`BaseClient.cpp:1707-1716`). Returns what moved — never onto a `to`
-    /// that already holds a slot or a place.
+    /// (`BaseClient.cpp:1707-1716`); a live slot rides on over `to`. Returns
+    /// what moved — never onto a `to` that already holds a slot or a place.
     pub fn relink(&mut self, from: PeerEndpoint, to: PeerEndpoint) -> Option<Relinked> {
         if from == to || self.contains(to) {
             return None;
@@ -554,15 +560,37 @@ impl UploadSlotQueue {
             entry.connected = true;
             return Some(Relinked::Waiter);
         }
-        let slot = self
-            .granted
-            .iter_mut()
-            .find(|g| g.peer == from && g.dial_back_since.is_some())?;
+        let slot = self.granted.iter_mut().find(|g| g.peer == from)?;
         slot.peer = to;
-        slot.dial_back_since = None;
-        Some(Relinked::HeldGrant {
-            file_hash: slot.file_hash,
+        let file_hash = slot.file_hash;
+        Some(match slot.dial_back_since.take() {
+            Some(_) => Relinked::HeldGrant { file_hash },
+            None => Relinked::Slot { file_hash },
         })
+    }
+
+    /// Fill a slot left free because no waiter could be reached, now that a
+    /// waiter's link came up: the best waiter the queue can reach takes it,
+    /// as aMule's `Process` fills a free slot within its next second
+    /// (`UploadQueue.cpp:255-258`). A slot frees promoting any waiter a dial
+    /// reaches, so only a link coming up — a relink onto a live one — makes
+    /// a waiter reachable, and the one it promotes is the one linked: no
+    /// dial (ADR-0057). Then reports the wait list's changed ranks.
+    #[must_use]
+    pub fn fill_free_slot(
+        &mut self,
+        now: Instant,
+        modifiers: &HashMap<PeerEndpoint, f64>,
+    ) -> Promotion {
+        if self.granted.len() >= self.budget || self.waiting.is_empty() {
+            return Promotion::default();
+        }
+        let mut promotion = match self.sort_and_mark(now, modifiers) {
+            Some(index) => self.promote(index, now),
+            None => Promotion::default(),
+        };
+        promotion.reranked = self.collect_rank_changes();
+        promotion
     }
 
     /// The file of the pending dial-back grant `peer` holds, if it holds one.
@@ -777,9 +805,9 @@ impl UploadSlotQueue {
     /// when it has no live connection (ADR-0057) and stamping the reclaim marker
     /// so one whose client never links can be reaped by [`purge`](Self::purge).
     /// The slot went to a waiter the queue could reach, so a marked Low ID may
-    /// take one over the budget again. Shared by [`release`](Self::release)
-    /// and the purge reclaim. Does not re-rank — the caller collects any rank
-    /// shifts.
+    /// take one over the budget again. Shared by [`release`](Self::release),
+    /// the purge reclaim and [`fill_free_slot`](Self::fill_free_slot). Does
+    /// not re-rank — the caller collects any rank shifts.
     fn promote(&mut self, index: usize, now: Instant) -> Promotion {
         let head = self.waiting.remove(index);
         let dial_back = !head.connected;

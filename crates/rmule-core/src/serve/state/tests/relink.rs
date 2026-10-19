@@ -104,6 +104,22 @@ fn a_new_link_from_where_the_live_one_is_replaces_it() {
     assert_eq!(state.queue.waiting_len(), 1);
 }
 
+#[test]
+fn a_link_rmule_dialed_takes_no_client_from_its_live_link() {
+    // aMule moves a client to a new socket only at the hello of one the peer
+    // opened (`ClientTCPSocket.cpp:391`); the hello answer on a socket it
+    // dialed finishes that client's own.
+    let file = hash(0x34);
+    let t = Instant::now();
+    let first = peer_at([172, 19, 0, 5], 51318);
+    let mut state = waiting(file, first, t);
+    let dialed = peer_at([172, 19, 0, 5], 4662);
+    state.on_link_dialed(dialed);
+
+    assert_eq!(hello_of(&mut state, dialed, user(0x0B)), []);
+    assert_eq!(rank_of(&mut state, first, file, t), Some(1));
+}
+
 /// Prove `p`'s hello hash by Secure User Identification, the ledger binding
 /// it.
 fn bind(state: &mut ServeState, p: PeerEndpoint, user_hash: UserHash) {

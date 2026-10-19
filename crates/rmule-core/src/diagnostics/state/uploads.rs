@@ -90,6 +90,18 @@ impl DiagnosticsState {
         inner.shared_files.restore_moved(files);
     }
 
+    /// Move `from`'s upload row to `to`, the link its client came back on
+    /// with its slot (ADR-0057): the row, its start and its bytes ride on.
+    /// Nothing moves for a client that held no slot.
+    pub fn move_upload(&self, from: PeerEndpoint, to: PeerEndpoint) {
+        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        if let Some(row) = inner.uploads.remove(&from) {
+            inner
+                .uploads
+                .insert(to, UploadDiagnostics { peer: to, ..row });
+        }
+    }
+
     /// Retire `peer`'s upload row when its slot is released. The bytes it
     /// carried stay counted in [`SessionCounters::up_bytes_total`].
     pub fn close_upload(&self, peer: PeerEndpoint) {

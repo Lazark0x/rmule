@@ -1,13 +1,16 @@
-//! A waiter is a client, not a link (ADR-0057, "A waiter on a new link";
-//! ADR-0107, "One peer, one link"): the hello of a new link that names a
-//! client already waiting moves that client's place — or its pending dial-back
-//! grant, granted there at once — onto the new link, as aMule attaches a new
-//! socket to the client it knows (`ClientList.cpp:371-412`), keeps a queued
-//! client's place (`UploadQueue.cpp:395-431`) and grants a client it promoted
-//! unconnected once its hellos finish (`BaseClient.cpp:1707-1716`). Two clients under one User Hash are settled
-//! as aMule settles them: an identified one still linked turns the newcomer
-//! away (`ClientList.cpp:384-392`), and at a slot ask the ones not identified
-//! leave the wait list (`UploadQueue.cpp:432-458`).
+//! A waiter is a client, not a link (ADR-0057, "A client on a new link keeps
+//! its standing"; ADR-0107, "One peer, one link"): the hello of a new link
+//! that names a client the queue holds moves that client's place, its
+//! pending dial-back grant — granted there at once — or its slot onto the new
+//! link, as aMule attaches a new socket to the client it knows
+//! (`ClientList.cpp:371-412`), keeps a queued client's place
+//! (`UploadQueue.cpp:395-431`) and grants a client it promoted unconnected
+//! once its hellos finish (`BaseClient.cpp:1707-1716`). Of two hellos of one
+//! client racing, the link the peer opened keeps the client. Two clients
+//! under one User Hash are settled as aMule settles them: an identified one
+//! still linked turns the newcomer away (`ClientList.cpp:384-392`), and at a
+//! slot ask the ones not identified leave the wait list
+//! (`UploadQueue.cpp:432-458`).
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -24,27 +27,27 @@ use crate::upload_queue::Relinked;
 use super::{ServeDecision, ServeState};
 
 impl ServeState {
-    /// Move the place of the client `identity` names onto `peer`, the link
-    /// its hello just came in on. The client is the waiter — or the pending
-    /// dial-back grantee — holding the same User Hash, best rank first:
-    /// aMule's queue finds its client by hash (`UploadQueue.cpp:396-397`),
-    /// and a client it promoted unconnected is granted on the first link its
-    /// hellos finish on (`ClientTCPSocket.cpp:328`, `:417`), so a held grant
-    /// goes on `peer` at once. It is attached when the link
-    /// it waited on has ended, or comes from the same address and listen
-    /// port, which aMule drops for the new one (`ClientList.cpp:400-403`); a
-    /// live link from anywhere else keeps its client, and the new link is
-    /// another (`:384-398`).
+    /// Move the standing of the client `identity` names onto `peer`, the
+    /// link its hello just came in on: its place, its pending dial-back grant
+    /// or its slot, found by User Hash as aMule's queue finds its client
+    /// (`UploadQueue.cpp:396-397`). A standing whose link has ended moves to
+    /// any link; a live one only to a link the peer opened from the same
+    /// address and listen port, closing the old link, as aMule replaces the
+    /// socket it held at the hello of a newer one (`ClientTCPSocket.cpp:391`,
+    /// `ClientList.cpp:400-403`) — a live link from anywhere else, or one
+    /// rmule dialed, keeps its client (`:384-398`).
+    ///
+    /// A held grant goes on `peer` at once, as aMule grants a client it
+    /// promoted unconnected on the first link its hellos finish on
+    /// (`ClientTCPSocket.cpp:328`, `:417`), and the dial-back still in flight
+    /// is called off; a slot is granted again there, so the session on
+    /// `peer` serves its part asks (`UploadQueue.cpp:486-493`).
     pub(super) fn relink_waiter(
         &mut self,
         peer: PeerEndpoint,
         identity: &PeerIdentity,
     ) -> Vec<ServeDecision> {
-        let standings = self
-            .queue
-            .waiters()
-            .chain(self.queue.pending_dial_backs().map(|held| (held, false)));
-        let found = standings.into_iter().find_map(|(held, linked)| {
+        let found = self.queue.standings().find_map(|(held, linked)| {
             let known = self.identities.get(&held)?;
             (held != peer && known.user_hash() == identity.user_hash()).then(|| {
                 let same_place = held.ip() == peer.ip() && known.tcp_port() == identity.tcp_port();
@@ -54,7 +57,7 @@ impl ServeState {
         let Some((from, linked, same_place)) = found else {
             return Vec::new();
         };
-        if linked && !same_place {
+        if linked && (!same_place || self.dialed.contains(&peer)) {
             return Vec::new();
         }
         let Some(moved) = self.queue.relink(from, peer) else {
@@ -68,17 +71,25 @@ impl ServeState {
         if linked {
             decisions.push(ServeDecision::Disconnect { peer: from });
         }
-        if let Relinked::HeldGrant { file_hash } = moved {
-            decisions.push(ServeDecision::Send {
+        match moved {
+            Relinked::Waiter => {}
+            Relinked::HeldGrant { file_hash } => {
+                decisions.push(ServeDecision::CallOffDialBack { waiter: from });
+                decisions.push(ServeDecision::Send {
+                    peer,
+                    command: ServerCommand::GrantSlot { file_hash },
+                });
+                decisions.push(ServeDecision::Emit(ServeEvent::UploadSlotGranted {
+                    peer,
+                    file_hash,
+                    software: Some(identity.software().clone()),
+                    road: GrantRoad::CameBack,
+                }));
+            }
+            Relinked::Slot { file_hash } => decisions.push(ServeDecision::Send {
                 peer,
                 command: ServerCommand::GrantSlot { file_hash },
-            });
-            decisions.push(ServeDecision::Emit(ServeEvent::UploadSlotGranted {
-                peer,
-                file_hash,
-                software: Some(identity.software().clone()),
-                road: GrantRoad::CameBack,
-            }));
+            }),
         }
         decisions
     }

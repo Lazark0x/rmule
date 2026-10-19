@@ -337,7 +337,10 @@ where
                     match dialed {
                         // A connection rmule dialed is also serving the peer:
                         // admit it to the same queue as an accepted one.
-                        Some(conn) => register_serve_connection(conn, &mut conns, &fact_tx),
+                        Some(conn) => {
+                            state.on_link_dialed(conn.peer());
+                            register_serve_connection(conn, &mut conns, &fact_tx);
+                        }
                         // The dialed source closed (core shutdown); stop polling
                         // it but keep serving accepted connections.
                         None => dialed_serve_rx = None,
@@ -549,6 +552,8 @@ async fn enact<L: ServeRuntimeService>(
                         }
                     }
                     ServeEvent::WaiterRelinked { from, to } => {
+                        // A slot's upload row rides on with it.
+                        diagnostics.move_upload(from, to);
                         // The mark `PeerQueued` set moves with the place.
                         if let Some(v4) = from.as_v4() {
                             peer_roster.forget(PeerRelation::Upload, v4);
@@ -702,6 +707,7 @@ async fn enact<L: ServeRuntimeService>(
             // The adapter dials on a task of its own and says how it ended on
             // the loop's dial-back inbox (ADR-0057).
             ServeDecision::DialBack(dial) => serve_runtime.dial_back(dial, dial_backs.clone()),
+            ServeDecision::CallOffDialBack { waiter } => serve_runtime.call_off_dial_back(waiter),
         }
     }
 }

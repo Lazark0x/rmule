@@ -130,6 +130,9 @@ fn a_waiter_back_while_its_slot_is_held_is_granted_on_the_link_it_came_back_on()
     let mut state = hung_up_behind(file, holder, waiter, user(0x0A), t);
     let _ = state.on_conn_event(t, holder, disconnected(), &no_modifiers());
 
+    // The dial still in flight is called off, as aMule deletes the socket
+    // it was connecting when the client's own arrives
+    // (`ClientList.cpp:400-403`).
     let back = peer_at([10, 0, 0, 2], 50288);
     let hello = hello_facts(user(0x0A), 0, 0, 2).identified();
     let [grant, said] = granted(back, file, GrantRoad::CameBack);
@@ -140,12 +143,13 @@ fn a_waiter_back_while_its_slot_is_held_is_granted_on_the_link_it_came_back_on()
                 from: waiter,
                 to: back,
             }),
+            ServeDecision::CallOffDialBack { waiter },
             grant,
             said,
         ]
     );
-    // The dial that was in flight comes up after: nothing of the grant is
-    // left for it, so its link is let go.
+    // A dial already past its hello comes up all the same: its hello takes
+    // nothing from the link the client came back on, and is let go.
     let link = waiter.with_port(4662);
     let dialed = hello_facts(user(0x0A), 0, 0, 2).identity();
     assert_eq!(
@@ -153,6 +157,42 @@ fn a_waiter_back_while_its_slot_is_held_is_granted_on_the_link_it_came_back_on()
         [ServeDecision::Disconnect { peer: link }]
     );
     assert!(state.queue.is_granted(back));
+}
+
+#[test]
+fn a_link_the_peer_opens_after_the_dialed_hello_takes_the_slot_from_the_dialed_link() {
+    // aMule's newer socket replaces the one its client held, dialed or not
+    // (`ClientList.cpp:400-403`): the slot rides on, and the dialed link is
+    // closed. The link it moved to is granted again, so its session serves
+    // the part asks that follow (`UploadQueue.cpp:486-493`).
+    let file = hash(0x48);
+    let t = Instant::now();
+    let (holder, waiter) = (peer_at([10, 0, 0, 1], 51000), peer_at([10, 0, 0, 2], 51318));
+    let mut state = hung_up_behind(file, holder, waiter, user(0x0A), t);
+    let _ = state.on_conn_event(t, holder, disconnected(), &no_modifiers());
+    let link = waiter.with_port(4662);
+    let dialed = hello_facts(user(0x0A), 0, 0, 2).identity();
+    let _ = state.on_dial_back_linked(t, waiter, link, dialed, &no_modifiers());
+
+    let back = peer_at([10, 0, 0, 2], 50288);
+    let hello = hello_facts(user(0x0A), 0, 0, 2).identified();
+    assert_eq!(
+        state.on_conn_event(t, back, hello, &no_modifiers()),
+        [
+            ServeDecision::Emit(ServeEvent::WaiterRelinked {
+                from: link,
+                to: back,
+            }),
+            ServeDecision::Disconnect { peer: link },
+            send(back, ServerCommand::GrantSlot { file_hash: file }),
+        ]
+    );
+    assert!(state.queue.is_granted(back));
+    assert_eq!(
+        state.on_conn_event(t, link, disconnected(), &no_modifiers()),
+        [],
+        "the replaced link's close frees no slot"
+    );
 }
 
 #[test]
@@ -247,9 +287,11 @@ fn a_low_id_waiter_is_passed_over_and_granted_when_it_next_connects() {
 }
 
 #[test]
-fn a_slot_nobody_could_be_reached_for_goes_to_a_waiter_asking_from_a_link() {
-    // aMule's `Process` fills a free slot with the best waiter it can reach
-    // (`UploadQueue.cpp:255-258`); rmule has no such loop, so the ask does.
+fn a_slot_nobody_could_be_reached_for_goes_to_the_waiter_whose_link_comes_back() {
+    // aMule's `Process` fills a free slot within its next second with the
+    // best waiter it can reach (`UploadQueue.cpp:255-258`). Only a link
+    // coming up makes a waiter reachable, so its hello fills the slot, on
+    // that link, before any ask and with no dial.
     let file = hash(0x47);
     let t = Instant::now();
     let (holder, low) = (peer_at([10, 0, 0, 1], 51000), peer_at([10, 0, 0, 2], 51318));
@@ -273,10 +315,17 @@ fn a_slot_nobody_could_be_reached_for_goes_to_a_waiter_asking_from_a_link() {
         "nobody the queue can reach waits: the slot stays free"
     );
 
-    // Back on a new link, a sort reads it reachable before it asks.
     let back = peer_at([10, 0, 0, 2], 50288);
-    let _ = state.on_conn_event(t, back, low_id(), &no_modifiers());
-    let _ = state.on_rerank_tick(t, &no_modifiers());
     let [grant, said] = granted(back, file, GrantRoad::Linked);
-    assert_eq!(slot_request(&mut state, back, file, t), [grant, said]);
+    assert_eq!(
+        state.on_conn_event(t, back, low_id(), &no_modifiers()),
+        [
+            ServeDecision::Emit(ServeEvent::WaiterRelinked {
+                from: low,
+                to: back,
+            }),
+            grant,
+            said,
+        ]
+    );
 }

@@ -253,13 +253,14 @@ pub enum ServeEvent {
         /// Why it left.
         cause: crate::WaiterLeaveCause,
     },
-    /// A waiter came back on a new link and keeps its place: the new link's
-    /// hello named the client waiting at `from`, whose link had ended or
-    /// came from the same address and listen port (aMule attaches the new
-    /// socket to the client it knows, `ClientList.cpp:371-412`, and a client
-    /// already queued keeps its place, `UploadQueue.cpp:395-431`). Every row
-    /// and mark keyed by `from` is now keyed by `to`; a `from` still live is
-    /// closed after this.
+    /// A client of the upload queue came back on a new link and keeps its
+    /// standing — its place, its held grant or its slot: the new link's
+    /// hello named the client held at `from`, whose link had ended, or the
+    /// peer opened the new link from the same address and listen port (aMule
+    /// attaches the new socket to the client it knows,
+    /// `ClientList.cpp:371-412`, and a client already queued keeps its place,
+    /// `UploadQueue.cpp:395-431`). Every row and mark keyed by `from` is now
+    /// keyed by `to`; a `from` still live is closed after this.
     WaiterRelinked {
         /// The link the waiter waited on.
         from: rmule_primitives::PeerEndpoint,

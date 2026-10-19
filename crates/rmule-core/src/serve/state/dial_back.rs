@@ -90,8 +90,9 @@ impl ServeState {
     /// (ADR-0057). The waiter's held grant moves onto the link and
     /// `OP_ACCEPTUPLOADREQ` goes on it. A hello that names another client
     /// ends the grant; a grant already delivered elsewhere — the client came
-    /// back first — or reclaimed leaves the link to whatever its hello finds,
-    /// and a link nothing of ours stands on is let go.
+    /// back first — or reclaimed leaves the link to whatever its hello finds
+    /// as a link rmule dialed, which takes nothing from a live link, and a
+    /// link nothing of ours stands on is let go.
     pub(in crate::serve) fn on_dial_back_linked(
         &mut self,
         now: Instant,
@@ -100,6 +101,7 @@ impl ServeState {
         identity: PeerIdentity,
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
+        self.dialed.insert(link);
         let mut decisions = Vec::new();
         if self.queue.pending_grant(waiter).is_some() {
             let theirs = self.identities.get(&waiter).map(PeerIdentity::user_hash);

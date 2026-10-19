@@ -504,10 +504,15 @@ impl ServeState {
                         ServeDecision::Disconnect { peer },
                     ];
                 }
-                let relinked = self.relink_waiter(peer, &identity);
+                let mut relinked = self.relink_waiter(peer, &identity);
                 self.identities.insert(peer, identity);
                 if !relinked.is_empty() {
                     self.stamp_contact(peer);
+                    // A link coming up is what makes a waiter reachable: a
+                    // slot nobody could be reached for goes to it now
+                    // (ADR-0057).
+                    let filled = self.queue.fill_free_slot(now, modifiers);
+                    relinked.extend(self.promotion_decisions(filled));
                 }
                 relinked
             }
@@ -538,6 +543,7 @@ impl ServeState {
                 }]
             }
             ConnectionEvent::Disconnected { .. } => {
+                self.dialed.remove(&peer);
                 self.served_ranges
                     .retain(|(range_peer, _), _| *range_peer != peer);
                 // A waiting peer keeps its queue position across disconnect —

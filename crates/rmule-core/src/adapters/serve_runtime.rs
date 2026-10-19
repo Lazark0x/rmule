@@ -4,6 +4,7 @@
 //! ADR-0095) — the whole socket concern behind one seam so core owns policy
 //! and stays socket-free.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddrV4;
 use std::time::Duration;
@@ -11,7 +12,8 @@ use std::time::Duration;
 use rmule_ed2k::OfferedFile;
 use rmule_net::family::FamilySelection;
 use rmule_net::peer::{PeerListener, PeerNetError};
-use tokio::sync::mpsc;
+use rmule_primitives::PeerEndpoint;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::CoreError;
 use crate::ban_store::SharedBanStore;
@@ -134,6 +136,16 @@ pub trait ServeRuntimeService: Send + 'static {
     /// dials nothing — the held grant waits for the waiter's next
     /// connection, and the purge reclaims one that never comes.
     fn dial_back(&mut self, _dial: DialBack, _outcomes: mpsc::Sender<DialBackOutcome>) {}
+
+    /// Call off the dial-back to `waiter` if it has not reached the peer's
+    /// hello yet (ADR-0057, "Two hellos of one client race"): it stops and
+    /// says nothing, its socket closed and its Dial in Flight unfiled, so a
+    /// download waiting on it looks again and finds the link the client came
+    /// back on. A dial past its hello, or none, is left as it is.
+    ///
+    /// Default: nothing to call off, the truth for an adapter that dials
+    /// nothing.
+    fn call_off_dial_back(&mut self, _waiter: PeerEndpoint) {}
 
     /// Adopt the builder's one set of `AdapterCells`
     /// (ADR-0048 "Identity ownership"):
@@ -277,6 +289,10 @@ pub struct RuntimeServeRuntimeService {
     /// connection; `None` before the first start and after a release, when
     /// nothing is dialed back.
     hello: Option<HelloSource>,
+    /// Where each dial-back is called off, by the waiter it dials for: held
+    /// from the dial until its road ends or is called off (ADR-0057, "Two
+    /// hellos of one client race").
+    dial_backs: HashMap<PeerEndpoint, oneshot::Sender<()>>,
 }
 
 impl RuntimeServeRuntimeService {
@@ -556,6 +572,10 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
         let Some(hello) = self.hello.clone() else {
             return;
         };
+        // A road past its hello, or ended, holds its call-off no more.
+        self.dial_backs.retain(|_, call_off| !call_off.is_closed());
+        let (call_off, called_off) = oneshot::channel();
+        self.dial_backs.insert(dial.waiter, call_off);
         let road = DialBackRoad {
             hello,
             adverts: self.adverts.clone(),
@@ -563,7 +583,13 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
             ban_store: self.ban_store.clone(),
             deps: self.inbound_deps(),
         };
-        tokio::spawn(road.run(dial, outcomes));
+        tokio::spawn(road.run(dial, called_off, outcomes));
+    }
+
+    fn call_off_dial_back(&mut self, waiter: PeerEndpoint) {
+        if let Some(call_off) = self.dial_backs.remove(&waiter) {
+            let _ = call_off.send(());
+        }
     }
 
     /// Refused before `start` and after a release: there is no listener to
@@ -589,6 +615,8 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
         // about files this node no longer serves.
         self.follower = None;
         self.hello = None;
+        // No serve task waits on a dial-back any more: none is called off.
+        self.dial_backs.clear();
         // Dropping the receiver is the pump's stop signal (`accept_tx.closed()`);
         // joining it is what makes the listener — and its port — gone rather
         // than merely told to go.

@@ -12,11 +12,16 @@
 //! only what downloads open (ADR-0116). Once the peer's hello is in, the link
 //! is driven as a served Peer Link the serve side holds from the dial, and its
 //! serve connection goes to the serve task with the hello, which grants on it.
+//!
+//! Until that hello the serve side may call the dial off: the client came back
+//! on a link of its own, which took the grant and the dial's Peer Link names,
+//! as aMule deletes the socket it was connecting when the client's own
+//! arrives (`ClientList.cpp:400-403`). The dial stops without a word.
 
 use rmule_net::peer::{Connection as PeerConnection, ObfuscationPolicy, PeerNetError};
 use rmule_peer::PeerIdentity;
 use rmule_primitives::{PeerCrypt, PeerEndpoint};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use super::ServeConnection;
 use crate::adapters::hello_wait::{Opening, await_hello};
@@ -84,8 +89,15 @@ impl DialBackRoad {
     /// ended on `outcomes`. A link or a dial already filed under the
     /// waiter's names is not dialed around (ADR-0107 invariant 7): nothing is
     /// said, and the grant goes on that link once its hello reaches the serve
-    /// side.
-    pub(super) async fn run(self, dial: DialBack, outcomes: mpsc::Sender<DialBackOutcome>) {
+    /// side. A word on `called_off` before the peer's hello stops the dial
+    /// with nothing said: its socket closes, and its Dial in Flight is
+    /// unfiled, so a download waiting on it looks again.
+    pub(super) async fn run(
+        self,
+        dial: DialBack,
+        called_off: oneshot::Receiver<()>,
+        outcomes: mpsc::Sender<DialBackOutcome>,
+    ) {
         let Self {
             hello,
             adverts,
@@ -127,7 +139,16 @@ impl DialBackRoad {
         };
         let options = adverts.connect_options(crypt);
         let ours = ObfuscationPolicy::stance_of(options.obfuscation.map(|config| config.policy));
-        let mut conn = match PeerConnection::connect(at, hello.now(), options).await {
+        let mut called_off = Some(called_off);
+        let connected = tokio::select! {
+            biased;
+            () = call_off(&mut called_off) => {
+                drop(in_flight);
+                return;
+            }
+            connected = PeerConnection::connect(at, hello.now(), options) => connected,
+        };
+        let mut conn = match connected {
             Ok(conn) => conn,
             // Refused before any socket: no dial was in flight.
             Err(PeerNetError::CryptIncompatible) => {
@@ -142,7 +163,16 @@ impl DialBackRoad {
                 return;
             }
         };
-        let identity = match await_hello(&mut conn, &deps.hello_refusals, |_| {}).await {
+        let opening = tokio::select! {
+            biased;
+            () = call_off(&mut called_off) => {
+                drop(in_flight);
+                let _ = conn.shutdown().await;
+                return;
+            }
+            opening = await_hello(&mut conn, &deps.hello_refusals, |_| {}) => opening,
+        };
+        let identity = match opening {
             Opening::Identified(identity) => *identity,
             Opening::Closed(reason) => {
                 let cause = closed_before_hello(reason);
@@ -177,6 +207,19 @@ impl DialBackRoad {
         let _ =
             drive_served_link(conn, identity, command_rx, event_tx, deps, Some(in_flight)).await;
     }
+}
+
+/// Resolves when the serve side calls the dial off; never once it can no
+/// longer, the serve side having let the call-off go.
+async fn call_off(called_off: &mut Option<oneshot::Receiver<()>>) {
+    if let Some(word) = called_off.as_mut() {
+        if word.await.is_ok() {
+            return;
+        }
+        // A spent receiver is never polled again.
+        *called_off = None;
+    }
+    std::future::pending::<()>().await;
 }
 
 #[cfg(test)]
