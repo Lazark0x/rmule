@@ -106,7 +106,8 @@ fn ledger(capture: &TcpCapture, rmule: IpAddr, peer: IpAddr) -> Vec<Link> {
     let mut links: Vec<Link> = Vec::new();
     for open in &capture.opens {
         let rmule_opened = open.source.ip() == rmule && open.destination.ip() == peer;
-        if !rmule_opened && !(open.source.ip() == peer && open.destination.ip() == rmule) {
+        let peer_opened = open.source.ip() == peer && open.destination.ip() == rmule;
+        if !(rmule_opened || peer_opened) {
             continue;
         }
         let (rmule_end, peer_end) = if rmule_opened {
