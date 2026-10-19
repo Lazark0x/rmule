@@ -130,3 +130,29 @@ fn out_of_part_reqs_empties_the_pipeline() {
         Some(vec![(0, BLOCK), (BLOCK, 2 * BLOCK), (2 * BLOCK, 3 * BLOCK)])
     );
 }
+
+#[test]
+fn a_lost_block_frees_its_depth_and_is_a_hole_only_in_the_streamed_range() {
+    let t0 = Instant::now();
+    let mut pipeline = Pipeline::new();
+    pipeline.begin(0, 10 * BLOCK);
+    assert!(pipeline.next_request(t0).is_some());
+    assert!(deliver(&mut pipeline, t0, (0, BLOCK)));
+    assert_eq!(
+        pipeline.next_request(t0),
+        Some(vec![(3 * BLOCK, 4 * BLOCK)])
+    );
+    assert!(pipeline.lost(BLOCK), "a block of the streamed range is a hole");
+
+    // A new part: the two blocks still asked of the old one drain against
+    // the depth, until one of them is lost.
+    pipeline.begin(20 * BLOCK, 30 * BLOCK);
+    assert_eq!(pipeline.next_request(t0), Some(vec![(20 * BLOCK, 21 * BLOCK)]));
+    assert_eq!(pipeline.next_request(t0), None);
+    assert!(!pipeline.lost(2 * BLOCK), "an old part's block is no hole");
+    assert!(deliver(&mut pipeline, t0, (20 * BLOCK, 21 * BLOCK)));
+    assert_eq!(
+        pipeline.next_request(t0),
+        Some(vec![(21 * BLOCK, 22 * BLOCK), (22 * BLOCK, 23 * BLOCK)])
+    );
+}

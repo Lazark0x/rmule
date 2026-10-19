@@ -156,6 +156,60 @@ async fn a_requeue_reports_itself_and_leaves_the_worker_on_its_link() {
     assert_eq!(reported, vec![PeerWorkerEvent::Requeued]);
 }
 
+/// A compressed block the session could not inflate leaves a hole this slot
+/// can never fill: a stock uploader drops a second ask for a block it has sent
+/// (aMule `UploadClient.cpp:503-511`). The stream ends at once, its slot given
+/// back, rather than idling out the no-progress budget (ADR-0029 "Request
+/// pipeline").
+#[tokio::test(start_paused = true)]
+async fn a_block_that_fails_to_inflate_ends_the_stream_at_once() {
+    let bytes = [0x5A; 1024];
+    let file = rmule_testkit::file_link("corrupt.bin", &bytes);
+    let (events_tx, mut events) = mpsc::channel(8);
+    let (cmd_tx, _cmd_rx) = mpsc::channel(8);
+    let (event_tx, mut worker_events) = mpsc::channel(8);
+    let (_worker_cmd_tx, mut worker_cmd_rx) = mpsc::channel(8);
+    events_tx
+        .send(PeerEvent::Requester(RequesterEvent::CompressedPartSkipped {
+            file_hash: file.file_hash,
+            offset: 0,
+            reason: rmule_peer::InflateFailed::Corrupt,
+        }))
+        .await
+        .unwrap();
+    let plan = PartPlan {
+        part_index: 0,
+        offset: 0,
+        len: bytes.len() as u64,
+    };
+    let mut link = WorkerLink {
+        events: &mut events,
+        cmd_tx: &cmd_tx,
+        event_tx: &event_tx,
+        commands: &mut worker_cmd_rx,
+        deferred: VecDeque::new(),
+    };
+    let started = tokio::time::Instant::now();
+    let streamed = stream_part_download(
+        &mut link,
+        &mut Pipeline::new(),
+        &file,
+        plan,
+        0,
+        Duration::from_secs(180),
+    )
+    .await;
+    assert_eq!(started.elapsed(), Duration::ZERO, "no wait on the hole");
+    assert!(matches!(streamed, Streamed::Abandoned), "the slot goes back");
+    drop(event_tx);
+    let mut reported = Vec::new();
+    while let Some(event) = worker_events.recv().await {
+        reported.push(event);
+    }
+    assert_eq!(reported, vec![PeerWorkerEvent::Disconnected]);
+    drop(events_tx);
+}
+
 /// Run [`idle_wait`] over `link_events`, the link closing after them, with no
 /// command sent and a slot budget of `budget`, and return the worker events
 /// it reported.

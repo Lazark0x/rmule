@@ -148,6 +148,17 @@ impl Pipeline {
         current
     }
 
+    /// The block asked at `offset` will never arrive whole: the session could
+    /// not inflate it, or refused it. It stops counting against the depth.
+    /// Answers whether it was the streamed range's, a hole this slot cannot
+    /// fill (ADR-0029 "A lost block ends the stream").
+    pub(super) fn lost(&mut self, offset: u64) -> bool {
+        let Some(at) = self.asked.iter().position(|asked| asked.start == offset) else {
+            return false;
+        };
+        self.asked.remove(at).is_some_and(|asked| asked.current)
+    }
+
     /// Whether every block of the streamed range has arrived.
     pub(super) fn streamed(&self) -> bool {
         self.next >= self.end && !self.asked.iter().any(|asked| asked.current)

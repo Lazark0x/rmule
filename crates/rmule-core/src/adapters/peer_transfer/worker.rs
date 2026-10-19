@@ -310,6 +310,10 @@ async fn work_the_link(
                             slot_deadline = tokio::time::Instant::now() + slot_wait_timeout;
                         }
                         Streamed::WindDown => break,
+                        Streamed::Abandoned => {
+                            cancel = true;
+                            break;
+                        }
                         Streamed::Shutdown { cancel: c } => {
                             cancel = c;
                             break;
@@ -502,7 +506,8 @@ async fn request_aich_recovery(
 /// worker) owns assembly and completion (ADR-0029): the worker forwards each
 /// block as it arrives and reports `PartStreamed` once its whole assigned
 /// range has arrived. A part handed meanwhile ends the stream at once; the
-/// old blocks still asked drain through the next one.
+/// old blocks still asked drain through the next one. A block of the range
+/// the session could not inflate ends it too, the slot given back.
 ///
 /// Every wait is bounded by `slot_wait_timeout` measured from the last
 /// sign of data progress: a busy peer may queue us (and rank us)
@@ -610,6 +615,19 @@ async fn stream_part_download(
                     return Streamed::WindDown;
                 }
             }
+            // A lost block of this range is a hole the prefix cannot pass,
+            // and a stock uploader never sends a block twice in one slot
+            // (ADR-0029 "A lost block ends the stream").
+            PeerEvent::Requester(RequesterEvent::CompressedPartSkipped {
+                file_hash: received,
+                offset,
+                ..
+            }) if received == file_hash => {
+                if pipeline.lost(offset) {
+                    let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
+                    return Streamed::Abandoned;
+                }
+            }
             _ => {}
         }
     }
@@ -637,6 +655,9 @@ enum Streamed {
     WindDown,
     /// The download told this worker to stop mid-part.
     Shutdown { cancel: bool },
+    /// The worker gave its slot up: the peer sent a block of the part it
+    /// cannot use, so the slot ends with `OP_CANCELTRANSFER` (ADR-0056).
+    Abandoned,
     /// The download handed this worker a part while it waited on another:
     /// the new part waits in `deferred`, served next.
     Reassigned,
