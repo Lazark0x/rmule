@@ -170,11 +170,13 @@ async fn a_block_that_fails_to_inflate_ends_the_stream_at_once() {
     let (event_tx, mut worker_events) = mpsc::channel(8);
     let (_worker_cmd_tx, mut worker_cmd_rx) = mpsc::channel(8);
     events_tx
-        .send(PeerEvent::Requester(RequesterEvent::CompressedPartSkipped {
-            file_hash: file.file_hash,
-            offset: 0,
-            reason: rmule_peer::InflateFailed::Corrupt,
-        }))
+        .send(PeerEvent::Requester(
+            RequesterEvent::CompressedPartSkipped {
+                file_hash: file.file_hash,
+                offset: 0,
+                reason: rmule_peer::InflateFailed::Corrupt,
+            },
+        ))
         .await
         .unwrap();
     let plan = PartPlan {
@@ -200,7 +202,10 @@ async fn a_block_that_fails_to_inflate_ends_the_stream_at_once() {
     )
     .await;
     assert_eq!(started.elapsed(), Duration::ZERO, "no wait on the hole");
-    assert!(matches!(streamed, Streamed::Abandoned), "the slot goes back");
+    assert!(
+        matches!(streamed, Streamed::Abandoned),
+        "the slot goes back"
+    );
     drop(event_tx);
     let mut reported = Vec::new();
     while let Some(event) = worker_events.recv().await {

@@ -333,7 +333,8 @@ fn a_compressed_block_cut_by_the_slot_end_leaves_nothing_for_the_next_slot() {
             matches!(
                 event,
                 PeerEvent::Requester(
-                    RequesterEvent::PartReceived { .. } | RequesterEvent::CompressedPartSkipped { .. }
+                    RequesterEvent::PartReceived { .. }
+                        | RequesterEvent::CompressedPartSkipped { .. }
                 )
             )
         })

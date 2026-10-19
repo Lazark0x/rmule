@@ -91,11 +91,7 @@ impl AdmissionTally {
     /// the half of the caps `IsAcceptableContact` applies. The bucket cap
     /// never refuses a row, because aMule takes a row its bin refused when
     /// the global limits allow it.
-    pub(super) fn answer_refusal(
-        &self,
-        passed: &Self,
-        ip: Ipv4Addr,
-    ) -> Option<KadAdmissionCap> {
+    pub(super) fn answer_refusal(&self, passed: &Self, ip: Ipv4Addr) -> Option<KadAdmissionCap> {
         let (at_ip, in_net) = self.held(ip);
         let (passed_at_ip, passed_in_net) = passed.held(ip);
         global_refusal(
