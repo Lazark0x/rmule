@@ -193,3 +193,31 @@ fn a_departed_seed_stops_counting() {
     assert_eq!(run.decisions[1].expected, BTreeSet::from([Pick::Fresh(0)]));
     assert!(run.decisions[1].matched());
 }
+
+/// A seed that delivered its part, with nothing pending it holds, joins a
+/// part one other racer is on: the Tail Race (ADR-0026) is a pick the
+/// scheduler may make, and so is giving the slot back.
+#[test]
+fn a_seed_that_delivered_may_race_a_lone_part() {
+    let advertised = BTreeMap::from([(A, set(&[0, 1])), (B, set(&[0, 1]))]);
+    let first_status_at = BTreeMap::from([(A, 1.0), (B, 1.1)]);
+    let topology = Topology {
+        size: SIZE,
+        window_parts: 0,
+        advertised: &advertised,
+        first_status_at: &first_status_at,
+    };
+    let events = [
+        tick(10.0),
+        assigned(A, 0),
+        assigned(B, 1),
+        LogEvent::Verified { part: 0 },
+        assigned(A, 1),
+        tick(20.0),
+    ];
+    let run = replay(&events, &topology);
+    let race = run.decisions.last().unwrap();
+    assert_eq!(race.actual, Pick::Raced(1));
+    assert!(race.matched());
+    assert!(race.expected.contains(&Pick::Nothing));
+}

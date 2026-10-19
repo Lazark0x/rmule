@@ -322,11 +322,12 @@ pub(crate) fn replay(events: &[LogEvent], topology: &Topology<'_>) -> Replay {
                         vec![parts.completed.contains(peer)]
                     };
                     for delivered in completed {
-                        let pick = pick(&parts, *peer, held, total, delivered, rank);
-                        if pick == actual && class.is_none() {
-                            class = Some(frequency[*part as usize] <= bound);
+                        for pick in picks(&parts, *peer, held, total, delivered, &rank) {
+                            if pick == actual && class.is_none() {
+                                class = Some(frequency[*part as usize] <= bound);
+                            }
+                            expected.insert(pick);
                         }
-                        expected.insert(pick);
                     }
                 }
                 out.decisions.push(Decision {
@@ -463,37 +464,50 @@ fn frequency(
     frequency
 }
 
-/// What the scheduler hands `peer` (`Scheduler::assign_next`): the
+/// What the scheduler may hand `peer` (`Scheduler::assign_next`): the
 /// best-ranked pending part it advertised; else, unless it delivered a part
-/// already, the best-ranked in-flight part it advertised and is not on.
-fn pick(
+/// already, the best-ranked in-flight part it advertised and is not on. A
+/// peer that delivered runs a Tail Race (ADR-0026): it joins a part it
+/// advertised and is not on that exactly one racer holds, when that racer's
+/// Delivery Rate is below its own, else it gets nothing. The log carries no
+/// rates, so every such part, and nothing, is a pick the scheduler may make.
+fn picks(
     parts: &Parts,
     peer: Ipv4Addr,
     held: &BTreeSet<u32>,
     total: u32,
     delivered: bool,
     rank: impl Fn(u32) -> (bool, bool, bool, u32, u32),
-) -> Pick {
+) -> Vec<Pick> {
     if parts.peer_part.contains_key(&peer) {
-        return Pick::Nothing;
+        return vec![Pick::Nothing];
     }
     let fresh = (0..total)
         .filter(|part| held.contains(part))
         .filter(|part| !parts.verified.contains(part) && !parts.racing.contains_key(part))
         .min_by_key(|part| rank(*part));
     if let Some(part) = fresh {
-        return Pick::Fresh(part);
+        return vec![Pick::Fresh(part)];
     }
-    if delivered {
-        return Pick::Nothing;
-    }
-    parts
+    let joinable = parts
         .racing
         .iter()
-        .filter(|(part, racers)| held.contains(part) && !racers.contains(&peer))
-        .map(|(part, _)| *part)
-        .min_by_key(|part| rank(*part))
-        .map_or(Pick::Nothing, Pick::Raced)
+        .filter(|(part, racers)| held.contains(part) && !racers.contains(&peer));
+    if delivered {
+        return std::iter::once(Pick::Nothing)
+            .chain(
+                joinable
+                    .filter(|(_, racers)| racers.len() == 1)
+                    .map(|(part, _)| Pick::Raced(*part)),
+            )
+            .collect();
+    }
+    vec![
+        joinable
+            .map(|(part, _)| *part)
+            .min_by_key(|part| rank(*part))
+            .map_or(Pick::Nothing, Pick::Raced),
+    ]
 }
 
 /// The Streaming Window: `n` parts from the lowest unverified one.

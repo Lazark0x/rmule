@@ -283,7 +283,7 @@ fn claims(
     let mut claims = vec![
         advertised_only(wire, advertised),
         first_ask(wire, run),
-        window_ascends(run),
+        window_ascends(run, topology.window_parts),
         rank_minimum(run),
     ];
     if topology.seeds.iter().any(|seed| seed.holding == "complete") {
@@ -430,8 +430,15 @@ fn first_ask(wire: &Wire, run: &Replay) -> Claim {
 }
 
 /// Claim 3, ADR-0112 §4–5: every part handed out inside the window is the
-/// rank's, so the window is taken in ascending order.
-fn window_ascends(run: &Replay) -> Claim {
+/// rank's, so the window is taken in ascending order. A run with no window
+/// (`--streaming-window 0`) cannot draw it.
+fn window_ascends(run: &Replay, window_parts: u32) -> Claim {
+    if window_parts == 0 {
+        return Claim::blocked(
+            "inside-the-window-requests-ascend",
+            "the run has no Streaming Window (`--streaming-window 0`)",
+        );
+    }
     let inside: Vec<_> = run
         .decisions
         .iter()
