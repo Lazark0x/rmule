@@ -256,7 +256,9 @@ impl GatewayWatch {
             pcp_removed: count("mapping removed"),
             natpmp_requests: count("NAT-PMP port mapping request")
                 .saturating_sub(count(" lifetime=0s")),
-            conflicts: count("ConflictInMappingEntry") + count("conflict"),
+            conflicts: count("ConflictInMappingEntry")
+                + count("conflict")
+                + count("already redirected"),
             build: text
                 .lines()
                 .filter(|line| line.starts_with("rmule-miniupnpd-version"))

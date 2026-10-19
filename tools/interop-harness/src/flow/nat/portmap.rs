@@ -149,9 +149,9 @@ impl PortMapFlow {
             // Longer: this flow is about the shifted grant, and a fast renewal
             // cadence would only add rows to read.
             Self::Mismatch => 20,
-            // Room between the grant and the renewal at L/2 for a second host
-            // to take the port.
-            Self::Moved => 30,
+            // What rmule asks for whatever this says (its floor is 120 s), so
+            // the renewal lands at about 60 s.
+            Self::Moved => 120,
             Self::Ipv6Pinhole | Self::Ipv6PinholeLinkLocal => 12,
         }
     }
@@ -212,8 +212,8 @@ impl PortMapFlow {
             // the fresh redirect, and the acks that land on it.
             Self::HighId | Self::NatPmp => 75,
             Self::Mismatch => 40,
-            // The take-over, the renewal at about 15 s and its settling.
-            Self::Moved => 50,
+            // The take-over, the renewal at about 60 s and its settling.
+            Self::Moved => 90,
             Self::Ipv6Pinhole | Self::Ipv6PinholeLinkLocal => 45,
         }
     }
