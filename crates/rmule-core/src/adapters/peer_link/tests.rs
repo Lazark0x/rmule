@@ -83,6 +83,45 @@ fn a_newer_link_takes_a_name_and_the_older_one_ending_leaves_it_there() {
     assert!(links.find(&[shared]).is_none());
 }
 
+#[test]
+fn the_link_the_peer_opened_during_a_dial_keeps_every_name_past_the_dials_hello() {
+    // aMule attaches a socket to a client it knows only at the hello of a
+    // socket the peer opened, replacing the one it was connecting
+    // (`ClientTCPSocket.cpp:391`, `ClientList.cpp:400-403`): the dial's own
+    // hello later takes nothing back, and its end leaves the names filed.
+    let links = SharedPeerLinks::default();
+    let at = v4([203, 0, 113, 3], 4662);
+    let looked_up = [LinkName::Endpoint(at), LinkName::User(user(0x23))];
+    let Reach::Dial(dial) = links.reach(at, &looked_up) else {
+        panic!("nothing is filed yet: the look-up files the dial");
+    };
+    let came_back = v4([203, 0, 113, 3], 50_288);
+    let low_id = LinkName::Callback {
+        server: server(),
+        low_id: ClientId::from_u32(0x0000_1234),
+    };
+    let proven = vec![looked_up[0], looked_up[1], low_id];
+    let (_inbound, _inbound_joins) = links.file(came_back, proven.clone());
+
+    let (mut dialed, _dialed_joins) = dial.into_parts();
+    dialed.refile(proven.clone());
+    for name in &proven {
+        assert_eq!(
+            links.find(&[*name]).map(|found| found.remote),
+            Some(came_back),
+            "{name:?} stays with the link the peer opened"
+        );
+    }
+    drop(dialed);
+    for name in &proven {
+        assert_eq!(
+            links.find(&[*name]).map(|found| found.remote),
+            Some(came_back),
+            "{name:?} outlives the dial"
+        );
+    }
+}
+
 fn half() -> (DownloadHalf, mpsc::Sender<PeerCommand>) {
     let (peer_cmd_tx, peer_cmd_rx) = mpsc::channel(1);
     let half = DownloadHalf {

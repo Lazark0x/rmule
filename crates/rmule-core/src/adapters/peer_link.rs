@@ -403,8 +403,14 @@ pub(super) struct Filing {
 }
 
 impl Filing {
-    /// File the link under `names` instead of what it was filed under: the
-    /// peer's identity moved (a Low ID it changed to).
+    /// File the link under `names` instead of what it was filed under: a
+    /// dial's hello proved them, or the peer's identity moved (a Low ID it
+    /// changed to). A name a link filed later holds stays with it: aMule
+    /// attaches a socket to a client it knows only at the hello of a socket
+    /// the peer opened (`ClientTCPSocket.cpp:391`), replacing the one it was
+    /// connecting (`ClientList.cpp:400-403`), so a dial's hello takes back
+    /// nothing the peer's own link took during the dial (ADR-0107
+    /// invariant 7).
     pub(super) fn refile(&mut self, names: Vec<LinkName>) {
         if names == self.names {
             return;
@@ -412,7 +418,13 @@ impl Filing {
         if let Ok(mut book) = self.links.book.lock() {
             release(&mut book, self.filed.filing, &self.names);
             for name in &names {
-                book.links.insert(*name, self.filed.clone());
+                let later = book
+                    .links
+                    .get(name)
+                    .is_some_and(|filed| filed.filing > self.filed.filing);
+                if !later {
+                    book.links.insert(*name, self.filed.clone());
+                }
             }
         }
         self.names = names;
