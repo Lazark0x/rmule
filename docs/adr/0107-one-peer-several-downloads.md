@@ -291,7 +291,7 @@ served nothing, and idle to the 40 s close. The link therefore keeps its **Asked
 range its `OP_REQUESTPARTS` carried since the uploader last cleared that list, forgotten at a
 `0x56` we send, a `0x57` we read and the link's close. Each grant hands them to the rider's
 worker, which never asks one of them: a block whose range is one is asked a byte shorter, which
-moves every later block of its stream off the old grid. eMuleAI keys the same drop by the file
+moves every later block of its run off the old grid (ADR-0117). eMuleAI keys the same drop by the file
 too (`UploadClient.cpp:79-86`, `:769-770`), so a switch collides nowhere there, and asking
 around the Asked Ranges costs it nothing.
 A waiter whose call comes after the link ended dials, as any download does that finds no link.

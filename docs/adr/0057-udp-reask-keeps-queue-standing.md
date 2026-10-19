@@ -175,7 +175,8 @@ aMule's `FILEREASKTIME` of 1 300 000 ms
   with a standing without a rank, its clock dated at the give-back, on the ordinary
   cadence: it holds a part we lack, only none is free now. aMule marks such a source
   `DS_NONEEDEDPARTS` (`DownloadClient.cpp:667`) and asks it at twice the period; rmule
-  keeps the ordinary period, since a part frees as soon as a racer verifies or fails.
+  keeps the ordinary period, since blocks free as soon as a worker holding them ends or a
+  part fails.
 - **No needed parts:** such a source reasks at twice the period, then forces a TCP
   recheck
   ([PartFile.cpp#L1439](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/PartFile.cpp#L1439)).

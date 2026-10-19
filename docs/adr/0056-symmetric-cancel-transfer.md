@@ -47,14 +47,14 @@ and nothing left to request from this source
    download while its slot is granted or active sends `0x56` before closing. This covers
    aMule's first two triggers; closing right after is safe because aMule's receipt path
    expects no follow-up.
-2. **Nothing to work on a granted slot.** A worker granted a slot it has no part to be
-   handed and none to race (ADR-0026 "Bounded racing") — at the grant, or after a part it
-   streamed — sends `0x56` and gives the slot back, as aMule's `SendBlockRequests` does
-   when no free block is left (`DownloadClient.cpp:641-693`). A worker that delivered a
-   part keeps its slot while a slower source holds an in-flight part alone: it races that
-   part (the Tail Race) and gives the slot back only when no such part is left, or when it
-   loses the race and nothing else is free. One whose Advertised Parts still hold a part we lack,
-   every one in flight elsewhere, is retired `NoFreePart` and its record waits in the
+2. **Nothing to work on a granted slot.** A worker granted a slot whose pipeline has
+   drained with no block to be handed and no Duplicate Set (ADR-0117) — at the grant, or
+   once its last asked block arrived — sends `0x56` and gives the slot back, as aMule's
+   `SendBlockRequests` does when no free block is left (`DownloadClient.cpp:641-693`). A
+   worker keeps its slot while a slower worker holds a block it could duplicate: the End
+   Game hands it that block, and it gives the slot back only once none is left. One whose
+   Advertised Parts still hold a part we lack, every block claimed elsewhere, is retired
+   `NoFreePart` and its record waits in the
    RemoteQueued stage on the ordinary cadence (ADR-0057); one advertising no part we
    lack is retired `NoNeededParts` (ADR-0112). Neither stays connected: the record's
    standing, not the socket, brings the source back. Holding one of the counterparty's

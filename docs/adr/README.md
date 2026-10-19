@@ -35,7 +35,7 @@ where a rejected alternative would otherwise come back.
 | [0026](0026-core-owned-download-orchestration.md) | Core owns download orchestration: per-peer connections, multi-peer scheduling, verification and storage |
 | [0027](0027-tracing-as-third-diagnostic-channel.md) | Tracing as a third diagnostic channel |
 | [0028](0028-worker-phase-diagnostics-snapshot.md) | Worker phase and diagnostics snapshot for hang investigation |
-| [0029](0029-block-level-cross-peer-part-assembly.md) | Block-level cross-peer part assembly with a core-owned prefix buffer |
+| [0029](0029-block-level-cross-peer-part-assembly.md) | Core-owned part assembly across peers, and the request pipeline |
 | [0030](0030-candidate-source-pool-with-worker-backfill.md) | Candidate-source pool with worker backfill and event-driven peer identification |
 | [0031](0031-bidirectional-peer-session-and-inbound-listener.md) | Bidirectional peer session with core-owned upload scheduling and an inbound listener |
 | [0032](0032-persistent-multiplexed-server-session.md) | Persistent, multiplexed eD2k server session shared by source-lookup and serve |
@@ -123,3 +123,4 @@ where a rejected alternative would otherwise come back.
 | [0114](0114-preview-action.md) | Preview hands a download's own file to the operator's player as one argument, once its first part is verified |
 | [0115](0115-temp-directory-and-completion-move.md) | Part files live in a Temp Directory apart from finished files; completion moves the file into the download directory, waits while a program holds it, and copies only across volumes |
 | [0116](0116-asking-and-transferring.md) | A download asks for queue places under one Connection Budget and transfers from every slot it is granted; a Low-ID rmule reasks at 15 minutes; an uploader we queue at is preferred within aMule's score |
+| [0117](0117-block-level-parts-and-a-bounded-end-game.md) | A part's blocks are shared by every worker that holds it, and its last blocks are asked twice, at most three at a time |

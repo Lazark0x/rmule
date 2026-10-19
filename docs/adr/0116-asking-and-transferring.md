@@ -168,8 +168,8 @@ The factor stays inside the rules a stock downloader waiting at rmule relies on:
   2; every source that grants transfers. A queued source holds no socket, so open connections stay near
   the transfers plus the asks in flight; a dead dial ends within the peer connect and hello timeouts
   (10 s, 15 s).
-- Assembly memory is bounded by the parts in flight, at most one per transferring source, each buffer
-  holding only what has arrived (ADR-0029).
+- Assembly memory is bounded by the parts holding arrived bytes, fewer than the transferring sources
+  since workers share the first-ranked part, each holding about what has arrived (ADR-0029, ADR-0117).
 - The Sources pane's slot rows grow with the sources asking and transferring at once; a freed row
   number is reused first, so the rows stay as many as the most held at once.
 - A process started at 256 descriptors — the macOS shell default — raises them to 10240 and keeps the

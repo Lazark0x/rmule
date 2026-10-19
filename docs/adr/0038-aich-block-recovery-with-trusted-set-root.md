@@ -41,10 +41,10 @@ AICH is a block-level recovery layer beside MD4, implemented in both directions.
 - **AICH changes only the failure path.** MD4 still defines "verified". When a part fails
   MD4 and a trusted root exists, core requests the part's recovery data
   (`0x9B` → `0x9C`), hashes each block, and finds the corrupt ones. `PartAssembly` records
-  the contributor of each block as the prefix is built; repair truncates the assembly back
-  to the earliest corrupt block, retires that block's contributor only, and returns the
-  part to the pending pool. The normal resume-from-prefix then refetches from the
-  corruption onward from a surviving peer, and the part re-verifies by MD4.
+  every worker that wrote a byte into each block's cell (ADR-0117); repair drops only the
+  corrupt cells from the part's **Arrived Ranges**, retires the workers that wrote into
+  them, and distrusts a corrupt cell's sole writer. The dropped blocks are handed again to
+  the next workers with room, and the part re-verifies by MD4.
 - **Bad AICH input is a skip, not an error.** A malformed `0x9C`, a master-hash echo that
   does not match, or recovery data that does not chain to the trusted root falls back to
   retire-all, and the peer session stays open.
@@ -58,9 +58,9 @@ AICH is a block-level recovery layer beside MD4, implemented in both directions.
 
 - With a trusted root, a corrupt part costs one peer — the poisoner — instead of every
   contributor.
-- Repair refetches the corrupt block and everything after it, not a precise set of
-  blocks, keeping the contiguous-prefix assembly model. Racing (ADR-0026) and the
-  in-memory, per-session lifetime of assembly are unchanged.
+- Repair refetches exactly the corrupt blocks. A cell holding two workers' bytes — a
+  duplicate, a freed lost block, an off-grid ask — retires both writers and distrusts
+  neither. The in-memory, per-session lifetime of assembly is unchanged.
 - The serve-side cache holds one tree per shared file a peer asked about, about 20 bytes
   per 180 KiB block; nothing bounds it but the share set.
 - AICH trees are not persisted (there is no `known2.met` equivalent); a restart rebuilds

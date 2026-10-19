@@ -772,20 +772,32 @@ A download whose name is in aMule's video or audio table (`is_previewable()`), r
 _Avoid_: media file, playable
 
 **Download State**:
-The sans-I/O scheduling brain for one download (`download/state.rs`). It owns every channel-free decision — which part a peer works, how cross-peer blocks assemble (ADR-0029), when a raced part completes and clears its losers (ADR-0026), which candidate backfills a retired worker (ADR-0030), when a pooled source is reasked and when a callback road lapses — and returns an ordered `Vec<Decision>` the async runner *enacts* (the only async surface). Time is an argument: each entry takes `now`, `on_tick(now)` runs the reask sweep, turns the spent period and expires deadlines, and `next_wake()` names when the runner wakes it next. Persistence is a fallible effect, so it round-trips through `on_persist_result`. Touching no socket, clock, store, or channel is what makes the racing / resume / retire-all / backfill / reask behaviours assertable as plain decision sequences instead of only through a live Tokio actor.
+The sans-I/O scheduling brain for one download (`download/state.rs`). It owns every channel-free decision — which blocks a peer is handed and when it duplicates a slower peer's (ADR-0117), how cross-peer blocks assemble (ADR-0029), which candidate backfills a retired worker (ADR-0030), when a pooled source is reasked and when a callback road lapses — and returns an ordered `Vec<Decision>` the async runner *enacts* (the only async surface). Time is an argument: each entry takes `now`, `on_tick(now)` runs the reask sweep, turns the spent period and expires deadlines, and `next_wake()` names when the runner wakes it next. Persistence is a fallible effect, so it round-trips through `on_persist_result`. Touching no socket, clock, store, or channel is what makes the handout / end-game / retire-all / backfill / reask behaviours assertable as plain decision sequences instead of only through a live Tokio actor.
 _Avoid_: download manager, actor, scheduler (the `DownloadScheduler` is one of the bags it owns)
 
 **Request Depth**:
-How many blocks a worker has asked of its uploader and not yet received (ADR-0029 "Request pipeline"): `3 + ⌊2 × rate × rtt / EMBLOCKSIZE⌋`, held between 3 and 24, refilled at every arrival so the link never runs dry between blocks. The pipeline is the link's, not the part's: a reassignment leaves its asked blocks draining.
+How many blocks a worker has asked of its uploader and not yet received (ADR-0029 "Request pipeline"): `3 + ⌊2 × rate × rtt / EMBLOCKSIZE⌋`, held between 3 and 24, refilled at every arrival from the **Claimed Blocks** it was handed so the link never runs dry between blocks. The worker reports the room it leaves (`BlocksWanted`), and a handout never exceeds it (ADR-0117). The pipeline is the link's, not the part's: it runs from one part into the next.
 _Avoid_: window, queue size, pipelining factor
 
 **Delivery Rate**:
-What core measures of one worker from its block arrivals at the instants it is handed — bytes over windows of at least one second, smoothed by a quarter per window (ADR-0026). Scheduling input for the **Tail Race** only; never published, so it is not a counter (ADR-0077).
+What core measures of one worker from its block arrivals at the instants it is handed — bytes over windows of at least one second, smoothed by a quarter per window (ADR-0026). Scheduling input for the **End Game** only; never published, so it is not a counter (ADR-0077).
 _Avoid_: speed, bandwidth, throughput
 
-**Tail Race**:
-A granted worker that has delivered a part, with no pending part left it can work, joining an in-flight part held alone by a worker of lower **Delivery Rate** instead of giving its slot back (ADR-0026 "Bounded racing"): the rank of ADR-0112 §4 with the expected finish, latest first, in its fourth position. Never a part's third racer; the first verified copy wins.
-_Avoid_: end game, steal, swap
+**Arrived Ranges**:
+The exact byte ranges of one in-flight part that have arrived, relative to the part's start, and their bytes in 180 KiB cells, each cell recording every worker that wrote into it (ADR-0117). A merge writes only bytes not yet arrived, so the first copy of a byte wins whatever its grid; the part verifies when they cover it. In memory for the run: a restart rebuilds the missing set from the verified parts.
+_Avoid_: prefix, bitmap, gap list
+
+**Claimed Block**:
+A block of a part handed to one worker to ask, until its range has arrived (ADR-0117): cut from the part's unarrived, unclaimed bytes on its `EMBLOCKSIZE` grid, so off the grid exactly where the gaps are. One worker per block outside the **End Game**; a worker's end, a requeue or a lost block frees it for the next worker with room.
+_Avoid_: assignment, lease, request
+
+**End Game**:
+A granted worker's state once it has room and no part it advertised holds an unclaimed block (ADR-0117): instead of giving its slot back it is handed a **Duplicate Set**. A worker's state, not the download's; at the file's end every worker reaches it.
+_Avoid_: tail race, steal, swap, racing
+
+**Duplicate Set**:
+At most three **Claimed Blocks** of other workers, at most 3 × `EMBLOCKSIZE`, handed to an **End Game** worker measured faster than each block's one holder, latest expected arrival first after the rank's very-rare, band and window positions (ADR-0117). A block has at most two copies asked; a worker holds one unsettled set at a time; the copy that arrives second is dropped on merge, since eD2k has no per-block cancel.
+_Avoid_: race, backup, duplicate request
 
 **Preview Band**:
 aMule's head-and-tail set (`PartFile.cpp:1958-1972`): part `0`, the last, and the last-but-one when the last part's length plus one is below `PARTSIZE / 3`. Only for **Streaming Priority**; ranks below a very rare part, above the **Streaming Window**; no latch (ADR-0112).
@@ -851,9 +863,9 @@ The **Download State** failure-path upgrade (ADR-0038, amending ADR-0029): when 
 fails MD4 verification and a **Trusted AICH Root** exists, rmule SHA-1s each 180 KiB
 block, localizes the corrupt one(s), retires only the contributing peer(s) by
 *per-block provenance*, and refetches only those blocks — instead of retiring every
-contributor. The contiguous-prefix *build phase* stays as ADR-0029; a *repair phase*
-turns the completed-but-failed buffer into a block-set with holes punched where AICH
-found corruption.
+contributor. Repair drops only the corrupt cells from the part's **Arrived Ranges**
+and hands those blocks again; a cell's writers are retired and its sole writer
+distrusted (ADR-0117).
 _Avoid_: retire-all (that is the no-root fallback), AICH verification (MD4 is verification; this is recovery)
 
 **Peer Reach**:

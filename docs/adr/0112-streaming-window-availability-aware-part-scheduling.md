@@ -68,19 +68,19 @@ rules at other lines. aMule facts are read, never ported (ADR-0004).
   set, an AICH root, forwarded as they are while a part streams — until the probe is answered,
   bounded by `slot_wait_timeout` (ending `SlotTimeout`), then sends `PartsAdvertised`. The
   brain asks the worker's slot (or the hash set) on `PartsAdvertised`, never on
-  `Connected`, and hands its first part at the grant (ADR-0026, "The slot ask").
-- A handed part cannot be taken back: the worker asks the session for the part's first block
-  at once and defers a later `RequestPart` to the part's end. Assigning before the status
-  would hand a partial source a part it lacks. aMule likewise chooses a part only once the
+  `Connected`, and hands its first blocks at the grant (ADR-0026, "The slot ask").
+- A handed block cannot be taken back: the worker asks the session for it at once. Assigning
+  before the status would hand a partial source a part it lacks. aMule likewise chooses a part only once the
   status is known, and only on a granted slot.
 - An `OP_FILEREQANSNOFIL` answer ends the worker as it does today.
-- A release hands the freed part only to a granted worker; a queued one is handed its part
-  at its grant.
+- A release hands the freed blocks only to a granted worker; a queued one is handed its
+  blocks at its grant.
 
 ### 4. The rank
 
-The candidates for worker `p` are the pending parts its Advertised Parts hold. The minimum of
-one tuple wins; `i` sits in every key, so no two tie:
+The candidates for worker `p` are the parts its Advertised Parts hold that still have an
+unclaimed block (ADR-0117). The minimum of one tuple wins; `i` sits in every key, so no two
+tie:
 
 | Position | Component | `0` when |
 |---|---|---|
@@ -94,15 +94,14 @@ one tuple wins; `i` sits in every key, so no two tie:
   and very rare is a part only this source holds. Inside the very-rare zone aMule orders by
   frequency before preview; the tuple keeps the band ahead, the same order whenever the
   bound is 1.
-- **Racing** keeps ADR-0026's rules, filtered: with no pending part its Advertised Parts hold
-  left, a backup peer races the minimum-ranked in-flight part they hold and it is not on —
-  other pending parts it lacks do not keep it off the race. A peer that has delivered a
-  part runs ADR-0026's **Tail Race** over the same filter and the same tuple, its fourth
-  position read as the expected finish, latest first: positions 1–3 still put a very rare,
-  band or window part ahead, and the part index still breaks every tie.
+- **The End Game** (ADR-0117) uses the same filter and the same tuple: with no unclaimed
+  block left in a part its Advertised Parts hold, a worker's **Duplicate Set** is chosen by
+  positions 1–3, then by expected arrival, latest first, so a very rare, band or window
+  part still comes first, and the part index and offset break every tie.
 - No randomness: the same inputs give the same part, so every decision sequence is
-  assertable. aMule's completion criterion is not taken: a released part keeps its assembled
-  prefix (ADR-0029) and resumes there whenever it is next chosen.
+  assertable. aMule's completion criterion is not taken: a part whose workers left keeps its
+  **Arrived Ranges** (ADR-0117), and its unclaimed blocks are handed whenever it is next
+  chosen.
 - Every download is filtered and ranked. Outside Streaming Priority the band and window are
   empty and the tuple is `(very rare, frequency, i)`; when every worker advertises every part,
   that is today's lowest-index order.
@@ -154,9 +153,9 @@ one tuple wins; `i` sits in every key, so no two tie:
   with nothing we need is alive and honest. The retirement says why; no queue rank is
   reported for it.
 - A worker whose Advertised Parts hold a part the file lacks asks its slot at its probe
-  answer even when every such part is in flight elsewhere (ADR-0026): its part is chosen at
-  the grant. Granted with none it may be handed — every one in flight, and none it may race
-  (ADR-0026) — it gives the slot back with `OP_CANCELTRANSFER` and is
+  answer even when every such part is in flight elsewhere (ADR-0026): its blocks are chosen
+  at the grant. Granted with none it may be handed once its pipeline has drained — every block
+  claimed, and no Duplicate Set for it (ADR-0117) — it gives the slot back with `OP_CANCELTRANSFER` and is
   retired **`NoFreePart`**, its record waiting in the RemoteQueued stage on the ordinary
   cadence (ADR-0056, ADR-0057): it still holds a part we lack.
 - A worker slot is never held by a source that holds nothing we need, nor a granted slot by
@@ -167,7 +166,8 @@ one tuple wins; `i` sits in every key, so no two tie:
 - Scheduling stays sans-I/O and assertable; decision-sequence tests gain the probe answer
   between `Connected` and the first assignment, and in-process fakes send it.
 - A partial source is asked only for parts it holds; a previewed file grows its head, its
-  index and a contiguous prefix first.
+  index and the parts from its lowest unverified one first, every source that holds them
+  sharing their blocks.
 - The wire changes in one place: a TCP status with a wrong part count now ends the
   connection, as it does in aMule. rmule asks nothing new; it only stops dropping what it
   already read.
