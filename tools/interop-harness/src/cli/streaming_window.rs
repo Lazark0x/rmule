@@ -82,6 +82,10 @@ pub(crate) struct PeerStreamingWindowArgs {
     /// get-sources.
     #[arg(long)]
     pub(crate) link_sources: bool,
+    /// Leave the part hashes (`p=`) out of rmule's link, so the download
+    /// asks a seed for the hash set over the wire (`OP_HASHSETREQUEST`).
+    #[arg(long)]
+    pub(crate) link_without_part_hashes: bool,
     /// Hold every packet each seed sends by this many ms with `tc netem`, so
     /// the links carry a WAN round trip.
     #[arg(long)]
@@ -110,6 +114,7 @@ struct ResolvedConfig {
     hold_secs: u64,
     wait_secs: Option<u64>,
     link_sources: bool,
+    link_without_part_hashes: bool,
     seed_netem_delay_ms: Option<u32>,
     timeout_secs: u64,
 }
@@ -146,6 +151,7 @@ pub(crate) fn peer_streaming_window(args: PeerStreamingWindowArgs) -> Result<()>
             hold_secs: args.hold_secs,
             wait_secs: args.wait_secs,
             link_sources: args.link_sources,
+            link_without_part_hashes: args.link_without_part_hashes,
             seed_netem_delay_ms: args.seed_netem_delay_ms,
             timeout_secs: args.timeout,
         },
@@ -178,6 +184,7 @@ pub(crate) fn peer_streaming_window(args: PeerStreamingWindowArgs) -> Result<()>
         parts_every_ms: args.report_parts_every_ms,
         hold_secs: args.hold_secs,
         link_sources: args.link_sources,
+        link_without_part_hashes: args.link_without_part_hashes,
         wait_secs: args.wait_secs,
         seed_netem_delay_ms: args.seed_netem_delay_ms,
     })

@@ -116,6 +116,8 @@ pub struct StreamingWindowOptions<'a> {
     pub hold_secs: u64,
     /// Also name every seed as a source in rmule's link.
     pub link_sources: bool,
+    /// Leave the part hashes out of rmule's link.
+    pub link_without_part_hashes: bool,
     /// How long this call waits for rmule's run to end before it returns a
     /// kept run for a later collection; `None` waits the whole `hold_secs`.
     pub wait_secs: Option<u64>,
@@ -246,10 +248,15 @@ pub fn run_streaming_window(options: StreamingWindowOptions<'_>) -> Result<()> {
             });
         }
 
-        let link = if options.link_sources {
-            with_sources(&stream.link, &rows)
+        let link = if options.link_without_part_hashes {
+            without_part_hashes(&stream.link)
         } else {
             stream.link.clone()
+        };
+        let link = if options.link_sources {
+            with_sources(&link, &rows)
+        } else {
+            link
         };
         let download = rmule_download(&bench, &options, &rmule, &link);
         bench.start_rmule_container(
@@ -493,6 +500,15 @@ fn wait_for_end(docker: &Docker, container: &str, end: &str, wait: Duration) -> 
         }
         thread::sleep(Duration::from_secs(2));
     }
+}
+
+/// The link without its `p=` field: the download has no hash set until a
+/// seed answers `OP_HASHSETREQUEST`.
+fn without_part_hashes(link: &str) -> String {
+    link.split('|')
+        .filter(|field| !field.starts_with("p="))
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
 /// The link naming every seed as a source as well.
