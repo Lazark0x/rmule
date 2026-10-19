@@ -27,6 +27,8 @@ use crate::service::LinkTurn;
 
 use super::*;
 
+mod overtaken;
+
 fn file() -> Ed2kFileLink {
     Ed2kFileLink {
         name: Ed2kText::from_utf8("partial.bin"),

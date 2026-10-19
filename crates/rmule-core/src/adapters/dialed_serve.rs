@@ -14,7 +14,7 @@ use super::InboundPeerDeps;
 use super::inbound_triage::serve_side;
 use super::kad_runtime::broker_peer_kad_handoff;
 use super::peer_link::{
-    DialInFlight, DownloadHalf, Filing, LinkJoin, LinkName, Riders, ServeHold, recv_join,
+    DialInFlight, DownloadHalf, Filing, LinkJoin, LinkName, Moving, Riders, ServeHold, recv_join,
 };
 use super::peer_transfer::PeerWorkerEvent;
 use super::peer_transfer::dial_end::closed_before_hello;
@@ -108,6 +108,7 @@ pub(crate) async fn route_dialed_connection(mut conn: PeerConnection, route: Dia
         identity: None,
         filing: None,
         joins: None,
+        moving: Moving::default(),
     };
     match origin {
         // A link rmule dialed reaches the peer where it was dialed, whatever
@@ -183,6 +184,21 @@ pub(crate) async fn route_dialed_connection(mut conn: PeerConnection, route: Dia
                 // Every name of the link went to newer links.
                 None => link.joins = None,
             },
+            // The downloads of a dial this adopted link overtook move over
+            // (ADR-0107 invariant 7); a grant held for them goes as any
+            // unasked grant does once they have.
+            join = link.moving.next(), if open && link.moving.coming() => match join {
+                Some(join) => riders.take(join, link.identity.as_ref()),
+                None => {
+                    let unasked = link.moving.release_grant() && !riders.is_ridden();
+                    if unasked && !link.offer_grant(&deps, remote) {
+                        let decline = PeerCommand::Requester(RequesterCommand::DeclineSlot);
+                        if conn.send(decline).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            },
             () = tokio::time::sleep_until(closing.unwrap_or_else(tokio::time::Instant::now)),
                 if closing.is_some() => break,
             event = conn.next_event() => {
@@ -200,9 +216,8 @@ pub(crate) async fn route_dialed_connection(mut conn: PeerConnection, route: Dia
                     // (ADR-0057).
                     Routed::SlotOffered => {
                         let taken = riders.is_ridden()
-                            || link.identity.as_ref().is_some_and(|identity| {
-                                deps.peer_links.offer_grant(&link.names(remote, identity))
-                            });
+                            || link.moving.hold_grant()
+                            || link.offer_grant(&deps, remote);
                         let decline = PeerCommand::Requester(RequesterCommand::DeclineSlot);
                         if !taken && conn.send(decline).await.is_err() {
                             break;
@@ -244,6 +259,8 @@ struct DialedLink {
     identity: Option<PeerIdentity>,
     filing: Option<Filing>,
     joins: Option<mpsc::Receiver<LinkJoin>>,
+    /// The downloads of the dials an adopted link overtook, moving over.
+    moving: Moving,
 }
 
 impl DialedLink {
@@ -254,12 +271,21 @@ impl DialedLink {
         match &mut self.filing {
             Some(filing) => filing.refile(names),
             None => {
-                let (filing, joins) = deps.peer_links.file(remote, names);
+                let (filing, joins, moving) = deps.peer_links.file(remote, names);
                 self.filing = Some(filing);
                 self.joins = Some(joins);
+                self.moving = moving;
             }
         }
         self.identity = Some(identity);
+    }
+
+    /// Hand an unasked grant to the Awaited Grant under the link's names;
+    /// whether one took it.
+    fn offer_grant(&self, deps: &InboundPeerDeps, remote: PeerEndpoint) -> bool {
+        self.identity
+            .as_ref()
+            .is_some_and(|identity| deps.peer_links.offer_grant(&self.names(remote, identity)))
     }
 
     /// The names the link proves: its hello's, and where it was dialed.

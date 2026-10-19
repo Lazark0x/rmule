@@ -66,8 +66,8 @@ fn a_newer_link_takes_a_name_and_the_older_one_ending_leaves_it_there() {
     let links = SharedPeerLinks::default();
     let shared = LinkName::User(user(0x21));
     let (older_at, newer_at) = (v4([203, 0, 113, 1], 4662), v4([203, 0, 113, 2], 4662));
-    let (older, _older_joins) = links.file(older_at, vec![LinkName::Endpoint(older_at), shared]);
-    let (newer, _newer_joins) = links.file(newer_at, vec![shared]);
+    let (older, _older_joins, _) = links.file(older_at, vec![LinkName::Endpoint(older_at), shared]);
+    let (newer, _newer_joins, _) = links.file(newer_at, vec![shared]);
 
     assert_eq!(
         links.find(&[shared]).map(|found| found.remote),
@@ -101,7 +101,7 @@ fn the_link_the_peer_opened_during_a_dial_keeps_every_name_past_the_dials_hello(
         low_id: ClientId::from_u32(0x0000_1234),
     };
     let proven = vec![looked_up[0], looked_up[1], low_id];
-    let (_inbound, _inbound_joins) = links.file(came_back, proven.clone());
+    let (_inbound, _inbound_joins, _) = links.file(came_back, proven.clone());
 
     let (mut dialed, _dialed_joins) = dial.into_parts();
     dialed.refile(proven.clone());

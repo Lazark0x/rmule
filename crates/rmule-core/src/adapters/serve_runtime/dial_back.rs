@@ -126,7 +126,7 @@ impl DialBackRoad {
         }
         let mut names = vec![LinkName::Endpoint(at)];
         names.extend(crypt.user_hash().map(LinkName::User));
-        let in_flight = match deps.peer_links.reach(at, &names) {
+        let in_flight = match deps.peer_links.reach_for_grant(at, &names) {
             Reach::Dial(in_flight) => in_flight,
             Reach::Found(found) => {
                 tracing::debug!(

@@ -4,12 +4,13 @@
 //! hands back a live [`PeerWorker`].
 
 pub(super) mod dial_end;
+mod download_road;
 pub(super) mod worker;
 
 use std::future::Future;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use rmule_net::peer::{Connection as PeerConnection, ObfuscationPolicy, PeerNetError};
+use rmule_net::peer::Connection as PeerConnection;
 use rmule_peer::{PartBitmap, PeerCommand, PeerHandshakeContext, PeerIdentity, SideCommand};
 use rmule_primitives::{
     AichRootHash, ClientId, Ed2kFileLink, Ipv4Endpoint, PartHash, PeerCrypt, PeerEndpoint,
@@ -25,12 +26,13 @@ use crate::service::DialEnd;
 use crate::{BlockPlan, DownloadFailure};
 
 use super::HelloAdverts;
-use super::dialed_serve::{LinkOrigin, SharedDialedServeSink};
+use super::dialed_serve::SharedDialedServeSink;
 use super::kad_runtime::{KadPresenceView, SharedKadBootstrap, SharedKadPump};
-use super::peer_link::{LinkName, Reach, Turn};
-use super::peer_transfer::worker::{drive_joined_worker, drive_peer_worker};
+use super::peer_link::{LinkName, Turn};
+use super::peer_transfer::worker::drive_joined_worker;
 use super::{InboundPeerDeps, SharedTunnelAdmit};
 use crate::buddy_link::SharedBuddySlot;
+use download_road::DownloadRoad;
 
 /// One contiguous run of bytes a peer served, tagged with where it belongs.
 /// Never a whole part on its own: cross-peer assembly (ADR-0029) may stitch
@@ -753,144 +755,26 @@ impl PeerTransferService for RuntimePeerTransferService {
         file: Ed2kFileLink,
         brief: WorkerBrief,
     ) -> Result<PeerWorker, DownloadFailure> {
-        let WorkerBrief {
-            peer_crypt,
-            own_status,
-            want_sources,
-            opening,
-        } = brief;
-        let ban_store = self.ban_store.clone();
-        let ip_filter = self.ip_filter.clone();
-        let peer_links = self.peer_links.clone();
-        let deps = self.link_deps();
         // Every advert read now, per dial: what is true when the
         // peer is met is what the hello says — the SUI keypair included, with
         // a challenge minted for this dial alone (ADR-0041 anti-replay), so a
-        // download proves with the one key every other hello proves with
+        // download proves with the one key every other hello proves with.
         // `peer_crypt` is the peer's stated crypt side; the dial
         // meets it with our policy by aMule's outbound rule (ADR-0049) —
         // obfuscated, plaintext, or refused before any socket.
-        let options = self.adverts.connect_options(peer_crypt);
-        let ours = ObfuscationPolicy::stance_of(options.obfuscation.map(|config| config.policy));
-        let (command_tx, mut command_rx) = mpsc::channel(8);
+        let road = DownloadRoad {
+            peer,
+            ctx,
+            options: self.adverts.connect_options(brief.peer_crypt),
+            file,
+            brief,
+            ban_store: self.ban_store.clone(),
+            ip_filter: self.ip_filter.clone(),
+            deps: self.link_deps(),
+        };
+        let (command_tx, command_rx) = mpsc::channel(8);
         let (event_tx, event_rx) = mpsc::channel(16);
-        tokio::spawn(async move {
-            // The IP filter, aMule `CUpDownClient::TryToConnect` /
-            // `SendHelloPacket`: a candidate source whose IP is filtered is
-            // never dialed — reported like a connect failure so the runner
-            // backfills the slot (the ban gate's exact shape, below). The
-            // verdict is bound first so the read guard never crosses an await.
-            let ip_filtered = ip_filter
-                .read()
-                .expect("ip filter lock")
-                .is_filtered_peer(peer);
-            if ip_filtered {
-                end_dial(&event_tx, DialEnd::IpFiltered).await;
-                let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-                return;
-            }
-            // ADR-0064, peer-TCP enforcement: a banned candidate source is
-            // never dialed at all — reported the same way a real connect
-            // failure is, so the runner backfills the slot exactly as it
-            // would for any other dead source. Kad's own routing/search
-            // surface is untouched (no ban gate there).
-            if ban_store.lock().await.is_banned(peer.ip(), Instant::now()) {
-                end_dial(&event_tx, DialEnd::Banned).await;
-                let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-                return;
-            }
-            // One peer, one link (ADR-0107): a peer linked to us already is
-            // asked over that link, as aMule asks a client over the socket it
-            // holds (`BaseClient.cpp:1489-1496`); a second link would make it
-            // drop the first (`ClientList.cpp:400-403`). Busy with another
-            // download — or still being dialed by one — the link is waited
-            // on, not dialed around; finding nothing files this dial in the
-            // same step, so the next download finds it.
-            let mut names = vec![LinkName::Endpoint(peer)];
-            names.extend(peer_crypt.user_hash().map(LinkName::User));
-            let dial = loop {
-                let found = match peer_links.reach(peer, &names) {
-                    Reach::Dial(dial) => break dial,
-                    Reach::Found(found) => found,
-                };
-                match found.take_turn(&event_tx, &mut command_rx).await {
-                    Turn::Seated(joined) => {
-                        tracing::debug!(?peer, "download rides the peer's link");
-                        drive_joined_worker(
-                            *joined,
-                            file,
-                            own_status,
-                            want_sources,
-                            opening,
-                            command_rx,
-                            event_tx,
-                            deps.slot_wait_timeout,
-                        )
-                        .await;
-                        return;
-                    }
-                    Turn::Stopped => return,
-                    // The dial it waited on failed: the source is gone for
-                    // this download too, for the same cause.
-                    Turn::DialEnded(cause) => {
-                        end_dial(&event_tx, cause).await;
-                        let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-                        return;
-                    }
-                    // The link ended before this download's turn: look again.
-                    Turn::LinkEnded => {}
-                    // The link it waited on ended: its source stands on the
-                    // peer's queue, as aMule keeps the client for its other
-                    // file (`BaseClient.cpp:1283-1284`), and is asked at the
-                    // reask, never dialed now (ADR-0107 invariant 9).
-                    Turn::HandedBack => {
-                        let _ = event_tx.send(PeerWorkerEvent::HandedBack).await;
-                        return;
-                    }
-                }
-            };
-            // Connect + identify run inside the worker task, off the runner's
-            // critical path (ADR-0030). A connect or handshake failure becomes
-            // an ordinary `Disconnected` worker event so the runner backfills
-            // a replacement instead of aborting the whole download — and
-            // every download waiting on the dial is retired with its cause.
-            let conn = match PeerConnection::connect(peer, ctx, options).await {
-                Ok(conn) => conn,
-                // The stances cannot meet: named apart from a
-                // dead source, so the brain retires the source for that
-                // reason rather than as unreachable. No socket opened, so
-                // no dial was in flight: a download waiting on it meets the
-                // rule with what its own record knows.
-                Err(PeerNetError::CryptIncompatible) => {
-                    drop(dial);
-                    end_dial(&event_tx, dial_end::crypt_refusal(peer_crypt, ours)).await;
-                    let _ = event_tx.send(PeerWorkerEvent::CryptIncompatible).await;
-                    return;
-                }
-                Err(error) => {
-                    let cause = dial_end::connect_failure(&error);
-                    dial.failed(cause);
-                    end_dial(&event_tx, cause).await;
-                    let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-                    return;
-                }
-            };
-            // A dialed worker has not identified yet (`None`), so the drive body
-            // waits for the peer's hello. An adopted inbound worker passes
-            // `Some((user_hash, crypt))` instead (ADR-0039).
-            drive_peer_worker(
-                conn,
-                peer,
-                file,
-                own_status,
-                want_sources,
-                LinkOrigin::Dialed(dial),
-                command_rx,
-                event_tx,
-                deps,
-            )
-            .await;
-        });
+        tokio::spawn(road.drive(command_rx, event_tx));
         Ok(PeerWorker::new(peer, command_tx, event_rx))
     }
 }

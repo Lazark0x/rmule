@@ -17,7 +17,7 @@ use tokio::sync::mpsc;
 
 use super::InboundPeerDeps;
 use super::inbound_triage::serve_side;
-use super::peer_link::{DialInFlight, LinkName, Riders, ServeHold, recv_join};
+use super::peer_link::{DialInFlight, LinkName, Moving, Riders, ServeHold, recv_join};
 use super::peer_transfer::PeerWorkerEvent;
 use super::serve_runtime::{ServeInput, ServeOutput};
 use crate::service::PortTestClosedBy;
@@ -55,21 +55,26 @@ pub(super) async fn drive_served_link(
     let remote = conn.peer_endpoint();
     let dialed_at = dialed.is_some().then_some(remote);
     let names = LinkName::proven(remote, &identity, dialed_at);
-    let (mut filing, joins, mut serve) = match dialed {
+    let (mut filing, joins, mut moving, mut serve) = match dialed {
         Some(dial) => {
             let (mut filing, joins) = dial.into_parts();
             filing.refile(names);
             (
                 filing,
                 joins,
+                Moving::default(),
                 ServeHold::dialed(remote, deps.buddy_slot.clone()),
             )
         }
+        // An accepted link: a download's dial to its peer that has not sent
+        // its hello yields to it, and that dial's downloads move over
+        // (ADR-0107 invariant 7).
         None => {
-            let (filing, joins) = deps.peer_links.file(remote, names);
+            let (filing, joins, moving) = deps.peer_links.file(remote, names);
             (
                 filing,
                 joins,
+                moving,
                 ServeHold::new(remote, deps.buddy_slot.clone()),
             )
         }
@@ -99,6 +104,25 @@ pub(super) async fn drive_served_link(
                 Some(join) => riders.take(join, Some(&identity)),
                 // Every name of the link went to newer links.
                 None => joins = None,
+            },
+            join = moving.next(), if moving.coming() => match join {
+                Some(join) => riders.take(join, Some(&identity)),
+                // Every download of the dials this link overtook has joined:
+                // a grant held for them is the rider's own ask's now, or goes
+                // as any unasked grant does.
+                None => {
+                    if moving.release_grant()
+                        && !riders.is_ridden()
+                        && !deps
+                            .peer_links
+                            .offer_grant(&LinkName::proven(remote, &identity, dialed_at))
+                    {
+                        let decline = PeerCommand::Requester(RequesterCommand::DeclineSlot);
+                        if conn.send(decline).await.is_err() {
+                            break close_reason(&mut conn).await;
+                        }
+                    }
+                }
             },
             command = riders.next_command() => match command {
                 Some(command) => {
@@ -155,9 +179,11 @@ pub(super) async fn drive_served_link(
                     // An uploader's grant nobody on the link asked for: the
                     // download awaiting it rides the link, or it goes back
                     // (ADR-0057). A riding download's own ask is about to be
-                    // granted.
+                    // granted, and one moving over from a dial this link
+                    // overtook is about to ride it (ADR-0107 invariant 7).
                     Routed::SlotOffered => {
                         if !riders.is_ridden()
+                            && !moving.hold_grant()
                             && !deps
                                 .peer_links
                                 .offer_grant(&LinkName::proven(remote, &identity, dialed_at))
