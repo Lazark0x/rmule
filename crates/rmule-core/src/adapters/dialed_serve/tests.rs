@@ -113,11 +113,13 @@ async fn a_dialed_connection_serves_the_peer_it_dialed_on_the_same_socket() {
         .await
         .unwrap();
 
-    // The dialed connection produced a serve half.
-    let mut serve_conn = timeout(Duration::from_secs(5), dialed_rx.recv())
+    // The dialed connection produced a serve half, on a link rmule dialed.
+    let half = timeout(Duration::from_secs(5), dialed_rx.recv())
         .await
         .expect("serve half produced for the dialed connection")
         .expect("serve connection present");
+    assert!(half.rmule_dialed);
+    let mut serve_conn = half.conn;
 
     // Act as the serve task for the one shared file: answer each probe and
     // stream the requested block back over the dialed socket.

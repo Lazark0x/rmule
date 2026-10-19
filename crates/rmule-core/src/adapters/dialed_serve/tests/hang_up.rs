@@ -77,11 +77,15 @@ fn ranking_sharer(listener: PeerListener, pull: Option<FileHash>) -> mpsc::Recei
 /// holds every serve half it is handed and reads it to its end, asking
 /// nothing of it.
 fn serving_transfer() -> RuntimePeerTransferService {
-    let (dialed_tx, mut dialed_rx) = mpsc::channel::<crate::adapters::ServeConnection>(4);
+    let (dialed_tx, mut dialed_rx) = mpsc::channel::<crate::adapters::LinkServeHalf>(4);
     let sink = SharedDialedServeSink::default();
     sink.install_for_good(dialed_tx);
     tokio::spawn(async move {
-        while let Some(mut serve_conn) = dialed_rx.recv().await {
+        while let Some(crate::adapters::LinkServeHalf {
+            conn: mut serve_conn,
+            ..
+        }) = dialed_rx.recv().await
+        {
             tokio::spawn(async move { while serve_conn.next_event().await.is_some() {} });
         }
     });

@@ -19,7 +19,7 @@ use tokio::time::Instant;
 
 use crate::adapters::InboundPeerDeps;
 use crate::adapters::dialed_serve::{
-    DialedRoute, LinkOrigin, bridge_dialed_serve, route_dialed_connection,
+    DialedRoute, LinkOrigin, LinkServeHalf, bridge_dialed_serve, route_dialed_connection,
 };
 use crate::adapters::hello_wait::{Opening, await_hello};
 use crate::adapters::peer_link::{DownloadHalf, JoinedLink};
@@ -114,6 +114,7 @@ pub(crate) async fn drive_peer_worker(
             server_rx,
             serve_cmd_tx,
             sink: dialed_serve_sink,
+            rmule_dialed: !adopted,
         }),
         &file,
         own_status,
@@ -187,6 +188,9 @@ struct ServeHalf {
     /// Where the serve half's commands are framed onto the link.
     serve_cmd_tx: mpsc::Sender<PeerCommand>,
     sink: crate::adapters::SharedDialedServeSink,
+    /// Whether rmule dialed the link, rather than adopting one the peer
+    /// opened.
+    rmule_dialed: bool,
 }
 
 /// From a connected link to the worker's end: report the connection, send the
@@ -417,6 +421,7 @@ async fn hand_over_serve_half(half: ServeHalf, event_tx: &mpsc::Sender<PeerWorke
         server_rx,
         serve_cmd_tx,
         sink,
+        rmule_dialed,
     } = half;
     if let Some(serve_sink) = sink.sender() {
         let (bridge_cmd_tx, bridge_cmd_rx) = mpsc::channel(16);
@@ -427,9 +432,11 @@ async fn hand_over_serve_half(half: ServeHalf, event_tx: &mpsc::Sender<PeerWorke
             serve_cmd_tx,
             serve_evt_tx,
         ));
-        let _ = serve_sink
-            .send(ServeConnection::new(peer, bridge_cmd_tx, serve_evt_rx))
-            .await;
+        let half = LinkServeHalf {
+            conn: ServeConnection::new(peer, bridge_cmd_tx, serve_evt_rx),
+            rmule_dialed,
+        };
+        let _ = serve_sink.send(half).await;
     } else {
         // Not serving: nobody drains the serve half. Close it now so the
         // router's bounded `server_tx.send(..)` fails fast (the request is

@@ -21,7 +21,7 @@ const CALLER_HASH: UserHash = UserHash::from_bytes([0xC7; UserHash::BYTE_LEN]);
 struct Adopted {
     caller: PeerConnection,
     worker: PeerWorker,
-    serving: mpsc::Receiver<crate::adapters::ServeConnection>,
+    serving: mpsc::Receiver<crate::adapters::LinkServeHalf>,
     _registration: crate::adapters::awaited_inbound::AwaitedInboundHandle,
 }
 
@@ -161,10 +161,15 @@ async fn a_slot_ask_over_an_adopted_callback_reaches_the_serve_side_under_its_he
         .await
         .expect("the caller's link is up");
 
-    let mut served = timeout(Duration::from_secs(5), serving.recv())
+    let half = timeout(Duration::from_secs(5), serving.recv())
         .await
         .expect("the adopted link's serve half reaches the serve side")
         .expect("a serve connection");
+    assert!(
+        !half.rmule_dialed,
+        "an adopted callback is a link the peer opened"
+    );
+    let mut served = half.conn;
     let mut inputs = Vec::new();
     let read = async {
         while let Some(input) = served.next_event().await {
@@ -207,7 +212,8 @@ async fn an_adopted_callbacks_verification_reaches_its_serve_half_and_is_bound_o
     let mut served = timeout(Duration::from_secs(5), serving.recv())
         .await
         .expect("the adopted link's serve half reaches the serve side")
-        .expect("a serve connection");
+        .expect("a serve connection")
+        .conn;
     let verified = timeout(Duration::from_secs(5), async {
         while let Some(input) = served.next_event().await {
             if let ServeInput::Connection(ConnectionEvent::IdentityVerified { user_hash, .. }) =

@@ -56,7 +56,7 @@ pub(crate) use awaited_inbound::{
 #[cfg(test)]
 pub(crate) use awaited_inbound::{InboundArrival, InboundVerdict};
 pub(crate) use cells::AdapterCells;
-pub(crate) use dialed_serve::SharedDialedServeSink;
+pub(crate) use dialed_serve::{LinkServeHalf, SharedDialedServeSink};
 pub(crate) use directory_watch::NotifyWatchStarter;
 pub(crate) use folder_watch::NotifyFolderWatch;
 pub(crate) use hello_adverts::HelloAdverts;

@@ -29,7 +29,18 @@ use crate::service::DialEnd;
 /// serving** — dialed connections then never produce a serve half, and the
 /// router drops their Server Capability requests. Mirrors ADR-0032's
 /// `SharedServerSession` slot.
-pub(crate) type SharedDialedServeSink = crate::mailbox::Mailbox<ServeConnection>;
+pub(crate) type SharedDialedServeSink = crate::mailbox::Mailbox<LinkServeHalf>;
+
+/// The serve half of a link a download holds, as it reaches the serve
+/// activity, and who opened the link.
+pub(crate) struct LinkServeHalf {
+    /// The serve half itself.
+    pub(crate) conn: ServeConnection,
+    /// Whether rmule dialed the link: its hello went out on it, so the peer
+    /// keeps it against a link of its own (ADR-0057, "Two hellos of one
+    /// client race"). An adopted callback is a link the peer opened.
+    pub(crate) rmule_dialed: bool,
+}
 
 /// Where a dialed connection's router sends what the socket reads, built by
 /// the worker that owns the connection: the download that dialed it — the

@@ -65,7 +65,8 @@ async fn a_dialed_links_verification_reaches_its_serve_half_and_is_bound_once() 
     let mut serve_conn = timeout(Duration::from_secs(5), dialed_rx.recv())
         .await
         .expect("the dialed link's serve half reaches the serve side")
-        .expect("a serve connection");
+        .expect("a serve connection")
+        .conn;
 
     let verified = timeout(Duration::from_secs(5), async {
         while let Some(input) = serve_conn.next_event().await {

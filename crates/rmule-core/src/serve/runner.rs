@@ -14,7 +14,8 @@ use rmule_primitives::PeerEndpoint;
 use tokio::sync::{mpsc, watch};
 
 use crate::adapters::{
-    AnnounceOutcome, DialBackOutcome, ServeConnection, ServeInput, ServeOutput, ServeRuntimeService,
+    AnnounceOutcome, DialBackOutcome, LinkServeHalf, ServeConnection, ServeInput, ServeOutput,
+    ServeRuntimeService,
 };
 use crate::client_udp::{ClientUdpDatagram, ClientUdpSend};
 use crate::content::{CheckedReadError, ContentFileStore};
@@ -43,7 +44,7 @@ pub(crate) struct ServeTask<L> {
     /// Serve halves of connections rmule *dialed* (to download) that the peer
     /// also pulls from, on the same socket (ADR-0031). `None` when no
     /// dialed source is wired. Registered exactly like accepted connections.
-    pub(crate) dialed_serve_rx: Option<mpsc::Receiver<ServeConnection>>,
+    pub(crate) dialed_serve_rx: Option<mpsc::Receiver<LinkServeHalf>>,
     /// The shared, `UserHash`-keyed credit ledger. The serve task records
     /// served bytes here and reads each waiter's modifier to rank the queue.
     pub(crate) credit: SharedCreditStore,
@@ -335,14 +336,15 @@ where
                 },
                 dialed = recv_dialed(&mut dialed_serve_rx) => {
                     match dialed {
-                        // A connection rmule dialed is also serving the peer:
-                        // admit it to the same queue as an accepted one.
-                        // An adopted callback comes this way too, but its
-                        // hello was read on the accept side and never
-                        // reaches the serve side, so only a dialed hello
-                        // meets the mark.
-                        Some(conn) => {
-                            state.on_link_dialed(conn.peer());
+                        // A connection a download holds also serves the
+                        // peer: admit it to the same queue as an accepted
+                        // one. An adopted callback comes this way too, a
+                        // link the peer opened, so only a link rmule dialed
+                        // is marked so.
+                        Some(LinkServeHalf { conn, rmule_dialed }) => {
+                            if rmule_dialed {
+                                state.on_link_dialed(conn.peer());
+                            }
                             register_serve_connection(conn, &mut conns, &fact_tx);
                         }
                         // The dialed source closed (core shutdown); stop polling
@@ -783,9 +785,6 @@ fn register_serve_connection(
     });
 }
 
-/// Await the next dialed serve connection, or park forever when no dialed
-/// source is wired (download-only / fake adapters), so the select arm never
-/// busy-loops.
 /// The next outcome the follower said of a later session; pending with none.
 async fn recv_session_told(
     rx: &mut Option<mpsc::UnboundedReceiver<AnnounceOutcome>>,
@@ -796,7 +795,10 @@ async fn recv_session_told(
     }
 }
 
-async fn recv_dialed(rx: &mut Option<mpsc::Receiver<ServeConnection>>) -> Option<ServeConnection> {
+/// Await the next dialed serve connection, or park forever when no dialed
+/// source is wired (download-only / fake adapters), so the select arm never
+/// busy-loops.
+async fn recv_dialed(rx: &mut Option<mpsc::Receiver<LinkServeHalf>>) -> Option<LinkServeHalf> {
     match rx {
         Some(rx) => rx.recv().await,
         None => std::future::pending().await,
