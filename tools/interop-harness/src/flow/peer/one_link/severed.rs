@@ -46,6 +46,19 @@ struct Rows {
     last_tick: [i64; 4],
     /// Whether rmule logged `download.failed` for it.
     failed: bool,
+    /// The other downloads that logged `download.failed` after the close: a
+    /// download waiting on the link has the same source and no transfer.
+    others_failed: Vec<u32>,
+}
+
+/// The downloads other than `rider` that logged `download.failed` after
+/// `closed`.
+fn others_failed(log: &str, closed: f64, rider: u32) -> Vec<u32> {
+    log.lines()
+        .filter_map(stamped)
+        .filter(|&(name, id, at)| name == "download.failed" && id != rider && at >= closed)
+        .map(|(_, id, _)| id)
+        .collect()
 }
 
 /// The verdict file.
@@ -144,6 +157,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         rider,
         last_tick,
         failed,
+        others_failed: closed.map_or_else(Vec::new, |at| others_failed(&log, at, rider)),
     };
     let claims = vec![
         Claim::about(
@@ -183,7 +197,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::after_close;
+    use super::{after_close, others_failed};
 
     #[test]
     fn the_rider_is_read_at_the_close_and_judged_by_its_ticks_after_it() {
@@ -197,5 +211,9 @@ mod tests {
             format!("{log}download.failed id=1 failure=no_usable_sources at_unix_ms=3100\n");
         assert_eq!(after_close(&failed, 2.0), (1, true, [1, 0, 1, 0]));
         assert_eq!(after_close(log, 0.5).0, 0);
+        let waiter =
+            format!("{log}download.failed id=2 failure=no_usable_sources at_unix_ms=2105\n");
+        assert_eq!(others_failed(&waiter, 2.0, 1), [2]);
+        assert!(others_failed(&waiter, 2.2, 1).is_empty());
     }
 }
