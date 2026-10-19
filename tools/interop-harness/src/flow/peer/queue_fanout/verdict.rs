@@ -3,9 +3,12 @@
 //! The tap in rmule's namespace carries every link rmule dialed and every
 //! sharer's dial-back to its listener: the dials are the connections the
 //! asking budget spent, the part frames each sharer sent are counterparty
-//! bytes. rmule's run log says which sharers ranked it and were hung up on,
-//! which grants it took unasked, and, tick by tick, how many sources asked,
-//! waited and transferred at once (ADR-0116).
+//! bytes. Which sharers ranked rmule and which dialed it back is read off the
+//! tap, not taken from the shape: a holder that has not yet taken its slot, or
+//! has lost it, turns a sharer meant to queue into one that grants at once, and
+//! the claims follow what each sharer did. rmule's run log says which sharers
+//! it hung up on, which grants it took unasked, and, tick by tick, how many
+//! sources asked, waited and transferred at once (ADR-0116).
 
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -39,6 +42,9 @@ const OP_SENDINGPART: u8 = 0x46;
 const EMULE_PART_FRAMES: [u8; 3] = [0x40, 0xA2, 0xA1];
 /// The eD2k frame header ahead of a payload: protocol, length, opcode.
 const FRAME_HEADER_LEN: usize = 6;
+/// The ranks: `OP_QUEUERANK` (eD2k) and `OP_QUEUERANKING` (eMule).
+const OP_QUEUERANK: u8 = 0x5C;
+const OP_QUEUERANKING: u8 = 0x60;
 
 /// The claim on the sharers that grant at once.
 pub(crate) const FREE_TRANSFERRED: &str = "every-free-sharer-sent-parts";
@@ -90,6 +96,10 @@ pub(crate) struct Rows {
     pub(crate) peaks: ActivityPeaks,
     /// Sharers that sent part frames of rmule's file.
     pub(crate) sharers_sending: usize,
+    /// Sharers that sent rmule a rank, and how many of them the shape meant
+    /// to queue.
+    pub(crate) sharers_ranking: usize,
+    pub(crate) ranking_as_shaped: usize,
     /// The copy's length, `-1` when never written.
     pub(crate) copy_bytes: i64,
 }
@@ -190,8 +200,22 @@ fn parts_from(capture: &TcpCapture, sharer: Ipv4Addr, hash: [u8; 16]) -> usize {
         .count()
 }
 
+/// Whether `sharer` sent rmule a rank, on any link.
+fn ranked(capture: &TcpCapture, sharer: Ipv4Addr) -> bool {
+    capture
+        .streams
+        .iter()
+        .filter(|stream| stream.source.ip() == IpAddr::V4(sharer))
+        .flat_map(|stream| stream.ed2k_frames())
+        .any(|frame| {
+            (frame.protocol, frame.opcode) == (OP_EDONKEYPROT, OP_QUEUERANK)
+                || (frame.protocol, frame.opcode) == (OP_EMULEPROT, OP_QUEUERANKING)
+        })
+}
+
 /// A claim over a set of sharers: held when `each` holds for every one, with
-/// the ones it failed for in the note.
+/// the ones it failed for in the note; blocked when the run drew no such
+/// sharer.
 fn over_all(
     name: &str,
     sharers: &[Ipv4Addr],
@@ -199,6 +223,9 @@ fn over_all(
     what: &str,
     each: impl Fn(Ipv4Addr) -> bool,
 ) -> Claim {
+    if sharers.is_empty() {
+        return Claim::blocked(name, format!("{what}: no such sharer in this run"));
+    }
     let failed: Vec<Ipv4Addr> = sharers.iter().copied().filter(|&ip| !each(ip)).collect();
     Claim::about(
         name,
@@ -211,24 +238,39 @@ fn over_all(
 fn claims(at: &Topology, seen: &Observed) -> (Vec<Claim>, Rows) {
     let shape = at.shape;
     let listener = |ip: Ipv4Addr| SocketAddr::from((ip, AMULE_PEER_TCP_PORT));
-    let queued = &at.sharers[..shape.queued.min(at.sharers.len())];
-    let late = &queued[..shape.late.min(queued.len())];
-    let free = &at.sharers[shape.queued.min(at.sharers.len())..];
+    let rmule = IpAddr::V4(at.rmule);
+    let dialed_back = |ip: Ipv4Addr| {
+        seen.capture.opens.iter().any(|open| {
+            open.source.ip() == IpAddr::V4(ip)
+                && open.destination.ip() == rmule
+                && open.destination.port() == RMULE_SERVE_TCP_PORT
+        })
+    };
+    let (queued, free): (Vec<Ipv4Addr>, Vec<Ipv4Addr>) = at
+        .sharers
+        .iter()
+        .partition(|&&ip| ranked(&seen.capture, ip));
+    let late: Vec<Ipv4Addr> = queued
+        .iter()
+        .copied()
+        .filter(|&ip| dialed_back(ip))
+        .collect();
+    let shaped_queued = &at.sharers[..shape.queued.min(at.sharers.len())];
     let sending = |ip: Ipv4Addr| parts_from(&seen.capture, ip, seen.hash) > 0;
 
     let mut claims = vec![
         over_all(
             FREE_TRANSFERRED,
-            free,
+            &free,
             Evidence::Captured,
-            "part frames of rmule's file from each sharer that grants at once",
+            "part frames of rmule's file from each sharer that never ranked it",
             sending,
         ),
         over_all(
             QUEUED_HUNG_UP,
-            queued,
+            &queued,
             Evidence::RmuleOnly,
-            "rmule's log: download.peer_retired reason=queued for each queued sharer",
+            "rmule's log: download.peer_retired reason=queued for each sharer that ranked it",
             |ip| {
                 seen.log.names(
                     "download.peer_retired",
@@ -239,9 +281,10 @@ fn claims(at: &Topology, seen: &Observed) -> (Vec<Claim>, Rows) {
         ),
         over_all(
             LATE_TAKEN,
-            late,
+            &late,
             Evidence::Captured,
-            "download.slot_offered in rmule's log and part frames from each late sharer",
+            "download.slot_offered in rmule's log and part frames from each sharer that ranked \
+             rmule and dialed it back",
             |ip| seen.log.names("download.slot_offered", listener(ip), None) && sending(ip),
         ),
     ];
@@ -253,19 +296,25 @@ fn claims(at: &Topology, seen: &Observed) -> (Vec<Claim>, Rows) {
         format!("output.bin {len} bytes, equal {equal}"),
     ));
 
-    let rmule = IpAddr::V4(at.rmule);
     let rmule_dials = seen
         .capture
         .opens
         .iter()
         .filter(|open| open.source.ip() == rmule && open.destination.port() == AMULE_PEER_TCP_PORT)
         .count();
+    // The server's port test dials the same listener; only a sharer's SYN is
+    // a grant by dial-back.
     let dial_backs = seen
         .capture
         .opens
         .iter()
         .filter(|open| {
-            open.destination.ip() == rmule && open.destination.port() == RMULE_SERVE_TCP_PORT
+            open.destination.ip() == rmule
+                && open.destination.port() == RMULE_SERVE_TCP_PORT
+                && at
+                    .sharers
+                    .iter()
+                    .any(|&ip| open.source.ip() == IpAddr::V4(ip))
         })
         .count();
     let started = seen.log.first_at("download.part_assigned");
@@ -286,6 +335,11 @@ fn claims(at: &Topology, seen: &Observed) -> (Vec<Claim>, Rows) {
         dial_backs,
         peaks: seen.log.activity_peaks(),
         sharers_sending: at.sharers.iter().filter(|&&ip| sending(ip)).count(),
+        sharers_ranking: queued.len(),
+        ranking_as_shaped: queued
+            .iter()
+            .filter(|ip| shaped_queued.contains(ip))
+            .count(),
         copy_bytes: len,
     };
     (claims, rows)
