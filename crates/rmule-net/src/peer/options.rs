@@ -1,4 +1,4 @@
-//! The knobs a caller sets before dialing or accepting a peer: the four
+//! The knobs a caller sets before dialing or accepting a peer: the five
 //! timeouts the runtime distinguishes, the capture destination and how much of
 //! the stream it keeps, and the Secure User Identification and obfuscation
 //! material the session negotiates with.
@@ -13,6 +13,12 @@ use rmule_primitives::PeerCrypt;
 
 use crate::peer::obfuscation::ObfuscationConfig;
 
+/// How long an obfuscated peer dial waits for the crypt handshake's answer:
+/// aMule's `CONNECTION_TIMEOUT` (40 s, `protocol/ed2k/Constants.h:34`), the
+/// socket timeout that covers a socket from its connect through the handshake
+/// (`ClientTCPSocket.cpp:201-222`).
+pub const PEER_CRYPT_TIMEOUT: Duration = Duration::from_secs(40);
+
 /// Tunables for [`Connection::connect`](crate::peer::Connection::connect).
 ///
 /// Split into the failure modes consumers actually distinguish: TCP
@@ -26,6 +32,11 @@ use crate::peer::obfuscation::ObfuscationConfig;
 pub struct ConnectOptions {
     /// Cap on the TCP handshake alone — not on anything the peer says after.
     pub connect_timeout: Duration,
+    /// Cap on an obfuscated dial's crypt handshake once TCP is up: aMule's
+    /// socket timeout covers a socket from its connect through the handshake
+    /// ([`PEER_CRYPT_TIMEOUT`]), so a peer that takes the connection and never
+    /// answers ends the dial as [`PeerNetError::CryptUnanswered`](crate::peer::PeerNetError::CryptUnanswered).
+    pub crypt_timeout: Duration,
     /// Cap on the peer identifying itself once TCP is up; armed as the
     /// driver's one startup deadline and disarmed by the hello.
     pub hello_timeout: Duration,
@@ -139,6 +150,7 @@ impl Default for ConnectOptions {
     fn default() -> Self {
         Self {
             connect_timeout: Duration::from_secs(10),
+            crypt_timeout: PEER_CRYPT_TIMEOUT,
             hello_timeout: Duration::from_secs(15),
             slot_stale_timeout: Duration::from_secs(60),
             idle_close_timeout: Duration::from_secs(300),

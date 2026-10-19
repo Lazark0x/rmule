@@ -322,3 +322,42 @@ async fn a_peer_that_requires_is_refused_before_any_socket_when_our_layer_is_off
         .is_ok();
     assert!(!dialed, "a refused dial opens no socket");
 }
+
+/// A raw peer that takes the connection and reads the dialer's opening but
+/// never answers it; it returns once the dialer closes the socket.
+async fn silent_responder() -> (SocketAddrV4, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = bound_v4(&listener);
+    let held = tokio::spawn(async move {
+        let (mut s, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 256];
+        while matches!(s.read(&mut buf).await, Ok(read) if read > 0) {}
+    });
+    (addr, held)
+}
+
+#[tokio::test]
+async fn a_silent_responder_ends_an_obfuscated_dial_at_the_crypt_timeout() {
+    // aMule's socket timeout covers the crypt handshake
+    // (`ClientTCPSocket.cpp:201-222`): a peer that takes the connection and
+    // never answers ends the dial as a connect failure, and the socket closes.
+    let (addr, held) = silent_responder().await;
+    let opts = ConnectOptions {
+        crypt_timeout: std::time::Duration::from_millis(200),
+        ..requested_toward(RESPONDER_HASH)
+    };
+    let dialed = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        Connection::connect(peer_endpoint(addr), dialer_ctx(), opts),
+    )
+    .await
+    .expect("the dial ends at its crypt timeout");
+    assert!(
+        matches!(dialed, Err(PeerNetError::CryptUnanswered)),
+        "a silent responder ends the dial as an unanswered handshake"
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(5), held)
+        .await
+        .expect("the dial closes its socket")
+        .unwrap();
+}

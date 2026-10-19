@@ -10,18 +10,21 @@ use rmule_peer::{
 };
 use rmule_primitives::{OutboundCrypt, PeerEndpoint, UserHash};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tracing::Instrument;
 
 use crate::driver::{
-    ChannelCaps, CryptStream, DriverError, SpawnCapture, SpawnHandles, run_capture,
-    spawn_connection,
+    ChannelCaps, DriverError, SpawnCapture, SpawnHandles, run_capture, spawn_connection,
 };
 use crate::peer::capture::{PeerCaptureFormat, event_to_toml};
 use crate::peer::driver::PeerDriven;
-use crate::peer::obfuscation::{ObfuscationPolicy, PeerObfuscationTransport, crypt_advertisement};
-use crate::peer::{ConnectOptions, PeerNetError};
+use crate::peer::obfuscation::{ObfuscationPolicy, crypt_advertisement};
+use crate::peer::{ConnectOptions, PEER_CRYPT_TIMEOUT, PeerNetError};
+
+mod opened_dial;
+
+pub use opened_dial::OpenedDial;
+use opened_dial::{OpenedStream, open_stream};
 
 /// Which side of a stream this session is on — and therefore which side's
 /// hello goes first.
@@ -64,8 +67,11 @@ pub struct Connection {
 impl Connection {
     /// Open a TCP connection to `peer`, drive the sans-I/O peer session,
     /// and surface events through `next_event`. Returns once TCP is up
-    /// (or `connect_timeout` elapsed); hello timeout fires as a
-    /// `ConnectionEvent::Disconnected { reason: HelloTimeout }`.
+    /// (or `connect_timeout` elapsed) and, for an obfuscated dial, the crypt
+    /// handshake answered (or `crypt_timeout` elapsed), with our hello on its
+    /// way; hello timeout fires as a
+    /// `ConnectionEvent::Disconnected { reason: HelloTimeout }`. It is
+    /// [`open`](Self::open) and [`OpenedDial::hello`] in one step.
     ///
     /// Whether the dial is obfuscated is aMule's outbound rule
     /// ([`PeerCrypt::outbound`](rmule_primitives::PeerCrypt::outbound),
@@ -78,38 +84,48 @@ impl Connection {
     /// that requires obfuscation meets one that cannot provide it, or the
     /// peer's hash to key it is not in hand;
     /// [`DriverError::ConnectTimeout`] / [`PeerNetError::Connect`] for a dial
-    /// that does not come up; the crypt handshake's error when an obfuscated
-    /// dial is not answered in kind — required or merely requested, there is
-    /// no plaintext retry (ADR-0049), as aMule configures its
-    /// socket once per `Connect`.
+    /// that does not come up; [`PeerNetError::CryptUnanswered`] for an
+    /// obfuscated dial the peer never answers, and the crypt handshake's error
+    /// when it is not answered in kind — required or merely requested, there
+    /// is no plaintext retry (ADR-0049), as aMule configures its socket once
+    /// per `Connect`.
     pub async fn connect(
         peer: PeerEndpoint,
         ctx: PeerHandshakeContext,
         options: ConnectOptions,
     ) -> Result<Self, PeerNetError> {
+        Ok(Self::open(peer, options).await?.hello(ctx))
+    }
+
+    /// Open a dial to `peer` up to its hello: TCP up and, when aMule's
+    /// outbound rule obfuscates it, the crypt handshake answered. No byte of
+    /// the hello has gone out, so the caller may still let the dial go
+    /// unheard — dropping the [`OpenedDial`] closes its socket — or send the
+    /// hello with [`OpenedDial::hello`]. A dial the peer may overtake
+    /// settles here whether it yields (ADR-0107 invariant 7).
+    ///
+    /// # Errors
+    /// As [`connect`](Self::connect).
+    pub async fn open(
+        peer: PeerEndpoint,
+        options: ConnectOptions,
+    ) -> Result<OpenedDial, PeerNetError> {
         let ours = ObfuscationPolicy::stance_of(options.obfuscation.map(|config| config.policy));
         let crypt = options.peer_crypt.outbound(ours);
         if crypt == OutboundCrypt::Incompatible {
             return Err(PeerNetError::CryptIncompatible);
         }
-        // The dial takes whatever family the endpoint carries (ADR-0085).
-        let addr = std::net::SocketAddr::new(peer.ip(), peer.port());
-        let stream = tokio::time::timeout(options.connect_timeout, TcpStream::connect(&addr))
-            .await
-            .map_err(|_| DriverError::ConnectTimeout)?
-            .map_err(|source| PeerNetError::Connect { source })?;
-        let session = Self::dialing_session(peer, ctx, &options);
-
-        let OutboundCrypt::Obfuscated { toward, .. } = crypt else {
-            return Ok(Self::spawn(session, stream, options, peer));
+        let toward = match crypt {
+            OutboundCrypt::Obfuscated { toward, .. } => Some(toward),
+            _ => None,
         };
-
-        // Drive the crypt handshake eagerly so a peer that does not answer it
-        // surfaces here as a failed dial rather than a later protocol
-        // violation on the session.
-        let mut crypt = CryptStream::new(stream, PeerObfuscationTransport::initiator(toward));
-        crypt.complete_handshake().await?;
-        Ok(Self::spawn(session, crypt, options, peer))
+        let stream =
+            open_stream(peer, options.connect_timeout, options.crypt_timeout, toward).await?;
+        Ok(OpenedDial {
+            peer,
+            stream,
+            options,
+        })
     }
 
     /// Open a TCP stream to `peer` and hand it back **undriven** — no session,
@@ -144,26 +160,22 @@ impl Connection {
     /// # Errors
     /// [`DriverError::ConnectTimeout`] when the connect outlives
     /// `connect_timeout`, [`PeerNetError::Connect`] for a refused or
-    /// unreachable peer, and the crypt handshake's own I/O error when an
-    /// obfuscated dial is not answered in kind.
+    /// unreachable peer, [`PeerNetError::CryptUnanswered`] when an obfuscated
+    /// dial is never answered inside [`PEER_CRYPT_TIMEOUT`], and the crypt
+    /// handshake's own I/O error when it is not answered in kind.
     pub async fn dial_stream(
         peer: PeerEndpoint,
         connect_timeout: std::time::Duration,
         obfuscate_toward: Option<UserHash>,
     ) -> Result<Box<dyn DialedStream>, PeerNetError> {
-        let addr = std::net::SocketAddr::new(peer.ip(), peer.port());
-        let stream = tokio::time::timeout(connect_timeout, TcpStream::connect(&addr))
-            .await
-            .map_err(|_| DriverError::ConnectTimeout)?
-            .map_err(|source| PeerNetError::Connect { source })?;
-        let Some(target) = obfuscate_toward else {
-            return Ok(Box::new(stream));
-        };
         // Eagerly, so a requester that cannot speak obfuscation surfaces as a
         // failed dial rather than as a doomed stream occupying a serve slot.
-        let mut crypt = CryptStream::new(stream, PeerObfuscationTransport::initiator(target));
-        crypt.complete_handshake().await?;
-        Ok(Box::new(crypt))
+        Ok(
+            match open_stream(peer, connect_timeout, PEER_CRYPT_TIMEOUT, obfuscate_toward).await? {
+                OpenedStream::Plain(stream) => Box::new(stream),
+                OpenedStream::Obfuscated(crypt) => Box::new(crypt),
+            },
+        )
     }
 
     /// The reusable **peer-TCP dial surface** (ADR-0058 firewall dial-back;
