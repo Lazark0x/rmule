@@ -105,6 +105,18 @@ impl RunLog {
             .collect()
     }
 
+    /// The client ids rmule's servers gave it, in login order
+    /// (`server.connected`).
+    pub(crate) fn client_ids(&self) -> Vec<rmule_primitives::ClientId> {
+        self.records
+            .iter()
+            .filter(|record| record.name == "server.connected")
+            .filter_map(|record| record.count("client_id"))
+            .filter_map(|id| u32::try_from(id).ok())
+            .map(rmule_primitives::ClientId::from_u32)
+            .collect()
+    }
+
     /// When the first record `name` was printed.
     pub(crate) fn first_at(&self, name: &str) -> Option<f64> {
         self.records

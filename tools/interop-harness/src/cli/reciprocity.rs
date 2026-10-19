@@ -52,8 +52,8 @@ impl From<LegArg> for ReciprocityLeg {
 /// `peer-reciprocity`: the eserver, a High-ID stock aMule sharer held to two
 /// slots, and one rmule core queued at it; `--leg credit` adds two waiters
 /// ahead of rmule and three stock aMules downloading rmule's gift, `--leg
-/// low-id` runs rmule without a listener. Taps on rmule's and the sharer's
-/// namespaces.
+/// low-id` drops inbound connections to rmule's listener, so its server
+/// gives it a Low ID. Taps on rmule's and the sharer's namespaces.
 #[derive(Debug, Args)]
 pub(crate) struct PeerReciprocityArgs {
     #[command(flatten)]

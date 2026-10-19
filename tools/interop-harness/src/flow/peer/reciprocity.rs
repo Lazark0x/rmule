@@ -13,8 +13,9 @@
 //! (`ClientCredits.cpp:139-161`); a holder stops, and S promotes rmule ahead of
 //! the two waiters that queued before it. Taps in rmule's and S's namespaces.
 //!
-//! **Low ID** — the 15-minute reask. rmule runs without a listener, so the
-//! eserver gives it a Low ID; it asks S, is ranked and hangs up. A holder
+//! **Low ID** — the 15-minute reask. Inbound connections to rmule's listener
+//! are dropped, so the eserver gives it a Low ID; it asks S, is ranked and
+//! hangs up. A holder
 //! stops: S marks rmule for its next connection (`UploadQueue.cpp:136-138`),
 //! which comes with rmule's TCP full ask, 900 s after its rank where the build
 //! before it waited 1300 s. A tap in rmule's namespace.
@@ -28,6 +29,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::artifacts::{Ed2kHashCommand, RunLayout, write_ed2k_link, write_incompressible_file};
+use crate::docker::RunContainer;
 use crate::flow::bench::{
     AMULE_PEER_TCP_PORT, Bench, CaptureSidecar, DEFAULT_TAP_INTERFACE, Eserver, amulecmd_command,
     run_checked,
@@ -208,6 +210,32 @@ fn start_downloader(
     )
 }
 
+/// A one-shot container in `target`'s network namespace, from the aMule
+/// image (which carries `iptables`), that drops every inbound connection to
+/// rmule's listener.
+fn low_id_firewall(image: &str, target: &str) -> RunContainer {
+    [
+        "-A",
+        "INPUT",
+        "-p",
+        "tcp",
+        "--dport",
+        &RMULE_SERVE_TCP_PORT.to_string(),
+        "--syn",
+        "-j",
+        "DROP",
+    ]
+    .into_iter()
+    .fold(
+        RunContainer::new(image.to_owned())
+            .remove_after_exit()
+            .network(format!("container:{target}"))
+            .cap_add("NET_ADMIN")
+            .entrypoint("iptables"),
+        |container, arg| container.arg(arg),
+    )
+}
+
 /// Wait until `path` holds `size` bytes, or `budget` passes.
 fn wait_for_file(path: &Path, size: u64, budget: Duration) -> bool {
     let deadline = Instant::now() + budget;
@@ -369,7 +397,8 @@ pub fn run_peer_reciprocity(options: PeerReciprocityOptions<'_>) -> Result<()> {
             "prebuild rmule-tools for the download container",
         )?;
         let flags = rmule_flags(&shape, options.timeout_secs);
-        // Low ID: no listener, so the eserver's dial-back fails.
+        // Low ID: rmule does not serve; the firewall below keeps the
+        // eserver's port test from its listener.
         let serve = shape.leg == ReciprocityLeg::Credit;
         let download = options
             .rmule_client_container
@@ -398,6 +427,17 @@ pub fn run_peer_reciprocity(options: PeerReciprocityOptions<'_>) -> Result<()> {
             };
             bench.start_extra(capture, tap.container(), "run reciprocity tcpdump sidecar")?;
             wait_for_container_log(&bench.docker, capture, "listening on", timeout)?;
+        }
+        if shape.leg == ReciprocityLeg::LowId {
+            // rmule's login binds its listener whether or not it serves
+            // (ADR-0095), so a Low ID is a network condition: the eserver's
+            // port test must not reach that listener.
+            run_checked(
+                bench
+                    .docker
+                    .run_container(low_id_firewall(options.amule_image, &rmule_name)),
+                "drop inbound connections to rmule's listener",
+            )?;
         }
         release_held_download(options.layout)?;
         let rmule_ip: Ipv4Addr = run_checked(

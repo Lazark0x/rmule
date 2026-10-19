@@ -54,6 +54,8 @@ pub(crate) const REASKED: &str = "rmule-asked-again-at-fifteen-minutes";
 pub(crate) const SLOT_ON_REASK: &str = "the-sharer-sent-parts-after-the-reask";
 /// The claim on the copy.
 pub(crate) const BYTE_EQUAL: &str = "the-download-completed-byte-equal";
+/// The claim the Low-ID leg stands on: the server gave rmule a Low ID.
+pub(crate) const LOW_ID_LOGIN: &str = "rmule-logged-in-with-a-low-id";
 
 /// The instants a run marked, unix seconds.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -217,6 +219,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
             ));
         }
         ReciprocityLeg::LowId => {
+            claims.push(low_id_login(&log));
             let listener = std::net::SocketAddr::from((at.sharer, AMULE_PEER_TCP_PORT));
             let ranked = log.first_naming_at("download.peer_queued", listener);
             let reasked = log.first_naming_at("download.source_reasked_over_tcp", listener);
@@ -266,6 +269,22 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
     Ok(verdict)
 }
 
+/// Whether every server rmule logged in to gave it a Low ID, read off its
+/// `server.connected` records: a High ID lets S call rmule back, and the
+/// cadence the leg measures is then not the Low-ID one.
+fn low_id_login(log: &RunLog) -> Claim {
+    let ids = log.client_ids();
+    Claim::about(
+        LOW_ID_LOGIN,
+        !ids.is_empty() && ids.iter().all(|id| id.is_low_id()),
+        Evidence::RmuleOnly,
+        format!(
+            "rmule's servers gave it the client ids {:?}",
+            ids.iter().map(|id| id.as_u32()).collect::<Vec<_>>()
+        ),
+    )
+}
+
 /// The frames `tap` delivered, in capture order.
 fn frames(tap: &TcpCapture) -> Vec<Ed2kFrame> {
     let mut frames: Vec<Ed2kFrame> = tap
@@ -297,4 +316,24 @@ fn first_part_after(tap: &TcpCapture, sharer: Ipv4Addr, hash: [u8; 16], since: f
         .filter(|frame| frame.at >= since && frame.source.ip() == IpAddr::V4(sharer))
         .find(|frame| part_of(frame) == Some(hash))
         .map(|frame| frame.at)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A login answered with a High ID (172.20.0.6, little-endian) is no
+    /// Low-ID run, whatever its reask cadence; one answered with a Low ID is.
+    #[test]
+    fn the_low_id_leg_stands_only_on_a_low_id_login() {
+        let high = RunLog::parse(
+            "server.connected server=eserver:4661 client_id=100668588 at_unix_ms=1792383861850\n",
+        );
+        assert_eq!(low_id_login(&high).outcome, "absent");
+        let low = RunLog::parse(
+            "server.connected server=eserver:4661 client_id=7 at_unix_ms=1792383861850\n",
+        );
+        assert_eq!(low_id_login(&low).outcome, "held");
+        assert_eq!(low_id_login(&RunLog::parse("")).outcome, "absent");
+    }
 }
