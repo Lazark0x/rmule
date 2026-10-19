@@ -711,7 +711,18 @@ async fn enact<L: ServeRuntimeService>(
             // The adapter dials on a task of its own and says how it ended on
             // the loop's dial-back inbox (ADR-0057).
             ServeDecision::DialBack(dial) => serve_runtime.dial_back(dial, dial_backs.clone()),
-            ServeDecision::CallOffDialBack { waiter } => serve_runtime.call_off_dial_back(waiter),
+            // What the call-off found settles which link takes the grant, and
+            // that goes out before anything decided after the call-off.
+            ServeDecision::CallOffDialBack { waiter, link } => {
+                let found = serve_runtime.call_off_dial_back(waiter);
+                for settled in state
+                    .on_dial_back_call_off(waiter, link, found)
+                    .into_iter()
+                    .rev()
+                {
+                    decisions.push_front(settled);
+                }
+            }
         }
     }
 }

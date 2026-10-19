@@ -9,6 +9,7 @@
 use rmule_primitives::PeerCrypt;
 
 use super::*;
+use crate::adapters::DialBackCallOff;
 use crate::service::{DialBackEnd, DialEnd, GrantRoad};
 
 /// The slot `holder` holds, and `waiter` — identified as `user_hash`, a High
@@ -120,51 +121,93 @@ fn a_promoted_waiter_with_a_live_link_is_granted_on_it() {
 }
 
 #[test]
-fn a_waiter_back_while_its_slot_is_held_is_granted_on_the_link_it_came_back_on() {
+fn a_waiter_back_before_its_dial_back_said_hello_is_granted_on_the_link_it_came_back_on() {
     // aMule grants a client it promoted unconnected on whichever link its
     // hellos finish first, inbound included (`ClientTCPSocket.cpp:417`,
-    // `BaseClient.cpp:1707-1716`) — not at its next ask.
+    // `BaseClient.cpp:1707-1716`) — not at its next ask. The dial is called
+    // off first: one the peer never read a hello on leaves it its own link
+    // (`ClientList.cpp:400-403`).
     let file = hash(0x43);
     let t = Instant::now();
     let (holder, waiter) = (peer_at([10, 0, 0, 1], 51000), peer_at([10, 0, 0, 2], 51318));
     let mut state = hung_up_behind(file, holder, waiter, user(0x0A), t);
     let _ = state.on_conn_event(t, holder, disconnected(), &no_modifiers());
 
-    // The dial still in flight is called off, as aMule deletes the socket
-    // it was connecting when the client's own arrives
-    // (`ClientList.cpp:400-403`).
     let back = peer_at([10, 0, 0, 2], 50288);
     let hello = hello_facts(user(0x0A), 0, 0, 2).identified();
-    let [grant, said] = granted(back, file, GrantRoad::CameBack);
     assert_eq!(
         state.on_conn_event(t, back, hello, &no_modifiers()),
+        [ServeDecision::CallOffDialBack { waiter, link: back }]
+    );
+    let [grant, said] = granted(back, file, GrantRoad::CameBack);
+    assert_eq!(
+        state.on_dial_back_call_off(waiter, back, DialBackCallOff::Stopped),
         [
             ServeDecision::Emit(ServeEvent::WaiterRelinked {
                 from: waiter,
                 to: back,
             }),
-            ServeDecision::CallOffDialBack { waiter },
             grant,
             said,
         ]
-    );
-    // A dial already past its hello comes up all the same: its hello takes
-    // nothing from the link the client came back on, and is let go.
-    let link = waiter.with_port(4662);
-    let dialed = hello_facts(user(0x0A), 0, 0, 2).identity();
-    assert_eq!(
-        state.on_dial_back_linked(t, waiter, link, dialed, &no_modifiers()),
-        [ServeDecision::Disconnect { peer: link }]
     );
     assert!(state.queue.is_granted(back));
 }
 
 #[test]
-fn a_link_the_peer_opens_after_the_dialed_hello_takes_the_slot_from_the_dialed_link() {
-    // aMule's newer socket replaces the one its client held, dialed or not
-    // (`ClientList.cpp:400-403`): the slot rides on, and the dialed link is
-    // closed. The link it moved to is granted again, so its session serves
-    // the part asks that follow (`UploadQueue.cpp:486-493`).
+fn a_waiter_back_after_its_dial_back_said_hello_is_let_go_and_the_dial_keeps_the_grant() {
+    // The peer keeps the socket it read our hello on and deletes its own
+    // (`ClientList.cpp:400-403` at its end): moving the grant onto the link
+    // it opened would lose it with that link.
+    let file = hash(0x49);
+    let t = Instant::now();
+    let (holder, waiter) = (peer_at([10, 0, 0, 1], 51000), peer_at([10, 0, 0, 2], 51318));
+    let mut state = hung_up_behind(file, holder, waiter, user(0x0A), t);
+    let _ = state.on_conn_event(t, holder, disconnected(), &no_modifiers());
+
+    let back = peer_at([10, 0, 0, 2], 50288);
+    let hello = hello_facts(user(0x0A), 0, 0, 2).identified();
+    assert_eq!(
+        state.on_conn_event(t, back, hello, &no_modifiers()),
+        [ServeDecision::CallOffDialBack { waiter, link: back }]
+    );
+    assert_eq!(
+        state.on_dial_back_call_off(waiter, back, DialBackCallOff::PastHello),
+        [
+            ServeDecision::Disconnect { peer: back },
+            ServeDecision::Emit(ServeEvent::CrossedLinkLetGo { peer: back }),
+        ]
+    );
+    assert_eq!(state.queue.pending_grant(waiter), Some(file));
+
+    // The peer's hello on the dial: the grant goes on it.
+    let link = waiter.with_port(4662);
+    let dialed = hello_facts(user(0x0A), 0, 0, 2).identity();
+    let [grant, said] = granted(link, file, GrantRoad::DialedBack);
+    assert_eq!(
+        state.on_dial_back_linked(t, waiter, link, dialed, &no_modifiers()),
+        [
+            ServeDecision::Emit(ServeEvent::WaiterRelinked {
+                from: waiter,
+                to: link,
+            }),
+            grant,
+            said,
+        ]
+    );
+    assert_eq!(
+        state.on_conn_event(t, back, disconnected(), &no_modifiers()),
+        [],
+        "the let-go link's close frees no slot"
+    );
+    assert!(state.queue.is_granted(link));
+}
+
+#[test]
+fn a_link_the_peer_opens_after_the_dialed_hellos_is_let_go_and_the_slot_stays_on_the_dialed_link() {
+    // The peer read our hello on the dial and keeps it, deleting its own
+    // socket (`ClientList.cpp:400-403` at its end): the slot stays on the
+    // dialed link, and the link the peer opened is let go.
     let file = hash(0x48);
     let t = Instant::now();
     let (holder, waiter) = (peer_at([10, 0, 0, 1], 51000), peer_at([10, 0, 0, 2], 51318));
@@ -179,19 +222,15 @@ fn a_link_the_peer_opens_after_the_dialed_hello_takes_the_slot_from_the_dialed_l
     assert_eq!(
         state.on_conn_event(t, back, hello, &no_modifiers()),
         [
-            ServeDecision::Emit(ServeEvent::WaiterRelinked {
-                from: link,
-                to: back,
-            }),
-            ServeDecision::Disconnect { peer: link },
-            send(back, ServerCommand::GrantSlot { file_hash: file }),
+            ServeDecision::Disconnect { peer: back },
+            ServeDecision::Emit(ServeEvent::CrossedLinkLetGo { peer: back }),
         ]
     );
-    assert!(state.queue.is_granted(back));
+    assert!(state.queue.is_granted(link));
     assert_eq!(
-        state.on_conn_event(t, link, disconnected(), &no_modifiers()),
+        state.on_conn_event(t, back, disconnected(), &no_modifiers()),
         [],
-        "the replaced link's close frees no slot"
+        "the let-go link's close frees no slot"
     );
 }
 

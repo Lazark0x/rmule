@@ -13,7 +13,7 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Duration;
 
 use rmule_core::{Core, CoreCommand, CoreConfig, ServeCommand};
-use rmule_net::peer::{ConnectOptions, Connection, PeerListener};
+use rmule_net::peer::{ConnectOptions, Connection, PeerListener, PeerStreamRole};
 use rmule_peer::{
     ConnectionEvent, PartRanges, PeerCommand, PeerEvent, PeerHandshakeContext, RequesterCommand,
     RequesterEvent,
@@ -223,6 +223,61 @@ async fn a_waiter_that_hung_up_is_dialed_back_and_granted_after_the_hellos() {
         "the hellos come first: {said:#?}"
     );
     assert_eq!(said.last().map(String::as_str), Some("grant"), "{said:#?}");
+}
+
+#[tokio::test]
+async fn a_waiter_whose_own_link_crosses_its_dial_back_past_the_hello_is_granted_on_the_dial() {
+    // Each end keeps the socket it read the other's hello on and deletes the
+    // one it held (`ClientList.cpp:400-403`): the waiter keeps the dial whose
+    // hello it read, so rmule lets the waiter's own link go and grants on
+    // the dial.
+    let (at, file, _share) = serving_one_slot().await;
+    let holder_hash = UserHash::from_bytes([0xA1; UserHash::BYTE_LEN]);
+    let waiter_hash = UserHash::from_bytes([0xB2; UserHash::BYTE_LEN]);
+
+    let mut holder = asking(at, holder_hash, dead_port().await, file).await;
+    holder.granted().await;
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let listen_port = listener.local_addr().unwrap().port();
+    let mut waiter = asking(at, waiter_hash, listen_port, file).await;
+    waiter.ranked(1).await;
+    waiter.hang_up().await;
+    let _ = holder.link.shutdown().await;
+
+    let (stream, dialer) = timeout(HANG_GUARD, listener.accept())
+        .await
+        .expect("the core dials the waiter back")
+        .unwrap();
+    let mut first = [0u8; 1];
+    timeout(HANG_GUARD, stream.peek(&mut first))
+        .await
+        .expect("the dial's hello arrives")
+        .unwrap();
+    assert_eq!(first[0], 0xE3, "the dial's hello is on the wire");
+
+    let mut own = linked(at, ctx(waiter_hash, listen_port)).await;
+    next_matching(&mut own, |event| {
+        matches!(
+            event,
+            PeerEvent::Connection(ConnectionEvent::Disconnected { .. })
+        )
+    })
+    .await;
+
+    let dialer = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, dialer.port()));
+    let mut dial = Connection::over_stream(
+        stream,
+        dialer,
+        PeerStreamRole::Responder,
+        ctx(waiter_hash, 0),
+        ConnectOptions::default(),
+    );
+    next_matching(&mut dial, |event| {
+        matches!(event, PeerEvent::Requester(RequesterEvent::SlotOffered))
+    })
+    .await;
 }
 
 #[tokio::test]

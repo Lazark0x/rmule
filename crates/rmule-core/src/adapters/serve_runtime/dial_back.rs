@@ -13,15 +13,22 @@
 //! is driven as a served Peer Link the serve side holds from the dial, and its
 //! serve connection goes to the serve task with the hello, which grants on it.
 //!
-//! Until that hello the serve side may call the dial off: the client came back
-//! on a link of its own, which took the grant and the dial's Peer Link names,
-//! as aMule deletes the socket it was connecting when the client's own
-//! arrives (`ClientList.cpp:400-403`). The dial stops without a word.
+//! When the client comes back on a link of its own, the serve side calls the
+//! dial off, and the call-off and the dial's hello going out are one claim
+//! ([`DialClaim`]): each end keeps the socket it read the other's `OP_HELLO`
+//! on and deletes the one it held (`ClientList.cpp:400-403`). Called off while
+//! its connect or crypt handshake still runs, the dial stops without a word,
+//! no byte of its hello sent, and the grant goes on the client's link. Once
+//! its hello is out the far side keeps the dial, so the dial goes on and keeps
+//! the grant (ADR-0057, "Two hellos of one client race").
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use rmule_net::peer::{Connection as PeerConnection, ObfuscationPolicy, PeerNetError};
 use rmule_peer::PeerIdentity;
 use rmule_primitives::{PeerCrypt, PeerEndpoint};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Notify, mpsc};
 
 use super::ServeConnection;
 use crate::adapters::hello_wait::{Opening, await_hello};
@@ -75,6 +82,63 @@ pub enum DialBackOutcome {
     },
 }
 
+/// What calling a dial-back off found (ADR-0057, "Two hellos of one client
+/// race"): whether the dial's hello had gone out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DialBackCallOff {
+    /// No byte of the dial's hello went out — or no dial was made — so the
+    /// peer keeps its own link: the dial stops unheard, and the grant goes on
+    /// the link the client came back on.
+    Stopped,
+    /// The dial's hello is out: the far side keeps the dial and closes its
+    /// own link, so the dial goes on and keeps the grant.
+    PastHello,
+}
+
+/// The one claim a dial-back's hello and its call-off race for: whichever
+/// takes it first holds.
+#[derive(Default)]
+pub(super) struct DialClaim {
+    state: AtomicU8,
+    called_off: Notify,
+}
+
+const DIALING: u8 = 0;
+const HELLO_OUT: u8 = 1;
+const CALLED_OFF: u8 = 2;
+
+impl DialClaim {
+    /// Call the dial off: it stops, unless its hello went out first.
+    pub(super) fn call_off(&self) -> DialBackCallOff {
+        match self
+            .state
+            .compare_exchange(DIALING, CALLED_OFF, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => {
+                self.called_off.notify_one();
+                DialBackCallOff::Stopped
+            }
+            Err(HELLO_OUT) => DialBackCallOff::PastHello,
+            Err(_) => DialBackCallOff::Stopped,
+        }
+    }
+
+    /// Claim the hello for the dial: `false` when it was called off first,
+    /// and no byte of it may go out.
+    fn hello_out(&self) -> bool {
+        self.state
+            .compare_exchange(DIALING, HELLO_OUT, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Resolves once the dial is called off.
+    async fn called_off(&self) {
+        while self.state.load(Ordering::Acquire) != CALLED_OFF {
+            self.called_off.notified().await;
+        }
+    }
+}
+
 /// Everything one dial-back reads, taken from the serve adapter at the dial.
 pub(super) struct DialBackRoad {
     pub(super) hello: HelloSource,
@@ -89,13 +153,14 @@ impl DialBackRoad {
     /// ended on `outcomes`. A link or a dial already filed under the
     /// waiter's names is not dialed around (ADR-0107 invariant 7): nothing is
     /// said, and the grant goes on that link once its hello reaches the serve
-    /// side. A word on `called_off` before the peer's hello stops the dial
-    /// with nothing said: its socket closes, and its Dial in Flight is
-    /// unfiled, so a download waiting on it looks again.
+    /// side. A call-off on `claim` that comes before the dial's hello stops
+    /// the dial with nothing said: its socket closes unheard, and its Dial in
+    /// Flight is unfiled, so a download waiting on it looks again. Once the
+    /// hello holds the claim, the dial goes on to the peer's hello.
     pub(super) async fn run(
         self,
         dial: DialBack,
-        called_off: oneshot::Receiver<()>,
+        claim: Arc<DialClaim>,
         outcomes: mpsc::Sender<DialBackOutcome>,
     ) {
         let Self {
@@ -139,17 +204,16 @@ impl DialBackRoad {
         };
         let options = adverts.connect_options(crypt);
         let ours = ObfuscationPolicy::stance_of(options.obfuscation.map(|config| config.policy));
-        let mut called_off = Some(called_off);
-        let connected = tokio::select! {
+        let opened = tokio::select! {
             biased;
-            () = call_off(&mut called_off) => {
+            () = claim.called_off() => {
                 drop(in_flight);
                 return;
             }
-            connected = PeerConnection::connect(at, hello.now(), options) => connected,
+            opened = PeerConnection::open(at, options) => opened,
         };
-        let mut conn = match connected {
-            Ok(conn) => conn,
+        let opened = match opened {
+            Ok(opened) => opened,
             // Refused before any socket: no dial was in flight.
             Err(PeerNetError::CryptIncompatible) => {
                 drop(in_flight);
@@ -163,15 +227,15 @@ impl DialBackRoad {
                 return;
             }
         };
-        let opening = tokio::select! {
-            biased;
-            () = call_off(&mut called_off) => {
-                drop(in_flight);
-                let _ = conn.shutdown().await;
-                return;
-            }
-            opening = await_hello(&mut conn, &deps.hello_refusals, |_| {}) => opening,
-        };
+        // Called off while the socket came up: the peer never reads a hello
+        // on it, and keeps its own link.
+        if !claim.hello_out() {
+            drop(opened);
+            drop(in_flight);
+            return;
+        }
+        let mut conn = opened.hello(hello.now());
+        let opening = await_hello(&mut conn, &deps.hello_refusals, |_| {}).await;
         let identity = match opening {
             Opening::Identified(identity) => *identity,
             Opening::Closed(reason) => {
@@ -206,20 +270,10 @@ impl DialBackRoad {
         }
         let _ =
             drive_served_link(conn, identity, command_rx, event_tx, deps, Some(in_flight)).await;
+        // Held to the link's end: a call-off meanwhile reads the dial as past
+        // its hello.
+        drop(claim);
     }
-}
-
-/// Resolves when the serve side calls the dial off; never once it can no
-/// longer, the serve side having let the call-off go.
-async fn call_off(called_off: &mut Option<oneshot::Receiver<()>>) {
-    if let Some(word) = called_off.as_mut() {
-        if word.await.is_ok() {
-            return;
-        }
-        // A spent receiver is never polled again.
-        *called_off = None;
-    }
-    std::future::pending::<()>().await;
 }
 
 #[cfg(test)]

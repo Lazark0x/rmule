@@ -319,6 +319,10 @@ pub fn log_line(event: &ServeEvent) -> Sentence {
             address(*from),
             address(*to)
         )),
+        Sv::CrossedLinkLetGo { peer } => Sentence::owned(format!(
+            "upload peer {} crossed our connection to it, which said hello first; it keeps ours, so we let its own go",
+            address(*peer)
+        )),
         Sv::SourcesServed { peer, count, .. } => {
             Sentence::owned(format!("served {count} sources to {}", address(*peer)))
         }

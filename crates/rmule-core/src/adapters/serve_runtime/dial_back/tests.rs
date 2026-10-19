@@ -8,21 +8,27 @@
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Duration;
 
-use rmule_net::peer::{ConnectOptions, Connection as PeerConnection, PeerListener};
+use rmule_net::peer::{
+    ConnectOptions, Connection as PeerConnection, ObfuscationPolicy, PeerListener, PeerStreamRole,
+};
 use rmule_peer::{ConnectionEvent, PeerEvent, PeerHandshakeContext, ServerEvent};
 use rmule_primitives::{
     ClientId, ClientIdentity, CryptStance, Ed2kFileLink, Ed2kText, FileHash, Ipv4Endpoint,
     PeerCrypt, PeerEndpoint, UserHash,
 };
+use tokio::io::AsyncReadExt;
+use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
-use super::{DialBack, DialBackOutcome};
+use super::{DialBack, DialBackCallOff, DialBackOutcome};
+use crate::adapters::HelloAdverts;
 use crate::adapters::peer_link::LinkName;
 use crate::adapters::peer_transfer::{PeerTransferService, WorkerBrief};
 use crate::adapters::serve_runtime::{RuntimeServeRuntimeService, ServeRuntimeService};
 use crate::adapters::tests::dialed_serve_ctx;
 use crate::adapters::{RuntimePeerTransferService, SharedPeerLinks};
+use crate::obfuscation_policy::SharedObfuscationPolicy;
 
 const WAITER: UserHash = UserHash::from_bytes([0xB7; UserHash::BYTE_LEN]);
 
@@ -304,20 +310,82 @@ async fn the_link_the_waiter_opens_during_its_dial_back_keeps_the_names_and_a_do
     );
 }
 
-#[tokio::test]
-async fn a_dial_back_called_off_before_its_hello_stops_with_nothing_said_and_unfiled() {
-    // aMule deletes the socket it was connecting when the client's own
-    // arrives (`ClientList.cpp:400-403`).
-    let links = SharedPeerLinks::default();
-    let (mut serve, _ours) = serving(&links).await;
-    // Bound, never answering: the dial waits on the waiter's hello.
-    let listener = PeerListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+/// The waiter's listen port as a raw socket, and where a dial reaches it.
+async fn raw_waiter() -> (TcpListener, PeerEndpoint) {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
         .expect("bind the waiter's listen port");
-    let at = PeerEndpoint::V4(Ipv4Endpoint::new(
-        Ipv4Addr::LOCALHOST,
-        listener.local_port(),
-    ));
+    let port = listener.local_addr().expect("bound").port();
+    (
+        listener,
+        PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, port)),
+    )
+}
+
+#[tokio::test]
+async fn a_dial_back_called_off_before_its_hello_stops_unheard_and_unfiled() {
+    // The waiter never answers the crypt handshake, so no byte of the hello
+    // can follow it: the call-off finds the dial before its hello, and the
+    // waiter keeps its own link (`ClientList.cpp:400-403`).
+    let links = SharedPeerLinks::default();
+    let mut serve = RuntimeServeRuntimeService::new()
+        .with_peer_links(links.clone())
+        .with_hello_adverts(HelloAdverts {
+            obfuscation: SharedObfuscationPolicy::new(Some(ObfuscationPolicy::Supported)),
+            ..HelloAdverts::default()
+        });
+    serve
+        .start(
+            dialed_serve_ctx().identity,
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
+        )
+        .await
+        .expect("the listener binds");
+    let (listener, at) = raw_waiter().await;
+    let (outcomes_tx, mut outcomes) = mpsc::channel(1);
+    let waiter = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, 51318));
+    serve.dial_back(
+        DialBack {
+            waiter,
+            at,
+            crypt: PeerCrypt::new(CryptStance::new(true, true, true), Some(WAITER)),
+        },
+        outcomes_tx,
+    );
+    let (mut stream, _) = timeout(Duration::from_secs(5), listener.accept())
+        .await
+        .expect("the dial arrives")
+        .expect("accept the dial");
+    let mut opening = [0u8; 256];
+    let read = timeout(Duration::from_secs(5), stream.read(&mut opening))
+        .await
+        .expect("the crypt handshake opens")
+        .expect("read the opening");
+    assert!(read > 0);
+    filed(&links, LinkName::User(WAITER), |found| found == Some(at)).await;
+
+    assert_eq!(serve.call_off_dial_back(waiter), DialBackCallOff::Stopped);
+    let said = timeout(Duration::from_secs(5), outcomes.recv())
+        .await
+        .expect("the dial stops");
+    assert!(said.is_none(), "a dial called off says nothing");
+    let closed = timeout(Duration::from_secs(5), async {
+        while stream.read(&mut opening).await.is_ok_and(|read| read > 0) {}
+    })
+    .await;
+    assert!(closed.is_ok(), "the dial's socket closes");
+    assert!(links.find(&[LinkName::User(WAITER)]).is_none());
+    assert!(links.find(&[LinkName::Endpoint(at)]).is_none());
+}
+
+#[tokio::test]
+async fn a_dial_back_called_off_past_its_hello_goes_on_to_the_waiters_hello() {
+    // The waiter keeps the socket it read our hello on and deletes its own
+    // (`ClientList.cpp:400-403` at its end): a dial past its hello is past
+    // the call-off, and comes up to grant on.
+    let links = SharedPeerLinks::default();
+    let (mut serve, _ours) = serving(&links).await;
+    let (listener, at) = raw_waiter().await;
     let (outcomes_tx, mut outcomes) = mpsc::channel(1);
     let waiter = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, 51318));
     serve.dial_back(
@@ -328,14 +396,37 @@ async fn a_dial_back_called_off_before_its_hello_stops_with_nothing_said_and_unf
         },
         outcomes_tx,
     );
-    filed(&links, LinkName::User(WAITER), |found| found == Some(at)).await;
-
-    serve.call_off_dial_back(waiter);
-    let said = timeout(Duration::from_secs(5), outcomes.recv())
+    let (stream, dialer) = timeout(Duration::from_secs(5), listener.accept())
         .await
-        .expect("the dial stops");
-    assert!(said.is_none(), "a dial called off says nothing");
-    assert!(links.find(&[LinkName::User(WAITER)]).is_none());
-    assert!(links.find(&[LinkName::Endpoint(at)]).is_none());
-    drop(listener);
+        .expect("the dial arrives")
+        .expect("accept the dial");
+    let mut first = [0u8; 1];
+    timeout(Duration::from_secs(5), stream.peek(&mut first))
+        .await
+        .expect("the hello arrives")
+        .expect("peek the hello");
+    assert_eq!(first[0], 0xE3, "the dial's hello is on the wire");
+
+    assert_eq!(serve.call_off_dial_back(waiter), DialBackCallOff::PastHello);
+    let dialer = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, dialer.port()));
+    let _answered = PeerConnection::over_stream(
+        stream,
+        dialer,
+        PeerStreamRole::Responder,
+        waiter_ctx(),
+        ConnectOptions::default(),
+    );
+    let outcome = timeout(Duration::from_secs(5), outcomes.recv())
+        .await
+        .expect("the dial ends");
+    assert!(
+        matches!(outcome, Some(DialBackOutcome::Linked { waiter: linked, .. }) if linked == waiter),
+        "the dial goes on and comes up"
+    );
+    assert_eq!(
+        links
+            .find(&[LinkName::User(WAITER)])
+            .map(|found| found.remote),
+        Some(at)
+    );
 }

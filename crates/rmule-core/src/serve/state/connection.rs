@@ -17,6 +17,7 @@ use crate::adapters::ServeInput;
 use crate::service::{GrantRoad, ServeEvent};
 use crate::upload_queue::{Admission, LowIdAbuseFacts, WaiterContact, refuses_as_low_id_abuse};
 
+use super::relink::Relink;
 use super::transfer::answer_aich_recovery;
 use super::{ReadPurpose, ServeDecision, ServeState};
 
@@ -504,17 +505,21 @@ impl ServeState {
                         ServeDecision::Disconnect { peer },
                     ];
                 }
-                let mut relinked = self.relink_waiter(peer, &identity);
+                let relink = self.relink_waiter(peer, &identity);
                 self.identities.insert(peer, identity);
-                if !relinked.is_empty() {
-                    self.stamp_contact(peer);
-                    // A link coming up is what makes a waiter reachable: a
-                    // slot nobody could be reached for goes to it now
-                    // (ADR-0057).
-                    let filled = self.queue.fill_free_slot(now, modifiers);
-                    relinked.extend(self.promotion_decisions(filled));
+                match relink {
+                    Relink::Moved(mut moved) => {
+                        self.stamp_contact(peer);
+                        // A link coming up is what makes a waiter reachable:
+                        // a slot nobody could be reached for goes to it now
+                        // (ADR-0057).
+                        let filled = self.queue.fill_free_slot(now, modifiers);
+                        moved.extend(self.promotion_decisions(filled));
+                        moved
+                    }
+                    Relink::Held(held) => held,
+                    Relink::None => Vec::new(),
                 }
-                relinked
             }
             // Only a peer the serve side already holds a hello for: the map is
             // keyed by live identified connections. A waiter already on the
@@ -578,7 +583,7 @@ impl ServeState {
     /// `OP_REASKFILEPING` matches by IP + UDP port — a peer that named none
     /// stays TCP-reask-only — and whether a dial reaches it once it hangs up,
     /// a High ID or an IPv6 as the link it came on reads it.
-    fn stamp_contact(&mut self, peer: PeerEndpoint) {
+    pub(super) fn stamp_contact(&mut self, peer: PeerEndpoint) {
         if let Some(identity) = self.identities.get(&peer) {
             let (udp_port, udp_version) = identity.client_udp_reask().unwrap_or_default();
             let dialable = identity

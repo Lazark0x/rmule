@@ -410,6 +410,9 @@ pub(super) fn fold(state: &mut UiState, event: ServeEvent) -> bool {
         // column reads core's per-file counter instead, so this edge's whole
         // footprint is its log line.
         E::SourcesServed { .. } => false,
+        // The client's row stays on the link rmule dialed; the link let go
+        // held none, so the log line is the whole fact.
+        E::CrossedLinkLetGo { .. } => false,
     }
 }
 

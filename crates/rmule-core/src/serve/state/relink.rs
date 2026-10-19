@@ -5,8 +5,11 @@
 //! link, as aMule attaches a new socket to the client it knows
 //! (`ClientList.cpp:371-412`), keeps a queued client's place
 //! (`UploadQueue.cpp:395-431`) and grants a client it promoted unconnected
-//! once its hellos finish (`BaseClient.cpp:1707-1716`). Of two hellos of one
-//! client racing, the link the peer opened keeps the client. Two clients
+//! once its hellos finish (`BaseClient.cpp:1707-1716`). Of two links of one
+//! client crossing, the one both ends keep takes the client: each end keeps
+//! the socket it read the other's hello on (`ClientList.cpp:400-403`), so a
+//! link rmule dialed keeps it once its hello went out, and the link the peer
+//! opened is let go. Two clients
 //! under one User Hash are settled as aMule settles them: an identified one
 //! still linked turns the newcomer away (`ClientList.cpp:384-392`), and at a
 //! slot ask the ones not identified leave the wait list
@@ -21,10 +24,22 @@ use rmule_primitives::{PeerEndpoint, UserHash};
 use rmule_peer::ServerCommand;
 
 use crate::WaiterLeaveCause;
+use crate::adapters::DialBackCallOff;
 use crate::service::{GrantRoad, ServeEvent};
 use crate::upload_queue::Relinked;
 
 use super::{ServeDecision, ServeState};
+
+/// What a new link's hello does to the standing of the client it names.
+pub(super) enum Relink {
+    /// No standing of the client is the new link's.
+    None,
+    /// The client's standing moved onto the new link.
+    Moved(Vec<ServeDecision>),
+    /// The standing stays where it is — on a link rmule dialed, the new link
+    /// let go — or waits on its dial-back's call-off.
+    Held(Vec<ServeDecision>),
+}
 
 impl ServeState {
     /// Move the standing of the client `identity` names onto `peer`, the
@@ -35,18 +50,17 @@ impl ServeState {
     /// address and listen port, closing the old link, as aMule replaces the
     /// socket it held at the hello of a newer one (`ClientTCPSocket.cpp:391`,
     /// `ClientList.cpp:400-403`) — a live link from anywhere else, or one
-    /// rmule dialed, keeps its client (`:384-398`).
+    /// rmule dialed, keeps its client (`:384-398`). A live link rmule dialed
+    /// keeps it against the peer's own link from that address too: its hello
+    /// went out, so the far side keeps it and closes its own, and `peer` is
+    /// let go.
     ///
-    /// A held grant goes on `peer` at once, as aMule grants a client it
-    /// promoted unconnected on the first link its hellos finish on
-    /// (`ClientTCPSocket.cpp:328`, `:417`), and the dial-back still in flight
-    /// is called off; a slot is granted again there, so the session on
-    /// `peer` serves its part asks (`UploadQueue.cpp:486-493`).
-    pub(super) fn relink_waiter(
-        &mut self,
-        peer: PeerEndpoint,
-        identity: &PeerIdentity,
-    ) -> Vec<ServeDecision> {
+    /// A grant held for a dial-back waits on the dial's call-off: `peer` takes
+    /// it only when no byte of the dial's hello went out
+    /// ([`on_dial_back_call_off`](Self::on_dial_back_call_off)). A slot is
+    /// granted again on the link it moved to, so the session there serves its
+    /// part asks (`UploadQueue.cpp:486-493`).
+    pub(super) fn relink_waiter(&mut self, peer: PeerEndpoint, identity: &PeerIdentity) -> Relink {
         let found = self.queue.standings().find_map(|(held, linked)| {
             let known = self.identities.get(&held)?;
             (held != peer && known.user_hash() == identity.user_hash()).then(|| {
@@ -55,11 +69,68 @@ impl ServeState {
             })
         });
         let Some((from, linked, same_place)) = found else {
-            return Vec::new();
+            return Relink::None;
         };
         if linked && (!same_place || self.dialed.contains(&peer)) {
-            return Vec::new();
+            return Relink::None;
         }
+        if linked && self.dialed.contains(&from) {
+            return Relink::Held(vec![
+                ServeDecision::Disconnect { peer },
+                ServeDecision::Emit(ServeEvent::CrossedLinkLetGo { peer }),
+            ]);
+        }
+        if self.queue.pending_grant(from).is_some() {
+            return Relink::Held(vec![ServeDecision::CallOffDialBack {
+                waiter: from,
+                link: peer,
+            }]);
+        }
+        let moved = self.move_standing(from, peer, linked);
+        if moved.is_empty() {
+            Relink::None
+        } else {
+            Relink::Moved(moved)
+        }
+    }
+
+    /// The dial-back to `waiter` was called off for `link`, the link the
+    /// client came back on, and the call-off found `found` (ADR-0057, "Two
+    /// hellos of one client race"). Stopped before its hello, the dial left
+    /// the peer its own link: the held grant moves onto `link` and goes on it
+    /// at once, as aMule grants a client it promoted unconnected on the first
+    /// link its hellos finish on (`ClientTCPSocket.cpp:328`, `:417`). Past its
+    /// hello, the peer keeps the dial and closes `link`: the grant stays held
+    /// for the dial, and `link` is let go.
+    pub(in crate::serve) fn on_dial_back_call_off(
+        &mut self,
+        waiter: PeerEndpoint,
+        link: PeerEndpoint,
+        found: DialBackCallOff,
+    ) -> Vec<ServeDecision> {
+        match found {
+            DialBackCallOff::Stopped => {
+                let moved = self.move_standing(waiter, link, false);
+                if !moved.is_empty() {
+                    self.stamp_contact(link);
+                }
+                moved
+            }
+            DialBackCallOff::PastHello => vec![
+                ServeDecision::Disconnect { peer: link },
+                ServeDecision::Emit(ServeEvent::CrossedLinkLetGo { peer: link }),
+            ],
+        }
+    }
+
+    /// Move the standing held at `from` onto `peer`, closing `from` when it is
+    /// still `linked`; what it moved is granted again on `peer`.
+    fn move_standing(
+        &mut self,
+        from: PeerEndpoint,
+        peer: PeerEndpoint,
+        linked: bool,
+    ) -> Vec<ServeDecision> {
         let Some(moved) = self.queue.relink(from, peer) else {
             return Vec::new();
         };
@@ -74,7 +145,6 @@ impl ServeState {
         match moved {
             Relinked::Waiter => {}
             Relinked::HeldGrant { file_hash } => {
-                decisions.push(ServeDecision::CallOffDialBack { waiter: from });
                 decisions.push(ServeDecision::Send {
                     peer,
                     command: ServerCommand::GrantSlot { file_hash },
@@ -82,7 +152,7 @@ impl ServeState {
                 decisions.push(ServeDecision::Emit(ServeEvent::UploadSlotGranted {
                     peer,
                     file_hash,
-                    software: Some(identity.software().clone()),
+                    software: self.software_of(peer),
                     road: GrantRoad::CameBack,
                 }));
             }

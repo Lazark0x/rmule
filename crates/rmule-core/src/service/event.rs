@@ -267,6 +267,14 @@ pub enum ServeEvent {
         /// The link it waits on now.
         to: rmule_primitives::PeerEndpoint,
     },
+    /// The link `peer` opened to us was let go: it crossed a link rmule
+    /// dialed to the same client whose hello went out first, so the client
+    /// keeps rmule's link and closes its own, and its standing stays on the
+    /// dialed link (ADR-0057, "Two hellos of one client race").
+    CrossedLinkLetGo {
+        /// The link the peer opened, as it came in.
+        peer: rmule_primitives::PeerEndpoint,
+    },
     /// A peer's source-exchange request was answered with `count` sources
     /// (ADR-0055 §Serving) — the serve-side mirror of a download's
     /// `SourcesReceived`. A throttled or empty-pool ask emits nothing.

@@ -129,12 +129,18 @@ pub(super) enum ServeDecision {
     /// it ended ([`ServeState::on_dial_back_linked`],
     /// [`ServeState::on_dial_back_failed`]).
     DialBack(DialBack),
-    /// Call off the dial-back to `waiter` while it has not yet reached the
-    /// peer: the client came back on a link of its own and took the grant,
-    /// as aMule deletes the socket it was connecting to a client whose own
-    /// socket arrives (`ClientList.cpp:400-403`). A dial past its hello
-    /// says so as ever, and its link is let go.
-    CallOffDialBack { waiter: PeerEndpoint },
+    /// Call off the dial-back to `waiter`: the client came back on `link`, a
+    /// link of its own, while its grant was held for the dial (ADR-0057,
+    /// "Two hellos of one client race"). What the call-off found decides
+    /// which link takes the grant ([`ServeState::on_dial_back_call_off`]):
+    /// `link`, when no byte of the dial's hello went out; the dial, when it
+    /// did, `link` being let go.
+    CallOffDialBack {
+        /// The waiter the dial is for, keyed by the link it waited on.
+        waiter: PeerEndpoint,
+        /// The link the client came back on.
+        link: PeerEndpoint,
+    },
     /// Hand `sighting`, a peer that asked about `file_hash`, to the run of
     /// the download serving it as a candidate source (ADR-0113). The run
     /// takes it under its own source cap; a full inbox drops it.

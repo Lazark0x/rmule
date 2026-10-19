@@ -7,13 +7,14 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddrV4;
+use std::sync::Arc;
 use std::time::Duration;
 
 use rmule_ed2k::OfferedFile;
 use rmule_net::family::FamilySelection;
 use rmule_net::peer::{PeerListener, PeerNetError};
 use rmule_primitives::PeerEndpoint;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 
 use crate::CoreError;
 use crate::ban_store::SharedBanStore;
@@ -29,11 +30,11 @@ mod follower;
 mod test_connection;
 
 pub use connection::{ServeConnection, ServeInput, ServeOutput};
-pub use dial_back::{DialBack, DialBackOutcome};
+pub use dial_back::{DialBack, DialBackCallOff, DialBackOutcome};
 
 use accept::{AcceptGates, spawn_accept_pump};
 pub(crate) use accept::{AdmittedPeer, SharedTunnelAdmit};
-use dial_back::DialBackRoad;
+use dial_back::{DialBackRoad, DialClaim};
 use follower::SessionFollower;
 
 use super::HelloAdverts;
@@ -137,15 +138,19 @@ pub trait ServeRuntimeService: Send + 'static {
     /// connection, and the purge reclaims one that never comes.
     fn dial_back(&mut self, _dial: DialBack, _outcomes: mpsc::Sender<DialBackOutcome>) {}
 
-    /// Call off the dial-back to `waiter` if it has not reached the peer's
-    /// hello yet (ADR-0057, "Two hellos of one client race"): it stops and
-    /// says nothing, its socket closed and its Dial in Flight unfiled, so a
+    /// Call off the dial-back to `waiter`, the client having come back on a
+    /// link of its own (ADR-0057, "Two hellos of one client race"), and say
+    /// what that found. A dial whose hello has not gone out stops and says
+    /// nothing, its socket closed unheard and its Dial in Flight unfiled, so a
     /// download waiting on it looks again and finds the link the client came
-    /// back on. A dial past its hello, or none, is left as it is.
+    /// back on: [`DialBackCallOff::Stopped`], as for no dial at all. A dial
+    /// whose hello is out goes on, the far side keeping it:
+    /// [`DialBackCallOff::PastHello`].
     ///
-    /// Default: nothing to call off, the truth for an adapter that dials
-    /// nothing.
-    fn call_off_dial_back(&mut self, _waiter: PeerEndpoint) {}
+    /// Default: nothing dialed, so no hello went out.
+    fn call_off_dial_back(&mut self, _waiter: PeerEndpoint) -> DialBackCallOff {
+        DialBackCallOff::Stopped
+    }
 
     /// Adopt the builder's one set of `AdapterCells`
     /// (ADR-0048 "Identity ownership"):
@@ -289,10 +294,10 @@ pub struct RuntimeServeRuntimeService {
     /// connection; `None` before the first start and after a release, when
     /// nothing is dialed back.
     hello: Option<HelloSource>,
-    /// Where each dial-back is called off, by the waiter it dials for: held
-    /// from the dial until its road ends or is called off (ADR-0057, "Two
-    /// hellos of one client race").
-    dial_backs: HashMap<PeerEndpoint, oneshot::Sender<()>>,
+    /// Each dial-back's claim, by the waiter it dials for, which its hello
+    /// and a call-off race for (ADR-0057, "Two hellos of one client race"):
+    /// held from the dial while its road runs.
+    dial_backs: HashMap<PeerEndpoint, Arc<DialClaim>>,
 }
 
 impl RuntimeServeRuntimeService {
@@ -572,10 +577,11 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
         let Some(hello) = self.hello.clone() else {
             return;
         };
-        // A road past its hello, or ended, holds its call-off no more.
-        self.dial_backs.retain(|_, call_off| !call_off.is_closed());
-        let (call_off, called_off) = oneshot::channel();
-        self.dial_backs.insert(dial.waiter, call_off);
+        // An ended road holds its claim no more.
+        self.dial_backs
+            .retain(|_, claim| Arc::strong_count(claim) > 1);
+        let claim = Arc::new(DialClaim::default());
+        self.dial_backs.insert(dial.waiter, claim.clone());
         let road = DialBackRoad {
             hello,
             adverts: self.adverts.clone(),
@@ -583,13 +589,13 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
             ban_store: self.ban_store.clone(),
             deps: self.inbound_deps(),
         };
-        tokio::spawn(road.run(dial, called_off, outcomes));
+        tokio::spawn(road.run(dial, claim, outcomes));
     }
 
-    fn call_off_dial_back(&mut self, waiter: PeerEndpoint) {
-        if let Some(call_off) = self.dial_backs.remove(&waiter) {
-            let _ = call_off.send(());
-        }
+    fn call_off_dial_back(&mut self, waiter: PeerEndpoint) -> DialBackCallOff {
+        self.dial_backs
+            .get(&waiter)
+            .map_or(DialBackCallOff::Stopped, |claim| claim.call_off())
     }
 
     /// Refused before `start` and after a release: there is no listener to
