@@ -91,6 +91,7 @@ pub const fn dial_end_words(cause: DialEnd) -> &'static str {
         DialEnd::Banned => "not dialled: it is banned",
         DialEnd::ConnectionRefused => "connection refused",
         DialEnd::TimedOut => "no answer",
+        DialEnd::CryptUnanswered => "it never answered the obfuscation handshake",
         DialEnd::Reset => "reset",
         DialEnd::Os { kind } => super::super::os::kind_words(kind),
         DialEnd::ClosedBeforeHello => "it hung up before its hello",

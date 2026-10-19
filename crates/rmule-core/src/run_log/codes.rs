@@ -752,6 +752,7 @@ pub(super) fn dial_end(record: Record, cause: DialEnd) -> Record {
         DialEnd::Banned => "banned",
         DialEnd::ConnectionRefused => "connection_refused",
         DialEnd::TimedOut => "timed_out",
+        DialEnd::CryptUnanswered => "crypt_unanswered",
         DialEnd::Reset => "reset",
         DialEnd::Os { kind } => return record.code("cause", "os").os_error(kind, None),
         DialEnd::ClosedBeforeHello => "closed_before_hello",

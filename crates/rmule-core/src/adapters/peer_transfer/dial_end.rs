@@ -32,6 +32,7 @@ pub(in crate::adapters) fn connect_failure(error: &PeerNetError) -> DialEnd {
         PeerNetError::Driver(DriverError::Io(source)) => io_kind(source.kind()),
         PeerNetError::HandshakeIncomplete(reason) => closed_before_hello(*reason),
         PeerNetError::CryptIncompatible => DialEnd::CryptKeyUnknown,
+        PeerNetError::CryptUnanswered => DialEnd::CryptUnanswered,
         // `PeerNetError` is non-exhaustive, and the rest end a dial only as
         // a link gone before the hello.
         _ => DialEnd::ClosedBeforeHello,
@@ -102,5 +103,16 @@ mod tests {
             assert_eq!(peer.outbound(ours), OutboundCrypt::Incompatible);
             assert_eq!(crypt_refusal(peer, ours), cause);
         }
+    }
+
+    /// A peer that took the connection and never answered the crypt
+    /// handshake is named for that, not read as one that hung up before its
+    /// hello: aMule's socket timed out on it (`ClientTCPSocket.cpp:201-222`).
+    #[test]
+    fn a_crypt_handshake_never_answered_is_named_apart_from_a_hang_up() {
+        assert_eq!(
+            connect_failure(&PeerNetError::CryptUnanswered),
+            DialEnd::CryptUnanswered
+        );
     }
 }
