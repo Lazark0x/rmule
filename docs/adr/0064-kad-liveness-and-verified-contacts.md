@@ -65,10 +65,23 @@ outbound, because the `0x22` consume checks it.
   instead, because in an all-plaintext topology a strict gate would serve nothing and
   silently unjoin the node, as aMule serves silence there. The moment one contact
   verifies, unverified contacts stop being served.
-- Contacts from lookup answers enter unverified, behind aMule's anti-hijack filter: a
-  verified duplicate at a different IP rejects the candidate
-  ([RoutingZone.cpp#L897](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/kademlia/routing/RoutingZone.cpp#L897)).
-  Bootstrap-file contacts may enter verified (ADR-0066).
+- **Lookup-answer rows** never enter the table, and a walk dials a row only when the table
+  would take it. aMule hands its search only the rows its routing zone stored or would
+  accept (`ProcessKademlia2Response`, `KademliaUDPListener.cpp:741-750`;
+  `CRoutingZone::IsAcceptableContact`, `RoutingZone.cpp:897-916`), and rmule applies the
+  same judgement. A row from Kad version 1 or older is refused (`:731`, `:901-904`). A row
+  naming a stored ID passes only at that contact's UDP port, and only at its IP once the
+  contact is verified: the anti-hijack filter (`:905-913`). Any other row must fit the two
+  table-wide admission caps below, one per address and ten per /24
+  (`CRoutingBin::CheckGlobalIPLimits`, `RoutingBin.cpp:366-390`). The count covers the table
+  and the rows of the same answer already let through. aMule stores each row it can before
+  it judges the next one. rmule's walk stores none, so it counts the earlier rows as if they
+  were stored, and one answer cannot hand a walk more rows of one address or /24 than the
+  table would hold. This is stricter than aMule, which counts only the rows its bins took.
+  The bucket cap never refuses a row. A UDP firewall check's helper rows skip this
+  judgement, because aMule hands them to its tester unjudged (`:734-740`). A refused row is
+  diagnosed (`ContactRefused`, `ContactContradictsStored`, `ContactOverAdmissionCap`) and
+  never dialed. Bootstrap-file contacts may enter verified (ADR-0066).
 - **Admission caps** (aMule `CRoutingBin::AddContact`, `CheckGlobalIPLimits` and
   `ChangeContactIPAddress`,
   [RoutingBin.cpp#L84](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/kademlia/routing/RoutingBin.cpp#L84),
@@ -134,7 +147,8 @@ outbound, because the `0x22` consume checks it.
   offender at 5×), the decay arithmetic, the cleanup sweep, the LAN bypass, the port-53
   pair, the solicitation edges, the `0x22` state machine, verified gating with the
   anti-hijack duplicate, the admission caps (per IP, per /24 table-wide and per bucket,
-  the LAN exemption, a refused move), the misc-options truth table and mesh-sim flood,
+  the LAN exemption, a refused move, a lookup answer's rows of one /24 and a row
+  re-homing a verified ID), the misc-options truth table and mesh-sim flood,
   handshake and banned-peer scenarios.
 - Captures use inverted roles with absence plus a positive control against the same pinned
   counterparty: rmule's fourth `HELLO_REQ` in a minute draws no answer while the first

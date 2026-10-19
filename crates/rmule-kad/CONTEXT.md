@@ -126,7 +126,7 @@ A routing-table contact whose IP has been proven not spoofed — by a hello carr
 _Avoid_: responded contact (liveness, not identity), trusted node, known peer
 
 **Admission Cap**:
-One of the three limits on how much of the routing table one address or one /24 may hold (aMule's `CRoutingBin` caps, ADR-0064): one contact per IPv4 address and ten per /24 across the table, two per /24 inside one bucket. The table-wide counts are tallies the table keeps in step with every stored contact's IP; a newcomer, a `Failed` contact's replacement and a move to a new IP all pass the caps, and a refused move leaves the entry as it was. The private ranges and loopback are exempt from the /24 caps, loopback from the per-IP cap too. A deterministic mesh gives each member its own /24 for this reason.
+One of the three limits on how much of the routing table one address or one /24 may hold (aMule's `CRoutingBin` caps, ADR-0064): one contact per IPv4 address and ten per /24 across the table, two per /24 inside one bucket. The table-wide counts are tallies the table keeps in step with every stored contact's IP; a newcomer, a `Failed` contact's replacement and a move to a new IP all pass the caps, and a refused move leaves the entry as it was. The private ranges and loopback are exempt from the /24 caps, loopback from the per-IP cap too. A lookup answer's rows meet the two table-wide caps before a walk may dial them, counted with the rows of that answer already let through. A deterministic mesh gives each member its own /24 for this reason.
 _Avoid_: IP limit, subnet filter (the IP filter is the **Kad Node Start**'s contact admission, a different gate)
 
 **Kad Node Start**:
