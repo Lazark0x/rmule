@@ -94,7 +94,7 @@ pub(super) async fn drive_served_link(
                 // The serve side let the link go: it ends with it, unless a
                 // download still holds it.
                 None | Some(ServeOutput::Disconnect) => {
-                    if riders.is_empty() {
+                    if riders.is_empty() && !moving.coming() {
                         break PortTestClosedBy::Us;
                     }
                     serve.serve_ended();
@@ -122,6 +122,11 @@ pub(super) async fn drive_served_link(
                             break close_reason(&mut conn).await;
                         }
                     }
+                    // The serve side let the link go while they moved, and
+                    // none of them rides it.
+                    if riders.is_empty() && !serve.serving() {
+                        break PortTestClosedBy::Us;
+                    }
                 }
             },
             command = riders.next_command() => match command {
@@ -141,7 +146,7 @@ pub(super) async fn drive_served_link(
                             break close_reason(&mut conn).await;
                         }
                     }
-                    if riders.is_empty() && !serve.holds() {
+                    if riders.is_empty() && !moving.coming() && !serve.holds() {
                         if serve.serving() {
                             let _ = event_tx.send(ServeInput::closed_here()).await;
                         }
@@ -171,7 +176,7 @@ pub(super) async fn drive_served_link(
                         }
                     }
                     Routed::ServeGone => {
-                        if riders.is_empty() {
+                        if riders.is_empty() && !moving.coming() {
                             break PortTestClosedBy::Us;
                         }
                         serve.serve_ended();

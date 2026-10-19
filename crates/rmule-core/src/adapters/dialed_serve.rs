@@ -164,7 +164,7 @@ pub(crate) async fn route_dialed_connection(mut conn: PeerConnection, route: Dia
                             break;
                         }
                     }
-                    if riders.is_empty() && !serve.holds() {
+                    if riders.is_empty() && !link.moving.coming() && !serve.holds() {
                         closing = close(&mut conn).await;
                         if closing.is_none() {
                             break;
@@ -180,7 +180,7 @@ pub(crate) async fn route_dialed_connection(mut conn: PeerConnection, route: Dia
                 }
                 None => {
                     serve.serve_ended();
-                    if riders.is_empty() {
+                    if riders.is_empty() && !link.moving.coming() {
                         closing = close(&mut conn).await;
                         if closing.is_none() {
                             break;
@@ -203,6 +203,12 @@ pub(crate) async fn route_dialed_connection(mut conn: PeerConnection, route: Dia
                     if unasked && !link.offer_grant(&deps, remote) {
                         let decline = PeerCommand::Requester(RequesterCommand::DeclineSlot);
                         if conn.send(decline).await.is_err() {
+                            break;
+                        }
+                    }
+                    if riders.is_empty() && !serve.holds() {
+                        closing = close(&mut conn).await;
+                        if closing.is_none() {
                             break;
                         }
                     }

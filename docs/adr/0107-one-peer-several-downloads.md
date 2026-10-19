@@ -163,9 +163,10 @@ Invariants every transition keeps:
 
    An uploader dialing a waiter it promoted grants at its `ConnectionEstablished`
    (`BaseClient.cpp:1707-1716`), so a link that overtook a download's dial may carry an unasked
-   grant before the moving download has joined it. The link holds that grant — offers it to no
-   Awaited Grant and gives nothing back — until every download moving over from the dials it
-   overtook has joined: a download then riding it leaves the grant to its own ask, which the
+   grant before the moving download has joined it. Until every download moving over from the dials
+   it overtook has joined, the link holds itself up for them, as for its waiters (invariant 9), and
+   holds that grant — offers it to no Awaited Grant and gives nothing back: a download then riding
+   it leaves the grant to its own ask, which the
    uploader, uploading to the client already, grants at once (`UploadQueue.cpp:486-493`), and with
    none riding the grant goes as any unasked grant does. A rank the peer's link carries answers only
    an ask made on it: the moved download's ask is answered by the client's standing at the
