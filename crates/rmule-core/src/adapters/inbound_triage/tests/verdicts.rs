@@ -2,7 +2,7 @@
 //! the *production* serve adapter: a stream rmule raised toward a named
 //! target enters at
 //! [`SharedTunnelAdmit::admit_dialed_toward`](crate::adapters::SharedTunnelAdmit),
-//! meets the IP filter and the ban gate in `accept()`, and reaches the real
+//! meets the IP filter and the ban gate there, and reaches the real
 //! `triage_inbound_connection`, which asks the registry on the hello.
 //!
 //! The stream is an ordinary loopback `TcpStream` rather than a punched uTP

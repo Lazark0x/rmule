@@ -103,7 +103,7 @@ fn deps() -> InboundPeerDeps {
 }
 
 /// Hand one admitted path to the production inbound router against `awaited`.
-/// This is what the serve adapter's `accept()` loop does per connection; an
+/// This is what the serve adapter's `accept()` does per connection; an
 /// adoption leaves down the claim's own `adopt_tx`, so nothing comes back
 /// here.
 fn triage_admitted(admitted: AdmittedPeer, awaited: AwaitedInbound) {
@@ -327,7 +327,7 @@ async fn a_download_takes_a_part_over_the_tunnel_it_adopted() {
         )
         .await;
     // Each node's front raises exactly one Tunnel and admits it; the serve
-    // adapter's `accept()` loop is what takes them in production.
+    // adapter's `accept()` is what takes them in production.
     let mut requester = requester;
     let mut target = target;
     let dialed = tokio::time::timeout(Duration::from_secs(20), requester.accepted.recv())

@@ -1,8 +1,9 @@
-//! Accept-side tests: a cancelled accept must not drop a peer mid-handshake,
-//! and a banned or IP-filtered address is refused at the listener.
+//! Accept-side tests: a cancelled accept drops no peer, whether mid-handshake
+//! or held at the gates, and a banned or IP-filtered address is refused
+//! before the serve loop sees it.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddrV4};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rmule_net::peer::ObfuscationPolicy;
 use rmule_primitives::{Ipv4Endpoint, PeerEndpoint};
@@ -145,6 +146,59 @@ async fn accept_refuses_a_connection_from_a_banned_ip() {
     );
 }
 
+/// Nothing that reached the serve loop's accept channel is lost to its
+/// `select!`. The ban gate awaits the ban store's lock; the serve runner races
+/// `accept()` against every other branch and drops it whenever one of those
+/// wakes first. With the gate run inside `accept()`, the connection it had
+/// already taken off the channel went down with the cancelled future — an
+/// accepted peer, a server's High-ID port test or a Low-ID dial-back, closed
+/// for nothing it did.
+///
+/// Hold the lock, dial, and cancel `accept()` over and over while it is held,
+/// exactly as a busy serve loop would. Once the lock is free the next
+/// `accept()` must surface that connection, and it must still be open.
+#[tokio::test]
+async fn an_accept_cancelled_while_the_ban_store_is_locked_loses_no_connection() {
+    use std::net::SocketAddr;
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpStream;
+
+    let ban_store: SharedBanStore = SharedBanStore::default();
+    let mut serve = RuntimeServeRuntimeService::new().with_ban_store(ban_store.clone());
+    let bound = serve
+        .start(
+            dialed_serve_ctx().identity,
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
+        )
+        .await
+        .unwrap();
+
+    let held = ban_store.lock().await;
+    let mut client = TcpStream::connect(SocketAddr::V4(bound)).await.unwrap();
+    // Long enough for the pump to have accepted the dial many times over: a
+    // loopback accept with no crypt armed needs no byte from the peer.
+    for _ in 0..30 {
+        tokio::select! {
+            biased;
+            _ = serve.accept() => panic!("no connection passes a ban gate whose store is locked"),
+            () = tokio::time::sleep(Duration::from_millis(10)) => {}
+        }
+    }
+    drop(held);
+
+    let accepted = timeout(Duration::from_secs(2), serve.accept())
+        .await
+        .expect("the connection surfaces once the ban store is free")
+        .expect("a ServeConnection surfaced");
+    assert!(
+        timeout(Duration::from_millis(200), client.read(&mut [0u8; 1]))
+            .await
+            .is_err(),
+        "the connection is still open"
+    );
+    drop(accepted);
+}
+
 /// The IP filter's accept gate (aMule `CClientTCPSocket::InitNetworkData`):
 /// `accept()` silently refuses a connection from an IP-filtered address on
 /// the same running instance that accepted an ordinary one moments before
@@ -195,20 +249,17 @@ async fn accept_refuses_a_connection_from_an_ip_filtered_address() {
     );
 }
 
-/// A burst of refused peers is drained **off** the accept path.
+/// A burst of refused peers is closed at the gates and never queued for the
+/// serve loop.
 ///
-/// Three IP-filtered peers arrive at once. One `accept()` call — cancelled,
-/// exactly as the serve runner's `select!` cancels it — drains all three, and
-/// every one of them is still closed afterwards: their `shutdown()` runs in a
-/// task of its own, so neither the drain nor the close is gated on the other.
-/// Inline, the cancellation would have dropped whichever refusal was mid-close
-/// and left the rest queued behind it.
-///
-/// The backlog the accept gauge reports is asserted on the way past, since it
-/// is the same fact from the other side: three peers queued is a depth of
-/// three.
+/// Three IP-filtered peers arrive at once and every one of them is closed with
+/// no `accept()` running at all: the pump refuses them before the channel, so
+/// the channel — the serve loop's only cushion, and the backlog its gauge
+/// reports — holds only peers the loop will take. Queued ungated, the burst
+/// would have sat there unclosed, crowding admissible peers, until an
+/// `accept()` drained it.
 #[tokio::test]
-async fn a_burst_of_refused_peers_is_drained_and_closed_off_the_accept_path() {
+async fn a_burst_of_refused_peers_is_closed_at_the_gates_and_never_queued() {
     use std::net::SocketAddr;
     use tokio::io::AsyncReadExt;
     use tokio::net::TcpStream;
@@ -226,29 +277,6 @@ async fn a_burst_of_refused_peers_is_drained_and_closed_off_the_accept_path() {
     for _ in 0..3 {
         refused.push(TcpStream::connect(SocketAddr::V4(bound)).await.unwrap());
     }
-
-    // Wait for all three to reach the channel, so the drain below really is
-    // one accept over a burst rather than three accepts over a trickle.
-    timeout(Duration::from_secs(5), async {
-        while serve.accept_backlog() != Some(3) {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .expect("the pump admits all three within 5s");
-
-    assert!(
-        timeout(Duration::from_millis(300), serve.accept())
-            .await
-            .is_err(),
-        "no filtered peer becomes a ServeConnection"
-    );
-    assert_eq!(
-        serve.accept_backlog(),
-        Some(0),
-        "one cancelled accept drained the whole burst"
-    );
-
     for (nth, mut client) in refused.into_iter().enumerate() {
         let mut buf = [0u8; 1];
         let read = timeout(Duration::from_secs(2), client.read(&mut buf))
@@ -260,6 +288,18 @@ async fn a_burst_of_refused_peers_is_drained_and_closed_off_the_accept_path() {
             "refused peer {nth} is closed, not ignored"
         );
     }
+
+    assert_eq!(
+        serve.accept_backlog(),
+        Some(0),
+        "no refused peer waits for the serve loop"
+    );
+    assert!(
+        timeout(Duration::from_millis(300), serve.accept())
+            .await
+            .is_err(),
+        "no filtered peer becomes a ServeConnection"
+    );
 }
 
 /// A minimal plaintext `OP_HELLO` (`0xE3`), enough for the listener's

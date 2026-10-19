@@ -252,7 +252,6 @@ impl Node {
                 .try_send(AdmittedPeer {
                     conn,
                     dialed_toward: None,
-                    test_connection: false,
                     awaited_server: None,
                 })
                 .is_err()

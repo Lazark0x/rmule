@@ -6,7 +6,7 @@
 
 use std::future::Future;
 use std::net::SocketAddrV4;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use rmule_ed2k::OfferedFile;
 use rmule_net::family::FamilySelection;
@@ -27,7 +27,7 @@ mod test_connection;
 
 pub use connection::{ServeConnection, ServeInput, ServeOutput};
 
-use accept::spawn_accept_pump;
+use accept::{AcceptGates, spawn_accept_pump};
 pub(crate) use accept::{AdmittedPeer, SharedTunnelAdmit};
 use follower::SessionFollower;
 
@@ -169,7 +169,9 @@ pub struct RuntimeServeRuntimeService {
     /// cancelling that future mid-peek silently drops (FINs) the peer — the
     /// interop bench observed a stock aMule's source dial die exactly that way
     /// whenever another serve-loop branch woke first. An
-    /// `mpsc::Receiver::recv` is cancel-safe, so the race is now harmless.
+    /// `mpsc::Receiver::recv` is cancel-safe, and every connection on the
+    /// channel has already passed the **Accept Gates**, so the race is
+    /// harmless.
     accept_rx: Option<mpsc::Receiver<AdmittedPeer>>,
     /// The pump task itself, held only so [`release`](ServeRuntimeService::release)
     /// can *await* its end: dropping `accept_rx` tells it to stop, and joining
@@ -187,10 +189,10 @@ pub struct RuntimeServeRuntimeService {
     awaited_inbound: AwaitedInbound,
     slot_wait_timeout: Duration,
     dialed_serve_sink: SharedDialedServeSink,
-    /// The core-owned `BanStore` (ADR-0064). Default/empty on the
-    /// non-`Core::new` constructors (nothing is ever banned); `Core::builder`
-    /// shares one instance across this adapter, `RuntimePeerTransferService`,
-    /// and the Kad event fold.
+    /// The core-owned `BanStore` (ADR-0064), the second **Accept Gate**.
+    /// Default/empty on the non-`Core::new` constructors (nothing is ever
+    /// banned); `Core::builder` shares one instance across this adapter,
+    /// `RuntimePeerTransferService`, and the Kad event fold.
     ban_store: SharedBanStore,
     /// The ed2k→Kad handoff sink (ADR-0067): each accepted peer that carries a
     /// Kad node hint is brokered to the running node through it. Default/empty on
@@ -227,8 +229,8 @@ pub struct RuntimeServeRuntimeService {
     /// `Core::builder` shares the one instance with the Kad factory and the
     /// client-UDP front.
     buddy_slot: SharedBuddySlot,
-    /// The core-owned IP filter. Default/empty on the
-    /// non-`Core::new` constructors (nothing is ever filtered);
+    /// The core-owned IP filter, the first **Accept Gate**. Default/empty on
+    /// the non-`Core::new` constructors (nothing is ever filtered);
     /// `Core::builder` shares one instance across this adapter, both peer
     /// adapters, and the runner's ingest gates.
     ip_filter: SharedIpFilter,
@@ -269,9 +271,9 @@ impl RuntimeServeRuntimeService {
     }
 
     /// Share the core-owned `BanStore` (ADR-0064): every accepted
-    /// connection is checked against it before it ever reaches the accept
-    /// router. `Core::builder` wires the one production instance in; the
-    /// default (unset) store bans nothing.
+    /// connection is checked against it before it reaches the accept channel.
+    /// `Core::builder` wires the one production instance in; the default
+    /// (unset) store bans nothing.
     #[cfg(test)]
     #[must_use]
     pub(crate) fn with_ban_store(mut self, ban_store: SharedBanStore) -> Self {
@@ -294,7 +296,7 @@ impl RuntimeServeRuntimeService {
     }
 
     /// Share the core-owned IP filter: every accepted connection
-    /// is checked against it before the ban gate and the accept router.
+    /// is checked against it before the ban gate and the accept channel.
     /// `Core::builder` wires the
     /// one production instance in; the default (empty) filter blocks nothing.
     #[cfg(test)]
@@ -347,22 +349,6 @@ fn bind_error_kind(error: &PeerNetError) -> std::io::ErrorKind {
         PeerNetError::Bind { source } => source.kind(),
         _ => std::io::ErrorKind::Other,
     }
-}
-
-/// Close a refused peer's connection **off** the accept path.
-///
-/// `accept()` is one arm of the serve runner's `select!`, and the accept
-/// channel is the only cushion between it and every producer feeding it — the
-/// TCP accept pump, the NAT-T adopter, the callback dial-back. A refused
-/// peer's `shutdown()` is the one await in that arm that is not the pump
-/// itself: a burst of filtered or banned peers would otherwise be closed one
-/// FIN round trip at a time while admissible peers queued behind them. Nothing
-/// downstream waits on this close — the peer is refused either way — so it is
-/// exactly the work that belongs in a task of its own.
-fn shutdown_refused(conn: rmule_net::peer::Connection) {
-    tokio::spawn(async move {
-        let _ = conn.shutdown().await;
-    });
 }
 
 impl ServeRuntimeService for RuntimeServeRuntimeService {
@@ -449,12 +435,18 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
             )
         });
         let hello = crate::server_session::HelloSource::live(identity, reach);
+        let gates = AcceptGates::new(
+            self.ip_filter.clone(),
+            self.ban_store.clone(),
+            self.kad_pump.clone(),
+        );
         let pump = spawn_accept_pump(
             listener,
             hello,
             self.adverts.clone(),
             &self.tunnel_admit,
             self.session.own_identity().awaited_testers().clone(),
+            gates,
         );
         self.accept_rx = Some(pump.accepted);
         self.accept_pump = Some(pump.task);
@@ -467,118 +459,67 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
     }
 
     async fn accept(&mut self) -> Option<ServeConnection> {
-        loop {
-            // `recv` is cancel-safe, so the serve runner may race this future
-            // in its `select!` freely; the listener itself lives in the pump
-            // task precisely so that race can never drop a mid-handshake
-            // socket. `None` means the pump ended — a fatal
-            // listener error or serve shutdown — and winds the activity down.
-            // A connection the pump accepted before the serve loop began (the
-            // server's High-ID port-check among them) waits in the channel,
-            // already answered by its own driver.
-            let AdmittedPeer {
-                conn,
-                dialed_toward,
-                test_connection,
-                awaited_server,
-            } = self.accept_rx.as_mut()?.recv().await?;
-            let peer = conn.peer_endpoint();
-            // The IP filter, aMule `CClientTCPSocket::InitNetworkData`: an
-            // accepted connection from an IP-filtered address is refused
-            // before any hello — and before the ban gate, aMule's own check
-            // order. The verdict is bound first so the read guard never
-            // crosses the shutdown await.
-            let ip_filtered = self
-                .ip_filter
-                .read()
-                .expect("ip filter lock")
-                .is_filtered_peer(peer);
-            if ip_filtered {
-                tracing::debug!(
-                    %peer,
-                    "refusing an accepted connection from an IP-filtered address"
-                );
-                shutdown_refused(conn);
-                if let Some(server) = awaited_server {
-                    let end = PortTestEnd::IpFiltered;
-                    server.report(LoginStep::PortTestEnded { end }).await;
-                }
-                continue;
+        // The receive is this future's only await, and `recv` is cancel-safe,
+        // so the serve runner may race it in its `select!` freely: a cancel
+        // before it resolves leaves the connection on the channel for the next
+        // call, and nothing after it awaits. That holds because the producers
+        // run the **Accept Gates** — the IP filter, the ban, the Test
+        // Connection carve-out — before the channel, never here: the ban
+        // check's lock and a refused port test's report would each be an await
+        // a cancel could drop a taken connection at. The listener lives in the
+        // pump task for the same reason, so the race never drops a
+        // mid-handshake socket either. `None` means the pump ended — a fatal
+        // listener error or serve shutdown — and winds the activity down. A
+        // connection the pump accepted before the serve loop began (the
+        // server's High-ID port-check among them) waits in the channel,
+        // already answered by its own driver.
+        let AdmittedPeer {
+            conn,
+            dialed_toward,
+            awaited_server,
+        } = self.accept_rx.as_mut()?.recv().await?;
+        let peer = conn.peer_endpoint();
+        let (command_tx, command_rx) = mpsc::channel(16);
+        let (event_tx, event_rx) = mpsc::channel(16);
+        // Triage, don't bridge eagerly (ADR-0039): the per-connection task drains
+        // the inbound hello and, on a pending-callback match, adopts the raw
+        // connection as a download worker instead of serving it.
+        let triage = triage_inbound_connection(
+            conn,
+            dialed_toward,
+            command_rx,
+            event_tx,
+            self.awaited_inbound.clone(),
+            InboundPeerDeps {
+                slot_wait_timeout: self.slot_wait_timeout,
+                dialed_serve_sink: self.dialed_serve_sink.clone(),
+                kad_bootstrap: self.kad_bootstrap.clone(),
+                kad_pump: self.kad_pump.clone(),
+                buddy_slot: self.buddy_slot.clone(),
+                // The one Address Learning store, reached the way every
+                // other feeder reaches it (ADR-0084).
+                addresses: self.session.own_identity().addresses().clone(),
+                peer_roster: self.peer_roster.clone(),
+                kad_presence: self.kad_presence.clone(),
+                file_known: self.file_known.clone(),
+                tunnel_admit: self.tunnel_admit.clone(),
+                hello_refusals: self.hello_refusals.clone(),
+                peer_links: self.peer_links.clone(),
+            },
+        );
+        // A connection from the awaited server admitted as an ordinary
+        // peer: its test's one knowable end is its peer connection's, and
+        // who closed it. One adopted as a download worker has not ended.
+        tokio::spawn(async move {
+            let InboundEnd::Closed(closed_by) = triage.await else {
+                return;
+            };
+            if let Some(server) = awaited_server {
+                let end = PortTestEnd::PeerConnectionEnded { closed_by };
+                server.report(LoginStep::PortTestEnded { end }).await;
             }
-            // ADR-0064, peer-TCP enforcement: a flood-offender IP the core
-            // `BanStore` still holds is refused here, post-accept — the same
-            // point aMule's own client-list ban decides at. Refusing loops
-            // back for the next comer instead of returning `None` (which
-            // would read as "listener closed" to the caller). Kad's own
-            // datagram path never consults this store (no Kad ban gate).
-            if self
-                .ban_store
-                .lock()
-                .await
-                .is_banned(peer.ip(), Instant::now())
-            {
-                tracing::debug!(%peer, "refusing an accepted connection from a banned IP");
-                shutdown_refused(conn);
-                if let Some(server) = awaited_server {
-                    let end = PortTestEnd::Banned;
-                    server.report(LoginStep::PortTestEnded { end }).await;
-                }
-                continue;
-            }
-            // ADR-0046 "Test Connections": past the gates, a test is answered
-            // on its own and is never a serve connection.
-            if test_connection {
-                let kad_pump = self.kad_pump.clone();
-                tokio::spawn(async move {
-                    let end = test_connection::answer_test_connection(conn, kad_pump).await;
-                    if let Some(server) = awaited_server {
-                        server.report(LoginStep::PortTestEnded { end }).await;
-                    }
-                });
-                continue;
-            }
-            let (command_tx, command_rx) = mpsc::channel(16);
-            let (event_tx, event_rx) = mpsc::channel(16);
-            // Triage, don't bridge eagerly (ADR-0039): the per-connection task drains
-            // the inbound hello and, on a pending-callback match, adopts the raw
-            // connection as a download worker instead of serving it.
-            let triage = triage_inbound_connection(
-                conn,
-                dialed_toward,
-                command_rx,
-                event_tx,
-                self.awaited_inbound.clone(),
-                InboundPeerDeps {
-                    slot_wait_timeout: self.slot_wait_timeout,
-                    dialed_serve_sink: self.dialed_serve_sink.clone(),
-                    kad_bootstrap: self.kad_bootstrap.clone(),
-                    kad_pump: self.kad_pump.clone(),
-                    buddy_slot: self.buddy_slot.clone(),
-                    // The one Address Learning store, reached the way every
-                    // other feeder reaches it (ADR-0084).
-                    addresses: self.session.own_identity().addresses().clone(),
-                    peer_roster: self.peer_roster.clone(),
-                    kad_presence: self.kad_presence.clone(),
-                    file_known: self.file_known.clone(),
-                    tunnel_admit: self.tunnel_admit.clone(),
-                    hello_refusals: self.hello_refusals.clone(),
-                    peer_links: self.peer_links.clone(),
-                },
-            );
-            // A connection from the awaited server admitted as an ordinary
-            // peer: its test's one knowable end is its peer connection's, and
-            // who closed it. One adopted as a download worker has not ended.
-            tokio::spawn(async move {
-                let InboundEnd::Closed(closed_by) = triage.await else {
-                    return;
-                };
-                if let Some(server) = awaited_server {
-                    let end = PortTestEnd::PeerConnectionEnded { closed_by };
-                    server.report(LoginStep::PortTestEnded { end }).await;
-                }
-            });
-            return Some(ServeConnection::new(peer, command_tx, event_rx));
-        }
+        });
+        Some(ServeConnection::new(peer, command_tx, event_rx))
     }
 
     fn accept_backlog(&self) -> Option<usize> {

@@ -305,12 +305,12 @@ pub struct SessionCounters {
     /// too, so this counter names why those connections ended.
     pub malformed_name_asks_total: u64,
     /// The deepest the serve activity's **accept backlog** has been seen this
-    /// session: admitted peers queued behind the one the runner just
-    /// took, plus that one. The channel holds sixteen, so a reading that
-    /// approaches it says the runner was away — in `enact`, or in a refused
-    /// peer's close — long enough for a burst to stack up behind it, and a
-    /// reading that reaches it says peers were made to wait on the producers'
-    /// side, where the NAT-T adopter drops rather than blocks.
+    /// session: peers past the **Accept Gates** queued behind the one the
+    /// runner just took, plus that one — a refused peer never queues. The
+    /// channel holds sixteen, so a reading that approaches it says the runner
+    /// was away — in `enact` — long enough for a burst to stack up behind it,
+    /// and a reading that reaches it says peers were made to wait on the
+    /// producers' side, where the NAT-T adopter drops rather than blocks.
     ///
     /// `None` on a core whose serve adapter keeps no such channel, and on one
     /// that has not accepted a peer yet: "not measured" is not depth zero.
