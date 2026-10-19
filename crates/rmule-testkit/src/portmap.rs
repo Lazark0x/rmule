@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use rmule_net::portmap::{
     EpochVerdict, Gateway, GatewaySource, MappingBackend, MappingError, MappingFuture,
-    MappingGrant, MappingProtocol, MappingRequest, ProbeReport,
+    MappingGrant, MappingProtocol, MappingRequest, ProbeReport, ReleaseOutcome,
 };
 use rmule_primitives::{AddressFamily, Ipv4Endpoint, PeerEndpoint};
 
@@ -90,6 +90,8 @@ struct Script {
     /// the runtime actually enacted.
     asked: Vec<MappingRequest>,
     released: Vec<(MappingRequest, u16)>,
+    /// What every release answers, and how long it takes to.
+    release: (ReleaseOutcome, Duration),
     /// The local address each map and release was spoken from, with the
     /// request — the PCP source a v6 pinhole is keyed by.
     spoken_from: Vec<(MappingRequest, IpAddr)>,
@@ -110,6 +112,7 @@ impl ScriptedBackend {
                 external_address: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)),
                 asked: Vec::new(),
                 released: Vec::new(),
+                release: (ReleaseOutcome::Sent, Duration::ZERO),
                 spoken_from: Vec::new(),
             })),
         }
@@ -142,6 +145,15 @@ impl ScriptedBackend {
     #[must_use]
     pub fn at_external_address(self, address: IpAddr) -> Self {
         self.script.lock().expect("script mutex").external_address = address;
+        self
+    }
+
+    /// Answer every release with `outcome`, `latency` after it was asked: a
+    /// UPnP release that found the port another host's, a slow gateway at
+    /// quit.
+    #[must_use]
+    pub fn releasing(self, outcome: ReleaseOutcome, latency: Duration) -> Self {
+        self.script.lock().expect("script mutex").release = (outcome, latency);
         self
     }
 
@@ -262,11 +274,17 @@ impl MappingBackend for ScriptedBackend {
         gateway: Gateway,
         request: MappingRequest,
         external_port: u16,
-    ) -> MappingFuture<'static, ()> {
+    ) -> MappingFuture<'static, ReleaseOutcome> {
         let mut script = self.script.lock().expect("script mutex");
         script.released.push((request, external_port));
         script.spoken_from.push((request, gateway.local_address));
+        let (outcome, latency) = script.release.clone();
         drop(script);
-        Box::pin(async {})
+        Box::pin(async move {
+            if !latency.is_zero() {
+                tokio::time::sleep(latency).await;
+            }
+            outcome
+        })
     }
 }

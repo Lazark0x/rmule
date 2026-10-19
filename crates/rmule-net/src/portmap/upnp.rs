@@ -28,6 +28,16 @@
 //! thing the ADR's order buys — not silently stealing another LAN host's
 //! mapping on the same external port — is the cost, and it is the smaller one: a
 //! conflicting entry is far more often our own stale mapping than a neighbour's.
+//!
+//! ## A release deletes only our own entry
+//!
+//! UPnP-IGD keys a mapping by external port and protocol, and
+//! `DeletePortMapping` names no internal client, so a gateway that obeys a
+//! delete from any LAN host removes whoever holds the port now. A release
+//! therefore asks `GetSpecificPortMappingEntry` first (the [`entry`] check,
+//! which `igd-next` does not issue) and deletes only an entry that still
+//! names this host's internal address and port (ADR-0086, "A release takes
+//! down only rmule's own mapping").
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -40,7 +50,10 @@ use super::epoch::EpochVerdict;
 use super::{
     Gateway, MappedTransport, MappingBackend, MappingError, MappingFuture, MappingGrant,
     MappingProtocol, MappingRefusal, MappingRequest, MappingTransportFault, ProbeReport,
+    ReleaseKept, ReleaseOutcome,
 };
+
+mod entry;
 
 /// The SSDP search budget. Shorter than `igd-next`'s 10 s default so a UPnP
 /// probe still lands inside the race's extended 15-second grace, and long
@@ -184,17 +197,43 @@ impl MappingBackend for UpnpMappingBackend {
         gateway: Gateway,
         request: MappingRequest,
         external_port: u16,
-    ) -> MappingFuture<'static, ()> {
+    ) -> MappingFuture<'static, ReleaseOutcome> {
         Box::pin(async move {
-            let Ok(device) = self.device(gateway).await else {
-                return;
+            let device = match self.device(gateway).await {
+                Ok(device) => device,
+                Err(error) => return ReleaseOutcome::Kept(ReleaseKept::Unchecked(error)),
             };
             let protocol = protocol_of(request.transport);
-            let _ =
-                tokio::task::spawn_blocking(move || device.remove_port(protocol, external_port))
-                    .await;
+            let ours = SocketAddr::new(gateway.local_address, request.internal_port);
+            tokio::task::spawn_blocking(move || release_own(&device, protocol, external_port, ours))
+                .await
+                .unwrap_or_else(|error| {
+                    ReleaseOutcome::Kept(ReleaseKept::Unchecked(transport(&error)))
+                })
         })
     }
+}
+
+/// Delete `external_port` only while the gateway says it forwards to `ours`,
+/// the internal address and port rmule mapped it to.
+fn release_own(
+    device: &igd_next::Gateway,
+    protocol: PortMappingProtocol,
+    external_port: u16,
+    ours: SocketAddr,
+) -> ReleaseOutcome {
+    let kept = match entry::forwards_to(device, protocol, external_port) {
+        Ok(Some(internal)) if internal == ours => {
+            // Fire and forget, like every release: the entry was ours a round
+            // trip ago, and the lease is the cleanup if the delete is lost.
+            let _ = device.remove_port(protocol, external_port);
+            return ReleaseOutcome::Sent;
+        }
+        Ok(Some(internal)) => ReleaseKept::ForwardsElsewhere(join(internal.ip(), internal.port())),
+        Ok(None) => ReleaseKept::Absent,
+        Err(error) => ReleaseKept::Unchecked(error),
+    };
+    ReleaseOutcome::Kept(kept)
 }
 
 /// What one `AddPortMapping` round produced.
@@ -335,71 +374,4 @@ const fn join(address: IpAddr, port: u16) -> PeerEndpoint {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::net::{Ipv4Addr, Ipv6Addr};
-
-    #[tokio::test]
-    async fn an_ipv6_gateway_is_refused_before_any_search_runs() {
-        // IGD2 `AddPinhole` is the only UPnP route to an IPv6 pinhole and
-        // `igd-next` cannot issue it, so claiming otherwise would put a
-        // permanently failing candidate in every dual-stack race.
-        let backend = Arc::new(UpnpMappingBackend::new());
-        let gateway = Gateway {
-            address: IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
-            scope_id: Some(4),
-            local_address: IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 5)),
-        };
-        assert!(matches!(
-            backend.probe(gateway).await,
-            Err(MappingError::Unsupported(MappingProtocol::Upnp))
-        ));
-    }
-
-    #[test]
-    fn only_a_port_conflict_falls_back_to_any_port() {
-        // A SOAP `ActionFailed` (501) is the device saying no, not "that port
-        // is taken": a random-port grant in its place is a silent LowID.
-        let action_failed = AddPortError::RequestError(igd_next::RequestError::ErrorCode(
-            501,
-            "ActionFailed".to_owned(),
-        ));
-        assert!(matches!(
-            next_step(action_failed),
-            NextStep::Fail(MappingError::Refused {
-                refusal: MappingRefusal::DeviceRefused,
-                ..
-            })
-        ));
-        assert!(matches!(
-            next_step(AddPortError::ActionNotAuthorized),
-            NextStep::Fail(MappingError::Refused {
-                refusal: MappingRefusal::NotAuthorized,
-                ..
-            })
-        ));
-        assert!(matches!(
-            next_step(AddPortError::PortInUse),
-            NextStep::AnyPort
-        ));
-    }
-
-    #[test]
-    fn the_device_cache_is_keyed_on_the_next_hop_it_was_found_from() {
-        // A different next hop is a different router: answering from the cache
-        // would map ports on a box that is no longer in the path.
-        let backend = UpnpMappingBackend::new();
-        let first = Gateway::v4(Ipv4Addr::new(192, 168, 1, 1), Ipv4Addr::new(192, 168, 1, 5));
-        let second = Gateway::v4(Ipv4Addr::new(10, 0, 0, 1), Ipv4Addr::new(10, 0, 0, 5));
-        let device = igd_next::Gateway {
-            addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 5000),
-            root_url: String::new(),
-            control_url: String::new(),
-            control_schema_url: String::new(),
-            control_schema: std::collections::HashMap::new(),
-        };
-        backend.remember(first, &device);
-        assert!(backend.cached(first).is_some());
-        assert!(backend.cached(second).is_none());
-    }
-}
+mod tests;

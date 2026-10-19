@@ -16,6 +16,8 @@ rmule-kad = { path = "../rmule-kad" }
 rmule-os = { path = "../rmule-os" }
 rmule-peer = { path = "../rmule-peer" }
 rmule-primitives = { path = "../rmule-primitives" }
+# The UPnP release's ownership check (`portmap/upnp/entry.rs`).
+attohttpc.workspace = true
 crab-nat.workspace = true
 getrandom.workspace = true
 igd-next.workspace = true
@@ -32,6 +34,8 @@ socket2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+# The UPnP release's ownership check (`portmap/upnp/entry.rs`).
+xmltree.workspace = true
 
 [dev-dependencies]
 rmule-testkit = { path = "../rmule-testkit" }

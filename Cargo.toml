@@ -103,6 +103,14 @@ icu_normalizer = { version = "2.2", default-features = false, features = ["compi
 # blocking client is used instead, on `spawn_blocking`, which is also emule-qt's
 # own shape (blocking SOAP isolated on a worker thread).
 igd-next = "0.17"
+# Confined to rmule-net's UPnP backend: the `GetSpecificPortMappingEntry` check
+# a release asks before `DeletePortMapping` (ADR-0086, "A release takes down
+# only rmule's own mapping"), which `igd-next` does not issue. The same blocking
+# HTTP client and XML reader `igd-next` speaks every other action through, at
+# its versions and features: MPL-2.0 (reviewed above) and MIT, already in the
+# graph through `igd-next`: no crate added.
+attohttpc = { version = "0.30", default-features = false }
+xmltree = "0.10"
 # macOS only, confined to `rmule-os`: `fcntl(F_PUNCHHOLE)` and `fpunchhole_t`,
 # the part file's punch on APFS (ADR-0111), which neither std nor `rustix`
 # exposes. MIT OR Apache-2.0, already in the graph through tokio and mio: no

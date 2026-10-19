@@ -2835,6 +2835,7 @@ dependencies = [
 name = "rmule-net"
 version = "0.2.0"
 dependencies = [
+ "attohttpc",
  "crab_nat",
  "getrandom 0.4.2",
  "igd-next",
@@ -2859,6 +2860,7 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "xmltree",
 ]
 
 [[package]]

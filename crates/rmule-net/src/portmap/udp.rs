@@ -50,7 +50,7 @@ use super::epoch::{EpochTracker, EpochVerdict};
 use super::{
     Gateway, MappedTransport, MappingBackend, MappingError, MappingFuture, MappingGrant,
     MappingProtocol, MappingRefusal, MappingRequest, MappingTransportFault, PeerPinRequest,
-    ProbeReport,
+    ProbeReport, ReleaseOutcome,
 };
 
 mod pinned;
@@ -242,11 +242,14 @@ impl MappingBackend for UdpMappingBackend {
         gateway: Gateway,
         request: MappingRequest,
         _external_port: u16,
-    ) -> MappingFuture<'static, ()> {
+    ) -> MappingFuture<'static, ReleaseOutcome> {
         Box::pin(async move {
             // Fire and forget: at least one firmware never acknowledges a PCP
-            // delete, and the finite lease is the real cleanup.
+            // delete, and the finite lease is the real cleanup. The gateway
+            // keys the mapping by this host's own address, so the delete
+            // cannot reach another host's.
             let _ = self.run_release(gateway, request).await;
+            ReleaseOutcome::Sent
         })
     }
 }
