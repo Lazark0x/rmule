@@ -10,6 +10,12 @@
 //! count a queued source on its `download sources_tick` after the close.
 //! The close is read off the tap (the sharer's FIN or RST after its part
 //! frames, counterparty bytes); rmule's ticks are `rmule-only`.
+//!
+//! A download waiting on the link (`turn=waiting`) is handed back at its end:
+//! it keeps its place on the peer's queue for the reask, as aMule keeps the
+//! client for both files (`BaseClient.cpp:1283-1284`, `:1322-1328`), and
+//! dials nothing. Its worker ends `link_ended`, it logs no `download.failed`,
+//! and the tap holds no SYN from rmule to the sharer after the close.
 
 use std::fs;
 use std::net::IpAddr;
@@ -19,6 +25,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use super::verdict::{Addresses, RMULE_PCAP, ROOT_DIR, part_of};
+use crate::flow::bench::AMULE_PEER_TCP_PORT;
 use crate::flow::nat::claims::{Claim, Evidence, label};
 use crate::flow::pcap::{records, tcp_capture};
 
@@ -31,6 +38,10 @@ pub(crate) const WATCH_SECS: u64 = 45;
 pub(crate) const SEVERED: &str = "the-sharer-closed-the-link-mid-transfer";
 /// rmule's record of the riding download after it.
 pub(crate) const STOOD: &str = "the-riding-download-kept-its-source-queued";
+/// rmule's record of the waiting download after it.
+pub(crate) const HANDED_BACK: &str = "the-waiting-download-was-handed-back";
+/// rmule's dials after it.
+pub(crate) const NO_DIAL: &str = "rmule-dialed-the-sharer-nothing-after-the-close";
 
 /// The rows beside the claims.
 #[derive(Debug, Default, Serialize, PartialEq)]
@@ -49,6 +60,23 @@ struct Rows {
     /// The other downloads that logged `download.failed` after the close: a
     /// download waiting on the link has the same source and no transfer.
     others_failed: Vec<u32>,
+    /// The downloads whose worker ended `link_ended` after the close.
+    link_ended: Vec<u32>,
+    /// rmule's SYNs to the sharer's listener after the close.
+    dials_after_close: usize,
+}
+
+/// The downloads whose worker rmule retired `link_ended` after `closed`.
+fn link_ended(log: &str, closed: f64) -> Vec<u32> {
+    log.lines()
+        .filter(|line| {
+            line.split_whitespace()
+                .any(|field| field == "reason=link_ended")
+        })
+        .filter_map(stamped)
+        .filter(|&(name, _, at)| name == "download.peer_retired" && at >= closed)
+        .map(|(_, id, _)| id)
+        .collect()
 }
 
 /// The downloads other than `rider` that logged `download.failed` after
@@ -156,7 +184,26 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         last_tick,
         failed,
         others_failed: closed.map_or_else(Vec::new, |at| others_failed(&log, at, rider)),
+        link_ended: closed.map_or_else(Vec::new, |at| link_ended(&log, at)),
+        dials_after_close: closed.map_or(0, |closed_at| {
+            capture
+                .opens
+                .iter()
+                .filter(|open| {
+                    open.at > closed_at
+                        && open.source.ip() == IpAddr::V4(at.rmule)
+                        && open.destination.ip() == IpAddr::V4(at.sharer)
+                        && open.destination.port() == AMULE_PEER_TCP_PORT
+                })
+                .count()
+        }),
     };
+    let waiters: Vec<u32> = rows
+        .link_ended
+        .iter()
+        .copied()
+        .filter(|&id| id != rider)
+        .collect();
     let claims = vec![
         Claim::about(
             SEVERED,
@@ -166,6 +213,28 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
                 "the sharer's FIN or RST after its first part frame: {}; part frames before it: {}",
                 closed.map_or("none".to_owned(), |at| format!("{at:.3}")),
                 rows.parts_before_close
+            ),
+        ),
+        Claim::about(
+            HANDED_BACK,
+            closed.is_some() && rows.others_failed.is_empty() && !waiters.is_empty(),
+            Evidence::RmuleOnly,
+            format!(
+                "downloads other than {rider} that logged download.failed after the close: \
+                 {:?}; downloads whose worker ended link_ended after it: {:?}",
+                rows.others_failed, rows.link_ended
+            ),
+        ),
+        Claim::absence(
+            NO_DIAL,
+            if closed.is_some() {
+                i64::try_from(rows.dials_after_close).unwrap_or(i64::MAX)
+            } else {
+                -1
+            },
+            format!(
+                "rmule's SYNs to the sharer's listener after the close: {}",
+                rows.dials_after_close
             ),
         ),
         Claim::about(
@@ -195,7 +264,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{after_close, others_failed};
+    use super::{after_close, link_ended, others_failed};
 
     #[test]
     fn the_rider_is_read_at_the_close_and_judged_by_its_ticks_after_it() {
@@ -213,5 +282,16 @@ mod tests {
             format!("{log}download.failed id=2 failure=no_usable_sources at_unix_ms=2105\n");
         assert_eq!(others_failed(&waiter, 2.0, 1), [2]);
         assert!(others_failed(&waiter, 2.2, 1).is_empty());
+    }
+
+    /// Run `1792391482`'s waiter dialed and failed; a handed-back one ends
+    /// `link_ended` and fails nothing.
+    #[test]
+    fn a_waiter_handed_back_at_the_close_ends_link_ended() {
+        let log = "download.peer_retired id=2 peer=172.18.0.4:4662 reason=link_ended at_unix_ms=2101\n\
+                   download.peer_retired id=1 peer=172.18.0.4:4662 reason=peer_disconnected at_unix_ms=2100\n\
+                   download.peer_retired id=2 peer=172.18.0.4:4662 reason=link_ended at_unix_ms=1900\n";
+        assert_eq!(link_ended(log, 2.0), [2]);
+        assert!(link_ended(log, 2.2).is_empty());
     }
 }
