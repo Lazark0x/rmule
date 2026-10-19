@@ -10,6 +10,7 @@
 //! enters — so only the counterparty is a fake: rmule's side, not interop.
 
 use std::net::{Ipv4Addr, SocketAddrV4};
+use std::sync::{Arc, Mutex};
 
 use rmule_core::{Core, CoreCommand, CoreConfig, ServeCommand};
 use rmule_ed2k::{CallbackRequest, IdChange, LoginRequest};
@@ -71,6 +72,27 @@ fn requester_accepts(
     dialed_rx
 }
 
+/// Read `core`'s event stream for the rest of the leg, as a front end does,
+/// keeping a short line per event for a failure to show. The core has one
+/// bounded stream and its activities await room in it, so a reader that
+/// stops stalls the serve side as soon as the stream fills: after it framed
+/// the grant, before it reads the part request.
+fn keep_reading(mut core: Core) -> Arc<Mutex<Vec<String>>> {
+    let said = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&said);
+    tokio::spawn(async move {
+        while let Some(event) = core.next_event().await {
+            log.lock().unwrap().push(brief(&event));
+        }
+    });
+    said
+}
+
+/// One event, cut to a line a failure can list.
+fn brief(event: &impl std::fmt::Debug) -> String {
+    format!("{event:?}").chars().take(120).collect()
+}
+
 async fn read_packet(stream: &mut TcpStream, buf: &mut Vec<u8>) -> Packet {
     loop {
         if let Ok((packet, consumed)) = Packet::decode(buf) {
@@ -104,7 +126,8 @@ async fn a_low_id_core_dials_back_the_relayed_requester_and_serves_it() {
         .settings(settings_on(port))
         .user_hash(SHARER_HASH)
         .build();
-    rmule_testkit::share_directory(&mut core, share.path()).await;
+    let shared = rmule_testkit::share_directory(&mut core, share.path()).await;
+    assert_eq!(shared, [file_hash], "the first pass shared relayed.bin");
     // Our inbound TCP is blocked for the probe, so the server assigns a Low
     // ID; the requester's, after it, is open.
     server.set_probe_blocked(true).await;
@@ -118,6 +141,7 @@ async fn a_low_id_core_dials_back_the_relayed_requester_and_serves_it() {
     .await
     .unwrap();
     serving_started(&mut core).await;
+    let core_said = keep_reading(core);
 
     // The requester: High-ID on the same server, its listener answering both
     // the probe and, later, our dial-back.
@@ -173,6 +197,8 @@ async fn a_low_id_core_dials_back_the_relayed_requester_and_serves_it() {
     }))
     .await
     .unwrap();
+    // What the requester met on the way, so a stall names its step.
+    let mut requester_saw = Vec::new();
     let received = timeout(HANG_GUARD, async {
         let mut got = Vec::new();
         while let Some(event) = link.next_event().await {
@@ -181,11 +207,19 @@ async fn a_low_id_core_dials_back_the_relayed_requester_and_serves_it() {
                 if got.len() >= 4096 {
                     break;
                 }
+            } else {
+                requester_saw.push(brief(&event));
             }
         }
         got
     })
-    .await
-    .expect("the sharer serves the requester over the dialed link");
+    .await;
+    let Ok(received) = received else {
+        panic!(
+            "the sharer never served the requester over the dialed link; the requester met \
+             {requester_saw:#?}; the sharer's core said {:#?}",
+            core_said.lock().unwrap()
+        );
+    };
     assert_eq!(received, bytes);
 }
