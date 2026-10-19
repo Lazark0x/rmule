@@ -597,9 +597,9 @@ impl UploadSlotQueue {
 
     /// Remove `peer` (granted or queued). If a granted slot frees, promote the
     /// **highest-score** waiter the queue can reach at `now` (see
-    /// [`sort_and_mark`](Self::sort_and_mark)); then report the remaining wait
-    /// list's changed ranks. A promoted waiter with no live connection flags
-    /// the promotion as a dial-back (ADR-0057).
+    /// `sort_and_mark`); then report the remaining wait list's changed ranks.
+    /// A promoted waiter with no live connection flags the promotion as a
+    /// dial-back (ADR-0057).
     #[must_use]
     pub fn release(
         &mut self,
