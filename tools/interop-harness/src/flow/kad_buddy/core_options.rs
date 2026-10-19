@@ -167,7 +167,7 @@ pub struct KadCoreBuddyOptions<'a> {
     /// [`omit_buddy_endpoint`](Self::omit_buddy_endpoint).
     pub findsource_transfer: bool,
     /// Run the buddy reask leg
-    /// ([`buddy_reask`](crate::flow::kad_buddy::buddy_reask)) as the third
+    /// (`flow::kad_buddy::buddy_reask`) as the third
     /// party: two holders take the aMule's upload slots, a downloader on an
     /// `ed2ksrv` High ID is queued, the server stops, and the downloader's
     /// reask must take the buddy road. Requires
