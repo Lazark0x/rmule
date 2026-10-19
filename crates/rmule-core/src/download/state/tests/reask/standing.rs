@@ -228,3 +228,48 @@ fn a_queued_source_keeps_the_user_hash_its_hello_named() {
     let _ = state.on_slot_offered(t0() + Duration::from_secs(90), peer(1));
     assert_eq!(state.peer_crypt(peer(1)).user_hash(), Some(SOURCE));
 }
+
+/// A grant by dial-back to a record that never heard the peer's parts — it
+/// waited on another download's standing — is taken at its probe's answer,
+/// asking no slot: the probe is a file request the uploader does not score,
+/// the slot ask one it does (ADR-0107, ADR-0112).
+#[test]
+fn a_grant_to_a_record_that_heard_no_parts_is_taken_at_its_probe_and_no_slot_ask() {
+    let standings = QueueStandings::shared();
+    let mut first = seated(&standings, 1, &[peer(1)], live_posture());
+    let _ = first.start(t0());
+    queue_and_hang_up(&mut first, peer(1), true, 5);
+    first.hold_standings();
+    let mut second = seated(&standings, 2, &[peer(1)], live_posture());
+    let _ = second.start(t0() + Duration::from_secs(60));
+    second.hold_standings();
+    drop(first);
+
+    let granted_at = t0() + Duration::from_secs(90);
+    let offered = second.on_slot_offered(granted_at, peer(1));
+    assert!(
+        offered.iter().any(|d| matches!(
+            d,
+            Decision::Spawn { peer: p, opening: WorkerOpening::Probe, .. } if *p == peer(1)
+        )),
+        "{offered:?}"
+    );
+    let connected = second.on_worker_event(granted_at, peer(1), PeerWorkerEvent::Connected);
+    assert!(
+        !sent(&connected)
+            .iter()
+            .any(|(_, c)| matches!(c, PeerWorkerCommand::TakeGrant | PeerWorkerCommand::AskSlot)),
+        "{connected:?}"
+    );
+    let answered = second.on_worker_event(
+        granted_at,
+        peer(1),
+        PeerWorkerEvent::every_part(second.file_size),
+    );
+    let commands = sent(&answered);
+    assert!(
+        commands.contains(&(peer(1), PeerWorkerCommand::TakeGrant)),
+        "{answered:?}"
+    );
+    assert!(!commands.contains(&(peer(1), PeerWorkerCommand::AskSlot)));
+}

@@ -435,7 +435,7 @@ impl PeerTransferService for HoldingPeerTransfer {
             let mut sent_hashes = false;
             while let Some(command) = command_rx.recv().await {
                 match command {
-                    PeerWorkerCommand::AskSlot => {
+                    PeerWorkerCommand::AskSlot | PeerWorkerCommand::TakeGrant => {
                         let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
                     }
                     PeerWorkerCommand::RequestHashSet => {}
@@ -485,7 +485,7 @@ impl PeerTransferService for PartialSuccessThenHold {
             let mut streamed = false;
             while let Some(command) = command_rx.recv().await {
                 match command {
-                    PeerWorkerCommand::AskSlot => {
+                    PeerWorkerCommand::AskSlot | PeerWorkerCommand::TakeGrant => {
                         let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
                     }
                     PeerWorkerCommand::RequestHashSet => {}

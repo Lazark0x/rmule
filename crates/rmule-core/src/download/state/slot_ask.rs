@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use rmule_primitives::{PartHashSet, PeerEndpoint};
 
-use crate::adapters::PeerWorkerCommand;
+use crate::adapters::{PeerWorkerCommand, WorkerOpening};
 use crate::diagnostics::WorkerPhase;
 use crate::service::PeerRetirementReason;
 
@@ -26,6 +26,8 @@ pub(crate) const HASH_SET_DEADLINE: Duration = Duration::from_secs(20);
 enum SlotAsk {
     /// Its slot ask is out: the uploader queues it.
     Queued,
+    /// It takes the grant its link carries, asking nothing (ADR-0107).
+    Taking,
     /// The uploader granted it a slot.
     Granted,
 }
@@ -41,6 +43,9 @@ pub(super) struct SlotAsks {
     /// Workers opened on a grant their uploader gave unasked (ADR-0057), until
     /// their own ask leaves: the slot is theirs to give back (ADR-0056).
     offered: HashSet<PeerEndpoint>,
+    /// Offered workers that probe nothing: they take the grant at their
+    /// connection, off the parts their record heard (ADR-0107).
+    take_at_connect: HashSet<PeerEndpoint>,
 }
 
 impl SlotAsks {
@@ -66,6 +71,7 @@ impl SlotAsks {
         self.by_worker.remove(&peer);
         self.passed.remove(&peer);
         self.offered.remove(&peer);
+        self.take_at_connect.remove(&peer);
         let asking = self.hash_set.is_some_and(|(asker, _)| asker == peer);
         if asking {
             self.hash_set = None;
@@ -87,16 +93,46 @@ impl DownloadState {
     /// the hash set: only a granted worker is asked it (ADR-0026, ADR-0116
     /// invariant 3), since a `0x51` unanswered on a link the uploader ranks
     /// costs that link at aMule's 40 s silent-link close.
+    /// A worker opened on a grant its link carries takes it instead, asking
+    /// nothing the uploader would score (ADR-0107).
     pub(super) fn ask_on_probe(&mut self, peer: PeerEndpoint, out: &mut Vec<Decision>) {
-        if !self.slot_asks.by_worker.contains_key(&peer) {
+        if self.slot_asks.by_worker.contains_key(&peer) {
+            return;
+        }
+        if self.slot_asks.offered.contains(&peer) {
+            self.slot_asks.by_worker.insert(peer, SlotAsk::Taking);
+            out.push(Decision::Send {
+                peer,
+                command: PeerWorkerCommand::TakeGrant,
+            });
+        } else {
             self.ask_slot(peer, out);
         }
     }
 
-    /// `peer`'s worker opened on a grant its uploader gave unasked: until its
-    /// own ask leaves, the slot is its to give back (ADR-0056 item 3).
-    pub(super) fn holds_offered_slot(&mut self, peer: PeerEndpoint) {
+    /// `peer`'s worker opened on a grant its uploader gave unasked: until it
+    /// takes it or its own ask leaves, the slot is its to give back (ADR-0056
+    /// item 3). Opened `Granted`, it probes nothing and takes the grant at its
+    /// connection.
+    pub(super) fn holds_offered_slot(&mut self, peer: PeerEndpoint, opening: WorkerOpening) {
         self.slot_asks.offered.insert(peer);
+        if opening == WorkerOpening::Granted {
+            self.slot_asks.take_at_connect.insert(peer);
+        }
+    }
+
+    /// `peer`'s worker connected: one opened on a grant its link carries,
+    /// probing nothing, takes it off the parts its record heard, as a probe's
+    /// answer would have them (ADR-0107, ADR-0112).
+    pub(super) fn take_grant_at_connect(
+        &mut self,
+        now: Instant,
+        peer: PeerEndpoint,
+        out: &mut Vec<Decision>,
+    ) {
+        if self.slot_asks.take_at_connect.remove(&peer) && self.sources.take_heard_parts(peer) {
+            self.on_probe_answer(now, peer, out);
+        }
     }
 
     /// Send `peer`'s slot ask: it waits queued, its part chosen at the grant.

@@ -234,7 +234,7 @@ impl PeerTransferService for ResumeAfterDropTransfer {
             let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
                 match command {
-                    PeerWorkerCommand::AskSlot => {
+                    PeerWorkerCommand::AskSlot | PeerWorkerCommand::TakeGrant => {
                         let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
                     }
                     PeerWorkerCommand::RequestHashSet => {}
@@ -308,7 +308,7 @@ impl PeerTransferService for CrossPeerVerifyFailTransfer {
             let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
                 match command {
-                    PeerWorkerCommand::AskSlot => {
+                    PeerWorkerCommand::AskSlot | PeerWorkerCommand::TakeGrant => {
                         let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
                     }
                     // Every source holds the file, so any of them answers the

@@ -20,7 +20,9 @@ use crate::adapters::peer_transfer::{PeerTransferService, WorkerBrief};
 use crate::adapters::serve_runtime::ServeOutput;
 use crate::adapters::serve_runtime::{RuntimeServeRuntimeService, ServeRuntimeService};
 use crate::adapters::tests::dialed_serve_ctx;
-use crate::adapters::{PeerWorkerEvent, RuntimePeerTransferService, SharedPeerLinks};
+use crate::adapters::{
+    PeerWorkerCommand, PeerWorkerEvent, RuntimePeerTransferService, SharedPeerLinks,
+};
 use crate::service::LinkTurn;
 
 use super::*;
@@ -505,5 +507,120 @@ async fn a_taken_grant_its_last_rider_leaves_standing_goes_back() {
     assert!(
         given_back(&mut linked.asker, Duration::from_secs(5)).await,
         "the grant left standing goes back"
+    );
+}
+
+/// What the asker read of our requests on its link, up to its first block
+/// request or `within`: every file request, slot ask and block request.
+async fn requests_up_to_blocks(asker: &mut PeerConnection, within: Duration) -> Vec<ServerEvent> {
+    let deadline = tokio::time::Instant::now() + within;
+    let mut read = Vec::new();
+    while let Ok(Some(event)) = tokio::time::timeout_at(deadline, asker.next_event()).await {
+        let PeerEvent::Server(event) = event else {
+            continue;
+        };
+        let blocks = matches!(
+            event,
+            ServerEvent::PartsRequested { .. } | ServerEvent::PartsWithoutSlot { .. }
+        );
+        if matches!(
+            event,
+            ServerEvent::FileRequested { .. }
+                | ServerEvent::FileBundleRequested { .. }
+                | ServerEvent::FileIdSet { .. }
+                | ServerEvent::SlotRequested { .. }
+        ) || blocks
+        {
+            read.push(event);
+        }
+        if blocks {
+            break;
+        }
+    }
+    read
+}
+
+/// A link whose first packet after the hellos is the uploader's grant — its
+/// promotion by dial-back — is answered with block requests alone: no file
+/// request and no `OP_STARTUPLOADREQ`, which aMule's downloader leaves out
+/// there (`BaseClient.cpp:1692-1706`, `ClientTCPSocket.cpp:635-644`) and the
+/// uploader would score towards a ban (`UploadClient.cpp:795-825`, ADR-0107).
+#[tokio::test]
+async fn a_grant_its_link_carries_is_answered_with_blocks_and_no_ask() {
+    let mut linked = Linked::up().await;
+    let at = linked.at();
+    let (grants, mut granted) = tokio::sync::mpsc::channel(1);
+    let _awaiting = linked
+        .links
+        .await_grant(at, vec![LinkName::Endpoint(at)], true, grants);
+    grant_unasked(&mut linked.asker).await;
+    assert_eq!(
+        timeout(Duration::from_secs(5), granted.recv())
+            .await
+            .ok()
+            .flatten(),
+        Some(crate::adapters::LinkOffer::Grant(at))
+    );
+
+    let file = file();
+    let mut worker = linked
+        .dialer
+        .start_download_worker(
+            at,
+            dialed_serve_ctx(),
+            file.clone(),
+            WorkerBrief {
+                opening: crate::adapters::WorkerOpening::Granted,
+                ..WorkerBrief::fresh(&file)
+            },
+        )
+        .await
+        .expect("a worker starts");
+    // The brain takes the grant at the worker's connection.
+    let connected = async {
+        while let Some(event) = worker.next_event().await {
+            if event == PeerWorkerEvent::Connected {
+                return true;
+            }
+        }
+        false
+    };
+    assert!(
+        timeout(Duration::from_secs(5), connected)
+            .await
+            .unwrap_or(false)
+    );
+    worker
+        .send(PeerWorkerCommand::TakeGrant)
+        .await
+        .expect("the worker runs");
+    let took = async {
+        while let Some(event) = worker.next_event().await {
+            if event == PeerWorkerEvent::SlotGranted {
+                return true;
+            }
+        }
+        false
+    };
+    assert!(
+        timeout(Duration::from_secs(5), took).await.unwrap_or(false),
+        "the worker holds the grant"
+    );
+    worker
+        .send(PeerWorkerCommand::RequestBlocks {
+            blocks: vec![crate::BlockPlan {
+                part_index: 0,
+                start: 0,
+                end: 1024,
+            }],
+            handout: 1,
+        })
+        .await
+        .expect("the worker runs");
+
+    let read = requests_up_to_blocks(&mut linked.asker, Duration::from_secs(5)).await;
+    assert!(
+        matches!(read.as_slice(), [ServerEvent::PartsRequested { file_hash, .. }] if *file_hash == file.file_hash),
+        "block requests alone: {read:?}"
     );
 }

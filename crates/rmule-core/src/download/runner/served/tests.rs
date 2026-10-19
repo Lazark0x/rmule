@@ -224,6 +224,7 @@ async fn a_persisted_part_is_in_the_range_before_the_next_decision_is_enacted() 
             peer: PeerEndpoint::V4(OTHER),
             slot: WorkerSlot::from_usize(1),
             want_sources: false,
+            opening: crate::adapters::WorkerOpening::Probe,
         },
     ]);
     enact_drain(&mut queue, &mut ctx).await.unwrap();

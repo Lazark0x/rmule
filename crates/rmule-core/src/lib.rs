@@ -141,7 +141,7 @@ pub use adapters::{
     PeerDownloadOutcome, PeerTransferService, PeerWorker, PeerWorkerCommand, PeerWorkerEvent,
     RuntimeKadChannel, RuntimeKadFactory, RuntimePeerTransferService, RuntimeServeRuntimeService,
     RuntimeSourceLookupService, ServeConnection, ServeInput, ServeOutput, ServeRuntimeService,
-    SourceLookupOutcome, SourceLookupService, WorkerBrief,
+    SourceLookupOutcome, SourceLookupService, WorkerBrief, WorkerOpening,
 };
 pub use adapters::{DialBack, DialBackOutcome};
 pub use address_learning::{

@@ -52,7 +52,7 @@ use seeds::SeedDials;
 pub(crate) use sightings::{Channel, Taken, Tally};
 
 use crate::DownloadFailure;
-use crate::adapters::{CallbackKey, PeerWorkerCommand};
+use crate::adapters::{CallbackKey, PeerWorkerCommand, WorkerOpening};
 use crate::assembly::PartAssembly;
 use crate::callback::CallbackSilence;
 use crate::delivery_rate::DeliveryRate;
@@ -129,6 +129,10 @@ pub(crate) enum Decision {
         /// Whether the connection carries a source ask (ADR-0108): the
         /// peer's ask facts, read at the decision.
         want_sources: bool,
+        /// What the worker sends once its link is up: the probe, or nothing
+        /// for a grant the link carries and the record's parts serve
+        /// (ADR-0107).
+        opening: WorkerOpening,
     },
     /// Ask the connected server to call back a Low-ID source it assigned
     /// (ADR-0039). The runner enacts it via the server session and files the

@@ -325,7 +325,7 @@ impl PeerTransferService for GatedConnectTransfer {
             let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
                 match command {
-                    PeerWorkerCommand::AskSlot => {
+                    PeerWorkerCommand::AskSlot | PeerWorkerCommand::TakeGrant => {
                         let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
                     }
                     PeerWorkerCommand::RequestHashSet => {}
@@ -380,7 +380,7 @@ impl PeerTransferService for MultiPeerTransfer {
             let mut sent_hashes = false;
             while let Some(command) = command_rx.recv().await {
                 match command {
-                    PeerWorkerCommand::AskSlot => {
+                    PeerWorkerCommand::AskSlot | PeerWorkerCommand::TakeGrant => {
                         let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
                     }
                     PeerWorkerCommand::RequestHashSet => {}
@@ -436,7 +436,7 @@ impl PeerTransferService for DisconnectThenSuccess {
             let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
                 match command {
-                    PeerWorkerCommand::AskSlot => {
+                    PeerWorkerCommand::AskSlot | PeerWorkerCommand::TakeGrant => {
                         let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
                     }
                     PeerWorkerCommand::RequestHashSet => {}

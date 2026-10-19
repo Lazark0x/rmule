@@ -66,6 +66,13 @@ pub enum PeerWorkerCommand {
     /// (ADR-0026, "The slot ask"): the worker then waits on the link, reporting
     /// the ask leaving, each rank and the grant; its part comes at the grant.
     AskSlot,
+    /// Take the grant the link already carries as this worker's slot
+    /// (`OP_ACCEPTUPLOADREQ` read before the worker rode it, the Awaited
+    /// Grant, ADR-0107): nothing is written, and the worker reports
+    /// [`PeerWorkerEvent::SlotGranted`], its blocks asked next with no file
+    /// request or slot ask first, as aMule's downloader answers a dial-back
+    /// grant (`ClientTCPSocket.cpp:635-644`).
+    TakeGrant,
     /// Ask the uploader for the file's part hash set (`OP_HASHSETREQUEST`): the
     /// download's one hash-set ask, whose answer arrives as
     /// [`PeerWorkerEvent::HashSetReceived`] (ADR-0026).
@@ -449,6 +456,21 @@ pub struct WorkerBrief {
     /// `IsSourceRequestAllowed`). The peer's own hello still decides whether it
     /// can be asked at all.
     pub want_sources: bool,
+    /// What the worker sends once its link is up.
+    pub opening: WorkerOpening,
+}
+
+/// What a worker sends once its link is up (ADR-0107, ADR-0112).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WorkerOpening {
+    /// The connect-time file request: the probe whose answer the download
+    /// asks the slot on, or takes a grant the link carries on.
+    #[default]
+    Probe,
+    /// Nothing: the link carries a grant the worker takes, off the parts its
+    /// record already heard, as aMule's downloader sends no file request on
+    /// an uploader's dial-back (`BaseClient.cpp:1692-1706`).
+    Granted,
 }
 
 impl WorkerBrief {
@@ -459,6 +481,7 @@ impl WorkerBrief {
             peer_crypt: PeerCrypt::unknown(),
             own_status: PartBitmap::downloader_empty(file.size),
             want_sources: true,
+            opening: WorkerOpening::Probe,
         }
     }
 }
@@ -692,6 +715,7 @@ impl PeerTransferService for RuntimePeerTransferService {
                         file,
                         brief.own_status,
                         brief.want_sources,
+                        brief.opening,
                         command_rx,
                         event_tx,
                         slot_wait_timeout,
@@ -725,6 +749,7 @@ impl PeerTransferService for RuntimePeerTransferService {
             peer_crypt,
             own_status,
             want_sources,
+            opening,
         } = brief;
         let ban_store = self.ban_store.clone();
         let ip_filter = self.ip_filter.clone();
@@ -788,6 +813,7 @@ impl PeerTransferService for RuntimePeerTransferService {
                             file,
                             own_status,
                             want_sources,
+                            opening,
                             command_rx,
                             event_tx,
                             deps.slot_wait_timeout,

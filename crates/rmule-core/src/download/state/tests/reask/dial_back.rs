@@ -90,3 +90,38 @@ fn a_taken_grant_whose_probe_names_nothing_we_lack_goes_back() {
         "the grant goes back: {answered:?}"
     );
 }
+
+/// A grant by dial-back is the record's to take, asking nothing (ADR-0107):
+/// its worker opens with nothing asked at connect, takes the grant the link
+/// carries, and is handed its blocks off the parts its record heard before
+/// its hang-up — no slot ask, which the uploader scores against the one it
+/// ranked (`UploadClient.cpp:795-825`).
+#[test]
+fn a_grant_by_dial_back_is_taken_off_the_parts_its_record_heard_and_no_slot_ask() {
+    let mut state = standing();
+    let later = t0() + Duration::from_secs(90);
+    let offered = state.on_slot_offered(later, peer(1));
+    assert!(
+        offered.iter().any(|d| matches!(
+            d,
+            Decision::Spawn { peer: p, opening: WorkerOpening::Granted, .. } if *p == peer(1)
+        )),
+        "{offered:?}"
+    );
+
+    let connected = state.on_worker_event(later, peer(1), PeerWorkerEvent::Connected);
+    let commands = sent(&connected);
+    assert!(
+        commands.contains(&(peer(1), PeerWorkerCommand::TakeGrant)),
+        "{connected:?}"
+    );
+    assert!(!commands.contains(&(peer(1), PeerWorkerCommand::AskSlot)));
+
+    let granted = state.on_worker_event(later, peer(1), PeerWorkerEvent::SlotGranted);
+    assert!(
+        sent(&granted)
+            .iter()
+            .any(|(p, c)| *p == peer(1) && matches!(c, PeerWorkerCommand::RequestBlocks { .. })),
+        "{granted:?}"
+    );
+}

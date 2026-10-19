@@ -72,6 +72,7 @@ impl DownloadState {
                         command: PeerWorkerCommand::RequestAichFileHash,
                     });
                 }
+                self.take_grant_at_connect(now, peer, &mut out);
             }
             // The peer's identity, at its hello and at every revision: it
             // rides the worker's record and dies with that worker (ADR-0049);
@@ -236,7 +237,12 @@ impl DownloadState {
     /// `peer`'s probe answered with parts: one holding nothing we lack is
     /// retired `NoNeededParts` (ADR-0112 §6); any other asks its slot
     /// (ADR-0026).
-    fn on_probe_answer(&mut self, now: Instant, peer: PeerEndpoint, out: &mut Vec<Decision>) {
+    pub(super) fn on_probe_answer(
+        &mut self,
+        now: Instant,
+        peer: PeerEndpoint,
+        out: &mut Vec<Decision>,
+    ) {
         let Some(parts) = self.sources.worker_parts(peer) else {
             return;
         };

@@ -21,7 +21,7 @@ use crate::adapters::dialed_serve::{
 };
 use crate::adapters::hello_wait::{Opening, await_hello};
 use crate::adapters::peer_link::{DownloadHalf, JoinedLink};
-use crate::adapters::peer_transfer::{PeerWorkerCommand, PeerWorkerEvent};
+use crate::adapters::peer_transfer::{PeerWorkerCommand, PeerWorkerEvent, WorkerOpening};
 use crate::adapters::serve_runtime::{ServeConnection, ServeInput};
 use crate::service::DialEnd;
 
@@ -117,6 +117,7 @@ pub(crate) async fn drive_peer_worker(
         &file,
         own_status,
         want_sources,
+        WorkerOpening::Probe,
         command_rx,
         event_tx,
         slot_wait_timeout,
@@ -128,13 +129,15 @@ pub(crate) async fn drive_peer_worker(
 /// peer, one link"): the peer is linked to us already, so nothing is dialed
 /// and nothing waits for a hello — the link's identity is the one the
 /// download keeps, as an adopted worker's is — and the link's serve half
-/// stays where it is, registered since the peer came in.
+/// stays where it is, registered since the peer came in. `opening` says
+/// whether it probes the file or takes a grant the link carries (ADR-0107).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn drive_joined_worker(
     joined: JoinedLink,
     file: Ed2kFileLink,
     own_status: PartBitmap,
     want_sources: bool,
+    opening: WorkerOpening,
     command_rx: mpsc::Receiver<PeerWorkerCommand>,
     event_tx: mpsc::Sender<PeerWorkerEvent>,
     slot_wait_timeout: Duration,
@@ -160,6 +163,7 @@ pub(crate) async fn drive_joined_worker(
         &file,
         own_status,
         want_sources,
+        opening,
         command_rx,
         event_tx,
         slot_wait_timeout,
@@ -185,7 +189,8 @@ struct ServeHalf {
 }
 
 /// From a connected link to the worker's end: report the connection, send the
-/// connect-time file request, hand the serve half (when the link has one of
+/// connect-time file request — none when the link carries a grant the worker
+/// takes off parts its record heard (`WorkerOpening::Granted`) — hand the serve half (when the link has one of
 /// its own) to the serve activity, then take the download's commands until it
 /// winds the worker down.
 #[allow(clippy::too_many_arguments)]
@@ -195,6 +200,7 @@ async fn work_the_link(
     file: &Ed2kFileLink,
     own_status: PartBitmap,
     want_sources: bool,
+    opening: WorkerOpening,
     mut command_rx: mpsc::Receiver<PeerWorkerCommand>,
     event_tx: mpsc::Sender<PeerWorkerEvent>,
     slot_wait_timeout: Duration,
@@ -221,17 +227,22 @@ async fn work_the_link(
     // separate Connected-time decision (ADR-0038) — it owns "still rootless?"
     // dynamically, stopping once a root commits — so `want_aich_root` is not
     // folded from a spawn-time snapshot here.
-    let connect_request = PeerCommand::Requester(RequesterCommand::RequestFile {
-        file_hash: file.file_hash,
-        file_size: file.size,
-        want_sources,
-        want_aich_root: false,
-        own_status,
-    });
-    // Whether the ask went out is the session's to say (ADR-0108): its
-    // `FileRequestSent` reaches the download through the router as
-    // `SourceExchange` + `SourcesAsked`.
-    let _ = peer_cmd_tx.send(connect_request).await;
+    // A link carrying a grant the worker takes off parts its record heard is
+    // asked no file: aMule's downloader sends none on an uploader's dial-back
+    // (`BaseClient.cpp:1692-1706`, ADR-0107).
+    if opening == WorkerOpening::Probe {
+        let connect_request = PeerCommand::Requester(RequesterCommand::RequestFile {
+            file_hash: file.file_hash,
+            file_size: file.size,
+            want_sources,
+            want_aich_root: false,
+            own_status,
+        });
+        // Whether the ask went out is the session's to say (ADR-0108): its
+        // `FileRequestSent` reaches the download through the router as
+        // `SourceExchange` + `SourcesAsked`.
+        let _ = peer_cmd_tx.send(connect_request).await;
+    }
 
     // Same-socket serve: a link of the worker's own hands its serve half to
     // the serve activity, so the peer's pull is admitted to the one
@@ -257,7 +268,10 @@ async fn work_the_link(
     // The slot ask waits for the probe's answer (ADR-0112): the brain asks
     // on `PartsAdvertised` and hands the part at the grant, so a partial
     // source is never handed a part it lacks.
-    let probed = await_probe(&mut link, file.file_hash, slot_wait_timeout).await;
+    let probed = match opening {
+        WorkerOpening::Probe => await_probe(&mut link, file.file_hash, slot_wait_timeout).await,
+        WorkerOpening::Granted => Streamed::Next,
+    };
     match probed {
         Streamed::Shutdown { cancel: c } => cancel = c,
         Streamed::Stalled => cancel = pipeline.holds_slot(),
@@ -295,10 +309,16 @@ async fn work_the_link(
                 }
             };
             match command {
-                PeerWorkerCommand::AskSlot | PeerWorkerCommand::RequestHashSet => {
+                PeerWorkerCommand::AskSlot
+                | PeerWorkerCommand::TakeGrant
+                | PeerWorkerCommand::RequestHashSet => {
                     let file_hash = file.file_hash;
                     let ask = match command {
                         PeerWorkerCommand::AskSlot => RequesterCommand::AskSlot { file_hash },
+                        PeerWorkerCommand::TakeGrant => RequesterCommand::TakeOfferedSlot {
+                            file_hash,
+                            file_size: file.size,
+                        },
                         _ => RequesterCommand::RequestHashSet { file_hash },
                     };
                     if link.cmd_tx.send(PeerCommand::Requester(ask)).await.is_err() {

@@ -204,6 +204,7 @@ where
                 peer,
                 slot,
                 want_sources,
+                opening,
             } => {
                 // The crypt side this peer's record stated — the server-lookup
                 // reply (ADR-0046), a source-exchange answer (ADR-0042), a Kad
@@ -214,6 +215,7 @@ where
                     peer_crypt: ctx.state.peer_crypt(peer),
                     own_status: ctx.state.our_part_status(),
                     want_sources,
+                    opening,
                 };
                 if ctx
                     .worker_pool
@@ -702,6 +704,7 @@ where
         peer_crypt: rmule_primitives::PeerCrypt::unknown(),
         own_status: ctx.state.our_part_status(),
         want_sources,
+        opening: crate::adapters::WorkerOpening::Probe,
     };
     let ridden = ctx.runner.rt.peer_transfer.lock().await.ride_callback_link(
         key.low_id,

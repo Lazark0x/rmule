@@ -10,7 +10,7 @@ use std::time::Instant;
 use rmule_peer::peer_udp::requester::{self, HeardReply, IgnoredReply};
 use rmule_primitives::PeerEndpoint;
 
-use super::{Decision, DownloadState};
+use super::{Decision, DownloadState, WorkerOpening};
 use crate::adapters::advertises_complete;
 use crate::client_udp::ClientUdpSend;
 use crate::download::source_book::{Answer, Reask, ReaskGates};
@@ -105,8 +105,15 @@ impl DownloadState {
             download_id: self.download_id,
             peer,
         }));
-        self.spawn_worker(now, peer, slot, &mut out);
-        self.holds_offered_slot(peer);
+        // A record that heard the peer's parts takes the grant on them and
+        // asks the link nothing; one that heard none probes first (ADR-0107).
+        let opening = if self.sources.heard_parts(peer) {
+            WorkerOpening::Granted
+        } else {
+            WorkerOpening::Probe
+        };
+        self.spawn_worker(now, peer, slot, opening, &mut out);
+        self.holds_offered_slot(peer, opening);
         out
     }
 
@@ -122,7 +129,7 @@ impl DownloadState {
             return out;
         }
         let slot = self.claim_slot();
-        self.spawn_worker(now, peer, slot, &mut out);
+        self.spawn_worker(now, peer, slot, WorkerOpening::Probe, &mut out);
         out
     }
 

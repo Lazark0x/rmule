@@ -619,6 +619,7 @@ async fn worked_until_the_budget(first: Option<PeerEvent>) -> Vec<PeerCommand> {
         &file,
         rmule_peer::PartBitmap::downloader_empty(1024),
         false,
+        WorkerOpening::Probe,
         command_rx,
         event_tx,
         Duration::from_millis(100),

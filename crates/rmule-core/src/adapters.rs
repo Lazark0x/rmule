@@ -39,7 +39,7 @@ pub use kad_runtime::{
 };
 pub use peer_transfer::{
     DownloadedPart, PeerDownloadOutcome, PeerTransferService, PeerWorker, PeerWorkerCommand,
-    PeerWorkerEvent, RuntimePeerTransferService, WorkerBrief,
+    PeerWorkerEvent, RuntimePeerTransferService, WorkerBrief, WorkerOpening,
 };
 pub use serve_runtime::{
     AnnounceOutcome, DialBack, DialBackOutcome, RuntimeServeRuntimeService, ServeConnection,

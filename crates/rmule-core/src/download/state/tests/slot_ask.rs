@@ -83,8 +83,8 @@ fn a_download_holding_its_set_asks_no_link_for_it() {
 /// The set is asked of a granted link, never at a probe answer: every worker
 /// asks its slot at once, a ranked one hangs up with no `0x51` on its link,
 /// and a download whose every source ranked it takes the ask at its first
-/// grant — here an uploader's dial-back to a hung-up record (ADR-0116
-/// invariant 3).
+/// grant — here an uploader's dial-back to a hung-up record, taken with no
+/// slot ask (ADR-0116 invariant 3, ADR-0107).
 #[test]
 fn the_set_is_asked_at_the_first_grant_never_at_a_probe_answer() {
     let mut state = two_workers(file_hash_only_content(THREE_PARTS));
@@ -98,8 +98,11 @@ fn the_set_is_asked_at_the_first_grant_never_at_a_probe_answer() {
     assert_eq!(state.slot_asks.next_deadline(), None);
 
     let _ = state.on_slot_offered(t0(), peer(1));
-    let answered = probed(&mut state, t0(), peer(1));
-    assert!(asks_slot(&answered, peer(1)), "{answered:?}");
+    let answered = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    assert!(
+        sent(&answered).contains(&(peer(1), PeerWorkerCommand::TakeGrant)),
+        "{answered:?}"
+    );
     assert!(!asks_any_hash_set(&answered), "{answered:?}");
     let granted = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotGranted);
     assert!(asks_hash_set(&granted, peer(1)), "{granted:?}");

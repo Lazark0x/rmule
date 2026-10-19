@@ -15,7 +15,7 @@ use crate::download::queue_standings::Role;
 use crate::download::source_book::{Deadline, DialEnd, NextDial, Release, WorkerEnd};
 use crate::service::{DownloadEvent, PartReleaseReason, PeerRetirementReason};
 
-use super::{Decision, DownloadState, LowIdCandidate, LowIdRoad};
+use super::{Decision, DownloadState, LowIdCandidate, LowIdRoad, WorkerOpening};
 
 impl DownloadState {
     /// Spawn workers from the candidate pool while the node's **Connection
@@ -50,7 +50,9 @@ impl DownloadState {
             match dial {
                 // A High-ID candidate, or a Low-ID candidate's IPv6 half
                 // (rung 0): dial it now.
-                NextDial::Worker(peer) => self.spawn_worker(now, peer, slot, out),
+                NextDial::Worker(peer) => {
+                    self.spawn_worker(now, peer, slot, WorkerOpening::Probe, out);
+                }
                 // A Low-ID candidate's callback road or punch (ADR-0091): hold
                 // its slot until adoption or the slot-release deadline.
                 NextDial::Callback { candidate, road } => {
@@ -126,6 +128,7 @@ impl DownloadState {
         now: Instant,
         peer: PeerEndpoint,
         slot: WorkerSlot,
+        opening: WorkerOpening,
         out: &mut Vec<Decision>,
     ) {
         self.seeds.dialable(peer);
@@ -138,6 +141,7 @@ impl DownloadState {
             peer,
             slot,
             want_sources: self.sources.wants_sources_at(peer, now),
+            opening,
         });
     }
     /// Open `candidate`'s road at `now` on the `slot` it now holds, and arm

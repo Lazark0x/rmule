@@ -100,6 +100,34 @@ impl SourceBook {
         }
     }
 
+    /// Whether the record at `endpoint` heard its source's parts — a probe's
+    /// answer or a reask answer's status — that a grant its link carries can
+    /// be taken on without a probe (ADR-0107, ADR-0112).
+    pub(crate) fn heard_parts(&self, endpoint: PeerEndpoint) -> bool {
+        self.record_at(endpoint)
+            .is_some_and(|record| record.advertised.is_some())
+    }
+
+    /// The worker at `endpoint` takes a grant its link carries without a
+    /// probe: the parts its record last heard are its probe's answer, as
+    /// aMule's downloader asks blocks off the part status its client kept
+    /// (`ClientTCPSocket.cpp:635-644`). Whether it holds any.
+    pub(crate) fn take_heard_parts(&mut self, endpoint: PeerEndpoint) -> bool {
+        let Some(record) = self.record_at_mut(endpoint) else {
+            return false;
+        };
+        if record.advertised.is_none() {
+            return false;
+        }
+        match &mut record.stage {
+            Stage::Worker(live, heard) if live.endpoint == endpoint => {
+                heard.answered = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The Advertised Parts of the record at `endpoint`, once its source
     /// advertised any.
     #[cfg(test)]
