@@ -516,7 +516,7 @@ impl PeerTransferService for PartialSuccessThenHold {
                                 .send(PeerWorkerEvent::BlocksWanted {
                                     room: 3,
                                     drained: true,
-                                    handout: handout,
+                                    handout,
                                 })
                                 .await;
                         }
