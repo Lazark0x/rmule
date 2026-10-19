@@ -71,6 +71,9 @@ pub const fn retirement_words(reason: PeerRetirementReason) -> &'static str {
         }
         PeerRetirementReason::FileNotFound => "it does not have this file",
         PeerRetirementReason::Queued => "it queued us; we hung up and keep our place",
+        PeerRetirementReason::LinkEnded => {
+            "the connection it was waiting on closed; we ask it again later"
+        }
     }
 }
 

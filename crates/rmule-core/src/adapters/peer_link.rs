@@ -166,8 +166,13 @@ pub(crate) struct JoinedLink {
 pub(crate) enum Turn {
     /// The download rides the link now.
     Seated(Box<JoinedLink>),
-    /// The link ended before the download's turn: it dials as before.
+    /// The link ended before the download's turn, and before it was told it
+    /// waits: it looks the peer up again.
     LinkEnded,
+    /// The link the download waited on ended before its turn: it is handed
+    /// back to its download, whose source stands on the peer's queue and is
+    /// asked at the reask, never dialed then (ADR-0107 invariant 9).
+    HandedBack,
     /// The Dial in Flight it waited on failed before the hello: the source is
     /// gone for this download too, for the dial's cause.
     DialEnded(DialEnd),
@@ -338,6 +343,7 @@ impl FoundLink {
             return Turn::LinkEnded;
         }
         let mut told_waiting = Some(told_waiting);
+        let mut waited = false;
         let mut turn = turn;
         loop {
             tokio::select! {
@@ -345,6 +351,11 @@ impl FoundLink {
                     let identity = match seat {
                         Ok(Seat::Riding(identity)) => *identity,
                         Ok(Seat::DialEnded(cause)) => return Turn::DialEnded(cause),
+                        // Told it waits, though the word may still sit
+                        // unread beside the link's end.
+                        Err(_) if waited || told_waiting.as_mut().is_some_and(|told| told.try_recv().is_ok()) => {
+                            return Turn::HandedBack;
+                        }
                         Err(_) => return Turn::LinkEnded,
                     };
                     let _ = worker_evt_tx
@@ -358,6 +369,7 @@ impl FoundLink {
                 }
                 told = recv_once(&mut told_waiting) => {
                     if told.is_ok() {
+                        waited = true;
                         let _ = worker_evt_tx
                             .send(PeerWorkerEvent::LinkShared { turn: LinkTurn::Waiting })
                             .await;

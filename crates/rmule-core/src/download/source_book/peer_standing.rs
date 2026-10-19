@@ -67,6 +67,23 @@ impl SourceBook {
         true
     }
 
+    /// The worker at `endpoint` waited on a link that ended before its turn
+    /// (ADR-0107 invariant 9): its record stands on the peer's standing as a
+    /// fill's parked record does — no rank, no contact, its clock at
+    /// `asked_at`, the peer's last ask, or `now` — unless it holds one.
+    pub(crate) fn handed_back(
+        &mut self,
+        endpoint: PeerEndpoint,
+        asked_at: Option<Instant>,
+        now: Instant,
+    ) {
+        if let Some(record) = self.live_record_mut(endpoint)
+            && record.standing.is_none()
+        {
+            record.standing = Some(Standing::waiting(asked_at, now));
+        }
+    }
+
     /// Whether the record waiting at `at` in the RemoteQueued stage holds its
     /// peer's standing — it re-asks — rather than waiting on another
     /// download's.

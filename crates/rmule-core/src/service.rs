@@ -402,4 +402,10 @@ pub enum PeerRetirementReason {
     /// re-ask period, as aMule dead-lists it (ADR-0090). Honest, so not
     /// distrusted.
     FileNotFound,
+    /// The link this worker waited on, behind another download of the same
+    /// peer, ended before its turn (ADR-0107 invariant 9): nothing was
+    /// dialed, and the source stands on the peer's queue standing, asked at
+    /// the reask, as aMule keeps the client for its other file. Alive, so
+    /// not spent.
+    LinkEnded,
 }

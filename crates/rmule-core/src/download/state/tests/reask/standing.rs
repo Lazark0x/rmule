@@ -273,3 +273,60 @@ fn a_grant_to_a_record_that_heard_no_parts_is_taken_at_its_probe_and_no_slot_ask
     );
     assert!(!commands.contains(&(peer(1), PeerWorkerCommand::AskSlot)));
 }
+
+/// A download waiting on a link that fails under another download's rider
+/// keeps its source: handed back, it stands on the peer's standing — the
+/// cut rider's — and neither dials nor asks, where it used to dial once,
+/// meet a refused connection and fail the download (ADR-0107 invariant 9).
+#[test]
+fn a_waiter_handed_back_by_a_failed_link_stands_on_the_riders_standing() {
+    let standings = QueueStandings::shared();
+    let mut rider = seated(&standings, 1, &[peer(1)], live_posture());
+    let _ = rider.start(t0());
+    let _ = connect(&mut rider, t0(), peer(1));
+    rider.hold_standings();
+    let mut waiter = seated(&standings, 2, &[peer(1)], live_posture());
+    assert_eq!(spawned(&waiter.start(t0())), [peer(1)]);
+    let _ = waiter.on_worker_event(
+        t0(),
+        peer(1),
+        PeerWorkerEvent::LinkShared {
+            turn: crate::service::LinkTurn::Waiting,
+        },
+    );
+
+    let cut = t0() + Duration::from_secs(10);
+    let _ = rider.on_worker_event(cut, peer(1), PeerWorkerEvent::Disconnected);
+    rider.hold_standings();
+    let handed = waiter.on_worker_event(cut, peer(1), PeerWorkerEvent::HandedBack);
+    waiter.hold_standings();
+    assert!(
+        !handed.iter().any(|d| matches!(d, Decision::Fail(_))),
+        "{handed:?}"
+    );
+    assert!(spawned(&handed).is_empty(), "{handed:?}");
+    assert!(
+        handed.iter().any(|d| matches!(
+            d,
+            Decision::Emit(DownloadEvent::PeerRetired {
+                peer: p,
+                reason: PeerRetirementReason::LinkEnded,
+                ..
+            }) if *p == peer(1)
+        )),
+        "{handed:?}"
+    );
+    assert_eq!(waiter.source_activity().queued, 1);
+
+    let due = cut + FILE_REASK_TIME;
+    let held = waiter.on_tick(due);
+    assert!(
+        pinged(&held).is_empty() && asked_by_tcp(&held).is_empty(),
+        "{held:?}"
+    );
+    let asked = rider.on_tick(due);
+    assert!(
+        !pinged(&asked).is_empty() || !asked_by_tcp(&asked).is_empty(),
+        "the rider's standing asks: {asked:?}"
+    );
+}

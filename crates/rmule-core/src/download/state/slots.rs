@@ -119,6 +119,30 @@ impl DownloadState {
         true
     }
 
+    /// The link `peer`'s worker waited on, behind another download of the
+    /// peer, ended before its turn (ADR-0107 invariant 9): the source stands
+    /// on the peer's **Queue Standing**, no rank and no contact of its own,
+    /// its clock the peer's last ask, as aMule keeps the client for its other
+    /// file when the link drops (`BaseClient.cpp:1283-1284`, `:1322-1328`).
+    /// Nothing was dialed and nothing is spent; the reask asks it.
+    pub(super) fn handed_back(
+        &mut self,
+        now: Instant,
+        peer: PeerEndpoint,
+        out: &mut Vec<Decision>,
+    ) {
+        let asked_at =
+            self.sources
+                .dial_place(peer)
+                .and_then(|place| match self.standings.role(&place) {
+                    Role::Holds => None,
+                    Role::Inherits { asked_at } => Some(asked_at),
+                    Role::Waits { asked_at } => asked_at,
+                });
+        self.sources.handed_back(peer, asked_at, now);
+        self.retire(now, peer, PeerRetirementReason::LinkEnded, out);
+    }
+
     /// Put a worker on `peer` in `slot`: register it as connecting and have
     /// the runner dial it, with the source ask its record's facts call for at
     /// `now`. A High-ID candidate and a Low-ID candidate's IPv6 half (rung 0)
@@ -272,7 +296,8 @@ impl DownloadState {
                 }
                 PeerRetirementReason::PeerDisconnected
                 | PeerRetirementReason::SlotTimeout
-                | PeerRetirementReason::Queued => {}
+                | PeerRetirementReason::Queued
+                | PeerRetirementReason::LinkEnded => {}
                 PeerRetirementReason::NoNeededParts => self.sources.no_needed_parts(peer, now),
                 PeerRetirementReason::NoFreePart => self.sources.on_queue(peer, now),
                 _ => self.sources.end_standing(peer),
@@ -287,7 +312,9 @@ impl DownloadState {
                 let failed = !self.sources.is_connected(peer)
                     && !matches!(
                         reason,
-                        PeerRetirementReason::CryptIncompatible | PeerRetirementReason::Distrusted
+                        PeerRetirementReason::CryptIncompatible
+                            | PeerRetirementReason::Distrusted
+                            | PeerRetirementReason::LinkEnded
                     );
                 // A source that said it lacks the file is spent under every
                 // name its record holds, whichever road reached it (ADR-0090).

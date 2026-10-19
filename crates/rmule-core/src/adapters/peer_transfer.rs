@@ -262,6 +262,11 @@ pub enum PeerWorkerEvent {
     /// The connection ended, for any reason. Terminal — no further event
     /// follows, and core retires the worker.
     Disconnected,
+    /// The link the worker waited on, behind another download of the same
+    /// peer, ended before its turn. Terminal: nothing was dialed, and core
+    /// keeps the source standing on the peer's queue for the reask
+    /// (ADR-0107 invariant 9).
+    HandedBack,
     /// The dial ended before the peer's hello, for `cause`. Not terminal on
     /// its own: [`Self::Disconnected`] or [`Self::CryptIncompatible`] follows
     /// at once, and this only names why.
@@ -725,6 +730,9 @@ impl PeerTransferService for RuntimePeerTransferService {
                 Turn::LinkEnded => {
                     let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
                 }
+                Turn::HandedBack => {
+                    let _ = event_tx.send(PeerWorkerEvent::HandedBack).await;
+                }
                 // Only a dial is ever in flight, and none is filed under a
                 // callback: a link found here is live, but its end is read
                 // the way a dial's is.
@@ -831,6 +839,14 @@ impl PeerTransferService for RuntimePeerTransferService {
                     }
                     // The link ended before this download's turn: look again.
                     Turn::LinkEnded => {}
+                    // The link it waited on ended: its source stands on the
+                    // peer's queue, as aMule keeps the client for its other
+                    // file (`BaseClient.cpp:1283-1284`), and is asked at the
+                    // reask, never dialed now (ADR-0107 invariant 9).
+                    Turn::HandedBack => {
+                        let _ = event_tx.send(PeerWorkerEvent::HandedBack).await;
+                        return;
+                    }
                 }
             };
             // Connect + identify run inside the worker task, off the runner's

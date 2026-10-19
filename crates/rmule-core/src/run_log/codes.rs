@@ -203,6 +203,7 @@ pub(super) const fn retirement(reason: PeerRetirementReason) -> &'static str {
         PeerRetirementReason::NoFreePart => "no_free_part",
         PeerRetirementReason::Queued => "queued",
         PeerRetirementReason::FileNotFound => "file_not_found",
+        PeerRetirementReason::LinkEnded => "link_ended",
     }
 }
 

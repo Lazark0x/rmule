@@ -157,6 +157,7 @@ impl DownloadState {
             PeerWorkerEvent::Disconnected => {
                 self.release(now, peer, PeerRetirementReason::PeerDisconnected, &mut out);
             }
+            PeerWorkerEvent::HandedBack => self.handed_back(now, peer, &mut out),
             PeerWorkerEvent::CryptIncompatible => {
                 // The dial was refused before any socket. aMule
                 // deletes the client outright (`CheckContactPreconditions`,
