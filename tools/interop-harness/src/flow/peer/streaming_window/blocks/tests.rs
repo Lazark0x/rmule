@@ -81,6 +81,8 @@ fn off_grid_and_two_part_asks_count_as_served_only_when_delivered() {
         data(1.1, PART - BLOCK, PART - 1),
         data(1.2, PART, PART + BLOCK),
         data(1.3, BLOCK + 10, BLOCK + 20),
+        (1.4, LinkEvent::Request(vec![(PART + BLOCK, SIZE)])),
+        data(1.5, PART + BLOCK, SIZE),
     ];
     let blocks = read(&vec![vec![events]], SIZE);
     assert_eq!(
@@ -90,6 +92,8 @@ fn off_grid_and_two_part_asks_count_as_served_only_when_delivered() {
             off_grid_served: 1,
             two_part_requests: 1,
             two_part_served: 0,
+            two_part_pipelines: 1,
+            two_part_pipelines_served: 0,
             packed_data_frames: 0,
         }
     );

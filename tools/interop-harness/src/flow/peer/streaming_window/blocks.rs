@@ -45,6 +45,11 @@ pub(crate) struct AskShapes {
     pub(crate) two_part_requests: usize,
     /// Of those, the ones whose every range the same link's data covered.
     pub(crate) two_part_served: usize,
+    /// Requests that left the link's queue of asked, unbegun blocks holding
+    /// two or more parts.
+    pub(crate) two_part_pipelines: usize,
+    /// Of those, the ones whose every queued range the link's data covered.
+    pub(crate) two_part_pipelines_served: usize,
     /// Compressed data frames: their unpacked bytes are not on the wire, so
     /// the bytes landing twice count only the plain frames.
     pub(crate) packed_data_frames: usize,
@@ -59,9 +64,26 @@ pub(crate) fn read(links: &SeedLinks, size: u64) -> Blocks {
     for (seed, connections) in links.iter().enumerate() {
         for events in connections {
             let served = Served::of(events);
+            // Asked and not yet begun: aMule's queue of requested blocks.
+            let mut pipeline: Vec<(u64, u64)> = Vec::new();
             for (at, event) in events {
                 match event {
                     LinkEvent::Request(ranges) => {
+                        for range in ranges {
+                            if !pipeline.contains(range) {
+                                pipeline.push(*range);
+                            }
+                        }
+                        let pipeline_parts: BTreeSet<u32> =
+                            pipeline.iter().map(|&(start, _)| part_of(start)).collect();
+                        if pipeline_parts.len() > 1 {
+                            blocks.asks.two_part_pipelines += 1;
+                            blocks.asks.two_part_pipelines_served += usize::from(
+                                pipeline
+                                    .iter()
+                                    .all(|&(start, end)| served.covers(start, end)),
+                            );
+                        }
                         let parts: BTreeSet<u32> =
                             ranges.iter().map(|&(start, _)| part_of(start)).collect();
                         for &(start, end) in ranges {
@@ -83,8 +105,11 @@ pub(crate) fn read(links: &SeedLinks, size: u64) -> Blocks {
                         }
                     }
                     LinkEvent::Cancel => cancels.push((*at, seed)),
-                    LinkEvent::Data { packed: true, .. } => blocks.asks.packed_data_frames += 1,
-                    LinkEvent::Data { .. } | LinkEvent::Segment => {}
+                    LinkEvent::Data { start, packed, .. } => {
+                        pipeline.retain(|&(from, to)| !(from <= *start && *start < to));
+                        blocks.asks.packed_data_frames += usize::from(*packed);
+                    }
+                    LinkEvent::Segment => {}
                 }
             }
         }
