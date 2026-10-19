@@ -211,6 +211,33 @@ fn wait_for_file(path: &Path, size: u64, budget: Duration) -> bool {
     false
 }
 
+/// The flags rmule's `download start` runs under in `shape`'s leg, each
+/// readiness wait bounded by `timeout_secs`. In the credit leg rmule shares
+/// the gift from one upload slot and serves on once its own download has
+/// completed, which can come before S holds the whole gift: the run ends at
+/// a deadline past every wait the flow makes after starting rmule (X's and
+/// W's readiness, two steps, the gift's window and the copy's window).
+fn rmule_flags(shape: &ReciprocityShape, timeout_secs: u64) -> Vec<String> {
+    let mut flags = vec![
+        "--report-parts-every-ms".to_owned(),
+        "1000".to_owned(),
+        "--stamp-events".to_owned(),
+    ];
+    if shape.leg == ReciprocityLeg::Credit {
+        let deadline = 3 * timeout_secs + 2 * shape.step_secs + 2 * shape.run_window_secs;
+        flags.extend([
+            "--share".to_owned(),
+            format!("{CONTAINER_RUN_ROOT}/synthetic/{GIFT_FILE}"),
+            "--upload-slots".to_owned(),
+            "1".to_owned(),
+            "--linger".to_owned(),
+            "--max-seconds".to_owned(),
+            deadline.to_string(),
+        ]);
+    }
+    flags
+}
+
 /// Run the flow's leg and score it.
 ///
 /// # Errors
@@ -332,19 +359,7 @@ pub fn run_peer_reciprocity(options: PeerReciprocityOptions<'_>) -> Result<()> {
                 .prebuild_command(&bench.docker)?,
             "prebuild rmule-tools for the download container",
         )?;
-        let mut flags = vec![
-            "--report-parts-every-ms".to_owned(),
-            "1000".to_owned(),
-            "--stamp-events".to_owned(),
-        ];
-        if shape.leg == ReciprocityLeg::Credit {
-            flags.extend([
-                "--share".to_owned(),
-                format!("{CONTAINER_RUN_ROOT}/synthetic/{GIFT_FILE}"),
-                "--upload-slots".to_owned(),
-                "1".to_owned(),
-            ]);
-        }
+        let flags = rmule_flags(&shape, options.timeout_secs);
         // Low ID: no listener, so the eserver's dial-back fails.
         let serve = shape.leg == ReciprocityLeg::Credit;
         let download = options
@@ -489,4 +504,41 @@ pub fn run_peer_reciprocity(options: PeerReciprocityOptions<'_>) -> Result<()> {
     let verdict = score_run_dir(options.layout.root())?;
     println!("peer_reciprocity verdict={verdict}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn credit_shape() -> ReciprocityShape {
+        ReciprocityShape {
+            leg: ReciprocityLeg::Credit,
+            slot_kib: 50,
+            holder_kib: 2,
+            step_secs: 60,
+            run_window_secs: 1200,
+        }
+    }
+
+    /// rmule's own download from S can complete before S has fetched the
+    /// whole gift from rmule, so the credit leg's rmule serves on past its
+    /// completion until every wait the flow makes after starting it has run
+    /// out: X's and W's readiness, two steps, the gift's window and the
+    /// copy's window.
+    #[test]
+    fn the_credit_legs_rmule_serves_on_until_the_flows_last_wait() {
+        let shape = credit_shape();
+        let flags = rmule_flags(&shape, 600);
+        assert!(flags.iter().any(|flag| flag == "--linger"), "{flags:?}");
+        let deadline: u64 = flags
+            .iter()
+            .position(|flag| flag == "--max-seconds")
+            .and_then(|at| flags.get(at + 1))
+            .and_then(|secs| secs.parse().ok())
+            .expect("a deadline the lingering run ends at");
+        assert!(
+            deadline >= 2 * 600 + 2 * shape.step_secs + 2 * shape.run_window_secs,
+            "{deadline}"
+        );
+    }
 }
