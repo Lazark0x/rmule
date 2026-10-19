@@ -244,7 +244,7 @@ async fn idled_over(link_events: Vec<PeerEvent>, budget: Duration) -> Vec<PeerWo
         tokio::time::Instant::now() + budget,
     )
     .await;
-    assert!(matches!(idled, Idled::Ended));
+    assert!(matches!(idled, Idled::Ended | Idled::Stalled));
     drop(open);
     drop(event_tx);
     let mut reported = Vec::new();
@@ -558,4 +558,84 @@ async fn the_hash_set_ask_leaves_while_a_part_streams() {
         reported.last(),
         Some(&PeerWorkerEvent::PartStreamed { part_index: 0 })
     );
+}
+
+/// Run [`work_the_link`] with the probe answered and `first` arriving on the
+/// link, the download handing part 0 at once and nothing more, under a slot
+/// budget of 100 ms; the commands the worker framed onto the link, in order.
+async fn worked_until_the_budget(first: Option<PeerEvent>) -> Vec<PeerCommand> {
+    let file = rmule_testkit::file_link("stall.bin", &[0x5A; 1024]);
+    let (events_tx, requester_rx) = mpsc::channel(8);
+    let (peer_cmd_tx, mut peer_cmd_rx) = mpsc::channel(32);
+    let (event_tx, _worker_events) = mpsc::channel(32);
+    let (command_tx, command_rx) = mpsc::channel(8);
+    events_tx
+        .send(PeerEvent::Requester(RequesterEvent::FileProbed {
+            file_hash: file.file_hash,
+            status: FileProbeStatus::Available {
+                file_name: rmule_primitives::Ed2kText::from_utf8("stall.bin"),
+                bitmap: rmule_peer::PartBitmap::one_part_complete(),
+                complete: true,
+            },
+        }))
+        .await
+        .unwrap();
+    if let Some(first) = first {
+        events_tx.send(first).await.unwrap();
+    }
+    command_tx
+        .send(PeerWorkerCommand::RequestPart {
+            plan: PartPlan {
+                part_index: 0,
+                offset: 0,
+                len: 1024,
+            },
+            resume_offset: 0,
+        })
+        .await
+        .unwrap();
+    work_the_link(
+        WorkerHalves {
+            peer_cmd_tx,
+            requester_rx,
+        },
+        None,
+        &file,
+        rmule_peer::PartBitmap::downloader_empty(1024),
+        false,
+        command_rx,
+        event_tx,
+        Duration::from_millis(100),
+    )
+    .await;
+    drop((events_tx, command_tx));
+    let mut sent = Vec::new();
+    while let Ok(command) = peer_cmd_rx.try_recv() {
+        sent.push(command);
+    }
+    sent
+}
+
+/// A granted slot that delivers no byte for the slot budget goes back with
+/// `OP_CANCELTRANSFER`, as aMule's downloader cancels at `DOWNLOADTIMEOUT`
+/// (`DownloadClient.cpp:1188-1196`, ADR-0056 item 4); a stream that never
+/// held a grant ends silently.
+#[tokio::test]
+async fn a_granted_slot_that_streams_nothing_for_the_budget_is_given_back() {
+    let file_hash = rmule_testkit::file_link("stall.bin", &[0x5A; 1024]).file_hash;
+    let granted = PeerEvent::Requester(RequesterEvent::SlotGranted {
+        file_hash,
+        asked: rmule_peer::AskedRanges::default(),
+    });
+    let teardown = |sent: &[PeerCommand]| sent.last().cloned();
+    assert!(matches!(
+        teardown(&worked_until_the_budget(Some(granted)).await),
+        Some(PeerCommand::Requester(
+            RequesterCommand::CancelTransfer { .. }
+        ))
+    ));
+    assert!(matches!(
+        teardown(&worked_until_the_budget(None).await),
+        Some(PeerCommand::Requester(RequesterCommand::ReleaseSlot { .. }))
+    ));
 }

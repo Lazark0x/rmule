@@ -387,10 +387,11 @@ impl SourceBook {
     }
 
     /// The live worker at `endpoint` was transferring on a granted slot when
-    /// its link failed: its record earns a standing without a rank, dated at
-    /// its last ask, as aMule turns `DS_DOWNLOADING` into `DS_ONQUEUE` at a
-    /// disconnect and asks again a period after that ask
-    /// (`BaseClient.cpp:1283-1284`, `PartFile.cpp:1449-1483`, ADR-0090).
+    /// its link failed or the slot stalled: its record earns a standing
+    /// without a rank, dated at its last ask, as aMule turns `DS_DOWNLOADING`
+    /// into `DS_ONQUEUE` at a disconnect or a `DOWNLOADTIMEOUT` and asks again
+    /// a period after that ask (`BaseClient.cpp:1283-1284`,
+    /// `DownloadClient.cpp:1188-1196`, `PartFile.cpp:1449-1483`, ADR-0090).
     pub(crate) fn transfer_cut(&mut self, endpoint: PeerEndpoint, now: Instant) {
         let Some(record) = self.live_record_mut(endpoint) else {
             return;

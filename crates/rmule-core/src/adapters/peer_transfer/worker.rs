@@ -259,8 +259,10 @@ async fn work_the_link(
     // on `PartsAdvertised` and hands the part at the grant, so a partial
     // source is never handed a part it lacks.
     let probed = await_probe(&mut link, file.file_hash, slot_wait_timeout).await;
-    if let Streamed::Shutdown { cancel: c } = probed {
-        cancel = c;
+    match probed {
+        Streamed::Shutdown { cancel: c } => cancel = c,
+        Streamed::Stalled => cancel = pipeline.holds_slot(),
+        _ => {}
     }
     if matches!(probed, Streamed::Next) {
         // A slot wait — from the probe's answer, or the flow's return to the
@@ -279,6 +281,12 @@ async fn work_the_link(
                             continue;
                         }
                         Idled::Ended => break,
+                        // A granted slot held with nothing asked for the
+                        // budget goes back, as a stalled stream's does.
+                        Idled::Stalled => {
+                            cancel = pipeline.holds_slot();
+                            break;
+                        }
                     }
                 }
             };
@@ -314,6 +322,13 @@ async fn work_the_link(
                         Streamed::WindDown => break,
                         Streamed::Abandoned => {
                             cancel = true;
+                            break;
+                        }
+                        // No byte for the budget: a granted slot goes back,
+                        // as aMule's `DOWNLOADTIMEOUT` cancels
+                        // (`DownloadClient.cpp:1188-1196`, ADR-0056).
+                        Streamed::Stalled => {
+                            cancel = pipeline.holds_slot();
                             break;
                         }
                         Streamed::Shutdown { cancel: c } => {
@@ -361,9 +376,10 @@ async fn work_the_link(
             }
         }
     }
-    // Wind the held slot down (a no-op if none): a local-reason abandon emits
-    // `OP_CANCELTRANSFER` (the requester-side counterpart to a silent release,
-    // ADR-0056), a completion or peer-initiated end releases silently. Then drop
+    // Wind the held slot down (a no-op if none): a local-reason abandon or a
+    // granted slot that stalled emits `OP_CANCELTRANSFER` (the requester-side
+    // counterpart to a silent release, ADR-0056), a completion or
+    // peer-initiated end releases silently. Then drop
     // `peer_cmd_tx`: the link's next waiter takes it, and with none the link
     // stays up only while its serve half holds it (ADR-0025 release).
     let teardown = if cancel {
@@ -655,6 +671,9 @@ enum Streamed {
     Next,
     /// The peer or the core side went away; wind the worker down.
     WindDown,
+    /// Nothing arrived within the slot budget, reported as `SlotTimeout`;
+    /// wind the worker down, giving back a slot it holds (ADR-0056).
+    Stalled,
     /// The download told this worker to stop mid-part.
     Shutdown { cancel: bool },
     /// The worker gave its slot up: the peer sent a block of the part it

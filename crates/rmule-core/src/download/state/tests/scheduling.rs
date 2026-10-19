@@ -303,6 +303,35 @@ fn the_last_worker_retiring_with_an_empty_pool_fails_the_download() {
     );
 }
 
+/// A granted slot that delivered no byte for the slot budget is given back
+/// and its source stays one, standing without a rank, as aMule's
+/// `DOWNLOADTIMEOUT` cancels and turns `DS_DOWNLOADING` into `DS_ONQUEUE`
+/// (`DownloadClient.cpp:1188-1196`, ADR-0090).
+#[test]
+fn a_granted_slot_that_stalls_leaves_its_source_standing_queued() {
+    let mut state = file_hash_only_state(vec![peer(1)], 1);
+    let _ = state.start(t0());
+    let _ = probed(&mut state, t0(), peer(1));
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotAsked);
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotGranted);
+
+    let stalled = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotTimeout);
+    assert!(
+        stalled.iter().any(|d| matches!(
+            d,
+            Decision::Emit(DownloadEvent::SourceRemoteQueued { peer: p, rank: None, .. })
+                if *p == peer(1)
+        )),
+        "the source waits queued: {stalled:?}"
+    );
+    assert!(
+        !stalled
+            .iter()
+            .any(|d| matches!(d, Decision::Fail(DownloadFailure::NoUsableSources))),
+        "a source still stands: {stalled:?}"
+    );
+}
+
 /// A source transferring on a granted slot whose link fails stays a source,
 /// as aMule turns `DS_DOWNLOADING` into `DS_ONQUEUE` at a disconnect and
 /// keeps the client (`BaseClient.cpp:1283-1284`): its part returns to the

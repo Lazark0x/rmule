@@ -72,7 +72,8 @@ pub(super) async fn await_probe(
 /// ask (ADR-0038) and the download's hash-set ask, which only a granted
 /// worker is handed (ADR-0026), go out as they come; a part handed meanwhile waits in
 /// `deferred` and ends the wait as `Reassigned`; anything else waits in
-/// `deferred`. No event by `deadline` reports `SlotTimeout`.
+/// `deferred`. No event by `deadline` reports `SlotTimeout` and ends the
+/// wait as `Stalled`.
 pub(super) async fn next_event(
     link: &mut WorkerLink<'_>,
     file_hash: FileHash,
@@ -111,7 +112,7 @@ pub(super) async fn next_event(
                     Ok(event) => Ok(event),
                     Err(_) => {
                         let _ = link.event_tx.send(PeerWorkerEvent::SlotTimeout).await;
-                        Err(Streamed::WindDown)
+                        Err(Streamed::Stalled)
                     }
                 };
             }
@@ -129,9 +130,12 @@ pub(super) enum Idled {
     Command(PeerWorkerCommand),
     /// `OP_OUTOFPARTREQS` queued the flow again: a new slot wait begins.
     Requeued,
-    /// The link, the download or the slot budget ended the worker; whatever
-    /// ended it was reported.
+    /// The link or the download ended the worker; whatever ended it was
+    /// reported.
     Ended,
+    /// The slot budget ran out with no command and no grant, reported as
+    /// `SlotTimeout`; a slot the worker holds goes back (ADR-0056).
+    Stalled,
 }
 
 /// Wait between parts for the download's next command, reading the link
@@ -156,7 +160,7 @@ pub(super) async fn idle_wait(
         };
         let Ok(event) = waited else {
             let _ = link.event_tx.send(PeerWorkerEvent::SlotTimeout).await;
-            return Idled::Ended;
+            return Idled::Stalled;
         };
         let event = match forward_shared(link.event_tx, file_hash, event).await {
             Ok(Some(event)) => event,

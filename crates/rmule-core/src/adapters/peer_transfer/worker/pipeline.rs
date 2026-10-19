@@ -46,6 +46,9 @@ pub(super) struct Pipeline {
     /// The link's **Asked Ranges** as of the last grant, and every block
     /// asked since: the uploader serves none of them again (ADR-0107).
     spent: AskedRanges,
+    /// Whether the uploader holds a slot for this worker: from its grant to
+    /// an `OP_OUTOFPARTREQS`.
+    slot_held: bool,
 }
 
 impl Pipeline {
@@ -59,6 +62,7 @@ impl Pipeline {
             requested: false,
             flowing: false,
             spent: AskedRanges::default(),
+            slot_held: false,
         }
     }
 
@@ -66,6 +70,13 @@ impl Pipeline {
     /// link — what an earlier file asked before a silent release among them.
     pub(super) fn granted(&mut self, asked: &AskedRanges) {
         self.spent.extend(asked);
+        self.slot_held = true;
+    }
+
+    /// Whether the uploader holds a slot for this worker, one a timeout must
+    /// give back (ADR-0056).
+    pub(super) fn holds_slot(&self) -> bool {
+        self.slot_held
     }
 
     /// Stream `from..to` next. Blocks still asked of an earlier stream keep
@@ -87,6 +98,7 @@ impl Pipeline {
     pub(super) fn requeued(&mut self) {
         self.asked.clear();
         self.spent.clear();
+        self.slot_held = false;
         self.rate.pause();
     }
 
