@@ -229,11 +229,13 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         fs::read(run_dir.join("rmule").join("output.bin")).is_ok_and(|copy| copy == staged);
 
     let links = ledger(&capture, IpAddr::V4(at.rmule), IpAddr::V4(at.peer));
-    let race_began = at
-        .marks
-        .holder_stopped_at
-        .or(at.marks.returned_at)
-        .unwrap_or(0.0);
+    // On the download side rmule's dial is out before S is told to open its
+    // link, and every link with S belongs to the race.
+    let race_began = if at.shape.leg.serves() {
+        at.marks.holder_stopped_at.unwrap_or(0.0)
+    } else {
+        0.0
+    };
     let watch_ended = at.marks.watch_ended_at.unwrap_or(f64::MAX);
     let raced: Vec<&Link> = links
         .iter()
