@@ -84,6 +84,23 @@ _Avoid_: server completion marker, search deadline, socket timeout
 The core-owned, cross-connection queue of remote peers requesting files we share, with a bounded slot budget and assigned queue rank — the serve-side sibling of the download scheduler (ADR-0026). A `PeerSession`'s **Server Capability** only reports inbound requests and obeys grant/queue/refuse commands; it holds no queue. Core computes rank, sends `OP_QUEUERANKING`, promotes on slot free, and pushes part bytes down via `SendBlock`.
 _Avoid_: upload manager, seed scheduler, slot (a slot is one grant within the queue)
 
+**Dial-Back Grant**:
+An upload slot the **Upload Slot Queue** holds for a waiter it promoted while no link of the
+waiter was up (ADR-0057), aMule's client in `US_CONNECTING`. The serve side dials the waiter where
+its hello says a dial reaches it — a High ID at its link's address, or an IPv6 — under the outbound
+crypt rule, filed as a **Dial in Flight**, outside the **Connection Budget**; the grant goes on the
+first link whose hello names the waiter, the dialed one or one it came back on. A dial that fails,
+or reaches another client, ends the grant and the waiter's place, and the slot promotes the next
+waiter. The Run Log tells it from an ordinary grant by its road.
+_Avoid_: callback dial-back (that answers a Low ID's callback request), Awaited Grant (the download side's)
+
+**Next-Connection Mark**:
+A waiter that hung up under a Low ID and ranks above the best waiter the **Upload Slot Queue** can
+reach: passed over at promotion, since nothing can dial it, and granted at its slot ask on the link
+it comes back on — under the slot budget, or one over it when the last promotion went to a waiter
+rmule could reach (aMule's `m_bAddNextConnect`, ADR-0057). Recomputed at every sort.
+_Avoid_: low-ID slot, reserved slot
+
 **Asked File**:
 The one shared file a remote peer is currently asking us about — aMule's per-client upload file (`SetUploadFileID`). Its name ask, status ask, bundle and slot ask each set it; a waiter's place in the **Upload Slot Queue** follows it (the place kept), and its UDP reask is answered only when it names it (ADR-0055 §Name-ask surface). A slot holder's slot keeps its own file until it asks a slot for another. The asker's part status is still kept per peer *and* file, not reset when the Asked File moves.
 _Avoid_: request file (that is our own download's file on the requester side), upload file (reads as the slot's)
@@ -866,7 +883,7 @@ _Avoid_: inbound peer (that is any accepted connection; this is one routed to *d
 
 **Peer Link**:
 A live, identified link to a peer, whoever dialed it — an accepted link on the serve road, a
-link a download dialed, or an adopted callback — filed (`SharedPeerLinks`) under each **Ask
+link a download dialed, a **Dial-Back Grant**'s link, or an adopted callback — filed (`SharedPeerLinks`) under each **Ask
 Name** it proves: the dial endpoint (the link's own address with the hello's listen port, where
 the peer is a source; for a link rmule dialed, also where it dialed), `(server, low_id)` for a
 Low ID — moved by `OP_CHANGE_CLIENT_ID` only under a server the list holds — and the User Hash.
@@ -874,12 +891,13 @@ A download about to dial a peer, or to ask it for a callback, looks its names up
 the link it finds instead (ADR-0107, "One peer, one link"): its requests go out on the link and
 the link's requester events come back to it, as aMule asks a client over the socket it already
 holds. The link lives while its rider, a waiter, its serve side once the peer has asked it
-anything over the link, or the held buddy link's slot holds it; a link its last rider leaves with
+anything over the link (or from the dial, on a link the serve side dialed back), or the held buddy
+link's slot holds it; a link its last rider leaves with
 nothing else holding it closes then. A newer link filed under a name takes that name.
 _Avoid_: served link (the accepted kind only), shared connection (every link is bidirectional), second link
 
 **Dial in Flight**:
-A **Peer Link** before its hello: a download's dial, filed under where it dials and the User Hash
+A **Peer Link** before its hello: a download's dial or a **Dial-Back Grant**'s, filed under where it dials and the User Hash
 its record knows from the moment the dial is decided — in the same step as the look-up that found
 nothing — until the hello refiles it under every name it proves. Another download of the peer that
 finds it waits on it as a **Link Rider** and takes its turn after the hello; a dial that fails

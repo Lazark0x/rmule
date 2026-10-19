@@ -120,9 +120,11 @@ Invariants every transition keeps:
    one held to it before).
 
 Departures from aMule, settled: rmule counts only the connections its downloads open, where aMule
-counts every socket it creates, accepted ones too (`ClientTCPSocket.cpp:154`), and rmule has no spike
-modifier shrinking the window (`ListenSocket.cpp:225-238`). Downloads take tokens first come, as aMule
-asks in download-queue order; no share is reserved per download.
+counts every socket it creates, accepted ones too (`ClientTCPSocket.cpp:154`) — so the serve side's
+dial-back to a waiter it promoted (ADR-0057) takes no token and no place under the Ceiling, as
+aMule's `TryToConnect(true)` skips `TooManySockets` for it (`BaseClient.cpp:1398`) — and rmule has
+no spike modifier shrinking the window (`ListenSocket.cpp:225-238`). Downloads take tokens first
+come, as aMule asks in download-queue order; no share is reserved per download.
 
 **The reask cadence.**
 

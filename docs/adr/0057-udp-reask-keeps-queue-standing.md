@@ -206,15 +206,34 @@ aMule's `FILEREASKTIME` of 1 300 000 ms
   closed for the new one (`:400-403`); a live link from anywhere else keeps its client.
   `ServeEvent::WaiterRelinked` carries every row and mark keyed by the old link to the
   new one, and the new link's slot ask is answered at the place it kept. A pending
-  dial-back grant moves the same way and turns live at the client's next ask on the new
-  link, as aMule hands a client marked for its next connection the slot there
-  (`m_bAddNextConnect`, `UploadQueue.cpp:410-425`); one whose client never comes back is
-  reclaimed by the purge.
-- **Promotion dials back.** Promoting a disconnected waiter dials its TCP endpoint and
-  sends `OP_ACCEPTUPLOADREQ` on connect
-  ([UploadQueue.cpp#L169](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/UploadQueue.cpp#L169)),
-  a serve-side outbound dial (`ServeDecision::DialBackGrant`) over the dialed-serve seam
-  of ADR-0031. A Low-ID waiter cannot be dialed directly.
+  dial-back grant moves the same way, and `OP_ACCEPTUPLOADREQ` goes on the new link at
+  once: aMule grants a client it promoted unconnected (`US_CONNECTING`) on whichever link
+  its hellos finish first, inbound or dialed (`ClientTCPSocket.cpp:328`, `:417`,
+  `BaseClient.cpp:1707-1716`).
+- **Promotion reaches the waiter.** Every freed slot promotes the best waiter rmule can
+  reach, and the grant goes out as aMule's `AddUpNextClient` sends it
+  (`UploadQueue.cpp:202-222`):
+
+  | Rule | aMule | rmule |
+  |---|---|---|
+  | who is promoted | the best-scored waiter that is connected or holds a High ID; a Low-ID waiter not connected and scored above it is marked for its next connection (`m_bAddNextConnect`, `UploadQueue.cpp:126-149`); with none, the slot stays free | the best-scored waiter that is linked, or whose hello names an endpoint a dial reaches: a High ID at the address its link came from, or an IPv6 (`PeerIdentity::source_coordinate`); a waiter that hung up under a Low ID and ranks above it is marked for its next connection and passed over; with none, the slot stays free |
+  | a promoted waiter with a link | `OP_ACCEPTUPLOADREQ` on its socket (`:211-217`) | the grant goes on its link: the one it waits on, or any live link whose hello names its User Hash, its place moving there |
+  | one with none | the slot is taken at once in `US_CONNECTING` and the client dialed (`:206-210`, `:222`) | the slot is held as a **pending dial-back grant** and the waiter dialed at that endpoint, under ADR-0049's outbound rule toward the crypt stance and the User Hash its hello named |
+  | the dial and the budget | `TryToConnect(true)` skips `TooManySockets` (`BaseClient.cpp:1398`) | no Dial Window token and no place under the Ceiling: the Connection Budget paces the roads downloads open (ADR-0116), and a grant is never admitted |
+  | the dial's gates | the IP filter and the ban list refuse it before any socket (`BaseClient.cpp:1427`, `:1437`) | the same two gates, before any socket |
+  | one peer, one link | one client, one socket | the dial is filed as a Dial in Flight under the waiter's endpoint and User Hash; a link or dial already filed under one of them is not dialed around (ADR-0107 invariant 7), and the grant goes on it once its hello reaches the serve side |
+  | after the hellos | `ConnectionEstablished` in `US_CONNECTING` sends `OP_ACCEPTUPLOADREQ` (`BaseClient.cpp:1707-1716`) | the pending grant moves onto the dialed link and `OP_ACCEPTUPLOADREQ` goes on it; the link is a Peer Link like any served one, filed under its hello's names and where it was dialed, so a download of ours rides it, and the serve side holds it from the dial (ADR-0107 invariant 9) |
+  | the dial fails | `US_CONNECTING` on disconnect makes the client a dead source and deletes it (`BaseClient.cpp:1333-1337`), out of the upload and the waiting lists (`:413-417`); the next `Process` fills the slot (`UploadQueue.cpp:255-258`) | the pending grant ends and the waiter's place with it, so its next ask queues it at the tail with its wait from zero (`UploadQueue.cpp:501`); the slot promotes the next waiter at once |
+  | the dialed hello names another client | the client takes the new hash (`BaseClient.cpp:475`) and is granted | departs: the grant is the waiter's, so it fails as a failed dial, and the link is left to whatever else holds it |
+  | a Low-ID waiter marked for its next connection | its slot ask on that connection takes a slot while the upload list is under the slot count, or one over it when the last slot went to a High ID; the turn passes to a Low ID again only after a High ID's (`UploadQueue.cpp:410-425`, `:147`) | the same: its slot ask on the link it came back on is granted under the budget, or one over it when the last promotion went to a waiter rmule could reach |
+
+  A pending dial-back grant whose client never links is reclaimed by the purge after
+  `MAX_PURGEQUEUETIME`: the net under a link found filed whose hello never reaches the
+  serve side. The operator reads each step in the Run Log: `serve.upload_dial_back` when
+  rmule dials, `serve.upload_dial_back_failed` with its cause when the waiter's grant ends
+  unsent, and `serve.upload_slot_granted` with its road — on the link the peer holds, on
+  the link rmule dialed, on the link it came back on while its grant was held, or at its
+  next connection after a Low-ID mark.
 
 All four opcodes map onto existing core meanings (rank, queue full, dead source); the
 UDP forms are transport variants. The reask codecs and every reply and parse rule live in
