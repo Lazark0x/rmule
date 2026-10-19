@@ -198,26 +198,38 @@ aMule's `FILEREASKTIME` of 1 300 000 ms
   using several UDP ports are dropped silently: the silence forces the peer to a TCP full
   ask, which repairs the mismatch. `0x91` and `0x92` are encrypted when the sender's hash
   is known (ADR-0046). The full rule set is in ADR-0055's surface table.
-- **A waiter on a new link keeps its place.** The place belongs to the client, not to the
-  link it asked on: aMule attaches a new socket to the client it already knows
+- **A client on a new link keeps its standing.** The place belongs to the client, not to
+  the link it asked on: aMule attaches a new socket to the client it already knows
   (`ClientList.cpp:371-412`) and a client already queued keeps its place
-  (`UploadQueue.cpp:395-431`). So the hello of a new link that names a waiter's User Hash
-  moves that waiter's entry — its place, its wait, its file — onto the new link when the
-  link it waited on has ended, or comes from the same address and listen port, which is
-  closed for the new one (`:400-403`); a live link from anywhere else keeps its client.
-  `ServeEvent::WaiterRelinked` carries every row and mark keyed by the old link to the
-  new one, and the new link's slot ask is answered at the place it kept. A pending
-  dial-back grant moves the same way, and `OP_ACCEPTUPLOADREQ` goes on the new link at
-  once: aMule grants a client it promoted unconnected (`US_CONNECTING`) on whichever link
-  its hellos finish first, inbound or dialed (`ClientTCPSocket.cpp:328`, `:417`,
-  `BaseClient.cpp:1707-1716`).
+  (`UploadQueue.cpp:395-431`). It attaches one only at the `OP_HELLO` of a socket the peer
+  opened (`ClientTCPSocket.cpp:391`); the hello answer on a socket it dialed finishes that
+  client's own socket. So the hello of a link the peer opened that names a client's User
+  Hash moves that client's standing onto the new link — its place, its wait and its file;
+  a pending dial-back grant; or its slot — when the link it held has ended, or comes from
+  the same address and listen port, which is closed for the new one (`:400-403`); a live
+  link from anywhere else keeps its client. The hello of a link rmule dialed takes only a
+  standing whose link has ended. `ServeEvent::WaiterRelinked` carries every row and mark
+  keyed by the old link to the new one, and the new link's slot ask is answered at the
+  place it kept. A slot is granted again on the link it moved to, so that link's session
+  serves the part asks that follow, as aMule answers an uploading client's ask with
+  `OP_ACCEPTUPLOADREQ` (`UploadQueue.cpp:486-493`). A pending dial-back grant moves the
+  same way, and `OP_ACCEPTUPLOADREQ` goes on the new link at once: aMule grants a client
+  it promoted unconnected (`US_CONNECTING`) on whichever link its hellos finish first,
+  inbound or dialed (`ClientTCPSocket.cpp:328`, `:417`, `BaseClient.cpp:1707-1716`).
+- **Two hellos of one client race.** The peer's own link wins, whichever hello finishes
+  first, as aMule's newer socket replaces the one it held, connecting or connected
+  (`ClientList.cpp:400-403`). The peer's hello during rmule's dial-back takes the pending
+  grant and calls the dial off: aMule deletes the socket it was connecting, so the peer
+  never reads a hello on it that would make it drop its own link. The peer's hello after
+  the dial-back's takes the slot from the dialed link, which is closed. Either way the
+  link the peer opened keeps every Peer Link name (ADR-0107 invariant 7) and the grant.
 - **Promotion reaches the waiter.** Every freed slot promotes the best waiter rmule can
   reach, and the grant goes out as aMule's `AddUpNextClient` sends it
   (`UploadQueue.cpp:202-222`):
 
   | Rule | aMule | rmule |
   |---|---|---|
-  | who is promoted | the best-scored waiter that is connected or holds a High ID; a Low-ID waiter not connected and scored above it is marked for its next connection (`m_bAddNextConnect`, `UploadQueue.cpp:126-149`); with none, the slot stays free | the best-scored waiter that is linked, or whose hello names an endpoint a dial reaches: a High ID at the address its link came from, or an IPv6 (`PeerIdentity::source_coordinate`); a waiter that hung up under a Low ID and ranks above it is marked for its next connection and passed over; with none, the slot stays free until a waiter asks from a link, as `Process` fills a free slot within its next second (`UploadQueue.cpp:255-258`) |
+  | who is promoted | the best-scored waiter that is connected or holds a High ID; a Low-ID waiter not connected and scored above it is marked for its next connection (`m_bAddNextConnect`, `UploadQueue.cpp:126-149`); with none, the slot stays free | the best-scored waiter that is linked, or whose hello names an endpoint a dial reaches: a High ID at the address its link came from, or an IPv6 (`PeerIdentity::source_coordinate`); a waiter that hung up under a Low ID and ranks above it is marked for its next connection and passed over; with none, the slot stays free until a waiter's link comes up. The hello that moves a waiter onto a live link — its return, a marked Low ID's next connection, a link of ours naming it — fills the free slot with the best waiter rmule can reach, granted on its link, as `Process` fills a free slot within its next second (`UploadQueue.cpp:255-258`). Nothing else makes a waiter reachable, since a freed slot already promotes any waiter a dial reaches, so no clock is kept and the fill dials nothing: no dial for the Connection Budget to pace (ADR-0116), where aMule's fill waits out `TooManySockets` (`:249-252`), and none toward a waiter whose dial failed, which lost its place with it |
   | a promoted waiter with a link | `OP_ACCEPTUPLOADREQ` on its socket (`:211-217`) | the grant goes on its link: the one it waits on, or any live link whose hello names its User Hash, its place moving there |
   | one with none | the slot is taken at once in `US_CONNECTING` and the client dialed (`:206-210`, `:222`) | the slot is held as a **pending dial-back grant** and the waiter dialed at that endpoint, under ADR-0049's outbound rule toward the crypt stance and the User Hash its hello named |
   | the dial and the budget | `TryToConnect(true)` skips `TooManySockets` (`BaseClient.cpp:1398`) | no Dial Window token and no place under the Ceiling: the Connection Budget paces the roads downloads open (ADR-0116), and a grant is never admitted |
@@ -226,7 +238,7 @@ aMule's `FILEREASKTIME` of 1 300 000 ms
   | after the hellos | `ConnectionEstablished` in `US_CONNECTING` sends `OP_ACCEPTUPLOADREQ` (`BaseClient.cpp:1707-1716`) | the pending grant moves onto the dialed link and `OP_ACCEPTUPLOADREQ` goes on it; the link is a Peer Link like any served one, filed under its hello's names and where it was dialed, so a download of ours rides it, and the serve side holds it from the dial (ADR-0107 invariant 9) |
   | the dial fails | `US_CONNECTING` on disconnect makes the client a dead source and deletes it (`BaseClient.cpp:1333-1337`), out of the upload and the waiting lists (`:413-417`); the next `Process` fills the slot (`UploadQueue.cpp:255-258`) | the pending grant ends and the waiter's place with it, so its next ask queues it at the tail with its wait from zero (`UploadQueue.cpp:501`); the slot promotes the next waiter at once |
   | the dialed hello names another client | the client takes the new hash (`BaseClient.cpp:475`) and is granted | departs: the grant is the waiter's, so it fails as a failed dial, and the link is left to whatever else holds it |
-  | a Low-ID waiter marked for its next connection | its slot ask on that connection takes a slot while the upload list is under the slot count, or one over it when the last slot went to a High ID; the turn passes to a Low ID again only after a High ID's (`UploadQueue.cpp:410-425`, `:147`) | the same: its slot ask on the link it came back on is granted under the budget, or one over it when the last promotion went to a waiter rmule could reach |
+  | a Low-ID waiter marked for its next connection | its slot ask on that connection takes a slot while the upload list is under the slot count, or one over it when the last slot went to a High ID; the turn passes to a Low ID again only after a High ID's (`UploadQueue.cpp:410-425`, `:147`) | the same: the hello of the link it came back on takes a free slot (the first row), and its slot ask there one over the budget when the last promotion went to a waiter rmule could reach |
 
   A pending dial-back grant whose client never links is reclaimed by the purge after
   `MAX_PURGEQUEUETIME`: the net under a link found filed whose hello never reaches the

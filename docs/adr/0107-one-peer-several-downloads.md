@@ -111,7 +111,7 @@ dial rmule has in flight to one — and the downloads that ride it, one at a tim
 
 | Set | Key | Owner | Lifetime |
 |---|---|---|---|
-| **Peer Links** | each **Ask Name** the link proves: its dial endpoint (the link's own address with the hello's listen port; for a link rmule dialed, also where it dialed), `(server, low_id)` when the hello names a Low ID and its server, and the hello's User Hash; a **Dial in Flight**, before its hello, under where it dials and the User Hash the dialing source's record knows | the link's driver — the accept road's, the dialing worker's or the serve side's dial-back's router, and before the socket the dialing worker or the dial-back — by filing | a link rmule dials: from the dial, as a Dial in Flight, refiled under its hello's names at the hello; an accepted link: from the hello (an adopted callback: from the adoption); to the link's end or the dial's failure; a newer link filed under a name takes that name |
+| **Peer Links** | each **Ask Name** the link proves: its dial endpoint (the link's own address with the hello's listen port; for a link rmule dialed, also where it dialed), `(server, low_id)` when the hello names a Low ID and its server, and the hello's User Hash; a **Dial in Flight**, before its hello, under where it dials and the User Hash the dialing source's record knows | the link's driver — the accept road's, the dialing worker's or the serve side's dial-back's router, and before the socket the dialing worker or the dial-back — by filing | a link rmule dials: from the dial, as a Dial in Flight, refiled under its hello's names at the hello; an accepted link: from the hello (an adopted callback: from the adoption); to the link's end or the dial's failure. A link filed later under a name takes that name — a dial is filed at the dial, an accepted link at its hello — and a refiling, a dial's hello or a revised identity, never takes back a name a link filed later holds (invariant 7) |
 | **Link Riders** | one Peer Link: one rider, then the waiters in arrival order | the link's driver | a rider from its turn to its worker's end; a waiter from its join to its turn, its run's stop, or the link's end |
 | **Awaited Grants** | each Ask Name of a source whose record waits in the RemoteQueued stage (ADR-0057): its dial endpoint and the User Hash its record knows — a record's statement, or the hello its standing kept past the worker (ADR-0049); several downloads under one name, the peer's standing holder first, then in the order they filed | the download's run, held to its Source Book's RemoteQueued stage and its standing's holder after every brain step | from the record entering the stage to its leaving it, or the run's end |
 
@@ -122,7 +122,17 @@ Invariants every transition keeps:
    endpoint and the User Hash its record knows, a callback under its `(server, low_id)` — and rides
    or waits on what it finds. The look-up and a dial's filing are one step, so of two downloads
    that start together one dials and the other finds its dial. The serve side's dial-back to a
-   promoted waiter (ADR-0057) meets the same look-up and files its dial the same way.
+   promoted waiter (ADR-0057) meets the same look-up and files its dial the same way. When the
+   peer's own link reaches rmule while rmule's dial to it is in flight, the two hellos race, and
+   the link the peer opened keeps every name whichever finishes first: aMule attaches a socket to a
+   client it knows only at the `OP_HELLO` of a socket the peer opened (`ClientTCPSocket.cpp:391`),
+   replacing the one the client held, connecting or connected, from the same address and port
+   (`ClientList.cpp:400-403`), while the hello answer on a socket it dialed only finishes that
+   client's own socket. So the accepted hello takes the names from the Dial in Flight, and the
+   dial's hello takes none of them back; or, when the dial's hello came first, the accepted hello
+   takes them from the dialed link. The serve side moves the client's standing the same way and
+   lets its own dial-back go (ADR-0057, "Two hellos of one client race"), so every name stays
+   filed under one live link, and the grant goes on that link.
 8. **One download rides a link at a time**, as aMule's client has one `m_reqfile`. Another download
    of the peer waits on the link, not on a second socket, and the oldest waiter still running takes
    the link the moment the rider's worker ends.
