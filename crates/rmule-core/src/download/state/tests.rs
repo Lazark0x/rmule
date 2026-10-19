@@ -16,6 +16,7 @@ mod end_game;
 mod intake;
 mod ownership;
 mod reask;
+mod restart;
 mod scheduling;
 mod seeds;
 mod slot_ask;
