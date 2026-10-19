@@ -1,3 +1,6 @@
+//! The block-level reading over hand-built links: shared parts, slots given
+//! back before every block was asked, and the asks off the grid or across parts.
+
 use super::*;
 
 const PART: u64 = ED2K_PART_SIZE;
