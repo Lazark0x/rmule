@@ -22,7 +22,7 @@ use super::run_log::{ActivityPeaks, RunLog};
 use crate::flow::bench::AMULE_PEER_TCP_PORT;
 use crate::flow::identity::parse_ed2k_file_hash;
 use crate::flow::nat::claims::{Claim, Evidence, label};
-use crate::flow::pcap::{Ed2kFrame, TcpCapture, records, tcp_capture};
+use crate::flow::pcap::{Ed2kFrame, TcpCapture, TcpClose, records, tcp_capture};
 use crate::flow::wire_filter::{OP_EDONKEYPROT, OP_EMULEPROT};
 use crate::rmule::RMULE_SERVE_TCP_PORT;
 
@@ -45,6 +45,12 @@ const FRAME_HEADER_LEN: usize = 6;
 /// The ranks: `OP_QUEUERANK` (eD2k) and `OP_QUEUERANKING` (eMule).
 const OP_QUEUERANK: u8 = 0x5C;
 const OP_QUEUERANKING: u8 = 0x60;
+/// `OP_ACCEPTUPLOADREQ`: a grant.
+const OP_ACCEPTUPLOADREQ: u8 = 0x55;
+/// The block requests: `OP_REQUESTPARTS` (eD2k) and `OP_REQUESTPARTS_I64`
+/// (eMule).
+const OP_REQUESTPARTS: u8 = 0x47;
+const OP_REQUESTPARTS_I64: u8 = 0xA3;
 
 /// The claim on the sharers that grant at once.
 pub(crate) const FREE_TRANSFERRED: &str = "every-free-sharer-sent-parts";
@@ -107,6 +113,9 @@ pub(crate) struct Rows {
     /// to queue.
     pub(crate) sharers_ranking: usize,
     pub(crate) ranking_as_shaped: usize,
+    /// Grants a sharer wrote on a link after rmule had closed it: a promotion
+    /// that crossed the hang-up, which rmule cannot read.
+    pub(crate) grants_after_hang_up: usize,
     /// The copy's length, `-1` when never written.
     pub(crate) copy_bytes: i64,
 }
@@ -303,6 +312,54 @@ fn ranked(capture: &TcpCapture, sharer: Ipv4Addr) -> bool {
         })
 }
 
+/// Whether `frame` is a grant.
+fn is_grant(frame: &Ed2kFrame) -> bool {
+    (frame.protocol, frame.opcode) == (OP_EDONKEYPROT, OP_ACCEPTUPLOADREQ)
+}
+
+/// Whether `sharer`'s first grant on a dial-back to rmule's listener came
+/// while rmule still had blocks to ask: no later than rmule's last block
+/// request on any link. A grant after that finds the whole file asked and
+/// cannot become a transfer; one without any grant on the tap stays in the
+/// claim.
+fn granted_before_last_ask(frames: &[Ed2kFrame], sharer: Ipv4Addr, rmule: IpAddr) -> bool {
+    let last_ask = frames
+        .iter()
+        .filter(|frame| {
+            frame.source.ip() == rmule
+                && ((frame.protocol, frame.opcode) == (OP_EDONKEYPROT, OP_REQUESTPARTS)
+                    || (frame.protocol, frame.opcode) == (OP_EMULEPROT, OP_REQUESTPARTS_I64))
+        })
+        .map(|frame| frame.at)
+        .fold(f64::NEG_INFINITY, f64::max);
+    frames
+        .iter()
+        .filter(|frame| {
+            is_grant(frame)
+                && frame.source.ip() == IpAddr::V4(sharer)
+                && frame.destination.ip() == rmule
+                && frame.destination.port() == RMULE_SERVE_TCP_PORT
+        })
+        .map(|frame| frame.at)
+        .reduce(f64::min)
+        .is_none_or(|granted| granted <= last_ask)
+}
+
+/// The grants written on a link after rmule's FIN or RST on it.
+fn grants_after_hang_up(frames: &[Ed2kFrame], closes: &[TcpClose], rmule: IpAddr) -> usize {
+    frames
+        .iter()
+        .filter(|frame| is_grant(frame) && frame.destination.ip() == rmule)
+        .filter(|frame| {
+            closes.iter().any(|close| {
+                close.at < frame.at
+                    && close.source == frame.destination
+                    && close.destination == frame.source
+            })
+        })
+        .count()
+}
+
 /// A claim over a set of sharers: held when `each` holds for every one, with
 /// the ones it failed for in the note; blocked when the run drew no such
 /// sharer.
@@ -340,11 +397,17 @@ fn claims(at: &Topology, seen: &Observed) -> (Vec<Claim>, Rows) {
         .sharers
         .iter()
         .partition(|&&ip| ranked(&seen.capture, ip));
-    let late: Vec<Ipv4Addr> = queued
+    let frames: Vec<Ed2kFrame> = seen
+        .capture
+        .streams
+        .iter()
+        .flat_map(|stream| stream.ed2k_frames())
+        .collect();
+    let (late, past_last_ask): (Vec<Ipv4Addr>, Vec<Ipv4Addr>) = queued
         .iter()
         .copied()
         .filter(|&ip| dialed_back(ip))
-        .collect();
+        .partition(|&ip| granted_before_last_ask(&frames, ip, rmule));
     let closers: Vec<String> = queued
         .iter()
         .map(|&ip| {
@@ -394,8 +457,11 @@ fn claims(at: &Topology, seen: &Observed) -> (Vec<Claim>, Rows) {
             LATE_TAKEN,
             &late,
             Evidence::Captured,
-            "download.slot_offered in rmule's log and part frames from each sharer that ranked \
-             rmule and dialed it back",
+            &format!(
+                "download.slot_offered in rmule's log and part frames from each sharer that \
+                 ranked rmule and dialed it back before rmule's last block request (granted \
+                 after it: {past_last_ask:?})"
+            ),
             |ip| seen.log.names("download.slot_offered", listener(ip), None) && sending(ip),
         ),
     ];
@@ -428,13 +494,7 @@ fn claims(at: &Topology, seen: &Observed) -> (Vec<Claim>, Rows) {
                     .any(|&ip| open.source.ip() == IpAddr::V4(ip))
         })
         .count();
-    let end = seen
-        .capture
-        .streams
-        .iter()
-        .flat_map(|stream| stream.ed2k_frames())
-        .map(|frame| frame.at)
-        .fold(0.0, f64::max);
+    let end = frames.iter().map(|frame| frame.at).fold(0.0, f64::max);
     let spans = link_spans(&seen.capture, rmule, &at.sharers, end);
     let started = seen.log.first_at("download.part_assigned");
     let completed = seen.log.first_at("download.completed");
@@ -461,6 +521,7 @@ fn claims(at: &Topology, seen: &Observed) -> (Vec<Claim>, Rows) {
             .iter()
             .filter(|ip| shaped_queued.contains(ip))
             .count(),
+        grants_after_hang_up: grants_after_hang_up(&frames, &seen.capture.closes, rmule),
         copy_bytes: len,
     };
     (claims, rows)
@@ -468,7 +529,67 @@ fn claims(at: &Topology, seen: &Observed) -> (Vec<Claim>, Rows) {
 
 #[cfg(test)]
 mod tests {
-    use super::peak_open;
+    use super::*;
+
+    const RMULE: Ipv4Addr = Ipv4Addr::new(172, 18, 0, 17);
+    const SHARER: Ipv4Addr = Ipv4Addr::new(172, 18, 0, 6);
+
+    fn frame(at: f64, source: SocketAddr, destination: SocketAddr, opcode: u8) -> Ed2kFrame {
+        Ed2kFrame {
+            at,
+            source,
+            destination,
+            protocol: OP_EDONKEYPROT,
+            opcode,
+            bytes: vec![OP_EDONKEYPROT, 1, 0, 0, 0, opcode],
+        }
+    }
+
+    #[test]
+    fn a_dial_back_grant_after_the_last_block_request_is_not_held_to_a_transfer() {
+        let dialed = SocketAddr::from((SHARER, 40250));
+        let listener = SocketAddr::from((RMULE, RMULE_SERVE_TCP_PORT));
+        let ask = frame(
+            10.0,
+            SocketAddr::from((RMULE, 48022)),
+            SocketAddr::from((Ipv4Addr::new(172, 18, 0, 7), AMULE_PEER_TCP_PORT)),
+            OP_REQUESTPARTS,
+        );
+        let grant = |at| frame(at, dialed, listener, OP_ACCEPTUPLOADREQ);
+        let rmule = IpAddr::V4(RMULE);
+        assert!(!granted_before_last_ask(
+            &[ask.clone(), grant(10.8)],
+            SHARER,
+            rmule
+        ));
+        assert!(granted_before_last_ask(
+            &[grant(9.0), ask.clone()],
+            SHARER,
+            rmule
+        ));
+        assert!(granted_before_last_ask(&[ask], SHARER, rmule));
+    }
+
+    #[test]
+    fn a_grant_written_after_rmule_closed_its_link_crossed_the_hang_up() {
+        let ours = SocketAddr::from((RMULE, 41682));
+        let theirs = SocketAddr::from((SHARER, AMULE_PEER_TCP_PORT));
+        let grant = |at| frame(at, theirs, ours, OP_ACCEPTUPLOADREQ);
+        let closed_by = |source, destination| TcpClose {
+            at: 1.0,
+            source,
+            destination,
+        };
+        let rmule = IpAddr::V4(RMULE);
+        let hang_up = [closed_by(ours, theirs)];
+        assert_eq!(grants_after_hang_up(&[grant(1.38)], &hang_up, rmule), 1);
+        assert_eq!(grants_after_hang_up(&[grant(0.9)], &hang_up, rmule), 0);
+        let sharer_closed = [closed_by(theirs, ours)];
+        assert_eq!(
+            grants_after_hang_up(&[grant(1.38)], &sharer_closed, rmule),
+            0
+        );
+    }
 
     #[test]
     fn the_peak_counts_links_open_together_and_a_close_frees_its_place_first() {
