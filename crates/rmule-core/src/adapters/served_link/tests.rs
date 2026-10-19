@@ -172,6 +172,20 @@ impl Linked {
     /// The asker asks our serve side for a file over its link, as a peer
     /// downloading from us does: its pull holds the link (ADR-0107 invariant 9).
     async fn pulls(&mut self) {
+        // The asker's session takes a request only once it holds our hello.
+        let identified = async {
+            while let Some(event) = self.asker.next_event().await {
+                if matches!(
+                    event,
+                    PeerEvent::Connection(ConnectionEvent::Identified { .. })
+                ) {
+                    return;
+                }
+            }
+        };
+        timeout(Duration::from_secs(5), identified)
+            .await
+            .expect("the asker reads our hello");
         self.asker
             .send(PeerCommand::Requester(
                 rmule_peer::RequesterCommand::ProbeFile {
