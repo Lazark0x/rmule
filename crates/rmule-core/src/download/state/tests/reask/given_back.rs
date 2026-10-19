@@ -32,6 +32,7 @@ fn both_granted(posture: SourcingPosture) -> DownloadState {
         PeerWorkerEvent::BlocksWanted {
             room: 64,
             drained: false,
+            handout: 1,
         },
     );
     state
@@ -45,6 +46,7 @@ fn drained(state: &mut DownloadState, now: Instant) -> Vec<Decision> {
         PeerWorkerEvent::BlocksWanted {
             room: 3,
             drained: true,
+            handout: 1,
         },
     )
 }

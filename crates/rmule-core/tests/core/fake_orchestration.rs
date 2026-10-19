@@ -284,7 +284,7 @@ impl PeerTransferService for ScriptedPeerTransfer {
                         let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
                     }
                     PeerWorkerCommand::RequestHashSet => {}
-                    PeerWorkerCommand::RequestBlocks { blocks } => {
+                    PeerWorkerCommand::RequestBlocks { blocks, handout } => {
                         if !hashes_sent && !outcome.peer_hashes.is_empty() {
                             hashes_sent = true;
                             let _ = event_tx
@@ -293,7 +293,7 @@ impl PeerTransferService for ScriptedPeerTransfer {
                                 })
                                 .await;
                         }
-                        emit_blocks(&event_tx, &outcome.parts, &blocks).await;
+                        emit_blocks(&event_tx, &outcome.parts, &blocks, handout).await;
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}
                     PeerWorkerCommand::RequestAichFileHash => {}
@@ -334,7 +334,7 @@ impl PeerTransferService for FirstPartThenBlocked {
                     PeerWorkerCommand::RequestHashSet => {}
                     // The first handout streams part 0 whole; the next one,
                     // part 1's, is never served.
-                    PeerWorkerCommand::RequestBlocks { .. } if !streamed => {
+                    PeerWorkerCommand::RequestBlocks { handout, .. } if !streamed => {
                         streamed = true;
                         let _ = event_tx
                             .send(PeerWorkerEvent::HashSetReceived {
@@ -352,6 +352,7 @@ impl PeerTransferService for FirstPartThenBlocked {
                             .send(PeerWorkerEvent::BlocksWanted {
                                 room: 3,
                                 drained: true,
+                                handout: handout,
                             })
                             .await;
                     }
@@ -380,8 +381,8 @@ fn spawn_delivering_worker(peer: PeerEndpoint, file_size: u64, part: DownloadedP
                     let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
                 }
                 PeerWorkerCommand::RequestHashSet => {}
-                PeerWorkerCommand::RequestBlocks { blocks } => {
-                    emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks).await;
+                PeerWorkerCommand::RequestBlocks { blocks, handout } => {
+                    emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks, handout).await;
                 }
                 PeerWorkerCommand::RequestAich { .. } => {}
                 PeerWorkerCommand::RequestAichFileHash => {}

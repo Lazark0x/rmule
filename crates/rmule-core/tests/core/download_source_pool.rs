@@ -194,13 +194,13 @@ impl PeerTransferService for BackfillTransfer {
                         let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
                     }
                     PeerWorkerCommand::RequestHashSet => {}
-                    PeerWorkerCommand::RequestBlocks { blocks } => {
+                    PeerWorkerCommand::RequestBlocks { blocks, handout } => {
                         let part = DownloadedPart {
                             part_index: 0,
                             offset: 0,
                             bytes: bytes.clone(),
                         };
-                        emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks).await;
+                        emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks, handout).await;
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}
                     PeerWorkerCommand::RequestAichFileHash => {}

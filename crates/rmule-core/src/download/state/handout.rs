@@ -49,16 +49,23 @@ impl DownloadState {
     }
 
     /// `peer` has room for `room` more blocks, its pipeline `drained` or
-    /// not: hand them, or — drained with nothing for it — take the slot back.
+    /// not, having taken handout `handout`: hand them, or — drained with
+    /// nothing for it — take the slot back. A want naming an earlier handout
+    /// than the last one sent says nothing of that one's blocks, still on
+    /// their way to the worker, and is set aside: the worker speaks again once
+    /// it takes them.
     pub(super) fn on_blocks_wanted(
         &mut self,
         now: Instant,
         peer: PeerEndpoint,
         room: u32,
         drained: bool,
+        handout: u32,
         out: &mut Vec<Decision>,
     ) {
-        if !self.slot_asks.granted(peer) {
+        if !self.slot_asks.granted(peer)
+            || handout != self.handouts.get(&peer).copied().unwrap_or(0)
+        {
             return;
         }
         let room = usize::try_from(room).unwrap_or(usize::MAX);
@@ -149,9 +156,14 @@ impl DownloadState {
                 },
             });
         }
+        let handout = self.handouts.entry(peer).or_insert(0);
+        *handout += 1;
         out.push(Decision::Send {
             peer,
-            command: PeerWorkerCommand::RequestBlocks { blocks },
+            command: PeerWorkerCommand::RequestBlocks {
+                blocks,
+                handout: *handout,
+            },
         });
         Handed::Working
     }

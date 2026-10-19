@@ -431,6 +431,9 @@ pub(crate) struct DownloadState {
     /// Each granted worker's room it reported and the brain has not yet
     /// answered (`BlocksWanted`, ADR-0117).
     wants: HashMap<PeerEndpoint, handout::Want>,
+    /// The number of the last handout sent each worker: a want naming an
+    /// earlier one was sent before that handout reached it.
+    handouts: HashMap<PeerEndpoint, u32>,
     /// The part each worker last delivered bytes of and how many: its
     /// `ReceivingPart` row (ADR-0117 "What the operator reads").
     delivered: HashMap<PeerEndpoint, (u32, u64)>,
@@ -576,6 +579,7 @@ impl DownloadState {
             scheduler: DownloadScheduler::new(file_size, verified_parts, order),
             assembly: HashMap::new(),
             wants: HashMap::new(),
+            handouts: HashMap::new(),
             delivered: HashMap::new(),
             pending_persist: HashMap::new(),
             awaiting_recovery: HashMap::new(),

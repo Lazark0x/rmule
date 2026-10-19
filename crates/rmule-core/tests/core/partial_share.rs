@@ -68,16 +68,18 @@ impl PeerTransferService for Gated {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
             let _ = event_tx.send(rmule_testkit::every_part(file.size)).await;
             let mut held = Vec::new();
+            let mut last_handout = 0;
             loop {
                 tokio::select! {
                     command = command_rx.recv() => match command {
-                        Some(PeerWorkerCommand::RequestBlocks { blocks }) => {
+                        Some(PeerWorkerCommand::RequestBlocks { blocks, handout }) => {
                             let mut parts: Vec<u32> = blocks.iter().map(|b| b.part_index).collect();
                             parts.dedup();
                             if this.first_served.swap(true, Ordering::SeqCst) {
                                 held.extend(parts);
+                                last_handout = handout;
                             } else {
-                                serve(&event_tx, &this.bytes, &parts).await;
+                                serve(&event_tx, &this.bytes, &parts, handout).await;
                             }
                         }
                         Some(PeerWorkerCommand::AskSlot) => {
@@ -90,7 +92,7 @@ impl PeerTransferService for Gated {
                         if !opened {
                             break;
                         }
-                        serve(&event_tx, &this.bytes, &std::mem::take(&mut held)).await;
+                        serve(&event_tx, &this.bytes, &std::mem::take(&mut held), last_handout).await;
                     }
                 }
             }
@@ -99,8 +101,14 @@ impl PeerTransferService for Gated {
     }
 }
 
-/// Deliver `parts` whole and report the pipeline drained (ADR-0117).
-async fn serve(event_tx: &tokio::sync::mpsc::Sender<PeerWorkerEvent>, bytes: &[u8], parts: &[u32]) {
+/// Deliver `parts` whole and report the pipeline drained, having taken
+/// handout `handout` (ADR-0117).
+async fn serve(
+    event_tx: &tokio::sync::mpsc::Sender<PeerWorkerEvent>,
+    bytes: &[u8],
+    parts: &[u32],
+    handout: u32,
+) {
     for &part_index in parts {
         let _ = event_tx
             .send(PeerWorkerEvent::BlockReceived {
@@ -114,6 +122,7 @@ async fn serve(event_tx: &tokio::sync::mpsc::Sender<PeerWorkerEvent>, bytes: &[u
         .send(PeerWorkerEvent::BlocksWanted {
             room: 3,
             drained: true,
+            handout,
         })
         .await;
 }

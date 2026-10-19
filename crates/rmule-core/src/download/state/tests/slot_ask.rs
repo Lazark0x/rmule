@@ -274,6 +274,7 @@ fn a_queued_worker_left_holding_nothing_we_lack_goes_with_no_slot_to_give_back()
         PeerWorkerEvent::BlocksWanted {
             room: 3,
             drained: true,
+            handout: 1,
         },
     );
     assert!(

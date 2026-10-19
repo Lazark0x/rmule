@@ -244,6 +244,7 @@ impl DownloadState {
             }));
         }
         self.wants.remove(&peer);
+        self.handouts.remove(&peer);
         self.delivered.remove(&peer);
         let holds_slot = self.slot_asks.holds_slot(peer);
         let granted = self.slot_asks.granted(peer);

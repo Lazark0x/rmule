@@ -352,6 +352,7 @@ async fn a_shutdown_mid_part_stops_the_stream_at_once() {
                 start: 0,
                 end: file.size,
             }],
+            handout: 1,
         })
         .await
         .unwrap();

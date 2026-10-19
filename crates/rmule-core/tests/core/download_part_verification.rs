@@ -419,7 +419,7 @@ impl PeerTransferService for MismatchedThenSuccess {
                             .await;
                         break;
                     }
-                    PeerWorkerCommand::RequestBlocks { blocks } => {
+                    PeerWorkerCommand::RequestBlocks { blocks, handout } => {
                         let _ = event_tx
                             .send(PeerWorkerEvent::HashSetReceived {
                                 part_hashes: correct_hashes.clone(),
@@ -430,7 +430,7 @@ impl PeerTransferService for MismatchedThenSuccess {
                             offset: 0,
                             bytes: bytes.clone(),
                         };
-                        emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks).await;
+                        emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks, handout).await;
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}
                     PeerWorkerCommand::RequestAichFileHash => {}

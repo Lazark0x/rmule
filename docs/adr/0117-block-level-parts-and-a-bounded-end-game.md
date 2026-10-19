@@ -117,7 +117,8 @@ slower worker is fetching. The first byte to arrive at an offset is kept. Nothin
 
   The blocks are chosen by the rank's first three positions (very rare, band, window), then by
   expected arrival, latest first, then by part and offset. A block's expected arrival is its
-  holder's claimed, unarrived bytes up to and including that block, over the holder's rate.
+  holder's claimed, unarrived bytes up to and including that block, over the holder's rate. Of
+  each block only what has not arrived is asked again.
 - **The bounds.** A block is asked of at most two workers. A worker holds at most one unsettled
   Duplicate Set; it may be handed another once every block of the set has arrived. Each set
   therefore wastes at most 3 × `EMBLOCKSIZE`: the copy that arrives second.
@@ -148,19 +149,25 @@ slower worker is fetching. The first byte to arrive at an offset is kept. Nothin
 
 ### 5. The worker's side
 
-- **`RequestBlocks { blocks }`** replaces `RequestPart { plan, resume_offset }`. Each block is
-  a part index and an absolute range inside that part. The worker queues them behind what it holds,
-  and consecutive blocks of one part form a run.
+- **`RequestBlocks { blocks, handout }`** replaces `RequestPart { plan, resume_offset }`. Each
+  block is a part index and an absolute range inside that part, and `handout` numbers the handout
+  on that worker from 1. The worker queues them behind what it holds, and consecutive blocks of
+  one part form a run.
 - **The worker asks its runs in order**, in steps of at most `EMBLOCKSIZE`, three ranges per
   `OP_REQUESTPARTS`, up to its Request Depth (ADR-0029, "Request pipeline"). A step that repeats
   an Asked Range is shortened by a byte. The run continues from the shortened end, so no byte of
   a run is skipped.
-- **`BlocksWanted { room, drained }`**: everything handed has been asked, and the depth has room.
-  `drained` says nothing asked is still to arrive. A worker sends it once for each room it reaches,
-  and again once it drains. The brain answers each want once, with blocks or not at all. A want
-  left unanswered is answered when blocks free up. A drained want that nothing can answer gives
-  the slot back.
+- **`BlocksWanted { room, drained, handout }`**: everything handed has been asked, and the depth
+  has room. `drained` says nothing asked is still to arrive, and `handout` names the last handout
+  the worker took. A worker sends it once for each room it reaches, and again once it drains. The
+  brain answers each want once, with blocks or not at all. A want left unanswered is answered when
+  blocks free up. A drained want that nothing can answer gives the slot back. A want that names an
+  earlier handout than the last one sent was sent before that handout reached the worker; it says
+  nothing of those blocks, so it is set aside, and the worker speaks again once it takes them.
 - **`BlockLost { start, end }`** replaces giving the slot back on a lost block.
+- **An AICH recovery ask (ADR-0038) leaves at once, while blocks stream.** Its answer is forwarded
+  when it comes, and an empty answer stands in at the slot budget or the link's end. A worker no
+  longer reaches a drain at a part's end, so the ask cannot wait for one.
 - **`PartStreamed` goes.** The next handout reaches the worker before its pipeline drains, so a
   part boundary costs no round trip (ADR-0029, "A part boundary drains it").
 - **`BlockReceived` is unchanged.** It still names the part and the absolute offset.

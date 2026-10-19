@@ -204,9 +204,11 @@ impl DownloadState {
             }
             // The worker has room for more blocks: hand them, or give a
             // drained slot with nothing left for it back (ADR-0117).
-            PeerWorkerEvent::BlocksWanted { room, drained } => {
-                self.on_blocks_wanted(now, peer, room, drained, &mut out);
-            }
+            PeerWorkerEvent::BlocksWanted {
+                room,
+                drained,
+                handout,
+            } => self.on_blocks_wanted(now, peer, room, drained, handout, &mut out),
             // A block that will not come on this slot is freed for the next
             // worker with room; the slot is kept (ADR-0029 "A lost block is
             // freed").

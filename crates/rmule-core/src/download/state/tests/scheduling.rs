@@ -187,13 +187,14 @@ fn a_streaming_priority_download_fetches_its_head_and_tail_first() {
         let _ = state.start(t0());
         let mut decisions = connect(&mut state, t0(), peer(1));
         // The rest of part 0, then two parts' worth.
-        for room in [part_blocks - 3, 2 * part_blocks] {
+        for (handout, room) in [(1, part_blocks - 3), (2, 2 * part_blocks)] {
             decisions.extend(state.on_worker_event(
                 t0(),
                 peer(1),
                 PeerWorkerEvent::BlocksWanted {
                     room: room as u32,
                     drained: false,
+                    handout,
                 },
             ));
         }
@@ -516,7 +517,7 @@ fn handed_blocks(decisions: &[Decision], to: PeerEndpoint) -> Vec<(u32, u64, u64
         .into_iter()
         .filter(|(peer, _)| *peer == to)
         .flat_map(|(_, command)| match command {
-            PeerWorkerCommand::RequestBlocks { blocks } => blocks,
+            PeerWorkerCommand::RequestBlocks { blocks, .. } => blocks,
             _ => Vec::new(),
         })
         .map(|block| (block.part_index, block.start, block.end))
@@ -581,4 +582,53 @@ fn two_workers_share_one_parts_blocks() {
         )),
         "the part is whole once both workers' blocks are in: {last:?}"
     );
+}
+
+/// A want the worker sent before the latest handout reached it is set aside:
+/// it says nothing of the blocks it has not seen, so a drained want from
+/// before them never takes the slot back (ADR-0117).
+#[test]
+fn a_want_sent_before_the_latest_handout_is_set_aside() {
+    use rmule_primitives::EMBLOCKSIZE as B;
+    let mut state = pooled_state(file_hash_only_content(4 * B), &[peer(1)], QUIET_POSTURE, 1);
+    let _ = state.start(t0());
+    let first = connect(&mut state, t0(), peer(1));
+    assert_eq!(handed_blocks(&first, peer(1)).len(), 3);
+    let second = state.on_worker_event(
+        t0(),
+        peer(1),
+        PeerWorkerEvent::BlocksWanted {
+            room: 1,
+            drained: false,
+            handout: 1,
+        },
+    );
+    assert_eq!(handed_blocks(&second, peer(1)), vec![(0, 3 * B, 4 * B)]);
+    for n in 0..3 {
+        let _ = state.on_worker_event(
+            t0(),
+            peer(1),
+            PeerWorkerEvent::BlockReceived {
+                part_index: 0,
+                offset: n * B,
+                bytes: vec![0; B as usize],
+            },
+        );
+    }
+    let stale = state.on_worker_event(
+        t0(),
+        peer(1),
+        PeerWorkerEvent::BlocksWanted {
+            room: 3,
+            drained: true,
+            handout: 1,
+        },
+    );
+    assert!(
+        !stale
+            .iter()
+            .any(|d| matches!(d, Decision::Emit(DownloadEvent::PeerRetired { .. }))),
+        "the worker has block 3 on its way: {stale:?}"
+    );
+    assert!(state.is_working(peer(1)));
 }

@@ -247,6 +247,7 @@ async fn take_part(worker: &mut PeerWorker, file: &Ed2kFileLink) -> Vec<u8> {
                 start: 0,
                 end: file.size,
             }],
+            handout: 1,
         })
         .await
         .expect("the adopted worker takes commands");

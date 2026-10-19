@@ -50,6 +50,8 @@ pub(super) struct Pipeline {
     /// The last room `BlocksWanted` reported, and whether it was drained, so
     /// each is said once.
     wanted: Option<(usize, bool)>,
+    /// The number of the last handout taken, which `BlocksWanted` names.
+    handout: u32,
 }
 
 impl Pipeline {
@@ -64,6 +66,7 @@ impl Pipeline {
             spent: AskedRanges::default(),
             slot_held: false,
             wanted: None,
+            handout: 0,
         }
     }
 
@@ -83,10 +86,11 @@ impl Pipeline {
         self.slot_held
     }
 
-    /// Queue `blocks` behind what the worker holds; consecutive blocks of one
-    /// part join one run. A pipeline that had drained leaves the wait out of
-    /// its rate.
-    pub(super) fn hand(&mut self, blocks: &[BlockPlan]) {
+    /// Queue `blocks`, handout number `handout`, behind what the worker
+    /// holds; consecutive blocks of one part join one run. A pipeline that had
+    /// drained leaves the wait out of its rate.
+    pub(super) fn hand(&mut self, blocks: &[BlockPlan], handout: u32) {
+        self.handout = handout;
         if self.drained() {
             self.rate.pause();
         }
@@ -229,6 +233,11 @@ impl Pipeline {
         }
         self.wanted = Some(want);
         Some(want)
+    }
+
+    /// The number of the last handout taken.
+    pub(super) fn handout(&self) -> u32 {
+        self.handout
     }
 
     /// Whether nothing handed is left to ask and nothing asked to arrive.

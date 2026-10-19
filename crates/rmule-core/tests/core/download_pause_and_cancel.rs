@@ -489,7 +489,7 @@ impl PeerTransferService for PartialSuccessThenHold {
                         let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
                     }
                     PeerWorkerCommand::RequestHashSet => {}
-                    PeerWorkerCommand::RequestBlocks { blocks } => {
+                    PeerWorkerCommand::RequestBlocks { blocks, handout } => {
                         if !sent_hashes {
                             sent_hashes = true;
                             let _ = event_tx
@@ -516,6 +516,7 @@ impl PeerTransferService for PartialSuccessThenHold {
                                 .send(PeerWorkerEvent::BlocksWanted {
                                     room: 3,
                                     drained: true,
+                                    handout: handout,
                                 })
                                 .await;
                         }

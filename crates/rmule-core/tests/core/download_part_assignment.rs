@@ -329,13 +329,13 @@ impl PeerTransferService for GatedConnectTransfer {
                         let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
                     }
                     PeerWorkerCommand::RequestHashSet => {}
-                    PeerWorkerCommand::RequestBlocks { blocks } => {
+                    PeerWorkerCommand::RequestBlocks { blocks, handout } => {
                         let part = DownloadedPart {
                             part_index: 0,
                             offset: 0,
                             bytes: bytes.clone(),
                         };
-                        emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks).await;
+                        emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks, handout).await;
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}
                     PeerWorkerCommand::RequestAichFileHash => {}
@@ -384,7 +384,7 @@ impl PeerTransferService for MultiPeerTransfer {
                         let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
                     }
                     PeerWorkerCommand::RequestHashSet => {}
-                    PeerWorkerCommand::RequestBlocks { blocks } => {
+                    PeerWorkerCommand::RequestBlocks { blocks, handout } => {
                         for block in &blocks {
                             let mut assignments = assignments.lock().unwrap();
                             let peers = assignments.entry(block.part_index).or_default();
@@ -400,7 +400,7 @@ impl PeerTransferService for MultiPeerTransfer {
                                 })
                                 .await;
                         }
-                        emit_blocks(&event_tx, &held, &blocks).await;
+                        emit_blocks(&event_tx, &held, &blocks, handout).await;
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}
                     PeerWorkerCommand::RequestAichFileHash => {}
@@ -444,7 +444,7 @@ impl PeerTransferService for DisconnectThenSuccess {
                         let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
                         break;
                     }
-                    PeerWorkerCommand::RequestBlocks { blocks } => {
+                    PeerWorkerCommand::RequestBlocks { blocks, handout } => {
                         let _ = event_tx
                             .send(PeerWorkerEvent::HashSetReceived {
                                 part_hashes: hashes.clone(),
@@ -455,7 +455,7 @@ impl PeerTransferService for DisconnectThenSuccess {
                             offset: 0,
                             bytes: bytes.clone(),
                         };
-                        emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks).await;
+                        emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks, handout).await;
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}
                     PeerWorkerCommand::RequestAichFileHash => {}

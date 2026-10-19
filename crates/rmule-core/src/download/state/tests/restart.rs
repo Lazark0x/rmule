@@ -26,12 +26,13 @@ fn handed_from_the_start(verified: Vec<u32>) -> (DownloadState, Vec<(u32, u64, u
         PeerWorkerEvent::BlocksWanted {
             room: u32::MAX,
             drained: false,
+            handout: 1,
         },
     ));
     let handed = sent(&decisions)
         .into_iter()
         .flat_map(|(_, command)| match command {
-            PeerWorkerCommand::RequestBlocks { blocks } => blocks,
+            PeerWorkerCommand::RequestBlocks { blocks, .. } => blocks,
             _ => Vec::new(),
         })
         .map(|block| (block.part_index, block.start, block.end))

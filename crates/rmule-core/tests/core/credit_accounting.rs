@@ -76,14 +76,19 @@ impl PeerTransferService for CreditingPeerTransfer {
                         let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
                     }
                     PeerWorkerCommand::RequestHashSet => {}
-                    PeerWorkerCommand::RequestBlocks { blocks } => {
+                    PeerWorkerCommand::RequestBlocks { blocks, handout } => {
                         let part = rmule_core::DownloadedPart {
                             part_index: 0,
                             offset: 0,
                             bytes: bytes.clone(),
                         };
-                        rmule_testkit::emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks)
-                            .await;
+                        rmule_testkit::emit_blocks(
+                            &event_tx,
+                            std::slice::from_ref(&part),
+                            &blocks,
+                            handout,
+                        )
+                        .await;
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}
                     PeerWorkerCommand::RequestAichFileHash => {}

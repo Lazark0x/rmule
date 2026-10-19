@@ -29,7 +29,7 @@ fn handed(start: u64, end: u64) -> Vec<BlockPlan> {
 /// A pipeline handed `start..end`.
 fn handing(start: u64, end: u64) -> Pipeline {
     let mut pipeline = Pipeline::new();
-    pipeline.hand(&handed(start, end));
+    pipeline.hand(&handed(start, end), 1);
     pipeline
 }
 
@@ -89,7 +89,7 @@ fn the_room_is_said_once_per_room_and_once_at_the_drain() {
     assert_eq!(pipeline.want(), None, "said once");
     assert!(deliver(&mut pipeline, t0, (BLOCK, 2 * BLOCK)));
     assert_eq!(pipeline.want(), Some((2, false)));
-    pipeline.hand(&handed(3 * BLOCK, 4 * BLOCK));
+    pipeline.hand(&handed(3 * BLOCK, 4 * BLOCK), 1);
     assert_eq!(pipeline.want(), None, "a handed block waits to be asked");
     pipeline.next_request(t0);
     assert!(deliver(&mut pipeline, t0, (2 * BLOCK, 3 * BLOCK)));
@@ -161,7 +161,7 @@ fn out_of_part_reqs_empties_the_pipeline() {
     assert!(pipeline.drained());
     assert_eq!(pipeline.next_request(t0), None);
     pipeline.granted(&AskedRanges::default());
-    pipeline.hand(&handed(0, 10 * BLOCK));
+    pipeline.hand(&handed(0, 10 * BLOCK), 1);
     assert_eq!(
         pipeline.next_request(t0),
         Some(vec![(0, BLOCK), (BLOCK, 2 * BLOCK), (2 * BLOCK, 3 * BLOCK)])
@@ -205,7 +205,7 @@ fn a_grant_after_a_silent_release_asks_no_range_the_link_asked() {
     let t0 = Instant::now();
     let mut pipeline = Pipeline::new();
     pipeline.granted(&first_files_blocks());
-    pipeline.hand(&handed(0, 10 * BLOCK));
+    pipeline.hand(&handed(0, 10 * BLOCK), 1);
     let mut asked = pipeline.next_request(t0).expect("the stream asks");
     let mut at = 0;
     while let Some(&(start, end)) = asked.get(at) {
@@ -231,7 +231,7 @@ fn a_held_block_is_asked_short_and_its_last_byte_after() {
     let t0 = Instant::now();
     let mut pipeline = Pipeline::new();
     pipeline.granted(&first_files_blocks());
-    pipeline.hand(&handed(0, BLOCK));
+    pipeline.hand(&handed(0, BLOCK), 1);
     assert_eq!(
         pipeline.next_request(t0),
         Some(vec![(0, BLOCK - 1), (BLOCK - 1, BLOCK)])
@@ -244,7 +244,7 @@ fn an_out_of_part_reqs_forgets_what_the_link_asked() {
     let mut pipeline = Pipeline::new();
     pipeline.granted(&first_files_blocks());
     pipeline.requeued();
-    pipeline.hand(&handed(0, 10 * BLOCK));
+    pipeline.hand(&handed(0, 10 * BLOCK), 1);
     assert_eq!(
         pipeline.next_request(t0),
         Some(vec![(0, BLOCK), (BLOCK, 2 * BLOCK), (2 * BLOCK, 3 * BLOCK)])

@@ -238,7 +238,7 @@ impl PeerTransferService for ResumeAfterDropTransfer {
                         let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
                     }
                     PeerWorkerCommand::RequestHashSet => {}
-                    PeerWorkerCommand::RequestBlocks { blocks } => {
+                    PeerWorkerCommand::RequestBlocks { blocks, handout } => {
                         resume_offsets
                             .lock()
                             .unwrap()
@@ -262,7 +262,7 @@ impl PeerTransferService for ResumeAfterDropTransfer {
                             offset: 0,
                             bytes: bytes.clone(),
                         };
-                        emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks).await;
+                        emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks, handout).await;
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}
                     PeerWorkerCommand::RequestAichFileHash => {}
@@ -320,7 +320,7 @@ impl PeerTransferService for CrossPeerVerifyFailTransfer {
                             })
                             .await;
                     }
-                    PeerWorkerCommand::RequestBlocks { blocks } => {
+                    PeerWorkerCommand::RequestBlocks { blocks, handout } => {
                         resume_offsets
                             .lock()
                             .unwrap()
@@ -363,7 +363,8 @@ impl PeerTransferService for CrossPeerVerifyFailTransfer {
                                 offset: 0,
                                 bytes: correct.clone(),
                             };
-                            emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks).await;
+                            emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks, handout)
+                                .await;
                         }
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}

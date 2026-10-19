@@ -122,6 +122,7 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_hands_only_that_block(
         PeerWorkerEvent::BlocksWanted {
             room: 3,
             drained: true,
+            handout: 1,
         },
     );
     assert_eq!(
@@ -134,6 +135,7 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_hands_only_that_block(
                     start: EMBLOCKSIZE,
                     end: 2 * EMBLOCKSIZE,
                 }],
+                handout: 2,
             }
         )],
         "only the corrupt block is fetched again: {handed:?}"

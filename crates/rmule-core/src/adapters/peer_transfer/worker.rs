@@ -306,8 +306,8 @@ async fn work_the_link(
                         break;
                     }
                 }
-                PeerWorkerCommand::RequestBlocks { blocks } => {
-                    pipeline.hand(&blocks);
+                PeerWorkerCommand::RequestBlocks { blocks, handout } => {
+                    pipeline.hand(&blocks, handout);
                     let streamed =
                         stream_blocks(&mut link, &mut pipeline, file, slot_wait_timeout).await;
                     match streamed {
@@ -513,8 +513,13 @@ async fn stream_blocks(
         }
         if let Some((room, drained)) = pipeline.want() {
             let room = u32::try_from(room).unwrap_or(u32::MAX);
+            let handout = pipeline.handout();
             if event_tx
-                .send(PeerWorkerEvent::BlocksWanted { room, drained })
+                .send(PeerWorkerEvent::BlocksWanted {
+                    room,
+                    drained,
+                    handout,
+                })
                 .await
                 .is_err()
             {
@@ -605,8 +610,8 @@ async fn stream_blocks(
 /// in arrival order; the other commands keep their place.
 fn hand_deferred(link: &mut WorkerLink<'_>, pipeline: &mut Pipeline) {
     link.deferred.retain(|command| match command {
-        PeerWorkerCommand::RequestBlocks { blocks } => {
-            pipeline.hand(blocks);
+        PeerWorkerCommand::RequestBlocks { blocks, handout } => {
+            pipeline.hand(blocks, *handout);
             false
         }
         _ => true,

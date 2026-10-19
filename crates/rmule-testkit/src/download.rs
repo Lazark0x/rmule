@@ -228,14 +228,16 @@ pub fn every_part(file_size: u64) -> PeerWorkerEvent {
     }
 }
 
-/// Deliver each handed block whose part `parts` hold, then — when every one
-/// was — report the pipeline drained with room for three more (ADR-0117 worker
-/// protocol): the download hands the next blocks, or takes the slot back. A
-/// handout holding a block of a part it lacks leaves the worker stalled on it.
+/// Deliver each block of handout number `handout` whose part `parts` hold,
+/// then — when every one was — report the pipeline drained with room for three
+/// more (ADR-0117 worker protocol): the download hands the next blocks, or
+/// takes the slot back. A handout holding a block of a part it lacks leaves
+/// the worker stalled on it.
 pub async fn emit_blocks(
     event_tx: &tokio::sync::mpsc::Sender<PeerWorkerEvent>,
     parts: &[DownloadedPart],
     blocks: &[BlockPlan],
+    handout: u32,
 ) {
     let mut whole = true;
     for block in blocks {
@@ -261,6 +263,7 @@ pub async fn emit_blocks(
             .send(PeerWorkerEvent::BlocksWanted {
                 room: 3,
                 drained: true,
+                handout,
             })
             .await;
     }
@@ -305,7 +308,7 @@ fn scripted_worker(
                             .await;
                     }
                 }
-                PeerWorkerCommand::RequestBlocks { blocks } => {
+                PeerWorkerCommand::RequestBlocks { blocks, handout } => {
                     for block in &blocks {
                         if !requested.contains(&block.part_index) {
                             requested.push(block.part_index);
@@ -319,7 +322,7 @@ fn scripted_worker(
                             })
                             .await;
                     }
-                    emit_blocks(&event_tx, &outcome.parts, &blocks).await;
+                    emit_blocks(&event_tx, &outcome.parts, &blocks, handout).await;
                 }
                 PeerWorkerCommand::RequestAich { .. } => {}
                 PeerWorkerCommand::RequestAichFileHash => {}

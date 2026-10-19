@@ -77,6 +77,9 @@ pub enum PeerWorkerCommand {
     RequestBlocks {
         /// The blocks, each an absolute range inside one part.
         blocks: Vec<BlockPlan>,
+        /// This handout's number on the worker, counted from 1: a
+        /// `BlocksWanted` names the last one it took.
+        handout: u32,
     },
     /// Ask this peer for the AICH recovery data of `part`, quoting the trusted
     /// master `root` (ADR-0038). Core sends this after a part fails MD4 and a
@@ -185,6 +188,9 @@ pub enum PeerWorkerEvent {
         room: u32,
         /// Whether every asked block has arrived.
         drained: bool,
+        /// The last handout the worker took: a want older than the latest
+        /// handout says nothing of its blocks, and is set aside.
+        handout: u32,
     },
     /// The asked range `start..end` will never arrive on this slot: the
     /// session could not inflate it, or refused it (ADR-0029 "A lost block

@@ -27,15 +27,22 @@ fn deliver(
     )
 }
 
-/// `peer` has room for `room` more blocks.
+/// `peer`, having taken handout `handout`, has room for `room` more blocks.
 fn wants(
     state: &mut DownloadState,
     at: Instant,
     peer: PeerEndpoint,
-    room: u32,
-    drained: bool,
+    (room, drained, handout): (u32, bool, u32),
 ) -> Vec<Decision> {
-    state.on_worker_event(at, peer, PeerWorkerEvent::BlocksWanted { room, drained })
+    state.on_worker_event(
+        at,
+        peer,
+        PeerWorkerEvent::BlocksWanted {
+            room,
+            drained,
+            handout,
+        },
+    )
 }
 
 /// The blocks `decisions` hand `to`.
@@ -44,7 +51,7 @@ fn handed(decisions: &[Decision], to: PeerEndpoint) -> Vec<(u64, u64)> {
         .into_iter()
         .filter(|(peer, _)| *peer == to)
         .flat_map(|(_, command)| match command {
-            PeerWorkerCommand::RequestBlocks { blocks } => blocks,
+            PeerWorkerCommand::RequestBlocks { blocks, .. } => blocks,
             _ => Vec::new(),
         })
         .map(|block| (block.start, block.end))
@@ -81,7 +88,7 @@ fn a_drained_fast_worker_doubles_the_slow_workers_last_blocks_within_the_bound()
     let _ = deliver(&mut state, t0() + second, slow, 3 * B + 1_000, 1_000);
 
     let at = t0() + 2 * second;
-    let doubled = wants(&mut state, at, fast, 3, true);
+    let doubled = wants(&mut state, at, fast, (3, true, 1));
     assert_eq!(
         handed(&doubled, fast),
         vec![(5 * B, 6 * B), (4 * B, 5 * B), (3 * B + 2_000, 4 * B)],
@@ -102,7 +109,7 @@ fn a_drained_fast_worker_doubles_the_slow_workers_last_blocks_within_the_bound()
         "nobody gives a slot back: {doubled:?}"
     );
 
-    let again = wants(&mut state, at, fast, 1, false);
+    let again = wants(&mut state, at, fast, (1, false, 2));
     assert!(
         handed(&again, fast).is_empty(),
         "one unsettled set at a time"

@@ -27,7 +27,7 @@ async fn streamed(
     blocks: &[BlockPlan],
     budget: Duration,
 ) -> Streamed {
-    pipeline.hand(blocks);
+    pipeline.hand(blocks, 1);
     stream_blocks(link, pipeline, file, budget).await
 }
 
@@ -44,6 +44,7 @@ async fn drained(mut worker_events: mpsc::Receiver<PeerWorkerEvent>) -> Vec<Peer
 const DRAINED: PeerWorkerEvent = PeerWorkerEvent::BlocksWanted {
     room: 3,
     drained: true,
+    handout: 1,
 };
 
 /// Run [`stream_blocks`] over `bytes` with `notice` arriving before the
@@ -402,11 +403,13 @@ async fn handed_blocks_stream_asked_ahead_and_report_their_room() {
         vec![
             PeerWorkerEvent::BlocksWanted {
                 room: 1,
-                drained: false
+                drained: false,
+                handout: 1,
             },
             PeerWorkerEvent::BlocksWanted {
                 room: 2,
-                drained: false
+                drained: false,
+                handout: 1,
             },
             DRAINED,
         ]
@@ -484,6 +487,7 @@ async fn blocks_handed_mid_stream_queue_behind_the_rest() {
     worker_cmd_tx
         .send(PeerWorkerCommand::RequestBlocks {
             blocks: vec![block(512, 1024)],
+            handout: 1,
         })
         .await
         .unwrap();
@@ -602,6 +606,7 @@ async fn worked_until_the_budget(first: Option<PeerEvent>) -> Vec<PeerCommand> {
     command_tx
         .send(PeerWorkerCommand::RequestBlocks {
             blocks: vec![block(0, 1024)],
+            handout: 1,
         })
         .await
         .unwrap();

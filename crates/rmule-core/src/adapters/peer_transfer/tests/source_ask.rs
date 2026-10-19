@@ -188,6 +188,7 @@ async fn a_dialed_worker_reports_a_peer_that_holds_the_whole_file() {
                 start: 0,
                 end: file.size,
             }],
+            handout: 1,
         })
         .await
         .unwrap();
