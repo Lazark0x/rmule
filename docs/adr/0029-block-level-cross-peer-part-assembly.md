@@ -76,7 +76,12 @@ Part assembly lives in `rmule-core`, in one shared buffer per in-flight part.
     sources (`RemoveBlockFromList`, `:985`). rmule's prefix drops the bytes past a hole, so
     the worker gives the slot back with `OP_CANCELTRANSFER` at once and reports the link
     ended, and the part returns to the download with its prefix. A lost block of an earlier
-    part that is still draining only stops counting against the depth.
+    part that is still draining only stops counting against the depth. A compressed block
+    still mid-accumulation goes with its slot, and a chunk that arrives outside the granted
+    slot opens nothing, as aMule drops its pending zlib streams when it leaves
+    `DS_DOWNLOADING` and reads no block outside it (`DownloadClient.cpp:541-543`,
+    `:836-838`). A block cut short in one slot therefore never corrupts the same block asked
+    in the next.
   - **The pipeline is the link's.** `OP_OUTOFPARTREQS` empties it: the uploader dropped
     every queued block. A worker handed a new part stops asking for its old one at
     once; the old blocks already asked still arrive, count against the depth while they
