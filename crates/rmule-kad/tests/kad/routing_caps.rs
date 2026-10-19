@@ -1,16 +1,19 @@
 //! The routing table's admission caps (ADR-0064, aMule `CRoutingBin`): one
 //! contact per IPv4 address and ten per /24 across the table, two per /24 in
 //! one bucket. The private ranges and loopback are exempt from the /24 caps,
-//! loopback from the per-IP cap too.
+//! loopback from the per-IP cap too. A lookup answer's rows reach a walk only
+//! when the table would take them.
 
 use std::net::Ipv4Addr;
 
 use rmule_kad::{
-    Kad2Message, KadAdmissionCap, KadContact, KadContactState, KadId, KadNodeDiagnostic,
-    KadNodeEndpoint, KadRoutingTable, KadRoutingUpdate,
+    Kad2Message, Kad2NodeInfo, KadAdmissionCap, KadCommand, KadContact, KadContactState, KadId,
+    KadNode, KadNodeDiagnostic, KadNodeEndpoint, KadRoutingTable, KadRoutingUpdate,
+    KadSourceLookupRequest,
 };
 use rmule_primitives::session::drain;
-use rmule_testkit::kad_node::{T0, deliver, diagnostics, id, info, node};
+use rmule_primitives::{FileHash, SourceLookupTarget};
+use rmule_testkit::kad_node::{T0, deliver, diagnostics, id, info, node, sent_messages};
 
 /// An ID in bucket `bucket` (< 8) of the all-zero own ID: byte 3 is the most
 /// significant distance byte, so its `bucket`-th bit from the top fixes the
@@ -202,4 +205,124 @@ fn the_node_answers_a_capped_hello_but_never_stores_the_sender() {
             cap: KadAdmissionCap::BucketSubnet,
         }]
     );
+}
+
+/// A node walking a source lookup from one seed at `45.55.100.1`, with the
+/// walk's first query sent: the walk target, an ID at XOR distance `d` from
+/// it, and the node.
+fn walking_node() -> (KadId, impl Fn(u8) -> KadId, KadNode) {
+    let request = KadSourceLookupRequest::new(SourceLookupTarget::new(
+        FileHash::from_bytes([0x5C; 16]),
+        65_536,
+    ));
+    let target = request.kad_target();
+    let near = move |d: u8| {
+        let mut bytes = *target.as_bytes();
+        bytes[12] ^= d;
+        KadId::from_bytes(bytes)
+    };
+    let mut node = node();
+    deliver(
+        &mut node,
+        T0,
+        seed(),
+        &Kad2Message::HelloReq(Kad2NodeInfo {
+            id: near(200),
+            tcp_port: 4662,
+            version: 8,
+            udp_port_tag: Some(seed().udp_port()),
+            misc_options: 0,
+        }),
+    );
+    node.handle_command(T0, KadCommand::SearchSources { request });
+    let _ = drain(|| node.poll_output());
+    (target, near, node)
+}
+
+fn seed() -> KadNodeEndpoint {
+    KadNodeEndpoint::new(Ipv4Addr::new(45, 55, 100, 1), 4100)
+}
+
+/// Where the node sent a `KADEMLIA2_REQ` among `outputs`.
+fn lookups_sent(outputs: &[rmule_kad::KadOutput]) -> Vec<KadNodeEndpoint> {
+    sent_messages(outputs)
+        .into_iter()
+        .filter(|(_, message)| matches!(message, Kad2Message::LookupReq { .. }))
+        .map(|(to, _)| to)
+        .collect()
+}
+
+/// aMule hands its search only the answer rows its routing zone stored or
+/// would accept (`ProcessKademlia2Response` → `IsAcceptableContact`,
+/// `KademliaUDPListener.cpp:741-750`, `RoutingZone.cpp:897-916`), and the rows
+/// it stores count against the next. Of eleven rows from one /24 the walk may
+/// dial ten: never the eleventh, though it lies closest to the target.
+#[test]
+fn a_lookup_answer_hands_a_walk_no_more_of_one_slash24_than_the_table_would_hold() {
+    let (target, near, mut node) = walking_node();
+    let rows: Vec<KadContact> = (1..=11u8)
+        .map(|n| contact(near(12 - n), public(n)))
+        .collect();
+    deliver(
+        &mut node,
+        T0,
+        seed(),
+        &Kad2Message::LookupRes {
+            target,
+            contacts: rows,
+        },
+    );
+    let outputs = drain(|| node.poll_output());
+
+    let eleventh = KadNodeEndpoint::new(public(11), 4672);
+    assert_eq!(
+        diagnostics(&outputs),
+        vec![KadNodeDiagnostic::ContactOverAdmissionCap {
+            endpoint: eleventh,
+            cap: KadAdmissionCap::Subnet,
+        }]
+    );
+    assert_eq!(
+        lookups_sent(&outputs),
+        [10, 9, 8].map(|host| KadNodeEndpoint::new(public(host), 4672)),
+        "the walk dials the three closest rows the table would take"
+    );
+}
+
+/// A row naming a contact the table holds verified, at another IP, is never
+/// dialed: a lookup answer cannot re-home a proven ID
+/// (`IsAcceptableContact`, `RoutingZone.cpp:905-913`).
+#[test]
+fn a_lookup_answer_cannot_re_home_a_verified_contact() {
+    let (target, near, mut node) = walking_node();
+    node.handle_command(
+        T0,
+        KadCommand::MergeContacts {
+            contacts: vec![contact(near(1), public(1)).into_verified()],
+        },
+    );
+    let _ = drain(|| node.poll_output());
+    let elsewhere = KadNodeEndpoint::new(Ipv4Addr::new(203, 0, 113, 9), 4672);
+    let honest = KadNodeEndpoint::new(Ipv4Addr::new(203, 0, 113, 10), 4672);
+    deliver(
+        &mut node,
+        T0,
+        seed(),
+        &Kad2Message::LookupRes {
+            target,
+            contacts: vec![
+                KadContact::new(near(1), elsewhere, 4662, 8),
+                KadContact::new(near(2), honest, 4662, 8),
+            ],
+        },
+    );
+    let outputs = drain(|| node.poll_output());
+
+    assert_eq!(
+        diagnostics(&outputs),
+        vec![KadNodeDiagnostic::ContactContradictsStored {
+            endpoint: elsewhere
+        }]
+    );
+    assert_eq!(lookups_sent(&outputs), vec![honest]);
 }

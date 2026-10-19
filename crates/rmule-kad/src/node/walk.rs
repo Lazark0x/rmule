@@ -18,6 +18,7 @@ use crate::buddy::BuddyMessage;
 use crate::keyword_store::encode_search_key_req;
 use crate::lookup_walk::{KadLookupWalk, KadWalkAction, KadWalkOutcome, KadWalkPurpose};
 use crate::messages::Kad2Message;
+use crate::routing::{KadAnswerRefusal, KadAnswerTally};
 use crate::{KadContact, KadId, KadInstant, KadNodeEndpoint};
 
 impl KadNode {
@@ -113,30 +114,53 @@ impl KadNode {
         // `KademliaUDPListener.cpp:732-733` — its checks run before the rows
         // reach the search manager *or* the routing zone), so a walk never
         // dials either. The responder is the party that named every row
-        // (ADR-0085).
+        // (ADR-0085). A UDP firewall check takes those rows as they are; a
+        // walk dials only the rows the routing table would take
+        // (`KademliaUDPListener.cpp:741-750`, ADR-0064).
         let informant = Informant::Party(IpAddr::V4(from.ip()));
         let mut admitted = Vec::with_capacity(contacts.len());
+        let mut dialable = Vec::with_capacity(contacts.len());
+        let mut unacceptable = Vec::new();
+        let mut passed = KadAnswerTally::default();
         for &contact in contacts {
             let endpoint = contact.endpoint();
             if !crate::net::may_be_a_contact(informant, endpoint, contact.version()) {
                 self.emit_diagnostic(KadNodeDiagnostic::ContactRefused { endpoint });
-            } else if !self.contact_admission.admits(endpoint.ip()) {
+                continue;
+            }
+            if !self.contact_admission.admits(endpoint.ip()) {
                 self.emit_diagnostic(KadNodeDiagnostic::ContactIpFiltered { endpoint });
-            } else {
-                admitted.push(contact);
+                continue;
+            }
+            admitted.push(contact);
+            match self.routing.judge_answer_row(&mut passed, &contact) {
+                Ok(()) => dialable.push(contact),
+                Err(refusal) => unacceptable.push(match refusal {
+                    KadAnswerRefusal::Kad1 => KadNodeDiagnostic::ContactRefused { endpoint },
+                    KadAnswerRefusal::ContradictsStored => {
+                        KadNodeDiagnostic::ContactContradictsStored { endpoint }
+                    }
+                    KadAnswerRefusal::Cap(cap) => {
+                        KadNodeDiagnostic::ContactOverAdmissionCap { endpoint, cap }
+                    }
+                }),
             }
         }
         let consumed = self.walks.iter_mut().find_map(|walk| {
             if walk.target() != target {
                 return None;
             }
-            let actions = walk.on_lookup_res(now, from, &admitted)?;
+            let actions = walk.on_lookup_res(now, from, &dialable)?;
             Some((walk.purpose(), actions))
         });
         match consumed {
             Some((purpose, actions)) => {
                 if let KadWalkPurpose::UdpFirewallHelpers { .. } = purpose {
                     self.offer_udp_helper_rows(&admitted);
+                } else {
+                    for diagnostic in unacceptable {
+                        self.emit_diagnostic(diagnostic);
+                    }
                 }
                 self.apply_walk_actions(now, purpose, actions);
             }

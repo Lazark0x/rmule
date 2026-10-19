@@ -182,20 +182,33 @@ pub enum KadNodeDiagnostic {
     /// A contact the routing table refused because storing it would break an
     /// admission cap (ADR-0064): one contact per IP and ten per /24
     /// table-wide, two per /24 in a bucket. A newcomer is never stored; a known
-    /// contact claiming a new IP keeps its old entry.
+    /// contact claiming a new IP keeps its old entry. A lookup-answer row
+    /// meets the two table-wide caps, counted with the rows of its answer
+    /// already let through (aMule `IsAcceptableContact`,
+    /// `RoutingZone.cpp:897-916`), and is never walked or dialed.
     ContactOverAdmissionCap {
         /// The endpoint the contact arrived at.
         endpoint: KadNodeEndpoint,
         /// The cap that refused it.
         cap: crate::KadAdmissionCap,
     },
+    /// A lookup-answer row refused because it names a contact the routing
+    /// table holds at another UDP port, or verified at another IP (aMule
+    /// `IsAcceptableContact`, `RoutingZone.cpp:905-913`, ADR-0064). The row is
+    /// never walked or dialed, and the stored contact stays as it was.
+    ContactContradictsStored {
+        /// The endpoint the row named.
+        endpoint: KadNodeEndpoint,
+    },
     /// A contact intake refused because no Kad node can be at its endpoint:
     /// an address in a Reserved Range the party that named it cannot vouch
     /// for (ADR-0085), port `0`, or port `53` on a contact older than Kad
     /// version 6 — aMule's `IsGoodIPPort` and DNS-port rule at
     /// `CRoutingZone::Add` (`RoutingZone.cpp:405-406`) and on every
-    /// `KADEMLIA2_RES` row (`KademliaUDPListener.cpp:732-733`). The contact is
-    /// never stored, probed, walked, or dialed.
+    /// `KADEMLIA2_RES` row (`KademliaUDPListener.cpp:732-733`) — or a
+    /// `KADEMLIA2_RES` row from Kad version 1 or older, which aMule ignores
+    /// (`KademliaUDPListener.cpp:731`, `RoutingZone.cpp:901-904`). The contact
+    /// is never stored, probed, walked, or dialed.
     ContactRefused {
         /// The endpoint concerned.
         endpoint: KadNodeEndpoint,

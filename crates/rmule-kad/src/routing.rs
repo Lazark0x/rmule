@@ -20,9 +20,11 @@ use crate::udp_key::KadUdpKey;
 use crate::{KadId, KadInstant, KadNodeEndpoint};
 
 mod aging;
+mod answer;
 mod caps;
 
 use aging::ContactAging;
+pub(crate) use answer::{KadAnswerRefusal, KadAnswerTally};
 use caps::AdmissionTally;
 pub use caps::KadAdmissionCap;
 

@@ -8,7 +8,8 @@
 //! moment it is stored until it is evicted, replaced or moved. The per-bucket
 //! count is read off the bucket itself. They cap how much of the table one
 //! address or one /24 can occupy, which raises the price of an eclipse: an
-//! attacker needs many addresses, not many IDs.
+//! attacker needs many addresses, not many IDs. The two table-wide caps also
+//! judge the rows of a lookup answer before a walk may dial them (`answer`).
 
 use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
@@ -66,27 +67,50 @@ impl AdmissionTally {
         bucket: impl Iterator<Item = Ipv4Addr>,
         leaving: Option<Ipv4Addr>,
     ) -> Option<KadAdmissionCap> {
-        if !ip.is_loopback() {
-            let held = self.per_ip.get(&ip).copied().unwrap_or(0);
-            let held = held.saturating_sub(u16::from(leaving == Some(ip)));
-            if held >= MAX_CONTACTS_PER_IP {
-                return Some(KadAdmissionCap::Ip);
-            }
+        let net = subnet(ip);
+        let leaves_here = leaving.is_some_and(|left| subnet(left) == net);
+        let (at_ip, in_net) = self.held(ip);
+        let at_ip = at_ip.saturating_sub(u16::from(leaving == Some(ip)));
+        let in_net = in_net.saturating_sub(u16::from(leaves_here));
+        if let Some(cap) = global_refusal(ip, at_ip, in_net) {
+            return Some(cap);
         }
         if is_lan_ip(ip) {
             return None;
-        }
-        let net = subnet(ip);
-        let leaves_here = leaving.is_some_and(|left| subnet(left) == net);
-        let held = self.per_subnet.get(&net).copied().unwrap_or(0);
-        if held.saturating_sub(u16::from(leaves_here)) >= MAX_CONTACTS_PER_SUBNET {
-            return Some(KadAdmissionCap::Subnet);
         }
         let in_bucket = bucket.filter(|held| subnet(*held) == net).count();
         if in_bucket.saturating_sub(usize::from(leaves_here)) >= MAX_CONTACTS_PER_BUCKET_SUBNET {
             return Some(KadAdmissionCap::BucketSubnet);
         }
         None
+    }
+
+    /// The table-wide cap a lookup-answer row at `ip` would break, counting
+    /// `passed`, the rows of the same answer already let through, as if they
+    /// were stored: aMule's `CheckGlobalIPLimits` (`RoutingBin.cpp:366-390`),
+    /// the half of the caps `IsAcceptableContact` applies. The bucket cap
+    /// never refuses a row, because aMule takes a row its bin refused when
+    /// the global limits allow it.
+    pub(super) fn answer_refusal(
+        &self,
+        passed: &Self,
+        ip: Ipv4Addr,
+    ) -> Option<KadAdmissionCap> {
+        let (at_ip, in_net) = self.held(ip);
+        let (passed_at_ip, passed_in_net) = passed.held(ip);
+        global_refusal(
+            ip,
+            at_ip.saturating_add(passed_at_ip),
+            in_net.saturating_add(passed_in_net),
+        )
+    }
+
+    /// How many counted contacts sit at `ip`, and in its /24.
+    fn held(&self, ip: Ipv4Addr) -> (u16, u16) {
+        (
+            self.per_ip.get(&ip).copied().unwrap_or(0),
+            self.per_subnet.get(&subnet(ip)).copied().unwrap_or(0),
+        )
     }
 
     /// Count a contact just stored at `ip`.
@@ -100,6 +124,19 @@ impl AdmissionTally {
         decrement(&mut self.per_ip, ip);
         decrement(&mut self.per_subnet, subnet(ip));
     }
+}
+
+/// The table-wide cap a contact at `ip` would break when `at_ip` contacts
+/// already sit at its address and `in_net` in its /24: one per address
+/// (loopback exempt), ten per /24 (the private ranges and loopback exempt).
+fn global_refusal(ip: Ipv4Addr, at_ip: u16, in_net: u16) -> Option<KadAdmissionCap> {
+    if !ip.is_loopback() && at_ip >= MAX_CONTACTS_PER_IP {
+        return Some(KadAdmissionCap::Ip);
+    }
+    if !is_lan_ip(ip) && in_net >= MAX_CONTACTS_PER_SUBNET {
+        return Some(KadAdmissionCap::Subnet);
+    }
+    None
 }
 
 /// Drop one from `key`'s count, forgetting the key at zero.
