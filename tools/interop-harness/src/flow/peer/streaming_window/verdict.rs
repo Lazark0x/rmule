@@ -295,13 +295,17 @@ fn claims(
     run: &Replay,
 ) -> Vec<Claim> {
     let parts = part_count(topology.file_size);
-    let mut claims = vec![
-        advertised_only(wire, advertised),
-        first_ask(wire, run),
-        window_ascends(run, topology.window_parts),
-        rank_minimum(run),
-    ];
-    if topology.seeds.iter().any(|seed| seed.holding == "complete") {
+    let mut claims = if parts == 1 {
+        one_part_has_no_status()
+    } else {
+        vec![
+            advertised_only(wire, advertised),
+            first_ask(wire, run),
+            rank_minimum(run),
+        ]
+    };
+    claims.insert(2, window_ascends(run, topology.window_parts));
+    if parts > 1 && topology.seeds.iter().any(|seed| seed.holding == "complete") {
         claims.push(status_form(
             "a-complete-seeds-count-0-status-decodes",
             wire,
@@ -309,7 +313,8 @@ fn claims(
             |form| form == StatusForm::Complete,
         ));
     }
-    if topology.file_size.is_multiple_of(ED2K_PART_SIZE)
+    if parts > 1
+        && topology.file_size.is_multiple_of(ED2K_PART_SIZE)
         && topology.seeds.iter().any(|seed| seed.holding != "complete")
     {
         claims.push(status_form(
@@ -339,6 +344,22 @@ fn claims(
         claims.push(retired_seed_waits(wire, run, parts));
     }
     claims
+}
+
+/// A file of one part carries no part status: aMule asks `OP_SETREQFILEID`
+/// only when `GetPartCount() > 1` (`DownloadClient.cpp:241`, `:290`), and
+/// rmule asks as aMule does, so the claims read off a seed's status are not
+/// drawn.
+fn one_part_has_no_status() -> Vec<Claim> {
+    const WHY: &str = "a one-part file carries no part status on the wire";
+    vec![
+        Claim::blocked("every-request-names-a-part-the-seed-advertised", WHY),
+        Claim::blocked(
+            "each-seed-is-first-asked-for-a-very-rare-part-else-a-band-part",
+            WHY,
+        ),
+        Claim::blocked("every-part-handed-out-is-the-rank-minimum", WHY),
+    ]
 }
 
 /// The copy rmule wrote is the file the seeds share, byte for byte.
