@@ -265,7 +265,9 @@ Two downloads that reach a peer before either stands, departs: the second waits 
 link (invariant 8) and, when the first hangs up at its rank, takes its turn and asks — the swap
 table's third row. The peer reads two asks seconds apart once, 3 points; the standing then asks
 once per cycle and each polite ask takes one off, so no ban follows. A called waiter whose holder
-ends ranked rather than released (`OP_OUTOFPARTREQS` and then a rank) costs the same once.
+ends ranked rather than released (`OP_OUTOFPARTREQS` and then a rank) costs the same once, and so
+does a Low-ID source a fill reaches by a callback road: its record has no address to wait at
+until the peer connects, and the connection that answers asks.
 
 ### Citations in two trees
 
