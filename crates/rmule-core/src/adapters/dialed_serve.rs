@@ -144,7 +144,16 @@ pub(crate) async fn route_dialed_connection(mut conn: PeerConnection, route: Dia
                     }
                 }
                 None => {
-                    riders.rider_left(link.identity.as_ref());
+                    // An unasked grant the leaving rider never asked on is
+                    // nobody's now: it goes back before the link stays up for
+                    // another half or closes (ADR-0056 item 3); the session
+                    // sends nothing when none stands.
+                    if riders.rider_left(link.identity.as_ref()) {
+                        let decline = PeerCommand::Requester(RequesterCommand::DeclineSlot);
+                        if conn.send(decline).await.is_err() {
+                            break;
+                        }
+                    }
                     if riders.is_empty() && !serve.holds() {
                         closing = close(&mut conn).await;
                         if closing.is_none() {

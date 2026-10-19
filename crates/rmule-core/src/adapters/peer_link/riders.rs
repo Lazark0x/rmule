@@ -61,12 +61,15 @@ impl Riders {
     }
 
     /// The rider's worker let the link go: the oldest waiter still running
-    /// takes it once the link knows its peer.
-    pub(in crate::adapters) fn rider_left(&mut self, identity: Option<&PeerIdentity>) {
+    /// takes it once the link knows its peer. Answers whether the link is
+    /// left with nobody riding it, so an unasked grant still standing is
+    /// nobody's and goes back (ADR-0056 item 3).
+    pub(in crate::adapters) fn rider_left(&mut self, identity: Option<&PeerIdentity>) -> bool {
         self.departed = true;
         if let Some(identity) = identity {
             self.seat_next(identity);
         }
+        !self.is_ridden()
     }
 
     /// The hello came: a link nobody rides any more seats its oldest waiter.

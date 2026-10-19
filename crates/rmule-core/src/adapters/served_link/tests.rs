@@ -467,3 +467,43 @@ async fn an_unasked_grant_nobody_awaits_is_given_back() {
     grant_unasked(&mut linked.asker).await;
     assert!(given_back(&mut linked.asker, Duration::from_secs(5)).await);
 }
+
+/// A grant a download took, whose worker ends before its own ask — the peer
+/// says it lacks the file — goes back with `OP_CANCELTRANSFER` when that
+/// last rider leaves a link the peer's pull keeps up, rather than holding the
+/// uploader's slot to its 40 s close (ADR-0056 item 3, ADR-0107 invariant 9).
+#[tokio::test]
+async fn a_taken_grant_its_last_rider_leaves_standing_goes_back() {
+    let mut linked = Linked::up().await;
+    linked.pulls().await;
+    let at = linked.at();
+    let (grants, mut granted) = tokio::sync::mpsc::channel(1);
+    let _awaiting = linked
+        .links
+        .await_grant(at, vec![LinkName::Endpoint(at)], true, grants);
+    linked
+        .asker
+        .send(PeerCommand::Server(rmule_peer::ServerCommand::GrantSlot {
+            file_hash: file().file_hash,
+        }))
+        .await
+        .expect("the link is up");
+    assert_eq!(
+        timeout(Duration::from_secs(5), granted.recv())
+            .await
+            .ok()
+            .flatten(),
+        Some(crate::adapters::LinkOffer::Grant(at)),
+        "a download takes the grant"
+    );
+
+    let file = file();
+    let mut worker = linked.download(&file).await;
+    linked.rode_the_link(file.file_hash).await;
+    linked.has_no_such_file(file.file_hash).await;
+    let _ = until_disconnected(&mut worker).await;
+    assert!(
+        given_back(&mut linked.asker, Duration::from_secs(5)).await,
+        "the grant left standing goes back"
+    );
+}

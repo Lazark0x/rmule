@@ -84,7 +84,16 @@ pub(super) async fn drive_served_link(
                     }
                 }
                 None => {
-                    riders.rider_left(Some(&identity));
+                    // An unasked grant the leaving rider never asked on is
+                    // nobody's now: it goes back before the link stays up for
+                    // another half or closes (ADR-0056 item 3); the session
+                    // sends nothing when none stands.
+                    if riders.rider_left(Some(&identity)) {
+                        let decline = PeerCommand::Requester(RequesterCommand::DeclineSlot);
+                        if conn.send(decline).await.is_err() {
+                            break close_reason(&mut conn).await;
+                        }
+                    }
                     if riders.is_empty() && !serve.holds() {
                         if serve.serving() {
                             let _ = event_tx.send(ServeInput::closed_here()).await;
