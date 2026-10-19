@@ -525,7 +525,7 @@ all-`SKIPPED` set of verdict files, otherwise `pass`). Tags alone do not tell tw
 builds apart, so a repeat of a flow with the same options is redundant only when
 the commit, `dirty` and the binary hash or image id all match. Verdict bodies
 name rmule as `<commit>[+dirty] sha256 <prefix>` from the same record. A re-score
-of a retained run never rewrites the record; it appends one `rescored_at` line.
+of a retained run never rewrites the record; it adds its time to the top-level `rescored_at` list.
 
 Use `--keep-containers` to leave the containers and network running. The harness prints retained container and network names in that mode.
 

@@ -14,11 +14,10 @@
 //! The record is process-wide because a run is: [`begin`] opens it where the
 //! run dir is created, the build steps note what they built, and [`finish`]
 //! closes it whether the flow failed or not. A re-score of a retained run never
-//! rewrites it; [`rescored`] appends one `rescored_at` line.
+//! rewrites it; [`rescored`] adds its time to the top-level `rescored_at` list.
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -270,17 +269,36 @@ pub fn finish(errored: bool) {
     });
 }
 
-/// A re-score of a retained run: append one `rescored_at` line to its
-/// `run.toml` and change nothing else. A run dir without a record (one from
-/// before the record existed) is left alone.
+/// A re-score of a retained run: add its time to the `rescored_at` list of
+/// its `run.toml` and change nothing else. A run dir without a record (one
+/// from before the record existed) is left alone.
 pub fn rescored(run_dir: &Path) {
     let path = run_dir.join(FILE_NAME);
-    if !path.is_file() {
-        return;
+    if let Ok(text) = fs::read_to_string(&path) {
+        let _ = fs::write(&path, with_rescore(&text, unix_ms()));
     }
-    if let Ok(mut file) = fs::OpenOptions::new().append(true).open(&path) {
-        let _ = writeln!(file, "rescored_at = {}", unix_ms());
+}
+
+/// `text` with `at` added to its top-level `rescored_at` list. The list sits
+/// ahead of the first table: a line appended at the end lands inside the last
+/// table, and a second one there is a duplicate key no TOML reader accepts.
+fn with_rescore(text: &str, at: u128) -> String {
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    let tables = lines
+        .iter()
+        .position(|line| line.starts_with('['))
+        .unwrap_or(lines.len());
+    match lines[..tables]
+        .iter()
+        .position(|line| line.starts_with("rescored_at = ["))
+    {
+        Some(index) => {
+            let listed = lines[index].trim_end().trim_end_matches(']').to_owned();
+            lines[index] = format!("{listed}, {at}]");
+        }
+        None => lines.insert(tables, format!("rescored_at = [{at}]")),
     }
+    lines.join("\n") + "\n"
 }
 
 #[cfg(test)]
@@ -311,15 +329,25 @@ mod tests {
         assert_eq!(outcome(run.path(), true), "error");
     }
 
-    /// A re-score appends one line and leaves everything before it as it was.
+    /// Two re-scores of a record with a table leave one top-level list of
+    /// two times, the rest as it was, and a file a TOML reader accepts.
     #[test]
-    fn a_rescore_only_appends() {
+    fn rescores_list_their_times_ahead_of_every_table() {
         let run = tempfile::tempdir().unwrap();
         let path = run.path().join(FILE_NAME);
-        std::fs::write(&path, "harness_commit = \"abc\"\n").unwrap();
+        let record =
+            "harness_commit = \"abc\"\n\n[counterparty_images]\n\"a:local\" = \"sha256:1\"\n";
+        std::fs::write(&path, record).unwrap();
+        rescored(run.path());
         rescored(run.path());
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.starts_with("harness_commit = \"abc\"\nrescored_at = "));
-        assert_eq!(text.lines().count(), 2);
+        let table: toml::Table = text.parse().expect("a TOML record");
+        assert_eq!(table["rescored_at"].as_array().map(Vec::len), Some(2));
+        assert_eq!(
+            table["counterparty_images"].as_table().map(|t| t.len()),
+            Some(1)
+        );
+        assert!(text.starts_with("harness_commit = \"abc\"\n\nrescored_at = ["));
+        assert!(text.ends_with("[counterparty_images]\n\"a:local\" = \"sha256:1\"\n"));
     }
 }

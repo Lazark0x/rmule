@@ -164,13 +164,12 @@ pub fn run_streaming_window(options: StreamingWindowOptions<'_>) -> Result<()> {
             options.capture_build_context,
         )?;
     }
-    if !options.skip_build {
-        bench.build_rmule_tools_image(
-            options.rmule_tools_image,
-            options.rmule_tools_dockerfile,
-            options.rmule_tools_build_context,
-        )?;
-    }
+    bench.rmule_tools_image(
+        options.rmule_tools_image,
+        options.rmule_tools_dockerfile,
+        options.rmule_tools_build_context,
+        options.skip_build,
+    )?;
     let root = options.layout.root().join(ROOT_DIR);
     fs::create_dir_all(&root).with_context(|| format!("create {}", root.display()))?;
     let stream = write_stream_file(

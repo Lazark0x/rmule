@@ -160,13 +160,12 @@ pub fn run_peer_lowid_callback_reask(options: PeerLowIdCallbackReaskOptions<'_>)
             options.layout.root(),
         )?;
     }
-    if !options.skip_build {
-        bench.build_rmule_tools_image(
-            options.rmule_tools_image,
-            options.rmule_tools_dockerfile,
-            options.rmule_tools_build_context,
-        )?;
-    }
+    bench.rmule_tools_image(
+        options.rmule_tools_image,
+        options.rmule_tools_dockerfile,
+        options.rmule_tools_build_context,
+        options.skip_build,
+    )?;
     let root = options.layout.root().join(ROOT_DIR);
     fs::create_dir_all(&root).with_context(|| format!("create {}", root.display()))?;
     let timeout = Duration::from_secs(options.timeout_secs);

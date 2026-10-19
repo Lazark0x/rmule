@@ -740,6 +740,23 @@ impl Bench {
         crate::flow::driver_image::build(&self.docker, tag, dockerfile, context)
     }
 
+    /// [`Self::build_rmule_tools_image`], or with `reuse` (`--skip-build`)
+    /// the image `tag` as it stands, whose id the run record then names as
+    /// the rmule under test.
+    pub(crate) fn rmule_tools_image(
+        &self,
+        tag: &str,
+        dockerfile: &Path,
+        context: &Path,
+        reuse: bool,
+    ) -> Result<()> {
+        if reuse {
+            crate::run_record::note_image(&self.docker, tag, true);
+            return Ok(());
+        }
+        self.build_rmule_tools_image(tag, dockerfile, context)
+    }
+
     /// Own an extra detached container (a helper aMule, a sidecar, a
     /// registrant) for teardown: removed in reverse start order, before the
     /// three roles.
