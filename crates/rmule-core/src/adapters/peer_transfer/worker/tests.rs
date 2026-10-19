@@ -786,6 +786,7 @@ async fn out_of_part_requests_during_an_aich_wait_end_the_slot_at_once() {
         &file,
         rmule_peer::PartBitmap::downloader_empty(1024),
         false,
+        WorkerOpening::Probe,
         command_rx,
         event_tx,
         Duration::from_secs(60),
