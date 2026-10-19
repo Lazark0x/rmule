@@ -13,7 +13,7 @@ use std::time::Instant;
 use rmule_peer::{PeerIdentity, ServerCommand};
 use rmule_primitives::{FileHash, PeerCrypt, PeerEndpoint, PeerSource};
 
-use crate::adapters::DialBack;
+use crate::adapters::{DialBack, FarEnd};
 use crate::service::{DialBackEnd, DialEnd, GrantRoad, ServeEvent};
 use crate::upload_queue::Relinked;
 
@@ -87,7 +87,8 @@ impl ServeState {
     }
 
     /// The dial-back to `waiter` came up as `link`, whose hello is `identity`
-    /// (ADR-0057). The waiter's held grant moves onto the link and
+    /// and whose far end its driver reads as `far_end` (ADR-0057). The
+    /// waiter's held grant moves onto the link and
     /// `OP_ACCEPTUPLOADREQ` goes on it. A hello that names another client
     /// ends the grant; a grant already delivered elsewhere — the client came
     /// back first — or reclaimed leaves the link to whatever its hello finds
@@ -99,9 +100,10 @@ impl ServeState {
         waiter: PeerEndpoint,
         link: PeerEndpoint,
         identity: PeerIdentity,
+        far_end: FarEnd,
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
-        self.dialed.insert(link);
+        self.dialed.insert(link, far_end);
         let mut decisions = Vec::new();
         if self.queue.pending_grant(waiter).is_some() {
             let theirs = self.identities.get(&waiter).map(PeerIdentity::user_hash);

@@ -17,7 +17,9 @@ use tokio::sync::mpsc;
 
 use super::InboundPeerDeps;
 use super::inbound_triage::serve_side;
-use super::peer_link::{DialInFlight, LinkName, Moving, Riders, ServeHold, recv_join};
+use super::peer_link::{
+    DialInFlight, FarEnd, LinkConnection, LinkName, Moving, Riders, ServeHold, recv_join,
+};
 use super::peer_transfer::PeerWorkerEvent;
 use super::serve_runtime::{ServeInput, ServeOutput};
 use crate::service::PortTestClosedBy;
@@ -38,26 +40,30 @@ use crate::service::PortTestClosedBy;
 /// detaches the held link, freeing the buddy slot at once (aMule frees
 /// `m_pBuddy` when the buddy's socket dies).
 ///
-/// A link the serve side dialed back comes with its `dialed` Dial in Flight:
-/// it keeps that filing, moved to its hello's names and where it was dialed,
-/// and the serve side holds it from the dial.
+/// A link the serve side dialed back comes `dialed`: it keeps its Dial in
+/// Flight's filing, moved to its hello's names and where it was dialed, the
+/// serve side holds it from the dial, and what crosses it is noted on its far
+/// end, which the serve side reads before it lets the client's own link go
+/// for this one (ADR-0107 invariant 7).
 ///
 /// Returns who closed the connection: the peer session's own close reason
 /// when it ended there, rmule when every half let it go.
 pub(super) async fn drive_served_link(
-    mut conn: PeerConnection,
+    conn: PeerConnection,
     mut identity: PeerIdentity,
     mut command_rx: mpsc::Receiver<ServeOutput>,
     event_tx: mpsc::Sender<ServeInput>,
     deps: InboundPeerDeps,
-    dialed: Option<DialInFlight>,
+    dialed: Option<DialedLink>,
 ) -> PortTestClosedBy {
     let remote = conn.peer_endpoint();
     let dialed_at = dialed.is_some().then_some(remote);
     let names = LinkName::proven(remote, &identity, dialed_at);
+    let far_end = dialed.as_ref().map(|dialed| dialed.far_end.clone());
+    let mut conn = LinkConnection::new(conn, far_end);
     let (mut filing, joins, mut moving, mut serve) = match dialed {
-        Some(dial) => {
-            let (mut filing, joins) = dial.into_parts();
+        Some(DialedLink { in_flight, .. }) => {
+            let (mut filing, joins) = in_flight.into_parts();
             filing.refile(names);
             (
                 filing,
@@ -216,6 +222,13 @@ pub(super) async fn drive_served_link(
     closed_by
 }
 
+/// A link the serve side dialed back (ADR-0057): the Dial in Flight it was
+/// filed as, and the far end its driver notes what crosses it on.
+pub(super) struct DialedLink {
+    pub(super) in_flight: DialInFlight,
+    pub(super) far_end: FarEnd,
+}
+
 /// What routing one event left of the link.
 enum Routed {
     Open,
@@ -339,7 +352,7 @@ async fn route(
 
 /// Drain a connection whose driver has stopped to its paired `Disconnected`
 /// and say who closed it.
-async fn close_reason(conn: &mut PeerConnection) -> PortTestClosedBy {
+async fn close_reason(conn: &mut LinkConnection) -> PortTestClosedBy {
     while let Some(event) = conn.next_event().await {
         if let PeerEvent::Connection(ConnectionEvent::Disconnected { reason }) = event {
             return (&reason).into();

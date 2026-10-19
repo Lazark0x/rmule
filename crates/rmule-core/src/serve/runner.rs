@@ -311,10 +311,10 @@ where
                     let mut decisions: VecDeque<ServeDecision> = match outcome {
                         // The link is registered before its hello is folded,
                         // so the grant the fold decides finds it.
-                        DialBackOutcome::Linked { waiter, conn, identity } => {
+                        DialBackOutcome::Linked { waiter, conn, identity, far_end } => {
                             let link = conn.peer();
                             register_serve_connection(conn, &mut conns, &fact_tx);
-                            state.on_dial_back_linked(now, waiter, link, *identity, &modifiers)
+                            state.on_dial_back_linked(now, waiter, link, *identity, far_end, &modifiers)
                         }
                         DialBackOutcome::Failed { waiter, cause } => {
                             state.on_dial_back_failed(now, waiter, cause, &modifiers)
@@ -341,9 +341,9 @@ where
                         // one. An adopted callback comes this way too, a
                         // link the peer opened, so only a link rmule dialed
                         // is marked so.
-                        Some(LinkServeHalf { conn, rmule_dialed }) => {
-                            if rmule_dialed {
-                                state.on_link_dialed(conn.peer());
+                        Some(LinkServeHalf { conn, dialed }) => {
+                            if let Some(far_end) = dialed {
+                                state.on_link_dialed(conn.peer(), far_end);
                             }
                             register_serve_connection(conn, &mut conns, &fact_tx);
                         }

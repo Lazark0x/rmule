@@ -1,8 +1,9 @@
 //! How an upload slot reaches the peer it is granted to, why a **Dial-Back
-//! Grant** ended unsent (ADR-0057), and why a slot holder's block request
-//! ended its slot (ADR-0031): the vocabulary that lets the operator tell a
-//! grant on a link the peer held from one rmule dialed back, and read why a
-//! peer lost its slot.
+//! Grant** ended unsent (ADR-0057), what showed a **Dead Dial** dead
+//! (ADR-0107), and why a slot holder's block request ended its slot
+//! (ADR-0031): the vocabulary that lets the operator tell a grant on a link
+//! the peer held from one rmule dialed back, and read why a peer lost its
+//! slot or its link.
 
 use super::DialEnd;
 
@@ -39,6 +40,20 @@ pub enum DialBackEnd {
     /// No link of the waiter came up within the purge window
     /// (`MAX_PURGEQUEUETIME`).
     Lapsed,
+}
+
+/// What showed a link rmule dialed dead at the far end, a **Dead Dial**
+/// ([`ServeEvent::DeadDialLetGo`](super::ServeEvent::DeadDialLetGo), ADR-0107
+/// invariant 7). Declared in rank order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DeadDialSign {
+    /// Its session ended: a reset or a FIN was read on it, or rmule closed
+    /// it.
+    Ended,
+    /// Nothing crossed it either way for longer than aMule's 40 s socket
+    /// timeout, after which aMule closes a socket
+    /// (`ClientTCPSocket.cpp:201-229`).
+    Silent,
 }
 
 /// Why a slot holder's block request ended its slot before anything of it was

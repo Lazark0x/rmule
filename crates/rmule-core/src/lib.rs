@@ -144,7 +144,7 @@ pub use adapters::{
     RuntimeSourceLookupService, ServeConnection, ServeInput, ServeOutput, ServeRuntimeService,
     SourceLookupOutcome, SourceLookupService, WorkerBrief, WorkerOpening,
 };
-pub use adapters::{DialBack, DialBackCallOff, DialBackOutcome};
+pub use adapters::{DialBack, DialBackCallOff, DialBackOutcome, FarEnd};
 pub use address_learning::{
     AddressObservation, AssignedAddress, ConfidenceTier, EndpointVerdict, ExternalAddressOverride,
     NatHint, ObservationOutcome, ObservationSource, SocketRole,
@@ -225,7 +225,7 @@ pub use search::{KadKeywordSink, MORE_RESULTS_ASKS, RelatedSearchRefusal, Server
 pub use served_downloads::PartialEnd;
 pub use server_session::build_peer_handshake_context;
 pub use service::LinkTurn;
-pub use service::{BlockAskFault, DialBackEnd, GrantRoad};
+pub use service::{BlockAskFault, DeadDialSign, DialBackEnd, GrantRoad};
 pub use service::{
     BuddyDialFailure, CeilingLowered, ClientCredentials, CompletionStep, Core, CoreBuilder,
     CoreCommand, CoreCommandRejectReason, CoreConfig, CoreEvent, DEFAULT_SLOT_WAIT_TIMEOUT,

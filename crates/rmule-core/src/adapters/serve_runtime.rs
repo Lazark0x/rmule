@@ -145,7 +145,8 @@ pub trait ServeRuntimeService: Send + 'static {
     /// download waiting on it looks again and finds the link the client came
     /// back on: [`DialBackCallOff::Stopped`], as for no dial at all. A dial
     /// whose hello is out goes on, the far side keeping it:
-    /// [`DialBackCallOff::PastHello`].
+    /// [`DialBackCallOff::PastHello`]; one that has ended since, before the
+    /// client's hello on it, keeps nothing: [`DialBackCallOff::Ended`].
     ///
     /// Default: nothing dialed, so no hello went out.
     fn call_off_dial_back(&mut self, _waiter: PeerEndpoint) -> DialBackCallOff {

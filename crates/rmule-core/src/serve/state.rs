@@ -37,7 +37,7 @@ use rmule_peer::{ClientSoftware, PartBitmap, PeerIdentity, ServerCommand};
 use rmule_primitives::{AichHashSet, Ed2kText, FileHash, PeerEndpoint, SourceSighting, UserHash};
 
 use crate::WaiterLeaveCause;
-use crate::adapters::DialBack;
+use crate::adapters::{DialBack, FarEnd};
 use crate::registry::SharedFileEntry;
 use crate::serve::source_exchange::SourceExchangeThrottle;
 use crate::served_downloads::{PartFileIdentity, PartialEnd, ReadCheck, ServedLook};
@@ -232,8 +232,10 @@ pub(super) struct ServeState {
     /// The live links rmule dialed — a download's, or a dial-back's — whose
     /// hello takes no client from a live link of its own: aMule moves a
     /// client to a new socket only at the hello of one the peer opened
-    /// (`ClientTCPSocket.cpp:391`, ADR-0057). Shed at the link's close.
-    dialed: HashSet<PeerEndpoint>,
+    /// (`ClientTCPSocket.cpp:391`, ADR-0057). Each with what its driver sees
+    /// of its far end, read before the client's own link is let go for it
+    /// (ADR-0107 invariant 7). Shed at the link's close.
+    dialed: HashMap<PeerEndpoint, FarEnd>,
     /// Ranges already decided for a granted flow, so a re-request serves only
     /// the missing subranges.
     served_ranges: HashMap<(PeerEndpoint, FileHash), Vec<(u64, u64)>>,
@@ -267,7 +269,7 @@ impl ServeState {
             queue,
             identities: HashMap::new(),
             identified: HashSet::new(),
-            dialed: HashSet::new(),
+            dialed: HashMap::new(),
             served_ranges: HashMap::new(),
             aich_cache: HashMap::new(),
             sx_part_status: HashMap::new(),
@@ -283,11 +285,12 @@ impl ServeState {
         self.ours = ours;
     }
 
-    /// `peer` is a link rmule dialed, whose hello is still to come: it takes
-    /// only a standing whose link has ended (ADR-0057, "A client on a new
-    /// link keeps its standing").
-    pub(super) fn on_link_dialed(&mut self, peer: PeerEndpoint) {
-        self.dialed.insert(peer);
+    /// `peer` is a link rmule dialed, whose hello is still to come, and
+    /// `far_end` what its driver sees of its far end: it takes only a
+    /// standing whose link has ended (ADR-0057, "A client on a new link keeps
+    /// its standing").
+    pub(super) fn on_link_dialed(&mut self, peer: PeerEndpoint, far_end: FarEnd) {
+        self.dialed.insert(peer, far_end);
     }
 
     /// The peers whose credit modifiers the entry points expect: every

@@ -20,7 +20,9 @@
 //! its connect or crypt handshake still runs, the dial stops without a word,
 //! no byte of its hello sent, and the grant goes on the client's link. Once
 //! its hello is out the far side keeps the dial, so the dial goes on and keeps
-//! the grant (ADR-0057, "Two hellos of one client race").
+//! the grant (ADR-0057, "Two hellos of one client race") — unless the dial
+//! has ended since, before the client's hello came back on it, when the
+//! grant goes on the client's link all the same (ADR-0107 invariant 7).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -31,13 +33,14 @@ use rmule_primitives::{PeerCrypt, PeerEndpoint};
 use tokio::sync::{Notify, mpsc};
 
 use super::ServeConnection;
+use crate::adapters::FarEnd;
 use crate::adapters::hello_wait::{Opening, await_hello};
 use crate::adapters::kad_runtime::broker_peer_kad_handoff;
 use crate::adapters::peer_link::{LinkName, Reach};
 use crate::adapters::peer_transfer::dial_end::{
     closed_before_hello, connect_failure, crypt_refusal,
 };
-use crate::adapters::served_link::drive_served_link;
+use crate::adapters::served_link::{DialedLink, drive_served_link};
 use crate::adapters::{HelloAdverts, InboundPeerDeps};
 use crate::ban_store::SharedBanStore;
 use crate::ip_filter::SharedIpFilter;
@@ -72,6 +75,9 @@ pub enum DialBackOutcome {
         conn: ServeConnection,
         /// The peer as its hello named it.
         identity: Box<PeerIdentity>,
+        /// What the link's driver sees of its far end, read before the
+        /// client's own link is let go for this one (ADR-0107 invariant 7).
+        far_end: FarEnd,
     },
     /// The dial ended before a hello, for `cause`.
     Failed {
@@ -93,6 +99,10 @@ pub enum DialBackCallOff {
     /// The dial's hello is out: the far side keeps the dial and closes its
     /// own link, so the dial goes on and keeps the grant.
     PastHello,
+    /// The dial's hello went out, but the dial ended before the peer's hello
+    /// came back on it: nothing holds the peer's own link off, and the grant
+    /// goes on it as when the dial stopped (ADR-0107 invariant 7).
+    Ended,
 }
 
 /// The one claim a dial-back's hello and its call-off race for: whichever
@@ -106,6 +116,7 @@ pub(super) struct DialClaim {
 const DIALING: u8 = 0;
 const HELLO_OUT: u8 = 1;
 const CALLED_OFF: u8 = 2;
+const ENDED: u8 = 3;
 
 impl DialClaim {
     /// Call the dial off: it stops, unless its hello went out first.
@@ -119,8 +130,16 @@ impl DialClaim {
                 DialBackCallOff::Stopped
             }
             Err(HELLO_OUT) => DialBackCallOff::PastHello,
+            Err(ENDED) => DialBackCallOff::Ended,
             Err(_) => DialBackCallOff::Stopped,
         }
+    }
+
+    /// The dial ended past its hello: a call-off from now finds it ended.
+    fn ended(&self) {
+        let _ = self
+            .state
+            .compare_exchange(HELLO_OUT, ENDED, Ordering::AcqRel, Ordering::Acquire);
     }
 
     /// Claim the hello for the dial: `false` when it was called off first,
@@ -239,6 +258,7 @@ impl DialBackRoad {
         let identity = match opening {
             Opening::Identified(identity) => *identity,
             Opening::Closed(reason) => {
+                claim.ended();
                 let cause = closed_before_hello(reason);
                 in_flight.failed(cause);
                 let _ = conn.shutdown().await;
@@ -246,6 +266,7 @@ impl DialBackRoad {
                 return;
             }
             Opening::Ended => {
+                claim.ended();
                 in_flight.failed(DialEnd::ClosedBeforeHello);
                 let _ = conn.shutdown().await;
                 let _ = outcomes.send(failed(DialEnd::ClosedBeforeHello)).await;
@@ -257,22 +278,25 @@ impl DialBackRoad {
         crate::address_learning::record_peer_ipv6_vote(&deps.addresses, at, &identity);
         let (command_tx, command_rx) = mpsc::channel(16);
         let (event_tx, event_rx) = mpsc::channel(16);
+        let far_end = FarEnd::new();
         let linked = DialBackOutcome::Linked {
             waiter,
             conn: ServeConnection::new(at, command_tx, event_rx),
             identity: Box::new(identity.clone()),
+            far_end: far_end.clone(),
         };
         if outcomes.send(linked).await.is_err() {
             // The serve activity ended under the dial: nothing grants here.
+            claim.ended();
             in_flight.failed(DialEnd::ClosedLocally);
             let _ = conn.shutdown().await;
             return;
         }
-        let _ =
-            drive_served_link(conn, identity, command_rx, event_tx, deps, Some(in_flight)).await;
+        let dialed = DialedLink { in_flight, far_end };
+        let _ = drive_served_link(conn, identity, command_rx, event_tx, deps, Some(dialed)).await;
         // Held to the link's end: a call-off meanwhile reads the dial as past
-        // its hello.
-        drop(claim);
+        // its hello, and as ended once it has.
+        claim.ended();
     }
 }
 

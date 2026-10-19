@@ -21,6 +21,7 @@ use crate::adapters::tests::dialed_serve_ctx;
 use super::*;
 
 mod dial_in_flight;
+mod far_end;
 mod hand_back;
 mod hang_up;
 mod secure_ident;
@@ -118,7 +119,7 @@ async fn a_dialed_connection_serves_the_peer_it_dialed_on_the_same_socket() {
         .await
         .expect("serve half produced for the dialed connection")
         .expect("serve connection present");
-    assert!(half.rmule_dialed);
+    assert!(half.dialed.is_some());
     let mut serve_conn = half.conn;
 
     // Act as the serve task for the one shared file: answer each probe and

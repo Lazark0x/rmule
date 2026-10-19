@@ -159,6 +159,7 @@ async fn a_download_of_a_waiter_dialed_back_rides_the_dialed_link() {
         waiter: dialed_for,
         conn,
         identity,
+        ..
     }) = timeout(Duration::from_secs(5), outcomes.recv())
         .await
         .expect("the dial ends")
@@ -429,4 +430,44 @@ async fn a_dial_back_called_off_past_its_hello_goes_on_to_the_waiters_hello() {
             .map(|found| found.remote),
         Some(at)
     );
+}
+
+#[tokio::test]
+async fn a_dial_back_reset_past_its_hello_is_found_ended_by_the_call_off() {
+    // The waiter read our hello and dropped the dial before answering it: it
+    // holds only the link it opens next (`ClientList.cpp:400-403`), so the
+    // call-off finds nothing that keeps the grant off that link.
+    let links = SharedPeerLinks::default();
+    let (mut serve, _ours) = serving(&links).await;
+    let (listener, at) = raw_waiter().await;
+    let (outcomes_tx, mut outcomes) = mpsc::channel(1);
+    let waiter = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, 51318));
+    serve.dial_back(
+        DialBack {
+            waiter,
+            at,
+            crypt: PeerCrypt::new(CryptStance::disabled(), Some(WAITER)),
+        },
+        outcomes_tx,
+    );
+    let (stream, _) = timeout(Duration::from_secs(5), listener.accept())
+        .await
+        .expect("the dial arrives")
+        .expect("accept the dial");
+    let mut first = [0u8; 1];
+    timeout(Duration::from_secs(5), stream.peek(&mut first))
+        .await
+        .expect("the hello arrives")
+        .expect("peek the hello");
+    assert_eq!(first[0], 0xE3, "the dial's hello is on the wire");
+    drop(stream);
+
+    let outcome = timeout(Duration::from_secs(5), outcomes.recv())
+        .await
+        .expect("the dial ends");
+    assert!(
+        matches!(outcome, Some(DialBackOutcome::Failed { waiter: failed, .. }) if failed == waiter),
+        "the dial ends before the waiter's hello"
+    );
+    assert_eq!(serve.call_off_dial_back(waiter), DialBackCallOff::Ended);
 }

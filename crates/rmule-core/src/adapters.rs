@@ -37,6 +37,7 @@ pub use kad_runtime::{
     ClientUdpBind, KadCells, KadEnableConfig, KadNodeIdentity, KadPumpStandIn, KadRuntimeFactory,
     KadShutdownHandle, KadShutdownSlot, KadSourceChannel, RuntimeKadChannel, RuntimeKadFactory,
 };
+pub use peer_link::FarEnd;
 pub use peer_transfer::{
     DownloadedPart, PeerDownloadOutcome, PeerTransferService, PeerWorker, PeerWorkerCommand,
     PeerWorkerEvent, RuntimePeerTransferService, WorkerBrief, WorkerOpening,

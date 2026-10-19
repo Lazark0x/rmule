@@ -505,7 +505,7 @@ impl ServeState {
                         ServeDecision::Disconnect { peer },
                     ];
                 }
-                let relink = self.relink_waiter(peer, &identity);
+                let relink = self.relink_waiter(now, peer, &identity);
                 self.identities.insert(peer, identity);
                 match relink {
                     Relink::Moved(mut moved) => {

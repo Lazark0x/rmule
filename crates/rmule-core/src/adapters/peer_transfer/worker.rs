@@ -21,7 +21,7 @@ use crate::adapters::dialed_serve::{
     DialedRoute, LinkOrigin, LinkServeHalf, bridge_dialed_serve, route_dialed_connection,
 };
 use crate::adapters::hello_wait::{Opening, await_hello};
-use crate::adapters::peer_link::{DownloadHalf, JoinedLink};
+use crate::adapters::peer_link::{DownloadHalf, FarEnd, JoinedLink};
 use crate::adapters::peer_transfer::{PeerWorkerCommand, PeerWorkerEvent, WorkerOpening};
 use crate::adapters::serve_runtime::{ServeConnection, ServeInput};
 use crate::service::DialEnd;
@@ -74,6 +74,10 @@ pub(crate) async fn drive_peer_worker(
     // revision the router forwards follows it. A dialed worker's comes from
     // the router at the peer's hello.
     let adopted = matches!(origin, LinkOrigin::Adopted(_));
+    // A link rmule dialed: what crosses it is noted on its far end, which the
+    // serve side reads before letting the peer's own link go for it
+    // (ADR-0107 invariant 7).
+    let far_end = (!adopted).then(FarEnd::new);
     if let LinkOrigin::Adopted(identity) = &origin
         && event_tx
             .send(PeerWorkerEvent::Identity(identity.clone()))
@@ -94,6 +98,7 @@ pub(crate) async fn drive_peer_worker(
             serve_cmd_rx,
             deps,
             origin,
+            far_end: far_end.clone(),
         },
     ));
     if !adopted
@@ -113,7 +118,7 @@ pub(crate) async fn drive_peer_worker(
             server_rx,
             serve_cmd_tx,
             sink: dialed_serve_sink,
-            rmule_dialed: !adopted,
+            dialed: far_end,
         }),
         &file,
         own_status,
@@ -187,9 +192,9 @@ struct ServeHalf {
     /// Where the serve half's commands are framed onto the link.
     serve_cmd_tx: mpsc::Sender<PeerCommand>,
     sink: crate::adapters::SharedDialedServeSink,
-    /// Whether rmule dialed the link, rather than adopting one the peer
-    /// opened.
-    rmule_dialed: bool,
+    /// On a link rmule dialed, rather than one the peer opened and a download
+    /// adopted, what its router notes of its far end.
+    dialed: Option<FarEnd>,
 }
 
 /// From a connected link to the worker's end: report the connection, send the
@@ -418,7 +423,7 @@ async fn hand_over_serve_half(half: ServeHalf) {
         server_rx,
         serve_cmd_tx,
         sink,
-        rmule_dialed,
+        dialed,
     } = half;
     if let Some(serve_sink) = sink.sender() {
         let (bridge_cmd_tx, bridge_cmd_rx) = mpsc::channel(16);
@@ -431,7 +436,7 @@ async fn hand_over_serve_half(half: ServeHalf) {
         ));
         let half = LinkServeHalf {
             conn: ServeConnection::new(peer, bridge_cmd_tx, serve_evt_rx),
-            rmule_dialed,
+            dialed,
         };
         let _ = serve_sink.send(half).await;
     } else {

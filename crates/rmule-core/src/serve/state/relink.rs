@@ -9,7 +9,9 @@
 //! client crossing, the one both ends keep takes the client: each end keeps
 //! the socket it read the other's hello on (`ClientList.cpp:400-403`), so a
 //! link rmule dialed keeps it once its hello went out, and the link the peer
-//! opened is let go. Two clients
+//! opened is let go — unless the dial is a **Dead Dial**, which the far end
+//! has dropped already, when the peer's link takes the client (ADR-0107
+//! invariant 7). Two clients
 //! under one User Hash are settled as aMule settles them: an identified one
 //! still linked turns the newcomer away (`ClientList.cpp:384-392`), and at a
 //! slot ask the ones not identified leave the wait list
@@ -53,14 +55,22 @@ impl ServeState {
     /// rmule dialed, keeps its client (`:384-398`). A live link rmule dialed
     /// keeps it against the peer's own link from that address too: its hello
     /// went out, so the far side keeps it and closes its own, and `peer` is
-    /// let go.
+    /// let go — unless the dialed link is a **Dead Dial** at `now`, read off
+    /// what its driver saw of its far end (ADR-0107 invariant 7): the far
+    /// side dropped it and holds only `peer`, which takes the client as from
+    /// a link that has ended.
     ///
     /// A grant held for a dial-back waits on the dial's call-off: `peer` takes
-    /// it only when no byte of the dial's hello went out
-    /// ([`on_dial_back_call_off`](Self::on_dial_back_call_off)). A slot is
+    /// it only when no byte of the dial's hello went out, or the dial has
+    /// ended since ([`on_dial_back_call_off`](Self::on_dial_back_call_off)). A slot is
     /// granted again on the link it moved to, so the session there serves its
     /// part asks (`UploadQueue.cpp:486-493`).
-    pub(super) fn relink_waiter(&mut self, peer: PeerEndpoint, identity: &PeerIdentity) -> Relink {
+    pub(super) fn relink_waiter(
+        &mut self,
+        now: Instant,
+        peer: PeerEndpoint,
+        identity: &PeerIdentity,
+    ) -> Relink {
         let found = self.queue.standings().find_map(|(held, linked)| {
             let known = self.identities.get(&held)?;
             (held != peer && known.user_hash() == identity.user_hash()).then(|| {
@@ -71,14 +81,22 @@ impl ServeState {
         let Some((from, linked, same_place)) = found else {
             return Relink::None;
         };
-        if linked && (!same_place || self.dialed.contains(&peer)) {
+        if linked && (!same_place || self.dialed.contains_key(&peer)) {
             return Relink::None;
         }
-        if linked && self.dialed.contains(&from) {
-            return Relink::Held(vec![
-                ServeDecision::Disconnect { peer },
-                ServeDecision::Emit(ServeEvent::CrossedLinkLetGo { peer }),
-            ]);
+        if linked && let Some(far_end) = self.dialed.get(&from) {
+            let Some(sign) = far_end.dead_at(now) else {
+                return Relink::Held(vec![
+                    ServeDecision::Disconnect { peer },
+                    ServeDecision::Emit(ServeEvent::CrossedLinkLetGo { peer }),
+                ]);
+            };
+            let mut moved = vec![ServeDecision::Emit(ServeEvent::DeadDialLetGo {
+                peer: from,
+                sign,
+            })];
+            moved.extend(self.move_standing(from, peer, true));
+            return Relink::Moved(moved);
         }
         if self.queue.pending_grant(from).is_some() {
             return Relink::Held(vec![ServeDecision::CallOffDialBack {
@@ -101,7 +119,9 @@ impl ServeState {
     /// at once, as aMule grants a client it promoted unconnected on the first
     /// link its hellos finish on (`ClientTCPSocket.cpp:328`, `:417`). Past its
     /// hello, the peer keeps the dial and closes `link`: the grant stays held
-    /// for the dial, and `link` is let go.
+    /// for the dial, and `link` is let go. A dial that ended past its hello,
+    /// before the peer's hello on it, holds nothing against `link`, which
+    /// takes the grant as when the dial stopped (ADR-0107 invariant 7).
     pub(in crate::serve) fn on_dial_back_call_off(
         &mut self,
         waiter: PeerEndpoint,
@@ -109,7 +129,7 @@ impl ServeState {
         found: DialBackCallOff,
     ) -> Vec<ServeDecision> {
         match found {
-            DialBackCallOff::Stopped => {
+            DialBackCallOff::Stopped | DialBackCallOff::Ended => {
                 let moved = self.move_standing(waiter, link, false);
                 if !moved.is_empty() {
                     self.stamp_contact(link);

@@ -14,7 +14,8 @@ use super::InboundPeerDeps;
 use super::inbound_triage::serve_side;
 use super::kad_runtime::broker_peer_kad_handoff;
 use super::peer_link::{
-    DialInFlight, DownloadHalf, Filing, LinkJoin, LinkName, Moving, Riders, ServeHold, recv_join,
+    DialInFlight, DownloadHalf, FarEnd, Filing, LinkConnection, LinkJoin, LinkName, Moving, Riders,
+    ServeHold, recv_join,
 };
 use super::peer_transfer::PeerWorkerEvent;
 use super::peer_transfer::dial_end::closed_before_hello;
@@ -36,10 +37,12 @@ pub(crate) type SharedDialedServeSink = crate::mailbox::Mailbox<LinkServeHalf>;
 pub(crate) struct LinkServeHalf {
     /// The serve half itself.
     pub(crate) conn: ServeConnection,
-    /// Whether rmule dialed the link: its hello went out on it, so the peer
-    /// keeps it against a link of its own (ADR-0057, "Two hellos of one
-    /// client race"). An adopted callback is a link the peer opened.
-    pub(crate) rmule_dialed: bool,
+    /// On a link rmule dialed, what its driver sees of its far end: rmule's
+    /// hello went out on it, so the peer keeps it against a link of its own
+    /// unless it has dropped it already (ADR-0057, "Two hellos of one client
+    /// race"; ADR-0107 invariant 7). `None` on an adopted callback, a link
+    /// the peer opened.
+    pub(crate) dialed: Option<FarEnd>,
 }
 
 /// Where a dialed connection's router sends what the socket reads, built by
@@ -64,6 +67,9 @@ pub(crate) struct DialedRoute {
     pub(crate) deps: InboundPeerDeps,
     /// How the link came up.
     pub(crate) origin: LinkOrigin,
+    /// On a link rmule dialed, the far end its router notes what crosses the
+    /// link on (ADR-0107 invariant 7).
+    pub(crate) far_end: Option<FarEnd>,
 }
 
 /// How a link a download holds came up.
@@ -104,14 +110,16 @@ pub(crate) enum LinkOrigin {
 /// accept side read before this router starts), then whole again at each
 /// `IdentityRevised` — the source-exchange facts the Source Ask Clock reads
 /// among them (ADR-0108).
-pub(crate) async fn route_dialed_connection(mut conn: PeerConnection, route: DialedRoute) {
+pub(crate) async fn route_dialed_connection(conn: PeerConnection, route: DialedRoute) {
     let DialedRoute {
         rider,
         server_tx,
         mut serve_cmd_rx,
         deps,
         origin,
+        far_end,
     } = route;
+    let mut conn = LinkConnection::new(conn, far_end);
     let remote = conn.peer_endpoint();
     let mut riders = Riders::seated(rider);
     let mut link = DialedLink {
@@ -272,7 +280,7 @@ pub(crate) async fn route_dialed_connection(mut conn: PeerConnection, route: Dia
 
 /// Tell the session to close behind the commands it already has; the grace
 /// deadline, or `None` when the driver is gone already.
-async fn close(conn: &mut PeerConnection) -> Option<tokio::time::Instant> {
+async fn close(conn: &mut LinkConnection) -> Option<tokio::time::Instant> {
     let disconnect = PeerCommand::Connection(ConnectionCommand::Disconnect);
     conn.send(disconnect).await.ok()?;
     Some(tokio::time::Instant::now() + rmule_net::driver::SHUTDOWN_GRACE)

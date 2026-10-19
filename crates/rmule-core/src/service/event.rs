@@ -26,7 +26,7 @@ pub use peer_reach::{
 };
 pub use scan::ScanEvent;
 pub use search::{LegNotSent, SearchEvent, SearchFailure, SearchLegState, SearchLegs, SweepTally};
-pub use slot_roads::{BlockAskFault, DialBackEnd, GrantRoad};
+pub use slot_roads::{BlockAskFault, DeadDialSign, DialBackEnd, GrantRoad};
 pub use source_ends::{DialEnd, IgnoredReaskReply, PurgedSource, SourcePurgeReason};
 
 use std::net::SocketAddrV4;
@@ -287,6 +287,17 @@ pub enum ServeEvent {
     CrossedLinkLetGo {
         /// The link the peer opened, as it came in.
         peer: rmule_primitives::PeerEndpoint,
+    },
+    /// The link rmule dialed to a client, `peer`, was let go as a **Dead
+    /// Dial** when the client's own link came in from the same address and
+    /// listen port: the far end keeps one socket per client
+    /// (`ClientList.cpp:400-403`), and it had dropped this one, so the
+    /// client's standing moves onto its own link (ADR-0107 invariant 7).
+    DeadDialLetGo {
+        /// The link rmule dialed, where it dialed.
+        peer: rmule_primitives::PeerEndpoint,
+        /// What showed it dead at the far end.
+        sign: DeadDialSign,
     },
     /// A peer's source-exchange request was answered with `count` sources
     /// (ADR-0055 §Serving) — the serve-side mirror of a download's

@@ -415,6 +415,9 @@ pub(super) fn fold(state: &mut UiState, event: ServeEvent) -> bool {
         // The client's row stays on the link rmule dialed; the link let go
         // held none, so the log line is the whole fact.
         E::CrossedLinkLetGo { .. } => false,
+        // The client's row moves with its standing, on the `WaiterRelinked`
+        // that follows; the dead link's close is the whole fact here.
+        E::DeadDialLetGo { .. } => false,
     }
 }
 

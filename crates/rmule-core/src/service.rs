@@ -28,7 +28,7 @@ pub use self::config::{
     VerificationAuthority, descriptor_room,
 };
 pub use self::event::LinkTurn;
-pub use self::event::{BlockAskFault, DialBackEnd, GrantRoad};
+pub use self::event::{BlockAskFault, DeadDialSign, DialBackEnd, GrantRoad};
 pub use self::event::{
     BuddyDialFailure, CompletionStep, CoreEvent, DialEnd, DialFailure, DownloadEvent, IdAssignment,
     IgnoredReaskReply, Ipv6Probe, KadStopReason, LegNotSent, LoginClaim, LoginCloseCause,

@@ -114,7 +114,7 @@ fn a_link_rmule_dialed_takes_no_client_from_its_live_link() {
     let first = peer_at([172, 19, 0, 5], 51318);
     let mut state = waiting(file, first, t);
     let dialed = peer_at([172, 19, 0, 5], 4662);
-    state.on_link_dialed(dialed);
+    state.on_link_dialed(dialed, crate::adapters::FarEnd::new());
 
     assert_eq!(hello_of(&mut state, dialed, user(0x0B)), []);
     assert_eq!(rank_of(&mut state, first, file, t), Some(1));

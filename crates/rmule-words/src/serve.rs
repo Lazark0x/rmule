@@ -4,7 +4,7 @@
 
 use rmule_core::file_history::HistoryPart;
 use rmule_core::{
-    BlockAskFault, DialBackEnd, GrantRoad, PartialEnd, ServeEvent, ServeStartFailure,
+    BlockAskFault, DeadDialSign, DialBackEnd, GrantRoad, PartialEnd, ServeEvent, ServeStartFailure,
     ServeStopReason, ShareRejectReason, SharesWithheld, WaiterLeaveCause, WithheldReason,
 };
 
@@ -47,6 +47,14 @@ const fn grant_road_words(road: GrantRoad) -> &'static str {
 }
 
 /// Why a slot held for a dial-back never reached its waiter.
+/// What showed our connection to an upload peer dead at its end.
+const fn dead_dial_words(sign: DeadDialSign) -> &'static str {
+    match sign {
+        DeadDialSign::Ended => "had ended",
+        DeadDialSign::Silent => "had carried nothing for 40 seconds, so the peer has closed it",
+    }
+}
+
 fn dial_back_end_words(end: DialBackEnd) -> String {
     match end {
         DialBackEnd::Dial(cause) => format!(
@@ -346,6 +354,11 @@ pub fn log_line(event: &ServeEvent) -> Sentence {
         Sv::CrossedLinkLetGo { peer } => Sentence::owned(format!(
             "upload peer {} crossed our connection to it, which said hello first; it keeps ours, so we let its own go",
             address(*peer)
+        )),
+        Sv::DeadDialLetGo { peer, sign } => Sentence::owned(format!(
+            "our connection to upload peer {} {}; its own connection takes its place",
+            address(*peer),
+            dead_dial_words(*sign)
         )),
         Sv::SourcesServed { peer, count, .. } => {
             Sentence::owned(format!("served {count} sources to {}", address(*peer)))

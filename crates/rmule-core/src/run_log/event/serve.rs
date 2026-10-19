@@ -149,6 +149,9 @@ impl ServeEvent {
             S::CrossedLinkLetGo { peer } => {
                 Record::new("serve.crossed_link_let_go").peer_address("peer", peer)
             }
+            S::DeadDialLetGo { peer, sign } => Record::new("serve.dead_dial_let_go")
+                .peer_address("peer", peer)
+                .code("sign", codes::dead_dial_sign(*sign)),
             S::SourcesServed {
                 peer,
                 file_hash,

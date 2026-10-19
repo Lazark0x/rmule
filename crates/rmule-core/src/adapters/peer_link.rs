@@ -36,11 +36,14 @@ use crate::server_list::SharedServerListStore;
 use crate::service::{DialEnd, LinkTurn};
 
 mod awaited_grants;
+mod far_end;
 mod overtaking;
 mod riders;
 mod serve_hold;
 
 pub(crate) use awaited_grants::{AwaitedGrant, GrantSender, LinkOffer};
+pub use far_end::FarEnd;
+pub(super) use far_end::LinkConnection;
 pub(super) use overtaking::Moving;
 pub(super) use riders::Riders;
 pub(super) use serve_hold::ServeHold;

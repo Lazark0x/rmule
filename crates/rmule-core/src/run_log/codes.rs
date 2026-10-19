@@ -3,10 +3,10 @@
 //! it has a code here, read by the events' own records and by the
 //! reachability trail's.
 
-use crate::BlockAskFault;
 use crate::port_mapping::{
     MappingError, MappingProtocol, MappingRefusal, MappingStatus, MappingTransportFault,
 };
+use crate::{BlockAskFault, DeadDialSign};
 use crate::{
     ConfidenceTier, CoreCommandRejectReason, DialBackEnd, DialEnd, DialFailure, DownloadFailure,
     DownloadLifecycle, GrantRoad, IgnoredReaskReply, KadStopReason, KadUnavailableReason,
@@ -277,6 +277,13 @@ pub(super) const fn block_ask_fault(fault: BlockAskFault) -> &'static str {
         BlockAskFault::PastEnd => "past_end",
         BlockAskFault::TooLong => "too_long",
         BlockAskFault::Unverified => "unverified",
+    }
+}
+
+pub(super) const fn dead_dial_sign(sign: DeadDialSign) -> &'static str {
+    match sign {
+        DeadDialSign::Ended => "ended",
+        DeadDialSign::Silent => "silent",
     }
 }
 

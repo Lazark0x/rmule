@@ -169,7 +169,7 @@ async fn a_slot_ask_over_an_adopted_callback_reaches_the_serve_side_under_its_he
         .expect("the adopted link's serve half reaches the serve side")
         .expect("a serve connection");
     assert!(
-        !half.rmule_dialed,
+        half.dialed.is_none(),
         "an adopted callback is a link the peer opened"
     );
     let mut served = half.conn;
