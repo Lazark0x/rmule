@@ -47,6 +47,7 @@ mod human_layer_session;
 mod multipacket_emit;
 mod multipacket_session;
 mod peer_session_aich;
+mod peer_session_asked_ranges;
 mod peer_session_parts;
 mod peer_session_slot;
 mod source_exchange_session;

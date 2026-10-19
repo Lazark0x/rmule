@@ -5,6 +5,7 @@
 use rmule_primitives::{AichRootHash, Ed2kText, FileHash, PartHash, SourceSighting};
 
 use crate::compress::InflateFailed;
+use crate::session::AskedRanges;
 use crate::source_exchange::AnswerSourcesSkip;
 
 use super::{FileProbeStatus, SlotReleaseReason};
@@ -80,6 +81,11 @@ pub enum RequesterEvent {
     SlotGranted {
         /// The file the slot is for.
         file_hash: FileHash,
+        /// The link's **Asked Ranges**: what the uploader still holds as
+        /// asked of this client, whatever file each was for — kept across a
+        /// silent release to another file (ADR-0107). A block request
+        /// repeating one is dropped, so the requester asks around them.
+        asked: AskedRanges,
     },
     /// One frame of a part arrived. Application accumulates bytes,
     /// verifies against `HashSetReceived.part_hashes` per ADR-0026.

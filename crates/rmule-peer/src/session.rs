@@ -18,7 +18,8 @@
 //! discipline. Each protocol leg implements its own half in a private
 //! submodule: `wire` (the byte boundary and opcode routing), `identity` (the
 //! peer's identity, read at the hello and kept current), `download` and
-//! `serve` (the two capabilities), `source_exchange`, `aich`, `multipacket`,
+//! `serve` (the two capabilities), `asked_ranges` (the block ranges the
+//! uploader holds as asked), `source_exchange`, `aich`, `multipacket`,
 //! `mule_info`, `human_layer` and `secure_ident`; each leg also owns the bookkeeping it
 //! carries between packets (the per-file flow in `download`, the pending
 //! bundle in `multipacket`, the SUI exchange in `secure_ident`). The
@@ -26,6 +27,7 @@
 //! re-exported here.
 
 mod aich;
+mod asked_ranges;
 mod command;
 mod download;
 mod error;
@@ -39,6 +41,7 @@ mod serve;
 mod source_exchange;
 mod wire;
 
+pub use self::asked_ranges::AskedRanges;
 pub use self::command::{
     ConnectionCommand, PeerCommand, PeerOutput, RequesterCommand, ServerCommand, SideCommand,
 };
@@ -99,6 +102,9 @@ pub struct PeerSession {
     /// an uploader promoting us by dial-back, or on a link it held — and
     /// nothing has answered it yet: neither an ask of ours nor a decline.
     slot_offered: bool,
+    /// Every block range this link asked since the uploader last cleared its
+    /// list: handed to the requester at each grant (ADR-0107).
+    asked_ranges: AskedRanges,
     /// `Some` once the Server Capability has granted this connection an
     /// upload slot for a file (set by `GrantSlot`, cleared when the peer
     /// cancels it). The serve-side mirror of `active_slot`; the
@@ -208,6 +214,7 @@ impl PeerSession {
             compressed_blocks_in_flight: CompressedBlocksInFlight::default(),
             active_slot: None,
             slot_offered: false,
+            asked_ranges: AskedRanges::default(),
             served_slot: None,
             served_multipacket: HashMap::new(),
             served_aich_request: None,

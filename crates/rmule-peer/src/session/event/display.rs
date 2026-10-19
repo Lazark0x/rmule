@@ -132,7 +132,7 @@ impl fmt::Display for RequesterEvent {
                 write!(f, "peer requeued file_hash={}", file_hash.to_hex_upper())
             }
             RequesterEvent::SlotOffered => write!(f, "peer slot_offered"),
-            RequesterEvent::SlotGranted { file_hash } => {
+            RequesterEvent::SlotGranted { file_hash, .. } => {
                 write!(
                     f,
                     "peer slot_granted file_hash={}",

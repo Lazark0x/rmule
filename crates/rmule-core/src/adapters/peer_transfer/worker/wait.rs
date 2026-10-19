@@ -13,6 +13,7 @@ use rmule_peer::{
 use rmule_primitives::FileHash;
 use tokio::sync::mpsc;
 
+use super::pipeline::Pipeline;
 use super::{Streamed, WorkerLink};
 use crate::adapters::peer_transfer::{PeerWorkerCommand, PeerWorkerEvent};
 
@@ -137,9 +138,11 @@ pub(super) enum Idled {
 /// meanwhile, so a queued worker hears its rank and grant and any worker hears
 /// its link close at once (ADR-0026): the shared arms ([`forward_shared`]) and
 /// the slot's answers ([`forward_slot_news`]) are forwarded as they come. No
-/// command and no grant by `deadline` reports `SlotTimeout`.
+/// command and no grant by `deadline` reports `SlotTimeout`. A grant hands
+/// `pipeline` the link's Asked Ranges.
 pub(super) async fn idle_wait(
     link: &mut WorkerLink<'_>,
+    pipeline: &mut Pipeline,
     file_hash: FileHash,
     deadline: tokio::time::Instant,
 ) -> Idled {
@@ -160,7 +163,7 @@ pub(super) async fn idle_wait(
             Ok(None) => continue,
             Err(Ended) => return Idled::Ended,
         };
-        match forward_slot_news(link.event_tx, file_hash, &event).await {
+        match forward_slot_news(link.event_tx, pipeline, file_hash, &event).await {
             Ok(Some(SlotNews::Requeued)) => return Idled::Requeued,
             Ok(Some(SlotNews::Noted) | None) => {}
             Err(Ended) => return Idled::Ended,
@@ -180,18 +183,21 @@ pub(super) enum SlotNews {
 /// leaving (`SlotAsked`), each rank (`Queued`), the grant, the flow queued
 /// again (`Requeued`, ADR-0057); a peer saying mid-flow that it lacks the file
 /// is reported as the probe reports it, and the slot's other ends as
-/// `Disconnected`, both ending the worker. Our own release is ignored.
+/// `Disconnected`, both ending the worker. Our own release is ignored. The
+/// grant hands `pipeline` the ranges the uploader still holds as asked of
+/// the link, so no block repeats one (ADR-0107).
 /// `Ok(None)` for an event that is no slot answer, the caller's own to read.
 pub(super) async fn forward_slot_news(
     event_tx: &mpsc::Sender<PeerWorkerEvent>,
+    pipeline: &mut Pipeline,
     file_hash: FileHash,
     event: &PeerEvent,
 ) -> Result<Option<SlotNews>, Ended> {
     let PeerEvent::Requester(requester) = event else {
         return Ok(None);
     };
-    let (report, news) = match *requester {
-        RequesterEvent::SlotAsked { file_hash: asked } if asked == file_hash => {
+    let (report, news) = match requester {
+        RequesterEvent::SlotAsked { file_hash: asked } if *asked == file_hash => {
             (PeerWorkerEvent::SlotAsked, SlotNews::Noted)
         }
         RequesterEvent::QueueRanked {
@@ -202,24 +208,28 @@ pub(super) async fn forward_slot_news(
             file_hash: ranked,
             new_rank: rank,
             ..
-        } if ranked == file_hash => (PeerWorkerEvent::Queued { rank }, SlotNews::Noted),
-        RequesterEvent::SlotGranted { file_hash: granted } if granted == file_hash => {
+        } if *ranked == file_hash => (PeerWorkerEvent::Queued { rank: *rank }, SlotNews::Noted),
+        RequesterEvent::SlotGranted {
+            file_hash: granted,
+            asked,
+        } if *granted == file_hash => {
+            pipeline.granted(asked);
             (PeerWorkerEvent::SlotGranted, SlotNews::Noted)
         }
         RequesterEvent::Requeued {
             file_hash: requeued,
-        } if requeued == file_hash => (PeerWorkerEvent::Requeued, SlotNews::Requeued),
+        } if *requeued == file_hash => (PeerWorkerEvent::Requeued, SlotNews::Requeued),
         RequesterEvent::SlotReleased {
             file_hash: released,
             reason: SlotReleaseReason::DownloadComplete,
-        } if released == file_hash => return Ok(Some(SlotNews::Noted)),
+        } if *released == file_hash => return Ok(Some(SlotNews::Noted)),
         // A mid-flow `OP_FILEREQANSNOFIL`: the peer lacks the file after all,
         // reported as the probe reports it, and the download retires the
         // source on it (ADR-0090).
         RequesterEvent::FileProbed {
             file_hash: probed,
             status: FileProbeStatus::NotAvailable,
-        } if probed == file_hash => {
+        } if *probed == file_hash => {
             let _ = event_tx
                 .send(PeerWorkerEvent::PartsAdvertised {
                     parts: None,
@@ -231,7 +241,7 @@ pub(super) async fn forward_slot_news(
         RequesterEvent::SlotReleased {
             file_hash: released,
             ..
-        } if released == file_hash => {
+        } if *released == file_hash => {
             let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
             return Err(Ended);
         }

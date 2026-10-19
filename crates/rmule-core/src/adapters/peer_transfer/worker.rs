@@ -270,15 +270,17 @@ async fn work_the_link(
         loop {
             let command = match link.deferred.pop_front() {
                 Some(command) => command,
-                None => match idle_wait(&mut link, file.file_hash, slot_deadline).await {
-                    Idled::Command(command) => command,
-                    Idled::Requeued => {
-                        pipeline.requeued();
-                        slot_deadline = tokio::time::Instant::now() + slot_wait_timeout;
-                        continue;
+                None => {
+                    match idle_wait(&mut link, &mut pipeline, file.file_hash, slot_deadline).await {
+                        Idled::Command(command) => command,
+                        Idled::Requeued => {
+                            pipeline.requeued();
+                            slot_deadline = tokio::time::Instant::now() + slot_wait_timeout;
+                            continue;
+                        }
+                        Idled::Ended => break,
                     }
-                    Idled::Ended => break,
-                },
+                }
             };
             match command {
                 PeerWorkerCommand::AskSlot | PeerWorkerCommand::RequestHashSet => {
@@ -582,7 +584,7 @@ async fn stream_part_download(
         // `OP_OUTOFPARTREQS` on the granted slot: the transfer is over, not
         // the flow. The part goes back to the download, and the worker stays
         // on the link for the next grant (ADR-0057).
-        match forward_slot_news(event_tx, file_hash, &event).await {
+        match forward_slot_news(event_tx, pipeline, file_hash, &event).await {
             Ok(None) => {}
             Ok(Some(SlotNews::Noted)) => continue,
             Ok(Some(SlotNews::Requeued)) => {

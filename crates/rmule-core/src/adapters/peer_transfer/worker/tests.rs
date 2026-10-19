@@ -239,6 +239,7 @@ async fn idled_over(link_events: Vec<PeerEvent>, budget: Duration) -> Vec<PeerWo
     };
     let idled = idle_wait(
         &mut link,
+        &mut Pipeline::new(),
         file.file_hash,
         tokio::time::Instant::now() + budget,
     )
@@ -263,7 +264,10 @@ async fn the_wait_between_parts_hears_the_slot_and_the_links_end() {
         vec![
             PeerEvent::Requester(RequesterEvent::SlotAsked { file_hash }),
             PeerEvent::Requester(RequesterEvent::QueueRanked { file_hash, rank: 4 }),
-            PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash }),
+            PeerEvent::Requester(RequesterEvent::SlotGranted {
+                file_hash,
+                asked: rmule_peer::AskedRanges::default(),
+            }),
         ],
         Duration::from_secs(5),
     )
@@ -365,6 +369,69 @@ async fn a_part_streams_with_blocks_asked_ahead() {
     assert_eq!(
         reported.last(),
         Some(&PeerWorkerEvent::PartStreamed { part_index: 0 })
+    );
+}
+
+/// The grant the wait between parts hears hands the next stream the link's
+/// Asked Ranges: after a silent release to this file, no block repeats a
+/// range the uploader still holds from the last one (ADR-0107).
+#[tokio::test]
+async fn a_grant_heard_between_parts_keeps_the_stream_off_the_asked_ranges() {
+    const BLOCK: u64 = rmule_peer::EMBLOCKSIZE;
+    let file = rmule_testkit::file_link("switch.bin", &vec![0x5A; (4 * BLOCK) as usize]);
+    let mut held = rmule_peer::AskedRanges::default();
+    for block in 0..3 {
+        held.insert(block * BLOCK, (block + 1) * BLOCK);
+    }
+    let (events_tx, mut events) = mpsc::channel(8);
+    let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+    let (event_tx, _worker_events) = mpsc::channel(16);
+    let (_worker_cmd_tx, mut worker_cmd_rx) = mpsc::channel(8);
+    events_tx
+        .send(PeerEvent::Requester(RequesterEvent::SlotGranted {
+            file_hash: file.file_hash,
+            asked: held.clone(),
+        }))
+        .await
+        .unwrap();
+    let mut link = WorkerLink {
+        events: &mut events,
+        cmd_tx: &cmd_tx,
+        event_tx: &event_tx,
+        commands: &mut worker_cmd_rx,
+        deferred: VecDeque::new(),
+    };
+    let mut pipeline = Pipeline::new();
+    idle_wait(
+        &mut link,
+        &mut pipeline,
+        file.file_hash,
+        tokio::time::Instant::now(),
+    )
+    .await;
+    drop(events_tx);
+    let plan = PartPlan {
+        part_index: 0,
+        offset: 0,
+        len: 4 * BLOCK,
+    };
+    stream_part_download(
+        &mut link,
+        &mut pipeline,
+        &file,
+        plan,
+        0,
+        Duration::from_secs(5),
+    )
+    .await;
+    let first = asked(&mut cmd_rx)
+        .into_iter()
+        .next()
+        .expect("the stream asks");
+    assert_eq!(first.len(), 3);
+    assert!(
+        first.iter().all(|&(start, end)| !held.contains(start, end)),
+        "no block repeats a held range: {first:?}"
     );
 }
 

@@ -528,7 +528,7 @@ fn the_full_human_layer_volley_mid_transfer_leaves_the_active_slot_unbroken() {
     assert!(
         events(&setup)
             .iter()
-            .any(|e| matches!(e, PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash }) if *file_hash == h)),
+            .any(|e| matches!(e, PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash, .. }) if *file_hash == h)),
         "setup must reach a granted slot, got {setup:?}"
     );
 

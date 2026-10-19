@@ -475,7 +475,7 @@ impl PeerSession {
                 }
                 let req = RequestPartsPacket { file_hash, ranges };
                 match req.encode_packet(width) {
-                    Ok(p) => self.write_packet(p),
+                    Ok(p) => self.write_block_request(p, ranges.as_array()),
                     Err(_) => self.release_slot(file_hash, SlotReleaseReason::ProtocolViolation),
                 }
                 return;
@@ -807,6 +807,7 @@ impl PeerSession {
         self.core
             .push_event(PeerEvent::Requester(RequesterEvent::SlotGranted {
                 file_hash: active,
+                asked: self.asked_ranges.clone(),
             }));
         // Send REQUESTPARTS for the pending request.
         if let Some(pending) = &mut flow.pending_request
@@ -820,7 +821,7 @@ impl PeerSession {
                 ranges,
             };
             match req.encode_packet(width) {
-                Ok(p) => self.write_packet(p),
+                Ok(p) => self.write_block_request(p, ranges.as_array()),
                 Err(_) => {
                     // Width mismatch — treat as protocol violation
                     // for the active slot.
@@ -837,6 +838,9 @@ impl PeerSession {
     /// downloading (`ClientTCPSocket.cpp:755-762`): while only queued it
     /// changes nothing.
     pub(super) fn on_out_of_part_reqs(&mut self) {
+        // aMule sends it after `RemoveFromUploadQueue`
+        // (`UploadClient.cpp:598-600`), whatever this side believes.
+        self.forget_asked_ranges();
         let Some(active) = self.active_slot else {
             return;
         };

@@ -82,7 +82,7 @@ fn ask_slot_asks_once_with_no_part_and_no_hash_set() {
     assert!(writes(&granted).is_empty(), "{granted:?}");
     assert!(events(&granted).iter().any(|e| matches!(
         e,
-        PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash }) if *file_hash == h
+        PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash, .. }) if *file_hash == h
     )));
     let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
@@ -335,7 +335,7 @@ fn outofpartreqs_on_a_granted_slot_queues_the_flow_again_on_the_link() {
     let granted = drain(|| session.poll_output());
     assert!(events(&granted).iter().any(|e| matches!(
         e,
-        PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash }) if *file_hash == f
+        PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash, .. }) if *file_hash == f
     )));
     let opcodes: Vec<u8> = writes(&granted).iter().map(Packet::opcode).collect();
     assert_eq!(
@@ -430,7 +430,7 @@ fn slot_grant_then_part_download_completes() {
     let after_accept = drain(|| session.poll_output());
     assert!(events(&after_accept).iter().any(|e| matches!(
         e,
-        PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash }) if *file_hash == h
+        PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash, .. }) if *file_hash == h
     )));
     // Session must send OP_REQUESTPARTS once accepted.
     let req_opcodes: Vec<u8> = writes(&after_accept).iter().map(Packet::opcode).collect();
@@ -721,6 +721,6 @@ fn an_unasked_grant_a_download_asks_on_is_not_declined() {
     let granted = drain(|| session.poll_output());
     assert!(events(&granted).iter().any(|e| matches!(
         e,
-        PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash }) if *file_hash == h
+        PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash, .. }) if *file_hash == h
     )));
 }

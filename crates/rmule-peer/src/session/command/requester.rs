@@ -191,11 +191,13 @@ impl PeerSession {
             RequesterCommand::DeclineSlot => {
                 if std::mem::take(&mut self.slot_offered) && self.active_slot.is_none() {
                     self.write_packet(CancelTransfer.encode_packet());
+                    self.forget_asked_ranges();
                 }
             }
             RequesterCommand::CancelTransfer { file_hash } => {
                 if self.active_slot == Some(file_hash) {
                     self.write_packet(CancelTransfer.encode_packet());
+                    self.forget_asked_ranges();
                     // The slot is given back and the connection held: a later
                     // slot ask runs the cycle again (ADR-0056).
                     if let Some(flow) = self.per_file.get_mut(&file_hash) {

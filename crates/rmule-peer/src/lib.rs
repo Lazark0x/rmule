@@ -88,7 +88,7 @@ pub use secure_ident::{
     SecIdentState, SecIdentStatePacket, SignaturePacket, SuiDecodeError,
 };
 pub use session::{
-    ConnectionCommand, ConnectionEvent, FileProbeStatus, IdentityChange, NoticeEvent,
+    AskedRanges, ConnectionCommand, ConnectionEvent, FileProbeStatus, IdentityChange, NoticeEvent,
     PeerCloseReason, PeerCommand, PeerError, PeerEvent, PeerOutput, PeerSession, RequesterCommand,
     RequesterEvent, SecureIdentFailure, ServerCommand, ServerEvent, SideCommand, SideEvent,
     SlotReleaseReason, SourceExchangeSupport,

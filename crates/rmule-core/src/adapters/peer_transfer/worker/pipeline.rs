@@ -7,7 +7,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use rmule_peer::EMBLOCKSIZE;
+use rmule_peer::{AskedRanges, EMBLOCKSIZE};
 
 use crate::delivery_rate::DeliveryRate;
 
@@ -43,6 +43,9 @@ pub(super) struct Pipeline {
     requested: bool,
     /// Whether a byte of this stream arrived: the slot is proven granted.
     flowing: bool,
+    /// The link's **Asked Ranges** as of the last grant, and every block
+    /// asked since: the uploader serves none of them again (ADR-0107).
+    spent: AskedRanges,
 }
 
 impl Pipeline {
@@ -55,7 +58,14 @@ impl Pipeline {
             end: 0,
             requested: false,
             flowing: false,
+            spent: AskedRanges::default(),
         }
+    }
+
+    /// The uploader granted the slot, still holding `asked` as asked of this
+    /// link — what an earlier file asked before a silent release among them.
+    pub(super) fn granted(&mut self, asked: &AskedRanges) {
+        self.spent.extend(asked);
     }
 
     /// Stream `from..to` next. Blocks still asked of an earlier stream keep
@@ -72,9 +82,11 @@ impl Pipeline {
         self.rate.pause();
     }
 
-    /// `OP_OUTOFPARTREQS`: the uploader dropped every block it held.
+    /// `OP_OUTOFPARTREQS`: the uploader dropped every block it held, and took
+    /// the client out of its upload slots, forgetting what it was asked.
     pub(super) fn requeued(&mut self) {
         self.asked.clear();
+        self.spent.clear();
         self.rate.pause();
     }
 
@@ -101,7 +113,8 @@ impl Pipeline {
         let room = self.depth().saturating_sub(self.asked.len());
         let mut blocks = Vec::new();
         while blocks.len() < room.min(RANGES_PER_REQUEST) && self.next < self.end {
-            let end = (self.next + EMBLOCKSIZE).min(self.end);
+            let end = self.unspent_end(self.next, (self.next + EMBLOCKSIZE).min(self.end));
+            self.spent.insert(self.next, end);
             blocks.push((self.next, end));
             self.asked.push_back(Asked {
                 start: self.next,
@@ -117,6 +130,17 @@ impl Pipeline {
         }
         self.requested = true;
         Some(blocks)
+    }
+
+    /// The end of the block from `start`, at most `end`: one byte shorter for
+    /// each range the uploader already holds as asked, so the block — and
+    /// every later one of the stream — leaves the old grid (ADR-0107).
+    fn unspent_end(&self, start: u64, end: u64) -> u64 {
+        let mut fitted = end;
+        while self.spent.contains(start, fitted) && fitted - start > 1 {
+            fitted -= 1;
+        }
+        fitted
     }
 
     /// Credit `len` bytes at `offset` that arrived at `now` to the blocks they

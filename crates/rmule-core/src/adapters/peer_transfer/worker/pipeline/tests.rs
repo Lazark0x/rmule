@@ -162,3 +162,49 @@ fn a_lost_block_frees_its_depth_and_is_a_hole_only_in_the_streamed_range() {
         Some(vec![(21 * BLOCK, 22 * BLOCK), (22 * BLOCK, 23 * BLOCK)])
     );
 }
+
+/// The first file's rider asked the first part's grid on the link, then
+/// released its slot silently; the uploader still holds those ranges and
+/// drops a request repeating one, whatever its file (ADR-0107).
+fn first_files_blocks() -> AskedRanges {
+    let mut asked = AskedRanges::default();
+    for block in 0..4 {
+        asked.insert(block * BLOCK, (block + 1) * BLOCK);
+    }
+    asked
+}
+
+#[test]
+fn a_grant_after_a_silent_release_asks_no_range_the_link_asked() {
+    let t0 = Instant::now();
+    let mut pipeline = Pipeline::new();
+    pipeline.granted(&first_files_blocks());
+    pipeline.begin(0, 10 * BLOCK);
+    let mut asked = pipeline.next_request(t0).expect("the stream asks");
+    for at in 0..asked.len() {
+        let (start, end) = asked[at];
+        assert!(deliver(&mut pipeline, t0, (start, end)));
+        asked.extend(pipeline.next_request(t0).into_iter().flatten());
+    }
+    let held = first_files_blocks();
+    assert!(
+        asked.iter().all(|&(start, end)| !held.contains(start, end)),
+        "every block avoids the held ranges: {asked:?}"
+    );
+    // The stream still covers its range without a gap.
+    assert_eq!(asked.first().map(|&(start, _)| start), Some(0));
+    assert!(asked.windows(2).all(|pair| pair[0].1 == pair[1].0));
+}
+
+#[test]
+fn an_out_of_part_reqs_forgets_what_the_link_asked() {
+    let t0 = Instant::now();
+    let mut pipeline = Pipeline::new();
+    pipeline.granted(&first_files_blocks());
+    pipeline.requeued();
+    pipeline.begin(0, 10 * BLOCK);
+    assert_eq!(
+        pipeline.next_request(t0),
+        Some(vec![(0, BLOCK), (BLOCK, 2 * BLOCK), (2 * BLOCK, 3 * BLOCK)])
+    );
+}
