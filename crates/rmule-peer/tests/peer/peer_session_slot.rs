@@ -724,3 +724,58 @@ fn an_unasked_grant_a_download_asks_on_is_not_declined() {
         PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash, .. }) if *file_hash == h
     )));
 }
+
+/// An unasked grant a download takes as its file's slot — the uploader's
+/// promotion by dial-back, which aMule's downloader answers with its block
+/// requests and nothing first (`ClientTCPSocket.cpp:635-644`) — grants that
+/// file at once and writes nothing: the blocks asked next go out alone, no
+/// file request and no `OP_STARTUPLOADREQ`, which the uploader would score
+/// (`UploadClient.cpp:795-825`).
+#[test]
+fn an_unasked_grant_taken_as_a_files_slot_asks_its_blocks_and_nothing_else() {
+    let h = file_hash(0xC8);
+    let mut session = identified_session();
+    session.handle_bytes(&acceptuploadreq());
+    let _ = drain(|| session.poll_output());
+
+    session.handle_command(PeerCommand::Requester(RequesterCommand::TakeOfferedSlot {
+        file_hash: h,
+        file_size: 1_000_000,
+    }));
+    let taken = drain(|| session.poll_output());
+    assert!(writes(&taken).is_empty(), "{taken:?}");
+    assert!(events(&taken).iter().any(|e| matches!(
+        e,
+        PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash, .. }) if *file_hash == h
+    )));
+
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
+        file_hash: h,
+        file_size: 1_000_000,
+        ranges: PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap(),
+    }));
+    let asked = drain(|| session.poll_output());
+    let opcodes: Vec<u8> = writes(&asked).iter().map(Packet::opcode).collect();
+    assert_eq!(opcodes, vec![0x47], "OP_REQUESTPARTS alone");
+    session.handle_command(PeerCommand::Requester(RequesterCommand::DeclineSlot));
+    assert!(
+        writes(&drain(|| session.poll_output())).is_empty(),
+        "a taken grant is not declined"
+    );
+}
+
+/// A grant gone from the link by the time a download would take it is asked
+/// for: the take falls back to the slot ask, so the worker is never left
+/// waiting on a grant nobody holds.
+#[test]
+fn taking_a_grant_no_longer_offered_asks_the_slot() {
+    let h = file_hash(0xC9);
+    let mut session = identified_session();
+    session.handle_command(PeerCommand::Requester(RequesterCommand::TakeOfferedSlot {
+        file_hash: h,
+        file_size: 1_000_000,
+    }));
+    let asked = drain(|| session.poll_output());
+    let opcodes: Vec<u8> = writes(&asked).iter().map(Packet::opcode).collect();
+    assert_eq!(opcodes, vec![0x54], "OP_STARTUPLOADREQ");
+}

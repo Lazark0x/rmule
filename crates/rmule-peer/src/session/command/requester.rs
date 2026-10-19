@@ -68,6 +68,19 @@ pub enum RequesterCommand {
         /// The file the slot is for.
         file_hash: FileHash,
     },
+    /// Take the slot the peer offered unasked (`SlotOffered`) as `file_hash`'s
+    /// grant: the flow holds the connection's slot context, granted, and
+    /// `SlotGranted` says so; nothing is written, so the blocks asked next go
+    /// out alone, as aMule's downloader answers an uploader's dial-back grant
+    /// with its block requests and no file request or `OP_STARTUPLOADREQ`
+    /// first (`ClientTCPSocket.cpp:635-644`, `BaseClient.cpp:1692-1706`).
+    /// With no offer standing it asks the slot, as [`Self::AskSlot`] does.
+    TakeOfferedSlot {
+        /// The file the slot is taken for.
+        file_hash: FileHash,
+        /// The file's size, which picks the block requests' wire form.
+        file_size: u64,
+    },
     /// Ask the peer for `file_hash`'s part hash set (`OP_HASHSETREQUEST`), once
     /// per file on this connection; the answer arrives as `HashSetReceived`.
     /// Nothing waits on it here: which link asks, and when its slot ask
@@ -164,6 +177,10 @@ impl PeerSession {
                 own_status,
             ),
             RequesterCommand::AskSlot { file_hash } => self.handle_ask_slot(file_hash),
+            RequesterCommand::TakeOfferedSlot {
+                file_hash,
+                file_size,
+            } => self.handle_take_offered_slot(file_hash, file_size),
             RequesterCommand::RequestHashSet { file_hash } => {
                 self.handle_request_hash_set(file_hash);
             }

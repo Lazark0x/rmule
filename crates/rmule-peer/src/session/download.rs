@@ -584,6 +584,35 @@ impl PeerSession {
         }
     }
 
+    /// `TakeOfferedSlot`: the slot the peer offered unasked becomes
+    /// `file_hash`'s grant, writing nothing; with no offer standing, or a
+    /// slot context held already, it is asked as `AskSlot` asks it.
+    pub(super) fn handle_take_offered_slot(&mut self, file_hash: FileHash, file_size: u64) {
+        if !self.require_identified() {
+            return;
+        }
+        let lacks_file = self
+            .per_file
+            .get(&file_hash)
+            .is_some_and(|flow| matches!(flow.probe, ProbeState::NotAvailable));
+        if !self.slot_offered || self.active_slot.is_some() || lacks_file {
+            self.handle_ask_slot(file_hash);
+            return;
+        }
+        self.slot_offered = false;
+        let flow = self.per_file.entry(file_hash).or_default();
+        flow.file_size = Some(file_size);
+        flow.slot = SlotState::Downloading;
+        flow.last_rank = None;
+        flow.pending_request = None;
+        self.active_slot = Some(file_hash);
+        self.core
+            .push_event(PeerEvent::Requester(RequesterEvent::SlotGranted {
+                file_hash,
+                asked: self.asked_ranges.clone(),
+            }));
+    }
+
     /// `AskSlot`: take the connection's slot context for `file_hash` and ask
     /// the peer for an upload slot, once per ask cycle — a flow already queued
     /// or granted is left alone (ADR-0025).
