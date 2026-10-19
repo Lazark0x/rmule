@@ -85,6 +85,10 @@ pub struct ReciprocityShape {
     /// rate (`DownloadClient.cpp:1162-1177`), so X takes a burst at link speed
     /// first and the gift must outlast it.
     pub x_kib: u32,
+    /// Credit leg: S fetches the gift on rmule's free slot before any rival
+    /// queues there, so S's credit for rmule is drawn without rmule's choice.
+    #[serde(default)]
+    pub gift_first: bool,
     /// Seconds each body that joins a queue is given before the next joins,
     /// and before a stop: the waits the scores compare.
     pub step_secs: u64,
@@ -450,14 +454,32 @@ pub fn run_peer_reciprocity(options: PeerReciprocityOptions<'_>) -> Result<()> {
         wait_for_container_log(&bench.docker, &rmule_name, "download.peer_queued", timeout)?;
         let mut marks = verdict::Marks::default();
 
-        if shape.leg == ReciprocityLeg::Credit {
+        let gift_at_rmule = ed2k_link_with_source(
+            &read_link(GIFT_LINK)?,
+            &rmule_ip.to_string(),
+            RMULE_SERVE_TCP_PORT,
+        );
+        let ask_for_gift = |bench: &Bench| {
+            run_checked(
+                bench.docker.exec(
+                    sharer.clone(),
+                    amulecmd_command(&format!("Add {gift_at_rmule}")),
+                ),
+                "the sharer asks rmule for the gift",
+            )
+        };
+        let gift_size = fs::metadata(synthetic.join(GIFT_FILE)).map_or(0, |meta| meta.len());
+        if shape.leg == ReciprocityLeg::Credit && shape.gift_first {
+            // S asks while rmule's one slot is free and nobody else waits.
+            ask_for_gift(&bench)?;
+            marks.gift_complete = wait_for_file(
+                &share_dir.join(GIFT_FILE),
+                gift_size,
+                Duration::from_secs(shape.run_window_secs),
+            );
+        } else if shape.leg == ReciprocityLeg::Credit {
             // X holds rmule's one slot; W queues at rmule; after a step S
             // queues there too; after another X stops and rmule chooses.
-            let gift_at_rmule = ed2k_link_with_source(
-                &read_link(GIFT_LINK)?,
-                &rmule_ip.to_string(),
-                RMULE_SERVE_TCP_PORT,
-            );
             start_downloader(
                 &mut bench,
                 &options,
@@ -481,13 +503,7 @@ pub fn run_peer_reciprocity(options: PeerReciprocityOptions<'_>) -> Result<()> {
                     .context("rival address")?;
             marks.rival = Some(rival_ip);
             std::thread::sleep(step);
-            run_checked(
-                bench.docker.exec(
-                    sharer.clone(),
-                    amulecmd_command(&format!("Add {gift_at_rmule}")),
-                ),
-                "the sharer asks rmule for the gift",
-            )?;
+            ask_for_gift(&bench)?;
             std::thread::sleep(step);
             marks.slot_freed_at = Some(verdict::unix_now());
             run_checked(
@@ -496,7 +512,6 @@ pub fn run_peer_reciprocity(options: PeerReciprocityOptions<'_>) -> Result<()> {
                     .stop_container(slot_holder.clone(), STOP_GRACE_SECS),
                 "stop the body holding rmule's slot",
             )?;
-            let gift_size = fs::metadata(synthetic.join(GIFT_FILE)).map_or(0, |meta| meta.len());
             marks.gift_complete = wait_for_file(
                 &share_dir.join(GIFT_FILE),
                 gift_size,
@@ -565,6 +580,7 @@ mod tests {
             slot_kib: 10,
             holder_kib: None,
             x_kib: 2,
+            gift_first: false,
             step_secs: 60,
             run_window_secs: 1200,
         }

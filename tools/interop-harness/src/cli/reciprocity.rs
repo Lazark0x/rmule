@@ -93,6 +93,10 @@ pub(crate) struct PeerReciprocityArgs {
     /// slot until the flow stops it.
     #[arg(long, default_value_t = 2)]
     pub(crate) x_kib: u32,
+    /// Credit leg: the sharer fetches the gift on rmule's free slot before
+    /// X or W start, drawing its credit for rmule without rmule's choice.
+    #[arg(long)]
+    pub(crate) gift_first: bool,
     /// Seconds between one body joining a queue and the next, and before a
     /// stop.
     #[arg(long, default_value_t = 60)]
@@ -133,6 +137,7 @@ pub(crate) fn peer_reciprocity(args: PeerReciprocityArgs) -> Result<()> {
         slot_kib: args.slot_kib,
         holder_kib: args.holder_kib,
         x_kib: args.x_kib,
+        gift_first: args.gift_first,
         step_secs: args.step,
         run_window_secs: args.run_window,
     };

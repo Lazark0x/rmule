@@ -191,16 +191,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
             };
             rows.rmule_granted = format!("{rmule_granted:?}");
             rows.sharer_granted = format!("{sharer_granted:?}");
-            claims.push(Claim::about(
-                RECIPROCATED,
-                rmule_granted == Some(at.sharer),
-                Evidence::RmuleOnly,
-                format!(
-                    "rmule's first OP_ACCEPTUPLOADREQ after its slot freed went to \
-                     {rmule_granted:?}; S is {}, W is {:?}",
-                    at.sharer, at.marks.rival
-                ),
-            ));
+            claims.push(reciprocated(&at, rmule_granted));
             claims.push(Claim::about(
                 GIFTED,
                 at.marks.gift_complete,
@@ -269,6 +260,28 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
     Ok(verdict)
 }
 
+/// The claim on rmule's choice, given where its first grant after its slot
+/// freed went.
+fn reciprocated(at: &Topology, rmule_granted: Option<Ipv4Addr>) -> Claim {
+    if at.shape.gift_first {
+        return Claim::blocked(
+            RECIPROCATED,
+            "the gift went first, on rmule's free slot: no rival queued and no slot \
+             freed, so rmule's choice was not drawn",
+        );
+    }
+    Claim::about(
+        RECIPROCATED,
+        rmule_granted == Some(at.sharer),
+        Evidence::RmuleOnly,
+        format!(
+            "rmule's first OP_ACCEPTUPLOADREQ after its slot freed went to \
+             {rmule_granted:?}; S is {}, W is {:?}",
+            at.sharer, at.marks.rival
+        ),
+    )
+}
+
 /// Whether every server rmule logged in to gave it a Low ID, read off its
 /// `server.connected` records: a High ID lets S call rmule back, and the
 /// cadence the leg measures is then not the Low-ID one.
@@ -321,6 +334,32 @@ fn first_part_after(tap: &TcpCapture, sharer: Ipv4Addr, hash: [u8; 16], since: f
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A gift-first run frees no slot and queues no rival, so rmule's choice
+    /// is not drawn: blocked, never a failure of the choice it never made.
+    #[test]
+    fn a_gift_first_run_leaves_rmules_choice_undrawn() {
+        let mut at = Topology {
+            rmule: Ipv4Addr::new(172, 19, 0, 8),
+            sharer: Ipv4Addr::new(172, 19, 0, 3),
+            shape: ReciprocityShape {
+                leg: ReciprocityLeg::Credit,
+                slot_kib: 10,
+                holder_kib: None,
+                x_kib: 2,
+                gift_first: true,
+                step_secs: 60,
+                run_window_secs: 1200,
+            },
+            marks: Marks::default(),
+        };
+        assert_eq!(reciprocated(&at, None).outcome, "blocked");
+        at.shape.gift_first = false;
+        at.marks.slot_freed_at = Some(1.0);
+        let rival = Ipv4Addr::new(172, 19, 0, 10);
+        at.marks.rival = Some(rival);
+        assert_eq!(reciprocated(&at, Some(rival)).outcome, "absent");
+    }
 
     /// A login answered with a High ID (172.20.0.6, little-endian) is no
     /// Low-ID run, whatever its reask cadence; one answered with a Low ID is.
