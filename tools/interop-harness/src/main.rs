@@ -20,6 +20,9 @@ use crate::cli::bootstrap::{
     Ed2kKadHandoffArgs, V2NodesDatHarvestArgs, ed2k_kad_handoff, http_bootstrap_cold_start,
     http_bootstrap_goldens, v2_nodes_dat_harvest,
 };
+use crate::cli::crossing::{
+    PeerCrossingArgs, PeerCrossingScoreArgs, peer_crossing, peer_crossing_score,
+};
 use crate::cli::dial_back_grant::{
     PeerDialBackGrantArgs, PeerDialBackGrantScoreArgs, peer_dial_back_grant,
     peer_dial_back_grant_score,
@@ -376,6 +379,17 @@ enum HarnessCommand {
     /// its copy and rmule's log, without driving the flow again.
     #[command(name = "peer-reciprocity-score")]
     PeerReciprocityScore(PeerReciprocityScoreArgs),
+    /// The crossing flow: a stock aMule's own link lands while rmule's dial
+    /// to it is in flight, staged with `iptables` holds — the serve
+    /// dial-back called off or crossed past its hello, a Low-ID waiter back
+    /// to a free slot, the download dial yielding or crossed (ADR-0107). A
+    /// tap in rmule's namespace
+    #[command(name = "peer-crossing")]
+    PeerCrossing(PeerCrossingArgs),
+    /// Score a finished or archived `peer-crossing` run dir from its tap, its
+    /// copy and rmule's log, without driving the flow again
+    #[command(name = "peer-crossing-score")]
+    PeerCrossingScore(PeerCrossingScoreArgs),
     /// The server-callback-serve flow: ed2ksrv, a Low-ID rmule sharer (its
     /// listener's inbound TCP dropped) and a High-ID stock aMule downloading
     /// the file through the server's callback relay: OP_CALLBACKREQUEST,
@@ -466,6 +480,7 @@ impl HarnessCommand {
             Self::PeerDialBackGrantScore(args) => Some(&args.run_dir),
             Self::PeerQueueFanoutScore(args) => Some(&args.run_dir),
             Self::PeerReciprocityScore(args) => Some(&args.run_dir),
+            Self::PeerCrossingScore(args) => Some(&args.run_dir),
             Self::Ed2ksrvHolepunchFailScore(args) => Some(&args.run_dir),
             Self::PeerUdpReaskEmitScore(args) => Some(&args.run_dir),
             Self::PeerStreamingWindowScore(args) => Some(&args.run_dir),
@@ -489,6 +504,7 @@ impl HarnessCommand {
                 | Self::PeerDialBackGrantScore(_)
                 | Self::PeerQueueFanoutScore(_)
                 | Self::PeerReciprocityScore(_)
+                | Self::PeerCrossingScore(_)
                 | Self::Ed2ksrvHolepunchFailScore(_)
                 | Self::PeerUdpReaskEmitScore(_)
                 | Self::PeerStreamingWindowScore(_)
@@ -650,6 +666,12 @@ fn dispatch(command: HarnessCommand) -> Result<()> {
         }
         HarnessCommand::PeerReciprocity(args) => {
             peer_reciprocity(args)?;
+        }
+        HarnessCommand::PeerCrossing(args) => {
+            peer_crossing(args)?;
+        }
+        HarnessCommand::PeerCrossingScore(args) => {
+            peer_crossing_score(args)?;
         }
         HarnessCommand::PeerReciprocityScore(args) => {
             peer_reciprocity_score(args)?;

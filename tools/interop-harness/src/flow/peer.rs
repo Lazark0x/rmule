@@ -11,6 +11,7 @@
 //! dialing it back, or asks many queuing aMules and transfers from every
 //! grant, or prefers an aMule whose queue it stands in.
 
+pub(crate) mod crossing;
 pub(crate) mod dial_back_grant;
 pub(crate) mod direct_sui;
 pub(crate) mod lowid_callback_reask;
@@ -26,6 +27,10 @@ pub(crate) mod two_hellos;
 pub(crate) mod udp_reask;
 pub(crate) mod udp_reask_emit;
 
+pub use self::crossing::{
+    CrossingLeg, CrossingShape, PeerCrossingOptions, run_peer_crossing,
+    score_run_dir as score_peer_crossing,
+};
 pub use self::dial_back_grant::{
     PeerDialBackGrantOptions, run_peer_dial_back_grant,
     score_run_dir as score_peer_dial_back_grant, stage_dial_back_files,

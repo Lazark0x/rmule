@@ -86,6 +86,11 @@ pub use self::peer::{
     stage_reask_emit_files,
 };
 pub use self::peer::{
+    CrossingLeg, CrossingShape, PeerCrossingOptions, PeerReciprocityOptions, ReciprocityLeg,
+    ReciprocityShape, run_peer_crossing, run_peer_reciprocity, score_peer_crossing,
+    score_peer_reciprocity, stage_reciprocity_files,
+};
+pub use self::peer::{
     FanoutShape, PeerQueueFanoutOptions, run_peer_queue_fanout, score_peer_queue_fanout,
     stage_queue_fanout_files,
 };
@@ -97,10 +102,6 @@ pub use self::peer::{
 pub use self::peer::{
     PeerOneLinkOptions, run_peer_one_link, score_peer_one_link, score_peer_one_link_severed,
     score_peer_one_link_silent,
-};
-pub use self::peer::{
-    PeerReciprocityOptions, ReciprocityLeg, ReciprocityShape, run_peer_reciprocity,
-    score_peer_reciprocity, stage_reciprocity_files,
 };
 pub use self::peer::{
     ServerCallbackServeOptions, run_server_callback_serve, score_server_callback_serve,
