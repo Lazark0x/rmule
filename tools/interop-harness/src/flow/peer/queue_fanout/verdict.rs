@@ -6,9 +6,11 @@
 //! bytes. Which sharers ranked rmule and which dialed it back is read off the
 //! tap, not taken from the shape: a holder that has not yet taken its slot, or
 //! has lost it, turns a sharer meant to queue into one that grants at once, and
-//! the claims follow what each sharer did. rmule's run log says which sharers
-//! it hung up on, which grants it took unasked, and, tick by tick, how many
-//! sources asked, waited and transferred at once (ADR-0116).
+//! the claims follow what each sharer did. Every sharer is stock aMule 2, so
+//! rmule holds each link it was ranked on until the sharer closes it or
+//! grants there (ADR-0116, invariant 3). rmule's run log says which grants it
+//! took unasked, and, tick by tick, how many sources asked, waited and
+//! transferred at once.
 
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -54,10 +56,17 @@ const OP_REQUESTPARTS_I64: u8 = 0xA3;
 
 /// The claim on the sharers that grant at once.
 pub(crate) const FREE_TRANSFERRED: &str = "every-free-sharer-sent-parts";
-/// The claim on the sharers that queue rmule.
-pub(crate) const QUEUED_HUNG_UP: &str = "rmule-hung-up-on-every-sharer-that-ranked-it";
-/// The claim on the links those sharers ranked rmule on.
-pub(crate) const QUEUED_CLOSED: &str = "rmule-closed-each-ranked-link-before-the-sharer";
+/// The claim on the links the sharers ranked rmule on: every sharer here is
+/// stock aMule 2, which reads no close until its 40 s idle timeout and writes
+/// a promotion on the link it still counts as open (`UploadQueue.cpp:211-217`),
+/// so rmule holds the link until the sharer closes it or grants on it
+/// (ADR-0116, invariant 3).
+pub(crate) const QUEUED_HELD: &str =
+    "rmule-held-each-ranked-link-until-the-sharer-closed-or-granted-on-it";
+/// The claim on the grants written on a ranked link.
+pub(crate) const RANKED_GRANT_TAKEN: &str = "every-grant-on-a-ranked-link-became-a-transfer";
+/// The claim on grants written after rmule closed their link.
+pub(crate) const NONE_CROSSED: &str = "no-grant-crossed-a-hang-up";
 /// The claim on the sharers that grant late.
 pub(crate) const LATE_TAKEN: &str = "every-late-grant-became-a-transfer";
 /// The claim on the copy.
@@ -272,31 +281,93 @@ fn peak_open(spans: &[(f64, f64)]) -> usize {
     usize::try_from(peak).unwrap_or(0)
 }
 
-/// Whether rmule closed the link `sharer` first ranked it on before the
-/// sharer did; `None` when no rank or no close crossed the tap.
-fn closed_after_rank(capture: &TcpCapture, sharer: Ipv4Addr, rmule: IpAddr) -> Option<bool> {
-    let (link, at) = capture
+/// One link a sharer ranked rmule on: the sharer's side, rmule's side, and
+/// the first rank's capture time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RankedLink {
+    sharer: SocketAddr,
+    rmule: SocketAddr,
+    ranked_at: f64,
+}
+
+/// Every link one of `sharers` ranked rmule on, at its first rank there.
+fn ranked_links(capture: &TcpCapture, rmule: IpAddr, sharers: &[Ipv4Addr]) -> Vec<RankedLink> {
+    capture
         .streams
         .iter()
         .filter(|stream| {
-            stream.source.ip() == IpAddr::V4(sharer) && stream.destination.ip() == rmule
+            stream.destination.ip() == rmule
+                && sharers
+                    .iter()
+                    .any(|&ip| stream.source.ip() == IpAddr::V4(ip))
         })
-        .flat_map(|stream| stream.ed2k_frames())
-        .filter(|frame| {
-            (frame.protocol, frame.opcode) == (OP_EDONKEYPROT, OP_QUEUERANK)
-                || (frame.protocol, frame.opcode) == (OP_EMULEPROT, OP_QUEUERANKING)
+        .filter_map(|stream| {
+            let ranked_at = stream
+                .ed2k_frames()
+                .iter()
+                .find(|frame| is_rank(frame))
+                .map(|frame| frame.at)?;
+            Some(RankedLink {
+                sharer: stream.source,
+                rmule: stream.destination,
+                ranked_at,
+            })
         })
-        .map(|frame| ((frame.source, frame.destination), frame.at))
-        .min_by(|a, b| a.1.total_cmp(&b.1))?;
-    capture
+        .collect()
+}
+
+/// Whether rmule held `link` past its rank: the first of rmule's close, the
+/// sharer's close and a grant on it is not rmule's close. `None` when none
+/// crossed the tap.
+fn held_after_rank(capture: &TcpCapture, frames: &[Ed2kFrame], link: &RankedLink) -> Option<bool> {
+    let closed = capture
         .closes
         .iter()
-        .find(|close| {
-            close.at >= at
-                && ((close.source, close.destination) == link
-                    || (close.destination, close.source) == link)
+        .filter(|close| {
+            close.at >= link.ranked_at
+                && ((close.source, close.destination) == (link.sharer, link.rmule)
+                    || (close.source, close.destination) == (link.rmule, link.sharer))
         })
-        .map(|close| close.source == link.1)
+        .map(|close| (close.at, close.source == link.sharer))
+        .min_by(|a, b| a.0.total_cmp(&b.0));
+    let granted = first_grant_on(frames, link).map(|at| (at, true));
+    match (closed, granted) {
+        (Some(close), Some(grant)) => Some(if grant.0 <= close.0 { grant.1 } else { close.1 }),
+        (one, other) => one.or(other).map(|(_, held)| held),
+    }
+}
+
+/// The first grant the sharer wrote on `link` after its rank there.
+fn first_grant_on(frames: &[Ed2kFrame], link: &RankedLink) -> Option<f64> {
+    frames
+        .iter()
+        .filter(|frame| {
+            is_grant(frame)
+                && frame.source == link.sharer
+                && frame.destination == link.rmule
+                && frame.at >= link.ranked_at
+        })
+        .map(|frame| frame.at)
+        .reduce(f64::min)
+}
+
+/// Part frames of the file `hash` names the sharer sent on `link` after `at`.
+fn parts_on_after(frames: &[Ed2kFrame], link: &RankedLink, hash: [u8; 16], at: f64) -> usize {
+    frames
+        .iter()
+        .filter(|frame| {
+            frame.source == link.sharer
+                && frame.destination == link.rmule
+                && frame.at > at
+                && part_of(frame) == Some(hash)
+        })
+        .count()
+}
+
+/// Whether `frame` is a rank.
+fn is_rank(frame: &Ed2kFrame) -> bool {
+    (frame.protocol, frame.opcode) == (OP_EDONKEYPROT, OP_QUEUERANK)
+        || (frame.protocol, frame.opcode) == (OP_EMULEPROT, OP_QUEUERANKING)
 }
 
 /// Whether `sharer` sent rmule a rank, on any link.
@@ -306,10 +377,7 @@ fn ranked(capture: &TcpCapture, sharer: Ipv4Addr) -> bool {
         .iter()
         .filter(|stream| stream.source.ip() == IpAddr::V4(sharer))
         .flat_map(|stream| stream.ed2k_frames())
-        .any(|frame| {
-            (frame.protocol, frame.opcode) == (OP_EDONKEYPROT, OP_QUEUERANK)
-                || (frame.protocol, frame.opcode) == (OP_EMULEPROT, OP_QUEUERANKING)
-        })
+        .any(|frame| is_rank(&frame))
 }
 
 /// Whether `frame` is a grant.
@@ -408,17 +476,26 @@ fn claims(at: &Topology, seen: &Observed) -> (Vec<Claim>, Rows) {
         .copied()
         .filter(|&ip| dialed_back(ip))
         .partition(|&ip| granted_before_last_ask(&frames, ip, rmule));
-    let closers: Vec<String> = queued
+    let ranked = ranked_links(&seen.capture, rmule, &at.sharers);
+    let held_note: Vec<String> = ranked
         .iter()
-        .map(|&ip| {
-            let who = match closed_after_rank(&seen.capture, ip, rmule) {
-                Some(true) => "rmule",
-                Some(false) => "sharer",
-                None => "nobody",
+        .map(|link| {
+            let who = match held_after_rank(&seen.capture, &frames, link) {
+                Some(true) => "held",
+                Some(false) => "rmule closed it first",
+                None => "nothing crossed",
             };
-            format!("{ip}: {who}")
+            format!("{} -> {}: {who}", link.sharer, link.rmule)
         })
         .collect();
+    let ranked_grants: Vec<(RankedLink, usize)> = ranked
+        .iter()
+        .filter_map(|link| {
+            let granted = first_grant_on(&frames, link)?;
+            Some((*link, parts_on_after(&frames, link, seen.hash, granted)))
+        })
+        .collect();
+    let crossed = grants_after_hang_up(&frames, &seen.capture.closes, rmule);
     let shaped_queued = &at.sharers[..shape.queued.min(at.sharers.len())];
     let sending = |ip: Ipv4Addr| parts_from(&seen.capture, ip, seen.hash) > 0;
 
@@ -431,27 +508,45 @@ fn claims(at: &Topology, seen: &Observed) -> (Vec<Claim>, Rows) {
             sending,
         ),
         over_all(
-            QUEUED_HUNG_UP,
-            &queued,
-            Evidence::RmuleOnly,
-            "rmule's log: download.peer_retired reason=queued for each sharer that ranked it",
-            |ip| {
-                seen.log.names(
-                    "download.peer_retired",
-                    listener(ip),
-                    Some(("reason", "queued")),
-                )
-            },
-        ),
-        over_all(
-            QUEUED_CLOSED,
+            QUEUED_HELD,
             &queued,
             Evidence::RmuleOnly,
             &format!(
-                "the first close on the link each sharer ranked rmule on ({})",
-                closers.join(", ")
+                "on each link a sharer ranked rmule on, the first of rmule's close, the \
+                 sharer's close and a grant ({})",
+                held_note.join(", ")
             ),
-            |ip| closed_after_rank(&seen.capture, ip, rmule) == Some(true),
+            |ip| {
+                ranked
+                    .iter()
+                    .filter(|link| link.sharer.ip() == IpAddr::V4(ip))
+                    .all(|link| held_after_rank(&seen.capture, &frames, link) == Some(true))
+            },
+        ),
+        if ranked_grants.is_empty() {
+            Claim::blocked(
+                RANKED_GRANT_TAKEN,
+                "no sharer wrote a grant on a link it had ranked rmule on",
+            )
+        } else {
+            Claim::about(
+                RANKED_GRANT_TAKEN,
+                ranked_grants.iter().all(|(_, parts)| *parts > 0),
+                Evidence::Captured,
+                format!(
+                    "part frames of rmule's file after each grant on a ranked link: {}",
+                    ranked_grants
+                        .iter()
+                        .map(|(link, parts)| format!("{}: {parts}", link.sharer))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            )
+        },
+        Claim::absence(
+            NONE_CROSSED,
+            i64::try_from(crossed).unwrap_or(i64::MAX),
+            format!("grants a sharer wrote on a link after rmule's FIN or RST on it: {crossed}"),
         ),
         over_all(
             LATE_TAKEN,
@@ -521,7 +616,7 @@ fn claims(at: &Topology, seen: &Observed) -> (Vec<Claim>, Rows) {
             .iter()
             .filter(|ip| shaped_queued.contains(ip))
             .count(),
-        grants_after_hang_up: grants_after_hang_up(&frames, &seen.capture.closes, rmule),
+        grants_after_hang_up: crossed,
         copy_bytes: len,
     };
     (claims, rows)
@@ -589,6 +684,55 @@ mod tests {
             grants_after_hang_up(&[grant(1.38)], &sharer_closed, rmule),
             0
         );
+    }
+
+    /// At aMule 2 a ranked link is held: rmule's own close before the
+    /// sharer's close or grant is the hang-up the old rule made.
+    #[test]
+    fn a_ranked_link_is_held_until_the_sharer_closes_it_or_grants_on_it() {
+        let link = RankedLink {
+            sharer: SocketAddr::from((SHARER, AMULE_PEER_TCP_PORT)),
+            rmule: SocketAddr::from((RMULE, 41682)),
+            ranked_at: 1.0,
+        };
+        let closed_by = |at, source, destination| TcpClose {
+            at,
+            source,
+            destination,
+        };
+        let capture = |closes| TcpCapture {
+            streams: Vec::new(),
+            closes,
+            opens: Vec::new(),
+        };
+        let grant = frame(30.0, link.sharer, link.rmule, OP_ACCEPTUPLOADREQ);
+        let hung_up = capture(vec![
+            closed_by(1.0007, link.rmule, link.sharer),
+            closed_by(42.0, link.sharer, link.rmule),
+        ]);
+        assert_eq!(held_after_rank(&hung_up, &[], &link), Some(false));
+        let idle_closed = capture(vec![
+            closed_by(42.0, link.sharer, link.rmule),
+            closed_by(42.001, link.rmule, link.sharer),
+        ]);
+        assert_eq!(held_after_rank(&idle_closed, &[], &link), Some(true));
+        let granted = capture(vec![closed_by(90.0, link.rmule, link.sharer)]);
+        assert_eq!(
+            held_after_rank(&granted, &[grant.clone()], &link),
+            Some(true)
+        );
+        assert_eq!(held_after_rank(&capture(Vec::new()), &[], &link), None);
+        let part = Ed2kFrame {
+            protocol: OP_EDONKEYPROT,
+            opcode: OP_SENDINGPART,
+            bytes: [
+                vec![OP_EDONKEYPROT, 0, 0, 0, 0, OP_SENDINGPART],
+                vec![7; 16],
+            ]
+            .concat(),
+            ..frame(30.5, link.sharer, link.rmule, OP_SENDINGPART)
+        };
+        assert_eq!(parts_on_after(&[grant, part], &link, [7; 16], 30.0), 1);
     }
 
     #[test]
