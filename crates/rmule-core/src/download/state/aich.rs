@@ -68,7 +68,7 @@ impl AichRootAuthority {
 
 /// The **Qualified Kad Root** of a Kad keyword result (ADR-0038): its one
 /// AICH root, when the result carries exactly one and at least a third of the
-/// file's `publishers` reported it, and at least [`MIN_UNIQUE_IPS_TO_TRUST`] of
+/// file's `publishers` reported it, and at least `MIN_UNIQUE_IPS_TO_TRUST` of
 /// them. The third is eMule's rule (`SearchList.cpp:785-803`), stated exactly
 /// rather than in its integer division; the floor is the peer vote's, because
 /// both counts are the storer's word.
