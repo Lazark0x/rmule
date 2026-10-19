@@ -1,6 +1,8 @@
-//! How an upload slot reaches the peer it is granted to, and why a
-//! **Dial-Back Grant** ended unsent (ADR-0057): the vocabulary that lets the
-//! operator tell a grant on a link the peer held from one rmule dialed back.
+//! How an upload slot reaches the peer it is granted to, why a **Dial-Back
+//! Grant** ended unsent (ADR-0057), and why a slot holder's block request
+//! ended its slot (ADR-0031): the vocabulary that lets the operator tell a
+//! grant on a link the peer held from one rmule dialed back, and read why a
+//! peer lost its slot.
 
 use super::DialEnd;
 
@@ -37,4 +39,20 @@ pub enum DialBackEnd {
     /// No link of the waiter came up within the purge window
     /// (`MAX_PURGEQUEUETIME`).
     Lapsed,
+}
+
+/// Why a slot holder's block request ended its slot before anything of it was
+/// read ([`ServeEvent::BlockAskRefused`](super::ServeEvent::BlockAskRefused),
+/// ADR-0031). aMule throws on each and only takes the client out of its upload
+/// queue (`UploadClient.cpp:211-231`, `:270-281`). Declared in rank order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BlockAskFault {
+    /// A range ends past the file's end (`UploadClient.cpp:211-213`).
+    PastEnd,
+    /// A range is longer than three blocks, `3 × EMBLOCKSIZE`
+    /// (`UploadClient.cpp:221-224`).
+    TooLong,
+    /// A range of a Partial Share falls outside its **Verified Range**
+    /// (ADR-0113; aMule `UploadClient.cpp:227-231`).
+    Unverified,
 }

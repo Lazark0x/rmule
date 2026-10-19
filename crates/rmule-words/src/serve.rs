@@ -4,8 +4,8 @@
 
 use rmule_core::file_history::HistoryPart;
 use rmule_core::{
-    DialBackEnd, GrantRoad, PartialEnd, ServeEvent, ServeStartFailure, ServeStopReason,
-    ShareRejectReason, SharesWithheld, WaiterLeaveCause, WithheldReason,
+    BlockAskFault, DialBackEnd, GrantRoad, PartialEnd, ServeEvent, ServeStartFailure,
+    ServeStopReason, ShareRejectReason, SharesWithheld, WaiterLeaveCause, WithheldReason,
 };
 
 use super::Sentence;
@@ -171,6 +171,25 @@ pub const REASK_MALFORMED: Sentence =
 pub const NAME_ASK_MALFORMED: Sentence =
     Sentence::fixed("a peer asked a file's name malformed; connection closed");
 
+/// Why a slot holder lost its slot to its own block request.
+#[must_use]
+pub const fn block_ask_fault_words(fault: BlockAskFault) -> &'static str {
+    match fault {
+        BlockAskFault::PastEnd => "it asked for data past the end of the file",
+        BlockAskFault::TooLong => "it asked for more than three blocks in one range",
+        BlockAskFault::Unverified => "it asked for a part this download has not verified",
+    }
+}
+
+/// A slot holder's block request ended its slot: the status feed's note.
+#[must_use]
+pub fn block_ask_refused(fault: BlockAskFault) -> Sentence {
+    Sentence::owned(format!(
+        "a peer lost its upload slot: {}",
+        block_ask_fault_words(fault)
+    ))
+}
+
 /// Why an unshare was refused.
 #[must_use]
 pub fn share_rejected(reason: ShareRejectReason) -> Sentence {
@@ -300,6 +319,11 @@ pub fn log_line(event: &ServeEvent) -> Sentence {
         Sv::NameAskMalformed { peer } => Sentence::owned(format!(
             "name ask from {} malformed; connection closed",
             address(*peer)
+        )),
+        Sv::BlockAskRefused { peer, fault, .. } => Sentence::owned(format!(
+            "upload slot of {} ended: {}",
+            address(*peer),
+            block_ask_fault_words(*fault)
         )),
         Sv::UploadSlotReleased { peer } => {
             Sentence::owned(format!("upload slot of {} released", address(*peer)))

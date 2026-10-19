@@ -37,6 +37,12 @@ const RANGE_COUNT: usize = 3;
 /// block request streamed immediately.
 pub const EMBLOCKSIZE: u64 = 184_320;
 
+/// The longest range one block request may name: three blocks. aMule's uploader
+/// takes a client asking a longer one out of its upload queue
+/// (`UploadClient.cpp:221-224`), so no stock downloader asks one; core ends
+/// the slot of a peer that does and reads no range longer (ADR-0031).
+pub const MAX_REQUESTED_RANGE: u64 = 3 * EMBLOCKSIZE;
+
 /// Selector for the part-transfer wire variant. aMule picks it on the
 /// offsets a packet names: the `_I64` opcodes once one passes `0xFFFFFFFF`
 /// — a request's block (`DownloadClient.cpp:745`), a plain packet's own range

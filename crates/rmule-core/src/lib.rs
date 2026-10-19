@@ -224,6 +224,7 @@ pub use search::{KadKeywordSink, MORE_RESULTS_ASKS, RelatedSearchRefusal, Server
 pub use served_downloads::PartialEnd;
 pub use server_session::build_peer_handshake_context;
 pub use service::LinkTurn;
+pub use service::{BlockAskFault, DialBackEnd, GrantRoad};
 pub use service::{
     BuddyDialFailure, CeilingLowered, ClientCredentials, CompletionStep, Core, CoreBuilder,
     CoreCommand, CoreCommandRejectReason, CoreConfig, CoreEvent, DEFAULT_SLOT_WAIT_TIMEOUT,
@@ -239,7 +240,6 @@ pub use service::{
     ShareRejectReason, SharesWithheld, SourcePurgeReason, SourceWait, SweepTally,
     VerificationAuthority, descriptor_room,
 };
-pub use service::{DialBackEnd, GrantRoad};
 pub use storage::{DownloadRepository, ResolvedAuthority};
 pub use store::app_config::DurableAppConfig;
 pub use store::credit::DurableCreditStore;

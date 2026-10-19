@@ -28,6 +28,7 @@ pub use self::config::{
     VerificationAuthority, descriptor_room,
 };
 pub use self::event::LinkTurn;
+pub use self::event::{BlockAskFault, DialBackEnd, GrantRoad};
 pub use self::event::{
     BuddyDialFailure, CompletionStep, CoreEvent, DialEnd, DialFailure, DownloadEvent, IdAssignment,
     IgnoredReaskReply, Ipv6Probe, KadStopReason, LegNotSent, LoginClaim, LoginCloseCause,
@@ -38,7 +39,6 @@ pub use self::event::{
     ServeStartFailure, ServeStopReason, ServerConnectFailure, ServerConnectionEvent,
     ServerListEvent, ShareRejectReason, SharesWithheld, SourcePurgeReason, SourceWait, SweepTally,
 };
-pub use self::event::{DialBackEnd, GrantRoad};
 
 use std::sync::Arc;
 

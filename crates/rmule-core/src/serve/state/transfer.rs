@@ -1,12 +1,14 @@
 //! Serving file data out: which reads a granted flow's block request
-//! decides — inside a Partial Share's **Verified Range** only (ADR-0113
-//! §"Reading a part file") — what a completed block read becomes for the flow
+//! decides — none for a request with a range past the file's end, longer than
+//! three blocks, or outside a Partial Share's **Verified Range**, which ends
+//! the slot (ADR-0031, ADR-0113 §"Reading a part file") — what a completed
+//! block read becomes for the flow
 //! that asked, the AICH recovery answer built from the cached hash tree
 //! (ADR-0038) — the one read purpose whose result is a hash set, not a block —
 //! and what a failed or refused read does: the file stops being offered at
 //! once.
 
-use rmule_peer::{PartRanges, ServerCommand};
+use rmule_peer::{MAX_REQUESTED_RANGE, PartRanges, ServerCommand};
 use rmule_primitives::{AichHashSet, ED2K_PART_SIZE, FileHash, PeerEndpoint};
 
 use std::collections::HashMap;
@@ -16,19 +18,20 @@ use super::connection::{record_served_range, subtract_served_ranges};
 use super::served::Found;
 use super::{ReadPurpose, ServeDecision, ServeState, rank_updates};
 use crate::served_downloads::PartialEnd;
-use crate::service::ServeEvent;
+use crate::service::{BlockAskFault, ServeEvent};
 use crate::upload_queue::WaiterLeaveCause;
 
 impl ServeState {
-    /// A granted flow's block request: every sub-range left after the ranges
-    /// already served is read — a row's from its path, a Partial Share's
-    /// from the path holding its bytes, checked against its Part File
-    /// Identity. One sub-range of a Partial Share outside its Verified Range
-    /// ends the peer's slot with nothing read and nothing sent, the link
-    /// kept: aMule throws on an incomplete block and its handler only takes
-    /// the client out of the upload queue (`UploadClient.cpp:227-231`,
-    /// `:270-282`, `UploadQueue.cpp:522-546`). A peer holding no slot is read
-    /// nothing, as aMule drops its block request (`UploadClient.cpp:497-500`).
+    /// A granted flow's block request, judged whole before anything is read
+    /// (ADR-0031): one live range past the file's end or longer than three
+    /// blocks, as asked, or — a Partial Share's — one sub-range left after the
+    /// ranges already served outside its **Verified Range** (ADR-0113
+    /// §"Reading a part file") ends the peer's slot with nothing of the request
+    /// read or sent ([`Self::refuse_block_ask`]). Otherwise every such
+    /// sub-range is read — a row's from its path, a Partial Share's from the
+    /// path holding its bytes, checked against its Part File Identity. A peer
+    /// holding no slot is read nothing, as aMule drops its block request
+    /// (`UploadClient.cpp:497-500`).
     pub(super) fn on_parts_requested(
         &mut self,
         now: Instant,
@@ -40,12 +43,31 @@ impl ServeState {
         if !self.queue.is_granted(peer) {
             return Vec::new();
         }
-        let (path, check, range) = match self.lookup(file_hash).filter(Found::offered) {
-            None => return Vec::new(),
-            Some(Found::Row(entry)) => (entry.path.clone(), None, None),
-            Some(Found::Download { look, .. }) => {
+        let Some(found) = self.lookup(file_hash).filter(Found::offered) else {
+            return Vec::new();
+        };
+        // `PartRanges::as_array()` yields the fixed `[(u64,u64); 3]`; the
+        // `(0,0)` padding slots are skipped by the `e > s` filter, as aMule
+        // skips every range whose end is not past its start
+        // (`UploadClient.cpp:871-882`).
+        let asked: Vec<(u64, u64)> = ranges
+            .as_array()
+            .iter()
+            .copied()
+            .filter(|(s, e)| e > s)
+            .collect();
+        let file_size = found.file_size();
+        if let Some(fault) = asked
+            .iter()
+            .find_map(|&(start, end)| range_fault(file_size, start, end))
+        {
+            return self.refuse_block_ask(now, peer, file_hash, fault, modifiers);
+        }
+        let (path, check, range) = match found {
+            Found::Row(entry) => (entry.path.clone(), None, None),
+            Found::Download { look, .. } => {
                 let (path, check) = look.served.read_target();
-                (path, Some(check), Some(look.served.range.clone()))
+                (path, Some(check), Some(&look.served.range))
             }
         };
         let mut served = self
@@ -54,16 +76,16 @@ impl ServeState {
             .cloned()
             .unwrap_or_default();
         let mut reads = Vec::new();
-        // `PartRanges::as_array()` yields the fixed `[(u64,u64); 3]`; the
-        // `(0,0)` padding slots are skipped by the `e > s` filter.
-        for &(start, end) in ranges.as_array().iter().filter(|(s, e)| e > s) {
+        for (start, end) in asked {
             for (send_start, send_end) in subtract_served_ranges(start, end, &served) {
                 record_served_range(&mut served, send_start, send_end);
                 reads.push((send_start, send_end));
             }
         }
+        // A Partial Share's guard reads the unserved rest only (ADR-0113).
         if range.is_some_and(|range| !reads.iter().all(|&(s, e)| range.covers(s, e))) {
-            return self.end_slot(now, peer, modifiers);
+            let fault = BlockAskFault::Unverified;
+            return self.refuse_block_ask(now, peer, file_hash, fault, modifiers);
         }
         // Recorded at decision time, not on the read result: a repeat
         // request must not double-send a range whose read is still in
@@ -87,19 +109,30 @@ impl ServeState {
             .collect()
     }
 
-    /// End `peer`'s slot and nothing else: its flow's ranges go, the slot
-    /// is released and the next waiter promoted; nothing is sent to it, and
-    /// its link stays.
-    fn end_slot(
+    /// End `peer`'s slot for its block request's `fault`, before anything of
+    /// it is read: the refusal is told, its flow's ranges go, the slot is
+    /// released and the next waiter promoted. Nothing is sent to it, its link
+    /// stays and its address is not banned, as aMule's handler only takes the
+    /// client out of the upload queue (`UploadClient.cpp:270-281`).
+    fn refuse_block_ask(
         &mut self,
         now: Instant,
         peer: PeerEndpoint,
+        file_hash: FileHash,
+        fault: BlockAskFault,
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
         self.served_ranges
             .retain(|(range_peer, _), _| *range_peer != peer);
         let promotion = self.queue.release(peer, now, modifiers);
-        let mut decisions = vec![ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer })];
+        let mut decisions = vec![
+            ServeDecision::Emit(ServeEvent::BlockAskRefused {
+                peer,
+                file_hash,
+                fault,
+            }),
+            ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer }),
+        ];
         decisions.extend(self.promotion_decisions(promotion));
         decisions
     }
@@ -318,6 +351,19 @@ impl ServeState {
         moved.retain(|(waiter, _)| self.queue.waiting_file(*waiter).is_some());
         decisions.extend(rank_updates(&self.queue, &self.identities, moved));
         decisions
+    }
+}
+
+/// What ends the slot of a peer asking `start..end` of a `file_size`-byte
+/// file, judged as asked in aMule's order (ADR-0031): past the file's end
+/// (`UploadClient.cpp:211-213`), then longer than three blocks (`:221-224`).
+const fn range_fault(file_size: u64, start: u64, end: u64) -> Option<BlockAskFault> {
+    if end > file_size {
+        Some(BlockAskFault::PastEnd)
+    } else if end - start > MAX_REQUESTED_RANGE {
+        Some(BlockAskFault::TooLong)
+    } else {
+        None
     }
 }
 

@@ -376,6 +376,8 @@ pub(super) fn fold(state: &mut UiState, event: ServeEvent) -> bool {
         // The connection is closed on it; what that frees arrives as its own
         // events, so the note is the whole fact.
         E::NameAskMalformed { .. } => note(state, words::NAME_ASK_MALFORMED),
+        // Its row goes with the release that follows; the note says why.
+        E::BlockAskRefused { fault, .. } => note(state, words::block_ask_refused(fault)),
         E::UploadDialBack {
             peer,
             file_hash,

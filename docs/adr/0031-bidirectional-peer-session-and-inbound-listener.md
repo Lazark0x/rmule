@@ -80,8 +80,8 @@ scheduling is (ADR-0026).
   peer leaves the queue: a later ask queues it afresh. Its link stays and its address
   is not banned. aMule throws on either range while it cuts the block, and its handler
   only takes the client out of the upload queue (`UploadClient.cpp:211-224`,
-  `:270-281`); it bans nobody for it. A Partial Share's range outside its Verified
-  Range ends the slot the same way (ADR-0113).
+  `:270-281`); it bans nobody for it. A Partial Share's request whose unserved rest
+  leaves its Verified Range ends the slot the same way (ADR-0113).
 - A range whose end is not past its start is skipped, as aMule skips one in
   `OP_REQUESTPARTS` (`UploadClient.cpp:871-882`); the `(0, 0)` padding is one. A pair
   that runs backwards fails the request's decode, so core never sees it.

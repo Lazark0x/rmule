@@ -129,6 +129,14 @@ impl ServeEvent {
             S::UploadAddressCapReached { peer } => {
                 Record::new("serve.upload_address_cap_reached").peer_address("peer", peer)
             }
+            S::BlockAskRefused {
+                peer,
+                file_hash,
+                fault,
+            } => Record::new("serve.block_ask_refused")
+                .peer_address("peer", peer)
+                .file_hash("file_hash", file_hash)
+                .code("fault", codes::block_ask_fault(*fault)),
             S::UploadSlotReleased { peer } => {
                 Record::new("serve.upload_slot_released").peer_address("peer", peer)
             }

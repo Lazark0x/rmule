@@ -134,13 +134,18 @@ fn a_request_straddling_the_verified_range_ends_the_slot_and_reads_nothing() {
         matches!(
             decisions.as_slice(),
             [
+                ServeDecision::Emit(ServeEvent::BlockAskRefused {
+                    peer: refused,
+                    file_hash: asked,
+                    fault: crate::BlockAskFault::Unverified,
+                }),
                 ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer: released }),
                 ServeDecision::Send {
                     peer: granted,
                     command: ServerCommand::GrantSlot { .. },
                 },
                 ServeDecision::Emit(ServeEvent::UploadSlotGranted { .. }),
-            ] if *released == holder && *granted == waiter
+            ] if *refused == holder && *asked == file && *released == holder && *granted == waiter
         ),
         "the slot ends, nothing is read or sent to its holder, and the waiter takes it: {decisions:?}"
     );

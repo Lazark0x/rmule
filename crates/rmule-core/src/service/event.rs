@@ -26,7 +26,7 @@ pub use peer_reach::{
 };
 pub use scan::ScanEvent;
 pub use search::{LegNotSent, SearchEvent, SearchFailure, SearchLegState, SearchLegs, SweepTally};
-pub use slot_roads::{DialBackEnd, GrantRoad};
+pub use slot_roads::{BlockAskFault, DialBackEnd, GrantRoad};
 pub use source_ends::{DialEnd, IgnoredReaskReply, PurgedSource, SourcePurgeReason};
 
 use std::net::SocketAddrV4;
@@ -236,6 +236,19 @@ pub enum ServeEvent {
     UploadAddressCapReached {
         /// The peer that was turned away.
         peer: rmule_primitives::PeerEndpoint,
+    },
+    /// A slot holder's block request ended its slot before anything of it was
+    /// read (ADR-0031): a range past the file's end, longer than three
+    /// blocks, or outside a Partial Share's **Verified Range**. Nothing of the
+    /// request was sent; its [`Self::UploadSlotReleased`] follows. Its link
+    /// stays and its address is not banned.
+    BlockAskRefused {
+        /// The slot holder that asked.
+        peer: rmule_primitives::PeerEndpoint,
+        /// The file the request named.
+        file_hash: FileHash,
+        /// What ended the slot.
+        fault: BlockAskFault,
     },
     /// A peer left the queue/slot; its slot (if held) is freed for promotion.
     UploadSlotReleased {

@@ -3,6 +3,7 @@
 //! it has a code here, read by the events' own records and by the
 //! reachability trail's.
 
+use crate::BlockAskFault;
 use crate::port_mapping::{
     MappingError, MappingProtocol, MappingRefusal, MappingStatus, MappingTransportFault,
 };
@@ -268,6 +269,14 @@ pub(super) const fn partial_end(cause: crate::PartialEnd) -> &'static str {
         crate::PartialEnd::HeldBack => "held_back",
         crate::PartialEnd::Changed => "changed",
         crate::PartialEnd::Unreadable => "unreadable",
+    }
+}
+
+pub(super) const fn block_ask_fault(fault: BlockAskFault) -> &'static str {
+    match fault {
+        BlockAskFault::PastEnd => "past_end",
+        BlockAskFault::TooLong => "too_long",
+        BlockAskFault::Unverified => "unverified",
     }
 }
 
