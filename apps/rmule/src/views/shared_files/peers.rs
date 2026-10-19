@@ -119,6 +119,7 @@ fn peer_columns(peer: &UploadPeer, state: &UiState, bps: f64, theme: &Theme) -> 
     let addr = crate::words::units::address(peer.peer);
     let (state_text, file) = match peer.state {
         UploadState::Uploading { file } => (crate::words::serve::UPLOADING.to_string(), file),
+        UploadState::DialingBack { file } => (crate::words::serve::DIALING_BACK.to_string(), file),
         UploadState::Queued { rank, file } => (crate::words::serve::queued_words(rank), file),
     };
     let (file_text, named) = file_label(state, file);

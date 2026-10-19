@@ -10,6 +10,7 @@ mod login;
 mod peer_reach;
 mod scan;
 mod search;
+mod slot_roads;
 mod source_ends;
 
 pub use buddy::BuddyDialFailure;
@@ -25,6 +26,7 @@ pub use peer_reach::{
 };
 pub use scan::ScanEvent;
 pub use search::{LegNotSent, SearchEvent, SearchFailure, SearchLegState, SearchLegs, SweepTally};
+pub use slot_roads::{DialBackEnd, GrantRoad};
 pub use source_ends::{DialEnd, IgnoredReaskReply, PurgedSource, SourcePurgeReason};
 
 use std::net::SocketAddrV4;
@@ -141,7 +143,8 @@ pub enum ServeEvent {
         /// Why the server was not told them.
         reason: SharesWithheld,
     },
-    /// A requesting peer was granted an upload slot for `file_hash`.
+    /// A requesting peer was granted an upload slot for `file_hash`: the
+    /// `OP_ACCEPTUPLOADREQ` went on its link.
     UploadSlotGranted {
         /// The peer now allowed to pull bytes.
         peer: rmule_primitives::PeerEndpoint,
@@ -150,6 +153,30 @@ pub enum ServeEvent {
         /// The client the peer's hello named; `None` when the serve side
         /// holds no hello for it.
         software: Option<rmule_peer::ClientSoftware>,
+        /// The road the slot took to it: on a link it held, or on one rmule
+        /// dialed back or it came back on (ADR-0057).
+        road: GrantRoad,
+    },
+    /// rmule dials `peer`, a waiter it promoted while no link of it was up,
+    /// to grant it the slot it now holds for `file_hash`: the **Dial-Back
+    /// Grant** (ADR-0057). The grant follows on the first link whose hello
+    /// names it ([`Self::UploadSlotGranted`]), or ends unsent
+    /// ([`Self::UploadDialBackFailed`]).
+    UploadDialBack {
+        /// The waiter, keyed by the link it waited on.
+        peer: rmule_primitives::PeerEndpoint,
+        /// The file the held slot is for.
+        file_hash: FileHash,
+        /// The client the waiter's hello named.
+        software: Option<rmule_peer::ClientSoftware>,
+    },
+    /// A **Dial-Back Grant** ended without reaching its waiter: the waiter
+    /// lost its place, and the slot went on to the next waiter (ADR-0057).
+    UploadDialBackFailed {
+        /// The waiter, keyed by the link it waited on.
+        peer: rmule_primitives::PeerEndpoint,
+        /// Why the grant ended unsent.
+        cause: DialBackEnd,
     },
     /// A requesting peer is waiting at queue position `rank` for `file_hash`.
     /// Raised again whenever the rank or the file moves: a waiter follows the
@@ -217,10 +244,9 @@ pub enum ServeEvent {
     },
     /// A wait-list entry left the queue without ever holding a slot — the
     /// Waiter relation's terminal (ADR-0059 "Roster relations"). Distinct
-    /// from [`Self::UploadSlotReleased`], which only a slot holder earns: the
-    /// reclaimed dial-back leg of the purge sweep emits that one alone, never
-    /// this too. A promotion is not a leave — the waiter becomes
-    /// a holder (`UploadSlotGranted`).
+    /// from [`Self::UploadSlotReleased`], which only a slot holder earns, and
+    /// from [`Self::UploadDialBackFailed`], a held grant's end. A promotion is
+    /// not a leave — the waiter becomes a holder (`UploadSlotGranted`).
     WaiterLeft {
         /// The waiter that left.
         peer: rmule_primitives::PeerEndpoint,

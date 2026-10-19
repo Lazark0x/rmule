@@ -111,39 +111,6 @@ fn bind(state: &mut ServeState, p: PeerEndpoint, user_hash: UserHash) {
 }
 
 #[test]
-fn a_pending_dial_back_grant_moves_with_its_client_to_the_link_it_came_back_on() {
-    // aMule hands a Low-ID client marked for its next connection the slot
-    // there (`m_bAddNextConnect`, `UploadQueue.cpp:410-425`).
-    let file = hash(0x34);
-    let t = Instant::now();
-    let (first, second) = (
-        peer_at([172, 19, 0, 5], 51318),
-        peer_at([172, 19, 0, 5], 50288),
-    );
-    let mut state = waiting(file, first, t);
-    let _ = state.on_conn_event(t, first, disconnected(), &no_modifiers());
-    // The slot frees while the waiter is away: it is granted for a dial back.
-    let freed = state.on_conn_event(t, peer(1), disconnected(), &no_modifiers());
-    assert!(freed.contains(&ServeDecision::DialBackGrant {
-        peer: first,
-        file_hash: file,
-    }));
-
-    assert_eq!(
-        hello_of(&mut state, second, user(0x0B)),
-        [ServeDecision::Emit(ServeEvent::WaiterRelinked {
-            from: first,
-            to: second,
-        })]
-    );
-    assert!(
-        slot_request(&mut state, second, file, t)
-            .contains(&send(second, ServerCommand::GrantSlot { file_hash: file })),
-        "its ask over the new link takes the slot it was granted"
-    );
-}
-
-#[test]
 fn a_second_link_naming_an_identified_linked_clients_hash_is_banned() {
     // aMule: "Banreason: Userhash invalid" (`ClientList.cpp:384-392`).
     let file = hash(0x35);

@@ -28,6 +28,7 @@ fn slot_requests_grant_queue_or_refuse_within_the_shared_budget() {
                 peer: peer(1),
                 file_hash,
                 software: None,
+                road: crate::GrantRoad::Linked,
             }),
         ],
     );
@@ -143,6 +144,7 @@ fn disconnect_promotes_the_highest_credit_waiter_and_releases_the_slot() {
                 peer: rich,
                 file_hash,
                 software: None,
+                road: crate::GrantRoad::Linked,
             }),
             ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer: holder }),
         ],
@@ -194,6 +196,7 @@ fn transfer_cancelled_promotes_the_highest_credit_waiter_and_releases_the_slot()
                 peer: rich,
                 file_hash,
                 software: None,
+                road: crate::GrantRoad::Linked,
             }),
             ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer: holder }),
         ],
@@ -606,6 +609,7 @@ fn grant_and_queue_edges_name_each_peers_own_client() {
             peer: peer(1),
             file_hash,
             software: Some(amule),
+            road: crate::GrantRoad::Linked,
         }))
     );
     assert!(

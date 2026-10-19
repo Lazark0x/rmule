@@ -17,18 +17,21 @@ use crate::CoreError;
 use crate::ban_store::SharedBanStore;
 use crate::buddy_link::SharedBuddySlot;
 use crate::ip_filter::SharedIpFilter;
-use crate::server_session::SharedServerSession;
+use crate::server_session::{HelloSource, SharedServerSession};
 use crate::service::{LoginStep, PortTestEnd, SharesWithheld};
 
 mod accept;
 mod connection;
+mod dial_back;
 mod follower;
 mod test_connection;
 
 pub use connection::{ServeConnection, ServeInput, ServeOutput};
+pub use dial_back::{DialBack, DialBackOutcome};
 
 use accept::{AcceptGates, spawn_accept_pump};
 pub(crate) use accept::{AdmittedPeer, SharedTunnelAdmit};
+use dial_back::DialBackRoad;
 use follower::SessionFollower;
 
 use super::HelloAdverts;
@@ -120,6 +123,17 @@ pub trait ServeRuntimeService: Send + 'static {
     /// *default* factory's view, which a later `.kad()` would otherwise
     /// orphan. Default no-op: a fake that gates on nothing need not track it.
     fn set_kad_presence(&mut self, _kad_presence: KadPresenceView) {}
+
+    /// Dial back a waiter the serve side promoted while no link of it was up
+    /// (ADR-0057), on a task of its own: returns at once, and how the dial
+    /// ended arrives on `outcomes` — the link's serve connection with the
+    /// hello it read, or why it ended first. A link or dial already filed
+    /// under the waiter's names is not dialed around, and says nothing.
+    ///
+    /// Default: dials nothing and says nothing, the truth for an adapter that
+    /// dials nothing — the held grant waits for the waiter's next
+    /// connection, and the purge reclaims one that never comes.
+    fn dial_back(&mut self, _dial: DialBack, _outcomes: mpsc::Sender<DialBackOutcome>) {}
 
     /// Adopt the builder's one set of `AdapterCells`
     /// (ADR-0048 "Identity ownership"):
@@ -259,6 +273,10 @@ pub struct RuntimeServeRuntimeService {
     /// Where each served link is filed for a download of its peer to ride
     /// (ADR-0107). Default/unshared off `Core::builder`: no download joins.
     peer_links: super::SharedPeerLinks,
+    /// The hello the last `start` answers and dials under, read live at each
+    /// connection; `None` before the first start and after a release, when
+    /// nothing is dialed back.
+    hello: Option<HelloSource>,
 }
 
 impl RuntimeServeRuntimeService {
@@ -338,6 +356,27 @@ impl RuntimeServeRuntimeService {
     pub(crate) fn with_peer_links(mut self, peer_links: super::SharedPeerLinks) -> Self {
         self.peer_links = peer_links;
         self
+    }
+
+    /// The node-wide services a link this adapter drives reaches — an
+    /// accepted one or one it dialed back — read from its cells now.
+    fn inbound_deps(&self) -> InboundPeerDeps {
+        InboundPeerDeps {
+            slot_wait_timeout: self.slot_wait_timeout,
+            dialed_serve_sink: self.dialed_serve_sink.clone(),
+            kad_bootstrap: self.kad_bootstrap.clone(),
+            kad_pump: self.kad_pump.clone(),
+            buddy_slot: self.buddy_slot.clone(),
+            // The one Address Learning store, reached the way every other
+            // feeder reaches it (ADR-0084).
+            addresses: self.session.own_identity().addresses().clone(),
+            peer_roster: self.peer_roster.clone(),
+            kad_presence: self.kad_presence.clone(),
+            file_known: self.file_known.clone(),
+            tunnel_admit: self.tunnel_admit.clone(),
+            hello_refusals: self.hello_refusals.clone(),
+            peer_links: self.peer_links.clone(),
+        }
     }
 }
 
@@ -434,7 +473,8 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
                 crate::natt::front::SharedNattFront::default(),
             )
         });
-        let hello = crate::server_session::HelloSource::live(identity, reach);
+        let hello = HelloSource::live(identity, reach);
+        self.hello = Some(hello.clone());
         let gates = AcceptGates::new(
             self.ip_filter.clone(),
             self.ban_store.clone(),
@@ -490,22 +530,7 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
             command_rx,
             event_tx,
             self.awaited_inbound.clone(),
-            InboundPeerDeps {
-                slot_wait_timeout: self.slot_wait_timeout,
-                dialed_serve_sink: self.dialed_serve_sink.clone(),
-                kad_bootstrap: self.kad_bootstrap.clone(),
-                kad_pump: self.kad_pump.clone(),
-                buddy_slot: self.buddy_slot.clone(),
-                // The one Address Learning store, reached the way every
-                // other feeder reaches it (ADR-0084).
-                addresses: self.session.own_identity().addresses().clone(),
-                peer_roster: self.peer_roster.clone(),
-                kad_presence: self.kad_presence.clone(),
-                file_known: self.file_known.clone(),
-                tunnel_admit: self.tunnel_admit.clone(),
-                hello_refusals: self.hello_refusals.clone(),
-                peer_links: self.peer_links.clone(),
-            },
+            self.inbound_deps(),
         );
         // A connection from the awaited server admitted as an ordinary
         // peer: its test's one knowable end is its peer connection's, and
@@ -524,6 +549,21 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
 
     fn accept_backlog(&self) -> Option<usize> {
         self.accept_rx.as_ref().map(mpsc::Receiver::len)
+    }
+
+    fn dial_back(&mut self, dial: DialBack, outcomes: mpsc::Sender<DialBackOutcome>) {
+        // Released or never started: no serve task waits on the outcome.
+        let Some(hello) = self.hello.clone() else {
+            return;
+        };
+        let road = DialBackRoad {
+            hello,
+            adverts: self.adverts.clone(),
+            ip_filter: self.ip_filter.clone(),
+            ban_store: self.ban_store.clone(),
+            deps: self.inbound_deps(),
+        };
+        tokio::spawn(road.run(dial, outcomes));
     }
 
     /// Refused before `start` and after a release: there is no listener to
@@ -548,6 +588,7 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
         // Stop following: a session the operator makes after this is not told
         // about files this node no longer serves.
         self.follower = None;
+        self.hello = None;
         // Dropping the receiver is the pump's stop signal (`accept_tx.closed()`);
         // joining it is what makes the listener — and its port — gone rather
         // than merely told to go.

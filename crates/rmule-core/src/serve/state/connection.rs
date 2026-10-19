@@ -14,8 +14,8 @@ use rmule_primitives::{FileHash, PeerEndpoint};
 
 use crate::WaiterLeaveCause;
 use crate::adapters::ServeInput;
-use crate::service::ServeEvent;
-use crate::upload_queue::{Admission, LowIdAbuseFacts, refuses_as_low_id_abuse};
+use crate::service::{GrantRoad, ServeEvent};
+use crate::upload_queue::{Admission, LowIdAbuseFacts, WaiterContact, refuses_as_low_id_abuse};
 
 use super::transfer::answer_aich_recovery;
 use super::{ReadPurpose, ServeDecision, ServeState};
@@ -338,6 +338,13 @@ impl ServeState {
                 // is past the per-address cap — and not for a waiter asking
                 // again, which returns earlier (`UploadQueue.cpp:401-431`).
                 let waiting_already = self.queue.contains(peer) && !self.queue.is_granted(peer);
+                // A Low-ID waiter marked for its next connection is granted
+                // at this ask (`UploadQueue.cpp:410-425`).
+                let road = if self.queue.marked_for_next_connection(peer) {
+                    GrantRoad::NextConnection
+                } else {
+                    GrantRoad::Linked
+                };
                 let admission = self.queue.admit(peer, file_hash, now);
                 let counted = !waiting_already && admission != Admission::RefusedAddressCap;
                 let mut decisions = match admission {
@@ -350,13 +357,14 @@ impl ServeState {
                             peer,
                             file_hash,
                             software: self.software_of(peer),
+                            road,
                         }),
                     ],
                     Admission::Queued { rank } => {
                         // Stamp the waiter's advertised UDP contact so its
                         // reask heartbeat matches by IP + port (ADR-0057); an
                         // absent one keeps it TCP-reask-only.
-                        self.stamp_udp_contact(peer);
+                        self.stamp_contact(peer);
                         vec![
                             ServeDecision::Send {
                                 peer,
@@ -481,7 +489,7 @@ impl ServeState {
     }
 
     /// Fold one fact about the link into the serve-side bookkeeping.
-    fn on_connection_fact(
+    pub(super) fn on_connection_fact(
         &mut self,
         now: Instant,
         peer: PeerEndpoint,
@@ -499,7 +507,7 @@ impl ServeState {
                 let relinked = self.relink_waiter(peer, &identity);
                 self.identities.insert(peer, identity);
                 if !relinked.is_empty() {
-                    self.stamp_udp_contact(peer);
+                    self.stamp_contact(peer);
                 }
                 relinked
             }
@@ -511,7 +519,7 @@ impl ServeState {
                 if let Some(held) = self.identities.get_mut(&peer) {
                     *held = identity;
                     if what == IdentityChange::ReaskContact {
-                        self.stamp_udp_contact(peer);
+                        self.stamp_contact(peer);
                     }
                 }
                 Vec::new()
@@ -559,14 +567,27 @@ impl ServeState {
         }
     }
 
-    /// Stamp the client-UDP reask contact `peer`'s identity names on its
-    /// wait-list entry (ADR-0057), so an inbound `OP_REASKFILEPING` matches by
-    /// IP + UDP port; a peer that named none stays TCP-reask-only.
-    fn stamp_udp_contact(&mut self, peer: PeerEndpoint) {
+    /// Stamp how `peer`'s identity says it is reached on its wait-list entry
+    /// (ADR-0057): its client-UDP reask contact, so an inbound
+    /// `OP_REASKFILEPING` matches by IP + UDP port — a peer that named none
+    /// stays TCP-reask-only — and whether a dial reaches it once it hangs up,
+    /// a High ID or an IPv6 as the link it came on reads it.
+    fn stamp_contact(&mut self, peer: PeerEndpoint) {
         if let Some(identity) = self.identities.get(&peer) {
             let (udp_port, udp_version) = identity.client_udp_reask().unwrap_or_default();
-            self.queue
-                .set_udp_contact(peer, (udp_port != 0).then_some(udp_port), udp_version);
+            let dialable = identity
+                .source_coordinate(peer)
+                .peer_source()
+                .and_then(rmule_primitives::PeerSource::as_peer_endpoint)
+                .is_some();
+            self.queue.set_contact(
+                peer,
+                WaiterContact {
+                    udp_port: (udp_port != 0).then_some(udp_port),
+                    udp_version,
+                    dialable,
+                },
+            );
         }
     }
 }

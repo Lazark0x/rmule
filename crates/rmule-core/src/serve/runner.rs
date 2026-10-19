@@ -14,7 +14,7 @@ use rmule_primitives::PeerEndpoint;
 use tokio::sync::{mpsc, watch};
 
 use crate::adapters::{
-    AnnounceOutcome, ServeConnection, ServeInput, ServeOutput, ServeRuntimeService,
+    AnnounceOutcome, DialBackOutcome, ServeConnection, ServeInput, ServeOutput, ServeRuntimeService,
 };
 use crate::client_udp::{ClientUdpDatagram, ClientUdpSend};
 use crate::content::{CheckedReadError, ContentFileStore};
@@ -188,6 +188,9 @@ where
         let (fact_tx, mut fact_rx) = mpsc::channel::<(PeerEndpoint, ServeInput)>(64);
         // What each session made after an announce was told of the set.
         let mut session_told_rx = serve_runtime.take_session_told();
+        // How each dial-back the serve adapter makes ended (ADR-0057). The
+        // loop holds a sender, so the receiver never closes under it.
+        let (dial_back_tx, mut dial_back_rx) = mpsc::channel::<DialBackOutcome>(16);
 
         // The write-through handles every enactment shares, bound once.
         let sinks = ServeSinks {
@@ -200,6 +203,7 @@ where
             peer_roster: &peer_roster,
             read_failed_tx: read_failed_tx.as_ref(),
             served: &served,
+            dial_backs: &dial_back_tx,
         };
 
         // Announce the share set as of serve start — once the Registry
@@ -296,6 +300,34 @@ where
                             break;
                         }
                     }
+                }
+                outcome = dial_back_rx.recv() => {
+                    let Some(outcome) = outcome else { continue };
+                    let modifiers = current_modifiers(&credit, &held_places, state.identities()).await;
+                    state.on_self_position(self_position(own_identity.as_ref()));
+                    refresh_served(&served, &mut served_seen, &mut state);
+                    let now = Instant::now();
+                    let mut decisions: VecDeque<ServeDecision> = match outcome {
+                        // The link is registered before its hello is folded,
+                        // so the grant the fold decides finds it.
+                        DialBackOutcome::Linked { waiter, conn, identity } => {
+                            let link = conn.peer();
+                            register_serve_connection(conn, &mut conns, &fact_tx);
+                            state.on_dial_back_linked(now, waiter, link, *identity, &modifiers)
+                        }
+                        DialBackOutcome::Failed { waiter, cause } => {
+                            state.on_dial_back_failed(now, waiter, cause, &modifiers)
+                        }
+                    }
+                    .into();
+                    enact(
+                        &mut decisions,
+                        &mut state,
+                        &conns,
+                        &mut serve_runtime,
+                        sinks,
+                    )
+                    .await;
                 }
                 told = recv_session_told(&mut session_told_rx) => match told {
                     Some(told) => say_told(&evt_tx, told).await,
@@ -429,6 +461,8 @@ struct ServeSinks<'a> {
     read_failed_tx: Option<&'a std::sync::mpsc::Sender<crate::registry_check::CheckInput>>,
     /// The **Served Downloads**, whose runs take their askers.
     served: &'a ServedDownloads,
+    /// Where the serve adapter says how each dial-back ended.
+    dial_backs: &'a mpsc::Sender<DialBackOutcome>,
 }
 
 /// Carry out one `Vec<ServeDecision>` against the live runtime — the only
@@ -457,6 +491,7 @@ async fn enact<L: ServeRuntimeService>(
         peer_roster,
         read_failed_tx,
         served,
+        dial_backs,
     } = sinks;
     while let Some(decision) = decisions.pop_front() {
         match decision {
@@ -503,10 +538,12 @@ async fn enact<L: ServeRuntimeService>(
                             peer_roster.forget(PeerRelation::Upload, v4);
                         }
                     }
-                    ServeEvent::WaiterLeft { peer, .. } => {
-                        // A waiter that left never held a slot, so there is
-                        // no upload to close — only the roster mark
-                        // `PeerQueued` set.
+                    ServeEvent::WaiterLeft { peer, .. }
+                    | ServeEvent::UploadDialBackFailed { peer, .. } => {
+                        // A waiter that left — or whose dial-back ended
+                        // unsent — never had an upload open, so there is
+                        // nothing to close: only the roster mark `PeerQueued`
+                        // set.
                         if let Some(v4) = peer.as_v4() {
                             peer_roster.forget(PeerRelation::Upload, v4);
                         }
@@ -662,17 +699,9 @@ async fn enact<L: ServeRuntimeService>(
             } => {
                 served.sight(file_hash, sighting);
             }
-            ServeDecision::DialBackGrant { peer, file_hash } => {
-                // Seam (ADR-0057): promotion of a disconnected waiter dials its
-                // TCP endpoint and grants on connect — a serve-side outbound
-                // dial riding the ADR-0031 dialed-serve seam. The outbound
-                // serve-dial machinery lands with the live front.
-                tracing::debug!(
-                    ?peer,
-                    ?file_hash,
-                    "dial-back grant to a disconnected waiter; serve-dial seam"
-                );
-            }
+            // The adapter dials on a task of its own and says how it ended on
+            // the loop's dial-back inbox (ADR-0057).
+            ServeDecision::DialBack(dial) => serve_runtime.dial_back(dial, dial_backs.clone()),
         }
     }
 }

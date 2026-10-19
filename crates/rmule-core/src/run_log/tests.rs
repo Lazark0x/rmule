@@ -99,6 +99,7 @@ fn session_events() -> Vec<CoreEvent> {
             peer,
             file_hash: hash,
             software: Some(amule_233()),
+            road: crate::GrantRoad::Linked,
         }),
         CoreEvent::Scan(ScanEvent::Declined {
             dir: "/home/ann/private-share".into(),

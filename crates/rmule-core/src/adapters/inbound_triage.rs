@@ -225,7 +225,7 @@ pub(crate) async fn triage_inbound_connection(
             identity: identity.clone(),
         }))
         .await;
-    InboundEnd::Closed(drive_served_link(conn, identity, command_rx, event_tx, deps).await)
+    InboundEnd::Closed(drive_served_link(conn, identity, command_rx, event_tx, deps, None).await)
 }
 
 /// A Kad firewall-check frame that arrived before the hello: a dial-back can

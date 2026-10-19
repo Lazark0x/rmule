@@ -264,13 +264,7 @@ impl DialedLink {
 
     /// The names the link proves: its hello's, and where it was dialed.
     fn names(&self, remote: PeerEndpoint, identity: &PeerIdentity) -> Vec<LinkName> {
-        let mut names = LinkName::of(remote, identity);
-        if let Some(dialed_at) = self.dialed_at
-            && !names.contains(&LinkName::Endpoint(dialed_at))
-        {
-            names.push(LinkName::Endpoint(dialed_at));
-        }
-        names
+        LinkName::proven(remote, identity, self.dialed_at)
     }
 
     /// The session revised the peer: its names follow.

@@ -1,6 +1,6 @@
-//! Why a download dial ended before the peer's hello, read off what ended it:
-//! the outbound crypt rule's refusal, the connect's error, or the session's
-//! close before the peer identified.
+//! Why a dial — a download's, or the serve side's dial-back — ended before the
+//! peer's hello, read off what ended it: the outbound crypt rule's refusal,
+//! the connect's error, or the session's close before the peer identified.
 
 use rmule_net::driver::DriverError;
 use rmule_net::peer::PeerNetError;
@@ -11,7 +11,7 @@ use crate::service::DialEnd;
 
 /// Which side of aMule's outbound rule (`PeerCrypt::outbound`, ADR-0049)
 /// refused a dial before any socket, given the peer's crypt side and `ours`.
-pub(super) fn crypt_refusal(peer: PeerCrypt, ours: CryptStance) -> DialEnd {
+pub(in crate::adapters) fn crypt_refusal(peer: PeerCrypt, ours: CryptStance) -> DialEnd {
     let theirs = peer.stance();
     if theirs.requires() && !ours.supports() {
         DialEnd::CryptRequiredByPeer
@@ -25,7 +25,7 @@ pub(super) fn crypt_refusal(peer: PeerCrypt, ours: CryptStance) -> DialEnd {
 }
 
 /// Why `connect` failed, for every error but the crypt refusal.
-pub(super) fn connect_failure(error: &PeerNetError) -> DialEnd {
+pub(in crate::adapters) fn connect_failure(error: &PeerNetError) -> DialEnd {
     match error {
         PeerNetError::Connect { source } => io_kind(source.kind()),
         PeerNetError::Driver(DriverError::ConnectTimeout) => DialEnd::TimedOut,

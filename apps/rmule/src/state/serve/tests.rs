@@ -130,6 +130,7 @@ fn uploading_counts_the_files_slot_holders_now() {
             peer: peer_endpoint(peer),
             file_hash: file_hash(1),
             software: None,
+            road: rmule_core::GrantRoad::Linked,
         })
     };
     assert!(fold(&mut state, grant(1)));
@@ -213,6 +214,57 @@ fn a_relinked_waiter_keeps_its_row_at_its_new_link() {
         row.state,
         UploadState::Queued { rank: 1, file } if file == file_hash(4),
     ));
+}
+
+/// A waiter rmule dials back to its held slot reads so — not uploading yet —
+/// until the grant lands on the dialed link, its row moved there; a dial that
+/// ends unsent takes the row with the place.
+#[test]
+fn a_dialled_back_waiter_reads_dialling_back_until_its_grant_or_its_failure() {
+    let mut state = UiState::default();
+    let dialing = || {
+        serve_event(ServeEvent::UploadDialBack {
+            peer: peer_endpoint(2),
+            file_hash: file_hash(4),
+            software: None,
+        })
+    };
+    assert!(fold(&mut state, dialing()));
+    assert!(matches!(
+        state.upload_peers[&peer_endpoint(2)].state,
+        UploadState::DialingBack { file } if file == file_hash(4),
+    ));
+    assert_eq!(state.uploading_now(file_hash(4)), 0);
+
+    fold(
+        &mut state,
+        serve_event(ServeEvent::WaiterRelinked {
+            from: peer_endpoint(2),
+            to: peer_endpoint(3),
+        }),
+    );
+    fold(
+        &mut state,
+        serve_event(ServeEvent::UploadSlotGranted {
+            peer: peer_endpoint(3),
+            file_hash: file_hash(4),
+            software: None,
+            road: rmule_core::GrantRoad::DialedBack,
+        }),
+    );
+    assert_eq!(state.upload_peers.len(), 1, "one row, at the dialed link");
+    assert_eq!(state.uploading_now(file_hash(4)), 1);
+
+    let mut state = UiState::default();
+    fold(&mut state, dialing());
+    assert!(fold(
+        &mut state,
+        serve_event(ServeEvent::UploadDialBackFailed {
+            peer: peer_endpoint(2),
+            cause: rmule_core::DialBackEnd::Lapsed,
+        }),
+    ));
+    assert!(state.upload_peers.is_empty());
 }
 
 #[test]

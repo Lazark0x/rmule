@@ -76,6 +76,23 @@ impl LinkName {
         }
         names
     }
+
+    /// The names a link from `remote` proves once its hello is `identity`
+    /// ([`of`](Self::of)), and — for a link rmule dialed — where it dialed,
+    /// which reaches the peer whatever listen port its hello names.
+    pub(crate) fn proven(
+        remote: PeerEndpoint,
+        identity: &PeerIdentity,
+        dialed_at: Option<PeerEndpoint>,
+    ) -> Vec<Self> {
+        let mut names = Self::of(remote, identity);
+        if let Some(dialed_at) = dialed_at
+            && !names.contains(&Self::Endpoint(dialed_at))
+        {
+            names.push(Self::Endpoint(dialed_at));
+        }
+        names
+    }
 }
 
 /// The Peer Links, each under every name it proves. One cell shared by the

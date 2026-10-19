@@ -119,7 +119,7 @@ const PINNED_LEAN: &str = r#" INFO run_log: server.connected server=203.0.113.7:
  INFO run_log: serve.serving_started listen_addr=203.0.113.5:4662
  INFO run_log: download.queued id=3
  INFO run_log: download.peer_selected id=3
- INFO run_log: serve.upload_slot_granted
+ INFO run_log: serve.upload_slot_granted road=linked
  INFO run_log: scan.declined
  INFO run_log: identity.secured_mismatch
  INFO run_log: peer_reach.routed route=direct
@@ -165,7 +165,7 @@ const PINNED_FULL: &str = r#" INFO run_log: server.connected server=203.0.113.7:
  INFO run_log: serve.serving_started listen_addr=203.0.113.5:4662
  INFO run_log: download.queued id=3 file_hash=ABABABABABABABABABABABABABABABAB name="secret holiday film.avi" size=734003200 file_path="/home/ann/films/secret holiday film.avi.part"
  INFO run_log: download.peer_selected id=3 peer=198.51.100.9:4662
- INFO run_log: serve.upload_slot_granted peer=198.51.100.9:4662 file_hash=ABABABABABABABABABABABABABABABAB software="amule" software_version="2.3.3"
+ INFO run_log: serve.upload_slot_granted peer=198.51.100.9:4662 file_hash=ABABABABABABABABABABABABABABABAB road=linked software="amule" software_version="2.3.3"
  INFO run_log: scan.declined dir="/home/ann/private-share"
  INFO run_log: identity.secured_mismatch user_hash=CDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCD
  INFO run_log: peer_reach.routed peer=198.51.100.9:4662 route=direct dial=198.51.100.9:4662

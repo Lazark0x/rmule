@@ -150,6 +150,12 @@ pub enum UploadState {
         /// Which shared file the held slot is serving.
         file: FileHash,
     },
+    /// Promoted while it held no link: dialled back to take the slot held
+    /// for it.
+    DialingBack {
+        /// The shared file the held slot is for.
+        file: FileHash,
+    },
     /// Waiting for one.
     Queued {
         /// Place in the upload queue, as core last reported it.
@@ -326,6 +332,7 @@ pub(super) fn fold(state: &mut UiState, event: ServeEvent) -> bool {
             peer,
             file_hash,
             software,
+            ..
         } => {
             set_upload_state(
                 state,
@@ -369,6 +376,21 @@ pub(super) fn fold(state: &mut UiState, event: ServeEvent) -> bool {
         // The connection is closed on it; what that frees arrives as its own
         // events, so the note is the whole fact.
         E::NameAskMalformed { .. } => note(state, words::NAME_ASK_MALFORMED),
+        E::UploadDialBack {
+            peer,
+            file_hash,
+            software,
+        } => {
+            set_upload_state(
+                state,
+                peer,
+                UploadState::DialingBack { file: file_hash },
+                software,
+            );
+            true
+        }
+        // The waiter lost its place with the slot held for it.
+        E::UploadDialBackFailed { peer, .. } => release_peer(state, peer),
         E::UploadSlotReleased { peer } => release_peer(state, peer),
         // A wait-list entry that left without ever holding a slot (purged or
         // cancelled): the same row removal as a release, since it held only

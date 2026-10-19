@@ -29,6 +29,7 @@ async fn a_granted_upload_marks_the_peer_roster_known_and_its_release_forgets_it
         peer_roster: &peer_roster,
         read_failed_tx: None,
         served: &Default::default(),
+        dial_backs: &mpsc::channel(1).0,
     };
     let (_accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(1);
     let mut serve_runtime = FakeServeRuntime {
@@ -44,6 +45,7 @@ async fn a_granted_upload_marks_the_peer_roster_known_and_its_release_forgets_it
                 peer,
                 file_hash: file,
                 software: None,
+                road: crate::GrantRoad::Linked,
             },
         )]);
     super::super::enact(
@@ -119,6 +121,7 @@ async fn a_waiter_leaving_forgets_the_peer_roster_mark(cause: crate::WaiterLeave
         peer_roster: &peer_roster,
         read_failed_tx: None,
         served: &Default::default(),
+        dial_backs: &mpsc::channel(1).0,
     };
     let (_accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(1);
     let mut serve_runtime = FakeServeRuntime {

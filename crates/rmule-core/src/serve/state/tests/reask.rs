@@ -176,37 +176,6 @@ fn a_waiting_peer_keeps_its_position_across_disconnect_and_still_reasks() {
     );
 }
 
-#[test]
-fn promoting_a_disconnected_waiter_dials_back_rather_than_granting_over_a_dead_socket() {
-    let file = hash(0x11);
-    let waiter = peer_at([10, 0, 0, 2], 4000);
-    let holder = peer_at([10, 0, 0, 1], 4000);
-    let t = Instant::now();
-    let mut state = one_waiter_state(file, 4096, waiter, 6000, 4, t);
-
-    // The waiter loses its socket (keeps standing), then the holder frees
-    // the slot: the sole waiter is promoted, but with no live connection it
-    // is a dial-back grant, not a GrantSlot over a dead socket.
-    let _ = state.on_conn_event(t, waiter, disconnected(), &no_modifiers());
-    assert_eq!(
-        state.on_conn_event(t, holder, disconnected(), &no_modifiers()),
-        vec![
-            ServeDecision::DialBackGrant {
-                peer: waiter,
-                file_hash: file,
-            },
-            ServeDecision::Emit(ServeEvent::UploadSlotGranted {
-                peer: waiter,
-                file_hash: file,
-                // The waiter hung up, but its hello's identification waited
-                // with it: the grant still names its client.
-                software: Some(nameless_software()),
-            }),
-            ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer: holder }),
-        ],
-    );
-}
-
 /// The live-consume regression: once a disconnected top-waiter
 /// is promoted to a **pending dial-back grant** (the holder freed the slot,
 /// the serve-dial is deferred), its own `OP_REASKFILEPING` must still earn an

@@ -52,6 +52,7 @@ pub(crate) fn served_files() -> UiState {
             peer: peer_endpoint(1),
             file_hash: file_hash(1),
             software: Some(amule_233()),
+            road: rmule_core::GrantRoad::Linked,
         },
     );
     serve_fold(

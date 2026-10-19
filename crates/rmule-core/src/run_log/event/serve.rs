@@ -80,11 +80,27 @@ impl ServeEvent {
                 peer,
                 file_hash,
                 software: announced,
+                road,
             } => software(
                 Record::new("serve.upload_slot_granted")
                     .peer_address("peer", peer)
+                    .file_hash("file_hash", file_hash)
+                    .code("road", codes::grant_road(*road)),
+                announced.as_ref(),
+            ),
+            S::UploadDialBack {
+                peer,
+                file_hash,
+                software: announced,
+            } => software(
+                Record::new("serve.upload_dial_back")
+                    .peer_address("peer", peer)
                     .file_hash("file_hash", file_hash),
                 announced.as_ref(),
+            ),
+            S::UploadDialBackFailed { peer, cause } => codes::dial_back_end(
+                Record::new("serve.upload_dial_back_failed").peer_address("peer", peer),
+                *cause,
             ),
             S::PeerQueued {
                 peer,

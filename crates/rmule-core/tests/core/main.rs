@@ -74,6 +74,7 @@ mod credit_store;
 mod download_directory_scan;
 mod partial_share;
 mod registry_against_disk;
+mod serve_dial_back;
 mod serve_lifecycle;
 mod serve_loopback;
 mod serve_registry;

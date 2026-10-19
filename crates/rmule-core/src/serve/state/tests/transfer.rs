@@ -160,6 +160,7 @@ fn a_failed_block_read_stops_serving_the_file_and_tells_its_peers() {
                 peer: peer(3),
                 file_hash: other,
                 software: None,
+                road: crate::GrantRoad::Linked,
             }),
             ServeDecision::ReadFailed(file_hash),
         ],

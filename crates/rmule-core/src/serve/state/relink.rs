@@ -1,9 +1,10 @@
 //! A waiter is a client, not a link (ADR-0057, "A waiter on a new link";
 //! ADR-0107, "One peer, one link"): the hello of a new link that names a
 //! client already waiting moves that client's place — or its pending dial-back
-//! grant — onto the new link, as aMule attaches a new socket to the client it
-//! knows (`ClientList.cpp:371-412`) and keeps a queued client's place
-//! (`UploadQueue.cpp:395-431`). Two clients under one User Hash are settled
+//! grant, granted there at once — onto the new link, as aMule attaches a new
+//! socket to the client it knows (`ClientList.cpp:371-412`), keeps a queued
+//! client's place (`UploadQueue.cpp:395-431`) and grants a client it promoted
+//! unconnected once its hellos finish (`BaseClient.cpp:1707-1716`). Two clients under one User Hash are settled
 //! as aMule settles them: an identified one still linked turns the newcomer
 //! away (`ClientList.cpp:384-392`), and at a slot ask the ones not identified
 //! leave the wait list (`UploadQueue.cpp:432-458`).
@@ -14,8 +15,11 @@ use std::time::Instant;
 use rmule_peer::PeerIdentity;
 use rmule_primitives::{PeerEndpoint, UserHash};
 
+use rmule_peer::ServerCommand;
+
 use crate::WaiterLeaveCause;
-use crate::service::ServeEvent;
+use crate::service::{GrantRoad, ServeEvent};
+use crate::upload_queue::Relinked;
 
 use super::{ServeDecision, ServeState};
 
@@ -24,8 +28,9 @@ impl ServeState {
     /// its hello just came in on. The client is the waiter — or the pending
     /// dial-back grantee — holding the same User Hash, best rank first:
     /// aMule's queue finds its client by hash (`UploadQueue.cpp:396-397`),
-    /// and a Low-ID client marked for its next connection takes its slot
-    /// there (`m_bAddNextConnect`, `:410-425`). It is attached when the link
+    /// and a client it promoted unconnected is granted on the first link its
+    /// hellos finish on (`ClientTCPSocket.cpp:328`, `:417`), so a held grant
+    /// goes on `peer` at once. It is attached when the link
     /// it waited on has ended, or comes from the same address and listen
     /// port, which aMule drops for the new one (`ClientList.cpp:400-403`); a
     /// live link from anywhere else keeps its client, and the new link is
@@ -49,19 +54,33 @@ impl ServeState {
         let Some((from, linked, same_place)) = found else {
             return Vec::new();
         };
-        if (linked && !same_place) || !self.queue.relink(from, peer) {
+        if linked && !same_place {
             return Vec::new();
         }
-        self.served_ranges
-            .retain(|(range_peer, _), _| *range_peer != from);
-        self.forget(from);
-        self.sx_throttle.forget(from);
-        let relinked = ServeDecision::Emit(ServeEvent::WaiterRelinked { from, to: peer });
+        let Some(moved) = self.queue.relink(from, peer) else {
+            return Vec::new();
+        };
+        self.shed_link_state(from);
+        let mut decisions = vec![ServeDecision::Emit(ServeEvent::WaiterRelinked {
+            from,
+            to: peer,
+        })];
         if linked {
-            vec![relinked, ServeDecision::Disconnect { peer: from }]
-        } else {
-            vec![relinked]
+            decisions.push(ServeDecision::Disconnect { peer: from });
         }
+        if let Relinked::HeldGrant { file_hash } = moved {
+            decisions.push(ServeDecision::Send {
+                peer,
+                command: ServerCommand::GrantSlot { file_hash },
+            });
+            decisions.push(ServeDecision::Emit(ServeEvent::UploadSlotGranted {
+                peer,
+                file_hash,
+                software: Some(identity.software().clone()),
+                road: GrantRoad::CameBack,
+            }));
+        }
+        decisions
     }
 
     /// The credit ledger bound `user_hash`'s proven key on `peer`'s link, or

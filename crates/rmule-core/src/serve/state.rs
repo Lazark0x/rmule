@@ -18,6 +18,7 @@
 //! decision sequence instead of only through a live `ServeTask` loopback rig.
 
 mod connection;
+mod dial_back;
 mod exchange;
 mod reask;
 mod relink;
@@ -36,10 +37,11 @@ use rmule_peer::{ClientSoftware, PartBitmap, PeerIdentity, ServerCommand};
 use rmule_primitives::{AichHashSet, Ed2kText, FileHash, PeerEndpoint, SourceSighting, UserHash};
 
 use crate::WaiterLeaveCause;
+use crate::adapters::DialBack;
 use crate::registry::SharedFileEntry;
 use crate::serve::source_exchange::SourceExchangeThrottle;
 use crate::served_downloads::{PartFileIdentity, PartialEnd, ReadCheck, ServedLook};
-use crate::service::ServeEvent;
+use crate::service::{DialBackEnd, GrantRoad, ServeEvent};
 use crate::upload_queue::{Promotion, UploadSlotQueue};
 
 /// One effect the serve task must enact, drained in order from a
@@ -122,15 +124,11 @@ pub(super) enum ServeDecision {
         datagram: Vec<u8>,
         crypt_target: Option<PeerUdpCryptTarget>,
     },
-    /// Dial `peer`'s TCP endpoint and grant it `file_hash`'s upload slot
-    /// (`OP_ACCEPTUPLOADREQ` on connect) — promotion of a **disconnected**
-    /// waiter (ADR-0057 dial-back grant), a serve-side outbound dial riding the
-    /// ADR-0031 dialed-serve seam. The outbound serve-dial machinery lands with
-    /// the live front; the promotion decision is deterministic here.
-    DialBackGrant {
-        peer: PeerEndpoint,
-        file_hash: FileHash,
-    },
+    /// Dial back a waiter promoted while no link of it was up — the
+    /// **Dial-Back Grant** (ADR-0057). The serve adapter dials and says how
+    /// it ended ([`ServeState::on_dial_back_linked`],
+    /// [`ServeState::on_dial_back_failed`]).
+    DialBack(DialBack),
     /// Hand `sighting`, a peer that asked about `file_hash`, to the run of
     /// the download serving it as a candidate source (ADR-0113). The run
     /// takes it under its own source cap; a full inbox drops it.
@@ -389,9 +387,8 @@ impl ServeState {
             self.sx_throttle.forget(peer);
         }
         let mut decisions = Vec::new();
-        // A dropped wait-list entry never held a slot, so it gets the purge's
-        // own event — never `UploadSlotReleased`, which stays reserved for the
-        // reclaimed dial-back grant below.
+        // A dropped wait-list entry gets the purge's own event; the reclaimed
+        // dial-back grant below gets its lapse instead.
         for peer in &purge.removed {
             if purge.reclaimed != Some(*peer) {
                 decisions.push(ServeDecision::Emit(ServeEvent::WaiterLeft {
@@ -401,38 +398,38 @@ impl ServeState {
             }
         }
         if let Some(peer) = purge.reclaimed {
-            // A pending dial-back grant whose dial never connected: its slot is
-            // reclaimed, so surface the release before the promotion that fills
+            // A pending dial-back grant whose client never linked: its slot is
+            // reclaimed, so surface the lapse before the promotion that fills
             // it (`promotion_decisions` carries the grant + rank shifts).
-            decisions.push(ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer }));
+            decisions.push(ServeDecision::Emit(ServeEvent::UploadDialBackFailed {
+                peer,
+                cause: DialBackEnd::Lapsed,
+            }));
         }
         decisions.extend(self.promotion_decisions(purge.promotion));
         decisions
     }
 
-    /// Grant (or dial-back) the promoted waiter plus any rank shifts — the
-    /// shared tail of a slot-freeing event. A promotion of a **disconnected**
-    /// waiter is a `DialBackGrant` (rmule dials it), not a `GrantSlot` over a
-    /// dead socket (ADR-0057).
-    fn promotion_decisions(&self, promotion: Promotion) -> Vec<ServeDecision> {
+    /// Grant the promoted waiter on its link, or reach it when it has none
+    /// ([`reach_promoted`](Self::reach_promoted)), plus any rank shifts — the
+    /// shared tail of a slot-freeing event (ADR-0057).
+    fn promotion_decisions(&mut self, promotion: Promotion) -> Vec<ServeDecision> {
         let mut decisions = Vec::new();
         if let Some((promoted, file_hash)) = promotion.granted {
-            decisions.push(if promotion.dial_back {
-                ServeDecision::DialBackGrant {
-                    peer: promoted,
-                    file_hash,
-                }
+            if promotion.dial_back {
+                decisions.extend(self.reach_promoted(promoted, file_hash));
             } else {
-                ServeDecision::Send {
+                decisions.push(ServeDecision::Send {
                     peer: promoted,
                     command: ServerCommand::GrantSlot { file_hash },
-                }
-            });
-            decisions.push(ServeDecision::Emit(ServeEvent::UploadSlotGranted {
-                peer: promoted,
-                file_hash,
-                software: self.software_of(promoted),
-            }));
+                });
+                decisions.push(ServeDecision::Emit(ServeEvent::UploadSlotGranted {
+                    peer: promoted,
+                    file_hash,
+                    software: self.software_of(promoted),
+                    road: GrantRoad::Linked,
+                }));
+            }
         }
         decisions.extend(rank_updates(
             &self.queue,

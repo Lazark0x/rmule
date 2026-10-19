@@ -38,6 +38,7 @@ pub use self::event::{
     ServeStartFailure, ServeStopReason, ServerConnectFailure, ServerConnectionEvent,
     ServerListEvent, ShareRejectReason, SharesWithheld, SourcePurgeReason, SourceWait, SweepTally,
 };
+pub use self::event::{DialBackEnd, GrantRoad};
 
 use std::sync::Arc;
 

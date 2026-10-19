@@ -4,8 +4,8 @@
 
 use rmule_core::file_history::HistoryPart;
 use rmule_core::{
-    PartialEnd, ServeEvent, ServeStartFailure, ServeStopReason, ShareRejectReason, SharesWithheld,
-    WaiterLeaveCause, WithheldReason,
+    DialBackEnd, GrantRoad, PartialEnd, ServeEvent, ServeStartFailure, ServeStopReason,
+    ShareRejectReason, SharesWithheld, WaiterLeaveCause, WithheldReason,
 };
 
 use super::Sentence;
@@ -30,6 +30,33 @@ pub const PARTIAL: &str = "partial";
 
 /// A peer holding an upload slot: the Shared Files peers table's State cell.
 pub const UPLOADING: &str = "Uploading";
+
+/// A waiter being dialled back to take the upload slot held for it: the
+/// Shared Files peers table's State cell.
+pub const DIALING_BACK: &str = "Dialling back";
+
+/// How an upload slot reached its peer, as the tail of its log line: nothing
+/// for a grant on the link the peer held.
+const fn grant_road_words(road: GrantRoad) -> &'static str {
+    match road {
+        GrantRoad::Linked => "",
+        GrantRoad::DialedBack => " on the link dialled back to it",
+        GrantRoad::CameBack => ", held for it until it came back",
+        GrantRoad::NextConnection => " when it came back as a Low ID",
+    }
+}
+
+/// Why a slot held for a dial-back never reached its waiter.
+fn dial_back_end_words(end: DialBackEnd) -> String {
+    match end {
+        DialBackEnd::Dial(cause) => format!(
+            "the dial back ended before its hello: {}",
+            super::download::dial_end_words(cause)
+        ),
+        DialBackEnd::AnotherClient => "another client answered at its address".to_owned(),
+        DialBackEnd::Lapsed => "it did not come back within the hour".to_owned(),
+    }
+}
 
 /// A peer waiting in the upload queue at `rank`: the peers table's State
 /// cell.
@@ -237,9 +264,20 @@ pub fn log_line(event: &ServeEvent) -> Sentence {
         Sv::ServingStopped { reason } => serving_stopped(*reason),
         Sv::FilesAnnounced { file_count } => announced(*file_count),
         Sv::FilesWithheld { file_count, reason } => shares_withheld(*file_count, *reason),
-        Sv::UploadSlotGranted { peer, .. } => {
-            Sentence::owned(format!("upload slot to {}", address(*peer)))
-        }
+        Sv::UploadSlotGranted { peer, road, .. } => Sentence::owned(format!(
+            "upload slot to {}{}",
+            address(*peer),
+            grant_road_words(*road)
+        )),
+        Sv::UploadDialBack { peer, .. } => Sentence::owned(format!(
+            "dialling {} back to hand it its upload slot",
+            address(*peer)
+        )),
+        Sv::UploadDialBackFailed { peer, cause } => Sentence::owned(format!(
+            "upload slot held for {} goes to the next waiter: {}",
+            address(*peer),
+            dial_back_end_words(*cause)
+        )),
         Sv::PeerQueued { peer, rank, .. } => Sentence::owned(format!(
             "upload peer {} waits at rank {rank}",
             address(*peer)

@@ -7,10 +7,10 @@ use crate::port_mapping::{
     MappingError, MappingProtocol, MappingRefusal, MappingStatus, MappingTransportFault,
 };
 use crate::{
-    ConfidenceTier, CoreCommandRejectReason, DialEnd, DialFailure, DownloadFailure,
-    DownloadLifecycle, IgnoredReaskReply, KadStopReason, KadUnavailableReason, LegNotSent,
-    NatTraversalUnavailableReason, PairRole, PartFileChange, PartReleaseReason, PartsLost,
-    PeerReachDropReason, PeerRetirementReason, PeerStreamRole, QuitStep, ReconnectEnd,
+    ConfidenceTier, CoreCommandRejectReason, DialBackEnd, DialEnd, DialFailure, DownloadFailure,
+    DownloadLifecycle, GrantRoad, IgnoredReaskReply, KadStopReason, KadUnavailableReason,
+    LegNotSent, NatTraversalUnavailableReason, PairRole, PartFileChange, PartReleaseReason,
+    PartsLost, PeerReachDropReason, PeerRetirementReason, PeerStreamRole, QuitStep, ReconnectEnd,
     RelatedSearchRefusal, SearchFailure, SearchLegState, SearchResultSkipReason, ServeStartFailure,
     ServeStopReason, ServerConnectFailure, ServerListUpdateFailure, ShareRejectReason,
     SharesWithheld, SocketRole, SourcePurgeReason, SourceWait, TunnelTransport,
@@ -275,6 +275,25 @@ pub(super) const fn waiter_left(cause: WaiterLeaveCause) -> &'static str {
         WaiterLeaveCause::Purged => "purged",
         WaiterLeaveCause::Cancelled => "cancelled",
         WaiterLeaveCause::UserHashClash => "user_hash_clash",
+    }
+}
+
+pub(super) const fn grant_road(road: GrantRoad) -> &'static str {
+    match road {
+        GrantRoad::Linked => "linked",
+        GrantRoad::DialedBack => "dialed_back",
+        GrantRoad::CameBack => "came_back",
+        GrantRoad::NextConnection => "next_connection",
+    }
+}
+
+/// Why a dial-back grant ended unsent: its own code, or — for a dial that
+/// ended before the hello — `dial` with the dial's cause beside it.
+pub(super) fn dial_back_end(record: Record, end: DialBackEnd) -> Record {
+    match end {
+        DialBackEnd::Dial(cause) => dial_end(record.code("end", "dial"), cause),
+        DialBackEnd::AnotherClient => record.code("end", "another_client"),
+        DialBackEnd::Lapsed => record.code("end", "lapsed"),
     }
 }
 

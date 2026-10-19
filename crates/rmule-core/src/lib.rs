@@ -142,6 +142,7 @@ pub use adapters::{
     RuntimeSourceLookupService, ServeConnection, ServeInput, ServeOutput, ServeRuntimeService,
     SourceLookupOutcome, SourceLookupService, WorkerBrief,
 };
+pub use adapters::{DialBack, DialBackOutcome};
 pub use address_learning::{
     AddressObservation, AssignedAddress, ConfidenceTier, EndpointVerdict, ExternalAddressOverride,
     NatHint, ObservationOutcome, ObservationSource, SocketRole,
@@ -238,6 +239,7 @@ pub use service::{
     ShareRejectReason, SharesWithheld, SourcePurgeReason, SourceWait, SweepTally,
     VerificationAuthority, descriptor_room,
 };
+pub use service::{DialBackEnd, GrantRoad};
 pub use storage::{DownloadRepository, ResolvedAuthority};
 pub use store::app_config::DurableAppConfig;
 pub use store::credit::DurableCreditStore;
@@ -248,7 +250,7 @@ pub use store::{
 };
 pub use upload_queue::{
     Admission, LOW_ID_ABUSE_WAIT_LIST_THRESHOLD, MAX_WAITING_PER_ADDRESS, Promotion,
-    ReaskResolution, UploadSlotQueue, WaiterLeaveCause,
+    ReaskResolution, Relinked, UploadSlotQueue, WaiterContact, WaiterLeaveCause,
 };
 
 /// One routing-table contact, re-exported so a front-end can hand

@@ -42,8 +42,8 @@ pub use peer_transfer::{
     PeerWorkerEvent, RuntimePeerTransferService, WorkerBrief,
 };
 pub use serve_runtime::{
-    AnnounceOutcome, RuntimeServeRuntimeService, ServeConnection, ServeInput, ServeOutput,
-    ServeRuntimeService,
+    AnnounceOutcome, DialBack, DialBackOutcome, RuntimeServeRuntimeService, ServeConnection,
+    ServeInput, ServeOutput, ServeRuntimeService,
 };
 pub use source_lookup::{RuntimeSourceLookupService, SourceLookupOutcome, SourceLookupService};
 pub(crate) use udp_transport::{RuntimeServerUdpTransport, ServerUdpTransport};

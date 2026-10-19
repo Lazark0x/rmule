@@ -1,4 +1,5 @@
-//! An accepted link that took the serve road, driven as a **Peer Link**
+//! An accepted link that took the serve road, or one the serve side dialed
+//! back to a waiter it promoted (ADR-0057), driven as a **Peer Link**
 //! (ADR-0107, "One peer, one link"): filed under every name its hello proves,
 //! so a download of its peer rides it rather than dial a second link aMule
 //! would answer by dropping this one (`ClientList.cpp:400-403`), ending our
@@ -16,7 +17,7 @@ use tokio::sync::mpsc;
 
 use super::InboundPeerDeps;
 use super::inbound_triage::serve_side;
-use super::peer_link::{LinkName, Riders, ServeHold, recv_join};
+use super::peer_link::{DialInFlight, LinkName, Riders, ServeHold, recv_join};
 use super::peer_transfer::PeerWorkerEvent;
 use super::serve_runtime::{ServeInput, ServeOutput};
 use crate::service::PortTestClosedBy;
@@ -37,6 +38,10 @@ use crate::service::PortTestClosedBy;
 /// detaches the held link, freeing the buddy slot at once (aMule frees
 /// `m_pBuddy` when the buddy's socket dies).
 ///
+/// A link the serve side dialed back comes with its `dialed` Dial in Flight:
+/// it keeps that filing, moved to its hello's names and where it was dialed,
+/// and the serve side holds it from the dial.
+///
 /// Returns who closed the connection: the peer session's own close reason
 /// when it ended there, rmule when every half let it go.
 pub(super) async fn drive_served_link(
@@ -45,13 +50,31 @@ pub(super) async fn drive_served_link(
     mut command_rx: mpsc::Receiver<ServeOutput>,
     event_tx: mpsc::Sender<ServeInput>,
     deps: InboundPeerDeps,
+    dialed: Option<DialInFlight>,
 ) -> PortTestClosedBy {
     let remote = conn.peer_endpoint();
-    let (mut filing, joins) = deps
-        .peer_links
-        .file(remote, LinkName::of(remote, &identity));
+    let dialed_at = dialed.is_some().then_some(remote);
+    let names = LinkName::proven(remote, &identity, dialed_at);
+    let (mut filing, joins, mut serve) = match dialed {
+        Some(dial) => {
+            let (mut filing, joins) = dial.into_parts();
+            filing.refile(names);
+            (
+                filing,
+                joins,
+                ServeHold::dialed(remote, deps.buddy_slot.clone()),
+            )
+        }
+        None => {
+            let (filing, joins) = deps.peer_links.file(remote, names);
+            (
+                filing,
+                joins,
+                ServeHold::new(remote, deps.buddy_slot.clone()),
+            )
+        }
+    };
     let mut joins = Some(joins);
-    let mut serve = ServeHold::new(remote, deps.buddy_slot.clone());
     let mut riders = Riders::default();
     let closed_by = loop {
         tokio::select! {
@@ -113,7 +136,9 @@ pub(super) async fn drive_served_link(
                 match routed {
                     Routed::Open => {}
                     Routed::Pulled => serve.pulled(),
-                    Routed::Revised => filing.refile(LinkName::of(remote, &identity)),
+                    Routed::Revised => {
+                        filing.refile(LinkName::proven(remote, &identity, dialed_at));
+                    }
                     Routed::Offered(answer) => {
                         if let Some(answer) = answer
                             && conn.send(PeerCommand::Connection(answer)).await.is_err()
@@ -133,7 +158,9 @@ pub(super) async fn drive_served_link(
                     // granted.
                     Routed::SlotOffered => {
                         if !riders.is_ridden()
-                            && !deps.peer_links.offer_grant(&LinkName::of(remote, &identity))
+                            && !deps
+                                .peer_links
+                                .offer_grant(&LinkName::proven(remote, &identity, dialed_at))
                         {
                             let decline = PeerCommand::Requester(RequesterCommand::DeclineSlot);
                             if conn.send(decline).await.is_err() {

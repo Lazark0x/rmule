@@ -1,6 +1,7 @@
 //! What holds a **Peer Link** besides its downloads (ADR-0107 invariant 9):
 //! its serve side while it serves, once the peer has asked it anything over
-//! the link (ADR-0031), and the buddy slot while the link is the held buddy
+//! the link (ADR-0031) or from the dial on a link it dialed back (ADR-0057),
+//! and the buddy slot while the link is the held buddy
 //! link (ADR-0061). A link its last rider leaves with neither holding it
 //! closes then, so a rider's Queued Hang-Up sends the FIN well inside the
 //! uploader's 40 s silent-link close (ADR-0116, `ClientTCPSocket.cpp:201-229`).
@@ -26,6 +27,17 @@ impl ServeHold {
             buddy,
             serving: true,
             pulled: false,
+        }
+    }
+
+    /// The hold on a link the serve side dialed to grant a slot on
+    /// (ADR-0057): it holds the link from the dial, as the peer's pull would.
+    pub(in crate::adapters) const fn dialed(remote: PeerEndpoint, buddy: SharedBuddySlot) -> Self {
+        Self {
+            remote,
+            buddy,
+            serving: true,
+            pulled: true,
         }
     }
 
