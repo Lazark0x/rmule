@@ -23,10 +23,13 @@ const FLOW: &str = "peer-reciprocity";
 
 /// rmule's file: moves in about a minute at one slot once granted.
 const DEFAULT_RMULE_FILE_SIZE: u64 = 1024 * 1024;
-/// The holders' file: more than a holder fetches at its cap in a run.
+/// The holders' file: more than a holder fetches at S's slot in a run (12 MiB
+/// at 10 KiB/s is over twenty minutes).
 const DEFAULT_HOLDER_FILE_SIZE: u64 = 12 * 1024 * 1024;
-/// The gift: 3 MiB lifts S's credit for rmule to `sqrt(3 + 2)` ≈ 2.24.
-const DEFAULT_GIFT_FILE_SIZE: u64 = 3 * 1024 * 1024;
+/// The gift: more than X's first burst at link speed, before its cap takes
+/// hold (3 MiB reached X whole in 0.6 s), and it lifts S's credit for rmule
+/// to `sqrt(32 + 2)` ≈ 5.83.
+const DEFAULT_GIFT_FILE_SIZE: u64 = 32 * 1024 * 1024;
 
 /// The leg, as the command line names it.
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -76,12 +79,20 @@ pub(crate) struct PeerReciprocityArgs {
     /// The gift's size in bytes.
     #[arg(long, default_value_t = DEFAULT_GIFT_FILE_SIZE)]
     pub(crate) gift_file_size: u64,
-    /// The sharer's upload slot, KiB/s; it keeps two.
-    #[arg(long, default_value_t = 50)]
+    /// The sharer's upload slot, KiB/s; it keeps two. A holder's session
+    /// past 10 MB is kicked once someone waits, so the slot is slow enough
+    /// that neither holder reaches it before its stop.
+    #[arg(long, default_value_t = 10)]
     pub(crate) slot_kib: u32,
-    /// Each holder's download cap, KiB/s.
+    /// Each of the sharer's holders' download cap, KiB/s. Unset, the
+    /// sharer's slot paces them; a cap below the slot loses it to aMule's
+    /// 40 s socket timeout.
+    #[arg(long)]
+    pub(crate) holder_kib: Option<u32>,
+    /// X's download cap, KiB/s: slow enough that X holds rmule's one upload
+    /// slot until the flow stops it.
     #[arg(long, default_value_t = 2)]
-    pub(crate) holder_kib: u32,
+    pub(crate) x_kib: u32,
     /// Seconds between one body joining a queue and the next, and before a
     /// stop.
     #[arg(long, default_value_t = 60)]
@@ -121,6 +132,7 @@ pub(crate) fn peer_reciprocity(args: PeerReciprocityArgs) -> Result<()> {
         leg: args.leg.into(),
         slot_kib: args.slot_kib,
         holder_kib: args.holder_kib,
+        x_kib: args.x_kib,
         step_secs: args.step,
         run_window_secs: args.run_window,
     };

@@ -69,11 +69,20 @@ pub enum ReciprocityLeg {
 pub struct ReciprocityShape {
     /// The leg.
     pub leg: ReciprocityLeg,
-    /// S's upload slot, KiB/s; S keeps two.
+    /// S's upload slot, KiB/s; S keeps two. aMule kicks a slot past 10 MB
+    /// while someone waits (`UploadQueue.cpp:580-581`), so a slot this slow
+    /// keeps both holders through the run.
     pub slot_kib: u32,
-    /// Each holder's (and X's) download cap, KiB/s: low enough that none
-    /// finishes.
-    pub holder_kib: u32,
+    /// Each of S's holders' download cap, KiB/s; unset, S's slot paces them.
+    /// A holder capped below its slot keeps S's socket unwritable past
+    /// aMule's 40 s timeout and loses the slot (`ClientTCPSocket.cpp:201-229`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder_kib: Option<u32>,
+    /// X's download cap, KiB/s: slow enough that X still holds rmule's one
+    /// slot when the flow stops it. aMule's cap follows a 10 s average of the
+    /// rate (`DownloadClient.cpp:1162-1177`), so X takes a burst at link speed
+    /// first and the gift must outlast it.
+    pub x_kib: u32,
     /// Seconds each body that joins a queue is given before the next joins,
     /// and before a stop: the waits the scores compare.
     pub step_secs: u64,
@@ -335,7 +344,7 @@ pub fn run_peer_reciprocity(options: PeerReciprocityOptions<'_>) -> Result<()> {
                 holder,
                 &holder_link,
                 HOLDER_FILE,
-                Some(shape.holder_kib),
+                shape.holder_kib,
             )?;
         }
         if shape.leg == ReciprocityLeg::Credit {
@@ -415,7 +424,7 @@ pub fn run_peer_reciprocity(options: PeerReciprocityOptions<'_>) -> Result<()> {
                 &slot_holder,
                 &gift_at_rmule,
                 GIFT_FILE,
-                Some(shape.holder_kib),
+                Some(shape.x_kib),
             )?;
             start_downloader(
                 &mut bench,
@@ -513,8 +522,9 @@ mod tests {
     fn credit_shape() -> ReciprocityShape {
         ReciprocityShape {
             leg: ReciprocityLeg::Credit,
-            slot_kib: 50,
-            holder_kib: 2,
+            slot_kib: 10,
+            holder_kib: None,
+            x_kib: 2,
             step_secs: 60,
             run_window_secs: 1200,
         }
