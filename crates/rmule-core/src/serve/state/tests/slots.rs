@@ -64,41 +64,6 @@ fn slot_requests_grant_queue_or_refuse_within_the_shared_budget() {
     );
 }
 
-/// Converted from the inline serve-task theft test (ADR-0041):
-/// the brain forwards every SUI proof as a `BindIdentity` decision —
-/// including a thief's under a different key — because only the ledger
-/// knows the stored key. Its atomic compare-and-set denies the mismatch
-/// (pinned in `tests/credit_store.rs`) and the enactor reports the theft,
-/// mirroring the download runner's arm.
-#[test]
-fn identity_proofs_bind_through_the_ledger_decision() {
-    let mut state = serving_state(1, Vec::new());
-    let user_hash = user(0x0C);
-    let t = Instant::now();
-
-    for (p, key) in [
-        (peer(1), b"the-owners-key".as_slice()),
-        (peer(2), b"the-thiefs-key".as_slice()),
-    ] {
-        assert_eq!(
-            state.on_conn_event(
-                t,
-                p,
-                ServeInput::Connection(ConnectionEvent::IdentityVerified {
-                    user_hash,
-                    public_key: key.to_vec(),
-                }),
-                &no_modifiers(),
-            ),
-            vec![ServeDecision::BindIdentity {
-                peer: p,
-                user_hash,
-                public_key: key.to_vec(),
-            }],
-        );
-    }
-}
-
 /// Converted from the inline serve-task promotion test: a freed
 /// slot goes to the highest-credit waiter, not the longest-waiting one.
 #[test]

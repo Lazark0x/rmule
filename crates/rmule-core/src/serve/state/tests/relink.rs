@@ -120,10 +120,11 @@ fn a_link_rmule_dialed_takes_no_client_from_its_live_link() {
     assert_eq!(rank_of(&mut state, first, file, t), Some(1));
 }
 
-/// Prove `p`'s hello hash by Secure User Identification, the ledger binding
+/// Prove `p`'s hello hash by Secure User Identification, the link binding
 /// it.
 fn bind(state: &mut ServeState, p: PeerEndpoint, user_hash: UserHash) {
-    state.on_identity_bound(p, user_hash, true);
+    let bound = ServeInput::IdentityBound { user_hash };
+    let _ = state.on_conn_event(Instant::now(), p, bound, &no_modifiers());
 }
 
 #[test]

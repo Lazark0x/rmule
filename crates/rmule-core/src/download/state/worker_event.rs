@@ -120,15 +120,6 @@ impl DownloadState {
                     self.on_probe_answer(now, peer, &mut out);
                 }
             }
-            PeerWorkerEvent::IdentityVerified {
-                user_hash,
-                public_key,
-            } => {
-                out.push(Decision::BindIdentity {
-                    user_hash,
-                    public_key,
-                });
-            }
             PeerWorkerEvent::BlockReceived {
                 part_index,
                 offset,

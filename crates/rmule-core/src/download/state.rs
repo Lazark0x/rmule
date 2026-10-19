@@ -102,13 +102,6 @@ pub(crate) enum Decision {
     /// Credit `user_hash` for serving `bytes`; the runner holds the
     /// ledger lock.
     RecordCredit { user_hash: UserHash, bytes: u64 },
-    /// Bind `public_key` as `user_hash`'s **Secured Identity** (ADR-0041).
-    /// The runner (ledger-holder) performs the store's atomic compare-and-set;
-    /// a `Mismatch` denies the claim (theft fact), never overwriting the key.
-    BindIdentity {
-        user_hash: UserHash,
-        public_key: Vec<u8>,
-    },
     /// Verify and persist the assembled bytes of `part_index` (contributed
     /// by `peer`). A fallible effect: the runner reports the outcome back
     /// through [`DownloadState::on_persist_result`].

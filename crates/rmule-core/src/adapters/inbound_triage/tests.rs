@@ -129,6 +129,7 @@ async fn dial_a_buddy(
             tunnel_admit: crate::adapters::SharedTunnelAdmit::default(),
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
             peer_links: crate::adapters::SharedPeerLinks::default(),
+            secured_identities: crate::secured_identity::SharedSecuredIdentities::default(),
         },
     ));
     loop {
@@ -472,6 +473,7 @@ async fn the_adopted_buddy_links_close_frees_the_buddy_slot() {
             tunnel_admit: crate::adapters::SharedTunnelAdmit::default(),
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
             peer_links: crate::adapters::SharedPeerLinks::default(),
+            secured_identities: crate::secured_identity::SharedSecuredIdentities::default(),
         },
     ));
     let (_key, mut worker) = timeout(Duration::from_secs(2), adopt_rx.recv())

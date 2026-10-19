@@ -277,6 +277,10 @@ pub struct RuntimeServeRuntimeService {
     tunnel_admit: SharedTunnelAdmit,
     /// Where an accepted peer's refused hello is reported (ADR-0050).
     hello_refusals: crate::hello_refusals::SharedHelloRefusals,
+    /// Where a link this adapter drives binds its verified identity
+    /// (ADR-0041). Default (never installed) off `Core::builder`: nothing is
+    /// bound.
+    secured_identities: crate::secured_identity::SharedSecuredIdentities,
     /// **Kad Presence**: a served link's `0x99` is read against
     /// the running node's own Kad ID. Default on the non-`Core::builder`
     /// constructors — a view of no node, so every `0x99` drops `KadDown`;
@@ -397,6 +401,7 @@ impl RuntimeServeRuntimeService {
             tunnel_admit: self.tunnel_admit.clone(),
             hello_refusals: self.hello_refusals.clone(),
             peer_links: self.peer_links.clone(),
+            secured_identities: self.secured_identities.clone(),
         }
     }
 }
@@ -651,6 +656,7 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
         self.address_families = cells.address_families;
         self.tunnel_admit = cells.tunnel_admit.clone();
         self.hello_refusals = cells.hello_refusals.clone();
+        self.secured_identities = cells.secured_identities.clone();
         self.file_known = cells.file_known.clone();
         self.peer_links = cells.peer_links.clone();
     }

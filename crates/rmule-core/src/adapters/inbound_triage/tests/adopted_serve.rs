@@ -2,7 +2,8 @@
 //! claims"): aMule takes a callback socket at its `OP_HELLO` like every socket
 //! a client opens (`ClientTCPSocket.cpp:391`), so the serve side reads the
 //! hello the accept side read before anything the peer asks over the link,
-//! and the link's one Secure User Identification (ADR-0041).
+//! and the client identified once the link binds its one Secure User
+//! Identification (ADR-0041).
 
 use rmule_net::peer::Connection as PeerConnection;
 use rmule_peer::{PeerCommand, PeerEvent, RequesterCommand, SecureIdentConfig, ServerEvent};
@@ -10,7 +11,7 @@ use rmule_primitives::{ClientIdentity, PeerEndpoint, SecureIdentKey};
 
 use super::*;
 use crate::adapters::PeerWorker;
-use crate::adapters::peer_transfer::PeerWorkerEvent;
+use crate::secured_identity::SharedSecuredIdentities;
 
 const CALLER_HASH: UserHash = UserHash::from_bytes([0xC7; UserHash::BYTE_LEN]);
 
@@ -28,6 +29,7 @@ struct Adopted {
 async fn adopted_callback(
     caller_key: Option<Arc<SecureIdentKey>>,
     our_key: Option<Arc<SecureIdentKey>>,
+    secured_identities: SharedSecuredIdentities,
 ) -> Adopted {
     let low_id = ClientId::from_u32(0x0000_1234);
     // The download that asked the callback, awaiting it under the caller's
@@ -112,6 +114,7 @@ async fn adopted_callback(
             tunnel_admit: crate::adapters::SharedTunnelAdmit::default(),
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
             peer_links: crate::adapters::SharedPeerLinks::default(),
+            secured_identities,
         },
     ));
     let (_key, worker) = timeout(Duration::from_secs(5), adopt_rx.recv())
@@ -138,7 +141,7 @@ async fn a_slot_ask_over_an_adopted_callback_reaches_the_serve_side_under_its_he
         mut serving,
         worker: _worker,
         _registration,
-    } = adopted_callback(None, None).await;
+    } = adopted_callback(None, None, SharedSecuredIdentities::default()).await;
 
     // The caller asks for a slot once it holds rmule's hello.
     let identified = async {
@@ -194,19 +197,28 @@ async fn a_slot_ask_over_an_adopted_callback_reaches_the_serve_side_under_its_he
     );
 }
 
-/// The adopted link's one verification reaches its serve half, which keys the
-/// identified client on it (`UploadQueue.cpp:432-458`,
-/// `ClientList.cpp:384-392`), and the adopted download binds nothing twice.
+/// The adopted link binds its one verification, and its serve half reads the
+/// client identified, which it keys on the link (`UploadQueue.cpp:432-458`,
+/// `ClientList.cpp:384-392`).
 #[tokio::test]
-async fn an_adopted_callbacks_verification_reaches_its_serve_half_and_is_bound_once() {
+async fn an_adopted_callbacks_verification_is_bound_and_its_serve_half_reads_it() {
+    let credit: crate::credit::SharedCreditStore =
+        Arc::new(crate::store::credit::DurableCreditStore::new(
+            crate::store::open_durable_store_in_memory().unwrap(),
+        ));
+    let (events_tx, _events) = mpsc::channel(4);
+    let secured = SharedSecuredIdentities::default();
+    secured.install(Arc::clone(&credit), events_tx.downgrade());
+    let caller_key = Arc::new(SecureIdentKey::generate().unwrap());
     let Adopted {
         caller: _caller,
-        mut worker,
+        worker: _worker,
         mut serving,
         _registration,
     } = adopted_callback(
+        Some(Arc::clone(&caller_key)),
         Some(Arc::new(SecureIdentKey::generate().unwrap())),
-        Some(Arc::new(SecureIdentKey::generate().unwrap())),
+        secured,
     )
     .await;
     let mut served = timeout(Duration::from_secs(5), serving.recv())
@@ -214,11 +226,9 @@ async fn an_adopted_callbacks_verification_reaches_its_serve_half_and_is_bound_o
         .expect("the adopted link's serve half reaches the serve side")
         .expect("a serve connection")
         .conn;
-    let verified = timeout(Duration::from_secs(5), async {
+    let identified = timeout(Duration::from_secs(5), async {
         while let Some(input) = served.next_event().await {
-            if let ServeInput::Connection(ConnectionEvent::IdentityVerified { user_hash, .. }) =
-                input
-            {
+            if let ServeInput::IdentityBound { user_hash } = input {
                 return Some(user_hash);
             }
         }
@@ -226,21 +236,13 @@ async fn an_adopted_callbacks_verification_reaches_its_serve_half_and_is_bound_o
     })
     .await;
     assert_eq!(
-        verified,
+        identified,
         Ok(Some(CALLER_HASH)),
-        "the serve half reads the link's verification"
+        "the serve half reads the client identified"
     );
-    let rider_bound = timeout(Duration::from_millis(300), async {
-        while let Some(event) = worker.next_event().await {
-            if matches!(event, PeerWorkerEvent::IdentityVerified { .. }) {
-                return true;
-            }
-        }
-        false
-    })
-    .await;
-    assert!(
-        !matches!(rider_bound, Ok(true)),
-        "the download binds nothing the serve half binds"
+    assert_eq!(
+        credit.public_key(CALLER_HASH).unwrap(),
+        Some(caller_key.public_key_der()),
+        "the caller's proven key is its Secured Identity"
     );
 }

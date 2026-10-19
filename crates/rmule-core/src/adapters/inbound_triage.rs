@@ -75,6 +75,9 @@ pub(crate) struct InboundPeerDeps {
     /// The **Served Links** (ADR-0107): where a served link is filed, and
     /// where a download about to dial its peer joins it instead.
     pub(crate) peer_links: SharedPeerLinks,
+    /// Where the link binds the Secure User Identification its session
+    /// verified, once, whichever halves hold it (ADR-0041).
+    pub(crate) secured_identities: crate::secured_identity::SharedSecuredIdentities,
 }
 
 /// How an accepted connection left [`triage_inbound_connection`].

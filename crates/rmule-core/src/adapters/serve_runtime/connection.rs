@@ -9,20 +9,20 @@
 //! core says — a connection was readopted, or it is to be closed.
 
 use rmule_peer::{ConnectionCommand, ConnectionEvent, PeerCommand, ServerCommand, ServerEvent};
-use rmule_primitives::PeerEndpoint;
+use rmule_primitives::{PeerEndpoint, UserHash};
 use tokio::sync::mpsc;
 
 use crate::CoreError;
 
 /// What one connection hands the **Serve State**: the peer's Server
 /// Capability requests and its connection facts, exactly as its session
-/// reported them, plus the one fact that exists only in core.
+/// reported them, plus the two facts that exist only in core.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ServeInput {
     /// The peer asked something of our Server Capability.
     Server(ServerEvent),
     /// A fact about the link: the peer's identification and its revisions,
-    /// the Secure User Identification verdict, the close. `Identified`
+    /// the close. `Identified`
     /// arrives once, before any request on the connection; its
     /// `(connected_server, client_id)` is the Low-ID callback correlation key
     /// the accept-router read first (ADR-0039).
@@ -32,6 +32,13 @@ pub enum ServeInput {
     /// serve task just drops it from the serve set — distinct from
     /// `Disconnected`, which would release a slot it never held.
     Readopted,
+    /// The link bound the Secure User Identification its session verified,
+    /// proving `user_hash` (ADR-0041): the client its hello names is
+    /// identified while the link carries that hash.
+    IdentityBound {
+        /// The User Hash the verification proved.
+        user_hash: UserHash,
+    },
 }
 
 impl ServeInput {

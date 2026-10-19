@@ -453,33 +453,22 @@ impl Halves<'_> {
                 let _ = self.server_tx.send(ServeInput::Connection(fact)).await;
                 return Routed::Closed(reason);
             }
-            // One verification per link, bound by one half (ADR-0041): the
-            // serve half while it serves, which keys the identified client on
-            // it, else the rider — straight to its worker event stream, since
-            // the transfer loops drain requester events only while a command
-            // is in flight.
+            // One verification per link, bound by the link (ADR-0041): to
+            // the client's identity where the ledger keeps it, before any
+            // half could let the link go; the serve half reads the client
+            // identified while it serves, as it keys that on the link.
             ConnectionEvent::IdentityVerified {
                 user_hash,
                 public_key,
             } => {
-                let verified = ConnectionEvent::IdentityVerified {
-                    user_hash,
-                    public_key: public_key.clone(),
-                };
-                let served = serving
-                    && self
-                        .server_tx
-                        .send(ServeInput::Connection(verified))
-                        .await
-                        .is_ok();
-                if !served && let Some(rider) = rider {
-                    let _ = rider
-                        .worker_evt_tx
-                        .send(PeerWorkerEvent::IdentityVerified {
-                            user_hash,
-                            public_key,
-                        })
-                        .await;
+                let bound = self
+                    .deps
+                    .secured_identities
+                    .bind(user_hash, &public_key)
+                    .await;
+                if bound && serving {
+                    let identified = ServeInput::IdentityBound { user_hash };
+                    let _ = self.server_tx.send(identified).await;
                 }
             }
             // A revision, whole, to both halves that keep the identity: the

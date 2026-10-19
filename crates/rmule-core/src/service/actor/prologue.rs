@@ -97,6 +97,11 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     wiring
         .hello_refusals
         .install(diagnostics.clone(), evt_tx.downgrade());
+    // The verified-identity cell, for the same reason: a link binds its
+    // Secure User Identification in the one ledger (ADR-0041).
+    wiring
+        .secured_identities
+        .install(Arc::clone(&wiring.credit), evt_tx.downgrade());
     // The login deadline every establishment arms, installed on
     // the same cell and for the same reason: establishment runs off this actor
     // and must not hold a serve start — or a front end — open on a server that

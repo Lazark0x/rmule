@@ -62,18 +62,6 @@ pub(super) enum ServeDecision {
     /// Credit `user_hash` for serving `bytes`; the enactor holds the
     /// ledger lock.
     RecordCredit { user_hash: UserHash, bytes: u64 },
-    /// Bind `public_key` as `user_hash`'s **Secured Identity** (ADR-0041).
-    /// The enactor (ledger-holder) performs the store's atomic
-    /// compare-and-set; a `Mismatch` denies the claim (theft fact), never
-    /// overwriting the key — the mirror of the download runner's arm.
-    /// The enactor reports the binding back
-    /// ([`ServeState::on_identity_bound`]), which is what makes the client on
-    /// `peer`'s link identified.
-    BindIdentity {
-        peer: PeerEndpoint,
-        user_hash: UserHash,
-        public_key: Vec<u8>,
-    },
     /// Ban `peer`'s address: its hello named the User Hash of an identified
     /// client still linked from elsewhere (ADR-0107; aMule bans it,
     /// "Userhash invalid", `ClientList.cpp:384-392`).
@@ -237,9 +225,9 @@ pub(super) struct ServeState {
     /// holds none.
     identities: HashMap<PeerEndpoint, PeerIdentity>,
     /// The links whose client is **identified**: its Secure User
-    /// Identification proved the hello's User Hash and the credit ledger
-    /// bound the key (ADR-0041) — aMule's `IS_IDENTIFIED`. Shed with the
-    /// identity.
+    /// Identification proved the hello's User Hash and the link bound the key
+    /// in the credit ledger (ADR-0041) — aMule's `IS_IDENTIFIED`. Shed with
+    /// the identity.
     identified: HashSet<PeerEndpoint>,
     /// The live links rmule dialed — a download's, or a dial-back's — whose
     /// hello takes no client from a live link of its own: aMule moves a

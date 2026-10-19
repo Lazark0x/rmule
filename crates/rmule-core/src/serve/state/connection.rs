@@ -255,6 +255,10 @@ impl ServeState {
                 self.sx_throttle.forget(peer);
                 Vec::new()
             }
+            ServeInput::IdentityBound { user_hash } => {
+                self.on_identity_bound(peer, user_hash);
+                Vec::new()
+            }
         }
     }
 
@@ -530,19 +534,6 @@ impl ServeState {
                 }
                 Vec::new()
             }
-            ConnectionEvent::IdentityVerified {
-                user_hash,
-                public_key,
-            } => {
-                // Every proof is forwarded — including a thief's under a
-                // different key — because only the ledger knows the stored
-                // key; its compare-and-set arbitrates at enactment (ADR-0041).
-                vec![ServeDecision::BindIdentity {
-                    peer,
-                    user_hash,
-                    public_key,
-                }]
-            }
             ConnectionEvent::Disconnected { .. } => {
                 self.dialed.remove(&peer);
                 self.served_ranges
@@ -566,8 +557,10 @@ impl ServeState {
                 }
                 decisions
             }
-            // Facts the serve side keeps nothing of.
+            // Facts the serve side keeps nothing of. A verification is the
+            // link's to bind, which says so as `IdentityBound` (ADR-0041).
             ConnectionEvent::HelloSent
+            | ConnectionEvent::IdentityVerified { .. }
             | ConnectionEvent::HelloRefused { .. }
             | ConnectionEvent::SecureIdentFailed { .. }
             | ConnectionEvent::ClientIdOffered { .. } => Vec::new(),

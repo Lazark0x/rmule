@@ -208,6 +208,10 @@ pub(super) struct CoreWiring<S, P, L, K> {
     /// Where a refused peer hello is counted and raised (ADR-0050): the
     /// adapters hold clones; the prologue installs the bus and diagnostics.
     pub(super) hello_refusals: crate::hello_refusals::SharedHelloRefusals,
+    /// Where every link binds the Secure User Identification its session
+    /// verified (ADR-0041): the adapters hold clones; the prologue installs
+    /// the credit ledger and the bus.
+    pub(super) secured_identities: crate::secured_identity::SharedSecuredIdentities,
     pub(super) ip_filter: SharedIpFilter,
     /// The **Interface Source** (ADR-0084) core polls for the addresses this
     /// host holds. `Core::builder` installs the live enumeration; the

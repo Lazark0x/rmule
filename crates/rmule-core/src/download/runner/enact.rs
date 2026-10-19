@@ -13,7 +13,6 @@ use crate::adapters::{
     SourceLookupService, WorkerBrief,
 };
 use crate::callback::{DownloadAsk, DownloadReach, PendingCallback};
-use crate::credit::KeyBinding;
 use crate::download::persist::{PersistError, persist_streamed_part};
 use crate::download::state::{Decision, DownloadState};
 use crate::download::worker_pool::{WorkerChannels, WorkerFact, WorkerId, WorkerPool};
@@ -110,21 +109,6 @@ where
             }
             Decision::RecordCredit { user_hash, bytes } => {
                 let _ = ctx.runner.rt.credit.record_download(user_hash, bytes);
-            }
-            Decision::BindIdentity {
-                user_hash,
-                public_key,
-            } => {
-                // Atomic compare-and-set in the ledger (ADR-0041); the
-                // *consequence* of a mismatch lives here: report the theft.
-                // The stored key is untouched and unsecured accrual continues.
-                let binding = ctx.runner.rt.credit.bind_public_key(user_hash, &public_key);
-                if matches!(binding, Ok(KeyBinding::Mismatch)) {
-                    let _ = ctx
-                        .evt_tx
-                        .send(CoreEvent::SecuredIdentityMismatch { user_hash })
-                        .await;
-                }
             }
             Decision::PersistPart {
                 part_index,

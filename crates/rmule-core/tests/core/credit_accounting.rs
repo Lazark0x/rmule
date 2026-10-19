@@ -36,9 +36,6 @@ impl SourceLookupService for OneSourceLookup {
 struct CreditingPeerTransfer {
     bytes: Vec<u8>,
     user_hash: UserHash,
-    /// When set, the worker also reports a completed Secure User
-    /// Identification with this public key (ADR-0041).
-    verified_key: Option<Vec<u8>>,
 }
 impl PeerTransferService for CreditingPeerTransfer {
     async fn start_peer_worker(
@@ -52,7 +49,6 @@ impl PeerTransferService for CreditingPeerTransfer {
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let bytes = self.bytes.clone();
         let user_hash = self.user_hash;
-        let verified_key = self.verified_key.clone();
         tokio::spawn(async move {
             let _ = event_tx
                 .send(PeerWorkerEvent::Identity(crate::fixture::peer_identity(
@@ -62,14 +58,6 @@ impl PeerTransferService for CreditingPeerTransfer {
                 .await;
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
             let _ = event_tx.send(advertised).await;
-            if let Some(public_key) = verified_key {
-                let _ = event_tx
-                    .send(PeerWorkerEvent::IdentityVerified {
-                        user_hash,
-                        public_key,
-                    })
-                    .await;
-            }
             while let Some(command) = command_rx.recv().await {
                 match command {
                     PeerWorkerCommand::AskSlot | PeerWorkerCommand::TakeGrant => {
@@ -102,12 +90,8 @@ impl PeerTransferService for CreditingPeerTransfer {
 
 /// Run one whole sub-part download from `user_hash` through a scripted worker
 /// against the credit ledger of `store`, returning every `CoreEvent` up to (and including) the
-/// completion. `verified_key` scripts a completed SUI exchange (ADR-0041).
-async fn run_credited_download(
-    store: Arc<DurableStore>,
-    user_hash: UserHash,
-    verified_key: Option<Vec<u8>>,
-) -> Vec<CoreEvent> {
+/// completion.
+async fn run_credited_download(store: Arc<DurableStore>, user_hash: UserHash) -> Vec<CoreEvent> {
     let output_dir = tempfile::tempdir().expect("temp dir");
     let bytes = vec![0x5A_u8; FILE_BYTES];
     let summary = FileHashSummary::digest_bytes(&bytes);
@@ -119,11 +103,7 @@ async fn run_credited_download(
             output_dir.path(),
         ))
         .source_lookup(OneSourceLookup { peer: source })
-        .peer_transfer(CreditingPeerTransfer {
-            bytes,
-            user_hash,
-            verified_key,
-        })
+        .peer_transfer(CreditingPeerTransfer { bytes, user_hash })
         .serve_runtime(RuntimeServeRuntimeService::new())
         .build();
 
@@ -171,67 +151,11 @@ async fn download_records_received_bytes_in_the_credit_store() {
     let store = rmule_testkit::memory_store();
     let credit = DurableCreditStore::new(store.clone());
 
-    run_credited_download(store.clone(), user_hash, None).await;
+    run_credited_download(store.clone(), user_hash).await;
 
     assert_eq!(
         credit.totals(user_hash).unwrap().downloaded,
         FILE_BYTES as u64
     );
     assert_eq!(credit.totals(user_hash).unwrap().uploaded, 0);
-}
-
-/// A worker-reported completed SUI exchange binds the peer's public key in the
-/// credit store: the peer becomes a **Secured Identity** (ADR-0041).
-#[tokio::test]
-async fn a_verified_identity_binds_the_peers_public_key_as_secured() {
-    let user_hash = UserHash::from_bytes([0x33; UserHash::BYTE_LEN]);
-    let store = rmule_testkit::memory_store();
-    let credit = DurableCreditStore::new(store.clone());
-
-    run_credited_download(
-        store.clone(),
-        user_hash,
-        Some(b"peer-public-key-der".to_vec()),
-    )
-    .await;
-
-    assert_eq!(
-        credit.public_key(user_hash).unwrap().as_deref(),
-        Some(b"peer-public-key-der".as_slice()),
-        "the verified key is bound as the peer's Secured Identity"
-    );
-}
-
-/// A verified exchange under a *different* key than the stored Secured
-/// Identity is identity theft (eMule `IS_IDFAILED`): the stored key is never
-/// overwritten, the theft is reported, and unsecured byte accrual continues
-/// untouched (ADR-0041).
-#[tokio::test]
-async fn a_mismatched_key_never_rebinds_and_reports_the_theft() {
-    let user_hash = UserHash::from_bytes([0x33; UserHash::BYTE_LEN]);
-    let store = rmule_testkit::memory_store();
-    let credit = DurableCreditStore::new(store.clone());
-    credit
-        .bind_public_key(user_hash, b"the-original-owner-key")
-        .unwrap();
-
-    let events =
-        run_credited_download(store.clone(), user_hash, Some(b"the-thiefs-key".to_vec())).await;
-
-    assert_eq!(
-        credit.public_key(user_hash).unwrap().as_deref(),
-        Some(b"the-original-owner-key".as_slice()),
-        "a mismatched key must never overwrite the Secured Identity"
-    );
-    assert!(
-        events.iter().any(
-            |e| matches!(e, CoreEvent::SecuredIdentityMismatch { user_hash: h } if *h == user_hash)
-        ),
-        "the denied claim is reported as a theft fact"
-    );
-    assert_eq!(
-        credit.totals(user_hash).unwrap().downloaded,
-        FILE_BYTES as u64,
-        "unsecured accrual is untouched by the denial"
-    );
 }

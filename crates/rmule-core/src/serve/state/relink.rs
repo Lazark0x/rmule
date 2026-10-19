@@ -164,23 +164,16 @@ impl ServeState {
         decisions
     }
 
-    /// The credit ledger bound `user_hash`'s proven key on `peer`'s link, or
-    /// refused it (`bound`, ADR-0041): a client proven and bound is
-    /// identified while its link carries that hash.
-    pub(in crate::serve) fn on_identity_bound(
-        &mut self,
-        peer: PeerEndpoint,
-        user_hash: UserHash,
-        bound: bool,
-    ) {
+    /// `peer`'s link bound the key its session proved `user_hash` holds
+    /// (ADR-0041): the client on it is identified while its hello carries
+    /// that hash.
+    pub(in crate::serve) fn on_identity_bound(&mut self, peer: PeerEndpoint, user_hash: UserHash) {
         let carries = self
             .identities
             .get(&peer)
             .is_some_and(|identity| identity.user_hash() == user_hash);
-        if bound && carries {
+        if carries {
             self.identified.insert(peer);
-        } else {
-            self.identified.remove(&peer);
         }
     }
 

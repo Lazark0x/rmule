@@ -99,6 +99,7 @@ fn deps() -> InboundPeerDeps {
         tunnel_admit: crate::adapters::SharedTunnelAdmit::default(),
         hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
         peer_links: crate::adapters::SharedPeerLinks::default(),
+        secured_identities: crate::secured_identity::SharedSecuredIdentities::default(),
     }
 }
 

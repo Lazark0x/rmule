@@ -19,7 +19,7 @@ use crate::adapters::{
 };
 use crate::client_udp::{ClientUdpDatagram, ClientUdpSend};
 use crate::content::{CheckedReadError, ContentFileStore};
-use crate::credit::{KeyBinding, SharedCreditStore};
+use crate::credit::SharedCreditStore;
 use crate::held_places::{RECIPROCITY_FACTOR, SharedHeldPlaces};
 use crate::peer_roster::{PeerRelation, RelationLease};
 use crate::registry::{SharedFileEntry, SharedFileRegistry};
@@ -586,24 +586,6 @@ async fn enact<L: ServeRuntimeService>(
             }
             ServeDecision::RecordCredit { user_hash, bytes } => {
                 let _ = credit.record_upload(user_hash, bytes);
-            }
-            ServeDecision::BindIdentity {
-                peer,
-                user_hash,
-                public_key,
-            } => {
-                // Bind the proven key as the peer's Secured Identity (ADR-0041).
-                // Mismatch = eMule IS_IDFAILED: deny, keep the stored key, report
-                // the theft; unsecured accrual continues untouched. Mirrors the
-                // download runner's Decision::BindIdentity enactment.
-                let binding = credit.bind_public_key(user_hash, &public_key);
-                if matches!(binding, Ok(KeyBinding::Mismatch)) {
-                    let _ = evt_tx
-                        .send(CoreEvent::SecuredIdentityMismatch { user_hash })
-                        .await;
-                }
-                let bound = matches!(binding, Ok(KeyBinding::Adopted | KeyBinding::AlreadyBound));
-                state.on_identity_bound(peer, user_hash, bound);
             }
             ServeDecision::Ban { peer } => {
                 tracing::info!(

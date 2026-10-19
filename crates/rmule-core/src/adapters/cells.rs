@@ -71,6 +71,9 @@ pub struct AdapterCells {
     /// The **Served Links** (ADR-0107): the accept path files each served
     /// link, the dial path joins one rather than dial its peer again.
     pub(crate) peer_links: super::SharedPeerLinks,
+    /// Where a link binds the Secure User Identification its session
+    /// verified (ADR-0041).
+    pub(crate) secured_identities: crate::secured_identity::SharedSecuredIdentities,
 }
 
 impl AdapterCells {
@@ -108,6 +111,7 @@ impl AdapterCells {
             address_families: FamilySelection::default(),
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
             peer_links: super::SharedPeerLinks::default(),
+            secured_identities: crate::secured_identity::SharedSecuredIdentities::default(),
         }
     }
 }

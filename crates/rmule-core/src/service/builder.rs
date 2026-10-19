@@ -482,6 +482,7 @@ where
                 served_downloads: cells.served_downloads,
                 tunnel_admit: cells.tunnel_admit,
                 hello_refusals: cells.hello_refusals,
+                secured_identities: cells.secured_identities,
                 ip_filter: cells.ip_filter,
                 interface_source: node.interface_source,
                 gateway_source: node.gateway_source,
@@ -705,6 +706,9 @@ impl Core {
             // A changed Low ID is checked against the managed server list
             // before a link is found under it (ADR-0107).
             peer_links: crate::adapters::SharedPeerLinks::knowing(app_config.clone()),
+            // One cell every link binds its verified identity through
+            // (ADR-0041); the actor's prologue installs the ledger and bus.
+            secured_identities: crate::secured_identity::SharedSecuredIdentities::default(),
         };
         // One wiring path: the default adapters adopt the cells
         // exactly as an injected one does.

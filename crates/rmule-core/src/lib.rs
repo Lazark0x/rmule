@@ -120,6 +120,7 @@ mod scheduler;
 // The Served Downloads (ADR-0113): the downloads that answer a peer's probes
 // and offer their verified parts, written under one lease at a time.
 mod search;
+mod secured_identity;
 mod serve;
 mod served_downloads;
 mod server_capabilities;

@@ -14,7 +14,7 @@ use rmule_net::peer::Connection as PeerConnection;
 use rmule_peer::{PartBitmap, PeerCommand, PeerHandshakeContext, PeerIdentity, SideCommand};
 use rmule_primitives::{
     AichRootHash, ClientId, Ed2kFileLink, Ipv4Endpoint, PartHash, PeerCrypt, PeerEndpoint,
-    SourceSighting, UserHash,
+    SourceSighting,
 };
 use tokio::sync::mpsc;
 
@@ -142,18 +142,6 @@ pub enum PeerWorkerEvent {
     /// A dialed worker's comes off its hello; an adopted inbound worker's is
     /// the one the accept side read off the same hello.
     Identity(PeerIdentity),
-    /// Secure User Identification proved the peer owns the `user_hash` it
-    /// claimed; `public_key` is its RSA public key DER (ADR-0041). Core binds
-    /// it as a **Secured Identity**. A connection-lifecycle fact, not a
-    /// transfer step: it may arrive at any point relative to the transfer
-    /// events (including before `Identity` — the router forwards it
-    /// directly, off the transfer flow).
-    IdentityVerified {
-        /// The hash the proof was for.
-        user_hash: UserHash,
-        /// Its RSA public key in DER form, bound as the peer's Secured Identity.
-        public_key: Vec<u8>,
-    },
     /// The peer answered `OP_HASHSETREQUEST`. These hashes are provisional
     /// until the finished file's own hash confirms them.
     HashSetReceived {
@@ -534,6 +522,9 @@ pub struct RuntimePeerTransferService {
     /// Where a dialed peer's refused hello is reported (ADR-0050). Default
     /// (never installed, reports go nowhere) off `Core::builder`.
     hello_refusals: crate::hello_refusals::SharedHelloRefusals,
+    /// Where a dialed link binds its verified identity (ADR-0041). Default
+    /// (never installed) off `Core::builder`: nothing is bound.
+    secured_identities: crate::secured_identity::SharedSecuredIdentities,
     /// The node-wide services a dialed link's side-channel frames are carried
     /// to, as an accepted link's are. Default (never installed) off
     /// `Core::builder`: the frames reach nothing.
@@ -572,6 +563,7 @@ impl RuntimePeerTransferService {
             tunnel_admit: self.side.tunnel_admit.clone(),
             hello_refusals: self.hello_refusals.clone(),
             peer_links: self.peer_links.clone(),
+            secured_identities: self.secured_identities.clone(),
         }
     }
 }
@@ -589,6 +581,7 @@ impl RuntimePeerTransferService {
             addresses: crate::address_learning::SharedAddressLearning::new(),
             ip_filter: SharedIpFilter::default(),
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
+            secured_identities: crate::secured_identity::SharedSecuredIdentities::default(),
             side: SideServices::default(),
             peer_links: super::SharedPeerLinks::default(),
         }
@@ -613,6 +606,7 @@ impl RuntimePeerTransferService {
             addresses: crate::address_learning::SharedAddressLearning::new(),
             ip_filter: SharedIpFilter::default(),
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
+            secured_identities: crate::secured_identity::SharedSecuredIdentities::default(),
             side: SideServices::default(),
             peer_links: super::SharedPeerLinks::default(),
         }
@@ -678,6 +672,7 @@ impl PeerTransferService for RuntimePeerTransferService {
         self.addresses = cells.addresses().clone();
         self.ip_filter = cells.ip_filter.clone();
         self.hello_refusals = cells.hello_refusals.clone();
+        self.secured_identities = cells.secured_identities.clone();
         self.side.kad_pump = cells.kad_pump.clone();
         self.side.buddy_slot = cells.buddy_slot.clone();
         self.side.peer_roster = cells.peer_roster.clone();
