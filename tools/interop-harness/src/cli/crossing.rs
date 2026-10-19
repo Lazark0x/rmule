@@ -72,7 +72,7 @@ pub(crate) struct PeerCrossingArgs {
     #[arg(long, value_enum)]
     pub(crate) leg: LegArg,
     /// Seconds W stays queued before X stops: past aMule's 40 s idle close.
-    #[arg(long, default_value_t = 60)]
+    #[arg(long, default_value_t = 45)]
     pub(crate) idle: u64,
     /// Seconds each hold stands before it is lifted.
     #[arg(long, default_value_t = 4)]

@@ -448,8 +448,9 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
             )?;
             wait_for_container_log(&bench.docker, &rmule_name, "serve.peer_queued", timeout)?;
             let waiter_ip = container_ip(&bench, &waiter)?;
-            // Past aMule's idle close, so the waiter has no link when X stops.
-            std::thread::sleep(Duration::from_secs(shape.idle_secs));
+            // Set now: no hold touches W's queued link (rmule's end is its
+            // listener), and X must stop well inside the 100 s an aMule
+            // downloader waits for a packet (`DownloadClient.cpp:1189`).
             match shape.leg {
                 CrossingLeg::ServeCalledOff => {
                     holds.add(
@@ -468,6 +469,8 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                 }
                 _ => {}
             }
+            // Past aMule's idle close, so the waiter has no link when X stops.
+            std::thread::sleep(Duration::from_secs(shape.idle_secs));
             marks.holder_stopped_at = Some(verdict::unix_now());
             run_checked(
                 bench.docker.stop_container(holder.clone(), STOP_GRACE_SECS),
