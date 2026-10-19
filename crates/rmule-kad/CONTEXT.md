@@ -150,7 +150,7 @@ The bounded keyword index a **Kad Storer** serves: entries keyed by keyword ID a
 _Avoid_: keyword cache, DHT storage, file database
 
 **Kad Keyword Result Row**:
-One row inside a `KADEMLIA2_SEARCH_RES` payload answering a keyword target: a file ID plus served tags and the storer's publish-info tag. Sibling of the **Kad Source Result Row** — same envelope, different index.
+One row inside a `KADEMLIA2_SEARCH_RES` payload answering a keyword target: a file ID plus served tags and the storer's publish-info tag, and from an eMule-family storer the AICH roots its publishers reported with how many did (`TAG_KADAICHHASHRESULT`; a search keeps them from a storer at Kad v9 or later only, ADR-0038). Sibling of the **Kad Source Result Row** — same envelope, different index.
 _Avoid_: search hit, file listing, source row
 
 **Kad Distance Ordering Evidence**:

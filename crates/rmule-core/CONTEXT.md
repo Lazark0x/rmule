@@ -864,12 +864,23 @@ _Avoid_: statistics, throughput, speed, bandwidth (all imply a time window core 
 
 **Trusted AICH Root**:
 The **AICH Root Hash** a download trusts as the anchor for **AICH Block Recovery**,
-resolved per-download with precedence link `h=` > trusted-set vote > none. A single
-peer's claimed root is never trusted: unlike the **ED2K Part Hash Set** (whose hashes
-re-hash to the **ED2K File Hash**), the AICH root has no self-verifying anchor, so with
-no link `h=` rmule commits a root only when enough distinct peers report the same one.
+resolved per-download with precedence link `h=` > **Qualified Kad Root** > trusted-set
+vote > none (ADR-0038). A single peer's claimed root is never trusted: unlike the **ED2K
+Part Hash Set** (whose hashes re-hash to the **ED2K File Hash**), the AICH root has no
+self-verifying anchor, so with no link `h=` rmule commits a root only when enough distinct
+peers report the same one. The vote still runs under a Kad root; a vote committing another
+root leaves the download trusting neither for its life.
 With no trusted root, recovery is disabled and a failed part's refetch attributes it (**Failed Cells**).
 _Avoid_: AICH root hash (that is the raw value; this is the per-download trust decision), verification authority (that is the MD4 identity authority; AICH is orthogonal)
+
+**Qualified Kad Root**:
+The one AICH root a Kad keyword result carries (`TAG_KADAICHHASHRESULT`, kept from a storer
+at Kad v9 or later), when at least a third of the file's publishers (`TAG_PUBLISHINFO`) and
+at least `MIN_UNIQUE_IPS_TO_TRUST` (10) of them reported it (ADR-0038). Two roots, or one
+under either bar, qualify nothing. The search row carries it; a download started from the
+row trusts it from the start, below a link's `h=`, and its record keeps it — or the contest
+that ended it. Never written into a link as `h=`.
+_Avoid_: Kad AICH hash, verified AICH hash (eMule's word: eMule takes it as `h=`; rmule ranks it below), trusted Kad root (it is trusted only once a download starts from it)
 
 **AICH Block Recovery**:
 The **Download State** failure-path upgrade (ADR-0038, amending ADR-0029): when a part
