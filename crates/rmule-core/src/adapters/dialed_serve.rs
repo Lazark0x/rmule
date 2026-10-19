@@ -218,7 +218,7 @@ pub(crate) async fn route_dialed_connection(mut conn: PeerConnection, route: Dia
                 if closing.is_some() => break,
             event = conn.next_event() => {
                 let Some(event) = event else { break }; // driver/peer gone
-                match halves.dispatch(remote, event, riders.rider()).await {
+                match halves.dispatch(remote, event, riders.rider(), serve.serving()).await {
                     Routed::Open => {}
                     Routed::Pulled => serve.pulled(),
                     Routed::Identified(identity) => {
@@ -342,15 +342,18 @@ struct Halves<'a> {
 
 impl Halves<'_> {
     /// Send one event to the half that keeps its group: the rider's, when
-    /// one rides.
+    /// one rides, and the serve half's while it is `serving`.
     async fn dispatch(
         &self,
         peer: PeerEndpoint,
         event: PeerEvent,
         rider: Option<&DownloadHalf>,
+        serving: bool,
     ) -> Routed {
         match event {
-            PeerEvent::Connection(fact) => return self.connection_fact(peer, fact, rider).await,
+            PeerEvent::Connection(fact) => {
+                return self.connection_fact(peer, fact, rider, serving).await;
+            }
             // Whether the file request carried a source ask (ADR-0108): the
             // riding download alone stamps it. The facts it was framed under
             // are the identity's, which reached the download first.
@@ -391,6 +394,7 @@ impl Halves<'_> {
         peer: PeerEndpoint,
         fact: ConnectionEvent,
         rider: Option<&DownloadHalf>,
+        serving: bool,
     ) -> Routed {
         match fact {
             ConnectionEvent::Identified { identity } => {
@@ -438,15 +442,26 @@ impl Halves<'_> {
                 let _ = self.server_tx.send(ServeInput::Connection(fact)).await;
                 return Routed::Closed(reason);
             }
-            // A connection-lifecycle fact (ADR-0041), forwarded straight to the
-            // worker event stream: the transfer loops drain requester events
-            // only while a command is in flight, so routing it there would park
-            // the verification behind an idle worker.
+            // One verification per link, bound by one half (ADR-0041): the
+            // serve half while it serves, which keys the identified client on
+            // it, else the rider — straight to its worker event stream, since
+            // the transfer loops drain requester events only while a command
+            // is in flight.
             ConnectionEvent::IdentityVerified {
                 user_hash,
                 public_key,
             } => {
-                if let Some(rider) = rider {
+                let verified = ConnectionEvent::IdentityVerified {
+                    user_hash,
+                    public_key: public_key.clone(),
+                };
+                let served = serving
+                    && self
+                        .server_tx
+                        .send(ServeInput::Connection(verified))
+                        .await
+                        .is_ok();
+                if !served && let Some(rider) = rider {
                     let _ = rider
                         .worker_evt_tx
                         .send(PeerWorkerEvent::IdentityVerified {

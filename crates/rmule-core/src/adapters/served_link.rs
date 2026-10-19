@@ -260,6 +260,37 @@ async fn route(
         PeerEvent::Connection(ConnectionEvent::ClientIdOffered { client_id, server }) => {
             return Routed::Offered(deps.peer_links.take_client_id(client_id, server));
         }
+        // One verification per link, bound by one half (ADR-0041): the serve
+        // task while it serves, which keys the identified client on it, else
+        // the riding download.
+        PeerEvent::Connection(ConnectionEvent::IdentityVerified {
+            user_hash,
+            public_key,
+        }) => {
+            let verified = ConnectionEvent::IdentityVerified {
+                user_hash,
+                public_key: public_key.clone(),
+            };
+            let served = serving
+                && event_tx
+                    .send(ServeInput::Connection(verified))
+                    .await
+                    .is_ok();
+            if !served && let Some(download) = download {
+                let _ = download
+                    .worker_evt_tx
+                    .send(PeerWorkerEvent::IdentityVerified {
+                        user_hash,
+                        public_key,
+                    })
+                    .await;
+            }
+            return if serving && !served {
+                Routed::ServeGone
+            } else {
+                Routed::Open
+            };
+        }
         PeerEvent::Connection(fact) => {
             if let ConnectionEvent::IdentityRevised {
                 identity: revised, ..

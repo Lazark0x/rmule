@@ -10,7 +10,8 @@ use std::time::Duration;
 
 use rmule_net::peer::Connection as PeerConnection;
 use rmule_peer::{
-    PartBitmap, PartRanges, PeerCommand, PeerEvent, RequesterCommand, RequesterEvent,
+    ConnectionEvent, PartBitmap, PartRanges, PeerCommand, PeerEvent, RequesterCommand,
+    RequesterEvent,
 };
 use rmule_primitives::{ED2K_PART_SIZE, Ed2kFileLink, PeerEndpoint};
 use tokio::sync::mpsc;
@@ -249,7 +250,7 @@ async fn work_the_link(
     // cross-connection UploadSlotQueue exactly like an accepted connection; a
     // joined link's serve half never left it.
     if let Some(half) = serve_half {
-        hand_over_serve_half(half).await;
+        hand_over_serve_half(half, &event_tx).await;
     }
 
     // Set once the download signals a local-reason abandon (ADR-0056): the
@@ -407,8 +408,10 @@ async fn work_the_link(
 /// is admitted to the one cross-connection UploadSlotQueue exactly like an
 /// accepted connection; its commands are framed onto the link through its own
 /// sender. When not serving the sink is empty, the router drops Server
-/// Capability requests, and the serve half lets the link go at once.
-async fn hand_over_serve_half(half: ServeHalf) {
+/// Capability requests, and the serve half lets the link go at once: a Secure
+/// User Identification the router queued for it meanwhile is the download's
+/// to bind, on `event_tx` (ADR-0041).
+async fn hand_over_serve_half(half: ServeHalf, event_tx: &mpsc::Sender<PeerWorkerEvent>) {
     let ServeHalf {
         peer,
         server_rx,
@@ -432,7 +435,22 @@ async fn hand_over_serve_half(half: ServeHalf) {
         // router's bounded `server_tx.send(..)` fails fast (the request is
         // dropped) instead of filling at capacity and stalling the socket once
         // a peer sends >16 Server Capability requests.
-        drop(server_rx);
+        let mut server_rx = server_rx;
+        server_rx.close();
+        while let Ok(input) = server_rx.try_recv() {
+            if let ServeInput::Connection(ConnectionEvent::IdentityVerified {
+                user_hash,
+                public_key,
+            }) = input
+            {
+                let _ = event_tx
+                    .send(PeerWorkerEvent::IdentityVerified {
+                        user_hash,
+                        public_key,
+                    })
+                    .await;
+            }
+        }
     }
 }
 

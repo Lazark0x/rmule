@@ -23,6 +23,7 @@ use super::*;
 mod dial_in_flight;
 mod hand_back;
 mod hang_up;
+mod secure_ident;
 
 /// A one-part file of 4096 bytes no peer serves: a download target whose
 /// probe the peer's name answer completes.
