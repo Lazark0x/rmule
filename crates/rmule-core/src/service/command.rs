@@ -18,6 +18,11 @@ use super::{DownloadId, PeerReach, SearchId};
 /// The download activity's command vocabulary. Wrapped by
 /// [`CoreCommand::Download`]; `ServeCommand` is its serve-side sibling.
 #[derive(Clone, Debug)]
+// One message per operator action over a low-frequency channel: the link and
+// the root `StartDownload` carries outweigh the id-only variants, and boxing
+// them would put an indirection in every front end's start for no
+// measurable gain.
+#[allow(clippy::large_enum_variant)]
 pub enum DownloadCommand {
     /// Queue a new download. Answered off the actor with
     /// [`DownloadEvent::DownloadQueued`](crate::DownloadEvent::DownloadQueued),
