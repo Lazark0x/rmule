@@ -173,15 +173,14 @@ pub const fn waiting_for_sources(reason: SourceWait) -> Sentence {
 }
 
 /// What a worker slot is doing, as the Sources pane's Phase cell says it:
-/// the dial, the file asked, the hash set asked, its place in the uploader's
-/// queue, the part it fetches, and its end (ADR-0028).
+/// the dial, the file asked, its place in the uploader's queue, the part it
+/// fetches, and its end (ADR-0028).
 #[must_use]
 pub fn phase_words(phase: &WorkerPhase) -> String {
     match phase {
         WorkerPhase::Idle => "idle".to_string(),
         WorkerPhase::Connecting => "connecting".to_string(),
         WorkerPhase::AskingFile => "asking file".to_string(),
-        WorkerPhase::RequestingHashSet => "hash set".to_string(),
         WorkerPhase::WaitingForSlot { rank: None } => "queued".to_string(),
         WorkerPhase::WaitingForSlot { rank: Some(rank) } => format!("queued #{rank}"),
         WorkerPhase::RequestingPart { part_index } => format!("req p{part_index}"),

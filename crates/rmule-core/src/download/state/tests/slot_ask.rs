@@ -1,7 +1,8 @@
-//! The slot ask and the download's one hash-set ask (ADR-0026): a download
-//! holding its part hash set asks no link for it, one wanting it asks one link
-//! at a time while every other asks its slot at once, and the ask passes on at
-//! its answer, its worker's end and the **Hash-Set Deadline**. A queued worker
+//! The slot ask and the download's one hash-set ask (ADR-0026): every worker
+//! asks its slot at its probe answer; a download holding its part hash set
+//! asks no link for it, and one wanting it asks one granted link at a time,
+//! never a link only queued (ADR-0116 invariant 3), the ask passing on at its
+//! answer, its worker's end and the **Hash-Set Deadline**. A queued worker
 //! left holding nothing we need goes without a slot to give back.
 
 use super::*;
@@ -38,21 +39,39 @@ fn asks_hash_set(decisions: &[Decision], peer: PeerEndpoint) -> bool {
     sent(decisions).contains(&(peer, PeerWorkerCommand::RequestHashSet))
 }
 
+/// Whether `decisions` send anyone a hash-set ask.
+fn asks_any_hash_set(decisions: &[Decision]) -> bool {
+    sent(decisions)
+        .iter()
+        .any(|(_, command)| *command == PeerWorkerCommand::RequestHashSet)
+}
+
 /// Whether `decisions` send `peer` its slot ask.
 fn asks_slot(decisions: &[Decision], peer: PeerEndpoint) -> bool {
     sent(decisions).contains(&(peer, PeerWorkerCommand::AskSlot))
 }
 
+/// Both workers of a download wanting its set probed, and granted in turn:
+/// the first grant takes the hash-set ask.
+fn both_granted(state: &mut DownloadState) {
+    for n in [1, 2] {
+        let _ = probed(state, t0(), peer(n));
+        let _ = state.on_worker_event(t0(), peer(n), PeerWorkerEvent::SlotGranted);
+    }
+}
+
 /// A link already holding the set never waits for its own answer: every
 /// worker of a `p=` download asks its slot at its probe answer, and none asks
-/// the set (ADR-0026).
+/// the set, granted or not (ADR-0026).
 #[test]
 fn a_download_holding_its_set_asks_no_link_for_it() {
     let mut state = two_workers(link_set_content(THREE_PARTS));
     for n in [1, 2] {
         let answered = probed(&mut state, t0(), peer(n));
         assert!(asks_slot(&answered, peer(n)), "{answered:?}");
-        assert!(!asks_hash_set(&answered, peer(n)), "{answered:?}");
+        let granted = state.on_worker_event(t0(), peer(n), PeerWorkerEvent::SlotGranted);
+        assert!(!asks_any_hash_set(&answered), "{answered:?}");
+        assert!(!asks_any_hash_set(&granted), "{granted:?}");
     }
     assert_eq!(
         state.slot_asks.next_deadline(),
@@ -61,26 +80,48 @@ fn a_download_holding_its_set_asks_no_link_for_it() {
     );
 }
 
-/// A download without the set asks it of its first link alone, whose slot ask
-/// waits on the answer; the second asks its slot at once (aMule
-/// `IsHashSetNeeded`, `DownloadClient.cpp:467-483`). An answer that is not
-/// the file's own retires its sender, and the ask passes to the link the
-/// uploader granted (`DownloadClient.cpp:583`, ADR-0116).
+/// The set is asked of a granted link, never at a probe answer: every worker
+/// asks its slot at once, a ranked one hangs up with no `0x51` on its link,
+/// and a download whose every source ranked it takes the ask at its first
+/// grant — here an uploader's dial-back to a hung-up record (ADR-0116
+/// invariant 3).
+#[test]
+fn the_set_is_asked_at_the_first_grant_never_at_a_probe_answer() {
+    let mut state = two_workers(file_hash_only_content(THREE_PARTS));
+    for n in [1, 2] {
+        let answered = probed(&mut state, t0(), peer(n));
+        assert!(asks_slot(&answered, peer(n)), "{answered:?}");
+        assert!(!asks_any_hash_set(&answered), "{answered:?}");
+        let ranked = state.on_worker_event(t0(), peer(n), PeerWorkerEvent::Queued { rank: 4 });
+        assert!(!asks_any_hash_set(&ranked), "{ranked:?}");
+    }
+    assert_eq!(state.slot_asks.next_deadline(), None);
+
+    let _ = state.on_slot_offered(t0(), peer(1));
+    let answered = probed(&mut state, t0(), peer(1));
+    assert!(asks_slot(&answered, peer(1)), "{answered:?}");
+    assert!(!asks_any_hash_set(&answered), "{answered:?}");
+    let granted = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotGranted);
+    assert!(asks_hash_set(&granted, peer(1)), "{granted:?}");
+    assert_eq!(
+        state.slot_asks.next_deadline(),
+        Some(t0() + HASH_SET_DEADLINE)
+    );
+}
+
+/// A download without the set asks it of its first granted link alone; the
+/// second grant asks nothing. An answer that is not the file's own retires
+/// its sender, and the ask passes to the other granted link
+/// (`DownloadClient.cpp:583`, ADR-0116).
 #[test]
 fn only_one_link_asks_the_set_and_a_refused_answer_passes_it_on() {
     let mut state = two_workers(file_hash_only_content(THREE_PARTS));
-    let first = probed(&mut state, t0(), peer(1));
+    let _ = probed(&mut state, t0(), peer(1));
+    let first = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotGranted);
     assert!(asks_hash_set(&first, peer(1)), "{first:?}");
-    assert!(!asks_slot(&first, peer(1)), "{first:?}");
-    assert_eq!(
-        phases(&first),
-        vec![WorkerPhase::AskingFile, WorkerPhase::RequestingHashSet]
-    );
-
-    let second = probed(&mut state, t0(), peer(2));
-    assert!(asks_slot(&second, peer(2)), "{second:?}");
-    assert!(!asks_hash_set(&second, peer(2)), "{second:?}");
-    let _ = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::SlotGranted);
+    let _ = probed(&mut state, t0(), peer(2));
+    let second = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::SlotGranted);
+    assert!(!asks_any_hash_set(&second), "{second:?}");
 
     let hashes = set_held_content(THREE_PARTS, Vec::new()).resolved.hashes;
     let answered = state.on_worker_event(
@@ -104,50 +145,48 @@ fn only_one_link_asks_the_set_and_a_refused_answer_passes_it_on() {
     assert!(asks_hash_set(&answered, peer(2)), "{answered:?}");
 }
 
-/// The asker's proven answer holds the set: its slot ask goes out, and no
-/// later link asks it again.
+/// The asker's proven answer holds the set: the ask ends, and no later grant
+/// asks it again.
 #[test]
-fn a_proven_answer_sends_the_askers_slot_ask() {
+fn a_proven_answer_ends_the_ask_and_no_later_grant_asks_it() {
     let file = two_part_file();
     let mut state = two_part_state(&file);
-    let first = probed(&mut state, t0(), peer(1));
+    let _ = probed(&mut state, t0(), peer(1));
+    let first = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotGranted);
     assert!(asks_hash_set(&first, peer(1)), "{first:?}");
 
-    let answered = state.on_worker_event(
+    let _ = state.on_worker_event(
         t0(),
         peer(1),
         PeerWorkerEvent::HashSetReceived {
             part_hashes: file.part_hash_set().expect("two parts").hashes().to_vec(),
         },
     );
-    assert!(asks_slot(&answered, peer(1)), "{answered:?}");
     assert_eq!(
         state.slot_asks.next_deadline(),
         None,
         "the ask's deadline ended with it"
     );
 
-    let second = probed(&mut state, t0(), peer(2));
-    assert!(asks_slot(&second, peer(2)), "{second:?}");
-    assert!(!asks_hash_set(&second, peer(2)), "{second:?}");
+    let _ = probed(&mut state, t0(), peer(2));
+    let second = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::SlotGranted);
+    assert!(!asks_any_hash_set(&second), "{second:?}");
 }
 
-/// An asker that never answers asks its slot at the **Hash-Set Deadline**
-/// regardless, and the ask passes to the next transferring link; the deadline
-/// is what the brain wakes for. A link the deadline passed is not asked again.
+/// An asker that never answers loses the ask at the **Hash-Set Deadline**,
+/// which passes to the next transferring link; the deadline is what the brain
+/// wakes for. A link the deadline passed is not asked again.
 #[test]
-fn the_deadline_sends_the_askers_slot_ask_and_passes_the_set_on() {
+fn the_deadline_passes_the_set_on() {
     let mut state = two_workers(file_hash_only_content(THREE_PARTS));
-    let _ = probed(&mut state, t0(), peer(1));
-    let _ = probed(&mut state, t0(), peer(2));
-    let _ = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::SlotGranted);
+    both_granted(&mut state);
     let deadline = t0() + HASH_SET_DEADLINE;
     assert_eq!(state.next_wake(), Some(deadline));
     assert!(sent(&state.on_tick(deadline - Duration::from_millis(1))).is_empty());
 
     let passed = state.on_tick(deadline);
-    assert!(asks_slot(&passed, peer(1)), "{passed:?}");
     assert!(asks_hash_set(&passed, peer(2)), "{passed:?}");
+    assert!(!asks_hash_set(&passed, peer(1)), "{passed:?}");
     assert_eq!(
         state.slot_asks.next_deadline(),
         Some(deadline + HASH_SET_DEADLINE)
@@ -156,7 +195,7 @@ fn the_deadline_sends_the_askers_slot_ask_and_passes_the_set_on() {
     let again = state.on_tick(deadline + HASH_SET_DEADLINE);
     assert!(
         sent(&again).is_empty(),
-        "both links were passed; the next probe answer takes the ask: {again:?}"
+        "both links were passed; the next grant takes the ask: {again:?}"
     );
     assert_eq!(state.slot_asks.next_deadline(), None);
 }
@@ -167,9 +206,7 @@ fn the_deadline_sends_the_askers_slot_ask_and_passes_the_set_on() {
 #[test]
 fn the_askers_end_passes_the_set_on() {
     let mut state = two_workers(file_hash_only_content(THREE_PARTS));
-    let _ = probed(&mut state, t0(), peer(1));
-    let _ = probed(&mut state, t0(), peer(2));
-    let _ = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::SlotGranted);
+    both_granted(&mut state);
 
     let ended = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
     assert!(asks_hash_set(&ended, peer(2)), "{ended:?}");
@@ -177,15 +214,16 @@ fn the_askers_end_passes_the_set_on() {
 
 /// A link only queued is never passed the ask: its rank will hang it up and
 /// drop the answer in flight (ADR-0116 invariant 3). With no link
-/// transferring, the next probe answer takes it.
+/// transferring, the next grant takes it.
 #[test]
 fn a_queued_link_is_not_passed_the_set() {
     let mut state = two_workers(file_hash_only_content(THREE_PARTS));
     let _ = probed(&mut state, t0(), peer(1));
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotGranted);
     let _ = probed(&mut state, t0(), peer(2));
 
     let ended = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
-    assert!(!asks_hash_set(&ended, peer(2)), "{ended:?}");
+    assert!(!asks_any_hash_set(&ended), "{ended:?}");
     let ranked = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Queued { rank: 4 });
     assert!(
         ranked.iter().any(|d| matches!(

@@ -1,8 +1,8 @@
 //! The slot ask and the download's one hash-set ask (ADR-0026, "The slot ask"
 //! and "One hash-set ask at a time, with a deadline"): what a worker's probe
-//! answer asks of its uploader, what its grant hands it, and how the hash-set
-//! ask passes from link to link — at its worker's end, at a refused answer and
-//! at the **Hash-Set Deadline**.
+//! answer asks of its uploader, what its grant hands it — the hash-set ask
+//! among it — and how that ask passes from granted link to granted link: at
+//! its worker's end, at a refused answer and at the **Hash-Set Deadline**.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -15,17 +15,15 @@ use crate::service::PeerRetirementReason;
 
 use super::{Decision, DownloadState};
 
-/// How long the download's one hash-set ask waits for its answer before its
-/// worker asks its slot regardless and the ask passes on: half aMule's 40 s idle
-/// close (`CONNECTION_TIMEOUT`, stock 2.3.3 `Constants.h:34`), so the slot ask
-/// still reaches an uploader that never answers the set (ADR-0026).
+/// How long the download's one hash-set ask waits for its answer before the
+/// ask passes on: half aMule's 40 s idle close (`CONNECTION_TIMEOUT`, stock
+/// 2.3.3 `Constants.h:34`), so an uploader that never answers the set holds
+/// the one ask no longer (ADR-0026).
 pub(crate) const HASH_SET_DEADLINE: Duration = Duration::from_secs(20);
 
 /// Where one worker's slot stands at its uploader, from its probe answer on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SlotAsk {
-    /// It asked the part hash set; its slot ask waits on the answer.
-    AwaitingHashSet,
     /// Its slot ask is out: the uploader queues it.
     Queued,
     /// The uploader granted it a slot.
@@ -75,25 +73,12 @@ impl DownloadState {
     }
 
     /// `peer`'s probe answered with Advertised Parts holding a part we lack:
-    /// ask its slot at once, whether or not a part is free — or, while the
-    /// download wants the part hash set and no link asks it, the hash set
-    /// first, its slot ask waiting on the answer (ADR-0026).
-    pub(super) fn ask_on_probe(
-        &mut self,
-        now: Instant,
-        peer: PeerEndpoint,
-        out: &mut Vec<Decision>,
-    ) {
-        if self.slot_asks.by_worker.contains_key(&peer) {
-            return;
-        }
-        if self.hash_set_wanted() && self.slot_asks.hash_set.is_none() {
-            self.slot_asks
-                .by_worker
-                .insert(peer, SlotAsk::AwaitingHashSet);
-            self.ask_hash_set(now, peer, out);
-            self.phase(peer, WorkerPhase::RequestingHashSet, out);
-        } else {
+    /// ask its slot at once, whether or not a part is free. Nothing waits on
+    /// the hash set: only a granted worker is asked it (ADR-0026, ADR-0116
+    /// invariant 3), since a `0x51` unanswered on a link the uploader ranks
+    /// costs that link at aMule's 40 s silent-link close.
+    pub(super) fn ask_on_probe(&mut self, peer: PeerEndpoint, out: &mut Vec<Decision>) {
+        if !self.slot_asks.by_worker.contains_key(&peer) {
             self.ask_slot(peer, out);
         }
     }
@@ -117,42 +102,43 @@ impl DownloadState {
         });
     }
 
+    /// Whether `peer` may take the hash-set ask: the download wants the set
+    /// and no link asks it, `peer` holds a granted slot, the deadline never
+    /// passed it, and its parts name a part we lack. A worker only queued
+    /// hangs up at its rank, so it never holds the ask (ADR-0116).
+    fn may_ask_hash_set(&self, peer: PeerEndpoint) -> bool {
+        self.hash_set_wanted()
+            && self.slot_asks.hash_set.is_none()
+            && self.slot_asks.granted(peer)
+            && !self.slot_asks.passed.contains(&peer)
+            && self
+                .sources
+                .worker_parts(peer)
+                .is_some_and(|parts| self.scheduler.lacks_any_of(parts))
+    }
+
     /// Pass the hash-set ask to the next transferring worker, in slot order,
-    /// whose parts name a part we lack and that the deadline never passed;
-    /// with none, the next probe answer takes it (aMule
-    /// `SetHashSetNeeded(true)`, ADR-0026). A worker only queued hangs up at
-    /// its rank, so it never holds the ask (ADR-0116).
+    /// that may take it; with none, the next grant takes it (aMule
+    /// `SetHashSetNeeded(true)`, ADR-0026).
     fn pass_hash_set_ask(&mut self, now: Instant, out: &mut Vec<Decision>) {
         self.slot_asks.hash_set = None;
-        if !self.hash_set_wanted() {
-            return;
-        }
-        let next = self.connected_workers().into_iter().find(|&peer| {
-            self.slot_asks.granted(peer)
-                && !self.slot_asks.passed.contains(&peer)
-                && self
-                    .sources
-                    .worker_parts(peer)
-                    .is_some_and(|parts| self.scheduler.lacks_any_of(parts))
-        });
+        let next = self
+            .connected_workers()
+            .into_iter()
+            .find(|&peer| self.may_ask_hash_set(peer));
         if let Some(peer) = next {
             self.ask_hash_set(now, peer, out);
         }
     }
 
     /// The download holds its part hash set now: the hash-set ask in flight
-    /// ends, and its worker's slot ask, if it waits, goes out.
-    pub(super) fn hash_set_held(&mut self, out: &mut Vec<Decision>) {
-        let Some((asker, _)) = self.slot_asks.hash_set.take() else {
-            return;
-        };
-        if self.slot_asks.by_worker.get(&asker) == Some(&SlotAsk::AwaitingHashSet) {
-            self.ask_slot(asker, out);
-        }
+    /// ends.
+    pub(super) fn hash_set_held(&mut self) {
+        self.slot_asks.hash_set = None;
     }
 
-    /// The **Hash-Set Deadline**: an asker that has not answered by `now`
-    /// asks its slot regardless, is not asked again, and the ask passes on.
+    /// The **Hash-Set Deadline**: an asker that has not answered by `now` is
+    /// not asked again, and the ask passes on.
     pub(super) fn hash_set_deadline(&mut self, now: Instant, out: &mut Vec<Decision>) {
         let Some((asker, deadline)) = self.slot_asks.hash_set else {
             return;
@@ -161,9 +147,6 @@ impl DownloadState {
             return;
         }
         self.slot_asks.passed.insert(asker);
-        if self.slot_asks.by_worker.get(&asker) == Some(&SlotAsk::AwaitingHashSet) {
-            self.ask_slot(asker, out);
-        }
         self.pass_hash_set_ask(now, out);
     }
 
@@ -207,15 +190,19 @@ impl DownloadState {
     }
 
     /// `peer`'s uploader granted it a slot: hand it its part, or give the slot
-    /// back (ADR-0026, ADR-0056). A slot the worker keeps is a grant on the
-    /// peer's **Queue Standing**: the downloads waiting on it are called to
-    /// this link, to take it by the swap rule (ADR-0107).
+    /// back (ADR-0026, ADR-0056). A slot the worker keeps takes the
+    /// download's one hash-set ask when nobody asks it (ADR-0116 invariant 3),
+    /// and is a grant on the peer's **Queue Standing**: the downloads waiting
+    /// on it are called to this link, to take it by the swap rule (ADR-0107).
     pub(super) fn granted(&mut self, now: Instant, peer: PeerEndpoint, out: &mut Vec<Decision>) {
         if !self.worker_slots.contains_key(&peer) {
             return;
         }
         self.slot_asks.by_worker.insert(peer, SlotAsk::Granted);
         self.assign(now, peer, out);
+        if self.may_ask_hash_set(peer) {
+            self.ask_hash_set(now, peer, out);
+        }
         if self.slot_asks.granted(peer) {
             out.push(Decision::CallStandingWaiters { peer });
         }

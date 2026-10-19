@@ -423,3 +423,72 @@ async fn a_part_handed_mid_stream_ends_the_old_one() {
         "no PartStreamed for the old part"
     );
 }
+
+/// The download's hash-set ask, handed to a granted worker while its part
+/// streams, leaves at once rather than after the part: the uploader is asked
+/// while the transfer runs, and the part streams on (ADR-0026).
+#[tokio::test]
+async fn the_hash_set_ask_leaves_while_a_part_streams() {
+    let bytes = [0x5A; 512];
+    let file = rmule_testkit::file_link("asked.bin", &bytes);
+    let (events_tx, mut events) = mpsc::channel(8);
+    let (cmd_tx, mut cmd_rx) = mpsc::channel(8);
+    let (event_tx, mut worker_events) = mpsc::channel(8);
+    let (worker_cmd_tx, mut worker_cmd_rx) = mpsc::channel(8);
+    worker_cmd_tx
+        .send(PeerWorkerCommand::RequestHashSet)
+        .await
+        .unwrap();
+    events_tx
+        .send(PeerEvent::Requester(RequesterEvent::PartReceived {
+            file_hash: file.file_hash,
+            offset: 0,
+            bytes: bytes.to_vec(),
+        }))
+        .await
+        .unwrap();
+    let mut link = WorkerLink {
+        events: &mut events,
+        cmd_tx: &cmd_tx,
+        event_tx: &event_tx,
+        commands: &mut worker_cmd_rx,
+        deferred: VecDeque::new(),
+    };
+    let plan = PartPlan {
+        part_index: 0,
+        offset: 0,
+        len: 512,
+    };
+    let streamed = stream_part_download(
+        &mut link,
+        &mut Pipeline::new(),
+        &file,
+        plan,
+        0,
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(matches!(streamed, Streamed::Next));
+    assert!(link.deferred.is_empty(), "nothing waits for the part's end");
+    drop(link);
+    drop(cmd_tx);
+    let mut sent = Vec::new();
+    while let Some(command) = cmd_rx.recv().await {
+        sent.push(command);
+    }
+    assert!(
+        sent.contains(&PeerCommand::Requester(RequesterCommand::RequestHashSet {
+            file_hash: file.file_hash
+        })),
+        "{sent:?}"
+    );
+    drop(event_tx);
+    let mut reported = Vec::new();
+    while let Some(event) = worker_events.recv().await {
+        reported.push(event);
+    }
+    assert_eq!(
+        reported.last(),
+        Some(&PeerWorkerEvent::PartStreamed { part_index: 0 })
+    );
+}

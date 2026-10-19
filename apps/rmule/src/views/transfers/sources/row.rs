@@ -123,14 +123,13 @@ impl SourceRow<'_> {
                 WorkerPhase::VerifyingPart { .. } => 1,
                 WorkerPhase::RequestingPart { .. } => 2,
                 WorkerPhase::WaitingForSlot { .. } => 3,
-                WorkerPhase::RequestingHashSet => 4,
-                WorkerPhase::AskingFile => 5,
-                WorkerPhase::Connecting => 6,
-                WorkerPhase::Idle => 7,
-                WorkerPhase::Retired { .. } => 8,
-                WorkerPhase::ShutDown => 9,
+                WorkerPhase::AskingFile => 4,
+                WorkerPhase::Connecting => 5,
+                WorkerPhase::Idle => 6,
+                WorkerPhase::Retired { .. } => 7,
+                WorkerPhase::ShutDown => 8,
             },
-            Self::Ended(..) => 10,
+            Self::Ended(..) => 9,
         }
     }
 

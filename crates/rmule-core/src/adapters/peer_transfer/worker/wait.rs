@@ -68,7 +68,8 @@ pub(super) async fn await_probe(
 /// the way: the command channel is read first so a `Shutdown` is never
 /// starved by a busy peer and stops the wait at once (aMule's
 /// `CUpDownClient::Disconnected` aborts a transfer on the spot); an AICH root
-/// ask goes out as it comes (ADR-0038); a part handed meanwhile waits in
+/// ask (ADR-0038) and the download's hash-set ask, which only a granted
+/// worker is handed (ADR-0026), go out as they come; a part handed meanwhile waits in
 /// `deferred` and ends the wait as `Reassigned`; anything else waits in
 /// `deferred`. No event by `deadline` reports `SlotTimeout`.
 pub(super) async fn next_event(
@@ -86,6 +87,11 @@ pub(super) async fn next_event(
                 Some(PeerWorkerCommand::RequestAichFileHash) => {
                     let _ = link.cmd_tx
                         .send(PeerCommand::Requester(RequesterCommand::RequestAichFileHash { file_hash }))
+                        .await;
+                }
+                Some(PeerWorkerCommand::RequestHashSet) => {
+                    let _ = link.cmd_tx
+                        .send(PeerCommand::Requester(RequesterCommand::RequestHashSet { file_hash }))
                         .await;
                 }
                 Some(later @ PeerWorkerCommand::RequestPart { .. }) => {

@@ -228,8 +228,8 @@ impl DownloadState {
         out
     }
     /// `peer`'s probe answered with parts: one holding nothing we lack is
-    /// retired `NoNeededParts` (ADR-0112 §6); any other asks its slot, or
-    /// the hash set first (ADR-0026).
+    /// retired `NoNeededParts` (ADR-0112 §6); any other asks its slot
+    /// (ADR-0026).
     fn on_probe_answer(&mut self, now: Instant, peer: PeerEndpoint, out: &mut Vec<Decision>) {
         let Some(parts) = self.sources.worker_parts(peer) else {
             return;
@@ -238,7 +238,7 @@ impl DownloadState {
             return;
         }
         if self.scheduler.lacks_any_of(parts) {
-            self.ask_on_probe(now, peer, out);
+            self.ask_on_probe(peer, out);
         } else {
             self.retire(now, peer, PeerRetirementReason::NoNeededParts, out);
         }
@@ -444,9 +444,8 @@ impl DownloadState {
                     part_count: self.resolved.hashes.len(),
                     authority: self.resolved.authority,
                 }));
-                // The set is held: the one hash-set ask ends, and a slot ask
-                // waiting on it goes out (ADR-0026).
-                self.hash_set_held(out);
+                // The set is held: the one hash-set ask ends (ADR-0026).
+                self.hash_set_held();
             }
             // A link hash set that disagrees with the peer's is unrecoverable.
             Err(failure) => out.push(Decision::Fail(failure)),

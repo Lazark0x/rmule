@@ -46,11 +46,8 @@ pub enum WorkerPhase {
     /// Dialing the peer and reading its hello.
     Connecting,
     /// The hello is done and the file asked; the worker waits for the probe's
-    /// answer, which asks its slot or the hash set, or retires it (ADR-0112).
+    /// answer, which asks its slot or retires it (ADR-0112).
     AskingFile,
-    /// Asked for the part hash set; its slot ask waits on the answer or the
-    /// **Hash-Set Deadline** (ADR-0026).
-    RequestingHashSet,
     /// The slot ask is out and the peer is queueing us. The longest phase by
     /// far on a busy source, and the one `slot_wait_timeout` bounds.
     WaitingForSlot {
