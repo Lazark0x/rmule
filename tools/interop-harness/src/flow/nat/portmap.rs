@@ -141,16 +141,14 @@ impl PortMapFlow {
     }
 
     /// The lifetime the driver asks the gateway for.
+    ///
+    /// rmule raises any ask under 120 s to 120 s (core's `MIN_ASKED_LEASE`),
+    /// so every flow below that floor is asked for 120 s and renews at about
+    /// 60 s; a window that must hold a renewal outlasts that.
     pub(crate) const fn lease_secs(self) -> u64 {
         match self {
-            // Short enough that the renewal ladder's first rung (L/2) fires
-            // several times inside the window.
             Self::HighId | Self::NatPmp => 12,
-            // Longer: this flow is about the shifted grant, and a fast renewal
-            // cadence would only add rows to read.
             Self::Mismatch => 20,
-            // What rmule asks for whatever this says (its floor is 120 s), so
-            // the renewal lands at about 60 s.
             Self::Moved => 120,
             Self::Ipv6Pinhole | Self::Ipv6PinholeLinkLocal => 12,
         }
