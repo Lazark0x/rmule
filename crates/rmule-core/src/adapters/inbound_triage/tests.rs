@@ -519,4 +519,5 @@ async fn the_adopted_buddy_links_close_frees_the_buddy_slot() {
     drop(registration);
 }
 
+mod adopted_serve;
 mod verdicts;

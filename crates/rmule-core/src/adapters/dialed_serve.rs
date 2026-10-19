@@ -120,8 +120,17 @@ pub(crate) async fn route_dialed_connection(mut conn: PeerConnection, route: Dia
             link.joins = Some(joins);
         }
         // An adopted link's remote end is the peer's own dial out, which no
-        // dial reaches.
-        LinkOrigin::Adopted(identity) => link.identified(&deps, remote, identity),
+        // dial reaches. Its serve half holds the hello the accept side read,
+        // as any inbound link's does (`ClientTCPSocket.cpp:391`): ahead of
+        // anything the peer asks over it, so its asks are scored, and its
+        // bans read, under that hello (ADR-0107).
+        LinkOrigin::Adopted(identity) => {
+            let hello = ConnectionEvent::Identified {
+                identity: identity.clone(),
+            };
+            let _ = server_tx.send(ServeInput::Connection(hello)).await;
+            link.identified(&deps, remote, identity);
+        }
     }
     // Why the link closed, for the downloads waiting on it before its hello.
     let mut closed = DialEnd::ClosedBeforeHello;
