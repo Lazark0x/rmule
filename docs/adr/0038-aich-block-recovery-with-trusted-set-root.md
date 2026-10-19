@@ -102,11 +102,13 @@ AICH is a block-level recovery layer beside MD4, implemented in both directions.
   neither. The in-memory, per-session lifetime of assembly is unchanged.
 - The serve-side cache holds one tree per shared file a peer asked about, about 20 bytes
   per 180 KiB block; nothing bounds it but the share set.
-- The Kad leg is source-derived. No stock counterparty the bench runs serves a v9 keyword
-  answer: aMule 2.3.3 is Kad v8, and aMule 3.1.0 writes `TAG_KADAICHHASHRESULT` only when built
-  with its non-default `ENABLE_KAD_PROTOCOL_10` (`Constants.h:47-57`). The claim a bench would
-  settle: a v9 storer holding a keyword entry that 10 or more publishers reported with one AICH
-  root, and rmule's download from that result taking the root.
+- The Kad leg is source-derived until a bench settles it: a v9 storer holding a keyword entry
+  that 10 or more publishers reported with one AICH root, and rmule's download from that result
+  taking the root. aMule 2.3.3 is Kad v8, and aMule 3.1.0 and kno write
+  `TAG_KADAICHHASHRESULT` only when built with their non-default `ENABLE_KAD_PROTOCOL_10`
+  (`Constants.h:47-57`); emule-qt runs Kad v10, writes the tag (`KadEntry.cpp:504-527`) and
+  publishes its roots to v9 storers (`KadSearch.cpp:143-186`), so the bench stages it with an
+  emule-qt storer and ten emule-qt publishers sharing one file.
 - eMule computes its third in integer arithmetic, `publishers / popularity <= 3`
   (`SearchList.cpp:797`), as aMule 3.1.0 does, which admits a root from just over a quarter of
   the publishers. rmule's `3 × popularity >= publishers` is the third it names: a root from 6 of
