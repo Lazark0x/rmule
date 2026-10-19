@@ -54,8 +54,9 @@ pub use self::serve::run_rmule_serves_amule_downloads;
 pub use self::server_callback_serve::verdict::score_run_dir as score_server_callback_serve;
 pub use self::server_callback_serve::{ServerCallbackServeOptions, run_server_callback_serve};
 pub use self::streaming_window::{
-    SeedHolding, StreamingWindowOptions, collect_kept_run as collect_streaming_window_run,
-    default_seeds, run_streaming_window, score_run_dir as score_streaming_window, seed_holding_arg,
+    CorruptSeed, SeedHolding, StreamingWindowOptions,
+    collect_kept_run as collect_streaming_window_run, corrupt_seed_arg, default_seeds,
+    run_streaming_window, score_run_dir as score_streaming_window, seed_holding_arg,
 };
 pub use self::sx1_gate::{Sx1GateOptions, run_sx1_gate};
 pub use self::two_hellos::{TwoHellosOptions, run_two_hellos};

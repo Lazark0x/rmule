@@ -250,3 +250,28 @@ fn an_end_game_set_reads_off_the_log() {
         }]
     );
 }
+
+/// A part that fails its check with no root writes `part_corrupt` and no
+/// `part_released`: its holders let it go there, so the next tick reads it
+/// missing and the next worker on it starts it fresh.
+#[test]
+fn a_corrupt_part_is_let_go_at_its_part_corrupt_record() {
+    let every = set(&[0, 1, 2, 3, 4, 5]);
+    let advertised = BTreeMap::from([(A, every.clone()), (B, every)]);
+    let first_status_at = BTreeMap::from([(A, 1.0), (B, 1.1)]);
+    let topology = Topology {
+        size: SIZE,
+        window_parts: 0,
+        advertised: &advertised,
+        first_status_at: &first_status_at,
+    };
+    let log = "download parts_tick id=1 at_unix_ms=10000 parts=MMMMMM\n\
+               download.part_assigned id=1 peer=10.0.0.2:4662 part_index=0\n\
+               download.part_assigned id=1 peer=10.0.0.3:4662 part_index=0\n\
+               download.part_corrupt id=1 part_index=0 writers=2 named=0\n\
+               download parts_tick id=1 at_unix_ms=20000 parts=MMMMMM\n\
+               download.part_assigned id=1 peer=10.0.0.3:4662 part_index=0\n";
+    let run = replay(&parse_log(log, 1), &topology);
+    assert_eq!(run.tick_mismatches, 0);
+    assert_eq!(run.decisions.last().map(|d| d.actual), Some(Pick::Fresh(0)));
+}

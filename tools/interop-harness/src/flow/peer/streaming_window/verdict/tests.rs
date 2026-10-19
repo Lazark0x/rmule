@@ -68,6 +68,7 @@ fn a_one_part_file_draws_no_claim_read_off_a_status() {
         rmule_container: String::new(),
         tap_container: String::new(),
         seed_netem_delay_ms: None,
+        corrupt: None,
     };
     let drawn = claims(
         &topology,

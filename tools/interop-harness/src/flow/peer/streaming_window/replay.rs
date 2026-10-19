@@ -69,6 +69,13 @@ pub(crate) enum LogEvent {
         /// The part.
         part: u32,
     },
+    /// `download.part_corrupt`: the part failed its check with no root to
+    /// name its bad cells, its bytes are dropped and every worker lets it go
+    /// at once, with no `part_released` of its own (ADR-0117 §1).
+    Corrupt {
+        /// The part.
+        part: u32,
+    },
     /// `download.peer_retired`.
     Retired {
         /// The worker's peer.
@@ -138,6 +145,7 @@ pub(crate) fn parse_log(text: &str, id: u64) -> Vec<LogEvent> {
                     bytes: fields.get("bytes")?.parse().ok()?,
                 },
                 "part_verified" => LogEvent::Verified { part: part()? },
+                "part_corrupt" => LogEvent::Corrupt { part: part()? },
                 "peer_retired" => LogEvent::Retired {
                     peer: peer()?,
                     reason: (*fields.get("reason")?).to_owned(),
@@ -379,6 +387,9 @@ pub(crate) fn replay(events: &[LogEvent], topology: &Topology<'_>) -> Replay {
             LogEvent::Verified { part } => {
                 parts.holders.remove(part);
                 parts.verified.insert(*part);
+            }
+            LogEvent::Corrupt { part } => {
+                parts.holders.remove(part);
             }
             LogEvent::Retired { peer, reason } => {
                 if reason != NO_NEEDED_PARTS {

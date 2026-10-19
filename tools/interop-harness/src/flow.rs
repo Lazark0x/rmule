@@ -76,10 +76,10 @@ pub use self::nat::{
 pub use self::packed_source_exchange::{PackedSourceExchangeOptions, run_packed_source_exchange};
 pub use self::pcap::ed2k_frame_listing;
 pub use self::peer::{
-    DEFAULT_REASK_WINDOW_SECS, DirectSuiOptions, PeerLowIdCallbackReaskOptions,
+    CorruptSeed, DEFAULT_REASK_WINDOW_SECS, DirectSuiOptions, PeerLowIdCallbackReaskOptions,
     PeerUdpReaskEmitOptions, PeerUdpReaskOptions, SeedHolding, StreamingWindowOptions,
-    Sx1GateOptions, TwoHellosOptions, collect_streaming_window_run, default_seeds,
-    run_amule_direct_sui, run_peer_lowid_callback_reask, run_peer_udp_reask,
+    Sx1GateOptions, TwoHellosOptions, collect_streaming_window_run, corrupt_seed_arg,
+    default_seeds, run_amule_direct_sui, run_peer_lowid_callback_reask, run_peer_udp_reask,
     run_peer_udp_reask_emit, run_rmule_serves_amule_downloads, run_streaming_window, run_sx1_gate,
     run_two_hellos, score_emit_run_dir as score_peer_udp_reask_emit, score_lowid_callback_reask,
     score_run_dir as score_peer_udp_reask, score_streaming_window, seed_holding_arg,

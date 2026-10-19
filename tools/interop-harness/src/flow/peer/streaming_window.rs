@@ -20,6 +20,7 @@
 //! `FILEREASKTIME` for the wait claim.
 
 mod blocks;
+mod corrupt;
 mod pace;
 mod prefix;
 mod replay;
@@ -27,6 +28,7 @@ pub(crate) mod seed;
 pub(crate) mod verdict;
 mod wire;
 
+pub use self::corrupt::{CorruptSeed, corrupt_seed_arg};
 pub use self::seed::{SeedHolding, default_seeds, seed_holding_arg};
 pub use self::verdict::score_run_dir;
 
@@ -125,6 +127,9 @@ pub struct StreamingWindowOptions<'a> {
     /// A `tc netem` delay each seed's egress is held by, in ms, so the links
     /// carry a WAN round trip (ADR-0029 "Request pipeline"); `None` for none.
     pub seed_netem_delay_ms: Option<u32>,
+    /// A complete seed whose copy has one part overwritten once it has
+    /// hashed and shared the file, so it serves bad bytes for that part.
+    pub corrupt: Option<&'a CorruptSeed>,
 }
 
 /// Run the streaming-window flow and score it.
@@ -174,7 +179,18 @@ pub fn run_streaming_window(options: StreamingWindowOptions<'_>) -> Result<()> {
         STREAM_BYTES_SEED,
     )?;
     let parts = part_count(options.file_size);
-    let staged = stage_seeds(&root, &stream, options.seeds)?;
+    if let Some(corrupt) = options.corrupt {
+        let index = (corrupt.role.as_bytes()[0] - b'a') as usize;
+        if options.seeds.get(index) != Some(&SeedHolding::Complete) {
+            bail!("the corrupt seed {} must be a complete one", corrupt.role);
+        }
+    }
+    let staged = stage_seeds(
+        &root,
+        &stream,
+        options.seeds,
+        options.corrupt.map(|corrupt| corrupt.role.as_str()),
+    )?;
     let held: BTreeSet<u32> = options
         .seeds
         .iter()
@@ -230,6 +246,9 @@ pub fn run_streaming_window(options: StreamingWindowOptions<'_>) -> Result<()> {
             bench.start_extra(&name, container, "run a seed aMule")?;
             wait_for_amule_ready(&bench.docker, options.layout, &name, timeout, AMULE_READY)?;
             wait_for_share(&bench.docker, &name, timeout)?;
+            if let Some(corrupt) = options.corrupt.filter(|corrupt| corrupt.role == seed.role) {
+                corrupt::overwrite_part(&bench, &name, corrupt, options.file_size, &root)?;
+            }
             if let Some(delay_ms) = options.seed_netem_delay_ms {
                 hold_seed_egress(&bench, options.rmule_tools_image, &name, delay_ms, &root)?;
             }
@@ -276,6 +295,7 @@ pub fn run_streaming_window(options: StreamingWindowOptions<'_>) -> Result<()> {
             rmule_container: rmule.clone(),
             tap_container: tap.clone(),
             seed_netem_delay_ms: options.seed_netem_delay_ms,
+            corrupt: options.corrupt.cloned(),
         };
         let topology_path = root.join(TOPOLOGY_FILE);
         fs::write(
@@ -423,7 +443,12 @@ struct StagedSeed {
 }
 
 /// Stage every seed's Temp and Incoming dirs under `root/seeds/<role>`.
-fn stage_seeds(root: &Path, stream: &StreamFile, seeds: &[SeedHolding]) -> Result<Vec<StagedSeed>> {
+fn stage_seeds(
+    root: &Path,
+    stream: &StreamFile,
+    seeds: &[SeedHolding],
+    corrupt_role: Option<&str>,
+) -> Result<Vec<StagedSeed>> {
     let parts = part_count(stream.summary.file_size());
     seeds
         .iter()
@@ -436,6 +461,13 @@ fn stage_seeds(root: &Path, stream: &StreamFile, seeds: &[SeedHolding]) -> Resul
             fs::create_dir_all(&incoming)
                 .with_context(|| format!("create {}", incoming.display()))?;
             match holding {
+                // The corrupt seed's copy is its own: the others link the
+                // one file, which an overwrite would reach through them.
+                SeedHolding::Complete if corrupt_role == Some(role.to_string().as_str()) => {
+                    let target = incoming.join(seed::STREAM_FILE_NAME);
+                    fs::copy(&stream.path, &target)
+                        .with_context(|| format!("copy to {}", target.display()))?;
+                }
                 SeedHolding::Complete => stage_complete_seed(&incoming, stream)?,
                 SeedHolding::Partial(_) => {
                     stage_partial_seed(&temp, stream, &holding.parts(parts))?;

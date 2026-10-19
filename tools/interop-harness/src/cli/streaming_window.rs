@@ -10,8 +10,9 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Args;
 use rmule_interop_harness::flow::{
-    SeedHolding, StreamingWindowOptions, collect_streaming_window_run, default_seeds,
-    run_streaming_window, score_streaming_window, seed_holding_arg,
+    CorruptSeed, SeedHolding, StreamingWindowOptions, collect_streaming_window_run,
+    corrupt_seed_arg, default_seeds, run_streaming_window, score_streaming_window,
+    seed_holding_arg,
 };
 use rmule_primitives::{ED2K_PART_SIZE, part_count};
 use serde::Serialize;
@@ -90,6 +91,11 @@ pub(crate) struct PeerStreamingWindowArgs {
     /// the links carry a WAN round trip.
     #[arg(long)]
     pub(crate) seed_netem_delay_ms: Option<u32>,
+    /// A complete seed that serves bad bytes for one part, as `c:1`: once it
+    /// has hashed and shared the file, that part of its own copy is
+    /// overwritten and the modification date put back.
+    #[arg(long, value_parser = corrupt_seed_arg)]
+    pub(crate) corrupt_seed: Option<CorruptSeed>,
     /// Per-step readiness budget in seconds.
     #[arg(long, default_value_t = 600)]
     pub(crate) timeout: u64,
@@ -116,6 +122,7 @@ struct ResolvedConfig {
     link_sources: bool,
     link_without_part_hashes: bool,
     seed_netem_delay_ms: Option<u32>,
+    corrupt_seed: Option<CorruptSeed>,
     timeout_secs: u64,
 }
 
@@ -153,6 +160,7 @@ pub(crate) fn peer_streaming_window(args: PeerStreamingWindowArgs) -> Result<()>
             link_sources: args.link_sources,
             link_without_part_hashes: args.link_without_part_hashes,
             seed_netem_delay_ms: args.seed_netem_delay_ms,
+            corrupt_seed: args.corrupt_seed.clone(),
             timeout_secs: args.timeout,
         },
     )?;
@@ -187,6 +195,7 @@ pub(crate) fn peer_streaming_window(args: PeerStreamingWindowArgs) -> Result<()>
         link_without_part_hashes: args.link_without_part_hashes,
         wait_secs: args.wait_secs,
         seed_netem_delay_ms: args.seed_netem_delay_ms,
+        corrupt: args.corrupt_seed.as_ref(),
     })
 }
 

@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use super::ROOT_DIR;
 use super::blocks::{self, AskShapes};
+use super::corrupt::{self, CorruptSeed};
 use super::pace::{self, Pace};
 use super::prefix::{Measurement, measure, traced_verifies};
 use super::replay::{Pick, Replay, Topology, parse_log, replay};
@@ -68,6 +69,9 @@ pub(crate) struct TopologyFile {
     /// `--seed-netem-delay-ms`; absent from a run before it existed.
     #[serde(default)]
     pub(crate) seed_netem_delay_ms: Option<u32>,
+    /// `--corrupt-seed`; absent from a run before it existed.
+    #[serde(default)]
+    pub(crate) corrupt: Option<CorruptSeed>,
 }
 
 /// One seed in [`TopologyFile`].
@@ -255,6 +259,12 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
     let path = run_dir.join(format!("{FLOW}-verdict.toml"));
     fs::write(&path, &text).with_context(|| format!("write {}", path.display()))?;
     println!("peer_streaming_window verdict={verdict}");
+    // A corrupt seed's run is that leg's measurement: its verdict is the run's.
+    if let Some(seed) = &topology.corrupt {
+        let corrupt = corrupt::write(run_dir, &topology, seed, &file_hash, byte_equal(run_dir)?)?;
+        println!("peer_streaming_window corrupt_verdict={corrupt}");
+        return Ok(corrupt);
+    }
     Ok(verdict)
 }
 
