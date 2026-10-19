@@ -43,7 +43,7 @@ impl OpenedDial {
         let session = Connection::dialing_session(peer, ctx, &options);
         match stream {
             OpenedStream::Plain(stream) => Connection::spawn(session, stream, options, peer),
-            OpenedStream::Obfuscated(crypt) => Connection::spawn(session, crypt, options, peer),
+            OpenedStream::Obfuscated(crypt) => Connection::spawn(session, *crypt, options, peer),
         }
     }
 }
@@ -52,7 +52,7 @@ impl OpenedDial {
 /// above it once the handshake is answered.
 pub(super) enum OpenedStream {
     Plain(TcpStream),
-    Obfuscated(CryptStream<TcpStream, PeerObfuscationTransport>),
+    Obfuscated(Box<CryptStream<TcpStream, PeerObfuscationTransport>>),
 }
 
 /// Connect to `peer` inside `connect_timeout` and, toward a User Hash, run the
@@ -79,5 +79,5 @@ pub(super) async fn open_stream(
     tokio::time::timeout(crypt_timeout, crypt.complete_handshake())
         .await
         .map_err(|_| PeerNetError::CryptUnanswered)??;
-    Ok(OpenedStream::Obfuscated(crypt))
+    Ok(OpenedStream::Obfuscated(Box::new(crypt)))
 }

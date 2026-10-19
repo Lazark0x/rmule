@@ -173,7 +173,7 @@ impl Connection {
         Ok(
             match open_stream(peer, connect_timeout, PEER_CRYPT_TIMEOUT, obfuscate_toward).await? {
                 OpenedStream::Plain(stream) => Box::new(stream),
-                OpenedStream::Obfuscated(crypt) => Box::new(crypt),
+                OpenedStream::Obfuscated(crypt) => crypt,
             },
         )
     }
