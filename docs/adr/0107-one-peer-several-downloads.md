@@ -180,13 +180,17 @@ the file (`:592-616`, `UploadQueue.cpp:395-519`):
 
 | The rider ended | The client at aMule | The next rider's ask |
 |---|---|---|
-| holding a slot, released silently (its last part streamed, the download finished) | still uploading | granted at once, `OP_ACCEPTUPLOADREQ` (`UploadQueue.cpp:486-493`) |
+| holding a slot, released silently (its last part streamed, the download finished) | still uploading, its done blocks kept (`SetUploadFileID`, `UploadClient.cpp:464-492`) | granted at once, `OP_ACCEPTUPLOADREQ` (`UploadQueue.cpp:486-493`); a block whose range repeats one the link asked is dropped, whatever its file (`UploadClient.cpp:503-521`), so the rider asks around the link's **Asked Ranges** |
 | holding a slot, with `OP_CANCELTRANSFER` (cancel, pause, nothing to work, ADR-0056) | out of the upload list and not queued (`ClientTCPSocket.cpp:673-680`) | a fresh admission: granted at once only when a slot is free and nobody waits, else queued with its wait from zero (`UploadQueue.cpp:500-518`) |
 | waiting in the queue | on the queue, its wait kept | answered with its rank (`UploadQueue.cpp:402-430`), the wait per client, not per file |
 
 The next rider asks the same way in all three and reads what comes back, a grant or a rank, as any
 worker does; nothing is skipped. The third row is the one place a hand-over asks the peer twice in
-a cycle, and "One peer, one queue standing" says when it happens.
+a cycle, and "One peer, one queue standing" says when it happens. A file the link already probed
+for an earlier worker — the same download's next worker on a link that stayed up, at an Awaited
+Grant or a TCP full ask — is probed again and its answer read afresh, as on a new link: a
+one-part file's probe settles on the name answer alone (aMule asks no `OP_SETREQFILEID` for it,
+`DownloadClient.cpp:241`), so no status is waited for.
 
 A grant nobody asked for on the link, settled: aMule grants a waiter it promotes on the link it
 holds or on one it dials to it, and the `0x55` names no file. A link a download rides leaves it to
@@ -269,6 +273,22 @@ its record's worker on the holder's link at once, unadmitted by the Connection B
 (ADR-0116), and waits there as a Link Rider. When the holder's worker ends, the swap rule hands the
 link to the oldest waiter: after a silent release its ask is granted at once
 (`UploadQueue.cpp:486-493`), after a cancel it is admitted afresh, and a rank makes it the holder.
+The grant after a silent release keeps the slot, and with it what the uploader remembers of the
+client: `AddReqBlock` drops a requested block whose start and end equal one in its done list or
+its pending queue, comparing offsets alone, not the file (stock 2.3.3 `UploadClient.cpp:503-521`,
+kno `:367-386`, 3.1.0 the same). `SetUploadFileID` re-targets the client and keeps the list
+(`:464-492`). Only `RemoveFromUploadQueue` clears it (`UploadQueue.cpp:540-541`): an
+`OP_CANCELTRANSFER` runs it (`ClientTCPSocket.cpp:673-680`), an upload session's end runs it
+before its `OP_OUTOFPARTREQS` (`UploadClient.cpp:598-600`), and so does a disconnect
+(`BaseClient.cpp:1278-1281`). Neither list is capped or trimmed. Every file's blocks lie on one
+grid from each part's start, so the next rider would ask ranges the uploader already holds, be
+served nothing, and idle to the 40 s close. The link therefore keeps its **Asked Ranges**: every
+range its `OP_REQUESTPARTS` carried since the uploader last cleared that list, forgotten at a
+`0x56` we send, a `0x57` we read and the link's close. Each grant hands them to the rider's
+worker, which never asks one of them: a block whose range is one is asked a byte shorter, which
+moves every later block of its stream off the old grid. eMuleAI keys the same drop by the file
+too (`UploadClient.cpp:79-86`, `:769-770`), so a switch collides nowhere there, and asking
+around the Asked Ranges costs it nothing.
 A waiter whose call comes after the link ended dials, as any download does that finds no link.
 rmule has no A4AF-auto preference, so nothing else swaps a standing.
 
@@ -318,6 +338,12 @@ rows of "One peer, one queue standing" are read in 2.3.3 alone:
   queuing stock sharer is what would prove it live.
 
 ## Considered options
+
+- **Giving the slot back with `0x56` before every hand-over to another file.** It would clear the
+  uploader's done list, and the next rider would be admitted afresh (the swap table's second
+  row): queued whenever anyone waits, its wait from zero. Rejected: the slot is the point of the
+  one-link grant, and asking around the Asked Ranges is wire-legal — the uploader serves any
+  other range.
 
 - **Copying a reask reply to every download.** Rejected: a peer queued for two files fed one standing
   into both.

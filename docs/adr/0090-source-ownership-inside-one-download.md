@@ -75,7 +75,7 @@ live, not queued. How the worker ends decides the rest:
 | The worker ends by | Its standing | Its record | Spent |
 |---|---|---|---|
 | a dial that ends short of a handshake | ends | a High ID falls to its other half once, a rung-0 half to the candidate's callback roads, an adopted callback back to its Low-ID lane; anything else leaves | the endpoint it dialed |
-| the peer hanging up, or the link failing | kept | waits in RemoteQueued when it holds a standing; else a called-back source returns to its Low-ID lane and any other leaves | no |
+| the peer hanging up, or the link failing | kept; a worker transferring on a granted slot earns one without a rank, dated at its last ask, as aMule turns `DS_DOWNLOADING` into `DS_ONQUEUE` at a disconnect and keeps the client (`BaseClient.cpp:1283-1284`, `:1322-1330`), its reask due a period after that ask (`DownloadClient.cpp:156`, `PartFile.cpp:1449-1483`) | waits in RemoteQueued when it holds a standing; else a called-back source returns to its Low-ID lane and any other leaves | no |
 | its slot wait timing out | kept | as a hang-up | no |
 | a rank while its slot is not granted: the **Queued Hang-Up** (ADR-0116) | kept, ranked | waits in RemoteQueued | no |
 | `OP_OUTOFPARTREQS` (`0x57`) on a granted slot | the worker does not end: its flow is queued again on the same link, as aMule turns `DS_DOWNLOADING` back into `DS_ONQUEUE` (`ClientTCPSocket.cpp:755-762`); the part it held is released for retry (ADR-0026) and a standing is earned without a rank, which the `0x60` that follows ranks (ADR-0057) | stays Worker | no |

@@ -53,8 +53,11 @@ Part assembly lives in `rmule-core`, in one shared buffer per in-flight part.
     sample yet it is 3. At 24 a link has at most 24 × 184,320 B (about 4.4 MB) asked.
   - **Refill before the link drains.** At every arrival the worker asks the shortfall
     to its depth at once, up to three new blocks per `OP_REQUESTPARTS`. A block is asked
-    once: a stock uploader drops a range it already holds or has sent
-    (`UploadClient.cpp:503-521`).
+    once: a stock uploader drops a range it already holds or has sent, whatever its file,
+    until it takes the client out of its upload slots (`UploadClient.cpp:503-521`,
+    `UploadQueue.cpp:540-541`). The link's **Asked Ranges** — every range it asked since
+    then, kept across a hand-over to another file (ADR-0107) — reach the worker at each
+    grant, and a block whose range is one of them is asked a byte shorter.
   - **One request before the grant.** A stream's first `OP_REQUESTPARTS` carries at
     most three blocks, and a second goes out only after the stream's first byte: the
     session holds a single request until `OP_ACCEPTUPLOADREQ` (ADR-0025), and a stock

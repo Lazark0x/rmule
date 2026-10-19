@@ -128,6 +128,10 @@ _Avoid_: authentication, SUI (**Secure User Identification** is a different, sig
 A part transfer whose payload is compressed (`OP_COMPRESSEDPART`) rather than raw (`OP_SENDINGPART`). Negotiated *per direction* through each side's **Capability Block**: a peer sends us compressed parts only if our block advertised data compression, and we send compressed only if the downloading peer's block did. Independent per direction, so "accept compressed, send raw" is a valid state.
 _Avoid_: compressed file (the file content is unchanged; only the on-wire part payload is compressed)
 
+**Asked Ranges**:
+Every block range a **Peer Session**'s `OP_REQUESTPARTS` carried since the uploader last took the client out of its upload slots — whatever file each was for. A stock uploader keeps the ranges it holds or has sent across a switch to another file and drops a request repeating one (`UploadClient.cpp:503-521`); a `0x56` we send, a `0x57` we read and the link's close clear its list, and the session forgets them at the same three. Each grant (`SlotGranted`) hands them to the requester, which asks around them (ADR-0107).
+_Avoid_: done blocks (that is the uploader's own list), request history
+
 **Advertised Parts**:
 The parts a peer's part status says it holds of one file — an `OP_FILESTATUS`, a `0x91` ack's status, the status a name ask or a reask ping carries — read over the file's real parts: a count of `0` is a complete source, every part; a count of `ed2k_status_part_count(size)` gives the first `part_count(size)` bits, so the phantom part of an exact multiple is never read; any other count is refused whole, as aMule throws. `PartBitmap::advertised_parts` is the one reader; rmule-core keeps each source's on its record.
 _Avoid_: availability, file status (that is the packet), bitmap (that is the wire form)

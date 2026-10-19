@@ -65,7 +65,11 @@ and nothing left to request from this source
    asked a slot on — an uploader's promotion by dial-back, or on a link it held (ADR-0057)
    — that no download of the peer takes (ADR-0107, the Awaited Grants) is given back with
    `0x56`, as aMule's downloader cancels an accept for a file it no longer wants
-   (`ClientTCPSocket.cpp:646-659`). The link stays up for whatever else holds it.
+   (`ClientTCPSocket.cpp:646-659`). The link stays up for whatever else holds it. A download
+   that takes it opens a worker that asks as any rider does (ADR-0107); until that ask leaves,
+   the grant is the rider's to give back. A worker retired before it — its probe naming no
+   part we lack (`NoNeededParts`, ADR-0112), or its run stopping — sends the same `0x56`, so
+   the uploader never holds a slot for a source that asks nothing on it.
 4. **At most one `0x56` per ask cycle** per connection, reset by the next ask and by
    teardown.
 
