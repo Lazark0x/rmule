@@ -72,12 +72,14 @@
 //!   only observable for a trust value beyond any single test's reach (tens
 //!   of distinct sole-publishing `/24` subnets on one entry).
 
+mod aich;
 mod entry;
 mod query;
 mod result;
 mod store;
 mod wire;
 
+pub use self::aich::KadAichRootReport;
 pub use self::entry::{KeywordFileOutcome, KeywordPublishFile, KeywordPublishOutcome};
 pub use self::query::UnknownSearchOperator;
 pub use self::result::{KadKeywordResult, KeywordResultRow};
@@ -109,6 +111,14 @@ const TAG_FILEFORMAT: u8 = 0x04;
 /// Documentation-backed byte, `[pending]` capture recipe 1.
 const TAG_SOURCES: u8 = 0x15;
 const TAG_PUBLISHINFO: u8 = 0x33;
+/// `TAG_KADAICHHASHRESULT` — the `BSOB` of AICH roots a storer at Kad v9 or
+/// later writes into a keyword answer (ADR-0038).
+const TAG_KADAICHHASHRESULT: u8 = 0x37;
+
+/// `KADEMLIA_VERSION9_50a`: the first Kad version that handles AICH roots on
+/// keyword storage, and the oldest storer whose `TAG_KADAICHHASHRESULT` a
+/// searcher keeps (eMule 0.70b `Search.cpp:1128`).
+const KADEMLIA_VERSION9_50A: u8 = 9;
 
 // ---------------------------------------------------------------------------
 // aMule constants (`Constants.h`)

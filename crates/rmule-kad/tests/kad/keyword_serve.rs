@@ -7,7 +7,7 @@ use std::net::Ipv4Addr;
 use rmule_kad::keyword_store::{
     KEYWORD_RESULT_ROWS_PER_DATAGRAM, KeywordStore, encode_search_key_res,
 };
-use rmule_kad::{KadEnvelope, KadId, KadInstant};
+use rmule_kad::{KadEnvelope, KadId, KadInstant, KadNode};
 use rmule_primitives::{Ed2kText, TagValue};
 use rmule_testkit::kad_keyword::{
     decode_publish_file_from_tags, decode_publish_file_with_id, file_id, keyword, lan_ip, name_tag,
@@ -50,7 +50,7 @@ fn serve_synthesizes_filename_and_filesize_and_preserves_the_rest_verbatim() {
         "TAG_PUBLISHINFO trails the row"
     );
 
-    let projected = rows[0].project();
+    let projected = rows[0].project(KadNode::KAD_VERSION);
     assert_eq!(
         projected.file_type.as_deref(),
         Some("Video"),
@@ -89,7 +89,7 @@ fn a_file_past_four_gib_is_stored_and_served_with_its_uint64_size() {
     assert_eq!(rows.len(), 1, "the entry is indexed, not refused size-less");
     assert_eq!(rows[0].tags[1].name().id(), Some(0x02));
     assert_eq!(rows[0].tags[1].value(), &TagValue::U64(FIVE_GIB));
-    assert_eq!(rows[0].project().size, Some(FIVE_GIB));
+    assert_eq!(rows[0].project(KadNode::KAD_VERSION).size, Some(FIVE_GIB));
 }
 
 #[test]

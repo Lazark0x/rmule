@@ -84,6 +84,7 @@ fn keyword_row(
         file_type: file_type.map(str::to_owned),
         complete_sources,
         publish_info: None,
+        aich_roots: Vec::new(),
     }
 }
 

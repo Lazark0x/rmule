@@ -78,6 +78,7 @@ mod source_result;
 mod source_storer;
 
 // Keywords: deriving them, indexing a publish, and serving a search.
+mod keyword_aich_roots;
 mod keyword_derivation;
 mod keyword_index;
 mod keyword_node;

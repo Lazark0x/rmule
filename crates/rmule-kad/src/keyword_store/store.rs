@@ -181,9 +181,11 @@ impl KeywordStore {
                 continue;
             }
             let trust = entry.trust(&self.subnet_publishers);
+            // rmule stores at Kad v8, so no publisher reports it an AICH root.
             let row = KeywordResultRow {
                 file_id: *file_id,
                 tags: entry.serve_tags(trust),
+                aich_roots: Vec::new(),
             };
             if trust >= TRUST_WORTHY_THRESHOLD {
                 trusted.push(row);

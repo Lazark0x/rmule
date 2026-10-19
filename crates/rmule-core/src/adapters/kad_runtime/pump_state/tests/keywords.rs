@@ -71,6 +71,7 @@ fn row(byte: u8, name: &str) -> KadKeywordResult {
         file_type: None,
         complete_sources: None,
         publish_info: None,
+        aich_roots: Vec::new(),
     }
 }
 

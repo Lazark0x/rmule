@@ -202,6 +202,8 @@ struct InFlightQuery {
 struct TerminalPhase {
     /// The fan recipients — the only endpoints whose answers are solicited.
     endpoints: Vec<KadNodeEndpoint>,
+    /// Each recipient's Kad version, by the same index as `endpoints`.
+    versions: Vec<u8>,
     deadline: KadInstant,
     /// Search: result rows consumed (capped by the result budget).
     rows_consumed: usize,
@@ -284,6 +286,15 @@ impl KadLookupWalk {
     /// only endpoints whose `KADEMLIA2_PUBLISH_RES` is solicited.
     pub(crate) fn is_publish_endpoint(&self, from: KadNodeEndpoint) -> bool {
         !self.purpose.is_search() && self.is_terminal_endpoint(from)
+    }
+
+    /// The Kad version the walk knew the fan recipient at `from` by when it
+    /// fanned, `None` for an endpoint it did not fan: what a searcher reads an
+    /// answer's version-gated tags by (eMule 0.70b `Search.cpp:1041-1054`).
+    pub(crate) fn fan_recipient_version(&self, from: KadNodeEndpoint) -> Option<u8> {
+        let terminal = self.terminal.as_ref()?;
+        let index = terminal.endpoints.iter().position(|&at| at == from)?;
+        terminal.versions.get(index).copied()
     }
 
     fn is_terminal_endpoint(&self, from: KadNodeEndpoint) -> bool {
@@ -599,6 +610,7 @@ impl KadLookupWalk {
         };
         self.terminal = Some(TerminalPhase {
             endpoints: fan.iter().map(|contact| contact.endpoint()).collect(),
+            versions: fan.iter().map(|contact| contact.version()).collect(),
             deadline: now + window,
             rows_consumed: 0,
             acked: Vec::new(),

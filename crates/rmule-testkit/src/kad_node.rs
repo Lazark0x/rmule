@@ -348,10 +348,16 @@ pub fn solicit_hello_res(node: &mut KadNode, responder: KadNodeEndpoint, respond
 /// introduces itself with, and the cheapest way to seat a contact as
 /// responded without driving a probe round trip.
 pub fn hello_req_from(id: KadId, endpoint: KadNodeEndpoint) -> Vec<u8> {
+    hello_req_at_version(id, endpoint, 8)
+}
+
+/// [`hello_req_from`] from a peer at Kad `version` — a storer whose answers
+/// a searcher reads by its version (`TAG_KADAICHHASHRESULT` from v9 on).
+pub fn hello_req_at_version(id: KadId, endpoint: KadNodeEndpoint, version: u8) -> Vec<u8> {
     Kad2Message::HelloReq(Kad2NodeInfo {
         id,
         tcp_port: 4662,
-        version: 8,
+        version,
         udp_port_tag: Some(endpoint.udp_port()),
         misc_options: 0,
     })

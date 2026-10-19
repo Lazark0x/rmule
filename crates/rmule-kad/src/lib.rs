@@ -44,7 +44,7 @@ pub use evidence::KadEvidence;
 pub use id::{KadDistance, KadId};
 pub use keyword::KadKeywordSearchRequest;
 pub use keyword_publisher::KadSharedFile;
-pub use keyword_store::{KadKeywordResult, KeywordResultRow};
+pub use keyword_store::{KadAichRootReport, KadKeywordResult, KeywordResultRow};
 pub use lookup::{
     KadBuddyContact, KadPublishPosture, KadPublishRequest, KadSourceCandidate, KadSourceDiagnostic,
     KadSourceLookupRequest, KadSourceRowFacts,
