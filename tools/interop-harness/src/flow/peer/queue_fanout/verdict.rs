@@ -718,7 +718,7 @@ mod tests {
         assert_eq!(held_after_rank(&idle_closed, &[], &link), Some(true));
         let granted = capture(vec![closed_by(90.0, link.rmule, link.sharer)]);
         assert_eq!(
-            held_after_rank(&granted, &[grant.clone()], &link),
+            held_after_rank(&granted, std::slice::from_ref(&grant), &link),
             Some(true)
         );
         assert_eq!(held_after_rank(&capture(Vec::new()), &[], &link), None);
