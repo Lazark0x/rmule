@@ -116,7 +116,7 @@ fn after_close(log: &str, closed: f64) -> (u32, bool, [i64; 4]) {
     (rider, failed, tick)
 }
 
-/// Score the severed run under `run_dir` and write [`VERDICT`]; the verdict.
+/// Score the severed run under `run_dir` and write `VERDICT`; the verdict.
 ///
 /// # Errors
 /// If the addresses, the tap or rmule's log cannot be read.
