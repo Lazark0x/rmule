@@ -66,10 +66,52 @@ slower worker is fetching. The first byte to arrive at an offset is kept. Nothin
     bytes leave the Arrived Ranges, and they are fetched again by whoever has room. The workers
     that wrote into a corrupt cell are retired. A cell's sole writer is distrusted (ADR-0090).
     Honest workers keep their slots and their blocks.
-  - Without a root, nothing attributes the bad bytes. Every contributor to the part is retired,
-    its sole contributor is distrusted, and the part's bytes are dropped (ADR-0029). A part
-    shared by several workers puts every one of them at risk. That blast radius is the price of
-    a part with no AICH root.
+  - Without a root, the part's MD4 says only that some cell is corrupt. The refetch attributes
+    it, cell by cell, as aMule's corruption black box does with the ranges each IP sent
+    (`TransferredData`, `PartFile.cpp:2918`; `VerifiedData`, `:3075`, `:3102`, `:3412-3415`).
+    The rules are below. The same path takes a part whose recovery answer is empty, malformed,
+    or names no cell (ADR-0038).
+
+#### A part that fails with no root
+
+- **Nobody is retired who cannot be named.** The part's bytes are dropped and its blocks are
+  handed again to whoever has room. Workers that shared the part keep their slots.
+- **Kept across the refetch: the Failed Cells.** For each cell of the failed attempt, the SHA-1
+  of its bytes (its AICH block hash) and its writers, each with the User Hash its hello named.
+  A part keeps one attempt, the latest. That is at most 53 hashes of 20 bytes plus one
+  attempt's writers per part. It lives in memory for the run and goes when the part verifies.
+  aMule keeps the same evidence as per-IP ranges until they verify
+  (`CorruptionBlackBox.cpp:78-112`).
+- **A refetched cell is asked of someone else.** A worker is handed the blocks of cells it did
+  not write first, so a refetched cell comes from another writer whenever one holding the part
+  has room. Without that, a writer that refetched its own bad cell would prove nothing.
+- **What a refetched cell's new bytes prove.** When the part next completes, each cell is
+  compared with its Failed Cell.
+  - **The part verifies.** A cell whose hash differs held corrupt bytes, exactly as a root would
+    have named it. Its old writers are retired, and its sole old writer is distrusted. A cell
+    that matches clears its writers. aMule's black box gives the same verdict only through AICH
+    (`:3412-3415`); on a plain MD4 pass it credits every old range as good (`:3075`).
+  - **The part fails again.** A cell whose bytes match the old copy, sent by writers disjoint
+    from the old ones, is **corroborated**: two senders agree, so both copies are taken as good.
+    A cell whose bytes differ is **disputed**: one of its two copies is corrupt.
+- **Who is named.** An attempt's **suspects** are the writers of its cells that were not
+  corroborated.
+  - **A first failure** names a writer only when one worker wrote the whole part. It is retired
+    and distrusted (ADR-0090). Otherwise nobody is retired.
+  - **A repeated failure** names every writer that could have sent the bad bytes of both
+    attempts: a suspect of both that wrote a copy of every disputed cell. With one bad sender,
+    that is the sender: its corrupt copies are never corroborated, and every disputed cell holds
+    one of them. Every named writer is retired. Several named writers cannot be told apart by
+    the evidence, so retiring them all bounds the refetches. A repeated failure that names
+    nobody (two senders lied, one in each attempt) retires nobody.
+  - Then the attempt becomes the part's Failed Cells.
+- **Who is distrusted.** Only a proven sender (ADR-0090): the sole writer of a whole failed
+  attempt, a writer that alone sent both differing copies of one cell, and the sole old writer
+  of a cell the verified part disproves. A writer named only by elimination is retired, not
+  distrusted, until the part's verified bytes prove it. aMule bans only past 32 % proven-corrupt
+  bytes (`CorruptionBlackBox.cpp:38`, `:191-225`), and without AICH it proves none.
+- **While a recovery ask is out, the part is verifying.** None of its blocks is handed until
+  the answer comes. The asked worker's end stands for an empty answer.
 
 ### 2. Assignment: Claimed Blocks
 
@@ -167,7 +209,10 @@ slower worker is fetching. The first byte to arrive at an offset is kept. Nothin
 - **`BlockLost { start, end }`** replaces giving the slot back on a lost block.
 - **An AICH recovery ask (ADR-0038) leaves at once, while blocks stream.** Its answer is forwarded
   when it comes, and an empty answer stands in at the slot budget or the link's end. A worker no
-  longer reaches a drain at a part's end, so the ask cannot wait for one.
+  longer reaches a drain at a part's end, so the ask cannot wait for one. While the ask is out the
+  worker keeps reading its link as between handouts: a rank, the grant, `OP_OUTOFPARTREQS` and the
+  peer's end reach the download at once, and a shutdown ends the wait. One ask is out per link; a
+  second waits for the first to settle.
 - **`PartStreamed` goes.** The next handout reaches the worker before its pipeline drains, so a
   part boundary costs no round trip (ADR-0029, "A part boundary drains it").
 - **`BlockReceived` is unchanged.** It still names the part and the absolute offset.
@@ -185,6 +230,10 @@ slower worker is fetching. The first byte to arrive at an offset is kept. Nothin
 - **`EndGameBlocks { peer, part_index, blocks, bytes }`** is said when a Duplicate Set is handed.
   Its sentence is written in `rmule-words`, and the run log writes it as
   `download.end_game_blocks`.
+- **`PartCorrupt { part_index, writers, retired }`** is said when a part fails its check with no
+  root to name its corrupt cells (§1): how many sources wrote it, and how many of them the failure
+  named and retired. Its sentence is written in `rmule-words`, and the run log writes it as
+  `download.part_corrupt`. Each retirement is also said as `PeerRetired`.
 
 ## Consequences
 
@@ -195,7 +244,9 @@ slower worker is fetching. The first byte to arrive at an offset is kept. Nothin
   those blocks. Duplicate bytes are at most 3 × `EMBLOCKSIZE` per Duplicate Set, against the rest
   of a part per Tail Race.
 - A part boundary no longer drains the pipeline.
-- Without an AICH root, a failed shared part retires more honest workers than an unshared one did.
+- Without an AICH root, a failed shared part retires nobody it cannot name. With one bad sender
+  among three or more writers, a refetch that fails again usually names it alone. Two writers
+  alone on a part dispute each other's cells, so a repeated failure usually retires both.
 - Assignment, the End Game, the merge and the rebuild are pure bookkeeping. They are asserted with
   decision sequences and deterministic fake workers, without sockets.
 - **The bench leg.** The flow is `peer-streaming-window` with `--seed complete` and

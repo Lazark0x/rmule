@@ -85,6 +85,7 @@ live, not queued. How the worker ends decides the rest:
 | a granted slot it has no part to work, given back with `0x56` (`NoFreePart`) | earned, on the ordinary cadence (ADR-0057) | waits in RemoteQueued | no |
 | the peer saying it lacks the file (`0x48`, at the probe or mid-slot) | ends | leaves the book, whichever road reached it — a called-back source does not return to its lane | every Ask Name its record holds, below |
 | bad data it alone sent, or a part hash set not the file's own | ends | leaves | no: distrusted (invariant 4) |
+| bad bytes a failed part's refetch names it for by elimination (ADR-0117 §1) | ends | leaves | no |
 | a hello naming a distrusted User Hash | ends | leaves | no |
 | crypt stances that cannot meet | (it dialed nothing) | leaves | no |
 | giving way in a merge | folds into the keeper's | folded into the keeper | no |
@@ -160,11 +161,14 @@ Invariants every transition keeps:
    sources.
 3. **One failed dial per endpoint per re-ask period**, whichever road dialed it.
 4. **Bad data is not re-pooled.** A proven sender of bad data for this file — an
-   AICH-attributed block, a part's sole contributor, or the sender of a part hash set that is
-   not the file's own — is distrusted, consulted at the sighting entry and at the hello (a
-   source reached without its hash is retired as `Distrusted`, its endpoint unspent). A
-   retire-all's several contributors are never distrusted. Distrust follows the peer across
-   addresses and stays apart from the IP-keyed, core-wide `BanStore` (ADR-0064).
+   AICH-attributed block, a failed part's sole contributor, the sole sender of two differing
+   copies of one cell, the sole old writer of a cell a verified refetch disproves (ADR-0117
+   §1), or the sender of a part hash set that is not the file's own — is distrusted,
+   consulted at the sighting entry and at the hello (a source reached without its hash is
+   retired as `Distrusted`, its endpoint unspent). Its User Hash is the one the hello named
+   when it wrote, so a sender proven after its worker ended is distrusted too. Writers a
+   failure names only by elimination are retired and never distrusted. Distrust follows the
+   peer across addresses and stays apart from the IP-keyed, core-wide `BanStore` (ADR-0064).
 
 aMule's counterparts: one `CUpDownClient` per peer and one pooling seam,
 `CDownloadQueue::CheckAndAddSource` (`src/DownloadQueue.cpp:687-745`); dead endpoints in

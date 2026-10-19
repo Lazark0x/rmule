@@ -87,17 +87,19 @@ Part assembly lives in `rmule-core`, in one shared buffer per in-flight part.
     trip (ADR-0117).
 - **On a failed part hash:** with a trusted AICH root, core drops only the corrupt
   cells' bytes and retires the workers that wrote into them (ADR-0038, ADR-0117).
-  Without one, nothing attributes the bad block, so core retires every contributor to
-  that attempt, discards the buffer, and the part's blocks are handed again to the
-  surviving workers. Retirement is per download; if it exhausts the swarm, the download
-  fails.
+  Without one, core discards the buffer, keeps each cell's hash and writers as the
+  part's **Failed Cells**, and hands the part's blocks again to every worker holding it.
+  The refetch attributes the bad cells: a verified refetch disproves the old copies
+  that differ, and a repeated failure names the writers both failures point to
+  (ADR-0117 §1). A part one worker wrote whole names that worker at once. Retirement is
+  per download; if it exhausts the swarm, the download fails.
 
 ## Consequences
 
 - Scarce parts finish across many short-lived grants.
 - End-game duplicates pull at most three blocks twice per Duplicate Set (ADR-0117).
-- Without AICH, the retire-all path removes a persistent poisoner at the cost of
-  retiring honest co-contributors for that download.
+- Without AICH, a persistent poisoner sharing a part with honest workers costs at
+  least one refetch before it is named, and the honest workers keep their slots.
 - Assembly behaviour — off-grid and duplicated arrivals merged, bytes kept across a
   drop, retirement on failure, buffers freed on success and failure — is asserted with
   deterministic fake workers, without sockets.
@@ -115,9 +117,10 @@ Part assembly lives in `rmule-core`, in one shared buffer per in-flight part.
   the gain, mid-part resume after a restart, is smaller than the cost.
 - **Write blocks to `.part` at once, track ranges in memory.** Rejected: restart must
   treat those bytes as absent anyway, so it pays the write complexity for nothing.
-- **Retire only the last contributor, or keep per-block provenance with staged
-  re-verification.** Rejected: the first lets an early-block poisoner escape and can
-  loop on the same bad peer; the second reinvents AICH badly.
+- **Retire only the last contributor.** Rejected: it lets an early-block poisoner
+  escape and can loop on the same bad peer.
+- **Retire every contributor to the failed attempt.** Rejected (ADR-0117 §1): with a
+  part's blocks shared, one bad sender would cost every worker on the part its slot.
 - **One block in flight.** Rejected: every block waits out the uploader's wake after
   its request lands, so a fast link idles for a large share of each block.
 - **aMule's fixed three.** Rejected as the rule, kept as the floor: three blocks cover a

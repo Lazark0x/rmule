@@ -780,7 +780,7 @@ A download whose name is in aMule's video or audio table (`is_previewable()`), r
 _Avoid_: media file, playable
 
 **Download State**:
-The sans-I/O scheduling brain for one download (`download/state.rs`). It owns every channel-free decision — which blocks a peer is handed and when it duplicates a slower peer's (ADR-0117), how cross-peer blocks assemble (ADR-0029), which candidate backfills a retired worker (ADR-0030), when a pooled source is reasked and when a callback road lapses — and returns an ordered `Vec<Decision>` the async runner *enacts* (the only async surface). Time is an argument: each entry takes `now`, `on_tick(now)` runs the reask sweep, turns the spent period and expires deadlines, and `next_wake()` names when the runner wakes it next. Persistence is a fallible effect, so it round-trips through `on_persist_result`. Touching no socket, clock, store, or channel is what makes the handout / end-game / retire-all / backfill / reask behaviours assertable as plain decision sequences instead of only through a live Tokio actor.
+The sans-I/O scheduling brain for one download (`download/state.rs`). It owns every channel-free decision — which blocks a peer is handed and when it duplicates a slower peer's (ADR-0117), how cross-peer blocks assemble (ADR-0029), which candidate backfills a retired worker (ADR-0030), when a pooled source is reasked and when a callback road lapses — and returns an ordered `Vec<Decision>` the async runner *enacts* (the only async surface). Time is an argument: each entry takes `now`, `on_tick(now)` runs the reask sweep, turns the spent period and expires deadlines, and `next_wake()` names when the runner wakes it next. Persistence is a fallible effect, so it round-trips through `on_persist_result`. Touching no socket, clock, store, or channel is what makes the handout / end-game / corrupt-part / backfill / reask behaviours assertable as plain decision sequences instead of only through a live Tokio actor.
 _Avoid_: download manager, actor, scheduler (the `DownloadScheduler` is one of the bags it owns)
 
 **Request Depth**:
@@ -794,6 +794,10 @@ _Avoid_: speed, bandwidth, throughput
 **Arrived Ranges**:
 The exact byte ranges of one in-flight part that have arrived, relative to the part's start, and their bytes in 180 KiB cells, each cell recording every worker that wrote into it (ADR-0117). A merge writes only bytes not yet arrived, so the first copy of a byte wins whatever its grid; the part verifies when they cover it. In memory for the run: a restart rebuilds the missing set from the verified parts.
 _Avoid_: prefix, bitmap, gap list
+
+**Failed Cells**:
+What a part that failed its check with no **Trusted AICH Root** keeps across its refetch (ADR-0117 §1): per 180 KiB cell, the SHA-1 of its bytes and its writers, each with the User Hash its hello named. One attempt per part, the latest, in memory until the part verifies. A refetched cell is asked of a worker that did not write it first; when the part verifies, a cell whose hash differs proves its old writers corrupt, and when it fails again, matching cells from disjoint writers are corroborated and differing ones disputed, naming the writers both failures point to.
+_Avoid_: black box, retire-all, suspects list
 
 **Claimed Block**:
 A block of a part handed to one worker to ask, until its range has arrived (ADR-0117): cut from the part's unarrived, unclaimed bytes on its `EMBLOCKSIZE` grid, so off the grid exactly where the gaps are. One worker per block outside the **End Game**; a worker's end, a requeue or a lost block frees it for the next worker with room.
@@ -863,7 +867,7 @@ resolved per-download with precedence link `h=` > trusted-set vote > none. A sin
 peer's claimed root is never trusted: unlike the **ED2K Part Hash Set** (whose hashes
 re-hash to the **ED2K File Hash**), the AICH root has no self-verifying anchor, so with
 no link `h=` rmule commits a root only when enough distinct peers report the same one.
-With no trusted root, recovery is disabled and a failed part falls back to retire-all.
+With no trusted root, recovery is disabled and a failed part's refetch attributes it (**Failed Cells**).
 _Avoid_: AICH root hash (that is the raw value; this is the per-download trust decision), verification authority (that is the MD4 identity authority; AICH is orthogonal)
 
 **AICH Block Recovery**:
@@ -874,7 +878,7 @@ block, localizes the corrupt one(s), retires only the contributing peer(s) by
 contributor. Repair drops only the corrupt cells from the part's **Arrived Ranges**
 and hands those blocks again; a cell's writers are retired and its sole writer
 distrusted (ADR-0117).
-_Avoid_: retire-all (that is the no-root fallback), AICH verification (MD4 is verification; this is recovery)
+_Avoid_: Failed Cells (that is the no-root path), AICH verification (MD4 is verification; this is recovery)
 
 **Peer Reach**:
 The one module that reaches a peer (ADR-0061, ADR-0091), over handles the core already shares: **Self Reach**, the client-UDP send half, the **NAT-T Front**'s command half, the Kad pump's and the event bus. Its one call, `reach(peer, retire)`, reads the **Route Position**, asks the route tree for the road, carries it out — a direct `0x95`, a buddy `0x52` or its **Callback Walk**, or rung 1 handed to the NAT-T Front whole — and reports the road taken. Both callers end in it: an operator's `ReachPeer` (nothing to retire) and a download's Low-ID candidate (its **Pending Callback**, whose road the brain already chose and whose retire channel hears at once when the road never opens).

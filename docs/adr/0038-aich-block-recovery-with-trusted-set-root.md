@@ -3,9 +3,9 @@
 ## Context
 
 A part assembled from several peers is verified once, by its MD4 part hash
-(ADR-0029). On failure, MD4 cannot say which block was bad, so the only safe move
-without more information is to retire every contributor and refetch the part — which
-collaterally retires honest peers.
+(ADR-0029). On failure, MD4 cannot say which block was bad. Without more information
+the part is fetched again, and only a refetch can say which writer sent the bad bytes
+(ADR-0117 §1).
 
 AICH is eMule's optional SHA-1 hash tree over 180 KiB (`EMBLOCKSIZE`) blocks. With a
 trusted master root, a part's recovery data localises the corrupt block and so names
@@ -37,7 +37,8 @@ AICH is a block-level recovery layer beside MD4, implemented in both directions.
   all voters, as aMule's `SHAHashSet.cpp` does. A voter is an IPv4 address masked as
   aMule masks it (`dwIP &= 0x00F0FFFF`), so one subnet cannot stuff the vote, or an IPv6
   proposer's `/64`. With no trusted root, AICH recovery is unavailable and a
-  failed part takes the retire-all path of ADR-0029. AICH is never a new failure mode.
+  failed part takes the rootless path of ADR-0117 §1, which attributes its corrupt cells
+  across a refetch. AICH is never a new failure mode.
 - **AICH changes only the failure path.** MD4 still defines "verified". When a part fails
   MD4 and a trusted root exists, core requests the part's recovery data
   (`0x9B` → `0x9C`), hashes each block, and finds the corrupt ones. `PartAssembly` records
@@ -47,7 +48,9 @@ AICH is a block-level recovery layer beside MD4, implemented in both directions.
   the next workers with room, and the part re-verifies by MD4.
 - **Bad AICH input is a skip, not an error.** A malformed `0x9C`, a master-hash echo that
   does not match, or recovery data that does not chain to the trusted root falls back to
-  retire-all, and the peer session stays open.
+  the rootless path, and the peer session stays open. So does recovery data naming no
+  corrupt block, and an ask whose worker ends before it answers. While the ask is out the
+  part is verifying, so none of its blocks is handed.
 - **Serving is lazy.** The serve side builds a shared file's `AichHashSet` from the file's
   bytes on the first `0x9B` or `0x9E` for it, caches it, and drops it when the file is
   unshared. It answers recovery data (`0x9C`) and the master root (`0x9D`) from the cache.
@@ -56,8 +59,9 @@ AICH is a block-level recovery layer beside MD4, implemented in both directions.
 
 ## Consequences
 
-- With a trusted root, a corrupt part costs one peer — the poisoner — instead of every
-  contributor.
+- With a trusted root, a corrupt part costs one peer — the poisoner — at once, and only
+  its corrupt cells are fetched again; without one, the whole part is, before the
+  poisoner can be named (ADR-0117 §1).
 - Repair refetches exactly the corrupt blocks. A cell holding two workers' bytes — a
   duplicate, a freed lost block, an off-grid ask — retires both writers and distrusts
   neither. The in-memory, per-session lifetime of assembly is unchanged.
