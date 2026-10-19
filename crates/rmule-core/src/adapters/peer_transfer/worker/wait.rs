@@ -69,8 +69,9 @@ pub(super) async fn await_probe(
 /// the way: the command channel is read first so a `Shutdown` is never
 /// starved by a busy peer and stops the wait at once (aMule's
 /// `CUpDownClient::Disconnected` aborts a transfer on the spot); an AICH root
-/// ask (ADR-0038) and the download's hash-set ask, which only a granted
-/// worker is handed (ADR-0026), go out as they come; blocks handed meanwhile wait in
+/// ask (ADR-0038), the download's hash-set ask, which only a granted
+/// worker is handed (ADR-0026), and an AICH recovery ask go out as they come,
+/// the recovery answer forwarded when it arrives; blocks handed meanwhile wait in
 /// `deferred` and end the wait as `Handed`; anything else waits in
 /// `deferred`. No event by `deadline` reports `SlotTimeout` and ends the
 /// wait as `Stalled`.
@@ -80,11 +81,20 @@ pub(super) async fn next_event(
     deadline: tokio::time::Instant,
 ) -> Result<Option<PeerEvent>, Streamed> {
     loop {
+        let aich_due = link.aich.map(|(_, due)| due);
         tokio::select! {
             biased;
             command = link.commands.recv() => match command {
                 Some(PeerWorkerCommand::Shutdown { cancel }) => {
                     return Err(Streamed::Shutdown { cancel });
+                }
+                // An AICH ask leaves at once, while blocks stream: a worker
+                // runs from part to part, so it cannot wait for a drain
+                // (ADR-0038, ADR-0117). Its answer comes back below.
+                Some(PeerWorkerCommand::RequestAich { part, root }) if link.aich.is_none() => {
+                    if !link.ask_aich(file_hash, part, root).await {
+                        return Err(Streamed::WindDown);
+                    }
                 }
                 Some(PeerWorkerCommand::RequestAichFileHash) => {
                     let _ = link.cmd_tx
@@ -105,9 +115,22 @@ pub(super) async fn next_event(
                 Some(later) => link.deferred.push_back(later),
                 None => return Err(Streamed::WindDown),
             },
+            () = tokio::time::sleep_until(aich_due.unwrap_or(deadline)), if aich_due.is_some() => {
+                if !link.give_up_aich().await {
+                    return Err(Streamed::WindDown);
+                }
+            }
             waited = tokio::time::timeout_at(deadline, link.events.recv()) => {
                 return match waited {
-                    Ok(event) => Ok(event),
+                    Ok(event) => {
+                        if let Some(answer) = link.settle_aich(file_hash, &event).await {
+                            if link.event_tx.send(answer).await.is_err() {
+                                return Err(Streamed::WindDown);
+                            }
+                            continue;
+                        }
+                        Ok(event)
+                    }
                     Err(_) => {
                         let _ = link.event_tx.send(PeerWorkerEvent::SlotTimeout).await;
                         Err(Streamed::Stalled)

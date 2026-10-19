@@ -76,13 +76,13 @@ async fn events_after(
         }))
         .await
         .unwrap();
-    let mut link = WorkerLink {
-        events: &mut events,
-        cmd_tx: &cmd_tx,
-        event_tx: &event_tx,
-        commands: &mut worker_cmd_rx,
-        deferred: VecDeque::new(),
-    };
+    let mut link = WorkerLink::new(
+        &mut events,
+        &cmd_tx,
+        &event_tx,
+        &mut worker_cmd_rx,
+        Duration::from_secs(5),
+    );
     streamed(
         &mut link,
         &mut Pipeline::new(),
@@ -149,13 +149,13 @@ async fn a_probe_answered_with_no_file_reports_no_parts_and_nothing_after() {
         }))
         .await
         .unwrap();
-    let mut link = WorkerLink {
-        events: &mut events,
-        cmd_tx: &cmd_tx,
-        event_tx: &event_tx,
-        commands: &mut worker_cmd_rx,
-        deferred: VecDeque::new(),
-    };
+    let mut link = WorkerLink::new(
+        &mut events,
+        &cmd_tx,
+        &event_tx,
+        &mut worker_cmd_rx,
+        Duration::from_secs(5),
+    );
     let probed = await_probe(&mut link, file.file_hash, Duration::from_secs(5)).await;
     assert!(matches!(probed, Streamed::WindDown));
     drop(event_tx);
@@ -208,13 +208,13 @@ async fn a_block_that_fails_to_inflate_is_freed_and_the_slot_kept() {
         ))
         .await
         .unwrap();
-    let mut link = WorkerLink {
-        events: &mut events,
-        cmd_tx: &cmd_tx,
-        event_tx: &event_tx,
-        commands: &mut worker_cmd_rx,
-        deferred: VecDeque::new(),
-    };
+    let mut link = WorkerLink::new(
+        &mut events,
+        &cmd_tx,
+        &event_tx,
+        &mut worker_cmd_rx,
+        Duration::from_secs(5),
+    );
     let started = tokio::time::Instant::now();
     let ended = streamed(
         &mut link,
@@ -260,13 +260,13 @@ async fn idled_over(link_events: Vec<PeerEvent>, budget: Duration) -> Vec<PeerWo
     }
     // With nothing to hear, the link stays open until the wait has ended.
     let open = (!closes).then_some(events_tx);
-    let mut link = WorkerLink {
-        events: &mut events,
-        cmd_tx: &cmd_tx,
-        event_tx: &event_tx,
-        commands: &mut worker_cmd_rx,
-        deferred: VecDeque::new(),
-    };
+    let mut link = WorkerLink::new(
+        &mut events,
+        &cmd_tx,
+        &event_tx,
+        &mut worker_cmd_rx,
+        Duration::from_secs(5),
+    );
     let idled = idle_wait(
         &mut link,
         &mut Pipeline::new(),
@@ -366,13 +366,13 @@ async fn handed_blocks_stream_asked_ahead_and_report_their_room() {
     let handed: Vec<BlockPlan> = (0..5u64)
         .map(|n| block(n * BLOCK, (n + 1) * BLOCK))
         .collect();
-    let mut link = WorkerLink {
-        events: &mut events,
-        cmd_tx: &cmd_tx,
-        event_tx: &event_tx,
-        commands: &mut worker_cmd_rx,
-        deferred: VecDeque::new(),
-    };
+    let mut link = WorkerLink::new(
+        &mut events,
+        &cmd_tx,
+        &event_tx,
+        &mut worker_cmd_rx,
+        Duration::from_secs(5),
+    );
     let ended = streamed(
         &mut link,
         &mut Pipeline::new(),
@@ -435,13 +435,13 @@ async fn a_grant_heard_between_handouts_keeps_the_stream_off_the_asked_ranges() 
         }))
         .await
         .unwrap();
-    let mut link = WorkerLink {
-        events: &mut events,
-        cmd_tx: &cmd_tx,
-        event_tx: &event_tx,
-        commands: &mut worker_cmd_rx,
-        deferred: VecDeque::new(),
-    };
+    let mut link = WorkerLink::new(
+        &mut events,
+        &cmd_tx,
+        &event_tx,
+        &mut worker_cmd_rx,
+        Duration::from_secs(5),
+    );
     let mut pipeline = Pipeline::new();
     idle_wait(
         &mut link,
@@ -497,13 +497,13 @@ async fn blocks_handed_mid_stream_queue_behind_the_rest() {
             .await
             .unwrap();
     }
-    let mut link = WorkerLink {
-        events: &mut events,
-        cmd_tx: &cmd_tx,
-        event_tx: &event_tx,
-        commands: &mut worker_cmd_rx,
-        deferred: VecDeque::new(),
-    };
+    let mut link = WorkerLink::new(
+        &mut events,
+        &cmd_tx,
+        &event_tx,
+        &mut worker_cmd_rx,
+        Duration::from_secs(5),
+    );
     let ended = streamed(
         &mut link,
         &mut Pipeline::new(),
@@ -543,13 +543,13 @@ async fn the_hash_set_ask_leaves_while_blocks_stream() {
         }))
         .await
         .unwrap();
-    let mut link = WorkerLink {
-        events: &mut events,
-        cmd_tx: &cmd_tx,
-        event_tx: &event_tx,
-        commands: &mut worker_cmd_rx,
-        deferred: VecDeque::new(),
-    };
+    let mut link = WorkerLink::new(
+        &mut events,
+        &cmd_tx,
+        &event_tx,
+        &mut worker_cmd_rx,
+        Duration::from_secs(5),
+    );
     let ended = streamed(
         &mut link,
         &mut Pipeline::new(),
@@ -649,4 +649,80 @@ async fn a_granted_slot_that_streams_nothing_for_the_budget_is_given_back() {
         teardown(&worked_until_the_budget(None).await),
         Some(PeerCommand::Requester(RequesterCommand::ReleaseSlot { .. }))
     ));
+}
+
+/// An AICH recovery ask handed while blocks stream leaves at once, its answer
+/// is forwarded when it comes, and the blocks stream on: a worker keeps
+/// streaming across parts, so the ask cannot wait for a drain (ADR-0038,
+/// ADR-0117).
+#[tokio::test]
+async fn an_aich_ask_handed_mid_stream_leaves_at_once_and_its_answer_comes_back() {
+    let bytes = [0x5A; 512];
+    let file = rmule_testkit::file_link("aich.bin", &bytes);
+    let root = rmule_primitives::AichRootHash::from_bytes([0xA7; 20]);
+    let (events_tx, mut events) = mpsc::channel(8);
+    let (cmd_tx, mut cmd_rx) = mpsc::channel(8);
+    let (event_tx, worker_events) = mpsc::channel(8);
+    let (worker_cmd_tx, mut worker_cmd_rx) = mpsc::channel(8);
+    worker_cmd_tx
+        .send(PeerWorkerCommand::RequestAich { part: 0, root })
+        .await
+        .unwrap();
+    events_tx
+        .send(PeerEvent::Requester(RequesterEvent::AichAnswerReceived {
+            file_hash: file.file_hash,
+            part: 0,
+            root,
+            recovery_data: vec![1, 2, 3],
+        }))
+        .await
+        .unwrap();
+    events_tx
+        .send(PeerEvent::Requester(RequesterEvent::PartReceived {
+            file_hash: file.file_hash,
+            offset: 0,
+            bytes: bytes.to_vec(),
+        }))
+        .await
+        .unwrap();
+    let mut link = WorkerLink::new(
+        &mut events,
+        &cmd_tx,
+        &event_tx,
+        &mut worker_cmd_rx,
+        Duration::from_secs(5),
+    );
+    let ended = streamed(
+        &mut link,
+        &mut Pipeline::new(),
+        &file,
+        &[block(0, 512)],
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(matches!(ended, Streamed::Next));
+    drop(link);
+    drop(cmd_tx);
+    let mut sent = Vec::new();
+    while let Some(command) = cmd_rx.recv().await {
+        sent.push(command);
+    }
+    assert!(
+        sent.contains(&PeerCommand::Requester(RequesterCommand::RequestAich {
+            file_hash: file.file_hash,
+            part: 0,
+            root
+        })),
+        "{sent:?}"
+    );
+    drop(event_tx);
+    let reported = drained(worker_events).await;
+    assert_eq!(
+        reported.first(),
+        Some(&PeerWorkerEvent::AichAnswerReceived {
+            part: 0,
+            recovery_data: vec![1, 2, 3]
+        })
+    );
+    assert_eq!(reported.last(), Some(&DRAINED));
 }
