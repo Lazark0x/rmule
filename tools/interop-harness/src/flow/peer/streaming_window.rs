@@ -19,6 +19,7 @@
 //! rmule runs its bounded `hold_secs`, which must outlast twice
 //! `FILEREASKTIME` for the wait claim.
 
+mod blocks;
 mod pace;
 mod prefix;
 mod replay;

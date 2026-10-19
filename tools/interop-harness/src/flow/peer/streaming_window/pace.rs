@@ -89,20 +89,24 @@ pub(crate) struct Pace {
     pub(crate) ideal_s: Option<f64>,
 }
 
-/// Read every seed link of `pcap` between `rmule` and `seeds` (role, address).
+/// Every seed's links, in seed order: per connection, its timed events in
+/// capture order.
+pub(crate) type SeedLinks = Vec<Vec<Vec<(f64, LinkEvent)>>>;
+
+/// Read every link of `pcap` between `rmule` and `seeds`, in seed order.
 ///
 /// # Errors
 /// If the capture cannot be read.
-pub(crate) fn read(
+pub(crate) fn links(
     pcap: &Path,
     rmule: Ipv4Addr,
-    seeds: &[(String, Ipv4Addr)],
+    seeds: &[Ipv4Addr],
     file_hash: &[u8; 16],
-) -> Result<Pace> {
+) -> Result<SeedLinks> {
     let capture = tcp_capture(&records(pcap)?)?;
     let seed_of = |address: SocketAddr| match address.ip() {
         IpAddr::V4(ip) if address.port() == SEED_TCP_PORT => {
-            seeds.iter().position(|(_, seed)| *seed == ip)
+            seeds.iter().position(|seed| *seed == ip)
         }
         _ => None,
     };
@@ -136,14 +140,27 @@ pub(crate) fn read(
             links[index].1.extend(segments);
         }
     }
+    Ok(per_seed
+        .into_iter()
+        .map(|connections| {
+            connections
+                .into_iter()
+                .map(|(_, mut events)| {
+                    events.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    events
+                })
+                .collect()
+        })
+        .collect())
+}
+
+/// The pace of every seed's `links`, each under its role in `roles`.
+pub(crate) fn read(links: &SeedLinks, roles: &[String]) -> Pace {
     let mut delivered: Vec<(u64, u64)> = Vec::new();
-    let mut links = Vec::new();
-    for ((role, _), connections) in seeds.iter().zip(per_seed) {
-        let mut connections: Vec<Vec<(f64, LinkEvent)>> =
-            connections.into_iter().map(|(_, events)| events).collect();
-        for events in &mut connections {
-            events.sort_by(|a, b| a.0.total_cmp(&b.0));
-            for (_, event) in events.iter() {
+    let mut paces = Vec::new();
+    for (role, connections) in roles.iter().zip(links) {
+        for events in connections {
+            for (_, event) in events {
                 if let LinkEvent::Data {
                     start,
                     len,
@@ -154,16 +171,16 @@ pub(crate) fn read(
                 }
             }
         }
-        let mut pace = link_pace(&connections);
+        let mut pace = link_pace(connections);
         pace.role.clone_from(role);
-        links.push(pace);
+        paces.push(pace);
     }
     let payload: u64 = delivered.iter().map(|(start, end)| end - start).sum();
-    Ok(Pace {
-        links,
+    Pace {
+        links: paces,
         duplicate_bytes: payload.saturating_sub(union_len(&mut delivered)),
         ideal_s: None,
-    })
+    }
 }
 
 /// The pace of one seed over its connections, each a timed event list in
@@ -247,7 +264,7 @@ fn percentile(values: &[f64], pct: usize) -> Option<f64> {
 }
 
 /// The length the union of `intervals` covers.
-fn union_len(intervals: &mut [(u64, u64)]) -> u64 {
+pub(super) fn union_len(intervals: &mut [(u64, u64)]) -> u64 {
     intervals.sort_unstable();
     let mut covered = 0;
     let mut reach = 0;

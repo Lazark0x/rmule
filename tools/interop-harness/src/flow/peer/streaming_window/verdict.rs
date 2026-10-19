@@ -18,9 +18,11 @@ use rmule_primitives::{ED2K_PART_SIZE, EMBLOCKSIZE, part_count};
 use serde::{Deserialize, Serialize};
 
 use super::ROOT_DIR;
+use super::blocks::{self, AskShapes};
 use super::pace::{self, Pace};
 use super::prefix::{Measurement, measure, traced_verifies};
 use super::replay::{Pick, Replay, Topology, parse_log, replay};
+use super::seed::STREAM_FILE_NAME;
 use super::wire::{StatusForm, Wire, read};
 use crate::flow::identity::ParseHex16;
 use crate::flow::nat::claims::{Claim, Evidence, label};
@@ -105,6 +107,9 @@ struct Verdict<'a> {
     tail_over_ideal: Option<f64>,
     seed_netem_delay_ms: Option<u32>,
     pace: Pace,
+    /// How the seeds served the asks off the 180 KiB grid or across two
+    /// parts (ADR-0117).
+    asks: AskShapes,
     claim: &'a [Claim],
 }
 
@@ -156,16 +161,19 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         &traced_verifies(&trace, DOWNLOAD_ID),
         topology.file_size,
     );
-    let mut pace = pace::read(
+    let roles: Vec<String> = topology
+        .seeds
+        .iter()
+        .map(|seed| seed.role.clone())
+        .collect();
+    let links = pace::links(
         &root.join(RMULE_PCAP),
         topology.rmule_ip,
-        &topology
-            .seeds
-            .iter()
-            .map(|seed| (seed.role.clone(), seed.ip))
-            .collect::<Vec<_>>(),
+        &seeds,
         &file_hash,
     )?;
+    let mut pace = pace::read(&links, &roles);
+    let blocks = blocks::read(&links, topology.file_size);
     let caps: u64 = topology
         .seeds
         .iter()
@@ -174,6 +182,11 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
     pace.ideal_s = (caps > 0).then(|| topology.file_size as f64 / caps as f64);
     let mut claims = claims(&topology, &wire, &advertised, &run);
     claims.push(end_game_bound(&run, &pace));
+    claims.push(blocks::seeds_share_a_part(&blocks, &roles));
+    claims.push(blocks::no_slot_given_back_early(&blocks, &events, &roles));
+    if topology.expect_complete {
+        claims.push(byte_equal(run_dir)?);
+    }
     let (verdict, detail) = label(&claims);
     let tail_over_ideal = measurement
         .last_part_verified_s
@@ -235,6 +248,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         tail_over_ideal,
         seed_netem_delay_ms: topology.seed_netem_delay_ms,
         pace,
+        asks: blocks.asks,
         claim: &claims,
     })
     .context("serialize the streaming-window verdict")?;
@@ -325,6 +339,27 @@ fn claims(
         claims.push(retired_seed_waits(wire, run, parts));
     }
     claims
+}
+
+/// The copy rmule wrote is the file the seeds share, byte for byte.
+fn byte_equal(run_dir: &Path) -> Result<Claim> {
+    let copy_path = run_dir.join("rmule/output.bin");
+    let source_path = run_dir.join("synthetic").join(STREAM_FILE_NAME);
+    let source =
+        fs::read(&source_path).with_context(|| format!("read {}", source_path.display()))?;
+    let copy = fs::read(&copy_path).unwrap_or_default();
+    let first_difference = copy.iter().zip(&source).position(|(a, b)| a != b);
+    Ok(Claim::about(
+        "the-copy-is-byte-equal",
+        copy == source,
+        Evidence::Captured,
+        format!(
+            "rmule/output.bin {} bytes, the seeds' file {} bytes{}",
+            copy.len(),
+            source.len(),
+            first_difference.map_or_else(String::new, |at| format!(", first difference at {at}"))
+        ),
+    ))
 }
 
 /// The End Game's bound, ADR-0117: every Duplicate Set is at most three
