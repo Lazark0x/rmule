@@ -108,20 +108,20 @@ pub(crate) struct Rows {
     pub(crate) switch_answer: &'static str,
     /// Milliseconds from that ask to the answer, `-1` without one.
     pub(crate) switch_answer_ms: f64,
-    /// The second file's part frames the sharer sent after the switch.
-    pub(crate) second_file_parts_after_switch: usize,
+    /// The next file's part frames the sharer sent after the switch.
+    pub(crate) parts_after_switch: usize,
 }
 
 /// The file switch one link carried.
 #[derive(Debug, PartialEq)]
 struct Switch {
-    /// `cancel` when rmule sent `OP_CANCELTRANSFER` between the first file's
-    /// last part frame and the second file's request, else `silent`.
+    /// `cancel` when rmule sent `OP_CANCELTRANSFER` between the riding file's
+    /// last part frame and the next file's request, else `silent`.
     release: &'static str,
     /// `accept`, `rank` or `none`, and how long after the ask it came.
     answer: &'static str,
     answer_ms: Option<f64>,
-    /// The second file's part frames after the switch.
+    /// The next file's part frames after the switch.
     parts_after: usize,
 }
 
@@ -238,23 +238,27 @@ fn requested(frame: &Ed2kFrame) -> Option<[u8; 16]> {
     request.then(|| hash.try_into().ok()).flatten()
 }
 
-/// The switch on one link from the first file to the second, read from the
-/// frames rmule `sent` and the frames it `heard`; `None` when rmule named the
-/// second file only before the first file's last part, or never.
-fn link_switch(sent: &[Ed2kFrame], heard: &[Ed2kFrame], hashes: [[u8; 16]; 2]) -> Option<Switch> {
+/// The switch on one link from the file `[from, to]` rode first to the other,
+/// read from the frames rmule `sent` and the frames it `heard`; `None` when
+/// rmule named `to` only before `from`'s last part, or never.
+fn link_switch(
+    sent: &[Ed2kFrame],
+    heard: &[Ed2kFrame],
+    [from, to]: [[u8; 16]; 2],
+) -> Option<Switch> {
     let is = |frame: &Ed2kFrame, protocol: u8, opcode: u8| {
         (frame.protocol, frame.opcode) == (protocol, opcode)
     };
-    let last_first_part = heard
+    let last_from_part = heard
         .iter()
-        .filter(|frame| part_of(frame) == Some(hashes[0]))
+        .filter(|frame| part_of(frame) == Some(from))
         .map(|frame| frame.at)
         .reduce(f64::max)?;
     let request = sent
         .iter()
-        .find(|frame| frame.at >= last_first_part && requested(frame) == Some(hashes[1]))?;
+        .find(|frame| frame.at >= last_from_part && requested(frame) == Some(to))?;
     let cancelled = sent.iter().any(|frame| {
-        (last_first_part..=request.at).contains(&frame.at)
+        (last_from_part..=request.at).contains(&frame.at)
             && is(frame, OP_EDONKEYPROT, OP_CANCELTRANSFER)
     });
     let ask = sent
@@ -280,12 +284,13 @@ fn link_switch(sent: &[Ed2kFrame], heard: &[Ed2kFrame], hashes: [[u8; 16]; 2]) -
         answer_ms: answer.map(|(_, ms)| ms),
         parts_after: heard
             .iter()
-            .filter(|frame| frame.at >= request.at && part_of(frame) == Some(hashes[1]))
+            .filter(|frame| frame.at >= request.at && part_of(frame) == Some(to))
             .count(),
     })
 }
 
-/// The file switch on the first link to the sharer that carried one.
+/// The file switch on the first link to the sharer that carried one, whichever
+/// download rode first.
 fn file_switch(at: &Addresses, capture: &TcpCapture, hashes: [[u8; 16]; 2]) -> Option<Switch> {
     capture
         .streams
@@ -299,7 +304,9 @@ fn file_switch(at: &Addresses, capture: &TcpCapture, hashes: [[u8; 16]; 2]) -> O
             let back = capture.streams.iter().find(|stream| {
                 stream.source == to_sharer.destination && stream.destination == to_sharer.source
             })?;
-            link_switch(&to_sharer.ed2k_frames(), &back.ed2k_frames(), hashes)
+            let (sent, heard) = (to_sharer.ed2k_frames(), back.ed2k_frames());
+            link_switch(&sent, &heard, hashes)
+                .or_else(|| link_switch(&sent, &heard, [hashes[1], hashes[0]]))
         })
 }
 
@@ -409,15 +416,15 @@ fn claims(at: &Addresses, seen: &Observed) -> (Vec<Claim>, Rows) {
             SWITCH_GRANTED,
             false,
             Evidence::Captured,
-            "no link named the second file after the first file's last part frame",
+            "no link named the other file after the riding file's last part frame",
         ),
         Some(switch) => Claim::about(
             SWITCH_GRANTED,
             switch.answer == "accept",
             Evidence::Captured,
             format!(
-                "release {}; the second download's OP_STARTUPLOADREQ answered {} after {} ms; \
-                 the second file's part frames after the switch: {}",
+                "release {}; the next download's OP_STARTUPLOADREQ answered {} after {} ms; \
+                 its file's part frames after the switch: {}",
                 switch.release,
                 switch.answer,
                 switch
@@ -439,7 +446,7 @@ fn claims(at: &Addresses, seen: &Observed) -> (Vec<Claim>, Rows) {
             .as_ref()
             .and_then(|switch| switch.answer_ms)
             .unwrap_or(-1.0),
-        second_file_parts_after_switch: switch.as_ref().map_or(0, |switch| switch.parts_after),
+        parts_after_switch: switch.as_ref().map_or(0, |switch| switch.parts_after),
     };
     (claims, rows)
 }
@@ -515,5 +522,6 @@ mod tests {
             "cancel"
         );
         assert_eq!(link_switch(&silent[..1], &heard, [a, b]), None);
+        assert_eq!(link_switch(&silent, &heard, [b, a]), None);
     }
 }
