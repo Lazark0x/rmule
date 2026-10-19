@@ -139,36 +139,7 @@ impl Tag {
     /// a name that is not UTF-8.
     pub fn decode_prefix(bytes: &[u8]) -> Result<(Self, usize)> {
         let mut reader = WireReader::new(bytes);
-        let encoded_type = reader.read_u8("tag type")?;
-        let (tag_type, name) = if encoded_type & NUMERIC_NAME_FLAG != 0 {
-            (
-                encoded_type & !NUMERIC_NAME_FLAG,
-                TagName::compact_id(reader.read_u8("tag name id")?),
-            )
-        } else {
-            let name_len = reader.read_u16_le("tag name length")? as usize;
-            let name_bytes = reader.take(name_len, "tag name")?;
-            // Per `docs/reference/notes/tags.md`, a length-prefixed
-            // name with `name_len == 1` is *always* a numeric ID, never
-            // a 1-character text name (the latter has no use in
-            // practice). Route to `length_prefixed_id` so round-trips
-            // re-emit the same wire bytes. A caller that hands
-            // `TagName::text("X")` to `encode` would NOT round-trip
-            // here — `text` accepting 1-byte input is a deliberate
-            // permissive constructor for fixture authoring but a
-            // by-construction asymmetry; documented for future readers.
-            if name_len == 1 {
-                (encoded_type, TagName::length_prefixed_id(name_bytes[0]))
-            } else {
-                // `name_len` came from a `u16` on the wire, so the
-                // resulting string is bounded by construction and the
-                // `text` validation can't fail here.
-                (
-                    encoded_type,
-                    TagName::text(decode_utf8(name_bytes, "tag name")?)?,
-                )
-            }
-        };
+        let (tag_type, name) = read_type_and_name(&mut reader)?;
 
         let value = match tag_type {
             TAGTYPE_STRING => {
@@ -216,6 +187,24 @@ impl Tag {
             }
             Err(other) => Err(other),
         }
+    }
+
+    /// The name and value of the first tag in `bytes` when its type is
+    /// `BSOB` — a byte count, then that many bytes — the one stepped type a
+    /// reader may still want the value of (`TAG_KADAICHHASHRESULT`, ADR-0053).
+    /// [`Self::decode_or_step_prefix`] still says how far the walk moves.
+    /// `None` for any other type, a name that is not UTF-8, or an entry cut
+    /// short.
+    #[must_use]
+    pub fn bsob_prefix(bytes: &[u8]) -> Option<(TagName, &[u8])> {
+        let mut reader = WireReader::new(bytes);
+        let (tag_type, name) = read_type_and_name(&mut reader).ok()?;
+        if tag_type != TAGTYPE_BSOB {
+            return None;
+        }
+        let len = usize::from(reader.read_u8("bsob length").ok()?);
+        let value = reader.take(len, "bsob value").ok()?;
+        Some((name, value))
     }
 
     /// How many bytes the first tag in `bytes` occupies, for every eD2k tag
@@ -469,6 +458,35 @@ impl TagName {
             TagNameKind::Text(_) => TagNameEncoding::LengthPrefixed,
         }
     }
+}
+
+/// A tag's type byte, less the compact-name flag, and its name.
+fn read_type_and_name(reader: &mut WireReader<'_>) -> Result<(u8, TagName)> {
+    let encoded_type = reader.read_u8("tag type")?;
+    if encoded_type & NUMERIC_NAME_FLAG != 0 {
+        return Ok((
+            encoded_type & !NUMERIC_NAME_FLAG,
+            TagName::compact_id(reader.read_u8("tag name id")?),
+        ));
+    }
+    let name_len = reader.read_u16_le("tag name length")? as usize;
+    let name_bytes = reader.take(name_len, "tag name")?;
+    // Per `docs/reference/notes/tags.md`, a length-prefixed name with
+    // `name_len == 1` is *always* a numeric ID, never a 1-character text name
+    // (the latter has no use in practice). Route to `length_prefixed_id` so
+    // round-trips re-emit the same wire bytes. A caller that hands
+    // `TagName::text("X")` to `encode` would NOT round-trip here — `text`
+    // accepting 1-byte input is a deliberate permissive constructor for
+    // fixture authoring but a by-construction asymmetry.
+    if name_len == 1 {
+        return Ok((encoded_type, TagName::length_prefixed_id(name_bytes[0])));
+    }
+    // `name_len` came from a `u16` on the wire, so the resulting string is
+    // bounded by construction and the `text` validation can't fail here.
+    Ok((
+        encoded_type,
+        TagName::text(decode_utf8(name_bytes, "tag name")?)?,
+    ))
 }
 
 fn decode_utf8(bytes: &[u8], reason: &'static str) -> Result<String> {

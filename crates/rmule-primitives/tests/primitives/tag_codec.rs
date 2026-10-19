@@ -291,3 +291,28 @@ fn a_list_entry_rmule_never_reads_is_stepped_over_by_its_width() {
         Err(PrimitiveError::UnsupportedTagType { tag_type: 0x0C })
     ));
 }
+
+/// A stepped `BSOB` still lends its name and value to the one reader that
+/// wants it (`TAG_KADAICHHASHRESULT`, ADR-0053), under either name spelling;
+/// any other type, or an entry cut short, lends nothing.
+#[test]
+fn a_bsob_entry_lends_its_name_and_value() {
+    let mut value = vec![0x01, 0x0C];
+    value.extend_from_slice(&[0xAB; 20]);
+    let prefixed = [&[0x0A, 0x01, 0x00, 0x37, 22][..], &value].concat();
+    let compact = [&[0x8A, 0x37, 22][..], &value].concat();
+
+    assert_eq!(
+        Tag::bsob_prefix(&prefixed),
+        Some((TagName::length_prefixed_id(0x37), value.as_slice()))
+    );
+    assert_eq!(
+        Tag::bsob_prefix(&compact),
+        Some((TagName::compact_id(0x37), value.as_slice()))
+    );
+    assert_eq!(
+        Tag::bsob_prefix(&[0x83, 0x37, 0x2A, 0x00, 0x00, 0x00]),
+        None
+    );
+    assert_eq!(Tag::bsob_prefix(&prefixed[..prefixed.len() - 1]), None);
+}
