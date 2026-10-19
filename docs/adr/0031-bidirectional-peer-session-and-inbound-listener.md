@@ -45,8 +45,9 @@ scheduling is (ADR-0026).
   (ADR-0041); the serve activity re-ranks idle waiters every
   `CoreConfig::queue_rerank_interval` and sends `OP_QUEUERANKING`.
 - Core pushes part bytes down with `ServerCommand::SendBlock`, read from the
-  content store's `read_range`. The session compresses a block only when the peer
-  advertised compression and the result is smaller, as eMule does. The Server
+  content store's `read_range`, and says whether the block may cross compressed. The
+  session compresses one only when core allows it, the peer advertised compression
+  and the result is smaller (below). The Server
   Capability reports requests as `Server` events and obeys `Server` commands (answers,
   grant, queue rank, blocks), so the session stays sans-I/O and storage-free.
 - The serve activity speaks those groups directly: its input is a connection's
@@ -119,6 +120,29 @@ scheduling is (ADR-0026).
 - **Plain.** Each packet is an `OP_SENDINGPART` naming its own range; the ranges
   tile the block in order. Each packet picks its offset width on its own offsets
   (`UploadClient.cpp:307`).
+- **Which blocks may be compressed.** Every block but an archive's: core marks a
+  block plain when the name its file is offered under falls in the Archive eD2k File
+  Class, as aMule never compresses an archive (`UploadClient.cpp:252`; aMule 3.1.0
+  keeps the rule, `UploadDiskIOThread.cpp:252`). rmule skips nothing more. A video or
+  a picture rarely shrinks, but those classes hold uncompressed formats too (`wav`,
+  `bmp`, `tiff`), and the first pass below makes a block that does not shrink cheap.
+  eMule AI skips a fixed list instead (`zip`, `rar`, `7z`, `cbz`, `cbr`, `ace`, `ogm`;
+  `srchybrid/UploadDiskIOThread.cpp:452-460`).
+- **The level.** Any zlib stream inflates the same, so the level is not on the wire;
+  it trades CPU for bytes. The session deflates a block at level 1 first: a block that
+  does not shrink goes plain, and one that does is deflated again at level 6 and the
+  smaller stream is sent. aMule 2.3.3 deflates at level 9 (`UploadClient.cpp:337`);
+  aMule 3.1.0 and eMule 0.70b moved to level 1 for speed (aMule 3.1.0
+  `UploadDiskIOThread.cpp:523-525`, eMule AI
+  `srchybrid/UploadDiskIOThread.cpp:518-523`). rmule departs from both on its own
+  deflate (`flate2` 1.1.9 over `miniz_oxide`), measured on 184,320-byte blocks on an
+  Apple M1 Pro: level 9 takes 1.4 to 1.6 times level 6's time for a stream at most
+  0.4 % smaller; level 1 takes a fifth to a quarter of it, but its stream is 18 % to
+  41 % longer on executables and source text; on random bytes every level from 2 up
+  spends about 3.1 ms a block shrinking nothing, and level 1 0.6 ms. Most shared
+  content is already compressed, so the first pass cuts the CPU an upload slot spends
+  on such a block to a fifth of one pass at level 6, and a block that does shrink costs
+  about a quarter more than level 6 alone, for level 6's bytes.
 - **Compressed.** The block is deflated whole and sent compressed only when that is
   smaller (above). The one zlib stream is cut by the same rule into a run of
   `OP_COMPRESSEDPART`, every one carrying the block's start and the stream's total
