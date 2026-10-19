@@ -364,10 +364,13 @@ impl DownloadState {
             return;
         }
         let part = crate::planning::part_plan(self.file_size, part_index);
-        let assembled = self.assembly.entry(part_index).or_default();
-        assembled.merge_block(peer, offset.saturating_sub(part.offset), bytes);
-        let prefix_len = assembled.prefix_len();
-        let complete = assembled.is_complete(part.len);
+        let assembled = self
+            .assembly
+            .entry(part_index)
+            .or_insert_with(|| PartAssembly::new(part.len));
+        assembled.merge(peer, offset.saturating_sub(part.offset), bytes);
+        let prefix_len = assembled.arrived_len();
+        let complete = assembled.is_complete();
         if let Some(slot) = self.worker_slots.get(&peer).copied() {
             out.push(Decision::Phase {
                 slot,
@@ -393,7 +396,7 @@ impl DownloadState {
                 phase: WorkerPhase::VerifyingPart { part_index },
             });
         }
-        let bytes = assembled.bytes().to_vec();
+        let bytes = assembled.bytes();
         self.pending_persist.insert(part_index, assembled);
         out.push(Decision::PersistPart {
             part_index,

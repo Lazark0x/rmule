@@ -19,6 +19,7 @@ mod address_learning;
 mod app_config;
 mod assembly;
 mod ban_store;
+mod byte_ranges;
 mod hello_refusals;
 // The core-owned open-node buddy service (ADR-0061): the single-slot citizen
 // next to `Reachability` that serves firewalled peers — the FINDBUDDY refusal

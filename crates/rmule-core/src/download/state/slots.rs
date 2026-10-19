@@ -457,10 +457,13 @@ impl DownloadState {
             Assignment::Nothing { .. } => return Handed::NothingFree,
         };
         let resume_offset = plan.offset
-            + self
-                .assembly
-                .get(&plan.part_index)
-                .map_or(0, PartAssembly::prefix_len);
+            + self.assembly.get(&plan.part_index).map_or(0, |assembled| {
+                assembled
+                    .arrived()
+                    .gaps(0, plan.len)
+                    .first()
+                    .map_or(plan.len, |&(start, _)| start)
+            });
         out.push(Decision::Emit(DownloadEvent::PartAssigned {
             download_id: self.download_id,
             peer,
@@ -499,7 +502,7 @@ impl crate::scheduler::Pace for Pace<'_> {
         let assembled = self
             .assembly
             .get(&plan.part_index)
-            .map_or(0, PartAssembly::prefix_len);
+            .map_or(0, PartAssembly::arrived_len);
         plan.len.saturating_sub(assembled)
     }
 }

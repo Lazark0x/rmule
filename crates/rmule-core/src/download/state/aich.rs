@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 use crate::service::{DownloadEvent, PeerRetirementReason};
-use rmule_primitives::{AichHashSet, AichRootHash, EMBLOCKSIZE, PeerEndpoint};
+use rmule_primitives::{AichHashSet, AichRootHash, PeerEndpoint};
 
 use super::{Decision, DownloadState};
 
@@ -89,7 +89,7 @@ impl DownloadState {
         let bad_blocks = match AichHashSet::verify_part(
             self.file_size,
             part.offset,
-            assembled.bytes(),
+            &assembled.bytes(),
             recovery_data,
             root,
         ) {
@@ -104,22 +104,29 @@ impl DownloadState {
         // block (deduped, slot-ordered).
         let mut bad: Vec<(usize, PeerEndpoint)> = bad_blocks
             .iter()
-            .filter_map(|&b| assembled.contributor_of_block(b as usize))
+            .flat_map(|&b| assembled.writers_of_block(b as usize).iter().copied())
             .filter_map(|c| self.worker_slots.get(&c).map(|slot| (slot.as_usize(), c)))
             .collect();
         bad.sort_unstable_by_key(|&(slot, _)| slot);
         bad.dedup_by_key(|&mut (_, c)| c);
+        // A corrupt block's sole writer is its proven sender (ADR-0090).
+        let proven: HashSet<PeerEndpoint> = bad_blocks
+            .iter()
+            .filter_map(|&b| match assembled.writers_of_block(b as usize) {
+                [sole] => Some(*sole),
+                _ => None,
+            })
+            .collect();
 
-        // Truncate to the earliest corrupt block and return the part to pending;
-        // the existing resume-from-prefix-end re-streams from the corruption on.
-        let earliest = bad_blocks.iter().copied().min().expect("non-empty");
-        assembled.truncate(u64::from(earliest) * EMBLOCKSIZE);
+        // Forget exactly the corrupt blocks; their bytes are fetched again.
+        assembled.drop_blocks(&bad_blocks);
         self.assembly.insert(part_index, assembled);
         self.scheduler.repend_part(part_index);
 
         for (_, contributor) in bad {
-            // The recovery pinned the corrupt blocks on it.
-            self.distrust(contributor, out);
+            if proven.contains(&contributor) {
+                self.distrust(contributor, out);
+            }
             out.push(Decision::Emit(DownloadEvent::PeerRetired {
                 download_id: self.download_id,
                 peer: contributor,
