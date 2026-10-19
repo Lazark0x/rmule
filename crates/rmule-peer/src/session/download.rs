@@ -114,8 +114,10 @@ impl PeerSession {
     /// compressed bytes have arrived, inflate and surface the plaintext as
     /// `PartReceived` — the same event a raw `OP_SENDINGPART` produces, so
     /// core's block assembly (ADR-0029) is unchanged. A block that fails to
-    /// inflate emits a non-terminal `CompressedPartSkipped`; the session stays
-    /// open and core re-requests the block.
+    /// inflate, or that is refused, emits a non-terminal
+    /// `CompressedPartSkipped`: the session stays open, and the requester
+    /// gives its slot back, since a stock uploader never sends the block
+    /// again in this slot (ADR-0029 "A lost block ends the stream").
     pub(super) fn on_compressed_part(&mut self, cp: &CompressedPart) {
         // A compressed block never spans more than one ED2K part; bound the
         // inflated output for safety.
@@ -127,10 +129,12 @@ impl PeerSession {
         // before buffering a single byte.
         const COMPRESSED_INPUT_CEILING: usize =
             COMPRESSED_BLOCK_CEILING + COMPRESSED_BLOCK_CEILING / 1000 + 64;
-        // An `OP_REQUESTPARTS` asks for at most 3 ranges, so a well-behaved
-        // sender keeps very few blocks mid-accumulation; 8 leaves slack for
-        // pipelined re-requests while capping what a hostile peer can hold
-        // buffered at `8 × COMPRESSED_INPUT_CEILING` per session.
+        // A stock uploader compresses each asked block whole and queues its
+        // chunks back to back (aMule `UploadClient.cpp:252-253`, `:333-394`),
+        // so a well-behaved sender has one block mid-accumulation at a time,
+        // however many blocks the requester asks ahead (up to 24, ADR-0029).
+        // 8 is slack; it caps what a hostile peer can hold buffered at
+        // `8 × COMPRESSED_INPUT_CEILING` per session.
         const MAX_INFLIGHT_COMPRESSED_BLOCKS: usize = 8;
 
         // Parts are only ever solicited: our own RequestParts created the

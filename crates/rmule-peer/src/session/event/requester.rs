@@ -92,8 +92,10 @@ pub enum RequesterEvent {
         bytes: Vec<u8>,
     },
     /// A compressed part block could not be inflated (corrupt zlib stream or
-    /// over the size ceiling). Non-terminal: the session stays open and core
-    /// re-requests the block, mirroring rmule-ed2k's `CompressedFrameSkipped`.
+    /// over the size ceiling). Non-terminal, mirroring rmule-ed2k's
+    /// `CompressedFrameSkipped`: the session stays open, and the requester
+    /// takes the block as lost and gives its slot back (ADR-0029 "A lost
+    /// block ends the stream").
     CompressedPartSkipped {
         /// The file the block was for.
         file_hash: FileHash,
