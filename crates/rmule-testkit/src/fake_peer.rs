@@ -13,7 +13,7 @@ use rmule_peer::{
     PartBitmap, RequestItem,
 };
 use rmule_primitives::{
-    ClientId, Ed2kText, FileHash, PacketProtocol, PartHash, PeerSource, SourceSighting, UserHash,
+    ClientId, Ed2kText, FileHash, PacketProtocol, PartHash, PeerSource, SourceClaim, UserHash,
 };
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
@@ -89,7 +89,7 @@ pub enum SourcesPolicy {
     /// Answer with this source list, packed (`0xD4`) — the ADR-0053
     /// peer-inbound-inflate scenario. aMule always packs `OP_ANSWERSOURCES`
     /// regardless of size.
-    AnswerPacked(Vec<SourceSighting>),
+    AnswerPacked(Vec<SourceClaim>),
 }
 
 /// One accepted connection's script.
@@ -295,7 +295,9 @@ fn multipacket_answer(script: &PeerScript, req: &MultiPacketRequest) -> MultiPac
                     script.file_name.clone(),
                 )));
             }
-            RequestItem::SetReqId => items.push(AnswerItem::Status(uploader_part_status())),
+            RequestItem::SetReqId => items.push(AnswerItem::Status(wire::full_status(
+                script.bytes.len() as u64,
+            ))),
             RequestItem::Sources | RequestItem::Sources2 { .. } | RequestItem::AichRoot => {}
         }
     }
@@ -304,14 +306,6 @@ fn multipacket_answer(script: &PeerScript, req: &MultiPacketRequest) -> MultiPac
         items,
         unknown_sub: None,
     }
-}
-
-/// The uploader's advertised availability inside a bundled answer: one present
-/// part. The downloader's probe records the bitmap verbatim (it does not
-/// cross-check part count against the requested size), so a single present
-/// part is enough to drive `FileProbed { Available }`.
-fn uploader_part_status() -> PartBitmap {
-    PartBitmap::decode(1, &[0b1]).expect("one present part")
 }
 
 /// The wire sub-opcode a decoded [`RequestItem`] arrived as, for the
@@ -368,7 +362,7 @@ async fn run_script(sock: tokio::net::TcpStream, script: PeerScript) -> PeerStat
             }
             // `OP_REQUESTFILENAME 0x58` asks for the name and is answered by
             // `OP_REQFILENAMEANSWER 0x59`; `OP_SETREQFILEID 0x4F` asks for
-            // availability and is answered by `OP_FILESTATUS 0x50`. The pairing
+            // the part status and is answered by `OP_FILESTATUS 0x50`. The pairing
             // is the one `rmule_peer::file_request` documents — a fake that
             // answers the other question lets an ordering bug pass.
             0x58 => {
@@ -382,7 +376,12 @@ async fn run_script(sock: tokio::net::TcpStream, script: PeerScript) -> PeerStat
             }
             0x4F => {
                 stats.standalone_probe_asks += 1;
-                let _ = wtx.send(wire::file_status_bytes(script.file_hash)).await;
+                let _ = wtx
+                    .send(wire::file_status_bytes(
+                        script.file_hash,
+                        script.bytes.len() as u64,
+                    ))
+                    .await;
             }
             0x51 => {
                 let hashes: &[PartHash] = match &script.hash_set {

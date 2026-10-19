@@ -14,12 +14,14 @@ mod part_path;
 mod rungs;
 
 pub(super) use part_path::PartPathSlot;
-pub(crate) use rungs::{UPGRADE_FROM_V5, UPGRADE_FROM_V6, UPGRADE_FROM_V7, grow_from_v8};
+pub(crate) use rungs::{
+    UPGRADE_FROM_V5, UPGRADE_FROM_V6, UPGRADE_FROM_V7, grow_from_v8, grow_from_v14,
+};
 #[cfg(test)]
-pub(crate) use rungs::{schema_v1, seed_v1};
+pub(crate) use rungs::{schema_v1, schema_v5_rows, seed_v1, seed_v5};
 
 use rmule_primitives::{
-    Ed2kFileLink, Ed2kLink, Ed2kText, FileHash, PartHash, ServerEndpoint, UserHash,
+    AichRootHash, Ed2kFileLink, Ed2kLink, Ed2kText, FileHash, PartHash, ServerEndpoint, UserHash,
 };
 use rmule_store::{Children, Indexed, MultimapIndex, Record, Sequence, UniqueIndex};
 use serde::{Deserialize, Serialize};
@@ -27,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use crate::durable::DurableDownloadRecordInput;
 use crate::{
     DownloadFailure, DownloadId, DownloadLifecycle, DownloadMetadata, DownloadMetadataOrigin,
-    DownloadPaths, DurableDownloadRecord, VerificationAuthority, VerifiedPartRecord,
+    DownloadPaths, DurableDownloadRecord, KadAichRoot, VerificationAuthority, VerifiedPartRecord,
 };
 
 /// One download as the store holds it, keyed by its [`DownloadId`]'s `u64`.
@@ -50,11 +52,16 @@ pub(super) struct DownloadRow {
     /// Why the last run failed: set with the `Failed` lifecycle, cleared by
     /// any other (ADR-0094, "Failed"). A code, never a sentence.
     pub failure: Option<DownloadFailure>,
+    /// The Download Name: the command's, before any number (ADR-0115).
+    pub name: String,
+    /// The Qualified Kad Root the download was started from, or the contest
+    /// that ended it (ADR-0038).
+    pub kad_aich_root: Option<KadAichRoot>,
 }
 
 impl Record for DownloadRow {
     const NAME: &'static str = "download";
-    const VERSION: u32 = 5;
+    const VERSION: u32 = 6;
 }
 
 /// One hash-checked part on disk, keyed by `(download id, part index)` so a
@@ -131,11 +138,12 @@ pub(super) static DOWNLOAD_IDS: Sequence = Sequence::new("download");
 
 impl DownloadRow {
     /// The row a `create_download` writes: every fact taken from the caller's
-    /// link, source hint and paths, queued and unverified.
+    /// link, source hint, paths and Kad root, queued and unverified.
     pub(super) fn new(
         file: &Ed2kFileLink,
         source_hint: Option<&ServerEndpoint>,
         paths: &DownloadPaths,
+        kad_aich_root: Option<AichRootHash>,
     ) -> Self {
         let metadata = DownloadMetadata::from_link(file);
         // A link set that is not the file's own is never recorded: the
@@ -159,11 +167,14 @@ impl DownloadRow {
             file_name: metadata.name,
             metadata_origin: metadata.origin,
             failure: None,
+            name: paths.name().to_owned(),
+            kad_aich_root: kad_aich_root.map(KadAichRoot::Trusted),
         }
     }
 
     /// Whether a second row for this file's identity would race this one.
-    /// Terminal rows (completed, cancelled) do not.
+    /// Terminal rows (completed, cancelled) do not; a completing one still
+    /// writes its part file and its destination (ADR-0115).
     pub(super) const fn is_live(&self) -> bool {
         matches!(
             self.lifecycle,
@@ -171,6 +182,7 @@ impl DownloadRow {
                 | DownloadLifecycle::Active
                 | DownloadLifecycle::Paused
                 | DownloadLifecycle::Failed
+                | DownloadLifecycle::Completing
         )
     }
 
@@ -181,7 +193,8 @@ impl DownloadRow {
     }
 
     /// Whether a caller could still resume this row — the live set minus
-    /// `Active`, which belongs to a run that is already on the wire.
+    /// `Active` and `Completing`, which belong to a run that is already on
+    /// the wire or that attach starts again.
     pub(super) const fn is_resumable(&self) -> bool {
         matches!(
             self.lifecycle,
@@ -189,12 +202,15 @@ impl DownloadRow {
         )
     }
 
-    /// Where this download's bytes live: the two paths it was created with.
+    /// Where this download's bytes live: the two paths it was created with,
+    /// the final one a completion move's destination once it has one, and
+    /// its Download Name.
     pub(super) fn paths(&self) -> DownloadPaths {
-        DownloadPaths::from_persisted_paths(
+        DownloadPaths::new(
             self.final_path.clone().into(),
             self.part_path.index_text().into(),
         )
+        .named(self.name.clone())
     }
 
     /// The domain record this row stands for, under the id it is keyed by.
@@ -213,6 +229,7 @@ impl DownloadRow {
             lifecycle: self.lifecycle,
             verification_authority: self.verification_authority,
             failure: self.failure.clone(),
+            kad_aich_root: self.kad_aich_root,
         })
     }
 }

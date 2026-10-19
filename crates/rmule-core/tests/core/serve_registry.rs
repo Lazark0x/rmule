@@ -20,8 +20,8 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, Ed2kText, FileHashSummary, PeerEndpoint, PeerSource, ServerEndpoint,
-    SourceLookupTarget, SourceSighting,
+    ClientId, Ed2kFileLink, Ed2kText, FileHashSummary, Informant, PeerEndpoint, PeerSource,
+    ServerEndpoint, SourceLookupTarget, SourceSighting,
 };
 use rmule_testkit::{StaticPeerTransfer, file_link_without_part_hash_set, source_with_high_id};
 use tokio::time::timeout;
@@ -202,40 +202,25 @@ impl PeerTransferService for ScriptedPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         assert_eq!(peer, self.expected_peer);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let outcome = self.outcome.clone();
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
                 match command {
-                    PeerWorkerCommand::RequestPart {
-                        plan,
-                        resume_offset,
-                    } => {
-                        if let Some(part) = outcome
-                            .parts
-                            .iter()
-                            .find(|part| part.part_index == plan.part_index)
-                        {
-                            let start = (resume_offset.saturating_sub(part.offset) as usize)
-                                .min(part.bytes.len());
-                            let _ = event_tx
-                                .send(PeerWorkerEvent::BlockReceived {
-                                    part_index: part.part_index,
-                                    offset: resume_offset,
-                                    bytes: part.bytes[start..].to_vec(),
-                                })
-                                .await;
-                            let _ = event_tx
-                                .send(PeerWorkerEvent::PartStreamed {
-                                    part_index: part.part_index,
-                                })
-                                .await;
-                        }
+                    PeerWorkerCommand::AskSlot | PeerWorkerCommand::TakeGrant => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::RequestHashSet => {}
+                    PeerWorkerCommand::RequestBlocks { blocks, handout } => {
+                        rmule_testkit::emit_blocks(&event_tx, &outcome.parts, &blocks, handout)
+                            .await;
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}
                     PeerWorkerCommand::RequestAichFileHash => {}
@@ -257,7 +242,7 @@ async fn completed_download_auto_registers_into_the_shared_file_registry() {
     let source = ScriptedSourceLookup {
         outcome: SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![SourceSighting::plain(high)],
+            sources: vec![SourceSighting::plain(high, Informant::Own)],
         },
     };
     let transfer = ScriptedPeerTransfer {
@@ -287,6 +272,7 @@ async fn completed_download_auto_registers_into_the_shared_file_registry() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("autoshare.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -345,7 +331,7 @@ async fn auto_share_persists_the_link_authority_part_hash_set() {
     let source = ScriptedSourceLookup {
         outcome: SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![SourceSighting::plain(high)],
+            sources: vec![SourceSighting::plain(high, Informant::Own)],
         },
     };
     let transfer = ScriptedPeerTransfer {
@@ -383,6 +369,7 @@ async fn auto_share_persists_the_link_authority_part_hash_set() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("auto-share-link-authority.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -443,7 +430,7 @@ async fn a_had_file_downloaded_again_leaves_the_had_set_when_it_is_whole() {
     let source = ScriptedSourceLookup {
         outcome: SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![SourceSighting::plain(high)],
+            sources: vec![SourceSighting::plain(high, Informant::Own)],
         },
     };
     let transfer = ScriptedPeerTransfer {
@@ -489,6 +476,7 @@ async fn a_had_file_downloaded_again_leaves_the_had_set_when_it_is_whole() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("had (1).bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -558,7 +546,7 @@ async fn complete_withheld(
     let store = rmule_testkit::memory_store();
     let repo = DurableDownloadRepository::new(Arc::clone(&store));
     let record = repo
-        .create_download(link, None, &DownloadPaths::from_final_path(output))
+        .create_download(link, None, &DownloadPaths::from_final_path(output), None)
         .unwrap();
     repo.set_lifecycle(record.id(), DownloadLifecycle::Paused)
         .unwrap();

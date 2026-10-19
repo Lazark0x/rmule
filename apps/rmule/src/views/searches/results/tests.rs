@@ -320,3 +320,23 @@ fn golden_searches_legs_counted() {
         view.draw(frame, frame.area(), &state, &theme, Instant::now());
     });
 }
+
+/// More results than the pane has lines (ADR-0072, "Viewport"): the bar
+/// takes the right column, its thumb part-way down, and the border counts
+/// the cursor's row; every column keeps its width less the bar's one.
+#[test]
+fn golden_searches_results_overflow() {
+    let results = (1..=40u8)
+        .map(|n| server_result(n, &format!("episode_{n:02}.mkv"), u64::from(n) << 20, 3, 0))
+        .collect();
+    let state = state_with(results, SearchStatus::Completed { total: 40 });
+    let theme = Theme::default_dark();
+    let mut view = SearchesView::new().having_sent("episode");
+    view.handle_key(press(KeyCode::Char('g')), &state);
+    for _ in 0..20 {
+        view.handle_key(press(KeyCode::Char('j')), &state);
+    }
+    assert_golden("searches_results_overflow", 78, 21, |frame| {
+        view.draw(frame, frame.area(), &state, &theme, Instant::now());
+    });
+}

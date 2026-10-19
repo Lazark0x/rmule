@@ -9,12 +9,14 @@ use crate::search_tree::SearchTree;
 use crate::wire_fields::KadWireFields;
 use crate::{KadEnvelope, KadId};
 
+use super::aich;
 use super::entry::KeywordPublishFile;
 use super::query::{UnknownSearchOperator, validate_operators};
 use super::result::KeywordResultRow;
 use super::{
     KADEMLIA2_PUBLISH_KEY_REQ, KADEMLIA2_SEARCH_KEY_REQ, KADEMLIA2_SEARCH_RES,
     KEYWORD_PUBLISH_BATCH_CAP, KEYWORD_RESULT_ROWS_PER_DATAGRAM, TAG_FILENAME, TAG_FILESIZE,
+    TAG_KADAICHHASHRESULT,
 };
 
 /// Why a keyword-store datagram could not be decoded.
@@ -95,12 +97,16 @@ fn decode_publish_file(
     let mut size = None;
     let mut tags = Vec::new();
     for _ in 0..tag_count {
-        let (tag, consumed) = Tag::decode_prefix(reader.remaining_bytes()).map_err(|_| {
-            KeywordDecodeError::Malformed {
-                reason: "publish tag is truncated or malformed",
-            }
-        })?;
+        let (tag, consumed) =
+            Tag::decode_or_step_prefix(reader.remaining_bytes()).map_err(|_| {
+                KeywordDecodeError::Malformed {
+                    reason: "publish tag is truncated or malformed",
+                }
+            })?;
         reader.advance_clamped(consumed);
+        let Some(tag) = tag else {
+            continue;
+        };
         // FILENAME/FILESIZE are dropped from the verbatim list on every
         // occurrence; only the first populates the typed field (aMule:
         // `if (entry->GetCommonFileName().IsEmpty()) { SetFileName(...); }
@@ -210,7 +216,8 @@ pub fn decode_search_key_req(
 
 /// Re-encode served rows into `KADEMLIA2_SEARCH_RES` (`0x3B`) envelopes, 50
 /// rows per datagram (same opcode and batching as source search results;
-/// `SendValidKeywordResult`). Zero rows encode to zero envelopes.
+/// `SendValidKeywordResult`). Zero rows encode to zero envelopes. A row's AICH
+/// roots go last, as one `TAG_KADAICHHASHRESULT`, as eMule's storer writes them.
 #[must_use]
 pub fn encode_search_key_res(
     sender: KadId,
@@ -229,11 +236,17 @@ pub fn encode_search_key_res(
             );
             for row in batch {
                 payload.extend_from_slice(row.file_id.as_bytes());
+                let aich_tag =
+                    (!row.aich_roots.is_empty()).then(|| aich::encode_tag(&row.aich_roots));
                 payload.push(
-                    u8::try_from(row.tags.len()).expect("a served row never exceeds 255 tags"),
+                    u8::try_from(row.tags.len() + usize::from(aich_tag.is_some()))
+                        .expect("a served row never exceeds 255 tags"),
                 );
                 for tag in &row.tags {
                     payload.extend_from_slice(&tag.encode());
+                }
+                if let Some(aich_tag) = aich_tag {
+                    payload.extend_from_slice(&aich_tag);
                 }
             }
             KadEnvelope::plain(KADEMLIA2_SEARCH_RES, payload)
@@ -328,7 +341,9 @@ pub fn encode_search_key_req(
 /// [`encode_search_key_res`]. `[sender ID (16)][keyword ID (16)][row count (2
 /// LE)]` then, per row, `[file ID (16)][tag count (1)][tags]`; every tag is kept
 /// verbatim (FILENAME, FILESIZE, and `TAG_PUBLISHINFO` included — the requester
-/// surfaces the dual form). The sender and keyword header identities are
+/// surfaces the dual form), and `TAG_KADAICHHASHRESULT`'s roots ride the row
+/// beside them: a value too short for its count drops the roots, never the row.
+/// Which storer's roots a search keeps is the node's to judge, by its version. The sender and keyword header identities are
 /// validated and skipped: the node already matched the envelope's target to the
 /// active search before calling this (sibling of `decode_source_result`).
 pub fn decode_search_key_res(
@@ -355,16 +370,30 @@ pub fn decode_search_key_res(
         let file_id = reader.read_kad_id("keyword result file ID")?;
         let tag_count = reader.read_u8("keyword result tag count")?;
         let mut tags = Vec::with_capacity(usize::from(tag_count));
+        let mut aich_roots = Vec::new();
         for _ in 0..tag_count {
-            let (tag, consumed) = Tag::decode_prefix(reader.remaining_bytes()).map_err(|_| {
-                KeywordDecodeError::Malformed {
+            let entry = reader.remaining_bytes();
+            let (tag, consumed) =
+                Tag::decode_or_step_prefix(entry).map_err(|_| KeywordDecodeError::Malformed {
                     reason: "keyword result tag is truncated or malformed",
+                })?;
+            match tag {
+                Some(tag) => tags.push(tag),
+                None => {
+                    if let Some((name, value)) = Tag::bsob_prefix(entry)
+                        && name.id() == Some(TAG_KADAICHHASHRESULT)
+                    {
+                        aich_roots = aich::decode(value);
+                    }
                 }
-            })?;
+            }
             reader.advance_clamped(consumed);
-            tags.push(tag);
         }
-        rows.push(KeywordResultRow { file_id, tags });
+        rows.push(KeywordResultRow {
+            file_id,
+            tags,
+            aich_roots,
+        });
     }
     if !reader.is_exhausted() {
         return Err(KeywordDecodeError::Malformed {

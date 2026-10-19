@@ -10,8 +10,8 @@ use rmule_peer::{
     SourceExchangeEntry, SourceExchangeVersion,
 };
 use rmule_primitives::{
-    ClientId, Ed2kText, FileHash, Ipv4Endpoint, Packet, PacketProtocol, PartHash, SourceSighting,
-    Tag, TagName, TagValue, UserHash,
+    ClientId, Ed2kText, FileHash, Ipv4Endpoint, Packet, PacketProtocol, PartHash, SourceClaim, Tag,
+    TagName, TagValue, UserHash,
 };
 
 /// `packet` with its payload cut to the first `at` bytes: the framing byte
@@ -158,12 +158,23 @@ pub fn filename_answer_bytes(file_hash: FileHash, name: &str) -> Vec<u8> {
     Packet::new(PacketProtocol::Edonkey, 0x59, payload).encode()
 }
 
-/// A framed file-status answer (opcode 0x50): a one-part bitmap present.
-pub fn file_status_bytes(file_hash: FileHash) -> Vec<u8> {
-    let mut payload = file_hash.as_bytes().to_vec();
-    payload.extend_from_slice(&1u16.to_le_bytes());
-    payload.push(0x01);
-    Packet::new(PacketProtocol::Edonkey, 0x50, payload).encode()
+/// The status of a peer holding every part of a `file_size`-byte file,
+/// spelled out at the count aMule's reader demands — any other count closes
+/// the session — rather than as the complete-source sentinel.
+#[must_use]
+pub fn full_status(file_size: u64) -> rmule_peer::PartBitmap {
+    rmule_peer::PartBitmap::all_present(rmule_primitives::ed2k_status_part_count(file_size))
+}
+
+/// A framed file-status answer (opcode 0x50) for a `file_size`-byte file the
+/// peer holds every part of ([`full_status`]).
+pub fn file_status_bytes(file_hash: FileHash, file_size: u64) -> Vec<u8> {
+    rmule_peer::FileStatus {
+        file_hash,
+        bitmap: full_status(file_size),
+    }
+    .encode_packet()
+    .encode()
 }
 
 /// A framed hash-set answer (opcode 0x52): `part_hashes` as the per-part hash
@@ -206,7 +217,7 @@ pub fn sending_part_bytes(file_hash: FileHash, start: u32, data: &[u8]) -> Vec<u
 /// fixture asserts it actually packed rather than silently exercising the
 /// plain path; callers must pick a `sources` list redundant/large enough to
 /// compress smaller (a handful of repeated entries is enough).
-pub fn packed_answer_sources_bytes(file_hash: FileHash, sources: &[SourceSighting]) -> Vec<u8> {
+pub fn packed_answer_sources_bytes(file_hash: FileHash, sources: &[SourceClaim]) -> Vec<u8> {
     let plain = AnswerSources {
         file_hash,
         sources: sources

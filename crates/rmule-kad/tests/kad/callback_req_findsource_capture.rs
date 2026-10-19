@@ -15,7 +15,6 @@
 
 use rmule_kad::KadInstant;
 use rmule_kad::KadNodeStart;
-use std::net::Ipv4Addr;
 
 use rmule_kad::opcode::KADEMLIA2_SEARCH_RES;
 use rmule_kad::{
@@ -25,7 +24,7 @@ use rmule_kad::{
 use rmule_primitives::{
     ClientDecryptKeys, DatagramKeyFamily, Ipv4Endpoint, decrypt_datagram_client,
 };
-use rmule_testkit::kad_node::endpoint;
+use rmule_testkit::kad_node::{endpoint, host_ip};
 
 use crate::fixture::{KAD_PROTO, captured};
 
@@ -151,7 +150,7 @@ fn a_buddy_node_asks_to_relay_amules_keyed_findsource_callback() {
     assert_eq!(
         relay,
         vec![KadEvent::CallbackRelayRequested {
-            requester: Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 7), 4704),
+            requester: Ipv4Endpoint::new(host_ip(7), 4704),
             buddy_id,
             file_hash: FileHash::from_hex("009D91607B0D86D64FAFF631E02ED864").unwrap(),
             requester_tcp_port: 4662,

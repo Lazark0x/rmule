@@ -8,17 +8,20 @@ use std::net::Ipv4Addr;
 use std::time::Instant;
 
 use rmule_primitives::{
-    ClientId, CryptStance, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, PeerSource, SourceSighting,
-    UserHash,
+    ClientId, CryptStance, Informant, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, PeerSource,
+    SourceSighting, UserHash,
 };
 
 use super::*;
 use crate::dialable::DialPosition;
+use crate::download::queue_standings::StandingSeat;
 use crate::download::source_book::FILE_REASK_TIME;
 use crate::download::state::CallbackCapability;
 use crate::hello_facts::HelloFacts;
 use crate::ip_filter::IpFilter;
 
+mod frequency;
+mod low_id_key;
 mod low_id_names;
 
 const BAD: UserHash = UserHash::from_bytes([0xBA; UserHash::BYTE_LEN]);
@@ -49,11 +52,11 @@ fn empty_book() -> SourceBook {
 }
 
 fn book_distrusting(distrusted: HashSet<UserHash>) -> SourceBook {
-    SourceBook::new(distrusted)
+    SourceBook::new(distrusted, 3)
 }
 
 fn plain(n: u8) -> SourceSighting {
-    SourceSighting::plain(PeerSource::HighId(v4(n)))
+    SourceSighting::plain(PeerSource::HighId(v4(n)), Informant::Own)
 }
 
 fn dual(n: u8, half: u16) -> SourceSighting {
@@ -61,7 +64,10 @@ fn dual(n: u8, half: u16) -> SourceSighting {
 }
 
 fn low_id(id: u32) -> SourceSighting {
-    SourceSighting::plain(PeerSource::new(ClientId::from_u32(id), 4662))
+    SourceSighting::plain(
+        PeerSource::new(ClientId::from_u32(id), 4662),
+        Informant::Own,
+    )
 }
 
 fn sight(book: &mut SourceBook, sighting: SourceSighting) -> Sighted {
@@ -88,7 +94,7 @@ fn blocking(hosts: &[u8]) -> IpFilter {
 
 /// The next dial, under any capability and our Known IPv6.
 fn dial(book: &mut SourceBook) -> Option<NextDial> {
-    book.next_dial(8, &CallbackCapability::server_high_id(), ours())
+    book.next_dial(&CallbackCapability::server_high_id(), ours())
 }
 
 /// Dial `book`'s next High ID and complete its handshake.
@@ -135,7 +141,7 @@ fn a_source_has_one_owner_from_its_worker_to_its_standing_and_back() {
         reachable: false,
     };
     assert_eq!(
-        book.sweep(queued_at + FILE_REASK_TIME, gates),
+        book.sweep(queued_at + FILE_REASK_TIME, gates, &alone()),
         vec![Reask::FullAsk { peer: high(1) }]
     );
     assert_eq!(dial(&mut book), Some(NextDial::Worker(high(1))));
@@ -154,25 +160,26 @@ fn a_sighting_of_a_held_source_merges_and_never_duplicates() {
         Sighted::Pooled(Some(PeerEndpoint::V6(v6(1))))
     );
     assert_eq!(sight(&mut book, plain(1)), Sighted::Merged(None));
-    let ipv6_only = SourceSighting::plain(PeerSource::Ipv6(v6(1)));
+    let ipv6_only = SourceSighting::plain(PeerSource::Ipv6(v6(1)), Informant::Own);
     assert_eq!(sight(&mut book, ipv6_only), Sighted::Merged(None));
 
     assert_eq!(sight(&mut book, low_id(7)), Sighted::Pooled(None));
     let key = CallbackKey {
         server: None,
         low_id: ClientId::from_u32(7),
+        kad_port: None,
     };
     let hashed = SourceSighting::new(
         PeerSource::new(ClientId::from_u32(7), 4662),
         Some(UserHash::from_bytes([0x5A; UserHash::BYTE_LEN])),
         None,
+        Informant::Own,
     );
     assert_eq!(sight(&mut book, hashed), Sighted::Merged(None));
     assert_eq!(book.counts().known, 2);
     // The dual-stack source is dialed first; the candidate's callback next.
     let callback = std::iter::from_fn(|| {
         book.next_dial(
-            8,
             &CallbackCapability::server_high_id(),
             DialPosition::default(),
         )
@@ -219,14 +226,17 @@ fn a_queued_source_is_dialed_at_the_ipv6_its_session_revised() {
 
     let mut book = empty_book();
     let old = PeerEndpoint::V6(v6(1));
-    let _ = sight(&mut book, SourceSighting::plain(PeerSource::Ipv6(v6(1))));
+    let _ = sight(
+        &mut book,
+        SourceSighting::plain(PeerSource::Ipv6(v6(1)), Informant::Own),
+    );
     assert_eq!(work(&mut book), old);
     let at = queue(&mut book, old);
     let moved = PeerEndpoint::V6(Ipv6Endpoint::new(moved_ip, 4662));
     assert_eq!(book.rank(moved), Some(3));
     assert!(!book.holds(old), "the standing moved off the old address");
     assert_eq!(
-        book.sweep(at + FILE_REASK_TIME, gates),
+        book.sweep(at + FILE_REASK_TIME, gates, &alone()),
         vec![Reask::FullAsk { peer: moved }]
     );
 
@@ -235,7 +245,7 @@ fn a_queued_source_is_dialed_at_the_ipv6_its_session_revised() {
     assert_eq!(work(&mut book), high(1));
     let at = queue(&mut book, high(1));
     assert_eq!(
-        book.sweep(at + FILE_REASK_TIME, gates),
+        book.sweep(at + FILE_REASK_TIME, gates, &alone()),
         vec![Reask::FullAsk { peer: high(1) }]
     );
 }
@@ -328,7 +338,7 @@ fn bad_data_is_never_pooled_again() {
     assert_eq!(book.distrust(peer), Some(BAD));
     assert_eq!(book.distrust(peer), None, "a distrust is new once");
 
-    let named = SourceSighting::new(PeerSource::HighId(v4(2)), Some(BAD), None);
+    let named = SourceSighting::new(PeerSource::HighId(v4(2)), Some(BAD), None, Informant::Own);
     assert_eq!(
         sight(&mut book, named),
         Sighted::Blocked(Blocked::Distrusted)
@@ -337,6 +347,7 @@ fn bad_data_is_never_pooled_again() {
         PeerSource::new(ClientId::from_u32(7), 4662),
         Some(BAD),
         None,
+        Informant::Own,
     );
     assert_eq!(sight(&mut book, low), Sighted::Blocked(Blocked::Distrusted));
 
@@ -361,7 +372,10 @@ fn two_live_records_proven_one_peer_keep_the_older_worker() {
     let mut book = empty_book();
     let _ = sight(&mut book, plain(1));
     let older = work(&mut book);
-    let _ = sight(&mut book, SourceSighting::plain(PeerSource::Ipv6(v6(1))));
+    let _ = sight(
+        &mut book,
+        SourceSighting::plain(PeerSource::Ipv6(v6(1)), Informant::Own),
+    );
     let newer = work(&mut book);
 
     assert_eq!(
@@ -383,14 +397,16 @@ fn a_callback_in_flight_outranks_a_pooled_record_of_the_same_peer() {
     let mut book = empty_book();
     let _ = sight(&mut book, low_id(7));
     let Some(NextDial::Callback { candidate, .. }) = book.next_dial(
-        8,
         &CallbackCapability::server_high_id(),
         DialPosition::default(),
     ) else {
         panic!("a callable downloader asks for a callback");
     };
     let half = PeerEndpoint::V6(v6(7));
-    let _ = sight(&mut book, SourceSighting::plain(PeerSource::Ipv6(v6(7))));
+    let _ = sight(
+        &mut book,
+        SourceSighting::plain(PeerSource::Ipv6(v6(7)), Informant::Own),
+    );
     assert!(book.is_pooled_or_live(half));
 
     let with_half = low_id(7).with_ipv6_half(Some(v6(7)));
@@ -408,7 +424,6 @@ fn a_callback_in_flight_outranks_a_pooled_record_of_the_same_peer() {
     assert_eq!(book.counts().known, 1);
     assert_eq!(
         book.next_dial(
-            8,
             &CallbackCapability::server_high_id(),
             DialPosition::default()
         ),
@@ -467,7 +482,7 @@ fn the_ip_filter_is_judged_per_half() {
 fn an_ipv6_only_source_needs_an_ipv6_of_our_own() {
     let filter = IpFilter::default();
     let mut book = empty_book();
-    let ipv6_only = SourceSighting::plain(PeerSource::Ipv6(v6(1)));
+    let ipv6_only = SourceSighting::plain(PeerSource::Ipv6(v6(1)), Informant::Own);
 
     assert_eq!(
         sight_through(&mut book, ipv6_only, &filter, DialPosition::default()),
@@ -481,4 +496,10 @@ fn an_ipv6_only_source_needs_an_ipv6_of_our_own() {
         sight_through(&mut book, ipv6_only, &filter, ours()),
         Sighted::Pooled(Some(PeerEndpoint::V6(v6(1))))
     );
+}
+
+/// A seat in a registry no other download shares: the book's own standing
+/// is always the holder.
+fn alone() -> StandingSeat {
+    StandingSeat::alone(crate::service::DownloadId::from_u64(0))
 }

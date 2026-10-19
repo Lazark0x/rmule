@@ -59,6 +59,18 @@ pub(crate) struct ServerProbeArgs {
     /// one — no socket is bound, the port is only a value.
     #[arg(long)]
     udp_ports_advert: Option<u16>,
+    /// Ride `CT_MOD_IP_V6` (`0xAE`) with its `SRVCAP_IPV6` bit on the login,
+    /// naming this address (ADR-0087). Beside `--udp-ports-advert` the login
+    /// carries six tags, `0xF9` after `0xAE`, as a dual-stack core's does. No
+    /// address is held; it is only a value.
+    #[arg(long)]
+    advertise_ipv6: Option<std::net::Ipv6Addr>,
+    /// Once logged in, ask the server to introduce us to this Low ID for a
+    /// punch (`OP_LOWID_HOLEPUNCH_REQUEST`, `0x60`, ADR-0091) and report its
+    /// answer — `0x61` introduces, `0x62` refuses. An id nobody holds draws
+    /// the refusal a punch-capable server writes.
+    #[arg(long)]
+    holepunch_target: Option<u32>,
 }
 
 /// Accumulates the probe's `key: value` lines: each is printed live (so it
@@ -387,7 +399,7 @@ async fn probe_login(
         login_timeout: per_step,
         obfuscation: None,
         obfuscated_port: None,
-        advertised_ipv6: None,
+        advertised_ipv6: args.advertise_ipv6,
         udp_ports: args
             .udp_ports_advert
             .map(|client_udp| rmule_ed2k::UdpPortsAdvert {
@@ -398,6 +410,14 @@ async fn probe_login(
     if let Some(advert) = options.udp_ports {
         report.line(format!("udp_ports_advert: 0x{:08X}", advert.word()));
     }
+    if let Some(address) = options.advertised_ipv6 {
+        report.line(format!("advertised_ipv6: {address}"));
+    }
+    // aMule 2.3.3's four, then each advert this login rides.
+    let login_tags = 4
+        + usize::from(options.advertised_ipv6.is_some())
+        + usize::from(options.udp_ports.is_some());
+    report.line(format!("login_tags: {login_tags}"));
     match Connection::connect_with_options(endpoint, identity, options).await {
         Ok(mut conn) => {
             match await_login(&mut conn, per_step).await {
@@ -434,6 +454,10 @@ async fn probe_login(
                             report.line("compression_advert: NO".to_owned());
                         }
                     }
+                    if let Some(target) = args.holepunch_target {
+                        let our_udp_port = args.udp_ports_advert.unwrap_or(4672);
+                        report.line(ask_holepunch(&mut conn, target, our_udp_port, per_step).await);
+                    }
                 }
                 None => {
                     report.line("login_accepted: false".to_owned());
@@ -448,6 +472,48 @@ async fn probe_login(
         }
     }
     Ok(())
+}
+
+/// Ask for a punch toward `target` and say what the server answered, as the
+/// report's `holepunch_answer:` line: the refusal's target, an introduction,
+/// or nothing inside `dur` — the answer of a server that does not speak it.
+async fn ask_holepunch(
+    conn: &mut Connection,
+    target: u32,
+    our_udp_port: u16,
+    dur: Duration,
+) -> String {
+    let target = ClientId::from_u32(target);
+    if conn
+        .send(rmule_ed2k::Ed2kCommand::RequestHolepunch {
+            target,
+            our_udp_port,
+        })
+        .await
+        .is_err()
+    {
+        return "holepunch_answer: unsent".to_owned();
+    }
+    let deadline = tokio::time::Instant::now() + dur;
+    loop {
+        match tokio::time::timeout_at(deadline, conn.next_event()).await {
+            Ok(Some(Ed2kEvent::HolepunchRefused { fail })) => {
+                return format!(
+                    "holepunch_answer: refused target={} asked={}",
+                    fail.target.as_u32(),
+                    target.as_u32()
+                );
+            }
+            Ok(Some(Ed2kEvent::HolepunchIntroduced { .. })) => {
+                return "holepunch_answer: introduced".to_owned();
+            }
+            Ok(Some(Ed2kEvent::Disconnected { .. }) | None) => {
+                return "holepunch_answer: disconnected".to_owned();
+            }
+            Ok(Some(_)) => {}
+            Err(_timeout) => return "holepunch_answer: none".to_owned(),
+        }
+    }
 }
 
 /// Drain events until the login resolves (accepted → its flags word; rejected /

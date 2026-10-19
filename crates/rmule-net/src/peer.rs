@@ -25,11 +25,11 @@ mod obfuscation;
 mod options;
 
 pub use capture::ELISION_MARKER;
-pub use connection::{Connection, DialedStream, PeerStreamRole};
+pub use connection::{Connection, DialedStream, OpenedDial, PeerStreamRole};
 pub use error::PeerNetError;
 pub use inbound::{InboundSource, PushBack};
 pub use listener::{Admitted, PeerListener};
 pub use obfuscation::{
     AwaitedTesters, ObfuscationConfig, ObfuscationPolicy, PeerObfuscationTransport,
 };
-pub use options::{CaptureMode, ConnectOptions};
+pub use options::{CaptureMode, ConnectOptions, Ipv6Follow, PEER_CRYPT_TIMEOUT};

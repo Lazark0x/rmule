@@ -23,6 +23,7 @@ use super::SourceBook;
 use super::record::{Record, RecordId};
 use crate::adapters::CallbackKey;
 use crate::download::source_ask_clock::AskFacts;
+use crate::download::state::LowIdCandidate;
 
 /// One of the names a peer's ask facts are known by (ADR-0108, "Ask Name").
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -31,11 +32,18 @@ pub(crate) enum AskName {
     /// end of any connection.
     Endpoint(PeerEndpoint),
     /// A Low-ID callback's routing key, as the book holds it: an eD2k low id
-    /// with the server that assigned it, or a Kad row's observed address.
+    /// with the server that assigned it, or a Kad row's observed address and
+    /// Kad UDP port.
     LowId(CallbackKey),
     /// The peer's User Hash, from a candidate's record, a record-stated crypt
     /// or a hello.
     User(UserHash),
+}
+
+impl From<PeerEndpoint> for AskName {
+    fn from(endpoint: PeerEndpoint) -> Self {
+        Self::Endpoint(endpoint)
+    }
 }
 
 impl SourceBook {
@@ -178,28 +186,26 @@ impl SourceBook {
 
     /// Every name `record` is known by: its endpoints, its `CallbackKey` when
     /// that names the peer beyond this record, and `hashes`.
-    fn ask_names(&self, record: &Record, hashes: &[UserHash]) -> Vec<AskName> {
+    pub(super) fn ask_names(&self, record: &Record, hashes: &[UserHash]) -> Vec<AskName> {
         record
             .endpoints
             .iter()
             .map(|&endpoint| AskName::Endpoint(endpoint))
-            .chain(
-                record
-                    .candidate
-                    .as_ref()
-                    .filter(|candidate| candidate.from_kad || candidate.source_server.is_some())
-                    .map(|candidate| AskName::LowId(candidate.key())),
-            )
+            .chain(record.candidate.as_ref().and_then(low_id_name))
             .chain(hashes.iter().map(|&hash| AskName::User(hash)))
             .collect()
     }
 
-    /// The User Hashes `record` knows: its live worker's identity's, its
-    /// candidate's, and the one a record stated with its crypt at any of its
-    /// endpoints.
-    fn user_hashes(&self, record: &Record) -> Vec<UserHash> {
+    /// The User Hashes `record` knows: its live worker's identity's, the one
+    /// the hello its standing kept named (ADR-0049), its candidate's, and the
+    /// one a record stated with its crypt at any of its endpoints.
+    pub(super) fn user_hashes(&self, record: &Record) -> Vec<UserHash> {
         let mut hashes = Vec::new();
         let identified = record.stage.identity().map(PeerIdentity::user_hash);
+        let queued_under = record
+            .standing
+            .and_then(|standing| standing.crypt())
+            .map(|crypt| crypt.user_hash);
         let stated = record.endpoints.iter().map(|&endpoint| {
             self.run
                 .record_crypt(endpoint)
@@ -210,6 +216,7 @@ impl SourceBook {
             .as_ref()
             .and_then(|candidate| candidate.user_hash);
         let named = std::iter::once(identified)
+            .chain(std::iter::once(queued_under))
             .chain(stated)
             .chain(std::iter::once(candidate));
         for hash in named.flatten() {
@@ -219,4 +226,13 @@ impl SourceBook {
         }
         hashes
     }
+}
+
+/// `candidate`'s key as an Ask Name, when it names the peer beyond its record:
+/// a Kad row's, or a low id beside the server that assigned it. One minted with
+/// no server known is read against whichever server we are on, so it names
+/// nobody past its record.
+pub(super) fn low_id_name(candidate: &LowIdCandidate) -> Option<AskName> {
+    (candidate.from_kad || candidate.source_server.is_some())
+        .then(|| AskName::LowId(candidate.key()))
 }

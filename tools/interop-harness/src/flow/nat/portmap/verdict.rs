@@ -102,7 +102,7 @@ impl Claim {
         }
     }
 
-    fn blocked(name: &'static str, note: impl Into<String>) -> Self {
+    pub(super) fn blocked(name: &'static str, note: impl Into<String>) -> Self {
         Self {
             name,
             outcome: "blocked",
@@ -133,11 +133,13 @@ pub(crate) fn judge(
     rmule: &DriverRow,
     kad_wire: Option<&KadHelperWire>,
     sources: Option<&PcpSources>,
+    driver_log: &str,
 ) -> (&'static str, String, Vec<Claim>) {
     let mut claims = vec![gateway_claim(proof)];
     claims.extend(match flow {
-        PortMapFlow::HighId => high_id_claims(gateway, rmule, kad_wire),
+        PortMapFlow::HighId | PortMapFlow::NatPmp => high_id_claims(flow, gateway, rmule, kad_wire),
         PortMapFlow::Mismatch => mismatch_claims(gateway, rmule),
+        PortMapFlow::Moved => super::moved::claims(gateway, rmule, driver_log),
         PortMapFlow::Ipv6Pinhole | PortMapFlow::Ipv6PinholeLinkLocal => {
             pinhole_claims(gateway, rmule)
         }
@@ -190,7 +192,7 @@ fn release_claim(gateway: &GatewayRecord) -> Claim {
     const NAME: &str = "release-on-exit-empties-the-gateway-table";
     let note = format!(
         "after the driver exited the gateway's tables read v4={} v6={}, and it logged {} \
-         DeletePortMapping / {} PCP removals",
+         DeletePortMapping / {} PCP or NAT-PMP removals",
         after_table(gateway.table_v4_after.as_ref()),
         after_table(gateway.table_v6_after.as_ref()),
         gateway.delete_port_mapping,
@@ -200,6 +202,35 @@ fn release_claim(gateway: &GatewayRecord) -> Claim {
         || Claim::blocked(NAME, note.clone()),
         |released| Claim::about(NAME, released, note.clone()),
     )
+}
+
+/// `the-shifted-grants-end-on-exit` (`portmap-mismatch`): UPnP keys a mapping
+/// by its external port, so the release at quit must name the ports the
+/// gateway granted, not the ones rmule asked for — those name the second
+/// host's rows. Held when no row for rmule survives the exit and both
+/// pre-claim rows do; `blocked` on an unread table.
+fn shifted_release_claim(gateway: &GatewayRecord) -> Claim {
+    const NAME: &str = "the-shifted-grants-end-on-exit";
+    let note = format!(
+        "after the driver exited the gateway's IPv4 table read {} and it logged {} \
+         DeletePortMapping",
+        after_table(gateway.table_v4_after.as_ref()),
+        gateway.delete_port_mapping,
+    );
+    match gateway.rows_v4_after() {
+        None => Claim::blocked(NAME, note),
+        Some(rows) => {
+            let ours = rows
+                .iter()
+                .filter(|row| row.internal_address == DRIVER_LAN_ADDRESS)
+                .count();
+            let preclaimed = rows
+                .iter()
+                .filter(|row| row.description.contains("preclaim"))
+                .count();
+            Claim::about(NAME, ours == 0 && preclaimed == 2, note)
+        }
+    }
 }
 
 /// `the-pinhole-is-withdrawn-on-exit`, `blocked` on an unread table.
@@ -237,11 +268,19 @@ fn gateway_claim(proof: &NatTypeProof) -> Claim {
 
 /// `portmap-highid`: ADR-0092's four assertions, one claim each.
 fn high_id_claims(
+    flow: PortMapFlow,
     gateway: &GatewayRecord,
     rmule: &DriverRow,
     kad_wire: Option<&KadHelperWire>,
 ) -> Vec<Claim> {
     let tcp_exact = gateway.holds_exact(DRIVER_LAN_ADDRESS, PEER_TCP_PORT);
+    // The gateway's log of each MAP, renewals included: SOAP actions for
+    // UPnP, request lines for NAT-PMP.
+    let (requests, action) = if flow == PortMapFlow::NatPmp {
+        (gateway.natpmp_requests, "NAT-PMP mapping requests")
+    } else {
+        (gateway.add_port_mapping, "AddPortMapping actions")
+    };
     let tcp_line = gateway
         .leases
         .iter()
@@ -297,12 +336,11 @@ fn high_id_claims(
         ),
         Claim::about(
             "one-renewal-in-the-gateways-own-record",
-            gateway.max_renewals() >= 1 && gateway.add_port_mapping > gateway.leases.len() as u64,
+            gateway.max_renewals() >= 1 && requests > gateway.leases.len() as u64,
             format!(
-                "the gateway's table advanced an expiry {}x and it logged {} AddPortMapping \
-                 actions for {} mappings; rmule counted {} renewals",
+                "the gateway's table advanced an expiry {}x and it logged {requests} {action} \
+                 for {} mappings; rmule counted {} renewals",
                 gateway.max_renewals(),
-                gateway.add_port_mapping,
                 gateway.leases.len(),
                 rmule.total_renewals,
             ),
@@ -465,6 +503,7 @@ fn mismatch_claims(gateway: &GatewayRecord, rmule: &DriverRow) -> Vec<Claim> {
                 rmule.every_row_exact, rmule.kad_recheck_observed,
             ),
         ),
+        shifted_release_claim(gateway),
     ]
 }
 
@@ -651,7 +690,7 @@ pub(crate) fn write(layout: &RunLayout, verdict: &PortMapVerdict) -> Result<()> 
 
 #[cfg(test)]
 mod tests {
-    use super::{gateway_claim, pinhole_withdrawn_claim, release_claim};
+    use super::{gateway_claim, pinhole_withdrawn_claim, release_claim, shifted_release_claim};
     use crate::flow::nat::portmap::gateway::GatewayRecord;
 
     /// A post-exit table that could not be read used to read as emptied, so
@@ -679,6 +718,27 @@ mod tests {
         assert_eq!(pinhole_withdrawn_claim(&kept).outcome, "absent");
     }
     use crate::nat::{NatType, NatTypeProof, PinnedPortReach};
+
+    /// A shifted grant ends only when the release names the granted port: a
+    /// delete by the asked-for port leaves rmule's row and, on a gateway that
+    /// did not check the caller, would take the second host's.
+    #[test]
+    fn a_shifted_grant_ends_on_its_granted_port() {
+        let after = |table: &str| GatewayRecord {
+            table_v4_after: Some(table.to_owned()),
+            ..GatewayRecord::default()
+        };
+        let preclaims = "TCP:4662:10.77.0.5:4662:1:preclaim\nUDP:4672:10.77.0.5:4672:1:preclaim\n";
+        assert_eq!(shifted_release_claim(&after(preclaims)).outcome, "held");
+        let kept = format!("{preclaims}TCP:57641:10.77.0.4:4662:1:rmule\n");
+        assert_eq!(shifted_release_claim(&after(&kept)).outcome, "absent");
+        let taken = "UDP:4672:10.77.0.5:4672:1:preclaim\n";
+        assert_eq!(shifted_release_claim(&after(taken)).outcome, "absent");
+        assert_eq!(
+            shifted_release_claim(&GatewayRecord::default()).outcome,
+            "blocked"
+        );
+    }
 
     /// The proof used to land only in the TOML; a gateway that probed as
     /// another type now fails the portmap row it stands under.

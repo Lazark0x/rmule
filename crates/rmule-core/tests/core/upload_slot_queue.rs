@@ -225,8 +225,14 @@ fn an_ipv6_reask_is_attributed_by_the_full_address_not_a_projection() {
     let second = v6_peer("2001:db8:0:1::b");
     let _ = q.admit(first, file(), t0);
     let _ = q.admit(second, file(), t0);
-    q.set_udp_contact(first, Some(6000), 4);
-    q.set_udp_contact(second, Some(6001), 4);
+    for (waiter, udp_port) in [(first, 6000), (second, 6001)] {
+        let contact = rmule_core::WaiterContact {
+            udp_port: Some(udp_port),
+            udp_version: 4,
+            dialable: true,
+        };
+        q.set_contact(waiter, contact);
+    }
 
     let resolved = |peer: PeerEndpoint, port: u16| match q.resolve_reask(peer.with_port(port)) {
         rmule_core::ReaskResolution::Known { peer, .. } => Some(peer),

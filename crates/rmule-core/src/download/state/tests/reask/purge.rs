@@ -140,7 +140,12 @@ fn a_no_needed_parts_source_is_let_go_near_the_source_limit() {
 /// A started download holding `SOURCE_PURGE_AT - 2` High IDs and two Low IDs
 /// another server assigned, under `capability`.
 fn with_two_global_low_ids(capability: CallbackCapability) -> DownloadState {
-    let global = |n| SourceSighting::plain(rmule_primitives::PeerSource::new(low(n), 4662));
+    let global = |n| {
+        SourceSighting::plain(
+            rmule_primitives::PeerSource::new(low(n), 4662),
+            rmule_primitives::Informant::Own,
+        )
+    };
     let mut state = state_from(
         file_hash_only_content(ONE_PART),
         SourcingPosture {

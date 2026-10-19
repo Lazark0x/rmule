@@ -171,6 +171,7 @@ fn waiter(low: u32) -> CallbackWalkReply {
         key: CallbackKey {
             server: None,
             low_id: rmule_primitives::ClientId::from_u32(low),
+            kad_port: None,
         },
         retire_tx,
     }

@@ -7,7 +7,7 @@
 
 use std::net::Ipv4Addr;
 
-use rmule_primitives::{Ipv4Endpoint, PeerSource, SourceSighting, UserHash};
+use rmule_primitives::{Informant, Ipv4Endpoint, PeerSource, SourceSighting, UserHash};
 
 use crate::DownloadFailure;
 
@@ -45,7 +45,10 @@ fn sight(state: &mut DownloadState) -> Vec<PeerEndpoint> {
     spawned(&via_exchange(
         state,
         peer(1),
-        vec![SourceSighting::plain(PeerSource::HighId(v4))],
+        vec![SourceSighting::plain(
+            PeerSource::HighId(v4),
+            Informant::Own,
+        )],
     ))
 }
 
@@ -56,7 +59,7 @@ fn sight(state: &mut DownloadState) -> Vec<PeerEndpoint> {
 fn a_remote_queued_source_sighted_again_keeps_one_owner() {
     let mut state = exchanging_state();
     assert_eq!(sight(&mut state), vec![source()]);
-    let _ = state.on_worker_event(t0(), source(), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), source());
     let _ = state.on_worker_event(t0(), source(), PeerWorkerEvent::Queued { rank: 3 });
     let _ = state.on_worker_event(t0(), source(), PeerWorkerEvent::Disconnected);
 
@@ -81,7 +84,7 @@ fn sight_hashed(
             let PeerEndpoint::V4(v4) = at else {
                 unreachable!()
             };
-            SourceSighting::new(PeerSource::HighId(v4), hash, None)
+            SourceSighting::new(PeerSource::HighId(v4), hash, None, Informant::Own)
         })
         .collect();
     spawned(&via_exchange(state, peer(1), sources))
@@ -90,7 +93,7 @@ fn sight_hashed(
 /// `at` completes its hello naming `user_hash`, then connects.
 fn hello(state: &mut DownloadState, at: PeerEndpoint, user_hash: UserHash) -> Vec<Decision> {
     let mut out = state.on_worker_event(t0(), at, identified(user_hash));
-    out.extend(state.on_worker_event(t0(), at, PeerWorkerEvent::Connected));
+    out.extend(connect(state, t0(), at));
     out
 }
 
@@ -127,7 +130,8 @@ fn a_peer_that_served_bad_data_is_not_redialled_and_a_clean_one_is() {
 
     let _ = hello(&mut state, bad, BAD);
     serve_bad_part(&mut state, bad);
-    let _ = hello(&mut state, clean, CLEAN);
+    let _ = state.on_worker_event(t0(), clean, identified(CLEAN));
+    let _ = probed(&mut state, t0(), clean);
     let _ = state.on_worker_event(t0(), clean, PeerWorkerEvent::Disconnected);
 
     assert_eq!(sight_hashed(&mut state, &both), vec![clean]);

@@ -330,6 +330,10 @@ impl PredictionFans {
 /// One Fan socket's reader: drop everything not from `peer`; on the first
 /// datagram from it while no route holds that endpoint, route it here, answer
 /// once, and report the hit; hand every datagram from `peer` to the inlet.
+/// A receive error is tolerated on the shared [`ReceiveErrorBudget`]; only a
+/// run of them ends the reader.
+///
+/// [`ReceiveErrorBudget`]: crate::family::ReceiveErrorBudget
 ///
 /// `holder` is the socket's own [`FanSocket`], held weakly: a route is
 /// installed only while something still holds the socket — the Fan, or an
@@ -345,9 +349,26 @@ async fn read_fan_socket(
 ) {
     let mut buf = vec![0u8; FAN_RECV_LEN];
     let mut answered = false;
+    let mut errors = crate::family::ReceiveErrorBudget::new();
     loop {
-        let Ok((len, from)) = socket.recv_from(&mut buf).await else {
-            return;
+        let (len, from) = match socket.recv_from(&mut buf).await {
+            Ok(received) => {
+                errors.record_success();
+                received
+            }
+            // One ICMP answer to a probe the Fan sent must not end the reader
+            // the peer's answer will arrive on; only a run of errors is a dead
+            // socket.
+            Err(error) => match errors.record_error(error.kind()) {
+                crate::family::ReceiveErrorOutcome::Tolerated => {
+                    tokio::time::sleep(crate::family::RECEIVE_ERROR_BACKOFF).await;
+                    continue;
+                }
+                crate::family::ReceiveErrorOutcome::Exhausted { kind, consecutive } => {
+                    tracing::debug!(?kind, consecutive, %peer, "Fan socket dead; reader ended");
+                    return;
+                }
+            },
         };
         let SocketAddr::V4(from) = from else { continue };
         if from != peer {

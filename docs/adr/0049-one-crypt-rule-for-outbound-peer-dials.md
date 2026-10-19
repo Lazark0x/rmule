@@ -38,9 +38,9 @@ Hash a dial is keyed on (`PeerCrypt`), one stance for TCP and UDP alike.
 
 | Source | Attaches to | Rank |
 | --- | --- | --- |
-| The peer's own hello (`MiscOptions2` crypt bits, hello User Hash) | the `PeerIdentity` its worker's Source Book record holds in its Worker stage, replaced whole at each revision, until the worker ends; a queue standing the worker earns keeps its peer-UDP crypt target for the standing's life | outranks every record |
+| The peer's own hello (`MiscOptions2` crypt bits, hello User Hash) | the `PeerIdentity` its worker's Source Book record holds in its Worker stage, replaced whole at each revision, until the worker ends; a queue standing the worker earns keeps its peer-UDP crypt target for the standing's life, and the run keeps it for the record's next dial when the standing ends at a grant, a call to its holder's link or a TCP full ask, so that dial finds the peer's link under its User Hash (ADR-0107) | outranks every record |
 | `OP_FOUNDSOURCES_OBFU`, source exchange v4, a Kad row's `TAG_ENCRYPTION` | High ID: `peer_crypts` per endpoint; Low ID: its `LowIdCandidate` | newest statement wins |
-| `KADEMLIA_FIREWALLED2_REQ`, `OP_DIRECTCALLBACKREQ`, a buddy's `KADEMLIA_FINDBUDDY_RES` | the one dial-back or buddy link it authorizes | never merged |
+| `KADEMLIA_FIREWALLED2_REQ`, `OP_DIRECTCALLBACKREQ`, `OP_CALLBACKREQUESTED`'s crypt extension, a buddy's `KADEMLIA_FINDBUDDY_RES` | the one dial-back or buddy link it authorizes | never merged |
 | An accepted peer's hello (serve side) | the `PeerIdentity` the serve state keeps for its connection | only source on that road |
 
 - **Silence is not a statement.** A record with no crypt byte (a plain source row,
@@ -53,8 +53,11 @@ Hash a dial is keyed on (`PeerCrypt`), one stance for TCP and UDP alike.
   settles it.
 - A stance attaches to one owner's record, never outlives it and never moves to another
   User Hash. No dial invents a stance the peer never stated.
-- `OP_CALLBACKREQUESTED`'s crypt extension is decoded and unread: rmule does not adopt
-  that callback, so the byte would have no reader.
+- `OP_CALLBACKREQUESTED`'s crypt extension states the requester's stance for the one
+  server-relayed dial-back it rides (ADR-0061). Its 6-byte form, and the IPv6 `0x26`,
+  state none: the requester's stance reads unknown, so that dial-back goes plaintext, and
+  is refused when our own policy requires crypt, as aMule's `TryToConnect` refuses a
+  client whose crypt flags were never set.
 
 ## Consequences
 

@@ -28,12 +28,13 @@ fn run(number: u64) -> ActiveDownload {
     let (later_links, _) = mpsc::unbounded_channel();
     let (_, seeds) = watch::channel(Vec::new());
     ActiveDownload {
-        run: number,
+        run: crate::download::RunNumber::new(number),
         file_hash: FileHash::from_bytes([1; 16]),
         stop_tx,
         handle: tokio::spawn(async {}),
         later_links,
         seeds,
+        completion: std::sync::Arc::new(crate::download::CompletionGate::open()),
     }
 }
 
@@ -47,10 +48,16 @@ async fn a_started_download_is_held_until_it_is_taken_once() {
 
     assert!(!set.downloads_idle());
     assert!(set.has_download(id(1)));
-    assert_eq!(set.download(id(2)).map(|active| active.run), Some(8));
+    assert_eq!(
+        set.download(id(2)).map(|active| active.run),
+        Some(crate::download::RunNumber::new(8))
+    );
     assert_eq!(set.downloads().count(), 2);
 
-    assert_eq!(set.take_download(id(1)).map(|active| active.run), Some(7));
+    assert_eq!(
+        set.take_download(id(1)).map(|active| active.run),
+        Some(crate::download::RunNumber::new(7))
+    );
     assert!(set.take_download(id(1)).is_none());
     assert!(!set.has_download(id(1)));
     assert!(set.download(id(2)).is_some());

@@ -14,8 +14,9 @@ use crate::adapters::{
 };
 use crate::diagnostics::DiagnosticsState;
 use crate::download::source_seeds::SourceSeed;
+use crate::served_downloads::ServedDownloads;
 use crate::service::{CoreEvent, DownloadEvent, DownloadId, send_download_event};
-use crate::storage::DownloadRepository;
+use crate::storage::{DownloadRepository, recorded_part_hashes};
 use crate::store::download::DurableDownloadRepository;
 use crate::{DownloadFailure, DownloadLifecycle};
 
@@ -29,11 +30,15 @@ use super::super::CoreActor;
 /// `can_restore`, since only a core built to restore at attach runs them —
 /// each with its **Source Seeds** under a day old (ADR-0109), the older ones
 /// dropped, said once for all of them.
+///
+/// Each that is a Served Download is installed with an empty range and no
+/// identity, its lease with the actor (ADR-0113).
 pub(in crate::service::actor) async fn attach_downloads(
     store: &DurableDownloadRepository,
     diagnostics: &DiagnosticsState,
     evt_tx: &mpsc::Sender<CoreEvent>,
     can_restore: bool,
+    served: &ServedDownloads,
 ) -> (VecDeque<DownloadId>, HashMap<DownloadId, Vec<SourceSeed>>) {
     let records = match store.listed_downloads() {
         Ok(records) => records,
@@ -48,6 +53,7 @@ pub(in crate::service::actor) async fn attach_downloads(
         let parts = store.verified_parts(download_id).unwrap_or_default();
         let verified_bytes = parts.iter().map(|part| part.len).sum();
         let held: Vec<u32> = parts.iter().map(|part| part.part_index).collect();
+        served.install(&record, &recorded_part_hashes(store, download_id));
         diagnostics.rest_download(
             download_id,
             record.file_hash(),
@@ -62,6 +68,7 @@ pub(in crate::service::actor) async fn attach_downloads(
                 failure: record.failure().cloned(),
                 file_hash: record.file_hash(),
                 metadata: record.metadata().clone(),
+                file_path: record.file_path().to_path_buf(),
             },
         )
         .await;
@@ -74,9 +81,10 @@ pub(in crate::service::actor) async fn attach_downloads(
             },
         )
         .await;
+        // A completing row's run goes straight to its move (ADR-0115).
         let wants_run = matches!(
             record.lifecycle(),
-            DownloadLifecycle::Active | DownloadLifecycle::Queued
+            DownloadLifecycle::Active | DownloadLifecycle::Queued | DownloadLifecycle::Completing
         );
         if wants_run && can_restore {
             restoring.push_back(download_id);

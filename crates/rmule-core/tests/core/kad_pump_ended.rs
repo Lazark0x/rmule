@@ -198,6 +198,7 @@ async fn a_kad_death_ends_the_wait_of_a_download_that_had_only_kad() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 1).unwrap()),
         name: rmule_testkit::file_name("kad-only.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .expect("download started");

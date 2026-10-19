@@ -73,7 +73,8 @@ fn amule_answered_rmule_keyword_search_with_rmules_own_file() {
         "aMule served exactly rmule's one published file"
     );
 
-    let result = rows[0].project();
+    // The answering aMule 2.3.3 stores at Kad v8.
+    let result = rows[0].project(8);
     assert_eq!(
         result.file_id,
         KadId::from_bytes(PUBLISHED_FILE_ID),

@@ -3,7 +3,7 @@
 use super::super::renewal::PERMANENT_POLL;
 use super::{
     DesiredMapping, Duration, GrantAnswer, Instant, MAX_RENEW_FAILURES, MIN_RENEW_GAP,
-    MappingCommand, MappingError, MappingProtocol, Phase, PortMapper, backoff_delay,
+    MappingCommand, MappingError, MappingProtocol, MappingStatus, Phase, PortMapper, backoff_delay,
     clamp_hold_off, clamp_lease, renewal_delay,
 };
 
@@ -70,7 +70,18 @@ impl PortMapper {
                     0,
                     draw,
                 );
+                let mut moved = None;
                 if let Some(held) = self.leases.get_mut(&mapping) {
+                    // UPnP keys a mapping by its external port: an answer on
+                    // another one is a second mapping beside the old. The move
+                    // is the gateway's 718, so the old port is usually another
+                    // host's by now; the release checks the gateway's entry and
+                    // deletes it only while it still forwards here.
+                    if held.protocol.keys_by_external_port()
+                        && held.external.port() != grant.external.port()
+                    {
+                        moved = Some((held.protocol, held.external.port()));
+                    }
                     held.external = grant.external;
                     held.lease = lease;
                     held.granted_at = now;
@@ -78,6 +89,19 @@ impl PortMapper {
                     held.attempt = 0;
                     held.failures = 0;
                     held.status = status;
+                }
+                if let Some((protocol, external_port)) = moved {
+                    self.commands.push_back(MappingCommand::Release {
+                        protocol,
+                        mapping,
+                        external_port,
+                    });
+                }
+                // A renewal the store no longer takes (a TCP port that moved,
+                // an address gone private) must not leave the last grant it
+                // took standing for a lease.
+                if status != MappingStatus::Mapped {
+                    self.withdraw_grant(mapping);
                 }
                 self.readd_succeeded |= was_readd;
             }

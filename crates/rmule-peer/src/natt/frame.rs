@@ -113,11 +113,10 @@ pub enum NattFrameDecodeError {
         actual: u8,
     },
 
-    /// A KEY frame whose body was not the sixteen bytes a user hash is.
-    /// eMuleAI's message is "Key packet too short"; a *longer* body is equally
-    /// refused here, because a hash has one width and a surplus means the
-    /// sender framed something else.
-    #[error("NAT-T KEY body is {actual} bytes, not the 16 a user hash is")]
+    /// A KEY frame whose body is shorter than the sixteen bytes a user hash
+    /// is — eMuleAI's "Key packet too short". A longer body is read by its
+    /// first sixteen bytes, as eMuleAI reads it.
+    #[error("NAT-T KEY body is {actual} bytes, short of the 16 a user hash is")]
     KeyBodyWidth {
         /// Bytes present after the envelope.
         actual: usize,
@@ -151,10 +150,13 @@ impl<'a> NattFrame<'a> {
             Some(NattFrameType::Quic) => Ok(Self::Quic(body)),
             Some(NattFrameType::Caps) => Ok(Self::Caps(CapsFrame::decode(body)?)),
             Some(NattFrameType::CapsAck) => Ok(Self::CapsAck(CapsFrame::decode(body)?)),
+            // eMuleAI refuses only a short body and reads the hash from the
+            // front of a longer one (`ClientUDPSocket.cpp:1002-1003`).
             Some(NattFrameType::Key) => {
                 let bytes: [u8; UserHash::BYTE_LEN] = body
-                    .try_into()
-                    .map_err(|_| NattFrameDecodeError::KeyBodyWidth { actual: body.len() })?;
+                    .get(..UserHash::BYTE_LEN)
+                    .and_then(|prefix| prefix.try_into().ok())
+                    .ok_or(NattFrameDecodeError::KeyBodyWidth { actual: body.len() })?;
                 Ok(Self::Key(UserHash::from_bytes(bytes)))
             }
             None => Err(NattFrameDecodeError::UnknownFrameType { actual: frame_type }),
@@ -239,12 +241,12 @@ mod tests {
         assert_eq!(NattFrame::decode(&datagram), Ok(NattFrame::Key(hash(0x5A))));
     }
 
-    /// A hash has one width: a short body is eMuleAI's "Key packet too short",
-    /// and a long one is refused for the same reason — a surplus means the
-    /// sender framed something that is not a hash.
+    /// A short body is eMuleAI's "Key packet too short"; a longer one is read
+    /// by its first sixteen bytes, as eMuleAI reads it, so a later eMuleAI that
+    /// extends the frame still teaches us its hash.
     #[test]
-    fn a_key_frame_of_any_other_width_is_refused() {
-        for body_len in [0usize, 15, 17] {
+    fn a_short_key_frame_is_refused_and_a_long_one_is_read_by_its_prefix() {
+        for body_len in [0usize, 15] {
             let mut datagram = vec![0xB2, 0xFF];
             datagram.extend(std::iter::repeat_n(0xAAu8, body_len));
             assert_eq!(
@@ -252,6 +254,9 @@ mod tests {
                 Err(NattFrameDecodeError::KeyBodyWidth { actual: body_len })
             );
         }
+        let mut datagram = NattFrame::Key(hash(0x5A)).encode();
+        datagram.push(0x01);
+        assert_eq!(NattFrame::decode(&datagram), Ok(NattFrame::Key(hash(0x5A))));
     }
 
     /// Two bytes is the floor: one byte carries no frame type, so there is no

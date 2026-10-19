@@ -30,6 +30,8 @@ pub struct Theme {
     pub bad: Color,
     /// Background of the cursor row — a fill, never a text color.
     pub selection: Color,
+    /// A scroll bar's track: a solid column, behind the thumb and the `▲` `▼`.
+    pub scroll_track: Color,
     /// A search result already downloading or paused (ADR-0100, Known-File
     /// Marks). The mark colours stand apart from the source tints — `good`,
     /// `fg`, `dim` — so a mark never reads as a source count.
@@ -63,6 +65,7 @@ impl Theme {
             warn: Color::Rgb(0xE0, 0xAF, 0x68),
             bad: Color::Rgb(0xD6, 0x69, 0x61),
             selection: Color::Rgb(0x2D, 0x34, 0x42),
+            scroll_track: Color::Rgb(0x23, 0x27, 0x31),
             mark_downloading: Color::Rgb(0x7A, 0xA2, 0xF7),
             mark_failed: Color::Rgb(0xF7, 0x76, 0x8E),
             mark_have: Color::Rgb(0xBB, 0x9A, 0xF7),
@@ -87,6 +90,7 @@ impl Theme {
             warn: Color::Rgb(0xA5, 0x6A, 0x00),
             bad: Color::Rgb(0xB0, 0x3A, 0x30),
             selection: Color::Rgb(0xC9, 0xD0, 0xDE),
+            scroll_track: Color::Rgb(0xD6, 0xDA, 0xE4),
             mark_downloading: Color::Rgb(0x2E, 0x5B, 0xBA),
             mark_failed: Color::Rgb(0xC4, 0x26, 0x4F),
             mark_have: Color::Rgb(0x7A, 0x3F, 0xB0),
@@ -112,6 +116,7 @@ impl Theme {
             warn: Color::Indexed(179),
             bad: Color::Indexed(167),              // #d75f5f
             selection: Color::Indexed(237),        // #3a3a3a
+            scroll_track: Color::Indexed(236),     // #303030
             mark_downloading: Color::Indexed(111), // #87afff
             mark_failed: Color::Indexed(204),      // #ff5f87
             mark_have: Color::Indexed(141),        // #af87ff
@@ -158,6 +163,27 @@ impl Theme {
     #[must_use]
     pub fn dim_text(&self) -> Style {
         Style::new().fg(self.dim)
+    }
+
+    /// A scroll bar's thumb.
+    #[must_use]
+    pub fn thumb(&self) -> Style {
+        Style::new().fg(self.fg)
+    }
+
+    /// A scroll bar's track column and its `▲` `▼`, on the track colour.
+    #[must_use]
+    pub fn scroll_track(&self) -> Style {
+        Style::new().fg(self.dim).bg(self.scroll_track)
+    }
+
+    /// Whether a scroll bar may draw the thumb's edges part-way down a cell:
+    /// only while the thumb's colour, `fg`, stands apart from the track's,
+    /// `scroll_track`. A part-cell edge shows where the thumb ends by colour
+    /// alone, so a theme without the contrast draws whole cells.
+    #[must_use]
+    pub fn thumb_in_eighths(&self) -> bool {
+        self.fg != self.scroll_track
     }
 
     /// The active tab: accent-inverted (spec §3.1).
@@ -256,6 +282,7 @@ mod tests {
             t.warn,
             t.bad,
             t.selection,
+            t.scroll_track,
             t.mark_downloading,
             t.mark_failed,
             t.mark_have,

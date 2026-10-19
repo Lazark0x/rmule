@@ -236,7 +236,7 @@ async fn download_resume_completes_hermetically_from_verified_parts() {
     let server_ep = server.endpoint();
     let repo = DurableDownloadRepository::new(open_durable_store(dir.path()).unwrap());
     let record = repo
-        .create_download(&file, Some(&server_ep), &paths)
+        .create_download(&file, Some(&server_ep), &paths, None)
         .unwrap();
     repo.record_verified_part(
         record.id(),

@@ -433,14 +433,21 @@ pub(crate) fn drive(
     let mut bodies = vec![Body {
         name: "rmule-buddy".to_owned(),
         image: options.rmule_tools_image.to_owned(),
-        pin: format!("this worktree; kad id {}", mesh::hex(&mesh::BUDDY_KAD_ID)),
+        pin: format!(
+            "{}; kad id {}",
+            crate::run_record::rmule_pin(),
+            mesh::hex(&mesh::BUDDY_KAD_ID)
+        ),
         address_v4: buddy_v4.clone(),
         address_v6: String::new(),
     }];
     bodies.extend(mesh.iter().map(|node| Body {
         name: format!("kad-mesh-{}", node.kad_id),
         image: options.rmule_tools_image.to_owned(),
-        pin: "this worktree; routing-only Kad Stimulus Node".to_owned(),
+        pin: format!(
+            "{}; routing-only Kad Stimulus Node",
+            crate::run_record::rmule_pin()
+        ),
         address_v4: node.address_v4.clone(),
         address_v6: String::new(),
     }));

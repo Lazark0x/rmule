@@ -145,8 +145,8 @@ impl SearchesView {
             return None;
         }
         let mut line = row - area.y;
-        let offset = self.results_state.offset();
-        for (index, height) in self.row_heights.iter().enumerate().skip(offset) {
+        let first = self.viewport.first();
+        for (index, height) in self.row_heights.iter().enumerate().skip(first) {
             if line < *height {
                 return Some(index);
             }

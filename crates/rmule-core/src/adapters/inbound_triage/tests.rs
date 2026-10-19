@@ -128,6 +128,8 @@ async fn dial_a_buddy(
             file_known: crate::known_files::SharedFileKnown::default(),
             tunnel_admit: crate::adapters::SharedTunnelAdmit::default(),
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
+            peer_links: crate::adapters::SharedPeerLinks::default(),
+            secured_identities: crate::secured_identity::SharedSecuredIdentities::default(),
         },
     ));
     loop {
@@ -417,6 +419,7 @@ async fn the_adopted_buddy_links_close_frees_the_buddy_slot() {
     let key = CallbackKey {
         server: None,
         low_id: ClientId::from_u32(0x2000_0002),
+        kad_port: None,
     };
     let registration = awaited.register(key, adopt_tx, mpsc::channel(1).0);
     registration.await_callback(
@@ -469,6 +472,8 @@ async fn the_adopted_buddy_links_close_frees_the_buddy_slot() {
             file_known: crate::known_files::SharedFileKnown::default(),
             tunnel_admit: crate::adapters::SharedTunnelAdmit::default(),
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
+            peer_links: crate::adapters::SharedPeerLinks::default(),
+            secured_identities: crate::secured_identity::SharedSecuredIdentities::default(),
         },
     ));
     let (_key, mut worker) = timeout(Duration::from_secs(2), adopt_rx.recv())
@@ -516,4 +521,5 @@ async fn the_adopted_buddy_links_close_frees_the_buddy_slot() {
     drop(registration);
 }
 
+mod adopted_serve;
 mod verdicts;

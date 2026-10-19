@@ -7,8 +7,8 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rmule_primitives::{
-    ClientId, CryptStance, Ed2kText, Ipv4Endpoint, Ipv6Endpoint, PeerSource, SourceSighting, Tag,
-    TagValue, UserHash,
+    ClientId, CryptStance, Ed2kText, Informant, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint,
+    PeerSource, SourceSighting, Tag, TagValue, UserHash,
 };
 
 use crate::capability::{CT_EMULE_UDPPORTS, MiscOptions1, MiscOptions2, ModMiscOptions};
@@ -45,11 +45,9 @@ pub struct PeerIdentity {
     tcp_port: u16,
     nickname: Option<Ed2kText>,
     protocol_version: Option<u32>,
+    /// The server the hello says the peer is logged in to, or the known
+    /// server an `OP_CHANGE_CLIENT_ID` moved it to.
     connected_server: Option<Ipv4Endpoint>,
-    /// The server an `OP_CHANGE_CLIENT_ID` named, once one has: the packet
-    /// carries an address and no port, and the claim it supersedes the hello's
-    /// (`None` until the peer revises its ID).
-    revised_server: Option<Ipv4Addr>,
     /// The peer's advertised **Kad** UDP port (`0` = none), the high half of
     /// `CT_EMULE_UDPPORTS` (ADR-0067).
     kad_udp_port: u16,
@@ -140,7 +138,6 @@ impl PeerIdentity {
             nickname,
             protocol_version,
             connected_server,
-            revised_server: None,
             // The ed2k→Kad handoff hint (ADR-0067): the Kad UDP port is the
             // high 16 bits of CT_EMULE_UDPPORTS, the Kad version the low nibble
             // of MiscOptions2 — the consume-side counterpart of the ADR-0047
@@ -231,12 +228,18 @@ impl PeerIdentity {
     }
 
     /// Take the Client ID an `OP_CHANGE_CLIENT_ID` says the peer now answers
-    /// to, and the server it named beside it, which then stands as the server
-    /// it claims; `true` when either changed.
-    pub(crate) fn revise_client_id(&mut self, client_id: ClientId, server: Ipv4Addr) -> bool {
-        let changed = self.client_id != client_id || self.revised_server != Some(server);
+    /// to, and — when the node knows the server named beside it — that
+    /// server, at the port the node knows it at, as the one it is on;
+    /// `true` when either changed.
+    pub(crate) fn revise_client_id(
+        &mut self,
+        client_id: ClientId,
+        server: Option<Ipv4Endpoint>,
+    ) -> bool {
+        let server = server.or(self.connected_server);
+        let changed = self.client_id != client_id || self.connected_server != server;
         self.client_id = client_id;
-        self.revised_server = Some(server);
+        self.connected_server = server;
         changed
     }
 
@@ -349,18 +352,50 @@ impl PeerIdentity {
         PeerUdpCryptTarget::new(self.user_hash, self.crypt)
     }
 
-    /// The peer as a source of the files it deals in (ADR-0055 §Serving): its
-    /// advertised `(client id, listen port)` with its User Hash, and the
-    /// usable IPv6 its hello (or a later `OP_CHANGE_CLIENT_IP`) named as the
-    /// source's IPv6 half. emule-qt writes `CT_MOD_IP_V6` for any source with
-    /// one, High ID included (`KnownFile.cpp:937`), and only an ExtSX record
-    /// can carry it (ADR-0087). A Low-ID client with an IPv6 is a source over
-    /// that IPv6 alone, the client emule-qt's writer keeps
-    /// (`KnownFile.cpp:846-854`); any other Low-ID client is a source an
-    /// answer filters out.
+    /// The peer as a source of the files it deals in (ADR-0055 §Serving), met
+    /// on a link from `link`: its Client ID read against that link, its listen
+    /// port, its User Hash, and the usable IPv6 its hello (or a later
+    /// `OP_CHANGE_CLIENT_IP`) named as the source's IPv6 half. emule-qt writes
+    /// `CT_MOD_IP_V6` for any source with one, High ID included
+    /// (`KnownFile.cpp:937`), and only an ExtSX record can carry it
+    /// (ADR-0087). A Low-ID client with an IPv6 is a source over that IPv6
+    /// alone, the client emule-qt's writer keeps (`KnownFile.cpp:846-854`);
+    /// any other Low-ID client is a source an answer filters out.
+    ///
+    /// Over IPv4 a claim that is no Low ID — a High ID, none, or the link's
+    /// own address — is the link's address, whatever number the hello wrote:
+    /// aMule takes the socket's address as the client's (`BaseClient.cpp:661`)
+    /// and stores it as a High ID (`:678-680`), and that is where it dials the
+    /// client (`:1620`). A Low ID stays the callback it names. Over IPv6 the
+    /// peer is a source at the link's own address with its listen port,
+    /// whatever ID it claims: kno's fork takes the socket's address as the
+    /// client's on either family (`BaseClient.cpp:812-813` at the Fork Pin),
+    /// and an IPv4 claim no link can check names nothing (ADR-0107).
+    ///
+    /// The sighting is the peer's own word, so its Informant is the party at
+    /// the link's address (ADR-0085).
     #[must_use]
-    pub fn source_coordinate(&self) -> SourceSighting {
-        let classic = PeerSource::new(self.client_id, self.tcp_port);
+    pub fn source_coordinate(&self, link: PeerEndpoint) -> SourceSighting {
+        if let PeerEndpoint::V6(link6) = link {
+            let at = Ipv6Endpoint::new(link6.ip, self.tcp_port);
+            return SourceSighting::new(
+                PeerSource::Ipv6(at),
+                Some(self.user_hash),
+                None,
+                Informant::Party(link.ip()),
+            )
+            .with_ipv6_half(Some(at));
+        }
+        let classic = match link.as_v4() {
+            Some(link)
+                if self.client_id.is_high_id()
+                    || self.client_id.as_u32() == 0
+                    || self.client_id.as_u32() == u32::from_le_bytes(link.ip.octets()) =>
+            {
+                PeerSource::HighId(Ipv4Endpoint::new(link.ip, self.tcp_port))
+            }
+            _ => PeerSource::new(self.client_id, self.tcp_port),
+        };
         let ipv6 = self
             .peer_ipv6()
             .map(|address| Ipv6Endpoint::new(address, self.tcp_port));
@@ -368,21 +403,23 @@ impl PeerIdentity {
             Some(endpoint) if !classic.is_high_id() => PeerSource::Ipv6(endpoint),
             _ => classic,
         };
-        SourceSighting::new(source, Some(self.user_hash), None).with_ipv6_half(ipv6)
+        SourceSighting::new(
+            source,
+            Some(self.user_hash),
+            None,
+            Informant::Party(link.ip()),
+        )
+        .with_ipv6_half(ipv6)
     }
 
     /// Whether the peer claims to be logged in to `server` — the "on our
     /// server" half of the **Low-ID abuse guard**. A claim of `0.0.0.0:0`
     /// is no server, so it never matches. After an `OP_CHANGE_CLIENT_ID` the
-    /// claim is the server that packet named, matched by address alone: it
-    /// names no port, and the server a node knows by that address is the one
-    /// whose port aMule takes (`ClientTCPSocket.cpp:751-776`).
+    /// claim is the known server that packet named
+    /// (`ClientTCPSocket.cpp:773-787`).
     #[must_use]
     pub fn is_on_server(&self, server: Ipv4Endpoint) -> bool {
-        match self.revised_server {
-            Some(named) => named == server.ip,
-            None => self.connected_server == Some(server),
-        }
+        self.connected_server == Some(server)
     }
 
     /// The peer's **Static Capability Claim** (`CT_MOD_MISCOPTIONS`,

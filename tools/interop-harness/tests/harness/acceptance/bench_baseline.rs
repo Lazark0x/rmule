@@ -107,7 +107,16 @@ fn ipv6_net_accept() {
     if !bench_enabled("ipv6-net-accept") {
         return;
     }
-    let mut args = vec!["--skip-build", "--timeout", "120", "--settle", "20"];
+    let natgw = concat!(env!("CARGO_MANIFEST_DIR"), "/images/natgw");
+    let mut args = vec![
+        "--skip-build",
+        "--timeout",
+        "120",
+        "--settle",
+        "20",
+        "--natgw-build-context",
+        natgw,
+    ];
     let run_root = bench_run_root();
     if let Some(root) = &run_root {
         args.extend_from_slice(&["--run-root", root]);

@@ -18,4 +18,4 @@
 │                        │
 │                        │
 │Off-screen: Type Videos │
-└ 1 column not shown ────┘
+└ 1 hidden ─────── 1 / 3 ┘

@@ -6,12 +6,14 @@ use std::time::Instant;
 use super::{
     ClientSoftware, DownloadId, DownloadMetadata, FileHash, PeerEndpoint, PeerRetirementReason,
 };
-use crate::service::DialEnd;
+use crate::content::HoleVerdict;
+use crate::service::{CompletionStep, DialEnd};
 
 /// Stable identifier for one peer worker slot inside one download.
-/// Slot index is `0..peer_concurrency_per_download` and is assigned at
-/// worker construction time; the peer the slot is bound to may change as
-/// peers are retired.
+/// A new worker or callback road takes the lowest number a retirement freed,
+/// else the first past every number in use (ADR-0116), so the numbers run
+/// from zero to the most held at once; the peer the slot is bound to may
+/// change as peers are retired.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WorkerSlot(usize);
 
@@ -32,24 +34,28 @@ impl WorkerSlot {
 
 /// Currently observed orchestration state of one worker slot.
 ///
-/// Mixes connection-level facts (`Connecting`, `HandshakingPeer`) with
+/// Mixes connection-level facts (`Connecting`, `AskingFile`) with
 /// orchestration facts (`WaitingForSlot`, `VerifyingPart`, `Retired`)
-/// because hang investigation needs both in one place (ADR-0028).
+/// because hang investigation needs both in one place (ADR-0028). Every
+/// phase has a writer at the transition it names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkerPhase {
-    /// The slot exists but holds no peer — its state between construction and
-    /// its first dial, and after a retirement until the pool backfills it.
+    /// The slot holds no peer yet: its row as it is built, before its first
+    /// phase is written.
     Idle,
-    /// Dialing the peer; nothing has been exchanged yet.
+    /// Dialing the peer and reading its hello.
     Connecting,
-    /// The TCP connection is up and the eD2k hello exchange is running.
-    HandshakingPeer,
-    /// The upload request is in and the peer is queueing us. The longest phase
-    /// by far on a busy source, and the one `slot_wait_timeout` bounds.
-    WaitingForSlot,
-    /// Waiting on `OP_HASHSETANSWER` before any part can be verified.
-    RequestingHashSet,
-    /// A part was asked for and the first block has not arrived.
+    /// The hello is done and the file asked; the worker waits for the probe's
+    /// answer, which asks its slot or retires it (ADR-0112).
+    AskingFile,
+    /// The slot ask is out and the peer is queueing us. The longest phase by
+    /// far on a busy source, and the one `slot_wait_timeout` bounds.
+    WaitingForSlot {
+        /// Our place in the peer's upload queue, once an `OP_QUEUERANKING`
+        /// gives one; refreshed by each.
+        rank: Option<u16>,
+    },
+    /// A part was handed at a grant and its first block has not arrived.
     RequestingPart {
         /// The zero-based part index asked for.
         part_index: u32,
@@ -68,10 +74,8 @@ pub enum WorkerPhase {
         /// The zero-based part index being checked.
         part_index: u32,
     },
-    /// The worker is giving its part back to the pool before it leaves.
-    Releasing,
-    /// The worker left the fleet; the row stays so the reason is visible after
-    /// the fact.
+    /// The worker left the fleet; the row stays, until the slot dials again,
+    /// so the reason is visible after the fact.
     Retired {
         /// Why it left.
         reason: PeerRetirementReason,
@@ -91,6 +95,7 @@ pub struct WorkerEntry {
     transition_count: u32,
     software: Option<ClientSoftware>,
     remembered: bool,
+    link_turn: Option<crate::LinkTurn>,
 }
 
 impl WorkerEntry {
@@ -106,6 +111,7 @@ impl WorkerEntry {
             transition_count: 0,
             software: None,
             remembered: false,
+            link_turn: None,
         }
     }
 
@@ -157,6 +163,7 @@ impl WorkerEntry {
         self.peer_endpoint = Some(peer);
         self.software = None;
         self.remembered = false;
+        self.link_turn = None;
     }
 
     /// Whether the slot's peer was dialed from the download's **Source
@@ -170,6 +177,19 @@ impl WorkerEntry {
     /// Mark the slot's peer as dialed from a seed.
     pub fn mark_remembered(&mut self) {
         self.remembered = true;
+    }
+
+    /// Where the slot's download stands on its peer's **Peer Link**, when it
+    /// reaches the peer over a link another holds rather than a dial of its
+    /// own (ADR-0107).
+    #[must_use]
+    pub const fn link_turn(&self) -> Option<crate::LinkTurn> {
+        self.link_turn
+    }
+
+    /// Mark the slot's download as waiting on, or riding, its peer's link.
+    pub fn mark_link_turn(&mut self, turn: crate::LinkTurn) {
+        self.link_turn = Some(turn);
     }
 
     /// Record the client the slot's peer named in its hello.
@@ -253,10 +273,9 @@ pub struct DownloadDiagnostics {
     /// A row at rest carries the durable picture instead: `Verified` where a
     /// part is held, `Missing` elsewhere, never `InFlight` (ADR-0094).
     ///
-    /// **Empty until the first settle of a new download's first run** — a
-    /// freshly opened row (the window between `StartDownload` and the first
-    /// drain) knows no part yet. Empty means *unknown*, not *zero parts*, and
-    /// a consumer renders it as such rather than as a 0%-complete file.
+    /// A freshly opened row (the window between `StartDownload` and the
+    /// first drain) holds every part `Missing`: the vector's length is the
+    /// file's part count from the row's first snapshot on.
     pub parts: Vec<PartState>,
     /// How many workers have left the fleet over the row's life. Monotonic —
     /// the rows themselves are reused, so this is the only trace of churn.
@@ -276,6 +295,10 @@ pub struct DownloadDiagnostics {
     /// A level, republished with the part map at every settle; a source that
     /// failed and was retired has left it.
     pub known_sources: u32,
+    /// How many of those sources are asking, queued and transferring now — the
+    /// run's **Source Activity** (ADR-0116). A level, republished with the part
+    /// map at every settle; zero at rest.
+    pub source_activity: SourceActivity,
     /// Dials that ended before the peer's hello over the row's life —
     /// refused by policy, never dialed, or lost before the peer identified.
     /// Monotonic.
@@ -289,6 +312,47 @@ pub struct DownloadDiagnostics {
     /// peer and the run's end, is cleared when a run starts, and at most
     /// [`DIAL_ENDS_KEPT`] are kept, the oldest leaving first.
     pub dial_ends: BTreeMap<PeerEndpoint, SourceDialEnd>,
+    /// **Allocated Bytes**: what the filesystem reserved for the `.part`,
+    /// read on the run's held handle when it holds the file and after each
+    /// part written (ADR-0111). A storage reading, not a counter: it falls
+    /// when a gap is punched and may exceed the file's length; core computes
+    /// no ratio from it. `None` when not read, or when the last reading
+    /// failed. The row keeps the last reading after the run ends; the next
+    /// run's first reading replaces it.
+    pub allocated_bytes: Option<u64>,
+    /// The run's **Hole Verdict**: whether the disk under the `.part` holds
+    /// holes, as the run's Hole Probe measured (ADR-0111). `None` from a run's
+    /// start until its probe answers; the row keeps it after the run.
+    pub hole_verdict: Option<HoleVerdict>,
+    /// Where the run's completion move stands (ADR-0115): `None` until the
+    /// move begins, and again once its run has ended.
+    pub completion: Option<CompletionProgress>,
+}
+
+/// How many of a running download's sources are in each activity (ADR-0116):
+/// winning a queue place, holding one with no connection, and transferring on
+/// a granted slot. A pooled source not yet asked is in none.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SourceActivity {
+    /// Dialing, called back, or connected with its slot ask not yet answered
+    /// by a grant.
+    pub asking: u32,
+    /// Waiting in a remote uploader's queue with no connection: the
+    /// **Remote-Queued Pool**.
+    pub queued: u32,
+    /// Holding a granted slot.
+    pub transferring: u32,
+}
+
+/// A completion move's step and the bytes its copy has written, as levels
+/// the run publishes as each step begins and after each part it copies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CompletionProgress {
+    /// What the move is doing.
+    pub step: CompletionStep,
+    /// Bytes the Completion Copy has written: 0 until a copy begins, and kept
+    /// through the steps that follow it.
+    pub copied: u64,
 }
 
 /// The most [`DownloadDiagnostics::dial_ends`] a row keeps.

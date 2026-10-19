@@ -56,7 +56,11 @@ fn p_on_a_paused_row_flashes_without_a_session_and_resumes_with_one() {
 #[test]
 fn a_failed_row_offers_restart_and_resumes_the_same_download() {
     let mut state = three_downloads();
-    let items = menu_items(DownloadStatus::Failed, None, &state);
+    let items = menu_items(
+        DownloadStatus::Failed,
+        crate::fixture::download_id(2),
+        &state,
+    );
     assert_eq!(items[0].label, "Restart");
     state.session = Some(crate::fixture::session_state().session.expect("session"));
     match pause_toggle_action(
@@ -291,4 +295,57 @@ fn a_status_change_under_an_open_menu_never_runs_another_action() {
     let outcome = view.handle_key(press(KeyCode::Enter), &state);
     assert!(matches!(outcome, ViewOutcome::Redraw), "got {outcome:?}");
     assert_eq!(view.overlay, Overlay::None);
+}
+
+/// `v` asks for the selected row's Preview, ready or not: the app reads the
+/// row and flashes why a blocked one cannot start.
+#[test]
+fn v_asks_for_the_selected_rows_preview() {
+    let mut view = TransfersView::new();
+    let mut state = preview_ready();
+    view.select_row(&state, 0);
+    assert!(matches!(
+        view.handle_key(press(KeyCode::Char('v')), &state),
+        ViewOutcome::Emit(Action::Preview(id)) if id == download_id(1)
+    ));
+    state.preferences.player_command = None;
+    assert!(matches!(
+        view.handle_key(press(KeyCode::Char('v')), &state),
+        ViewOutcome::Emit(Action::Preview(id)) if id == download_id(1)
+    ));
+}
+
+/// The open menu with Preview greyed by its longest reason, at the menu's
+/// 52-column floor: the reason fits beside the label, unwrapped.
+#[test]
+fn golden_menu_with_preview_greyed_by_its_longest_reason() {
+    let mut state = preview_ready();
+    state
+        .diagnostics
+        .downloads
+        .insert(download_id(1), diag(download_id(1), 0x4D, "IM", 0, vec![]));
+    let mut view = TransfersView::new();
+    view.select_row(&state, 0);
+    view.overlay = Overlay::Menu {
+        cursor: MenuAction::Pause,
+    };
+    assert_golden("transfers_menu_preview_greyed", 52, 14, |frame| {
+        let area = frame.area();
+        view.draw(frame, area, &state, &Theme::default_dark(), now());
+    });
+}
+
+/// A frame too short for the menu: its rows scroll under the cursor, the
+/// panel grows a column for the bar, and the border counts the cursor's row.
+#[test]
+fn golden_menu_overflows_a_short_frame() {
+    let mut view = TransfersView::new();
+    view.overlay = Overlay::Menu {
+        cursor: MenuAction::CopyLink,
+    };
+    let state = three_downloads();
+    assert_golden("transfers_menu_overflow", GOLDEN_W, 8, |frame| {
+        let area = frame.area();
+        view.draw(frame, area, &state, &Theme::default_dark(), now());
+    });
 }

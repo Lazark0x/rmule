@@ -115,12 +115,9 @@ async fn rmule_b_discovers_and_downloads_rmule_a_via_kad_with_no_server() {
         }))
         .await
         .unwrap();
-    // Let A's bootstrap settle before the share registers: the sweep's
-    // immediate publish is the only shot until the node's 5-hour republish,
-    // so it must find the storer already in A's routing table. No event
-    // reports a settled routing table, so this is a fixed wait — wide enough
-    // to hold while every other leg of this binary runs alongside it.
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    // The sweep's immediate publish is the only shot until the node's 5-hour
+    // republish, so it must find the storer already in A's routing table.
+    crate::fixture::until_kad_holds_a_contact(&core_a).await;
     rmule_testkit::share_directory(&mut core_a, dir_a.path()).await;
     // Keep A's event channel drained so its actor never blocks on a full
     // buffer while serving B.
@@ -165,6 +162,7 @@ async fn rmule_b_discovers_and_downloads_rmule_a_via_kad_with_no_server() {
             source_hint: Some(dead_server),
             name: rmule_testkit::file_name("downloaded.bin"),
             if_taken: rmule_core::NameTaken::Refuse,
+            kad_aich_root: None,
         }))
         .await
         .unwrap();

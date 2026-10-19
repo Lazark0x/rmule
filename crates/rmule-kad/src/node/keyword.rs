@@ -60,6 +60,9 @@ impl KadNode {
             return;
         };
         let (target, purpose) = (walk.target(), walk.purpose());
+        // The storer's Kad version as the walk fanned it: an endpoint the walk
+        // never knew a version for reads as 0, as eMule reads it.
+        let storer_kad_version = walk.fan_recipient_version(from).unwrap_or(0);
 
         // A keyword search rides the same `0x3B` as a source search; the owning
         // walk's purpose picks the decoder (ADR-0062). Both consume rows against
@@ -76,7 +79,7 @@ impl KadNode {
             let (accepted, actions) = walk.accept_search_results(rows.len());
             let mut rows = rows;
             rows.truncate(accepted);
-            let results = self.merge_keyword_results(target, rows);
+            let results = self.merge_keyword_results(target, rows, storer_kad_version);
             if !results.is_empty() {
                 self.emit_event(KadEvent::KeywordsFound {
                     keyword: target,
@@ -105,6 +108,7 @@ impl KadNode {
             candidates.truncate(accepted);
             self.emit_event(KadEvent::SourcesFound {
                 target: request.target(),
+                storer: from,
                 candidates,
             });
         }
@@ -114,11 +118,13 @@ impl KadNode {
     /// Residual-filter (v1 client-side multi-word) and dedup (by file ID, into
     /// the one search stream, ADR-0062) a keyword search's accepted rows,
     /// recording the surfaced file IDs. Returns the newly-surfaced typed
-    /// projections; a search already completed (no node-side state) yields none.
+    /// projections, read by the answering storer's Kad version; a search
+    /// already completed (no node-side state) yields none.
     fn merge_keyword_results(
         &mut self,
         target: KadId,
         rows: Vec<KeywordResultRow>,
+        storer_kad_version: u8,
     ) -> Vec<KadKeywordResult> {
         let Some(search) = self
             .keyword_searches
@@ -132,7 +138,7 @@ impl KadNode {
             if search.surfaced.contains(&row.file_id) {
                 continue;
             }
-            let result = row.project();
+            let result = row.project(storer_kad_version);
             if !residual_match(&result, &search.residual_tokens) {
                 continue;
             }

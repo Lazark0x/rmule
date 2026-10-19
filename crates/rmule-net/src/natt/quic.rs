@@ -35,7 +35,7 @@ pub use tls::{
     NATT_QUIC_ALPN, NATT_QUIC_COMMON_NAME, NATT_QUIC_SNI, NattQuicIdentity, QuicTlsError,
 };
 
-use super::registry::{Admission, DialingSlot, HeldSlot, TunnelRegistry};
+use super::registry::{Admission, DialingSlot, ExpectsSource, HeldSlot, TunnelRegistry};
 use super::send::{NattDatagramSink, NattOwnHash, NattSender};
 use super::tunnel::Tunnel;
 use crate::peer::PeerStreamRole;
@@ -264,13 +264,20 @@ impl<S: NattDatagramSink> QuicEngine<S> {
 
     /// Hand one raw QUIC datagram from `peer` to the engine, subject to the
     /// **Tunnel Registry** — the same A2 rule the uTP engine takes, with a long
-    /// header standing in for `ST_SYN`.
-    pub fn inject(&self, peer: PeerEndpoint, packet: &[u8], now: Instant) -> Admission {
+    /// header standing in for `ST_SYN`, opened only from an IP `expects`
+    /// names.
+    pub fn inject(
+        &self,
+        peer: PeerEndpoint,
+        packet: &[u8],
+        expects: &ExpectsSource<'_>,
+        now: Instant,
+    ) -> Admission {
         let admission = self
             .registry
             .lock()
             .expect("the NAT-T tunnel registry is never poisoned")
-            .admit(peer, is_quic_long_header(packet), now);
+            .admit(peer, is_quic_long_header(packet), expects, now);
         if admission == Admission::Drop {
             return admission;
         }

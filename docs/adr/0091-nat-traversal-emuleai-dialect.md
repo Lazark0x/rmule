@@ -72,6 +72,9 @@ exception, Port prediction, gated on our own observed mapping.**
   at the moment it is needed; a CAPS frame arriving before an identity exists
   (`CapsBeforeIdentity`) answers nothing. The QUIC proof gate refuses with `NoIdentity` the
   same way.
+  A CAPS body (54 bytes) and a KEY body (16) are read by their fixed prefix: a longer body is
+  eMuleAI's to extend, and it checks `>=` on both (`ClientUDPSocket.cpp:690`, `:1002-1003`).
+  Only a shorter one is malformed.
 - **Sharing the client-UDP socket.** Demux by protocol byte, then frame type. `0xB2` is on
   the never-obfuscated whitelist (ADR-0046). Transport frames are obfuscated when a key is
   known; the KEY frame (`0xB2/0xFF`, our 16-byte hash, once per endpoint per 10 s on a uTP
@@ -94,7 +97,8 @@ exception, Port prediction, gated on our own observed mapping.**
 - **ed2k-server punch.** `CT_EMULE_UDPPORTS 0xF9` (`kadUDP << 16 | clientUDP`) rides the login
   only with an IPv4 client-UDP bind and its send half: its presence is the capability claim,
   and the server refuses to introduce a client that sent none. The login then carries five
-  tags, not aMule 2.3.3's four; Lugdunum accepts it with the same High ID and flags.
+  tags, not aMule 2.3.3's four, or six beside `CT_MOD_IP_V6` (`0xAE`, ADR-0087), where `0xF9`
+  follows `0xAE`; Lugdunum accepts both with the same High ID and flags.
   `OP_SERVER_NATT_KEEPALIVE 0x9F` (our hash) leaves the client-UDP socket every **60 s** —
   the server trusts an observed port for 600 s, so the cadence is a correctness invariant.
   `OP_LOWID_HOLEPUNCH_REQUEST 0x60 <target_id 4><our_udp 2>`, `OP_LOWID_HOLEPUNCH_INFO 0x61` to
@@ -235,7 +239,7 @@ Invariants:
 The responder's expectation lives 120 s where eMuleAI's lives 30 s, because the requester
 re-dials for its whole 120 s budget and each `librqbit-utp` opener is sent once.
 
-### Security (the nine corrections, all adopted)
+### Security (the nine corrections, all adopted, and two of rmule's own)
 
 1. **Observed source > public claimed hint > hint as lookup key.** A claim is adopted only when
    the observed source is unusable and the claim is public. Arm 3 resolves nothing in core,
@@ -256,6 +260,24 @@ re-dials for its whole 120 s budget and each `librqbit-utp` opener is sent once.
 8. The 16-byte file-hash slot in the rendezvous body is always written, never inferred.
 9. No failure or reset frame exists in the dialect; stale tunnels are state, found by timeout,
    and an active transfer survives a caps change.
+10. **Tunnel admission is by expectation.** An opening packet (a uTP `ST_SYN`, a QUIC long
+    header) from an endpoint the Tunnel Registry holds no slot for opens one only when its
+    source IP is expected, and is otherwise dropped before the engine: no `ST_STATE`, no KEY
+    frame. The key is the IP because a hint, an introduction or an acted rendezvous names the
+    peer's address while a NAT, or a prediction leg, leaves its port open. Three facts expect an
+    IP: a **Punch Expectation** the NAT-T Front holds for it; a live relation in the **Peer
+    Roster** (ADR-0059) — kno dials uTP to every peer whose hello claims bit 1
+    (`UtpDialPolicy.h:103-139`, `BaseClient.cpp:2271`), so a peer we already deal with may come
+    back over uTP with no rendezvous; and, for any IPv4 address, a standing **Dial-Back Claim**
+    — eMuleAI answers a buddy callback with a uTP dial (`ListenSocket.cpp:2480-2494`) and a
+    Low-ID callback names no address for the dialer. eMuleAI gates the same way, on its
+    expected-peer table with an IP-only fallback (`eMuleAI/UtpSocket.cpp:683-1040`). An IPv6 source is never
+    expected: the dialect names IPv4 only and core adopts no IPv6 tunnel. `Opening` slots are
+    capped at 4 per IP and 64 per node, so a flood spoofing one expected address cannot crowd
+    out another, and they age out on the front's one-second tick rather than on every admit.
+11. **A held endpoint keeps its key.** A KEY frame whose hash differs from the live learned
+    one is refused while the endpoint holds a Tunnel. A NAT rebinding moves the endpoint, never
+    the hash at one endpoint, so only a spoof loses anything.
 
 The acting path also keeps a sender gate eMuleAI lacks: a relayed rendezvous is acted on only
 when its carrier is our buddy — the held TCP link by address, or the buddy's exact UDP endpoint
@@ -285,9 +307,13 @@ The one exception to "no NAT-type gate", gated only on our own mapping as our ow
 it.
 
 - **Own Mapping** is read from Address Learning (ADR-0084) for the `Udp` role, from the
-  `KadCheck` port reports of the current Extern Port Round: **Endpoint-Dependent** when two
-  distinct observers name different ports, **Endpoint-Independent** when at least two distinct
-  observers all name the same port, **Unknown** otherwise.
+  fresh `KadCheck` port reports of the current Extern Port Round, one per distinct observer.
+  The best-supported port is the one most observers name; the rest **dissent**.
+  **Endpoint-Dependent** when at least two observers dissent, **Endpoint-Independent** when at
+  least two observers name the best-supported port and at most one dissents, **Unknown**
+  otherwise. Dissent needs corroboration because the Fan is the costly role: one lying
+  contact must not pick it. A symmetric NAT still reads dependent within one round, since
+  aMule's round asks three observers (`EXTERNAL_PORT_ASKIPS`) and each sees its own port.
 - **Peer Mapping** can only veto: **Hard** when the coordinator-observed port differs from the
   peer's advertised client-UDP port, **Easy** when equal, **Unknown** when either half is missing
   (every target today). Nothing a peer claims can make rmule probe.

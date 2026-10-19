@@ -1,6 +1,6 @@
 //! **How an older store's download rows climb** (ADR-0083's ladder): the row
 //! shapes earlier store versions wrote, and the rungs that grow them into
-//! today's [`DownloadRow`].
+//! today's [`DownloadRow`](super::DownloadRow).
 //!
 //! A frozen row shape embeds only frozen enums: its bytes decode by variant
 //! position, so a live enum that gains or reorders a variant must not reach
@@ -13,12 +13,14 @@ use rmule_store::redb::TableDefinition;
 use rmule_store::{Indexed, Packed, Record, StoreError, UpgradeStep, WriteTransaction};
 use serde::{Deserialize, Serialize};
 
-use super::{DOWNLOADS, DownloadRow, PartPathSlot};
-use crate::{DownloadFailure, PartFault, StorageIntegrityFault};
+use crate::PartFault;
 
 mod row_enums;
+mod row_v5;
 
 use row_enums::{DownloadLifecycleV1, DownloadMetadataOriginV1, VerificationAuthorityV1};
+pub(crate) use row_v5::grow_from_v14;
+use row_v5::{DOWNLOADS_V5, DownloadFailureV5, DownloadRowV5};
 
 /// The row as record version 1 wrote it, before the failure reason was kept.
 /// Compiled only for [`UPGRADE_FROM_V5`].
@@ -48,7 +50,11 @@ static DOWNLOADS_V1: Indexed<u64, DownloadRowV1> = Indexed::new("download", &[])
 #[cfg(test)]
 mod declared_v1;
 #[cfg(test)]
+mod declared_v5;
+#[cfg(test)]
 pub(crate) use declared_v1::{schema_v1, seed_v1};
+#[cfg(test)]
+pub(crate) use declared_v5::{schema_v5_rows, seed_v5};
 
 /// The row as record version 2 wrote it: its failure reason a bare code, the
 /// storage-integrity one without the fault it now carries. Compiled only for
@@ -73,7 +79,7 @@ impl Record for DownloadRowV2 {
     const VERSION: u32 = 2;
 }
 
-/// [`DownloadFailure`] as store version 6 encoded it, by declaration order.
+/// [`DownloadFailure`](crate::DownloadFailure) as store version 6 encoded it, by declaration order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum DownloadFailureV2 {
     NoUsableSources,
@@ -204,7 +210,7 @@ impl Record for DownloadRowV3 {
     const VERSION: u32 = 3;
 }
 
-/// [`DownloadFailure`] as store version 7 encoded it, by declaration order.
+/// [`DownloadFailure`](crate::DownloadFailure) as store version 7 encoded it, by declaration order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum DownloadFailureV3 {
     NoUsableSources,
@@ -219,7 +225,7 @@ enum DownloadFailureV3 {
     StorageIntegrityFailed(StorageIntegrityFaultV3),
 }
 
-/// [`StorageIntegrityFault`] as store version 7 encoded it.
+/// [`StorageIntegrityFault`](crate::StorageIntegrityFault) as store version 7 encoded it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum StorageIntegrityFaultV3 {
     PartFileMissing,
@@ -227,7 +233,7 @@ enum StorageIntegrityFaultV3 {
     NoPartHolds { recorded: u32, first: PartFaultV3 },
 }
 
-/// [`PartFault`] as store versions 7 and 8 encoded it, by declaration order.
+/// [`PartFault`] as store versions 7 to 14 encoded it, by declaration order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum PartFaultV3 {
     Short {
@@ -300,7 +306,7 @@ impl DownloadFailureV3 {
     }
 }
 
-/// [`DownloadFailure`] as store version 8 encoded it, by declaration order.
+/// [`DownloadFailure`](crate::DownloadFailure) as store version 8 encoded it, by declaration order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum DownloadFailureV4 {
     NoUsableSources,
@@ -315,7 +321,7 @@ enum DownloadFailureV4 {
     StorageIntegrityFailed(StorageIntegrityFaultV4),
 }
 
-/// [`StorageIntegrityFault`] as store version 8 encoded it.
+/// [`StorageIntegrityFault`](crate::StorageIntegrityFault) as store versions 8 to 14 encoded it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum StorageIntegrityFaultV4 {
     PartFileMissing,
@@ -324,34 +330,19 @@ enum StorageIntegrityFaultV4 {
 }
 
 impl DownloadFailureV4 {
-    /// The reason as the live row keeps it: every code the same.
-    const fn grown(self) -> DownloadFailure {
+    /// The reason as record version 5 keeps it: every code the same.
+    const fn grown(self) -> DownloadFailureV5 {
         match self {
-            Self::NoUsableSources => DownloadFailure::NoUsableSources,
-            Self::HashSetMismatch => DownloadFailure::HashSetMismatch,
-            Self::Cancelled => DownloadFailure::Cancelled,
-            Self::Paused => DownloadFailure::Paused,
-            Self::ServerDisconnected => DownloadFailure::ServerDisconnected,
-            Self::ServerFiltered => DownloadFailure::ServerFiltered,
-            Self::SourceLookupTimedOut => DownloadFailure::SourceLookupTimedOut,
-            Self::PeerDisconnected => DownloadFailure::PeerDisconnected,
-            Self::PartVerificationFailed => DownloadFailure::PartVerificationFailed,
-            Self::StorageIntegrityFailed(fault) => {
-                DownloadFailure::StorageIntegrityFailed(match fault {
-                    StorageIntegrityFaultV4::PartFileMissing => {
-                        StorageIntegrityFault::PartFileMissing
-                    }
-                    StorageIntegrityFaultV4::PartFileUnreadable { os_code } => {
-                        StorageIntegrityFault::PartFileUnreadable { os_code }
-                    }
-                    StorageIntegrityFaultV4::NoPartHolds { recorded, first } => {
-                        StorageIntegrityFault::NoPartHolds {
-                            recorded,
-                            first: first.grown(),
-                        }
-                    }
-                })
-            }
+            Self::NoUsableSources => DownloadFailureV5::NoUsableSources,
+            Self::HashSetMismatch => DownloadFailureV5::HashSetMismatch,
+            Self::Cancelled => DownloadFailureV5::Cancelled,
+            Self::Paused => DownloadFailureV5::Paused,
+            Self::ServerDisconnected => DownloadFailureV5::ServerDisconnected,
+            Self::ServerFiltered => DownloadFailureV5::ServerFiltered,
+            Self::SourceLookupTimedOut => DownloadFailureV5::SourceLookupTimedOut,
+            Self::PeerDisconnected => DownloadFailureV5::PeerDisconnected,
+            Self::PartVerificationFailed => DownloadFailureV5::PartVerificationFailed,
+            Self::StorageIntegrityFailed(fault) => DownloadFailureV5::StorageIntegrityFailed(fault),
         }
     }
 }
@@ -433,24 +424,22 @@ pub(crate) fn grow_from_v8(txn: &WriteTransaction) -> Result<(), StoreError> {
     txn.delete_table(TableDefinition::<u64, Packed<DownloadRowV4>>::new(
         "download",
     ))?;
-    DOWNLOADS.create(txn)?;
+    DOWNLOADS_V5.create(txn)?;
     for (key, row) in old {
-        let grown = DownloadRow {
+        let grown = DownloadRowV5 {
             file_hash: row.file_hash,
             file_size: row.file_size,
             canonical_link: row.canonical_link,
             source_hint: Some(row.server),
             final_path: row.final_path,
-            part_path: PartPathSlot::from_stored(row.part_path),
+            part_path: row.part_path,
             lifecycle: row.lifecycle.grown(),
-            verification_authority: row
-                .verification_authority
-                .map(VerificationAuthorityV1::grown),
+            verification_authority: row.verification_authority,
             file_name: row.file_name,
-            metadata_origin: row.metadata_origin.grown(),
+            metadata_origin: row.metadata_origin,
             failure: row.failure.map(DownloadFailureV4::grown),
         };
-        DOWNLOADS.set(txn, &key, &grown)?;
+        DOWNLOADS_V5.insert(txn, &key, &grown)?;
     }
     Ok(())
 }

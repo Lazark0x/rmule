@@ -66,6 +66,30 @@ fn add_names_the_fields_the_link_carried_that_no_client_reads() {
         .stderr(contains("no server configured"));
 }
 
+/// An add that ends in a refusal still quits the core (ADR-0093): the quit's
+/// steps reach the Run Log and the credit checkpoint is written before the
+/// process exits, whatever way the add ended.
+#[test]
+fn an_add_the_core_refuses_still_runs_quit_before_exiting() {
+    let dir = tempdir().unwrap();
+    off_the_host(dir.path());
+    cli(dir.path())
+        .args(["add", SOURCED_LINK])
+        .timeout(std::time::Duration::from_secs(60))
+        .assert()
+        .failure()
+        .stderr(contains("no download directory configured"));
+    assert!(
+        dir.path().join("clients.met").exists(),
+        "quit's checkpoint must have written clients.met"
+    );
+    let log = std::fs::read_to_string(dir.path().join("rmule.log")).expect("rmule.log");
+    assert!(
+        log.contains("quit.step"),
+        "no quit step in the run log:\n{log}"
+    );
+}
+
 /// A link that names its own source needs no server (ADR-0089): the add
 /// runs from the link, says so, and ends on what the source
 /// did — here a port nothing listens on, so the run fails, not the add.
@@ -133,7 +157,7 @@ fn the_share_guards_refuse_the_data_dir_at_the_set_and_the_home_at_the_add() {
         )))
         .stdout(contains("queued id=").not())
         .stderr(contains(
-            "download refused: everything under the download directory is shared, and it is your home directory",
+            "download refused: everything under the download dir is shared, and it is your home directory",
         ));
     assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
 }

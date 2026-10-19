@@ -11,7 +11,7 @@ use rmule_kad::{
 use rmule_primitives::session::drain;
 use rmule_primitives::{Ipv4Endpoint, UserHash};
 use rmule_testkit::kad_node::{
-    T0, datagrams, deliver, diagnostics, endpoint, events, id, node, self_checking_node,
+    T0, datagrams, deliver, diagnostics, endpoint, events, host_ip, id, node, self_checking_node,
 };
 
 #[test]
@@ -27,7 +27,7 @@ fn a_legacy_firewall_check_answers_0x58_and_requests_a_udp_acked_dial_back() {
     // back to its UDP source (aMule answers regardless of the dial-back).
     assert_eq!(
         datagrams(&outputs),
-        vec![(requester, vec![0xE4, 0x58, 7, 113, 0, 203])]
+        vec![(requester, vec![0xE4, 0x58, 1, 7, 55, 45])]
     );
     // The dial-back command targets the advertised TCP port; a legacy 0x50
     // carries no connect-options — the UDP-0x59 ack signal.
@@ -36,7 +36,7 @@ fn a_legacy_firewall_check_answers_0x58_and_requests_a_udp_acked_dial_back() {
         vec![
             KadEvent::HadContact { from: requester },
             KadEvent::DialBackRequested {
-                requester: Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 7), 4662),
+                requester: Ipv4Endpoint::new(host_ip(7), 4662),
                 connect_options: None,
                 user_hash: None,
             }
@@ -58,7 +58,7 @@ fn a_v7_firewall_check_forwards_connect_options_for_the_tcp_link_ack() {
     // 0x58 body is the requester IP low-octet-first (as captured).
     assert_eq!(
         datagrams(&outputs),
-        vec![(requester, vec![0xE4, 0x58, 7, 113, 0, 203])]
+        vec![(requester, vec![0xE4, 0x58, 1, 7, 55, 45])]
     );
     // A v7+ 0x53 forwards its connect-options and the requester's own User
     // Hash — the OP_KAD_FWTCPCHECK_ACK (TCP-link ack) signal plus the
@@ -68,7 +68,7 @@ fn a_v7_firewall_check_forwards_connect_options_for_the_tcp_link_ack() {
         vec![
             KadEvent::HadContact { from: requester },
             KadEvent::DialBackRequested {
-                requester: Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 7), 4662),
+                requester: Ipv4Endpoint::new(host_ip(7), 4662),
                 connect_options: Some(0x03),
                 user_hash: Some(UserHash::from_bytes([0xAB; UserHash::BYTE_LEN])),
             }
@@ -229,7 +229,7 @@ fn a_windowed_0x58_counts_but_an_unrequested_one_is_diagnosed() {
     assert_eq!(
         events(&drain(|| node.poll_output())),
         vec![KadEvent::AddressObserved {
-            observer: Ipv4Addr::new(203, 0, 113, 1),
+            observer: host_ip(1),
             address: Ipv4Addr::new(7, 100, 51, 198),
         }]
     );
@@ -250,20 +250,43 @@ fn a_windowed_0x58_counts_but_an_unrequested_one_is_diagnosed() {
 }
 
 #[test]
-fn a_0x59_ack_proves_a_connect_back_leg_unguarded() {
+fn a_0x59_ack_is_counted_only_from_a_checked_ip_within_its_window() {
     let mut node = self_checking_node();
-    // aMule's `ProcessFirewalledAckResponse` counts the legacy UDP ack with no
-    // window guard — any well-formed 0x59 proves a reachability leg.
-    node.handle_datagram(T0, endpoint(3, 5000), &[0xE4, 0x59]);
-    assert_eq!(
-        events(&drain(|| node.poll_output())),
-        vec![
-            KadEvent::HadContact {
-                from: endpoint(3, 5000)
-            },
-            KadEvent::ReachabilityConnectBack
-        ]
+    // A v6 contact gets the legacy 0x50, whose connect-back ack is the 0x59.
+    hello_from(&mut node, T0, 1, 6);
+    drain(|| node.poll_output());
+    let proves_a_leg =
+        |outputs: &[KadOutput]| events(outputs).contains(&KadEvent::ReachabilityConnectBack);
+
+    // The asked contact's ack, from any of its ports, proves a leg.
+    node.handle_datagram(T0, endpoint(1, 9999), &[0xE4, 0x59]);
+    assert!(proves_a_leg(&drain(|| node.poll_output())));
+
+    // An ack from an IP we never asked proves nothing, and says so: aMule counts
+    // it, so two spoofed datagrams would read Kad TCP open (ADR-0058).
+    node.handle_datagram(T0, endpoint(9, 5000), &[0xE4, 0x59]);
+    let outputs = drain(|| node.poll_output());
+    assert!(!proves_a_leg(&outputs));
+    assert!(matches!(
+        diagnostics(&outputs).as_slice(),
+        [KadNodeDiagnostic::UnrequestedFirewallResponse { opcode: 0x59, .. }]
+    ));
+
+    // The asked contact's own ack at the 180 s boundary is already late.
+    node.handle_datagram(
+        T0 + KadNode::FIREWALL_CHECK_WINDOW,
+        endpoint(1, 9999),
+        &[0xE4, 0x59],
     );
+    let outputs = drain(|| node.poll_output());
+    assert!(
+        !proves_a_leg(&outputs),
+        "the window boundary is already expired"
+    );
+    assert!(matches!(
+        diagnostics(&outputs).as_slice(),
+        [KadNodeDiagnostic::UnrequestedFirewallResponse { opcode: 0x59, .. }]
+    ));
 }
 
 #[test]
@@ -274,14 +297,14 @@ fn a_tcp_ack_is_counted_only_within_its_check_window() {
 
     // An OP_KAD_FWTCPCHECK_ACK from the checked IP proves a leg (core bridges it
     // here from the Kad-ignorant peer session, carrying the peer's IP).
-    node.consume_tcp_firewall_ack(T0, Ipv4Addr::new(203, 0, 113, 1));
+    node.consume_tcp_firewall_ack(T0, host_ip(1));
     assert_eq!(
         events(&drain(|| node.poll_output())),
         vec![KadEvent::ReachabilityConnectBack]
     );
 
     // An ack from an unchecked IP is discarded, and says so...
-    let stranger = Ipv4Addr::new(203, 0, 113, 9);
+    let stranger = host_ip(9);
     node.consume_tcp_firewall_ack(T0, stranger);
     assert_eq!(
         events(&drain(|| node.poll_output())),
@@ -290,7 +313,7 @@ fn a_tcp_ack_is_counted_only_within_its_check_window() {
         )]
     );
     // ...and so is one at the 180 s window boundary (strict `<`).
-    let helper = Ipv4Addr::new(203, 0, 113, 1);
+    let helper = host_ip(1);
     node.consume_tcp_firewall_ack(T0 + KadNode::FIREWALL_CHECK_WINDOW, helper);
     assert_eq!(
         events(&drain(|| node.poll_output())),
@@ -702,7 +725,7 @@ fn a_mutual_firewall_check_earns_the_0x58_but_no_dial_back() {
     let outputs = drain(|| node.poll_output());
     assert_eq!(
         datagrams(&outputs),
-        vec![(requester, vec![0xE4, 0x58, 7, 113, 0, 203])],
+        vec![(requester, vec![0xE4, 0x58, 1, 7, 55, 45])],
         "the observed-IP answer still goes out"
     );
     assert!(
@@ -741,7 +764,7 @@ fn every_emitted_check_names_its_helper_and_window() {
     assert_eq!(
         asked,
         vec![KadEvent::ReachabilityCheckAsked {
-            helper: Ipv4Addr::new(203, 0, 113, 1),
+            helper: host_ip(1),
             helper_id: id(1),
             helper_udp_port: 4701,
             connect_options: Some(0),

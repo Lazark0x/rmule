@@ -5,6 +5,7 @@
 //! directory would offer and asks, and the question is asked here. `x` on a
 //! listed directory asks, naming the count, before it stops sharing it.
 
+use std::cell::Cell;
 use std::path::PathBuf;
 
 use ratatui::Frame;
@@ -17,11 +18,14 @@ use rmule_core::{CoreCommand, DirectoryRefusal, DirectoryRole, ScanCommand};
 use super::{Row, SettingsView};
 use crate::action::Action;
 use crate::form::Field;
+use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
-use crate::views::modal::Modal;
-use crate::words::scan::{refusal, remove_confirm, role_words, state_words, under_words};
+use crate::views::modal::{Modal, scroll_key};
+use crate::words::Sentence;
+use crate::words::app::{self as words, AddDirectoryRefusal};
+use crate::words::scan::{remove_confirm, role_words, state_words, under_words};
 use crate::wrap::{clamp_u16, wrapped_lines};
 
 /// The section's heading.
@@ -110,7 +114,9 @@ impl SettingsView {
                 role: DirectoryRole::DownloadDirectory,
                 ..
             }) => {
-                self.form.error = Some(refusal(&DirectoryRefusal::DownloadDirectory));
+                self.form.error = Some(words::shared_directory_refusal(
+                    &DirectoryRefusal::DownloadDirectory,
+                ));
                 ViewOutcome::Redraw
             }
             Some(Slot::Dir {
@@ -118,6 +124,7 @@ impl SettingsView {
                 role: DirectoryRole::Added,
             }) => {
                 self.removing = Some(dir.clone());
+                self.modal_viewport.take();
                 ViewOutcome::Redraw
             }
             _ => ViewOutcome::Ignored,
@@ -140,21 +147,25 @@ impl SettingsView {
                 self.removing = None;
                 ViewOutcome::Redraw
             }
-            KeyCode::Char('q') | KeyCode::Char('j' | 'k' | 'g' | 'G' | 'x') => ViewOutcome::Redraw,
+            code @ (KeyCode::Char('j' | 'k' | 'g' | 'G') | KeyCode::Up | KeyCode::Down) => {
+                scroll_key(&mut self.modal_viewport, code);
+                ViewOutcome::Redraw
+            }
+            KeyCode::Char('q' | 'x') => ViewOutcome::Redraw,
             _ => ViewOutcome::Ignored,
         }
     }
 }
 
 /// The typed path, if it can be sent: core does every other check.
-fn directory_to_add(text: &str) -> Result<PathBuf, String> {
+fn directory_to_add(text: &str) -> Result<PathBuf, Sentence> {
     let text = text.trim();
     if text.is_empty() {
-        return Err(crate::words::scan::ADD_EMPTY.to_string());
+        return Err(words::add_directory_refusal(AddDirectoryRefusal::Empty));
     }
     let path = PathBuf::from(text);
     if !path.is_absolute() {
-        return Err(crate::words::scan::ADD_RELATIVE.to_string());
+        return Err(words::add_directory_refusal(AddDirectoryRefusal::Relative));
     }
     Ok(path)
 }
@@ -163,27 +174,30 @@ fn directory_to_add(text: &str) -> Result<PathBuf, String> {
 pub(super) fn draw_remove(
     frame: &mut Frame,
     area: Rect,
-    dir: &std::path::Path,
+    (dir, viewport): (&std::path::Path, &Cell<Viewport>),
     state: &UiState,
     theme: &Theme,
 ) {
     let (question, consequence) = remove_confirm(dir, state.shared_under(dir));
     let width = clamp_u16(64).min(area.width);
-    let text_w = usize::from(width).saturating_sub(4).max(1);
-    let mut lines = wrapped_lines(&question, text_w, Style::new().fg(theme.fg));
-    lines.push(Line::from(""));
-    lines.extend(wrapped_lines(&consequence, text_w, theme.dim_text()));
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("y", Style::new().fg(theme.bad).add_modifier(Modifier::BOLD)),
-        Span::styled(" stop sharing    ", Style::new().fg(theme.fg)),
-        Span::styled("n", Style::new().fg(theme.accent)),
-        Span::styled(" keep it", Style::new().fg(theme.fg)),
-    ]));
+    let lines = |width: u16| {
+        let text_w = usize::from(width).saturating_sub(4).max(1);
+        let mut lines = wrapped_lines(&question, text_w, Style::new().fg(theme.fg));
+        lines.push(Line::from(""));
+        lines.extend(wrapped_lines(&consequence, text_w, theme.dim_text()));
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("y", Style::new().fg(theme.bad).add_modifier(Modifier::BOLD)),
+            Span::styled(" stop sharing    ", Style::new().fg(theme.fg)),
+            Span::styled("n", Style::new().fg(theme.accent)),
+            Span::styled(" keep it", Style::new().fg(theme.fg)),
+        ]));
+        lines
+    };
     Modal::new(crate::words::scan::REMOVE_TITLE, theme)
         .danger(theme)
         .padded()
-        .draw(frame, area, width, theme, lines);
+        .draw_scrolled(frame, area, width, theme, viewport, lines);
 }
 
 #[cfg(test)]

@@ -28,11 +28,13 @@ use ratatui::widgets::{Block, Paragraph};
 
 use super::sort::{SharedColumn, SharedLine, SharedTable};
 use super::{GUTTER_W, Pane, SharedView, num_style, pane_border, render_empty, table_widths};
+use crate::row_selection::viewport;
 use crate::row_selection::{gutter, mark_row};
 use crate::state::{UiState, withheld_words};
 use crate::table_sort::{SortedTable, TableSort, arrow_floors, header_label, header_widths};
 use crate::theme::Theme;
-use crate::views::{DrawnRows, day, human_size, say_gave_way, scroll_to_show};
+use crate::views::{DrawnRows, day, human_size, say_gave_way};
+use crate::words::serve::PARTIAL;
 use crate::wrap::{Column, TableColumns, clamp_u16, column_lines, gave_way};
 
 /// Fixed widths of the files table's non-name columns: State · Size ·
@@ -156,7 +158,7 @@ fn file_columns(line: &SharedLine, widths: &[usize], theme: &Theme) -> Vec<Colum
         None => (crate::words::units::short_hash(line.file_hash), dim),
     };
     let state = line.withheld.map_or_else(
-        || Column::left("shared", dim),
+        || Column::left(if line.partial { PARTIAL } else { "shared" }, dim),
         |held| {
             Column::left(
                 format!("{} since {}", withheld_words(held.reason), day(held.since)),
@@ -240,16 +242,19 @@ impl SharedView {
         let bare_inner = Block::bordered().inner(area);
         let floors = arrow_floors(&self.sort, &FILE_COLS, 0);
         let headers = header_widths(&self.sort);
-        let widths = table_widths(
-            bare_inner,
-            &TableColumns {
-                floors: &floors,
-                headers: &headers,
-                flex: 0,
-                wants: &[],
-                give_way: &FILE_GIVE_WAY,
-            },
-        );
+        let widths_at = |bar: bool| {
+            table_widths(
+                bare_inner,
+                bar,
+                &TableColumns {
+                    floors: &floors,
+                    headers: &headers,
+                    flex: 0,
+                    wants: &[],
+                    give_way: &FILE_GIVE_WAY,
+                },
+            )
+        };
 
         // Header line (spec §3.5): file count + total size.
         let total = total_size(&lines_in_order).map_or_else(|| "—".to_string(), human_size);
@@ -257,7 +262,7 @@ impl SharedView {
             " Shared Files · {} · {total} ",
             crate::words::scan::files(lines_in_order.len())
         );
-        let hint = if state.shared.is_empty() {
+        let hint = if lines_in_order.is_empty() {
             ""
         } else {
             " s sort  S reverse "
@@ -283,19 +288,13 @@ impl SharedView {
             render_empty(frame, inner, &empty, theme);
             return;
         }
-        say_gave_way(
-            frame,
-            area,
-            &gave_way(SharedTable::COLUMNS.iter().map(|c| c.label), &widths),
-            theme,
-        );
         // The selected row's values that gave way, in full: a hidden
         // column's value, and a counter shortened to fit —
         // the drop loses nothing, it moves off the row onto this line.
-        let off_screen = lines_in_order
-            .get(self.files_selected)
-            .map_or_else(Vec::new, |line| {
-                let values: Vec<String> = file_columns(line, &widths, theme)
+        let selected = lines_in_order.get(self.files_selected);
+        let off_screen_at = |widths: &[usize]| {
+            selected.map_or_else(Vec::new, |line| {
+                let values: Vec<String> = file_columns(line, widths, theme)
                     .into_iter()
                     .map(|column| column.text)
                     .collect();
@@ -305,40 +304,68 @@ impl SharedView {
                         .take(LEADING_COLUMNS)
                         .map(|c| c.label),
                     &values,
-                    &widths,
+                    widths,
                 );
-                parts.extend(selected_detail(line, &widths));
+                parts.extend(selected_detail(line, widths));
                 parts
-            });
-        let inner = crate::views::off_screen::draw(frame, inner, &off_screen, theme);
+            })
+        };
+        let rows_at = |widths: &[usize]| -> Vec<Vec<Line<'static>>> {
+            lines_in_order
+                .iter()
+                .enumerate()
+                .map(|(idx, line)| {
+                    files_row(line, widths, idx == self.files_selected, focused, theme)
+                })
+                .collect()
+        };
+        let bar = viewport::needs_bar(lines_in_order.len(), inner.height.saturating_sub(1), || {
+            let widths = widths_at(false);
+            let room = inner
+                .height
+                .saturating_sub(crate::views::off_screen::height(
+                    inner,
+                    &off_screen_at(&widths),
+                ))
+                .saturating_sub(clamp_u16(files_header(&widths, &self.sort, theme).len()));
+            rows_at(&widths).iter().map(Vec::len).sum::<usize>() > usize::from(room)
+        });
+        let widths = widths_at(bar);
+        let rows = rows_at(&widths);
+        let inner = crate::views::off_screen::draw(frame, inner, &off_screen_at(&widths), theme);
+        let (list, bar) = viewport::split(inner, bar);
 
         let mut lines = files_header(&widths, &self.sort, theme);
-        let header_h = clamp_u16(lines.len()).min(inner.height);
+        let header_h = clamp_u16(lines.len()).min(list.height);
         self.header_area = Rect::new(
-            inner.x.saturating_add(clamp_u16(GUTTER_W)),
-            inner.y,
-            inner.width.saturating_sub(clamp_u16(GUTTER_W)),
+            list.x.saturating_add(clamp_u16(GUTTER_W)),
+            list.y,
+            list.width.saturating_sub(clamp_u16(GUTTER_W)),
             header_h,
         );
         self.header_cols.clone_from(&widths);
 
-        let top_h = header_h;
-
-        let rows: Vec<Vec<Line<'static>>> = lines_in_order
-            .iter()
-            .enumerate()
-            .map(|(idx, line)| files_row(line, &widths, idx == self.files_selected, focused, theme))
-            .collect();
         let heights: Vec<u16> = rows.iter().map(|row| clamp_u16(row.len())).collect();
-        let room = inner.height.saturating_sub(top_h);
-        self.files_offset = scroll_to_show(self.files_offset, self.files_selected, &heights, room);
-        lines.extend(rows.into_iter().skip(self.files_offset).flatten());
+        let room = list.height.saturating_sub(header_h);
+        let first = self
+            .files_viewport
+            .follow(self.files_selected, heights.len(), room, |index| {
+                heights[index]
+            });
+        lines.extend(rows.into_iter().skip(first).flatten());
         self.file_rows = DrawnRows::new(
-            Rect::new(inner.x, inner.y + top_h, inner.width, room),
-            self.files_offset,
-            heights[self.files_offset..].to_vec(),
+            Rect::new(list.x, list.y + header_h, list.width, room),
+            first,
+            heights[first..].to_vec(),
         );
-        frame.render_widget(Paragraph::new(lines), inner);
+        frame.render_widget(Paragraph::new(lines), list);
+        let foot = self.files_viewport.draw(frame, area, bar, theme);
+        say_gave_way(
+            frame,
+            foot,
+            &gave_way(SharedTable::COLUMNS.iter().map(|c| c.label), &widths),
+            theme,
+        );
     }
 }
 

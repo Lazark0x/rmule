@@ -287,6 +287,10 @@ fn connection_toml(event: &ConnectionEvent) -> String {
         ConnectionEvent::SecureIdentFailed { reason } => {
             format!("type = \"PeerSecureIdentFailed\"\nreason = \"{reason:?}\"\n")
         }
+        ConnectionEvent::ClientIdOffered { client_id, server } => format!(
+            "type = \"PeerClientIdOffered\"\nclient_id = {}\nserver = \"{server}\"\n",
+            client_id.as_u32()
+        ),
     }
 }
 
@@ -335,11 +339,16 @@ fn requester_toml(event: &RequesterEvent) -> String {
             "type = \"QueueProgress\"\nfile_hash = \"{}\"\nprevious_rank = {previous_rank}\nnew_rank = {new_rank}\n",
             file_hash.to_hex_upper(),
         ),
-        RequesterEvent::QueueRejected { file_hash } => format!(
-            "type = \"QueueRejected\"\nfile_hash = \"{}\"\n",
+        RequesterEvent::SlotAsked { file_hash } => format!(
+            "type = \"SlotAsked\"\nfile_hash = \"{}\"\n",
             file_hash.to_hex_upper(),
         ),
-        RequesterEvent::SlotGranted { file_hash } => format!(
+        RequesterEvent::Requeued { file_hash } => format!(
+            "type = \"Requeued\"\nfile_hash = \"{}\"\n",
+            file_hash.to_hex_upper(),
+        ),
+        RequesterEvent::SlotOffered => "type = \"SlotOffered\"\n".to_owned(),
+        RequesterEvent::SlotGranted { file_hash, .. } => format!(
             "type = \"SlotGranted\"\nfile_hash = \"{}\"\n",
             file_hash.to_hex_upper(),
         ),
@@ -535,9 +544,9 @@ fn notice_toml(event: &NoticeEvent) -> String {
 pub(crate) const fn slot_release_reason_label(reason: SlotReleaseReason) -> &'static str {
     match reason {
         SlotReleaseReason::DownloadComplete => "DownloadComplete",
-        SlotReleaseReason::QueueRejected => "QueueRejected",
         SlotReleaseReason::PeerClosed => "PeerClosed",
         SlotReleaseReason::ProtocolViolation => "ProtocolViolation",
+        SlotReleaseReason::FileNotFound => "FileNotFound",
         SlotReleaseReason::Stale => "Stale",
         SlotReleaseReason::Cancelled => "Cancelled",
     }

@@ -17,8 +17,9 @@ pub const NOT_SAVED: Sentence =
     Sentence::fixed("could not save the setting: the store refused (see the run log)");
 
 /// A Settings edit Core Settings refused for its value: nothing was written,
-/// and the sentence says what the key takes, or for a download dir the share
-/// guards refuse, why it may not be shared.
+/// and the sentence says what the key takes, for a download dir the share
+/// guards refuse, why it may not be shared, and for a Temp Directory, why it was
+/// not taken.
 #[must_use]
 pub fn setting_refused(refusal: &rmule_core::SettingRefusal) -> Sentence {
     use rmule_core::SettingRefusal as R;
@@ -32,6 +33,12 @@ pub fn setting_refused(refusal: &rmule_core::SettingRefusal) -> Sentence {
             return Sentence::owned(format!(
                 "not saved: everything under the download dir is shared, and {}",
                 super::scan::download_dir_refusal(guard)
+            ));
+        }
+        R::TempDirRefused(guard) => {
+            return Sentence::owned(format!(
+                "not saved as the Temp Directory: {}",
+                super::scan::temp_dir_refusal(guard)
             ));
         }
         R::NicknameUnfit => "not saved: the nickname must not be blank or hold control characters",

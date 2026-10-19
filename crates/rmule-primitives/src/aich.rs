@@ -7,8 +7,9 @@
 //! file identity (ADR-0038).
 //!
 //! Two directions are supported, sharing one tree shape:
-//! - **build** ([`AichHashSet::from_bytes`]) — compute the whole tree (and its
-//!   master root) from a complete file's bytes, and serialize a part's
+//! - **build** ([`AichHashSet::from_bytes`], or [`AichHashSet::from_reader`]
+//!   one block at a time) — compute the whole tree (and its master root) from
+//!   a complete file's bytes, and serialize a part's
 //!   [recovery data](AichHashSet::create_part_recovery_data) (answer side).
 //! - **verify** ([`AichHashSet::verify_part`]) — read a part's recovery data,
 //!   confirm it chains to a *trusted* master root, then localize which 180 KiB
@@ -19,6 +20,9 @@
 //! commit `377ec8d9`; the behaviour is cited and rewritten in idiomatic Rust,
 //! never ported (ADR-0004/0013). SHA-1 comes from the `sha1` crate wrapped
 //! behind rmule types (ADR-0012).
+
+use std::convert::Infallible;
+use std::io::{self, Read};
 
 use crate::{AichRootHash, ED2K_PART_SIZE, WireReader, WireTruncated};
 use sha1::{Digest, Sha1};
@@ -31,8 +35,8 @@ const HASHSIZE: usize = 20;
 pub const EMBLOCKSIZE: u64 = 184_320;
 
 /// Why reading a peer's AICH recovery data failed. All variants are
-/// non-terminal at the session level (the part falls back to MD4 retire-all and
-/// the peer connection stays open, ADR-0038).
+/// non-terminal at the session level (the part takes the path of a part with no
+/// trusted root and the peer connection stays open, ADR-0038).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum AichRecoveryError {
     /// The recovery data was truncated, carried an out-of-range part, or a hash
@@ -53,6 +57,15 @@ impl From<WireTruncated> for AichRecoveryError {
     fn from(_: WireTruncated) -> Self {
         Self::Malformed
     }
+}
+
+/// The AICH hash of one block of at most [`EMBLOCKSIZE`] bytes: a leaf of the
+/// tree, the SHA-1 a part's recovery data names that block by. A part that
+/// failed with no trusted root compares its cells' hashes across the refetch
+/// (ADR-0117).
+#[must_use]
+pub fn aich_block_hash(block: &[u8]) -> [u8; HASHSIZE] {
+    sha1_bytes(block)
 }
 
 /// SHA-1 of a byte run — one AICH leaf hash.
@@ -123,36 +136,59 @@ impl AichHashTree {
     /// Recursively build the subtree covering `data` (aMule `FindHash` split +
     /// `SetBlockHash` leaves + `ReCalculateHash` fold, done eagerly top-down).
     fn build(data: &[u8], is_left_branch: bool) -> Self {
-        let data_size = data.len() as u64;
+        let leaf_hash = &mut |start: u64, size: u64| {
+            Ok::<_, Infallible>(sha1_bytes(&data[start as usize..(start + size) as usize]))
+        };
+        let Ok(tree) = Self::build_over(0, data.len() as u64, is_left_branch, leaf_hash);
+        tree
+    }
+
+    /// Build the subtree covering the `data_size` bytes at file offset `start`,
+    /// taking each leaf block's hash from `leaf_hash(start, size)`. The split
+    /// rule alone shapes the tree, so a tree over a file too large to hold in
+    /// memory is the same shape as one built from its bytes. Leaves are asked
+    /// left to right, each starting where the one before ended, and none is
+    /// longer than [`EMBLOCKSIZE`]; the first error a leaf answers ends the
+    /// build.
+    fn build_over<E>(
+        start: u64,
+        data_size: u64,
+        is_left_branch: bool,
+        leaf_hash: &mut impl FnMut(u64, u64) -> Result<[u8; HASHSIZE], E>,
+    ) -> Result<Self, E> {
         let base_size = Self::base_size_for(data_size);
 
         if data_size <= base_size {
-            return Self {
+            return Ok(Self {
                 data_size,
                 base_size,
                 is_left_branch,
-                hash: Some(sha1_bytes(data)),
+                hash: Some(leaf_hash(start, data_size)?),
                 left: None,
                 right: None,
-            };
+            });
         }
 
         let n_left = Self::split_left_size(data_size, base_size, is_left_branch);
-        let (left_data, right_data) = data.split_at(n_left as usize);
-        let left = Box::new(Self::build(left_data, true));
-        let right = Box::new(Self::build(right_data, false));
+        let left = Box::new(Self::build_over(start, n_left, true, leaf_hash)?);
+        let right = Box::new(Self::build_over(
+            start + n_left,
+            data_size - n_left,
+            false,
+            leaf_hash,
+        )?);
         let hash = sha1_pair(
             &left.hash.expect("built leaf/node has a hash"),
             &right.hash.expect("built leaf/node has a hash"),
         );
-        Self {
+        Ok(Self {
             data_size,
             base_size,
             is_left_branch,
             hash: Some(hash),
             left: Some(left),
             right: Some(right),
-        }
+        })
     }
 
     /// A childless node covering `data_size` bytes with no hash yet. The receive
@@ -369,6 +405,27 @@ impl AichHashSet {
         }
     }
 
+    /// Build the same tree as [`Self::from_bytes`] over the `file_size` bytes
+    /// `reader` yields, read one leaf block at a time into one buffer of at
+    /// most [`EMBLOCKSIZE`] bytes: a file of any size is hashed holding one
+    /// block of it.
+    ///
+    /// # Errors
+    ///
+    /// The reader's first error; a reader that ends before `file_size` bytes
+    /// is [`io::ErrorKind::UnexpectedEof`].
+    pub fn from_reader(mut reader: impl Read, file_size: u64) -> io::Result<Self> {
+        let mut block = vec![0; EMBLOCKSIZE.min(file_size) as usize];
+        let leaf_hash = &mut |_start: u64, size: u64| {
+            let leaf = &mut block[..size as usize];
+            reader.read_exact(leaf)?;
+            Ok::<_, io::Error>(sha1_bytes(leaf))
+        };
+        Ok(Self {
+            tree: AichHashTree::build_over(0, file_size, true, leaf_hash)?,
+        })
+    }
+
     /// The file's AICH master root — the root of the hash tree.
     #[must_use]
     pub fn master_root(&self) -> AichRootHash {
@@ -382,7 +439,9 @@ impl AichHashSet {
     /// for a file too small to have an AICH tree (one block or less) or an
     /// out-of-range part. Wire layout:
     /// `[u16 count16][(u16 ident, hash20)…][u16 count32][(u32 ident, hash20)…]`,
-    /// with 32-bit identifiers only for large (> 4 GiB) files.
+    /// with 32-bit identifiers only for a large file (aMule
+    /// `bUse32BitIdentifier = IsLargeFile()`, `SHAHashSet.cpp:495`; see
+    /// [`is_large_file`](crate::is_large_file)).
     #[must_use]
     pub fn create_part_recovery_data(&self, part_start_pos: u64) -> Option<Vec<u8>> {
         let file_size = self.tree.data_size;
@@ -393,7 +452,7 @@ impl AichHashSet {
         let level = self.tree.find_level(part_start_pos, part_size, 0)?;
         let n_blocks = part_size.div_ceil(EMBLOCKSIZE);
         let n_hashs = (u64::from(level) - 1) + n_blocks;
-        let use_32 = is_large_file(file_size);
+        let use_32 = crate::is_large_file(file_size);
 
         let mut out = Vec::new();
         if use_32 {
@@ -413,8 +472,8 @@ impl AichHashSet {
     /// `part_bytes` do not match their AICH block hash — the corrupt blocks
     /// (aMule `CAICHHashSet::ReadRecoveryData` + block comparison). An empty
     /// result means the whole part is intact. `part_bytes` must be the complete
-    /// assembled part. Errors are non-terminal (ADR-0038): the caller falls back
-    /// to MD4 retire-all.
+    /// assembled part. Errors are non-terminal (ADR-0038): the caller takes the
+    /// path of a part with no trusted root.
     pub fn verify_part(
         file_size: u64,
         part_start_pos: u64,
@@ -487,13 +546,6 @@ impl AichHashSet {
     }
 }
 
-/// Whether a file needs 32-bit AICH hash identifiers — eMule ties this to large
-/// (> 4 GiB) files (`IsLargeFile`). Confirm the exact `OLD_MAX_FILE_SIZE`
-/// constant before relying on the 32-bit path.
-fn is_large_file(file_size: u64) -> bool {
-    file_size > 0xFFFF_FFFF
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,6 +582,53 @@ mod tests {
         assert_eq!(root.as_bytes(), &expected);
     }
 
+    /// A reader of `bytes` that notes the longest buffer it was asked to fill.
+    struct Watched<'a> {
+        bytes: &'a [u8],
+        at: usize,
+        longest: usize,
+    }
+
+    impl Read for Watched<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.longest = self.longest.max(buf.len());
+            let n = buf.len().min(self.bytes.len() - self.at);
+            buf[..n].copy_from_slice(&self.bytes[self.at..self.at + n]);
+            self.at += n;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn a_tree_read_one_block_at_a_time_is_the_tree_built_from_the_bytes() {
+        // Past one part, so part nodes split into blocks, with a last block
+        // shorter than EMBLOCKSIZE.
+        let size = (ED2K_PART_SIZE + EMBLOCKSIZE + 5) as usize;
+        let bytes: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+        let built = AichHashSet::from_bytes(&bytes);
+        let mut reader = Watched {
+            bytes: &bytes,
+            at: 0,
+            longest: 0,
+        };
+
+        let read = AichHashSet::from_reader(&mut reader, size as u64).unwrap();
+        assert_eq!(read.master_root(), built.master_root());
+        assert_eq!(
+            read.create_part_recovery_data(ED2K_PART_SIZE),
+            built.create_part_recovery_data(ED2K_PART_SIZE)
+        );
+        assert_eq!(reader.at, size, "every byte is read once");
+        assert!(
+            reader.longest <= EMBLOCKSIZE as usize,
+            "no read is longer than a block: {}",
+            reader.longest
+        );
+
+        let short = AichHashSet::from_reader(&bytes[..size - 1], size as u64);
+        assert_eq!(short.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+    }
+
     #[test]
     fn recovery_data_for_a_single_part_file_has_one_hash_per_block() {
         // A 3-block file is one AICH part at the tree root (level 1, so no
@@ -548,6 +647,50 @@ mod tests {
         );
         // 2 (count16) + 3 × (2 ident + 20 hash) + 2 (count32).
         assert_eq!(rec.len(), 2 + 3 * (2 + HASHSIZE) + 2);
+    }
+
+    #[test]
+    fn a_file_one_byte_past_old_max_file_size_writes_32_bit_identifiers() {
+        // aMule `CreatePartRecoveryData` keys the identifier width on
+        // `IsLargeFile()` (`SHAHashSet.cpp:495`), strictly past
+        // OLD_MAX_FILE_SIZE. A large file writes `[u16 0]`, `[u16 n]` and n ×
+        // (u32 ident, hash20); any other file writes `[u16 n]`, n × (u16
+        // ident, hash20) and `[u16 0]`. Part 0 of either size sits ten levels
+        // down (442 or 441 parts, then 221, 111, 56, 28, 14, 7, 4, 2, 1 under
+        // the left-branch split), so n is 9 sibling hashes plus its 53 block
+        // hashes. Leaf hashes are synthetic: the width and the count follow
+        // from the tree's shape alone, and 4 GiB of bytes would not.
+        let synthetic = |start: u64, size: u64| {
+            Ok::<_, Infallible>(sha1_bytes(
+                &[start.to_le_bytes(), size.to_le_bytes()].concat(),
+            ))
+        };
+        let part_zero = |file_size| {
+            let Ok(tree) = AichHashTree::build_over(0, file_size, true, &mut { synthetic });
+            AichHashSet { tree }
+                .create_part_recovery_data(0)
+                .expect("a multi-part file has recovery data")
+        };
+        let count = 9 + 53;
+        let word = |data: &[u8], at: usize| u16::from_le_bytes([data[at], data[at + 1]]);
+
+        let large = part_zero(crate::OLD_MAX_FILE_SIZE + 1);
+        assert_eq!(word(&large, 0), 0, "no 16-bit hashes");
+        assert_eq!(usize::from(word(&large, 2)), count);
+        assert_eq!(
+            large.len(),
+            4 + count * (4 + HASHSIZE),
+            "nothing trails the 32-bit list"
+        );
+
+        let old_max = part_zero(crate::OLD_MAX_FILE_SIZE);
+        assert_eq!(usize::from(word(&old_max, 0)), count);
+        assert_eq!(old_max.len(), 2 + count * (2 + HASHSIZE) + 2);
+        assert_eq!(word(&old_max, old_max.len() - 2), 0, "no 32-bit hashes");
+
+        // Both name the same first tree position, in their own width.
+        let ident32 = u32::from_le_bytes(large[4..8].try_into().expect("four bytes"));
+        assert_eq!(ident32, u32::from(word(&old_max, 2)));
     }
 
     #[test]

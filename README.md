@@ -226,6 +226,7 @@ Each command opens the data directory, does one thing and exits.
 ```sh
 rmule-cli identity show                          # user hash, nickname, eD2k port
 rmule-cli config set-download-dir ~/Downloads    # where finished files go
+rmule-cli config set-temp-dir ~/rmule-parts      # where new downloads fill, until they finish
 rmule-cli config show
 rmule-cli server add 203.0.113.5:4661            # add a server
 rmule-cli server list

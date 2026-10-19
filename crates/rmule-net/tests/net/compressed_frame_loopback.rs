@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::fixture::peer_endpoint;
 use rmule_net::peer::{ConnectOptions, Connection};
 use rmule_peer::{ConnectionEvent, PeerCommand, PeerEvent, RequesterCommand, RequesterEvent};
-use rmule_primitives::{ClientId, FileHash, PeerSource, SourceSighting, UserHash};
+use rmule_primitives::{ClientId, FileHash, Informant, PeerSource, SourceClaim, UserHash};
 use rmule_testkit::peer_session::loopback_ctx;
 use rmule_testkit::{FakePeer, PeerScript, SourcesPolicy};
 
@@ -24,9 +24,9 @@ async fn packed_answer_sources_inflates_to_sources_received_over_real_connection
         0x13, 0x57, 0x9B, 0xDF, 0x24, 0x68, 0xAC, 0xE0, 0x31, 0x75, 0xB9, 0xFD, 0x42, 0x86, 0xCA,
         0x0E,
     ]);
-    let sources: Vec<SourceSighting> = (0..20)
+    let sources: Vec<SourceClaim> = (0..20)
         .map(|_| {
-            SourceSighting::new(
+            SourceClaim::new(
                 PeerSource::new(ClientId::from_u32(0xC0A8_0101), 4662),
                 Some(source_hash),
                 None,
@@ -79,7 +79,15 @@ async fn packed_answer_sources_inflates_to_sources_received_over_real_connection
     let (received_hash, received_sources) = received.expect("SourcesReceived arrived");
     assert_eq!(received_hash, file_hash);
     assert_eq!(received_sources.len(), sources.len());
-    assert_eq!(received_sources, sources);
+    let answerer = Informant::Party(endpoint.ip());
+    let stated: Vec<_> = sources
+        .iter()
+        .map(|sent| sent.stated_by(answerer))
+        .collect();
+    assert_eq!(
+        received_sources, stated,
+        "each is the answering peer's word"
+    );
 
     conn.shutdown().await.expect("shutdown");
     let _ = peer_task.await;

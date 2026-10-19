@@ -31,6 +31,11 @@ fn reason_events() -> Vec<CoreEvent> {
             part_index: 5,
             reason: crate::PartReleaseReason::PeerRetired(crate::PeerRetirementReason::SlotTimeout),
         }),
+        CoreEvent::Download(DownloadEvent::KadAichRootContested {
+            download_id,
+            kad_root: rmule_primitives::AichRootHash::from_bytes([0xA1; 20]),
+            voted_root: rmule_primitives::AichRootHash::from_bytes([0xB2; 20]),
+        }),
         CoreEvent::Serve(ServeEvent::FileWithheld {
             file_hash: file_hash(0xAB),
             reason: crate::WithheldReason::Unreadable(std::io::ErrorKind::PermissionDenied),
@@ -92,7 +97,35 @@ fn reason_events() -> Vec<CoreEvent> {
             policy: Some(crate::ObfuscationPolicy::Required),
         },
         CoreEvent::ObfuscationPolicyChanged { policy: None },
+        CoreEvent::MappingReleaseKept {
+            mapping: listener_row(),
+            protocol: crate::port_mapping::MappingProtocol::Upnp,
+            external_port: 4662,
+            kept: crate::port_mapping::ReleaseKept::ForwardsElsewhere(peer_at(10, 77, 0, 5, 4662)),
+        },
+        CoreEvent::MappingReleaseKept {
+            mapping: listener_row(),
+            protocol: crate::port_mapping::MappingProtocol::Upnp,
+            external_port: 53906,
+            kept: crate::port_mapping::ReleaseKept::Unchecked(
+                crate::port_mapping::MappingError::Refused {
+                    protocol: crate::port_mapping::MappingProtocol::Upnp,
+                    refusal: crate::port_mapping::MappingRefusal::UnknownCode(501),
+                    hold_off: None,
+                },
+            ),
+        },
     ]
+}
+
+/// The eD2k listener's IPv4 mapping row.
+const fn listener_row() -> crate::port_mapping::DesiredMapping {
+    crate::port_mapping::DesiredMapping {
+        role: crate::SocketRole::Tcp,
+        family: rmule_primitives::AddressFamily::V4,
+        internal_port: 4662,
+        pinhole: None,
+    }
 }
 
 /// The bytes a fixed session's records leave in the file at `level`, each
@@ -119,7 +152,7 @@ const PINNED_LEAN: &str = r#" INFO run_log: server.connected server=203.0.113.7:
  INFO run_log: serve.serving_started listen_addr=203.0.113.5:4662
  INFO run_log: download.queued id=3
  INFO run_log: download.peer_selected id=3
- INFO run_log: serve.upload_slot_granted
+ INFO run_log: serve.upload_slot_granted road=linked
  INFO run_log: scan.declined
  INFO run_log: identity.secured_mismatch
  INFO run_log: peer_reach.routed route=direct
@@ -144,6 +177,7 @@ const PINNED_LEAN: &str = r#" INFO run_log: server.connected server=203.0.113.7:
  INFO run_log: kad.helper_test_late late_by_ms=3400 admission=refused
  INFO run_log: download.failed id=4 failure=storage_integrity_failed fault=no_part_holds recorded_parts=7 part_fault=hash_mismatch part_index=2
  INFO run_log: download.part_released id=4 part_index=5 reason=peer_retired retired=slot_timeout
+ INFO run_log: download.kad_aich_root_contested id=4
  INFO run_log: serve.file_withheld reason=unreadable error=permission_denied os_code=none
  INFO run_log: serve.serving_failed reason=bind error=address_in_use os_code=none
  INFO run_log: shared_directory.refused reason=inside_shared
@@ -158,14 +192,16 @@ const PINNED_LEAN: &str = r#" INFO run_log: server.connected server=203.0.113.7:
  INFO run_log: quit.step step=credit_checkpoint
  INFO run_log: obfuscation.policy policy=required
  INFO run_log: obfuscation.policy_changed policy=off
+ INFO run_log: port_mapping.release_kept role=tcp family=ipv4 internal_port=4662 external_port=4662 kept=forwards_elsewhere protocol=upnp
+ INFO run_log: port_mapping.release_kept role=tcp family=ipv4 internal_port=4662 external_port=53906 kept=unchecked protocol=upnp error=refused refusal=unknown_code refusal_code=501
  INFO run_log: setting.refused reason=download_dir_refused guard=home_directory"#;
 
 /// What `pinned_lines` returns at the full level.
 const PINNED_FULL: &str = r#" INFO run_log: server.connected server=203.0.113.7:4661 client_id=167772167
  INFO run_log: serve.serving_started listen_addr=203.0.113.5:4662
- INFO run_log: download.queued id=3 file_hash=ABABABABABABABABABABABABABABABAB name="secret holiday film.avi" size=734003200
+ INFO run_log: download.queued id=3 file_hash=ABABABABABABABABABABABABABABABAB name="secret holiday film.avi" size=734003200 file_path="/home/ann/films/secret holiday film.avi.part"
  INFO run_log: download.peer_selected id=3 peer=198.51.100.9:4662
- INFO run_log: serve.upload_slot_granted peer=198.51.100.9:4662 file_hash=ABABABABABABABABABABABABABABABAB software="amule" software_version="2.3.3"
+ INFO run_log: serve.upload_slot_granted peer=198.51.100.9:4662 file_hash=ABABABABABABABABABABABABABABABAB road=linked software="amule" software_version="2.3.3"
  INFO run_log: scan.declined dir="/home/ann/private-share"
  INFO run_log: identity.secured_mismatch user_hash=CDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCD
  INFO run_log: peer_reach.routed peer=198.51.100.9:4662 route=direct dial=198.51.100.9:4662
@@ -190,6 +226,7 @@ const PINNED_FULL: &str = r#" INFO run_log: server.connected server=203.0.113.7:
  INFO run_log: kad.helper_test_late helper=198.51.100.31 late_by_ms=3400 admission=refused
  INFO run_log: download.failed id=4 failure=storage_integrity_failed fault=no_part_holds recorded_parts=7 part_fault=hash_mismatch part_index=2 expected=11111111111111111111111111111111 found=22222222222222222222222222222222
  INFO run_log: download.part_released id=4 peer=198.51.100.9:4662 part_index=5 reason=peer_retired retired=slot_timeout
+ INFO run_log: download.kad_aich_root_contested id=4 kad_root=UGQ2DINBUGQ2DINBUGQ2DINBUGQ2DINB voted_root=WKZLFMVSWKZLFMVSWKZLFMVSWKZLFMVS
  INFO run_log: serve.file_withheld file_hash=ABABABABABABABABABABABABABABABAB reason=unreadable error=permission_denied os_code=none
  INFO run_log: serve.serving_failed reason=bind error=address_in_use os_code=none
  INFO run_log: shared_directory.refused dir="/home/ann/films/new" reason=inside_shared parent="/home/ann/films"
@@ -204,6 +241,8 @@ const PINNED_FULL: &str = r#" INFO run_log: server.connected server=203.0.113.7:
  INFO run_log: quit.step step=credit_checkpoint
  INFO run_log: obfuscation.policy policy=required
  INFO run_log: obfuscation.policy_changed policy=off
+ INFO run_log: port_mapping.release_kept role=tcp family=ipv4 internal_port=4662 external_port=4662 kept=forwards_elsewhere protocol=upnp holder=10.77.0.5:4662
+ INFO run_log: port_mapping.release_kept role=tcp family=ipv4 internal_port=4662 external_port=53906 kept=unchecked protocol=upnp error=refused refusal=unknown_code refusal_code=501
  INFO run_log: setting.refused reason=download_dir_refused guard=home_directory"#;
 
 #[test]

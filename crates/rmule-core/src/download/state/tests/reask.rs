@@ -8,11 +8,22 @@ use rmule_peer::{ReaskAck, file_not_found_datagram, queue_full_datagram};
 use rmule_primitives::Ipv6Endpoint;
 
 use super::*;
-use crate::download::source_book::{NO_NEEDED_PARTS_MULTIPLIER, REASK_RECHECK, UDP_REASK_LEAD};
+use crate::download::source_book::{
+    LOW_ID_REASK_TIME, NO_NEEDED_PARTS_MULTIPLIER, REASK_RECHECK, UDP_REASK_LEAD,
+};
 use crate::own_identity::ConnectedSession;
 use crate::service::IgnoredReaskReply;
 
+mod buddy;
+mod dial_back;
+mod exchange_pool;
+mod given_back;
+mod no_file;
+mod no_needed_parts;
+mod on_queue;
 mod purge;
+mod redial;
+mod standing;
 
 /// The port every test source advertises for client UDP.
 const UDP_PORT: u16 = 5000;
@@ -28,6 +39,12 @@ fn contact(peer: PeerEndpoint) -> PeerEndpoint {
 /// The instant, past a standing's clock origin, its UDP ping falls due.
 fn udp_due() -> Duration {
     FILE_REASK_TIME - UDP_REASK_LEAD
+}
+
+/// [`udp_due`] while we are firewalled: the **Low-ID Reask**'s window
+/// (ADR-0116).
+fn low_id_udp_due() -> Duration {
+    LOW_ID_REASK_TIME - UDP_REASK_LEAD
 }
 
 /// Our own reask position fully live: a client-UDP socket bound and a server
@@ -84,7 +101,7 @@ fn queue_and_hang_up_as(
     rank: u16,
     at: Instant,
 ) {
-    let _ = state.on_worker_event(at, peer, PeerWorkerEvent::Connected);
+    let _ = connect(state, at, peer);
     if let Some(identity) = identity {
         let _ = state.on_worker_event(at, peer, PeerWorkerEvent::Identity(identity));
     }
@@ -94,7 +111,7 @@ fn queue_and_hang_up_as(
         hung_up.iter().any(|d| matches!(
             d,
             Decision::Emit(DownloadEvent::SourceRemoteQueued { peer: p, rank: r, .. })
-                if *p == peer && *r == rank
+                if *p == peer && *r == Some(rank)
         )),
         "a queued worker that hangs up keeps its standing: {hung_up:?}"
     );
@@ -174,11 +191,20 @@ fn the_udp_ping_fires_first_and_the_latch_bars_a_second_ping() {
     let mut state = standing();
     let due = state.on_tick(t0() + udp_due());
     assert_eq!(pinged(&due), vec![contact(peer(1))]);
-    let Some(Decision::SendReaskPing { peer: at, ping }) = due.first() else {
+    let Some(Decision::SendReaskPing {
+        peer: at,
+        ping,
+        answered_from,
+    }) = due.first()
+    else {
         panic!("one ping: {due:?}");
     };
     assert_eq!(*at, peer(1));
     assert_eq!(ping.datagram[..2], [0xC5, 0x90]);
+    assert_eq!(
+        *answered_from, ping.to,
+        "a direct ping is answered where it went"
+    );
 
     assert!(
         pinged(&state.on_tick(t0() + udp_due() + Duration::from_secs(5))).is_empty(),
@@ -334,6 +360,22 @@ fn a_reask_ack_holding_no_part_we_lack_makes_the_source_no_needed_parts() {
     );
 }
 
+/// A UDPv4 `0x91`'s part status is the source's Advertised Parts now: it
+/// replaces what its worker's probe wrote on the record (ADR-0112), and Part
+/// Frequency follows.
+#[test]
+fn a_reask_acks_part_status_replaces_the_records_parts() {
+    let (mut state, window) = three_part_standing();
+    assert_eq!(state.sources.part_frequency(), [1, 1, 1]);
+    let middle = PartBitmap::decode(3, &[0b0000_0010]).expect("three parts");
+    let _ = state.on_reask_reply(window, contact(peer(1)), &v4_ack_with(middle.clone(), 2));
+    assert_eq!(state.sources.parts(peer(1)), Some(&middle));
+    assert_eq!(
+        (state.sources.part_frequency(), state.sources.parts_known()),
+        (&[0, 1, 0][..], 1)
+    );
+}
+
 /// A status counting other than the file's parts is aMule's
 /// `ProcessFileStatus` throw (stock 2.3.3 `DownloadClient.cpp:416-424`),
 /// which drops the whole `0x91` before its rank is read: the reply is ignored,
@@ -378,11 +420,12 @@ fn a_queue_full_reply_keeps_the_source_and_refreshes_the_clock() {
     ));
 }
 
-/// A `0x92` drops the source dead: its record leaves the book, nothing is
-/// reasked, and a later sighting pools it anew — it answered, so it is not
-/// spent.
+/// A `0x92` spends the source for this download, as aMule dead-lists it
+/// (ADR-0090): its record leaves the book, nothing is reasked, and a sighting
+/// of it — at its endpoint or by the User Hash its hello named — is refused
+/// until two spent turns have passed.
 #[test]
-fn a_file_not_found_reply_drops_the_source_dead() {
+fn a_file_not_found_reply_spends_the_source_for_the_re_ask_period() {
     let mut state = standing();
     let dropped = state.on_reask_reply(t0(), contact(peer(1)), &file_not_found_datagram());
     assert!(matches!(
@@ -395,9 +438,37 @@ fn a_file_not_found_reply_drops_the_source_dead() {
         Some(t0() + FILE_REASK_TIME),
         "the spent turn alone"
     );
+    assert!(
+        spawned(&take(&mut state, Channel::Server, plain_sightings(&[peer(1)])).decisions)
+            .is_empty(),
+        "its endpoint is spent"
+    );
+    let elsewhere = SourceSighting::new(
+        rmule_primitives::PeerSource::HighId(Ipv4Endpoint::new(
+            Ipv4Addr::new(45, 55, 200, 9),
+            4662,
+        )),
+        Some(SOURCE),
+        None,
+        rmule_primitives::Informant::Own,
+    );
+    assert_eq!(
+        take(&mut state, Channel::Server, [elsewhere]).tally.fresh,
+        0,
+        "its User Hash is spent too"
+    );
+
+    let _ = state.on_tick(t0() + FILE_REASK_TIME);
+    assert!(
+        spawned(&take(&mut state, Channel::Server, plain_sightings(&[peer(1)])).decisions)
+            .is_empty(),
+        "one turn later it is still spent"
+    );
+    let _ = state.on_tick(t0() + FILE_REASK_TIME * 2);
     assert_eq!(
         spawned(&take(&mut state, Channel::Server, plain_sightings(&[peer(1)])).decisions),
-        vec![peer(1)]
+        vec![peer(1)],
+        "two turns later it is a source again"
     );
 }
 
@@ -472,7 +543,8 @@ fn our_udp_disabled_takes_every_reask_straight_to_the_tcp_full_ask() {
 
 /// A server Low ID and no open Kad verdict: a source cannot answer by UDP a
 /// downloader no route reaches, so no ping leaves — but the window is looked
-/// at again a second later, since reachability can arrive in it.
+/// at again a second later, since reachability can arrive in it. The TCP
+/// full ask comes at the **Low-ID Reask** (ADR-0116).
 #[test]
 fn a_firewalled_downloader_never_udp_pings() {
     let mut state = started(
@@ -483,12 +555,43 @@ fn a_firewalled_downloader_never_udp_pings() {
         },
     );
     queue_and_hang_up(&mut state, peer(1), true, 5);
-    let window = t0() + udp_due();
+    let window = t0() + low_id_udp_due();
     assert!(state.on_tick(window).is_empty());
     assert_eq!(state.next_wake(), Some(window + REASK_RECHECK));
     assert_eq!(
-        asked_by_tcp(&state.on_tick(t0() + FILE_REASK_TIME)),
+        asked_by_tcp(&state.on_tick(t0() + LOW_ID_REASK_TIME)),
         vec![peer(1)]
+    );
+}
+
+/// While we are firewalled the TCP full ask comes at 15 minutes, not
+/// `FILEREASKTIME`: a Low-ID waiter's slot opens only at its next
+/// connection (ADR-0116). Reachable again, the period is aMule's 1300 s.
+#[test]
+fn a_firewalled_downloader_asks_a_queued_source_again_at_fifteen_minutes() {
+    let mut state = started(
+        &[peer(1)],
+        SourcingPosture {
+            callback_capability: low_id_session(),
+            ..live_posture()
+        },
+    );
+    queue_and_hang_up(&mut state, peer(1), true, 5);
+    assert_eq!(state.next_wake(), Some(t0() + low_id_udp_due()));
+    assert!(
+        asked_by_tcp(&state.on_tick(t0() + LOW_ID_REASK_TIME - Duration::from_secs(1))).is_empty()
+    );
+    assert_eq!(
+        asked_by_tcp(&state.on_tick(t0() + LOW_ID_REASK_TIME)),
+        vec![peer(1)]
+    );
+
+    let mut reachable = started(&[peer(2)], live_posture());
+    queue_and_hang_up(&mut reachable, peer(2), true, 5);
+    assert!(asked_by_tcp(&reachable.on_tick(t0() + LOW_ID_REASK_TIME)).is_empty());
+    assert_eq!(
+        asked_by_tcp(&reachable.on_tick(t0() + FILE_REASK_TIME)),
+        vec![peer(2)]
     );
 }
 
@@ -606,26 +709,6 @@ fn a_source_exchange_due_source_prefers_the_tcp_full_ask() {
     ));
 }
 
-/// A source refused for parts while queued (`OP_OUTOFPARTREQS`) holds none we
-/// need: it reasks at twice the period, over TCP only (aMule
-/// `DS_NONEEDEDPARTS`).
-#[test]
-fn a_no_needed_parts_source_reasks_at_double_the_period_over_tcp() {
-    let mut state = started(&[peer(1)], live_posture());
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
-    let identity = reaskable(SOURCE).identity();
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Identity(identity));
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Queued { rank: 5 });
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotRejected);
-
-    assert!(state.on_tick(t0() + udp_due()).is_empty());
-    assert!(state.on_tick(t0() + FILE_REASK_TIME).is_empty());
-    assert_eq!(
-        asked_by_tcp(&state.on_tick(t0() + FILE_REASK_TIME * NO_NEEDED_PARTS_MULTIPLIER)),
-        vec![peer(1)]
-    );
-}
-
 /// One sweep reasks every standing in the order the book first held them:
 /// the two with a contact ping, and at the period all three fall to TCP.
 #[test]
@@ -645,22 +728,30 @@ fn a_tick_sweeps_every_source_in_book_order() {
     );
 }
 
-/// A queued worker granted a slot is live, not standing: when it ends, nothing
-/// is reasked.
+/// A queued worker granted a slot is live, not standing, and no reask falls
+/// due while it transfers; when its link fails it stands again without a
+/// rank, as aMule's `DS_DOWNLOADING` client turns `DS_ONQUEUE`
+/// (`BaseClient.cpp:1283-1284`), and is asked again a period after the ask
+/// that won the grant (`PartFile.cpp:1449-1483`, ADR-0090).
 #[test]
-fn a_granted_source_keeps_no_standing() {
+fn a_granted_source_whose_link_fails_is_asked_a_period_after_its_ask() {
     let mut state = started(&[peer(1)], live_posture());
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Queued { rank: 2 });
+    let _ = probed(&mut state, t0(), peer(1));
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotAsked);
     let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotGranted);
-    let ended = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
+    assert!(asked_by_tcp(&state.on_tick(t0() + FILE_REASK_TIME)).is_empty());
+
+    let cut_at = t0() + FILE_REASK_TIME + Duration::from_secs(60);
+    let ended = state.on_worker_event(cut_at, peer(1), PeerWorkerEvent::Disconnected);
     assert!(
-        !ended
-            .iter()
-            .any(|d| matches!(d, Decision::Emit(DownloadEvent::SourceRemoteQueued { .. }))),
+        ended.iter().any(|d| matches!(
+            d,
+            Decision::Emit(DownloadEvent::SourceRemoteQueued { peer: p, rank: None, .. })
+                if *p == peer(1)
+        )),
         "{ended:?}"
     );
-    assert!(asked_by_tcp(&state.on_tick(t0() + FILE_REASK_TIME)).is_empty());
+    assert_eq!(asked_by_tcp(&state.on_tick(cut_at)), vec![peer(1)]);
 }
 
 /// An IPv6 source holds its queue standing exactly as an IPv4 one does
@@ -738,7 +829,7 @@ fn the_captured_amule_reask_ack_lands_on_its_source() {
     let read = |name: &str| std::fs::read(format!("{DIR}{name}")).expect("captured datagram");
     let sharer = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(192, 0, 2, 6), 4662));
     let mut state = started(&[sharer], live_posture());
-    let _ = state.on_worker_event(t0(), sharer, PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), sharer);
     let hello = HelloFacts {
         udp_port: 4672,
         udp_version: 4,

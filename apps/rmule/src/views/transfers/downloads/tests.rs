@@ -144,6 +144,7 @@ fn done_and_eta_read_exact_bytes_with_or_without_a_live_part_map() {
             failure: None,
             file_hash: file_hash(0x08),
             metadata: metadata("song.mp3", size, Link),
+            file_path: crate::fixture::part_file(),
         },
         DownloadEvent::DownloadProgressRestored {
             download_id: id,
@@ -202,7 +203,11 @@ fn the_sources_cell_counts_what_the_run_knows_and_who_is_sending() {
         0,
         vec![
             worker(0, receiving, Some(peer_endpoint(1))),
-            worker(1, WorkerPhase::WaitingForSlot, Some(peer_endpoint(2))),
+            worker(
+                1,
+                WorkerPhase::WaitingForSlot { rank: None },
+                Some(peer_endpoint(2)),
+            ),
         ],
     );
     running.known_sources = 12;
@@ -480,12 +485,14 @@ fn golden_transfers_waiting_with_no_session() {
 /// A `DownloadLine`'s sort values and its cell text say the same thing
 /// about a row, edge case by edge case: an unknown size,
 /// the part-count estimate, a nameless exact size, a share the row cannot
-/// exceed, and every status the cell can word.
+/// exceed, and every status the cell can word, a completing move's steps
+/// among them.
 #[test]
 fn sort_values_and_cell_text_agree_for_every_edge_case() {
     use crate::table_sort::SortValue;
     use rmule_core::DownloadMetadataOrigin::{Link, Unknown};
-    use rmule_core::SourceWait;
+    use rmule_core::diagnostics::CompletionProgress;
+    use rmule_core::{CompletionStep, SourceWait};
 
     let size = 2 * ED2K_PART_SIZE + 1_000;
     let mut state = UiState::default();
@@ -547,9 +554,27 @@ fn sort_values_and_cell_text_agree_for_every_edge_case() {
         .diagnostics
         .downloads
         .insert(download_id(10), diag(download_id(10), 10, "VMM", 0, vec![]));
+    // Completing at three steps: renaming, held by a program, and 46 MiB
+    // into its copy.
+    for (n, step, copied) in [
+        (11, CompletionStep::Moving, 0),
+        (12, CompletionStep::WaitingForRelease, 0),
+        (13, CompletionStep::Copying, 46 << 20),
+    ] {
+        state.downloads.insert(
+            download_id(n),
+            DownloadRow {
+                metadata: Some(metadata("film.mkv", 92 << 20, Link)),
+                ..download_row(DownloadStatus::Completing, n as u8, 10)
+            },
+        );
+        let mut row = diag(download_id(n), n as u8, "VVVVVVVVVV", 0, vec![]);
+        row.completion = Some(CompletionProgress { step, copied });
+        state.diagnostics.downloads.insert(download_id(n), row);
+    }
 
     let check = |state: &UiState, want: &[(u64, &str, u64)]| {
-        for n in 1..=10 {
+        for n in 1..=13 {
             let id = download_id(n);
             let line = DownloadLine::new(id, state);
             let cells = line.values(&Theme::default_dark());
@@ -584,11 +609,14 @@ fn sort_values_and_cell_text_agree_for_every_edge_case() {
     let statuses = [
         (2, "Waiting", 1),
         (4, "Paused", 2),
-        (5, "Completed", 3),
+        (5, "Completed", 4),
         (7, "No network", 1),
         (8, "Asking Kad", 1),
-        (9, "Failed", 4),
+        (9, "Failed", 5),
         (10, "Downloading", 0),
+        (11, "Completing", 3),
+        (12, "Completing: waiting for the file to be released", 3),
+        (13, "Completing: 46.0 MB copied", 3),
     ];
     check(&state, &statuses);
 

@@ -1,6 +1,7 @@
 //! The held part file notices, at the next part, that the file at its path
 //! is not the one it holds — removed, replaced or cut short — and writes
-//! nothing into a file nobody can reach.
+//! nothing into a file nobody can reach. A write that skips a part punches the
+//! gap it opened, and the reading after it shows the space given back.
 
 use super::*;
 
@@ -8,7 +9,7 @@ const PART: &[u8] = b"a verified part";
 
 async fn held_with_one_part(dir: &Path) -> (HeldPartFile, PathBuf) {
     let path = dir.join("film.bin.part");
-    let mut held = HeldPartFile::hold(&path, 0)
+    let (mut held, _) = HeldPartFile::hold(&path, 0)
         .await
         .expect("hold a new part file");
     held.write_part(0, PART)
@@ -81,4 +82,32 @@ async fn parts_recorded_with_no_file_are_gone_at_hold() {
         !path.exists(),
         "a download with parts recorded never recreates its file"
     );
+}
+
+/// Parts 0 and 2 of a three-part file: the one-part gap is under APFS's
+/// 16 MiB fill threshold, so APFS allocates it unless the write punches it.
+#[tokio::test]
+async fn a_write_past_a_missing_part_punches_the_gap_it_opened() {
+    const SIZE: usize = rmule_primitives::ED2K_PART_SIZE as usize;
+    let part = SIZE as u64;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gapped.bin.part");
+    let first = vec![0x11u8; SIZE];
+    let third = vec![0x33u8; SIZE];
+    let (mut held, _) = HeldPartFile::hold(&path, 0).await.unwrap();
+    held.write_part(0, &first).await.unwrap();
+    let allocated = held
+        .write_part(2 * part, &third)
+        .await
+        .unwrap()
+        .expect("the reading after the write");
+
+    let bytes = std::fs::read(&path).unwrap();
+    assert_eq!(bytes.len() as u64, 3 * part, "the length is three parts");
+    assert!(
+        allocated <= 2 * part + 1024 * 1024,
+        "{allocated} bytes allocated for two parts written"
+    );
+    assert!(bytes[..SIZE] == first[..], "part 0 reads back");
+    assert!(bytes[2 * SIZE..] == third[..], "part 2 reads back");
 }

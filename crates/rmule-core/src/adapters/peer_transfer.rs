@@ -3,17 +3,18 @@
 //! source, runs the eD2k handshake — SUI, obfuscation, buddy posture — and
 //! hands back a live [`PeerWorker`].
 
-mod dial_end;
+pub(super) mod dial_end;
+mod download_road;
 pub(super) mod worker;
 
 use std::future::Future;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use rmule_net::peer::{Connection as PeerConnection, ObfuscationPolicy, PeerNetError};
+use rmule_net::peer::Connection as PeerConnection;
 use rmule_peer::{PartBitmap, PeerCommand, PeerHandshakeContext, PeerIdentity, SideCommand};
 use rmule_primitives::{
-    AichRootHash, Ed2kFileLink, Ipv4Endpoint, PartHash, PeerCrypt, PeerEndpoint, SourceSighting,
-    UserHash,
+    AichRootHash, ClientId, Ed2kFileLink, Ipv4Endpoint, PartHash, PeerCrypt, PeerEndpoint,
+    SourceSighting,
 };
 use tokio::sync::mpsc;
 
@@ -22,14 +23,16 @@ use crate::buddy::{BuddyServePosture, BuddyUdpPosture};
 use crate::ip_filter::SharedIpFilter;
 use crate::reachability::{SharedSelfReach, TcpReachability, UdpReachability};
 use crate::service::DialEnd;
-use crate::{DownloadFailure, PartPlan};
+use crate::{BlockPlan, DownloadFailure};
 
 use super::HelloAdverts;
 use super::dialed_serve::SharedDialedServeSink;
 use super::kad_runtime::{KadPresenceView, SharedKadBootstrap, SharedKadPump};
-use super::peer_transfer::worker::drive_peer_worker;
+use super::peer_link::{LinkName, Turn};
+use super::peer_transfer::worker::drive_joined_worker;
 use super::{InboundPeerDeps, SharedTunnelAdmit};
 use crate::buddy_link::SharedBuddySlot;
+use download_road::DownloadRoad;
 
 /// One contiguous run of bytes a peer served, tagged with where it belongs.
 /// Never a whole part on its own: cross-peer assembly (ADR-0029) may stitch
@@ -61,16 +64,31 @@ pub struct PeerDownloadOutcome {
 /// channel; the worker answers with [`PeerWorkerEvent`]s.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PeerWorkerCommand {
-    /// Stream the bytes of `plan`'s part starting at `resume_offset` (the
-    /// absolute file offset of the shared prefix end), block by block, to
-    /// the end of the part. `resume_offset` equals `plan.offset` for a fresh
-    /// part and advances as cross-peer assembly fills the prefix (ADR-0029).
-    RequestPart {
-        /// The part to fetch and the byte range it spans.
-        plan: PartPlan,
-        /// The absolute file offset to start at — the end of the prefix other
-        /// peers already filled.
-        resume_offset: u64,
+    /// Ask the uploader for a slot (`OP_STARTUPLOADREQ`) with no part chosen
+    /// (ADR-0026, "The slot ask"): the worker then waits on the link, reporting
+    /// the ask leaving, each rank and the grant; its part comes at the grant.
+    AskSlot,
+    /// Take the grant the link already carries as this worker's slot
+    /// (`OP_ACCEPTUPLOADREQ` read before the worker rode it, the Awaited
+    /// Grant, ADR-0107): nothing is written, and the worker reports
+    /// [`PeerWorkerEvent::SlotGranted`], its blocks asked next with no file
+    /// request or slot ask first, as aMule's downloader answers a dial-back
+    /// grant (`ClientTCPSocket.cpp:635-644`).
+    TakeGrant,
+    /// Ask the uploader for the file's part hash set (`OP_HASHSETREQUEST`): the
+    /// download's one hash-set ask, whose answer arrives as
+    /// [`PeerWorkerEvent::HashSetReceived`] (ADR-0026).
+    RequestHashSet,
+    /// Ask `blocks` next, in order, behind whatever the worker already holds
+    /// (ADR-0117): its **Claimed Blocks**, each inside one part. The worker
+    /// asks them up to its Request Depth and says when it has room for more
+    /// ([`PeerWorkerEvent::BlocksWanted`]).
+    RequestBlocks {
+        /// The blocks, each an absolute range inside one part.
+        blocks: Vec<BlockPlan>,
+        /// This handout's number on the worker, counted from 1: a
+        /// `BlocksWanted` names the last one it took.
+        handout: u32,
     },
     /// Ask this peer for the AICH recovery data of `part`, quoting the trusted
     /// master `root` (ADR-0038). Core sends this after a part fails MD4 and a
@@ -106,8 +124,10 @@ pub enum PeerWorkerCommand {
 /// every worker's events into the one scheduling brain.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PeerWorkerEvent {
-    /// The handshake finished and the peer is usable. Core assigns the worker
-    /// its first part here, not at spawn, so a failed handshake strands nothing.
+    /// The handshake finished and the peer is usable. Core asks nothing
+    /// yet: the worker's slot ask waits for [`Self::PartsAdvertised`] and its
+    /// first part for [`Self::SlotGranted`] (ADR-0112, ADR-0026), so neither a
+    /// failed handshake nor a part the peer lacks strands one.
     Connected,
     /// The peer's identity, as its session keeps it: sent once its hello is
     /// read — immediately before `Connected` — and again whole each time the
@@ -122,24 +142,15 @@ pub enum PeerWorkerEvent {
     /// A dialed worker's comes off its hello; an adopted inbound worker's is
     /// the one the accept side read off the same hello.
     Identity(PeerIdentity),
-    /// Secure User Identification proved the peer owns the `user_hash` it
-    /// claimed; `public_key` is its RSA public key DER (ADR-0041). Core binds
-    /// it as a **Secured Identity**. A connection-lifecycle fact, not a
-    /// transfer step: it may arrive at any point relative to the transfer
-    /// events (including before `Identity` — the router forwards it
-    /// directly, off the transfer flow).
-    IdentityVerified {
-        /// The hash the proof was for.
-        user_hash: UserHash,
-        /// Its RSA public key in DER form, bound as the peer's Secured Identity.
-        public_key: Vec<u8>,
-    },
     /// The peer answered `OP_HASHSETREQUEST`. These hashes are provisional
     /// until the finished file's own hash confirms them.
     HashSetReceived {
         /// The part hashes in part order.
         part_hashes: Vec<PartHash>,
     },
+    /// Our upload request (`OP_STARTUPLOADREQ`) left: the peer queues us,
+    /// ranked or not (aMule `DS_ONQUEUE`, ADR-0090).
+    SlotAsked,
     /// The peer answered our upload request with a queue position
     /// (`OP_QUEUERANKING`). Non-terminal: the worker stays connected and
     /// keeps waiting for `OP_ACCEPTUPLOADREQ`.
@@ -147,14 +158,15 @@ pub enum PeerWorkerEvent {
         /// Our position in the peer's upload queue.
         rank: u16,
     },
-    /// The peer granted the upload slot (`OP_ACCEPTUPLOADREQ`).
+    /// The peer granted the upload slot (`OP_ACCEPTUPLOADREQ`): the download
+    /// hands the worker its part, or gives the slot back (ADR-0056).
     SlotGranted,
     /// The worker waited the configured slot budget without a grant and
     /// gave up. Terminal for this worker's current part.
     SlotTimeout,
     /// One block of `part_index` arrived at absolute file `offset`. Core
-    /// merges it into the shared per-part contiguous prefix (ADR-0029); the
-    /// worker neither accumulates bytes nor decides completion.
+    /// merges it into the part's **Arrived Ranges** (ADR-0117); the worker
+    /// neither accumulates bytes nor decides completion.
     BlockReceived {
         /// The zero-based part the block belongs to.
         part_index: u32,
@@ -163,20 +175,42 @@ pub enum PeerWorkerEvent {
         /// The block's contents.
         bytes: Vec<u8>,
     },
-    /// The worker delivered its whole assigned range for `part_index` and is
-    /// ready for the next assignment. Not a completion claim — core decides
-    /// completion when the shared prefix reaches the part length.
-    PartStreamed {
-        /// The part whose assigned range is fully delivered.
-        part_index: u32,
+    /// Every block handed has been asked and the Request Depth has `room` for
+    /// more (ADR-0117); `drained` when nothing asked is still to arrive. Sent
+    /// once per room reached and once at the drain. Core answers with
+    /// [`PeerWorkerCommand::RequestBlocks`], later when blocks free up, or —
+    /// drained with nothing left for it — by giving the slot back.
+    BlocksWanted {
+        /// How many more blocks the depth holds.
+        room: u32,
+        /// Whether every asked block has arrived.
+        drained: bool,
+        /// The last handout the worker took: a want older than the latest
+        /// handout says nothing of its blocks, and is set aside.
+        handout: u32,
     },
-    /// The peer answered the file probe (ADR-0108): whether its copy of the
-    /// file is complete — aMule's `m_bCompleteSource`, the one bit of its part
-    /// picture the source-ask gate reads. `false` when it said it lacks the
-    /// file. The download's **Source Ask Clock** keeps it for the run.
+    /// The asked range `start..end` will never arrive on this slot: the
+    /// session could not inflate it, or refused it (ADR-0029 "A lost block
+    /// is freed"). Core frees it for another worker; the slot is kept.
+    BlockLost {
+        /// Its first byte's offset in the file.
+        start: u64,
+        /// The offset just past its last byte.
+        end: u64,
+    },
+    /// The peer answered the connect-time file probe, once per worker
+    /// (ADR-0112): the parts it holds, which its Source Book record keeps and
+    /// the brain assigns from, and whether its copy is complete — aMule's
+    /// `m_bCompleteSource`, which the download's **Source Ask Clock** keeps
+    /// for the run (ADR-0108). The worker's slot — or the hash set — is asked
+    /// here.
     PartsAdvertised {
+        /// Its **Advertised Parts** over the file's real parts; `None` when it
+        /// answered `OP_FILEREQANSNOFIL`, lacking the file.
+        parts: Option<PartBitmap>,
         /// aMule's part-count-0 "complete" sentinel, or a one-part file's
-        /// name answer — never a spelled-out bitmap, however full.
+        /// name answer — never a spelled-out bitmap, however full. `false`
+        /// when it lacks the file.
         complete: bool,
     },
     /// The connect-time file request carried a source ask (ADR-0108), as the
@@ -211,12 +245,18 @@ pub enum PeerWorkerEvent {
         /// The master root this peer proposes for the file.
         root: AichRootHash,
     },
-    /// The peer refused the upload request outright (`OP_OUTOFPARTREQS`).
-    /// Terminal for this worker.
-    SlotRejected,
+    /// The peer ended our granted slot and put us back on its queue
+    /// (`OP_OUTOFPARTREQS`, ADR-0057). Not terminal: the worker stays on its
+    /// link, queued, and the next grant hands it its part.
+    Requeued,
     /// The connection ended, for any reason. Terminal — no further event
     /// follows, and core retires the worker.
     Disconnected,
+    /// The link the worker waited on, behind another download of the same
+    /// peer, ended before its turn. Terminal: nothing was dialed, and core
+    /// keeps the source standing on the peer's queue for the reask
+    /// (ADR-0107 invariant 9).
+    HandedBack,
     /// The dial ended before the peer's hello, for `cause`. Not terminal on
     /// its own: [`Self::Disconnected`] or [`Self::CryptIncompatible`] follows
     /// at once, and this only names why.
@@ -224,11 +264,39 @@ pub enum PeerWorkerEvent {
         /// Why the dial ended.
         cause: crate::service::DialEnd,
     },
+    /// The download reaches the peer over its **Peer Link** rather than a
+    /// dial of its own (ADR-0107, "One peer, one link"): `Waiting` while
+    /// another download of the peer rides it, then `Riding` at its turn, just
+    /// before `Identity` and `Connected`. Not terminal.
+    LinkShared {
+        /// Where the download stands on the link.
+        turn: crate::service::LinkTurn,
+    },
     /// The dial was refused before any socket: the peer's stated crypt
     /// stance and ours cannot meet (ADR-0049's outbound rule).
     /// Terminal like [`Self::Disconnected`], but core retires the source for
     /// this reason — every road to it meets the same two stances.
     CryptIncompatible,
+}
+
+#[cfg(test)]
+impl PeerWorkerEvent {
+    /// A probe answer spelling out every part of a `file_size`-byte file — not
+    /// the complete-source sentinel, so the source-ask gate reads it as it
+    /// reads a source that never advertised (ADR-0108). What an in-process
+    /// fake sends after `Connected` (ADR-0030).
+    ///
+    /// `rmule_testkit::every_part` is the same answer for integration tests;
+    /// this crate's own tests cannot take it, since the testkit links its own
+    /// build of this crate, whose event is not the one under test.
+    pub(crate) fn every_part(file_size: u64) -> Self {
+        Self::PartsAdvertised {
+            parts: Some(PartBitmap::all_present(rmule_primitives::part_count(
+                file_size,
+            ))),
+            complete: false,
+        }
+    }
 }
 
 /// Whether a raw part status a source advertised — a `0x91`'s, unexpanded —
@@ -326,6 +394,25 @@ pub trait PeerTransferService: Send + 'static {
         self.start_peer_worker(peer, ctx, file)
     }
 
+    /// Reach the Low-ID peer `low_id` of `server` over its **Peer Link** —
+    /// the link it opened to us, or one an earlier callback brought in
+    /// (ADR-0107, "One peer, one link") — with the download's `brief`. The
+    /// worker rides the link, or waits on it while another download does,
+    /// and no callback is asked: the peer's `TryToConnect` toward a client it
+    /// holds a socket for opens nothing (`BaseClient.cpp:1489-1496`), so the
+    /// callback would only lapse. `None` when no link is filed under that
+    /// callback. The default holds no link.
+    fn ride_callback_link(
+        &mut self,
+        low_id: ClientId,
+        server: Ipv4Endpoint,
+        file: Ed2kFileLink,
+        brief: WorkerBrief,
+    ) -> Option<PeerWorker> {
+        let _ = (low_id, server, file, brief);
+        None
+    }
+
     /// Adopt the builder's one set of `AdapterCells`
     /// (ADR-0048 "Identity ownership"): `Core::builder`
     /// weaves its own adapter through this, and `CoreBuilder::peer_transfer`
@@ -364,6 +451,21 @@ pub struct WorkerBrief {
     /// `IsSourceRequestAllowed`). The peer's own hello still decides whether it
     /// can be asked at all.
     pub want_sources: bool,
+    /// What the worker sends once its link is up.
+    pub opening: WorkerOpening,
+}
+
+/// What a worker sends once its link is up (ADR-0107, ADR-0112).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WorkerOpening {
+    /// The connect-time file request: the probe whose answer the download
+    /// asks the slot on, or takes a grant the link carries on.
+    #[default]
+    Probe,
+    /// Nothing: the link carries a grant the worker takes, off the parts its
+    /// record already heard, as aMule's downloader sends no file request on
+    /// an uploader's dial-back (`BaseClient.cpp:1692-1706`).
+    Granted,
 }
 
 impl WorkerBrief {
@@ -374,6 +476,7 @@ impl WorkerBrief {
             peer_crypt: PeerCrypt::unknown(),
             own_status: PartBitmap::downloader_empty(file.size),
             want_sources: true,
+            opening: WorkerOpening::Probe,
         }
     }
 }
@@ -419,10 +522,16 @@ pub struct RuntimePeerTransferService {
     /// Where a dialed peer's refused hello is reported (ADR-0050). Default
     /// (never installed, reports go nowhere) off `Core::builder`.
     hello_refusals: crate::hello_refusals::SharedHelloRefusals,
+    /// Where a dialed link binds its verified identity (ADR-0041). Default
+    /// (never installed) off `Core::builder`: nothing is bound.
+    secured_identities: crate::secured_identity::SharedSecuredIdentities,
     /// The node-wide services a dialed link's side-channel frames are carried
     /// to, as an accepted link's are. Default (never installed) off
     /// `Core::builder`: the frames reach nothing.
     side: SideServices,
+    /// The **Served Links** a download joins before it dials (ADR-0107).
+    /// Default/unshared off `Core::builder`: every download dials.
+    peer_links: super::SharedPeerLinks,
 }
 
 /// The cells only a link's side-channel frames reach (Kad firewall checks, the
@@ -453,6 +562,8 @@ impl RuntimePeerTransferService {
             file_known: self.side.file_known.clone(),
             tunnel_admit: self.side.tunnel_admit.clone(),
             hello_refusals: self.hello_refusals.clone(),
+            peer_links: self.peer_links.clone(),
+            secured_identities: self.secured_identities.clone(),
         }
     }
 }
@@ -470,7 +581,9 @@ impl RuntimePeerTransferService {
             addresses: crate::address_learning::SharedAddressLearning::new(),
             ip_filter: SharedIpFilter::default(),
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
+            secured_identities: crate::secured_identity::SharedSecuredIdentities::default(),
             side: SideServices::default(),
+            peer_links: super::SharedPeerLinks::default(),
         }
     }
 
@@ -493,7 +606,9 @@ impl RuntimePeerTransferService {
             addresses: crate::address_learning::SharedAddressLearning::new(),
             ip_filter: SharedIpFilter::default(),
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
+            secured_identities: crate::secured_identity::SharedSecuredIdentities::default(),
             side: SideServices::default(),
+            peer_links: super::SharedPeerLinks::default(),
         }
     }
 
@@ -530,6 +645,16 @@ impl RuntimePeerTransferService {
         self.ip_filter = ip_filter;
         self
     }
+
+    /// Share the **Served Links** a download joins before it dials
+    /// (ADR-0107). `Core::builder` wires the one instance in through
+    /// `adopt_cells`.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_peer_links(mut self, peer_links: super::SharedPeerLinks) -> Self {
+        self.peer_links = peer_links;
+        self
+    }
 }
 
 impl Default for RuntimePeerTransferService {
@@ -547,11 +672,13 @@ impl PeerTransferService for RuntimePeerTransferService {
         self.addresses = cells.addresses().clone();
         self.ip_filter = cells.ip_filter.clone();
         self.hello_refusals = cells.hello_refusals.clone();
+        self.secured_identities = cells.secured_identities.clone();
         self.side.kad_pump = cells.kad_pump.clone();
         self.side.buddy_slot = cells.buddy_slot.clone();
         self.side.peer_roster = cells.peer_roster.clone();
         self.side.file_known = cells.file_known.clone();
         self.side.tunnel_admit = cells.tunnel_admit.clone();
+        self.peer_links = cells.peer_links.clone();
     }
 
     fn set_kad_presence(&mut self, kad_presence: KadPresenceView) {
@@ -568,6 +695,54 @@ impl PeerTransferService for RuntimePeerTransferService {
         self.start_download_worker(peer, ctx, file, brief).await
     }
 
+    fn ride_callback_link(
+        &mut self,
+        low_id: ClientId,
+        server: Ipv4Endpoint,
+        file: Ed2kFileLink,
+        brief: WorkerBrief,
+    ) -> Option<PeerWorker> {
+        let found = self
+            .peer_links
+            .find(&[LinkName::Callback { server, low_id }])?;
+        let remote = found.remote;
+        let slot_wait_timeout = self.slot_wait_timeout;
+        let (command_tx, mut command_rx) = mpsc::channel(8);
+        let (event_tx, event_rx) = mpsc::channel(16);
+        tokio::spawn(async move {
+            match found.take_turn(&event_tx, &mut command_rx).await {
+                Turn::Seated(joined) => {
+                    drive_joined_worker(
+                        *joined,
+                        file,
+                        brief.own_status,
+                        brief.want_sources,
+                        brief.opening,
+                        command_rx,
+                        event_tx,
+                        slot_wait_timeout,
+                    )
+                    .await;
+                }
+                Turn::LinkEnded => {
+                    let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
+                }
+                Turn::HandedBack => {
+                    let _ = event_tx.send(PeerWorkerEvent::HandedBack).await;
+                }
+                // Only a dial is ever in flight, and none is filed under a
+                // callback: a link found here is live, but its end is read
+                // the way a dial's is.
+                Turn::DialEnded(cause) => {
+                    end_dial(&event_tx, cause).await;
+                    let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
+                }
+                Turn::Stopped => {}
+            }
+        });
+        Some(PeerWorker::new(remote, command_tx, event_rx))
+    }
+
     async fn start_download_worker(
         &mut self,
         peer: PeerEndpoint,
@@ -575,86 +750,26 @@ impl PeerTransferService for RuntimePeerTransferService {
         file: Ed2kFileLink,
         brief: WorkerBrief,
     ) -> Result<PeerWorker, DownloadFailure> {
-        let WorkerBrief {
-            peer_crypt,
-            own_status,
-            want_sources,
-        } = brief;
-        let ban_store = self.ban_store.clone();
-        let ip_filter = self.ip_filter.clone();
-        let deps = self.link_deps();
         // Every advert read now, per dial: what is true when the
         // peer is met is what the hello says — the SUI keypair included, with
         // a challenge minted for this dial alone (ADR-0041 anti-replay), so a
-        // download proves with the one key every other hello proves with
+        // download proves with the one key every other hello proves with.
         // `peer_crypt` is the peer's stated crypt side; the dial
         // meets it with our policy by aMule's outbound rule (ADR-0049) —
         // obfuscated, plaintext, or refused before any socket.
-        let options = self.adverts.connect_options(peer_crypt);
-        let ours = ObfuscationPolicy::stance_of(options.obfuscation.map(|config| config.policy));
+        let road = DownloadRoad {
+            peer,
+            ctx,
+            options: self.adverts.connect_options(brief.peer_crypt),
+            file,
+            brief,
+            ban_store: self.ban_store.clone(),
+            ip_filter: self.ip_filter.clone(),
+            deps: self.link_deps(),
+        };
         let (command_tx, command_rx) = mpsc::channel(8);
         let (event_tx, event_rx) = mpsc::channel(16);
-        tokio::spawn(async move {
-            // The IP filter, aMule `CUpDownClient::TryToConnect` /
-            // `SendHelloPacket`: a candidate source whose IP is filtered is
-            // never dialed — reported like a connect failure so the runner
-            // backfills the slot (the ban gate's exact shape, below). The
-            // verdict is bound first so the read guard never crosses an await.
-            let ip_filtered = ip_filter
-                .read()
-                .expect("ip filter lock")
-                .is_filtered_peer(peer);
-            if ip_filtered {
-                end_dial(&event_tx, DialEnd::IpFiltered).await;
-                let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-                return;
-            }
-            // ADR-0064, peer-TCP enforcement: a banned candidate source is
-            // never dialed at all — reported the same way a real connect
-            // failure is, so the runner backfills the slot exactly as it
-            // would for any other dead source. Kad's own routing/search
-            // surface is untouched (no ban gate there).
-            if ban_store.lock().await.is_banned(peer.ip(), Instant::now()) {
-                end_dial(&event_tx, DialEnd::Banned).await;
-                let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-                return;
-            }
-            // Connect + identify run inside the worker task, off the runner's
-            // critical path (ADR-0030). A connect or handshake failure becomes
-            // an ordinary `Disconnected` worker event so the runner backfills
-            // a replacement instead of aborting the whole download.
-            let conn = match PeerConnection::connect(peer, ctx, options).await {
-                Ok(conn) => conn,
-                // The stances cannot meet: named apart from a
-                // dead source, so the brain retires the source for that
-                // reason rather than as unreachable.
-                Err(PeerNetError::CryptIncompatible) => {
-                    end_dial(&event_tx, dial_end::crypt_refusal(peer_crypt, ours)).await;
-                    let _ = event_tx.send(PeerWorkerEvent::CryptIncompatible).await;
-                    return;
-                }
-                Err(error) => {
-                    end_dial(&event_tx, dial_end::connect_failure(&error)).await;
-                    let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-                    return;
-                }
-            };
-            // A dialed worker has not identified yet (`None`), so the drive body
-            // waits for the peer's hello. An adopted inbound worker passes
-            // `Some((user_hash, crypt))` instead (ADR-0039).
-            drive_peer_worker(
-                conn,
-                peer,
-                file,
-                own_status,
-                want_sources,
-                None,
-                command_rx,
-                event_tx,
-                deps,
-            )
-            .await;
-        });
+        tokio::spawn(road.drive(command_rx, event_tx));
         Ok(PeerWorker::new(peer, command_tx, event_rx))
     }
 }

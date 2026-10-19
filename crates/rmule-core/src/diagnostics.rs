@@ -71,14 +71,15 @@ pub use crate::firewalled::recruit::RecruitRefusal;
 
 pub use counters::SessionCounters;
 pub use download::{
-    DIAL_ENDS_KEPT, DownloadDiagnostics, PartCounts, PartState, SourceDialEnd, UploadDiagnostics,
-    WorkerEntry, WorkerPhase, WorkerSlot,
+    CompletionProgress, DIAL_ENDS_KEPT, DownloadDiagnostics, PartCounts, PartState, SourceActivity,
+    SourceDialEnd, UploadDiagnostics, WorkerEntry, WorkerPhase, WorkerSlot,
 };
 pub use kad::{
     KadFirewallCheck, KadFirewallVerdict, KadRuntimeDiagnostics, KadState, KadTraffic,
     KadUdpVerdict,
 };
-pub use server::{ServerDiagnostics, ShareAnnouncement, SharesToServer};
+pub(crate) use server::PingProbe;
+pub use server::{PingState, ServerDiagnostics, ShareAnnouncement, SharesToServer};
 pub use shared_files::{ShareTotals, SharedFileCounters};
 #[cfg(test)]
 pub(crate) use software::client_software;

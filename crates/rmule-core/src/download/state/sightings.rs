@@ -37,7 +37,18 @@ pub(crate) enum Channel {
     /// (ADR-0055); the answer is reported as an event naming it, and each
     /// Low-ID row is read in the server it names.
     Exchanged(PeerEndpoint),
+    /// A peer that asked us about the file, from its hello's source
+    /// coordinate (ADR-0113), as aMule's `CheckAndAddKnownSource` is reached
+    /// (`ClientTCPSocket.cpp:449-455`).
+    Prober,
 }
+
+/// The **Source Limit** (ADR-0116): aMule's default `MaxSourcesPerFile`
+/// (stock 2.3.3 `Preferences.cpp:1027`). A file holding this many sources
+/// takes no sighting from any channel, as every aMule intake reads it
+/// (`DownloadQueue.cpp:1556`, `ClientTCPSocket.cpp:452`, `:1095`,
+/// `PartFile.cpp:1677`, `:2814`).
+pub(crate) const SOURCE_LIMIT: u32 = 300;
 
 impl Channel {
     /// The server whose namespace `sighting`, a Low-ID row of this channel,
@@ -144,13 +155,17 @@ impl DownloadState {
         let mut tally = Tally::default();
         let mut seeded = Vec::new();
         for sighting in sightings {
+            if self.sources.counts().known >= SOURCE_LIMIT {
+                tally.received += 1;
+                continue;
+            }
             let dialable = sighting.as_peer_endpoint();
             let namespace = channel.source_server(&sighting, self.callback_capability.server());
             let sighted = self.sources.sight(sighting, namespace, gate);
             tally.received += 1;
             match sighted {
                 Sighted::Blocked(Blocked::FamilyUnreachable) => tally.family_unreachable += 1,
-                Sighted::Blocked(Blocked::IpFiltered) => {}
+                Sighted::Blocked(Blocked::IpFiltered | Blocked::Reserved) => {}
                 _ => {
                     tally.admitted += 1;
                     tally.dialable += usize::from(dialable.is_some());

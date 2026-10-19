@@ -2,8 +2,8 @@
 
 ## Context
 
-A download caps its peer workers at `peer_concurrency_per_download` (ADR-0026), but
-its source list is usually longer and full of dead or firewalled entries. If the
+A download opens only so many peer workers at once, but its source list is usually
+longer and full of dead or firewalled entries. If the
 runner keeps only the first few sources and dials them in a blocking loop, two
 things break: one dead entry in the first batch aborts the whole download while
 other sources sit untried, and once the first workers are gone nothing replaces
@@ -16,9 +16,12 @@ happened to be live completed.
 The runner keeps every usable source as an ordered candidate pool and backfills
 workers from it; a worker's identification is an event, not a blocking call.
 
-- All usable sources go into the pool. The runner spawns workers from it to keep
-  `peer_concurrency_per_download` in play — active, connecting and awaiting a
-  callback together — at start and after every retirement.
+- All usable sources go into the pool. The runner spawns workers from it as the node's
+  **Connection Budget** admits them (ADR-0116) — at start, after every retirement and at
+  each turn of the Dial Window that refused one. A grant is never admitted: the worker an
+  uploader's grant opens for a source waiting in its queue, on the link the grant came on
+  (ADR-0057), opens whatever the budget reads. A granted slot is a transfer, not a dial;
+  refusing it would cost the source's queue standing.
 - The pool grows while the download runs: server-UDP global sources (ADR-0051), Kad
   sources (ADR-0043), source exchange (ADR-0055), and Low-ID sources reached by
   callback (ADR-0039) all feed it.
@@ -26,8 +29,9 @@ workers from it; a worker's identification is an event, not a blocking call.
   own task dials and handshakes, then emits `PeerWorkerEvent::Connected` when the peer
   is usable, or `DialEnded` naming the cause followed by `Disconnected` (or
   `CryptIncompatible`) when it is not.
-- Core assigns a worker its first part on `Connected`, not at spawn, so a failed
-  handshake strands no part. A failed handshake is an ordinary worker failure and
+- Core assigns a worker its first part when its peer answers the file probe
+  (`PartsAdvertised`, ADR-0112), never at spawn or on `Connected`, so neither a failed
+  handshake nor a part the peer lacks strands a part. A failed handshake is an ordinary worker failure and
   takes the same retire-and-backfill path as a mid-download disconnect.
 - The download fails with `NoUsableSources` only when the pool is empty and no worker
   is active, connecting or awaiting a callback.
@@ -43,10 +47,10 @@ workers from it; a worker's identification is an event, not a blocking call.
 
 - Any download with at least one live, granting peer among its sources completes,
   instead of depending on the first few entries being live.
-- `peer_concurrency_per_download` stays the one concurrency knob and bounds socket
-  use.
-- In-process fakes return a worker at once and must emit `Connected` before a part
-  is assigned, the same contract the runtime adapter keeps.
+- The Connection Budget (ADR-0116) bounds the dials every download makes together; a
+  grant an uploader makes by dialing back adds its one link.
+- In-process fakes return a worker at once and must emit `Connected` and then
+  `PartsAdvertised` before a part is assigned, the same contract the runtime adapter keeps.
 
 ## Considered options
 
@@ -56,6 +60,6 @@ workers from it; a worker's identification is an event, not a blocking call.
 - **Connector tasks handing ready workers back on a second channel.** Rejected: it
   duplicates readiness bookkeeping beside the worker event stream the runner already
   consumes.
-- **Dialling more connectors than the worker cap** to time out dead peers in
+- **Dialling more connectors than the budget admits** to time out dead peers in
   parallel. Not adopted: backfill already makes dead-heavy source lists succeed, and
   over-dialling costs more sockets and a second tuning knob.

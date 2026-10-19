@@ -25,7 +25,12 @@ impl SourceLookupService for StancelessSources {
             client_id: ClientId::from_u32(STANCELESS[0]),
             sources: STANCELESS
                 .iter()
-                .map(|&id| SourceSighting::plain(PeerSource::new(ClientId::from_u32(id), 4663)))
+                .map(|&id| {
+                    SourceSighting::plain(
+                        PeerSource::new(ClientId::from_u32(id), 4663),
+                        rmule_primitives::Informant::Own,
+                    )
+                })
                 .collect(),
         })
     }
@@ -54,6 +59,7 @@ async fn a_required_policy_tells_each_stanceless_source_s_refusal_once() {
             &rmule_primitives::FileHash::from_bytes([0; 16]),
         ),
         if_taken: crate::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

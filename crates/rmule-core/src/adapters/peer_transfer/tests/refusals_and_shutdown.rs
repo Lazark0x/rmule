@@ -72,10 +72,15 @@ async fn a_required_policy_names_a_stanceless_seed_s_refusal() {
 
 /// The obfuscation policy changes live (ADR-0046): each dial reads it as it
 /// starts, so the dial made before a change to `Required` reaches its
-/// stanceless peer, and the very next one is refused before any socket.
+/// stanceless peer, and the very next one is refused before any socket. The
+/// next dial is to another peer: one to the same peer would wait on the
+/// first one's link instead of dialing (ADR-0107).
 #[tokio::test]
 async fn a_live_policy_change_reaches_the_very_next_dial() {
     let listener = PeerListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let other = PeerListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
         .await
         .unwrap();
     let policy = crate::obfuscation_policy::SharedObfuscationPolicy::default();
@@ -84,11 +89,8 @@ async fn a_live_policy_change_reaches_the_very_next_dial() {
             obfuscation: policy.clone(),
             ..HelloAdverts::default()
         });
-    let peer = PeerEndpoint::V4(Ipv4Endpoint::new(
-        Ipv4Addr::LOCALHOST,
-        listener.local_port(),
-    ));
-    let dial = async |transfer: &mut RuntimePeerTransferService| {
+    let at = |port| PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, port));
+    let dial = async |transfer: &mut RuntimePeerTransferService, peer| {
         transfer
             .start_download_worker(
                 peer,
@@ -100,7 +102,7 @@ async fn a_live_policy_change_reaches_the_very_next_dial() {
             .unwrap()
     };
 
-    let _before = dial(&mut transfer).await;
+    let _before = dial(&mut transfer, at(listener.local_port())).await;
     timeout(
         Duration::from_secs(2),
         listener.accept(dialed_serve_ctx(), PeerConnectOptions::default()),
@@ -110,7 +112,7 @@ async fn a_live_policy_change_reaches_the_very_next_dial() {
     .expect("in plaintext, as off dials");
 
     policy.set(Some(ObfuscationPolicy::Required));
-    let mut after = dial(&mut transfer).await;
+    let mut after = dial(&mut transfer, at(other.local_port())).await;
     assert_eq!(
         first_two(&mut after).await,
         [
@@ -119,6 +121,15 @@ async fn a_live_policy_change_reaches_the_very_next_dial() {
             }),
             Some(PeerWorkerEvent::CryptIncompatible)
         ]
+    );
+    assert!(
+        timeout(
+            Duration::from_millis(300),
+            other.accept(dialed_serve_ctx(), PeerConnectOptions::default())
+        )
+        .await
+        .is_err(),
+        "the refused dial opens no socket"
     );
 }
 
@@ -335,13 +346,13 @@ async fn a_shutdown_mid_part_stops_the_stream_at_once() {
         .await
         .unwrap();
     worker
-        .send(PeerWorkerCommand::RequestPart {
-            plan: crate::PartPlan {
+        .send(PeerWorkerCommand::RequestBlocks {
+            blocks: vec![crate::BlockPlan {
                 part_index: 0,
-                offset: 0,
-                len: file.size,
-            },
-            resume_offset: 0,
+                start: 0,
+                end: file.size,
+            }],
+            handout: 1,
         })
         .await
         .unwrap();

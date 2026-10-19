@@ -163,7 +163,7 @@ pub fn decode_publish_notes_req(envelope: &KadEnvelope) -> Result<KadId, NotesDe
     reader.take(KadId::BYTE_LEN, "notes publish source ID")?;
     let tag_count = reader.read_u8("notes publish tag count")?;
     for _ in 0..tag_count {
-        let (_, consumed) = Tag::decode_prefix(reader.remaining_bytes()).map_err(|_| {
+        let (_, consumed) = Tag::decode_or_step_prefix(reader.remaining_bytes()).map_err(|_| {
             NotesDecodeError::Malformed {
                 reason: "notes publish tag is truncated or malformed",
             }

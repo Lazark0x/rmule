@@ -62,7 +62,8 @@ fn amules_status() -> PartBitmap {
 
 fn answer(datagram: &[u8], pinger: Pinger, room: QueueRoom, shared: Option<u64>) -> ReaskAnswer {
     let ping = responder::read(datagram).expect("a ping naming a file");
-    responder::answer(&ping, &pinger, room, shared)
+    let shared = shared.map(responder::SharedFile::whole);
+    responder::answer(&ping, &pinger, room, shared.as_ref())
 }
 
 fn send(datagram: Vec<u8>, encrypt_for: Option<PeerUdpCryptTarget>) -> ReaskReply {

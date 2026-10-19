@@ -42,6 +42,7 @@ fn two_running_downloads(
                 &file_link(name, &bytes),
                 Some(server),
                 &DownloadPaths::from_final_path(dir.join(name)),
+                None,
             )
             .unwrap();
         repo.set_lifecycle(record.id(), DownloadLifecycle::Active)

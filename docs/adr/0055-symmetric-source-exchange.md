@@ -71,8 +71,9 @@ admission rule leaves open (ADR-0039, ADR-0061, ADR-0091).
 - **Pools**, as aMule builds them: for a shared complete file, upload-engaged clients
   (uploading or queued), with a source of unknown status included
   ([KnownFile.cpp#L965](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/KnownFile.cpp#L965));
-  for a download in progress, the file's sources that are downloading or queued, with
-  unknown status excluded
+  for a download in progress, the file's sources that are downloading or queued and not
+  queue-full (`PartFile.cpp:2601`), with unknown status excluded, kept by the run from its
+  Source Book (ADR-0113)
   ([PartFile.cpp#L2596](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/PartFile.cpp#L2596)).
 - **The answer rule.** The part status a peer writes into its name ask, or restates in a
   UDPv4 `OP_REASKFILEPING` (`0x90`, ADR-0057), is kept per peer and file, aMule's
@@ -153,7 +154,7 @@ in core when the count is not the file's.
 | Before the hello | `cts:307-308` throw | kept as unknown, link open (ADR-0018) |
 | Banned IP: silence | `cts:186`, `:433` | refused at accept |
 | Unshared file: silence, link kept | `cts:442-447` | same |
-| A downloading file over one part is answered | `cts:443-453` | only complete files are shared |
+| A downloading file over one part is answered | `cts:441-455` | same, from its Served Download; the asker becomes a candidate (ADR-0113) |
 | Sets the Asked File | `cts:462` | same |
 | Wait clock starts at the first file ask | `cts:436-438` | starts at the slot ask (divergence 3) |
 | Claim 0: status cleared, ask answered | `uc:400-406` | same |
@@ -165,7 +166,7 @@ in core when the count is not the file's.
 | **Status ask (`OP_SETREQFILEID`)** | | |
 | Not exactly a hash: disconnect | `cts:497`, `:536` | same |
 | Unshared: `OP_FILEREQANSNOFIL` | `cts:503-512` | same |
-| Shared: `OP_FILESTATUS`, a complete file as count 0; sets the Asked File | `cts:521-529` | same |
+| Shared: `OP_FILESTATUS`, a complete file as count 0, a part file as its parts (`cts:524-528`); sets the Asked File | `cts:521-529` | same; a part file's from the Verified Range, and a download not yet offered moves no standing (ADR-0113) |
 | **Bundle (`OP_MULTIPACKET` / `_EXT`)** | | |
 | Before the handshake | `cts:1050-1054` throw | kept as unknown, link open (ADR-0018) |
 | Header cut short: disconnect | `cts:1057-1058` | same |
@@ -195,7 +196,7 @@ in core when the count is not the file's.
 | Matched: standing refreshed | `cus:198-200` | same |
 | UDPv4 status through the name ask's reader; malformed: silence, counted | `cus:202-203` | same |
 | UDPv3: complete count only; hash alone silenced | `cus:204-209` | same |
-| Ack: our status for a UDPv4 pinger (complete file as count 0), then the rank | `cus:213-222` | same |
+| Ack: our status for a UDPv4 pinger (complete file as count 0, a part file as its parts), then the rank | `cus:213-222` | same; a Partial Share answers its Verified Range (ADR-0113) |
 | Unknown sender: `OP_QUEUEFULL` in plaintext when nearly full, else silence | `cus:231-236` | same |
 | One IP, several ports: silence | `cus:237-239` | same |
 | Buddy-relayed reask with a malformed body | `cts:1704-1707` drops the buddy link | ping silenced, link kept |

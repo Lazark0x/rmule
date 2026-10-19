@@ -27,6 +27,7 @@ pub(crate) fn download_row(
         part_count: Some(part_count),
         verified_bytes: 0,
         metadata: None,
+        file_path: None,
         failure: None,
         source_wait: None,
     }
@@ -85,8 +86,12 @@ pub(crate) fn diag(
         workers: workers.into_iter().map(|w| (w.slot(), w)).collect(),
         received_bytes,
         known_sources: 0,
+        source_activity: rmule_core::diagnostics::SourceActivity::default(),
         dials_ended: 0,
         dial_ends: Default::default(),
+        allocated_bytes: None,
+        hole_verdict: None,
+        completion: None,
         reask_replies_ignored: 0,
     }
 }
@@ -146,7 +151,7 @@ pub(crate) fn three_downloads() -> UiState {
                 ),
                 remembered(worker(
                     1,
-                    WorkerPhase::WaitingForSlot,
+                    WorkerPhase::WaitingForSlot { rank: Some(3) },
                     Some(peer_endpoint(2)),
                 )),
             ],
@@ -166,6 +171,16 @@ pub(crate) fn three_downloads() -> UiState {
     for (id, known) in [(1, 8), (2, 0), (3, 1)] {
         diags.get_mut(&download_id(id)).expect("diag").known_sources = known;
     }
+    // Of the active run's eight: one transferring, one still asking, three
+    // waiting in remote queues with no connection (ADR-0116).
+    diags
+        .get_mut(&download_id(1))
+        .expect("diag")
+        .source_activity = rmule_core::diagnostics::SourceActivity {
+        asking: 1,
+        queued: 3,
+        transferring: 1,
+    };
 
     let mut download_bps = BTreeMap::new();
     download_bps.insert(download_id(1), 123.4 * 1024.0);
@@ -295,5 +310,27 @@ pub(crate) fn waiting_downloads() -> UiState {
             }),
         );
     }
+    state
+}
+
+/// One Preview Ready download (ADR-0114): download_id(1), `film.mkv` over
+/// two parts, running with part 0 verified on its diagnostics row, its
+/// `.part` published, and the Player Command `mpv --fs` set. A test breaks
+/// one fact to reach each block.
+pub(crate) fn preview_ready() -> UiState {
+    let mut row = download_row(DownloadStatus::Downloading, 0x4D, 2);
+    row.metadata = Some(metadata(
+        "film.mkv",
+        ED2K_PART_SIZE + 1,
+        DownloadMetadataOrigin::Link,
+    ));
+    row.file_path = Some(super::rooted("films/film.mkv.part"));
+    let mut state = UiState::default();
+    state.downloads.insert(download_id(1), row);
+    state
+        .diagnostics
+        .downloads
+        .insert(download_id(1), diag(download_id(1), 0x4D, "VM", 0, vec![]));
+    state.preferences.player_command = Some("mpv --fs".to_string());
     state
 }

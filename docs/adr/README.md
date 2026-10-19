@@ -35,7 +35,7 @@ where a rejected alternative would otherwise come back.
 | [0026](0026-core-owned-download-orchestration.md) | Core owns download orchestration: per-peer connections, multi-peer scheduling, verification and storage |
 | [0027](0027-tracing-as-third-diagnostic-channel.md) | Tracing as a third diagnostic channel |
 | [0028](0028-worker-phase-diagnostics-snapshot.md) | Worker phase and diagnostics snapshot for hang investigation |
-| [0029](0029-block-level-cross-peer-part-assembly.md) | Block-level cross-peer part assembly with a core-owned prefix buffer |
+| [0029](0029-block-level-cross-peer-part-assembly.md) | Core-owned part assembly across peers, and the request pipeline |
 | [0030](0030-candidate-source-pool-with-worker-backfill.md) | Candidate-source pool with worker backfill and event-driven peer identification |
 | [0031](0031-bidirectional-peer-session-and-inbound-listener.md) | Bidirectional peer session with core-owned upload scheduling and an inbound listener |
 | [0032](0032-persistent-multiplexed-server-session.md) | Persistent, multiplexed eD2k server session shared by source-lookup and serve |
@@ -107,13 +107,20 @@ where a rejected alternative would otherwise come back.
 | [0098](0098-hello-names-the-live-session.md) | Every hello names the live server session |
 | [0099](0099-announce-policy.md) | The Announce Policy: shares may be withheld from servers that answer related searches |
 | [0100](0100-known-file-marks.md) | Known-File Marks: every search result says whether rmule has, fetches, failed, had or dropped the file |
-| [0101](0101-shared-directories.md) | Shared directories are the only way rmule shares: whole, recursive, guarded and confirmed |
+| [0101](0101-shared-directories.md) | Shared directories are the only way rmule shares a whole file: whole directories, recursive, guarded and confirmed |
 | [0102](0102-directory-scan-and-hash-trust.md) | The scan hashes one file at a time and trusts a stored hash on its path, size and time |
 | [0103](0103-directory-watch.md) | The watch: one notify stream per shared directory, coalesced and waiting for stillness |
 | [0104](0104-spare-copies-and-renames.md) | Spare copies and renames carry a stored hash only when the file's identity proves it |
 | [0105](0105-had-set.md) | The Had Set remembers content that left the disk, by hash, and a move never passes through it |
 | [0106](0106-registry-against-the-disk.md) | The registry against the disk: what is offered is readable now, and a peer is answered honestly when it is not |
-| [0107](0107-one-peer-several-downloads.md) | One peer, several downloads: every per-peer set is keyed so two downloads never share a standing, a claim or an answer |
+| [0107](0107-one-peer-several-downloads.md) | One peer, several downloads: one link and one queue standing per peer, and every claim and answer keyed to the download it serves |
 | [0108](0108-source-exchange-ask-cadence.md) | The source-exchange ask follows aMule's gate, per peer and download, under every name the peer is known by |
 | [0109](0109-source-seeds.md) | Source Seeds: a restart dials first the peers the last run knew, without asking anyone |
 | [0110](0110-dial-end-cause.md) | A dial that ends before the hello says why, and the cause outlives the slot |
+| [0111](0111-sparse-part-file.md) | A part file stays positional and is never pre-sized; every write that extends it punches the gap it opened, and each run measures whether its disk holds holes |
+| [0112](0112-streaming-window-availability-aware-part-scheduling.md) | A peer is handed only a part it advertised: very rare first, then aMule's head and tail, then a streaming window, then rarest |
+| [0113](0113-partial-share-from-the-first-verified-part.md) | A download offers its verified parts from the first one, running or paused: the download's own, never a registry row |
+| [0114](0114-preview-action.md) | Preview hands a download's own file to the operator's player as one argument, once its first part is verified |
+| [0115](0115-temp-directory-and-completion-move.md) | Part files live in a Temp Directory apart from finished files; completion moves the file into the download directory, waits while a program holds it, and copies only across volumes |
+| [0116](0116-asking-and-transferring.md) | A download asks for queue places under one Connection Budget and transfers from every slot it is granted; a Low-ID rmule reasks at 15 minutes; an uploader we queue at is preferred within aMule's score |
+| [0117](0117-block-level-parts-and-a-bounded-end-game.md) | A part's blocks are shared by every worker that holds it, and its last blocks are asked twice, at most three at a time |

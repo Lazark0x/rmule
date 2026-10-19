@@ -164,6 +164,7 @@ async fn a_buddy_named_by_id_alone_is_walked_to_and_sent_the_0x52() {
         source_hint: Some(server_ep),
         name: rmule_testkit::file_name("walked-buddy.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

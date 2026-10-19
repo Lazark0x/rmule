@@ -6,13 +6,16 @@
 //!   OP_ACCEPTUPLOADREQ = 0x55 (OP_EDONKEYPROT) empty
 //!   OP_CANCELTRANSFER  = 0x56 (OP_EDONKEYPROT) empty — "stop sending, I no
 //!                        longer want this transfer" (ADR-0056)
-//!   OP_OUTOFPARTREQS   = 0x57 (OP_EDONKEYPROT) empty — TCP "no slot now"
+//!   OP_OUTOFPARTREQS   = 0x57 (OP_EDONKEYPROT) empty — TCP "back to queue"
 //!   OP_QUEUERANKING    = 0x60 (OP_EMULEPROT)   12 bytes: u16 rank + 10 zero pad
 //!
-//! `OP_OUTOFPARTREQS`, not `OP_QUEUEFULL`, is the TCP "no slot" answer:
+//! `OP_OUTOFPARTREQS` is the uploader ending a granted transfer and queueing
+//! the downloader again: aMule sends it when the session's time or bytes are
+//! up while someone waits, then ranks the downloader on the same socket
+//! (`UploadClient.cpp:643-660`). Its receiver goes back to queued
+//! (`ClientTCPSocket.cpp:755-762`), and the session does the same (ADR-0025).
 //! `OP_QUEUEFULL = 0x93` is a UDP-only opcode and this session has no UDP
-//! surface. eMule spec §6.4.13 notes that the receiver of
-//! `OP_OUTOFPARTREQS` takes no action — the session stays queued.
+//! surface.
 //!
 //! `OP_QUEUERANKING`'s 10-byte trailing pad is "purpose unknown" per
 //! eMule spec §6.5.4; aMule sender writes zeros (`UploadClient.cpp:585-589`)
@@ -82,7 +85,8 @@ empty_body_codec! {
 }
 
 empty_body_codec! {
-    /// `OP_OUTOFPARTREQS` (`0x57`) — no slot, now or any longer.
+    /// `OP_OUTOFPARTREQS` (`0x57`) — the granted transfer is over; back to
+    /// the queue.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     OutOfPartReqs, SlotDecodeError,
     protocol: PeerOpcode::OutOfPartReqs.protocol(),

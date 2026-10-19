@@ -116,11 +116,13 @@ fn a_source_exchange_request_answers_from_the_engaged_high_id_upload_clients() {
         PeerSource::new(high_id_client([1, 2, 3, 4]), 4662),
         Some(user(0xA1)),
         None,
+        rmule_primitives::Informant::Party(high_a.ip()),
     );
     let expected_b = SourceSighting::new(
         PeerSource::new(high_id_client([5, 6, 7, 8]), 5000),
         Some(user(0xB2)),
         None,
+        rmule_primitives::Informant::Party(high_b.ip()),
     );
     assert_eq!(
         out,
@@ -258,6 +260,7 @@ fn a_low_id_client_that_named_an_ipv6_is_served_over_it() {
         PeerSource::Ipv6(Ipv6Endpoint::new(v6, 4662)),
         Some(user(0x51)),
         None,
+        rmule_primitives::Informant::Party(queued.ip()),
     );
     assert_eq!(
         state.on_conn_event(t, asker, sx_request(file), &no_modifiers()),
@@ -299,8 +302,13 @@ fn a_high_id_client_that_named_an_ipv6_is_served_with_both_addresses() {
         t,
     );
     let decisions = state.on_conn_event(t, asker, sx_request(file), &no_modifiers());
-    let expected = SourceSighting::new(PeerSource::new(id, 4662), Some(user(0x51)), None)
-        .with_ipv6_half(Some(Ipv6Endpoint::new(v6, 4662)));
+    let expected = SourceSighting::new(
+        PeerSource::new(id, 4662),
+        Some(user(0x51)),
+        None,
+        rmule_primitives::Informant::Party(queued.ip()),
+    )
+    .with_ipv6_half(Some(Ipv6Endpoint::new(v6, 4662)));
     assert_eq!(
         decisions.first(),
         Some(&ServeDecision::Send {
@@ -354,8 +362,13 @@ fn a_revised_ipv6_is_the_one_an_answer_offers() {
         t,
     );
     let decisions = state.on_conn_event(t, asker, sx_request(file), &no_modifiers());
-    let expected = SourceSighting::new(PeerSource::new(id, 4662), Some(user(0x52)), None)
-        .with_ipv6_half(Some(Ipv6Endpoint::new(moved, 4662)));
+    let expected = SourceSighting::new(
+        PeerSource::new(id, 4662),
+        Some(user(0x52)),
+        None,
+        rmule_primitives::Informant::Party(queued.ip()),
+    )
+    .with_ipv6_half(Some(Ipv6Endpoint::new(moved, 4662)));
     assert_eq!(
         decisions.first(),
         Some(&ServeDecision::Send {
@@ -368,56 +381,66 @@ fn a_revised_ipv6_is_the_one_an_answer_offers() {
     );
 }
 
-/// After an `OP_CHANGE_CLIENT_ID` the answer offers the ID the peer now
-/// answers to, not the one its hello named.
+/// After an `OP_CHANGE_CLIENT_ID` the answer reads the ID the peer now
+/// answers to against its link, as aMule takes one
+/// (`ClientTCPSocket.cpp:773-787`): a Low ID is a callback the answer leaves
+/// out, and a High ID other than the link's address changes nothing — the
+/// source stays where its link came from.
 #[test]
-fn a_revised_client_id_is_the_one_an_answer_offers() {
+fn a_revised_client_id_is_read_against_the_link_an_answer_offers() {
     use rmule_primitives::SourceSighting;
 
     let file = hash(0x47);
-    let mut state = serving_state(2, vec![entry(file, 4096, "served.bin")]);
-    let t = Instant::now();
     let queued = peer_at([198, 51, 100, 9], 40_000);
-    let id = high_id_client([198, 51, 100, 9]);
-    identify_source(&mut state, queued, user(0x53), id, 4662, t);
-    let _ = slot_request(&mut state, queued, file, t);
-    let moved = high_id_client([198, 51, 100, 10]);
-    let revised = HelloFacts {
-        client_id: moved,
-        ..HelloFacts::of(user(0x53))
-    }
-    .identity();
-    let _ = state.on_conn_event(
-        t,
-        queued,
-        ServeInput::Connection(ConnectionEvent::IdentityRevised {
-            identity: revised,
-            what: IdentityChange::ClientId,
-        }),
-        &no_modifiers(),
+    let at_link = SourceSighting::new(
+        PeerSource::new(high_id_client([198, 51, 100, 9]), 4662),
+        Some(user(0x53)),
+        None,
+        rmule_primitives::Informant::Party(queued.ip()),
     );
+    for (moved, offered) in [
+        (high_id_client([198, 51, 100, 10]), Some(at_link)),
+        (ClientId::from_u32(77), None),
+    ] {
+        let mut state = serving_state(2, vec![entry(file, 4096, "served.bin")]);
+        let t = Instant::now();
+        let id = high_id_client([198, 51, 100, 9]);
+        identify_source(&mut state, queued, user(0x53), id, 4662, t);
+        let _ = slot_request(&mut state, queued, file, t);
+        let revised = HelloFacts {
+            client_id: moved,
+            ..HelloFacts::of(user(0x53))
+        }
+        .identity();
+        let _ = state.on_conn_event(
+            t,
+            queued,
+            ServeInput::Connection(ConnectionEvent::IdentityRevised {
+                identity: revised,
+                what: IdentityChange::ClientId,
+            }),
+            &no_modifiers(),
+        );
 
-    let asker = peer_at([9, 9, 9, 9], 4000);
-    identify_source(
-        &mut state,
-        asker,
-        user(0xD6),
-        ClientId::from_u32(0),
-        4662,
-        t,
-    );
-    let decisions = state.on_conn_event(t, asker, sx_request(file), &no_modifiers());
-    let expected = SourceSighting::new(PeerSource::new(moved, 4662), Some(user(0x53)), None);
-    assert_eq!(
-        decisions.first(),
-        Some(&ServeDecision::Send {
-            peer: asker,
-            command: ServerCommand::AnswerSources {
-                file_hash: file,
-                sources: vec![expected],
-            },
-        }),
-    );
+        let asker = peer_at([9, 9, 9, 9], 4000);
+        identify_source(
+            &mut state,
+            asker,
+            user(0xD6),
+            ClientId::from_u32(0),
+            4662,
+            t,
+        );
+        let decisions = state.on_conn_event(t, asker, sx_request(file), &no_modifiers());
+        let answered = decisions.into_iter().find_map(|decision| match decision {
+            ServeDecision::Send {
+                command: ServerCommand::AnswerSources { sources, .. },
+                ..
+            } => Some(sources),
+            _ => None,
+        });
+        assert_eq!(answered, offered.map(|source| vec![source]), "{moved:?}");
+    }
 }
 
 /// The name ask that tells the serve state which parts `p` holds of `file`
@@ -479,6 +502,7 @@ fn pool_with_known_unknown_and_empty_status(
             PeerSource::new(high_id_client(octets), 4662),
             Some(user(hash_byte)),
             None,
+            rmule_primitives::Informant::Party(p.ip()),
         )
     });
     (state, sources)

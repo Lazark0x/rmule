@@ -12,6 +12,8 @@ use rmule_kad::KadNodeStart;
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
+use rmule_testkit::kad_node::host_ip;
+
 use rmule_kad::{Kad2Message, Kad2NodeInfo, KadId, KadNode, KadNodeConfig, KadNodeEndpoint};
 
 // ---- recorded bytes ---------------------------------------------------------
@@ -95,9 +97,10 @@ pub fn joining_node() -> KadNode {
     KadNode::new(join_start().self_lookup())
 }
 
-/// A candidate's endpoint, by last octet, on the default Kad UDP port.
-pub fn ep(last_octet: u8) -> KadNodeEndpoint {
-    KadNodeEndpoint::new(Ipv4Addr::new(203, 0, 113, last_octet), 4672)
+/// Candidate `host`'s endpoint on the default Kad UDP port, at its own
+/// fake-public /24 ([`host_ip`]).
+pub fn ep(host: u8) -> KadNodeEndpoint {
+    KadNodeEndpoint::new(host_ip(host), 4672)
 }
 
 /// The bytes of a `BOOTSTRAP_REQ` — the payload-free datagram a dial is.
@@ -142,7 +145,8 @@ pub const TWENTY_MIN: Duration = Duration::from_secs(20 * 60);
 
 // ---- nodes.dat rows ---------------------------------------------------------
 
-/// A contact's address, by last octet — TEST-NET, so nothing here reads as LAN.
-pub fn ip(byte: u8) -> Ipv4Addr {
-    Ipv4Addr::new(203, 0, 113, byte)
+/// Contact `host`'s address — fake-public, so nothing here reads as LAN, and
+/// alone in its /24, so no admission cap refuses it ([`host_ip`]).
+pub fn ip(host: u8) -> Ipv4Addr {
+    host_ip(host)
 }

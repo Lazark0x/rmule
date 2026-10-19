@@ -257,7 +257,9 @@ impl FakeNetwork {
                     },
                 )
                 .map_or(datagram, |decrypted| decrypted.payload);
-                front.on_datagram(from, &plain, Instant::now()).await;
+                front
+                    .on_datagram(from, &plain, &any_source, Instant::now())
+                    .await;
             }
         });
         Self {
@@ -276,6 +278,12 @@ impl FakeNetwork {
     fn wire(&self) -> Vec<Datagram> {
         self.log.lock().expect("wire log").clone()
     }
+}
+
+/// Every source expected: these legs are about what a tunnel does once its
+/// opener is admitted, not about who may open one.
+fn any_source(_: std::net::IpAddr) -> bool {
+    true
 }
 
 fn ctx(user_hash: UserHash, nickname: &str) -> PeerHandshakeContext {
@@ -431,7 +439,7 @@ async fn an_ipv6_tunnel_frees_its_registry_slot_when_it_is_dropped() {
         net.b_registry
             .lock()
             .expect("registry")
-            .admit(net.a_at, false, Instant::now()),
+            .admit(net.a_at, false, any_source, Instant::now()),
         Admission::Drop,
         "a late non-SYN from the closed source is a stranger's again"
     );
@@ -457,7 +465,7 @@ async fn the_demux_routes_every_frame_type_and_gates_the_transport_arms() {
     data[0] = 0x01; // ST_DATA
     assert_eq!(
         net.b
-            .on_datagram(net.a_at, &NattFrame::Utp(&data).encode(), now)
+            .on_datagram(net.a_at, &NattFrame::Utp(&data).encode(), &any_source, now)
             .await,
         NattDisposition::Utp(Admission::Drop)
     );
@@ -467,13 +475,13 @@ async fn the_demux_routes_every_frame_type_and_gates_the_transport_arms() {
     syn[0] = 0x41; // ST_SYN
     assert_eq!(
         net.b
-            .on_datagram(net.a_at, &NattFrame::Utp(&syn).encode(), now)
+            .on_datagram(net.a_at, &NattFrame::Utp(&syn).encode(), &any_source, now)
             .await,
         NattDisposition::Utp(Admission::Opened)
     );
     assert_eq!(
         net.b
-            .on_datagram(net.a_at, &NattFrame::Utp(&data).encode(), now)
+            .on_datagram(net.a_at, &NattFrame::Utp(&data).encode(), &any_source, now)
             .await,
         NattDisposition::Utp(Admission::Inject)
     );
@@ -481,7 +489,12 @@ async fn the_demux_routes_every_frame_type_and_gates_the_transport_arms() {
     // A QUIC frame with no QUIC runtime is dropped, not answered.
     assert_eq!(
         net.b
-            .on_datagram(net.a_at, &NattFrame::Quic(&[0xC0, 0x00]).encode(), now)
+            .on_datagram(
+                net.a_at,
+                &NattFrame::Quic(&[0xC0, 0x00]).encode(),
+                &any_source,
+                now
+            )
             .await,
         NattDisposition::QuicUnavailable
     );
@@ -489,7 +502,12 @@ async fn the_demux_routes_every_frame_type_and_gates_the_transport_arms() {
     // A KEY frame teaches the endpoint's hash.
     assert_eq!(
         net.b
-            .on_datagram(net.a_at, &NattFrame::Key(hash(0xAA)).encode(), now)
+            .on_datagram(
+                net.a_at,
+                &NattFrame::Key(hash(0xAA)).encode(),
+                &any_source,
+                now
+            )
             .await,
         NattDisposition::KeyLearned(hash(0xAA))
     );
@@ -497,13 +515,47 @@ async fn the_demux_routes_every_frame_type_and_gates_the_transport_arms() {
     // Anything that does not decode is dropped in silence — no reply frame
     // exists in this dialect, so inventing one would make rmule a reflector.
     assert!(matches!(
-        net.b.on_datagram(net.a_at, &[0xB2, 0x7F, 0x00], now).await,
+        net.b
+            .on_datagram(net.a_at, &[0xB2, 0x7F, 0x00], &any_source, now)
+            .await,
         NattDisposition::Malformed(_)
     ));
     assert!(matches!(
-        net.b.on_datagram(net.a_at, &[0xB2], now).await,
+        net.b.on_datagram(net.a_at, &[0xB2], &any_source, now).await,
         NattDisposition::Malformed(_)
     ));
+}
+
+/// An `ST_SYN` from a source nobody expects opens nothing and draws nothing:
+/// it never reaches the engine, so no `ST_STATE` and no KEY frame leave
+/// (ADR-0091, security rule 10). The same opener from an expected source
+/// opens the slot.
+#[tokio::test]
+async fn an_opener_from_an_unexpected_ip_is_dropped_with_no_answer() {
+    let net = FakeNetwork::build(UTP_ONLY, true);
+    let mut syn = [0u8; 20];
+    syn[0] = 0x41; // ST_SYN
+    let frame = NattFrame::Utp(&syn).encode();
+    let nobody = |_: std::net::IpAddr| false;
+    assert_eq!(
+        net.b
+            .on_datagram(net.a_at, &frame, &nobody, Instant::now())
+            .await,
+        NattDisposition::Utp(Admission::Drop)
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(net.wire().is_empty(), "nothing left the gated node");
+    assert_eq!(
+        net.b_registry.lock().expect("registry").slot(net.a_at),
+        None
+    );
+
+    assert_eq!(
+        net.b
+            .on_datagram(net.a_at, &frame, &any_source, Instant::now())
+            .await,
+        NattDisposition::Utp(Admission::Opened)
+    );
 }
 
 /// A CAPS probe is answered exactly once, with a CAPS-ACK that is never itself
@@ -521,7 +573,12 @@ async fn a_caps_probe_is_answered_once_and_a_misaddressed_one_is_not() {
 
     let answered = net
         .b
-        .on_datagram(net.a_at, &NattFrame::Caps(probe(hash(0xBB))).encode(), now)
+        .on_datagram(
+            net.a_at,
+            &NattFrame::Caps(probe(hash(0xBB))).encode(),
+            &any_source,
+            now,
+        )
         .await;
     assert_eq!(
         answered,
@@ -550,6 +607,7 @@ async fn a_caps_probe_is_answered_once_and_a_misaddressed_one_is_not() {
         .on_datagram(
             net.a_at,
             &NattFrame::CapsAck(probe(hash(0xBB))).encode(),
+            &any_source,
             now,
         )
         .await;
@@ -567,7 +625,12 @@ async fn a_caps_probe_is_answered_once_and_a_misaddressed_one_is_not() {
     // identity to whoever misrouted it.
     let not_ours = net
         .b
-        .on_datagram(net.a_at, &NattFrame::Caps(probe(hash(0x77))).encode(), now)
+        .on_datagram(
+            net.a_at,
+            &NattFrame::Caps(probe(hash(0x77))).encode(),
+            &any_source,
+            now,
+        )
         .await;
     assert_eq!(not_ours, NattDisposition::CapsNotOurs);
     assert_eq!(
@@ -618,7 +681,12 @@ async fn a_caps_probe_is_silent_before_identity_and_answered_once_it_arrives() {
     let now = Instant::now();
 
     let before = demux
-        .on_datagram(peer, &NattFrame::Caps(probe(acquired)).encode(), now)
+        .on_datagram(
+            peer,
+            &NattFrame::Caps(probe(acquired)).encode(),
+            &any_source,
+            now,
+        )
         .await;
     assert_eq!(before, NattDisposition::CapsBeforeIdentity);
     assert!(
@@ -629,7 +697,12 @@ async fn a_caps_probe_is_silent_before_identity_and_answered_once_it_arrives() {
     own_hash.set(acquired);
 
     let answered = demux
-        .on_datagram(peer, &NattFrame::Caps(probe(acquired)).encode(), now)
+        .on_datagram(
+            peer,
+            &NattFrame::Caps(probe(acquired)).encode(),
+            &any_source,
+            now,
+        )
         .await;
     assert_eq!(
         answered,
@@ -651,7 +724,12 @@ async fn a_caps_probe_is_silent_before_identity_and_answered_once_it_arrives() {
 
     // Identity now exists, but this frame does not name it.
     let not_ours = demux
-        .on_datagram(peer, &NattFrame::Caps(probe(hash(0x11))).encode(), now)
+        .on_datagram(
+            peer,
+            &NattFrame::Caps(probe(hash(0x11))).encode(),
+            &any_source,
+            now,
+        )
         .await;
     assert_eq!(not_ours, NattDisposition::CapsNotOurs);
 }
@@ -699,7 +777,7 @@ async fn a_quic_failure_clears_the_quic_bit_for_that_endpoint_only() {
 
     net.b.quic_failed(net.a_at, now);
     net.b
-        .on_datagram(net.a_at, &NattFrame::Caps(probe).encode(), now)
+        .on_datagram(net.a_at, &NattFrame::Caps(probe).encode(), &any_source, now)
         .await;
     let answer = net
         .wire()
@@ -722,7 +800,12 @@ async fn a_quic_failure_clears_the_quic_bit_for_that_endpoint_only() {
     // A different endpoint is unaffected: the blacklist is a fact about one
     // mapping, not about this build.
     net.b
-        .on_datagram(endpoint(9), &NattFrame::Caps(probe).encode(), now)
+        .on_datagram(
+            endpoint(9),
+            &NattFrame::Caps(probe).encode(),
+            &any_source,
+            now,
+        )
         .await;
     let other = net
         .wire()

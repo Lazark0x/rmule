@@ -7,8 +7,8 @@ use rmule_peer::{
     FileProbeStatus, NoticeEvent, PartRanges, PeerCommand, PeerEvent, RequesterCommand,
     RequesterEvent,
 };
+use rmule_primitives::PartHash;
 use rmule_primitives::session::drain;
-use rmule_primitives::{ED2K_PART_SIZE, PartHash};
 use rmule_testkit::peer_session::*;
 
 #[test]
@@ -35,7 +35,7 @@ fn unsolicited_probe_answers_do_not_seed_state_or_emit_probed() {
     let out = drain(|| session.poll_output());
     assert!(writes(&out).iter().any(|p| p.opcode() == 0x58));
     session.handle_bytes(&reqfilename_answer(h, "real"));
-    session.handle_bytes(&file_status(h, 1, &[0x01]));
+    session.handle_bytes(&file_status(h, 3, &[0x01]));
     let out = drain(|| session.poll_output());
     assert!(events(&out).iter().any(|e| matches!(
         e,
@@ -162,13 +162,10 @@ fn unsolicited_hashset_answer_does_not_precache() {
     session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     let _ = drain(|| session.poll_output());
 
-    // A real multi-part download afterwards must still fetch the hash set
-    // instead of trusting the planted "cache".
-    let ranges = PartRanges::new([(0, 64), (0, 0), (0, 0)]).unwrap();
-    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
+    // Asked for afterwards, the hash set is still fetched instead of the
+    // planted "cache" being trusted.
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestHashSet {
         file_hash: h,
-        file_size: ED2K_PART_SIZE + 1,
-        ranges,
     }));
     let out = drain(|| session.poll_output());
     assert!(

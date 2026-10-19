@@ -128,9 +128,10 @@ pub fn publish_request(file_size: u64) -> KadPublishRequest {
     ))
 }
 
-/// A routing-table contact's endpoint, in the documentation range.
-pub fn contact_endpoint(d: u8) -> KadNodeEndpoint {
-    KadNodeEndpoint::new(Ipv4Addr::new(203, 0, 113, d), 4_000 + u16::from(d))
+/// A routing-table contact's endpoint: contact `d` at its own fake-public
+/// address ([`host_ip`](crate::kad_node::host_ip)), port `4000 + d`.
+pub const fn contact_endpoint(d: u8) -> KadNodeEndpoint {
+    crate::kad_node::endpoint(d, 4_000 + d as u16)
 }
 
 /// An ID a short XOR distance from [`key`] — a contact the publish walk must

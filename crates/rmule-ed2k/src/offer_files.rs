@@ -147,9 +147,11 @@ impl OfferFiles {
     /// compression-flag server reads [`COMPLETE_FILE_ID`] or
     /// [`INCOMPLETE_FILE_ID`] off the file's completeness; any other server
     /// gets `presented_id` and `client_port` only while `ed2k_id` is High
-    /// (`KnownFile.cpp:1113-1115`), and `0:0` otherwise. Files larger than
-    /// `u32::MAX` split their size into `FT_FILESIZE` (low 32 bits) +
-    /// `FT_FILESIZE_HI` (high bits), matching aMule's large-file wire form.
+    /// (`KnownFile.cpp:1113-1115`), and `0:0` otherwise. A large file
+    /// ([`is_large_file`](rmule_primitives::is_large_file)) splits its size into
+    /// `FT_FILESIZE` (low 32 bits) + `FT_FILESIZE_HI` (high bits), aMule's
+    /// large-file wire form (`KnownFile.cpp:1138-1149`), even when the high
+    /// bits are zero.
     #[must_use]
     pub fn announce(
         grants: ServerGrants,
@@ -178,7 +180,7 @@ impl OfferFiles {
                     TagName::compact_id(FT_FILESIZE),
                     TagValue::U32(file.file_size as u32),
                 ));
-                if file.file_size > u64::from(u32::MAX) {
+                if rmule_primitives::is_large_file(file.file_size) {
                     tags.push(Tag::new(
                         TagName::compact_id(FT_FILESIZE_HI),
                         TagValue::U16((file.file_size >> 32) as u16),

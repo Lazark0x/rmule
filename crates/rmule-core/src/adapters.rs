@@ -25,23 +25,26 @@ mod peer_transfer;
 // The **Port Mapping** runtime (ADR-0086): the task that gives the sans-I/O
 // `PortMapper` its sockets — one spawned backend call per emitted command, the
 // answer fed back, the diagnostics level republished.
+mod peer_link;
 mod port_mapping;
 mod serve_runtime;
+mod served_link;
 mod source_lookup;
 mod udp_ports_advert;
 mod udp_transport;
 
 pub use kad_runtime::{
-    ClientUdpBind, KadCells, KadEnableConfig, KadNodeIdentity, KadRuntimeFactory,
+    ClientUdpBind, KadCells, KadEnableConfig, KadNodeIdentity, KadPumpStandIn, KadRuntimeFactory,
     KadShutdownHandle, KadShutdownSlot, KadSourceChannel, RuntimeKadChannel, RuntimeKadFactory,
 };
+pub use peer_link::FarEnd;
 pub use peer_transfer::{
     DownloadedPart, PeerDownloadOutcome, PeerTransferService, PeerWorker, PeerWorkerCommand,
-    PeerWorkerEvent, RuntimePeerTransferService, WorkerBrief,
+    PeerWorkerEvent, RuntimePeerTransferService, WorkerBrief, WorkerOpening,
 };
 pub use serve_runtime::{
-    AnnounceOutcome, RuntimeServeRuntimeService, ServeConnection, ServeInput, ServeOutput,
-    ServeRuntimeService,
+    AnnounceOutcome, DialBack, DialBackCallOff, DialBackOutcome, RuntimeServeRuntimeService,
+    ServeConnection, ServeInput, ServeOutput, ServeRuntimeService,
 };
 pub use source_lookup::{RuntimeSourceLookupService, SourceLookupOutcome, SourceLookupService};
 pub(crate) use udp_transport::{RuntimeServerUdpTransport, ServerUdpTransport};
@@ -54,7 +57,7 @@ pub(crate) use awaited_inbound::{
 #[cfg(test)]
 pub(crate) use awaited_inbound::{InboundArrival, InboundVerdict};
 pub(crate) use cells::AdapterCells;
-pub(crate) use dialed_serve::SharedDialedServeSink;
+pub(crate) use dialed_serve::{LinkServeHalf, SharedDialedServeSink};
 pub(crate) use directory_watch::NotifyWatchStarter;
 pub(crate) use folder_watch::NotifyFolderWatch;
 pub(crate) use hello_adverts::HelloAdverts;
@@ -66,6 +69,7 @@ pub(crate) use kad_runtime::{
     KadPresenceView, SharedKadBootstrap, SharedKadPump, request_kad_buddy_callback,
     request_kad_callback_walk, request_kad_recheck,
 };
+pub(crate) use peer_link::{AwaitedGrant, GrantSender, LinkName, LinkOffer, SharedPeerLinks};
 pub(crate) use peer_transfer::advertises_complete;
 pub(crate) use port_mapping::{
     DurablePortMappingPreferences, PortMappingControl, PortMappingHandle, PortMappingPreferences,

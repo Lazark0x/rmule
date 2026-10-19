@@ -39,6 +39,7 @@ fn callback(low: u32) -> CallbackKey {
     CallbackKey {
         server: None,
         low_id: ClientId::from_u32(low),
+        kad_port: None,
     }
 }
 
@@ -48,6 +49,7 @@ fn routing(low: u32) -> CallbackKey {
     CallbackKey {
         server: Some(Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 1), 4661)),
         low_id: ClientId::from_u32(low),
+        kad_port: None,
     }
 }
 

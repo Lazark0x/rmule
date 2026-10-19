@@ -13,11 +13,14 @@ one of them, and historically it has been rmule's.
 
 Requires the Reference Source (ADR-0082) cloned at its pinned commit: the
 sidecar `docs/reference/emule-source/eMule.meta.toml` names the URL, the commit
-and the path, and `docs/reference/README.md` gives the steps. Findings are
+and the path, and `docs/reference/README.md` gives the steps. CI's
+`reference-constants` job fetches that commit and runs this script;
+`scripts/guards.sh` runs it when the tree is present. An optional argument
+names another copy of the tree's `srchybrid/` directory. Findings are
 *specification*, not evidence — a constant confirmed here still needs a capture
 before it closes a parity row (ADR-0045).
 
-Exit status is 1 if any shared symbol disagrees.
+Exit status is 1 if any shared symbol disagrees, 2 if the tree is missing.
 """
 
 import pathlib
@@ -25,7 +28,7 @@ import re
 import subprocess
 import sys
 
-REF = pathlib.Path("docs/reference/emule-source/eMule/srchybrid")
+REF = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "docs/reference/emule-source/eMule/srchybrid")
 
 # eMule declares wire constants three ways: plain `#define NAME 0xNN`, a
 # `#define NAME "\xNN"` string form used throughout the Kad tag block, and an

@@ -52,12 +52,22 @@ impl NattKeyTable {
         Self::default()
     }
 
-    /// Adopt the hash a KEY frame carried. A later frame from the same
-    /// endpoint replaces the earlier one *and* refreshes the TTL: the endpoint
-    /// is the identity here, and it has just restated what answers there.
-    pub fn learn(&mut self, peer: PeerEndpoint, hash: UserHash, now: Instant) {
+    /// Adopt the hash a KEY frame carried, returning whether it was adopted.
+    /// A later frame from the same endpoint replaces the earlier one *and*
+    /// refreshes the TTL: the endpoint is the identity here, and it has just
+    /// restated what answers there.
+    ///
+    /// Except while the endpoint `held` a tunnel: then a hash that differs
+    /// from the live one is refused (ADR-0091, security rule 11). A NAT
+    /// rebinding moves the endpoint, never the hash at one, so the only frame
+    /// this refuses is one that would re-key a live tunnel to a stranger.
+    pub fn learn(&mut self, peer: PeerEndpoint, hash: UserHash, held: bool, now: Instant) -> bool {
+        if held && self.key_for(peer, now).is_some_and(|known| known != hash) {
+            return false;
+        }
         self.entries.entry(peer).or_insert(EMPTY).learned = Some((hash, now));
         self.prune(now);
+        true
     }
 
     /// The hash to obfuscate a send to `peer` under, or `None` — plaintext
@@ -164,7 +174,7 @@ mod tests {
         let now = Instant::now();
         let mut table = NattKeyTable::new();
         assert_eq!(table.key_for(endpoint(1), now), None);
-        table.learn(endpoint(1), hash(0x42), now);
+        table.learn(endpoint(1), hash(0x42), false, now);
         assert_eq!(table.key_for(endpoint(1), now), Some(hash(0x42)));
         assert_eq!(
             table.key_for(
@@ -182,10 +192,29 @@ mod tests {
     fn two_endpoints_hold_two_independent_keys() {
         let now = Instant::now();
         let mut table = NattKeyTable::new();
-        table.learn(endpoint(1), hash(1), now);
-        table.learn(endpoint(2), hash(2), now);
+        table.learn(endpoint(1), hash(1), false, now);
+        table.learn(endpoint(2), hash(2), false, now);
         assert_eq!(table.key_for(endpoint(1), now), Some(hash(1)));
         assert_eq!(table.key_for(endpoint(2), now), Some(hash(2)));
+    }
+
+    /// While the endpoint holds a tunnel its key is fixed: a KEY frame naming
+    /// another hash is refused and the tunnel keeps obfuscating under the one
+    /// it rose with, while a restatement of the same hash still refreshes it.
+    #[test]
+    fn a_held_endpoint_refuses_a_key_naming_another_hash() {
+        let now = Instant::now();
+        let mut table = NattKeyTable::new();
+        assert!(table.learn(endpoint(1), hash(1), true, now));
+        let later = now + Duration::from_secs(500);
+        assert!(!table.learn(endpoint(1), hash(9), true, later));
+        assert_eq!(table.key_for(endpoint(1), later), Some(hash(1)));
+        assert!(table.learn(endpoint(1), hash(1), true, later));
+        assert_eq!(
+            table.key_for(endpoint(1), now + LEARNED_HASH_TTL),
+            Some(hash(1)),
+            "the restatement refreshed the window"
+        );
     }
 
     /// A restated hash replaces the old one and refreshes the window — an
@@ -194,9 +223,9 @@ mod tests {
     fn a_second_key_frame_replaces_and_refreshes() {
         let now = Instant::now();
         let mut table = NattKeyTable::new();
-        table.learn(endpoint(1), hash(1), now);
+        table.learn(endpoint(1), hash(1), false, now);
         let later = now + Duration::from_secs(500);
-        table.learn(endpoint(1), hash(9), later);
+        table.learn(endpoint(1), hash(9), false, later);
         assert_eq!(table.key_for(endpoint(1), later), Some(hash(9)));
         assert_eq!(
             table.key_for(endpoint(1), now + LEARNED_HASH_TTL),
@@ -236,9 +265,9 @@ mod tests {
     fn a_fully_expired_endpoint_is_pruned() {
         let now = Instant::now();
         let mut table = NattKeyTable::new();
-        table.learn(endpoint(1), hash(1), now);
+        table.learn(endpoint(1), hash(1), false, now);
         assert_eq!(table.len(), 1);
-        table.learn(endpoint(2), hash(2), now + LEARNED_HASH_TTL);
+        table.learn(endpoint(2), hash(2), false, now + LEARNED_HASH_TTL);
         assert_eq!(table.len(), 1, "endpoint 1 aged out on the prune");
         assert!(!table.is_empty());
     }

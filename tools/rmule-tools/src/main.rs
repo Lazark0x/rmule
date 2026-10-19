@@ -101,10 +101,11 @@ async fn main() -> Result<()> {
             Ed2kCommand::SentinelProbe => ed2k::sentinel_probe()?,
             Ed2kCommand::SentinelStimulus(args) => ed2k::sentinel_stimulus(args).await?,
             Ed2kCommand::Download { command } => match command {
-                DownloadCommand::Start(args) => download::start(args).await?,
+                DownloadCommand::Start(args) => download::start(*args).await?,
                 DownloadCommand::Resume(args) => download::resume(args).await?,
                 DownloadCommand::Pause(args) => download::pause(args)?,
                 DownloadCommand::Status(args) => download::status(args)?,
+                DownloadCommand::Reopen(args) => download::reopen(args).await?,
             },
             Ed2kCommand::Packet { command } => match command {
                 PacketCommand::Inspect { path } => ed2k::inspect_packet(&path)?,

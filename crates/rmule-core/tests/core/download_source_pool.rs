@@ -4,7 +4,7 @@
 //! holding no usable High-ID source fails before any peer transfer starts.
 
 use rmule_core::{
-    CoreEvent, DownloadEvent, DownloadFailure, DownloadedPart, PeerDownloadOutcome,
+    CoreConfig, CoreEvent, DownloadEvent, DownloadFailure, DownloadedPart, PeerDownloadOutcome,
     PeerTransferService, PeerWorker, PeerWorkerCommand, PeerWorkerEvent, SourceLookupOutcome,
     SourceLookupService,
 };
@@ -13,8 +13,9 @@ use rmule_primitives::{
     ClientId, ED2K_PART_SIZE, Ed2kFileLink, PeerEndpoint, PeerSource, SourceLookupTarget,
 };
 use rmule_testkit::{
-    StaticPeerTransfer, StaticSourceLookup, emit_streamed_part, file_link,
-    file_link_without_part_hash_set, plain_sources, run_download, two_high_id_sources,
+    StaticPeerTransfer, StaticSourceLookup, emit_blocks, file_link,
+    file_link_without_part_hash_set, plain_sources, run_download, run_download_with,
+    two_high_id_sources,
 };
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -54,7 +55,7 @@ async fn download_backfills_from_unused_sources_when_initial_peers_fail() {
     // source completes the download instead of aborting with
     // `NoUsableSources` after only the first `peer_concurrency` peers.
     let bytes = b"backfill payload".to_vec();
-    // Four usable High-ID sources; `peer_concurrency` defaults to 2.
+    // Four usable High-ID sources, two workers per download.
     let sources = plain_sources(vec![
         PeerSource::new(ClientId::from_u32(0x0100_007F), 5001),
         PeerSource::new(ClientId::from_u32(0x0200_007F), 5002),
@@ -68,7 +69,14 @@ async fn download_backfills_from_unused_sources_when_initial_peers_fail() {
         .map(|source| source.as_peer_endpoint().unwrap())
         .collect();
 
-    let events = run_download(
+    let events = run_download_with(
+        CoreConfig {
+            peer_connections: rmule_core::PeerConnections {
+                max_connections: 2,
+                ..rmule_core::PeerConnections::default()
+            },
+            ..CoreConfig::default()
+        },
         file_link_without_part_hash_set("example.bin", &bytes),
         StaticSourceLookup {
             outcome: SourceLookupOutcome {
@@ -163,14 +171,16 @@ impl PeerTransferService for BackfillTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let failing = self.failing_peers.contains(&peer);
         let bytes = self.bytes.clone();
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             if failing {
                 // A peer from the initial batch that connects but then drops
                 // without delivering: an ordinary worker failure that must be
@@ -180,20 +190,17 @@ impl PeerTransferService for BackfillTransfer {
             }
             while let Some(command) = command_rx.recv().await {
                 match command {
-                    PeerWorkerCommand::RequestPart {
-                        plan,
-                        resume_offset,
-                    } => {
-                        emit_streamed_part(
-                            &event_tx,
-                            &DownloadedPart {
-                                part_index: plan.part_index,
-                                offset: plan.offset,
-                                bytes: bytes.clone(),
-                            },
-                            resume_offset,
-                        )
-                        .await;
+                    PeerWorkerCommand::AskSlot | PeerWorkerCommand::TakeGrant => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::RequestHashSet => {}
+                    PeerWorkerCommand::RequestBlocks { blocks, handout } => {
+                        let part = DownloadedPart {
+                            part_index: 0,
+                            offset: 0,
+                            bytes: bytes.clone(),
+                        };
+                        emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks, handout).await;
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}
                     PeerWorkerCommand::RequestAichFileHash => {}
@@ -212,14 +219,23 @@ impl PeerTransferService for AlwaysDisconnect {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
-            if let Some(PeerWorkerCommand::RequestPart { .. }) = command_rx.recv().await {
-                let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
+            let _ = event_tx.send(advertised).await;
+            // The AICH-root ask the handshake triggers comes first; the slot
+            // ask follows the probe's answer, and the link fails at it, before
+            // the source stands anywhere: a source cut while it transfers would
+            // stay queued (ADR-0090), and the download would not exhaust.
+            while let Some(command) = command_rx.recv().await {
+                if matches!(command, PeerWorkerCommand::AskSlot) {
+                    let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
+                    break;
+                }
             }
         });
         Ok(PeerWorker::new(peer, command_tx, event_rx))

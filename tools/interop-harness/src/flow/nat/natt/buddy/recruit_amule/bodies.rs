@@ -255,7 +255,11 @@ pub(super) fn bodies(
     let rmule = |name: String, kad_id: &[u8; 16], role: &str, address_v4: &str| Body {
         name,
         image: options.rmule_tools_image.to_owned(),
-        pin: format!("this worktree; kad id {}; {role}", mesh::hex(kad_id)),
+        pin: format!(
+            "{}; kad id {}; {role}",
+            crate::run_record::rmule_pin(),
+            mesh::hex(kad_id)
+        ),
         address_v4: address_v4.to_owned(),
         address_v6: String::new(),
     };

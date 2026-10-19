@@ -188,6 +188,7 @@ async fn callback_adopts_low_id_peer_and_downloads_a_part() {
         source_hint: Some(server_ep),
         name: rmule_testkit::file_name("callback.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -266,6 +267,7 @@ async fn a_low_id_kad_open_downloader_never_asks_its_own_server_to_relay_a_callb
         source_hint: Some(server_ep),
         name: rmule_testkit::file_name("carve-out.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

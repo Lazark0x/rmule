@@ -7,7 +7,7 @@
 use rmule_peer::PeerIdentity;
 use rmule_primitives::{Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, UserHash};
 
-use super::record::{DialRoad, Lane, Live, RecordId, Stage};
+use super::record::{DialRoad, Heard, Lane, Live, RecordId, Stage};
 use super::road::PendingRoad;
 use super::standing::ReaskFacts;
 use super::{Adopted, DialEnd, NextDial, Release, SourceBook, WorkerEnd};
@@ -16,20 +16,34 @@ use crate::dialable::{DialPosition, choose_dial};
 use crate::download::state::{CallbackCapability, LowIdCandidate, LowIdRoute};
 
 impl SourceBook {
-    /// Take the next dial for a free slot, while the stages hold fewer than
-    /// `cap`: the High-ID lane's first record, else the first Low-ID candidate
-    /// the admission rule admits — the connected server's lane before the
-    /// global one, a skipped candidate keeping its place. The record moves to
-    /// Dialing or CallbackPending here.
+    /// Whether a fill would find a next dial: a High-ID record pooled, or a
+    /// Low-ID candidate the admission rule admits. Asked before the
+    /// **Connection Budget** is, so a fill with nothing to open spends no road.
+    pub(crate) fn has_next_dial(
+        &self,
+        capability: &CallbackCapability,
+        dial: DialPosition,
+    ) -> bool {
+        !self.lanes.is_empty(Lane::HighId)
+            || [Lane::LowIdConnected, Lane::LowIdGlobal]
+                .into_iter()
+                .any(|lane| {
+                    self.lanes
+                        .iter(lane)
+                        .any(|id| self.low_id_route(id, capability, dial).is_some())
+                })
+    }
+
+    /// Take the next dial for a road the **Connection Budget** admitted
+    /// (ADR-0116): the High-ID lane's first record, else the first Low-ID
+    /// candidate the admission rule admits — the connected server's lane before
+    /// the global one, a skipped candidate keeping its place. The record moves
+    /// to Dialing or CallbackPending here.
     pub(crate) fn next_dial(
         &mut self,
-        cap: usize,
         capability: &CallbackCapability,
         dial: DialPosition,
     ) -> Option<NextDial> {
-        if self.slots_in_use() >= cap {
-            return None;
-        }
         if let Some(id) = self.lanes.pop_front(Lane::HighId) {
             let record = self.records.get_mut(&id)?;
             let endpoint = *record.endpoints.first()?;
@@ -128,7 +142,7 @@ impl SourceBook {
             && let Stage::Dialing(live) = record.stage
             && live.endpoint == endpoint
         {
-            record.stage = Stage::Worker(live, None);
+            record.stage = Stage::Worker(live, Heard::default());
         }
     }
 
@@ -218,6 +232,17 @@ impl SourceBook {
             }
             DialRoad::Callback => unreachable!("a called-back worker's end is taken above"),
         }))
+    }
+
+    /// The worker at `endpoint`'s source said it lacks the file (ADR-0090):
+    /// its record is spent under every name it holds and leaves the book,
+    /// whichever road reached it — a called-back source does not return to its
+    /// Low-ID lane, and a standing it held ends.
+    pub(crate) fn lacked_file(&mut self, endpoint: PeerEndpoint) -> Option<WorkerEnd> {
+        let id = self.aliases.endpoint(endpoint)?;
+        self.records.get(&id)?.live_at(endpoint)?;
+        self.spend_lacking(id);
+        Some(WorkerEnd::Release(Release::Gone))
     }
 
     /// A called-back source's worker ended without a queue rank (ADR-0090): its
@@ -478,7 +503,14 @@ impl SourceBook {
         let hash = identity.user_hash();
         let support = identity.source_exchange();
         let buddy = identity.serving_buddy();
-        record.stage = Stage::Worker(live, Some(Box::new(identity)));
+        let answered = matches!(&record.stage, Stage::Worker(_, heard) if heard.answered);
+        record.stage = Stage::Worker(
+            live,
+            Heard {
+                identity: Some(Box::new(identity)),
+                answered,
+            },
+        );
         self.learned(endpoint, support);
         if let Some(buddy) = buddy {
             self.hello_buddy(hash, buddy.buddy_udp);
@@ -505,6 +537,14 @@ impl SourceBook {
     /// none leaves nothing to key it by.
     pub(crate) fn distrust(&mut self, endpoint: PeerEndpoint) -> Option<UserHash> {
         let hash = self.identity(endpoint)?.user_hash();
-        self.blocks.distrust(hash).then_some(hash)
+        self.distrust_hash(hash).then_some(hash)
+    }
+
+    /// A writer whose hello named `user_hash` is proven to have served this
+    /// file bad data, whether or not its worker is still live (ADR-0117 §1):
+    /// distrust that hash. `true` when the distrust is new, for the brain to
+    /// persist.
+    pub(crate) fn distrust_hash(&mut self, user_hash: UserHash) -> bool {
+        self.blocks.distrust(user_hash)
     }
 }

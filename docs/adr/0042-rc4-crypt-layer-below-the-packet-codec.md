@@ -53,8 +53,12 @@ Option<ObfuscationConfig>`; `None` is disabled. The active states are `Supported
 `Required` (refuse plaintext). A failed peer dial does not fall back to plaintext. Under
 `Required`, the listener still accepts a plain connection from a party rmule is awaiting
 a reachability test from (ADR-0046). The crypt handshake runs below the session, so it
-has its own short deadline (the connect timeout, for a server) and does not eat the
-hello budget.
+has its own deadline and does not eat the hello budget: the connect timeout for a server,
+and for a peer dial aMule's socket timeout, `CONNECTION_TIMEOUT` (40 s,
+`protocol/ed2k/Constants.h:34`), which covers a socket from its connect through the
+handshake (`ClientTCPSocket.cpp:201-222`). A peer that takes the connection and never
+answers the handshake ends the dial as a connect failure, its Run Log cause
+`crypt_unanswered`, as aMule's socket times out and the connect fails.
 
 **A server login opens its link by aMule's gate** (`ServerSocket.cpp:786-795`). Each
 dial reads the policy: under `Requested` or `Required`, a server whose row says it takes

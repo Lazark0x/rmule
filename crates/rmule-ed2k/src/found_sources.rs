@@ -6,8 +6,7 @@
 //! wire-transport flag, not one of the crypt capability bits below it.
 
 use rmule_primitives::{
-    FileHash, Packet, PacketProtocol, PeerSource, SourceCryptOptions, SourceListTail,
-    SourceSighting,
+    FileHash, Packet, PacketProtocol, PeerSource, SourceClaim, SourceCryptOptions, SourceListTail,
 };
 
 use crate::source_record::{self, HAS_USER_HASH, RECORD_LEN, RecordForm};
@@ -158,10 +157,11 @@ impl FoundSources {
 /// Source**, its `[ipv6 16]` last, after both (ADR-0085). That per-source
 /// crypt-options + optional User Hash is exactly the `(crypt_options,
 /// user_hash)` provenance ADR-0046 threads onto candidates, so each source
-/// decodes to a [`SourceSighting`] — the same model the peer source-exchange
-/// path produces. This *amends* ADR-0042's rule that server-lookup sources can
+/// decodes to a [`SourceClaim`] — the same model the peer source-exchange
+/// path produces — which the session's owner states as the server's word
+/// (ADR-0085). This *amends* ADR-0042's rule that server-lookup sources can
 /// never be obfuscate-dialed: a `0x44` source's crypt side reads through
-/// [`SourceSighting::peer_crypt`], the same [`PeerCrypt::outbound`]
+/// [`SourceClaim::peer_crypt`], the same [`PeerCrypt::outbound`]
 /// (ADR-0049) rule every dial meets its peer with.
 ///
 /// [`PeerCrypt::outbound`]: rmule_primitives::PeerCrypt::outbound
@@ -172,7 +172,7 @@ impl FoundSources {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FoundSourcesObfu {
     file_hash: FileHash,
-    sources: Vec<SourceSighting>,
+    sources: Vec<SourceClaim>,
     tail: SourceListTail,
 }
 
@@ -180,7 +180,7 @@ impl FoundSourcesObfu {
     /// Construct an `OP_FOUNDSOURCES_OBFU` body. The wire count field is a
     /// `u8`, so up to 255 entries are permitted; checking here keeps
     /// `encode_packet` infallible.
-    pub fn new(file_hash: FileHash, sources: Vec<SourceSighting>) -> Result<Self> {
+    pub fn new(file_hash: FileHash, sources: Vec<SourceClaim>) -> Result<Self> {
         // A server answers with eD2k records only: a Kad callback row has no
         // record form to put in one.
         let peer_sources: Vec<PeerSource> = sources
@@ -212,7 +212,7 @@ impl FoundSourcesObfu {
     /// The sources, each carrying the crypt material its entry included,
     /// dropped exactly as [`FoundSources::sources`] drops them (ADR-0085).
     #[must_use]
-    pub fn sources(&self) -> &[SourceSighting] {
+    pub fn sources(&self) -> &[SourceClaim] {
         &self.sources
     }
 
@@ -267,10 +267,10 @@ impl FoundSourcesObfu {
                 // Store the capability bits only: HAS_USER_HASH is
                 // wire-transport framing (consumed by the walk to gate the
                 // hash), not a crypt capability, so leaking it in would split
-                // `SourceSighting` dedup against an equivalent
+                // `SourceClaim` dedup against an equivalent
                 // source-exchange source. aMule keeps `byCryptOptions & 0x7F`.
                 let crypt = record.crypt_byte.unwrap_or(0) & !HAS_USER_HASH;
-                Some(SourceSighting::new(
+                Some(SourceClaim::new(
                     record.source?,
                     record.user_hash,
                     Some(SourceCryptOptions::from_byte(crypt)),
@@ -293,7 +293,7 @@ impl FoundSourcesObfu {
         let mut payload = Vec::with_capacity(FileHash::BYTE_LEN + 1);
         payload.extend_from_slice(self.file_hash.as_bytes());
         payload.push(count);
-        // `new` admitted only sightings with a record.
+        // `new` admitted only claims with a record.
         for (source, record) in self
             .sources
             .iter()

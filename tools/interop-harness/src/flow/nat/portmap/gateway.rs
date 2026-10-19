@@ -90,8 +90,11 @@ pub(crate) struct GatewayRecord {
     pub(crate) delete_port_mapping: u64,
     /// `PCP MAP: added mapping …` lines.
     pub(crate) pcp_added: u64,
-    /// `PCP: … mapping removed` lines.
+    /// `… mapping removed` lines, PCP's and NAT-PMP's.
     pub(crate) pcp_removed: u64,
+    /// `NAT-PMP port mapping request : …` lines with a lifetime: every
+    /// NAT-PMP MAP and renewal, the zero-lifetime releases left out.
+    pub(crate) natpmp_requests: u64,
     /// Lines naming a conflict the gateway refused.
     pub(crate) conflicts: u64,
     /// The daemon's own version banner, kept verbatim: it is what says this
@@ -99,6 +102,68 @@ pub(crate) struct GatewayRecord {
     pub(crate) build: Vec<String>,
     /// How many times the tables were polled.
     pub(crate) polls: u64,
+    /// Every SOAP action the daemon logged, in order, with the client that
+    /// sent it.
+    #[serde(skip)]
+    pub(crate) soap: Vec<SoapRequest>,
+}
+
+/// One SOAP action as the daemon's `-d` log tells it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SoapRequest {
+    /// The LAN address the HTTP request came from.
+    pub(crate) client: String,
+    /// The action, `DeletePortMapping` and the like.
+    pub(crate) action: String,
+    /// The daemon's own line on it (the one opening with the action's name
+    /// and a colon), when it wrote one.
+    pub(crate) detail: Option<String>,
+}
+
+impl SoapRequest {
+    /// The external port and protocol the detail names: `GetSpecificPortMappingEntry:
+    /// rhost='' 4662 TCP found => …` or `DeletePortMapping: external port:
+    /// 4662, protocol: TCP`.
+    pub(crate) fn port(&self) -> Option<(u16, String)> {
+        let detail = self.detail.as_deref()?;
+        if let Some(rest) = detail.split_once("external port: ").map(|(_, rest)| rest) {
+            let (port, rest) = rest.split_once(',')?;
+            let protocol = rest.split_once("protocol: ")?.1.trim();
+            return Some((port.trim().parse().ok()?, protocol.to_owned()));
+        }
+        let mut words = detail.split_once("rhost=")?.1.split_whitespace().skip(1);
+        Some((words.next()?.parse().ok()?, words.next()?.to_owned()))
+    }
+}
+
+/// Every SOAP action in the daemon's log `text`: each `HTTP REQUEST from
+/// [::ffff:<client>]:<port>` names the client of the `SOAPAction` after it.
+pub(crate) fn soap_requests(text: &str) -> Vec<SoapRequest> {
+    let mut requests: Vec<SoapRequest> = Vec::new();
+    let mut client = String::new();
+    for line in text.lines() {
+        if let Some(from) = line.split_once("HTTP REQUEST from [").map(|(_, from)| from) {
+            let address = from.split(']').next().unwrap_or_default();
+            client = address.trim_start_matches("::ffff:").to_owned();
+        } else if let Some(action) = line.split_once("SOAPAction: ").map(|(_, urn)| urn) {
+            requests.push(SoapRequest {
+                client: client.clone(),
+                action: action
+                    .rsplit('#')
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_owned(),
+                detail: None,
+            });
+        } else if let Some(last) = requests.last_mut()
+            && last.detail.is_none()
+            && let Some(detail) = line.split_once(&format!("{}: ", last.action))
+        {
+            last.detail = Some(format!("{}: {}", last.action, detail.1));
+        }
+    }
+    requests
 }
 
 impl GatewayRecord {
@@ -137,6 +202,18 @@ impl GatewayRecord {
     pub(crate) fn released(&self) -> Option<bool> {
         Some(empty(self.table_v4_after.as_deref()?) && empty(self.table_v6_after.as_deref()?))
     }
+
+    /// The rows the IPv4 table still held after the driver exited, or `None`
+    /// when it could not be read.
+    pub(crate) fn rows_v4_after(&self) -> Option<Vec<LeaseRow>> {
+        Some(
+            self.table_v4_after
+                .as_deref()?
+                .lines()
+                .filter_map(|line| parse_lease(line, "v4"))
+                .collect(),
+        )
+    }
 }
 
 /// Polls the gateway's tables while a flow runs and folds them into one record.
@@ -152,6 +229,16 @@ impl GatewayWatch {
     /// A watch with nothing seen yet.
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    /// Whether any poll so far saw `internal_address:internal_port` forwarded
+    /// from the same external port.
+    pub(crate) fn has_seen_exact(&self, internal_address: &str, internal_port: u16) -> bool {
+        self.seen.values().any(|lease| {
+            lease.internal_address == internal_address
+                && lease.internal_port == internal_port
+                && lease.external_port == internal_port
+        })
     }
 
     /// Read both tables once and fold them in.
@@ -229,13 +316,18 @@ impl GatewayWatch {
             delete_port_mapping: count("#DeletePortMapping"),
             pcp_added: count("PCP MAP: added mapping"),
             pcp_removed: count("mapping removed"),
-            conflicts: count("ConflictInMappingEntry") + count("conflict"),
+            natpmp_requests: count("NAT-PMP port mapping request")
+                .saturating_sub(count(" lifetime=0s")),
+            conflicts: count("ConflictInMappingEntry")
+                + count("conflict")
+                + count("already redirected"),
             build: text
                 .lines()
                 .filter(|line| line.starts_with("rmule-miniupnpd-version"))
                 .map(ToOwned::to_owned)
                 .collect(),
             polls: self.polls,
+            soap: soap_requests(&text),
         })
     }
 }
@@ -331,6 +423,29 @@ fn parse_pinhole(line: &str, family: &'static str) -> Option<LeaseRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Lines as miniupnpd 2.3.10 logs them (run `1792392425`): the second
+    /// host's check, then rmule's blind delete.
+    #[test]
+    fn each_soap_action_is_read_with_its_client_and_port() {
+        let log = "miniupnpd[1]: HTTP REQUEST from [::ffff:10.77.0.5]:43280 : POST /ctl/IPConn (HTTP/1.1)\n\
+                   miniupnpd[1]: SOAPAction: urn:schemas-upnp-org:service:WANIPConnection:2#GetSpecificPortMappingEntry\n\
+                   miniupnpd[1]: timestamp entry found (4662, 6, 1059666)\n\
+                   miniupnpd[1]: GetSpecificPortMappingEntry: rhost='' 4662 TCP found => 10.77.0.5:4662 desc='preclaim' duration=600\n\
+                   miniupnpd[1]: HTTP REQUEST from [::ffff:10.77.0.4]:41102 : POST /ctl/IPConn (HTTP/1.1)\n\
+                   miniupnpd[1]: SOAPAction: urn:schemas-upnp-org:service:WANIPConnection:1#DeletePortMapping\n\
+                   miniupnpd[1]: DeletePortMapping: external port: 4662, protocol: TCP\n\
+                   miniupnpd[1]: HTTP REQUEST from [::ffff:10.77.0.4]:41104 : POST /ctl/IPConn (HTTP/1.1)\n\
+                   miniupnpd[1]: SOAPAction: urn:schemas-upnp-org:service:WANIPConnection:1#GetExternalIPAddress\n";
+        let requests = soap_requests(log);
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[0].client, "10.77.0.5");
+        assert_eq!(requests[0].port(), Some((4662, "TCP".to_owned())));
+        assert_eq!(requests[1].client, "10.77.0.4");
+        assert_eq!(requests[1].action, "DeletePortMapping");
+        assert_eq!(requests[1].port(), Some((4662, "TCP".to_owned())));
+        assert_eq!(requests[2].detail, None);
+    }
 
     /// The v6 table is semicolon-separated with the address in field two and no
     /// external port at all, so the v4 reader applied to it would name `3fff` as

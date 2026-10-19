@@ -1,8 +1,9 @@
 //! A download carried by the peers that can deliver, over the loopback
 //! counterparties: a source whose eD2k hello never arrives stays off the
-//! runner's critical path (ADR-0030), a peer that queues us forever is raced by
-//! one that grants, and a peer that closes mid-part leaves a prefix the next
-//! peer resumes from rather than restarting at block 0 (ADR-0029).
+//! runner's critical path (ADR-0030), a peer that queues us forever holds no
+//! part while one that grants carries it (ADR-0026), and a peer that closes
+//! mid-part leaves a prefix the next peer resumes from rather than restarting
+//! at block 0 (ADR-0029).
 
 use rmule_testkit::HANG_GUARD;
 use std::time::Duration;
@@ -27,7 +28,7 @@ async fn core_completes_when_one_source_never_finishes_handshake() {
     let silent = FakePeer::bind().await;
     let good = FakePeer::bind().await;
     // Silent source listed first so it joins the initial spawn batch
-    // alongside the healthy one (peer_concurrency defaults to 2).
+    // alongside the healthy one.
     server
         .set_sources(vec![silent.source(), good.source()])
         .await;
@@ -47,6 +48,7 @@ async fn core_completes_when_one_source_never_finishes_handshake() {
         source_hint: Some(server.endpoint()),
         name: rmule_testkit::file_name("silent-source.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -73,12 +75,12 @@ async fn core_completes_when_one_source_never_finishes_handshake() {
 }
 
 #[tokio::test]
-async fn core_single_part_race_completes_when_primary_peer_queues_forever() {
-    // A single-part file with one slow peer (assigned the part
-    // first) that queues us forever and one peer that grants instantly.
-    // The granting peer must be allowed to race the same part rather than
-    // sit idle, so the download completes instead of stalling on the slow
-    // primary.
+async fn core_single_part_completes_through_the_grant_while_another_peer_queues_forever() {
+    // A single-part file with one slow peer that queues us forever and one
+    // that grants at once. Both ask their slot at their probe answers, and the
+    // part is handed at a grant (ADR-0026, "The slot ask"): the granting peer
+    // carries it, and the slow one, queued, holds no part for the download to
+    // stall on.
     let bytes = b"raced single part loopback download".to_vec();
     let file = file_link("loopback.bin", &bytes);
     let file_hash = file.file_hash;
@@ -88,7 +90,7 @@ async fn core_single_part_race_completes_when_primary_peer_queues_forever() {
     let fast = FakePeer::bind().await;
     let slow_port = slow.addr().port();
     let fast_port = fast.addr().port();
-    // Slow peer first: it is assigned the only part, the fast peer races it.
+    // Slow peer first: it asks its slot first, and is never granted.
     server.set_sources(vec![slow.source(), fast.source()]).await;
     let slow_task = slow.spawn(PeerScript {
         slot: SlotPolicy::QueueForever {
@@ -101,7 +103,10 @@ async fn core_single_part_race_completes_when_primary_peer_queues_forever() {
     let fast_task = fast.spawn(PeerScript::serving(file_hash, bytes));
 
     let config = CoreConfig {
-        peer_concurrency_per_download: 2,
+        peer_connections: rmule_core::PeerConnections {
+            max_connections: 2,
+            ..rmule_core::PeerConnections::default()
+        },
         ..CoreConfig::default()
     };
     let out = tempfile::tempdir().unwrap();
@@ -117,11 +122,13 @@ async fn core_single_part_race_completes_when_primary_peer_queues_forever() {
         source_hint: Some(server.endpoint()),
         name: rmule_testkit::file_name("race.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
 
     let mut assigned_to = std::collections::HashSet::new();
+    let mut queued_at = std::collections::HashSet::new();
     loop {
         let event = timeout(HANG_GUARD, core.next_event())
             .await
@@ -130,6 +137,9 @@ async fn core_single_part_race_completes_when_primary_peer_queues_forever() {
         match event {
             CoreEvent::Download(DownloadEvent::PartAssigned { peer, .. }) => {
                 assigned_to.insert(peer.port());
+            }
+            CoreEvent::Download(DownloadEvent::PeerQueued { peer, .. }) => {
+                queued_at.insert(peer.port());
             }
             CoreEvent::Download(DownloadEvent::DownloadCompleted { .. }) => break,
             CoreEvent::Download(DownloadEvent::DownloadFailed { reason, .. }) => {
@@ -140,8 +150,13 @@ async fn core_single_part_race_completes_when_primary_peer_queues_forever() {
     }
 
     assert!(
-        assigned_to.contains(&slow_port) && assigned_to.contains(&fast_port),
-        "both peers must race the single part; assigned to ports {assigned_to:?}"
+        queued_at.contains(&slow_port),
+        "the slow peer's slot ask went out and it queued us: {queued_at:?}"
+    );
+    assert_eq!(
+        assigned_to,
+        std::collections::HashSet::from([fast_port]),
+        "the part goes to the grant; a peer queued forever holds none"
     );
 
     slow_task.abort();
@@ -181,7 +196,10 @@ async fn core_finishes_a_part_from_a_second_peer_after_the_first_drops_mid_part(
     let finish_task = finishing.spawn(PeerScript::serving(file_hash, bytes.clone()));
 
     let config = CoreConfig {
-        peer_concurrency_per_download: 1,
+        peer_connections: rmule_core::PeerConnections {
+            max_connections: 1,
+            ..rmule_core::PeerConnections::default()
+        },
         ..CoreConfig::default()
     };
     let out = tempfile::tempdir().unwrap();
@@ -197,6 +215,7 @@ async fn core_finishes_a_part_from_a_second_peer_after_the_first_drops_mid_part(
         source_hint: Some(server.endpoint()),
         name: rmule_testkit::file_name("drop-resume.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

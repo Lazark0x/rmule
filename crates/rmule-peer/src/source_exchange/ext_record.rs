@@ -32,9 +32,9 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rmule_primitives::{
-    CT_MOD_IP_V6, ClientId, Ipv4Endpoint, Ipv6Endpoint, PeerSource, PrimitiveError,
-    SourceCryptOptions, SourceSighting, Tag, TagName, TagValue, UserHash, WireReader,
-    WireTruncated, is_usable_tag_identity,
+    CT_MOD_IP_V6, ClientId, Ipv4Endpoint, Ipv6Endpoint, PeerSource, PrimitiveError, SourceClaim,
+    SourceCryptOptions, Tag, TagName, TagValue, UserHash, WireReader, WireTruncated,
+    is_usable_tag_identity,
 };
 use thiserror::Error;
 
@@ -303,7 +303,7 @@ impl RecordTags {
             _ => None,
         };
         SourceExchangeEntry::new(
-            SourceSighting::new(source, self.user_hash, self.crypt_options).with_ipv6_half(half),
+            SourceClaim::new(source, self.user_hash, self.crypt_options).with_ipv6_half(half),
             server,
         )
     }

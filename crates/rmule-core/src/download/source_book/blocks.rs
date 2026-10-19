@@ -1,38 +1,43 @@
 //! The **Source Book**'s blocks: what stops a source from being pooled, held
 //! apart from the records because each outlives them (ADR-0090).
 //!
-//! **Spent endpoints** — an endpoint whose dial ended short of a completed
-//! handshake: a High-ID single-address source, either half of a dual-stack
-//! one, a Low-ID candidate's rung-0 IPv6 half. Why the dial ended does not
-//! matter: no route, refused, timed out, closed before the hello answer, or a
-//! worker that could not even start all read the same — nothing answers at
-//! that endpoint now. A worker that did complete its handshake reached a live
-//! peer and never spends; a `CryptIncompatible` retirement dialed nothing. The
-//! block lasts one to two `FILEREASKTIME` periods: two generations, turned
-//! once a period at the brain's tick, so an endpoint spent in the current one
-//! stays spent through the next. That brackets aMule's 30/45-minute
-//! dead-source block (`DeadSourceList.cpp:34`) with no per-endpoint clock.
+//! **Spent names** — the **Ask Names** a source is not pooled under for a
+//! while. An endpoint whose dial ended short of a completed handshake is
+//! spent: a High-ID single-address source, either half of a dual-stack one, a
+//! Low-ID candidate's rung-0 IPv6 half. Why the dial ended does not matter: no
+//! route, refused, timed out, closed before the hello answer, or a worker that
+//! could not even start all read the same — nothing answers at that endpoint
+//! now. A worker that did complete its handshake reached a live peer and never
+//! spends, save one that said it lacks the file: its record is spent under
+//! every name it holds — endpoints, Low-ID key, User Hashes — as aMule
+//! dead-lists it (ADR-0090). A `CryptIncompatible` retirement dialed nothing.
+//! The block lasts one to two `FILEREASKTIME` periods: two generations, turned
+//! once a period at the brain's tick, so a name spent in the current one stays
+//! spent through the next. That brackets aMule's 30/45-minute dead-source
+//! block (`DeadSourceList.cpp:34`) with no per-name clock.
 //!
 //! **Distrusted peers** — a peer proven to have served this file bad data
 //! (invariant 4). *Proven* is the rule's whole weight: the AICH recovery pins
 //! corrupt blocks on their senders, a part with one contributor has nobody
-//! else to blame, a hash set that is not the file's own convicts its sender;
-//! a retire-all across several contributors blames none. Keyed by User Hash,
+//! else to blame, a hash set that is not the file's own convicts its sender,
+//! and a refetch proves a cell's old copy or a writer's two copies of one cell
+//! (ADR-0117 §1); a writer named only by elimination is not. Keyed by User Hash,
 //! so the distrust follows the peer to a new address, and held for the
 //! download's life, seeded from its durable record.
 
 use std::collections::HashSet;
 use std::time::Instant;
 
-use rmule_primitives::{PeerEndpoint, UserHash};
+use rmule_primitives::UserHash;
 
+use super::asks::AskName;
 use super::standing::FILE_REASK_TIME;
 
-/// The two generations of spent endpoints and the distrusted User Hashes.
+/// The two generations of spent names and the distrusted User Hashes.
 #[derive(Debug, Default)]
 pub(super) struct Blocks {
-    spent: HashSet<PeerEndpoint>,
-    spent_last_period: HashSet<PeerEndpoint>,
+    spent: HashSet<AskName>,
+    spent_last_period: HashSet<AskName>,
     /// When the generations last turned, or the run started: `None` before
     /// the brain's first instant reached the book.
     turned_at: Option<Instant>,
@@ -48,14 +53,16 @@ impl Blocks {
         }
     }
 
-    /// Spend `endpoint`: its dial ended short of a completed handshake.
-    pub(super) fn spend(&mut self, endpoint: PeerEndpoint) {
-        self.spent.insert(endpoint);
+    /// Spend `name`: a dial at it ended short of a completed handshake, or
+    /// the source it names said it lacks the file.
+    pub(super) fn spend(&mut self, name: impl Into<AskName>) {
+        self.spent.insert(name.into());
     }
 
-    /// Whether `endpoint` is spent, in either generation.
-    pub(super) fn is_spent(&self, endpoint: PeerEndpoint) -> bool {
-        self.spent.contains(&endpoint) || self.spent_last_period.contains(&endpoint)
+    /// Whether `name` is spent, in either generation.
+    pub(super) fn is_spent(&self, name: impl Into<AskName>) -> bool {
+        let name = name.into();
+        self.spent.contains(&name) || self.spent_last_period.contains(&name)
     }
 
     /// Turn the generations at `now` when a re-ask period has passed since

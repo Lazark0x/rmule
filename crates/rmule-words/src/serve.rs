@@ -4,13 +4,13 @@
 
 use rmule_core::file_history::HistoryPart;
 use rmule_core::{
-    ServeEvent, ServeStartFailure, ServeStopReason, ShareRejectReason, SharesWithheld,
-    WaiterLeaveCause, WithheldReason,
+    BlockAskFault, DeadDialSign, DialBackEnd, GrantRoad, PartialEnd, ServeEvent, ServeStartFailure,
+    ServeStopReason, ShareRejectReason, SharesWithheld, WaiterLeaveCause, WithheldReason,
 };
 
 use super::Sentence;
 use super::os::kind_words;
-use super::units::address;
+use super::units::{address, human_size};
 
 /// Why a row is withheld: the Shared Files table's State cell.
 #[must_use]
@@ -22,6 +22,62 @@ pub const fn withheld_words(reason: WithheldReason) -> &'static str {
         WithheldReason::Unreadable(_) => "unreadable",
         WithheldReason::Refused => "folder refused",
     }
+}
+
+/// A download offering the parts it verified: the Shared Files table's
+/// State cell.
+pub const PARTIAL: &str = "partial";
+
+/// A peer holding an upload slot: the Shared Files peers table's State cell.
+pub const UPLOADING: &str = "Uploading";
+
+/// A waiter being dialled back to take the upload slot held for it: the
+/// Shared Files peers table's State cell.
+pub const DIALING_BACK: &str = "Dialling back";
+
+/// How an upload slot reached its peer, as the tail of its log line: nothing
+/// for a grant on the link the peer held.
+const fn grant_road_words(road: GrantRoad) -> &'static str {
+    match road {
+        GrantRoad::Linked => "",
+        GrantRoad::DialedBack => " on the link dialled back to it",
+        GrantRoad::CameBack => ", held for it until it came back",
+        GrantRoad::NextConnection => " when it came back as a Low ID",
+    }
+}
+
+/// Why a slot held for a dial-back never reached its waiter.
+/// What showed our connection to an upload peer dead at its end.
+const fn dead_dial_words(sign: DeadDialSign) -> &'static str {
+    match sign {
+        DeadDialSign::Ended => "had ended",
+        DeadDialSign::Silent => "had carried nothing for 40 seconds, so the peer has closed it",
+    }
+}
+
+fn dial_back_end_words(end: DialBackEnd) -> String {
+    match end {
+        DialBackEnd::Dial(cause) => format!(
+            "the dial back ended before its hello: {}",
+            super::download::dial_end_words(cause)
+        ),
+        DialBackEnd::AnotherClient => "another client answered at its address".to_owned(),
+        DialBackEnd::Lapsed => "it did not come back within the hour".to_owned(),
+    }
+}
+
+/// A peer waiting in the upload queue at `rank`: the peers table's State
+/// cell.
+#[must_use]
+pub fn queued_words(rank: u16) -> String {
+    format!("Queued #{rank}")
+}
+
+/// What the peers table says of the waiters its filter left out, so none is
+/// silently dropped.
+#[must_use]
+pub fn hidden_queued(count: usize) -> String {
+    format!("{count} hidden queued")
 }
 
 /// A withhold edge, in the status feed and the log.
@@ -66,6 +122,39 @@ pub fn history_unread(parts: &[HistoryPart]) -> Sentence {
 /// Offered again.
 pub const OFFERED: Sentence = Sentence::fixed("a shared file is readable again and offered again");
 
+/// A download began to offer the parts it verified.
+pub const PARTIAL_OFFERED: Sentence =
+    Sentence::fixed("a download offers the parts it has verified");
+
+/// A restarted download's Offer Check read its verified parts again before
+/// it may be offered: how much it read, and how long that took.
+#[must_use]
+pub fn offer_checked(bytes_read: u64, took: std::time::Duration) -> Sentence {
+    Sentence::owned(format!(
+        "a restarted download's verified parts were read again before it is offered: {} in {} ms",
+        human_size(bytes_read),
+        took.as_millis()
+    ))
+}
+
+/// A download stopped offering its parts, and why.
+#[must_use]
+pub const fn partial_withdrawn(cause: PartialEnd) -> Sentence {
+    Sentence::fixed(match cause {
+        PartialEnd::Completed => "a download finished and is shared whole",
+        PartialEnd::Ended => "a download no longer offers its parts: it ended",
+        PartialEnd::HeldBack => {
+            "a download no longer offers its parts: its folder leads where rmule will not share"
+        }
+        PartialEnd::Changed => {
+            "a download no longer offers its parts: its part file changed on disk"
+        }
+        PartialEnd::Unreadable => {
+            "a download no longer offers its parts: its part file cannot be read"
+        }
+    })
+}
+
 /// The folder watch's degrade.
 pub const UNWATCHED: Sentence = Sentence::fixed(
     "shared files outside the download dir are not watched: a file that goes is noticed when a peer asks for it, or at the next start",
@@ -89,6 +178,25 @@ pub const REASK_MALFORMED: Sentence =
 /// A peer asked a file's name in a form its own hello ruled out.
 pub const NAME_ASK_MALFORMED: Sentence =
     Sentence::fixed("a peer asked a file's name malformed; connection closed");
+
+/// Why a slot holder lost its slot to its own block request.
+#[must_use]
+pub const fn block_ask_fault_words(fault: BlockAskFault) -> &'static str {
+    match fault {
+        BlockAskFault::PastEnd => "it asked for data past the end of the file",
+        BlockAskFault::TooLong => "it asked for more than three blocks in one range",
+        BlockAskFault::Unverified => "it asked for a part this download has not verified",
+    }
+}
+
+/// A slot holder's block request ended its slot: the status feed's note.
+#[must_use]
+pub fn block_ask_refused(fault: BlockAskFault) -> Sentence {
+    Sentence::owned(format!(
+        "a peer lost its upload slot: {}",
+        block_ask_fault_words(fault)
+    ))
+}
 
 /// Why an unshare was refused.
 #[must_use]
@@ -171,6 +279,11 @@ pub fn log_line(event: &ServeEvent) -> Sentence {
         Sv::FileUnshared { .. } => FILE_UNSHARED,
         Sv::FileWithheld { reason, .. } => withheld(*reason),
         Sv::FileOffered { .. } => OFFERED,
+        Sv::PartialOffered { .. } => PARTIAL_OFFERED,
+        Sv::PartialWithdrawn { cause, .. } => partial_withdrawn(*cause),
+        Sv::OfferChecked {
+            bytes_read, took, ..
+        } => offer_checked(*bytes_read, *took),
         Sv::SharesUnwatched => UNWATCHED,
         Sv::ShareRejected { reason } => share_rejected(*reason),
         Sv::ServingStarted { listen_addr } => serving_started(listen_addr.port()),
@@ -178,9 +291,20 @@ pub fn log_line(event: &ServeEvent) -> Sentence {
         Sv::ServingStopped { reason } => serving_stopped(*reason),
         Sv::FilesAnnounced { file_count } => announced(*file_count),
         Sv::FilesWithheld { file_count, reason } => shares_withheld(*file_count, *reason),
-        Sv::UploadSlotGranted { peer, .. } => {
-            Sentence::owned(format!("upload slot to {}", address(*peer)))
-        }
+        Sv::UploadSlotGranted { peer, road, .. } => Sentence::owned(format!(
+            "upload slot to {}{}",
+            address(*peer),
+            grant_road_words(*road)
+        )),
+        Sv::UploadDialBack { peer, .. } => Sentence::owned(format!(
+            "dialling {} back to hand it its upload slot",
+            address(*peer)
+        )),
+        Sv::UploadDialBackFailed { peer, cause } => Sentence::owned(format!(
+            "upload slot held for {} goes to the next waiter: {}",
+            address(*peer),
+            dial_back_end_words(*cause)
+        )),
         Sv::PeerQueued { peer, rank, .. } => Sentence::owned(format!(
             "upload peer {} waits at rank {rank}",
             address(*peer)
@@ -204,6 +328,11 @@ pub fn log_line(event: &ServeEvent) -> Sentence {
             "name ask from {} malformed; connection closed",
             address(*peer)
         )),
+        Sv::BlockAskRefused { peer, fault, .. } => Sentence::owned(format!(
+            "upload slot of {} ended: {}",
+            address(*peer),
+            block_ask_fault_words(*fault)
+        )),
         Sv::UploadSlotReleased { peer } => {
             Sentence::owned(format!("upload slot of {} released", address(*peer)))
         }
@@ -211,9 +340,26 @@ pub fn log_line(event: &ServeEvent) -> Sentence {
             let how = match cause {
                 WaiterLeaveCause::Purged => "dropped from the upload queue",
                 WaiterLeaveCause::Cancelled => "left the upload queue",
+                WaiterLeaveCause::UserHashClash => {
+                    "dropped from the upload queue: another client asked under its user hash"
+                }
             };
             Sentence::owned(format!("{} {how}", address(*peer)))
         }
+        Sv::WaiterRelinked { from, to } => Sentence::owned(format!(
+            "upload peer {} came back as {} and keeps its place",
+            address(*from),
+            address(*to)
+        )),
+        Sv::CrossedLinkLetGo { peer } => Sentence::owned(format!(
+            "upload peer {} crossed our connection to it, which said hello first; it keeps ours, so we let its own go",
+            address(*peer)
+        )),
+        Sv::DeadDialLetGo { peer, sign } => Sentence::owned(format!(
+            "our connection to upload peer {} {}; its own connection takes its place",
+            address(*peer),
+            dead_dial_words(*sign)
+        )),
         Sv::SourcesServed { peer, count, .. } => {
             Sentence::owned(format!("served {count} sources to {}", address(*peer)))
         }

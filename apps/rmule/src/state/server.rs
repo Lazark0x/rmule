@@ -62,12 +62,21 @@ pub(super) fn fold_list(state: &mut UiState, event: rmule_core::ServerListEvent)
         E::ServerAdded { .. } => receipt(state, words::ADDED),
         E::ServerUpdated { .. } => receipt(state, words::UPDATED),
         E::ServerRemoved { .. } => receipt(state, words::REMOVED),
+        // No keystroke asked for it: the log line is the whole report.
+        E::ReservedServerDropped { .. } => false,
         E::ServerPriorityChanged { priority, .. } => receipt(state, words::priority_set(priority)),
         E::ServerStaticChanged { is_static, .. } => receipt(state, words::static_set(is_static)),
         E::ServerListUpdateStarted { .. } => {
             state.server_list_updating = true;
             note(state, words::LIST_UPDATE_STARTED)
         }
+        // A walk with no address fetches nothing, so no update runs.
+        E::ServerListAutoUpdateStarted { urls } => {
+            state.server_list_updating = !urls.is_empty();
+            note(state, words::auto_update_started(urls.len()))
+        }
+        // Each address is a line in the log; the walk's total is the note.
+        E::ServerListAutoUpdateFetched { .. } => false,
         E::ServerListUpdated {
             added,
             updated,

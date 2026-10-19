@@ -62,7 +62,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     // The managed server list is a level from the actor's first instant
     // (ADR-0080): a consumer that snapshots before sending any command still
     // sees what the store holds, exactly as it sees a recovered download.
-    match wiring.server_list.servers() {
+    match super::server::load_server_list(&wiring.server_list, &evt_tx).await {
         Ok(servers) => diagnostics.set_servers(servers),
         Err(error) => {
             tracing::warn!(%error, "managed server list unreadable at start; surfacing it empty");
@@ -97,6 +97,11 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     wiring
         .hello_refusals
         .install(diagnostics.clone(), evt_tx.downgrade());
+    // The verified-identity cell, for the same reason: a link binds its
+    // Secure User Identification in the one ledger (ADR-0041).
+    wiring
+        .secured_identities
+        .install(Arc::clone(&wiring.credit), evt_tx.downgrade());
     // The login deadline every establishment arms, installed on
     // the same cell and for the same reason: establishment runs off this actor
     // and must not hold a serve start — or a front end — open on a server that
@@ -332,6 +337,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
                         admit: wiring.tunnel_admit.clone(),
                         claims: wiring.awaited_inbound.clone(),
                         peer_pin: peer_pin.clone(),
+                        roster: wiring.peer_roster.clone(),
                         events: evt_tx.downgrade(),
                         hello_adverts: wiring.hello_adverts.clone(),
                         firewalled_front: wiring.firewalled_front.clone(),
@@ -407,6 +413,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
         diagnostics.clone(),
         Arc::clone(&wiring.port_mapping_preferences),
         self_reach.clone(),
+        evt_tx.downgrade(),
     );
     // A **Punched Path**'s one PCP `PEER` pin (ADR-0091) goes to the running
     // mapping runtime, which owns the backends and the route table. Weakly, so
@@ -432,6 +439,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
         &diagnostics,
         &evt_tx,
         wiring.restore_at_attach,
+        &wiring.served_downloads,
     )
     .await;
 
@@ -445,6 +453,9 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     // asks the one selector (ADR-0061). Bounded and never awaited on the answer
     // — a full inbox costs a punch attempt, not a download.
     let (download_reach_tx, download_reach_rx) = mpsc::channel(16);
+    // The runs' in-place reports (ADR-0115, step 6): each waits on its own
+    // answer, so a report never queues behind another run's.
+    let (in_place_tx, in_place_rx) = mpsc::channel(16);
     let download_runtime = DownloadRuntime {
         shared: Arc::new(SharedRuntime {
             download_reach_tx,
@@ -453,12 +464,18 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
             store: Arc::clone(&wiring.store),
             source_lookup: Arc::clone(&wiring.source_lookup),
             source_asks: Arc::default(),
+            connection_budget: crate::download::connection_budget::ConnectionBudget::shared(
+                wiring.config.peer_connections,
+            ),
+            queue_standings: crate::download::queue_standings::QueueStandings::shared(),
+            held_places: crate::held_places::SharedHeldPlaces::default(),
             peer_transfer: Arc::clone(&wiring.peer_transfer),
             credit: Arc::clone(&wiring.credit),
             evt_tx: evt_tx.clone(),
             diagnostics: diagnostics.clone(),
             server_session: wiring.shared_server_session.clone(),
             awaited_inbound: wiring.awaited_inbound.clone(),
+            peer_links: wiring.peer_links.clone(),
             global_source_registry,
             global_callback_tx,
             kad_source_registry: kad_source_registry.clone(),
@@ -471,8 +488,11 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
             reach: self_reach.clone(),
             peer_roster: wiring.peer_roster.clone(),
             resolver: crate::name_resolver::system_resolver(),
+            completion_fs: Arc::new(crate::download::OsCompletionFs),
+            copy_turn: Arc::new(tokio::sync::Semaphore::new(1)),
+            in_place_tx,
         }),
-        peer_concurrency: wiring.config.effective_peer_concurrency_per_download(),
+        streaming_window_parts: wiring.config.streaming_window_parts,
         finished_tx: finished_tx.clone(),
         discovery: crate::download::DiscoveryLiveness {
             global_servers: Arc::clone(&global_source_servers),
@@ -484,6 +504,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     // Read before the actor takes a command: the Registry Check's start look.
     let registry_at_start = crate::registry::SharedFileRegistry::list(&*wiring.registry).ok();
     let share_guards = wiring.share_guards.clone();
+    let temp_dir = wiring.settings.temp_dir.clone();
     // **Peer Reach** (ADR-0061, ADR-0091): both reach arms end in it, over
     // the handles woven above.
     let peer_reach = crate::peer_reach::PeerReacher::new(crate::peer_reach::PeerReachWiring {
@@ -505,6 +526,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
         finished_tx,
         registry_check: registry_check::spawn_registry_check(scan_tx.clone(), registry_at_start),
         directories: super::shared_directory::DirectoryList {
+            temp_dir,
             guards: share_guards,
             ..Default::default()
         },
@@ -533,6 +555,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
         trail,
         intent: super::server_intent::IntentLedger::default(),
         remember_peers,
+        offer_checks: super::offer_check::OfferChecks::default(),
     };
     // The listener is up from attach (ADR-0095): before any download
     // restored below starts, and before any connect.
@@ -544,7 +567,10 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     actor
         .run(
             inbox,
-            finished_rx,
+            super::RunNotices {
+                finished: finished_rx,
+                in_place: in_place_rx,
+            },
             scan_rx,
             download_reach_rx,
             serve_ended_rx,

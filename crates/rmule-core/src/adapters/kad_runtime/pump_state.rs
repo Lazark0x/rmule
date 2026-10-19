@@ -333,17 +333,23 @@ impl KadPumpState {
     fn on_event(&mut self, event: rmule_kad::KadEvent, now: Instant, out: &mut Vec<KadPumpEffect>) {
         use rmule_kad::{KadEvent, KadNodeDiagnostic};
         match event {
-            KadEvent::SourcesFound { target, candidates } => {
+            KadEvent::SourcesFound {
+                target,
+                storer,
+                candidates,
+            } => {
                 // Every row that names a road crosses, not just the dialable
                 // ones — a firewalled row carries the buddy that is the only
                 // way to reach it — and a walk that decoded only refusals
-                // still answers.
+                // still answers. Each row is the storer's word (ADR-0085).
                 if !candidates.is_empty() {
+                    let informant =
+                        rmule_primitives::Informant::Party(std::net::IpAddr::V4(storer.ip()));
                     out.push(KadPumpEffect::Sources {
                         file_hash: target.file_hash(),
                         answer: candidates
                             .into_iter()
-                            .filter_map(rmule_kad::KadSourceCandidate::sighting)
+                            .filter_map(|candidate| candidate.sighting(informant))
                             .collect(),
                     });
                 }

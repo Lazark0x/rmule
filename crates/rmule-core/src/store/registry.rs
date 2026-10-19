@@ -413,7 +413,7 @@ impl DurableSharedFileRegistry {
             match SHARED_FILES.get(txn, &key)? {
                 Some(mut row) if row.path == from => {
                     row.path.clone_from(&to.path);
-                    row.name = file_name(&to.path);
+                    row.name = SharedFileEntry::name_of(&to.path);
                     row.modified = Some(to.stamp.modified);
                     row.identity = to.identity;
                     SHARED_FILES.set(txn, &key, &row)?;
@@ -572,13 +572,6 @@ impl SharedFile {
             modified: self.modified,
         }
     }
-}
-
-/// The name a relocated row takes: its new path's last component.
-fn file_name(path: &Path) -> String {
-    path.file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default()
 }
 
 /// One file's stored part hash set in part order, read on `txn` — the read

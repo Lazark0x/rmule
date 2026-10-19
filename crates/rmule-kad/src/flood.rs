@@ -79,7 +79,8 @@ const MAX_BUCKETS: usize = 50_000;
 /// them. It does. eMule 0.70b has since moved `PUBLISH_KEY_REQ` to 4; that is
 /// recorded as downstream drift and deliberately **not** adopted, because
 /// following eMule here implies advertising a Kad version rmule cannot yet
-/// support (`KADEMLIA_VERSION` stays at 8 until `TAGTYPE_BSOB` decoding lands).
+/// support (`KADEMLIA_VERSION` stays at 8: a v9 node is published the `BSOB`
+/// `TAG_KADAICHHASHPUB`, which rmule's tag lists step over rather than keep).
 const fn request_rate_per_minute(opcode: u8) -> Option<u32> {
     match opcode {
         KADEMLIA2_BOOTSTRAP_REQ => Some(2),

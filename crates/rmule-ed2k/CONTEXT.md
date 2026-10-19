@@ -70,10 +70,11 @@ _Avoid_: ST_IPV6 (that id is `0x99`, and `server.met` only), server address tag
 `OP_CALLBACKREQUESTED_IPV6` (`0x26`) — the same role as `0x35` one family over:
 sixteen network-order address bytes then the requester's TCP port,
 little-endian, eighteen bytes minimum (ADR-0087 §4.5). No crypt extension
-exists for it, so trailing bytes are ignored and a dial-back would be
+exists for it, so trailing bytes are ignored and the dial-back is
 plaintext. Both opcodes project onto one event carrying the requester as a
-`PeerEndpoint`, never a synthesised IPv4. **Decoded, not adopted**: core logs
-the event and dials nobody, because the opcode names a peer but no file.
+`PeerEndpoint`, never a synthesised IPv4. Core dials the requester back and
+serves it, as for `0x35` (ADR-0061); the address is judged by the Reserved Range
+check with the server as its Informant there, not here.
 _Avoid_: v6 callback request (rmule never sends one — `0x1C` has no v6 form)
 
 **Server List IPv6 Block**:

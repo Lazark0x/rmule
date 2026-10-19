@@ -7,15 +7,15 @@
 use std::path::PathBuf;
 
 use crate::cli::bench::{
-    BenchArgs, DEFAULT_FILE_SIZE, DEFAULT_RMULE_CLIENT_IMAGE, DEFAULT_TIMEOUT_SECS, KadBenchArgs,
-    RmuleNodeArgs, stage_synthetic,
+    BenchArgs, DEFAULT_FILE_SIZE, DEFAULT_RMULE_CLIENT_IMAGE, DEFAULT_TIMEOUT_SECS, FileContent,
+    KadBenchArgs, RmuleNodeArgs, stage_synthetic_content,
 };
 use crate::cli::write_resolved_config;
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use rmule_interop_harness::artifacts::RunLayout;
 use rmule_interop_harness::flow::{
-    KadCoreBuddyOptions, KadDirectCallbackOptions, KadFirewalledBuddyOptions,
+    BuddyReaskServer, KadCoreBuddyOptions, KadDirectCallbackOptions, KadFirewalledBuddyOptions,
     KadRequiredCheckOptions, run_kad_core_buddy, run_kad_direct_callback, run_kad_firewalled_buddy,
     run_kad_required_check,
 };
@@ -134,6 +134,11 @@ pub(crate) struct CorePumpedArgs {
     /// Deterministic synthetic file size in bytes (the stimulus's shared file).
     #[arg(long, default_value_t = DEFAULT_FILE_SIZE)]
     pub(crate) file_size: u64,
+    /// What the synthetic file holds: `sparse` stages a file past 4 GiB as
+    /// one hole the sharer hashes as zeros, `incompressible` one a throttled
+    /// sharer cannot send compressed.
+    #[arg(long, value_enum, default_value_t = FileContent::Pattern)]
+    pub(crate) file_content: FileContent,
     /// Also drop the aMule's Kad UDP port.
     #[arg(long)]
     pub(crate) block_udp: bool,
@@ -155,7 +160,12 @@ impl CorePumpedArgs {
     fn stage(&self, flow: &'static str) -> Result<(RunLayout, RmuleServeContainer)> {
         self.bench.prepare(&self.kad.build_contexts())?;
         let (run_dir, layout) = self.bench.create_run()?;
-        stage_synthetic(&layout, self.file_size, self.ed2k_hash_command.as_deref())?;
+        stage_synthetic_content(
+            &layout,
+            self.file_size,
+            self.file_content,
+            self.ed2k_hash_command.as_deref(),
+        )?;
         std::fs::create_dir_all(layout.amule_dir())
             .with_context(|| format!("create {}", layout.amule_dir().display()))?;
         write_resolved_config(
@@ -275,6 +285,20 @@ pub(crate) struct KadCoreBuddyArgs {
     /// that can serve the file. Requires `--omit-buddy-endpoint`.
     #[arg(long)]
     pub(crate) findsource_transfer: bool,
+    /// Run the buddy reask leg as the third party (`kad-core-buddy
+    /// --buddy-reask`): two holders take the aMule's upload slots, a
+    /// downloader on an `ed2ksrv` High ID is queued, the server stops, and
+    /// the downloader's reask must go `0x94` to the buddy, `0x9A` over the
+    /// held link and `0x91` back. Requires `--publish-source`; pair it with
+    /// `--file-content incompressible` and a file of several parts.
+    #[arg(long)]
+    pub(crate) buddy_reask: bool,
+    /// The `ed2ksrv` image `--buddy-reask` runs.
+    #[arg(long, default_value = crate::cli::nat::DEFAULT_ED2KSRV_IMAGE)]
+    pub(crate) ed2ksrv_image: String,
+    /// The `ed2ksrv` bench config `--buddy-reask` renders.
+    #[arg(long, default_value = crate::cli::nat::DEFAULT_ED2KSRV_CONFIG)]
+    pub(crate) ed2ksrv_config: PathBuf,
 }
 
 /// `kad-direct-callback` (flow N).
@@ -406,6 +430,10 @@ pub(crate) fn kad_core_buddy(args: KadCoreBuddyArgs) -> Result<()> {
         omit_buddy_endpoint: args.omit_buddy_endpoint,
         requester_kad_crypt: args.requester_kad_crypt,
         findsource_transfer: args.findsource_transfer,
+        buddy_reask: args.buddy_reask.then_some(BuddyReaskServer {
+            image: &args.ed2ksrv_image,
+            config: &args.ed2ksrv_config,
+        }),
     })
 }
 

@@ -8,6 +8,7 @@
 
 use std::io::Read;
 
+use flate2::Compression;
 use flate2::read::ZlibDecoder;
 use thiserror::Error;
 
@@ -60,12 +61,22 @@ pub(crate) fn inflate(compressed: &[u8], size_ceiling: usize) -> Result<Vec<u8>,
     Ok(out)
 }
 
-/// Deflate bytes into a standard zlib stream — the encode side of compressed
-/// part transfer (`OP_COMPRESSEDPART` on the serve path).
-pub(crate) fn deflate(plain: &[u8]) -> Vec<u8> {
-    use flate2::{Compression, write::ZlibEncoder};
+/// The zlib stream a served block crosses in (`OP_COMPRESSEDPART`), when one
+/// is shorter than the block (ADR-0031): a first pass at level 1, so a block
+/// that does not shrink — most media — costs a fifth of a full pass and is
+/// `None`; a block that does is deflated again at level 6, and the shorter
+/// stream is kept.
+pub(crate) fn deflate_smaller(plain: &[u8]) -> Option<Vec<u8>> {
+    let fast = Some(deflate(plain, Compression::fast())).filter(|fast| fast.len() < plain.len())?;
+    let full = deflate(plain, Compression::new(6));
+    Some(if full.len() < fast.len() { full } else { fast })
+}
+
+/// `plain` as one standard zlib stream at `level`.
+fn deflate(plain: &[u8], level: Compression) -> Vec<u8> {
+    use flate2::write::ZlibEncoder;
     use std::io::Write;
-    let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
+    let mut enc = ZlibEncoder::new(Vec::new(), level);
     enc.write_all(plain)
         .expect("zlib write to a Vec is infallible");
     enc.finish().expect("zlib finish to a Vec is infallible")
@@ -78,7 +89,29 @@ mod tests {
     #[test]
     fn inflate_round_trips_zlib_compressed_bytes() {
         let plain = b"the quick brown fox ".repeat(50);
-        assert_eq!(inflate(&deflate(&plain), plain.len()).unwrap(), plain);
+        let stream = deflate_smaller(&plain).expect("repeated text shrinks");
+        assert_eq!(inflate(&stream, plain.len()).unwrap(), plain);
+    }
+
+    #[test]
+    fn a_block_that_shrinks_crosses_no_longer_than_level_six_makes_it_and_one_that_does_not_goes_plain()
+     {
+        // Bytes that deflate well, and bytes that do not: a xorshift stream.
+        let text = b"a served block of source text, ".repeat(6000);
+        let mut x = 0x2545_F491_4F6C_DD1D_u64;
+        let noise: Vec<u8> = (0..184_320)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect();
+
+        let stream = deflate_smaller(&text).expect("text shrinks");
+        assert!(stream.len() <= deflate(&text, Compression::new(6)).len());
+        assert_eq!(inflate(&stream, text.len()).unwrap(), text);
+        assert_eq!(deflate_smaller(&noise), None);
     }
 
     #[test]
@@ -93,7 +126,7 @@ mod tests {
     fn inflate_rejects_output_over_ceiling() {
         let plain = vec![0u8; 10_000]; // compresses tiny, inflates past the cap
         assert_eq!(
-            inflate(&deflate(&plain), 4096),
+            inflate(&deflate_smaller(&plain).unwrap(), 4096),
             Err(InflateFailed::TooLarge { ceiling: 4096 })
         );
     }

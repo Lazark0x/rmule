@@ -4,6 +4,8 @@
 //! asks first; the items the current selection cannot use stay visible and
 //! greyed rather than disappearing.
 
+use std::cell::Cell;
+
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
@@ -17,9 +19,11 @@ use super::ViewOutcome;
 use super::{GUTTER_W, Pane, SharedView};
 use crate::action::Action;
 use crate::row_selection::MARKER;
+use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
+use crate::table_sort::RowMove;
 use crate::theme::Theme;
-use crate::views::modal::Modal;
+use crate::views::modal::{Modal, scroll_key};
 use crate::words::units::short_hash;
 use crate::wrap::{clamp_u16, labeled_lines, wrapped_lines};
 
@@ -31,11 +35,15 @@ pub(super) struct FileMenu {
     /// survives later selection drift.
     file_hash: FileHash,
     selected: usize,
+    /// What part of the menu is on screen, in a frame too short for it.
+    viewport: Cell<Viewport>,
 }
 
 /// The unshare confirmation (names the object and the consequence).
 pub(super) struct Confirm {
     file_hash: FileHash,
+    /// What part of the question is on screen, in a frame too short for it.
+    viewport: Cell<Viewport>,
 }
 
 #[derive(Clone, Copy)]
@@ -99,21 +107,28 @@ pub(super) fn draw_confirm(frame: &mut Frame, area: Rect, confirm: &Confirm, the
     .unwrap_or(0)
         + 4;
     let width = clamp_u16(natural).min(area.width);
-    let text_w = usize::from(width).saturating_sub(4).max(1);
-
-    let mut lines = wrapped_lines(&question, text_w, Style::new().fg(theme.fg));
-    lines.push(Line::from(""));
-    lines.extend(wrapped_lines(consequence, text_w, theme.dim_text()));
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("y", Style::new().fg(theme.bad).add_modifier(Modifier::BOLD)),
-        Span::styled(" confirm    ", Style::new().fg(theme.fg)),
-        Span::styled("Esc", Style::new().fg(theme.accent)),
-        Span::styled(" cancel", Style::new().fg(theme.fg)),
-    ]));
-    Modal::new(title, theme)
-        .padded()
-        .draw(frame, area, width, theme, lines);
+    let lines = |width: u16| {
+        let text_w = usize::from(width).saturating_sub(4).max(1);
+        let mut lines = wrapped_lines(&question, text_w, Style::new().fg(theme.fg));
+        lines.push(Line::from(""));
+        lines.extend(wrapped_lines(consequence, text_w, theme.dim_text()));
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("y", Style::new().fg(theme.bad).add_modifier(Modifier::BOLD)),
+            Span::styled(" confirm    ", Style::new().fg(theme.fg)),
+            Span::styled("Esc", Style::new().fg(theme.accent)),
+            Span::styled(" cancel", Style::new().fg(theme.fg)),
+        ]));
+        lines
+    };
+    Modal::new(title, theme).padded().draw_scrolled(
+        frame,
+        area,
+        width,
+        theme,
+        &confirm.viewport,
+        lines,
+    );
 }
 
 /// Natural (unwrapped) width of a menu item, gutter included.
@@ -190,7 +205,13 @@ impl SharedView {
                 self.confirm = None;
                 ViewOutcome::Redraw
             }
-            _ => ViewOutcome::Ignored,
+            code => match self.confirm.as_mut() {
+                Some(confirm) if RowMove::of(code).is_some() => {
+                    scroll_key(&mut confirm.viewport, code);
+                    ViewOutcome::Redraw
+                }
+                _ => ViewOutcome::Ignored,
+            },
         }
     }
 
@@ -239,7 +260,10 @@ impl SharedView {
                 }
             }
             MenuAction::Unshare => {
-                self.confirm = Some(Confirm { file_hash });
+                self.confirm = Some(Confirm {
+                    file_hash,
+                    viewport: Cell::default(),
+                });
                 self.menu = None;
                 ViewOutcome::Redraw
             }
@@ -256,12 +280,15 @@ impl SharedView {
             return ViewOutcome::Ignored;
         }
         self.clamp_selection(state);
-        let Some(row) = self.ordered(state).get(self.files_selected).copied() else {
-            return ViewOutcome::Ignored; // nothing shared → no menu
+        // Nothing shared, or a Partial Share: its offer is its download's,
+        // ended only by cancelling it, so it has no menu.
+        let Some(row) = self.selected_row(state) else {
+            return ViewOutcome::Ignored;
         };
         self.menu = Some(FileMenu {
             file_hash: row.file_hash,
             selected: first_enabled_menu_index(state),
+            viewport: Cell::default(),
         });
         ViewOutcome::Redraw
     }
@@ -282,15 +309,22 @@ impl SharedView {
             .unwrap_or(0)
             + 4; // borders + 1-col pad each side
         let width = clamp_u16(natural).min(area.width);
-        let text_w = usize::from(width).saturating_sub(6).max(1);
-        let lines: Vec<Line<'static>> = items
-            .iter()
-            .enumerate()
-            .flat_map(|(idx, item)| menu_item_lines(item, idx == menu.selected, text_w, theme))
-            .collect();
-        Modal::new(title, theme)
-            .padded()
-            .draw(frame, area, width, theme, lines);
+        let rows = |width: u16| -> Vec<Vec<Line<'static>>> {
+            let text_w = usize::from(width).saturating_sub(6).max(1);
+            items
+                .iter()
+                .enumerate()
+                .map(|(idx, item)| menu_item_lines(item, idx == menu.selected, text_w, theme))
+                .collect()
+        };
+        Modal::new(title, theme).padded().draw_list(
+            frame,
+            area,
+            (width, menu.selected),
+            theme,
+            &menu.viewport,
+            rows,
+        );
     }
 }
 

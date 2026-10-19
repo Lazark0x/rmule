@@ -3,9 +3,10 @@
 //! [`ServeState`] is the **Serve State**, the serve-side mirror of
 //! [`DownloadState`](crate::download): it owns every clock-free serve
 //! decision — probe/status/hash-set answers from a **Shared File Registry**
-//! snapshot, slot admission via the **Upload Slot Queue** it contains, block
-//! sends with served-range subtraction, AICH tree building from round-tripped
-//! byte reads, credit recording, and **Secured Identity** binding — and
+//! snapshot and its copy of the **Served Downloads** (ADR-0113), slot
+//! admission via the **Upload Slot Queue** it contains, block
+//! sends with served-range subtraction, AICH tree building round-tripped
+//! through the enactor's block-at-a-time read, credit recording, and **Secured Identity** binding — and
 //! returns an ordered `Vec<`[`ServeDecision`]`>` that the `ServeTask` enacts.
 //! It never touches a socket, a clock, the registry, the content store, or an
 //! `mpsc` channel; byte reads are fallible effects that round-trip through
@@ -17,26 +18,30 @@
 //! decision sequence instead of only through a live `ServeTask` loopback rig.
 
 mod connection;
+mod dial_back;
+mod exchange;
 mod reask;
+mod relink;
+mod served;
 #[cfg(test)]
 mod tests;
 mod transfer;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use rmule_ed2k::OfferedFile;
+use rmule_ed2k::{FileCompleteness, OfferedFile};
 use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
 use rmule_peer::{ClientSoftware, PartBitmap, PeerIdentity, ServerCommand};
-use rmule_primitives::{AichHashSet, Ed2kText, FileHash, PeerEndpoint, UserHash};
+use rmule_primitives::{AichHashSet, Ed2kText, FileHash, PeerEndpoint, SourceSighting, UserHash};
 
 use crate::WaiterLeaveCause;
+use crate::adapters::{DialBack, FarEnd};
 use crate::registry::SharedFileEntry;
-use crate::serve::source_exchange::{
-    ServedFileKind, SourceExchangeThrottle, SxCandidate, SxRequester, held_parts, select_sources,
-};
-use crate::service::ServeEvent;
+use crate::serve::source_exchange::SourceExchangeThrottle;
+use crate::served_downloads::{PartFileIdentity, PartialEnd, ReadCheck, ServedLook};
+use crate::service::{DialBackEnd, GrantRoad, ServeEvent};
 use crate::upload_queue::{Promotion, UploadSlotQueue};
 
 /// One effect the serve task must enact, drained in order from a
@@ -57,23 +62,42 @@ pub(super) enum ServeDecision {
     /// Credit `user_hash` for serving `bytes`; the enactor holds the
     /// ledger lock.
     RecordCredit { user_hash: UserHash, bytes: u64 },
-    /// Bind `public_key` as `user_hash`'s **Secured Identity** (ADR-0041).
-    /// The enactor (ledger-holder) performs the store's atomic
-    /// compare-and-set; a `Mismatch` denies the claim (theft fact), never
-    /// overwriting the key — the mirror of the download runner's arm.
-    BindIdentity {
-        user_hash: UserHash,
-        public_key: Vec<u8>,
-    },
-    /// Read `len` bytes at `offset` from the shared file at `path`. A
-    /// fallible effect: the enactor feeds the outcome back through
-    /// [`ServeState::on_read_result`] with this same `purpose`.
+    /// Ban `peer`'s address: its hello named the User Hash of an identified
+    /// client still linked from elsewhere (ADR-0107; aMule bans it,
+    /// "Userhash invalid", `ClientList.cpp:384-392`).
+    Ban { peer: PeerEndpoint },
+    /// Read `block` of the shared file at `path`, never longer than three
+    /// blocks (ADR-0031). A fallible effect: the enactor feeds the bytes back
+    /// through [`ServeState::on_read_result`] with this same `block`, and a
+    /// failed read through [`ServeState::on_read_failed`]. A Served
+    /// Download's read carries its `check`: the handle the enactor opens must
+    /// be the file its **Part File Identity** names before a byte is read,
+    /// and a path that names nothing gives way to the other once (ADR-0113
+    /// §"Reading a part file"); a registry row's carries none.
     ReadRange {
         peer: PeerEndpoint,
         path: PathBuf,
-        offset: u64,
-        len: u64,
-        purpose: ReadPurpose,
+        block: BlockRead,
+        check: Option<ReadCheck>,
+    },
+    /// Build the AICH tree of the `file_size`-byte shared file at `path`,
+    /// read one block at a time (ADR-0038, ADR-0031). A fallible effect: the
+    /// enactor feeds the tree back through [`ServeState::on_aich_tree`] with
+    /// this same `ask`, and a failed read through
+    /// [`ServeState::on_read_failed`].
+    BuildAichTree {
+        peer: PeerEndpoint,
+        path: PathBuf,
+        file_size: u64,
+        ask: AichAsk,
+    },
+    /// A read of `file_hash`'s Served Download, checked against `checked`,
+    /// found its file changed or unreadable: its **Verified Range** empties
+    /// in the cell for `cause`, whoever holds it (ADR-0113).
+    EmptyRange {
+        file_hash: FileHash,
+        checked: Option<PartFileIdentity>,
+        cause: PartialEnd,
     },
     /// Announce the snapshot's offer list via `OP_OFFERFILES`.
     Announce(Vec<OfferedFile>),
@@ -98,41 +122,57 @@ pub(super) enum ServeDecision {
         datagram: Vec<u8>,
         crypt_target: Option<PeerUdpCryptTarget>,
     },
-    /// Dial `peer`'s TCP endpoint and grant it `file_hash`'s upload slot
-    /// (`OP_ACCEPTUPLOADREQ` on connect) — promotion of a **disconnected**
-    /// waiter (ADR-0057 dial-back grant), a serve-side outbound dial riding the
-    /// ADR-0031 dialed-serve seam. The outbound serve-dial machinery lands with
-    /// the live front; the promotion decision is deterministic here.
-    DialBackGrant {
-        peer: PeerEndpoint,
+    /// Dial back a waiter promoted while no link of it was up — the
+    /// **Dial-Back Grant** (ADR-0057). The serve adapter dials and says how
+    /// it ended ([`ServeState::on_dial_back_linked`],
+    /// [`ServeState::on_dial_back_failed`]).
+    DialBack(DialBack),
+    /// Call off the dial-back to `waiter`: the client came back on `link`, a
+    /// link of its own, while its grant was held for the dial (ADR-0057,
+    /// "Two hellos of one client race"). What the call-off found decides
+    /// which link takes the grant ([`ServeState::on_dial_back_call_off`]):
+    /// `link`, when no byte of the dial's hello went out; the dial, when it
+    /// did, `link` being let go.
+    CallOffDialBack {
+        /// The waiter the dial is for, keyed by the link it waited on.
+        waiter: PeerEndpoint,
+        /// The link the client came back on.
+        link: PeerEndpoint,
+    },
+    /// Hand `sighting`, a peer that asked about `file_hash`, to the run of
+    /// the download serving it as a candidate source (ADR-0113). The run
+    /// takes it under its own source cap; a full inbox drops it.
+    KeepAsker {
         file_hash: FileHash,
+        sighting: SourceSighting,
     },
 }
 
-/// Why a [`ServeDecision::ReadRange`] was issued — the resumption context
-/// [`ServeState::on_read_result`] needs to turn the bytes into an answer.
+/// The block a [`ServeDecision::ReadRange`] reads for a granted flow: the
+/// range `start..end` of `file_hash`, which [`ServeState::on_read_result`]
+/// sends as a `SendBlock`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ReadPurpose {
-    /// Serve the bytes to a granted slot as a `SendBlock` for this range.
-    Block {
-        file_hash: FileHash,
-        start: u64,
-        end: u64,
-    },
-    /// Build + cache the file's AICH tree (a whole-file read, ADR-0038),
-    /// then answer the requested part's recovery data.
-    AichRecovery { file_hash: FileHash, part: u16 },
-    /// Build + cache the file's AICH tree, then answer the master root.
-    AichMasterRoot { file_hash: FileHash },
+pub(super) struct BlockRead {
+    pub(super) file_hash: FileHash,
+    pub(super) start: u64,
+    pub(super) end: u64,
 }
 
-impl ReadPurpose {
-    /// The file the read is of.
+/// The ask a [`ServeDecision::BuildAichTree`] answers once the tree is built
+/// and cached (ADR-0038).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum AichAsk {
+    /// Answer the requested part's recovery data.
+    Recovery { file_hash: FileHash, part: u16 },
+    /// Answer the master root.
+    MasterRoot { file_hash: FileHash },
+}
+
+impl AichAsk {
+    /// The file whose tree answers it.
     pub(super) const fn file_hash(self) -> FileHash {
         match self {
-            Self::Block { file_hash, .. }
-            | Self::AichRecovery { file_hash, .. }
-            | Self::AichMasterRoot { file_hash } => file_hash,
+            Self::Recovery { file_hash, .. } | Self::MasterRoot { file_hash } => file_hash,
         }
     }
 }
@@ -163,6 +203,16 @@ pub(super) struct ServeState {
     /// replaced by [`ServeState::on_share_set`] on the share-changed trigger
     /// — no per-probe registry round trips.
     shared: HashMap<FileHash, SharedFileEntry>,
+    /// The brain's copy of the **Served Downloads** (ADR-0113): every
+    /// download answering probes, refreshed by [`ServeState::on_served`].
+    served: HashMap<FileHash, ServedLook>,
+    /// Entries the cell no longer holds, answering from their last copy
+    /// until the next share trigger drops them.
+    ended: HashSet<FileHash>,
+    /// The **Partial Share**s: the Served Downloads offered at the last share
+    /// trigger whose content no registry row offers whole. With the rows,
+    /// the share set.
+    partials: HashSet<FileHash>,
     queue: UploadSlotQueue,
     /// The identity each connected peer's session read off its hello and
     /// keeps current (ADR-0055 §Serving): its User Hash keys credit
@@ -174,20 +224,33 @@ pub(super) struct ServeState {
     /// queue standing, and shed in one place ([`Self::forget`]) when it
     /// holds none.
     identities: HashMap<PeerEndpoint, PeerIdentity>,
+    /// The links whose client is **identified**: its Secure User
+    /// Identification proved the hello's User Hash and the link bound the key
+    /// in the credit ledger (ADR-0041) — aMule's `IS_IDENTIFIED`. Shed with
+    /// the identity.
+    identified: HashSet<PeerEndpoint>,
+    /// The live links rmule dialed — a download's, or a dial-back's — whose
+    /// hello takes no client from a live link of its own: aMule moves a
+    /// client to a new socket only at the hello of one the peer opened
+    /// (`ClientTCPSocket.cpp:391`, ADR-0057). Each with what its driver sees
+    /// of its far end, read before the client's own link is let go for it
+    /// (ADR-0107 invariant 7). Shed at the link's close.
+    dialed: HashMap<PeerEndpoint, FarEnd>,
     /// Ranges already decided for a granted flow, so a re-request serves only
     /// the missing subranges.
     served_ranges: HashMap<(PeerEndpoint, FileHash), Vec<(u64, u64)>>,
-    /// Lazily-built AICH trees per shared file (ADR-0038), built from the
-    /// first round-tripped whole-file read and reused after — a cache hit
-    /// answers with no [`ServeDecision::ReadRange`]. Durable persistence
-    /// (known2.met) is deferred.
+    /// Lazily-built AICH trees per shared file (ADR-0038), built by the
+    /// first round-tripped [`ServeDecision::BuildAichTree`] and reused after —
+    /// a cache hit answers with no build. Durable persistence (known2.met) is
+    /// deferred.
     aich_cache: HashMap<FileHash, AichHashSet>,
     /// The parts each peer holds of a file we share, from the part status its
-    /// last name ask or UDP reask wrote (read through `held_parts`, ADR-0055 §Serving)
-    /// — aMule's per-client `m_upPartStatus`. Read twice
-    /// by a source-exchange answer: the asker's own entry is the needed-part
-    /// filter's reference, and each pooled source's entry is what it offers. A peer or file absent
-    /// here is of unknown status. Shed with the peer's identity.
+    /// last name ask or UDP reask wrote (read through
+    /// `PartBitmap::advertised_parts`, ADR-0055 §Serving) — aMule's
+    /// per-client `m_upPartStatus`. Read twice by a source-exchange answer:
+    /// the asker's own entry is the needed-part filter's reference, and each
+    /// pooled source's entry is what it offers. A peer or file absent here is
+    /// of unknown status. Shed with the peer's identity.
     sx_part_status: HashMap<(PeerEndpoint, FileHash), PartBitmap>,
     /// The per-peer source-exchange serve throttle (40/160-minute reask gate,
     /// ADR-0055) — shared by standalone and multipacket-sub asks.
@@ -200,8 +263,13 @@ impl ServeState {
     pub(super) fn new(queue: UploadSlotQueue) -> Self {
         Self {
             shared: HashMap::new(),
+            served: HashMap::new(),
+            ended: HashSet::new(),
+            partials: HashSet::new(),
             queue,
             identities: HashMap::new(),
+            identified: HashSet::new(),
+            dialed: HashMap::new(),
             served_ranges: HashMap::new(),
             aich_cache: HashMap::new(),
             sx_part_status: HashMap::new(),
@@ -215,6 +283,14 @@ impl ServeState {
     /// simply reads the latest one at its next decision.
     pub(super) fn on_self_position(&mut self, ours: ServeSelfPosition) {
         self.ours = ours;
+    }
+
+    /// `peer` is a link rmule dialed, whose hello is still to come, and
+    /// `far_end` what its driver sees of its far end: it takes only a
+    /// standing whose link has ended (ADR-0057, "A client on a new link keeps
+    /// its standing").
+    pub(super) fn on_link_dialed(&mut self, peer: PeerEndpoint, far_end: FarEnd) {
+        self.dialed.insert(peer, far_end);
     }
 
     /// The peers whose credit modifiers the entry points expect: every
@@ -233,13 +309,16 @@ impl ServeState {
     /// identity and the part statuses it wrote.
     fn forget(&mut self, peer: PeerEndpoint) {
         self.identities.remove(&peer);
+        self.identified.remove(&peer);
         self.sx_part_status
             .retain(|(held_by, _), _| *held_by != peer);
     }
 
     /// Replace the share-set snapshot and announce it. Fed the offered
-    /// registry rows at serve start and on every share-changed trigger. A
-    /// file that left the offer stops being served at once
+    /// registry rows at serve start and on every share-changed trigger, with
+    /// the Served Downloads as last refreshed: the Partial Shares are those
+    /// offered then that no row offers whole. A file that left the offer —
+    /// a row or a Partial Share — stops being served at once
     /// ([`stop_serving`](Self::stop_serving)).
     pub(super) fn on_share_set(
         &mut self,
@@ -247,16 +326,40 @@ impl ServeState {
         now: Instant,
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
-        let leaving: Vec<FileHash> = self
+        for file_hash in self.ended.drain() {
+            self.served.remove(&file_hash);
+        }
+        let rows: HashSet<FileHash> = entries.iter().map(|entry| entry.file_hash).collect();
+        let partials: HashSet<FileHash> = self
+            .served
+            .iter()
+            .filter(|(file_hash, look)| look.offered && !rows.contains(file_hash))
+            .map(|(file_hash, _)| *file_hash)
+            .collect();
+        let mut leaving: Vec<FileHash> = self
             .shared
             .keys()
-            .filter(|file_hash| !entries.iter().any(|entry| entry.file_hash == **file_hash))
+            .chain(&self.partials)
+            .filter(|file_hash| !rows.contains(file_hash) && !partials.contains(file_hash))
             .copied()
             .collect();
+        leaving.sort_unstable();
+        leaving.dedup();
         let mut decisions = Vec::new();
         for file_hash in leaving {
             decisions.extend(self.stop_serving(file_hash, now, modifiers));
         }
+        // The rows whole, then each Partial Share as incomplete under its
+        // download's name and size (ADR-0113 §"Announce and Kad").
+        let mut partial_files: Vec<OfferedFile> = partials
+            .iter()
+            .filter_map(|file_hash| Some((*file_hash, self.served.get(file_hash)?)))
+            .map(|(file_hash, look)| {
+                OfferedFile::new(file_hash, look.served.file_size, look.served.name.clone())
+                    .with_completeness(FileCompleteness::Incomplete)
+            })
+            .collect();
+        partial_files.sort_unstable_by_key(OfferedFile::file_hash);
         let files = entries
             .iter()
             .map(|entry| {
@@ -266,103 +369,15 @@ impl ServeState {
                     Ed2kText::from_utf8(entry.name.as_str()),
                 )
             })
+            .chain(partial_files)
             .collect();
         self.shared = entries
             .into_iter()
             .map(|entry| (entry.file_hash, entry))
             .collect();
+        self.partials = partials;
         decisions.push(ServeDecision::Announce(files));
         decisions
-    }
-
-    /// Keep the part status `peer` just wrote for `file_hash` — its name ask's
-    /// or its UDP reask's: one reader ([`held_parts`]) and one rule for both,
-    /// as aMule's `ProcessExtendedInfo` serves both (ADR-0055 §Serving).
-    /// A status this file cannot read leaves the peer's parts unknown,
-    /// as aMule clears it; so does any status from a peer whose hello claimed
-    /// extended requests `0` — aMule clears it and returns before reading
-    /// (stock 2.3.3 `4e8f2b3c` `UploadClient.cpp:400-406`).
-    fn record_part_status(
-        &mut self,
-        peer: PeerEndpoint,
-        file_hash: FileHash,
-        file_size: u64,
-        wire: Option<PartBitmap>,
-    ) {
-        let claims_status = self
-            .identities
-            .get(&peer)
-            .is_some_and(|identity| identity.extended_requests_version() > 0);
-        match wire
-            .filter(|_| claims_status)
-            .and_then(|wire| held_parts(file_size, &wire))
-        {
-            Some(held) => self.sx_part_status.insert((peer, file_hash), held),
-            None => self.sx_part_status.remove(&(peer, file_hash)),
-        };
-    }
-
-    /// Answer a peer's source-exchange request (ADR-0055 §Serving): build the
-    /// candidate pool for `file_hash`, apply the per-peer throttle, filter it
-    /// (LowID / self skip, needed-chunk, 500 cap), and — if anything survives —
-    /// frame an `OP_ANSWERSOURCES(2)` plus a served-sources event. A file we do
-    /// not share, a throttled ask, or an empty result all send nothing (aMule's
-    /// `NULL` reply packet).
-    ///
-    /// Only a complete shared file has an engaged-client pool here; an
-    /// in-progress download's source list lives in `DownloadState` (not owned
-    /// by the serve brain), so serving partials' sources rides rmule's
-    /// partial-file sharing (the [`ServedFileKind::InProgress`] pool rules are
-    /// modelled and tested in `serve::source_exchange`, unwired here).
-    fn answer_source_exchange(
-        &mut self,
-        now: Instant,
-        peer: PeerEndpoint,
-        file_hash: FileHash,
-    ) -> Vec<ServeDecision> {
-        if !self.shared.contains_key(&file_hash) {
-            return Vec::new();
-        }
-        let candidates: Vec<SxCandidate> = self
-            .queue
-            .engaged_peers(file_hash)
-            .into_iter()
-            .filter_map(|engaged| {
-                let source = self.identities.get(&engaged)?.source_coordinate();
-                Some(SxCandidate {
-                    source,
-                    part_status: self.sx_part_status.get(&(engaged, file_hash)).cloned(),
-                })
-            })
-            .collect();
-        // Rarity (rare vs common reask gate) follows how many sources we know
-        // for the file — the engaged-client count, aMule's `GetSourceCount`.
-        if !self.sx_throttle.admit(peer, now, candidates.len()) {
-            return Vec::new();
-        }
-        // The needed-chunk gate reads the requester's own last status (name ask or UDP reask);
-        // without one only sources holding a
-        // part, plus the unknowns, are offered. The self-skip compares source identity, so the requester's
-        // *own* source coordinate (its advertised id + listen port, not the
-        // ephemeral socket) is what we exclude.
-        let requester = SxRequester {
-            endpoint: self
-                .identities
-                .get(&peer)
-                .and_then(|identity| identity.source_coordinate().as_peer_endpoint()),
-            part_status: self.sx_part_status.get(&(peer, file_hash)).cloned(),
-        };
-        // Which of these the answer's wire form can carry is the peer
-        // session's call: a classic answer leaves an IPv6-only source out, and
-        // one left empty sends nothing (ADR-0087).
-        let sources = select_sources(ServedFileKind::Complete, &requester, &candidates);
-        if sources.is_empty() {
-            return Vec::new();
-        }
-        vec![ServeDecision::Send {
-            peer,
-            command: ServerCommand::AnswerSources { file_hash, sources },
-        }]
     }
 
     /// Re-rank idle waiters by live credit and report the changed positions.
@@ -385,11 +400,13 @@ impl ServeState {
         purge_after: Duration,
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
-        let shared = &self.shared;
+        // [`Self::in_share_set`], read by field: the queue is borrowed
+        // mutably beside it.
+        let (shared, partials) = (&self.shared, &self.partials);
         let purge = self.queue.purge(
             now,
             purge_after,
-            |hash| shared.contains_key(&hash),
+            |hash| shared.contains_key(&hash) || partials.contains(&hash),
             modifiers,
         );
         for &peer in &purge.removed {
@@ -397,9 +414,8 @@ impl ServeState {
             self.sx_throttle.forget(peer);
         }
         let mut decisions = Vec::new();
-        // A dropped wait-list entry never held a slot, so it gets the purge's
-        // own event — never `UploadSlotReleased`, which stays reserved for the
-        // reclaimed dial-back grant below.
+        // A dropped wait-list entry gets the purge's own event; the reclaimed
+        // dial-back grant below gets its lapse instead.
         for peer in &purge.removed {
             if purge.reclaimed != Some(*peer) {
                 decisions.push(ServeDecision::Emit(ServeEvent::WaiterLeft {
@@ -409,38 +425,38 @@ impl ServeState {
             }
         }
         if let Some(peer) = purge.reclaimed {
-            // A pending dial-back grant whose dial never connected: its slot is
-            // reclaimed, so surface the release before the promotion that fills
+            // A pending dial-back grant whose client never linked: its slot is
+            // reclaimed, so surface the lapse before the promotion that fills
             // it (`promotion_decisions` carries the grant + rank shifts).
-            decisions.push(ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer }));
+            decisions.push(ServeDecision::Emit(ServeEvent::UploadDialBackFailed {
+                peer,
+                cause: DialBackEnd::Lapsed,
+            }));
         }
         decisions.extend(self.promotion_decisions(purge.promotion));
         decisions
     }
 
-    /// Grant (or dial-back) the promoted waiter plus any rank shifts — the
-    /// shared tail of a slot-freeing event. A promotion of a **disconnected**
-    /// waiter is a `DialBackGrant` (rmule dials it), not a `GrantSlot` over a
-    /// dead socket (ADR-0057).
-    fn promotion_decisions(&self, promotion: Promotion) -> Vec<ServeDecision> {
+    /// Grant the promoted waiter on its link, or reach it when it has none
+    /// ([`reach_promoted`](Self::reach_promoted)), plus any rank shifts — the
+    /// shared tail of a slot-freeing event (ADR-0057).
+    fn promotion_decisions(&mut self, promotion: Promotion) -> Vec<ServeDecision> {
         let mut decisions = Vec::new();
         if let Some((promoted, file_hash)) = promotion.granted {
-            decisions.push(if promotion.dial_back {
-                ServeDecision::DialBackGrant {
-                    peer: promoted,
-                    file_hash,
-                }
+            if promotion.dial_back {
+                decisions.extend(self.reach_promoted(promoted, file_hash));
             } else {
-                ServeDecision::Send {
+                decisions.push(ServeDecision::Send {
                     peer: promoted,
                     command: ServerCommand::GrantSlot { file_hash },
-                }
-            });
-            decisions.push(ServeDecision::Emit(ServeEvent::UploadSlotGranted {
-                peer: promoted,
-                file_hash,
-                software: self.software_of(promoted),
-            }));
+                });
+                decisions.push(ServeDecision::Emit(ServeEvent::UploadSlotGranted {
+                    peer: promoted,
+                    file_hash,
+                    software: self.software_of(promoted),
+                    road: GrantRoad::Linked,
+                }));
+            }
         }
         decisions.extend(rank_updates(
             &self.queue,

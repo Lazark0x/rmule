@@ -2,7 +2,7 @@
 # Machine-checkable subset of the repository's code and docs conventions.
 #
 # Walks crates/ apps/ tools/ docs/ (and, for the two text checks, every public
-# tracked file) and reports every violation of the fourteen
+# tracked file) and reports every violation of the fifteen
 # guards below. A violation is suppressed when its exact `<check>:<path>` line appears
 # in scripts/guards-allow.txt (the ratchet — debt drained over time, never
 # grown without justification in the PR).
@@ -24,10 +24,13 @@
 #              can read: rmule's, rmule-cli's and rmule-words' source outside
 #              test code and `tracing::` macros, and the `#[error(...)]` texts
 #              of every other crate under crates/; the Run Log may hold one
-#   unsafe     `unsafe` code or an `unsafe_code` waiver outside
-#              crates/rmule-winsock, another manifest setting `unsafe_code`,
-#              rmule-winsock's lint table drifting from [workspace.lints], or
-#              rmule-winsock holding other than one `unsafe` block
+#   unsafe     `unsafe` code or an `unsafe_code` waiver outside the functions
+#              crates/rmule-os pins, a pinned function without exactly one
+#              waiver on it and one `unsafe` block in it or with more than one
+#              `unsafe extern` block, a block or an extern block without a
+#              `// SAFETY:` comment above it, another manifest setting
+#              `unsafe_code`, or rmule-os's lint table drifting from
+#              [workspace.lints]
 #   trackerref a reference into this repository's own tracker (a hash and a
 #              number, a numbered local plan issue, or an issue or pull URL)
 #              in any public tracked file
@@ -36,6 +39,11 @@
 #              private tree, in any public tracked file
 #   sentence   a `Sentence` made outside a words module: rmule-words, or the
 #              TUI's own words (apps/rmule/src/words.rs and words/)
+#   refconst   a constant declared under an eMule symbol name whose value the
+#              Reference Source gives otherwise (scripts/audit-reference-
+#              constants.py); run only when the pinned tree is present, which
+#              CI's reference-constants job provides — one line says so when
+#              it is not
 #
 # Exit 0 when every violation is suppressed, 1 otherwise.
 
@@ -322,39 +330,155 @@ done <<EOF
 $(rs_files)
 EOF
 
-# 10. unsafe — `unsafe_code` is forbidden workspace-wide. One crate,
-# rmule-winsock, relaxes it to deny for the one WinSock call no safe wrapper
-# offers: it holds exactly one `unsafe` block and one waiver, and its lint
-# table repeats every other workspace lint. Nothing outside it may hold
-# `unsafe` code or a waiver, and no other manifest may set the lint.
-UNSAFE_CRATE="crates/rmule-winsock"
+# 10. unsafe — `unsafe_code` is forbidden workspace-wide. One crate, rmule-os,
+# relaxes it to deny for the operating-system calls no safe wrapper offers
+# (ADR-0111), and only the functions pinned below may waive it: each carries
+# one waiver directly on it and holds one `unsafe` block under a `// SAFETY:`
+# comment, and may declare the foreign function it calls, when no crate does,
+# in at most one `unsafe extern` block under a `// SAFETY:` comment of its own.
+# Nothing else in the crate, or outside it, holds `unsafe` code or a waiver;
+# the crate's lint table repeats every other workspace lint, and no other
+# manifest sets the lint.
+UNSAFE_CRATE="crates/rmule-os"
+# The waived functions, `<file under the crate>:<fn name>`. Two definitions
+# under different `cfg`s share a name and count as one.
+UNSAFE_PINNED="src/winsock.rs:disable_udp_connection_reset
+src/sparse/macos.rs:punch_hole
+src/sparse/windows.rs:set_sparse
+src/sparse/windows.rs:punch_hole
+src/sparse/windows.rs:allocated_bytes
+src/fs/windows.rs:rename_exclusive
+src/default_app/macos.rs:drop
+src/default_app/macos.rs:cf_string
+src/default_app/macos.rs:content_type
+src/default_app/macos.rs:default_app
+src/default_app/macos.rs:file_path
+src/default_app/windows.rs:for_extension"
 UNSAFE_CODE='(^|[^[:alnum:]_])unsafe[[:space:]]*(\{|fn[[:space:]]|impl[[:space:]]|extern[[:space:]]|trait[[:space:]])'
 UNSAFE_WAIVER='(allow|expect)\([^)]*unsafe_code'
 # A file's code lines: `//` comment lines dropped.
 code_lines() {
     grep -v '^[[:space:]]*//' "$1"
 }
-waived_blocks=0
-waivers=0
+# unsafe_sites <file>: one line per waiver and per `unsafe` code line,
+#   waiver <line> <fn>              the fn the waiver sits on, `-` for none
+#   block <line> <fn> <safe> <ufn>  the fn declared last above the block (`-`
+#                                   for none); safe = 1 when the `//` run
+#                                   right above holds `SAFETY:`; ufn = 1 for
+#                                   an `unsafe fn`
+#   extern <line> <fn> <safe> 0     an `unsafe extern` block, read as a block
+#                                   is; the fns it declares are not the fn a
+#                                   later block lies in
+# A waiver sits on a fn when only attribute and comment lines lie between
+# them (or the fn follows it on its line); an inner `#![...]` sits on none.
+unsafe_sites() {
+    awk '
+        function fn_name(line,   name) {
+            if (!match(line, /(^|[^[:alnum:]_])fn[[:space:]]+[[:alpha:]_][[:alnum:]_]*/)) return ""
+            name = substr(line, RSTART, RLENGTH)
+            sub(/^.*fn[[:space:]]+/, "", name)
+            return name
+        }
+        function settle(name,   i, n, lines) {
+            n = split(pending, lines, " ")
+            for (i = 1; i <= n; i++) print "waiver", lines[i], (name == "" ? "-" : name)
+            pending = ""
+        }
+        /^[[:space:]]*\/\// {
+            if ($0 ~ /SAFETY:/) safety = 1
+            next
+        }
+        {
+            attribute = ($0 ~ /^[[:space:]]*#!?\[/)
+            if (pending != "" && !attribute) settle(fn_name($0))
+            if ($0 ~ /(allow|expect)\([^)]*unsafe_code/) {
+                rest = $0
+                sub(/^[[:space:]]*#\[[^]]*\][[:space:]]*/, "", rest)
+                if ($0 ~ /^[[:space:]]*#!/) print "waiver", NR, "-"
+                else if (fn_name(rest) != "") print "waiver", NR, fn_name(rest)
+                else pending = pending " " NR
+            }
+            if (depth > 0) {
+                depth += gsub(/[{]/, "{") - gsub(/[}]/, "}")
+                safety = 0
+                next
+            }
+            name = fn_name($0)
+            if (name != "") current = name
+            if ($0 ~ /(^|[^[:alnum:]_])unsafe[[:space:]]+extern[[:space:]]/) {
+                print "extern", NR, (current == "" ? "-" : current), safety + 0, 0
+                depth = gsub(/[{]/, "{") - gsub(/[}]/, "}")
+            } else if ($0 ~ /(^|[^[:alnum:]_])unsafe[[:space:]]*([{]|fn[[:space:]]|impl[[:space:]]|extern[[:space:]]|trait[[:space:]])/)
+                print "block", NR, (current == "" ? "-" : current), safety + 0, ($0 ~ /unsafe[[:space:]]+fn[[:space:]]/)
+            safety = 0
+        }
+        END { if (pending != "") settle("") }
+    ' "$1"
+}
+unsafe_waived=""
+unsafe_blocks=""
+unsafe_externs=""
 while IFS= read -r f; do
     [ -n "$f" ] || continue
     case "$f" in
     "$UNSAFE_CRATE"/*)
-        waived_blocks=$((waived_blocks + $(code_lines "$f" | grep -cE "$UNSAFE_CODE")))
-        waivers=$((waivers + $(code_lines "$f" | grep -cE "$UNSAFE_WAIVER")))
+        rel="${f#"$UNSAFE_CRATE"/}"
+        while read -r kind line fn safe ufn; do
+            [ -n "$kind" ] || continue
+            key="$rel:$fn"
+            if ! printf '%s\n' "$UNSAFE_PINNED" | grep -qxF "$key"; then
+                if [ "$kind" = waiver ]; then
+                    report unsafe "$f" "line $line: an unsafe_code waiver not directly on a function this guard pins"
+                else
+                    report unsafe "$f" "line $line: unsafe code outside a function this guard pins"
+                fi
+                continue
+            fi
+            if [ "$kind" = waiver ]; then
+                unsafe_waived="$unsafe_waived$key
+"
+                continue
+            fi
+            if [ "$kind" = extern ]; then
+                unsafe_externs="$unsafe_externs$key
+"
+                [ "$safe" = 1 ] ||
+                    report unsafe "$f" "line $line: an unsafe extern block without a // SAFETY: comment right above it"
+                continue
+            fi
+            unsafe_blocks="$unsafe_blocks$key
+"
+            [ "$safe" = 1 ] ||
+                report unsafe "$f" "line $line: an unsafe block without a // SAFETY: comment right above it"
+            [ "$ufn" = 0 ] ||
+                report unsafe "$f" "line $line: an unsafe fn — a pinned function is a safe wrapper"
+        done <<SITES
+$(unsafe_sites "$f")
+SITES
         ;;
     *)
         if code_lines "$f" | grep -qE "$UNSAFE_CODE|$UNSAFE_WAIVER"; then
-            report unsafe "$f" "unsafe code or an unsafe_code waiver — only $UNSAFE_CRATE may hold one"
+            report unsafe "$f" "unsafe code or an unsafe_code waiver — only the functions $UNSAFE_CRATE pins may hold one"
         fi
         ;;
     esac
 done <<EOF
 $(rs_files)
 EOF
-if [ "$waived_blocks" -ne 1 ] || [ "$waivers" -ne 1 ]; then
-    report unsafe "$UNSAFE_CRATE" "$waived_blocks unsafe block(s) and $waivers waiver(s) — exactly one of each"
-fi
+while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    waived=$(printf '%s' "$unsafe_waived" | grep -cxF "$key")
+    blocks=$(printf '%s' "$unsafe_blocks" | grep -cxF "$key")
+    if [ "$waived" -ne 1 ] || [ "$blocks" -ne 1 ]; then
+        report unsafe "$UNSAFE_CRATE/${key%%:*}" "${key#*:}: $waived waiver(s) and $blocks unsafe block(s) — exactly one of each"
+    fi
+    externs=$(printf '%s' "$unsafe_externs" | grep -cxF "$key")
+    if [ "$externs" -gt 1 ]; then
+        report unsafe "$UNSAFE_CRATE/${key%%:*}" "${key#*:}: $externs unsafe extern blocks — at most one"
+    fi
+done <<EOF
+$UNSAFE_PINNED
+EOF
 while IFS= read -r d; do
     [ -n "$d" ] || continue
     [ "$d" = "$UNSAFE_CRATE" ] && continue
@@ -574,6 +698,29 @@ while IFS= read -r f; do
 done <<EOF
 $(rs_files)
 EOF
+
+# 15. refconst — a constant rmule declares under eMule's own symbol name
+# carries eMule's value (ADR-0082). The Reference Source is a pinned clone no
+# checkout carries, so the audit runs here only when it is present; CI's
+# reference-constants job fetches it and runs the same script, so a tree that
+# is absent here skips nothing that matters.
+REF_TREE="docs/reference/emule-source/eMule/srchybrid"
+if [ -d "$REF_TREE" ]; then
+    audit="$(python3 scripts/audit-reference-constants.py 2>&1)"
+    audit_status=$?
+    if [ "$audit_status" -eq 1 ]; then
+        while IFS="$(printf '\t')" read -r path finding; do
+            [ -n "$path" ] || continue
+            report refconst "$path" "$finding"
+        done <<EOF
+$(printf '%s\n' "$audit" | sed -n 's/^  \([A-Z][A-Z0-9_]*: rmule .*\)  \[\(.*\)\]$/\2	\1/p')
+EOF
+    elif [ "$audit_status" -ne 0 ]; then
+        report refconst scripts/audit-reference-constants.py "the audit did not run (exit $audit_status)"
+    fi
+else
+    echo "refconst: not run here — no Reference Source at $REF_TREE (CI's reference-constants job runs it)"
+fi
 
 echo
 if [ "$suppressed" -gt 0 ]; then

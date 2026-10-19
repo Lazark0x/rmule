@@ -7,8 +7,11 @@
 //! by [`DownloadId`] at render time, so the edge path and the level path can
 //! never drift apart.
 
+use std::path::PathBuf;
+
 use rmule_core::{
-    DownloadEvent, DownloadFailure, DownloadId, DownloadLifecycle, DownloadMetadata, SourceWait,
+    CompletionStep, DownloadEvent, DownloadFailure, DownloadId, DownloadLifecycle,
+    DownloadMetadata, SourceWait,
 };
 use rmule_primitives::{ED2K_PART_SIZE, FileHash};
 
@@ -32,6 +35,10 @@ pub enum DownloadStatus {
     Downloading,
     /// Stopped on request; the row keeps everything it knows.
     Paused,
+    /// Every part verified and the file checked: core moves the finished
+    /// file into place (ADR-0115). Its step and the bytes copied are levels
+    /// on the download's diagnostics row.
+    Completing,
     /// Core called the file finished.
     Completed,
     /// Core called it terminally failed; the row keeps the reason.
@@ -62,6 +69,12 @@ pub struct DownloadRow {
     /// window where some other edge created the row (edge-order tolerance)
     /// before either of those landed.
     pub metadata: Option<DownloadMetadata>,
+    /// Where the download's bytes lie now, as core published it (ADR-0114):
+    /// the `.part` from `DownloadQueued` or `DownloadRecovered`, the finished
+    /// file once a `Completing` edge waiting for the store or
+    /// `DownloadCompleted` names it. Never composed from the download
+    /// directory and the name. `None` until one of those edges.
+    pub file_path: Option<PathBuf>,
     /// Why the last run failed, as the `DownloadFailed` edge said, or as the
     /// store kept it across a restart (`DownloadRecovered`). `None` for a row
     /// not failed, and for one failed before the store kept reasons.
@@ -79,6 +92,7 @@ impl DownloadRow {
             part_count: None,
             verified_bytes: 0,
             metadata: None,
+            file_path: None,
             failure: None,
             source_wait: None,
         }
@@ -127,10 +141,12 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
             download_id,
             file_hash,
             metadata,
+            file_path,
         } => {
             let row = row_mut(state, download_id);
             row.file_hash = Some(file_hash);
             row.metadata = Some(metadata);
+            row.file_path = Some(file_path);
             row.status = DownloadStatus::Waiting;
             note(state, words::QUEUED)
         }
@@ -140,6 +156,7 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
             failure,
             file_hash,
             metadata,
+            file_path,
         } => {
             let status = match lifecycle {
                 // No run exists yet: core starts one at its pace (ADR-0093),
@@ -148,6 +165,8 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
                 DownloadLifecycle::Paused => DownloadStatus::Paused,
                 DownloadLifecycle::Failed => DownloadStatus::Failed,
                 DownloadLifecycle::Completed => DownloadStatus::Completed,
+                // Its run starts at once and goes straight to the move.
+                DownloadLifecycle::Completing => DownloadStatus::Completing,
                 // A cancelled download has no row to recover.
                 DownloadLifecycle::Cancelled => return false,
             };
@@ -156,6 +175,7 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
             row.failure = failure;
             row.file_hash = Some(file_hash);
             row.metadata = Some(metadata);
+            row.file_path = Some(file_path);
             note(state, words::RECOVERED)
         }
         E::DownloadProgressRestored {
@@ -213,7 +233,11 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
             row_mut(state, download_id).part_count = Some(part_count);
             true
         }
-        E::DownloadCompleted { download_id, .. } => {
+        E::DownloadCompleted {
+            download_id,
+            final_path,
+        } => {
+            row_mut(state, download_id).file_path = Some(final_path);
             let changed = set_status(state, download_id, DownloadStatus::Completed);
             note(state, words::COMPLETED) || changed
         }
@@ -270,6 +294,23 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
             let text = words::part_file_lost(&download_name(state, download_id), found, lost);
             note(state, text)
         }
+        // Once per run (ADR-0111): the note says it now; the Transfers
+        // details modal keeps the verdict as the row's level.
+        E::HoleLessDestination {
+            download_id,
+            directory,
+        } => {
+            let text = words::hole_less_destination(&download_name(state, download_id), &directory);
+            note(state, text)
+        }
+        E::PartsDisproved {
+            download_id,
+            parts,
+            bytes,
+        } => {
+            let text = words::parts_disproved(&download_name(state, download_id), parts, bytes);
+            note(state, text)
+        }
         E::FinishedFileRejected {
             download_id,
             parts_dropped,
@@ -291,6 +332,23 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
             row_mut(state, download_id).failure = None;
             let changed = set_status(state, download_id, DownloadStatus::Waiting);
             let text = words::restarted(&download_name(state, download_id), &outcome);
+            note(state, text) || changed
+        }
+        // A step of the completion move that waits or copies began: the
+        // row reads Completing, and the note says what it does (ADR-0115).
+        // Waiting for the store is the one step core tells only once the
+        // finished file is in place, so from it on the bytes lie at `to`:
+        // a same-volume rename has taken the `.part` away.
+        E::Completing {
+            download_id,
+            step,
+            to,
+        } => {
+            if step == CompletionStep::WaitingForStore {
+                row_mut(state, download_id).file_path = Some(to);
+            }
+            let changed = set_status(state, download_id, DownloadStatus::Completing);
+            let text = words::completing(&download_name(state, download_id), step);
             note(state, text) || changed
         }
         E::WaitingForConnection { download_id } => {
@@ -320,14 +378,20 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
         | E::PeerQueued { .. }
         | E::PeerSlotTimeout { .. }
         | E::SourceRemoteQueued { .. }
+        | E::SourceWaitsOnStanding { .. }
         | E::SourceReaskAcked { .. }
         | E::SourceReaskQueueFull { .. }
         | E::SourceReaskedOverTcp { .. }
+        | E::SlotOffered { .. }
         | E::SourcePurged { .. }
         | E::SourceReaskDropped { .. }
         | E::ReaskReplyIgnored { .. }
         | E::DialEnded { .. }
+        | E::LinkShared { .. }
         | E::PartReleased { .. }
+        | E::EndGameBlocks { .. }
+        | E::PartCorrupt { .. }
+        | E::KadAichRootContested { .. }
         | E::PeerRetired { .. } => false,
     }
 }

@@ -62,9 +62,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow};
 use rmule_kad::{Kad2Message, KadDecoded, KadPublishedSource, KadSourceCandidate};
 
-use crate::docker::RunContainer;
 use crate::flow::bench::Bench;
-use crate::flow::ed2ksrv::Ed2ksrvImage;
+use crate::flow::ed2ksrv::ED2KSRV;
 use crate::flow::evidence::{count_pcap_rows, write_pcap_first_match};
 use crate::flow::gate::wait_for_container_log;
 use crate::flow::identity::{hex_lower, parse_ed2k_file_hash, parse_ipv4_octets};
@@ -79,6 +78,7 @@ use crate::flow::nat::dialect::verdict::{Body, Claim, DriverRow, Evidence};
 use crate::flow::nat::dialect::{BODY_CLIENT_UDP_PORT, BODY_PEER_TCP_PORT, ED2KSRV_TCP_PORT};
 use crate::flow::nat::synthetic::{SyntheticFile, write_hashed};
 use crate::flow::pcap::first_udp_payload;
+use crate::flow::pinned_image::AMULE_KNO;
 use crate::kad_seed::{
     KadContact, build_preferences_kad_dat, build_routing_zone_nodes_dat,
     storer_kad_id_for_file_hash,
@@ -176,7 +176,7 @@ pub(super) fn start(
     let storer_kad_id = storer_kad_id_for_file_hash(parse_ed2k_file_hash(&shared.link)?);
 
     let server = format!("rmule-interop-v6srv-{suffix}");
-    let ed2ksrv = Ed2ksrvImage::check(&bench.docker, options.ed2ksrv_image)?;
+    let ed2ksrv = ED2KSRV.check(&bench.docker, options.ed2ksrv_image)?;
     bench.start_extra(
         &server,
         ed2ksrv
@@ -239,9 +239,11 @@ pub(super) fn start(
 
     let kno = format!("rmule-interop-v6kno-{suffix}");
     let shared_dir = shared.path.parent().context("the shared file has a dir")?;
+    let pinned = AMULE_KNO.check(&bench.docker, options.amule_kno_image)?;
     bench.start_extra(
         &kno,
-        RunContainer::new(options.amule_kno_image)
+        pinned
+            .container()
             .detach()
             .name(&kno)
             .network(&stage.network)
@@ -273,12 +275,14 @@ pub(super) fn start(
     stage.bodies.push(Body {
         name: "amule-kno".to_owned(),
         image: options.amule_kno_image.to_owned(),
-        pin: "kno/amule integration/network-parity ab483654".to_owned(),
+        pin: pinned.pin(),
         address_v4: stage.v4(HOST_AMULE_KNO).to_owned(),
         address_v6: stage.v6(HOST_AMULE_KNO).to_owned(),
     });
     // Started last, by its own leg; its address is part of the plan from here.
-    stage.bodies.push(emuleqt::body(options, stage));
+    stage
+        .bodies
+        .push(emuleqt::body(&bench.docker, options, stage));
     stage.bodies.push(Body {
         name: "ed2ksrv".to_owned(),
         image: options.ed2ksrv_image.to_owned(),

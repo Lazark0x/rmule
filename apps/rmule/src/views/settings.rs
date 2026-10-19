@@ -50,13 +50,18 @@ use ratatui::widgets::{Block, Paragraph};
 
 use crate::action::Action;
 use crate::config::{
-    ObfuscationChoice, PrefEdit, Preferences, ThemeChoice, validate_download_dir, validate_nickname,
+    ObfuscationChoice, PrefEdit, Preferences, ThemeChoice, validate_download_dir,
+    validate_nickname, validate_temp_dir,
 };
 use crate::form::{self, Field, Form, FormKey, validate_port, validate_url};
+use crate::row_selection::viewport::{self, Viewport};
 use crate::state::UiState;
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
+use crate::words::Sentence;
+use crate::words::app as words;
 use crate::words::front_door;
+use crate::words::server as server_words;
 use crate::wrap::clamp_u16;
 use shared_dirs::Slot;
 
@@ -68,6 +73,7 @@ mod shared_dirs;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Row {
     DownloadDir,
+    TempDir,
     DataDir,
     Nickname,
     TcpPort,
@@ -77,9 +83,12 @@ pub(super) enum Row {
     ConnectAtStart,
     ServerMetUrl,
     AutoFetchServerMet,
+    AutoUpdateServerMet,
+    ServerMetAutoUpdateUrls,
     DeadServerRetries,
     WithholdShares,
     RememberPeers,
+    PlayerCommand,
     NodesDatUrl,
     AutoFetchNodesDat,
     Theme,
@@ -89,8 +98,9 @@ pub(super) enum Row {
 }
 
 impl Row {
-    const ALL: [Row; 19] = [
+    const ALL: [Row; 23] = [
         Row::DownloadDir,
+        Row::TempDir,
         Row::DataDir,
         Row::Nickname,
         Row::TcpPort,
@@ -100,9 +110,12 @@ impl Row {
         Row::ConnectAtStart,
         Row::ServerMetUrl,
         Row::AutoFetchServerMet,
+        Row::AutoUpdateServerMet,
+        Row::ServerMetAutoUpdateUrls,
         Row::DeadServerRetries,
         Row::WithholdShares,
         Row::RememberPeers,
+        Row::PlayerCommand,
         Row::NodesDatUrl,
         Row::AutoFetchNodesDat,
         Row::Theme,
@@ -131,21 +144,33 @@ impl Row {
 
 /// The **Dead Server Limit** as an operator types it: a whole number from 1
 /// to 10, aMule's own spin box's range (`muuli_wdr.cpp:1659`).
-fn validate_dead_after(text: &str) -> Result<u32, String> {
+fn validate_dead_after(text: &str) -> Result<u32, Sentence> {
     text.trim()
         .parse::<u32>()
         .ok()
         .filter(|limit| (1..=10).contains(limit))
-        .ok_or_else(|| "dead after: a whole number of tries from 1 to 10".to_string())
+        .ok_or(words::DEAD_AFTER_REFUSED)
 }
 
 /// `Remember peers` as an operator types it: a whole number from 1 to 255
 /// (ADR-0109, "Source Seeds").
-fn validate_remember_peers(text: &str) -> Result<rmule_core::RememberPeers, String> {
+fn validate_remember_peers(text: &str) -> Result<rmule_core::RememberPeers, Sentence> {
     text.trim()
         .parse::<std::num::NonZeroU8>()
         .map(rmule_core::RememberPeers::new)
-        .map_err(|_| crate::words::download::REMEMBER_PEERS_REFUSED.to_string())
+        .map_err(|_| words::REMEMBER_PEERS_REFUSED)
+}
+
+/// The **Player Command** as an operator types it (ADR-0114): empty clears
+/// it; any other text must split into a player's words.
+fn player_command(text: &str) -> Result<Option<String>, Sentence> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    crate::player::split(text)
+        .map(|_| Some(text.to_string()))
+        .map_err(crate::words::player::field_refusal)
 }
 
 /// Where a restart-shaped row says so.
@@ -171,15 +196,16 @@ fn connect_at_start_note(last: Option<&rmule_primitives::ServerEndpoint>) -> Str
 const DASH: &str = "—";
 
 /// The Settings view. Holds view state only (ADR-0069): the form's cursor and
-/// typing, whether a text field is open for editing, and the scroll offset.
+/// typing, whether a text field is open for editing, and its Viewport.
 /// Every *value* comes from [`UiState::preferences`].
 pub struct SettingsView {
     form: Form,
     /// `true` while a text field is open: the form owns every key, so a
     /// binding letter is a character and not a command.
     editing: bool,
-    /// First rendered display line, so a long form scrolls under a short pane.
-    offset: usize,
+    /// What part of the form is on screen, in display lines, so a long form
+    /// scrolls under a short pane.
+    viewport: Viewport,
     /// Field index behind each rendered display line, from the last draw — the
     /// map a click needs once a row can wrap to more than one line.
     line_rows: Vec<Option<usize>>,
@@ -194,6 +220,9 @@ pub struct SettingsView {
     removing: Option<std::path::PathBuf>,
     /// The disclosure questions this view answered (`ScanConsent::asked`).
     answered: std::collections::BTreeSet<u64>,
+    /// What part of the remove confirm or a disclosure question is on
+    /// screen, in a frame too short for it.
+    modal_viewport: std::cell::Cell<Viewport>,
 }
 
 impl Default for SettingsView {
@@ -202,13 +231,14 @@ impl Default for SettingsView {
         Self {
             form,
             editing: false,
-            offset: 0,
+            viewport: Viewport::default(),
             line_rows: Vec::new(),
             body: Rect::default(),
             warned_dir: None,
             slots,
             removing: None,
             answered: std::collections::BTreeSet::new(),
+            modal_viewport: std::cell::Cell::default(),
         }
     }
 }
@@ -231,6 +261,16 @@ fn build(prefs: &Preferences, state: &UiState) -> (Form, Vec<Slot>) {
         let field = match row {
             Row::DownloadDir => Field::text("Download dir", path(&prefs.download_dir))
                 .with_placeholder("unset — downloads have nowhere to land"),
+            // Unset, the row names the directory core reads by default.
+            Row::TempDir => Field::text("Temp dir", path(&prefs.temp_dir)).with_placeholder(
+                crate::words::app::temp_dir_default(
+                    prefs
+                        .data_dir
+                        .as_ref()
+                        .map(|dir| rmule_core::CoreSettings::default_temp_dir(&dir.path))
+                        .as_deref(),
+                ),
+            ),
             Row::DataDir => match &prefs.data_dir {
                 Some(dir) => Field::display("Data dir", dir.path.display().to_string())
                     .with_note(format!("({})", front_door::source_words(dir.source))),
@@ -250,6 +290,18 @@ fn build(prefs: &Preferences, state: &UiState) -> (Form, Vec<Slot>) {
                 usize::from(prefs.auto_fetch_server_met),
             )
             .with_note("server.met at start when the list is empty  (on restart)"),
+            Row::AutoUpdateServerMet => Field::choice(
+                server_words::AUTO_UPDATE_LABEL,
+                ON_OFF.to_vec(),
+                usize::from(prefs.auto_update_server_met),
+            )
+            .with_note(server_words::AUTO_UPDATE_NOTE),
+            Row::ServerMetAutoUpdateUrls => Field::text(
+                server_words::AUTO_UPDATE_URLS_LABEL,
+                prefs.server_met_auto_update_urls.join(" "),
+            )
+            .with_placeholder(server_words::AUTO_UPDATE_URLS_NONE)
+            .with_note(server_words::AUTO_UPDATE_URLS_NOTE),
             Row::UdpPort => {
                 Field::text("UDP port", prefs.udp_port.to_string()).with_note(ON_RESTART)
             }
@@ -287,6 +339,10 @@ fn build(prefs: &Preferences, state: &UiState) -> (Form, Vec<Slot>) {
             Row::RememberPeers => {
                 Field::text("Remember peers", prefs.remember_peers.get().to_string())
                     .with_note(crate::words::download::REMEMBER_PEERS_NOTE)
+            }
+            Row::PlayerCommand => {
+                Field::text("Player", prefs.player_command.clone().unwrap_or_default())
+                    .with_placeholder(crate::words::player::UNSET)
             }
             Row::NodesDatUrl => {
                 Field::text("nodes.dat", prefs.nodes_dat_url.clone()).with_note(ON_RESTART)
@@ -364,7 +420,7 @@ impl SettingsView {
     /// Validate the focused field into the edit it names, or the reason it is
     /// not one. Cross-field checks live here because this is the only place
     /// that can see the other fields.
-    fn commit(&self, prefs: &Preferences) -> Result<Option<PrefEdit>, String> {
+    fn commit(&self, prefs: &Preferences) -> Result<Option<PrefEdit>, Sentence> {
         let index = self.form.focus;
         let text = self.form.text(index);
         let row = match self.slots.get(index) {
@@ -373,24 +429,31 @@ impl SettingsView {
         };
         let edit = match row.as_ref() {
             Some(Row::DownloadDir) => PrefEdit::DownloadDir(validate_download_dir(text)?),
+            Some(Row::TempDir) => PrefEdit::TempDir(validate_temp_dir(text)?),
             Some(Row::Nickname) => PrefEdit::Nickname(validate_nickname(text)?),
             Some(Row::TcpPort) => {
                 let port = validate_port(text)?;
                 if port == prefs.udp_port {
-                    return Err("the eD2k port must differ from the UDP port".to_string());
+                    return Err(words::port_clash(words::PortClash::TcpAgainstUdp));
                 }
                 PrefEdit::TcpPort(port)
             }
             Some(Row::UdpPort) => {
                 let port = validate_port(text)?;
                 if port == prefs.tcp_port {
-                    return Err("the UDP port must differ from the eD2k port".to_string());
+                    return Err(words::port_clash(words::PortClash::UdpAgainstTcp));
                 }
                 PrefEdit::UdpPort(port)
             }
             Some(Row::ServerMetUrl) => PrefEdit::ServerMetUrl(validate_url(text)?.to_string()),
+            Some(Row::ServerMetAutoUpdateUrls) => PrefEdit::ServerMetAutoUpdateUrls(
+                text.split_whitespace()
+                    .map(|url| validate_url(url).map(str::to_owned))
+                    .collect::<Result<_, _>>()?,
+            ),
             Some(Row::DeadServerRetries) => PrefEdit::DeadServerRetries(validate_dead_after(text)?),
             Some(Row::RememberPeers) => PrefEdit::RememberPeers(validate_remember_peers(text)?),
+            Some(Row::PlayerCommand) => PrefEdit::PlayerCommand(player_command(text)?),
             Some(Row::NodesDatUrl) => PrefEdit::NodesDatUrl(validate_url(text)?.to_string()),
             Some(Row::ConnectAtStart) => PrefEdit::ConnectAtStart(self.form.choice(index) == 1),
             Some(Row::PortMapping) => PrefEdit::PortMapping(self.form.choice(index) == 1),
@@ -398,6 +461,9 @@ impl SettingsView {
             Some(Row::WithholdShares) => PrefEdit::WithholdShares(self.form.choice(index) == 1),
             Some(Row::AutoFetchServerMet) => {
                 PrefEdit::AutoFetchServerMet(self.form.choice(index) == 1)
+            }
+            Some(Row::AutoUpdateServerMet) => {
+                PrefEdit::AutoUpdateServerMet(self.form.choice(index) == 1)
             }
             Some(Row::AutoFetchNodesDat) => {
                 PrefEdit::AutoFetchNodesDat(self.form.choice(index) == 1)
@@ -429,7 +495,11 @@ impl SettingsView {
         if let Some(consent) =
             crate::views::shared_files::scan::open_consent(state, &self.answered, true)
         {
-            return crate::views::shared_files::scan::consent_key(key, consent, &mut self.answered);
+            return crate::views::shared_files::scan::consent_key(
+                key,
+                consent,
+                (&mut self.answered, &mut self.modal_viewport),
+            );
         }
         if self.removing.is_some() {
             return self.remove_key(key);
@@ -520,10 +590,7 @@ impl SettingsView {
     /// The share guards pass `dir`: say that everything under it will be
     /// offered, and let the next `Enter` commit it.
     pub fn warn_share(&mut self, dir: std::path::PathBuf) {
-        self.form.error = Some(format!(
-            "everything under {} will be offered to the network — Enter to confirm, Esc to cancel",
-            dir.display()
-        ));
+        self.form.error = Some(words::share_warning(&dir));
         self.warned_dir = Some(dir);
     }
 
@@ -539,7 +606,7 @@ impl SettingsView {
         if self.editing || !crate::views::pane_hit(self.body, column, row) {
             return ViewOutcome::Ignored;
         }
-        let line = usize::from(row - self.body.y) + self.offset;
+        let line = usize::from(row - self.body.y) + self.viewport.first();
         if let Some(Some(index)) = self.line_rows.get(line)
             && self.form.fields[*index].focusable()
         {
@@ -588,56 +655,79 @@ impl SettingsView {
             return;
         }
 
-        let mut rendered = self
-            .form
-            .render(usize::from(inner.width), theme, self.editing);
-        self.line_rows = rendered.rows;
-
         // A rejection is pinned to the foot of the pane rather than left in
         // the scrolling flow: the form is taller than the pane it lives in, so
         // an inline error would routinely land below the fold — and a reason
         // the operator cannot see is the same as no reason at all.
-        let error: Vec<Line<'static>> = match rendered.error_at {
-            Some(at) => rendered.lines.split_off(at.saturating_add(1)),
-            None => Vec::new(),
+        let render = |width: u16| {
+            let mut rendered = self.form.render(usize::from(width), theme, self.editing);
+            let error: Vec<Line<'static>> = match rendered.error_at {
+                Some(at) => rendered.lines.split_off(at.saturating_add(1)),
+                None => Vec::new(),
+            };
+            if rendered.error_at.is_some() {
+                rendered.lines.pop(); // the blank line that separated it
+            }
+            (rendered, error)
         };
-        if rendered.error_at.is_some() {
-            rendered.lines.pop(); // the blank line that separated it
+        let room = |error: &[Line<'static>]| {
+            inner
+                .height
+                .saturating_sub(clamp_u16(error.len()).min(inner.height))
+        };
+        let (mut rendered, mut error) = render(inner.width);
+        let bar = rendered.lines.len() > usize::from(room(&error))
+            && usize::from(inner.width - viewport::BAR_W) >= form::MIN_WIDTH;
+        if bar {
+            (rendered, error) = render(inner.width - viewport::BAR_W);
         }
-        let error_h = error.len().min(usize::from(inner.height));
-        let height = usize::from(inner.height).saturating_sub(error_h);
+        self.line_rows = rendered.rows;
+        let error_h = clamp_u16(error.len()).min(inner.height);
+        let height = room(&error);
 
         // Keep the focused field on screen; a form taller than its pane
-        // scrolls rather than hiding the row the cursor is on.
-        if rendered.focus.start < self.offset {
-            self.offset = rendered.focus.start;
-        } else if rendered.focus.end > self.offset + height {
-            self.offset = rendered.focus.end.saturating_sub(height);
-        }
-        self.offset = self.offset.min(rendered.lines.len().saturating_sub(height));
+        // scrolls rather than hiding the row the cursor is on. The count
+        // says which row it is, of the rows the cursor can rest on.
+        let rows = self.form.fields.iter().filter(|field| field.focusable());
+        let row = self.form.fields[..self.form.focus.min(self.form.fields.len())]
+            .iter()
+            .filter(|field| field.focusable())
+            .count();
+        let first = self.viewport.follow_span(
+            rendered.focus,
+            rendered.lines.len(),
+            height,
+            (row, rows.count()),
+        );
 
         let visible: Vec<Line<'static>> = rendered
             .lines
             .into_iter()
-            .skip(self.offset)
-            .take(height)
+            .skip(first)
+            .take(usize::from(height))
             .collect();
-        let [body, foot] = Layout::vertical([
-            Constraint::Length(clamp_u16(height)),
-            Constraint::Length(clamp_u16(error_h)),
-        ])
-        .areas(inner);
-        frame.render_widget(Paragraph::new(visible), body);
+        let [body, foot] =
+            Layout::vertical([Constraint::Length(height), Constraint::Length(error_h)])
+                .areas(inner);
+        let (list, bar) = viewport::split(body, bar);
+        frame.render_widget(Paragraph::new(visible), list);
         if error_h > 0 {
             frame.render_widget(Paragraph::new(error), foot);
         }
+        self.viewport.draw(frame, area, bar, theme);
         if let Some(dir) = &self.removing {
-            shared_dirs::draw_remove(frame, area, dir, state, theme);
+            shared_dirs::draw_remove(frame, area, (dir, &self.modal_viewport), state, theme);
         }
         if let Some(consent) =
             crate::views::shared_files::scan::open_consent(state, &self.answered, true)
         {
-            crate::views::shared_files::scan::draw_consent(frame, area, consent, theme);
+            crate::views::shared_files::scan::draw_consent(
+                frame,
+                area,
+                consent,
+                theme,
+                &self.modal_viewport,
+            );
         }
     }
 }

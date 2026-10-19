@@ -379,10 +379,8 @@ impl PeerReacher {
             );
             return unsent;
         };
-        // A pump that refused the ask (its task gone, or its mailbox full) is
-        // not retired here: the socket-free Kad factories the integration legs
-        // run on never install a pump, and their publisher dials back
-        // unprompted. The callback's own deadline bounds that slot.
+        // A pump that refused the ask — its task gone, or its mailbox full —
+        // sent nothing, so the road ends as one that never left.
         let emitted_to = match buddy.buddy_udp {
             Some(buddy_udp) => crate::adapters::request_kad_buddy_callback(
                 &self.wiring.kad_pump,
@@ -403,7 +401,7 @@ impl PeerReacher {
                         tcp_port,
                         reply: crate::adapters::CallbackWalkReply {
                             key: retire.key,
-                            retire_tx: retire.tx,
+                            retire_tx: retire.tx.clone(),
                         },
                     },
                 ) {
@@ -418,6 +416,9 @@ impl PeerReacher {
                 None
             }
         };
+        if emitted_to.is_none() {
+            retire.unopened(NattRetirement::CallbackNotSent);
+        }
         tracing::info!(
             ?emitted_to,
             buddy_id = ?buddy.buddy_id,

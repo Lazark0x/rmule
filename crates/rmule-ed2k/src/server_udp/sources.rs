@@ -45,8 +45,9 @@ impl GlobGetSources {
 /// advertising `SRV_UDPFLG_EXT_GETSOURCES2` accepts (ADR-0052 — the `0x97`
 /// reply's flags gate the upgrade; legacy [`GlobGetSources`] stays the
 /// fallback). Each entry is the 16-byte hash **plus the file size** (aMule
-/// `DownloadQueue.cpp` `SendNextUDPPacket`): `[size u32 LE]` for a file
-/// within `u32`, or the large-file form `[0 u32][size u64 LE]` — the zero
+/// `DownloadQueue.cpp` `SendNextUDPPacket`): `[size u32 LE]`, or for a large
+/// file (`IsLargeFile`, [`rmule_primitives::is_large_file`]) the large-file
+/// form `[0 u32][size u64 LE]` — the zero
 /// `u32` is the escape marker. The size unlocks source discovery for files
 /// past 4 GiB, which the bare-hash `0x9A` cannot request.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -67,12 +68,13 @@ impl GlobGetSources2 {
         let mut payload = Vec::new();
         for target in &self.targets {
             payload.extend_from_slice(target.file_hash().as_bytes());
-            match u32::try_from(target.file_size()) {
-                Ok(size) => payload.extend_from_slice(&size.to_le_bytes()),
-                Err(_) => {
-                    payload.extend_from_slice(&0_u32.to_le_bytes());
-                    payload.extend_from_slice(&target.file_size().to_le_bytes());
-                }
+            let size = target.file_size();
+            if rmule_primitives::is_large_file(size) {
+                payload.extend_from_slice(&0_u32.to_le_bytes());
+                payload.extend_from_slice(&size.to_le_bytes());
+            } else {
+                // Not large, so it fits: `OLD_MAX_FILE_SIZE` < `u32::MAX`.
+                payload.extend_from_slice(&(size as u32).to_le_bytes());
             }
         }
         Packet::new(
@@ -228,15 +230,23 @@ mod tests {
         expected.extend_from_slice(&(5_u64 * 1024 * 1024 * 1024).to_le_bytes());
         assert_eq!(datagram, expected);
 
-        // The u32 boundary itself still fits the small form.
-        let boundary = GlobGetSources2::new(vec![SourceLookupTarget::new(
-            FileHash::from_bytes([0x33; FileHash::BYTE_LEN]),
-            u64::from(u32::MAX),
-        )])
-        .encode_packet()
-        .encode_udp();
-        assert_eq!(boundary.len(), 2 + FileHash::BYTE_LEN + 4);
-        assert_eq!(&boundary[2 + FileHash::BYTE_LEN..], &u32::MAX.to_le_bytes());
+        // The cut is aMule's `IsLargeFile`, not `u32::MAX`: OLD_MAX_FILE_SIZE
+        // keeps the small form, one byte more takes the escape though a `u32`
+        // still holds it (`DownloadQueue.cpp:922-927`).
+        let entry = |size: u64| {
+            let datagram = GlobGetSources2::new(vec![SourceLookupTarget::new(
+                FileHash::from_bytes([0x33; FileHash::BYTE_LEN]),
+                size,
+            )])
+            .encode_packet()
+            .encode_udp();
+            datagram[2 + FileHash::BYTE_LEN..].to_vec()
+        };
+        let old_max = rmule_primitives::OLD_MAX_FILE_SIZE;
+        assert_eq!(entry(old_max), (old_max as u32).to_le_bytes());
+        let mut escaped = 0_u32.to_le_bytes().to_vec();
+        escaped.extend_from_slice(&(old_max + 1).to_le_bytes());
+        assert_eq!(entry(old_max + 1), escaped);
     }
 
     #[test]

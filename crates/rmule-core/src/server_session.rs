@@ -7,15 +7,19 @@
 //! the server's statements back into their sinks (ADR-0080); and
 //! [`establishment`] owns the dial + login + switch trail
 //! behind the IP-filter gate, projecting the login's products
-//! into the peer handshake context. A session dies with its link; the slot
+//! into the peer handshake context. Beside them, [`dial_backs`] answers the
+//! server relaying a peer that wants to download from a Low-ID us
+//! (ADR-0061). A session dies with its link; the slot
 //! survives and only the operator's next connect re-establishes (ADR-0095).
 
+mod dial_backs;
 mod establishment;
 mod hello;
 mod link;
 mod multiplexer;
 mod slot;
 
+pub(crate) use dial_backs::ServerCallbackDialBacks;
 pub use establishment::build_peer_handshake_context;
 pub(crate) use establishment::connect_to_server;
 pub(crate) use hello::{
@@ -86,6 +90,8 @@ pub(crate) mod tests {
             over_ipv6: false,
             punch: Default::default(),
             reach: None,
+            dial_backs: Default::default(),
+            tcp_port: 4662,
             // Granted, so a related search goes out unless a test withdraws it.
             grants: rmule_ed2k::ServerGrants {
                 related_search: true,

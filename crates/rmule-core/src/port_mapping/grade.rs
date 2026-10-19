@@ -58,15 +58,10 @@ pub(crate) struct Trial {
     outstanding: BTreeSet<DesiredMapping>,
     /// What it granted, keyed by the mapping asked for.
     pub(crate) grants: BTreeMap<DesiredMapping, GrantAnswer>,
-    /// The last refusal — carried onto the diagnostics row so a failed
-    /// trial says *why* rather than just "failed".
-    pub(crate) last_error: Option<MappingError>,
     /// The longest hold-off a refusal in this trial asked for, raw. RFC 6887
     /// §7.4 makes it attacker-controlled input, so the mapper clamps it before
     /// pacing anything on it.
     pub(crate) hold_off: Option<std::time::Duration>,
-    /// Whether any answer in this trial reported a gateway epoch reset.
-    pub(crate) epoch_reset: bool,
 }
 
 impl Trial {
@@ -77,9 +72,7 @@ impl Trial {
             protocol,
             outstanding: desired.expressible(protocol).collect(),
             grants: BTreeMap::new(),
-            last_error: None,
             hold_off: None,
-            epoch_reset: false,
         }
     }
 
@@ -94,14 +87,18 @@ impl Trial {
         }
         match outcome {
             Ok(grant) => {
-                self.epoch_reset |= grant.epoch_reset;
                 self.grants.insert(mapping, grant);
             }
-            Err(error) => {
-                self.hold_off = self.hold_off.max(error.hold_off());
-                self.last_error = Some(error);
-            }
+            Err(error) => self.hold_off = self.hold_off.max(error.hold_off()),
         }
+    }
+
+    /// Close the trial at its deadline (ADR-0086): every row still unanswered
+    /// is given up on and handed back, so the caller records it as a
+    /// [`Timeout`](MappingError::Timeout) and a gateway that never answers
+    /// one row cannot hold the race open for the session.
+    pub(crate) fn expire(&mut self) -> BTreeSet<DesiredMapping> {
+        std::mem::take(&mut self.outstanding)
     }
 
     /// Whether every mapping has answered.

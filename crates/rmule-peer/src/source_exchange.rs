@@ -19,7 +19,7 @@
 //! every one; none park as `Unknown`.
 //!
 //! Each decoded answer entry retains its declaring server endpoint alongside
-//! its [`SourceSighting`](rmule_primitives::SourceSighting) provenance (the
+//! its [`SourceClaim`](rmule_primitives::SourceClaim) provenance (the
 //! ADR-0046 model — see [`SourceExchangeEntry`]); the aMule-mirrored sanity
 //! filter, Low-ID routing rule and per-file cap that decide which entries the
 //! session surfaces live in `admission` ([`sanitize_and_route`]).
@@ -257,7 +257,7 @@ pub enum AnswerSourcesDecodeError {
 /// `[file_hash 16][count u16]` then `count` sources at whichever version the
 /// answer resolves to (see [`AnswerSources::decode_packet`]). Each source is
 /// a [`SourceExchangeEntry`] — the
-/// [`SourceSighting`](rmule_primitives::SourceSighting) provenance plus the
+/// [`SourceClaim`](rmule_primitives::SourceClaim) provenance plus the
 /// declaring server the consume-side Low-ID routing rule reads (ADR-0055).
 /// Low-ID sources survive here; the High-ID filter is the caller's
 /// `as_peer_endpoint` projection (the session's consume path, ADR-0055).
@@ -492,7 +492,7 @@ pub enum AnswerSourcesSkip {
 /// a different version on a size mismatch.
 ///
 /// Each source is a [`SourceExchangeEntry`] — the
-/// [`SourceSighting`](rmule_primitives::SourceSighting) provenance plus the
+/// [`SourceClaim`](rmule_primitives::SourceClaim) provenance plus the
 /// declaring server every version's entry carries, exactly
 /// as [`AnswerSources`] (`0x82`) holds it. aMule reads the same
 /// `[srvIP4][srvPort2]` for SX2 as SX1 (`CPartFile::AddClientSources`,

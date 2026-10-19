@@ -398,6 +398,7 @@ async fn run_returning_on_a_closed_inbox_closes_the_installed_sender() {
             admit: crate::adapters::SharedTunnelAdmit::default(),
             claims: crate::adapters::AwaitedInbound::default(),
             peer_pin: crate::adapters::SharedPeerPin::default(),
+            roster: crate::peer_roster::SharedPeerRoster::default(),
             diagnostics: DiagnosticsState::default(),
             events: None,
             prediction: None,

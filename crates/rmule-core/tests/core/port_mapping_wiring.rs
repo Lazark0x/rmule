@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use rmule_core::port_mapping::{MappingStatus, PortMappingMode};
 use rmule_core::{
-    ConfidenceTier, Core, CoreCommand, CoreConfig, PairRole, ServeCommand, SocketRole,
+    ConfidenceTier, Core, CoreCommand, CoreConfig, CoreEvent, PairRole, ServeCommand, SocketRole,
 };
 use rmule_net::portmap::{MappedTransport, MappingBackend, MappingProtocol};
 use rmule_primitives::AddressFamily;
@@ -25,7 +25,7 @@ use std::net::UdpSocket;
 use tokio::net::TcpListener;
 use tokio::time::{Duration, timeout};
 
-use crate::fixture::reserve_dual_stack_port;
+use crate::fixture::{next_expected, reserve_dual_stack_port};
 
 /// A core wired to `backends` behind a scripted home-LAN gateway.
 fn core_with(backends: Vec<Arc<dyn MappingBackend>>, config: CoreConfig) -> Core {
@@ -279,13 +279,16 @@ async fn a_mismatched_tcp_grant_is_degraded_and_the_advert_keeps_the_bound_port(
         "a mismatched UDP grant is the same fact Kad's extern-port rule learns"
     );
     assert_eq!(
-        client_udp.external.expect("an external endpoint").port(),
-        // Wrapping, as the scripted shift is: the internal port here is
-        // whatever the OS handed the client-UDP socket, and roughly one
-        // ephemeral port in sixteen is within 1000 of the top of the range —
-        // which is what made this leg fail one run in twenty on arithmetic
-        // that had nothing to do with port mapping.
-        client_udp.mapping.internal_port.wrapping_add(1000)
+        client_udp
+            .external
+            .expect("an external endpoint")
+            .port()
+            // Either side, as the scripted shift is: the internal port here
+            // is whatever the OS handed the client-UDP socket, and roughly
+            // one ephemeral port in sixteen is within 1000 of the top of the
+            // range.
+            .abs_diff(client_udp.mapping.internal_port),
+        1000
     );
 }
 
@@ -294,7 +297,7 @@ async fn port_mapping_off_talks_to_no_gateway_at_all() {
     // The operator who already has a static forward and wants nothing speaking
     // to their router gets exactly that: no probe, no map, and no rows.
     let pcp = Arc::new(ScriptedBackend::available(MappingProtocol::Pcp));
-    let core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
+    let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
         .settings(rmule_core::CoreSettings {
             port_mapping: PortMappingMode::Off,
             ..rmule_core::CoreSettings::default()
@@ -303,12 +306,23 @@ async fn port_mapping_off_talks_to_no_gateway_at_all() {
         .mapping_backends(vec![pcp.clone()])
         .build();
     // The recheck command is the strongest nudge there is, and it must still
-    // reach nothing.
+    // reach nothing. The diagnostics echo is the positive signal: the actor
+    // answers commands in order, so the snapshot it sends back was built after
+    // core start (every bind included) and after the recheck was handled.
     core.send(CoreCommand::RecheckReachability)
         .await
         .expect("recheck accepted");
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(core.diagnostics_snapshot().mappings.is_empty());
+    core.send(CoreCommand::DumpDiagnostics)
+        .await
+        .expect("dump accepted");
+    let echoed = next_expected(&mut core, "the diagnostics echo", |event| {
+        matches!(event, CoreEvent::DiagnosticsSnapshot { .. })
+    })
+    .await;
+    let CoreEvent::DiagnosticsSnapshot { snapshot } = echoed else {
+        unreachable!("the predicate admits only this variant");
+    };
+    assert!(snapshot.mappings.is_empty(), "no mapping row: {snapshot:?}");
     assert!(pcp.asked().is_empty(), "no gateway was asked anything");
 }
 

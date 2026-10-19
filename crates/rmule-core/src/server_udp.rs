@@ -287,8 +287,8 @@ pub(crate) mod tests {
         assert_eq!(pinged.server.fail_count, 1, "sending a ping counts nothing");
         assert_eq!(
             (pinged.ping, pinged.users, pinged.files),
-            (None, None, None),
-            "an unanswered ping measures nothing — unknown, not zero"
+            (crate::diagnostics::PingState::Awaiting, None, None),
+            "a ping in flight measures nothing — awaited, not zero"
         );
 
         // The server answers the challenge the fixed entropy minted.
@@ -301,7 +301,10 @@ pub(crate) mod tests {
             answered.server.fail_count, 0,
             "the answer absolves the whole tally"
         );
-        assert!(answered.ping.is_some(), "the gate timed the round trip");
+        assert!(
+            answered.ping.measured().is_some(),
+            "the gate timed the round trip"
+        );
         assert_eq!(answered.users, Some(1000));
         assert_eq!(answered.files, Some(2000));
     }
@@ -439,7 +442,10 @@ pub(crate) mod tests {
 
         let forged = row(&diagnostics, &listed);
         assert_eq!(forged.server.fail_count, 1, "the tally stands");
-        assert_eq!((forged.ping, forged.users), (None, None));
+        assert_eq!(
+            (forged.ping, forged.users),
+            (crate::diagnostics::PingState::Awaiting, None)
+        );
     }
 
     // ----- ADR-0052's amendment: a server listed by host name -----
@@ -477,7 +483,10 @@ pub(crate) mod tests {
             .await;
 
         let answered = row(&diagnostics, &named);
-        assert!(answered.ping.is_some(), "the named row shows its ping");
+        assert!(
+            answered.ping.measured().is_some(),
+            "the named row shows its ping"
+        );
         assert_eq!((answered.users, answered.files), (Some(1000), Some(2000)));
         assert_eq!(
             diagnostics.snapshot().servers.len(),

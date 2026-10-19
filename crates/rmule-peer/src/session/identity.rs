@@ -38,6 +38,8 @@ impl PeerSession {
                 identity,
             }));
         self.maybe_start_secure_ident();
+        // A move that came while the hellos crossed is owed now.
+        self.announce_ipv6_change();
     }
 
     /// Apply one revision to an identified peer's identity and, when it

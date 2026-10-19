@@ -1,6 +1,6 @@
 //! The durable [`DownloadRepository`]: every download row, its verified parts
 //! and its provisional part hashes in the shared [`Store`], composed with the
-//! [`ContentFileStore`] for the bytes themselves.
+//! [`ContentFileStore`](crate::ContentFileStore) for the bytes themselves.
 //!
 //! The record shapes, their indexes and the id counter live in [`row`]; this
 //! module is the transaction boundaries. Three writes are atomic by
@@ -13,25 +13,27 @@
 mod row;
 mod seeds;
 
-pub(crate) use row::{UPGRADE_FROM_V5, UPGRADE_FROM_V6, UPGRADE_FROM_V7, grow_from_v8};
+pub(crate) use row::{
+    UPGRADE_FROM_V5, UPGRADE_FROM_V6, UPGRADE_FROM_V7, grow_from_v8, grow_from_v14,
+};
 #[cfg(test)]
-pub(crate) use row::{schema_v1, seed_v1};
+pub(crate) use row::{schema_v1, seed_v1, seed_v5};
 pub use seeds::LoadedSeeds;
 pub(crate) use seeds::UPGRADE_FROM_V12;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use rmule_primitives::{Ed2kFileLink, FileHash, PartHash, ServerEndpoint, UserHash};
+use rmule_primitives::{AichRootHash, Ed2kFileLink, PartHash, ServerEndpoint, UserHash};
 use rmule_store::{Readable, Store};
 
 use super::Schema;
-use crate::content::{ContentFileStore, Revalidation, revalidate_verified_parts};
+use crate::content::{Revalidation, revalidate_verified_parts};
 use crate::file_history::Ed2kIdentity;
 use crate::storage::{DownloadRepository, ResolvedAuthority, resolve_hash_authority};
 use crate::{
     CoreError, DownloadFailure, DownloadId, DownloadLifecycle, DownloadPaths,
-    DurableDownloadRecord, FinalizeError, VerificationAuthority, VerifiedPartRecord,
+    DurableDownloadRecord, KadAichRoot, PartFault, VerificationAuthority, VerifiedPartRecord,
 };
 use row::{
     DISTRUSTED_PEERS, DOWNLOAD_IDS, DOWNLOADS, DistrustedPeerRow, DownloadRow, IDENTITY, PART_PATH,
@@ -50,11 +52,11 @@ pub(crate) fn schema() -> Schema {
         .children(&seeds::SOURCE_SEEDS)
 }
 
-/// The tables this seam owned at store version 12, before the seeds table.
+/// The tables this seam owned at store version 12, before the seeds table,
+/// its rows of record version 5.
 #[cfg(test)]
 pub(crate) fn schema_v12() -> Schema {
-    Schema::new()
-        .indexed(&DOWNLOADS)
+    row::schema_v5_rows()
         .children(&VERIFIED_PARTS)
         .children(&PROVISIONAL_HASHES)
         .children(&DISTRUSTED_PEERS)
@@ -75,6 +77,32 @@ impl DurableDownloadRepository {
     #[must_use]
     pub fn new(store: Arc<Store>) -> Self {
         Self { store }
+    }
+
+    /// Drop the record of each part in `damaged`, the parts revalidation
+    /// found no longer holding, so they are fetched again: Resume's effect,
+    /// and the Offer Check's (ADR-0113).
+    ///
+    /// # Errors
+    /// [`CoreError::UnknownDownload`] when the row is gone, or
+    /// [`CoreError::Repository`].
+    pub(crate) fn drop_parts(
+        &self,
+        id: DownloadId,
+        damaged: &[PartFault],
+    ) -> Result<(), CoreError> {
+        if damaged.is_empty() {
+            return Ok(());
+        }
+        self.store.write(|txn| {
+            require_row(txn, id)?;
+            for fault in damaged {
+                VERIFIED_PARTS
+                    .table()
+                    .remove(txn, &(id.as_u64(), fault.part_index()))?;
+            }
+            Ok(())
+        })
     }
 
     /// Record one part as hash-checked and on disk. Upserts on part index, so
@@ -100,8 +128,6 @@ impl DurableDownloadRepository {
         })
     }
 
-    /// Where one download's bytes live, without assembling the rest of the
-    /// record around them — what the two content-file methods need.
     /// Distrust `peer` for the download's life: it served this file bad data
     /// (ADR-0090 "Source ownership"). A peer already distrusted is left
     /// as it is.
@@ -128,6 +154,25 @@ impl DurableDownloadRepository {
         })
     }
 
+    /// Record that the peers' vote contested the download's Kad AICH root: a
+    /// resumed run trusts neither (ADR-0038). A row with no Kad root is left
+    /// as it is.
+    ///
+    /// # Errors
+    /// [`CoreError::UnknownDownload`] when the row is gone, or
+    /// [`CoreError::Repository`].
+    pub fn contest_kad_aich_root(&self, id: DownloadId) -> Result<(), CoreError> {
+        self.store.write(|txn| {
+            let mut row = read_row(txn, id)?;
+            if row.kad_aich_root.is_none() {
+                return Ok(());
+            }
+            row.kad_aich_root = Some(KadAichRoot::Contested);
+            DOWNLOADS.update(txn, &id.as_u64(), &row)?;
+            Ok(())
+        })
+    }
+
     /// Every peer the download distrusts, for a resumed run to start from.
     ///
     /// # Errors
@@ -145,10 +190,14 @@ impl DurableDownloadRepository {
     }
 
     /// Every part path a download row names, with whether its download is
-    /// live (queued, active, paused or failed) — for the **Download Directory
-    /// Scan**, which skips rmule's own part files by these paths, not by a
-    /// suffix (ADR-0102, "Part files are known by their download rows"). A
-    /// part path a terminal row gave up to a new row is not listed.
+    /// live (queued, active, completing, paused or failed) — for the
+    /// **Download Directory Scan**, which skips rmule's own part files by
+    /// these paths, not by a suffix (ADR-0102, "Part files are known by their
+    /// download rows"). A completing row's destination is listed as live
+    /// beside its part path until the row is `Completed`: the move puts the
+    /// finished file there before its registry row is written, and the scan
+    /// never reads it first (ADR-0115). A part path a terminal row gave up to
+    /// a new row is not listed.
     ///
     /// # Errors
     /// [`CoreError::Repository`] when the store read fails.
@@ -157,9 +206,12 @@ impl DurableDownloadRepository {
             Ok(DOWNLOADS
                 .iter(txn)?
                 .into_iter()
-                .filter_map(|(_, row)| {
+                .flat_map(|(_, row)| {
                     let live = row.is_live();
-                    row.part_path.held_path().map(|path| (path.into(), live))
+                    let part = row.part_path.held_path().map(|path| (path.into(), live));
+                    let destination = (row.lifecycle == DownloadLifecycle::Completing)
+                        .then(|| (PathBuf::from(&row.final_path), true));
+                    part.into_iter().chain(destination)
                 })
                 .collect())
         })
@@ -184,8 +236,33 @@ impl DurableDownloadRepository {
         })
     }
 
+    /// Store `Completing` and the destination the completion move chose, in
+    /// one write, before anything moves (ADR-0115): from `Active`, or on a
+    /// row already completing whose destination a free name moved. The row
+    /// names the one file the move may put at that path.
+    ///
+    /// # Errors
+    /// [`CoreError::UnknownDownload`] when the row is gone, and
+    /// [`CoreError::InvalidLifecycleTransition`] from any lifecycle but
+    /// `Active` and `Completing`.
+    pub fn set_completing(&self, id: DownloadId, destination: &Path) -> Result<(), CoreError> {
+        self.store.write(|txn| {
+            let mut row = read_row(txn, id)?;
+            if !matches!(
+                row.lifecycle,
+                DownloadLifecycle::Active | DownloadLifecycle::Completing
+            ) {
+                return Err(CoreError::InvalidLifecycleTransition);
+            }
+            row.lifecycle = DownloadLifecycle::Completing;
+            row.failure = None;
+            row.final_path = destination.to_string_lossy().into_owned();
+            Ok(DOWNLOADS.update(txn, &id.as_u64(), &row).map(|_| ())?)
+        })
+    }
+
     /// Drop the verified-part records of `parts`, which the part file no
-    /// longer holds (ADR-0094, "The part file under a running download"), and
+    /// longer holds (ADR-0094, "The run holds its part file"), and
     /// return the records dropped, so the caller can say what they cost.
     ///
     /// # Errors
@@ -319,10 +396,6 @@ impl DurableDownloadRepository {
                 .collect())
         })
     }
-
-    fn paths(&self, id: DownloadId) -> Result<DownloadPaths, CoreError> {
-        self.store.read(|txn| Ok(read_row(txn, id)?.paths()))
-    }
 }
 
 /// The row under `id`, or [`CoreError::UnknownDownload`].
@@ -378,11 +451,12 @@ impl DownloadRepository for DurableDownloadRepository {
         file: &Ed2kFileLink,
         source_hint: Option<&ServerEndpoint>,
         paths: &DownloadPaths,
+        kad_aich_root: Option<AichRootHash>,
     ) -> Result<DurableDownloadRecord, CoreError> {
         if paths.final_path().exists() {
             return Err(CoreError::PathConflict);
         }
-        let new = DownloadRow::new(file, source_hint, paths);
+        let new = DownloadRow::new(file, source_hint, paths, kad_aich_root);
         self.store.write(|txn| {
             if let Some(holder) =
                 DOWNLOADS.by_unique(txn, &PART_PATH, new.part_path.index_text())?
@@ -464,9 +538,13 @@ impl DownloadRepository for DurableDownloadRepository {
         })
     }
 
-    /// Store a peer-supplied part hash set for the download: the children and
-    /// the row's new authority land in one transaction, so no reader can see a
-    /// half-recorded set. Refused with
+    /// Store a peer-supplied part hash set for the download: the children,
+    /// the row's new authority and the drop of every verified part the set
+    /// disproves land in one transaction, so no reader can see a
+    /// half-recorded set or a part the set in force refutes. A part written
+    /// while no set was held was recorded with the hash of its own bytes; one
+    /// whose recorded hash is not the set's at its index is dropped and
+    /// returned, to be fetched again (ADR-0113). Refused with
     /// [`CoreError::ProvisionalAuthorityConflict`] when the row already
     /// verifies under the link's own set, which always wins, or when a
     /// *different* set is already recorded.
@@ -474,7 +552,7 @@ impl DownloadRepository for DurableDownloadRepository {
         &self,
         id: DownloadId,
         hashes: &[PartHash],
-    ) -> Result<(), CoreError> {
+    ) -> Result<Vec<VerifiedPartRecord>, CoreError> {
         self.store.write(|txn| {
             let mut row = read_row(txn, id)?;
             if row.verification_authority == Some(VerificationAuthority::LinkPartHashSet) {
@@ -483,7 +561,7 @@ impl DownloadRepository for DurableDownloadRepository {
             let existing = read_provisional(txn, id)?;
             if !existing.is_empty() {
                 return if existing == hashes {
-                    Ok(())
+                    Ok(Vec::new())
                 } else {
                     Err(CoreError::ProvisionalAuthorityConflict)
                 };
@@ -495,7 +573,16 @@ impl DownloadRepository for DurableDownloadRepository {
                 hashes.iter().map(ProvisionalPartHashRow::of),
             )?;
             row.verification_authority = Some(VerificationAuthority::PeerHashSet);
-            Ok(DOWNLOADS.update(txn, &id.as_u64(), &row).map(|_| ())?)
+            DOWNLOADS.update(txn, &id.as_u64(), &row)?;
+            let mut disproved = Vec::new();
+            for (index, part) in VERIFIED_PARTS.list(txn, id.as_u64())? {
+                let part = part.to_record(index);
+                if hashes.get(index as usize) != Some(&part.part_hash) {
+                    VERIFIED_PARTS.table().remove(txn, &(id.as_u64(), index))?;
+                    disproved.push(part);
+                }
+            }
+            Ok(disproved)
         })
     }
 
@@ -528,37 +615,12 @@ impl DownloadRepository for DurableDownloadRepository {
         })
     }
 
-    async fn finalize(
-        &self,
-        id: DownloadId,
-        expected: FileHash,
-        file_size: u64,
-    ) -> Result<PathBuf, FinalizeError> {
-        let paths = self.paths(id)?;
-        if ContentFileStore::hash_for_finalize(&paths, file_size).await? != expected {
-            return Err(FinalizeError::Mismatch);
-        }
-        ContentFileStore::finalize(&paths).await?;
-        self.set_lifecycle(id, DownloadLifecycle::Completed)?;
-        Ok(paths.final_path().to_path_buf())
-    }
-
     async fn revalidate(&self, id: DownloadId) -> Result<Revalidation, CoreError> {
         let record = self.load_download(id)?;
         let parts = self.verified_parts(id)?;
         let revalidation = revalidate_verified_parts(record.paths(), &parts).await;
-        if let Revalidation::Restored { damaged, .. } = &revalidation
-            && !damaged.is_empty()
-        {
-            self.store.write(|txn| {
-                require_row(txn, id)?;
-                for fault in damaged {
-                    VERIFIED_PARTS
-                        .table()
-                        .remove(txn, &(id.as_u64(), fault.part_index()))?;
-                }
-                Ok::<(), CoreError>(())
-            })?;
+        if let Revalidation::Restored { damaged, .. } = &revalidation {
+            self.drop_parts(id, damaged)?;
         }
         Ok(revalidation)
     }

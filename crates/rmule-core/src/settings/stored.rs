@@ -23,6 +23,7 @@ pub(super) fn read(store: &DurableAppConfig) -> Result<CoreSettings, CoreError> 
     let text = |preference| store.preference(preference);
     Ok(CoreSettings {
         download_dir: text(Preference::DownloadDir)?.map(PathBuf::from),
+        temp_dir: text(Preference::TempDir)?.map(PathBuf::from),
         nickname: identity.nickname().to_display_string(),
         tcp_port: identity.tcp_port(),
         udp_port: kad.udp_port,
@@ -40,6 +41,13 @@ pub(super) fn read(store: &DurableAppConfig) -> Result<CoreSettings, CoreError> 
         // ADR-0065's first-run fetch, on unless the operator turned it off.
         auto_fetch_server_met: text(Preference::AutoFetchServerMet)?
             .is_none_or(|value| value == "true"),
+        // ADR-0065's auto-update, off unless the operator turned it on, as
+        // aMule's `AutoServerlist`.
+        auto_update_server_met: text(Preference::AutoUpdateServerMet)?
+            .is_some_and(|value| value == "true"),
+        server_met_auto_update_urls: text(Preference::ServerMetAutoUpdateUrls)?
+            .map(|urls| urls.lines().map(str::to_owned).collect())
+            .unwrap_or_default(),
         nodes_dat_url: text(Preference::NodesDatUrl)?
             .unwrap_or_else(|| rmule_bootstrap::DEFAULT_NODES_DAT_URL.to_owned()),
         // The ADR-0067 amendment's opt-in, on unless the operator turned it off.
@@ -60,11 +68,10 @@ pub(super) fn server_policy(store: &DurableAppConfig) -> Result<ServerPolicy, Co
     })
 }
 
-/// Refuse a value the key cannot take, before anything is written: a
-/// download directory is judged by `guards` too.
-pub(super) fn validate(setting: &Setting, guards: &ShareGuards) -> Result<(), SettingRefusal> {
+/// Refuse a value the key cannot take, before anything is written. The two
+/// directories are judged by the handle, against what the store holds.
+pub(super) fn validate(setting: &Setting) -> Result<(), SettingRefusal> {
     match setting {
-        Setting::DownloadDir { dir, .. } => validate_download_dir(dir, guards),
         Setting::Nickname(nickname) => {
             let trimmed = nickname.trim();
             if trimmed.is_empty() || trimmed.chars().any(char::is_control) {
@@ -78,6 +85,9 @@ pub(super) fn validate(setting: &Setting, guards: &ShareGuards) -> Result<(), Se
         Setting::ServerMetUrl(url) | Setting::NodesDatUrl(url) if url.trim().is_empty() => {
             Err(SettingRefusal::UrlBlank)
         }
+        Setting::ServerMetAutoUpdateUrls(urls) if urls.iter().any(|url| url.trim().is_empty()) => {
+            Err(SettingRefusal::UrlBlank)
+        }
         _ => Ok(()),
     }
 }
@@ -85,10 +95,15 @@ pub(super) fn validate(setting: &Setting, guards: &ShareGuards) -> Result<(), Se
 /// An absolute, UTF-8 path that is not an existing file, and that the
 /// guards a shared directory must pass do not refuse where it is or would be
 /// made — the check core's scan makes of it at attach, made at the set, so a
-/// refused directory is never stored. Not "must exist": aMule creates its
-/// incoming directory, and refusing a path the operator is about to make
-/// would misstate what rmule can do.
-fn validate_download_dir(dir: &Path, guards: &ShareGuards) -> Result<(), SettingRefusal> {
+/// refused directory is never stored. `temp_dir` is the Temp Directory it
+/// may neither be nor hold. Not "must exist": aMule creates its incoming
+/// directory, and refusing a path the operator is about to make would
+/// misstate what rmule can do.
+pub(super) fn validate_download_dir(
+    dir: &Path,
+    guards: &ShareGuards,
+    temp_dir: Option<&Path>,
+) -> Result<(), SettingRefusal> {
     if dir.to_str().is_none() {
         return Err(SettingRefusal::DownloadDirNotUtf8);
     }
@@ -98,14 +113,16 @@ fn validate_download_dir(dir: &Path, guards: &ShareGuards) -> Result<(), Setting
     if dir.exists() && !dir.is_dir() {
         return Err(SettingRefusal::DownloadDirNotADirectory);
     }
-    guard_in_place(dir, guards).map_err(SettingRefusal::DownloadDirRefused)
+    guard_in_place(dir, guards, temp_dir).map_err(SettingRefusal::DownloadDirRefused)
 }
 
 /// Write a validated `setting` where its key is kept.
 pub(super) fn persist(store: &DurableAppConfig, setting: &Setting) -> Result<(), CoreError> {
     let flag = |on: bool| if on { "true" } else { "false" };
     match setting {
-        Setting::DownloadDir { dir, .. } => store.set_download_dir(dir),
+        Setting::DownloadDir { dir, .. } => store.set_dir(Preference::DownloadDir, dir),
+        Setting::TempDir(Some(dir)) => store.set_dir(Preference::TempDir, dir),
+        Setting::TempDir(None) => store.clear_preference(Preference::TempDir),
         Setting::Nickname(nickname) => store.set_nickname(&Ed2kText::from_utf8(nickname.trim())),
         Setting::TcpPort(port) => store.set_tcp_port(*port),
         Setting::UdpPort(port) => store.set_udp_port(*port),
@@ -129,6 +146,18 @@ pub(super) fn persist(store: &DurableAppConfig, setting: &Setting) -> Result<(),
         Setting::AutoFetchServerMet(on) => {
             store.set_preference(Preference::AutoFetchServerMet, flag(*on))
         }
+        Setting::AutoUpdateServerMet(on) => {
+            store.set_preference(Preference::AutoUpdateServerMet, flag(*on))
+        }
+        // One URL per line, as aMule's `addresses.dat` holds them.
+        Setting::ServerMetAutoUpdateUrls(urls) => store.set_preference(
+            Preference::ServerMetAutoUpdateUrls,
+            &urls
+                .iter()
+                .map(|url| url.trim())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
         Setting::NodesDatUrl(url) => store.set_preference(Preference::NodesDatUrl, url.trim()),
         Setting::AutoFetchNodesDat(on) => {
             store.set_preference(Preference::AutoFetchNodesDat, flag(*on))

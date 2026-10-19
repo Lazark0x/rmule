@@ -8,8 +8,9 @@
 //! that report lands: an `Arc<Mutex<_>>`-shared IP -> banned-until map, fed by
 //! the `RuntimeKadFactory` pump task's fold of every `FloodOffenderDetected`
 //! event and consulted by the two peer-TCP surfaces that enforce it —
-//! `RuntimeServeRuntimeService::accept` (refuses an accepted connection from a
-//! banned IP) and `RuntimePeerTransferService::start_download_worker`
+//! the serve adapter's **Accept Gates** (refuse an inbound connection from a
+//! banned IP before the serve loop sees it) and
+//! `RuntimePeerTransferService::start_download_worker`
 //! (skips dialing a banned candidate source entirely). Kad and the eD2k
 //! server surface are untouched — aMule's own client ban gates neither.
 

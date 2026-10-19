@@ -19,15 +19,15 @@ use rmule_primitives::{
     PeerEndpoint, ServerEndpoint,
 };
 use rmule_testkit::{
-    StaticPeerTransfer, emit_streamed_part, file_link, file_link_without_part_hash_set,
-    loopback_peer, next_event, run_download, source_with_high_id, two_high_id_sources,
+    StaticPeerTransfer, emit_blocks, file_link, file_link_without_part_hash_set, loopback_peer,
+    next_event, run_download, source_with_high_id, two_high_id_sources,
 };
 
 /// A file below one part has no part hash set: its one part is the whole file,
 /// so the file hash checks it on arrival (aMule `CPartFile::HashSinglePart`,
-/// `src/PartFile.cpp:2338-2343`) — corrupt bytes retire their sender and
-/// release the part for another source, as a bad part of a larger file does,
-/// instead of failing the whole download at finalize.
+/// `src/PartFile.cpp:2338-2343`) — corrupt bytes retire their sole sender and
+/// the part is fetched again, as a bad part of a larger file is, instead of
+/// failing the whole download at finalize.
 #[tokio::test]
 async fn small_file_without_part_hash_set_rejects_corrupt_bytes_on_arrival() {
     let expected = b"hello world".to_vec();
@@ -58,7 +58,12 @@ async fn small_file_without_part_hash_set_rejects_corrupt_bytes_on_arrival() {
     )));
     assert!(events.iter().any(|event| matches!(
         event,
-        CoreEvent::Download(DownloadEvent::PartReleased { part_index: 0, .. })
+        CoreEvent::Download(DownloadEvent::PartCorrupt {
+            part_index: 0,
+            writers: 1,
+            named: 1,
+            ..
+        })
     )));
     assert!(!events.iter().any(|event| matches!(
         event,
@@ -273,6 +278,7 @@ async fn first_peer_hash_set_without_link_parts_is_persisted_as_provisional_auth
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("download.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -327,6 +333,7 @@ async fn resumed_download_retires_peer_that_mismatches_persisted_provisional_aut
             &link_without_parts,
             Some(&ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
             &DownloadPaths::from_final_path(dir.path().join("download.bin")),
+            None,
         )
         .unwrap();
     repo.record_provisional_part_hashes(record.id(), &hashes)
@@ -393,8 +400,9 @@ impl PeerTransferService for MismatchedThenSuccess {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let mismatched_peer = self.mismatched_peer;
@@ -403,9 +411,14 @@ impl PeerTransferService for MismatchedThenSuccess {
         let bytes = self.bytes.clone();
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
                 match command {
-                    PeerWorkerCommand::RequestPart { .. } if peer == mismatched_peer => {
+                    PeerWorkerCommand::AskSlot | PeerWorkerCommand::TakeGrant => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::RequestHashSet => {}
+                    PeerWorkerCommand::RequestBlocks { .. } if peer == mismatched_peer => {
                         let _ = event_tx
                             .send(PeerWorkerEvent::HashSetReceived {
                                 part_hashes: mismatched_hashes.clone(),
@@ -413,25 +426,18 @@ impl PeerTransferService for MismatchedThenSuccess {
                             .await;
                         break;
                     }
-                    PeerWorkerCommand::RequestPart {
-                        plan,
-                        resume_offset,
-                    } => {
+                    PeerWorkerCommand::RequestBlocks { blocks, handout } => {
                         let _ = event_tx
                             .send(PeerWorkerEvent::HashSetReceived {
                                 part_hashes: correct_hashes.clone(),
                             })
                             .await;
-                        emit_streamed_part(
-                            &event_tx,
-                            &DownloadedPart {
-                                part_index: plan.part_index,
-                                offset: plan.offset,
-                                bytes: bytes.clone(),
-                            },
-                            resume_offset,
-                        )
-                        .await;
+                        let part = DownloadedPart {
+                            part_index: 0,
+                            offset: 0,
+                            bytes: bytes.clone(),
+                        };
+                        emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks, handout).await;
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}
                     PeerWorkerCommand::RequestAichFileHash => {}

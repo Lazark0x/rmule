@@ -81,6 +81,32 @@ pub(crate) struct Plan {
     pub(crate) unreadable: Vec<(FileHash, PathBuf, io::ErrorKind)>,
 }
 
+/// What a listing found before anything known is read: every file it
+/// listed, and every subfolder it could not list for an error other than
+/// its being gone.
+#[derive(Debug, Default)]
+pub(crate) struct Listed {
+    found: Vec<FoundFile>,
+    unlisted: Vec<PathBuf>,
+}
+
+impl Listed {
+    /// The walk this listing makes against `known`: each known path under a
+    /// subfolder it could not list looked at on its own ([`look_under`]),
+    /// everything in name order.
+    pub(crate) fn walked(self, source: &dyn DirectorySource, known: &Known) -> Walked {
+        let mut walked = Walked {
+            found: self.found,
+            unreadable: Vec::new(),
+        };
+        for dir in &self.unlisted {
+            look_under(source, dir, known, &mut walked);
+        }
+        walked.found.sort_by(|a, b| a.path.cmp(&b.path));
+        walked
+    }
+}
+
 /// Every file under `root`, recursively, in name order. Skipped names
 /// ([`skipped_name`]), symlinks and anything not a regular file are
 /// skipped. A subfolder gone before it is listed hides nothing. One that
@@ -88,7 +114,13 @@ pub(crate) struct Plan {
 /// known path under it is looked at on its own ([`look_under`]). Only
 /// `root` itself failing is an error.
 pub(crate) fn walk(source: &dyn DirectorySource, root: &Path, known: &Known) -> io::Result<Walked> {
-    let mut walked = Walked::default();
+    Ok(list(source, root)?.walked(source, known))
+}
+
+/// Every file under `root`, recursively, and every subfolder that could
+/// not be listed, as [`walk`] finds them, before anything known is read.
+pub(crate) fn list(source: &dyn DirectorySource, root: &Path) -> io::Result<Listed> {
+    let mut listed = Listed::default();
     let mut pending = vec![root.to_path_buf()];
     while let Some(dir) = pending.pop() {
         let entries = match source.list(&dir) {
@@ -97,7 +129,7 @@ pub(crate) fn walk(source: &dyn DirectorySource, root: &Path, known: &Known) -> 
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => {
                 tracing::warn!(dir = %dir.display(), %error, "could not list; each known file under it looked at alone");
-                look_under(source, &dir, known, &mut walked);
+                listed.unlisted.push(dir);
                 continue;
             }
         };
@@ -108,13 +140,12 @@ pub(crate) fn walk(source: &dyn DirectorySource, root: &Path, known: &Known) -> 
             let path = dir.join(&entry.name);
             match entry.kind {
                 EntryKind::Directory => pending.push(path),
-                EntryKind::File(stamp) => walked.found.push(FoundFile { path, stamp }),
+                EntryKind::File(stamp) => listed.found.push(FoundFile { path, stamp }),
                 EntryKind::Symlink | EntryKind::Other => {}
             }
         }
     }
-    walked.found.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(walked)
+    Ok(listed)
 }
 
 /// Look at each registry row's and spare copy's path under `dir`, a folder
@@ -176,6 +207,11 @@ pub(crate) fn plan(root: &Path, walked: Walked, known: &Known) -> Plan {
             continue;
         }
         if known.parts.live.contains(&file.path) {
+            // A download's own: its row, when the completion move has written
+            // one (ADR-0115), is neither trusted nor gone until the download
+            // is done with the path.
+            under.remove(file.path.as_path());
+            spares.remove(file.path.as_path());
             continue;
         }
         let spare = spares.remove(file.path.as_path());

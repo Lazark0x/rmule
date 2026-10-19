@@ -37,12 +37,48 @@ fn the_greedy_pair_share_the_slack_and_the_row_always_fits() {
     assert!(wide[SERVER_DESC_COL] > SERVER_COLS[SERVER_DESC_COL]);
 }
 
+/// Each Ping State renders its own cell: the round trip, or the word for
+/// why there is none — never a bare dash — and a missing count or age says
+/// the same word as the row's ping, or that the answer left a count unset;
+/// every word fits its column.
+#[test]
+fn each_ping_state_renders_its_own_cell_and_counts_and_age_follow_it() {
+    let unanswered = PingState::Unanswered {
+        since: Duration::from_secs(600),
+    };
+    for (ping, cell, count) in [
+        (
+            PingState::Measured(Duration::from_millis(42)),
+            "42ms",
+            "unset",
+        ),
+        (
+            PingState::Measured(Duration::from_millis(2_500)),
+            "2.5s",
+            "unset",
+        ),
+        (PingState::NotAskedYet, "soon", "soon"),
+        (PingState::Awaiting, "wait", "wait"),
+        (unanswered, "lost", "lost"),
+    ] {
+        assert_eq!(format_ping(&ping), cell);
+        assert!(
+            cell.chars().count() <= SERVER_COLS[4],
+            "{cell} overflows Ping"
+        );
+        assert_eq!(count_cell(None, &ping), count);
+        assert_eq!(count_cell(Some(431_004), &ping), "431k");
+        let age = age_cell(None, &ping);
+        assert!(age.chars().count() <= SERVER_COLS[7], "{age} overflows Age");
+        if ping.measured().is_none() {
+            assert_eq!(age, cell, "an undated row's age says why, as its ping");
+        }
+        assert_eq!(age_cell(Some(Duration::from_secs(59)), &ping), "59s");
+    }
+}
+
 #[test]
 fn dynamics_render_as_dashes_until_a_server_reports_them() {
-    assert_eq!(format_ping(None), "—");
-    assert_eq!(format_ping(Some(Duration::from_millis(42))), "42ms");
-    assert_eq!(format_ping(Some(Duration::from_millis(2_500))), "2.5s");
-    assert_eq!(format_age(None), "—", "never answered");
     for (secs, cell) in [
         (0, "0s"),
         (59, "59s"),
@@ -54,7 +90,7 @@ fn dynamics_render_as_dashes_until_a_server_reports_them() {
         (8_639_999, "99d"),
         (8_640_000, "14w"),
     ] {
-        assert_eq!(format_age(Some(Duration::from_secs(secs))), cell);
+        assert_eq!(format_age(Duration::from_secs(secs)), cell);
     }
     assert_eq!(short_count(None), "—");
     assert_eq!(short_count(Some(0)), "0", "zero users is a measurement");
@@ -76,8 +112,8 @@ fn the_connected_row_is_marked_by_a_glyph_beside_the_selection_arrow() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    // Short names so each row is one display line and the gutter reads
-    // straight down.
+    // Each row's gutter is read on the row's first line, whatever its
+    // cells wrap to.
     let state = UiState {
         diagnostics: DiagnosticsSnapshot {
             servers: vec![
@@ -110,10 +146,11 @@ fn the_connected_row_is_marked_by_a_glyph_beside_the_selection_arrow() {
             .map(|x| buffer.cell((x, y)).map_or(" ", |cell| cell.symbol()))
             .collect()
     };
+    let y1 = view.server_rows.line_of(1).expect("row 1 drawn");
     // Row 0 is selected but not connected; row 1 is connected, not selected.
     assert_eq!(gutter(y0), "▸  ", "selection arrow only");
-    assert_eq!(gutter(y0 + 1), " ● ", "connected dot only");
-    let dot = buffer.cell((2u16, y0 + 1)).expect("connected dot");
+    assert_eq!(gutter(y1), " ● ", "connected dot only");
+    let dot = buffer.cell((2u16, y1)).expect("connected dot");
     assert_eq!(dot.style().fg, Some(theme.good));
 }
 
@@ -306,17 +343,20 @@ fn a_long_list_scrolls_the_selected_row_into_view() {
             .expect("draw");
     };
     draw(&mut view);
-    assert_eq!(view.server_offset, 0);
+    assert_eq!(view.viewport.first(), 0);
     view.handle_key(press(KeyCode::Char('G')), &state);
     draw(&mut view);
-    assert!(view.server_offset > 0, "the table scrolled to the last row");
+    assert!(
+        view.viewport.first() > 0,
+        "the table scrolled to the last row"
+    );
     assert!(
         view.server_rows.line_of(39).is_some(),
         "the selected row is on screen"
     );
     view.handle_key(press(KeyCode::Char('g')), &state);
     draw(&mut view);
-    assert_eq!(view.server_offset, 0, "g scrolls back to the top");
+    assert_eq!(view.viewport.first(), 0, "g scrolls back to the top");
 }
 
 /// Everything on screen, one string per row.
@@ -401,4 +441,33 @@ fn the_detail_pane_collapses_where_the_table_would_lose_half_its_rows() {
         tall.contains("Shares: not announced to this session yet"),
         "{tall}"
     );
+}
+
+/// A server list longer than its pane: the bar runs down the header and the
+/// rows, and the border counts the cursor's row of the forty.
+#[test]
+fn golden_networks_servers_overflow() {
+    let servers: Vec<ServerDiagnostics> = (0..40u8)
+        .map(|n| listed(&format!("10.0.0.{n}"), 4661, &format!("Server {n}")))
+        .collect();
+    let state = UiState {
+        diagnostics: DiagnosticsSnapshot {
+            servers,
+            ..DiagnosticsSnapshot::default()
+        },
+        ..UiState::default()
+    };
+    let mut view = NetworksView::new();
+    for _ in 0..25 {
+        view.handle_key(press(KeyCode::Char('j')), &state);
+    }
+    assert_golden("networks_servers_overflow", 78, 24, |frame| {
+        view.draw(
+            frame,
+            frame.area(),
+            &state,
+            &Theme::default_dark(),
+            Instant::now(),
+        );
+    });
 }

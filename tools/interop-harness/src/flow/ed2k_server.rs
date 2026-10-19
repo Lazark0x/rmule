@@ -7,13 +7,15 @@
 //! search-wire leg (which stands ed2k-server up beside the eserver), and the
 //! announce-switch leg's offer-set probe and rmule legs, the late-port-test
 //! leg, the crypt-ping-port leg, the server-login-crypt leg, the
-//! sweep-follows-list leg, and the ask-budget leg.
+//! sweep-follows-list leg, the ask-budget leg, and the holepunch-fail leg
+//! (which stands ed2k-server up alone).
 
 pub(crate) mod announce_switch;
 pub(crate) mod ask_budget;
 pub(crate) mod bench_smoke;
 pub(crate) mod crypt_ping_port;
 pub(crate) mod cycle;
+pub(crate) mod holepunch_fail;
 pub(crate) mod late_port_test;
 pub(crate) mod rmule_tools;
 pub(crate) mod search_wire;
@@ -26,6 +28,9 @@ pub use self::ask_budget::{AskBudgetOptions, rescore_ask_budget, run_ask_budget}
 pub use self::bench_smoke::{BenchSmokeOptions, run_bench_smoke};
 pub use self::crypt_ping_port::{CryptPingPortOptions, run_crypt_ping_port};
 pub use self::cycle::{ServerCycleOptions, run_server_cycle};
+pub use self::holepunch_fail::{
+    HolepunchFailOptions, run_holepunch_fail, score_run_dir as score_holepunch_fail,
+};
 pub use self::late_port_test::{DEFAULT_HELLO_DELAY_MS, LatePortTestOptions, run_late_port_test};
 pub use self::search_wire::{
     SearchSpacingOptions, SearchWireOptions, SearchWireServer, run_search_spacing, run_search_wire,

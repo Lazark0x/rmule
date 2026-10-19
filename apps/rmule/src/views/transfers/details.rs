@@ -10,15 +10,18 @@ use rmule_core::DownloadId;
 use rmule_primitives::FileHash;
 
 use super::chunks::chunk_bar;
-use super::downloads::{diag_counts, diag_parts, origin_label, source_counts};
+use super::downloads::{diag_counts, diag_parts, origin_label};
 use super::sort::DownloadLine;
 use super::{Overlay, TransfersView, selected_id};
 use crate::rates::format_rate;
 use crate::state::UiState;
+use crate::table_sort::RowMove;
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
 use crate::views::modal::Modal;
-use crate::words::download::source_wait_words;
+use crate::words::download::{
+    completion_progress, on_disk, source_activity_words, source_wait_words,
+};
 use crate::wrap::labeled_lines;
 
 /// Width of the details modal's label column (`" {label:<8}"`).
@@ -42,7 +45,13 @@ impl TransfersView {
                 self.overlay = Overlay::None;
                 ViewOutcome::Redraw
             }
-            _ => ViewOutcome::Redraw,
+            // A frame too short for every line scrolls them.
+            code => {
+                if let Some(movement) = RowMove::of(code) {
+                    self.details_viewport.get_mut().scroll(movement);
+                }
+                ViewOutcome::Redraw
+            }
         }
     }
 
@@ -76,67 +85,90 @@ impl TransfersView {
         } else {
             format!("{percent_done}  ({}/{total_parts} parts)", counts.verified)
         };
-        let sources = source_counts(diag).map_or_else(
+        let sources = diag.map_or_else(
             || "— (not running)".to_string(),
-            |(known, sending)| format!("{known} known, {sending} sending"),
+            |diag| source_activity_words(diag.known_sources, diag.source_activity),
         );
 
         // Key-value rows wrap under their value column: the full hash
         // is 32 hex digits, so a narrow frame must grow the modal, not cut it.
         let width = 52u16.min(area.width);
-        let inner_w = usize::from(width).saturating_sub(2).max(1);
-        let value_w = inner_w.saturating_sub(DETAIL_LABEL_W + 1).max(1);
-        let mut lines: Vec<Line<'static>> = [
-            ("name", name),
-            (
-                "hash",
-                hash.map_or_else(|| "—".to_string(), FileHash::to_hex_upper),
-            ),
-            ("size", size),
-            ("origin", origin),
-            ("done", done),
-            ("speed", format_rate(bps)),
-            ("sources", sources),
-        ]
-        .into_iter()
-        .flat_map(|(label, value)| detail_rows(label, &value, value_w, theme))
-        .collect();
-        // A failed row says why — or that why was not kept (ADR-0094).
-        if let Some(row) = row
-            && row.status == crate::state::DownloadStatus::Failed
-        {
-            let why = row.failure.as_ref().map_or_else(
-                || crate::state::FAILURE_NOT_RECORDED.to_string(),
-                crate::state::download_failure_words,
-            );
-            lines.extend(detail_rows("failed", &why, value_w, theme));
-        }
-        // A row whose run waits says on what (ADR-0051's amendment).
-        if let Some(row) = row {
-            let wait = match (row.status, row.source_wait) {
-                (_, Some(reason)) => Some(source_wait_words(reason)),
-                (crate::state::DownloadStatus::NoConnection, None) => {
-                    Some(crate::state::NO_NETWORK_WAIT)
-                }
-                _ => None,
-            };
-            if let Some(wait) = wait {
-                lines.extend(detail_rows("waiting", wait, value_w, theme));
+        let lines = |width: u16| -> Vec<Line<'static>> {
+            let inner_w = usize::from(width).saturating_sub(2).max(1);
+            let value_w = inner_w.saturating_sub(DETAIL_LABEL_W + 1).max(1);
+            let mut lines: Vec<Line<'static>> = [
+                ("name", name.clone()),
+                (
+                    "hash",
+                    hash.map_or_else(|| "—".to_string(), FileHash::to_hex_upper),
+                ),
+                ("size", size.clone()),
+                ("origin", origin.clone()),
+                ("done", done.clone()),
+                ("speed", format_rate(bps)),
+                ("sources", sources.clone()),
+                // The one place the Allocated Bytes and the Hole Verdict show
+                // (ADR-0111, "What the operator reads").
+                (
+                    "on disk",
+                    on_disk(
+                        diag.and_then(|d| d.allocated_bytes),
+                        diag.and_then(|d| d.hole_verdict),
+                    ),
+                ),
+            ]
+            .into_iter()
+            .flat_map(|(label, value)| detail_rows(label, &value, value_w, theme))
+            .collect();
+            // A failed row says why — or that why was not kept (ADR-0094).
+            if let Some(row) = row
+                && row.status == crate::state::DownloadStatus::Failed
+            {
+                let why = row.failure.as_ref().map_or_else(
+                    || crate::state::FAILURE_NOT_RECORDED.to_string(),
+                    crate::state::download_failure_words,
+                );
+                lines.extend(detail_rows("failed", &why, value_w, theme));
             }
-        }
-        lines.push(Line::raw(""));
-        // The modal's wider budget buckets the same map more finely than the
-        // table cell does — same fact, more resolution (ADR-0079).
-        lines.push(Line::from(chunk_bar(diag_parts(diag), inner_w, theme)));
-
+            // A row whose run waits says on what (ADR-0051's amendment).
+            if let Some(row) = row {
+                let wait = match (row.status, row.source_wait) {
+                    (_, Some(reason)) => Some(source_wait_words(reason)),
+                    (crate::state::DownloadStatus::NoConnection, None) => {
+                        Some(crate::state::NO_NETWORK_WAIT)
+                    }
+                    _ => None,
+                };
+                if let Some(wait) = wait {
+                    lines.extend(detail_rows("waiting", wait, value_w, theme));
+                }
+            }
+            // A completing row says what its move does, and what its copy has
+            // written (ADR-0115).
+            if let Some(progress) = diag.and_then(|d| d.completion)
+                && row.is_some_and(|row| row.status == crate::state::DownloadStatus::Completing)
+            {
+                let size = metadata.map(|m| m.size);
+                let doing = completion_progress(progress.step, progress.copied, size);
+                lines.extend(detail_rows("move", &doing, value_w, theme));
+            }
+            lines.push(Line::raw(""));
+            // The modal's wider budget buckets the same map more finely than the
+            // table cell does — same fact, more resolution (ADR-0079).
+            lines.push(Line::from(chunk_bar(diag_parts(diag), inner_w, theme)));
+            lines
+        };
         Modal::new(" File details ", theme)
             .flash_title(theme)
-            .draw(frame, area, width, theme, lines);
+            .draw_scrolled(frame, area, width, theme, &self.details_viewport, lines);
     }
 }
 
 #[cfg(test)]
 mod tests {
+
+    use rmule_core::HoleVerdict;
+    use rmule_primitives::ED2K_PART_SIZE;
 
     use crate::golden::assert_golden;
 
@@ -171,6 +203,147 @@ mod tests {
             view.draw(frame, area, &state, &Theme::default_dark(), now());
         });
         assert!(screen.contains("no source left to try"), "{screen}");
+    }
+
+    /// The details modal over the active download, its On disk levels set.
+    fn assert_on_disk_golden(name: &str, allocated: Option<u64>, verdict: Option<HoleVerdict>) {
+        let mut view = TransfersView::new();
+        view.overlay = Overlay::Details;
+        let mut state = three_downloads();
+        let diag = state
+            .diagnostics
+            .downloads
+            .get_mut(&download_id(1))
+            .expect("the active download's row");
+        diag.allocated_bytes = allocated;
+        diag.hole_verdict = verdict;
+        assert_golden(name, GOLDEN_W, GOLDEN_H, |frame| {
+            let area = frame.area();
+            view.draw(frame, area, &state, &Theme::default_dark(), now());
+        });
+    }
+
+    /// A disk that holds holes: the part file takes its verified parts and
+    /// a probe's slack, and the row says what the verdict means.
+    #[test]
+    fn golden_details_on_disk_holds_holes() {
+        assert_on_disk_golden(
+            "transfers_details_on_disk_holds_holes",
+            Some(4 * ED2K_PART_SIZE + 4096),
+            Some(HoleVerdict::HoldsHoles),
+        );
+    }
+
+    /// A disk that holds no holes: the part file takes its length up to its
+    /// last verified part, part 6.
+    #[test]
+    fn golden_details_on_disk_hole_less() {
+        assert_on_disk_golden(
+            "transfers_details_on_disk_hole_less",
+            Some(7 * ED2K_PART_SIZE),
+            Some(HoleVerdict::HoleLess),
+        );
+    }
+
+    /// A probe that failed says the disk was not measured, and why.
+    #[test]
+    fn golden_details_on_disk_unknown() {
+        assert_on_disk_golden(
+            "transfers_details_on_disk_unknown",
+            Some(4 * ED2K_PART_SIZE + 4096),
+            Some(HoleVerdict::Unknown(std::io::ErrorKind::PermissionDenied)),
+        );
+    }
+
+    /// A reading above the file's 87.7 MB shows as read, and a verdict not
+    /// yet taken is a dash.
+    #[test]
+    fn golden_details_on_disk_above_the_files_length() {
+        assert_on_disk_golden(
+            "transfers_details_on_disk_above_length",
+            Some(100_000_000),
+            None,
+        );
+    }
+
+    /// The details modal over the active download, its completion move at
+    /// `step` with `copied` bytes written.
+    fn assert_completing_golden(name: &str, step: rmule_core::CompletionStep, copied: u64) {
+        let mut view = TransfersView::new();
+        view.overlay = Overlay::Details;
+        let mut state = three_downloads();
+        state
+            .downloads
+            .get_mut(&download_id(1))
+            .expect("the active download")
+            .status = crate::state::DownloadStatus::Completing;
+        let diag = state
+            .diagnostics
+            .downloads
+            .get_mut(&download_id(1))
+            .expect("the active download's row");
+        // Every part verified: only then does a move begin.
+        diag.parts = part_map("VVVVVVVVVV");
+        diag.workers.clear();
+        diag.known_sources = 0;
+        diag.completion = Some(rmule_core::diagnostics::CompletionProgress { step, copied });
+        assert_golden(name, GOLDEN_W, GOLDEN_H, |frame| {
+            let area = frame.area();
+            view.draw(frame, area, &state, &Theme::default_dark(), now());
+        });
+    }
+
+    #[test]
+    fn golden_details_completing_at_each_step() {
+        use rmule_core::CompletionStep as Step;
+        for (name, step, copied) in [
+            ("transfers_details_completing_moving", Step::Moving, 0),
+            (
+                "transfers_details_completing_queued",
+                Step::QueuedForCopy,
+                0,
+            ),
+            (
+                "transfers_details_completing_copying",
+                Step::Copying,
+                46_000_000,
+            ),
+            (
+                "transfers_details_completing_held",
+                Step::WaitingForRelease,
+                0,
+            ),
+            (
+                "transfers_details_completing_store",
+                Step::WaitingForStore,
+                92_000_000,
+            ),
+        ] {
+            assert_completing_golden(name, step, copied);
+        }
+    }
+
+    /// A frame too short for the details: `j` scrolls them, and the border
+    /// counts the last line on screen.
+    #[test]
+    fn golden_details_overflow_a_short_frame() {
+        let mut view = TransfersView::new();
+        view.overlay = Overlay::Details;
+        let state = three_downloads();
+        let draw = |view: &mut TransfersView| {
+            crate::golden::render_to_lines(GOLDEN_W, 9, |frame| {
+                let area = frame.area();
+                view.draw(frame, area, &state, &Theme::default_dark(), now());
+            })
+        };
+        draw(&mut view);
+        for _ in 0..3 {
+            view.handle_key(press(KeyCode::Char('j')), &state);
+        }
+        assert_golden("transfers_details_overflow", GOLDEN_W, 9, |frame| {
+            let area = frame.area();
+            view.draw(frame, area, &state, &Theme::default_dark(), now());
+        });
     }
 
     #[test]

@@ -42,7 +42,7 @@ use anyhow::{Context, Result};
 
 use crate::docker::RunContainer;
 use crate::flow::bench::Bench;
-use crate::flow::ed2ksrv::Ed2ksrvImage;
+use crate::flow::ed2ksrv::ED2KSRV;
 use crate::flow::gate::wait_for_container_log;
 use crate::flow::nat::dialect::bench::{
     HOST_AMULE_KNO, HOST_ED2KSRV, HOST_EMULEQT, HOST_LEGACY_AMULE, Ipv6DialectOptions, Stage,
@@ -52,6 +52,7 @@ use crate::flow::nat::dialect::legs::hello_leg;
 use crate::flow::nat::dialect::verdict::{Body, Claim, DriverRow, Evidence};
 use crate::flow::nat::dialect::{BODY_PEER_TCP_PORT, ED2KSRV_TCP_PORT};
 use crate::flow::nat::synthetic::write_hashed;
+use crate::flow::pinned_image::{AMULE_KNO, EMULEQT};
 use crate::flow::taps::{Attachment, PerAttachmentTaps, TapRole};
 
 /// The size of each client's own shared file: four parts.
@@ -123,7 +124,7 @@ pub(super) fn start(
 ) -> Result<Option<String>> {
     let server_v4 = stage.v4(HOST_ED2KSRV).to_owned();
     let server = format!("rmule-interop-v6srv-{suffix}");
-    let ed2ksrv = Ed2ksrvImage::check(&bench.docker, options.ed2ksrv_image)?;
+    let ed2ksrv = ED2KSRV.check(&bench.docker, options.ed2ksrv_image)?;
     bench.start_extra(
         &server,
         ed2ksrv
@@ -158,15 +159,22 @@ pub(super) fn start(
         .context("keep the client's file link")?;
         shared_b = Some(file);
         let name = format!("rmule-interop-{}-{suffix}", client.role);
-        let (image, pin) = match client.kind {
-            Kind::Amule => (options.amule_image, "aMule 2.3.3, Ubuntu 24.04 package"),
-            Kind::AmuleKno => (
-                options.amule_kno_image,
-                "kno/amule integration/network-parity ab483654",
+        let (image, base, pin) = match client.kind {
+            Kind::Amule => (
+                options.amule_image,
+                RunContainer::new(options.amule_image),
+                "aMule 2.3.3, Ubuntu 24.04 package".to_owned(),
             ),
-            Kind::EmuleQt => (options.emuleqt_image, "ModderMule/emule-qt 73fff714"),
+            Kind::AmuleKno => {
+                let checked = AMULE_KNO.check(&bench.docker, options.amule_kno_image)?;
+                (options.amule_kno_image, checked.container(), checked.pin())
+            }
+            Kind::EmuleQt => {
+                let checked = EMULEQT.check(&bench.docker, options.emuleqt_image)?;
+                (options.emuleqt_image, checked.container(), checked.pin())
+            }
         };
-        let container = RunContainer::new(image)
+        let container = base
             .detach()
             .name(&name)
             .network(&stage.network)
@@ -220,7 +228,7 @@ pub(super) fn start(
         stage.bodies.push(Body {
             name: client.name.to_owned(),
             image: image.to_owned(),
-            pin: pin.to_owned(),
+            pin,
             address_v4: stage.v4(client.host).to_owned(),
             address_v6: stage.v6(client.host).to_owned(),
         });

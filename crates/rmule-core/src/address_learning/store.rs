@@ -22,7 +22,7 @@ use tokio::sync::watch;
 
 use crate::reachability::Ipv6Probe;
 
-use super::admissible::{is_carrier_grade_nat, is_publicly_usable, is_site_local};
+use super::admissible::{is_carrier_grade_nat, is_publicly_usable};
 use super::ladder::{KadAgreement, Ladder, Rung};
 use super::{
     AddressObservation, AdvertReachability, AdvertisedEndpoints, AssignedAddress, ConfidenceTier,
@@ -48,9 +48,14 @@ pub(crate) struct AddressLearning {
     /// closed: a socket the settings leave to the OS (port `0`) binds it
     /// again, as aMule changes its ports only on a restart of the program.
     held_ports: BTreeMap<SocketRole, u16>,
-    /// The addresses this host currently holds, newest refresh wins. Both a
-    /// tier of its own and the corroboration filter's evidence.
+    /// The publicly usable addresses this host currently holds, newest
+    /// refresh wins. Both a tier of its own and the corroboration filter's
+    /// evidence.
     interfaces: Vec<IpAddr>,
+    /// Every address the last refresh enumerated, routable or not — the
+    /// evidence a hairpin needs: a refused reflection naming one of these
+    /// never left our NAT.
+    enumerated: Vec<IpAddr>,
     /// Hints raised when an observation was refused; the disagreement hint is
     /// derived on read instead, because it changes as tiers age.
     hints: BTreeMap<AddressFamily, NatHint>,
@@ -85,6 +90,12 @@ impl AddressLearning {
         match observation {
             AddressObservation::Address { address, .. } => {
                 self.record_address(source, address, now)
+            }
+            // A `0` is no port (ADR-0084): recorded, it would dissent in the
+            // Own Mapping as if an observer had seen one.
+            AddressObservation::Port { port: 0, .. } => ObservationOutcome::PortZeroRefused,
+            AddressObservation::Endpoint { endpoint, .. } if endpoint.port() == 0 => {
+                ObservationOutcome::PortZeroRefused
             }
             AddressObservation::Port { role, port, .. } => {
                 self.ports.entry(role).or_insert_with(port_ladder).record(
@@ -227,6 +238,7 @@ impl AddressLearning {
             .copied()
             .filter(|address| is_publicly_usable(*address))
             .collect();
+        self.enumerated = addresses.to_vec();
     }
 
     /// Record what one role's **Family Pair** bound — the families that came
@@ -297,7 +309,7 @@ impl AddressLearning {
     /// hole punched to an address we hold, so asking for one while our own v6
     /// is merely a stale last-known would open it at the wrong address.
     pub(crate) fn known_address(&self, family: AddressFamily, now: Instant) -> Option<IpAddr> {
-        let rungs = self.address_rungs(family);
+        let rungs = self.address_rungs(family, now);
         best_fresh(&rungs, family, now).map(|rung| rung.value)
     }
 
@@ -315,7 +327,7 @@ impl AddressLearning {
         family: AddressFamily,
         now: Instant,
     ) -> Option<ConfidenceTier> {
-        let rungs = self.address_rungs(family);
+        let rungs = self.address_rungs(family, now);
         best_fresh(&rungs, family, now).map(|rung| rung.tier)
     }
 
@@ -326,7 +338,7 @@ impl AddressLearning {
         role: SocketRole,
         now: Instant,
     ) -> EndpointVerdict {
-        let rungs = self.address_rungs(family);
+        let rungs = self.address_rungs(family, now);
         let port = self.port(role, now);
         if let Some(rung) = best_fresh(&rungs, family, now)
             && let Some(port) = port
@@ -360,7 +372,7 @@ impl AddressLearning {
     /// Asking for a full endpoint there would make the crypt layer wait on a
     /// listener it has nothing to do with.
     pub(crate) fn address(&self, family: AddressFamily, now: Instant) -> Option<IpAddr> {
-        let rungs = self.address_rungs(family);
+        let rungs = self.address_rungs(family, now);
         best_fresh(&rungs, family, now)
             .map(|rung| rung.value)
             .or_else(|| {
@@ -376,7 +388,7 @@ impl AddressLearning {
     /// "disagreement is a fact, not an error"). A live disagreement outranks a
     /// remembered refusal: it is the one that describes the path right now.
     pub(crate) fn nat_hint(&self, family: AddressFamily, now: Instant) -> Option<NatHint> {
-        let rungs = self.address_rungs(family);
+        let rungs = self.address_rungs(family, now);
         best_fresh(&rungs, family, now)
             .and_then(|adopted| {
                 rungs
@@ -445,7 +457,7 @@ impl AddressLearning {
     pub(crate) fn learned_port(&self, role: SocketRole, now: Instant) -> Option<u16> {
         self.ports.get(&role).and_then(|ladder| {
             ladder
-                .rungs()
+                .rungs(now)
                 .into_iter()
                 .filter(|rung| rung.is_fresh(now) && rung.tier.port_rank().is_some())
                 .min_by_key(|rung| rung.tier.port_rank())
@@ -476,6 +488,27 @@ impl AddressLearning {
         }
     }
 
+    /// Withdraw what one ended port-mapping grant fed (ADR-0086, "Every grant
+    /// has one owner and one end"): `role`'s port-ladder grant when the row
+    /// is IPv4 — an IPv6 pinhole never fed one — and `family`'s address-ladder
+    /// grant unless `sibling_held`, another `Mapped` lease in that family
+    /// still standing behind the same gateway address.
+    pub(crate) fn withdraw_mapping_grant(
+        &mut self,
+        role: SocketRole,
+        family: AddressFamily,
+        sibling_held: bool,
+    ) {
+        if family == AddressFamily::V4
+            && let Some(ladder) = self.ports.get_mut(&role)
+        {
+            ladder.withdraw(ConfidenceTier::MappingGrant);
+        }
+        if !sibling_held && let Some(ladder) = self.addresses.get_mut(&family) {
+            ladder.withdraw(ConfidenceTier::MappingGrant);
+        }
+    }
+
     /// The external port for `role`: the best fresh port tier, else the port
     /// the role actually bound.
     pub(super) fn port(&self, role: SocketRole, now: Instant) -> Option<u16> {
@@ -489,11 +522,11 @@ impl AddressLearning {
 
     /// Every address rung `family` offers, corroboration filter applied, plus
     /// the interface rung the ladder cannot produce on its own.
-    fn address_rungs(&self, family: AddressFamily) -> Vec<Rung<IpAddr>> {
+    fn address_rungs(&self, family: AddressFamily, now: Instant) -> Vec<Rung<IpAddr>> {
         let mut rungs: Vec<Rung<IpAddr>> = self
             .addresses
             .get(&family)
-            .map(Ladder::rungs)
+            .map(|ladder| ladder.rungs(now))
             .unwrap_or_default()
             .into_iter()
             .filter(|rung| {
@@ -598,11 +631,13 @@ impl AddressLearning {
         self.interfaces.contains(&address)
     }
 
-    /// Whether this host holds `address` on some interface, routable or not.
-    /// The interface *tier* keeps only publicly usable addresses; hairpin
-    /// detection needs the unroutable ones too, so the bind table answers it.
+    /// Whether this host holds `address` on some interface, routable or not,
+    /// or it is loopback. The interface *tier* keeps only publicly usable
+    /// addresses; hairpin detection needs the unroutable ones too, so the
+    /// enumeration's whole set answers it — a private address some other
+    /// host holds is no hairpin (ADR-0084).
     fn interfaces_hold_locally(&self, address: IpAddr) -> bool {
-        self.interfaces.contains(&address) || address.is_loopback() || is_site_local(address)
+        self.enumerated.contains(&address) || address.is_loopback()
     }
 }
 
@@ -807,6 +842,16 @@ impl SharedAddressLearning {
     /// again, instead of on a clock of its own.
     pub(crate) fn next_lapse(&self) -> Option<Instant> {
         self.with(|store, now| store.next_lapse(now))
+    }
+
+    /// See [`AddressLearning::withdraw_mapping_grant`].
+    pub(crate) fn withdraw_mapping_grant(
+        &self,
+        role: SocketRole,
+        family: AddressFamily,
+        sibling_held: bool,
+    ) {
+        self.write(|store, _| store.withdraw_mapping_grant(role, family, sibling_held));
     }
 
     /// See [`AddressLearning::forget_kad_port_round`].

@@ -19,6 +19,7 @@ mod address_learning;
 mod app_config;
 mod assembly;
 mod ban_store;
+mod byte_ranges;
 mod hello_refusals;
 // The core-owned open-node buddy service (ADR-0061): the single-slot citizen
 // next to `Reachability` that serves firewalled peers — the FINDBUDDY refusal
@@ -41,6 +42,7 @@ mod clients_met;
 mod content;
 mod credit;
 mod data_dir;
+mod delivery_rate;
 pub mod diagnostics;
 mod dialable;
 mod directory_scan;
@@ -48,6 +50,7 @@ mod download;
 mod durable;
 mod error;
 mod file_key;
+mod free_name;
 // The core-owned firewalled-node operation (ADR-0061): the sibling of the
 // open-node `buddy` service — buddy recruitment (gated on both surfaces
 // firewalled), the relayed-callback consume, the rate-limited/Reachability-gated
@@ -58,6 +61,7 @@ mod file_key;
 mod firewalled;
 mod global_sources;
 mod hashing;
+mod held_places;
 #[cfg(test)]
 mod hello_facts;
 mod interval_limiter;
@@ -113,8 +117,12 @@ mod reachability;
 mod registry;
 mod registry_check;
 mod scheduler;
+// The Served Downloads (ADR-0113): the downloads that answer a peer's probes
+// and offer their verified parts, written under one lease at a time.
 mod search;
+mod secured_identity;
 mod serve;
+mod served_downloads;
 mod server_capabilities;
 /// The managed server list: model, store seam, and server.met acquisition
 /// (ADR-0080).
@@ -130,12 +138,13 @@ mod upload_queue;
 
 pub use adapters::{
     AnnounceOutcome, ClientUdpBind, DownloadedPart, KadCells, KadEnableConfig, KadNodeIdentity,
-    KadRuntimeFactory, KadShutdownHandle, KadShutdownSlot, KadSourceChannel, PeerDownloadOutcome,
-    PeerTransferService, PeerWorker, PeerWorkerCommand, PeerWorkerEvent, RuntimeKadChannel,
-    RuntimeKadFactory, RuntimePeerTransferService, RuntimeServeRuntimeService,
+    KadPumpStandIn, KadRuntimeFactory, KadShutdownHandle, KadShutdownSlot, KadSourceChannel,
+    PeerDownloadOutcome, PeerTransferService, PeerWorker, PeerWorkerCommand, PeerWorkerEvent,
+    RuntimeKadChannel, RuntimeKadFactory, RuntimePeerTransferService, RuntimeServeRuntimeService,
     RuntimeSourceLookupService, ServeConnection, ServeInput, ServeOutput, ServeRuntimeService,
-    SourceLookupOutcome, SourceLookupService, WorkerBrief,
+    SourceLookupOutcome, SourceLookupService, WorkerBrief, WorkerOpening,
 };
+pub use adapters::{DialBack, DialBackCallOff, DialBackOutcome, FarEnd};
 pub use address_learning::{
     AddressObservation, AssignedAddress, ConfidenceTier, EndpointVerdict, ExternalAddressOverride,
     NatHint, ObservationOutcome, ObservationSource, SocketRole,
@@ -148,7 +157,7 @@ pub use clients_met::{
     CLIENTS_MET_FILE, CREDITFILE_VERSION, ClientsMetError, CreditRecord, EXPIRY_SECS,
     load_clients_met, save_clients_met, seed_credit_ring,
 };
-pub use content::{ContentFileStore, PartFileChange, RestoredProgress, Revalidation};
+pub use content::{ContentFileStore, HoleVerdict, PartFileChange, RestoredProgress, Revalidation};
 pub use credit::{CreditStore, CreditTotals, KeyBinding, PeerCredit, credit_modifier};
 pub use data_dir::{DataDir, DataDirSource, home_dir, resolve_data_dir};
 pub use directory_scan::{
@@ -158,20 +167,20 @@ pub use directory_scan::{
 pub use download::source_seeds::{RememberPeers, SeedRank, SourceSeed};
 pub use durable::{
     DownloadLifecycle, DownloadMetadata, DownloadMetadataOrigin, DownloadPaths,
-    DurableDownloadRecord, VerifiedPartRecord,
+    DurableDownloadRecord, KadAichRoot, VerifiedPartRecord,
 };
 pub use error::{CoreError, DownloadFailure, FinalizeError, PartFault, StorageIntegrityFault};
 pub use join::{
-    FirstRunFetch, JoinCommandSink, JoinConfig, JoinOutcome, KadSeedOutcome, SeedReadFault,
-    acquire_kad_seeds, run_join_sequence,
+    AutoUpdateOutcome, FirstRunFetch, JoinCommandSink, JoinConfig, JoinOutcome, KadSeedOutcome,
+    SeedReadFault, acquire_kad_seeds, run_join_sequence,
 };
 pub use kad_sources::KadAnswer;
-pub use planning::PartPlan;
+pub use planning::{BlockPlan, PartPlan};
 pub use reachability::KadReachLevel;
 /// Why a search row was skipped: the code a `SearchResultSkipped` event carries.
 pub use rmule_ed2k::SearchResultSkipReason;
 pub use server_list::{
-    DEFAULT_DEAD_AFTER, DeadSince, ManagedServer, ResolvedAddress, ServerFigures,
+    AutoUpdateFetch, DEFAULT_DEAD_AFTER, DeadSince, ManagedServer, ResolvedAddress, ServerFigures,
     ServerGrantsReport, ServerHealth, ServerListFetcher, ServerListStore, ServerListUpdate,
     ServerListUpdateError, ServerListUpdateFailure, ServerMerge, ServerPolicy,
 };
@@ -212,22 +221,25 @@ pub use rmule_net::portmap::live_backends as live_mapping_backends;
 /// port-prediction amendment).
 pub use rmule_peer::natt::{OwnMapping, PortPrediction};
 pub use rmule_peer::{HelloRefusal, HelloRefusalCode};
-pub use scheduler::DownloadScheduler;
 pub use search::{KadKeywordSink, MORE_RESULTS_ASKS, RelatedSearchRefusal, ServerMoreResults};
+pub use served_downloads::PartialEnd;
 pub use server_session::build_peer_handshake_context;
+pub use service::LinkTurn;
+pub use service::{BlockAskFault, DeadDialSign, DialBackEnd, GrantRoad};
 pub use service::{
-    BuddyDialFailure, ClientCredentials, Core, CoreBuilder, CoreCommand, CoreCommandRejectReason,
-    CoreConfig, CoreEvent, DEFAULT_SLOT_WAIT_TIMEOUT, DialEnd, DialFailure, DownloadCommand,
-    DownloadEvent, DownloadId, IdAssignment, IgnoredReaskReply, Ipv6Probe, KadStopReason,
-    KadUnavailableReason, LegNotSent, LoginClaim, LoginCloseCause, LoginLink, LoginStep, NameTaken,
-    NatTraversalUnavailableReason, NattConfig, PartReleaseReason, PartsLost, PeerBuddy, PeerReach,
-    PeerReachDropReason, PeerReachRoute, PeerRetirementReason, PlainLinkReason, PortTestAdmission,
-    PortTestClosedBy, PortTestEnd, PortTestLateAdmission, PurgedSource, QuitStep,
-    RECONNECT_ATTEMPTS, ReconnectEnd, RestartOutcome, ScanCommand, ScanEvent, SearchCommand,
-    SearchEvent, SearchFailure, SearchId, SearchLegState, SearchLegs, ServeCommand, ServeEvent,
-    ServeStartFailure, ServeStopReason, ServerConnectFailure, ServerConnectionEvent,
-    ServerListCommand, ServerListEvent, ShareRejectReason, SharesWithheld, SourcePurgeReason,
-    SourceWait, SweepTally, VerificationAuthority,
+    BuddyDialFailure, CeilingLowered, ClientCredentials, CompletionStep, Core, CoreBuilder,
+    CoreCommand, CoreCommandRejectReason, CoreConfig, CoreEvent, DEFAULT_SLOT_WAIT_TIMEOUT,
+    DialEnd, DialFailure, DownloadCommand, DownloadEvent, DownloadId, IdAssignment,
+    IgnoredReaskReply, Ipv6Probe, KadStopReason, KadUnavailableReason, LegNotSent, LoginClaim,
+    LoginCloseCause, LoginLink, LoginStep, NameTaken, NatTraversalUnavailableReason, NattConfig,
+    PartReleaseReason, PartsLost, PeerBuddy, PeerConnections, PeerReach, PeerReachDropReason,
+    PeerReachRoute, PeerRetirementReason, PlainLinkReason, PortTestAdmission, PortTestClosedBy,
+    PortTestEnd, PortTestLateAdmission, PurgedSource, QuitStep, RECONNECT_ATTEMPTS, ReconnectEnd,
+    RestartOutcome, ScanCommand, ScanEvent, SearchCommand, SearchEvent, SearchFailure, SearchId,
+    SearchLegState, SearchLegs, ServeCommand, ServeEvent, ServeStartFailure, ServeStopReason,
+    ServerConnectFailure, ServerConnectionEvent, ServerListCommand, ServerListEvent,
+    ShareRejectReason, SharesWithheld, SourcePurgeReason, SourceWait, SweepTally,
+    VerificationAuthority, descriptor_room,
 };
 pub use storage::{DownloadRepository, ResolvedAuthority};
 pub use store::app_config::DurableAppConfig;
@@ -239,7 +251,7 @@ pub use store::{
 };
 pub use upload_queue::{
     Admission, LOW_ID_ABUSE_WAIT_LIST_THRESHOLD, MAX_WAITING_PER_ADDRESS, Promotion,
-    ReaskResolution, UploadSlotQueue, WaiterLeaveCause,
+    ReaskResolution, Relinked, UploadSlotQueue, WaiterContact, WaiterLeaveCause,
 };
 
 /// One routing-table contact, re-exported so a front-end can hand

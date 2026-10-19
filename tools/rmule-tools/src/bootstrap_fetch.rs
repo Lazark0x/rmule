@@ -46,8 +46,8 @@ use clap::Args;
 use rmule_bootstrap::{BootstrapConfig, NodesDatInstall, ReqwestFetcher, fetch_nodes_dat};
 use rmule_core::run_log::Level;
 use rmule_core::{
-    Core, CoreCommand, CoreConfig, CoreEvent, DurableAppConfig, FirstRunFetch, JoinConfig,
-    KadEnableConfig, KadId, open_durable_store_in_memory, run_join_sequence,
+    AutoUpdateOutcome, Core, CoreCommand, CoreConfig, CoreEvent, DurableAppConfig, FirstRunFetch,
+    JoinConfig, KadEnableConfig, KadId, open_durable_store_in_memory, run_join_sequence,
 };
 use rmule_ed2k::Ed2kEvent;
 use rmule_kad::BootstrapDialList;
@@ -200,11 +200,16 @@ pub(crate) async fn run(args: BootstrapFetchArgs) -> Result<()> {
         FirstRunFetch::Skipped => "skipped".to_owned(),
         FirstRunFetch::Failed(error) => format!("failed error={error}"),
     };
+    let (auto_update, walked) = auto_update_report(&outcome.auto_update);
     println!(
-        "bootstrap-fetch join_sequence first_run={first_run} servers={} kad_seed={:?}",
+        "bootstrap-fetch join_sequence first_run={first_run} auto_update={auto_update} \
+         servers={} kad_seed={:?}",
         outcome.servers.len(),
         outcome.kad_seed
     );
+    for line in walked {
+        println!("bootstrap-fetch auto_update {line}");
+    }
 
     // Stage 3: eD2k verification — the acquired server accepts our login.
     let identity = ClientIdentity::new(
@@ -367,5 +372,80 @@ async fn wait_for_kad_contact(core: &mut Core, window: Duration) -> Result<bool>
             () = tokio::time::sleep_until(deadline) => return Ok(false),
             () = tokio::time::sleep(CONTACT_POLL) => {}
         }
+    }
+}
+
+/// The Join Sequence's auto-update walk as this runner reports it: a code
+/// for the join line — `skipped`, or `walked` — and, for a walk, one line
+/// per URL in the words the Networks log gives it, or the one saying no URL
+/// is set.
+fn auto_update_report(outcome: &AutoUpdateOutcome) -> (&'static str, Vec<String>) {
+    match outcome {
+        AutoUpdateOutcome::Skipped => ("skipped", Vec::new()),
+        AutoUpdateOutcome::Walked { fetched } if fetched.is_empty() => (
+            "walked",
+            vec![rmule_words::server::auto_update_started(0).to_string()],
+        ),
+        AutoUpdateOutcome::Walked { fetched } => (
+            "walked",
+            fetched
+                .iter()
+                .map(|(url, fetch)| {
+                    rmule_words::server::auto_update_fetched(url, *fetch).to_string()
+                })
+                .collect(),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rmule_core::{AutoUpdateFetch, AutoUpdateOutcome, ServerListUpdateFailure};
+
+    use super::auto_update_report;
+
+    /// The join line names whether the auto-update walk ran; each URL it
+    /// walked gets its own line in the same words the Networks log uses.
+    #[test]
+    fn the_auto_update_result_is_reported_in_words() {
+        assert_eq!(
+            auto_update_report(&AutoUpdateOutcome::Skipped),
+            ("skipped", Vec::<String>::new())
+        );
+        let walked = AutoUpdateOutcome::Walked {
+            fetched: vec![
+                (
+                    "http://one.example/server.met".to_owned(),
+                    AutoUpdateFetch::Merged {
+                        added: 2,
+                        updated: 1,
+                    },
+                ),
+                (
+                    "http://two.example/server.met".to_owned(),
+                    AutoUpdateFetch::Failed(ServerListUpdateFailure::TimedOut),
+                ),
+            ],
+        };
+        assert_eq!(
+            auto_update_report(&walked),
+            (
+                "walked",
+                vec![
+                    "server list from http://one.example/server.met: 2 new, 1 refreshed".to_owned(),
+                    "server list from http://two.example/server.met gave no list: the address \
+                     did not answer in time"
+                        .to_owned(),
+                ]
+            )
+        );
+        let (code, lines) = auto_update_report(&AutoUpdateOutcome::Walked {
+            fetched: Vec::new(),
+        });
+        assert_eq!(code, "walked");
+        assert_eq!(
+            lines,
+            ["server list auto-update: no address is set — add one in Settings, Servers"]
+        );
     }
 }

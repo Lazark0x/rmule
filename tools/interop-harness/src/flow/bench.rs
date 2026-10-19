@@ -20,7 +20,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 
 use crate::artifacts::RunLayout;
-use crate::docker::{Docker, DockerCommand, RunContainer, is_retriable_build_export_failure};
+use crate::bench_doctor::{BenchDoctor, DoctorReport};
+use crate::docker::{Docker, DockerCommand, RunContainer};
 use crate::flow::gate::{
     start_rmule_serve_with_login_retry, wait_for_amule_ready, wait_for_container_log,
 };
@@ -494,7 +495,9 @@ impl Bench {
         server: RunContainer,
     ) -> Result<()> {
         self.server_started = true;
+        let image = server.image().to_string_lossy().into_owned();
         let id = run_checked(self.docker.run_container(server), "run server container")?;
+        crate::run_record::note_image(&self.docker, &image, false);
         write_id(
             &layout.server_container_id_file(),
             fallback_id(&id, &self.names.server_container_name),
@@ -594,7 +597,9 @@ impl Bench {
         timeout: Duration,
     ) -> Result<()> {
         self.amule_started = true;
+        let image = amule.image().to_string_lossy().into_owned();
         let id = run_checked(self.docker.run_container(amule), "run aMule container")?;
+        crate::run_record::note_image(&self.docker, &image, false);
         write_id(
             &layout.amule_container_id_file(),
             fallback_id(&id, &self.names.amule_container_name),
@@ -686,7 +691,9 @@ impl Bench {
         phase: &str,
     ) -> Result<()> {
         self.track(name);
+        let image = container.image().to_string_lossy().into_owned();
         run_checked(self.docker.run_container(container), phase)?;
+        crate::run_record::note_image(&self.docker, &image, false);
         Ok(())
     }
 
@@ -699,55 +706,55 @@ impl Bench {
         .map(|_| ())
     }
 
-    /// Build kno's aMule runtime image from `context` (`images/amule-kno`).
-    /// The build context is the parent `images/` directory, so the Dockerfile
-    /// can lift the stock `amule` recipe's scenario entrypoint beside its own
-    /// instead of carrying a copy of it.
-    pub(crate) fn build_amule_kno_image(&self, tag: &str, context: &Path) -> Result<()> {
-        run_checked(
-            self.docker.build_image_with_dockerfile(
-                tag,
-                context.join("Dockerfile").as_os_str(),
-                context.join("..").as_os_str(),
-            ),
-            "build amule-kno image",
-        )
-        .map(|_| ())
+    /// The Bench Doctor, run first: build the one image it probes with (`role`
+    /// names it in a failure; a 30 s Debian layer that caches) and examine the
+    /// kernel with it. A flow builds nothing else until its `require` has
+    /// passed, so a run the host cannot carry is written down as skipped in
+    /// seconds instead of after every image has been built.
+    ///
+    /// # Errors
+    /// If the doctor image fails to build or the probes cannot run.
+    pub(crate) fn examine_doctor(
+        &self,
+        role: &str,
+        image: &str,
+        context: &Path,
+        suffix: &str,
+    ) -> Result<DoctorReport> {
+        self.build_image(role, image, context)?;
+        BenchDoctor::new(&self.docker, image, suffix)
+            .examine()
+            .context("run the bench doctor")
     }
 
-    /// Build the `rmule-tools` driver image, retrying the build exactly once
-    /// when it fails with [`is_retriable_build_export_failure`]: the legacy
-    /// (non-BuildKit) builder's image export flaked twice in one bench
-    /// session, each failure unrelated to the
-    /// Dockerfile or the compile — a second attempt against the same,
-    /// now-warm context cleared it both times. Any other failure (a real
-    /// compile error, a missing file) is returned as-is, not retried.
-    ///
-    /// This does not remove the "Created" container a flaked attempt may
-    /// leave behind: the legacy builder gives a build no name, label, or id
-    /// for that container to reclaim it by, and a host-wide `docker ps`
-    /// filter could just as easily catch another build's leftover — see
-    /// `CONTEXT.md`. [`Docker::prune_bench_stage_images`] still sweeps the
-    /// labeled dangling *images* every subcommand leaves; only the failed
-    /// *container* is left for `docker system prune` to reap.
+    /// Build the `rmule-tools` driver image from the warm host-cached
+    /// prebuild (see [`crate::flow::driver_image`]). `context` is the
+    /// workspace root the prebuild compiles; `dockerfile` is the runtime
+    /// recipe.
     pub(crate) fn build_rmule_tools_image(
         &self,
         tag: &str,
         dockerfile: &Path,
         context: &Path,
     ) -> Result<()> {
-        let phase = "build rmule-tools driver image";
-        let command = self
-            .docker
-            .build_image_with_dockerfile(tag, dockerfile, context);
-        match run_checked(command.clone(), phase) {
-            Ok(_) => Ok(()),
-            Err(err) if is_retriable_build_export_failure(&err.to_string()) => {
-                println!("{phase}: retrying once after a legacy-builder export flake: {err}");
-                run_checked(command, phase).map(|_| ())
-            }
-            Err(err) => Err(err),
+        crate::flow::driver_image::build(&self.docker, tag, dockerfile, context)
+    }
+
+    /// [`Self::build_rmule_tools_image`], or with `reuse` (`--skip-build`)
+    /// the image `tag` as it stands, whose id the run record then names as
+    /// the rmule under test.
+    pub(crate) fn rmule_tools_image(
+        &self,
+        tag: &str,
+        dockerfile: &Path,
+        context: &Path,
+        reuse: bool,
+    ) -> Result<()> {
+        if reuse {
+            crate::run_record::note_image(&self.docker, tag, true);
+            return Ok(());
         }
+        self.build_rmule_tools_image(tag, dockerfile, context)
     }
 
     /// Own an extra detached container (a helper aMule, a sidecar, a

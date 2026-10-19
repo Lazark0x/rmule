@@ -27,14 +27,17 @@ pub struct DownloadDiagnostics {
 - **`parts[i]` is part `i`** for every `i` in `0..part_count(file_size)`. The vector
   spans the whole file for the row's whole life; it is never a shrinking "remaining"
   list.
-- **Three states, because the scheduler partitions into exactly three:** racing →
-  `InFlight`, pending → `Missing`, tracked by neither → `Verified`. No `Requested`,
+- **Three states, because the scheduler partitions into exactly three:** a block of it
+  claimed by a worker, or its bytes being verified → `InFlight` (ADR-0117); unverified and
+  none of that → `Missing`; verified → `Verified`. No `Requested`,
   `Corrupt` or `Paused`: the scheduler does not distinguish them, and a state no writer
   can populate makes a surface lie.
-- **Empty means unknown, not zero.** A row between `StartDownload` and the runner's
-  first settle carries an empty vector, which a consumer renders as "no map yet".
+- **Empty means unknown, not zero.** A row opens with every part `Missing` (ADR-0094),
+  so a row core holds is never empty; a consumer with no row for a download yet renders
+  "no map yet".
 - **One source.** `DownloadScheduler::part_states()` walks `0..total_parts` once over the
-  two maps it owns; it is the only place a part's status is decided. The runner
+  missing parts, their claims and the parts being verified, all of which it owns; it is the
+  only place a part's status is decided. The runner
   republishes the whole vector, never patching an index, whenever the scheduler settles
   (`refresh_parts`, inside the drain).
 - **Counts are readings, not fields.** `part_counts()` returns

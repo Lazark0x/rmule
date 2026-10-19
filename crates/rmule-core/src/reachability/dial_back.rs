@@ -26,9 +26,12 @@
 //! flood can provoke.
 
 use std::collections::HashSet;
+use std::hash::Hash;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::{Arc, Mutex};
 
 use rmule_net::peer::ObfuscationPolicy;
-use rmule_primitives::{Ipv4Endpoint, OutboundCrypt, PeerCrypt, UserHash};
+use rmule_primitives::{Ipv4Endpoint, OutboundCrypt, PeerCrypt, PeerEndpoint, UserHash};
 
 use rmule_peer::peer_udp::crypt::stance_from_connect_options;
 
@@ -84,43 +87,58 @@ pub(crate) enum DialBackVerdict {
     Refuse { reason: DialBackRefusal },
 }
 
-/// Our own listen endpoint, as far as the ADR-0058 self-connect guard can
-/// currently tell. Address Learning's IPv4 projection —
-/// `own.public_ip()`, the same read the Kad pump samples for the node's own-IPv4
-/// level at Kad start, on every Own Address Generation and every recruit tick — is the one
-/// source: a second, independently-read copy of the level would only give
-/// the guard a chance to disagree with the verify-key state bound to the
-/// same value.
+/// Our own listen endpoint, as the ADR-0058 self-connect guard reads it: our
+/// public address in each family as Address Learning judges it —
+/// `own.public_ip()` and `own.public_ipv6()`, the reads the Kad pump samples
+/// for the node's own-address level — and our advertised TCP port. A second,
+/// independently-read copy of the level would only give the guard a chance to
+/// disagree with the verify-key state bound to the same value.
+///
+/// A candidate is us only at our public address **and** our port. With no
+/// public address known in its family nothing matches: aMule's
+/// `theApp->GetPublicIP() == nContactIP && thePrefs::GetPort() == contact->GetTCPPort()` test
+/// (`ClientList.cpp:848`, `:880`, `:918`) is false while `GetPublicIP()` is
+/// zero, so a fresh node refuses no requester for sharing its port.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum OwnListenEndpoint {
-    /// The live public IPv4 is known: a self-connect matches exact IP + port.
-    Known(Ipv4Endpoint),
-    /// No public IPv4 known yet (a fresh node, or one that has not completed
-    /// Address Learning): a self-connect matches on port alone, the only
-    /// signal available — aMule itself has none finer before its own
-    /// `GetPublicIP()` settles.
-    PortOnly(u16),
+pub(crate) struct OwnListenEndpoint {
+    ipv4: Option<Ipv4Addr>,
+    ipv6: Option<Ipv6Addr>,
+    port: u16,
 }
 
 impl OwnListenEndpoint {
-    /// The guard's current value: `own`'s live Address Learning verdict
+    /// The guard's current value: `own`'s live Address Learning verdicts
     /// paired with our advertised TCP `port`. Re-read at every guard check
-    /// (dial-back, `FINDBUDDY_REQ`) rather than cached, since the verdict can
-    /// move under a long-lived Kad node.
+    /// (dial-back, `FINDBUDDY_REQ`, a server-relayed callback) rather than
+    /// cached, since the verdict can move under a long-lived node.
     pub(crate) fn current(own: &crate::own_identity::SharedOwnIdentity, port: u16) -> Self {
-        match own.public_ip() {
-            Some(ip) => Self::Known(Ipv4Endpoint::new(ip, port)),
-            None => Self::PortOnly(port),
+        Self {
+            ipv4: own.public_ip(),
+            ipv6: own.public_ipv6(),
+            port,
         }
     }
 
-    /// Whether `candidate` is this endpoint, at the guard's current
-    /// precision.
-    pub(crate) fn matches(&self, candidate: Ipv4Endpoint) -> bool {
-        match self {
-            Self::Known(endpoint) => candidate == *endpoint,
-            Self::PortOnly(port) => candidate.port == *port,
+    /// The guard at one known IPv4 endpoint and no IPv6 — a test's fixed
+    /// value.
+    #[cfg(test)]
+    pub(crate) const fn at(endpoint: Ipv4Endpoint) -> Self {
+        Self {
+            ipv4: Some(endpoint.ip),
+            ipv6: None,
+            port: endpoint.port,
         }
+    }
+
+    /// Whether `candidate` is this endpoint: our port, at our public address
+    /// of the candidate's family.
+    pub(crate) fn matches(&self, candidate: impl Into<PeerEndpoint>) -> bool {
+        let candidate = candidate.into();
+        candidate.port() == self.port
+            && match candidate.ip().to_canonical() {
+                IpAddr::V4(ip) => self.ipv4 == Some(ip),
+                IpAddr::V6(ip) => self.ipv6 == Some(ip),
+            }
     }
 }
 
@@ -128,8 +146,7 @@ impl OwnListenEndpoint {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DialBackRefusal {
     /// The requester endpoint is our own listen endpoint — aMule's
-    /// local-IP-and-port self-connect guard, matched exactly once our public
-    /// IPv4 is known, on port alone until then ([`OwnListenEndpoint`]).
+    /// public-IP-and-port self-connect guard ([`OwnListenEndpoint`]).
     SelfConnect,
     /// We are already engaged with that endpoint (aMule's `KadState != KS_NONE`
     /// on the matched client).
@@ -220,14 +237,27 @@ pub(super) const MAX_CONCURRENT_DIAL_BACKS: usize = 8;
 /// verdict and hands the [`DialBackTicket`] to the enactment task; the
 /// ticket's drop — normal end, connect failure, or panic — retires it, so
 /// the set can never leak an endpoint past its task.
-#[derive(Clone, Default)]
-pub(crate) struct DialBackRegistry {
-    engaged: std::sync::Arc<std::sync::Mutex<HashSet<Ipv4Endpoint>>>,
+///
+/// Keyed by the endpoint the dial goes to: an [`Ipv4Endpoint`] for the Kad
+/// firewall-check responder, whose requesters are IPv4 by the wire, and a
+/// [`PeerEndpoint`] for the server-relayed callback, whose `0x26` names an
+/// IPv6 one.
+#[derive(Clone)]
+pub(crate) struct DialBackRegistry<K: Eq + Hash = Ipv4Endpoint> {
+    engaged: Arc<Mutex<HashSet<K>>>,
 }
 
-impl DialBackRegistry {
+impl<K: Eq + Hash> Default for DialBackRegistry<K> {
+    fn default() -> Self {
+        Self {
+            engaged: Arc::default(),
+        }
+    }
+}
+
+impl<K: Eq + Hash + Copy> DialBackRegistry<K> {
     /// Snapshot the engaged endpoints — the broker's `busy` guard feed.
-    pub(crate) fn engaged(&self) -> HashSet<Ipv4Endpoint> {
+    pub(crate) fn engaged(&self) -> HashSet<K> {
         self.engaged
             .lock()
             .expect("dial-back registry lock")
@@ -238,25 +268,25 @@ impl DialBackRegistry {
     /// is already engaged or the concurrent budget
     /// ([`MAX_CONCURRENT_DIAL_BACKS`]) is spent — the caller then refuses
     /// silently, exactly like a broker guard.
-    pub(crate) fn begin(&self, requester: Ipv4Endpoint) -> Option<DialBackTicket> {
+    pub(crate) fn begin(&self, requester: K) -> Option<DialBackTicket<K>> {
         let mut engaged = self.engaged.lock().expect("dial-back registry lock");
         if engaged.len() >= MAX_CONCURRENT_DIAL_BACKS || !engaged.insert(requester) {
             return None;
         }
         Some(DialBackTicket {
-            engaged: std::sync::Arc::clone(&self.engaged),
+            engaged: Arc::clone(&self.engaged),
             requester,
         })
     }
 }
 
 /// One claimed dial-back enactment; dropping it retires the engagement.
-pub(crate) struct DialBackTicket {
-    engaged: std::sync::Arc<std::sync::Mutex<HashSet<Ipv4Endpoint>>>,
-    requester: Ipv4Endpoint,
+pub(crate) struct DialBackTicket<K: Eq + Hash = Ipv4Endpoint> {
+    engaged: Arc<Mutex<HashSet<K>>>,
+    requester: K,
 }
 
-impl Drop for DialBackTicket {
+impl<K: Eq + Hash> Drop for DialBackTicket<K> {
     fn drop(&mut self) {
         self.engaged
             .lock()

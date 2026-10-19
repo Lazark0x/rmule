@@ -24,6 +24,7 @@ async fn start(core: &mut Core, file: Ed2kFileLink, name: &str) -> DownloadId {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name(name),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -80,6 +81,15 @@ async fn a_cleared_download_leaves_its_file_on_disk_and_in_the_registry() {
     let id = start(&mut core, link.clone(), "kept.bin").await;
     next_expected(&mut core, "the completed download shared", |event| {
         matches!(event, CoreEvent::Serve(ServeEvent::FileShared { .. }))
+    })
+    .await;
+    // Shared as its file lands in place; completed once its part file is
+    // gone (ADR-0115).
+    next_expected(&mut core, "the download completed", |event| {
+        matches!(
+            event,
+            CoreEvent::Download(DownloadEvent::DownloadCompleted { .. })
+        )
     })
     .await;
 

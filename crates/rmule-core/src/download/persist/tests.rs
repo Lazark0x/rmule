@@ -6,7 +6,10 @@
 use rmule_primitives::PartHash;
 use tokio::sync::mpsc;
 
-use super::{PersistError, hold_part_file, part_file_changed, record_failure, write_through_held};
+use super::{
+    PersistError, distrusted_at_start, hold_part_file, part_file_changed, record_failure,
+    write_through_held,
+};
 use crate::content::{HeldPartFile, PartFileChange};
 use crate::diagnostics::DiagnosticsState;
 use crate::download::runner::RunnerContext;
@@ -26,6 +29,7 @@ async fn held_part_file(dir: &tempfile::TempDir) -> HeldPartFile {
     HeldPartFile::hold(&dir.path().join("file.part"), 0)
         .await
         .expect("a new part file is held")
+        .0
 }
 
 #[tokio::test]
@@ -34,6 +38,16 @@ async fn a_download_the_store_cannot_read_is_not_held_and_fails_as_a_store_failu
     assert_eq!(
         hold_part_file(&runner, UNKNOWN).await,
         Err(DownloadFailure::StoreFailed)
+    );
+}
+
+#[test]
+fn a_download_whose_distrusted_peers_the_store_cannot_read_does_not_start() {
+    let (runner, _held) = context();
+    assert_eq!(
+        distrusted_at_start(&runner, UNKNOWN),
+        Err(DownloadFailure::StoreFailed),
+        "a run that forgot its distrust would dial the peers that served it bad data"
     );
 }
 

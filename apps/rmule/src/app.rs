@@ -23,6 +23,7 @@ use crate::tui::{Surface, Tui};
 use views::Views;
 
 mod history;
+mod preview;
 mod reduce;
 mod related;
 mod views;
@@ -61,6 +62,9 @@ pub struct App {
     /// login, and on the operator's `K`. `None` on a UI-only run, where there
     /// is no join to start.
     kad_start: Option<crate::kad::KadStarter>,
+    /// The player lane: each Preview sends one launch on it. `None` on a
+    /// UI-only run, where no player is started.
+    player: Option<crate::player::PlayerLauncher>,
     /// Whether the first-login start is still owed: spent by that login, or
     /// by the operator's own `K` first, so a login never re-starts a Kad the
     /// operator stopped.
@@ -102,6 +106,7 @@ impl App {
             client: None,
             pending_commands: Vec::new(),
             kad_start: None,
+            player: None,
             kad_first_login_owed: false,
             kad_join_ended_told: false,
             last_server_unsaved_told: false,
@@ -167,6 +172,15 @@ impl App {
     pub fn with_kad_start(mut self, start: crate::kad::KadStarter) -> Self {
         self.kad_start = Some(start);
         self.kad_first_login_owed = true;
+        self
+    }
+
+    /// Install the player lane (ADR-0114): each Preview hands its launch to
+    /// the task on the lane's other half. Without one a Preview flashes that
+    /// no core is attached.
+    #[must_use]
+    pub fn with_player(mut self, player: crate::player::PlayerLauncher) -> Self {
+        self.player = Some(player);
         self
     }
 
@@ -253,29 +267,40 @@ impl App {
         loop {
             tokio::select! {
                 biased;
-                _ = &mut quit => return Ok(()),
+                _ = &mut quit => break,
                 action = actions.recv() => match action {
-                    Some(
-                        step @ (Action::Core(rmule_core::CoreEvent::Quitting { .. })
-                        | Action::Flash(_)),
-                    ) => {
-                        // Quitting steps are the core's own progress; a Flash
-                        // here is the bridge's grace-elapsed notice — both
-                        // are the status bar's
-                        // receipt for a wait that is not actually stuck, so
-                        // both get drawn instead of falling into `Some(_)`.
-                        let now = Instant::now();
-                        let _ = self.reduce(step, now);
-                        self.draw(tui, now)?;
-                    }
-                    Some(_) => {}
+                    Some(step) => self.draw_quit_step(tui, step)?,
                     None => {
                         quit.await;
-                        return Ok(());
+                        break;
                     }
                 },
             }
         }
+        // The door answers right after the bridge queues its last steps (the
+        // grace-elapsed notice among them), so the arm above can win the
+        // race with them still on the bus: draw whatever is queued before
+        // the terminal is restored.
+        while let Ok(step) = actions.try_recv() {
+            self.draw_quit_step(tui, step)?;
+        }
+        Ok(())
+    }
+
+    /// Reduce and draw one bus action during quit if it is the status bar's
+    /// receipt for the wait: a quit step is the core's own progress, and a
+    /// Flash is the bridge's grace-elapsed notice. Every other action is
+    /// dropped — nothing else is drawn while the core is stopping.
+    fn draw_quit_step<S: Surface>(&mut self, tui: &mut S, step: Action) -> std::io::Result<()> {
+        if matches!(
+            step,
+            Action::Core(rmule_core::CoreEvent::Quitting { .. }) | Action::Flash(_)
+        ) {
+            let now = Instant::now();
+            let _ = self.reduce(step, now);
+            self.draw(tui, now)?;
+        }
+        Ok(())
     }
 
     /// Forward queued commands through the client, in order. A send failing
@@ -465,7 +490,7 @@ mod tests {
     }
 
     /// The graceful quit's regression proof: before this fix, `Flow::Quit` dropped
-    /// the bridge (and the `Core` inside it) with no `Core::shutdown()` call
+    /// the bridge (and the `Core` inside it) with no `Core::quit` call
     /// at all, so the credit checkpoint never flushed. This runs the real
     /// quit path — `graceful_quit`, exactly what `Flow::Quit` now awaits —
     /// over a real `Core` and proves the unconditional checkpoint lands
@@ -491,7 +516,56 @@ mod tests {
 
         assert!(
             dir.path().join("clients.met").exists(),
-            "Core::shutdown()'s unconditional checkpoint must have written clients.met"
+            "Core::quit's unconditional checkpoint must have written clients.met"
+        );
+    }
+
+    /// A core whose quit never ends, so the bridge's grace elapses and it
+    /// queues the grace-elapsed notice just before it answers the door.
+    struct HangingCore(
+        mpsc::Sender<rmule_core::CoreEvent>,
+        mpsc::Receiver<rmule_core::CoreEvent>,
+    );
+
+    impl crate::bridge::CoreHandle for HangingCore {
+        async fn send(&self, _: rmule_core::CoreCommand) -> Result<(), rmule_core::CoreError> {
+            Ok(())
+        }
+        async fn next_event(&mut self) -> Option<rmule_core::CoreEvent> {
+            std::future::pending().await
+        }
+        fn diagnostics_snapshot(&self) -> rmule_core::diagnostics::DiagnosticsSnapshot {
+            Default::default()
+        }
+        fn quit(self) -> mpsc::Receiver<rmule_core::CoreEvent> {
+            // The sender leaks with the task, so the stream never ends.
+            std::mem::forget(self.0);
+            self.1
+        }
+    }
+
+    /// The grace-elapsed notice is queued on the bus just before the door
+    /// answers, so the quit arm must not win the race and leave it
+    /// undrawn: the last frame before the terminal is restored names it.
+    #[tokio::test(start_paused = true)]
+    async fn a_grace_elapsed_quit_draws_its_notice_before_returning() {
+        let (tx, rx) = mpsc::channel(1);
+        let (actions_tx, mut actions_rx) = mpsc::channel(64);
+        let handle = crate::bridge::spawn(
+            HangingCore(tx, rx),
+            actions_tx,
+            crate::bridge::BridgeConfig::default(),
+        );
+        let mut app = App::new(Theme::default_dark()).with_client(handle);
+        let mut surface = RecordingSurface::default();
+        app.graceful_quit(&mut surface, &mut actions_rx)
+            .await
+            .expect("draw succeeds");
+
+        let last = surface.frames.last().expect("quit drew");
+        assert!(
+            last.contains(&*crate::words::app::SHUTDOWN_GRACE_ELAPSED),
+            "the last frame must show the grace-elapsed notice, got:\n{last}"
         );
     }
 

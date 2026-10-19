@@ -3,8 +3,8 @@
 //! file class is read from its name and its tag.
 
 use rmule_primitives::{
-    ClientId, Ed2kFileClass, Ed2kLink, Ed2kText, FileHash, KeywordQuery, PeerSource, SearchResult,
-    SearchResultOrigin, Tag, TagName, TagValue,
+    AichRootHash, ClientId, Ed2kFileClass, Ed2kLink, Ed2kText, FileHash, KeywordQuery, PeerSource,
+    SearchResult, SearchResultOrigin, Tag, TagName, TagValue,
 };
 
 fn hash(byte: u8) -> FileHash {
@@ -253,6 +253,18 @@ fn extensions_classify_into_the_seven_ed2k_classes() {
             "classifying {name}"
         );
     }
+}
+
+/// A name that is not UTF-8 keeps its class: only the ASCII extension is
+/// read, so a Latin-1 stem from an old client does not lose it.
+#[test]
+fn a_name_that_is_not_utf8_classifies_by_its_extension() {
+    assert_eq!(
+        Ed2kFileClass::from_name_bytes(b"Cr\xe9dits.avi"),
+        Some(Ed2kFileClass::Video)
+    );
+    assert_eq!(Ed2kFileClass::from_name_bytes(b"\xff.\xfe"), None);
+    assert_eq!(Ed2kFileClass::from_name_bytes(b""), None);
 }
 
 /// The two wire vocabularies aMule keeps apart: what a search/publish may say
@@ -541,4 +553,28 @@ fn a_quoted_run_proves_only_as_an_ordered_phrase() {
         query("wembley at").matches(&row),
         "unquoted words need no order"
     );
+}
+
+/// A row keeps the first qualified Kad root a report of it carried, and a
+/// server answer folded in carries none; the link never carries it as `h=`
+/// (ADR-0038).
+#[test]
+fn a_row_keeps_the_first_kad_root_and_its_link_carries_none() {
+    let root = |fill| AichRootHash::from_bytes([fill; AichRootHash::BYTE_LEN]);
+    let row = |origin| {
+        SearchResult::new(
+            hash(0xaa),
+            1024,
+            vec![Ed2kText::from_utf8("a.bin")],
+            Vec::new(),
+        )
+        .unwrap()
+        .with_origin(origin)
+    };
+    let mut server_first = row(SearchResultOrigin::Ed2kServer);
+    server_first.merge_aliases_from(&row(SearchResultOrigin::Kad).with_kad_aich_root(root(1)));
+    server_first.merge_aliases_from(&row(SearchResultOrigin::Kad).with_kad_aich_root(root(2)));
+
+    assert_eq!(server_first.kad_aich_root(), Some(root(1)));
+    assert!(server_first.to_file_link().aich_root.is_none());
 }

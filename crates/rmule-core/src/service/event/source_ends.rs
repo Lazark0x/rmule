@@ -29,6 +29,9 @@ pub enum DialEnd {
     ConnectionRefused,
     /// No answer inside the connect timeout.
     TimedOut,
+    /// The peer took the connection and never answered the obfuscation
+    /// handshake inside aMule's socket timeout (ADR-0042).
+    CryptUnanswered,
     /// The connection was reset before the hello.
     Reset,
     /// Another OS error ended the dial.

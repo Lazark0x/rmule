@@ -20,8 +20,8 @@
 //! neither finishes a 9.28 MB part inside it, so neither is a source rmule
 //! can take a part from.
 
-use std::ffi::OsString;
 use std::fs;
+use std::net::Ipv4Addr;
 use std::path::Path;
 use std::time::Duration;
 
@@ -37,9 +37,12 @@ use crate::flow::identity::{ed2k_link_with_source, parse_ed2k_file_hash};
 use crate::flow::logs::{
     collect_amule_logfile, collect_amule_logs, collect_rmule_logs, collect_server_logs,
 };
+use crate::flow::pcap::udp4_datagrams;
 use crate::rmule::{DownloadCrypt, RmuleClientContainer, release_held_download};
 
+mod hand_over;
 mod known_sources;
+mod standing;
 mod verdict;
 
 pub use self::verdict::score_run_dir;
@@ -53,8 +56,8 @@ const SHARER_MAX_UPLOAD_KIB: &str = "3";
 const SLOT_HOLDERS: [&str; 2] = ["holder-a", "holder-b"];
 /// The second file of the two-download leg, and its link, beside the
 /// synthetic file.
-const SECOND_FILE: &str = "second.bin";
-const SECOND_LINK: &str = "second.ed2k.txt";
+pub(crate) const SECOND_FILE: &str = "second.bin";
+pub(crate) const SECOND_LINK: &str = "second.ed2k.txt";
 
 /// Stage this flow's files in the synthetic dir: `shared.bin` (and, for the
 /// two-download leg, `second.bin`) of `size` bytes no compressor shrinks, and
@@ -131,6 +134,11 @@ pub struct PeerUdpReaskEmitOptions<'a> {
     /// Timed policy flips the downloading rmule applies mid-run, each
     /// `<secs>:<policy>` from its login (`--peer-crypt-flip`).
     pub peer_crypt_flip: &'a [String],
+    /// Draw the Queue Standing's hand-over instead of sitting the reask
+    /// window: free a slot once rmule is queued, raise the sharer's upload cap
+    /// to this many KiB/s at the grant, and wait up to the window for both
+    /// downloads (needs `two_downloads`).
+    pub hand_over_upload_kib: Option<u64>,
 }
 
 /// The peer-UDP **reask EMIT** flow (flow L emit-leg, ADR-0057).
@@ -422,50 +430,49 @@ pub fn run_peer_udp_reask_emit(options: PeerUdpReaskEmitOptions<'_>) -> Result<(
 
         // Sit the FILEREASKTIME window. The tap records whatever rmule emits toward
         // the sharer; the operator lets the CLI run.
-        sit_tap_window(
-            "peer_udp_reask_emit",
-            Duration::from_secs(options.reask_window_secs),
-        );
+        if let Some(upload_kib) = options.hand_over_upload_kib {
+            hand_over::drive(
+                &bench,
+                &hand_over::Drive {
+                    sharer: &sharer,
+                    holder: &holders[0],
+                    rmule: &bench.names.rmule_container_name,
+                    upload_kib,
+                    window: Duration::from_secs(options.reask_window_secs),
+                },
+            )?;
+        } else {
+            sit_tap_window(
+                "peer_udp_reask_emit",
+                Duration::from_secs(options.reask_window_secs),
+            );
+        }
 
         // Harvest, source/dest swapped from consume: rmule → sharer is the 0x90
         // reask evidence; sharer → rmule is the 0x91/0x92/0x93 answer evidence.
-        // Zero on the first ⇒ no peer-UDP reask left rmule.
-        let reask_out = run_checked(
-            bench.docker.exec(
-                capture.clone(),
-                [
-                    OsString::from("sh"),
-                    OsString::from("-c"),
-                    // Count only `OP_REASKFILEPING` datagrams — client-UDP
-                    // eD2k protocol byte `0xC5` + opcode `0x90` at the payload
-                    // head — so a non-zero count proves a reask, not just any
-                    // UDP toward the sharer.
-                    OsString::from(format!(
-                        "tcpdump -nr {} 'udp and src host {} and dst host {} and udp[8] = 0xc5 and udp[9] = 0x90' 2>/dev/null | wc -l",
-                        tap.pcap_path(),
-                        rmule_ip.trim(),
-                        sharer_ip.trim()
-                    )),
-                ],
-            ),
-            "count rmule 0x90 reasks toward sharer",
-        )?;
-        let reask_answers = run_checked(
-            bench.docker.exec(
-                capture.clone(),
-                [
-                    OsString::from("sh"),
-                    OsString::from("-c"),
-                    OsString::from(format!(
-                        "tcpdump -nr {} 'udp and src host {} and dst host {}' 2>/dev/null | wc -l",
-                        tap.pcap_path(),
-                        sharer_ip.trim(),
-                        rmule_ip.trim()
-                    )),
-                ],
-            ),
-            "count sharer udp toward rmule",
-        )?;
+        // Zero on the first ⇒ no peer-UDP reask left rmule. Counted on the
+        // host from the retained tap: the sidecar shares rmule's namespace and
+        // stops with it, which a run whose downloads finish reaches first.
+        let rmule_addr: Ipv4Addr = rmule_ip.trim().parse().context("rmule address")?;
+        let sharer_addr: Ipv4Addr = sharer_ip.trim().parse().context("sharer address")?;
+        let datagrams = udp4_datagrams(&capture_dir.join("emit-reask.pcap"))?;
+        // Only `OP_REASKFILEPING` datagrams — client-UDP eD2k protocol byte
+        // `0xC5` + opcode `0x90` at the payload head — so a non-zero count
+        // proves a reask, not just any UDP toward the sharer.
+        let reask_out = datagrams
+            .iter()
+            .filter(|datagram| {
+                *datagram.source.ip() == rmule_addr
+                    && *datagram.destination.ip() == sharer_addr
+                    && datagram.payload.starts_with(&[0xC5, 0x90])
+            })
+            .count();
+        let reask_answers = datagrams
+            .iter()
+            .filter(|datagram| {
+                *datagram.source.ip() == sharer_addr && *datagram.destination.ip() == rmule_addr
+            })
+            .count();
 
         // rmule's own queue-standing evidence (rmule events): the pool entry
         // and, on a reply, the acked rank.
@@ -489,8 +496,7 @@ pub fn run_peer_udp_reask_emit(options: PeerUdpReaskEmitOptions<'_>) -> Result<(
              source_remote_queued={remote_queued} source_reask_acked={reask_acked} \
              (reask_udp_datagrams counts 0xC5/0x90 only: 0 ⇒ no OP_REASKFILEPING left rmule, \
              >0 ⇒ a genuine reask did)",
-            reask_out.trim(),
-            reask_answers.trim()
+            reask_out, reask_answers
         );
 
         // Persist the counterparties' own logs before teardown: the sharer's
@@ -546,6 +552,25 @@ pub fn run_peer_udp_reask_emit(options: PeerUdpReaskEmitOptions<'_>) -> Result<(
                 flips: super::udp_reask::tap::Flip::read_run_dir(options.layout.root()),
             },
         )?;
+        // Two downloads queued at one sharer: the peer is asked once a cycle,
+        // not once per download (ADR-0107, "One peer, one queue standing").
+        if options.two_downloads {
+            standing::write(
+                options.layout.root(),
+                &standing::StandingRun {
+                    pcap: &capture_dir.join("emit-reask.pcap"),
+                    rmule: rmule_ip.trim().parse().context("rmule address")?,
+                    sharer: sharer_ip.trim().parse().context("sharer address")?,
+                },
+            )?;
+        }
+        if options.hand_over_upload_kib.is_some() {
+            hand_over::write(
+                options.layout.root(),
+                rmule_ip.trim().parse().context("rmule address")?,
+                sharer_ip.trim().parse().context("sharer address")?,
+            )?;
+        }
         Ok(())
     })();
 

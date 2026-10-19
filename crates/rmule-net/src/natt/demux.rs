@@ -22,7 +22,7 @@ use rmule_peer::natt::{
 };
 use rmule_primitives::{FileHash, PeerEndpoint, UserHash};
 
-use super::registry::{Admission, TunnelRegistry};
+use super::registry::{Admission, ExpectsSource, TunnelRegistry};
 use super::send::{NattDatagramSink, NattOwnHash, NattSender};
 use super::utp::UtpEngine;
 
@@ -102,6 +102,11 @@ pub enum NattDisposition {
     /// A KEY frame; the endpoint's hash is now known and the next transport
     /// frame to it goes out obfuscated.
     KeyLearned(UserHash),
+    /// A KEY frame naming a hash other than the live one, from an endpoint
+    /// that holds a tunnel. Dropped: a NAT rebinding moves the endpoint, never
+    /// the hash at one, so this can only be a spoof (ADR-0091, security rule
+    /// 11).
+    KeyContradictsTunnel,
     /// The datagram did not decode. Dropped in silence.
     Malformed(NattFrameDecodeError),
 }
@@ -158,6 +163,9 @@ pub struct NattDemux<S> {
     utp: UtpEngine<S>,
     quic: Option<super::quic::QuicEngine<S>>,
     negotiation: Mutex<NegotiationTable>,
+    /// The engines' shared **Tunnel Registry**, read here for one fact: whether
+    /// a KEY frame's endpoint holds a tunnel.
+    registry: Arc<Mutex<TunnelRegistry>>,
 }
 
 impl<S: NattDatagramSink> NattDemux<S> {
@@ -194,6 +202,7 @@ impl<S: NattDatagramSink> NattDemux<S> {
             utp,
             quic,
             negotiation: Mutex::new(NegotiationTable::default()),
+            registry,
         })
     }
 
@@ -215,11 +224,15 @@ impl<S: NattDatagramSink> NattDemux<S> {
         &self.sender
     }
 
-    /// Route one already-plaintext `0xB2` datagram from `peer`.
+    /// Route one already-plaintext `0xB2` datagram from `peer`. `expects` is
+    /// asked, only for an opening packet from an endpoint with no slot, whether
+    /// its IP is one the caller expects a tunnel from (ADR-0091, security rule
+    /// 10).
     pub async fn on_datagram(
         &self,
         peer: PeerEndpoint,
         datagram: &[u8],
+        expects: &ExpectsSource<'_>,
         now: Instant,
     ) -> NattDisposition {
         let frame = match NattFrame::decode(datagram) {
@@ -230,9 +243,11 @@ impl<S: NattDatagramSink> NattDemux<S> {
             }
         };
         match frame {
-            NattFrame::Utp(packet) => NattDisposition::Utp(self.utp.inject(peer, packet, now)),
+            NattFrame::Utp(packet) => {
+                NattDisposition::Utp(self.utp.inject(peer, packet, expects, now))
+            }
             NattFrame::Quic(packet) => match &self.quic {
-                Some(engine) => NattDisposition::Quic(engine.inject(peer, packet, now)),
+                Some(engine) => NattDisposition::Quic(engine.inject(peer, packet, expects, now)),
                 None => {
                     tracing::trace!(%peer, "QUIC NAT-T frame with no QUIC runtime; dropped");
                     NattDisposition::QuicUnavailable
@@ -241,7 +256,16 @@ impl<S: NattDatagramSink> NattDemux<S> {
             NattFrame::Caps(caps) => self.on_caps(peer, caps, true, now).await,
             NattFrame::CapsAck(caps) => self.on_caps(peer, caps, false, now).await,
             NattFrame::Key(hash) => {
-                self.sender.learn_key(peer, hash, now);
+                let held = self
+                    .registry
+                    .lock()
+                    .expect("the NAT-T tunnel registry is never poisoned")
+                    .slot(peer)
+                    == Some(super::registry::TunnelSlot::Held);
+                if !self.sender.learn_key(peer, hash, held, now) {
+                    tracing::debug!(%peer, "NAT-T key frame contradicts the held tunnel's key; dropped");
+                    return NattDisposition::KeyContradictsTunnel;
+                }
                 tracing::debug!(%peer, "NAT-T key frame adopted; transport frames now obfuscated");
                 NattDisposition::KeyLearned(hash)
             }

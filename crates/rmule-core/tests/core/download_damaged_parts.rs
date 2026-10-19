@@ -43,6 +43,7 @@ fn row_with_three_verified(
             link,
             Some(&ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
             paths,
+            None,
         )
         .unwrap()
         .id();

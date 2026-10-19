@@ -23,8 +23,9 @@ use rmule_peer::{
     ServerCommand, ServerEvent,
 };
 use rmule_primitives::{
-    ClientId, ClientIdentity, Ed2kFileLink, Ed2kText, FileHashSummary, PeerEndpoint, PeerSource,
-    SecureIdentKey, ServerEndpoint, SourceLookupTarget, SourceSighting, UserHash, part_count,
+    ClientId, ClientIdentity, Ed2kFileLink, Ed2kText, FileHashSummary, Informant, PeerEndpoint,
+    PeerSource, SecureIdentKey, ServerEndpoint, SourceLookupTarget, SourceSighting, UserHash,
+    part_count,
 };
 use rmule_testkit::{PendingSourceLookup, RefusingPeerTransfer};
 
@@ -41,7 +42,7 @@ impl SourceLookupService for OneSourceLookup {
     ) -> Result<SourceLookupOutcome, DownloadFailure> {
         Ok(SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![SourceSighting::plain(self.peer)],
+            sources: vec![SourceSighting::plain(self.peer, Informant::Own)],
         })
     }
 }
@@ -137,6 +138,7 @@ async fn serve_once_with_sui(
                             start,
                             end,
                             bytes: bytes[start as usize..end as usize].to_vec(),
+                            compressible: true,
                         }))
                         .await;
                 }
@@ -229,6 +231,7 @@ async fn sui_download(dial: DialAdapter) {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("loopback.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

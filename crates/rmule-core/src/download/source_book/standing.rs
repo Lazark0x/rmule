@@ -7,7 +7,9 @@
 //!
 //! - At [`FILE_REASK_TIME`] − [`UDP_REASK_LEAD`] since the last reask, when the
 //!   gates pass, a `0x90` goes to the source's client-UDP endpoint and the latch
-//!   is set (aMule `CUpDownClient::UDPReaskForDownload`, `DownloadClient.cpp`).
+//!   is set (aMule `CUpDownClient::UDPReaskForDownload`, `DownloadClient.cpp`);
+//!   while we are unreachable, a Low-ID source's `0x94` goes to its buddy
+//!   instead.
 //! - At [`FILE_REASK_TIME`], the **TCP full ask**: the record leaves the stage
 //!   for its road, the latch reset with the standing (aMule `AskForDownload`,
 //!   `DownloadClient.cpp:139-160`). A lost datagram costs the 20 s grace, never
@@ -15,28 +17,48 @@
 //! - A reply refreshes the clock and clears the latch: `0x91` records the rank
 //!   and clears the queue-full mark, and its part status, when it holds no
 //!   part we lack, sets the no-needed-parts mark; `0x93` sets the queue-full
-//!   mark (rank 0); `0x92` drops the source dead.
+//!   mark (rank 0); `0x92` spends the source for this download (ADR-0090).
 //! - A queue-full source is reasked on the same cadence; it and a
 //!   no-needed-parts source are among those the book lets go as the file
 //!   nears its source limit (the purges, aMule `CPartFile::Process`).
 //! - A **no-needed-parts** source reasks at ×[`NO_NEEDED_PARTS_MULTIPLIER`] the
 //!   period, over TCP only (aMule `PartFile.cpp`).
+//! - While we are firewalled, the ordinary period is the **Low-ID Reask**,
+//!   [`LOW_ID_REASK_TIME`] (ADR-0116): a Low-ID downloader's slot opens only
+//!   at its next connection, so its TCP full ask comes sooner.
+//! - Only the download holding the peer's **Queue Standing** re-asks it
+//!   (ADR-0107): a record whose download waits on another's asks nothing and
+//!   its clock follows the peer's last ask; one whose download took the
+//!   standing over pings nothing, the peer holding the other file, and asks
+//!   by TCP a period after the peer's last ask.
 //!
 //! Every clock read is an instant the brain hands in.
 
 use std::time::{Duration, Instant};
 
+use rmule_kad::KadId;
 use rmule_peer::PeerIdentity;
 use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
-use rmule_primitives::PeerEndpoint;
+use rmule_primitives::{Ipv4Endpoint, PeerCrypt, PeerEndpoint, UserHash};
 
 use super::SourceBook;
+use super::asks::AskName;
 use super::purge::PurgeKind;
 use super::record::{Lane, Live, RecordId, Stage};
+use crate::download::queue_standings::{Role, StandingSeat};
 
 /// aMule `FILEREASKTIME` (`Constants.h`): 1,300,000 ms — the source-reask
 /// period, ≈ 21.7 minutes, and the spent endpoints' period (ADR-0090).
 pub(crate) const FILE_REASK_TIME: Duration = Duration::from_millis(1_300_000);
+
+/// The **Low-ID Reask** (ADR-0116): the ordinary period while we are
+/// firewalled, 900 s. A Low-ID waiter's slot opens only at its next connection
+/// (aMule `UploadQueue.cpp:136-138`, `:405-425`) and no direct ping leaves a
+/// firewalled node (`DownloadClient.cpp:1269`), so the TCP full ask is its one
+/// road to a slot. kno's `SourceReaskMinutes` floor and eMuleAI's
+/// `FILEREASKTIME` are both 15 minutes; aMule penalises an ask under 590 s
+/// (`MIN_REQUESTTIME`, `Constants.h:67`; `UploadClient.cpp:795-822`).
+pub(crate) const LOW_ID_REASK_TIME: Duration = Duration::from_secs(900);
 
 /// The UDP ping leads the TCP full ask by 20 s (aMule `DownloadClient.cpp`: the
 /// UDP reask fires at `FILEREASKTIME − 20 s`, the TCP full ask at
@@ -109,8 +131,11 @@ impl ReaskFacts {
 /// One record's queue standing at a remote uploader.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Standing {
-    /// The last queue rank we learned (0 when unknown or queue-full).
-    rank: u16,
+    /// The last queue rank we learned: `None` while the source has queued us
+    /// without ranking us yet — our `OP_STARTUPLOADREQ` out, or an
+    /// `OP_OUTOFPARTREQS` that put us back (ADR-0090) — and `0` when it said
+    /// its queue is full.
+    rank: Option<u16>,
     /// The source's client-UDP contact, or `None` when it advertised none.
     contact: Option<UdpContact>,
     /// The source's peer-UDP crypt target from the identity it queued under
@@ -133,9 +158,86 @@ pub(super) struct Standing {
     queue_full: bool,
     /// aMule `DS_NONEEDEDPARTS`: the source holds no parts we want.
     no_needed_parts: bool,
+    /// What its download was to the peer's **Queue Standing** at the last
+    /// sweep (ADR-0107); only a holder whose file the peer's entry names
+    /// pings.
+    pub(super) role: Role,
 }
 
 impl Standing {
+    /// Whether it is a place a source-exchange answer may name: not
+    /// queue-full (`IsRemoteQueueFull`), and not holding nothing we need
+    /// (`DS_NONEEDEDPARTS` is no queue state).
+    pub(super) const fn names_a_place(&self) -> bool {
+        !self.queue_full && !self.no_needed_parts
+    }
+
+    /// The peer-UDP crypt target the identity it queued under stated.
+    pub(super) const fn crypt(&self) -> Option<PeerUdpCryptTarget> {
+        self.crypt
+    }
+
+    /// The crypt side the hello it queued under stated (ADR-0049), past the
+    /// worker that read it.
+    pub(super) fn stated_crypt(&self) -> Option<PeerCrypt> {
+        self.crypt
+            .map(|target| PeerCrypt::new(target.stance, Some(target.user_hash)))
+    }
+
+    /// Whether the uploader ranked the record.
+    pub(super) const fn ranked(&self) -> bool {
+        self.rank.is_some()
+    }
+
+    /// Whether the record may need a part of the peer.
+    pub(super) const fn needs_parts(&self) -> bool {
+        !self.no_needed_parts
+    }
+
+    /// A standing whose download waits on another's, held from `asked_at`,
+    /// the peer's last ask, or `now` when none is known: no rank, no contact
+    /// of its own (ADR-0107 invariant 13).
+    pub(super) fn waiting(asked_at: Option<Instant>, now: Instant) -> Self {
+        Self {
+            rank: None,
+            contact: None,
+            crypt: None,
+            last_reask: asked_at.unwrap_or(now),
+            udp_pending: false,
+            recheck_at: None,
+            queue_full: false,
+            no_needed_parts: false,
+            role: Role::Waits { asked_at },
+        }
+    }
+
+    /// Read `role` at `now` against `period`: a waiter's clock follows the
+    /// peer's last ask, and moves to `now` once a period passed with the
+    /// holder still asking, so it wakes when the standing next falls due; a
+    /// record that took the standing over starts from the peer's last ask.
+    /// Whether the record asks at all.
+    fn take_role(&mut self, role: Role, now: Instant, period: Duration) -> bool {
+        self.role = role;
+        match role {
+            Role::Holds => true,
+            Role::Inherits { asked_at } => {
+                self.last_reask = self.last_reask.max(asked_at);
+                true
+            }
+            Role::Waits { asked_at } => {
+                if let Some(asked_at) = asked_at {
+                    self.last_reask = self.last_reask.max(asked_at);
+                }
+                if now.saturating_duration_since(self.last_reask) >= period {
+                    self.last_reask = now;
+                }
+                self.udp_pending = false;
+                self.recheck_at = None;
+                false
+            }
+        }
+    }
+
     /// Take what a revised identity of the live worker states: a contact
     /// replaces the one held, silence keeps it, and the crypt target is the
     /// identity's.
@@ -144,20 +246,28 @@ impl Standing {
         self.crypt = Some(facts.crypt);
     }
 
-    /// The reask period: the base [`FILE_REASK_TIME`], doubled for a
-    /// no-needed-parts source.
-    fn period(&self) -> Duration {
+    /// The reask period while we are `reachable` or not: the base
+    /// [`FILE_REASK_TIME`], the **Low-ID Reask** while firewalled, and twice
+    /// the base for a no-needed-parts source, which asks for parts, not a
+    /// slot (ADR-0116).
+    fn period(&self, reachable: bool) -> Duration {
         if self.no_needed_parts {
             FILE_REASK_TIME * NO_NEEDED_PARTS_MULTIPLIER
-        } else {
+        } else if reachable {
             FILE_REASK_TIME
+        } else {
+            LOW_ID_REASK_TIME
         }
     }
 
     /// Whether a UDP ping could ever reach this source this period, gates
     /// that move aside: a contact, parts we need, no ping already out.
     fn pingable(&self, socket: bool) -> bool {
-        socket && self.contact.is_some() && !self.no_needed_parts && !self.udp_pending
+        socket
+            && self.contact.is_some()
+            && !self.no_needed_parts
+            && !self.udp_pending
+            && self.role == Role::Holds
     }
 
     /// Which purge may let this standing go: a no-needed-parts source first —
@@ -174,8 +284,8 @@ impl Standing {
     }
 
     /// When this standing next wants a look.
-    fn wake(&self, socket: bool) -> Instant {
-        let full_ask = self.last_reask + self.period();
+    fn wake(&self, socket: bool, reachable: bool) -> Instant {
+        let full_ask = self.last_reask + self.period(reachable);
         if !self.pingable(socket) {
             return full_ask;
         }
@@ -210,12 +320,35 @@ pub(crate) enum Reask {
         /// identity stated it.
         crypt: Option<PeerUdpCryptTarget>,
     },
+    /// Send `OP_REASKCALLBACKUDP` for the firewalled source at `peer` to its
+    /// `buddy`, which relays it: we are firewalled, so the direct ping cannot
+    /// be answered (ADR-0057). Its latch is set, and the answer comes from
+    /// `contact`, as a direct ping's does.
+    ThroughBuddy {
+        /// The record's endpoint.
+        peer: PeerEndpoint,
+        /// Where the answer comes from, and the version the reask is framed
+        /// for.
+        contact: UdpContact,
+        /// The buddy that relays it.
+        buddy: BuddyRoad,
+    },
     /// The TCP full ask: the record at `peer` left the RemoteQueued stage for
     /// its road, its standing ended.
     FullAsk {
         /// The endpoint it stood at.
         peer: PeerEndpoint,
     },
+}
+
+/// A firewalled source's serving buddy, as its record names it: the Kad ID
+/// the buddy checks a relay against and the endpoint it is reached at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BuddyRoad {
+    /// The buddy's Kad ID, the `0x94`'s leading 16 bytes.
+    pub(crate) buddy_id: KadId,
+    /// The buddy's UDP endpoint; Kad is IPv4-only (ADR-0087).
+    pub(crate) buddy_udp: Ipv4Endpoint,
 }
 
 /// What a reply said to the standing it matched.
@@ -242,6 +375,40 @@ impl SourceBook {
     /// and queue-full mark cleared — with the UDP contact and crypt target the
     /// identity it queued under stated.
     pub(crate) fn queued(&mut self, endpoint: PeerEndpoint, rank: u16, now: Instant) {
+        self.stand(endpoint, Some(rank), now);
+    }
+
+    /// The live worker at `endpoint` is on its uploader's queue at `now`
+    /// without a rank yet — its `OP_STARTUPLOADREQ` left, or an
+    /// `OP_OUTOFPARTREQS` put it back (ADR-0090, aMule `DS_ONQUEUE`): its
+    /// record earns a standing without a rank, or keeps the one it holds.
+    pub(crate) fn on_queue(&mut self, endpoint: PeerEndpoint, now: Instant) {
+        if self
+            .live_record_mut(endpoint)
+            .is_some_and(|record| record.standing.is_none())
+        {
+            self.stand(endpoint, None, now);
+        }
+    }
+
+    /// The live worker at `endpoint` was transferring on a granted slot when
+    /// its link failed or the slot stalled: its record earns a standing
+    /// without a rank, dated at its last ask, as aMule turns `DS_DOWNLOADING`
+    /// into `DS_ONQUEUE` at a disconnect or a `DOWNLOADTIMEOUT` and asks again
+    /// a period after that ask (`BaseClient.cpp:1283-1284`,
+    /// `DownloadClient.cpp:1188-1196`, `PartFile.cpp:1449-1483`, ADR-0090).
+    pub(crate) fn transfer_cut(&mut self, endpoint: PeerEndpoint, now: Instant) {
+        let Some(record) = self.live_record_mut(endpoint) else {
+            return;
+        };
+        if record.standing.is_none() {
+            let asked = record.last_ask.unwrap_or(now);
+            self.stand(endpoint, None, asked);
+        }
+    }
+
+    /// [`Self::queued`] at `rank`, or without one.
+    fn stand(&mut self, endpoint: PeerEndpoint, rank: Option<u16>, now: Instant) {
         let Some(record) = self.live_record_mut(endpoint) else {
             return;
         };
@@ -251,6 +418,7 @@ impl SourceBook {
             .map(|(live, identity)| ReaskFacts::of(live, identity));
         let held = record.standing;
         let no_needed_parts = held.is_some_and(|standing| standing.no_needed_parts);
+        record.last_ask = Some(now);
         let (contact, crypt) = match stated {
             Some(stated) => (stated.contact, Some(stated.crypt)),
             None => (None, None),
@@ -264,12 +432,20 @@ impl SourceBook {
             recheck_at: None,
             queue_full: false,
             no_needed_parts,
+            role: Role::Holds,
         });
     }
 
-    /// The source at `endpoint` holds no part we need: its standing reasks at
-    /// twice the period, over TCP.
-    pub(crate) fn no_needed_parts(&mut self, endpoint: PeerEndpoint) {
+    /// The live worker at `endpoint`'s source holds no part we need: its
+    /// standing reasks at twice the period, over TCP — earned at rank 0 at
+    /// `now` when it held none, as a rank earns one (ADR-0112).
+    pub(crate) fn no_needed_parts(&mut self, endpoint: PeerEndpoint, now: Instant) {
+        if self
+            .live_record_mut(endpoint)
+            .is_some_and(|record| record.standing.is_none())
+        {
+            self.queued(endpoint, 0, now);
+        }
         if let Some(standing) = self
             .live_record_mut(endpoint)
             .and_then(|record| record.standing.as_mut())
@@ -286,11 +462,10 @@ impl SourceBook {
         }
     }
 
-    /// The rank the record at `endpoint` stands at, if it holds a standing.
+    /// The rank the record at `endpoint` stands at, if it holds a standing
+    /// that was ranked.
     pub(crate) fn rank(&self, endpoint: PeerEndpoint) -> Option<u16> {
-        self.record_at(endpoint)?
-            .standing
-            .map(|standing| standing.rank)
+        self.record_at(endpoint)?.standing?.rank
     }
 
     /// The reask sweep at `now`, over every record in the RemoteQueued stage
@@ -300,9 +475,19 @@ impl SourceBook {
     /// ping goes when every gate passes: our socket, our reachability, the
     /// source's contact, parts we need, no ping already out, and no source ask
     /// due, which the TCP ask carries (`DownloadClient.cpp:1269-1273`,
-    /// ADR-0108). A ping the moving gates held is looked at again
-    /// [`REASK_RECHECK`] later.
-    pub(crate) fn sweep(&mut self, now: Instant, gates: ReaskGates) -> Vec<Reask> {
+    /// ADR-0108). While we are unreachable, a Low-ID source whose record names
+    /// its buddy's ID and endpoint is reasked through that buddy instead,
+    /// neither our reachability nor a source ask holding that road
+    /// (`DownloadClient.cpp:1297-1318`). A ping the moving gates held is
+    /// looked at again [`REASK_RECHECK`] later. Only the download holding the
+    /// peer's Queue Standing re-asks it, each ping and TCP full ask stamped on
+    /// the peer in `standings` (ADR-0107 invariants 12-14).
+    pub(crate) fn sweep(
+        &mut self,
+        now: Instant,
+        gates: ReaskGates,
+        standings: &StandingSeat,
+    ) -> Vec<Reask> {
         let mut queued: Vec<RecordId> = self
             .records
             .iter()
@@ -310,8 +495,16 @@ impl SourceBook {
             .map(|(&id, _)| id)
             .collect();
         queued.sort_unstable();
+        let roles: Vec<(RecordId, Vec<AskName>, Role)> = queued
+            .into_iter()
+            .filter_map(|id| {
+                let place = self.place(self.records.get(&id)?)?;
+                let role = standings.role(&place);
+                Some((id, place.names, role))
+            })
+            .collect();
         let mut due = Vec::new();
-        for id in queued {
+        for (id, names, role) in roles {
             let sx_due = self.source_ask_due(id, now);
             let Some(record) = self.records.get_mut(&id) else {
                 continue;
@@ -321,10 +514,14 @@ impl SourceBook {
             else {
                 continue;
             };
-            let period = standing.period();
+            let period = standing.period(gates.reachable);
+            if !standing.take_role(role, now, period) {
+                continue;
+            }
             let elapsed = now.saturating_duration_since(standing.last_reask);
             if elapsed >= period {
                 self.full_ask(id, peer);
+                standings.stamp(&names, now);
                 due.push(Reask::FullAsk { peer });
                 continue;
             }
@@ -334,16 +531,37 @@ impl SourceBook {
             if elapsed < period.saturating_sub(UDP_REASK_LEAD) {
                 continue;
             }
-            if gates.reachable && !sx_due {
-                standing.udp_pending = true;
-                standing.recheck_at = None;
-                due.push(Reask::Ping {
-                    peer,
-                    contact,
-                    crypt: standing.crypt,
+            let buddy = record
+                .candidate
+                .and_then(|candidate| candidate.buddy)
+                .and_then(|buddy| {
+                    Some(BuddyRoad {
+                        buddy_id: buddy.buddy_id,
+                        buddy_udp: buddy.buddy_udp?,
+                    })
                 });
-            } else {
-                standing.recheck_at = Some(now + REASK_RECHECK);
+            match (gates.reachable, buddy) {
+                (true, _) if !sx_due => {
+                    standing.udp_pending = true;
+                    standing.recheck_at = None;
+                    standings.stamp(&names, now);
+                    due.push(Reask::Ping {
+                        peer,
+                        contact,
+                        crypt: standing.crypt,
+                    });
+                }
+                (false, Some(buddy)) => {
+                    standing.udp_pending = true;
+                    standing.recheck_at = None;
+                    standings.stamp(&names, now);
+                    due.push(Reask::ThroughBuddy {
+                        peer,
+                        contact,
+                        buddy,
+                    });
+                }
+                _ => standing.recheck_at = Some(now + REASK_RECHECK),
             }
         }
         due
@@ -364,6 +582,28 @@ impl SourceBook {
         }
     }
 
+    /// Where each record holding a queue standing stands — a RemoteQueued
+    /// record's endpoint, or the live worker whose slot ask earned one — and
+    /// the User Hash the identity it queued under named: the **Held Places**
+    /// (ADR-0116).
+    pub(crate) fn standing_at(
+        &self,
+    ) -> impl Iterator<Item = (PeerEndpoint, Option<UserHash>)> + '_ {
+        self.records.values().filter_map(|record| {
+            let standing = record.standing?;
+            let at = match record.stage {
+                Stage::RemoteQueued(at) => at,
+                _ => record.stage.live()?.endpoint,
+            };
+            let user_hash = record
+                .stage
+                .identity()
+                .map(PeerIdentity::user_hash)
+                .or_else(|| standing.crypt().map(|crypt| crypt.user_hash));
+            Some((at, user_hash))
+        })
+    }
+
     /// The endpoint each record in the RemoteQueued stage stands at.
     pub(crate) fn remote_queued(&self) -> impl Iterator<Item = PeerEndpoint> + '_ {
         self.records
@@ -374,14 +614,14 @@ impl SourceBook {
             })
     }
 
-    /// When the earliest standing next wants a look; `socket` says whether
-    /// any ping can leave at all.
-    pub(crate) fn next_reask(&self, socket: bool) -> Option<Instant> {
+    /// When the earliest standing next wants a look; `gates` say whether any
+    /// ping can leave at all and which period is in force.
+    pub(crate) fn next_reask(&self, gates: ReaskGates) -> Option<Instant> {
         self.records
             .values()
             .filter(|record| matches!(record.stage, Stage::RemoteQueued(_)))
             .filter_map(|record| record.standing)
-            .map(|standing| standing.wake(socket))
+            .map(|standing| standing.wake(gates.socket, gates.reachable))
             .min()
     }
 
@@ -407,14 +647,14 @@ impl SourceBook {
         {
             match answer {
                 Answer::Rank { rank, parts_needed } => {
-                    standing.rank = rank;
+                    standing.rank = Some(rank);
                     standing.queue_full = false;
                     if let Some(needed) = parts_needed {
                         standing.no_needed_parts = !needed;
                     }
                 }
                 Answer::QueueFull => {
-                    standing.rank = 0;
+                    standing.rank = Some(0);
                     standing.queue_full = true;
                 }
             }
@@ -424,9 +664,10 @@ impl SourceBook {
         }
     }
 
-    /// The source at `peer` no longer shares the file (`0x92`): its record
-    /// leaves the book, and a fact a sighting attached to its standing —
-    /// another family's half — goes with it.
+    /// The source at `peer` no longer shares the file (`0x92`): its record is
+    /// spent under every name it holds and leaves the book, as a TCP no-file
+    /// answer's does (ADR-0090), and a fact a sighting attached to its
+    /// standing — another family's half — goes with it.
     pub(crate) fn reask_dropped(&mut self, peer: PeerEndpoint) {
         if let Some(id) = self.aliases.endpoint(peer)
             && self
@@ -434,7 +675,7 @@ impl SourceBook {
                 .get(&id)
                 .is_some_and(|record| matches!(record.stage, Stage::RemoteQueued(_)))
         {
-            self.remove(id);
+            self.spend_lacking(id);
         }
     }
 
@@ -458,7 +699,14 @@ impl SourceBook {
         let Some(record) = self.records.get_mut(&id) else {
             return;
         };
+        let stated = record.standing.and_then(|standing| standing.stated_crypt());
         record.standing = None;
+        if let Some(stated) = stated {
+            self.run.note_crypt(peer, stated);
+        }
+        let Some(record) = self.records.get_mut(&id) else {
+            return;
+        };
         if lane == Lane::HighId {
             record.endpoints.retain(|&held| held != peer);
             record.endpoints.insert(0, peer);

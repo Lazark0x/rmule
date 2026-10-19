@@ -1,13 +1,13 @@
 ┌ Servers (2) · not connected ───────── a add · U update · m menu · s/S sort ┐
-│   Name ▲   Address        Port Desc   Ping Users Files Age Prio Fail Static│
-│▸  Der      198.51.100.200 4661 No        —  120k     —   — Norm    0 no    │
-│   Grosse                       fakes,                                      │
-│   Deutsche                     no                                          │
-│   Donkey                       advert                                      │
-│   Server                       s,                                          │
+│   Name ▲  Address        Port Desc   Ping Users Files Age Prio Fail Static▲│
+│▸  Der     198.51.100.200 4661 No     soon  120k  soon soo Norm    0 no    █│
+│   Grosse                      fakes,                    n                 █│
+│   Deutsch                     no                                           │
+│   e                           advert                                       │
+│   Donkey                      s,                                          ▼│
 │Grants: never logged in, so it has not said what it grants · UDP: no status │
-│answer yet                                                                  │
-└────────────────────────────────────────────────────────────────────────────┘
+│answer yet — the status ping has not asked it this run                      │
+└───────────────────────────────────────────────────────────────────── 1 / 2 ┘
 ┌ Log (0) ───────────────────────────┐┌ Kad ─────────────────────────────────┐
 │no core events yet                  ││● Kad: off                            │
 │                                    ││Joined    — (node not started)        │

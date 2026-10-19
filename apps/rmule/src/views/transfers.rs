@@ -58,6 +58,8 @@ use ratatui::widgets::{Block, Paragraph, TableState};
 use rmule_core::DownloadId;
 use rmule_core::diagnostics::DownloadDiagnostics;
 
+use crate::action::Action;
+use crate::row_selection::viewport::{BAR_W, Viewport};
 use crate::state::{DownloadStatus, UiState};
 use crate::table_sort::{RowCursor, RowMove, TableSort};
 use crate::theme::Theme;
@@ -133,15 +135,29 @@ pub struct TransfersView {
     /// The selected download, by id; `table_state`'s index is its position
     /// in the current order, re-placed before every key and draw.
     cursor: RowCursor<DownloadId>,
-    /// Download-row selection + scroll (the downloads table).
+    /// Download-row selection (the downloads table); its offset is the
+    /// Viewport's.
     table_state: TableState,
+    /// What part of the downloads table is on screen.
+    viewport: Viewport,
     /// The sources pane's order, one for every download's sources.
     source_sort: TableSort<SourcesTable>,
     /// The selected source, by its peer; `sources_state`'s index is its
     /// position in the current order, re-placed before every key and draw.
     source_cursor: RowCursor<SourceKey>,
-    /// Source-row selection + scroll (the sources pane).
+    /// Source-row selection (the sources pane); its offset is the
+    /// Viewport's.
     sources_state: TableState,
+    /// What part of the sources pane is on screen.
+    source_viewport: Viewport,
+    /// What part of the row menu is on screen, in a frame too short for it.
+    menu_viewport: std::cell::Cell<Viewport>,
+    /// What part of the details modal is on screen, in a frame too short for
+    /// it; back to its first line each time it opens.
+    details_viewport: std::cell::Cell<Viewport>,
+    /// What part of a confirm is on screen, in a frame too short for it;
+    /// back to its first line each time one opens.
+    confirm_viewport: std::cell::Cell<Viewport>,
     focus: Pane,
     overlay: Overlay,
     /// The Add-link form (`L`), modal over everything while it is up.
@@ -167,9 +183,16 @@ fn selected_id(ids: &[DownloadId], table_state: &TableState) -> Option<DownloadI
 
 /// Column widths for a bordered table drawn at `area`: the flex column takes
 /// what the fixed ones leave over, after the border pair, the selection
-/// symbol, and the inter-column spacing.
-fn table_widths(area: Rect, table: &TableColumns<'_>) -> Vec<usize> {
-    let total = usize::from(area.width.saturating_sub(2).saturating_sub(SYMBOL_W));
+/// symbol, the Viewport's bar column while it has a `bar`, and the
+/// inter-column spacing.
+fn table_widths(area: Rect, bar: bool, table: &TableColumns<'_>) -> Vec<usize> {
+    let bar = if bar { BAR_W } else { 0 };
+    let total = usize::from(
+        area.width
+            .saturating_sub(2)
+            .saturating_sub(SYMBOL_W)
+            .saturating_sub(bar),
+    );
     greedy_widths(total, table, usize::from(COL_SPACING))
 }
 
@@ -283,6 +306,15 @@ impl TransfersView {
                 Some((id, status)) => ViewOutcome::Emit(pause_toggle_action(status, id, state)),
                 None => ViewOutcome::Ignored,
             },
+            // The menu's Preview (ADR-0114): the app reads the row as the
+            // menu does, and flashes the reason the menu greys a blocked
+            // row with.
+            KeyCode::Char('v') if self.focus == Pane::Table => {
+                match self.selected_row_status(state, ids) {
+                    Some((id, _)) => ViewOutcome::Emit(Action::Preview(id)),
+                    None => ViewOutcome::Ignored,
+                }
+            }
             _ => ViewOutcome::Ignored,
         }
     }

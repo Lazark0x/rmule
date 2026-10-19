@@ -52,6 +52,7 @@ pub(crate) fn served_files() -> UiState {
             peer: peer_endpoint(1),
             file_hash: file_hash(1),
             software: Some(amule_233()),
+            road: rmule_core::GrantRoad::Linked,
         },
     );
     serve_fold(
@@ -78,6 +79,41 @@ pub(crate) fn served_files() -> UiState {
             peer: peer_endpoint(9),
             file_hash: file_hash(1),
             count: 4,
+        },
+    );
+    state
+}
+
+/// [`served_files`], each file named, beside a download of file 3 that
+/// offers the parts it verified — a Partial Share, which no File History
+/// answer names.
+pub(crate) fn partially_served() -> UiState {
+    let mut state = served_files();
+    for (byte, path, size) in [
+        (1, "/dl/film.mkv", 734_003_200),
+        (2, "/dl/song.mp3", 4_194_304),
+    ] {
+        let row = state.shared.get_mut(&file_hash(byte)).expect("shared");
+        row.path = Some(path.into());
+        row.file_size = Some(size);
+    }
+    crate::state::fold(
+        &mut state,
+        CoreEvent::Download(rmule_core::DownloadEvent::DownloadQueued {
+            download_id: super::download_id(3),
+            file_hash: file_hash(3),
+            metadata: super::metadata(
+                "album.flac",
+                52_428_800,
+                rmule_core::DownloadMetadataOrigin::Link,
+            ),
+            file_path: crate::fixture::part_file(),
+        }),
+    );
+    serve_fold(
+        &mut state,
+        ServeEvent::PartialOffered {
+            file_hash: file_hash(3),
         },
     );
     state

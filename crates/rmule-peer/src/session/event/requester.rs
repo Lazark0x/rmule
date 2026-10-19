@@ -5,6 +5,7 @@
 use rmule_primitives::{AichRootHash, Ed2kText, FileHash, PartHash, SourceSighting};
 
 use crate::compress::InflateFailed;
+use crate::session::AskedRanges;
 use crate::source_exchange::AnswerSourcesSkip;
 
 use super::{FileProbeStatus, SlotReleaseReason};
@@ -38,6 +39,13 @@ pub enum RequesterEvent {
         /// every block that follows.
         part_hashes: Vec<PartHash>,
     },
+    /// Our `OP_STARTUPLOADREQ` for the file left: the uploader queues us, as
+    /// aMule sets `DS_ONQUEUE` when it sends one (stock 2.3.3
+    /// `DownloadClient.cpp:163-169`), whether or not a rank follows.
+    SlotAsked {
+        /// The file the upload was asked for.
+        file_hash: FileHash,
+    },
     /// Initial queue rank observation for a file. Subsequent improvements
     /// emit `QueueProgress` instead.
     QueueRanked {
@@ -55,16 +63,29 @@ pub enum RequesterEvent {
         /// The rank now — always nearer 0.
         new_rank: u16,
     },
-    /// Peer refused the slot via `OP_OUTOFPARTREQS` (TCP) or
-    /// equivalent terminal signal. Slot context clears.
-    QueueRejected {
-        /// The file the queue was for.
+    /// The uploader ended our granted slot with `OP_OUTOFPARTREQS` and put us
+    /// back on its queue (ADR-0025): the flow is queued again on the same
+    /// link, the blocks we asked for are dropped, and the `OP_QUEUERANKING`
+    /// that follows ranks it afresh. Not terminal: a later
+    /// `OP_ACCEPTUPLOADREQ` grants it again.
+    Requeued {
+        /// The file whose transfer ended.
         file_hash: FileHash,
     },
+    /// The peer sent `OP_ACCEPTUPLOADREQ` on a link where no slot was asked:
+    /// an uploader promoting us by dial-back, or on a link it held, from its
+    /// queue (ADR-0057). It names no file; the link's owner hands it to the
+    /// download it is for, or gives it back with `DeclineSlot`.
+    SlotOffered,
     /// Peer granted an upload slot via `OP_ACCEPTUPLOADREQ`.
     SlotGranted {
         /// The file the slot is for.
         file_hash: FileHash,
+        /// The link's **Asked Ranges**: what the uploader still holds as
+        /// asked of this client, whatever file each was for — kept across a
+        /// silent release to another file (ADR-0107). A block request
+        /// repeating one is dropped, so the requester asks around them.
+        asked: AskedRanges,
     },
     /// One frame of a part arrived. Application accumulates bytes,
     /// verifies against `HashSetReceived.part_hashes` per ADR-0026.
@@ -77,8 +98,10 @@ pub enum RequesterEvent {
         bytes: Vec<u8>,
     },
     /// A compressed part block could not be inflated (corrupt zlib stream or
-    /// over the size ceiling). Non-terminal: the session stays open and core
-    /// re-requests the block, mirroring rmule-ed2k's `CompressedFrameSkipped`.
+    /// over the size ceiling). Non-terminal, mirroring rmule-ed2k's
+    /// `CompressedFrameSkipped`: the session stays open, and the requester
+    /// takes the block as lost and gives its slot back (ADR-0029 "A lost
+    /// block ends the stream").
     CompressedPartSkipped {
         /// The file the block was for.
         file_hash: FileHash,

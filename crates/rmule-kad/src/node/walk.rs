@@ -8,13 +8,17 @@
 //! timeouts and budgets are rmule policy — deterministic knobs for the sim
 //! tier, not wire compatibility.
 
+use std::net::IpAddr;
 use std::time::Duration;
+
+use rmule_primitives::Informant;
 
 use super::{KadCallbackWalkEnd, KadEvent, KadNode, KadNodeDiagnostic};
 use crate::buddy::BuddyMessage;
 use crate::keyword_store::encode_search_key_req;
 use crate::lookup_walk::{KadLookupWalk, KadWalkAction, KadWalkOutcome, KadWalkPurpose};
 use crate::messages::Kad2Message;
+use crate::routing::KadAnswerRefusal;
 use crate::{KadContact, KadId, KadInstant, KadNodeEndpoint};
 
 impl KadNode {
@@ -105,35 +109,96 @@ impl KadNode {
         target: KadId,
         contacts: &[KadContact],
     ) {
-        // IP-filtered rows are dropped before any walk sees them (aMule
-        // `ProcessKademlia2Response`, `KademliaUDPListener.cpp#L733` —
-        // its filter runs before the rows reach the search manager *or* the
-        // routing zone), so a walk never dials a filtered candidate.
-        let (admitted, refused): (Vec<KadContact>, Vec<KadContact>) = contacts
+        // A row no node can be at, then an IP-filtered one, is dropped before
+        // any walk sees it (aMule `ProcessKademlia2Response`,
+        // `KademliaUDPListener.cpp:732-733` — its checks run before the rows
+        // reach the search manager *or* the routing zone), so a walk never
+        // dials either. The responder is the party that named every row
+        // (ADR-0085).
+        let informant = Informant::Party(IpAddr::V4(from.ip()));
+        let mut admitted = Vec::with_capacity(contacts.len());
+        for &contact in contacts {
+            let endpoint = contact.endpoint();
+            if !crate::net::may_be_a_contact(informant, endpoint, contact.version()) {
+                self.emit_diagnostic(KadNodeDiagnostic::ContactRefused { endpoint });
+            } else if !self.contact_admission.admits(endpoint.ip()) {
+                self.emit_diagnostic(KadNodeDiagnostic::ContactIpFiltered { endpoint });
+            } else {
+                admitted.push(contact);
+            }
+        }
+        let Some(index) = self
+            .walks
             .iter()
-            .copied()
-            .partition(|contact| self.contact_admission.admits(contact.endpoint().ip()));
-        for contact in refused {
-            self.emit_diagnostic(KadNodeDiagnostic::ContactIpFiltered {
-                endpoint: contact.endpoint(),
-            });
-        }
-        let consumed = self.walks.iter_mut().find_map(|walk| {
-            if walk.target() != target {
-                return None;
-            }
-            let actions = walk.on_lookup_res(now, from, &admitted)?;
-            Some((walk.purpose(), actions))
-        });
-        match consumed {
-            Some((purpose, actions)) => {
-                if let KadWalkPurpose::UdpFirewallHelpers { .. } = purpose {
-                    self.offer_udp_helper_rows(&admitted);
+            .position(|walk| walk.target() == target && walk.awaits(from))
+        else {
+            self.emit_diagnostic(KadNodeDiagnostic::UnsolicitedLookupRes { from });
+            return;
+        };
+        let purpose = self.walks[index].purpose();
+        // A UDP firewall check's rows go to its tester as they are, never into
+        // the table (`KademliaUDPListener.cpp:734-740`), and its walk dials
+        // none of them. Any other walk's rows are taken one by one, in answer
+        // order, as aMule takes them.
+        let helper = matches!(purpose, KadWalkPurpose::UdpFirewallHelpers { .. });
+        let mut dialable = Vec::with_capacity(admitted.len());
+        if helper {
+            dialable.clone_from(&admitted);
+        } else {
+            for &row in &admitted {
+                let endpoint = row.endpoint();
+                match self.take_answer_row(now, row) {
+                    Ok(()) => dialable.push(row),
+                    Err(KadAnswerRefusal::Kad1) => {
+                        self.emit_diagnostic(KadNodeDiagnostic::ContactRefused { endpoint });
+                    }
+                    Err(KadAnswerRefusal::ContradictsStored) => {
+                        self.emit_diagnostic(KadNodeDiagnostic::ContactContradictsStored {
+                            endpoint,
+                        });
+                    }
+                    Err(KadAnswerRefusal::Cap(cap)) => {
+                        self.emit_diagnostic(KadNodeDiagnostic::ContactOverAdmissionCap {
+                            endpoint,
+                            cap,
+                        });
+                    }
                 }
-                self.apply_walk_actions(now, purpose, actions);
             }
-            None => self.emit_diagnostic(KadNodeDiagnostic::UnsolicitedLookupRes { from }),
         }
+        let Some(actions) = self.walks[index].on_lookup_res(now, from, &dialable) else {
+            self.emit_diagnostic(KadNodeDiagnostic::UnsolicitedLookupRes { from });
+            return;
+        };
+        if helper {
+            self.offer_udp_helper_rows(&admitted);
+        }
+        self.apply_walk_actions(now, purpose, actions);
+    }
+
+    /// Take one lookup-answer row as aMule's `ProcessKademlia2Response` does
+    /// (`KademliaUDPListener.cpp:731-750`, ADR-0064). A Kad1 row never. A row
+    /// of an ID the table does not hold is stored unverified and unqueried,
+    /// under the bucket rules and admission caps of any add; a known ID's
+    /// entry is left as it is (`AddUnfiltered` passes `update` false). The walk
+    /// may dial the row when the table stored it or would accept it.
+    fn take_answer_row(
+        &mut self,
+        now: KadInstant,
+        row: KadContact,
+    ) -> Result<(), KadAnswerRefusal> {
+        if row.version() <= 1 {
+            return Err(KadAnswerRefusal::Kad1);
+        }
+        if self.routing.get(row.id()).is_none() {
+            let unverified =
+                KadContact::new(row.id(), row.endpoint(), row.tcp_port(), row.version());
+            let update = self.routing.upsert(now, unverified);
+            if self.announce(unverified, update) {
+                return Ok(());
+            }
+        }
+        self.routing.accepts_answer_row(&row)
     }
 
     /// Translate walk actions into datagrams and events, then drop any walk

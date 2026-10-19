@@ -2,9 +2,10 @@
 //! and its reconnects, why a login landed Low ID, and every server event's
 //! line in the Networks log.
 
+use rmule_core::diagnostics::PingState;
 use rmule_core::port_mapping::{MappingDiagnostics, MappingStatus};
 use rmule_core::{
-    ReconnectEnd, ServerConnectFailure, ServerConnectionEvent, ServerListEvent,
+    AutoUpdateFetch, ReconnectEnd, ServerConnectFailure, ServerConnectionEvent, ServerListEvent,
     ServerListUpdateFailure, ServerPriority, SocketRole,
 };
 use rmule_primitives::{AddressFamily, ClientId, ServerEndpoint};
@@ -108,6 +109,44 @@ pub fn list_update_failed(reason: ServerListUpdateFailure) -> Sentence {
         list_update_failure_words(reason)
     ))
 }
+
+/// A server-list auto-update walk began over `urls` addresses, or found none
+/// set (ADR-0065).
+#[must_use]
+pub fn auto_update_started(urls: usize) -> Sentence {
+    match urls {
+        0 => Sentence::fixed(
+            "server list auto-update: no address is set — add one in Settings, Servers",
+        ),
+        1 => Sentence::fixed("server list auto-update started: 1 address"),
+        n => Sentence::owned(format!("server list auto-update started: {n} addresses")),
+    }
+}
+
+/// What one address of a server-list auto-update walk gave.
+#[must_use]
+pub fn auto_update_fetched(url: &str, outcome: AutoUpdateFetch) -> Sentence {
+    Sentence::owned(match outcome {
+        AutoUpdateFetch::Merged { added, updated } => {
+            format!("server list from {url}: {added} new, {updated} refreshed")
+        }
+        AutoUpdateFetch::Failed(reason) => format!(
+            "server list from {url} gave no list: {}",
+            list_update_failure_words(reason)
+        ),
+    })
+}
+
+/// The Settings row that turns the auto-update walk on.
+pub const AUTO_UPDATE_LABEL: &str = "Update lists";
+/// What the auto-update switch does.
+pub const AUTO_UPDATE_NOTE: &str = "merge every address below at start  (on restart)";
+/// The Settings row holding the auto-update addresses.
+pub const AUTO_UPDATE_URLS_LABEL: &str = "List URLs";
+/// The auto-update addresses row while none is set.
+pub const AUTO_UPDATE_URLS_NONE: &str = "none set";
+/// What the auto-update addresses are, and how they are typed.
+pub const AUTO_UPDATE_URLS_NOTE: &str = "server.met addresses, space between  (on restart)";
 
 /// The dial to a server started.
 #[must_use]
@@ -302,6 +341,10 @@ pub fn list_log_line(event: &ServerListEvent) -> Sentence {
         L::ServerRemoved { server } => {
             Sentence::owned(format!("server removed: {}", server_label(server)))
         }
+        L::ReservedServerDropped { server } => Sentence::owned(format!(
+            "server dropped from the list: no server can be at {}",
+            server_label(server)
+        )),
         L::ServerPriorityChanged { server, priority } => Sentence::owned(format!(
             "{}: priority {}",
             server_label(server),
@@ -325,6 +368,8 @@ pub fn list_log_line(event: &ServerListEvent) -> Sentence {
             total,
         } => list_updated(*added, *updated, *total),
         L::ServerListUpdateFailed { reason } => list_update_failed(*reason),
+        L::ServerListAutoUpdateStarted { urls } => auto_update_started(urls.len()),
+        L::ServerListAutoUpdateFetched { url, outcome } => auto_update_fetched(url, *outcome),
     }
 }
 
@@ -379,6 +424,42 @@ pub const LAST_SERVER_UNLISTED: Sentence =
 
 /// A **Dead Server**'s Fail cell, in place of its tally.
 pub const DEAD_CELL: &str = "dead";
+
+/// The Ping cell's word for a row with no measured round trip — why there is
+/// none (ADR-0080, "The Ping State"); `None` for a measured one, whose cell
+/// is the round trip itself. Four cells at most, so the Age cell can say it
+/// too.
+#[must_use]
+pub const fn unmeasured_ping_word(ping: &PingState) -> Option<&'static str> {
+    match ping {
+        PingState::Measured(_) => None,
+        PingState::NotAskedYet => Some("soon"),
+        PingState::Awaiting => Some("wait"),
+        PingState::Unanswered { .. } => Some("lost"),
+    }
+}
+
+/// The Age cell's word for a row nothing has dated — no status answer and no
+/// count report came: the row's ping word. A measured round trip always
+/// comes dated, so `none` stands only for a row whose figures carry no date.
+#[must_use]
+pub const fn undated_word(ping: &PingState) -> &'static str {
+    match unmeasured_ping_word(ping) {
+        Some(word) => word,
+        None => "none",
+    }
+}
+
+/// The Users or Files cell's word for a count the server never reported: the
+/// row's ping word while no status answer came — a status answer or a login
+/// is what reports one — or `unset` when an answer came without it.
+#[must_use]
+pub const fn unreported_count_word(ping: &PingState) -> &'static str {
+    match unmeasured_ping_word(ping) {
+        Some(word) => word,
+        None => "unset",
+    }
+}
 
 /// A server's failure tally reached the dead-server limit.
 #[must_use]

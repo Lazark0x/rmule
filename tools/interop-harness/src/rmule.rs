@@ -25,7 +25,7 @@ use crate::artifacts::RunLayout;
 use crate::docker::{Docker, DockerCommand, RunContainer};
 
 pub use client::{
-    DownloadCrypt, REGISTRANT_ANNOUNCE_TIMEOUT_SECS, REGISTRANT_PORT_BASE, Registrant,
+    DownloadCrypt, ProbeAsks, REGISTRANT_ANNOUNCE_TIMEOUT_SECS, REGISTRANT_PORT_BASE, Registrant,
     RmuleClientContainer, release_held_download,
 };
 pub use run::{
@@ -77,6 +77,38 @@ const CONTAINER_CARGO_HOME: &str = "/tmp/rmule-cargo-home";
 /// The `--server` a Kad-only stimulus run points at: a closed local port, so the
 /// non-fatal login failure lands immediately instead of hanging.
 const STIMULUS_CLOSED_SERVER_ENDPOINT: &str = "127.0.0.1:4661";
+
+/// The rust image `rmule-tools` compiles in for every container flow. Its
+/// glibc is the driver image's (Debian bookworm), so the binary it leaves
+/// runs there unchanged.
+pub const DRIVER_PREBUILD_IMAGE: &str = "rust:1.94.0-bookworm";
+
+/// Compile `rmule-tools` for the container platform into the host-persisted
+/// cache under `workspace` (once cold, seconds warm) and return the binary.
+/// The driver image takes this file instead of compiling inside `docker build`.
+///
+/// # Errors
+/// If the workspace cannot be resolved or the prebuild container fails; the
+/// error carries the container's stderr.
+pub fn prebuild_driver_binary(docker: &Docker, workspace: &Path) -> Result<PathBuf> {
+    let root = workspace
+        .canonicalize()
+        .with_context(|| format!("resolve the workspace {}", workspace.display()))?;
+    let workspace = RmuleWorkspace::new(DRIVER_PREBUILD_IMAGE, root);
+    let output = workspace
+        .prebuild_command(docker)?
+        .to_command()
+        .stdin(std::process::Stdio::null())
+        .output()
+        .context("run the rmule-tools prebuild for the driver image")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "the rmule-tools prebuild for the driver image failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(workspace.target_cache()?.join("debug/rmule-tools"))
+}
 
 /// The `RMULE_LOG` level an rmule container runs at: `RMULE_SERVE_LOG` from the
 /// harness's own environment when set (the serve-side tracing knob),
@@ -206,6 +238,7 @@ impl RmuleWorkspace {
     /// rustup reach the registry. Foreground and cached: a warm run returns in
     /// seconds.
     fn prebuild_command(&self, docker: &Docker) -> Result<DockerCommand> {
+        crate::run_record::expect_binary(&self.target_cache()?.join("debug/rmule-tools"));
         Ok(docker.run_container(
             RunContainer::new(self.image.clone())
                 .remove_after_exit()

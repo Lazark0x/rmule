@@ -23,7 +23,7 @@
 //!   §11.3 requires. So the nonce is derived from stable facts, and optionally
 //!   from a caller-held secret.
 //!
-//! - **IPv6 source-address pinning** ([`pcp_map`]). `crab_nat`
+//! - **IPv6 source-address pinning** ([`pcp_map`](super::pcp_map)). `crab_nat`
 //!   always binds the unspecified address and exposes no way to pin a source,
 //!   so over a link-local next hop the kernel picks a link-local source and the
 //!   gateway refuses (`ADDRESS_MISMATCH`, RFC 6887 §8.2). PCP over IPv6 is
@@ -35,7 +35,7 @@
 //! PCP request per source port over IPv6 — is the crate's own behaviour: every
 //! logical request binds a fresh socket.
 
-use std::net::{IpAddr, SocketAddrV6};
+use std::net::IpAddr;
 use std::num::NonZeroU16;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -47,16 +47,18 @@ use crab_nat::{
 use rmule_primitives::{AddressFamily, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint};
 
 use super::epoch::{EpochTracker, EpochVerdict};
-use super::pcp_map::{self, MapReply, MapRequest};
 use super::{
     Gateway, MappedTransport, MappingBackend, MappingError, MappingFuture, MappingGrant,
     MappingProtocol, MappingRefusal, MappingRequest, MappingTransportFault, PeerPinRequest,
-    ProbeReport,
+    ProbeReport, ReleaseOutcome,
 };
 
+mod pinned;
+
 /// The retransmit ladder both UDP backends run — through `crab_nat`, and
-/// through rmule's own pinned IPv6 PCP exchange ([`pcp_map::exchange`]), so a
-/// retune reaches every PCP and NAT-PMP request alike.
+/// through rmule's own pinned IPv6 PCP exchange
+/// ([`pcp_map::exchange`](super::pcp_map::exchange)), so a retune reaches
+/// every PCP and NAT-PMP request alike.
 ///
 /// Deliberately tighter than either RFC: RFC 6886's nine attempts take about
 /// 128 s to conclude "unsupported" and RFC 6887's default retries without limit,
@@ -68,9 +70,11 @@ pub(super) const LADDER: TimeoutConfig = TimeoutConfig {
     max_retry_timeout: Some(Duration::from_secs(4)),
 };
 
-/// The mixing constant the derived nonce is salted with — an rmule-specific
-/// value so two clients on one LAN mapping the same port derive different
-/// nonces.
+/// The mixing constant the derived nonce is salted with: a fixed domain
+/// separator that keeps rmule's derivation apart from any other client's over
+/// the same inputs. It is the same in every install, so it is not what tells
+/// two rmule clients on one LAN apart — the per-install `secret` both apps
+/// persist is.
 const NONCE_SALT: u32 = 0x726D_756C;
 
 /// The two protocols `crab_nat` speaks, as one backend each.
@@ -238,11 +242,14 @@ impl MappingBackend for UdpMappingBackend {
         gateway: Gateway,
         request: MappingRequest,
         _external_port: u16,
-    ) -> MappingFuture<'static, ()> {
+    ) -> MappingFuture<'static, ReleaseOutcome> {
         Box::pin(async move {
             // Fire and forget: at least one firmware never acknowledges a PCP
-            // delete, and the finite lease is the real cleanup.
+            // delete, and the finite lease is the real cleanup. The gateway
+            // keys the mapping by this host's own address, so the delete
+            // cannot reach another host's.
             let _ = self.run_release(gateway, request).await;
+            ReleaseOutcome::Sent
         })
     }
 }
@@ -333,6 +340,9 @@ impl UdpMappingBackend {
                 return Err(MappingError::Unsupported(MappingProtocol::Upnp));
             }
         };
+        if mapping.lifetime() == 0 && !request.lease.is_zero() {
+            return Err(empty_grant(self.protocol));
+        }
         let epoch = self.observe_epoch(gateway, mapping.gateway_epoch());
         // PCP's MAP response carries the assigned external address; NAT-PMP's
         // does not, so its address is the one the probe's opcode-0 request
@@ -392,6 +402,9 @@ impl UdpMappingBackend {
         )
         .await
         .map_err(|error| self.pcp_error(&error))?;
+        if mapping.lifetime_seconds() == 0 {
+            return Err(empty_grant(MappingProtocol::Pcp));
+        }
         let epoch = self.observe_epoch(gateway, mapping.gateway_epoch_seconds());
         Ok(MappingGrant {
             external: join(mapping.external_ip(), mapping.external_port().get()),
@@ -426,68 +439,6 @@ impl UdpMappingBackend {
             .await
             .map_err(|_| ()),
             MappingProtocol::Upnp => Err(()),
-        }
-    }
-
-    /// The `MAP` this backend sends over IPv6 for `request`: from the
-    /// gateway's local address, under the derived nonce — the same nonce the
-    /// `crab_nat` path uses, so a mapping made before a restart is still ours.
-    fn pinned_request(&self, gateway: Gateway, request: MappingRequest) -> Option<MapRequest> {
-        let IpAddr::V6(client) = gateway.local_address else {
-            return None;
-        };
-        Some(MapRequest {
-            client,
-            nonce: self.nonce(request),
-            protocol: match request.transport {
-                MappedTransport::Tcp => 6,
-                MappedTransport::Udp => 17,
-            },
-            internal_port: request.internal_port,
-            // A delete names no external port (the `crab_nat` path's wire,
-            // captured): the mapping is identified by nonce, protocol and
-            // internal port.
-            suggested_external_port: if request.lease.is_zero() {
-                0
-            } else {
-                request.suggested_external_port
-            },
-            lifetime: lease_seconds(request.lease),
-        })
-    }
-
-    /// One IPv6 PCP `MAP` (or delete, at lease zero) from the pinned source.
-    async fn pinned_exchange(
-        &self,
-        gateway: Gateway,
-        request: MappingRequest,
-    ) -> Result<MappingGrant, MappingError> {
-        let (IpAddr::V6(next_hop), Some(map)) =
-            (gateway.address, self.pinned_request(gateway, request))
-        else {
-            return Err(self.transport_error(MappingTransportFault::NoIpv6Local));
-        };
-        let server = SocketAddrV6::new(
-            next_hop,
-            pcp_map::PCP_SERVER_PORT,
-            0,
-            gateway.scope_id.unwrap_or(0),
-        );
-        match pcp_map::exchange(server, &map, LADDER).await? {
-            MapReply::Granted(grant) => Ok(MappingGrant {
-                external: join(IpAddr::V6(grant.external_address), grant.external_port),
-                lease: Some(Duration::from_secs(u64::from(grant.lifetime))),
-                epoch: self.observe_epoch(gateway, grant.epoch),
-            }),
-            MapReply::Refused { code, lifetime } => Err(MappingError::Refused {
-                protocol: MappingProtocol::Pcp,
-                refusal: MappingRefusal::from_pcp_code(code),
-                hold_off: pcp_map::carries_hold_off(code)
-                    .then(|| Duration::from_secs(u64::from(lifetime))),
-            }),
-            MapReply::UnsupportedVersion(_) | MapReply::Foreign => {
-                Err(MappingError::Unsupported(MappingProtocol::Pcp))
-            }
         }
     }
 
@@ -624,6 +575,17 @@ const fn protocol_of(transport: MappedTransport) -> InternetProtocol {
 /// The lifetime to ask for, in the seconds both wire formats carry. Saturating
 /// rather than wrapping: a caller asking for more than a `u32` of seconds gets
 /// the longest the protocol can state, not a tiny one.
+/// A success to a create that granted nothing (RFC 6887 §15, RFC 6886
+/// §3.4: lifetime 0 is a delete, and port 0 is no port). The answer
+/// does not parse as a grant, whatever its result code says.
+const fn empty_grant(protocol: MappingProtocol) -> MappingError {
+    MappingError::Refused {
+        protocol,
+        refusal: MappingRefusal::BadAnswer,
+        hold_off: None,
+    }
+}
+
 fn lease_seconds(lease: Duration) -> u32 {
     u32::try_from(lease.as_secs()).unwrap_or(u32::MAX)
 }
@@ -648,226 +610,4 @@ fn mix(value: u64) -> u32 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::net::Ipv4Addr;
-
-    fn request(port: u16, transport: MappedTransport) -> MappingRequest {
-        MappingRequest {
-            family: AddressFamily::V4,
-            transport,
-            internal_port: port,
-            suggested_external_port: port,
-            lease: Duration::from_secs(3600),
-        }
-    }
-
-    /// A peer pin is PCP's alone: NAT-PMP has no opcode that names a remote
-    /// peer, and it must say so *without touching the network* — a caller
-    /// treats `Unsupported` as "the keepalive carries this path", and a
-    /// timeout in its place would stall every punched path for the full
-    /// retry ladder on a NAT-PMP router.
-    #[tokio::test]
-    async fn only_pcp_can_pin_a_punched_path_and_nat_pmp_says_so_at_once() {
-        let gateway = Gateway {
-            // TEST-NET-1: nothing answers, so a backend that did send would
-            // sit out the whole ladder and fail the bound below.
-            address: IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1)),
-            local_address: IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 2)),
-            scope_id: None,
-        };
-        let request = PeerPinRequest {
-            internal_port: 4672,
-            suggested_external_port: None,
-            remote: std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(45, 55, 200, 9), 31999),
-            lease: Duration::from_secs(600),
-        };
-        let answer = tokio::time::timeout(
-            Duration::from_millis(200),
-            Arc::new(UdpMappingBackend::nat_pmp()).pin_peer(gateway, request),
-        )
-        .await
-        .expect("no network round trip");
-        assert_eq!(
-            answer,
-            Err(MappingError::Unsupported(MappingProtocol::NatPmp))
-        );
-    }
-
-    #[test]
-    fn the_pcp_nonce_is_stable_across_backends_and_distinct_per_mapping() {
-        // RFC 6887 §11.3 makes the nonce a capability: a *different* nonce for
-        // the same internal port earns NOT_AUTHORIZED against our own mapping
-        // until it expires, and measured firmware answers with silence rather
-        // than the refusal the RFC requires. So a restart must derive the same
-        // nonce — that is the whole reason it is derived and not drawn.
-        let first = UdpMappingBackend::pcp();
-        let second = UdpMappingBackend::pcp();
-        let tcp = request(4662, MappedTransport::Tcp);
-        assert_eq!(first.nonce(tcp), second.nonce(tcp));
-
-        // And two mappings must not share one, or deleting either would delete
-        // both.
-        assert_ne!(
-            first.nonce(tcp),
-            first.nonce(request(4672, MappedTransport::Udp))
-        );
-        assert_ne!(
-            first.nonce(tcp),
-            first.nonce(request(4662, MappedTransport::Udp)),
-            "the transport is part of the mapping's identity"
-        );
-        // A per-install secret changes every nonce, which is what makes it a
-        // capability a LAN neighbour cannot guess.
-        assert_ne!(
-            first.nonce(tcp),
-            UdpMappingBackend::pcp().with_secret(7).nonce(tcp)
-        );
-    }
-
-    /// The IPv6 path sends, byte for byte, what the `crab_nat` path sent to
-    /// the bench's miniupnpd in the `portmap-ipv6-pinhole` PASS (run
-    /// `1790023348`, `tap-lan.pcap`): same derived nonces, same delete shape.
-    /// That identity is what lets a pinhole granted before this change be
-    /// renewed and released after it without `NOT_AUTHORIZED` (§11.3).
-    #[test]
-    fn the_pinned_v6_path_reproduces_the_captured_pinhole_requests() {
-        let host: std::net::Ipv6Addr = "3fff:ed2:2::4".parse().expect("literal");
-        let gateway = Gateway {
-            address: IpAddr::V6("3fff:ed2:2::2".parse().expect("literal")),
-            local_address: IpAddr::V6(host),
-            scope_id: None,
-        };
-        let backend = UdpMappingBackend::pcp();
-        let wire = |request: MappingRequest| {
-            let map = backend
-                .pinned_request(gateway, request)
-                .expect("v6 local address");
-            map.encode()
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
-        };
-        let tcp = MappingRequest {
-            family: AddressFamily::V6,
-            lease: Duration::from_secs(12),
-            ..request(4662, MappedTransport::Tcp)
-        };
-        // 22:42:41.352611 — the state-free probe.
-        assert_eq!(
-            wire(pcp_probe_request(gateway)),
-            "02010000000000003fff0ed200020000000000000000000418c83c008fc4927eb4e997be110000000001000000000000000000000000000000000000"
-        );
-        // 22:42:41.353200 — the TCP 4662 pinhole.
-        assert_eq!(
-            wire(tcp),
-            "020100000000000c3fff0ed20002000000000000000000042d8d6ac49374337eeacf2d72060000001236123600000000000000000000000000000000"
-        );
-        // 22:43:26.375392 — its release.
-        assert_eq!(
-            wire(MappingRequest {
-                lease: Duration::ZERO,
-                ..tcp
-            }),
-            "02010000000000003fff0ed20002000000000000000000042d8d6ac49374337eeacf2d72060000001236000000000000000000000000000000000000"
-        );
-    }
-
-    #[test]
-    fn a_refusal_carries_its_hold_off_raw_and_a_version_mismatch_is_unsupported() {
-        // The hold-off is attacker-controlled input (RFC 6887 §7.4); clamping
-        // it is the mapper's job, so this layer must not quietly shrink it and
-        // hide what the gateway actually said.
-        let backend = UdpMappingBackend::pcp();
-        let refused = backend.pcp_error(&pcp::Failure::NoResources(u32::MAX));
-        assert_eq!(
-            refused.hold_off(),
-            Some(Duration::from_secs(u64::from(u32::MAX)))
-        );
-        assert!(matches!(refused, MappingError::Refused { .. }));
-
-        assert!(matches!(
-            backend.pcp_error(&pcp::Failure::UnsupportedVersion(
-                crab_nat::VersionCode::NatPmp
-            )),
-            MappingError::Unsupported(MappingProtocol::Pcp)
-        ));
-        assert!(matches!(
-            backend.pcp_error(&pcp::Failure::Timeout),
-            MappingError::Timeout(MappingProtocol::Pcp)
-        ));
-    }
-
-    #[test]
-    fn pointing_a_backend_at_a_second_gateway_re_anchors_its_epoch() {
-        // Two routers' uptimes are not comparable: without the re-anchor, a
-        // renumber onto a longer-running box would read as a reboot and re-add
-        // every mapping for nothing.
-        let backend = UdpMappingBackend::pcp();
-        let first = Gateway::v4(Ipv4Addr::new(192, 168, 1, 1), Ipv4Addr::new(192, 168, 1, 5));
-        let second = Gateway::v4(Ipv4Addr::new(10, 0, 0, 1), Ipv4Addr::new(10, 0, 0, 5));
-        assert_eq!(backend.observe_epoch(first, 90_000), EpochVerdict::Anchored);
-        assert_eq!(
-            backend.observe_epoch(first, 90_001),
-            EpochVerdict::Consistent
-        );
-        assert_eq!(
-            backend.observe_epoch(second, 12),
-            EpochVerdict::Anchored,
-            "a different gateway is a different counterparty"
-        );
-    }
-
-    /// One dual-stack router, reached at its IPv4 next hop and its link-local
-    /// IPv6 one. The PCP backend serves both, so a map or renew alternates
-    /// between them; each family keeps its own epoch history, and a pinhole
-    /// spoken from another Known IPv6 is still the same router.
-    #[test]
-    fn alternating_v4_and_v6_next_hops_keep_each_familys_epoch() {
-        let backend = UdpMappingBackend::pcp();
-        let v4 = Gateway::v4(Ipv4Addr::new(192, 168, 1, 1), Ipv4Addr::new(192, 168, 1, 5));
-        let v6 = |local: &str| Gateway {
-            address: IpAddr::V6("fe80::1".parse().expect("literal")),
-            scope_id: Some(2),
-            local_address: IpAddr::V6(local.parse().expect("literal")),
-        };
-        assert_eq!(backend.observe_epoch(v4, 90_000), EpochVerdict::Anchored);
-        assert_eq!(
-            backend.observe_epoch(v6("2001:db8::5"), 90_000),
-            EpochVerdict::Anchored
-        );
-        assert_eq!(
-            backend.observe_epoch(v4, 90_001),
-            EpochVerdict::Consistent,
-            "the IPv6 exchange in between did not erase the IPv4 history"
-        );
-        assert_eq!(
-            backend.observe_epoch(v6("2001:db8::7"), 90_001),
-            EpochVerdict::Consistent,
-            "a pinhole from another Known IPv6 is the same next hop"
-        );
-        // The router reboots: whichever family answers first reads it.
-        assert_eq!(backend.observe_epoch(v4, 12), EpochVerdict::Reset);
-    }
-
-    /// NAT-PMP's MAP carries no address, so a map reads the one its probe
-    /// learned; the first epoch reading after that probe must not wipe it.
-    #[test]
-    fn a_nat_pmp_probe_address_survives_the_first_map_epoch() {
-        let backend = UdpMappingBackend::nat_pmp();
-        let gateway = Gateway::v4(Ipv4Addr::new(192, 168, 1, 1), Ipv4Addr::new(192, 168, 1, 5));
-        let external = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7));
-        backend.remember_external(gateway, external);
-        assert_eq!(backend.observe_epoch(gateway, 500), EpochVerdict::Anchored);
-        assert_eq!(backend.external(gateway), Some(external));
-    }
-
-    #[test]
-    fn an_absurd_requested_lease_saturates_rather_than_wrapping() {
-        // A caller asking for more than the wire can state gets the longest it
-        // can, not a tiny one — the clamp that matters is the *granted*
-        // lifetime, and this must not undercut it.
-        assert_eq!(lease_seconds(Duration::from_secs(3600)), 3600);
-        assert_eq!(lease_seconds(Duration::from_secs(u64::MAX)), u32::MAX);
-    }
-}
+mod tests;

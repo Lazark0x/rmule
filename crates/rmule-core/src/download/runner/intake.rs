@@ -3,7 +3,7 @@
 //! filter reload applies from the next batch; sources already pooled stay as
 //! they are.
 
-use rmule_primitives::SourceSighting;
+use rmule_primitives::{Informant, Ipv4Endpoint, PeerSource, SourceSighting};
 
 use super::RunnerContext;
 use crate::download::source_book::Gate;
@@ -42,4 +42,49 @@ pub(super) fn any_admitted<S, P>(
         dial: runner.dial_position(),
     };
     sightings.iter().any(|&sighting| gate.admits(sighting))
+}
+
+/// A server-UDP global answer's `sources` (ADR-0051) as the word of `server`,
+/// the server that sent it (ADR-0085). The answer carries no crypt material,
+/// so each is a plain record.
+pub(super) fn global_answer(
+    server: Ipv4Endpoint,
+    sources: Vec<PeerSource>,
+) -> impl Iterator<Item = SourceSighting> {
+    let informant = Informant::Party(std::net::IpAddr::V4(server.ip));
+    sources
+        .into_iter()
+        .map(move |source| SourceSighting::plain(source, informant))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+
+    use super::*;
+    use crate::dialable::DialPosition;
+    use crate::download::source_book::Blocked;
+    use crate::ip_filter::IpFilter;
+
+    /// A global-UDP answer is judged as the word of the server that sent it:
+    /// a loopback row from a remote server is refused, and from a server on
+    /// this host it passes.
+    #[test]
+    fn a_global_row_is_the_word_of_the_server_that_sent_it() {
+        let filter = IpFilter::default();
+        let gate = Gate {
+            filter: &filter,
+            dial: DialPosition::default(),
+        };
+        let loopback = PeerSource::HighId(Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, 4662));
+        let remote = Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 7), 4662);
+        let local = Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, 4663);
+
+        for sighting in global_answer(remote, vec![loopback]) {
+            assert_eq!(gate.judge(sighting), Err(Blocked::Reserved));
+        }
+        for sighting in global_answer(local, vec![loopback]) {
+            assert!(gate.admits(sighting));
+        }
+    }
 }

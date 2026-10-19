@@ -14,8 +14,8 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, PeerEndpoint, PeerSource, ServerEndpoint, SourceLookupTarget,
-    SourceSighting,
+    ClientId, Ed2kFileLink, Informant, PeerEndpoint, PeerSource, ServerEndpoint,
+    SourceLookupTarget, SourceSighting,
 };
 use rmule_testkit::HANG_GUARD;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -119,6 +119,7 @@ fn start_command(file: Ed2kFileLink, name: &str) -> CoreCommand {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name(name),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     })
 }
 
@@ -148,6 +149,7 @@ fn seeded_row(
             file,
             Some(&ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
             &rmule_core::DownloadPaths::from_final_path(path),
+            None,
         )
         .unwrap();
     for state in lifecycle {
@@ -337,6 +339,7 @@ async fn durable_start_creates_record_before_fake_protocol_adapter_completes() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("download.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -375,6 +378,7 @@ async fn pause_download_persists_paused_and_emits_event() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("download.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -414,6 +418,7 @@ async fn startup_recovery_emits_recovered_without_source_lookup() {
             &file_link(),
             Some(&ServerEndpoint::new("persisted.example", 4661).unwrap()),
             &rmule_core::DownloadPaths::from_final_path(dir.path().join("download.bin")),
+            None,
         )
         .unwrap();
     repo.set_lifecycle(created.id(), DownloadLifecycle::Active)
@@ -442,6 +447,7 @@ async fn startup_recovery_emits_recovered_without_source_lookup() {
                 failure: None,
                 file_hash,
                 metadata,
+                ..
             }) if *download_id == expected_id
                 && *file_hash == file_link().file_hash
                 && metadata.name == file_link().name
@@ -473,6 +479,7 @@ async fn start_surfaces_the_stored_name_and_exact_size_on_both_paths() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("download.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -517,6 +524,7 @@ async fn resume_performs_a_fresh_source_lookup() {
             &file_link(),
             Some(&persisted_server),
             &rmule_core::DownloadPaths::from_final_path(dir.path().join("download.bin")),
+            None,
         )
         .unwrap();
     repo.set_lifecycle(created.id(), DownloadLifecycle::Paused)
@@ -602,6 +610,7 @@ async fn a_server_failure_persists_failed_not_paused() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("download.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -659,6 +668,7 @@ async fn sourceless_lookup_terminates_by_default_instead_of_hanging_forever() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("download.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -733,10 +743,10 @@ impl SourceLookupService for RecordingSourceLookup {
         self.calls.lock().unwrap().push(target);
         Ok(SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![SourceSighting::plain(PeerSource::new(
-                ClientId::from_u32(0x0100_007F),
-                4663,
-            ))],
+            sources: vec![SourceSighting::plain(
+                PeerSource::new(ClientId::from_u32(0x0100_007F), 4663),
+                Informant::Own,
+            )],
         })
     }
 }
@@ -748,13 +758,18 @@ impl PeerTransferService for PendingPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(8);
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
+                if matches!(command, PeerWorkerCommand::AskSlot) {
+                    let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                }
                 if matches!(command, PeerWorkerCommand::Shutdown { .. }) {
                     break;
                 }

@@ -117,8 +117,7 @@ impl PartBitmap {
     /// bitmap bytes as sub-opcodes. `held` answers for the file's real parts.
     pub fn downloader(file_size: u64, held: impl Fn(PartIndex) -> bool) -> Self {
         let real = rmule_primitives::part_count(file_size);
-        let counted =
-            u32::try_from(file_size / rmule_primitives::ED2K_PART_SIZE + 1).unwrap_or(u32::MAX);
+        let counted = rmule_primitives::ed2k_status_part_count(file_size);
         let mut bytes = vec![0u8; expected_byte_len(counted)];
         for part in 0..counted {
             if part >= real || held(PartIndex::new(part)) {
@@ -129,6 +128,36 @@ impl PartBitmap {
             part_count: counted,
             bytes,
         }
+    }
+
+    #[must_use]
+    /// The **Advertised Parts** a peer's wire status states for a
+    /// `file_size`-byte file: one bit per real part, `0..part_count(size)`.
+    /// The one reader every status goes through, as aMule's
+    /// `ProcessFileStatus` reads one (stock 2.3.3 `DownloadClient.cpp:404-449`):
+    /// a count of `0` is a complete source and holds every part; a count of
+    /// [`rmule_primitives::ed2k_status_part_count`] gives its first
+    /// `part_count(size)` bits, so the phantom part of an exact multiple is
+    /// never read; any other count is `None`, refused whole (aMule throws).
+    pub fn advertised_parts(&self, file_size: u64) -> Option<Self> {
+        let real = rmule_primitives::part_count(file_size);
+        if self.part_count == 0 {
+            return Some(Self::all_present(real));
+        }
+        if self.part_count != rmule_primitives::ed2k_status_part_count(file_size) {
+            return None;
+        }
+        let mut bytes = self.bytes[..expected_byte_len(real)].to_vec();
+        if let Some(last) = bytes.last_mut() {
+            let used_bits = real % 8;
+            if used_bits != 0 {
+                *last &= (1u8 << used_bits) - 1;
+            }
+        }
+        Some(Self {
+            part_count: real,
+            bytes,
+        })
     }
 
     #[must_use]

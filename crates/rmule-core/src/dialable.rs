@@ -115,9 +115,10 @@ pub(crate) fn resolve_family(sighting: SourceSighting, ours: DialPosition) -> Op
     settle_dual_stack(sighting.peer_source()?, sighting.ipv6(), ours)
 }
 
-/// A source's addresses, each judged on its own by `admits` — the IP filter at
-/// ingest (ADR-0087): every address that may be dialed is judged before
-/// any family or road is chosen.
+/// A source's addresses, each judged on its own by `admits` — at ingest, the
+/// Reserved Range check against the sighting's Informant and then the IP
+/// filter (ADR-0085, ADR-0087): every address that may be dialed is judged
+/// before any family or road is chosen.
 ///
 /// - A dual-stack pair: both halves are dialable. A refused IPv6 half is
 ///   dropped from the record; a refused client id leaves the source on its
@@ -222,8 +223,13 @@ mod tests {
             unreachable!()
         };
         let hash = rmule_primitives::UserHash::from_bytes([0x51; 16]);
-        let dual = SourceSighting::new(PeerSource::HighId(v4), Some(hash), None)
-            .with_ipv6_half(Some(v6()));
+        let dual = SourceSighting::new(
+            PeerSource::HighId(v4),
+            Some(hash),
+            None,
+            rmule_primitives::Informant::Own,
+        )
+        .with_ipv6_half(Some(v6()));
 
         assert_eq!(
             resolve_family(dual, ours()),
@@ -250,8 +256,13 @@ mod tests {
             unreachable!()
         };
         let hash = rmule_primitives::UserHash::from_bytes([0x52; 16]);
-        let dual = SourceSighting::new(PeerSource::HighId(v4), Some(hash), None)
-            .with_ipv6_half(Some(v6()));
+        let dual = SourceSighting::new(
+            PeerSource::HighId(v4),
+            Some(hash),
+            None,
+            rmule_primitives::Informant::Own,
+        )
+        .with_ipv6_half(Some(v6()));
         let refusing = |refused: PeerEndpoint| move |endpoint| endpoint != refused;
 
         let v4_only =
@@ -290,7 +301,9 @@ mod tests {
         let [row] = rows.as_slice() else {
             panic!("one published source, one row: {rows:?}");
         };
-        let row = row.sighting().expect("a direct row is a sighting");
+        let row = row
+            .sighting(rmule_primitives::Informant::Own)
+            .expect("a direct row is a sighting");
         let high_id = PeerSource::HighId(Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 8), 4662));
         let half = Ipv6Endpoint::new("3fff:ed2:1::8".parse().unwrap(), 4662);
 

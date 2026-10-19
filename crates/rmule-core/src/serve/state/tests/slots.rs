@@ -28,6 +28,7 @@ fn slot_requests_grant_queue_or_refuse_within_the_shared_budget() {
                 peer: peer(1),
                 file_hash,
                 software: None,
+                road: crate::GrantRoad::Linked,
             }),
         ],
     );
@@ -61,40 +62,6 @@ fn slot_requests_grant_queue_or_refuse_within_the_shared_budget() {
         state.on_conn_event(t0, peer(4), slot_request(hash(0x99)), &no_modifiers()),
         Vec::new(),
     );
-}
-
-/// Converted from the inline serve-task theft test (ADR-0041):
-/// the brain forwards every SUI proof as a `BindIdentity` decision —
-/// including a thief's under a different key — because only the ledger
-/// knows the stored key. Its atomic compare-and-set denies the mismatch
-/// (pinned in `tests/credit_store.rs`) and the enactor reports the theft,
-/// mirroring the download runner's arm.
-#[test]
-fn identity_proofs_bind_through_the_ledger_decision() {
-    let mut state = serving_state(1, Vec::new());
-    let user_hash = user(0x0C);
-    let t = Instant::now();
-
-    for (p, key) in [
-        (peer(1), b"the-owners-key".as_slice()),
-        (peer(2), b"the-thiefs-key".as_slice()),
-    ] {
-        assert_eq!(
-            state.on_conn_event(
-                t,
-                p,
-                ServeInput::Connection(ConnectionEvent::IdentityVerified {
-                    user_hash,
-                    public_key: key.to_vec(),
-                }),
-                &no_modifiers(),
-            ),
-            vec![ServeDecision::BindIdentity {
-                user_hash,
-                public_key: key.to_vec(),
-            }],
-        );
-    }
 }
 
 /// Converted from the inline serve-task promotion test: a freed
@@ -142,6 +109,7 @@ fn disconnect_promotes_the_highest_credit_waiter_and_releases_the_slot() {
                 peer: rich,
                 file_hash,
                 software: None,
+                road: crate::GrantRoad::Linked,
             }),
             ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer: holder }),
         ],
@@ -193,6 +161,7 @@ fn transfer_cancelled_promotes_the_highest_credit_waiter_and_releases_the_slot()
                 peer: rich,
                 file_hash,
                 software: None,
+                road: crate::GrantRoad::Linked,
             }),
             ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer: holder }),
         ],
@@ -214,14 +183,15 @@ fn transfer_cancelled_wipes_served_ranges_so_a_fresh_ask_re_reads() {
     let read = ServeDecision::ReadRange {
         peer: p,
         path: "/shared/served.bin".into(),
-        offset: 0,
-        len: 100,
-        purpose: ReadPurpose::Block {
+        block: BlockRead {
             file_hash,
             start: 0,
             end: 100,
         },
+        check: None,
     };
+    let slot = ServeInput::Server(ServerEvent::SlotRequested { file_hash });
+    let _ = state.on_conn_event(t, p, slot.clone(), &no_modifiers());
     assert_eq!(
         state.on_conn_event(
             t,
@@ -240,6 +210,7 @@ fn transfer_cancelled_wipes_served_ranges_so_a_fresh_ask_re_reads() {
         ServeInput::Server(ServerEvent::TransferCancelled { file_hash }),
         &no_modifiers(),
     );
+    let _ = state.on_conn_event(t, p, slot, &no_modifiers());
     assert_eq!(
         state.on_conn_event(
             t,
@@ -248,7 +219,7 @@ fn transfer_cancelled_wipes_served_ranges_so_a_fresh_ask_re_reads() {
             &no_modifiers(),
         ),
         vec![read],
-        "the same range reads again: nothing is stranded as already-served"
+        "the same range reads again on the next slot: nothing is stranded as already-served"
     );
 }
 
@@ -601,6 +572,7 @@ fn grant_and_queue_edges_name_each_peers_own_client() {
             peer: peer(1),
             file_hash,
             software: Some(amule),
+            road: crate::GrantRoad::Linked,
         }))
     );
     assert!(

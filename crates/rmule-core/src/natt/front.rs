@@ -362,6 +362,10 @@ pub(crate) struct NattWiring {
     pub(crate) claims: AwaitedInbound,
     /// Where a punched path asks for its one PCP `PEER` pin.
     pub(crate) peer_pin: SharedPeerPin,
+    /// The **Peer Roster**: an IP holding a live relation is expected to
+    /// open a Tunnel with no rendezvous, as kno dials uTP to every peer whose
+    /// hello claims it (ADR-0091, security rule 10).
+    pub(crate) roster: crate::peer_roster::SharedPeerRoster,
     pub(crate) diagnostics: DiagnosticsState,
     /// **Port Prediction** (ADR-0091's amendment): `None` while
     /// `natt.port_prediction` is off, which is every datagram as before.
@@ -375,6 +379,9 @@ pub(crate) struct NattWiring {
 /// ADR-0091 ledgers, and the expectations that join a punch to a dial.
 pub(crate) struct NattFront<S> {
     demux: Arc<NattDemux<S>>,
+    /// The engines' **Tunnel Registry**, kept here to prune its lapsed
+    /// opening slots on the tick.
+    registry: Arc<std::sync::Mutex<TunnelRegistry>>,
     wiring: NattWiring,
     requester: RendezvousRequester,
     paths: PunchedPaths,
@@ -457,11 +464,12 @@ fn assemble<S: NattDatagramSink>(
     wiring: NattWiring,
 ) -> Result<Assembled<S>, NattStartError> {
     let sender = Arc::new(NattSender::new(sink, crypt));
+    let registry = Arc::new(std::sync::Mutex::new(TunnelRegistry::new()));
     let demux = Arc::new(NattDemux::start(
         identity,
         own_hash,
         sender,
-        Arc::new(std::sync::Mutex::new(TunnelRegistry::new())),
+        Arc::clone(&registry),
     )?);
     let (risen_tx, risen_rx) = mpsc::channel(COMMAND_QUEUE_LEN);
     // The Awaited Inbound registry's report-back seam: the same channel
@@ -474,6 +482,7 @@ fn assemble<S: NattDatagramSink>(
     Ok(Assembled {
         front: NattFront {
             demux,
+            registry,
             wiring,
             requester: RendezvousRequester::default(),
             paths: PunchedPaths::default(),
@@ -565,7 +574,20 @@ impl<S: NattDatagramSink> NattFront<S> {
             if let Some(peer) = from.as_v4() {
                 self.paths.on_activity(peer, now);
             }
-            self.demux.on_datagram(from, &datagram, now).await;
+            // ADR-0091, security rule 10: a Punch Expectation names the IP,
+            // the Peer Roster names a peer that may come back over uTP, and a
+            // Dial-Back Claim names no address at all.
+            let expectations = &self.expectations;
+            let roster = &self.wiring.roster;
+            let claims = &self.wiring.claims;
+            let expects = |ip: std::net::IpAddr| match ip {
+                std::net::IpAddr::V4(ip) => {
+                    expectations.expects(ip, now) || roster.knows(ip) || claims.awaits_dial_back()
+                }
+                // The dialect names IPv4 only, and core adopts no IPv6 tunnel.
+                std::net::IpAddr::V6(_) => false,
+            };
+            self.demux.on_datagram(from, &datagram, &expects, now).await;
             return;
         }
         if is_holepunch(&datagram) {
@@ -764,6 +786,10 @@ impl<S: NattDatagramSink> NattFront<S> {
             self.enact_dial(order, now).await;
         }
         self.expectations.prune(now);
+        self.registry
+            .lock()
+            .expect("the NAT-T tunnel registry is never poisoned")
+            .prune(now);
         self.requester.prune(now);
         // Silence is the dialect's only failure signal: fifteen seconds with
         // no hint spends one of the target's five attempts.

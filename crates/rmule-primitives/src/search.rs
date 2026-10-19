@@ -3,7 +3,8 @@
 //! and how rows for one file from several origins fold into a single result.
 
 use crate::{
-    Ed2kFileClass, Ed2kFileLink, Ed2kText, FileHash, PeerSource, PrimitiveError, Result, Tag,
+    AichRootHash, Ed2kFileClass, Ed2kFileLink, Ed2kText, FileHash, PeerSource, PrimitiveError,
+    Result, Tag,
 };
 
 mod kind;
@@ -83,6 +84,9 @@ pub struct SearchResult {
     complete_sources: Option<u32>,
     origin: SearchResultOrigin,
     extra_tags: Vec<Tag>,
+    /// The qualified AICH root a Kad keyword answer carried for this file
+    /// (ADR-0038): the first one a report of it carried.
+    kad_aich_root: Option<AichRootHash>,
 }
 
 impl KeywordQuery {
@@ -275,6 +279,7 @@ impl SearchResult {
             complete_sources: None,
             origin: SearchResultOrigin::Ed2kServer,
             extra_tags: Vec::new(),
+            kad_aich_root: None,
         })
     }
 
@@ -363,16 +368,12 @@ impl SearchResult {
     /// the norm; the extension is the workhorse.
     #[must_use]
     pub fn file_class(&self) -> Option<Ed2kFileClass> {
-        self.primary_name()
-            .try_as_str()
-            .ok()
-            .and_then(Ed2kFileClass::from_file_name)
-            .or_else(|| {
-                self.file_type
-                    .as_ref()
-                    .and_then(|tag| tag.try_as_str().ok())
-                    .and_then(Ed2kFileClass::from_type_tag)
-            })
+        Ed2kFileClass::from_name_bytes(self.primary_name().as_bytes()).or_else(|| {
+            self.file_type
+                .as_ref()
+                .and_then(|tag| tag.try_as_str().ok())
+                .and_then(Ed2kFileClass::from_type_tag)
+        })
     }
 
     /// Every tag the answer carried that this crate does not type, kept so a
@@ -423,6 +424,23 @@ impl SearchResult {
         self
     }
 
+    /// Attach the AICH root a Kad keyword answer qualified for this file
+    /// (ADR-0038). Which roots qualify is the caller's rule, not this row's.
+    #[must_use]
+    pub const fn with_kad_aich_root(mut self, root: AichRootHash) -> Self {
+        self.kad_aich_root = Some(root);
+        self
+    }
+
+    /// The qualified AICH root a Kad keyword answer carried for this file, the
+    /// root a download started from this row trusts until its peers contest it
+    /// (ADR-0038). Never part of [`Self::to_file_link`]: a link's `h=` ranks
+    /// above it.
+    #[must_use]
+    pub const fn kad_aich_root(&self) -> Option<AichRootHash> {
+        self.kad_aich_root
+    }
+
     /// Attach the untyped tags an answer carried.
     #[must_use]
     pub fn with_extra_tags(mut self, extra_tags: Vec<Tag>) -> Self {
@@ -431,9 +449,9 @@ impl SearchResult {
     }
 
     /// Fold another report of the same file into this row: union the names,
-    /// sources and untyped tags, take the first non-empty typed tag, and
-    /// combine the counts by origin (sum across servers, max once Kad is
-    /// involved — see `merge_counts`).
+    /// sources and untyped tags, take the first non-empty typed tag and Kad
+    /// AICH root, and combine the counts by origin (sum across servers, max
+    /// once Kad is involved — see `merge_counts`).
     ///
     /// A report of a *different* file is ignored rather than rejected, so a
     /// caller grouping rows cannot corrupt one by mis-grouping.
@@ -460,6 +478,9 @@ impl SearchResult {
         }
         if self.file_format.is_none() {
             self.file_format.clone_from(&other.file_format);
+        }
+        if self.kad_aich_root.is_none() {
+            self.kad_aich_root = other.kad_aich_root;
         }
         self.reported_availability = merge_counts(
             self.origin,

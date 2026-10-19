@@ -23,9 +23,14 @@ pub use self::command::{
     CoreCommand, CoreCommandRejectReason, DownloadCommand, KadUnavailableReason, NameTaken,
     ScanCommand, SearchCommand, ServeCommand, ServerListCommand,
 };
-pub use self::config::{CoreConfig, DEFAULT_SLOT_WAIT_TIMEOUT, NattConfig, VerificationAuthority};
+pub use self::config::{
+    CeilingLowered, CoreConfig, DEFAULT_SLOT_WAIT_TIMEOUT, NattConfig, PeerConnections,
+    VerificationAuthority, descriptor_room,
+};
+pub use self::event::LinkTurn;
+pub use self::event::{BlockAskFault, DeadDialSign, DialBackEnd, GrantRoad};
 pub use self::event::{
-    BuddyDialFailure, CoreEvent, DialEnd, DialFailure, DownloadEvent, IdAssignment,
+    BuddyDialFailure, CompletionStep, CoreEvent, DialEnd, DialFailure, DownloadEvent, IdAssignment,
     IgnoredReaskReply, Ipv6Probe, KadStopReason, LegNotSent, LoginClaim, LoginCloseCause,
     LoginLink, LoginStep, NatTraversalUnavailableReason, PartsLost, PeerBuddy, PeerReach,
     PeerReachDropReason, PeerReachRoute, PlainLinkReason, PortTestAdmission, PortTestClosedBy,
@@ -345,6 +350,10 @@ pub enum PartReleaseReason {
     Paused,
     /// The download was cancelled by the caller.
     Cancelled,
+    /// The uploader ended our granted slot and put us back on its queue
+    /// (`OP_OUTOFPARTREQS`, ADR-0057): the worker stays on its link, queued,
+    /// and the part goes back for retry.
+    BackOnQueue,
 }
 
 /// Why a peer was retired from a download. The single retirement-reason
@@ -354,10 +363,12 @@ pub enum PartReleaseReason {
 pub enum PeerRetirementReason {
     /// The peer closed the connection, or the link failed under it.
     PeerDisconnected,
-    /// The peer refused the upload slot outright (`OP_OUTOFPARTREQS`).
-    SlotRejected,
     /// `slot_wait_timeout` elapsed with the peer still queueing us.
     SlotTimeout,
+    /// The peer queued us and gave us a rank, and no slot: the ask is
+    /// answered, so the worker hung up, and the source keeps its place by the
+    /// reask (the **Queued Hang-Up**, ADR-0116). Alive and honest.
+    Queued,
     /// A part this peer served did not match its hash — the peer is dropped,
     /// not just the part, since the bytes cannot be trusted.
     PartVerificationFailed,
@@ -376,4 +387,25 @@ pub enum PeerRetirementReason {
     /// already reaches, and this one, the newer, gave way (ADR-0090's merge
     /// rule). The peer is alive, so its endpoint is not spent.
     SameSource,
+    /// The peer's Advertised Parts hold no part the file still lacks (aMule
+    /// `DS_NONEEDEDPARTS`, ADR-0112): it waits as a queued source, asked again
+    /// over TCP at twice the reask period. Alive and honest, so neither spent
+    /// nor distrusted.
+    NoNeededParts,
+    /// The peer granted a slot this worker had no part to work: every part it
+    /// holds that we lack is in flight elsewhere (ADR-0112). The slot went back
+    /// with `OP_CANCELTRANSFER` (ADR-0056) and the source waits as a queued
+    /// one, asked again on the ordinary cadence (ADR-0057). Alive and honest.
+    NoFreePart,
+    /// The peer said it does not have the file (`OP_FILEREQANSNOFIL`): its
+    /// record is spent for this download under every name it holds, for the
+    /// re-ask period, as aMule dead-lists it (ADR-0090). Honest, so not
+    /// distrusted.
+    FileNotFound,
+    /// The link this worker waited on, behind another download of the same
+    /// peer, ended before its turn (ADR-0107 invariant 9): nothing was
+    /// dialed, and the source stands on the peer's queue standing, asked at
+    /// the reask, as aMule keeps the client for its other file. Alive, so
+    /// not spent.
+    LinkEnded,
 }

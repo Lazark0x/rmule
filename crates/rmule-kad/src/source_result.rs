@@ -91,15 +91,6 @@ pub(crate) const SOURCETYPE_BUDDY: u8 = 3;
 pub(crate) const SOURCETYPE_BUDDY_LARGE: u8 = 5;
 pub(crate) const SOURCETYPE_FIREWALLED_UDP: u8 = 6;
 
-/// The large-file boundary a source publish's type keys on: aMule's
-/// `OLD_MAX_FILE_SIZE` (`include/protocol/ed2k/Constants.h:89`) and eMuleAI's
-/// `OLD_MAX_EMULE_FILE_SIZE` (`Opcodes.h:165`), 4 290 048 000 bytes, the
-/// largest whole number of `PARTSIZE` parts under `2^32`. A file is large
-/// when it is **strictly greater** (`IsLargeFile`, kno `KnownFile.h:129`;
-/// eMuleAI `Search.cpp:885`, `:901`). This is not `u32::MAX`: a file of
-/// 4 290 048 001 bytes fits a `u32` and is still large.
-pub(crate) const OLD_MAX_FILE_SIZE: u64 = 4_290_048_000;
-
 /// Decode the source rows of a `KADEMLIA2_SEARCH_RES` envelope into candidates.
 ///
 /// Handles the proven plain-`0xE4` row shape: `[16B sender][16B target]
@@ -227,11 +218,11 @@ pub const SOURCE_RESULT_ROWS_PER_DATAGRAM: usize = 50;
 /// "Source-publish layouts"). Zero rows encode to zero envelopes — a storer
 /// with nothing to say stays silent, like aMule.
 ///
-/// Row tags are written in the stored-entry order the aMule storer produces
-/// (SOURCEIP, SOURCETYPE, SOURCEPORT, SOURCEUPORT, the buddy trio on a
-/// type-3/5 row, then ENCRYPTION when present, then the string-named `ip6` and
-/// `bi6` last), each in the explicit length-prefixed name form and at a fixed
-/// width (`decode_source_result` tolerates narrower variable-width forms; the
+/// Row tags go out as SOURCEIP, SOURCETYPE, SOURCEPORT, SOURCEUPORT, the
+/// buddy trio on a type-3/5 row, ENCRYPTION when present, and the string-named
+/// `ip6` and `bi6` last, as the publisher wrote them. Every reader ignores tag
+/// order, so no other order is reproduced. Each tag is in the explicit
+/// length-prefixed name form and at a fixed width (`decode_source_result` tolerates narrower variable-width forms; the
 /// encoder never emits them). The caller applies result budgets and start
 /// offsets — this is pure serialization of already-selected rows.
 #[must_use]
@@ -267,9 +258,8 @@ fn encode_row(payload: &mut Vec<u8>, row: &KadSourceRow) {
         (TAG_SOURCEUPORT, TagValue::U16(row.udp_port)),
     ];
     // The buddy tags follow the source ones, in the publisher's own order
-    // (`TAG_SERVERIP`, `TAG_SERVERPORT`, `TAG_BUDDYHASH`) — the storer keeps
-    // the tags it received in arrival order, and that is the order they arrive
-    // in. `TAG_BUDDYHASH` goes out as the 32 hex characters aMule writes.
+    // (`TAG_SERVERIP`, `TAG_SERVERPORT`, `TAG_BUDDYHASH`). `TAG_BUDDYHASH`
+    // goes out as the 32 hex characters aMule writes.
     if let Some(buddy) = row.buddy {
         if let Some(udp) = buddy.buddy_udp {
             let [a, b, c, d] = udp.ip.octets();
@@ -297,11 +287,11 @@ fn encode_row(payload: &mut Vec<u8>, row: &KadSourceRow) {
         tags.push((TAG_ENCRYPTION, TagValue::U8(options)));
     }
     // The two IPv6 tags close the row, `ip6` then `bi6`, where the publisher
-    // wrote them — eMuleAI's `0x44` ends `ENCRYPTION, ip6, bi6`
+    // wrote them: eMuleAI's `0x44` ends `ENCRYPTION, ip6, bi6`
     // (`Search.cpp:913-923`, `a2f05dc8`), kno's ends in `ip6`
-    // (`Search.cpp:886-902`) — and where kno's storer re-serves them, in
-    // arrival order. Both were gated by `IsUsableTagIdentity` when the publish
-    // was read, so an address this storer refused was never stored to re-serve.
+    // (`Search.cpp:886-902`). Both were gated by `IsUsableTagIdentity` when the
+    // publish was read, so an address this storer refused was never stored to
+    // re-serve.
     let ipv6_tags: Vec<Tag> = [
         row.ipv6
             .map(|address| crate::ipv6_tags::ipv6_tag(crate::ipv6_tags::TAG_SOURCE_IPV6, address)),
@@ -412,12 +402,16 @@ fn decode_row(
         ..RowTags::default()
     };
     for _ in 0..tag_count {
-        let (tag, consumed) = Tag::decode_prefix(reader.remaining_bytes()).map_err(|_| {
-            KadSourceResultDecodeError::MalformedPayload {
-                reason: "source row tag is truncated or malformed",
-            }
-        })?;
+        let (tag, consumed) =
+            Tag::decode_or_step_prefix(reader.remaining_bytes()).map_err(|_| {
+                KadSourceResultDecodeError::MalformedPayload {
+                    reason: "source row tag is truncated or malformed",
+                }
+            })?;
         reader.advance_clamped(consumed);
+        let Some(tag) = tag else {
+            continue;
+        };
         apply_tag(&mut tags, &tag);
     }
 
@@ -555,7 +549,7 @@ fn row_facts(tags: &RowTags, source_type: u8) -> KadSourceRowFacts {
         kad_udp: endpoint(
             tags.source_ip_host_order.map(u32::swap_bytes),
             tags.udp_port,
-            crate::net::is_unicast_host,
+            crate::net::may_name_a_host,
         ),
         connect_options: tags.connect_options.map(SourceCryptOptions::from_byte),
         buddy: tags.buddy_id_be.map(|be| KadBuddyContact {

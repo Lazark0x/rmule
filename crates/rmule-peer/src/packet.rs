@@ -50,7 +50,7 @@ fn narrowest_width_for_ranges(req: &RequestParts) -> PartOffsetWidth {
 /// `narrowest_width_for_ranges`'s spirit — the umbrella-wide `encode()` picks
 /// a sufficient variant from the data rather than assuming a fixed one; a
 /// caller wanting a specific wire version (v3's hybrid id order in
-/// particular, which this can never pick since nothing in `SourceSighting`
+/// particular, which this can never pick since nothing in `SourceClaim`
 /// distinguishes "v2" from "v3") should call
 /// `AnswerSources::encode_packet(version)` directly.
 fn narrowest_version_for_sources(sources: &[SourceExchangeEntry]) -> SourceExchangeVersion {
@@ -100,7 +100,8 @@ pub enum PeerPacket {
     /// `OP_CANCELTRANSFER` (`0x56`, ADR-0056): "stop sending, I no longer
     /// want this transfer." Symmetric — either capability may receive it.
     CancelTransfer(CancelTransfer),
-    /// `OP_OUTOFPARTREQS` (`0x57`): no slot, now or any longer.
+    /// `OP_OUTOFPARTREQS` (`0x57`): the granted transfer is over; back to the
+    /// queue.
     OutOfPartReqs(OutOfPartReqs),
     /// `OP_QUEUERANKING` (`0x60` under Emule): how far from the front the queued peer stands.
     QueueRanking(QueueRanking),

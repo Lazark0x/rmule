@@ -34,12 +34,18 @@ ratatui.workspace = true
 # `DEFAULT_SERVER_MET_URL` pre-fills its form.
 rmule-bootstrap = { path = "../../crates/rmule-bootstrap", features = ["reqwest-fetcher"] }
 rmule-core = { path = "../../crates/rmule-core" }
+# Preview's Default App on macOS and Windows: the system's app for a
+# file-name extension (ADR-0114).
+rmule-os = { path = "../../crates/rmule-os" }
 rmule-primitives = { path = "../../crates/rmule-primitives" }
 rmule-words = { path = "../../crates/rmule-words" }
+# The Player Command splits into words by POSIX rules (ADR-0114).
+shlex.workspace = true
 thiserror.workspace = true
 # `rt-multi-thread` on top of the workspace set: one multi-thread runtime for
-# UI loop, bridge, and core tasks alike (ADR-0069 §Runtime).
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+# UI loop, bridge, and core tasks alike (ADR-0069 §Runtime). `process`: the
+# player lane starts Preview's player and awaits its exit (ADR-0114).
+tokio = { workspace = true, features = ["rt-multi-thread", "process"] }
 tracing.workspace = true
 
 [dev-dependencies]

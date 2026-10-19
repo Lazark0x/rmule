@@ -1,33 +1,43 @@
-//! Driving one dialed or adopted peer worker to a downloaded part: the block
-//! request loop that turns granted slots into bytes, the identity wait the
-//! dialer blocks on, and the AICH recovery detour a corrupt part triggers.
+//! Driving one dialed or adopted peer worker: the probe wait its slot ask
+//! waits on, the wait between handouts that hears the slot's answers and the
+//! link's end, the block request loop that turns handed blocks into bytes
+//! (ADR-0117), the identity wait the dialer blocks on, and the AICH recovery
+//! asks a corrupt part triggers, answered while the worker keeps hearing its
+//! link.
 
 use std::collections::VecDeque;
 use std::time::Duration;
 
 use rmule_net::peer::Connection as PeerConnection;
 use rmule_peer::{
-    ConnectionEvent, EMBLOCKSIZE, FileProbeStatus, NoticeEvent, PartBitmap, PartRanges,
-    PeerCommand, PeerEvent, PeerIdentity, RequesterCommand, RequesterEvent, SlotReleaseReason,
+    PartBitmap, PartRanges, PeerCommand, PeerEvent, RequesterCommand, RequesterEvent,
 };
-use rmule_primitives::{AichRootHash, Ed2kFileLink, PeerEndpoint};
+use rmule_primitives::{ED2K_PART_SIZE, Ed2kFileLink, PeerEndpoint};
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 
-use crate::PartPlan;
 use crate::adapters::InboundPeerDeps;
-use crate::adapters::dialed_serve::{DialedRoute, bridge_dialed_serve, route_dialed_connection};
+use crate::adapters::dialed_serve::{
+    DialedRoute, LinkOrigin, LinkServeHalf, bridge_dialed_serve, route_dialed_connection,
+};
 use crate::adapters::hello_wait::{Opening, await_hello};
-use crate::adapters::peer_transfer::{PeerWorkerCommand, PeerWorkerEvent};
-use crate::adapters::serve_runtime::ServeConnection;
+use crate::adapters::peer_link::{DownloadHalf, FarEnd, JoinedLink};
+use crate::adapters::peer_transfer::{PeerWorkerCommand, PeerWorkerEvent, WorkerOpening};
+use crate::adapters::serve_runtime::{ServeConnection, ServeInput};
 use crate::service::DialEnd;
+
+use self::pipeline::{Pipeline, RANGES_PER_REQUEST};
+use self::wait::{
+    Ended, Idled, SlotNews, await_probe, forward_shared, forward_slot_news, idle_wait, next_event,
+};
 
 /// Drive a peer worker over an established `conn` — the body shared by a dialed
 /// worker ([`RuntimePeerTransferService`](crate::RuntimePeerTransferService)'s `start_peer_worker`) and an adopted
-/// inbound worker (a called-back Low-ID peer, ADR-0039). `identified` is `None`
-/// for a dialed worker (wait for the peer's hello) and `Some(identity)` for an
-/// adopted one — the inbound hello already identified it during accept, so the
-/// wait is skipped, the worker enters the requester flow directly, and that
-/// identity is what the download keeps.
+/// inbound worker (a called-back Low-ID peer, ADR-0039). `origin` is the
+/// dial's **Dial in Flight** for a dialed worker (wait for the peer's hello)
+/// and the identity for an adopted one — the inbound hello already identified
+/// it during accept, so the wait is skipped, the worker enters the requester
+/// flow directly, and that identity is what the download keeps.
 /// `own_status` is what rmule holds of `file`; the connect-time name ask
 /// carries it. `want_sources` is the download's source-ask
 /// decision for this connection (ADR-0108).
@@ -38,20 +48,23 @@ pub(crate) async fn drive_peer_worker(
     file: Ed2kFileLink,
     own_status: PartBitmap,
     want_sources: bool,
-    identified: Option<PeerIdentity>,
-    mut command_rx: mpsc::Receiver<PeerWorkerCommand>,
+    origin: LinkOrigin,
+    command_rx: mpsc::Receiver<PeerWorkerCommand>,
     event_tx: mpsc::Sender<PeerWorkerEvent>,
     deps: InboundPeerDeps,
 ) {
     let slot_wait_timeout = deps.slot_wait_timeout;
     let hello_refusals = deps.hello_refusals.clone();
     let dialed_serve_sink = deps.dialed_serve_sink.clone();
-    // Split the one socket into the two consumers: the router owns the
-    // connection, fans events to the download (requester) half and the serve
-    // (Server Capability) half, and frames commands from both back onto the
-    // socket.
+    // Split the one socket into its consumers: the router owns the
+    // connection, fans events to the download riding it (the requester) and
+    // the serve half (Server Capability), and frames each one's commands back
+    // onto the socket. This download is the link's first rider; once the
+    // peer is identified another download of it may wait for the next turn
+    // (ADR-0107, "One peer, one link").
     let (peer_cmd_tx, peer_cmd_rx) = mpsc::channel(16);
     let (requester_tx, mut requester_rx) = mpsc::channel(64);
+    let (serve_cmd_tx, serve_cmd_rx) = mpsc::channel(16);
     // Server Capability events arriving before the serve bridge attaches
     // (below, post-identify) buffer here; the handshake ordering means no
     // serve burst precedes `Identified`, so this depth is ample.
@@ -60,10 +73,14 @@ pub(crate) async fn drive_peer_worker(
     // its identity reaches the download before the router starts, so every
     // revision the router forwards follows it. A dialed worker's comes from
     // the router at the peer's hello.
-    let adopted = identified.is_some();
-    if let Some(identity) = identified
+    let adopted = matches!(origin, LinkOrigin::Adopted(_));
+    // A link rmule dialed: what crosses it is noted on its far end, which the
+    // serve side reads before letting the peer's own link go for it
+    // (ADR-0107 invariant 7).
+    let far_end = (!adopted).then(FarEnd::new);
+    if let LinkOrigin::Adopted(identity) = &origin
         && event_tx
-            .send(PeerWorkerEvent::Identity(identity))
+            .send(PeerWorkerEvent::Identity(identity.clone()))
             .await
             .is_err()
     {
@@ -71,12 +88,17 @@ pub(crate) async fn drive_peer_worker(
     }
     tokio::spawn(route_dialed_connection(
         conn,
-        peer_cmd_rx,
         DialedRoute {
-            requester_tx,
+            rider: DownloadHalf {
+                requester_tx,
+                worker_evt_tx: event_tx.clone(),
+                peer_cmd_rx,
+            },
             server_tx,
-            worker_evt_tx: event_tx.clone(),
+            serve_cmd_rx,
             deps,
+            origin,
+            far_end: far_end.clone(),
         },
     ));
     if !adopted
@@ -84,8 +106,118 @@ pub(crate) async fn drive_peer_worker(
     {
         super::end_dial(&event_tx, cause).await;
         let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-        return; // dropping peer_cmd_tx winds the router (and socket) down
+        return; // dropping both command senders winds the router (and socket) down
     }
+    work_the_link(
+        WorkerHalves {
+            peer_cmd_tx,
+            requester_rx,
+        },
+        Some(ServeHalf {
+            peer,
+            server_rx,
+            serve_cmd_tx,
+            sink: dialed_serve_sink,
+            dialed: far_end,
+        }),
+        &file,
+        own_status,
+        want_sources,
+        WorkerOpening::Probe,
+        command_rx,
+        event_tx,
+        slot_wait_timeout,
+    )
+    .await;
+}
+
+/// Drive a download worker over a **Served Link** it joined (ADR-0107, "One
+/// peer, one link"): the peer is linked to us already, so nothing is dialed
+/// and nothing waits for a hello — the link's identity is the one the
+/// download keeps, as an adopted worker's is — and the link's serve half
+/// stays where it is, registered since the peer came in. `opening` says
+/// whether it probes the file or takes a grant the link carries (ADR-0107).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn drive_joined_worker(
+    joined: JoinedLink,
+    file: Ed2kFileLink,
+    own_status: PartBitmap,
+    want_sources: bool,
+    opening: WorkerOpening,
+    command_rx: mpsc::Receiver<PeerWorkerCommand>,
+    event_tx: mpsc::Sender<PeerWorkerEvent>,
+    slot_wait_timeout: Duration,
+) {
+    let JoinedLink {
+        identity,
+        peer_cmd_tx,
+        requester_rx,
+    } = joined;
+    if event_tx
+        .send(PeerWorkerEvent::Identity(identity))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    work_the_link(
+        WorkerHalves {
+            peer_cmd_tx,
+            requester_rx,
+        },
+        None,
+        &file,
+        own_status,
+        want_sources,
+        opening,
+        command_rx,
+        event_tx,
+        slot_wait_timeout,
+    )
+    .await;
+}
+
+/// The download's two ends of a link: where its commands are framed and where
+/// the link's requester events arrive.
+struct WorkerHalves {
+    peer_cmd_tx: mpsc::Sender<PeerCommand>,
+    requester_rx: mpsc::Receiver<PeerEvent>,
+}
+
+/// A dialed or adopted link's serve half, handed to the serve activity once
+/// the worker is connected.
+struct ServeHalf {
+    peer: PeerEndpoint,
+    server_rx: mpsc::Receiver<ServeInput>,
+    /// Where the serve half's commands are framed onto the link.
+    serve_cmd_tx: mpsc::Sender<PeerCommand>,
+    sink: crate::adapters::SharedDialedServeSink,
+    /// On a link rmule dialed, rather than one the peer opened and a download
+    /// adopted, what its router notes of its far end.
+    dialed: Option<FarEnd>,
+}
+
+/// From a connected link to the worker's end: report the connection, send the
+/// connect-time file request — none when the link carries a grant the worker
+/// takes off parts its record heard (`WorkerOpening::Granted`) — hand the serve half (when the link has one of
+/// its own) to the serve activity, then take the download's commands until it
+/// winds the worker down.
+#[allow(clippy::too_many_arguments)]
+async fn work_the_link(
+    halves: WorkerHalves,
+    serve_half: Option<ServeHalf>,
+    file: &Ed2kFileLink,
+    own_status: PartBitmap,
+    want_sources: bool,
+    opening: WorkerOpening,
+    mut command_rx: mpsc::Receiver<PeerWorkerCommand>,
+    event_tx: mpsc::Sender<PeerWorkerEvent>,
+    slot_wait_timeout: Duration,
+) {
+    let WorkerHalves {
+        peer_cmd_tx,
+        mut requester_rx,
+    } = halves;
     if event_tx.send(PeerWorkerEvent::Connected).await.is_err() {
         return;
     }
@@ -104,118 +236,147 @@ pub(crate) async fn drive_peer_worker(
     // separate Connected-time decision (ADR-0038) — it owns "still rootless?"
     // dynamically, stopping once a root commits — so `want_aich_root` is not
     // folded from a spawn-time snapshot here.
-    let connect_request = PeerCommand::Requester(RequesterCommand::RequestFile {
-        file_hash: file.file_hash,
-        file_size: file.size,
-        want_sources,
-        want_aich_root: false,
-        own_status,
-    });
-    // Whether the ask went out is the session's to say (ADR-0108): its
-    // `FileRequestSent` reaches the download through the router as
-    // `SourceExchange` + `SourcesAsked`.
-    let _ = peer_cmd_tx.send(connect_request).await;
+    // A link carrying a grant the worker takes off parts its record heard is
+    // asked no file: aMule's downloader sends none on an uploader's dial-back
+    // (`BaseClient.cpp:1692-1706`, ADR-0107).
+    if opening == WorkerOpening::Probe {
+        let connect_request = PeerCommand::Requester(RequesterCommand::RequestFile {
+            file_hash: file.file_hash,
+            file_size: file.size,
+            want_sources,
+            want_aich_root: false,
+            own_status,
+        });
+        // Whether the ask went out is the session's to say (ADR-0108): its
+        // `FileRequestSent` reaches the download through the router as
+        // `SourceExchange` + `SourcesAsked`.
+        let _ = peer_cmd_tx.send(connect_request).await;
+    }
 
-    // Same-socket serve: while the serve activity is running, hand the serve
-    // half of this connection to it so the peer's pull is admitted to the one
-    // cross-connection UploadSlotQueue exactly like an accepted connection. When
-    // not serving the sink is empty and the router drops Server Capability
-    // requests.
-    let serve_sink = dialed_serve_sink.sender();
-    if let Some(serve_sink) = serve_sink {
-        let (serve_cmd_tx, serve_cmd_rx) = mpsc::channel(16);
-        let (serve_evt_tx, serve_evt_rx) = mpsc::channel(16);
-        tokio::spawn(bridge_dialed_serve(
-            server_rx,
-            serve_cmd_rx,
-            peer_cmd_tx.clone(),
-            serve_evt_tx,
-        ));
-        let _ = serve_sink
-            .send(ServeConnection::new(peer, serve_cmd_tx, serve_evt_rx))
-            .await;
-    } else {
-        // Not serving: nobody drains the serve half. Close it now so the
-        // router's bounded `server_tx.send(..)` fails fast (the request is
-        // dropped) instead of filling at capacity and stalling the socket once
-        // a peer sends >16 Server Capability requests.
-        drop(server_rx);
+    // Same-socket serve: a link of the worker's own hands its serve half to
+    // the serve activity, so the peer's pull is admitted to the one
+    // cross-connection UploadSlotQueue exactly like an accepted connection; a
+    // joined link's serve half never left it.
+    if let Some(half) = serve_half {
+        hand_over_serve_half(half).await;
     }
 
     // Set once the download signals a local-reason abandon (ADR-0056): the
     // teardown then emits `OP_CANCELTRANSFER` instead of the silent slot
     // release a normal completion uses.
     let mut cancel = false;
-    // Commands the block loop read mid-part but could not act on there (a
-    // next part, an AICH detour); served here, in arrival order, before the
-    // channel is read again.
-    let mut deferred = VecDeque::new();
-    loop {
-        let command = match deferred.pop_front() {
-            Some(command) => command,
-            None => match command_rx.recv().await {
+    let mut link = WorkerLink::new(
+        &mut requester_rx,
+        &peer_cmd_tx,
+        &event_tx,
+        &mut command_rx,
+        slot_wait_timeout,
+    );
+    // The link's request pipeline, kept across handouts (ADR-0029).
+    let mut pipeline = Pipeline::new();
+    // The slot ask waits for the probe's answer (ADR-0112): the brain asks
+    // on `PartsAdvertised` and hands the part at the grant, so a partial
+    // source is never handed a part it lacks.
+    let probed = match opening {
+        WorkerOpening::Probe => await_probe(&mut link, file.file_hash, slot_wait_timeout).await,
+        WorkerOpening::Granted => Streamed::Next,
+    };
+    match probed {
+        Streamed::Shutdown { cancel: c } => cancel = c,
+        Streamed::Stalled => cancel = pipeline.holds_slot(),
+        _ => {}
+    }
+    if matches!(probed, Streamed::Next) {
+        // A slot wait — from the probe's answer, or the flow's return to the
+        // queue — is bounded by the slot budget with no part streaming
+        // (ADR-0026).
+        let mut slot_deadline = tokio::time::Instant::now() + slot_wait_timeout;
+        loop {
+            let command = match link.deferred.pop_front() {
                 Some(command) => command,
-                None => break,
-            },
-        };
-        match command {
-            PeerWorkerCommand::RequestPart {
-                plan,
-                resume_offset,
-            } => {
-                let streamed = stream_part_download(
-                    &mut requester_rx,
-                    &peer_cmd_tx,
-                    &event_tx,
-                    PartCommands {
-                        rx: &mut command_rx,
-                        deferred: &mut deferred,
-                    },
-                    &file,
-                    plan,
-                    resume_offset,
-                    slot_wait_timeout,
-                )
-                .await;
-                match streamed {
-                    Streamed::Next => {}
-                    Streamed::WindDown => break,
-                    Streamed::Shutdown { cancel: c } => {
-                        cancel = c;
+                None => {
+                    match idle_wait(&mut link, &mut pipeline, file.file_hash, slot_deadline).await {
+                        Idled::Command(command) => command,
+                        Idled::Requeued => {
+                            pipeline.requeued();
+                            slot_deadline = tokio::time::Instant::now() + slot_wait_timeout;
+                            continue;
+                        }
+                        Idled::Ended => break,
+                        // A granted slot held with nothing asked for the
+                        // budget goes back, as a stalled stream's does.
+                        Idled::Stalled => {
+                            cancel = pipeline.holds_slot();
+                            break;
+                        }
+                    }
+                }
+            };
+            match command {
+                PeerWorkerCommand::AskSlot
+                | PeerWorkerCommand::TakeGrant
+                | PeerWorkerCommand::RequestHashSet => {
+                    let file_hash = file.file_hash;
+                    let ask = match command {
+                        PeerWorkerCommand::AskSlot => RequesterCommand::AskSlot { file_hash },
+                        PeerWorkerCommand::TakeGrant => RequesterCommand::TakeOfferedSlot {
+                            file_hash,
+                            file_size: file.size,
+                        },
+                        _ => RequesterCommand::RequestHashSet { file_hash },
+                    };
+                    if link.cmd_tx.send(PeerCommand::Requester(ask)).await.is_err() {
+                        let _ = link.event_tx.send(PeerWorkerEvent::Disconnected).await;
                         break;
                     }
                 }
-            }
-            PeerWorkerCommand::RequestAich { part, root } => {
-                if !request_aich_recovery(
-                    &mut requester_rx,
-                    &peer_cmd_tx,
-                    &event_tx,
-                    &file,
-                    part,
-                    root,
-                    slot_wait_timeout,
-                )
-                .await
-                {
+                PeerWorkerCommand::RequestBlocks { blocks, handout } => {
+                    pipeline.hand(&blocks, handout);
+                    let streamed =
+                        stream_blocks(&mut link, &mut pipeline, file, slot_wait_timeout).await;
+                    match streamed {
+                        Streamed::Next | Streamed::Handed => {
+                            slot_deadline = tokio::time::Instant::now() + slot_wait_timeout;
+                        }
+                        Streamed::WindDown => break,
+                        // No byte for the budget: a granted slot goes back,
+                        // as aMule's `DOWNLOADTIMEOUT` cancels
+                        // (`DownloadClient.cpp:1188-1196`, ADR-0056).
+                        Streamed::Stalled => {
+                            cancel = pipeline.holds_slot();
+                            break;
+                        }
+                        Streamed::Shutdown { cancel: c } => {
+                            cancel = c;
+                            break;
+                        }
+                    }
+                }
+                // Its answer is forwarded by whichever wait reads it, so a
+                // rank, the grant, a requeue or the peer's end reach the
+                // download meanwhile (ADR-0038, ADR-0117).
+                PeerWorkerCommand::RequestAich { part, root } => {
+                    if !link.ask_aich(file.file_hash, part, root).await {
+                        break;
+                    }
+                }
+                PeerWorkerCommand::RequestAichFileHash => {
+                    // Fire-and-forget: the OP_AICHFILEHASHANS answer arrives on the
+                    // event stream and is forwarded as AichFileHashReceived while a
+                    // part streams (ADR-0038).
+                    let _ = link
+                        .cmd_tx
+                        .send(PeerCommand::Requester(
+                            RequesterCommand::RequestAichFileHash {
+                                file_hash: file.file_hash,
+                            },
+                        ))
+                        .await;
+                }
+                PeerWorkerCommand::Shutdown { cancel: c } => {
+                    cancel = c;
                     break;
                 }
-            }
-            PeerWorkerCommand::RequestAichFileHash => {
-                // Fire-and-forget: the OP_AICHFILEHASHANS answer arrives on the
-                // event stream and is forwarded as AichFileHashReceived while a
-                // part streams (ADR-0038).
-                let _ = peer_cmd_tx
-                    .send(PeerCommand::Requester(
-                        RequesterCommand::RequestAichFileHash {
-                            file_hash: file.file_hash,
-                        },
-                    ))
-                    .await;
-            }
-            PeerWorkerCommand::Shutdown { cancel: c } => {
-                cancel = c;
-                break;
             }
         }
     }
@@ -232,12 +393,12 @@ pub(crate) async fn drive_peer_worker(
             }
         }
     }
-    // Wind the held slot down (a no-op if none): a local-reason abandon emits
-    // `OP_CANCELTRANSFER` (the requester-side counterpart to a silent release,
-    // ADR-0056), a completion or peer-initiated end releases silently. Then drop
-    // `peer_cmd_tx`: if the serve bridge still holds a clone the router keeps
-    // serving until the peer disconnects; otherwise the router sees its command
-    // channel close and shuts the socket down (ADR-0025 release).
+    // Wind the held slot down (a no-op if none): a local-reason abandon or a
+    // granted slot that stalled emits `OP_CANCELTRANSFER` (the requester-side
+    // counterpart to a silent release, ADR-0056), a completion or
+    // peer-initiated end releases silently. Then drop
+    // `peer_cmd_tx`: the link's next waiter takes it, and with none the link
+    // stays up only while its serve half holds it (ADR-0025 release).
     let teardown = if cancel {
         PeerCommand::Requester(RequesterCommand::CancelTransfer {
             file_hash: file.file_hash,
@@ -249,6 +410,42 @@ pub(crate) async fn drive_peer_worker(
     };
     let _ = peer_cmd_tx.send(teardown).await;
     drop(peer_cmd_tx);
+}
+
+/// While the serve activity is running, hand `half` to it so the peer's pull
+/// is admitted to the one cross-connection UploadSlotQueue exactly like an
+/// accepted connection; its commands are framed onto the link through its own
+/// sender. When not serving the sink is empty, the router drops Server
+/// Capability requests, and the serve half lets the link go at once.
+async fn hand_over_serve_half(half: ServeHalf) {
+    let ServeHalf {
+        peer,
+        server_rx,
+        serve_cmd_tx,
+        sink,
+        dialed,
+    } = half;
+    if let Some(serve_sink) = sink.sender() {
+        let (bridge_cmd_tx, bridge_cmd_rx) = mpsc::channel(16);
+        let (serve_evt_tx, serve_evt_rx) = mpsc::channel(16);
+        tokio::spawn(bridge_dialed_serve(
+            server_rx,
+            bridge_cmd_rx,
+            serve_cmd_tx,
+            serve_evt_tx,
+        ));
+        let half = LinkServeHalf {
+            conn: ServeConnection::new(peer, bridge_cmd_tx, serve_evt_rx),
+            dialed,
+        };
+        let _ = serve_sink.send(half).await;
+    } else {
+        // Not serving: nobody drains the serve half. Close it now so the
+        // router's bounded `server_tx.send(..)` fails fast (the request is
+        // dropped) instead of filling at capacity and stalling the socket once
+        // a peer sends >16 Server Capability requests.
+        drop(server_rx);
+    }
 }
 
 /// Wait for a dialed peer's hello, or learn why the connection ended before
@@ -264,132 +461,38 @@ async fn wait_for_peer_identified(
     }
 }
 
-/// Ask the peer for the AICH recovery data of `part` (quoting the trusted
-/// master `root`) and forward the answer to core (ADR-0038). The recovery data
-/// verifies against the trusted root core-side, so asking any connected peer is
-/// safe. On timeout or disconnect, forwards an *empty* answer so the runner
-/// resolves the awaiting part via the MD4 retire-all fallback rather than
-/// stranding it. Returns `false` (winding the worker down) only on disconnect.
-async fn request_aich_recovery(
-    events: &mut mpsc::Receiver<PeerEvent>,
-    cmd_tx: &mpsc::Sender<PeerCommand>,
-    event_tx: &mpsc::Sender<PeerWorkerEvent>,
-    file: &Ed2kFileLink,
-    part: u16,
-    root: AichRootHash,
-    timeout: Duration,
-) -> bool {
-    if cmd_tx
-        .send(PeerCommand::Requester(RequesterCommand::RequestAich {
-            file_hash: file.file_hash,
-            part,
-            root,
-        }))
-        .await
-        .is_err()
-    {
-        let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-        return false;
-    }
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        match tokio::time::timeout_at(deadline, events.recv()).await {
-            // The peer answered: forward it; core verifies + localizes.
-            Ok(Some(PeerEvent::Requester(RequesterEvent::AichAnswerReceived {
-                part: answered,
-                recovery_data,
-                ..
-            }))) if answered == part => {
-                return event_tx
-                    .send(PeerWorkerEvent::AichAnswerReceived {
-                        part,
-                        recovery_data,
-                    })
-                    .await
-                    .is_ok();
-            }
-            // Disconnected: resolve the awaiting part with an empty answer (→
-            // retire-all fallback), then wind the worker down.
-            Ok(None) | Ok(Some(PeerEvent::Connection(ConnectionEvent::Disconnected { .. }))) => {
-                let _ = event_tx
-                    .send(PeerWorkerEvent::AichAnswerReceived {
-                        part,
-                        recovery_data: Vec::new(),
-                    })
-                    .await;
-                let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-                return false;
-            }
-            // No answer within the budget: empty answer → fallback, keep worker.
-            Err(_) => {
-                return event_tx
-                    .send(PeerWorkerEvent::AichAnswerReceived {
-                        part,
-                        recovery_data: Vec::new(),
-                    })
-                    .await
-                    .is_ok();
-            }
-            // Any other event during the wait: ignore and keep waiting.
-            Ok(Some(_)) => {}
-        }
-    }
-}
-
-/// Stream one part's bytes from `resume_offset` to the part end in
-/// `<= EMBLOCKSIZE` blocks, emitting each block to core via `BlockReceived`.
-/// A real peer grants the slot but sends nothing for a request whose range
-/// exceeds one block, so the next block is requested only once every byte
-/// already requested has arrived. Core (not the worker) owns assembly and
-/// completion (ADR-0029): the worker forwards each block as it arrives and
-/// reports `PartStreamed` once it has delivered its whole assigned range.
+/// Ask the blocks `pipeline` was handed and forward their bytes, in
+/// `<= EMBLOCKSIZE` steps up to the Request Depth, refilled at every arrival
+/// (ADR-0029 "Request pipeline"). Core (not the worker) owns assembly and
+/// completion (ADR-0117): the worker forwards each block's bytes as they
+/// arrive, tells core the room it has once everything handed is asked
+/// (`BlocksWanted`), and serves blocks handed meanwhile behind the rest. A
+/// block the session could not inflate is reported lost and freed; the slot is
+/// kept. The stream ends when the pipeline has drained, its last
+/// `BlocksWanted` saying so.
 ///
 /// Every wait is bounded by `slot_wait_timeout` measured from the last
-/// sign of data progress: a busy peer may queue us (and rank us)
-/// indefinitely, and a peer that grants a slot may then stall delivering
-/// nothing. Either way, if no part bytes arrive within the budget the
-/// worker gives up and reports `SlotTimeout`. The budget resets on each
-/// received block so a healthy slow transfer is not cut off.
-#[allow(clippy::too_many_arguments)]
-async fn stream_part_download(
-    events: &mut mpsc::Receiver<PeerEvent>,
-    cmd_tx: &mpsc::Sender<PeerCommand>,
-    event_tx: &mpsc::Sender<PeerWorkerEvent>,
-    commands: PartCommands<'_>,
+/// sign of data progress: a peer that grants a slot may stall delivering
+/// nothing, and if no part bytes arrive within the budget the worker gives
+/// up and reports `SlotTimeout`. The budget resets on each received block so
+/// a healthy slow transfer is not cut off.
+async fn stream_blocks(
+    link: &mut WorkerLink<'_>,
+    pipeline: &mut Pipeline,
     file: &Ed2kFileLink,
-    plan: PartPlan,
-    resume_offset: u64,
     slot_wait_timeout: Duration,
 ) -> Streamed {
+    let (cmd_tx, event_tx) = (link.cmd_tx, link.event_tx);
     let file_hash = file.file_hash;
-    let part_end = plan.offset + plan.len;
-    let mut requested_until = resume_offset;
-    let mut received_until = resume_offset;
     let mut progress_deadline = tokio::time::Instant::now() + slot_wait_timeout;
 
     loop {
-        if received_until >= part_end {
-            // Delivered the whole assigned range; core decides completion
-            // once the shared per-part prefix reaches the part length.
-            return match event_tx
-                .send(PeerWorkerEvent::PartStreamed {
-                    part_index: plan.part_index,
-                })
-                .await
-            {
-                Ok(()) => Streamed::Next,
-                Err(_) => Streamed::WindDown,
-            };
-        }
-
-        if requested_until < part_end && received_until >= requested_until {
-            let block_end = (requested_until + EMBLOCKSIZE).min(part_end);
-            let ranges = match PartRanges::new([(requested_until, block_end), (0, 0), (0, 0)]) {
-                Ok(ranges) => ranges,
-                Err(_) => {
-                    let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-                    return Streamed::WindDown;
-                }
+        while let Some(blocks) = pipeline.next_request(Instant::now().into_std()) {
+            let mut padded = [(0, 0); RANGES_PER_REQUEST];
+            padded[..blocks.len()].copy_from_slice(&blocks);
+            let Ok(ranges) = PartRanges::new(padded) else {
+                let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
+                return Streamed::WindDown;
             };
             if cmd_tx
                 .send(PeerCommand::Requester(RequesterCommand::RequestParts {
@@ -403,194 +506,175 @@ async fn stream_part_download(
                 let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
                 return Streamed::WindDown;
             }
-            requested_until = block_end;
+        }
+        if let Some((room, drained)) = pipeline.want() {
+            let room = u32::try_from(room).unwrap_or(u32::MAX);
+            let handout = pipeline.handout();
+            if event_tx
+                .send(PeerWorkerEvent::BlocksWanted {
+                    room,
+                    drained,
+                    handout,
+                })
+                .await
+                .is_err()
+            {
+                return Streamed::WindDown;
+            }
+            if drained {
+                return Streamed::Next;
+            }
         }
 
-        // Bound every wait by the no-progress budget: a busy peer can
-        // queue us forever before a grant, and a peer that grants can then
-        // stall sending nothing. The deadline resets whenever a block
-        // arrives (below), so a healthy transfer is never cut off.
-        //
-        // The command channel is read between blocks too: a `Shutdown`
-        // mid-part stops the stream at once instead of letting the peer send
-        // the rest of a part the download has already let go of (aMule's
-        // `CUpDownClient::Disconnected` aborts the transfer on the spot). The
-        // bias puts the command first so a shutdown is never starved by a
-        // busy block stream.
-        let event = tokio::select! {
-            biased;
-            command = commands.rx.recv() => match command {
-                Some(PeerWorkerCommand::Shutdown { cancel }) => {
-                    return Streamed::Shutdown { cancel };
-                }
-                Some(PeerWorkerCommand::RequestAichFileHash) => {
-                    let _ = cmd_tx
-                        .send(PeerCommand::Requester(RequesterCommand::RequestAichFileHash { file_hash }))
-                        .await;
-                    continue;
-                }
-                Some(later) => {
-                    commands.deferred.push_back(later);
-                    continue;
-                }
-                None => return Streamed::WindDown,
-            },
-            waited = tokio::time::timeout_at(progress_deadline, events.recv()) => match waited {
-                Ok(event) => event,
-                Err(_) => {
-                    let _ = event_tx.send(PeerWorkerEvent::SlotTimeout).await;
-                    return Streamed::WindDown;
-                }
-            },
+        // Bound every wait by the no-progress budget: a peer that grants can
+        // stall sending nothing. The deadline resets whenever a block arrives
+        // (below), so a healthy transfer is never cut off.
+        let event = match next_event(link, file_hash, progress_deadline).await {
+            Ok(event) => event,
+            // Blocks handed meanwhile queue behind the rest.
+            Err(Streamed::Handed) => {
+                hand_deferred(link, pipeline);
+                continue;
+            }
+            Err(end) => return end,
         };
+        let event = match forward_shared(event_tx, file_hash, event).await {
+            Ok(Some(event)) => event,
+            Ok(None) => continue,
+            Err(Ended) => return Streamed::WindDown,
+        };
+        // `OP_OUTOFPARTREQS` on the granted slot: the transfer is over, not
+        // the flow. Core frees the worker's blocks, and the worker stays on
+        // the link for the next grant (ADR-0057).
+        match forward_slot_news(event_tx, pipeline, file_hash, &event).await {
+            Ok(None) => {}
+            Ok(Some(SlotNews::Noted)) => continue,
+            Ok(Some(SlotNews::Requeued)) => {
+                pipeline.requeued();
+                return Streamed::Next;
+            }
+            Err(Ended) => return Streamed::WindDown,
+        }
         match event {
-            Some(PeerEvent::Requester(RequesterEvent::HashSetReceived {
-                file_hash: received,
-                part_hashes,
-            })) if received == file_hash => {
-                if event_tx
-                    .send(PeerWorkerEvent::HashSetReceived { part_hashes })
-                    .await
-                    .is_err()
-                {
-                    return Streamed::WindDown;
-                }
-            }
-            Some(PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash: granted }))
-                if granted == file_hash =>
-            {
-                if event_tx.send(PeerWorkerEvent::SlotGranted).await.is_err() {
-                    return Streamed::WindDown;
-                }
-            }
-            Some(PeerEvent::Requester(RequesterEvent::PartReceived {
+            PeerEvent::Requester(RequesterEvent::PartReceived {
                 file_hash: received,
                 offset,
                 bytes,
-            })) if received == file_hash => {
+            }) if received == file_hash => {
                 // Data progress: extend the no-progress budget and forward
-                // the block to core, which merges it into the shared prefix.
-                progress_deadline = tokio::time::Instant::now() + slot_wait_timeout;
-                received_until = offset + bytes.len() as u64;
-                if event_tx
-                    .send(PeerWorkerEvent::BlockReceived {
-                        part_index: plan.part_index,
-                        offset,
-                        bytes,
-                    })
-                    .await
-                    .is_err()
+                // the bytes of an asked block to core, which merges them into
+                // the part's Arrived Ranges.
+                let now = Instant::now();
+                progress_deadline = now + slot_wait_timeout;
+                let part_index = u32::try_from(offset / ED2K_PART_SIZE).unwrap_or(u32::MAX);
+                if pipeline.arrived(now.into_std(), offset, bytes.len() as u64)
+                    && event_tx
+                        .send(PeerWorkerEvent::BlockReceived {
+                            part_index,
+                            offset,
+                            bytes,
+                        })
+                        .await
+                        .is_err()
                 {
                     return Streamed::WindDown;
                 }
             }
-            Some(PeerEvent::Requester(RequesterEvent::SourcesReceived {
+            // A lost block will not come again on this slot (a stock uploader
+            // never sends a block twice in one slot): core frees it for
+            // another worker (ADR-0029 "A lost block is freed").
+            PeerEvent::Requester(RequesterEvent::CompressedPartSkipped {
                 file_hash: received,
-                sources,
-            })) if received == file_hash => {
-                // Forward exchanged sources to the runner's candidate pool
-                // (ADR-0055); non-terminal — keep streaming this part.
-                let _ = event_tx
-                    .send(PeerWorkerEvent::SourcesReceived { sources })
-                    .await;
-            }
-            Some(PeerEvent::Requester(RequesterEvent::FileProbed {
-                file_hash: probed,
-                status,
-            })) if probed == file_hash => {
-                // The one bit of the peer's part picture the source-ask gate
-                // reads (ADR-0108); non-terminal.
-                let complete = match &status {
-                    FileProbeStatus::Available { complete, .. } => *complete,
-                    FileProbeStatus::NotAvailable => false,
-                };
-                let _ = event_tx
-                    .send(PeerWorkerEvent::PartsAdvertised { complete })
-                    .await;
-            }
-            Some(PeerEvent::Requester(RequesterEvent::AichFileHashReceived { root })) => {
-                // A trusted-set root proposal (ADR-0038); forward to the
-                // runner's vote tally. Non-terminal — keep streaming. No file
-                // guard: the 0x9D answer carries no file hash.
-                let _ = event_tx
-                    .send(PeerWorkerEvent::AichFileHashReceived { root })
-                    .await;
-            }
-            // The peer signals it finished the requested range; the
-            // range-done check at the top of the loop emits PartStreamed
-            // once the assigned range is delivered, otherwise the next block
-            // is requested.
-            Some(PeerEvent::Requester(RequesterEvent::SlotReleased {
-                file_hash: released,
-                reason: SlotReleaseReason::DownloadComplete,
-            })) if released == file_hash => {}
-            Some(PeerEvent::Requester(RequesterEvent::SlotReleased {
-                file_hash: released,
-                reason: SlotReleaseReason::QueueRejected,
-            })) if released == file_hash => {
-                let _ = event_tx.send(PeerWorkerEvent::SlotRejected).await;
-                return Streamed::WindDown;
-            }
-            Some(PeerEvent::Requester(RequesterEvent::SlotReleased {
-                file_hash: released,
+                offset,
                 ..
-            })) if released == file_hash => {
-                let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-                return Streamed::WindDown;
-            }
-            // The peer is holding us in its upload queue. Non-terminal:
-            // keep the connection open and keep waiting for a slot grant,
-            // but forward the position so core/CLI see queue progress.
-            Some(PeerEvent::Requester(RequesterEvent::QueueRanked {
-                file_hash: ranked,
-                rank,
-            }))
-            | Some(PeerEvent::Requester(RequesterEvent::QueueProgress {
-                file_hash: ranked,
-                new_rank: rank,
-                ..
-            })) if ranked == file_hash => {
-                if event_tx
-                    .send(PeerWorkerEvent::Queued { rank })
-                    .await
-                    .is_err()
+            }) if received == file_hash => {
+                if let Some((start, end)) = pipeline.lost(offset)
+                    && event_tx
+                        .send(PeerWorkerEvent::BlockLost { start, end })
+                        .await
+                        .is_err()
                 {
                     return Streamed::WindDown;
                 }
-            }
-            // A serving command the session refused (a block after the slot
-            // was released) concerns the serve half; the link and this
-            // download carry on, as aMule's `RemoveFromUploadQueue` leaves
-            // the socket alone (`UploadQueue.cpp:560-587`).
-            Some(PeerEvent::Notice(NoticeEvent::CommandRejected { reason }))
-                if reason.is_serving_refusal() => {}
-            Some(PeerEvent::Notice(NoticeEvent::CommandRejected { .. }))
-            | Some(PeerEvent::Connection(ConnectionEvent::Disconnected { .. }))
-            | None => {
-                let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-                return Streamed::WindDown;
             }
             _ => {}
         }
     }
 }
 
-/// The worker's command side, lent to the block loop so it can hear a
-/// `Shutdown` mid-part; anything else it reads there waits in `deferred`.
-struct PartCommands<'a> {
-    rx: &'a mut mpsc::Receiver<PeerWorkerCommand>,
-    deferred: &'a mut VecDeque<PeerWorkerCommand>,
+/// Queue every `RequestBlocks` a wait set aside behind what `pipeline` holds,
+/// in arrival order; the other commands keep their place.
+fn hand_deferred(link: &mut WorkerLink<'_>, pipeline: &mut Pipeline) {
+    link.deferred.retain(|command| match command {
+        PeerWorkerCommand::RequestBlocks { blocks, handout } => {
+            pipeline.hand(blocks, *handout);
+            false
+        }
+        _ => true,
+    });
 }
 
-/// How one part's stream ended.
+/// The worker's ends of its channels, lent to every wait on the peer: the
+/// peer's events, the commands sent it, the events sent the download, and
+/// the download's commands, read so a wait hears a `Shutdown`. A command a
+/// wait reads but cannot act on there (a next handout) waits in `deferred`,
+/// served in arrival order before the channel is read again.
+struct WorkerLink<'a> {
+    events: &'a mut mpsc::Receiver<PeerEvent>,
+    cmd_tx: &'a mpsc::Sender<PeerCommand>,
+    event_tx: &'a mpsc::Sender<PeerWorkerEvent>,
+    commands: &'a mut mpsc::Receiver<PeerWorkerCommand>,
+    deferred: VecDeque<PeerWorkerCommand>,
+    /// The AICH recovery asked and not yet answered: its part, and when an
+    /// empty answer stands in for the peer's (ADR-0038).
+    aich: Option<(u16, tokio::time::Instant)>,
+    /// The AICH recoveries handed while one is out, each asked once the one
+    /// before it settles.
+    aich_queued: VecDeque<(u16, rmule_primitives::AichRootHash)>,
+    /// How long an AICH ask waits for its answer: the slot budget.
+    aich_budget: Duration,
+}
+
+impl<'a> WorkerLink<'a> {
+    fn new(
+        events: &'a mut mpsc::Receiver<PeerEvent>,
+        cmd_tx: &'a mpsc::Sender<PeerCommand>,
+        event_tx: &'a mpsc::Sender<PeerWorkerEvent>,
+        commands: &'a mut mpsc::Receiver<PeerWorkerCommand>,
+        aich_budget: Duration,
+    ) -> Self {
+        Self {
+            events,
+            cmd_tx,
+            event_tx,
+            commands,
+            deferred: VecDeque::new(),
+            aich: None,
+            aich_queued: VecDeque::new(),
+            aich_budget,
+        }
+    }
+}
+
+/// How a wait on the peer ended: the probe's, or a stream of handed blocks.
 enum Streamed {
-    /// The assigned range was delivered; read the next command.
+    /// The probe was answered, or the pipeline drained; read the next
+    /// command.
     Next,
     /// The peer or the core side went away; wind the worker down.
     WindDown,
+    /// Nothing arrived within the slot budget, reported as `SlotTimeout`;
+    /// wind the worker down, giving back a slot it holds (ADR-0056).
+    Stalled,
     /// The download told this worker to stop mid-part.
     Shutdown { cancel: bool },
+    /// The download handed this worker blocks while it waited: they wait in
+    /// `deferred` until the stream takes them.
+    Handed,
 }
 
+mod aich;
+mod pipeline;
 #[cfg(test)]
 mod tests;
+mod wait;

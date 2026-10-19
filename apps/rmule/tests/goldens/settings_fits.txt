@@ -1,0 +1,60 @@
+┌ Settings ──────────────────────────────────── j/k row  ←→ step  Enter edit ┐
+│Paths                                                                       │
+│ Download dir /home/u/Downloads                                             │
+│ Temp dir     /home/u/.local/share/rmule/Temp  (the default)                │
+│ Data dir     /home/u/.local/share/rmule  (from HOME)                       │
+│                                                                            │
+│Shared directories                                                          │
+│ Share a dir  Enter, type an absolute path, Enter                           │
+│                                                                            │
+│Network                                                                     │
+│ Nickname     rmule  (on restart)                                           │
+│ eD2k port    4662  (on restart)                                            │
+│ UDP port     4672  (on restart)                                            │
+│ Obfuscation  requested  peer TCP/UDP + Kad + server UDP                    │
+│ Port mapping on  opens router ports: UPnP, PCP, NAT-PMP  (on restart)      │
+│ Autoconnect  off  at start, to the last server — none yet  (on restart)    │
+│ server.met   http://upd.emule-security.org/server.met  (Networks: U)       │
+│ Fetch list   on  server.met at start when the list is empty  (on restart)  │
+│ Update lists off  merge every address below at start  (on restart)         │
+│ List URLs    none set  server.met addresses, space between  (on restart)   │
+│                                                                            │
+│Servers                                                                     │
+│ Dead after   3  failed tries in a row; a dead server stays listed          │
+│ Hide shares  off  from servers that answer related searches                │
+│                                                                            │
+│Downloads                                                                   │
+│ Remember peers 10  per download, dialled first after a restart             │
+│ Player       unset — Preview opens the default app                         │
+│                                                                            │
+│Kad                                                                         │
+│ nodes.dat    http://upd.emule-security.org/nodes.dat  (on restart)         │
+│ Fetch seeds  on  nodes.dat on first Kad start  (on restart)                │
+│                                                                            │
+│Appearance                                                                  │
+│ Theme        auto  auto = RMULE_THEME / COLORTERM                          │
+│                                                                            │
+│Diagnostics                                                                 │
+│ Full run log off  adds peers, files and paths to rmule.log                 │
+│                                                                            │
+│Identity — minted once, never edited                                        │
+│ User hash    2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a                              │
+│ Kad node ID  77777777777777777777777777777777                              │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+└──────────────────────────────────────────────────────────────────── 1 / 21 ┘

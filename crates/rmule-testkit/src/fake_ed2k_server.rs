@@ -23,7 +23,7 @@ use rmule_net::ed2k::ServerObfuscationTransport;
 use rmule_peer::HelloAnswer;
 use rmule_primitives::{
     ClientId, FileHash, Ipv4Endpoint, KeywordQuery, Packet, PacketProtocol, PeerSource,
-    PrimitiveError, SearchResult, ServerEndpoint, UserHash, is_plaintext_marker,
+    PrimitiveError, SearchResult, ServerEndpoint, TagValue, UserHash, is_plaintext_marker,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -35,6 +35,10 @@ use tokio::task::JoinHandle;
 /// unbound port is refused and a live driver answers near-instantly, so this
 /// only bounds the pathological case (the real Lugdunum allows ~10 s).
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// `SRVCAP_IPV6`, the `CT_SERVER_FLAGS` bit that rides with `CT_MOD_IP_V6`
+/// (ADR-0087 §4.1).
+const SRVCAP_IPV6: u32 = 0x1000;
 
 /// A stand-in routable id handed to reachable (High-ID) clients. Any value
 /// `>= ClientId::LOW_ID_THRESHOLD` works; rmule never dials it for a callback.
@@ -101,6 +105,10 @@ struct Shared {
     /// While set ([`FakeEd2kServer::set_refusing`]), a login is closed before
     /// any id is granted — a server that accepts the socket and refuses.
     refusing: bool,
+    /// While set ([`FakeEd2kServer::set_probe_blocked`]), a login's
+    /// Back-Connect Probe reads unanswered without a dial — a client whose
+    /// firewall drops inbound TCP — so it is assigned a Low ID.
+    probe_blocked: bool,
     /// While set ([`FakeEd2kServer::set_search_silent`]), a search request is
     /// recorded and never answered — a server still thinking when its session
     /// ends.
@@ -229,6 +237,13 @@ impl FakeEd2kServer {
     /// closed before any id is granted.
     pub async fn set_refusing(&self, refusing: bool) {
         self.shared.lock().await.refusing = refusing;
+    }
+
+    /// Block (`true`) or open (`false`) the Back-Connect Probe of every later
+    /// login: a blocked one reads unanswered, so the client is assigned a Low
+    /// ID even while it listens — the bench's forced Low-ID, as a knob.
+    pub async fn set_probe_blocked(&self, blocked: bool) {
+        self.shared.lock().await.probe_blocked = blocked;
     }
 
     /// Replace the scripted `OP_GETSOURCES` answer (scripted mode only).
@@ -510,9 +525,11 @@ where
     // later ADRs settled may ride, each at most once and in this order:
     // `CT_MOD_IP_V6` (`0xAE`, ADR-0087) and `CT_EMULE_UDPPORTS` (`0xF9`,
     // ADR-0091 — present whenever a client-UDP socket is bound, which is
-    // every running core). Anything else is a violating client and is dropped
-    // before IdChange, so any test driving a session through this server
-    // fails loudly on its login wait.
+    // every running core). `CT_MOD_IP_V6` rides exactly when
+    // `CT_SERVER_FLAGS` sets `SRVCAP_IPV6` (`0x1000`): the dialect's "send
+    // both or neither" (ADR-0087 §4.1). Anything else is a violating client
+    // and is dropped before IdChange, so any test driving a session through
+    // this server fails loudly on its login wait.
     let tag_ids: Vec<Option<u8>> = login.tags().iter().map(|t| t.name().id()).collect();
     let canonical = [Some(0x01), Some(0x11), Some(0x20), Some(0xFB)];
     let adverts: &[Option<u8>] = tag_ids.get(canonical.len()..).unwrap_or(&[]);
@@ -520,7 +537,12 @@ where
         adverts,
         [] | [Some(0xAE)] | [Some(0xF9)] | [Some(0xAE), Some(0xF9)]
     );
-    if !tag_ids.starts_with(&canonical) || !adverts_ok {
+    let flags_ipv6 = login.tags().iter().any(|tag| {
+        tag.name().id() == Some(0x20)
+            && matches!(tag.value(), TagValue::U32(flags) if flags & SRVCAP_IPV6 != 0)
+    });
+    let ipv6_paired = flags_ipv6 == adverts.contains(&Some(0xAE));
+    if !tag_ids.starts_with(&canonical) || !adverts_ok || !ipv6_paired {
         writer.abort();
         return;
     }
@@ -538,10 +560,19 @@ where
     // your <port> port" and assigns Low-ID — so the client must be accepting
     // AND answering *during* its login. Scripted mode skips the probe: every
     // client is High-ID by construction.
-    let (scripted, login_delay, tcp_flags, obfuscation_offer, standard_port, raw_id_change) = {
+    let (
+        scripted,
+        probe_blocked,
+        login_delay,
+        tcp_flags,
+        obfuscation_offer,
+        standard_port,
+        raw_id_change,
+    ) = {
         let state = shared.lock().await;
         (
             state.scripted_sources.is_some(),
+            state.probe_blocked,
             state.login_delay,
             state.tcp_flags,
             state.obfuscation_offer,
@@ -556,7 +587,8 @@ where
     if !login_delay.is_zero() {
         tokio::time::sleep(login_delay).await;
     }
-    let reachable = scripted || port_check(peer_ip, advertised, login.user_hash()).await;
+    let reachable =
+        scripted || (!probe_blocked && port_check(peer_ip, advertised, login.user_hash()).await);
 
     let assigned = if reachable {
         ClientId::from_u32(HIGH_ID)

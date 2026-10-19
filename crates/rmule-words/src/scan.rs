@@ -47,6 +47,7 @@ pub fn refusal(reason: &DirectoryRefusal) -> String {
             format!("it cannot be looked at: {}", kind_words(*kind))
         }
         DirectoryRefusal::NotUtf8 => "its name is not valid UTF-8".to_string(),
+        DirectoryRefusal::NotAbsolute => "it is not an absolute path".to_string(),
         DirectoryRefusal::HomeDirectory => {
             "it is your home directory — share a folder inside it".to_string()
         }
@@ -62,6 +63,15 @@ pub fn refusal(reason: &DirectoryRefusal) -> String {
         DirectoryRefusal::AlreadyShared => "it is already shared".to_string(),
         DirectoryRefusal::InsideShared { parent } => {
             format!("it is already shared as part of {}", parent.display())
+        }
+        DirectoryRefusal::HoldsShared { child } => {
+            format!("it holds the shared directory {}", child.display())
+        }
+        DirectoryRefusal::HoldsTempDirectory => {
+            "it is or holds the Temp Directory, where unfinished downloads are kept".to_string()
+        }
+        DirectoryRefusal::InsideTempDirectory => {
+            "it lies inside the Temp Directory, where unfinished downloads are kept".to_string()
         }
         DirectoryRefusal::DownloadDirectory => {
             "it is the download directory — change that above, under Paths".to_string()
@@ -81,6 +91,24 @@ pub fn download_dir_refusal(reason: &DirectoryRefusal) -> String {
         DirectoryRefusal::HomeDirectory => "it is your home directory".to_string(),
         DirectoryRefusal::FilesystemRoot => "it is the root of a disk".to_string(),
         other => refusal(other),
+    }
+}
+
+/// Why the Temp Directory was not taken, as a clause: where it lies against
+/// the shared directories, what it is, or why it could not be made.
+#[must_use]
+pub fn temp_dir_refusal(reason: &DirectoryRefusal) -> String {
+    match reason {
+        DirectoryRefusal::NotADirectory => "it names a file, not a directory".to_string(),
+        DirectoryRefusal::Unreachable(kind) => {
+            format!("it cannot be made: {}", kind_words(*kind))
+        }
+        DirectoryRefusal::DownloadDirectory => "it is the download directory".to_string(),
+        DirectoryRefusal::AlreadyShared => "it is a shared directory".to_string(),
+        DirectoryRefusal::InsideShared { parent } => {
+            format!("it lies inside the shared directory {}", parent.display())
+        }
+        other => download_dir_refusal(other),
     }
 }
 

@@ -5,8 +5,8 @@
 //! bar stay whole outside it, so dismissing the overlay restores exactly what
 //! was there. When the bindings outgrow the frame it scrolls rather than
 //! dropping a row to fit:
-//! `j`/`k` a line, `PgDn`/`PgUp` a page, `g`/`G` the ends, and its border
-//! says which lines show.
+//! `j`/`k` a line, `PgDn`/`PgUp` a page, `g`/`G` the ends, and its
+//! Viewport draws its bar and says which lines show.
 
 use std::cell::Cell;
 
@@ -16,45 +16,35 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
+use crate::row_selection::viewport::{self, Viewport};
+use crate::table_sort::RowMove;
 use crate::theme::Theme;
 use crate::views::centered;
-use crate::wrap::labeled_lines;
+use crate::wrap::{clamp_u16, labeled_lines};
 
-/// Where the help overlay is scrolled to, and how far it can go, as the last
-/// draw laid it out. `Cell`s because drawing is a `&self` pass.
+/// Where the help overlay is scrolled to, as the last draw laid it out: its
+/// Viewport, in a `Cell` because drawing is a `&self` pass.
 #[derive(Default)]
-pub(super) struct HelpScroll {
-    /// The first line on screen.
-    offset: Cell<u16>,
-    /// The furthest the first line can go: lines beyond the room.
-    max: Cell<u16>,
-    /// Lines on screen at once.
-    room: Cell<u16>,
-}
+pub(super) struct HelpScroll(Cell<Viewport>);
 
 impl HelpScroll {
     /// Back to the first line, as the overlay opens.
     pub(super) fn top(&self) {
-        self.offset.set(0);
+        self.0.set(Viewport::default());
     }
 
     /// Move by `lines` within what the last draw could show; whether it
     /// moved.
     pub(super) fn scroll(&self, lines: i16) -> bool {
-        let before = self.offset.get();
-        let after = if lines < 0 {
-            before.saturating_sub(lines.unsigned_abs())
-        } else {
-            before.saturating_add(lines.unsigned_abs())
-        }
-        .min(self.max.get());
-        self.offset.set(after);
-        after != before
+        let mut viewport = self.0.get();
+        let moved = viewport.scroll(RowMove::Step(isize::from(lines)));
+        self.0.set(viewport);
+        moved
     }
 
     /// A page: the lines on screen at once, at least one.
     pub(super) fn page(&self) -> u16 {
-        self.room.get().max(1)
+        u16::try_from(self.0.get().page()).unwrap_or(u16::MAX)
     }
 }
 
@@ -129,6 +119,10 @@ pub(super) fn draw_help(
             "pause/resume selected download / clear all completed",
         ),
         ("L", "Transfers: add a download from a pasted eD2k link"),
+        (
+            "v",
+            "Transfers: preview the selected download in the player set in Settings",
+        ),
         ("?", "this help; j/k, PgUp/PgDn scroll it when it is long"),
         ("q / Esc", "quit (top level) / dismiss (modal)"),
         (
@@ -149,60 +143,72 @@ pub(super) fn draw_help(
     let width = u16::try_from(natural)
         .unwrap_or(u16::MAX)
         .clamp(3, area.width.max(3));
-    let inner_w = usize::from(width).saturating_sub(2);
-    let desc_w = inner_w.saturating_sub(key_w + 1).max(1);
 
-    // The build first, where `?` opens, so a hands-on check tells two builds
-    // apart in one keypress; it wraps rather than being cut.
-    let mut lines = labeled_lines(
-        Span::raw(" "),
-        &version.0,
-        Style::new().fg(theme.fg),
-        inner_w.saturating_sub(1).max(1),
-    );
-    lines.push(Line::default());
-    // Continuation lines hang under the description column, so a wrapped
-    // binding still reads as one row.
-    lines.extend(rows.iter().flat_map(|(key, what)| {
-        labeled_lines(
-            Span::styled(format!(" {key:<key_w$}"), Style::new().fg(theme.accent)),
-            what,
+    let lines_at = |inner_w: usize| {
+        let desc_w = inner_w.saturating_sub(key_w + 1).max(1);
+        // The build first, where `?` opens, so a hands-on check tells two
+        // builds apart in one keypress; it wraps rather than being cut.
+        let mut lines = labeled_lines(
+            Span::raw(" "),
+            &version.0,
             Style::new().fg(theme.fg),
-            desc_w,
-        )
-    }));
-
-    let total = u16::try_from(lines.len()).unwrap_or(u16::MAX);
-    let height = total.saturating_add(2).min(area.height);
+            inner_w.saturating_sub(1).max(1),
+        );
+        lines.push(Line::default());
+        // Continuation lines hang under the description column, so a wrapped
+        // binding still reads as one row.
+        lines.extend(rows.iter().flat_map(|(key, what)| {
+            labeled_lines(
+                Span::styled(format!(" {key:<key_w$}"), Style::new().fg(theme.accent)),
+                what,
+                Style::new().fg(theme.fg),
+                desc_w,
+            )
+        }));
+        lines
+    };
+    let inner_w = usize::from(width).saturating_sub(2);
+    let mut lines = lines_at(inner_w);
+    let room = clamp_u16(lines.len()).min(area.height.saturating_sub(2));
+    // Outgrowing the frame, it takes a column for its bar: one more when the
+    // frame has it, else one of its own, re-wrapped.
+    let bar = lines.len() > usize::from(room);
+    let width = if !bar {
+        width
+    } else if width < area.width {
+        width + viewport::BAR_W
+    } else {
+        lines = lines_at(inner_w.saturating_sub(usize::from(viewport::BAR_W)));
+        width
+    };
+    let height = room.saturating_add(2).min(area.height);
     let room = height.saturating_sub(2);
-    scroll.room.set(room);
-    scroll.max.set(total.saturating_sub(room));
-    let offset = scroll.offset.get().min(scroll.max.get());
-    scroll.offset.set(offset);
     let modal = centered(area, width, height);
     frame.render_widget(Clear, modal);
-    // The border says which lines show while not all of them do.
-    let place = (room < total).then(|| {
-        let last = offset.saturating_add(room).min(total);
-        format!(" {}–{last} of {total} · j/k ", offset + 1)
-    });
-    let mut block = Block::bordered()
+    let block = Block::bordered()
         .border_style(theme.chrome())
         .style(Style::new().fg(theme.fg).bg(theme.panel))
         .title_top(Line::from(Span::styled(" Help ", theme.tab_active())));
-    if let Some(place) = place {
-        block =
-            block.title_bottom(Line::from(Span::styled(place, theme.dim_text())).right_aligned());
-    }
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
-    let shown: Vec<Line<'static>> = lines
-        .into_iter()
-        .skip(usize::from(offset))
-        .take(usize::from(room))
-        .collect();
-    frame.render_widget(Paragraph::new(shown), inner);
+    let mut place = scroll.0.get();
+    let shown = place.show(lines.len(), room);
+    scroll.0.set(place);
+    let (list, bar) = viewport::split(inner, bar);
+    frame.render_widget(Paragraph::new(lines[shown].to_vec()), list);
+    // The border says which lines show while not all of them do, and the
+    // keys that move them, which give way first.
+    let rest = place.draw(frame, modal, bar, theme);
+    if place.overflows() && usize::from(rest.width) >= SCROLL_HINT.chars().count() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(SCROLL_HINT, theme.dim_text())).right_aligned(),
+            rest,
+        );
+    }
 }
+
+/// The help's scroll keys, on its bottom border while it overflows.
+const SCROLL_HINT: &str = " j/k ";
 
 #[cfg(test)]
 mod tests {
@@ -258,6 +264,24 @@ mod tests {
         let mut chrome = chrome();
         chrome.update(&Action::ToggleHelp, now());
         assert_golden("chrome_help", 80, 24, |frame| {
+            draw_frame(
+                frame,
+                &UiState::default(),
+                &chrome,
+                &Theme::default_dark(),
+                now(),
+            );
+            draw_overlays(frame, &chrome, &Theme::default_dark());
+        });
+    }
+
+    /// A frame tall enough for every binding: no bar, and no count — the
+    /// help has no cursor to place.
+    #[test]
+    fn golden_help_overlay_fits_a_tall_frame() {
+        let mut chrome = chrome();
+        chrome.update(&Action::ToggleHelp, now());
+        assert_golden("chrome_help_fits", 100, 40, |frame| {
             draw_frame(
                 frame,
                 &UiState::default(),

@@ -70,7 +70,10 @@ pub use quic::{
     NATT_QUIC_ALPN, NATT_QUIC_COMMON_NAME, NATT_QUIC_SNI, NattQuicIdentity, QuicEngine,
     QuicNattError, QuicTlsError, is_quic_long_header,
 };
-pub use registry::{Admission, DialingSlot, HeldSlot, OPENING_TTL, TunnelRegistry, TunnelSlot};
+pub use registry::{
+    Admission, DialingSlot, ExpectsSource, HeldSlot, OPENING_MAX, OPENING_PER_IP, OPENING_TTL,
+    TunnelRegistry, TunnelSlot,
+};
 pub use send::{NattCrypt, NattDatagramSink, NattOwnHash, NattSender, SentFrame};
 pub use tunnel::{Tunnel, TunnelTransport};
 pub use utp::{UtpEngine, is_utp_syn};

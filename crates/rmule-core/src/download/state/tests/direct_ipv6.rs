@@ -3,8 +3,8 @@
 //! connects hands the candidate to the callback roads, once.
 
 use rmule_primitives::{
-    CryptStance, Ipv6Endpoint, OutboundCrypt, PeerSource, SourceCryptOptions, SourceSighting,
-    UserHash,
+    CryptStance, Informant, Ipv6Endpoint, OutboundCrypt, PeerSource, SourceCryptOptions,
+    SourceSighting, UserHash,
 };
 
 use super::*;
@@ -28,6 +28,7 @@ fn low_with_crypt(n: u32, half: Ipv6Endpoint, crypt: u8) -> SourceSighting {
         PeerSource::new(low(n), 4662),
         Some(TARGET_HASH),
         Some(SourceCryptOptions::from_byte(crypt)),
+        Informant::Own,
     )
     .with_ipv6_half(Some(half))
 }
@@ -41,7 +42,8 @@ fn known_ipv6() -> DialPosition {
 /// An ExtSX Low-ID record with a `CT_MOD_IP_V6` half, as the
 /// connected-server namespace pools it.
 fn low_with_half(n: u32) -> SourceSighting {
-    SourceSighting::plain(PeerSource::new(low(n), 4662)).with_ipv6_half(Some(half()))
+    SourceSighting::plain(PeerSource::new(low(n), 4662), Informant::Own)
+        .with_ipv6_half(Some(half()))
 }
 
 fn state(capability: CallbackCapability, dial: DialPosition) -> DownloadState {
@@ -152,7 +154,8 @@ fn without_a_known_ipv6_rung_0_is_skipped() {
 #[test]
 fn a_half_is_the_only_road_left_and_its_failure_is_honest_starvation() {
     let mut state = pooled_state(file_hash_only_content(ONE_PART), &[], QUIET_POSTURE, 1);
-    let global = SourceSighting::plain(PeerSource::new(low(7), 4662)).with_ipv6_half(Some(half()));
+    let global = SourceSighting::plain(PeerSource::new(low(7), 4662), Informant::Own)
+        .with_ipv6_half(Some(half()));
     let _ = take(&mut state, Channel::Global(source_server(3)), [global]);
     assert!(
         state.start(t0()).is_empty(),
@@ -285,13 +288,14 @@ fn exchanging_state() -> (DownloadState, PeerEndpoint) {
         spawned(&started).contains(&PeerEndpoint::V6(half())),
         "{started:?}"
     );
-    let _ = state.on_worker_event(t0(), high, PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), high);
     (state, high)
 }
 
 /// `high`'s source exchange names the candidate at `at`; what it spawned.
 fn sight(state: &mut DownloadState, high: PeerEndpoint, at: Ipv6Endpoint) -> Vec<PeerEndpoint> {
-    let source = SourceSighting::plain(PeerSource::new(low(7), 4662)).with_ipv6_half(Some(at));
+    let source = SourceSighting::plain(PeerSource::new(low(7), 4662), Informant::Own)
+        .with_ipv6_half(Some(at));
     spawned(&via_exchange(state, high, vec![source]))
 }
 
@@ -408,7 +412,8 @@ fn an_ip_filtered_rung_0_half_never_reaches_the_route_choice() {
     let capability = CallbackCapability::server_high_id();
 
     let exchanged = admit_halves(
-        SourceSighting::plain(PeerSource::new(low(7), 4662)).with_ipv6_half(Some(half())),
+        SourceSighting::plain(PeerSource::new(low(7), 4662), Informant::Own)
+            .with_ipv6_half(Some(half())),
         admits,
     )
     .expect("a Low ID names no address of its own to refuse");

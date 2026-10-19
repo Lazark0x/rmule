@@ -18,8 +18,8 @@ use rmule_peer::{
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{
-    ClientId, Ed2kText, FileHash, Ipv4Endpoint, Packet, PacketProtocol, PeerSource, SourceSighting,
-    Tag, TagName, TagValue, UserHash,
+    ClientId, Ed2kText, FileHash, Informant, Ipv4Endpoint, Packet, PacketProtocol, PeerSource,
+    SourceSighting, Tag, TagName, TagValue, UserHash,
 };
 use rmule_testkit::peer_session::{ctx, file_hash, last_write_bytes, peer_at};
 
@@ -162,7 +162,10 @@ fn answer_packet(outputs: &[PeerOutput]) -> Packet {
 }
 
 fn high_id_source(id: u32, port: u16) -> SourceSighting {
-    SourceSighting::plain(PeerSource::new(ClientId::from_u32(id), port))
+    SourceSighting::plain(
+        PeerSource::new(ClientId::from_u32(id), port),
+        Informant::Own,
+    )
 }
 
 fn ids(sources: &[rmule_peer::SourceExchangeEntry]) -> Vec<u32> {
@@ -174,10 +177,13 @@ fn ids(sources: &[rmule_peer::SourceExchangeEntry]) -> Vec<u32> {
 }
 
 fn ipv6_source() -> SourceSighting {
-    SourceSighting::plain(PeerSource::Ipv6(rmule_primitives::Ipv6Endpoint::new(
-        "2a01:4f8::7".parse().unwrap(),
-        4662,
-    )))
+    SourceSighting::plain(
+        PeerSource::Ipv6(rmule_primitives::Ipv6Endpoint::new(
+            "2a01:4f8::7".parse().unwrap(),
+            4662,
+        )),
+        Informant::Own,
+    )
 }
 
 #[test]
@@ -454,7 +460,7 @@ fn a_dual_stack_source_carries_its_ipv6_beside_the_ipv4_in_an_ext_answer_only() 
     );
     let v6 = rmule_primitives::Ipv6Endpoint::new("3fff:ed2:1::7".parse().unwrap(), 4662);
     let hash = UserHash::from_bytes([0x51; UserHash::BYTE_LEN]);
-    let single = SourceSighting::new(v4, Some(hash), None);
+    let single = SourceSighting::new(v4, Some(hash), None, Informant::Own);
     let dual = single.with_ipv6_half(Some(v6));
 
     let answer = |source: SourceSighting, advert: Advert| {

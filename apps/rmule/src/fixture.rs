@@ -131,6 +131,12 @@ pub(crate) fn file_hash(byte: u8) -> FileHash {
     FileHash::from_bytes([byte; 16])
 }
 
+/// The `.part` core names for a fixture download: an absolute path, as
+/// core only ever publishes one.
+pub(crate) fn part_file() -> std::path::PathBuf {
+    rooted("downloads/file.bin.part")
+}
+
 /// Metadata for a file core knows the hash of but not the name — the
 /// edge-order case every download row must render honestly.
 pub(crate) fn unnamed_metadata() -> DownloadMetadata {

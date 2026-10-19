@@ -2,7 +2,6 @@
 //! answers, the eviction a mismatched identity earns, and the failure a silent
 //! probed contact meets on tick.
 
-use std::net::Ipv4Addr;
 use std::time::Duration;
 
 use rmule_kad::{
@@ -11,7 +10,8 @@ use rmule_kad::{
 };
 use rmule_primitives::session::drain;
 use rmule_testkit::kad_node::{
-    T0, bootstrapped, deliver, diagnostics, endpoint, events, id, info, node, sent_messages,
+    T0, bootstrapped, deliver, diagnostics, endpoint, events, host_ip, id, info, node,
+    sent_messages,
 };
 
 #[test]
@@ -29,7 +29,7 @@ fn hello_req_stores_the_sender_as_responded_and_answers_hello_res() {
     assert_eq!(stored.state(), KadContactState::Responded);
     assert_eq!(
         stored.endpoint(),
-        KadNodeEndpoint::new(Ipv4Addr::new(203, 0, 113, 4), 4804),
+        KadNodeEndpoint::new(host_ip(4), 4804),
         "the UDP-port tag overrides the datagram source port"
     );
     assert_eq!(stored.tcp_port(), 4761);

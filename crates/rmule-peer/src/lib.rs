@@ -76,8 +76,8 @@ pub use obfuscation::{PeerObfuscation, PeerObfuscationStep};
 pub use opcode::PeerOpcode;
 pub use packet::PeerPacket;
 pub use parts::{
-    CompressedPart, EMBLOCKSIZE, PartOffsetWidth, PartRanges, PartRangesError, RequestParts,
-    SendingPart,
+    CompressedPart, EMBLOCKSIZE, MAX_REQUESTED_RANGE, PartOffsetWidth, PartRanges, PartRangesError,
+    RequestParts, SendingPart,
 };
 pub use peer_udp::{
     BUDDY_ID_LEN, ClientUdpOpcode, DirectCallbackReq, ReaskAck, ReaskCallbackUdp, ReaskFilePing,
@@ -88,7 +88,7 @@ pub use secure_ident::{
     SecIdentState, SecIdentStatePacket, SignaturePacket, SuiDecodeError,
 };
 pub use session::{
-    ConnectionCommand, ConnectionEvent, FileProbeStatus, IdentityChange, NoticeEvent,
+    AskedRanges, ConnectionCommand, ConnectionEvent, FileProbeStatus, IdentityChange, NoticeEvent,
     PeerCloseReason, PeerCommand, PeerError, PeerEvent, PeerOutput, PeerSession, RequesterCommand,
     RequesterEvent, SecureIdentFailure, ServerCommand, ServerEvent, SideCommand, SideEvent,
     SlotReleaseReason, SourceExchangeSupport,

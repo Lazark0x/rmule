@@ -18,7 +18,8 @@
 //! discipline. Each protocol leg implements its own half in a private
 //! submodule: `wire` (the byte boundary and opcode routing), `identity` (the
 //! peer's identity, read at the hello and kept current), `download` and
-//! `serve` (the two capabilities), `source_exchange`, `aich`, `multipacket`,
+//! `serve` (the two capabilities), `asked_ranges` (the block ranges the
+//! uploader holds as asked), `source_exchange`, `aich`, `multipacket`,
 //! `mule_info`, `human_layer` and `secure_ident`; each leg also owns the bookkeeping it
 //! carries between packets (the per-file flow in `download`, the pending
 //! bundle in `multipacket`, the SUI exchange in `secure_ident`). The
@@ -26,6 +27,7 @@
 //! re-exported here.
 
 mod aich;
+mod asked_ranges;
 mod command;
 mod download;
 mod error;
@@ -39,6 +41,7 @@ mod serve;
 mod source_exchange;
 mod wire;
 
+pub use self::asked_ranges::AskedRanges;
 pub use self::command::{
     ConnectionCommand, PeerCommand, PeerOutput, RequesterCommand, ServerCommand, SideCommand,
 };
@@ -95,6 +98,13 @@ pub struct PeerSession {
     /// `FileFlow::compressed_blocks` — can move it.
     compressed_blocks_in_flight: CompressedBlocksInFlight,
     active_slot: Option<FileHash>,
+    /// The peer sent `OP_ACCEPTUPLOADREQ` with no slot asked on this link —
+    /// an uploader promoting us by dial-back, or on a link it held — and
+    /// nothing has answered it yet: neither an ask of ours nor a decline.
+    slot_offered: bool,
+    /// Every block range this link asked since the uploader last cleared its
+    /// list: handed to the requester at each grant (ADR-0107).
+    asked_ranges: AskedRanges,
     /// `Some` once the Server Capability has granted this connection an
     /// upload slot for a file (set by `GrantSlot`, cleared when the peer
     /// cancels it). The serve-side mirror of `active_slot`; the
@@ -167,6 +177,10 @@ pub struct PeerSession {
     /// Advertised Endpoints chooser. `None` omits the tag — the claim bit
     /// still rides, since it names a capability rather than an address.
     ipv6_advert: Option<std::net::Ipv6Addr>,
+    /// The IPv6 the peer has been told is ours: what our hello named, then
+    /// each `OP_CHANGE_CLIENT_IP` since. An announcement goes out only when
+    /// [`Self::ipv6_advert`] moves away from it (ADR-0087).
+    ipv6_told: Option<std::net::Ipv6Addr>,
     /// Our serving buddy for the hello's `CT_EMULE_BUDDYIP` / `BUDDYUDP` /
     /// `SERVINGBUDDYIPV6` tags (ADR-0061/0087), set via
     /// [`with_serving_buddy_advertisement`](Self::with_serving_buddy_advertisement).
@@ -199,6 +213,8 @@ impl PeerSession {
             per_file: HashMap::new(),
             compressed_blocks_in_flight: CompressedBlocksInFlight::default(),
             active_slot: None,
+            slot_offered: false,
+            asked_ranges: AskedRanges::default(),
             served_slot: None,
             served_multipacket: HashMap::new(),
             served_aich_request: None,
@@ -214,6 +230,7 @@ impl PeerSession {
             crypt_advert: None,
             udp_ports_advert: None,
             ipv6_advert: None,
+            ipv6_told: None,
             serving_buddy_advert: None,
             direct_udp_callback_advert: false,
             source_exchange_capture_override: None,
@@ -300,6 +317,13 @@ impl PeerSession {
         self
     }
 
+    /// The hello tags of the hello or hello answer about to be written —
+    /// the moment the peer is told our IPv6.
+    fn hello_body_to_write(&mut self) -> PeerHelloBody {
+        self.ipv6_told = self.ipv6_advert;
+        self.advertised_hello_body()
+    }
+
     /// The hello tags this session sends, capture overrides applied.
     fn advertised_hello_body(&self) -> PeerHelloBody {
         let mut body = PeerHelloBody::from_handshake_context(&self.ctx, &self.hello_advert());
@@ -375,7 +399,7 @@ impl PeerSession {
         if !matches!(self.state, State::BeforeStart) {
             return;
         }
-        let bytes = Hello::new(self.advertised_hello_body())
+        let bytes = Hello::new(self.hello_body_to_write())
             .encode_packet()
             .encode();
         self.core

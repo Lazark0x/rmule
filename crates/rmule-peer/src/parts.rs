@@ -24,6 +24,8 @@ use thiserror::Error;
 
 use crate::opcode::PeerOpcode;
 
+mod served_block;
+
 const RANGE_COUNT: usize = 3;
 
 /// Maximum byte length of a single `OP_REQUESTPARTS` block, matching
@@ -35,8 +37,19 @@ const RANGE_COUNT: usize = 3;
 /// block request streamed immediately.
 pub const EMBLOCKSIZE: u64 = 184_320;
 
-/// Selector for the part-transfer wire variant. `for_file_size` picks
-/// `U64` once the file size requires a 64-bit offset; otherwise `U32`.
+/// The longest range one block request may name: three blocks. aMule's uploader
+/// takes a client asking a longer one out of its upload queue
+/// (`UploadClient.cpp:221-224`), so no stock downloader asks one; core ends
+/// the slot of a peer that does and reads no range longer (ADR-0031).
+pub const MAX_REQUESTED_RANGE: u64 = 3 * EMBLOCKSIZE;
+
+/// Selector for the part-transfer wire variant. aMule picks it on the
+/// offsets a packet names: the `_I64` opcodes once one passes `0xFFFFFFFF`
+/// — a request's block (`DownloadClient.cpp:745`), a plain packet's own range
+/// (`UploadClient.cpp:307`), a compressed packet's whole block (`:361`) —
+/// never on `IsLargeFile`, so the blocks of a large file below 4 GiB still
+/// ride the 32-bit opcodes. [`Self::for_file_size`] fed the highest such
+/// offset is that rule.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PartOffsetWidth {
     /// The original opcodes, offsets as `u32`.
@@ -46,13 +59,22 @@ pub enum PartOffsetWidth {
 }
 
 impl PartOffsetWidth {
-    /// The narrowest width that can address every byte of a file this size.
+    /// The narrowest width that can address every byte up to `file_size` —
+    /// a block's highest offset, for aMule's per-block choice.
     #[must_use]
     pub const fn for_file_size(file_size: u64) -> Self {
         if file_size <= u32::MAX as u64 {
             Self::U32
         } else {
             Self::U64
+        }
+    }
+
+    /// The bytes one offset takes at this width.
+    const fn offset_len(self) -> usize {
+        match self {
+            Self::U32 => 4,
+            Self::U64 => 8,
         }
     }
 }

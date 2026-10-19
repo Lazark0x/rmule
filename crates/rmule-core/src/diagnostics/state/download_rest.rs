@@ -1,4 +1,4 @@
-//! A download's diagnostics row with no run behind it (ADR-0093, "The part
+//! A download's diagnostics row with no run behind it (ADR-0094, "The part
 //! picture is the download's, not its run's"): which parts are held is a fact
 //! of the download, so a paused, failed, waiting or restored download keeps a
 //! row whose part map shows held and missing parts and nothing in flight.
@@ -9,14 +9,15 @@ use std::time::Instant;
 use rmule_primitives::{FileHash, part_count};
 
 use super::DiagnosticsState;
-use crate::diagnostics::{DownloadDiagnostics, PartState};
+use crate::diagnostics::{DownloadDiagnostics, PartState, SourceActivity};
 use crate::{DownloadId, DownloadMetadata};
 
 impl DiagnosticsState {
     /// Open (or reset) `download_id`'s row at rest from its durable facts: the
     /// part map is `Verified` at each index of `verified_parts` and `Missing`
     /// everywhere else over the file's `part_count(size)`, with no workers and
-    /// no sources — what attach knows of a download before any run starts.
+    /// no sources, and no part file reading or Hole Verdict (ADR-0111) — what
+    /// attach knows of a download before any run starts.
     pub fn rest_download(
         &self,
         download_id: DownloadId,
@@ -47,18 +48,25 @@ impl DiagnosticsState {
                 workers: BTreeMap::new(),
                 received_bytes: 0,
                 known_sources: 0,
+                source_activity: SourceActivity::default(),
                 dials_ended: 0,
                 reask_replies_ignored: 0,
                 dial_ends: BTreeMap::new(),
+                allocated_bytes: None,
+                hole_verdict: None,
+                completion: None,
             });
         row.parts = parts;
         row.workers.clear();
         row.known_sources = 0;
+        row.source_activity = SourceActivity::default();
         row.dial_ends.clear();
+        row.allocated_bytes = None;
+        row.hole_verdict = None;
     }
 
-    /// `parts` were lost from the part file (ADR-0093, "The part file under a
-    /// running download"): the picture shows them missing at once, so what
+    /// `parts` were lost from the part file (ADR-0094, "The run holds its
+    /// part file"): the picture shows them missing at once, so what
     /// the operator reads is what the file holds.
     pub fn parts_lost(&self, download_id: DownloadId, parts: &[u32]) {
         let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
@@ -77,8 +85,10 @@ impl DiagnosticsState {
 
     /// Put `download_id`'s row to rest as its run ends: a part in flight is not
     /// held, so it reads `Missing`; the workers and the sources were the run's
-    /// and leave with it. A `completed` run holds every part. The row itself
-    /// stays — only a cancel removes it.
+    /// and leave with it. A `completed` run holds every part. The last
+    /// Allocated Bytes reading and the Hole Verdict stay (ADR-0111); the
+    /// completion move's level leaves with the run (ADR-0115). The row
+    /// itself stays — only a cancel removes it.
     pub fn end_run(&self, download_id: DownloadId, completed: bool) {
         let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
         let Some(row) = inner.downloads.get_mut(&download_id) else {
@@ -93,5 +103,7 @@ impl DiagnosticsState {
         }
         row.workers.clear();
         row.known_sources = 0;
+        row.source_activity = SourceActivity::default();
+        row.completion = None;
     }
 }

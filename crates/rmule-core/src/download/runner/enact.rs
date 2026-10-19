@@ -13,8 +13,7 @@ use crate::adapters::{
     SourceLookupService, WorkerBrief,
 };
 use crate::callback::{DownloadAsk, DownloadReach, PendingCallback};
-use crate::credit::KeyBinding;
-use crate::download::persist::{PersistError, finalize_download, persist_streamed_part};
+use crate::download::persist::{PersistError, persist_streamed_part};
 use crate::download::state::{Decision, DownloadState};
 use crate::download::worker_pool::{WorkerChannels, WorkerFact, WorkerId, WorkerPool};
 use crate::error::DownloadFailure;
@@ -25,7 +24,7 @@ use crate::storage::DownloadRepository;
 
 use super::callbacks::CallbackContext;
 use super::fleet::{enter_phase, refresh_parts};
-use super::{RunnerContext, WORKER_SHUTDOWN_TIMEOUT, now};
+use super::{RunnerContext, WORKER_SHUTDOWN_TIMEOUT, now, served};
 
 /// Everything one download run carries across loop turns, owned as one value so
 /// the `select!` loop and [`enact_drain`] share a single `&mut ctx`: the
@@ -49,6 +48,12 @@ pub(super) struct LoopCtx<'a, S, P> {
     /// the RemoteQueued stage of its Source Book as the last drain left it
     /// ([`hold_queued_relations`]).
     pub(super) queued_relations: HashSet<Ipv4Endpoint>,
+    /// The sources this run awaits an uploader's grant from, filed in the
+    /// Peer Links and held to the same stage (ADR-0057).
+    pub(super) awaited_grants: super::awaited_grants::AwaitedGrants,
+    /// This run's **Held Places**, republished after every drain and
+    /// withdrawn when the run ends (ADR-0116).
+    pub(super) held_places: crate::held_places::HeldPlacesSeat,
 }
 
 /// Carry out one `Vec<Decision>` against the live runtime — the only async
@@ -89,12 +94,12 @@ where
                     .update_worker(ctx.download_id, slot, |entry| entry.identify(software));
             }
             Decision::Send { peer, command } => ctx.command_channels.send(peer, command).await,
-            Decision::EndWorker { peer } => {
+            Decision::EndWorker { peer, cancel } => {
                 // The brain released the worker: it ends, and its channel with
                 // it. The Peer Roster's download leg (ADR-0059)
                 // forgets it here, the one site every retirement passes —
                 // its own later `Disconnected` is a released worker's, stale.
-                ctx.command_channels.end(peer).await;
+                ctx.command_channels.end(peer, cancel).await;
                 if let Some(v4) = peer.as_v4() {
                     ctx.runner
                         .rt
@@ -104,21 +109,6 @@ where
             }
             Decision::RecordCredit { user_hash, bytes } => {
                 let _ = ctx.runner.rt.credit.record_download(user_hash, bytes);
-            }
-            Decision::BindIdentity {
-                user_hash,
-                public_key,
-            } => {
-                // Atomic compare-and-set in the ledger (ADR-0041); the
-                // *consequence* of a mismatch lives here: report the theft.
-                // The stored key is untouched and unsecured accrual continues.
-                let binding = ctx.runner.rt.credit.bind_public_key(user_hash, &public_key);
-                if matches!(binding, Ok(KeyBinding::Mismatch)) {
-                    let _ = ctx
-                        .evt_tx
-                        .send(CoreEvent::SecuredIdentityMismatch { user_hash })
-                        .await;
-                }
             }
             Decision::PersistPart {
                 part_index,
@@ -155,26 +145,35 @@ where
                         queue.extend(ctx.state.on_persist_result(now(), part_index, peer, Ok(())))
                     }
                 }
+                // Before any decision that result returned is enacted, so
+                // no status the run sends names a part the serve side
+                // lacks (ADR-0113).
+                served::rule_range_of(ctx.runner, ctx.download_id, &ctx.state);
             }
             Decision::PersistProvisionalHashes(hashes) => {
                 // A store that cannot keep the set fails the run through the
                 // one whole-fleet terminal, so every worker is
                 // told `Shutdown` and every roster relation ends — never a
                 // bare early return that leaves the fleet running unowned.
-                if ctx
+                match ctx
                     .runner
                     .rt
                     .store
                     .record_provisional_part_hashes(ctx.download_id, &hashes)
-                    .is_err()
                 {
-                    queue.push_front(Decision::Fail(DownloadFailure::StoreFailed));
+                    Err(_) => queue.push_front(Decision::Fail(DownloadFailure::StoreFailed)),
+                    Ok(disproved) => {
+                        refetch_disproved(ctx, &disproved, queue);
+                        served::rule_range(ctx.runner, ctx.download_id, &hashes);
+                    }
                 }
             }
             Decision::DistrustPeer { user_hash } => {
-                // Durable beside the download's record; the brain
-                // already holds it for this run, so a failed write costs only
-                // a resumed run's memory of it.
+                // Durable beside the download's record. A write that fails
+                // fails the run through the one whole-fleet terminal, as a
+                // provisional set the store cannot keep does: a run that
+                // went on believing the peer persisted would let a resumed
+                // one dial it again.
                 if let Err(error) = ctx
                     .runner
                     .rt
@@ -182,12 +181,23 @@ where
                     .distrust_peer(ctx.download_id, user_hash)
                 {
                     tracing::warn!(%error, "could not persist a distrusted peer");
+                    queue.push_front(Decision::Fail(DownloadFailure::StoreFailed));
+                }
+            }
+            Decision::ContestKadAichRoot => {
+                // Durable beside the download's record, as a distrusted peer
+                // is: a resumed run that trusted the contested root again
+                // would let its recovery data blame honest cells.
+                if let Err(error) = ctx.runner.rt.store.contest_kad_aich_root(ctx.download_id) {
+                    tracing::warn!(%error, "could not persist a contested Kad AICH root");
+                    queue.push_front(Decision::Fail(DownloadFailure::StoreFailed));
                 }
             }
             Decision::Spawn {
                 peer,
                 slot,
                 want_sources,
+                opening,
             } => {
                 // The crypt side this peer's record stated — the server-lookup
                 // reply (ADR-0046), a source-exchange answer (ADR-0042), a Kad
@@ -198,6 +208,7 @@ where
                     peer_crypt: ctx.state.peer_crypt(peer),
                     own_status: ctx.state.our_part_status(),
                     want_sources,
+                    opening,
                 };
                 if ctx
                     .worker_pool
@@ -219,11 +230,16 @@ where
                         .update_worker(ctx.download_id, slot, |entry| entry.mark_remembered());
                 }
             }
-            Decision::SendReaskPing { peer, ping } => {
-                // One `0x90` in flight per peer endpoint across the Download
-                // Set (ADR-0107): the reply names no file, so a second
-                // download's ping to this endpoint waits, its latch handed
-                // back to the brain, until the first is answered or lapses.
+            Decision::SendReaskPing {
+                peer,
+                ping,
+                answered_from,
+            } => {
+                // One reask in flight per answering endpoint across the
+                // Download Set (ADR-0107): the reply names no file, so a
+                // second download's reask answered there waits, its latch
+                // handed back to the brain, until the first is answered or
+                // lapses.
                 let at = now();
                 let claimed = ctx
                     .runner
@@ -231,7 +247,7 @@ where
                     .reask_reply_sink
                     .lock()
                     .expect("reask reply sink mutex")
-                    .claim_ping(ping.to, ctx.download_id, at);
+                    .claim_ping(answered_from, ctx.download_id, at);
                 if !claimed {
                     ctx.state.on_ping_held(at, peer);
                     continue;
@@ -240,18 +256,25 @@ where
                     let _ = tx.send(ping).await;
                 }
             }
+            Decision::CallStandingWaiters { peer } => {
+                // A grant on the peer's Queue Standing: every other download
+                // waiting on it joins this link (ADR-0107), found under the
+                // names the granted worker's hello proved.
+                let mut names = vec![crate::adapters::LinkName::Endpoint(peer)];
+                names.extend(
+                    ctx.state
+                        .peer_crypt(peer)
+                        .user_hash()
+                        .map(crate::adapters::LinkName::User),
+                );
+                ctx.runner.rt.peer_links.call_waiters(&names);
+            }
             Decision::Finalize => {
                 // Normal completion: release each held slot silently, no
-                // `OP_CANCELTRANSFER` (ADR-0056).
+                // `OP_CANCELTRANSFER` (ADR-0056). The fleet loop sees every
+                // part verified and ends; the completion move follows it
+                // (ADR-0115).
                 shut_down_every_worker(ctx, false).await;
-                finalize_download(
-                    ctx.runner,
-                    ctx.download_id,
-                    ctx.file,
-                    std::mem::take(&mut ctx.file_hash_only_parts),
-                    ctx.evt_tx,
-                )
-                .await?;
             }
             Decision::RequestCallback {
                 low_id,
@@ -264,23 +287,40 @@ where
                 // road is filed under the candidate's key — one minted with no
                 // server known is resolved to the live one. Filing precedes the
                 // request so an unusually fast dial-back always finds it.
-                let key = CallbackKey { server, low_id };
+                let key = CallbackKey {
+                    server,
+                    low_id,
+                    kad_port: None,
+                };
                 let brief = AdoptionBrief {
                     file: ctx.file.clone(),
                     own_status: ctx.state.our_part_status(),
                     want_sources,
                 };
                 ctx.callbacks.await_callback(key, brief);
+                // A Low-ID peer linked to us already is ridden over that link
+                // (ADR-0107, "One peer, one link"): asked for a callback it
+                // would open nothing, its `TryToConnect` finding the socket
+                // it holds.
+                if ride_callback_link(ctx, key, want_sources).await {
+                    continue;
+                }
                 let session = {
                     let slot = ctx.runner.rt.server_session.slot().lock().await;
                     slot.as_ref().filter(|handle| handle.is_alive()).cloned()
                 };
-                if let Some(session) = session {
-                    tracing::info!(
-                        low_id = low_id.as_u32(),
-                        "server callback: asking the connected server to relay OP_CALLBACK"
-                    );
-                    session.request_callback(low_id).await;
+                let sent = match session {
+                    Some(session) => {
+                        tracing::info!(
+                            low_id = low_id.as_u32(),
+                            "server callback: asking the connected server to relay OP_CALLBACK"
+                        );
+                        session.request_callback(low_id).await
+                    }
+                    None => false,
+                };
+                if !sent {
+                    queue.extend(never_left(ctx, key));
                 }
             }
             Decision::RequestGlobalCallback {
@@ -298,6 +338,7 @@ where
                 let key = CallbackKey {
                     server: Some(source_server),
                     low_id,
+                    kad_port: None,
                 };
                 let brief = AdoptionBrief {
                     file: ctx.file.clone(),
@@ -305,8 +346,8 @@ where
                     want_sources,
                 };
                 ctx.callbacks.await_callback(key, brief);
-                if let Some(requester) = ctx.callbacks.facts.requester() {
-                    let _ = ctx
+                let sent = match ctx.callbacks.facts.requester() {
+                    Some(requester) => ctx
                         .runner
                         .rt
                         .global_callback_tx
@@ -315,7 +356,12 @@ where
                             low_id,
                             source_server,
                         })
-                        .await;
+                        .await
+                        .is_ok(),
+                    None => false,
+                };
+                if !sent {
+                    queue.extend(never_left(ctx, key));
                 }
             }
             Decision::RequestBuddyCallback {
@@ -483,8 +529,56 @@ where
     // without refreshing — matching the stop path's prior behaviour (the
     // diagnostics row is removed on teardown regardless).
     refresh_parts(&ctx.runner.rt.diagnostics, ctx.download_id, &ctx.state);
+    ctx.state.hold_connections();
+    ctx.state.hold_standings();
+    ctx.held_places.hold(ctx.state.held_places());
     hold_queued_relations(ctx);
+    ctx.awaited_grants.hold(&ctx.state);
     Ok(())
+}
+
+/// A server-relayed ask for `key`'s callback that never left — no live
+/// session, no requester endpoint to name, or a send nothing took: the brain
+/// hears it now, so the slot goes to the candidate's next road rather than
+/// waiting out the callback deadline for an invitation nobody carried. The
+/// answer is the brain's decisions, for the queue.
+fn never_left<S, P>(ctx: &mut LoopCtx<'_, S, P>, key: CallbackKey) -> Vec<Decision> {
+    tracing::debug!(
+        low_id = key.low_id.as_u32(),
+        "server callback ask never left; its road ends now"
+    );
+    ctx.state.on_traversal_retired(
+        now(),
+        key,
+        crate::diagnostics::NattRetirement::CallbackNotSent,
+    )
+}
+
+/// The parts a part hash set disproved as it arrived, dropped by the store in
+/// the write that recorded it: no longer verified by the file hash at
+/// finalize, said, and fetched again.
+fn refetch_disproved<S, P>(
+    ctx: &mut LoopCtx<'_, S, P>,
+    disproved: &[crate::VerifiedPartRecord],
+    queue: &mut VecDeque<Decision>,
+) {
+    if disproved.is_empty() {
+        return;
+    }
+    let lost: Vec<u32> = disproved.iter().map(|part| part.part_index).collect();
+    tracing::warn!(
+        download_id = ctx.download_id.as_u64(),
+        parts = lost.len(),
+        "parts fetched before the part hash set arrived do not match it; fetching them again"
+    );
+    ctx.file_hash_only_parts.retain(|part| !lost.contains(part));
+    ctx.runner.rt.diagnostics.parts_lost(ctx.download_id, &lost);
+    queue.push_back(Decision::Emit(DownloadEvent::PartsDisproved {
+        download_id: ctx.download_id,
+        parts: u32::try_from(lost.len()).unwrap_or(u32::MAX),
+        bytes: disproved.iter().map(|part| part.len).sum(),
+    }));
+    queue.extend(ctx.state.refetch(now(), &lost));
 }
 
 /// The Peer Roster's `Queued` leg (ADR-0059 "Roster relations"): this run
@@ -584,3 +678,32 @@ async fn await_worker_shutdown(
 
 #[cfg(test)]
 mod tests;
+
+/// Hand the run a worker riding `key`'s peer over its Peer Link, when one is
+/// filed under the callback the key names; whether one was.
+async fn ride_callback_link<S, P>(
+    ctx: &mut LoopCtx<'_, S, P>,
+    key: CallbackKey,
+    want_sources: bool,
+) -> bool
+where
+    S: SourceLookupService,
+    P: PeerTransferService,
+{
+    let Some(server) = ctx.callbacks.routing_key(key).server else {
+        return false;
+    };
+    let brief = WorkerBrief {
+        peer_crypt: rmule_primitives::PeerCrypt::unknown(),
+        own_status: ctx.state.our_part_status(),
+        want_sources,
+        opening: crate::adapters::WorkerOpening::Probe,
+    };
+    let ridden = ctx.runner.rt.peer_transfer.lock().await.ride_callback_link(
+        key.low_id,
+        server,
+        ctx.file.clone(),
+        brief,
+    );
+    ridden.is_some_and(|worker| ctx.callbacks.hand_ridden(key, worker).is_ok())
+}

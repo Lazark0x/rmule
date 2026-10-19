@@ -79,6 +79,7 @@ fn callback_key() -> CallbackKey {
     CallbackKey {
         server: None,
         low_id: ClientId::from_u32(7),
+        kad_port: None,
     }
 }
 
@@ -97,11 +98,13 @@ fn deps() -> InboundPeerDeps {
         file_known: crate::known_files::SharedFileKnown::default(),
         tunnel_admit: crate::adapters::SharedTunnelAdmit::default(),
         hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
+        peer_links: crate::adapters::SharedPeerLinks::default(),
+        secured_identities: crate::secured_identity::SharedSecuredIdentities::default(),
     }
 }
 
 /// Hand one admitted path to the production inbound router against `awaited`.
-/// This is what the serve adapter's `accept()` loop does per connection; an
+/// This is what the serve adapter's `accept()` does per connection; an
 /// adoption leaves down the claim's own `adopt_tx`, so nothing comes back
 /// here.
 fn triage_admitted(admitted: AdmittedPeer, awaited: AwaitedInbound) {
@@ -223,6 +226,7 @@ async fn send_ranges(
                     start: at,
                     end: stop,
                     bytes: block,
+                    compressible: true,
                 }))
                 .await
                 .is_err()
@@ -234,17 +238,18 @@ async fn send_ranges(
     }
 }
 
-/// Stream one part off `worker` and return what core would have assembled:
-/// every block it forwarded, written at the offset it named.
+/// Hand `worker` the file as blocks and return what core would have
+/// assembled: every block it forwarded, written at the offset it named, up to
+/// its pipeline's drain.
 async fn take_part(worker: &mut PeerWorker, file: &Ed2kFileLink) -> Vec<u8> {
     worker
-        .send(PeerWorkerCommand::RequestPart {
-            plan: crate::PartPlan {
+        .send(PeerWorkerCommand::RequestBlocks {
+            blocks: vec![crate::BlockPlan {
                 part_index: 0,
-                offset: 0,
-                len: file.size,
-            },
-            resume_offset: 0,
+                start: 0,
+                end: file.size,
+            }],
+            handout: 1,
         })
         .await
         .expect("the adopted worker takes commands");
@@ -261,7 +266,7 @@ async fn take_part(worker: &mut PeerWorker, file: &Ed2kFileLink) -> Vec<u8> {
                 assembled[at..at + bytes.len()].copy_from_slice(&bytes);
                 delivered += bytes.len() as u64;
             }
-            PeerWorkerEvent::PartStreamed { .. } => {
+            PeerWorkerEvent::BlocksWanted { drained: true, .. } => {
                 assert_eq!(delivered, file.size, "the worker delivered its whole range");
                 return assembled;
             }
@@ -325,7 +330,7 @@ async fn a_download_takes_a_part_over_the_tunnel_it_adopted() {
         )
         .await;
     // Each node's front raises exactly one Tunnel and admits it; the serve
-    // adapter's `accept()` loop is what takes them in production.
+    // adapter's `accept()` is what takes them in production.
     let mut requester = requester;
     let mut target = target;
     let dialed = tokio::time::timeout(Duration::from_secs(20), requester.accepted.recv())

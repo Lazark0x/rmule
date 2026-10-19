@@ -119,8 +119,10 @@ pub enum FileProbeStatus {
     Available {
         /// The name it calls the file by.
         file_name: Ed2kText,
-        /// Which parts of it the peer holds — aMule's part-count-0 sentinel
-        /// already expanded to every part.
+        /// Which parts of it the peer holds: its **Advertised Parts**, one bit
+        /// per real part of the file (`0..part_count(size)`), read by
+        /// [`PartBitmap::advertised_parts`] — the part-count-0 sentinel as
+        /// every part, the phantom part of an exact multiple never read.
         bitmap: PartBitmap,
         /// Whether the peer said it holds the whole file (aMule
         /// `m_bCompleteSource`, ADR-0108): the part-count-0 sentinel, or the
@@ -137,13 +139,14 @@ pub enum FileProbeStatus {
 pub enum SlotReleaseReason {
     /// All requested parts arrived and verified.
     DownloadComplete,
-    /// Peer refused the slot (`OP_OUTOFPARTREQS` or queue terminal).
-    QueueRejected,
     /// Peer closed the connection mid-slot.
     PeerClosed,
     /// Wire-level protocol violation forced session into terminal
     /// slot state.
     ProtocolViolation,
+    /// The peer answered `OP_FILEREQANSNOFIL` for the file mid-slot: it does
+    /// not have it.
+    FileNotFound,
     /// Driver-owned slot-stale timeout fired (`signal_slot_stale`).
     Stale,
     /// Local-reason teardown sent `OP_CANCELTRANSFER` before releasing

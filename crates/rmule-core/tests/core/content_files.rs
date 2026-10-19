@@ -1,7 +1,5 @@
 //! The content-file store's side of a download: bytes land at the part
-//! offset the plan declares, the `.part` file is renamed into place on
-//! finalization only when nothing already owns that path, and a part belongs
-//! to exactly one download.
+//! offset the plan declares, and a part belongs to exactly one download.
 use rmule_core::DownloadRepository;
 use std::fs;
 
@@ -43,29 +41,20 @@ async fn read_range_reads_a_completed_file_at_its_final_path() {
 }
 
 #[tokio::test]
-async fn finalization_rejects_existing_final_path() {
+async fn read_range_refuses_a_length_over_three_blocks_before_reading() {
     let dir = tempfile::tempdir().unwrap();
-    let paths = DownloadPaths::from_final_path(dir.path().join("download.bin"));
-    fs::write(paths.part_path(), b"verified").unwrap();
-    fs::write(paths.final_path(), b"existing").unwrap();
+    let path = dir.path().join("shared.bin");
+    let cap = rmule_peer::MAX_REQUESTED_RANGE;
+    fs::File::create(&path).unwrap().set_len(2 * cap).unwrap();
 
-    let err = ContentFileStore::finalize(&paths).await.unwrap_err();
-
-    assert_eq!(err, rmule_core::FinalizeError::FinalPathTaken);
-    assert_eq!(fs::read(paths.part_path()).unwrap(), b"verified");
-    assert_eq!(fs::read(paths.final_path()).unwrap(), b"existing");
-}
-
-#[tokio::test]
-async fn finalization_renames_part_file_to_final_path() {
-    let dir = tempfile::tempdir().unwrap();
-    let paths = DownloadPaths::from_final_path(dir.path().join("download.bin"));
-    fs::write(paths.part_path(), b"complete").unwrap();
-
-    ContentFileStore::finalize(&paths).await.unwrap();
-
-    assert_eq!(fs::read(paths.final_path()).unwrap(), b"complete");
-    assert!(!paths.part_path().exists());
+    let read = ContentFileStore::read_range(&path, 0, cap).await.unwrap();
+    assert_eq!(read.len() as u64, cap, "three blocks are read");
+    assert!(
+        ContentFileStore::read_range(&path, 0, cap + 1)
+            .await
+            .is_err(),
+        "a byte more is refused, though the file holds it"
+    );
 }
 
 #[test]
@@ -73,14 +62,20 @@ fn repository_rejects_foreign_part_path_owner() {
     let dir = tempfile::tempdir().unwrap();
     let repo = DurableDownloadRepository::new(rmule_testkit::memory_store());
     let paths = DownloadPaths::from_final_path(dir.path().join("download.bin"));
-    repo.create_download(&file_link(), Some(&stub_server("example.org")), &paths)
-        .unwrap();
+    repo.create_download(
+        &file_link(),
+        Some(&stub_server("example.org")),
+        &paths,
+        None,
+    )
+    .unwrap();
 
     let err = repo
         .create_download(
             &other_file_link(),
             Some(&stub_server("example.org")),
             &paths,
+            None,
         )
         .unwrap_err();
 

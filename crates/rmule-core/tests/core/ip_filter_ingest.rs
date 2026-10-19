@@ -14,8 +14,8 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, PeerEndpoint, PeerSource, ServerEndpoint, SourceLookupTarget,
-    SourceSighting,
+    ClientId, Ed2kFileLink, Informant, PeerEndpoint, PeerSource, ServerEndpoint,
+    SourceLookupTarget, SourceSighting,
 };
 use rmule_testkit::HANG_GUARD;
 use rmule_testkit::file_link_without_part_hash_set;
@@ -84,8 +84,9 @@ impl PeerTransferService for ScriptedPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         assert_eq!(
             peer, self.expected_peer,
             "only the admitted source is ever dialed"
@@ -95,32 +96,16 @@ impl PeerTransferService for ScriptedPeerTransfer {
         let outcome = self.outcome.clone();
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
                 match command {
-                    PeerWorkerCommand::RequestPart {
-                        plan,
-                        resume_offset,
-                    } => {
-                        if let Some(part) = outcome
-                            .parts
-                            .iter()
-                            .find(|part| part.part_index == plan.part_index)
-                        {
-                            let start = (resume_offset.saturating_sub(part.offset) as usize)
-                                .min(part.bytes.len());
-                            let _ = event_tx
-                                .send(PeerWorkerEvent::BlockReceived {
-                                    part_index: part.part_index,
-                                    offset: resume_offset,
-                                    bytes: part.bytes[start..].to_vec(),
-                                })
-                                .await;
-                            let _ = event_tx
-                                .send(PeerWorkerEvent::PartStreamed {
-                                    part_index: part.part_index,
-                                })
-                                .await;
-                        }
+                    PeerWorkerCommand::AskSlot | PeerWorkerCommand::TakeGrant => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::RequestHashSet => {}
+                    PeerWorkerCommand::RequestBlocks { blocks, handout } => {
+                        rmule_testkit::emit_blocks(&event_tx, &outcome.parts, &blocks, handout)
+                            .await;
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}
                     PeerWorkerCommand::RequestAichFileHash => {}
@@ -173,8 +158,8 @@ async fn a_filtered_server_snapshot_source_never_reaches_the_pool() {
             outcome: SourceLookupOutcome {
                 client_id: ClientId::from_u32(0x0100_007F),
                 sources: vec![
-                    SourceSighting::plain(filtered_source(4662)),
-                    SourceSighting::plain(admitted),
+                    SourceSighting::plain(filtered_source(4662), Informant::Own),
+                    SourceSighting::plain(admitted, Informant::Own),
                 ],
             },
         })
@@ -190,6 +175,7 @@ async fn a_filtered_server_snapshot_source_never_reaches_the_pool() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("snapshot.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

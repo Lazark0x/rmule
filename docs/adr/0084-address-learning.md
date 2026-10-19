@@ -47,6 +47,13 @@ Explicit-time and event-fed: `observe(AddressObservation, now)` in,
   30 minutes); `MappingGrant` (a PCP / NAT-PMP / IGD lease's external address and port,
   for the lease's life); `LowIdReport` (the address a Low-ID login reported); `Interface`
   (a global-unicast address on a local interface, until the next refresh).
+- **Freshness before ranking:** an observation backs a rung, or votes in a quorum, only while
+  it is inside its own window. A lapsed backer never holds a fresh report, and lapsed votes
+  never outrank fresh ones: a value is chosen from fresh observations first, and only when
+  none holds is the most recent lapsed one the stale last-known.
+- **Port 0 is no port.** A port observation of `0` is refused at `observe`
+  (`ObservationOutcome::PortZeroRefused`). aMule records it (`Prefs.cpp:280`); rmule refuses
+  it because a `0` would also count as a dissenting port in the Own Mapping (ADR-0091).
 - **Verdict:** `Known { endpoint, tier }` while a fresh tier holds; `Stale { endpoint,
   since }` when every source has aged out but a last value exists; `Unknown` otherwise.
   Adverts, hello and login tags and Kad publishes require `Known`; the UDP crypt keys
@@ -107,6 +114,10 @@ Explicit-time and event-fed: `observe(AddressObservation, now)` in,
 When two fresh tiers disagree (the server says A, the gateway granted B, Kad sees C), the
 higher tier wins and the disagreement is published on the diagnostics level as a
 `NatHint` (double NAT, CGNAT, hairpin) — never silently overwritten, never only logged.
+A refused reflection is a hairpin only when it names an address this host holds, or
+loopback: the store keeps every enumerated interface address for that question, beside the
+publicly usable set the tiers read. A private address nobody here holds is refused with no
+hint.
 
 ### Seams
 
@@ -119,7 +130,7 @@ higher tier wins and the disagreement is published on the diagnostics level as a
   tags, and the Kad publish tags. No advert site reads either store ad hoc.
 - **Interface enumeration** is an I/O seam in `rmule-net` behind `InterfaceSource`,
   polled at startup, on every server connect and every five minutes; the testkit fakes it.
-- **Override** is a per-family `SessionConfig` field. **Diagnostics** publishes, per
+- **Override** is the per-family `CoreConfig::external_address` field. **Diagnostics** publishes, per
   (family, role), the verdict, tier, freshness and any NAT hint.
 
 ### One owner of the Own Address

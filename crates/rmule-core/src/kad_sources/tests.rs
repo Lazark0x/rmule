@@ -1,13 +1,16 @@
 //! The Kad Discovery Channel and the Kad Publisher against a fake Kad
 //! channel and the durable registry: routed sources, one publish per
-//! offered file, withdrawal and re-publication, and a failed registry read.
+//! offered file — a Partial Share included — withdrawal and re-publication,
+//! and a failed registry read.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rmule_primitives::{ClientId, FileHash, PeerSource, SourceLookupTarget, SourceSighting};
+use rmule_primitives::{
+    ClientId, FileHash, Informant, PeerSource, SourceLookupTarget, SourceSighting,
+};
 use tokio::sync::mpsc;
 
 use super::{KadDiscoveryChannel, KadPublisher, KadSourceRegistry};
@@ -90,7 +93,10 @@ fn engine<C: KadSourceChannel>(
 async fn asks_kad_and_routes_found_sources_to_the_matching_download() {
     let file_hash = FileHash::from_bytes([0x21; FileHash::BYTE_LEN]);
     let source = PeerSource::new(ClientId::from_u32(u32::from_le_bytes([10, 0, 0, 9])), 4662);
-    let (channel, _probes) = fake_channel(Some((file_hash, vec![SourceSighting::plain(source)])));
+    let (channel, _probes) = fake_channel(Some((
+        file_hash,
+        vec![SourceSighting::plain(source, Informant::Own)],
+    )));
 
     let downloads: KadSourceRegistry = Arc::new(Mutex::new(HashMap::new()));
     let (sink_tx, mut sink_rx) = mpsc::channel(8);
@@ -110,7 +116,7 @@ async fn asks_kad_and_routes_found_sources_to_the_matching_download() {
         .await
         .expect("a Kad source routed within 2s")
         .expect("sink stayed open");
-    assert_eq!(routed, vec![SourceSighting::plain(source)]);
+    assert_eq!(routed, vec![SourceSighting::plain(source, Informant::Own)]);
 
     task.abort();
 }
@@ -143,6 +149,7 @@ async fn publishes_each_shared_file_exactly_once() {
             channel,
             Arc::new(shared),
             WithheldRows::default(),
+            Default::default(),
             share_changed_rx,
         )
         .run(),
@@ -195,6 +202,7 @@ async fn a_withheld_file_is_withdrawn_and_published_again_once_offered() {
             channel,
             Arc::new(shared),
             withheld.clone(),
+            Default::default(),
             share_changed_rx,
         )
         .run(),
@@ -220,6 +228,60 @@ async fn a_withheld_file_is_withdrawn_and_published_again_once_offered() {
         file_hash,
         "offered again, it is published again"
     );
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_partial_share_is_published_once_and_withdrawn_when_its_download_ends() {
+    use crate::served_downloads::PartialEnd;
+    use crate::served_downloads::leased::{Leased, SIZE, leased};
+    use rmule_primitives::ED2K_PART_SIZE;
+
+    let file_hash = FileHash::from_bytes([0x46; FileHash::BYTE_LEN]);
+    let Leased {
+        store,
+        record,
+        cell: served,
+        lease,
+        set,
+    } = leased(file_hash, "/downloads/partial.bin".into());
+    lease.record_range(
+        &set,
+        &[crate::VerifiedPartRecord {
+            part_index: 0,
+            offset: 0,
+            len: ED2K_PART_SIZE,
+            part_hash: set[0],
+        }],
+    );
+
+    let (channel, mut probes) = fake_channel(None);
+    let (share_changed_tx, share_changed_rx) = mpsc::channel(8);
+    let task = tokio::spawn(
+        KadPublisher::new(
+            channel,
+            Arc::new(DurableSharedFileRegistry::new(store)),
+            WithheldRows::default(),
+            served.clone(),
+            share_changed_rx,
+        )
+        .run(),
+    );
+    let wait = Duration::from_secs(2);
+    let first = tokio::time::timeout(wait, probes.publishes.recv()).await;
+    let first = first.unwrap().unwrap();
+    assert_eq!((first.file_hash(), first.file_size()), (file_hash, SIZE));
+    for _ in 0..3 {
+        share_changed_tx.send(()).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(probes.publishes.try_recv().is_err(), "published once");
+
+    served.take_back(file_hash, crate::download::RunNumber::new(1));
+    assert!(served.end(record.id(), PartialEnd::Ended));
+    share_changed_tx.send(()).await.unwrap();
+    let withdrawn = tokio::time::timeout(wait, probes.withdraws.recv()).await;
+    assert_eq!(withdrawn.unwrap().unwrap().file_hash(), file_hash);
     task.abort();
 }
 
@@ -299,6 +361,7 @@ async fn a_failed_registry_read_withdraws_nothing_and_the_sweep_is_retried() {
             channel,
             Arc::clone(&registry),
             WithheldRows::default(),
+            Default::default(),
             share_changed_rx,
         )
         .run(),

@@ -14,8 +14,8 @@ use rmule_core::{
 };
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
-    ClientId, Ed2kFileLink, PeerEndpoint, PeerSource, ServerEndpoint, SourceLookupTarget,
-    SourceSighting,
+    ClientId, Ed2kFileLink, Informant, PeerEndpoint, PeerSource, ServerEndpoint,
+    SourceLookupTarget, SourceSighting,
 };
 use rmule_testkit::file_link_without_part_hash_set;
 use tokio::sync::mpsc;
@@ -47,8 +47,9 @@ impl PeerTransferService for ScriptedPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         assert_eq!(
             peer, self.expected_peer,
             "the scheduler dials the Kad-fed source"
@@ -58,32 +59,16 @@ impl PeerTransferService for ScriptedPeerTransfer {
         let outcome = self.outcome.clone();
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
                 match command {
-                    PeerWorkerCommand::RequestPart {
-                        plan,
-                        resume_offset,
-                    } => {
-                        if let Some(part) = outcome
-                            .parts
-                            .iter()
-                            .find(|part| part.part_index == plan.part_index)
-                        {
-                            let start = (resume_offset.saturating_sub(part.offset) as usize)
-                                .min(part.bytes.len());
-                            let _ = event_tx
-                                .send(PeerWorkerEvent::BlockReceived {
-                                    part_index: part.part_index,
-                                    offset: resume_offset,
-                                    bytes: part.bytes[start..].to_vec(),
-                                })
-                                .await;
-                            let _ = event_tx
-                                .send(PeerWorkerEvent::PartStreamed {
-                                    part_index: part.part_index,
-                                })
-                                .await;
-                        }
+                    PeerWorkerCommand::AskSlot | PeerWorkerCommand::TakeGrant => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::RequestHashSet => {}
+                    PeerWorkerCommand::RequestBlocks { blocks, handout } => {
+                        rmule_testkit::emit_blocks(&event_tx, &outcome.parts, &blocks, handout)
+                            .await;
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}
                     PeerWorkerCommand::RequestAichFileHash => {}
@@ -113,7 +98,8 @@ async fn kad_fed_sources_fill_the_pool_and_the_scheduler_dials_them() {
             }],
         },
     };
-    let factory = StubKad::new().answering_sources(vec![SourceSighting::plain(kad_source)]);
+    let factory =
+        StubKad::new().answering_sources(vec![SourceSighting::plain(kad_source, Informant::Own)]);
 
     let mut core = Core::builder(
         CoreConfig {
@@ -141,6 +127,7 @@ async fn kad_fed_sources_fill_the_pool_and_the_scheduler_dials_them() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 1).unwrap()),
         name: rmule_testkit::file_name("kad-fed.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -199,7 +186,7 @@ async fn with_no_server_at_all_a_kad_search_row_downloads_over_kad() {
     )
     .expect("a valid row");
     let channel = StubKad::new()
-        .answering_sources(vec![SourceSighting::plain(kad_source)])
+        .answering_sources(vec![SourceSighting::plain(kad_source, Informant::Own)])
         .answering_keywords(vec![row]);
     let mut core = Core::builder(
         CoreConfig {
@@ -260,6 +247,7 @@ async fn with_no_server_at_all_a_kad_search_row_downloads_over_kad() {
         source_hint: None,
         name: rmule_testkit::file_name("kad-only.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

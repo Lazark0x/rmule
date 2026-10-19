@@ -5,7 +5,7 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rmule_primitives::{
-    ClientId, Ipv4Endpoint, Ipv6Endpoint, PeerSource, SourceCryptOptions, SourceSighting, Tag,
+    ClientId, Ipv4Endpoint, Ipv6Endpoint, PeerSource, SourceClaim, SourceCryptOptions, Tag,
     TagName, TagValue, UserHash,
 };
 
@@ -223,7 +223,7 @@ fn a_low_id_source_keeps_a_usable_ipv6_and_loses_an_unusable_one() {
 #[test]
 fn an_ipv6_only_source_round_trips_through_the_placeholder_low_id() {
     let endpoint = Ipv6Endpoint::new("2a01:4f8::9".parse().unwrap(), 4662);
-    let entry = SourceExchangeEntry::plain(SourceSighting::plain(PeerSource::Ipv6(endpoint)));
+    let entry = SourceExchangeEntry::plain(SourceClaim::plain(PeerSource::Ipv6(endpoint)));
 
     let mut out = Vec::new();
     encode_ext_record(&mut out, entry, ExtSxEmission::default());
@@ -246,7 +246,7 @@ fn an_ipv6_only_source_round_trips_through_the_placeholder_low_id() {
 /// tags it did not ask for.
 #[test]
 fn the_optional_identity_tags_are_gated_on_emit_and_accepted_on_read() {
-    let source = SourceSighting::new(
+    let source = SourceClaim::new(
         PeerSource::HighId(Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, 1), 4662)),
         Some(UserHash::from_bytes([0x3C; UserHash::BYTE_LEN])),
         Some(SourceCryptOptions::from_byte(0x05)),

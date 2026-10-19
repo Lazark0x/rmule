@@ -5,13 +5,15 @@
 //! open-node half (the firewalled client *we* relay for), this owns the
 //! firewalled half: **our** buddy (the open node relaying for us), how we recruit
 //! it, the relayed callbacks we consume through it, the direct-UDP callbacks we
-//! consume without one, and the buddy info our source publishes carry.
+//! consume without one, the callbacks our server relays, and the buddy info
+//! our source publishes carry.
 //!
-//! Its four decisions, all keyed off the ADR-0058
-//! [`Reachability`](crate::reachability) verdict. Three are consumes with
-//! disjoint vocabularies and a refusal matrix each, stated in the submodule
-//! that owns it — they share only the buddy slot this module holds and the
-//! [`inverted`] XOR helper every buddy-ID check runs:
+//! Its five decisions. Four are consumes with disjoint vocabularies and a
+//! refusal matrix each, stated in the submodule that owns it. The Kad three
+//! are keyed off the ADR-0058 [`Reachability`](crate::reachability) verdict
+//! and share only the buddy slot this module holds and the [`inverted`] XOR
+//! helper every buddy-ID check runs; the server one is keyed off our
+//! session's Low ID:
 //!
 //! - [`recruit`] — the FINDBUDDY walk toward `~ourKadID`, run only while
 //!   **both** our surfaces are firewalled, and the verified `0x5A` answer that
@@ -24,8 +26,11 @@
 //!   applies where the link lives.
 //! - [`direct_callback`] — the `OP_DIRECTCALLBACKREQ` (`0x95`) a requester
 //!   sends straight to our UDP surface, rate-limited per source IP.
+//! - [`server_callback`] — the `OP_CALLBACKREQUESTED` (`0x35`, `0x26` for an
+//!   IPv6 peer) our server relays from a peer that wants to download from us,
+//!   answered by a dial-back into the serve pipeline.
 //!
-//! The fourth is **publish**
+//! The fifth is **publish**
 //! ([`publish_buddy_info`](FirewalledNode::publish_buddy_info)): while
 //! firewalled with a buddy, our Kad source publishes carry the buddy's endpoint
 //! and the relationship ID — the named integration point with the ADR-0043 Kad
@@ -48,6 +53,7 @@ pub(crate) mod front;
 pub(crate) mod link;
 pub(crate) mod recruit;
 pub(crate) mod relayed_callback;
+pub(crate) mod server_callback;
 
 use direct_callback::{DIRECT_CALLBACK_MIN_INTERVAL, DIRECT_CALLBACK_TRACKED_MAX};
 

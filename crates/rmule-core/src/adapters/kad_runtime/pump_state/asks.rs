@@ -161,21 +161,9 @@ impl KadPumpState {
             ),
             // ADR-0061 route 4: the `0x52` to a firewalled source's buddy,
             // which relays it over the link it holds.
-            KadPumpCommand::BuddyCallback(ask) => (
-                KadCommand::RequestBuddyCallback {
-                    buddy: rmule_kad::KadNodeEndpoint::new(ask.buddy_udp.ip, ask.buddy_udp.port),
-                    buddy_id: ask.buddy_id,
-                    file_hash: ask.file_hash,
-                    tcp_port: ask.tcp_port,
-                },
-                Then::Nothing,
-            ),
+            KadPumpCommand::BuddyCallback(ask) => (ask.node_command(), Then::Nothing),
             KadPumpCommand::CallbackWalk(ask) => (
-                KadCommand::CallbackWalk {
-                    buddy_id: ask.buddy_id,
-                    file_hash: ask.file_hash,
-                    tcp_port: ask.tcp_port,
-                },
+                ask.node_command(),
                 Then::CallbackWaiter(ask.buddy_id, ask.reply),
             ),
         };

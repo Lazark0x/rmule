@@ -3,8 +3,8 @@
 use super::{
     AddressObservation, DesiredMapping, Duration, GrantAnswer, Instant, MAX_LEASE, MappingCommand,
     MappingError, MappingGrade, MappingLease, MappingProtocol, MappingStatus, ObservationOutcome,
-    Phase, PortMapper, SocketRole, Standing, Trial, TrialStep, VecDeque, better, clamp_lease,
-    renewal_delay,
+    Phase, PortMapper, SocketRole, Standing, TRIAL_DEADLINE, Trial, TrialStep, VecDeque, better,
+    clamp_lease, renewal_delay,
 };
 
 impl PortMapper {
@@ -19,6 +19,7 @@ impl PortMapper {
         self.phase = Phase::Trialling {
             queue,
             current: Trial::new(first, &self.desired),
+            deadline: now + TRIAL_DEADLINE,
             completed: Vec::new(),
         };
         self.emit_trial_maps(first);
@@ -52,19 +53,37 @@ impl PortMapper {
         {
             self.queue_readds(now);
         }
+        // A renewal names a lease this protocol holds, and renewals fire
+        // only while mapped — or for the incumbent while a re-race asks the
+        // others.
+        let renewing = self
+            .leases
+            .get(&mapping)
+            .is_some_and(|held| held.protocol == protocol)
+            && (matches!(self.phase, Phase::Mapped) || self.reracing == Some(protocol));
         match &mut self.phase {
             Phase::Trialling { current, .. } if current.protocol == protocol => {
                 current.record(mapping, outcome);
                 self.settle_trial(now);
             }
-            Phase::Mapped => self.settle_renewal(mapping, outcome, now),
-            // The incumbent keeps renewing while a re-race asks the others.
-            _ if self.reracing == Some(protocol) => self.settle_renewal(mapping, outcome, now),
-            // A late trial answer from a protocol that already lost, or a
-            // renewal answer that arrived after a re-probe started: neither
-            // names state this mapper still holds.
-            _ => {}
+            _ if renewing => self.settle_renewal(mapping, outcome, now),
+            // A trial that already closed, or a race that was interrupted:
+            // nothing here holds what it granted.
+            _ => self.release_stray(protocol, mapping, &outcome),
         }
+    }
+
+    /// Close the trial in flight at its deadline: its unanswered rows count
+    /// as timed out, and the race moves on exactly as if they had answered.
+    pub(super) fn expire_trial(&mut self, now: Instant) {
+        let Phase::Trialling { current, .. } = &mut self.phase else {
+            return;
+        };
+        let protocol = current.protocol;
+        for mapping in current.expire() {
+            self.errors.insert(mapping, MappingError::Timeout(protocol));
+        }
+        self.settle_trial(now);
     }
 
     /// Conclude the in-flight trial when every mapping has answered. The phase
@@ -75,6 +94,7 @@ impl PortMapper {
             let Phase::Trialling {
                 queue,
                 current,
+                deadline,
                 completed,
             } = &mut self.phase
             else {
@@ -97,6 +117,7 @@ impl PortMapper {
                 match queue.pop_front() {
                     Some(next) => {
                         *current = Trial::new(next, desired);
+                        *deadline = now + TRIAL_DEADLINE;
                         TrialStep::Next(next)
                     }
                     None => TrialStep::Exhausted,
@@ -182,25 +203,27 @@ impl PortMapper {
                 .is_none_or(|held| held.lead != MappingGrade::Exact);
         self.installed = Some(standing);
         self.schedule_rerace(trial.protocol, whole_set_exact, now);
-        let superseded: Vec<_> = std::mem::take(&mut self.leases)
-            .into_iter()
+        // A held lease is superseded unless this trial re-grants the very
+        // same gateway mapping: same protocol, and under UPnP — which keys a
+        // mapping by its external port — the same external port.
+        let superseded: Vec<_> = self
+            .leases
+            .iter()
             .filter(|(mapping, lease)| {
-                lease.protocol != trial.protocol || !trial.grants.contains_key(mapping)
+                trial.grants.get(mapping).is_none_or(|grant| {
+                    lease.protocol != trial.protocol
+                        || (lease.protocol.keys_by_external_port()
+                            && grant.external.port() != lease.external.port())
+                })
             })
-            .map(|(mapping, lease)| (mapping, lease.protocol, lease.external.port()))
+            .map(|(mapping, lease)| (*mapping, lease.protocol))
             .collect();
-        for (mapping, protocol, external_port) in superseded {
+        for (mapping, protocol) in superseded {
             let queued = self.commands.iter().any(|command| {
                 matches!(command, MappingCommand::Release { protocol: p, mapping: m, .. }
                     if *p == protocol && *m == mapping)
             });
-            if !queued {
-                self.commands.push_back(MappingCommand::Release {
-                    protocol,
-                    mapping,
-                    external_port,
-                });
-            }
+            self.end_lease(mapping, !queued);
         }
         let mut any_usable = false;
         for (mapping, grant) in trial.grants {
@@ -272,7 +295,8 @@ impl PortMapper {
             ObservationOutcome::Recorded => MappingStatus::Mapped,
             ObservationOutcome::NotPubliclyUsable
             | ObservationOutcome::Ipv4PeerVoteRefused
-            | ObservationOutcome::UnheldPeerVoteRefused => MappingStatus::Degraded,
+            | ObservationOutcome::UnheldPeerVoteRefused
+            | ObservationOutcome::PortZeroRefused => MappingStatus::Degraded,
         }
     }
 }

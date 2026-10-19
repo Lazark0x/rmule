@@ -32,6 +32,8 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::theme::Theme;
+use crate::words::Sentence;
+use crate::words::app as words;
 use crate::wrap::{labeled_lines, wrapped_lines};
 
 /// Label column every form's fields align on — the unification of the two
@@ -204,7 +206,7 @@ pub(crate) struct Form {
     pub focus: usize,
     /// The last commit's rejection, shown under the fields until the next one.
     /// The typing stays: a validation failure must never cost an entry.
-    pub error: Option<String>,
+    pub error: Option<Sentence>,
 }
 
 impl Form {
@@ -371,6 +373,36 @@ impl Form {
         }
     }
 
+    /// The form as a modal lays it out: its fields, `footer` under them (the
+    /// key legend), and the lines a scrolling frame keeps on screen for the
+    /// focus. The first field answers for everything above it and the last
+    /// for everything under it, so the heading, the rejection and the legend
+    /// are in view when the focus is at an end.
+    pub fn render_modal(
+        &self,
+        width: usize,
+        theme: &Theme,
+        footer: Vec<Line<'static>>,
+    ) -> (Vec<Line<'static>>, Range<usize>) {
+        let mut rendered = self.render(width, theme, true);
+        rendered.lines.push(Line::raw(""));
+        rendered.lines.extend(footer);
+        let mut focus = rendered.focus;
+        let mut focusable = self
+            .fields
+            .iter()
+            .enumerate()
+            .filter(|(_, field)| field.focusable())
+            .map(|(index, _)| index);
+        if focusable.next() == Some(self.focus) {
+            focus.start = 0;
+        }
+        if focusable.next_back().unwrap_or(self.focus) == self.focus {
+            focus.end = rendered.lines.len();
+        }
+        (rendered.lines, focus)
+    }
+
     /// Render the whole form to `width` columns.
     ///
     /// `caret` marks the focused field's insertion point; a browsing surface
@@ -499,22 +531,24 @@ pub(crate) struct Rendered {
 /// A port entry: `1`–`65535`. Shared by every form that takes one — the
 /// add-server modal and the two Settings port fields — so the three cannot
 /// disagree about what a port is.
-pub(crate) fn validate_port(port: &str) -> Result<u16, String> {
+pub(crate) fn validate_port(port: &str) -> Result<u16, Sentence> {
     if port.is_empty() {
-        return Err("port is required (1–65535)".to_string());
+        return Err(words::port_refusal(&words::PortRefusal::Required));
     }
     match port.parse::<u16>() {
-        Ok(0) | Err(_) => Err(format!("'{port}' is not a port number (1–65535)")),
+        Ok(0) | Err(_) => Err(words::port_refusal(&words::PortRefusal::NotAPort(
+            port.to_string(),
+        ))),
         Ok(port) => Ok(port),
     }
 }
 
 /// An `http`/`https` URL, the only two schemes anything here fetches over.
-pub(crate) fn validate_url(url: &str) -> Result<&str, String> {
+pub(crate) fn validate_url(url: &str) -> Result<&str, Sentence> {
     if url.starts_with("http://") || url.starts_with("https://") {
         Ok(url)
     } else {
-        Err("URL must start with http:// or https://".to_string())
+        Err(words::URL_SCHEME)
     }
 }
 

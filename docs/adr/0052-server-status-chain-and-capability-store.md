@@ -54,9 +54,16 @@ run gets its first contact at one per 250 ms (eMuleAI's `UDPSEARCHSPEED`), its c
 fallback on the same pace. Every later probe is a refresh, due once a 20-minute window
 lapses (aMule's `UDPSERVSTATMINREASKTIME` floor) and paced at one per 5 s across the
 list. Per server the load stays one `0x96` (plus one crypt-ping) per window. At attach
-the sweep seeds its schedule from the durable figures (ADR-0080): a server that answered
-within the window counts as pinged then; a server with no figures or older ones joins the
-burst.
+the sweep seeds its schedule from the durable status-answer date alone (ADR-0080's
+`answered_at`): a server whose last challenge-matched `0x97` (or imported `ST_LASTPING`)
+falls within the window counts as pinged then; a server with none, or an older one, joins
+the burst. Counts a login reported carry their own date and never stand in for a ping, so
+a server that was only logged into last run gets its first contact at once.
+
+**The sweep reports each row's Ping State** (ADR-0080) to the level as a run-time fact: a
+probe sent (awaiting, unless a round trip is already measured), a plain probe judged
+silent (unanswered, dated by the first silence of the run), and a challenge-matched `0x97`
+clears it. The offline guard gates the tally, not this fact.
 
 **Dead servers are marked, never removed.** Removal is the operator's act; rmule departs
 from aMule here on purpose.

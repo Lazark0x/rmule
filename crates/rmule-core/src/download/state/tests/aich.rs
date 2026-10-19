@@ -3,19 +3,16 @@
 //! distinct IPs agree, and the provisional hash-set authority a set that is
 //! not the file's own is refused against.
 
-use rmule_primitives::{ED2K_PART_SIZE, FileHashSummary};
-
 use super::*;
 
 #[test]
-fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_resumes_from_it() {
-    // A 3-block file with a trusted AICH root. peer 1 delivers block 0
-    // (good) and block 1 (corrupt); peer 2 delivers block 2 (good) and
-    // completes the part. MD4 fails — but AICH localizes block 1, so only
-    // its deliverer (peer 1) is retired and the re-stream resumes from
-    // block 1, not from byte 0 (ADR-0038 honest attribution + truncate).
+fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_hands_only_that_block() {
+    // A 6-block file with a trusted AICH root. peer 1 is handed blocks 0-2
+    // and delivers block 1 corrupt; peer 2 is handed blocks 3-5 and completes
+    // the part. MD4 fails — but AICH localizes block 1, so only its writer
+    // (peer 1) is retired and only block 1 is handed again (ADR-0038, ADR-0117).
     let emb = EMBLOCKSIZE as usize;
-    let file_size = 3 * EMBLOCKSIZE;
+    let file_size = 6 * EMBLOCKSIZE;
     let true_bytes: Vec<u8> = (0..file_size).map(|i| (i % 251) as u8).collect();
     let tree = AichHashSet::from_bytes(&true_bytes);
     let root = tree.master_root();
@@ -23,8 +20,8 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_resumes_from_it() {
 
     let mut state = aich_state(file_size, root, vec![peer(1), peer(2)], 2);
     let _ = state.start(t0());
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
-    let _ = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(1));
+    let _ = connect(&mut state, t0(), peer(2));
 
     let mut corrupt_block1 = true_bytes[emb..2 * emb].to_vec();
     corrupt_block1[0] ^= 0xFF;
@@ -46,13 +43,22 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_resumes_from_it() {
             bytes: corrupt_block1,
         },
     );
+    let _ = state.on_worker_event(
+        t0(),
+        peer(1),
+        PeerWorkerEvent::BlockReceived {
+            part_index: 0,
+            offset: 2 * EMBLOCKSIZE,
+            bytes: true_bytes[2 * emb..3 * emb].to_vec(),
+        },
+    );
     let completing = state.on_worker_event(
         t0(),
         peer(2),
         PeerWorkerEvent::BlockReceived {
             part_index: 0,
-            offset: 2 * EMBLOCKSIZE,
-            bytes: true_bytes[2 * emb..].to_vec(),
+            offset: 3 * EMBLOCKSIZE,
+            bytes: true_bytes[3 * emb..].to_vec(),
         },
     );
     assert!(
@@ -85,8 +91,8 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_resumes_from_it() {
         "no peer is retired before the AICH answer arrives: {failed:?}"
     );
 
-    // The peer answers; AICH localizes block 1 → retire only its deliverer
-    // (peer 1) and re-stream from EMBLOCKSIZE, keeping the good block 0.
+    // The peer answers; AICH localizes block 1 → retire only its writer
+    // (peer 1), keeping every good block.
     let repaired = state.on_worker_event(
         t0(),
         peer(2),
@@ -109,13 +115,30 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_resumes_from_it() {
         )),
         "peer 2 (delivered only a good block) is NOT retired: {repaired:?}"
     );
-    assert!(
-        repaired.iter().any(|d| matches!(
-            d,
-            Decision::Send { peer: p, command: PeerWorkerCommand::RequestPart { resume_offset, .. } }
-                if *p == peer(2) && *resume_offset == EMBLOCKSIZE
-        )),
-        "the part re-streams from the corrupt block (EMBLOCKSIZE), not from 0: {repaired:?}"
+    // peer 2 has room again: it is handed the corrupt block alone.
+    let handed = state.on_worker_event(
+        t0(),
+        peer(2),
+        PeerWorkerEvent::BlocksWanted {
+            room: 3,
+            drained: true,
+            handout: 1,
+        },
+    );
+    assert_eq!(
+        sent(&handed),
+        vec![(
+            peer(2),
+            PeerWorkerCommand::RequestBlocks {
+                blocks: vec![crate::BlockPlan {
+                    part_index: 0,
+                    start: EMBLOCKSIZE,
+                    end: 2 * EMBLOCKSIZE,
+                }],
+                handout: 2,
+            }
+        )],
+        "only the corrupt block is fetched again: {handed:?}"
     );
 }
 #[test]
@@ -160,7 +183,8 @@ fn an_aich_attributed_corrupt_block_distrusts_only_its_sender() {
     const CORRUPTER: UserHash = UserHash::from_bytes([0xC0; UserHash::BYTE_LEN]);
     const HONEST: UserHash = UserHash::from_bytes([0x40; UserHash::BYTE_LEN]);
     let emb = EMBLOCKSIZE as usize;
-    let file_size = 2 * EMBLOCKSIZE;
+    // Four blocks: the first grant takes three, the second the last.
+    let file_size = 4 * EMBLOCKSIZE;
     let true_bytes: Vec<u8> = (0..file_size).map(|i| (i % 251) as u8).collect();
     let tree = AichHashSet::from_bytes(&true_bytes);
     let recovery = tree.create_part_recovery_data(0).expect("recovery data");
@@ -168,7 +192,7 @@ fn an_aich_attributed_corrupt_block_distrusts_only_its_sender() {
     let _ = state.start(t0());
     for (at, user_hash) in [(peer(1), CORRUPTER), (peer(2), HONEST)] {
         let _ = state.on_worker_event(t0(), at, identified(user_hash));
-        let _ = state.on_worker_event(t0(), at, PeerWorkerEvent::Connected);
+        let _ = connect(&mut state, t0(), at);
     }
     let mut corrupt_block0 = true_bytes[..emb].to_vec();
     corrupt_block0[0] ^= 0xFF;
@@ -216,27 +240,6 @@ fn an_aich_attributed_corrupt_block_distrusts_only_its_sender() {
     assert_eq!(distrusted, vec![CORRUPTER], "{repaired:?}");
 }
 
-/// A two-part file's true ED2K identity, hashed from its bytes: its file hash
-/// and the part hash set a truthful peer sends.
-fn two_part_file() -> FileHashSummary {
-    FileHashSummary::digest_bytes(&[0x5A; (ED2K_PART_SIZE + 1_000) as usize])
-}
-
-/// A started two-peer download of `file`, with no link hash set.
-fn two_part_state(file: &FileHashSummary) -> DownloadState {
-    let mut state = pooled_state(
-        ContentFacts {
-            file_hash: file.file_hash(),
-            ..file_hash_only_content(file.file_size())
-        },
-        &[peer(1), peer(2)],
-        QUIET_POSTURE,
-        2,
-    );
-    let _ = state.start(t0());
-    state
-}
-
 #[test]
 fn a_first_peer_hash_set_is_adopted_as_the_provisional_authority() {
     let file = two_part_file();
@@ -281,7 +284,7 @@ fn a_hash_set_that_is_not_the_files_own_is_refused_and_its_sender_distrusted() {
     let file = two_part_file();
     let mut state = two_part_state(&file);
     let _ = state.on_worker_event(t0(), peer(2), identified(FORGER));
-    let _ = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Connected);
+    let _ = connect(&mut state, t0(), peer(2));
     let mut forged = file.part_hash_set().expect("two parts").hashes().to_vec();
     forged[0] = PartHash::from_bytes([0x22; 16]);
 
@@ -314,4 +317,37 @@ fn a_hash_set_that_is_not_the_files_own_is_refused_and_its_sender_distrusted() {
             .any(|d| matches!(d, Decision::PersistProvisionalHashes(_))),
         "the forged set is never adopted: {out:?}"
     );
+}
+
+/// A part verified while no part hash set was held is outside the Verified
+/// Range until a set arrives (ADR-0113 rule 2): the status the run sends
+/// leaves it out, so it never names a part the serve side refuses, and names
+/// it once the file's own set is adopted.
+#[test]
+fn a_part_verified_before_the_set_is_named_only_once_the_set_arrives() {
+    let file = two_part_file();
+    let mut state = pooled_state(
+        ContentFacts {
+            file_hash: file.file_hash(),
+            verified_parts: vec![0],
+            ..file_hash_only_content(file.file_size())
+        },
+        &[peer(1)],
+        QUIET_POSTURE,
+        1,
+    );
+    let _ = state.start(t0());
+    let none = PartBitmap::downloader(file.file_size(), |_| false);
+    assert_eq!(state.our_part_status(), none);
+
+    let _ = connect(&mut state, t0(), peer(1));
+    let hashes = file.part_hash_set().expect("two parts").hashes().to_vec();
+    let _ = state.on_worker_event(
+        t0(),
+        peer(1),
+        PeerWorkerEvent::HashSetReceived {
+            part_hashes: hashes,
+        },
+    );
+    assert!(state.our_part_status().has(rmule_peer::PartIndex::new(0)));
 }

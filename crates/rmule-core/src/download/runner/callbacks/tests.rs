@@ -9,8 +9,8 @@
 use std::net::Ipv4Addr;
 
 use rmule_primitives::{
-    ClientId, Ed2kText, FileHash, Ipv4Endpoint, PeerSource, SourceCryptOptions, SourceSighting,
-    UserHash,
+    ClientId, Ed2kText, FileHash, Informant, Ipv4Endpoint, PeerSource, SourceCryptOptions,
+    SourceSighting, UserHash,
 };
 use tokio::sync::mpsc;
 
@@ -43,6 +43,7 @@ fn candidate_with_hash(low_id: u32, user_hash: UserHash) -> LowIdCandidate {
             PeerSource::new(ClientId::from_u32(low_id), 4662),
             Some(user_hash),
             Some(SourceCryptOptions::from_byte(0x01)),
+            Informant::Own,
         ),
         None,
     )
@@ -52,7 +53,10 @@ fn candidate_with_hash(low_id: u32, user_hash: UserHash) -> LowIdCandidate {
 /// The same source as a plain `0x42` answer names it: an id and a port.
 fn bare_candidate(low_id: u32) -> LowIdCandidate {
     LowIdCandidate::from_sighting(
-        SourceSighting::plain(PeerSource::new(ClientId::from_u32(low_id), 4662)),
+        SourceSighting::plain(
+            PeerSource::new(ClientId::from_u32(low_id), 4662),
+            Informant::Own,
+        ),
         None,
     )
     .expect("a Low-ID source is a candidate")

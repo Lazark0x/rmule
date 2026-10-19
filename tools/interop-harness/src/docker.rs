@@ -45,9 +45,12 @@ impl DockerCommand {
 /// A multi-stage build under the plain `docker build` — no BuildKit; colima's
 /// engine defaults to the legacy builder — commits every stage as its own
 /// image, and only the final stage gets `-t`: every earlier stage is dangling
-/// the moment the build succeeds. [`Docker::prune_bench_stage_images`] sweeps
-/// exactly the images carrying this label, so it never touches an unrelated
-/// dangling image on the host.
+/// the moment the build succeeds. That stage image is also the recipe's only
+/// layer cache, so [`Docker::prune_bench_stage_images`] deletes the cache of
+/// every recipe that carries the label (`rmule-node`, `amule-kad-patched`); the
+/// `rmule-tools` driver image no longer does, it takes a prebuilt binary. The
+/// sweep removes exactly the images carrying this label, so it never touches an
+/// unrelated dangling image on the host.
 pub const BENCH_STAGE_LABEL: &str = "org.rmule.bench.stage=1";
 
 /// Whether a failed `docker build`'s combined output names one of the four
@@ -324,6 +327,18 @@ impl Docker {
         ])
     }
 
+    /// `docker image inspect -f '{{.Id}}' <tag>` — the image's content id, which
+    /// tells two builds of one tag apart.
+    pub fn image_id(&self, tag: impl Into<OsString>) -> DockerCommand {
+        self.command(vec![
+            OsString::from("image"),
+            OsString::from("inspect"),
+            OsString::from("-f"),
+            OsString::from("{{.Id}}"),
+            tag.into(),
+        ])
+    }
+
     /// `docker info --format <format>` — what **Bench Doctor** reads the daemon's
     /// own capability report out of.
     pub fn info(&self, format: impl Into<OsString>) -> DockerCommand {
@@ -453,6 +468,12 @@ impl Docker {
         self.command(vec![OsString::from("pause"), container.into()])
     }
 
+    /// `docker unpause <container>` — thaws what [`Self::pause_container`]
+    /// froze, so its logs end and its stop runs its own handlers.
+    pub fn unpause_container(&self, container: impl Into<OsString>) -> DockerCommand {
+        self.command(vec![OsString::from("unpause"), container.into()])
+    }
+
     /// `docker stop --time <timeout_secs> <container>` — SIGTERM, then
     /// SIGKILL only after `timeout_secs` — never `docker kill`'s immediate
     /// SIGKILL. A container's own process needs its SIGTERM
@@ -549,6 +570,11 @@ pub struct RunContainer {
 }
 
 impl RunContainer {
+    /// The image the container starts from.
+    pub fn image(&self) -> &OsStr {
+        &self.image
+    }
+
     /// Run `image` with no options yet.
     pub fn new(image: impl Into<OsString>) -> Self {
         Self {

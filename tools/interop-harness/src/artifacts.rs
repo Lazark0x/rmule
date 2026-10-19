@@ -347,13 +347,32 @@ pub fn write_synthetic_file(layout: &RunLayout, size: u64) -> Result<()> {
         .with_context(|| format!("flush {}", path.display()))
 }
 
+/// Write `size` zero bytes to `path` as one hole: the length is set and no
+/// block is written, so a file past 4 GiB is staged without the disk holding
+/// it, and a reader sees zeros.
+pub fn write_sparse_file(path: &Path, size: u64) -> Result<()> {
+    let file = File::create(path).with_context(|| format!("create {}", path.display()))?;
+    file.set_len(size)
+        .with_context(|| format!("set the length of {}", path.display()))
+}
+
 /// Write `size` bytes to `path` that no compressor shrinks: a xorshift
 /// stream from `seed`. A peer compresses a part it sends when that saves
 /// bytes, so a patterned file crosses a throttled link at many times its cap.
+/// Distinct seeds write distinct files: flows stage one file per role from
+/// adjacent seeds, and two roles sharing one hash share one swarm.
 pub fn write_incompressible_file(path: &Path, size: u64, seed: u64) -> Result<()> {
     let file = File::create(path).with_context(|| format!("create {}", path.display()))?;
     let mut writer = BufWriter::new(file);
-    let mut state = seed | 1;
+    // The splitmix64 finaliser is a bijection, so distinct seeds start
+    // distinct states; xorshift only needs the state non-zero.
+    let mut state = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    state = (state ^ (state >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    state = (state ^ (state >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    state ^= state >> 31;
+    if state == 0 {
+        state = 0x9E37_79B9_7F4A_7C15;
+    }
     let mut remaining = size;
     let mut buffer = [0_u8; 8192];
     while remaining > 0 {
@@ -421,6 +440,18 @@ mod tests {
     use std::io::Write as _;
 
     use super::write_incompressible_file;
+
+    /// Seeds one apart, as a flow numbers its roles, stage two files.
+    #[test]
+    fn adjacent_seeds_write_different_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let [first, second] = [0x5EED_0F10, 0x5EED_0F11].map(|seed| {
+            let path = dir.path().join(format!("{seed:x}.bin"));
+            write_incompressible_file(&path, 4096, seed).unwrap();
+            std::fs::read(&path).unwrap()
+        });
+        assert_ne!(first, second);
+    }
 
     /// zlib gains nothing on the staged bytes, so a peer that compresses a
     /// part when that saves bytes sends them whole, at its cap.

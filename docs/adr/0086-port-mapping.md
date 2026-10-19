@@ -104,6 +104,88 @@ its own address and a new row is mapped, as RFC 6887 §8.4 recommends.
 - Mappings are released on exit (configurable). A pinhole whose Known IPv6 lapsed entirely
   has no row left to diff and is left to its lease.
 
+### Every grant has one owner and one end
+
+A gateway grant lives in exactly one of four places inside rmule, and each place names its
+key and every way the grant leaves it.
+
+| holder | key | holds |
+|---|---|---|
+| **lease table** | the desired row (role, family, internal port, pinhole) | the installed protocol, external endpoint, lease and renewal rung |
+| **open trial** (the one in flight and the completed ones of the open race) | (protocol, desired row) | grants a race has not installed yet |
+| **challenger** | (protocol, desired row) | a re-race's trials, while the incumbent stays in the lease table |
+| **`MappingGrant` observation** (ADR-0084) | the family's address ladder; the role's port ladder, IPv4 rows only | what a `Mapped` lease fed Address Learning, fresh for its lease |
+
+A gateway keys its own mapping differently per protocol. PCP and NAT-PMP key it by internal
+port and transport: a renewal granted on another external port **moved** the one mapping,
+and a delete names the internal port. UPnP keys it by external port and transport: a
+renewal granted on another external port is a **second** mapping, so the old external port
+is released when the lease moves — through the ownership check below, because that move is
+the gateway's `ConflictInMappingEntry` (718), and another host usually holds the old port by
+then.
+
+**A release takes down only rmule's own mapping.** PCP and NAT-PMP cannot do otherwise. A
+NAT-PMP gateway keys a mapping by the requesting host's address, the request's source
+(RFC 6886 §3.3); a PCP gateway by the PCP client address, which must equal the source
+(RFC 6887 §8.1; rmule sends no `THIRD_PARTY`), and it honours a delete only under the
+mapping's own nonce (§11.3). Neither delete can reach another host. UPnP-IGD keys a mapping
+by external port and protocol, and `DeletePortMapping` names no internal client: a gateway
+that obeys a delete from any LAN host (miniupnpd with `secure_mode=no`) removes whoever holds
+the port now. Both references delete blindly (aMule `UPnPBase.cpp:1109`, emule-qt
+`UPnPImplMiniLib.cpp:106`). rmule **knows** a UPnP port is its own only from the gateway's
+`GetSpecificPortMappingEntry` for that external port and protocol, asked immediately before
+the delete, and sends `DeletePortMapping` only when the entry names rmule's own internal
+address and internal port:
+
+| `GetSpecificPortMappingEntry` answers | the release |
+|---|---|
+| rmule's internal address and port | deletes |
+| `NoSuchEntryInArray` (714) | sends nothing: there is nothing to take down |
+| another internal address or port | sends nothing: another host's mapping, or another of rmule's |
+| a fault, no answer, or an answer that cannot be read | sends nothing: unknown is not rmule's, and the lease is the cleanup |
+
+A release reports which, and every release that sent no delete is a Run Log record
+(`port_mapping.release_kept`) with its sentence, at quit as in session.
+
+A 718 is not taken as the proof. By the IGD spec it means another client holds the port, but
+quit has no 718 to read — a neighbour may have taken the port at any time since the last
+renewal — and a gateway that answers 718 to its own client's re-add would leave rmule's old
+port forwarding until its lease ends, and for good under IGD1's permanent lease. One check
+before every UPnP delete covers the moved renewal, departure, the lost race and quit alike.
+The check and the delete are two round trips with a window between them; another host would
+have to delete and re-add the port inside it, and that is accepted.
+
+Ends, each with what it does to every holder:
+
+- **Renewal answered**: the lease and the observation take the new grant; under UPnP a moved
+  external port releases the old one, through the ownership check.
+- **Departure** (the row left the set, including the set emptying): release, drop the lease,
+  withdraw the observation.
+- **Reprobe** (operator recheck, smart-LowID, three renewal failures): drop the lease with no
+  release (above) and withdraw the observation.
+- **Set change** for a surviving row: the lease stays until the race installs; an install
+  that does not re-grant it releases it and withdraws the observation.
+- **Interrupted race** (a set change, reprobe or quit while trials are open): every grant the
+  open trials and the challenger hold is released. An answer that lands for a trial no
+  longer open, and names no held lease of its protocol, is released on arrival.
+- **Quit**: release when release-on-exit is set; withdraw always.
+
+A withdrawal takes the role's port-ladder grant (an IPv6 row never fed one), and the family's
+address-ladder grant only when no other `Mapped` lease in that family remains. The learned
+method is the mapper's current value: a race that remembers none (a non-Exact win, a failed
+short round, a backoff) clears the stored row as well.
+
+Every call and phase has a deadline. The runtime runs every probe and map under a 20 s
+backend deadline, answered as `Timeout`. A probe round closes at 3 s or 15 s. A trial
+closes 25 s after its maps went out, its unanswered rows counted as `Timeout`. A renewal
+advances its rung when it is sent and never waits. A release is fire-and-forget; a UPnP
+release is two round trips, its check and its delete. The exit pass starts every release at
+once and gives them 2 s together, so the budget bounds the slowest release rather than their
+sum, and a UPnP check not answered inside it sends no delete. Nothing the runtime answers can
+be lost: a call that never left (no route) is fed back to the mapper directly, the result
+inbox is awaited, and the operator's reprobe is a coalesced flag rather than a slot in the
+8-deep punched-path pin inbox.
+
 ### Acting on Reachability
 
 A fresh lead-family `Exact` grant, and an epoch reset that re-added the set, each issue a
@@ -168,9 +250,10 @@ aMule binds its listener, then its UDP socket, then maps both, and only then aut
   validation, the retransmit ladder, IPv6 source pinning, one socket per attempt.
 - **`GatewaySource`** (`rmule-net`): default-gateway lookup via `netdev`, with the scope id
   of a link-local gateway; faked in the testkit.
-- **Config** on `CoreConfig`: `PortMappingMode` `Off | Auto` (default **Auto**), a protocol
-  mask in emule-qt's encoding (1 = PCP, 2 = NAT-PMP, 4 = UPnP; all by default), lease
-  seconds, release on exit.
+- **Config**: `PortMappingMode` `Off | Auto` (default **Auto**) is the operator's setting,
+  `CoreSettings::port_mapping`; the engineering knobs are `CoreConfig::port_mapping`: a
+  protocol mask in emule-qt's encoding (1 = PCP, 2 = NAT-PMP, 4 = UPnP; all by default),
+  lease seconds, release on exit.
 - **Diagnostics** per mapping: `NotMapped | Probing | Mapped | Degraded | Failed`, method,
   external endpoint, lease, next renewal, last error; the TUI and CLI read this level, and
   the Run Log writes it.
@@ -212,3 +295,7 @@ aMule binds its listener, then its UDP socket, then maps both, and only then aut
   router that never answers must cost seconds, not the session.
 - **Waiting for `crab_nat` to add a source option.** Rejected: IPv6 port mapping would stay
   broken on real routers for an unknown time.
+- **Deleting a UPnP port blindly, as both references do.** Rejected: on a gateway that obeys
+  any host's delete, a moved renewal or a quit takes down a neighbour's forwarding.
+- **A 718 on the renewal as the only proof the old port is gone.** Rejected: quit has no 718
+  to read, and a gateway that answers 718 to its own client would strand rmule's old port.

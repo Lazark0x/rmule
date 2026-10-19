@@ -23,10 +23,21 @@
 //!
 //! So the order is inverted: `AddPortMapping` on the port rmule actually wants,
 //! which is exact-or-error, and `add_any_port` only as the fallback that turns a
-//! conflict into a *graded* `Mismatched` grant rather than nothing. The one
+//! port conflict (UPnP error 718) into a *graded* `Mismatched` grant rather than
+//! nothing. Any other refusal stays a refusal. The one
 //! thing the ADR's order buys — not silently stealing another LAN host's
 //! mapping on the same external port — is the cost, and it is the smaller one: a
 //! conflicting entry is far more often our own stale mapping than a neighbour's.
+//!
+//! ## A release deletes only our own entry
+//!
+//! UPnP-IGD keys a mapping by external port and protocol, and
+//! `DeletePortMapping` names no internal client, so a gateway that obeys a
+//! delete from any LAN host removes whoever holds the port now. A release
+//! therefore asks `GetSpecificPortMappingEntry` first (the `entry` check,
+//! which `igd-next` does not issue) and deletes only an entry that still
+//! names this host's internal address and port (ADR-0086, "A release takes
+//! down only rmule's own mapping").
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -39,7 +50,10 @@ use super::epoch::EpochVerdict;
 use super::{
     Gateway, MappedTransport, MappingBackend, MappingError, MappingFuture, MappingGrant,
     MappingProtocol, MappingRefusal, MappingRequest, MappingTransportFault, ProbeReport,
+    ReleaseKept, ReleaseOutcome,
 };
+
+mod entry;
 
 /// The SSDP search budget. Shorter than `igd-next`'s 10 s default so a UPnP
 /// probe still lands inside the race's extended 15-second grace, and long
@@ -183,17 +197,43 @@ impl MappingBackend for UpnpMappingBackend {
         gateway: Gateway,
         request: MappingRequest,
         external_port: u16,
-    ) -> MappingFuture<'static, ()> {
+    ) -> MappingFuture<'static, ReleaseOutcome> {
         Box::pin(async move {
-            let Ok(device) = self.device(gateway).await else {
-                return;
+            let device = match self.device(gateway).await {
+                Ok(device) => device,
+                Err(error) => return ReleaseOutcome::Kept(ReleaseKept::Unchecked(error)),
             };
             let protocol = protocol_of(request.transport);
-            let _ =
-                tokio::task::spawn_blocking(move || device.remove_port(protocol, external_port))
-                    .await;
+            let ours = SocketAddr::new(gateway.local_address, request.internal_port);
+            tokio::task::spawn_blocking(move || release_own(&device, protocol, external_port, ours))
+                .await
+                .unwrap_or_else(|error| {
+                    ReleaseOutcome::Kept(ReleaseKept::Unchecked(transport(&error)))
+                })
         })
     }
+}
+
+/// Delete `external_port` only while the gateway says it forwards to `ours`,
+/// the internal address and port rmule mapped it to.
+fn release_own(
+    device: &igd_next::Gateway,
+    protocol: PortMappingProtocol,
+    external_port: u16,
+    ours: SocketAddr,
+) -> ReleaseOutcome {
+    let kept = match entry::forwards_to(device, protocol, external_port) {
+        Ok(Some(internal)) if internal == ours => {
+            // Fire and forget, like every release: the entry was ours a round
+            // trip ago, and the lease is the cleanup if the delete is lost.
+            let _ = device.remove_port(protocol, external_port);
+            return ReleaseOutcome::Sent;
+        }
+        Ok(Some(internal)) => ReleaseKept::ForwardsElsewhere(join(internal.ip(), internal.port())),
+        Ok(None) => ReleaseKept::Absent,
+        Err(error) => ReleaseKept::Unchecked(error),
+    };
+    ReleaseOutcome::Kept(kept)
 }
 
 /// What one `AddPortMapping` round produced.
@@ -204,8 +244,8 @@ struct Granted {
     lease: Option<Duration>,
 }
 
-/// Ask for the exact port; fall back to a permanent lease, then to whatever the
-/// gateway will give.
+/// Ask for the exact port; fall back to a permanent lease, or — on a port
+/// conflict alone — to whatever port the gateway will give.
 fn add_mapping(
     device: &igd_next::Gateway,
     protocol: PortMappingProtocol,
@@ -213,34 +253,72 @@ fn add_mapping(
     local: SocketAddr,
     lease: u32,
 ) -> Result<Granted, MappingError> {
-    match device.add_port(protocol, wanted, local, lease, DESCRIPTION) {
-        Ok(()) => Ok(Granted {
+    let Err(error) = device.add_port(protocol, wanted, local, lease, DESCRIPTION) else {
+        return Ok(Granted {
             port: wanted,
             lease: Some(Duration::from_secs(u64::from(lease))),
-        }),
-        // UPnP error 725. IGD1's lease of 0 *means* permanent, while IGD2
-        // forbids infinite leases outright — so the same request earns a
-        // permanent mapping on one class of router and a one-week one on
-        // another. Asking again with 0 is the only way to be mapped at all on
-        // the first class.
-        Err(AddPortError::OnlyPermanentLeasesSupported) => device
+        });
+    };
+    match next_step(error) {
+        NextStep::Permanent => device
             .add_port(protocol, wanted, local, 0, DESCRIPTION)
             .map(|()| Granted {
                 port: wanted,
                 lease: None,
             })
             .map_err(|error| refused(&error)),
-        // The port is taken, or the gateway insists on choosing. A grant on
-        // another port is still worth having on the UDP surfaces — it is the
-        // same fact Kad's extern-port rule learns — and the grade is what
-        // stops it being advertised on the TCP one.
-        Err(_) => device
+        NextStep::AnyPort => device
             .add_any_port(protocol, local, lease, DESCRIPTION)
             .map(|port| Granted {
                 port,
                 lease: Some(Duration::from_secs(u64::from(lease))),
             })
             .map_err(|error| refused(&error)),
+        NextStep::Fail(error) => Err(error),
+    }
+}
+
+/// What an `AddPortMapping` refusal leads to.
+#[derive(Debug)]
+enum NextStep {
+    /// Ask again with IGD1's lease of 0.
+    Permanent,
+    /// Take any port the gateway picks.
+    AnyPort,
+    /// Report the refusal.
+    Fail(MappingError),
+}
+
+/// Read one `AddPortMapping` refusal.
+///
+/// UPnP error 725 (`OnlyPermanentLeasesSupported`): IGD1's lease of 0 *means*
+/// permanent, while IGD2 forbids infinite leases outright — so asking again
+/// with 0 is the only way to be mapped at all on that class of router.
+///
+/// UPnP error 718 (`PortInUse`, `ConflictInMappingEntry`): the port is taken.
+/// A grant on another port is still worth having on the UDP surfaces — it is
+/// the same fact Kad's extern-port rule learns — and the grade stops it being
+/// advertised on the TCP one. Every other refusal is the device saying no, or
+/// not being reachable: a random-port grant would answer neither, and on the
+/// eD2k listener it would be a silent LowID taken for a transient fault.
+fn next_step(error: AddPortError) -> NextStep {
+    use igd_next::RequestError;
+    match error {
+        AddPortError::OnlyPermanentLeasesSupported => NextStep::Permanent,
+        AddPortError::PortInUse => NextStep::AnyPort,
+        AddPortError::ActionNotAuthorized => {
+            NextStep::Fail(refusal(&error, MappingRefusal::NotAuthorized))
+        }
+        AddPortError::RequestError(
+            ref fault @ (RequestError::AttoHttpError(_) | RequestError::IoError(_)),
+        ) => NextStep::Fail(transport(fault)),
+        AddPortError::RequestError(RequestError::InvalidResponse(_)) => {
+            NextStep::Fail(refusal(&error, MappingRefusal::BadAnswer))
+        }
+        AddPortError::RequestError(RequestError::UnsupportedAction(_)) => {
+            NextStep::Fail(refusal(&error, MappingRefusal::Unsupported))
+        }
+        _ => NextStep::Fail(refused(&error)),
     }
 }
 
@@ -259,10 +337,16 @@ fn lease_seconds(lease: Duration) -> u32 {
 
 /// The device refused; what it said goes to the Run Log.
 fn refused(error: &dyn std::fmt::Display) -> MappingError {
+    refusal(error, MappingRefusal::DeviceRefused)
+}
+
+/// The device refused, for a reason it named; what it said goes to the Run
+/// Log.
+fn refusal(error: &dyn std::fmt::Display, refusal: MappingRefusal) -> MappingError {
     tracing::debug!(%error, "UPnP device refused");
     MappingError::Refused {
         protocol: MappingProtocol::Upnp,
-        refusal: MappingRefusal::DeviceRefused,
+        refusal,
         // UPnP carries no retry estimate, so the mapper's own backoff floor
         // paces a refusal.
         hold_off: None,
@@ -290,43 +374,4 @@ const fn join(address: IpAddr, port: u16) -> PeerEndpoint {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::net::{Ipv4Addr, Ipv6Addr};
-
-    #[tokio::test]
-    async fn an_ipv6_gateway_is_refused_before_any_search_runs() {
-        // IGD2 `AddPinhole` is the only UPnP route to an IPv6 pinhole and
-        // `igd-next` cannot issue it, so claiming otherwise would put a
-        // permanently failing candidate in every dual-stack race.
-        let backend = Arc::new(UpnpMappingBackend::new());
-        let gateway = Gateway {
-            address: IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)),
-            scope_id: Some(4),
-            local_address: IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 5)),
-        };
-        assert!(matches!(
-            backend.probe(gateway).await,
-            Err(MappingError::Unsupported(MappingProtocol::Upnp))
-        ));
-    }
-
-    #[test]
-    fn the_device_cache_is_keyed_on_the_next_hop_it_was_found_from() {
-        // A different next hop is a different router: answering from the cache
-        // would map ports on a box that is no longer in the path.
-        let backend = UpnpMappingBackend::new();
-        let first = Gateway::v4(Ipv4Addr::new(192, 168, 1, 1), Ipv4Addr::new(192, 168, 1, 5));
-        let second = Gateway::v4(Ipv4Addr::new(10, 0, 0, 1), Ipv4Addr::new(10, 0, 0, 5));
-        let device = igd_next::Gateway {
-            addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 5000),
-            root_url: String::new(),
-            control_url: String::new(),
-            control_schema_url: String::new(),
-            control_schema: std::collections::HashMap::new(),
-        };
-        backend.remember(first, &device);
-        assert!(backend.cached(first).is_some());
-        assert!(backend.cached(second).is_none());
-    }
-}
+mod tests;

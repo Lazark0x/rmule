@@ -22,7 +22,7 @@ fn an_add_answers_the_canonical_path_whatever_the_spelling() {
     let made = dirs(tmp.path(), &["films"]);
     let spelled = tmp.path().join("films/./../films");
     assert_eq!(
-        admit(&spelled, &[], &ShareGuards::default()),
+        admit(&spelled, &[], &ShareGuards::default(), None),
         Ok(made[0].clone())
     );
 }
@@ -46,7 +46,7 @@ fn the_guards_refuse_home_root_data_and_what_is_already_shared() {
         home: Some(home.clone()),
         data_dir: Some(data.clone()),
     };
-    let refused = |path: &Path, listed: &[PathBuf]| admit(path, listed, &guards).unwrap_err();
+    let refused = |path: &Path, listed: &[PathBuf]| admit(path, listed, &guards, None).unwrap_err();
     assert_eq!(refused(home, &[]), DirectoryRefusal::HomeDirectory);
     assert_eq!(
         refused(Path::new("/"), &[]),
@@ -61,7 +61,8 @@ fn the_guards_refuse_home_root_data_and_what_is_already_shared() {
             &ShareGuards {
                 home: None,
                 data_dir: Some(data.clone()),
-            }
+            },
+            None,
         )
         .unwrap_err(),
         DirectoryRefusal::HoldsDataDirectory
@@ -82,7 +83,7 @@ fn the_guards_refuse_home_root_data_and_what_is_already_shared() {
     );
     // A parent of a listed entry is admitted: it replaces the entry.
     assert_eq!(
-        admit(media, std::slice::from_ref(films), &guards),
+        admit(media, std::slice::from_ref(films), &guards, None),
         Ok(media.clone())
     );
 }
@@ -100,17 +101,41 @@ fn the_download_dir_is_guarded_where_it_would_be_made() {
     };
     let spelled = |name: &str| tmp.path().join(name);
     assert_eq!(
-        guard_in_place(&spelled("home"), &guards),
+        guard_in_place(&spelled("home"), &guards, None),
         Err(DirectoryRefusal::HomeDirectory)
     );
     assert_eq!(
-        guard_in_place(&spelled("home/rmule-data/incoming/new"), &guards),
+        guard_in_place(&spelled("home/rmule-data/incoming/new"), &guards, None),
         Err(DirectoryRefusal::DataDirectory)
     );
-    assert_eq!(guard_in_place(&spelled("home/films"), &guards), Ok(()));
     assert_eq!(
-        guard_in_place(&spelled("home/films/not-yet"), &guards),
+        guard_in_place(&spelled("home/films"), &guards, None),
         Ok(())
+    );
+    assert_eq!(
+        guard_in_place(&spelled("home/films/not-yet"), &guards, None),
+        Ok(())
+    );
+    // The Temp Directory, not made yet and named through the link, is judged
+    // where it would be: neither it nor a directory holding it passes.
+    let temp = spelled("home/films/parts");
+    for dir in [spelled("home/films"), temp.clone()] {
+        assert_eq!(
+            guard_in_place(&dir, &guards, Some(&temp)),
+            Err(DirectoryRefusal::HoldsTempDirectory),
+            "{}",
+            dir.display()
+        );
+    }
+    // Nor a directory inside it: the two never overlap (ADR-0115).
+    assert_eq!(
+        guard_in_place(&spelled("home/films/parts/inner"), &guards, Some(&temp)),
+        Err(DirectoryRefusal::InsideTempDirectory)
+    );
+    assert_eq!(
+        guard_in_place(&spelled("home/films/partsx"), &guards, Some(&temp)),
+        Ok(()),
+        "a sibling whose name begins the same is apart"
     );
 }
 
@@ -120,7 +145,7 @@ fn a_file_is_no_directory() {
     let file = tmp.path().join("film.mkv");
     std::fs::write(&file, b"not a directory").unwrap();
     assert_eq!(
-        admit(&file, &[], &ShareGuards::default()),
+        admit(&file, &[], &ShareGuards::default(), None),
         Err(DirectoryRefusal::NotADirectory)
     );
 }

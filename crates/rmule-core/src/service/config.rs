@@ -2,12 +2,16 @@
 //! concurrency, cadences) and the verification stance a download's hash
 //! authority grants it. The operator's preferences are not here: they are
 //! **Core Settings** (ADR-0069). Every default here is aMule's, so a stock
-//! session behaves like a stock aMule.
+//! session behaves like a stock aMule — but for the streaming window, which
+//! aMule does not have (ADR-0112).
+
+mod descriptors;
 
 use std::time::Duration;
 
 use rmule_net::family::FamilySelection;
 
+pub use self::descriptors::{CeilingLowered, descriptor_room};
 use crate::address_learning::ExternalAddressOverride;
 use crate::port_mapping::PortMappingConfig;
 use serde::{Deserialize, Serialize};
@@ -36,26 +40,44 @@ pub const DEFAULT_SLOT_WAIT_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// The engineering knobs one session runs against, fixed for the life of the
 /// [`Core`] it is built with — timeouts, concurrency, cadences. What the
-/// operator chooses is [`CoreSettings`](crate::CoreSettings), not this. Every
-/// default matches stock aMule, so a `CoreConfig` straight from `Default`
-/// behaves the way aMule would.
+/// operator chooses is [`CoreSettings`](crate::CoreSettings), not this. Three
+/// defaults differ from stock aMule by design, and each says why on its own
+/// field: [`CoreConfig::upload_slot_budget`], [`CoreConfig::max_upload_queue_len`]
+/// and [`CoreConfig::streaming_window_parts`]. The rest are engineering values;
+/// a field cites the aMule source where it follows one.
 ///
 /// [`Core`]: crate::Core
 #[derive(Clone, Debug)]
 pub struct CoreConfig {
-    /// How many peer workers one download runs at once — active plus
-    /// connecting plus outstanding callbacks. `0` is read as `1`; see
-    /// [`CoreConfig::effective_peer_concurrency_per_download`].
-    pub peer_concurrency_per_download: usize,
-    /// How long a peer worker keeps waiting for `OP_ACCEPTUPLOADREQ` after
-    /// requesting a part before it gives up the slot and is retired.
+    /// The node's **Connection Budget** (ADR-0116): how many connections the
+    /// downloads open per 5-second window and hold at once. It paces asking
+    /// only; every granted slot transfers, and no download has a worker cap.
+    /// Both defaults are aMule's.
+    pub peer_connections: PeerConnections,
+    /// How many parts from the lowest unverified one a **Streaming Priority**
+    /// download fetches in order before ranking the rest by rarity — the
+    /// **Streaming Window** (ADR-0112 §5). `0` is no window. aMule has none;
+    /// the default `8` is the width the bench against stock seeds measured to
+    /// grow the contiguous prefix soonest.
+    pub streaming_window_parts: u32,
+    /// How long a peer worker waits for the answer to its slot ask — a rank
+    /// or a grant — before it is retired; a rank without a grant hangs it up
+    /// at once (ADR-0116).
     pub slot_wait_timeout: Duration,
     /// Concurrent upload slots the serve side grants across all connections
     /// (ADR-0031: the cross-connection slot budget). FIFO admission fills
     /// these before queuing.
+    ///
+    /// Not aMule's: aMule sizes its slots from the configured upload rate (one
+    /// per 2 kB/s, at least 2). rmule has no upload-rate setting to size from,
+    /// so the default is a fixed, conservative `4`.
     pub upload_slot_budget: usize,
     /// Maximum waiting requesters before the serve side refuses new ones —
     /// in silence, as both references do.
+    ///
+    /// Not aMule's: aMule queues up to 5000. The default `64` keeps the wait
+    /// list, its re-ranking and the connections it holds small, which a node
+    /// serving a handful of slots has no use to exceed.
     pub max_upload_queue_len: usize,
     /// How often the serve activity re-ranks its idle waiters so a queued
     /// peer's reported `OP_QUEUERANKING` tracks elapsed wait and any credit it
@@ -217,6 +239,31 @@ pub struct CoreConfig {
     pub max_server_met_bytes: usize,
 }
 
+/// The **Connection Budget**'s two knobs [`CoreConfig::peer_connections`]
+/// carries (ADR-0116), shared by every download of the node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PeerConnections {
+    /// The **Dial Window**: roads the downloads open per 5-second window — a
+    /// dial, a callback ask, a punch, a TCP full ask. aMule's
+    /// `MaxConPerFive`, default 20 (stock 2.3.3 `Preferences.cpp:1029`). `0`
+    /// reads as 1, so a zero starves nothing.
+    pub dials_per_window: u32,
+    /// The **Connection Ceiling**: connections the downloads hold at once,
+    /// asking and transferring. aMule's `MaxConnections`, 500 where the
+    /// descriptor limit is above 520 or unknown (stock 2.3.3
+    /// `Preferences.cpp:1028`, `:1493-1500`). `0` reads as 1.
+    pub max_connections: usize,
+}
+
+impl Default for PeerConnections {
+    fn default() -> Self {
+        Self {
+            dials_per_window: 20,
+            max_connections: 500,
+        }
+    }
+}
+
 /// The NAT-T knobs [`CoreConfig::natt`] carries (ADR-0091).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct NattConfig {
@@ -231,7 +278,8 @@ pub struct NattConfig {
 impl Default for CoreConfig {
     fn default() -> Self {
         Self {
-            peer_concurrency_per_download: 2,
+            peer_connections: PeerConnections::default(),
+            streaming_window_parts: 8,
             slot_wait_timeout: DEFAULT_SLOT_WAIT_TIMEOUT,
             upload_slot_budget: 4,
             max_upload_queue_len: 64,
@@ -268,39 +316,5 @@ impl Default for CoreConfig {
             ip_filter_level: 127,
             max_server_met_bytes: rmule_bootstrap::DEFAULT_MAX_SERVER_MET_BYTES,
         }
-    }
-}
-
-impl CoreConfig {
-    /// [`CoreConfig::peer_concurrency_per_download`] clamped to at least one,
-    /// so a zero in config starves nothing: the download runs single-peer
-    /// instead of never spawning a worker.
-    #[must_use]
-    pub const fn effective_peer_concurrency_per_download(&self) -> usize {
-        if self.peer_concurrency_per_download == 0 {
-            1
-        } else {
-            self.peer_concurrency_per_download
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Two workers per download is aMule's shape; a configured zero would
-    /// otherwise spawn no worker at all and stall the download forever.
-    #[test]
-    fn peer_concurrency_defaults_to_two_and_normalizes_zero_to_one() {
-        assert_eq!(
-            CoreConfig::default().effective_peer_concurrency_per_download(),
-            2
-        );
-        let none_configured = CoreConfig {
-            peer_concurrency_per_download: 0,
-            ..CoreConfig::default()
-        };
-        assert_eq!(none_configured.effective_peer_concurrency_per_download(), 1);
     }
 }

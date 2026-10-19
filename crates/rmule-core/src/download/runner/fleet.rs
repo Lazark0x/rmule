@@ -11,11 +11,12 @@ use rmule_primitives::{Ed2kFileLink, SourceSighting, UserHash};
 use tokio::sync::mpsc;
 
 use crate::adapters::{
-    CallbackKey, PeerTransferService, PeerWorker, PeerWorkerEvent, SourceLookupService,
+    CallbackKey, LinkOffer, PeerTransferService, PeerWorker, PeerWorkerEvent, SourceLookupService,
 };
 use crate::client_udp::ClientUdpDatagram;
 use crate::download::state::{
-    Channel, ContentFacts, Decision, DownloadState, SourcingPosture, StartingFacts, Tally,
+    AichRootAuthority, Channel, ContentFacts, Decision, DownloadState, SourcingPosture,
+    StartingFacts, Tally,
 };
 use crate::download::worker_pool::{WorkerChannels, WorkerPool};
 use crate::error::DownloadFailure;
@@ -23,6 +24,7 @@ use crate::hashing::{
     ResolvedHashSet, hash_set_proves_file, proven_link_hash_set, resolve_hash_set_authority,
 };
 use crate::peer_roster::{PeerRelation, RelationLease};
+use crate::scheduler::PartOrder;
 use crate::service::{
     DownloadEvent, DownloadId, SourceWait, VerificationAuthority, send_download_event,
 };
@@ -30,6 +32,7 @@ use crate::source_discovery::register;
 use crate::storage::DownloadRepository;
 
 use super::adopt::adopt;
+use super::awaited_grants::AwaitedGrants;
 use super::callbacks::CallbackContext;
 use super::enact::{LoopCtx, enact_drain};
 use super::intake;
@@ -70,7 +73,13 @@ pub(super) fn refresh_parts(
     state: &DownloadState,
 ) {
     let (parts, retired) = state.part_map();
-    diagnostics.set_part_map(download_id, parts, retired, state.known_sources());
+    diagnostics.set_part_map(
+        download_id,
+        parts,
+        retired,
+        state.known_sources(),
+        state.source_activity(),
+    );
 }
 
 /// Everything one download run starts from, bundled so the fleet entry point
@@ -80,13 +89,16 @@ pub(super) struct FleetStart<'a> {
     pub(super) download_id: DownloadId,
     /// The link the run is pinned to: file hash, size, part hash set and AICH root.
     pub(super) file: Ed2kFileLink,
+    /// The Kad AICH root the download's record keeps, or the contest that
+    /// ended it (ADR-0038).
+    pub(super) kad_aich_root: Option<crate::KadAichRoot>,
     /// The peer-side handshake identity every worker dials with — server-login
     /// capability tags deliberately excluded (ADR-0047).
     pub(super) ctx: PeerHandshakeContext,
-    /// The fleet cap: active + connecting workers plus outstanding callbacks.
-    pub(super) peer_concurrency: usize,
     /// Parts an earlier run already verified on disk; they are never re-fetched.
     pub(super) verified_part_indexes: Vec<u32>,
+    /// How the download ranks its parts (ADR-0112 §5).
+    pub(super) order: PartOrder,
     /// The run's first sightings, by channel.
     pub(super) sources: StartSources,
     /// Where the **Callback Capability** is re-read from for the rest of the run.
@@ -124,7 +136,7 @@ pub(super) struct StartSources {
 pub(super) async fn apply_peer_workers_download<'a, S, P>(
     start: FleetStart<'a>,
     runner: &'a RunnerContext<S, P>,
-) -> Result<(), DownloadFailure>
+) -> Result<Vec<u32>, DownloadFailure>
 where
     S: SourceLookupService,
     P: PeerTransferService,
@@ -132,9 +144,10 @@ where
     let FleetStart {
         download_id,
         file,
+        kad_aich_root,
         ctx,
-        peer_concurrency,
         verified_part_indexes,
+        order,
         sources,
         callback_facts,
         posture,
@@ -227,6 +240,10 @@ where
     // run holds the inbox for its life, so none is taken by a repair's rerun
     // while this one still runs.
     let mut later_links = runner.later_links.lock().await;
+    // The peers that ask us about this file while it downloads (ADR-0113):
+    // the serve side hands each to this run as a candidate source. A run
+    // with no lease — a download of one part — takes none.
+    let mut askers = runner.served.as_ref().and_then(|lease| lease.take_askers());
     // `fact_tx` is moved in and kept alive for the whole run so a worker
     // backfilled mid-download can join the shared event stream by cloning it
     // (ADR-0030).
@@ -239,8 +256,8 @@ where
     // The sans-I/O scheduling brain (ADR-0026/0029/0030): it owns the
     // candidate pool, the free diagnostics slots, the scheduler, and the
     // cross-peer assembly, and turns each worker event into an ordered
-    // `Vec<Decision>` the runner enacts. Parts are assigned on the `Connected`
-    // event, not up front, so a failed handshake never strands a part.
+    // `Vec<Decision>` the runner enacts. Parts are assigned on each worker's
+    // probe answer, not up front, so a failed handshake never strands a part.
     let mut state = DownloadState::new(
         download_id,
         ContentFacts {
@@ -248,8 +265,9 @@ where
             file_size: file.size,
             link_part_hash_set: link_hash_set,
             resolved,
-            trusted_aich_root: file.aich_root,
+            aich_root: AichRootAuthority::at_start(file.aich_root, kad_aich_root),
             verified_parts: verified_part_indexes,
+            order,
         },
         StartingFacts {
             distrusted: sources.distrusted,
@@ -257,8 +275,15 @@ where
         },
         posture,
         runner.rt.callback_timeout,
-        peer_concurrency,
-    );
+        crate::download::connection_budget::BudgetSeat::new(
+            std::sync::Arc::clone(&runner.rt.connection_budget),
+            download_id,
+        ),
+    )
+    .with_standings(crate::download::queue_standings::StandingSeat::new(
+        std::sync::Arc::clone(&runner.rt.queue_standings),
+        download_id,
+    ));
     // The snapshot is sighted in the order a pool is built; nothing fills a
     // slot until `start`.
     let found = [
@@ -285,6 +310,9 @@ where
 
     // The `PeerHandshakeContext` binding `ctx` was consumed into `worker_pool`
     // above, so the name is free for the loop-carried state here.
+    // The sources the run waits in an uploader's queue for, filed so a link
+    // that reads the uploader's unasked grant hands it here (ADR-0057).
+    let awaited_grants = AwaitedGrants::new(runner.rt.peer_links.clone());
     let mut ctx = LoopCtx {
         state,
         runner,
@@ -297,14 +325,18 @@ where
         fact_rx,
         callbacks,
         queued_relations: std::collections::HashSet::new(),
+        awaited_grants,
+        held_places: runner.rt.held_places.seat(download_id),
     };
 
-    // Enact the initial fill: one `Spawn` per candidate up to concurrency.
+    // Enact the initial fill: one `Spawn` per candidate the Connection Budget
+    // admits (ADR-0116).
     // The wait this run last told, while it still waits on it.
     let mut told_wait: Option<SourceWait> = None;
     let mut queue: VecDeque<Decision> = ctx.state.start(now()).into();
     enact_drain(&mut queue, &mut ctx).await?;
     publish_seeds(&ctx);
+    publish_exchange_pool(&ctx);
     if ctx.command_channels.is_empty()
         && !ctx.state.has_pending_callbacks()
         && !ctx.state.is_complete()
@@ -370,8 +402,9 @@ where
                 // shutdown, and the fact-stream drain, then returns the failure.
                 // `Fail` short-circuits before the diagnostics refresh inside
                 // `enact_drain`, so the stop path skips it exactly as before.
-                let mut q: VecDeque<Decision> = ctx.state.on_stop(failure).into();
-                return enact_drain(&mut q, &mut ctx).await;
+                let mut q: VecDeque<Decision> = ctx.state.on_stop(failure.clone()).into();
+                enact_drain(&mut q, &mut ctx).await?;
+                return Err(failure);
             }
             () = sleep_until_optional(next_wake) => {
                 // Something the brain holds fell due: a callback road's
@@ -406,7 +439,7 @@ where
             Some((source_server, sources)) = global_sources_rx.recv() => {
                 // Server-UDP global sources (ADR-0051): a Low-ID row is held
                 // for a per-server callback to `source_server`.
-                let taken = intake::sight(ctx.runner, &mut ctx.state, Channel::Global(source_server), sources.into_iter().map(SourceSighting::plain));
+                let taken = intake::sight(ctx.runner, &mut ctx.state, Channel::Global(source_server), intake::global_answer(source_server, sources));
                 let mut q: VecDeque<Decision> = taken.decisions.into();
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
@@ -447,6 +480,27 @@ where
                 )
                 .await;
                 let mut q: VecDeque<Decision> = taken.decisions.into();
+                enact_drain(&mut q, &mut ctx).await?;
+                continue;
+            }
+            Some(sighting) = recv_asker(&mut askers) => {
+                // A peer asked us about the file: one more candidate, under
+                // the run's source cap.
+                let taken = intake::sight(ctx.runner, &mut ctx.state, Channel::Prober, [sighting]);
+                let mut q: VecDeque<Decision> = taken.decisions.into();
+                enact_drain(&mut q, &mut ctx).await?;
+                continue;
+            }
+            Some(offer) = ctx.awaited_grants.next() => {
+                // An uploader granted a source waiting in its queue a slot on
+                // a link of its own (ADR-0057): the record's worker rides it.
+                // Or the download holding that peer's Queue Standing was
+                // granted, and the record's worker joins its link (ADR-0107).
+                let decisions = match offer {
+                    LinkOffer::Grant(peer) => ctx.state.on_slot_offered(now(), peer),
+                    LinkOffer::Call(peer) => ctx.state.on_link_called(now(), peer),
+                };
+                let mut q: VecDeque<Decision> = decisions.into();
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
             }
@@ -499,6 +553,7 @@ where
                 enact_drain(&mut q, &mut ctx).await?;
                 told_wait = retell_wait(&ctx, &discovery, lookup_owed, told_wait).await;
                 publish_seeds(&ctx);
+                publish_exchange_pool(&ctx);
                 continue;
             }
             Some((udp_src, datagram)) = reask_reply_rx.recv() => {
@@ -534,6 +589,14 @@ where
                 .rt
                 .diagnostics
                 .dial_ended(ctx.download_id, peer, *cause);
+        }
+        // A source reached over its peer's link is marked on its slot for
+        // the Sources pane (ADR-0107).
+        if let PeerWorkerEvent::LinkShared { turn } = &event {
+            ctx.runner
+                .rt
+                .diagnostics
+                .link_turn(ctx.download_id, peer, *turn);
         }
         // The Peer Roster's download leg (ADR-0059): the hello
         // completing (`Connected`, right after `Identity`) is the one mark
@@ -572,10 +635,10 @@ where
             publish_seeds(&ctx);
         }
     }
-    // Completion is enacted by the `Finalize` decision (worker shutdown +
-    // `finalize_download`) the moment the last part verifies; the loop then
-    // observes `is_complete` and exits.
-    Ok(())
+    // The `Finalize` decision shuts the fleet down the moment the last part
+    // verifies; the loop then observes `is_complete` and exits, handing the
+    // run the parts its completion move verifies by the file hash.
+    Ok(std::mem::take(&mut ctx.file_hash_only_parts))
 }
 
 #[cfg(test)]
@@ -621,6 +684,15 @@ fn source_wait(discovery: &super::DiscoveryLiveness, lookup_owed: bool) -> Optio
 /// Publish the run's **Source Seeds** ranking for the actor's next write
 /// (ADR-0109): after the first fill, then each sample tick, so it is one
 /// sweep old at most.
+/// Hand the serve side the run's source-exchange pool (ADR-0113): after the
+/// first fill, then each sample tick — aMule builds its answer from the
+/// source list at the ask, and a pool a second old is that list.
+fn publish_exchange_pool<S, P>(ctx: &LoopCtx<'_, S, P>) {
+    if let Some(lease) = &ctx.runner.served {
+        lease.record_pool(ctx.state.exchange_pool());
+    }
+}
+
 fn publish_seeds<S, P>(ctx: &LoopCtx<'_, S, P>) {
     let ranking = ctx.state.source_seeds();
     ctx.runner.seeds_tx.send_if_modified(|held| {
@@ -630,6 +702,15 @@ fn publish_seeds<S, P>(ctx: &LoopCtx<'_, S, P>) {
         }
         moved
     });
+}
+
+/// The next asker the serve side handed this run; pending forever for a run
+/// with no inbox.
+async fn recv_asker(askers: &mut Option<mpsc::Receiver<SourceSighting>>) -> Option<SourceSighting> {
+    match askers {
+        Some(askers) => askers.recv().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// Sleep until `deadline`, or never while the brain names none (ADR-0026).

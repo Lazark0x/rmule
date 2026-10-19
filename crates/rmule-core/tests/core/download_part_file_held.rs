@@ -1,4 +1,4 @@
-//! The part file under a running download (ADR-0094):
+//! The run holds its part file (ADR-0094):
 //! the part file is the operator's to delete. The run holds it from its first
 //! act, and at the next part it notices that the file at its path is gone,
 //! replaced or cut short. It says what that cost, drops the parts it lost,
@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use rmule_core::{
     ContentFileStore, Core, CoreConfig, CoreEvent, DownloadEvent, DownloadFailure, DownloadId,
-    DownloadLifecycle, DownloadPaths, DownloadRepository, DurableDownloadRepository,
+    DownloadLifecycle, DownloadPaths, DownloadRepository, DurableDownloadRepository, HoleVerdict,
     PartFileChange, PartsLost, StorageIntegrityFault, VerifiedPartRecord, open_durable_store,
 };
 use rmule_primitives::ED2K_PART_SIZE;
@@ -41,7 +41,26 @@ struct Leg {
 }
 
 impl Leg {
+    /// The restored run, waiting for a connection with its part file held.
     async fn waiting_with_part_zero() -> Self {
+        let mut leg = Self::with_part_zero(true).await;
+        next_expected(
+            &mut leg.core,
+            "the restored run waiting, its file held",
+            |event| {
+                matches!(
+                    event,
+                    CoreEvent::Download(DownloadEvent::WaitingForConnection { .. })
+                )
+            },
+        )
+        .await;
+        leg
+    }
+
+    /// The download stored with part 0 verified, and a core attached to it
+    /// that starts it again only when `restore`.
+    async fn with_part_zero(restore: bool) -> Self {
         let mut bytes = vec![0x5A; PART];
         bytes.push(0xA5);
         let link = file_link("held.bin", &bytes);
@@ -55,7 +74,7 @@ impl Leg {
         let repo = DurableDownloadRepository::new(Arc::clone(&store));
         let paths = DownloadPaths::from_final_path(dir.path().join("held.bin"));
         let id = repo
-            .create_download(&link, Some(&server.endpoint()), &paths)
+            .create_download(&link, Some(&server.endpoint()), &paths, None)
             .unwrap()
             .id();
         ContentFileStore::write_verified_part(&paths, 0, &bytes[..PART])
@@ -73,27 +92,19 @@ impl Leg {
         .unwrap();
         repo.set_lifecycle(id, DownloadLifecycle::Active).unwrap();
 
-        let mut core = Core::builder(
+        let builder = Core::builder(
             CoreConfig {
                 download_restore_pace: Duration::from_millis(10),
                 ..CoreConfig::default()
             },
             store,
         )
-        .settings(crate::fixture::attach_settings().await)
-        .restore_at_attach()
-        .build();
-        next_expected(
-            &mut core,
-            "the restored run waiting, its file held",
-            |event| {
-                matches!(
-                    event,
-                    CoreEvent::Download(DownloadEvent::WaitingForConnection { .. })
-                )
-            },
-        )
-        .await;
+        .settings(crate::fixture::attach_settings().await);
+        let core = if restore {
+            builder.restore_at_attach().build()
+        } else {
+            builder.build()
+        };
         Self {
             core,
             id,
@@ -319,6 +330,7 @@ async fn events_within(
     }
 }
 
+#[cfg(unix)]
 fn failure(events: &[DownloadEvent]) -> Option<&DownloadFailure> {
     events.iter().find_map(|event| match event {
         DownloadEvent::DownloadFailed { reason, .. } => Some(reason),
@@ -338,7 +350,7 @@ fn nothing_dropped(events: &[DownloadEvent]) -> bool {
 }
 
 #[tokio::test]
-async fn a_verified_file_whose_final_path_is_taken_keeps_its_parts_and_fails_by_that_cause() {
+async fn a_verified_file_whose_final_path_is_taken_completes_under_the_next_free_name() {
     let mut leg = Leg::waiting_with_part_zero().await;
     std::fs::write(leg.paths.final_path(), b"the operator's own file").unwrap();
     leg.connect().await;
@@ -346,18 +358,28 @@ async fn a_verified_file_whose_final_path_is_taken_keeps_its_parts_and_fails_by_
     let events = events_within(&mut leg, Duration::from_secs(20))
         .await
         .unwrap_or_else(|seen| panic!("the run never ended; saw {seen:#?}"));
-    assert_eq!(failure(&events), Some(&DownloadFailure::FinalPathTaken));
+    let numbered = numbered(leg.paths.final_path());
+    let landed = events.iter().find_map(|event| match event {
+        DownloadEvent::DownloadCompleted { final_path, .. } => Some(final_path.clone()),
+        _ => None,
+    });
+    assert_eq!(landed.as_deref(), Some(numbered.as_path()), "{events:#?}");
     assert!(nothing_dropped(&events), "{events:#?}");
-    assert_eq!(
-        leg.repo.verified_parts(leg.id).unwrap().len(),
-        2,
-        "every verified part is kept"
-    );
+    assert_eq!(std::fs::read(&numbered).unwrap(), leg.bytes);
     assert_eq!(
         std::fs::read(leg.paths.final_path()).unwrap(),
         b"the operator's own file"
     );
-    assert_eq!(std::fs::read(leg.part_path()).unwrap(), leg.bytes);
+}
+
+/// `stem (1).ext` beside `path`.
+fn numbered(path: &std::path::Path) -> std::path::PathBuf {
+    let stem = path.file_stem().unwrap().to_string_lossy();
+    let name = match path.extension() {
+        Some(ext) => format!("{stem} (1).{}", ext.to_string_lossy()),
+        None => format!("{stem} (1)"),
+    };
+    path.with_file_name(name)
 }
 
 #[cfg(unix)]
@@ -381,4 +403,101 @@ async fn a_verified_file_whose_rename_is_refused_keeps_its_parts_and_fails_by_th
     assert!(nothing_dropped(&events), "{events:#?}");
     assert_eq!(leg.repo.verified_parts(leg.id).unwrap().len(), 2);
     assert_eq!(std::fs::read(leg.part_path()).unwrap(), leg.bytes);
+}
+
+/// The run reads its part file's Allocated Bytes when it holds the file and
+/// after each part, and probes its disk once (ADR-0111): after the run's first
+/// persisted part the row carries both levels, and keeps them after the run.
+#[tokio::test]
+async fn a_run_publishes_its_part_files_allocated_bytes_and_hole_verdict() {
+    let mut leg = Leg::waiting_with_part_zero().await;
+    leg.connect().await;
+
+    let events = leg.events_until_the_run_ends().await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, DownloadEvent::PartVerified { part_index: 1, .. })),
+        "part 1 is the run's first persisted part: {events:#?}"
+    );
+    let row = leg
+        .core
+        .diagnostics_snapshot()
+        .downloads
+        .remove(&leg.id)
+        .expect("the row outlives the run");
+    let allocated = row.allocated_bytes.expect("read after the part");
+    assert!(
+        allocated >= ED2K_PART_SIZE,
+        "part 0's bytes take their space: {allocated}"
+    );
+    assert!(row.hole_verdict.is_some(), "the run's probe answered");
+}
+
+/// A `HoleLess` verdict is told once per run as `HoleLessDestination`, naming
+/// the part file's directory, and no other verdict is told (ADR-0111): on
+/// whatever disk the test runs, the edges agree with the row's level.
+#[tokio::test]
+async fn a_run_tells_its_hole_verdict_only_when_hole_less_and_only_once() {
+    let mut leg = Leg::with_part_zero(true).await;
+    let mut events = Vec::new();
+    timeout(Duration::from_secs(30), async {
+        loop {
+            let Some(CoreEvent::Download(event)) = leg.core.next_event().await else {
+                continue;
+            };
+            let waiting = matches!(event, DownloadEvent::WaitingForConnection { .. });
+            events.push(event);
+            if waiting {
+                return;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the restored run never waited; saw {events:#?}"));
+    leg.connect().await;
+    events.extend(leg.events_until_the_run_ends().await);
+
+    let told: Vec<&Path> = events
+        .iter()
+        .filter_map(|event| match event {
+            DownloadEvent::HoleLessDestination { directory, .. } => Some(directory.as_path()),
+            _ => None,
+        })
+        .collect();
+    let verdict = leg
+        .core
+        .diagnostics_snapshot()
+        .downloads
+        .remove(&leg.id)
+        .and_then(|row| row.hole_verdict)
+        .expect("the run's probe answered");
+    let directory = leg.part_path().parent().expect("the part file's directory");
+    let expected: Vec<&Path> = if verdict == HoleVerdict::HoleLess {
+        vec![directory]
+    } else {
+        Vec::new()
+    };
+    assert_eq!(told, expected, "verdict {verdict:?}");
+}
+
+#[tokio::test]
+async fn a_row_at_rest_after_attach_has_no_part_file_reading() {
+    let mut leg = Leg::with_part_zero(false).await;
+    next_expected(&mut leg.core, "the download reported at attach", |event| {
+        matches!(
+            event,
+            CoreEvent::Download(DownloadEvent::DownloadRecovered { .. })
+        )
+    })
+    .await;
+
+    let row = leg
+        .core
+        .diagnostics_snapshot()
+        .downloads
+        .remove(&leg.id)
+        .expect("the row at rest");
+    assert_eq!(row.allocated_bytes, None, "no run has read the part file");
+    assert_eq!(row.hole_verdict, None, "no run has probed its disk");
 }

@@ -161,7 +161,7 @@ impl PeerSession {
                     self.peer_software = SoftwareEvidence::default();
                     self.peer_software.hello(hello.body(), hello.trailer());
                     self.send_emule_info_if_legacy();
-                    let answer_body = self.advertised_hello_body();
+                    let answer_body = self.hello_body_to_write();
                     self.write_packet(HelloAnswer::new(answer_body).encode_packet());
                     self.identify_peer(hello.body());
                 } else {

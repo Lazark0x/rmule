@@ -16,15 +16,14 @@ use std::net::Ipv4Addr;
 
 use rmule_peer::multipacket::RequestItem;
 use rmule_peer::{
-    AnswerItem, FileProbeStatus, HashSetAnswer, HelloAnswer, MiscOptions1, MiscOptions2,
-    MultiPacketAnswer, NoticeEvent, PartRanges, PeerCommand, PeerError, PeerEvent, PeerHelloBody,
-    PeerOutput, PeerPacket, PeerSession, RequesterCommand, RequesterEvent, ServerCommand,
-    ServerEvent,
+    AnswerItem, FileProbeStatus, HelloAnswer, MiscOptions1, MiscOptions2, MultiPacketAnswer,
+    NoticeEvent, PartRanges, PeerCommand, PeerError, PeerEvent, PeerHelloBody, PeerOutput,
+    PeerPacket, PeerSession, RequesterCommand, RequesterEvent, ServerCommand, ServerEvent,
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{
-    ClientId, ED2K_PART_SIZE, Ed2kText, FileHash, Ipv4Endpoint, Packet, PacketProtocol, PartHash,
-    Tag, UserHash,
+    ClientId, ED2K_PART_SIZE, Ed2kText, FileHash, Ipv4Endpoint, Packet, PacketProtocol, Tag,
+    UserHash,
 };
 use rmule_testkit::peer_session::{events, peer_at, serverless_ctx, writes};
 
@@ -440,9 +439,9 @@ fn the_bundles_probe_is_recorded_so_request_parts_does_not_reprobe() {
     // Live wiring: `RequestFile`'s multi-part item set carries the
     // name + status pair, so the session records the probe as in flight. A
     // `RequestParts` that follows must not re-issue the standalone
-    // `0x58`+`0x4F` on top of the bundle — it only adds the hash-set ask —
-    // and the slot flow still advances to `OP_STARTUPLOADREQ` once the
-    // bundled answer and the hash set land.
+    // `0x58`+`0x4F` on top of the bundle, and the slot flow advances to
+    // `OP_STARTUPLOADREQ` once the bundled answer lands — no hash-set ask
+    // stands between them (ADR-0026).
     let fh = hash();
     let size = ED2K_PART_SIZE + 1;
     let mut session = identified_against(vec![misc1_multipacket(), misc2_ext()]);
@@ -466,10 +465,9 @@ fn the_bundles_probe_is_recorded_so_request_parts_does_not_reprobe() {
         ranges,
     }));
     let out = drain(|| session.poll_output());
-    assert_eq!(
-        writes(&out).iter().map(Packet::opcode).collect::<Vec<_>>(),
-        vec![0x51],
-        "the probe rode the bundle: RequestParts adds only the hash-set ask"
+    assert!(
+        writes(&out).is_empty(),
+        "the probe rode the bundle: RequestParts adds nothing before its answer"
     );
 
     let answer = MultiPacketAnswer {
@@ -481,18 +479,10 @@ fn the_bundles_probe_is_recorded_so_request_parts_does_not_reprobe() {
         unknown_sub: None,
     };
     session.handle_bytes(&answer.encode_packet().encode());
-    let hashes = HashSetAnswer {
-        file_hash: fh,
-        part_hashes: vec![
-            PartHash::from_bytes([0xAA; 16]),
-            PartHash::from_bytes([0xBB; 16]),
-        ],
-    };
-    session.handle_bytes(&hashes.encode_packet().encode());
     let out = drain(|| session.poll_output());
     assert_eq!(
         writes(&out).iter().map(Packet::opcode).collect::<Vec<_>>(),
         vec![0x54],
-        "probe (from the bundle) + hash set → the slot flow sends STARTUPLOADREQ"
+        "the bundle's answer is the probe's: the slot flow sends STARTUPLOADREQ"
     );
 }

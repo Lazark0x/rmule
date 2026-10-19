@@ -160,13 +160,12 @@ pub fn run_peer_lowid_callback_reask(options: PeerLowIdCallbackReaskOptions<'_>)
             options.layout.root(),
         )?;
     }
-    if !options.skip_build {
-        bench.build_rmule_tools_image(
-            options.rmule_tools_image,
-            options.rmule_tools_dockerfile,
-            options.rmule_tools_build_context,
-        )?;
-    }
+    bench.rmule_tools_image(
+        options.rmule_tools_image,
+        options.rmule_tools_dockerfile,
+        options.rmule_tools_build_context,
+        options.skip_build,
+    )?;
     let root = options.layout.root().join(ROOT_DIR);
     fs::create_dir_all(&root).with_context(|| format!("create {}", root.display()))?;
     let timeout = Duration::from_secs(options.timeout_secs);
@@ -379,7 +378,7 @@ fn save_logs(bench: &Bench, container: &str, path: &Path) -> Result<()> {
 
 /// A stock aMule on the bench at `ip`, logged in to `ed2ksrv` with plain
 /// frames, so the server tap reads every one.
-fn amule_on_ed2ksrv(bench: &Bench, image: &str, name: &str, ip: &str) -> RunContainer {
+pub(super) fn amule_on_ed2ksrv(bench: &Bench, image: &str, name: &str, ip: &str) -> RunContainer {
     RunContainer::new(image.to_owned())
         .detach()
         .name(name)

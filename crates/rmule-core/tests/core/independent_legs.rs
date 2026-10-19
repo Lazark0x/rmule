@@ -296,6 +296,7 @@ async fn a_download_on_kad_alone_gains_the_servers_sources_when_the_operator_con
         source_hint: Some(server.endpoint()),
         name: rmule_testkit::file_name("kad-first.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -365,6 +366,7 @@ async fn a_part_file_removed_while_the_run_waits_for_sources_is_told() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("waits.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

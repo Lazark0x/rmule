@@ -132,6 +132,17 @@ impl MappingProtocol {
             (Self::NatPmp | Self::Upnp, AddressFamily::V6) => false,
         }
     }
+
+    /// Whether the gateway keys a mapping by its **external** port (ADR-0086,
+    /// "Every grant has one owner and one end"). UPnP does
+    /// (`DeletePortMapping` names `NewExternalPort`), so a renewal granted on
+    /// another external port is a second mapping beside the first. PCP and
+    /// NAT-PMP key it by the internal port, so the same answer moved the one
+    /// mapping, and a delete naming the old port would remove the new one.
+    #[must_use]
+    pub const fn keys_by_external_port(self) -> bool {
+        matches!(self, Self::Upnp)
+    }
 }
 
 impl fmt::Display for MappingProtocol {
@@ -253,6 +264,37 @@ pub struct MappingGrant {
     pub epoch: EpochVerdict,
 }
 
+/// What one release did on the gateway (ADR-0086, "A release takes down only
+/// rmule's own mapping"). It says whether a delete went out, never whether the
+/// gateway obeyed it: a release is fire-and-forget.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReleaseOutcome {
+    /// The delete went out. PCP and NAT-PMP always send it, since their gateway
+    /// keys a mapping by the requesting host's own address and the delete can
+    /// name no other host's; UPnP sends it only after the gateway's entry for
+    /// the external port named this host's internal address and port.
+    Sent,
+    /// No delete went out, and why.
+    Kept(ReleaseKept),
+}
+
+/// Why a UPnP release sent no `DeletePortMapping`: the gateway's entry for the
+/// external port did not name this host's internal address and port. A UPnP
+/// delete names no internal client, so it would take down whoever holds the
+/// port now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReleaseKept {
+    /// The gateway holds no entry on that port (`NoSuchEntryInArray`, 714):
+    /// there is nothing to take down.
+    Absent,
+    /// The entry forwards to this internal endpoint: another LAN host's, or
+    /// another of this host's ports.
+    ForwardsElsewhere(PeerEndpoint),
+    /// The gateway did not say whom the entry forwards to. Unknown is not
+    /// ours, and the lease is the cleanup.
+    Unchecked(MappingError),
+}
+
 /// Why a gateway did not do what was asked.
 ///
 /// The distinction that matters to core is [`Unsupported`] (this protocol is
@@ -350,16 +392,18 @@ pub trait MappingBackend: Send + Sync + fmt::Debug {
         request: MappingRequest,
     ) -> MappingFuture<'static, Result<MappingGrant, MappingError>>;
 
-    /// Withdraw a mapping. Fire-and-forget by design: at least one firmware
-    /// never acknowledges a PCP delete, and the finite lease is the real
-    /// cleanup — so a caller that waited for confirmation would hang on exit
-    /// for nothing.
+    /// Withdraw this host's own mapping, and never another host's (ADR-0086,
+    /// "A release takes down only rmule's own mapping"). Fire-and-forget by
+    /// design: at least one firmware never acknowledges a PCP delete, and the
+    /// finite lease is the real cleanup — so a caller that waited for
+    /// confirmation would hang on exit for nothing. The outcome says whether
+    /// a delete went out, and why not when none did.
     fn release(
         self: Arc<Self>,
         gateway: Gateway,
         request: MappingRequest,
         external_port: u16,
-    ) -> MappingFuture<'static, ()>;
+    ) -> MappingFuture<'static, ReleaseOutcome>;
 
     /// Pin a punched path (see [`PeerPinRequest`]). Only PCP can express it —
     /// NAT-PMP and UPnP have no notion of a remote peer — so the default says

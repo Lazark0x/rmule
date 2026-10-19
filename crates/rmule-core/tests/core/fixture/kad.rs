@@ -1,15 +1,19 @@
 //! The Kad seam stubbed for the legs that run with Kad enabled and no socket:
 //! one channel that records the keyword walks it was asked for, answers them
 //! with scripted rows when it has any, and answers source lookups with
-//! scripted sources when it has any.
+//! scripted sources when it has any. And the wait the legs that run a real
+//! node share: until its routing table holds a contact.
 
 use std::sync::{Arc, Mutex};
 
 use rmule_core::{
-    ClientUdpBind, CoreError, KadEnableConfig, KadKeywordSink, KadRuntimeFactory, KadSourceChannel,
+    ClientUdpBind, Core, CoreError, KadEnableConfig, KadKeywordSink, KadRuntimeFactory,
+    KadSourceChannel,
 };
 use rmule_primitives::{FileHash, KeywordQuery, SearchResult, SourceLookupTarget, SourceSighting};
+use rmule_testkit::HANG_GUARD;
 use tokio::sync::mpsc;
+use tokio::time::{Duration, timeout};
 
 type SourceAnswer = (FileHash, Vec<SourceSighting>);
 
@@ -95,4 +99,22 @@ impl KadRuntimeFactory for StubKad {
     ) -> Result<Self, CoreError> {
         Ok(self.clone())
     }
+}
+
+/// Wait until the running Kad node's routing table holds a contact — the moment
+/// a publish that fires once, on the share, has somewhere to walk to. The
+/// table is the diagnostics snapshot's live reading, so nothing is guessed:
+/// the wait ends when the bootstrap answer lands, however long the host takes.
+pub async fn until_kad_holds_a_contact(core: &Core) {
+    timeout(HANG_GUARD, async {
+        while core
+            .diagnostics_snapshot()
+            .kad
+            .is_none_or(|kad| kad.contacts == 0)
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the Kad node met a contact");
 }

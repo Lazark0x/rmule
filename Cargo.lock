@@ -2042,16 +2042,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pem"
-version = "4.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d354a98a3d1251555de99e8fdd8afda05573c31b82f59063a7b0a29b5527f120"
-dependencies = [
- "base64 0.23.1",
- "serde_core",
-]
-
-[[package]]
 name = "pem-rfc7468"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2593,7 +2583,6 @@ version = "0.14.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8774e05a7d0de114588e6a28fe7e71694b82614ed569d86d8b389dfbc98b8ad8"
 dependencies = [
- "pem",
  "ring",
  "rustls-pki-types",
  "time",
@@ -2724,9 +2713,11 @@ dependencies = [
  "rmule-bootstrap",
  "rmule-core",
  "rmule-kad",
+ "rmule-os",
  "rmule-primitives",
  "rmule-testkit",
  "rmule-words",
+ "shlex",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -2759,6 +2750,7 @@ dependencies = [
  "rmule-core",
  "rmule-kad",
  "rmule-net",
+ "rmule-os",
  "rmule-primitives",
  "rmule-testkit",
  "rmule-words",
@@ -2780,6 +2772,7 @@ dependencies = [
  "rmule-ed2k",
  "rmule-kad",
  "rmule-net",
+ "rmule-os",
  "rmule-peer",
  "rmule-primitives",
  "rmule-store",
@@ -2821,6 +2814,7 @@ dependencies = [
  "rmule-peer",
  "rmule-primitives",
  "serde",
+ "socket2",
  "tempfile",
  "toml",
 ]
@@ -2841,6 +2835,7 @@ dependencies = [
 name = "rmule-net"
 version = "0.2.0"
 dependencies = [
+ "attohttpc",
  "crab_nat",
  "getrandom 0.4.2",
  "igd-next",
@@ -2853,10 +2848,10 @@ dependencies = [
  "rcgen",
  "rmule-ed2k",
  "rmule-kad",
+ "rmule-os",
  "rmule-peer",
  "rmule-primitives",
  "rmule-testkit",
- "rmule-winsock",
  "rsa",
  "rustls",
  "socket2",
@@ -2865,6 +2860,18 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "xmltree",
+]
+
+[[package]]
+name = "rmule-os"
+version = "0.2.0"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
+ "rustix",
+ "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2940,22 +2947,17 @@ dependencies = [
  "rmule-ed2k",
  "rmule-kad",
  "rmule-net",
+ "rmule-os",
  "rmule-peer",
  "rmule-primitives",
  "rmule-testkit",
+ "rmule-words",
  "tempfile",
  "tokio",
  "toml",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "rmule-winsock"
-version = "0.2.0"
-dependencies = [
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3028,9 +3030,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "once_cell",
  "ring",

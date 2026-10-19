@@ -2,7 +2,6 @@
 //! results into a verdict, the six-minute timeout, and the helper side this
 //! node runs for other people's checks.
 
-use std::net::Ipv4Addr;
 use std::time::Duration;
 
 use rmule_kad::{
@@ -15,7 +14,7 @@ use rmule_primitives::session::drain;
 use rmule_primitives::{ClientEncryptKey, encrypt_datagram_client};
 use rmule_testkit::kad_node::{
     OUR_INTERN_UDP, OWN_IP, T0, crypt_node, crypt_start, datagrams, deliver, diagnostics, endpoint,
-    events, fixed_nonce, id, node, our_key_for, self_checking_node, sent_messages, start,
+    events, fixed_nonce, host_ip, id, node, our_key_for, self_checking_node, sent_messages, start,
 };
 
 /// End the **Extern Port Round** the way core's verdict does, so the helper
@@ -33,7 +32,7 @@ fn settle_extern_port(node: &mut KadNode) {
 /// A fresh UDP-check helper candidate at `203.0.113.host` (TCP port `4700+host`).
 fn udp_helper(host: u8, version: u8) -> UdpFirewallHelper {
     UdpFirewallHelper {
-        endpoint: Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, host), 4700 + u16::from(host)),
+        endpoint: Ipv4Endpoint::new(host_ip(host), 4700 + u16::from(host)),
         id: id(host),
         version,
     }
@@ -122,8 +121,7 @@ fn the_helper_lookup_offers_its_answer_rows_to_the_udp_check_and_walks_no_furthe
         },
     );
     let outputs = drain(|| node.poll_output());
-    let helper =
-        |host: u8| Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, host), 4700 + u16::from(host));
+    let helper = |host: u8| Ipv4Endpoint::new(host_ip(host), 4700 + u16::from(host));
     assert_eq!(
         engaged(&outputs),
         vec![helper(2), helper(3)],
@@ -142,7 +140,7 @@ fn the_helper_lookup_offers_its_answer_rows_to_the_udp_check_and_walks_no_furthe
     node.handle_command(
         T0,
         KadCommand::UdpFirewallCheckCancelled {
-            helper_ip: Ipv4Addr::new(203, 0, 113, 2),
+            helper_ip: host_ip(2),
         },
     );
     assert_eq!(engaged(&drain(|| node.poll_output())), vec![helper(4)]);
@@ -219,7 +217,7 @@ fn helpers_used_before_the_recheck_stay_ineligible_but_fresh_ones_are_engaged() 
     settle_extern_port(&mut node);
     node.offer_udp_firewall_helper(udp_helper(1, 8));
     drain(|| node.poll_output());
-    node.consume_udp_firewall_failure(T0, Ipv4Addr::new(203, 0, 113, 1));
+    node.consume_udp_firewall_failure(T0, host_ip(1));
     drain(|| node.poll_output());
 
     // aMule's `ReCheckFirewallUDP` never clears `m_usedTestClients` — the
@@ -289,7 +287,7 @@ fn a_cancelled_helper_check_counts_neither_way_and_the_next_candidate_is_engaged
     node.handle_command(
         T0,
         KadCommand::UdpFirewallCheckCancelled {
-            helper_ip: Ipv4Addr::new(203, 0, 113, 1),
+            helper_ip: host_ip(1),
         },
     );
     let outputs = drain(|| node.poll_output());
@@ -307,14 +305,14 @@ fn a_cancelled_helper_check_counts_neither_way_and_the_next_candidate_is_engaged
     node.handle_command(
         T0,
         KadCommand::UdpFirewallCheckFailed {
-            helper_ip: Ipv4Addr::new(203, 0, 113, 2),
+            helper_ip: host_ip(2),
         },
     );
     assert!(events(&drain(|| node.poll_output())).is_empty());
     node.handle_command(
         T0,
         KadCommand::UdpFirewallCheckFailed {
-            helper_ip: Ipv4Addr::new(203, 0, 113, 3),
+            helper_ip: host_ip(3),
         },
     );
 }
@@ -353,14 +351,14 @@ fn a_biased_0x62_answer_counts_neither_way_and_the_next_candidate_is_engaged() {
     node.handle_command(
         T0,
         KadCommand::UdpFirewallCheckFailed {
-            helper_ip: Ipv4Addr::new(203, 0, 113, 2),
+            helper_ip: host_ip(2),
         },
     );
     assert!(events(&drain(|| node.poll_output())).is_empty());
     node.handle_command(
         T0,
         KadCommand::UdpFirewallCheckFailed {
-            helper_ip: Ipv4Addr::new(203, 0, 113, 3),
+            helper_ip: host_ip(3),
         },
     );
     assert_eq!(
@@ -398,7 +396,7 @@ fn the_udp_check_requests_only_fresh_helpers() {
     assert_eq!(
         udp_requests(&drain(|| node.poll_output())),
         vec![(
-            Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 1), 4701),
+            Ipv4Endpoint::new(host_ip(1), 4701),
             vec![0x40, 0x12, 0x88, 0x13, 0x00, 0x00, 0x00, 0x00],
         )]
     );
@@ -499,12 +497,12 @@ fn both_helper_failures_firewall_the_udp_verdict() {
     drain(|| node.poll_output());
 
     // Both helpers' links end with no 0x62 — the second failure concludes firewalled.
-    node.consume_udp_firewall_failure(T0, Ipv4Addr::new(203, 0, 113, 1));
+    node.consume_udp_firewall_failure(T0, host_ip(1));
     assert!(
         events(&drain(|| node.poll_output())).is_empty(),
         "one failure is not yet a verdict"
     );
-    node.consume_udp_firewall_failure(T0, Ipv4Addr::new(203, 0, 113, 2));
+    node.consume_udp_firewall_failure(T0, host_ip(2));
     assert_eq!(
         events(&drain(|| node.poll_output())),
         vec![KadEvent::UdpReachabilityFirewalled]
@@ -599,7 +597,7 @@ fn a_dormant_udp_check_neither_requests_nor_consumes() {
 #[test]
 fn the_helper_responder_answers_0x62_to_each_tested_port() {
     let mut node = node();
-    let requester = Ipv4Addr::new(203, 0, 113, 9);
+    let requester = host_ip(9);
     // A request: intern 6000 (0x1770), extern 7000 (0x1B58), key 0xDEADBEEF.
     let request = [0x70, 0x17, 0x58, 0x1B, 0xEF, 0xBE, 0xAD, 0xDE];
     node.consume_udp_firewall_request(requester, &request, false);
@@ -629,7 +627,7 @@ fn the_helper_responder_answers_0x62_to_each_tested_port() {
 #[test]
 fn the_helper_responder_flags_a_biased_result_for_a_known_requester() {
     let mut node = node();
-    let requester = Ipv4Addr::new(203, 0, 113, 9);
+    let requester = host_ip(9);
     // The requester is already a routing-zone contact — its result would be
     // biased, so the errorcode is 1 and it must discard it.
     node.handle_command(
@@ -670,7 +668,7 @@ fn the_helper_responder_flags_a_biased_result_for_a_caller_the_peer_roster_knows
     // with (aMule `BaseClient.cpp:4002-4003`) — biased the same
     // way a routing-zone contact is.
     let mut node = node();
-    let requester = Ipv4Addr::new(203, 0, 113, 9);
+    let requester = host_ip(9);
     let request = [0x70, 0x17, 0x70, 0x17, 0x00, 0x00, 0x00, 0x00];
     node.consume_udp_firewall_request(requester, &request, true);
 
@@ -692,7 +690,7 @@ fn the_helper_responder_flags_a_biased_result_for_a_caller_the_peer_roster_knows
 #[test]
 fn the_helper_responder_rejects_an_intern_port_of_zero() {
     let mut node = node();
-    let requester = Ipv4Addr::new(203, 0, 113, 9);
+    let requester = host_ip(9);
     // Intern port 0 — aMule rejects it, no 0x62 sent.
     let request = [0x00, 0x00, 0x58, 0x1B, 0x00, 0x00, 0x00, 0x00];
     node.consume_udp_firewall_request(requester, &request, false);
@@ -726,7 +724,7 @@ fn a_keyed_udp_firewall_request_draws_a_keyed_0x62() {
     // (`MuleUDPSocket.cpp:271-274`). The sync word is little-endian per
     // `7a438aa`.
     let mut node = crypt_node();
-    let requester = Ipv4Addr::new(203, 0, 113, 9);
+    let requester = host_ip(9);
     let sender_key = 0xC0FF_EE11u32;
     // Intern 6000 (0x1770), extern == intern (a single result packet).
     let mut request = 6000u16.to_le_bytes().to_vec();
@@ -762,7 +760,7 @@ fn a_keyless_udp_firewall_request_stays_plaintext_even_with_obfuscation_armed() 
     // (`MuleUDPSocket.cpp:271-274`) never fires on a zero key, regardless of
     // our own obfuscation being armed.
     let mut node = crypt_node();
-    let requester = Ipv4Addr::new(203, 0, 113, 9);
+    let requester = host_ip(9);
     let request = [0x70, 0x17, 0x70, 0x17, 0x00, 0x00, 0x00, 0x00];
     node.consume_udp_firewall_request(requester, &request, false);
     assert_eq!(
@@ -788,7 +786,7 @@ fn a_crypt_requiring_requester_decodes_the_keyed_0x62_and_its_tester_counts_it()
     let mut requester = KadNode::new(crypt_start().self_check(KadSelfCheck::new()));
     settle_extern_port(&mut requester);
 
-    let helper_ip = Ipv4Addr::new(203, 0, 113, 1);
+    let helper_ip = host_ip(1);
     requester.offer_udp_firewall_helper(UdpFirewallHelper {
         endpoint: Ipv4Endpoint::new(helper_ip, 4701),
         id: id(1),

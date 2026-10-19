@@ -143,6 +143,7 @@ async fn run(run_args: RunArgs) -> std::io::Result<()> {
             mut preferences,
             kad,
             at_start,
+            ceiling_lowered,
         }) => {
             // `--log-level` holds for this run and is never stored; the
             // Settings tab shows the level in force.
@@ -158,6 +159,10 @@ async fn run(run_args: RunArgs) -> std::io::Result<()> {
                     ..BridgeConfig::default()
                 },
             );
+            if let Some(lowered) = ceiling_lowered {
+                let words = rmule::words::download::ceiling_lowered(lowered);
+                let _ = actions_tx.send(Action::Note(words)).await;
+            }
             // The operator's connect, given ahead of time — or nothing
             // (ADR-0095): no other road in the app dials a server.
             match at_start {
@@ -180,6 +185,10 @@ async fn run(run_args: RunArgs) -> std::io::Result<()> {
             // round trip. Each outcome reaches the same status bar every other
             // command's does, including the honest "no contacts, waiting for
             // an eD2k peer" degrade.
+            // The player lane (ADR-0114): each Preview's player is started
+            // and awaited on a task of its own, and how it ended is noted.
+            let (player, launches) = rmule::player::lane();
+            tokio::spawn(rmule::player::play_each(launches, actions_tx.clone()));
             let (kad_start, mut kad_starts) = rmule::kad::start_lane();
             // …and the panel's bare "Kad: off" says nothing about *why* until
             // then, so the app does.
@@ -219,7 +228,8 @@ async fn run(run_args: RunArgs) -> std::io::Result<()> {
                 .with_session(session)
                 .with_run_log(run_log_level)
                 .with_config(config, preferences)
-                .with_kad_start(kad_start);
+                .with_kad_start(kad_start)
+                .with_player(player);
             if let Err(failure) = run_log {
                 app.state.notable = Some(rmule::words::app::no_run_log(failure));
             }

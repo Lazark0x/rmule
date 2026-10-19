@@ -25,6 +25,16 @@ pub(crate) struct SharedRuntime<S, P> {
     pub(crate) source_lookup: Arc<Mutex<S>>,
     /// The core's **Source Ask Budget** (ADR-0107), shared by every run.
     pub(crate) source_asks: crate::download::source_asks::SharedSourceAskBudget,
+    /// The node's **Connection Budget** (ADR-0116), shared by every run: each
+    /// run's brain holds a seat in it and asks it before opening any road.
+    pub(crate) connection_budget: crate::download::connection_budget::SharedConnectionBudget,
+    /// The node's **Queue Standings** (ADR-0107), shared by every run: each
+    /// run's brain holds a seat in it, so a peer queued for several downloads
+    /// is re-asked by one.
+    pub(crate) queue_standings: crate::download::queue_standings::SharedQueueStandings,
+    /// The node's **Held Places** (ADR-0116): each run publishes the peers it
+    /// stands queued at, and the serve activity ranks its queue by them.
+    pub(crate) held_places: crate::held_places::SharedHeldPlaces,
     pub(crate) peer_transfer: Arc<Mutex<P>>,
     pub(crate) credit: SharedCreditStore,
     pub(crate) evt_tx: mpsc::Sender<CoreEvent>,
@@ -39,6 +49,10 @@ pub(crate) struct SharedRuntime<S, P> {
     /// hands the connection to this download instead of serving it. A
     /// callback's end releases both roads at once.
     pub(crate) awaited_inbound: crate::adapters::AwaitedInbound,
+    /// The **Peer Links** (ADR-0107): the runner files each source waiting in
+    /// its RemoteQueued stage as an **Awaited Grant**, so a link that reads
+    /// the uploader's unasked grant hands it to this download (ADR-0057).
+    pub(crate) peer_links: crate::adapters::SharedPeerLinks,
     /// How long the initial source lookup waits on the connected server
     /// before giving up (`CoreConfig::source_lookup_timeout`):
     /// bounds a sourceless file's `download start` so it terminates by
@@ -105,4 +119,14 @@ pub(crate) struct SharedRuntime<S, P> {
     /// The **Name Resolver** a link's named sources are resolved through
     /// (ADR-0089's amendment), off the actor and bounded.
     pub(crate) resolver: crate::name_resolver::SharedNameResolver,
+    /// The completion move's rename and delete (ADR-0115): the operating
+    /// system's, or a test's.
+    pub(crate) completion_fs: Arc<dyn crate::download::CompletionFs>,
+    /// The core's one **Completion Copy** turn (ADR-0115): copies across
+    /// volumes run one at a time, as aMule's completion tasks do.
+    pub(crate) copy_turn: Arc<tokio::sync::Semaphore>,
+    /// Where a run reports its finished file in place to the core actor,
+    /// which writes the registry row and ends the Served Download in one
+    /// step (ADR-0115, step 6).
+    pub(crate) in_place_tx: mpsc::Sender<crate::download::FinalFileInPlace>,
 }

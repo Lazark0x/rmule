@@ -1,8 +1,8 @@
 //! Which peer works which part: a `PartAssigned` always precedes its
-//! `PartVerified`, one part goes to each usable High-ID peer by default,
-//! assignment is driven by a worker's `Connected` event rather than done up
-//! front at spawn (ADR-0030), and a single-part file's race survives one
-//! racer's disconnect because the part stays covered by the other.
+//! `PartVerified`, every usable High-ID peer is handed blocks, a handout is
+//! driven by a worker's `Connected` event rather than done up front at spawn
+//! (ADR-0030), and a shared part survives one worker's disconnect because the
+//! blocks it held go to the other (ADR-0117).
 
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent, DownloadFailure,
@@ -14,7 +14,7 @@ use rmule_primitives::{
     ClientId, ED2K_PART_SIZE, Ed2kFileLink, PartHash, PeerEndpoint, PeerSource, ServerEndpoint,
 };
 use rmule_testkit::{
-    StaticPeerTransfer, StaticSourceLookup, emit_streamed_part, file_link,
+    StaticPeerTransfer, StaticSourceLookup, emit_blocks, file_link,
     file_link_without_part_hash_set, loopback_peer, next_event, plain_sources, run_download,
     source_with_high_id, two_high_id_sources,
 };
@@ -78,7 +78,7 @@ async fn scheduler_assignment_events_are_emitted_before_part_verification() {
 }
 
 #[tokio::test]
-async fn fake_multi_peer_happy_path_assigns_one_part_per_high_id_peer_by_default() {
+async fn fake_multi_peer_happy_path_hands_blocks_to_every_high_id_peer() {
     let out_dir = tempfile::tempdir().unwrap();
     let mut bytes = vec![0xAB; ED2K_PART_SIZE as usize];
     bytes.push(0xCD);
@@ -116,6 +116,7 @@ async fn fake_multi_peer_happy_path_assigns_one_part_per_high_id_peer_by_default
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("multi-peer-happy-path.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -145,16 +146,15 @@ async fn fake_multi_peer_happy_path_assigns_one_part_per_high_id_peer_by_default
             })
         )
     }));
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, CoreEvent::Download(DownloadEvent::PartAssigned { peer, part_index: 0, .. }) if *peer == first_peer))
-    );
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, CoreEvent::Download(DownloadEvent::PartAssigned { peer, part_index: 1, .. }) if *peer == second_peer))
-    );
+    for usable in [first_peer, second_peer] {
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                CoreEvent::Download(DownloadEvent::PartAssigned { peer, .. }) if *peer == usable
+            )),
+            "{usable} is handed blocks"
+        );
+    }
     assert!(events.iter().any(|event| {
         matches!(
             event,
@@ -173,8 +173,14 @@ async fn fake_multi_peer_happy_path_assigns_one_part_per_high_id_peer_by_default
     )));
 
     let assignments = assignments.lock().unwrap();
-    assert_eq!(assignments.get(&0), Some(&first_peer));
-    assert_eq!(assignments.get(&1), Some(&second_peer));
+    for part in [0, 1] {
+        assert!(
+            assignments
+                .get(&part)
+                .is_some_and(|peers| peers.iter().all(|p| [first_peer, second_peer].contains(p))),
+            "part {part} went to the usable peers: {assignments:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -203,6 +209,7 @@ async fn worker_is_assigned_a_part_only_after_connected() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("gated-connect.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -247,12 +254,11 @@ async fn worker_is_assigned_a_part_only_after_connected() {
 }
 
 #[tokio::test]
-async fn single_part_race_survives_a_co_racer_disconnect() {
-    // ADR-0026 (amended): for a single-part file both peers race the one
-    // part. When one racer disconnects, the part is still covered by the
-    // other racer, so the download completes via the survivor instead of
-    // cascading to failure. Because the part stays covered, the
-    // disconnect does not release it back to the pending pool.
+async fn a_shared_part_survives_a_co_worker_disconnect() {
+    // ADR-0117: for a single-part file both peers are handed blocks of the one
+    // part. When one disconnects, the blocks it held are freed and go to the
+    // other, so the download completes via the survivor instead of cascading
+    // to failure.
     let bytes = vec![0xAB; ED2K_PART_SIZE as usize];
     let link = file_link("example.bin", &bytes);
     let hashes = link.part_hash_set.as_ref().unwrap().hashes().to_vec();
@@ -270,7 +276,7 @@ async fn single_part_race_survives_a_co_racer_disconnect() {
     )
     .await;
 
-    // Both peers were assigned the only part (a race).
+    // Both peers were handed blocks of the only part.
     assert!(events.iter().any(|event| matches!(
         event,
         CoreEvent::Download(DownloadEvent::PartAssigned { peer, part_index: 0, .. }) if *peer == first_peer
@@ -279,19 +285,20 @@ async fn single_part_race_survives_a_co_racer_disconnect() {
         event,
         CoreEvent::Download(DownloadEvent::PartAssigned { peer, part_index: 0, .. }) if *peer == second_peer
     )));
-    // The surviving racer carries the download to completion.
+    // The disconnect freed the blocks the first peer held...
+    assert!(events.iter().any(|event| matches!(
+        event,
+        CoreEvent::Download(DownloadEvent::PartReleased {
+            peer,
+            part_index: 0,
+            reason: PartReleaseReason::PeerRetired(PeerRetirementReason::PeerDisconnected),
+            ..
+        }) if *peer == first_peer
+    )));
+    // ...and the survivor carries the download to completion.
     assert!(events.iter().any(|event| matches!(
         event,
         CoreEvent::Download(DownloadEvent::DownloadCompleted { .. })
-    )));
-    // The part stayed covered by the survivor, so the disconnect did not
-    // release it for reassignment.
-    assert!(!events.iter().any(|event| matches!(
-        event,
-        CoreEvent::Download(DownloadEvent::PartReleased {
-            reason: PartReleaseReason::PeerRetired(PeerRetirementReason::PeerDisconnected),
-            ..
-        })
     )));
 }
 
@@ -305,8 +312,9 @@ impl PeerTransferService for GatedConnectTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let gate = Arc::clone(&self.gate);
@@ -316,22 +324,20 @@ impl PeerTransferService for GatedConnectTransfer {
             // runner cannot assign a part before `Connected` (ADR-0030).
             gate.notified().await;
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
                 match command {
-                    PeerWorkerCommand::RequestPart {
-                        plan,
-                        resume_offset,
-                    } => {
-                        emit_streamed_part(
-                            &event_tx,
-                            &DownloadedPart {
-                                part_index: plan.part_index,
-                                offset: plan.offset,
-                                bytes: bytes.clone(),
-                            },
-                            resume_offset,
-                        )
-                        .await;
+                    PeerWorkerCommand::AskSlot | PeerWorkerCommand::TakeGrant => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::RequestHashSet => {}
+                    PeerWorkerCommand::RequestBlocks { blocks, handout } => {
+                        let part = DownloadedPart {
+                            part_index: 0,
+                            offset: 0,
+                            bytes: bytes.clone(),
+                        };
+                        emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks, handout).await;
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}
                     PeerWorkerCommand::RequestAichFileHash => {}
@@ -346,7 +352,7 @@ impl PeerTransferService for GatedConnectTransfer {
 struct MultiPeerTransfer {
     part_hashes: Vec<PartHash>,
     parts: HashMap<u32, Vec<u8>>,
-    assignments: Arc<StdMutex<HashMap<u32, PeerEndpoint>>>,
+    assignments: Arc<StdMutex<HashMap<u32, Vec<PeerEndpoint>>>>,
 }
 
 impl PeerTransferService for MultiPeerTransfer {
@@ -354,23 +360,40 @@ impl PeerTransferService for MultiPeerTransfer {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let part_hashes = self.part_hashes.clone();
-        let parts = self.parts.clone();
+        let held: Vec<DownloadedPart> = self
+            .parts
+            .iter()
+            .map(|(&part_index, bytes)| DownloadedPart {
+                part_index,
+                offset: u64::from(part_index) * ED2K_PART_SIZE,
+                bytes: bytes.clone(),
+            })
+            .collect();
         let assignments = Arc::clone(&self.assignments);
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             let mut sent_hashes = false;
             while let Some(command) = command_rx.recv().await {
                 match command {
-                    PeerWorkerCommand::RequestPart {
-                        plan,
-                        resume_offset,
-                    } => {
-                        assignments.lock().unwrap().insert(plan.part_index, peer);
+                    PeerWorkerCommand::AskSlot | PeerWorkerCommand::TakeGrant => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::RequestHashSet => {}
+                    PeerWorkerCommand::RequestBlocks { blocks, handout } => {
+                        for block in &blocks {
+                            let mut assignments = assignments.lock().unwrap();
+                            let peers = assignments.entry(block.part_index).or_default();
+                            if !peers.contains(&peer) {
+                                peers.push(peer);
+                            }
+                        }
                         if !sent_hashes {
                             sent_hashes = true;
                             let _ = event_tx
@@ -379,18 +402,7 @@ impl PeerTransferService for MultiPeerTransfer {
                                 })
                                 .await;
                         }
-                        if let Some(bytes) = parts.get(&plan.part_index).cloned() {
-                            emit_streamed_part(
-                                &event_tx,
-                                &DownloadedPart {
-                                    part_index: plan.part_index,
-                                    offset: plan.offset,
-                                    bytes,
-                                },
-                                resume_offset,
-                            )
-                            .await;
-                        }
+                        emit_blocks(&event_tx, &held, &blocks, handout).await;
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}
                     PeerWorkerCommand::RequestAichFileHash => {}
@@ -413,8 +425,9 @@ impl PeerTransferService for DisconnectThenSuccess {
         &mut self,
         peer: PeerEndpoint,
         _ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let disconnecting_peer = self.disconnecting_peer;
@@ -422,31 +435,29 @@ impl PeerTransferService for DisconnectThenSuccess {
         let bytes = self.bytes.clone();
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             while let Some(command) = command_rx.recv().await {
                 match command {
-                    PeerWorkerCommand::RequestPart { .. } if peer == disconnecting_peer => {
+                    PeerWorkerCommand::AskSlot | PeerWorkerCommand::TakeGrant => {
+                        let _ = event_tx.send(PeerWorkerEvent::SlotGranted).await;
+                    }
+                    PeerWorkerCommand::RequestHashSet => {}
+                    PeerWorkerCommand::RequestBlocks { .. } if peer == disconnecting_peer => {
                         let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
                         break;
                     }
-                    PeerWorkerCommand::RequestPart {
-                        plan,
-                        resume_offset,
-                    } => {
+                    PeerWorkerCommand::RequestBlocks { blocks, handout } => {
                         let _ = event_tx
                             .send(PeerWorkerEvent::HashSetReceived {
                                 part_hashes: hashes.clone(),
                             })
                             .await;
-                        emit_streamed_part(
-                            &event_tx,
-                            &DownloadedPart {
-                                part_index: plan.part_index,
-                                offset: plan.offset,
-                                bytes: bytes.clone(),
-                            },
-                            resume_offset,
-                        )
-                        .await;
+                        let part = DownloadedPart {
+                            part_index: 0,
+                            offset: 0,
+                            bytes: bytes.clone(),
+                        };
+                        emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks, handout).await;
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}
                     PeerWorkerCommand::RequestAichFileHash => {}

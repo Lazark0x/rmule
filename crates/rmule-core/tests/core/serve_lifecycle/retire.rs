@@ -91,6 +91,7 @@ async fn stopping_serve_closes_every_open_upload_row() {
             peer: peer(41),
             file_hash,
             software: None,
+            road: rmule_core::GrantRoad::Linked,
         }
     );
 
@@ -108,6 +109,7 @@ async fn stopping_serve_closes_every_open_upload_row() {
             peer: peer(42),
             file_hash,
             software: None,
+            road: rmule_core::GrantRoad::Linked,
         }
     );
 
@@ -300,6 +302,7 @@ async fn a_dead_listener_closes_every_open_upload_row_too() {
             peer: peer(21),
             file_hash,
             software: None,
+            road: rmule_core::GrantRoad::Linked,
         }
     );
     assert_eq!(

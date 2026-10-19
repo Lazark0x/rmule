@@ -56,8 +56,43 @@ pub enum RequesterCommand {
         /// source-exchange answer without one.
         own_status: PartBitmap,
     },
-    /// Request a specific set of part ranges. Auto-issues hash-set
-    /// request and slot acquisition if not already done for `file_hash`.
+    /// Ask the peer for an upload slot for `file_hash` (`OP_STARTUPLOADREQ`,
+    /// aMule `SendStartupLoadReq`): the flow takes the connection's slot
+    /// context and is queued, and `SlotAsked` says the ask left. The caller
+    /// sends it once the probe has answered, as aMule asks once a status names
+    /// a part it needs; the part itself is asked for at the grant, with
+    /// `RequestParts`. A flow already queued or granted is left alone, and a
+    /// flow whose slot was given back or released asks again; another file
+    /// holding the slot is `SlotBusy` (ADR-0025).
+    AskSlot {
+        /// The file the slot is for.
+        file_hash: FileHash,
+    },
+    /// Take the slot the peer offered unasked (`SlotOffered`) as `file_hash`'s
+    /// grant: the flow holds the connection's slot context, granted, and
+    /// `SlotGranted` says so; nothing is written, so the blocks asked next go
+    /// out alone, as aMule's downloader answers an uploader's dial-back grant
+    /// with its block requests and no file request or `OP_STARTUPLOADREQ`
+    /// first (`ClientTCPSocket.cpp:635-644`, `BaseClient.cpp:1692-1706`).
+    /// With no offer standing it asks the slot, as [`Self::AskSlot`] does.
+    TakeOfferedSlot {
+        /// The file the slot is taken for.
+        file_hash: FileHash,
+        /// The file's size, which picks the block requests' wire form.
+        file_size: u64,
+    },
+    /// Ask the peer for `file_hash`'s part hash set (`OP_HASHSETREQUEST`), once
+    /// per file on this connection; the answer arrives as `HashSetReceived`.
+    /// Nothing waits on it here: which link asks, and when its slot ask
+    /// follows, is the download's decision (ADR-0026).
+    RequestHashSet {
+        /// The file whose part hashes are wanted.
+        file_hash: FileHash,
+    },
+    /// Request a specific set of part ranges. Without a slot ask yet, this
+    /// asks the probe (when none was asked) and then the slot once the probe
+    /// answers; before the grant the ranges wait for it. It asks no hash set
+    /// ([`Self::RequestHashSet`] does).
     RequestParts {
         /// The file the ranges fall in.
         file_hash: FileHash,
@@ -103,13 +138,21 @@ pub enum RequesterCommand {
     /// torn down by `CancelDownload`, `PauseDownload`, or complete-overshoot
     /// while `file_hash` holds the connection's active slot context sends
     /// `OP_CANCELTRANSFER` before releasing it — the requester-side
-    /// counterpart to `ReleaseSlot`'s silent local clear. A `CancelTransfer`
-    /// for a file that does not hold the active slot is a no-op (nothing to
+    /// counterpart to `ReleaseSlot`'s silent local clear. With no slot
+    /// active, it gives back a slot the peer offered unasked that no ask of
+    /// ours answered since, as [`Self::DeclineSlot`] does: the rider that took
+    /// the grant stops before asking. Anything else is a no-op (nothing to
     /// cancel); this also makes the emit idempotent within one ask-cycle.
     CancelTransfer {
         /// The file whose slot to cancel.
         file_hash: FileHash,
     },
+    /// Give back a slot the peer offered unasked (`SlotOffered`) that no
+    /// download takes: `OP_CANCELTRANSFER` once, as aMule's downloader
+    /// cancels an accept it does not want (`ClientTCPSocket.cpp:646-659`,
+    /// ADR-0056). A no-op once an ask of ours went out on the link, or with
+    /// no offer pending.
+    DeclineSlot,
 }
 
 impl PeerSession {
@@ -133,6 +176,14 @@ impl PeerSession {
                 want_aich_root,
                 own_status,
             ),
+            RequesterCommand::AskSlot { file_hash } => self.handle_ask_slot(file_hash),
+            RequesterCommand::TakeOfferedSlot {
+                file_hash,
+                file_size,
+            } => self.handle_take_offered_slot(file_hash, file_size),
+            RequesterCommand::RequestHashSet { file_hash } => {
+                self.handle_request_hash_set(file_hash);
+            }
             RequesterCommand::RequestParts {
                 file_hash,
                 file_size,
@@ -156,24 +207,40 @@ impl PeerSession {
                     self.release_slot(file_hash, SlotReleaseReason::DownloadComplete);
                 }
             }
+            RequesterCommand::DeclineSlot => self.decline_offered_slot(),
             RequesterCommand::CancelTransfer { file_hash } => {
                 if self.active_slot == Some(file_hash) {
                     self.write_packet(CancelTransfer.encode_packet());
-                    // Transition to standby (slot dropped, connection held) for
-                    // no-needed-parts emit, or teardown-emit path decides via
-                    // later Disconnect (ADR-0056).
+                    self.forget_asked_ranges();
+                    // The slot is given back and the connection held: a later
+                    // slot ask runs the cycle again (ADR-0056).
                     if let Some(flow) = self.per_file.get_mut(&file_hash) {
                         flow.slot = SlotState::Standby;
                         flow.pending_request = None;
                     }
+                    self.drop_compressed_blocks(file_hash);
                     self.active_slot = None;
                     self.core
                         .push_event(PeerEvent::Requester(RequesterEvent::SlotReleased {
                             file_hash,
                             reason: SlotReleaseReason::Cancelled,
                         }));
+                } else {
+                    // The rider took an unasked grant and stops before its
+                    // own ask leaves: the grant is its to give back
+                    // (ADR-0056 item 3).
+                    self.decline_offered_slot();
                 }
             }
+        }
+    }
+
+    /// Give back a slot the peer offered unasked, once: `OP_CANCELTRANSFER`
+    /// while the offer stands and no ask of ours went out since.
+    fn decline_offered_slot(&mut self) {
+        if std::mem::take(&mut self.slot_offered) && self.active_slot.is_none() {
+            self.write_packet(CancelTransfer.encode_packet());
+            self.forget_asked_ranges();
         }
     }
 }

@@ -220,6 +220,7 @@ async fn reask_loopback(crypt: Option<rmule_net::peer::ObfuscationPolicy>, shape
     let credit: SharedCreditStore = Arc::new(DurableCreditStore::new(store));
 
     let task = ServeTask {
+        bans: Default::default(),
         registry: Arc::new(registry),
         serve_runtime: FakeServeRuntime {
             bound: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 4662),
@@ -232,6 +233,7 @@ async fn reask_loopback(crypt: Option<rmule_net::peer::ObfuscationPolicy>, shape
         share_changed_rx,
         dialed_serve_rx: None,
         credit,
+        held_places: crate::held_places::SharedHeldPlaces::default(),
         // Long enough that neither timer fires mid-test (no rerank/purge
         // racing the reask arm).
         rerank_interval: Duration::from_secs(3600),
@@ -243,6 +245,7 @@ async fn reask_loopback(crypt: Option<rmule_net::peer::ObfuscationPolicy>, shape
         peer_roster: crate::peer_roster::SharedPeerRoster::default(),
         withheld: crate::registry_check::WithheldRows::default(),
         read_failed_tx: None,
+        served: Default::default(),
     };
     let serve = tokio::spawn(task.run());
 
@@ -456,6 +459,7 @@ async fn a_dropped_stop_sender_ends_the_serve_task() {
 
     let serve = tokio::spawn(
         ServeTask {
+            bans: Default::default(),
             registry: Arc::new(registry),
             serve_runtime: FakeServeRuntime {
                 bound: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 4662),
@@ -468,6 +472,7 @@ async fn a_dropped_stop_sender_ends_the_serve_task() {
             share_changed_rx,
             dialed_serve_rx: None,
             credit,
+            held_places: crate::held_places::SharedHeldPlaces::default(),
             rerank_interval: Duration::from_secs(3600),
             reask_rx: None,
             client_udp_tx: None,
@@ -477,6 +482,7 @@ async fn a_dropped_stop_sender_ends_the_serve_task() {
             peer_roster: crate::peer_roster::SharedPeerRoster::default(),
             withheld: crate::registry_check::WithheldRows::default(),
             read_failed_tx: None,
+            served: Default::default(),
         }
         .run(),
     );
@@ -532,6 +538,7 @@ async fn the_fifth_asker_from_one_address_is_served_silence_and_a_counter() {
 
     let serve = tokio::spawn(
         ServeTask {
+            bans: Default::default(),
             registry: Arc::new(registry),
             serve_runtime: FakeServeRuntime {
                 bound: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 4662),
@@ -546,6 +553,7 @@ async fn the_fifth_asker_from_one_address_is_served_silence_and_a_counter() {
             share_changed_rx,
             dialed_serve_rx: None,
             credit,
+            held_places: crate::held_places::SharedHeldPlaces::default(),
             rerank_interval: Duration::from_secs(3600),
             reask_rx: None,
             client_udp_tx: None,
@@ -555,6 +563,7 @@ async fn the_fifth_asker_from_one_address_is_served_silence_and_a_counter() {
             peer_roster: crate::peer_roster::SharedPeerRoster::default(),
             withheld: crate::registry_check::WithheldRows::default(),
             read_failed_tx: None,
+            served: Default::default(),
         }
         .run(),
     );
@@ -666,6 +675,7 @@ async fn a_hash_only_name_ask_from_a_claimant_closes_the_connection_and_is_count
 
     let serve = tokio::spawn(
         ServeTask {
+            bans: Default::default(),
             registry: Arc::new(registry),
             serve_runtime: FakeServeRuntime {
                 bound: SocketAddrV4::new(Ipv4Addr::LOCALHOST, 4662),
@@ -678,6 +688,7 @@ async fn a_hash_only_name_ask_from_a_claimant_closes_the_connection_and_is_count
             share_changed_rx,
             dialed_serve_rx: None,
             credit,
+            held_places: crate::held_places::SharedHeldPlaces::default(),
             rerank_interval: Duration::from_secs(3600),
             reask_rx: None,
             client_udp_tx: None,
@@ -687,6 +698,7 @@ async fn a_hash_only_name_ask_from_a_claimant_closes_the_connection_and_is_count
             peer_roster: crate::peer_roster::SharedPeerRoster::default(),
             withheld: crate::registry_check::WithheldRows::default(),
             read_failed_tx: None,
+            served: Default::default(),
         }
         .run(),
     );
@@ -799,4 +811,8 @@ fn self_position_follows_a_mid_session_reassignment() {
     );
 }
 
+mod aich;
+mod part_file;
+mod reciprocity;
 mod roster;
+mod served;

@@ -18,12 +18,13 @@ use rmule_primitives::{SafeFileName, SearchResult};
 
 use super::{SearchesView, ViewOutcome};
 use crate::action::Action;
+use crate::row_selection::viewport::Viewport;
 use crate::state::{
     KnownFileMark, KnownFileMarks, UiState, download_failure_words, withheld_words,
 };
 use crate::theme::Theme;
 use crate::views::day;
-use crate::views::modal::Modal;
+use crate::views::modal::{Modal, scroll_key};
 use crate::words::download as download_words;
 use crate::wrap::wrapped_lines;
 
@@ -33,6 +34,8 @@ use crate::wrap::wrapped_lines;
 pub(super) struct ReAdd {
     result: SearchResult,
     mark: KnownFileMark,
+    /// What part of the question is on screen, in a frame too short for it.
+    viewport: std::cell::Cell<Viewport>,
 }
 
 impl SearchesView {
@@ -50,7 +53,11 @@ impl SearchesView {
                 ViewOutcome::Emit(Action::Flash(download_words::already_downloading(&name)))
             }
             Some(mark) => {
-                self.readd = Some(ReAdd { result, mark });
+                self.readd = Some(ReAdd {
+                    result,
+                    mark,
+                    viewport: std::cell::Cell::default(),
+                });
                 ViewOutcome::Redraw
             }
         }
@@ -72,7 +79,12 @@ impl SearchesView {
                 self.readd = None;
                 ViewOutcome::Redraw
             }
-            _ => ViewOutcome::Redraw,
+            code => {
+                if let Some(readd) = self.readd.as_mut() {
+                    scroll_key(&mut readd.viewport, code);
+                }
+                ViewOutcome::Redraw
+            }
         }
     }
 
@@ -81,100 +93,103 @@ impl SearchesView {
             return;
         };
         let width = 56u16.min(area.width);
-        let text_w = usize::from(width).saturating_sub(2).max(1);
-        let text = Style::new().fg(theme.fg);
-        let mut lines: Vec<Line<'static>> = wrapped_lines(
-            &readd.result.primary_name().to_display_string(),
-            text_w,
-            text,
-        );
-        match &readd.mark {
-            KnownFileMark::Have { path } => {
-                lines.extend(wrapped_lines("You have this file, at", text_w, text));
-                lines.extend(wrapped_lines(
-                    &path.display().to_string(),
-                    text_w,
-                    Style::new().fg(theme.mark_have),
-                ));
-            }
-            KnownFileMark::Withheld {
-                path,
-                reason,
-                since,
-            } => {
-                lines.extend(wrapped_lines("You share this file, at", text_w, text));
-                lines.extend(wrapped_lines(
-                    &path.display().to_string(),
-                    text_w,
-                    Style::new().fg(theme.mark_withheld),
-                ));
-                lines.extend(wrapped_lines(
-                    &format!(
-                        "rmule cannot read it now ({}) since {}.",
-                        withheld_words(*reason),
-                        day(*since)
-                    ),
-                    text_w,
-                    text,
-                ));
-            }
-            KnownFileMark::Had { name, found_gone } => {
-                lines.extend(wrapped_lines("You had this file, as", text_w, text));
-                lines.extend(wrapped_lines(name, text_w, Style::new().fg(theme.mark_had)));
-                lines.extend(wrapped_lines(
-                    &format!("rmule found it gone on {}.", day(*found_gone)),
-                    text_w,
-                    text,
-                ));
-            }
-            KnownFileMark::Cancelled => lines.extend(wrapped_lines(
-                "You cancelled a download of this file before.",
-                text_w,
-                Style::new().fg(theme.mark_cancelled),
-            )),
-            KnownFileMark::Failed { name, reason, .. } => {
-                lines.extend(wrapped_lines(
-                    "Your download of this file failed, as",
-                    text_w,
-                    text,
-                ));
-                lines.extend(wrapped_lines(
-                    name,
-                    text_w,
-                    Style::new().fg(theme.mark_failed),
-                ));
-                let why = match reason {
-                    Some(reason) => {
-                        format!("It failed because {}.", download_failure_words(reason))
-                    }
-                    // Only a row failed before the store kept reasons (store
-                    // version 6) has none.
-                    None => format!("Why was {}.", crate::state::FAILURE_NOT_RECORDED),
-                };
-                lines.extend(wrapped_lines(&why, text_w, text));
-                lines.extend(wrapped_lines(
-                    "Restarting continues from the parts on disk that still check, or starts over when nothing there can be continued from.",
-                    text_w,
-                    text,
-                ));
-            }
-            // Refused before a confirm opens.
-            KnownFileMark::Downloading { .. } => {}
-        }
         let (verb, title) = match readd.mark {
             KnownFileMark::Failed { .. } => (" restart it    ", " Restart download? "),
             _ => (" download again    ", " Download again? "),
         };
-        lines.push(Line::raw(""));
-        let key = Style::new().fg(theme.accent).add_modifier(Modifier::BOLD);
-        lines.push(Line::from(vec![
-            Span::styled("y", key),
-            Span::styled(verb, text),
-            Span::styled("Esc", key),
-            Span::styled(" keep", text),
-        ]));
+        let lines = |width: u16| {
+            let text_w = usize::from(width).saturating_sub(2).max(1);
+            let text = Style::new().fg(theme.fg);
+            let mut lines: Vec<Line<'static>> = wrapped_lines(
+                &readd.result.primary_name().to_display_string(),
+                text_w,
+                text,
+            );
+            match &readd.mark {
+                KnownFileMark::Have { path } => {
+                    lines.extend(wrapped_lines("You have this file, at", text_w, text));
+                    lines.extend(wrapped_lines(
+                        &path.display().to_string(),
+                        text_w,
+                        Style::new().fg(theme.mark_have),
+                    ));
+                }
+                KnownFileMark::Withheld {
+                    path,
+                    reason,
+                    since,
+                } => {
+                    lines.extend(wrapped_lines("You share this file, at", text_w, text));
+                    lines.extend(wrapped_lines(
+                        &path.display().to_string(),
+                        text_w,
+                        Style::new().fg(theme.mark_withheld),
+                    ));
+                    lines.extend(wrapped_lines(
+                        &format!(
+                            "rmule cannot read it now ({}) since {}.",
+                            withheld_words(*reason),
+                            day(*since)
+                        ),
+                        text_w,
+                        text,
+                    ));
+                }
+                KnownFileMark::Had { name, found_gone } => {
+                    lines.extend(wrapped_lines("You had this file, as", text_w, text));
+                    lines.extend(wrapped_lines(name, text_w, Style::new().fg(theme.mark_had)));
+                    lines.extend(wrapped_lines(
+                        &format!("rmule found it gone on {}.", day(*found_gone)),
+                        text_w,
+                        text,
+                    ));
+                }
+                KnownFileMark::Cancelled => lines.extend(wrapped_lines(
+                    "You cancelled a download of this file before.",
+                    text_w,
+                    Style::new().fg(theme.mark_cancelled),
+                )),
+                KnownFileMark::Failed { name, reason, .. } => {
+                    lines.extend(wrapped_lines(
+                        "Your download of this file failed, as",
+                        text_w,
+                        text,
+                    ));
+                    lines.extend(wrapped_lines(
+                        name,
+                        text_w,
+                        Style::new().fg(theme.mark_failed),
+                    ));
+                    let why = match reason {
+                        Some(reason) => {
+                            format!("It failed because {}.", download_failure_words(reason))
+                        }
+                        // Only a row failed before the store kept reasons (store
+                        // version 6) has none.
+                        None => format!("Why was {}.", crate::state::FAILURE_NOT_RECORDED),
+                    };
+                    lines.extend(wrapped_lines(&why, text_w, text));
+                    lines.extend(wrapped_lines(
+                        "Restarting continues from the parts on disk that still check, or starts over when nothing there can be continued from.",
+                        text_w,
+                        text,
+                    ));
+                }
+                // Refused before a confirm opens.
+                KnownFileMark::Downloading { .. } => {}
+            }
+            lines.push(Line::raw(""));
+            let key = Style::new().fg(theme.accent).add_modifier(Modifier::BOLD);
+            lines.push(Line::from(vec![
+                Span::styled("y", key),
+                Span::styled(verb, text),
+                Span::styled("Esc", key),
+                Span::styled(" keep", text),
+            ]));
 
-        Modal::new(title, theme).draw(frame, area, width, theme, lines);
+            lines
+        };
+        Modal::new(title, theme).draw_scrolled(frame, area, width, theme, &readd.viewport, lines);
     }
 }
 
@@ -199,6 +214,7 @@ fn start_download(result: &SearchResult, state: &UiState, again: bool) -> ViewOu
             } else {
                 NameTaken::Refuse
             },
+            kad_aich_root: result.kad_aich_root(),
         },
     )))
 }

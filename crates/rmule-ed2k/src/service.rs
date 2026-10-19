@@ -10,8 +10,8 @@ use std::net::Ipv4Addr;
 
 use rmule_primitives::{
     ClientId, Ed2kText, FileHash, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, SearchQuery,
-    SearchResult, ServerEndpoint, ServerIdentity, ServerStatusReport, SourceListTail,
-    SourceLookupTarget, SourceSighting,
+    SearchResult, ServerEndpoint, ServerIdentity, ServerStatusReport, SourceClaim, SourceListTail,
+    SourceLookupTarget,
 };
 
 use crate::{
@@ -232,16 +232,18 @@ pub enum Ed2kEvent {
         /// §4.6). Empty for a legacy server, which sends no block at all.
         ipv6_servers: Vec<Ipv6Endpoint>,
     },
-    /// Sources for `file_hash`, as candidates carrying the optional
+    /// Sources for `file_hash`, as claims carrying the optional
     /// `(user_hash, crypt_options)` provenance the obfuscation-aware `0x44`
     /// reply delivers (ADR-0046). A plain `0x42` reply projects each source
-    /// as [`SourceSighting::plain`] — no crypt material, dialed plaintext.
+    /// as [`SourceClaim::plain`] — no crypt material, dialed plaintext. The
+    /// session does not know the server's address, so the claims name nobody:
+    /// its owner states them as the server's word (ADR-0085).
     SourcesFound {
         /// The file the sources are for.
         file_hash: FileHash,
         /// The sources, each carrying whatever crypt provenance the reply
         /// form delivered.
-        sources: Vec<SourceSighting>,
+        sources: Vec<SourceClaim>,
         /// How the list's records measured (ADR-0085). A
         /// [`SourceListTail::Malformed`] list cost the records from its first
         /// **Sentinel Source** on and nothing before it — a counted
@@ -359,7 +361,7 @@ impl Ed2kEvent {
                     .sources()
                     .iter()
                     .copied()
-                    .map(SourceSighting::plain)
+                    .map(SourceClaim::plain)
                     .collect(),
                 tail: found.tail(),
             },

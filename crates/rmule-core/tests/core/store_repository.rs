@@ -27,6 +27,7 @@ fn create(repo: &DurableDownloadRepository, dir: &Path, name: &str) -> DurableDo
         &stub_link(name, 1234, 0x01),
         Some(&stub_server("example.org")),
         &DownloadPaths::from_final_path(dir.join(name)),
+        None,
     )
     .unwrap()
 }
@@ -54,6 +55,7 @@ fn download_name_and_exact_size_survive_a_store_reopen() {
             &file,
             Some(&stub_server("example.org")),
             &DownloadPaths::from_final_path(dir.path().join("download.bin")),
+            None,
         )
         .unwrap();
     drop(repo);
@@ -85,6 +87,7 @@ fn duplicate_live_download_uses_file_hash_and_size_not_filename() {
         &stub_link("first.bin", 1234, 0x01),
         Some(&server),
         &DownloadPaths::from_final_path(dir.path().join("first.bin")),
+        None,
     )
     .unwrap();
 
@@ -93,6 +96,7 @@ fn duplicate_live_download_uses_file_hash_and_size_not_filename() {
             &stub_link("renamed.bin", 1234, 0x01),
             Some(&server),
             &DownloadPaths::from_final_path(dir.path().join("renamed.bin")),
+            None,
         )
         .unwrap_err();
 
@@ -109,6 +113,7 @@ fn a_part_path_another_row_already_writes_is_refused() {
         &stub_link("first.bin", 1234, 0x01),
         Some(&stub_server("a.org")),
         &paths,
+        None,
     )
     .unwrap();
 
@@ -119,6 +124,7 @@ fn a_part_path_another_row_already_writes_is_refused() {
             &stub_link("other.bin", 5678, 0x02),
             Some(&stub_server("a.org")),
             &paths,
+            None,
         )
         .unwrap_err();
 
@@ -139,6 +145,7 @@ fn created_download_persists_canonical_file_link() {
             &file,
             Some(&stub_server("example.org")),
             &DownloadPaths::from_final_path(dir.path().join("download.bin")),
+            None,
         )
         .unwrap();
 
@@ -160,6 +167,7 @@ fn existing_final_output_path_is_rejected_before_creating_record() {
             &stub_link("already-there.bin", 1234, 0x01),
             Some(&stub_server("example.org")),
             &DownloadPaths::from_final_path(final_path.clone()),
+            None,
         )
         .unwrap_err();
     assert_eq!(err, CoreError::PathConflict);
@@ -170,6 +178,7 @@ fn existing_final_output_path_is_rejected_before_creating_record() {
             &stub_link("already-there.bin", 1234, 0x01),
             Some(&stub_server("example.org")),
             &DownloadPaths::from_final_path(final_path),
+            None,
         )
         .unwrap();
     // The refused create consumed no id: the counter only moves on success.
@@ -186,6 +195,14 @@ fn lifecycle_allows_pause_resume_and_completion_path() {
         DownloadLifecycle::Active,
         DownloadLifecycle::Paused,
         DownloadLifecycle::Active,
+        DownloadLifecycle::Completing,
+        // A Pause before the file is in place, and the repair of a copy whose
+        // bytes changed, both leave the move (ADR-0115).
+        DownloadLifecycle::Paused,
+        DownloadLifecycle::Active,
+        DownloadLifecycle::Completing,
+        DownloadLifecycle::Active,
+        DownloadLifecycle::Completing,
         DownloadLifecycle::Completed,
     ] {
         repo.set_lifecycle(created.id(), state).unwrap();
@@ -195,6 +212,54 @@ fn lifecycle_allows_pause_resume_and_completion_path() {
         repo.load_download(created.id()).unwrap().lifecycle(),
         DownloadLifecycle::Completed
     );
+}
+
+/// A completing row stores its destination with its lifecycle, and names it
+/// beside its part file as the download's own until it is completed: the
+/// scan never reads the file the move puts there first (ADR-0115).
+#[test]
+fn a_completing_row_names_its_destination_as_its_own_until_it_completes() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repository(dir.path());
+    let created = create(&repo, dir.path(), "download.bin");
+    let part = created.paths().part_path().to_path_buf();
+    repo.set_lifecycle(created.id(), DownloadLifecycle::Active)
+        .unwrap();
+    let destination = dir.path().join("download (1).bin");
+
+    repo.set_completing(created.id(), &destination).unwrap();
+
+    let record = repo.load_download(created.id()).unwrap();
+    assert_eq!(record.lifecycle(), DownloadLifecycle::Completing);
+    assert_eq!(record.paths().final_path(), destination);
+    let mut parts = repo.part_files().unwrap();
+    parts.sort();
+    assert_eq!(parts, vec![(destination, true), (part.clone(), true)]);
+
+    repo.set_lifecycle(created.id(), DownloadLifecycle::Completed)
+        .unwrap();
+    assert_eq!(repo.part_files().unwrap(), vec![(part, false)]);
+    assert_eq!(
+        repo.set_completing(created.id(), dir.path()).unwrap_err(),
+        CoreError::InvalidLifecycleTransition
+    );
+}
+
+/// Every completion goes through `Completing`, which names the destination
+/// before anything moves (ADR-0115).
+#[test]
+fn a_running_download_completes_only_through_completing() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repository(dir.path());
+    let created = create(&repo, dir.path(), "download.bin");
+    repo.set_lifecycle(created.id(), DownloadLifecycle::Active)
+        .unwrap();
+
+    let err = repo
+        .set_lifecycle(created.id(), DownloadLifecycle::Completed)
+        .unwrap_err();
+
+    assert_eq!(err, CoreError::InvalidLifecycleTransition);
 }
 
 #[test]
@@ -245,6 +310,7 @@ fn the_restart_read_keeps_each_row_as_the_last_process_left_it() {
             &stub_link("paused.bin", 5678, 0x02),
             Some(&stub_server("example.org")),
             &DownloadPaths::from_final_path(dir.path().join("paused.bin")),
+            None,
         )
         .unwrap();
     repo.set_lifecycle(paused.id(), DownloadLifecycle::Paused)
@@ -381,6 +447,39 @@ fn replacing_provisional_part_hashes_is_rejected_unless_identical() {
 }
 
 #[test]
+fn a_set_drops_the_parts_recorded_before_it_that_it_disproves() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = repository(dir.path());
+    let created = create(&repo, dir.path(), "download.bin");
+    let hashes: Vec<PartHash> = [0x11, 0x22, 0x33]
+        .map(|byte| PartHash::from_bytes([byte; PartHash::BYTE_LEN]))
+        .to_vec();
+    let part = |part_index: u32, part_hash| VerifiedPartRecord {
+        part_index,
+        offset: u64::from(part_index) * ED2K_PART_SIZE,
+        len: ED2K_PART_SIZE,
+        part_hash,
+    };
+    let held = part(0, hashes[0]);
+    let refuted = part(1, PartHash::from_bytes([0xEE; PartHash::BYTE_LEN]));
+    repo.record_verified_part(created.id(), held).unwrap();
+    repo.record_verified_part(created.id(), refuted).unwrap();
+
+    assert_eq!(
+        repo.record_provisional_part_hashes(created.id(), &hashes)
+            .unwrap(),
+        vec![refuted]
+    );
+    assert_eq!(repo.verified_parts(created.id()).unwrap(), vec![held]);
+    assert!(
+        repo.record_provisional_part_hashes(created.id(), &hashes)
+            .unwrap()
+            .is_empty(),
+        "the set in force refutes nothing it already checked"
+    );
+}
+
+#[test]
 fn link_part_hash_authority_does_not_duplicate_hashes_as_child_rows() {
     let dir = tempfile::tempdir().unwrap();
     let repo = repository(dir.path());
@@ -392,6 +491,7 @@ fn link_part_hash_authority_does_not_duplicate_hashes_as_child_rows() {
             &file,
             Some(&stub_server("example.org")),
             &DownloadPaths::from_final_path(dir.path().join("download.bin")),
+            None,
         )
         .unwrap();
 

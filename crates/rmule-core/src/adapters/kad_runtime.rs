@@ -5,7 +5,7 @@
 mod callback_walk;
 mod cells;
 pub(crate) use callback_walk::{CallbackWalkAsk, CallbackWalkReply, request_kad_callback_walk};
-pub use cells::KadCells;
+pub use cells::{KadCells, KadPumpStandIn};
 mod handoff;
 mod node;
 mod presence;
@@ -632,6 +632,19 @@ pub(crate) struct BuddyCallbackAsk {
     pub(crate) tcp_port: u16,
 }
 
+impl BuddyCallbackAsk {
+    /// The command a running node is handed for this ask: the `0x52` to the
+    /// buddy.
+    pub(crate) fn node_command(&self) -> rmule_kad::KadCommand {
+        rmule_kad::KadCommand::RequestBuddyCallback {
+            buddy: rmule_kad::KadNodeEndpoint::new(self.buddy_udp.ip, self.buddy_udp.port),
+            buddy_id: self.buddy_id,
+            file_hash: self.file_hash,
+            tcp_port: self.tcp_port,
+        }
+    }
+}
+
 /// Hand one buddy callback to the running node, reporting whether a node was
 /// there to take it. `false` — Kad is off, or its inbox is full — means no
 /// `0x52` will leave, which the caller reports rather than assumes.
@@ -701,6 +714,10 @@ impl KadSourceChannel for RuntimeKadChannel {
 /// `m_sourceCount` (`Search.cpp:1033` → `SearchList.cpp`'s `FT_SOURCES` tag →
 /// `SearchFile.cpp:79`), and the app-facing meaning is the consumer's. The
 /// `> 65500` clamp is aMule's rogue-publisher guard from the same site.
+///
+/// The row's AICH roots become the result's Kad root only when they make a
+/// **Qualified Kad Root** (ADR-0038); the storer's version gate ran in the
+/// Kad node.
 pub(crate) fn project_keyword_result(
     row: &rmule_kad::KadKeywordResult,
 ) -> Result<SearchResult, SearchResultSkipReason> {
@@ -723,6 +740,10 @@ pub(crate) fn project_keyword_result(
         _ => SearchResultSkipReason::MissingFileName,
     })?
     .with_origin(SearchResultOrigin::Kad);
+    let result = match crate::download::qualified_kad_root(&row.aich_roots, row.publishers()) {
+        Some(root) => result.with_kad_aich_root(root),
+        None => result,
+    };
     let result = match row.complete_sources {
         Some(availability) if availability <= KAD_MAX_PLAUSIBLE_AVAILABILITY => {
             result.with_reported_availability(availability)

@@ -31,6 +31,7 @@ async fn start(core: &mut Core, file: Ed2kFileLink) -> DownloadId {
         file,
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -212,6 +213,7 @@ async fn attach_restores_a_paused_downloads_part_picture() {
             &link,
             Some(&ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
             &DownloadPaths::from_final_path(dir.path().join("held.bin")),
+            None,
         )
         .unwrap();
     repo.set_lifecycle(record.id(), DownloadLifecycle::Paused)
@@ -264,6 +266,7 @@ async fn a_failed_download_holds_its_place_and_restarts_in_place() {
             &link,
             Some(&ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
             &DownloadPaths::from_final_path(dir.path().join("failed.bin")),
+            None,
         )
         .unwrap();
     repo.set_lifecycle(record.id(), DownloadLifecycle::Failed)
@@ -283,6 +286,7 @@ async fn a_failed_download_holds_its_place_and_restarts_in_place() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("failed (1).bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -386,6 +390,7 @@ async fn a_download_attach_cannot_start_is_told_as_failed() {
             &link,
             Some(&ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
             &DownloadPaths::from_final_path(dir.path().join("stuck.bin")),
+            None,
         )
         .unwrap()
         .id();
@@ -436,4 +441,117 @@ async fn a_download_attach_cannot_start_is_told_as_failed() {
         ),
         "{told:?}"
     );
+}
+
+/// The queued edge names the `.part` the store recorded for the new row:
+/// where its bytes lie from the first one written.
+#[tokio::test]
+async fn the_queued_edge_names_the_part_file_the_store_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open_durable_store(dir.path()).unwrap();
+    let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_testkit::in_download_dir(
+            rmule_core::CoreSettings::default(),
+            dir.path(),
+        ))
+        .source_lookup(two_high_id_sources())
+        .peer_transfer(PendingPeerTransfer)
+        .build();
+    core.send(CoreCommand::Download(DownloadCommand::StartDownload {
+        name: rmule_primitives::SafeFileName::of_link(&two_part_link("film.mkv", 0xE5)),
+        file: two_part_link("film.mkv", 0xE5),
+        source_hint: None,
+        if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
+    }))
+    .await
+    .unwrap();
+    let queued = next_expected(&mut core, "the download queued", |event| {
+        matches!(
+            event,
+            CoreEvent::Download(DownloadEvent::DownloadQueued { .. })
+        )
+    })
+    .await;
+    let CoreEvent::Download(DownloadEvent::DownloadQueued {
+        download_id,
+        file_path,
+        ..
+    }) = queued
+    else {
+        unreachable!("matcher only returns queued events")
+    };
+    let record = DurableDownloadRepository::new(Arc::clone(&store))
+        .load_download(download_id)
+        .unwrap();
+    assert_eq!(file_path, record.paths().part_path());
+    assert_eq!(file_path, dir.path().join("film.mkv.part"));
+}
+
+/// Attach names where each listed download's bytes lie: the `.part` of a
+/// paused and of a failed row, the finished file of a completed one — even
+/// when a re-add of that file to the same place took the completed row's
+/// `.part` slot, whose stand-in text is not a path.
+#[tokio::test]
+async fn attach_names_the_part_file_or_the_finished_file_by_lifecycle() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open_durable_store(dir.path()).unwrap();
+    let repo = DurableDownloadRepository::new(Arc::clone(&store));
+    let seeded = |name: &str, fill: u8, steps: &[DownloadLifecycle]| {
+        let paths = DownloadPaths::from_final_path(dir.path().join(name));
+        let record = repo
+            .create_download(&two_part_link(name, fill), None, &paths, None)
+            .unwrap();
+        for step in steps {
+            repo.set_lifecycle(record.id(), *step).unwrap();
+        }
+        (record.id(), paths)
+    };
+    let (paused, paused_paths) = seeded("paused.bin", 0x11, &[DownloadLifecycle::Paused]);
+    let (failed, failed_paths) = seeded("failed.bin", 0x22, &[DownloadLifecycle::Failed]);
+    let (done, done_paths) = seeded(
+        "done.bin",
+        0x33,
+        &[
+            DownloadLifecycle::Active,
+            DownloadLifecycle::Completing,
+            DownloadLifecycle::Completed,
+        ],
+    );
+    // The finished file is gone from disk, so a re-add to the same place is
+    // admitted and takes the completed row's `.part` slot.
+    let (readded, _) = seeded("done.bin", 0x33, &[DownloadLifecycle::Paused]);
+
+    let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(crate::fixture::attach_settings().await)
+        .source_lookup(two_high_id_sources())
+        .peer_transfer(PendingPeerTransfer)
+        .build();
+    let mut told = std::collections::HashMap::new();
+    while told.len() < 4 {
+        if let CoreEvent::Download(DownloadEvent::DownloadRecovered {
+            download_id,
+            file_path,
+            ..
+        }) = next_expected(&mut core, "every listed download recovered", |event| {
+            matches!(
+                event,
+                CoreEvent::Download(DownloadEvent::DownloadRecovered { .. })
+            )
+        })
+        .await
+        {
+            told.insert(download_id, file_path);
+        }
+    }
+    assert_eq!(told[&paused], paused_paths.part_path());
+    assert_eq!(told[&failed], failed_paths.part_path());
+    assert_eq!(told[&done], done_paths.final_path());
+    assert_eq!(told[&readded], done_paths.part_path());
+    for path in told.values() {
+        assert!(
+            !path.to_string_lossy().contains('\0'),
+            "a stand-in reached the edge: {path:?}"
+        );
+    }
 }

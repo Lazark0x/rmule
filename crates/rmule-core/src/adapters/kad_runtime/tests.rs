@@ -84,6 +84,7 @@ fn keyword_row(
         file_type: file_type.map(str::to_owned),
         complete_sources,
         publish_info: None,
+        aich_roots: Vec::new(),
     }
 }
 
@@ -106,6 +107,61 @@ fn a_projected_kad_keyword_row_carries_its_source_count_and_type() {
         projected.sources().is_empty(),
         "a keyword row carries a count, never endpoints"
     );
+}
+
+/// A keyword row from a v9 storer naming `roots` (popularity, root fill), out
+/// of `publishers` publishers by its `TAG_PUBLISHINFO`.
+fn rooted_row(publishers: u8, roots: &[(u8, u8)]) -> rmule_kad::KadKeywordResult {
+    rmule_kad::KadKeywordResult {
+        publish_info: Some(u32::from_be_bytes([1, publishers, 0, 100])),
+        aich_roots: roots
+            .iter()
+            .map(|&(popularity, fill)| rmule_kad::KadAichRootReport {
+                popularity,
+                root: root(fill),
+            })
+            .collect(),
+        ..keyword_row(None, None)
+    }
+}
+
+fn root(fill: u8) -> rmule_primitives::AichRootHash {
+    rmule_primitives::AichRootHash::from_bytes([fill; rmule_primitives::AichRootHash::BYTE_LEN])
+}
+
+fn qualified(row: &rmule_kad::KadKeywordResult) -> Option<rmule_primitives::AichRootHash> {
+    project_keyword_result(row)
+        .expect("a named, sized row projects")
+        .kad_aich_root()
+}
+
+/// A **Qualified Kad Root** (ADR-0038): the result's one root, reported by
+/// at least a third of its publishers and by at least ten of them.
+#[test]
+fn one_root_from_12_of_20_publishers_is_qualified() {
+    assert_eq!(qualified(&rooted_row(20, &[(12, 0xA1)])), Some(root(0xA1)));
+}
+
+#[test]
+fn one_root_from_9_of_9_publishers_falls_under_the_floor() {
+    assert_eq!(qualified(&rooted_row(9, &[(9, 0xA1)])), None);
+}
+
+#[test]
+fn one_root_from_5_of_20_publishers_falls_under_a_third() {
+    assert_eq!(qualified(&rooted_row(20, &[(5, 0xA1)])), None);
+}
+
+/// eMule's integer test (`SearchList.cpp:797`) would take 6 of 20; rmule's
+/// third does not.
+#[test]
+fn one_root_from_6_of_20_publishers_falls_under_rmules_third() {
+    assert_eq!(qualified(&rooted_row(20, &[(6, 0xA1)])), None);
+}
+
+#[test]
+fn two_roots_qualify_neither() {
+    assert_eq!(qualified(&rooted_row(30, &[(12, 0xA1), (11, 0xB2)])), None);
 }
 
 /// aMule's rogue-publisher guard (`Search.cpp:1035`): an implausible count

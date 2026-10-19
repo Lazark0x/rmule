@@ -24,10 +24,12 @@ pub enum DownloadEvent {
         /// on every wire surface.
         file_hash: FileHash,
         /// The name + exact size core just recorded for this download
-        /// (ADR-0077). Carried on the edge so a consumer that folds events
+        /// (ADR-0078). Carried on the edge so a consumer that folds events
         /// into its own row has the file's identity in one message, without
         /// waiting for a diagnostics snapshot to join against.
         metadata: DownloadMetadata,
+        /// Where the download's bytes lie now: its `.part` (ADR-0114).
+        file_path: PathBuf,
     },
     /// A download the store held from an earlier run was re-admitted at
     /// startup. No task is running for it yet; `state` says what it was doing.
@@ -40,12 +42,16 @@ pub enum DownloadEvent {
         /// kept it (ADR-0094, "Failed"); `None` otherwise, and for a row
         /// failed before the store kept reasons.
         failure: Option<DownloadFailure>,
-        /// Restart replays what the store holds: a recovered download has no
-        /// live task, so its diagnostics row does not exist yet and these two
-        /// facts have no other path to a consumer.
+        /// The file's ED2K content identity, as the store recorded it.
+        /// Carried with the name and size so a consumer folding events has
+        /// the file's identity in this one message; the resting diagnostics
+        /// row opened just before it carries the same facts.
         file_hash: FileHash,
         /// The name and exact size the store recorded for it.
         metadata: DownloadMetadata,
+        /// Where the download's bytes lie now (ADR-0114): the finished file
+        /// of a `Completed` download, the `.part` of any other.
+        file_path: PathBuf,
     },
     /// Verified on-disk progress was read back for a recovered download, so a
     /// consumer can show it as partly complete before a single peer is dialed.
@@ -69,9 +75,20 @@ pub enum DownloadEvent {
         /// Each dropped part and what its check found, lowest part first.
         damaged: Vec<crate::PartFault>,
     },
+    /// Parts the run fetched before the file's part hash set arrived did not
+    /// match it when it did (ADR-0113, "The sets and who writes them"): their
+    /// records are dropped, without a read, and the parts are fetched again.
+    PartsDisproved {
+        /// The download whose parts were disproved.
+        download_id: DownloadId,
+        /// How many parts the set disproved.
+        parts: u32,
+        /// How many bytes they held.
+        bytes: u64,
+    },
     /// The run found that the file at its part file's path is not the file it
-    /// holds, or no longer all of it (ADR-0093, "The part file under a running
-    /// download"): removed, replaced or cut short. The verified parts it cost
+    /// holds, or no longer all of it (ADR-0094, "The run holds its part
+    /// file"): removed, replaced or cut short. The verified parts it cost
     /// are dropped and are to be fetched again; a removed or replaced file
     /// fails the download (`PartFileMissing`) rather than being recreated, and
     /// a file cut short keeps its run going. Told even when the store cannot
@@ -222,15 +239,26 @@ pub enum DownloadEvent {
     /// A source that queued us hung up and entered the **Remote-Queued Pool**
     /// (ADR-0057): its earned queue standing is now kept without a socket, on the
     /// `FILEREASKTIME` reask heartbeat, instead of being forfeited. `rank` is the
-    /// last position we learned before disconnecting.
+    /// last position we learned before disconnecting, `None` when it queued us
+    /// without ranking us yet.
     SourceRemoteQueued {
         /// The download the pooled source still owes bytes to.
         download_id: DownloadId,
         /// The source that hung up while queueing us.
         peer: rmule_primitives::PeerEndpoint,
-        /// The last rank learned before the disconnect; the reask cycle
-        /// refreshes it.
-        rank: u16,
+        /// The last rank learned before the disconnect, `None` when none was;
+        /// the reask cycle refreshes it.
+        rank: Option<u16>,
+    },
+    /// A source this download would have dialed already queues another of our
+    /// downloads: it waits on that download's place in the peer's queue — the
+    /// peer's **Queue Standing** (ADR-0107) — and asks the peer nothing until
+    /// the standing passes to it or a grant calls it to the holder's link.
+    SourceWaitsOnStanding {
+        /// The download whose source waits.
+        download_id: DownloadId,
+        /// The source it waits at.
+        peer: rmule_primitives::PeerEndpoint,
     },
     /// A pooled source answered our UDP reask ping with `OP_REASKACK` (`0x91`):
     /// the fresh `rank` was recorded and its standing refreshed (ADR-0057).
@@ -257,6 +285,16 @@ pub enum DownloadEvent {
     /// a dial at its endpoint, or a called-back source's callback road.
     SourceReaskedOverTcp {
         /// The download re-asking the source.
+        download_id: DownloadId,
+        /// The endpoint the source stood at.
+        peer: rmule_primitives::PeerEndpoint,
+    },
+    /// The uploader the source at `peer` names granted a slot on a link of its
+    /// own — it promoted us from its queue by dialing us back, or on a link it
+    /// held — and the source's worker opens on that link at once, past the
+    /// worker cap (ADR-0057, "A grant by dial-back is taken").
+    SlotOffered {
+        /// The download the grant is for.
         download_id: DownloadId,
         /// The endpoint the source stood at.
         peer: rmule_primitives::PeerEndpoint,
@@ -302,6 +340,17 @@ pub enum DownloadEvent {
         /// Why the dial ended.
         cause: super::DialEnd,
     },
+    /// The download reaches `peer` over its **Peer Link** rather than a dial
+    /// of its own (ADR-0107, "One peer, one link"): waiting while another
+    /// download of the peer rides it, then riding at its turn.
+    LinkShared {
+        /// The download on the link.
+        download_id: DownloadId,
+        /// The source the download meant to reach.
+        peer: rmule_primitives::PeerEndpoint,
+        /// Where the download stands on the link.
+        turn: LinkTurn,
+    },
     /// The part hash set the run verifies against is settled — from the link,
     /// from a peer, or from the store. Every later `PartVerified` is checked
     /// against it.
@@ -315,8 +364,9 @@ pub enum DownloadEvent {
         /// provisional until the whole file's hash confirms it.
         authority: VerificationAuthority,
     },
-    /// A worker was handed its next part to fetch. Assignment happens on the
-    /// worker's `Connected` event, so a failed handshake never strands a part.
+    /// A worker was first handed blocks of a part it held none of (ADR-0117):
+    /// several workers can be assigned one part. Handouts start at the grant,
+    /// so a failed handshake never strands a block.
     PartAssigned {
         /// The download the part belongs to.
         download_id: DownloadId,
@@ -324,6 +374,48 @@ pub enum DownloadEvent {
         peer: rmule_primitives::PeerEndpoint,
         /// The zero-based part index within the file.
         part_index: u32,
+    },
+    /// The End Game handed a worker a **Duplicate Set** in a part: blocks a
+    /// slower worker is fetching, asked again of this one (ADR-0117). The copy
+    /// that arrives second is dropped.
+    EndGameBlocks {
+        /// The download the part belongs to.
+        download_id: DownloadId,
+        /// The worker asked the blocks again.
+        peer: rmule_primitives::PeerEndpoint,
+        /// The zero-based part index within the file.
+        part_index: u32,
+        /// How many blocks, at most three.
+        blocks: u32,
+        /// Their bytes, at most three `EMBLOCKSIZE`.
+        bytes: u64,
+    },
+    /// The peers' vote committed an AICH root other than the **Qualified Kad
+    /// Root** the download was started from (ADR-0038): the download trusts
+    /// neither for its life, and a part that fails its check takes the
+    /// rootless path (ADR-0117 §1).
+    KadAichRootContested {
+        /// The download whose roots disagree.
+        download_id: DownloadId,
+        /// The root the Kad search result named.
+        kad_root: rmule_primitives::AichRootHash,
+        /// The root the peers' vote committed.
+        voted_root: rmule_primitives::AichRootHash,
+    },
+    /// A part failed its check with no Trusted AICH Root to name its corrupt
+    /// cells (ADR-0117 §1): its bytes are dropped and it is fetched again.
+    /// The failure names a writer only when the evidence points to it, and
+    /// each one retired is also said as `PeerRetired`.
+    PartCorrupt {
+        /// The download the part belongs to.
+        download_id: DownloadId,
+        /// The zero-based part index within the file.
+        part_index: u32,
+        /// How many sources wrote the failed attempt.
+        writers: u32,
+        /// How many of them the failure named: each still working is
+        /// retired.
+        named: u32,
     },
     /// A part went back to the unassigned pool for another worker to take.
     PartReleased {
@@ -353,13 +445,14 @@ pub enum DownloadEvent {
         /// The zero-based part index within the file.
         part_index: u32,
     },
-    /// Every part verified and the file was finalized on disk. Terminal.
+    /// Every part verified, the finished file in place and shared, its part
+    /// file gone (ADR-0115). Terminal.
     DownloadCompleted {
         /// The download that finished.
         download_id: DownloadId,
         /// Where the finished file now lies: the path core resolved in the
-        /// download directory when the download started, the `.part` renamed
-        /// onto it.
+        /// download directory when the download started, or the first free
+        /// numbered name beside it the completion move took.
         final_path: PathBuf,
     },
     /// A `CancelDownload` was honoured: the run stopped and the store row is
@@ -423,6 +516,47 @@ pub enum DownloadEvent {
         /// The download that waits.
         download_id: DownloadId,
     },
+    /// The run's Hole Probe found that the disk under its part file holds no
+    /// holes (ADR-0111, "Each run measures whether its disk holds holes"):
+    /// the file takes its full length up to its last verified part. Told
+    /// once per run, when the run first holds its part file; the run goes on
+    /// unchanged. A disk that holds holes, or a probe that failed, sends
+    /// nothing: the verdict is the row's level either way.
+    HoleLessDestination {
+        /// The download whose part file lies there.
+        download_id: DownloadId,
+        /// The directory that holds the part file.
+        directory: PathBuf,
+    },
+    /// A step of the completion move that waits or copies began (ADR-0115):
+    /// the download is `Completing`, its finished file headed for `to`. Told
+    /// once as each such step begins; the step and the bytes copied are the
+    /// download's diagnostics level meanwhile.
+    Completing {
+        /// The download moving into place.
+        download_id: DownloadId,
+        /// Where the finished file lands, a numbered name included.
+        to: PathBuf,
+        /// What the move is doing.
+        step: CompletionStep,
+    },
+}
+
+/// Where a download's completion move stands (ADR-0115).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompletionStep {
+    /// The part file is being renamed onto its destination.
+    Moving,
+    /// The destination lies on another volume: the copy waits for the core's
+    /// one copy turn.
+    QueuedForCopy,
+    /// The finished file is being copied to the destination's volume.
+    Copying,
+    /// Another program holds the file; the move retries until it lets go.
+    WaitingForRelease,
+    /// The finished file is in place, and the store has not yet recorded it;
+    /// the move retries until it does.
+    WaitingForStore,
 }
 
 /// Why a download with no source to try waits, rather than fails: which
@@ -488,4 +622,15 @@ pub enum PartsLost {
     /// The store could not say which parts were lost, so no count is told;
     /// the download fails as a store failure.
     NotCounted,
+}
+
+/// A download's turn on a **Peer Link** another download or the serve side
+/// holds (ADR-0107, "One peer, one link"), ranked by how far it got.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LinkTurn {
+    /// Another download of the peer rides the link; this one waits for it to
+    /// let go, dialing nothing.
+    Waiting,
+    /// The download rides the link: its requests go out on it.
+    Riding,
 }

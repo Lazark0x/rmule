@@ -1,13 +1,13 @@
 //! The **Requester Capability**: the half of the connection that chases
 //! parts (ADR-0031).
 //!
-//! Probes a file, asks for its name, status and hash set, claims the one
-//! in-flight slot per connection (ADR-0025), and reassembles the blocks —
-//! plain and compressed — the peer sends back.
+//! Probes a file, asks for its name, status and — when told — its hash set,
+//! claims the one in-flight slot per connection (ADR-0025), and reassembles
+//! the blocks — plain and compressed — the peer sends back.
 
 use std::collections::HashMap;
 
-use rmule_primitives::{ED2K_PART_SIZE, Ed2kText, FileHash, part_count};
+use rmule_primitives::{Ed2kText, FileHash, part_count};
 
 use super::{FileProbeStatus, PeerError, PeerEvent, PeerSession, SlotReleaseReason, State};
 use crate::RequesterEvent;
@@ -50,8 +50,9 @@ pub(super) struct FileFlow {
 /// The running count of `FileFlow::compressed_blocks` entries across every
 /// per-file flow — what a hostile peer can hold buffered session-wide.
 /// The field is private to this module, so only
-/// [`PeerSession::on_compressed_part`] can move it: up when a block opens,
-/// down when one is inflated or dropped.
+/// [`PeerSession::on_compressed_part`] and
+/// [`PeerSession::drop_compressed_blocks`] can move it: up when a block opens,
+/// down when one is inflated or dropped, or its slot ends.
 #[derive(Debug, Default)]
 pub(super) struct CompressedBlocksInFlight(usize);
 
@@ -87,11 +88,9 @@ pub(super) enum HashSetState {
     NotIssued,
     Pending,
     // The hashes themselves are emitted on the wire-event channel
-    // immediately; the session only needs to remember that they've
-    // arrived to decide whether to re-request on a subsequent
-    // RequestParts. Once a downstream consumer needs the cached
-    // hashes (e.g. for in-session verification, which ADR-0026
-    // forbids today), revive the Vec<PartHash> payload.
+    // immediately; the session only remembers that they arrived, so a
+    // repeated `RequestHashSet` asks nothing. Verification is core's
+    // (ADR-0026), so the hashes are not kept here.
     Cached,
 }
 
@@ -104,9 +103,9 @@ pub(super) enum SlotState {
     Queued,
     /// Slot granted; `OP_REQUESTPARTS` sent, awaiting part bytes.
     Downloading,
-    /// Slot held but no needed parts available; `OP_CANCELTRANSFER` sent
-    /// (ADR-0056). The connection stays open for re-ask when parts
-    /// become available.
+    /// The slot given back with `OP_CANCELTRANSFER` (ADR-0056), the
+    /// connection held; a later slot ask runs the cycle again from
+    /// `OP_STARTUPLOADREQ`.
     Standby,
     Released,
 }
@@ -116,8 +115,10 @@ impl PeerSession {
     /// compressed bytes have arrived, inflate and surface the plaintext as
     /// `PartReceived` — the same event a raw `OP_SENDINGPART` produces, so
     /// core's block assembly (ADR-0029) is unchanged. A block that fails to
-    /// inflate emits a non-terminal `CompressedPartSkipped`; the session stays
-    /// open and core re-requests the block.
+    /// inflate, or that is refused, emits a non-terminal
+    /// `CompressedPartSkipped`: the session stays open, and the requester
+    /// gives its slot back, since a stock uploader never sends the block
+    /// again in this slot (ADR-0029 "A lost block ends the stream").
     pub(super) fn on_compressed_part(&mut self, cp: &CompressedPart) {
         // A compressed block never spans more than one ED2K part; bound the
         // inflated output for safety.
@@ -129,19 +130,26 @@ impl PeerSession {
         // before buffering a single byte.
         const COMPRESSED_INPUT_CEILING: usize =
             COMPRESSED_BLOCK_CEILING + COMPRESSED_BLOCK_CEILING / 1000 + 64;
-        // An `OP_REQUESTPARTS` asks for at most 3 ranges, so a well-behaved
-        // sender keeps very few blocks mid-accumulation; 8 leaves slack for
-        // pipelined re-requests while capping what a hostile peer can hold
-        // buffered at `8 × COMPRESSED_INPUT_CEILING` per session.
+        // A stock uploader compresses each asked block whole and queues its
+        // chunks back to back (aMule `UploadClient.cpp:252-253`, `:333-394`),
+        // so a well-behaved sender has one block mid-accumulation at a time,
+        // however many blocks the requester asks ahead (up to 24, ADR-0029).
+        // 8 is slack; it caps what a hostile peer can hold buffered at
+        // `8 × COMPRESSED_INPUT_CEILING` per session.
         const MAX_INFLIGHT_COMPRESSED_BLOCKS: usize = 8;
 
         // Parts are only ever solicited: our own RequestParts created the
         // flow before a legal peer sends one. An unsolicited hash must not
         // create per-file state — drop the chunk silently, as
-        // core drops parts for unknown hashes.
+        // core drops parts for unknown hashes. A chunk outside the granted
+        // slot, still in flight when it ended, opens nothing either (aMule
+        // reads no block outside `DS_DOWNLOADING`, `DownloadClient.cpp:836-838`).
         let Some(flow) = self.per_file.get_mut(&cp.file_hash) else {
             return;
         };
+        if flow.slot != SlotState::Downloading {
+            return;
+        }
         if cp.compressed_block_len as usize > COMPRESSED_INPUT_CEILING {
             // Drop any bytes an earlier, legal declaration buffered for this
             // offset — the peer has shown the block malformed either way.
@@ -198,6 +206,18 @@ impl PeerSession {
             }),
         };
         self.core.push_event(event);
+    }
+
+    /// Drop the compressed blocks `file_hash` holds mid-accumulation, because
+    /// its slot ended: their other chunks never come, and the same block asked
+    /// in a later slot starts a fresh stream (aMule drops its pending blocks'
+    /// zlib streams on leaving `DS_DOWNLOADING`, `DownloadClient.cpp:541-543`,
+    /// `BaseClient.cpp:1209-1245`).
+    pub(super) fn drop_compressed_blocks(&mut self, file_hash: FileHash) {
+        if let Some(flow) = self.per_file.get_mut(&file_hash) {
+            self.compressed_blocks_in_flight.0 -= flow.compressed_blocks.len();
+            flow.compressed_blocks.clear();
+        }
     }
 
     // --- Command handlers --------------------------------------
@@ -329,7 +349,10 @@ impl PeerSession {
         // save it.
         flow.file_size = Some(file_size);
         flow.own_status = Some(own_status);
-        if matches!(flow.probe, ProbeState::NotIssued) {
+        // A probe settled on this link for an earlier worker is asked again
+        // and read afresh, as on a new link (ADR-0107): the next worker waits
+        // on this answer, not on the one before.
+        if !matches!(flow.probe, ProbeState::Pending { .. }) {
             flow.probe = ProbeState::Pending {
                 name: None,
                 bitmap: (!multi_part).then(PartBitmap::one_part_complete),
@@ -434,20 +457,29 @@ impl PeerSession {
                 // Slot already held for this file: send another block
                 // request directly over it (ADR-0025, amended). Only once
                 // the slot is granted (`Downloading`); before the grant the
-                // first request is still pending and carries the ranges.
-                let downloading = self
-                    .per_file
-                    .get(&file_hash)
-                    .is_some_and(|flow| matches!(flow.slot, SlotState::Downloading));
-                if downloading {
-                    let width = PartOffsetWidth::for_file_size(file_size);
-                    let req = RequestPartsPacket { file_hash, ranges };
-                    match req.encode_packet(width) {
-                        Ok(p) => self.write_packet(p),
-                        Err(_) => {
-                            self.release_slot(file_hash, SlotReleaseReason::ProtocolViolation)
-                        }
+                // first request is still pending and carries the ranges. A
+                // flow queued again by `OP_OUTOFPARTREQS` holds none: this
+                // request waits for the next grant, as a first one does.
+                let width = PartOffsetWidth::for_file_size(file_size);
+                let Some(flow) = self.per_file.get_mut(&file_hash) else {
+                    return;
+                };
+                match flow.slot {
+                    SlotState::Downloading => {}
+                    SlotState::Queued if flow.pending_request.is_none() => {
+                        flow.pending_request = Some(PendingRequest {
+                            ranges,
+                            width,
+                            requestparts_sent: false,
+                        });
+                        return;
                     }
+                    _ => return,
+                }
+                let req = RequestPartsPacket { file_hash, ranges };
+                match req.encode_packet(width) {
+                    Ok(p) => self.write_block_request(p, ranges.as_array()),
+                    Err(_) => self.release_slot(file_hash, SlotReleaseReason::ProtocolViolation),
                 }
                 return;
             }
@@ -484,7 +516,6 @@ impl PeerSession {
             Reject(&'static str),
             Send {
                 send_probe: bool,
-                send_hashset: bool,
                 send_start_upload: bool,
             },
         }
@@ -512,20 +543,12 @@ impl PeerSession {
                         complete: !multi_part,
                     };
                 }
-                let needs_hashset = file_size >= ED2K_PART_SIZE;
-                let send_hashset =
-                    needs_hashset && matches!(flow.hash_set, HashSetState::NotIssued);
-                if send_hashset {
-                    flow.hash_set = HashSetState::Pending;
-                } else if !needs_hashset && matches!(flow.hash_set, HashSetState::NotIssued) {
-                    flow.hash_set = HashSetState::Cached;
-                }
-                let probe_done = matches!(flow.probe, ProbeState::Available { .. });
-                let hashset_cached = matches!(flow.hash_set, HashSetState::Cached);
-                let send_start_upload = probe_done && hashset_cached;
+                // The slot ask follows the probe's answer and nothing else:
+                // a hash set is asked only when the caller says so
+                // (`RequestHashSet`, ADR-0026).
+                let send_start_upload = matches!(flow.probe, ProbeState::Available { .. });
                 NextAction::Send {
                     send_probe,
-                    send_hashset,
                     send_start_upload,
                 }
             }
@@ -536,7 +559,6 @@ impl PeerSession {
             }
             NextAction::Send {
                 send_probe,
-                send_hashset,
                 send_start_upload,
             } => {
                 self.active_slot = Some(file_hash);
@@ -555,14 +577,84 @@ impl PeerSession {
                         self.write_packet(SetReqFileId { file_hash }.encode_packet());
                     }
                 }
-                if send_hashset {
-                    self.write_packet(HashSetRequest { file_hash }.encode_packet());
-                }
                 if send_start_upload {
                     self.try_send_start_upload(file_hash);
                 }
             }
         }
+    }
+
+    /// `TakeOfferedSlot`: the slot the peer offered unasked becomes
+    /// `file_hash`'s grant, writing nothing; with no offer standing, or a
+    /// slot context held already, it is asked as `AskSlot` asks it.
+    pub(super) fn handle_take_offered_slot(&mut self, file_hash: FileHash, file_size: u64) {
+        if !self.require_identified() {
+            return;
+        }
+        let lacks_file = self
+            .per_file
+            .get(&file_hash)
+            .is_some_and(|flow| matches!(flow.probe, ProbeState::NotAvailable));
+        if !self.slot_offered || self.active_slot.is_some() || lacks_file {
+            self.handle_ask_slot(file_hash);
+            return;
+        }
+        self.slot_offered = false;
+        let flow = self.per_file.entry(file_hash).or_default();
+        flow.file_size = Some(file_size);
+        flow.slot = SlotState::Downloading;
+        flow.last_rank = None;
+        flow.pending_request = None;
+        self.active_slot = Some(file_hash);
+        self.core
+            .push_event(PeerEvent::Requester(RequesterEvent::SlotGranted {
+                file_hash,
+                asked: self.asked_ranges.clone(),
+            }));
+    }
+
+    /// `AskSlot`: take the connection's slot context for `file_hash` and ask
+    /// the peer for an upload slot, once per ask cycle — a flow already queued
+    /// or granted is left alone (ADR-0025).
+    pub(super) fn handle_ask_slot(&mut self, file_hash: FileHash) {
+        if !self.require_identified() {
+            return;
+        }
+        match self.active_slot {
+            Some(active) if active != file_hash => {
+                self.reject(PeerError::SlotBusy);
+                return;
+            }
+            _ => {}
+        }
+        let flow = self.per_file.entry(file_hash).or_default();
+        if matches!(flow.probe, ProbeState::NotAvailable) {
+            self.reject(PeerError::PeerProtocolViolation {
+                reason: "peer previously answered FILEREQANSNOFIL for this hash",
+            });
+            return;
+        }
+        if matches!(flow.slot, SlotState::Queued | SlotState::Downloading) {
+            return;
+        }
+        flow.slot = SlotState::Idle;
+        flow.last_rank = None;
+        self.active_slot = Some(file_hash);
+        self.try_send_start_upload(file_hash);
+    }
+
+    /// `RequestHashSet`: ask the peer for `file_hash`'s part hash set, once per
+    /// file on this connection. Its answer moves no slot (ADR-0026).
+    pub(super) fn handle_request_hash_set(&mut self, file_hash: FileHash) {
+        if !self.require_identified() {
+            return;
+        }
+        let flow = self.per_file.entry(file_hash).or_default();
+        if !matches!(flow.hash_set, HashSetState::NotIssued) {
+            return;
+        }
+        flow.hash_set = HashSetState::Pending;
+        self.write_packet(HashSetRequest { file_hash }.encode_packet());
     }
 
     // --- Wire-event handlers -----------------------------------
@@ -598,12 +690,26 @@ impl PeerSession {
         let Some(flow) = self.per_file.get_mut(&file_hash) else {
             return;
         };
+        // Only a flow that named the file's size can read a status for it: a
+        // bare `RequestSources` opened none, and asked for no status.
+        let Some(file_size) = flow.file_size else {
+            return;
+        };
         // aMule and eMule count a peer complete on the sentinel alone; a
         // spelled-out bitmap with every part is a part file, not complete
         // (stock 2.3.3 `DownloadClient.cpp:405-409`, `:428`; eMule
         // `DownloadClient.cpp:516`).
         let sentinel = status.bitmap.part_count() == 0;
-        let bitmap = expand_complete_source_sentinel(status.bitmap, flow.file_size);
+        // A count that is not the file's is aMule's "wrong part number"
+        // throw, and the connection drops (`DownloadClient.cpp:417-425`,
+        // `ClientTCPSocket.cpp:2018-2047`).
+        let Some(bitmap) = status.bitmap.advertised_parts(file_size) else {
+            self.reject(PeerError::PeerProtocolViolation {
+                reason: "file status counts other parts than the file has",
+            });
+            self.close_protocol_violation();
+            return;
+        };
         match &mut flow.probe {
             ProbeState::Pending {
                 bitmap: pending_bitmap,
@@ -619,19 +725,15 @@ impl PeerSession {
             // never resets the file to unknown). A late or unsolicited
             // `OP_FILESTATUS` for a probe we already resolved to
             // `Available` folds its bits in (a no-op when identical, as
-            // aMule's own late answer to a one-part probe is); a status
-            // describing a different part count than the one this probe
-            // already settled on cannot describe the same file and is
-            // dropped, same as any other unsolicited data.
+            // aMule's own late answer to a one-part probe is) and is not
+            // raised again: rmule asks once per connection.
             ProbeState::Available {
                 bitmap: settled_bitmap,
                 complete,
                 ..
             } => {
-                if settled_bitmap.part_count() == bitmap.part_count() {
-                    settled_bitmap.merge_from(&bitmap);
-                    *complete = sentinel;
-                }
+                settled_bitmap.merge_from(&bitmap);
+                *complete = sentinel;
                 return;
             }
             ProbeState::NotIssued | ProbeState::NotAvailable => {
@@ -646,8 +748,8 @@ impl PeerSession {
     }
 
     /// State follow-up after the projection emits `FileProbed{NotAvailable}`:
-    /// record unavailability and abandon the active slot if this file held
-    /// it.
+    /// record unavailability and end the active slot if this file held it —
+    /// the peer lacks the file, a terminal path (ADR-0025).
     pub(super) fn after_file_unavailable(&mut self, file_hash: FileHash) {
         // Only record unavailability for a file we actually asked about — an
         // unsolicited FILEREQANSNOFIL must not create state or pre-poison a
@@ -657,7 +759,7 @@ impl PeerSession {
         };
         flow.probe = ProbeState::NotAvailable;
         if self.active_slot == Some(file_hash) {
-            self.release_slot(file_hash, SlotReleaseReason::ProtocolViolation);
+            self.release_slot(file_hash, SlotReleaseReason::FileNotFound);
         }
     }
 
@@ -709,22 +811,24 @@ impl PeerSession {
     }
 
     /// State follow-up after the projection emits `HashSetReceived`: mark
-    /// the hash set cached and, if this file holds the active slot, advance
-    /// it toward `STARTUPLOADREQ`.
+    /// the hash set cached, so a later `RequestHashSet` asks nothing. No slot
+    /// waits on it (ADR-0026).
     pub(super) fn after_hash_set(&mut self, file_hash: FileHash) {
-        // Only cache a hash set we asked for — a planted answer must not
-        // create state or satisfy a later request's hash-set gate.
+        // Only a file this connection asked about keeps state — a planted
+        // answer must not create a flow.
         let Some(flow) = self.per_file.get_mut(&file_hash) else {
             return;
         };
         flow.hash_set = HashSetState::Cached;
-        if self.active_slot == Some(file_hash) {
-            self.advance_active_slot(file_hash);
-        }
     }
 
     pub(super) fn on_accept_upload(&mut self) {
+        // A grant no ask of ours on this link earned: whose it is, if
+        // anyone's, is core's to say (ADR-0057).
         let Some(active) = self.active_slot else {
+            self.slot_offered = true;
+            self.core
+                .push_event(PeerEvent::Requester(RequesterEvent::SlotOffered));
             return;
         };
         let flow = self
@@ -735,6 +839,7 @@ impl PeerSession {
         self.core
             .push_event(PeerEvent::Requester(RequesterEvent::SlotGranted {
                 file_hash: active,
+                asked: self.asked_ranges.clone(),
             }));
         // Send REQUESTPARTS for the pending request.
         if let Some(pending) = &mut flow.pending_request
@@ -748,7 +853,7 @@ impl PeerSession {
                 ranges,
             };
             match req.encode_packet(width) {
-                Ok(p) => self.write_packet(p),
+                Ok(p) => self.write_block_request(p, ranges.as_array()),
                 Err(_) => {
                     // Width mismatch — treat as protocol violation
                     // for the active slot.
@@ -758,15 +863,34 @@ impl PeerSession {
         }
     }
 
+    /// `OP_OUTOFPARTREQS`: on a granted slot the uploader ended our transfer
+    /// and queued us again, so the flow goes back to queued on this link, the
+    /// blocks asked for dropped and its rank forgotten for the
+    /// `OP_QUEUERANKING` that follows (ADR-0025). aMule acts on it only while
+    /// downloading (`ClientTCPSocket.cpp:755-762`): while only queued it
+    /// changes nothing.
     pub(super) fn on_out_of_part_reqs(&mut self) {
+        // aMule sends it after `RemoveFromUploadQueue`
+        // (`UploadClient.cpp:598-600`), whatever this side believes.
+        self.forget_asked_ranges();
         let Some(active) = self.active_slot else {
             return;
         };
+        let flow = self
+            .per_file
+            .get_mut(&active)
+            .expect("active_slot entry must exist");
+        if flow.slot != SlotState::Downloading {
+            return;
+        }
+        flow.slot = SlotState::Queued;
+        flow.pending_request = None;
+        flow.last_rank = None;
+        self.drop_compressed_blocks(active);
         self.core
-            .push_event(PeerEvent::Requester(RequesterEvent::QueueRejected {
+            .push_event(PeerEvent::Requester(RequesterEvent::Requeued {
                 file_hash: active,
             }));
-        self.release_slot(active, SlotReleaseReason::QueueRejected);
     }
 
     pub(super) fn on_queue_ranking(&mut self, rank: u16) {
@@ -814,7 +938,12 @@ impl PeerSession {
             return;
         }
         flow.slot = SlotState::Queued;
+        self.slot_offered = false;
         self.write_packet(StartUploadReq { file_hash }.encode_packet());
+        self.core
+            .push_event(PeerEvent::Requester(RequesterEvent::SlotAsked {
+                file_hash,
+            }));
     }
 
     /// Terminate the active slot context for `file_hash` (ADR-0025): the
@@ -829,6 +958,7 @@ impl PeerSession {
         flow.slot = SlotState::Released;
         flow.pending_request = None;
         self.active_slot = None;
+        self.drop_compressed_blocks(file_hash);
         self.core
             .push_event(PeerEvent::Requester(RequesterEvent::SlotReleased {
                 file_hash,
@@ -836,38 +966,16 @@ impl PeerSession {
             }));
     }
 
+    /// After the probe answers for the file holding the active slot: a
+    /// `RequestParts` waiting on it asks the slot now.
     fn advance_active_slot(&mut self, file_hash: FileHash) {
-        // Called after probe completes or hash-set arrives for the
-        // file holding the active slot. Issues STARTUPLOADREQ when
-        // both probe + hash-set are ready and we haven't already.
         let flow = self
             .per_file
             .get(&file_hash)
             .expect("per_file entry must exist");
         let probe_done = matches!(flow.probe, ProbeState::Available { .. });
-        let hashset_done = matches!(flow.hash_set, HashSetState::Cached);
-        let slot_idle = matches!(flow.slot, SlotState::Idle);
-        if probe_done && hashset_done && slot_idle {
+        if probe_done && matches!(flow.slot, SlotState::Idle) {
             self.try_send_start_upload(file_hash);
         }
-    }
-}
-
-/// The reader-side half of aMule's part-count-0 "complete source" sentinel
-/// (`ProcessFileStatus`, `DownloadClient.cpp:388-458`, kno `ab483654`): a
-/// literal zero part count means every part, not none, expanded to a full
-/// bitmap of the file's own part count. `decode_packet` cannot do this
-/// itself — it never sees the file's size — so the fold does it once the
-/// bitmap reaches per-file state, which does. `file_size` is `None` only
-/// for a flow a bare `RequestSources` opened with no probe or part request
-/// alongside it (that command carries no size); the sentinel rides through
-/// undecoded there rather than being guessed.
-fn expand_complete_source_sentinel(bitmap: PartBitmap, file_size: Option<u64>) -> PartBitmap {
-    if bitmap.part_count() != 0 {
-        return bitmap;
-    }
-    match file_size {
-        Some(size) => PartBitmap::all_present(part_count(size)),
-        None => bitmap,
     }
 }

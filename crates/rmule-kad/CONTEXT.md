@@ -125,6 +125,10 @@ _Avoid_: bootstrap dial (a self-lookup queries, it doesn't bootstrap), keepalive
 A routing-table contact whose IP has been proven not spoofed — by a hello carrying a valid receiver key, by the `HELLO_RES_ACK` three-way handshake, or by arriving pre-verified from a bootstrap file. Only verified contacts are served in routing answers or seed own lookup walks; unverified contacts wait in their bins until a verification path completes.
 _Avoid_: responded contact (liveness, not identity), trusted node, known peer
 
+**Admission Cap**:
+One of the three limits on how much of the routing table one address or one /24 may hold (aMule's `CRoutingBin` caps, ADR-0064): one contact per IPv4 address and ten per /24 across the table, two per /24 inside one bucket. The table-wide counts are tallies the table keeps in step with every stored contact's IP; a newcomer, a `Failed` contact's replacement and a move to a new IP all pass the caps, and a refused move leaves the entry as it was. The private ranges and loopback are exempt from the /24 caps, loopback from the per-IP cap too. A lookup answer's rows are stored unverified under the same caps, one by one in answer order; a row the table does not store reaches the walk only within the two table-wide caps. A deterministic mesh gives each member its own /24 for this reason.
+_Avoid_: IP limit, subnet filter (the IP filter is the **Kad Node Start**'s contact admission, a different gate)
+
 **Kad Node Start**:
 The one value a `KadNode` is built from: start instant, contact admission, join cadence, firewall self-check, and obfuscation with its optional verify keys. The node orders it internally (admission before any traffic, obfuscation before its keys), and verify keys exist only inside the obfuscation, because their trailer rides inside the crypt header — a keyed node with plaintext sends cannot be started.
 _Avoid_: arming, enable calls, post-construction setup
@@ -146,7 +150,7 @@ The bounded keyword index a **Kad Storer** serves: entries keyed by keyword ID a
 _Avoid_: keyword cache, DHT storage, file database
 
 **Kad Keyword Result Row**:
-One row inside a `KADEMLIA2_SEARCH_RES` payload answering a keyword target: a file ID plus served tags and the storer's publish-info tag. Sibling of the **Kad Source Result Row** — same envelope, different index.
+One row inside a `KADEMLIA2_SEARCH_RES` payload answering a keyword target: a file ID plus served tags and the storer's publish-info tag, and from an eMule-family storer the AICH roots its publishers reported with how many did (`TAG_KADAICHHASHRESULT`; a search keeps them from a storer at Kad v9 or later only, ADR-0038). Sibling of the **Kad Source Result Row** — same envelope, different index.
 _Avoid_: search hit, file listing, source row
 
 **Kad Distance Ordering Evidence**:

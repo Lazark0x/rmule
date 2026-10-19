@@ -299,7 +299,10 @@ impl Ed2kSession {
                     );
                     return;
                 }
-                let request = if target.file_size() <= u64::from(u32::MAX) {
+                // aMule `SendLocalSrcRequest` writes the large form, and asks
+                // only a large-file server, for an `IsLargeFile` file
+                // (`DownloadQueue.cpp:1083-1098`), which a `u32` may still hold.
+                let request = if !rmule_primitives::is_large_file(target.file_size()) {
                     GetSourcesRequest::Normal { target }
                 } else if self.grants.large_files {
                     GetSourcesRequest::Large { target }
@@ -367,7 +370,11 @@ impl Ed2kSession {
                     );
                     return;
                 }
-                let needs_large_files = files.iter().any(|f| f.file_size() > u64::from(u32::MAX));
+                // aMule offers a large file only to a large-file server
+                // (`SharedFileList.cpp:732`, `IsLargeFile`).
+                let needs_large_files = files
+                    .iter()
+                    .any(|f| rmule_primitives::is_large_file(f.file_size()));
                 if needs_large_files && !self.grants.large_files {
                     self.reject_command(
                         Ed2kCommandKind::OfferFiles,

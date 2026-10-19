@@ -45,8 +45,9 @@ scheduling is (ADR-0026).
   (ADR-0041); the serve activity re-ranks idle waiters every
   `CoreConfig::queue_rerank_interval` and sends `OP_QUEUERANKING`.
 - Core pushes part bytes down with `ServerCommand::SendBlock`, read from the
-  content store's `read_range`. The session compresses a block only when the peer
-  advertised compression and the result is smaller, as eMule does. The Server
+  content store's `read_range`, and says whether the block may cross compressed. The
+  session compresses one only when core allows it, the peer advertised compression
+  and the result is smaller (below). The Server
   Capability reports requests as `Server` events and obeys `Server` commands (answers,
   grant, queue rank, blocks), so the session stays sans-I/O and storage-free.
 - The serve activity speaks those groups directly: its input is a connection's
@@ -70,6 +71,96 @@ scheduling is (ADR-0026).
   self-facts cell (ADR-0032) and clear when the session ends, because a node between
   sessions is Low-ID and shares a server with nobody.
 
+**A block request is judged whole before anything is read.**
+
+- A peer holding a slot asks up to three ranges in one `OP_REQUESTPARTS` or
+  `OP_REQUESTPARTS_I64`. Every live range is checked as asked, before the ranges
+  already served are taken off it: one range that ends past the file's end, or is
+  longer than three blocks (`3 × EMBLOCKSIZE`, 552,960 bytes), ends the peer's slot.
+  Nothing of the request is read or sent, the slot goes to the next waiter, and the
+  peer leaves the queue: a later ask queues it afresh. Its link stays and its address
+  is not banned. aMule throws on either range while it cuts the block, and its handler
+  only takes the client out of the upload queue (`UploadClient.cpp:211-224`,
+  `:270-281`); it bans nobody for it. A Partial Share's request whose unserved rest
+  leaves its Verified Range ends the slot the same way (ADR-0113).
+- A range whose end is not past its start is skipped, as aMule skips one in
+  `OP_REQUESTPARTS` (`UploadClient.cpp:871-882`); the `(0, 0)` padding is one. A pair
+  that runs backwards fails the request's decode, so core never sees it.
+- **Where rmule departs.** aMule judges each range as its turn comes, so ranges ahead
+  of a bad one may already be sent; rmule judges the request whole and sends none of
+  it. aMule 3.1.0 and eMule AI drop such a range at the ask and keep the slot
+  (aMule 3.1.0 `UploadClient.cpp:317-328`, eMule AI
+  `srchybrid/UploadClient.cpp:711-721`); rmule keeps 2.3.3's rule, because no stock
+  downloader asks a range longer than one block, so a peer that asks one is not one a
+  slot should wait on.
+- The refusal is its own serve event, `BlockAskRefused`, naming the fault — past the
+  end, longer than three blocks, outside the Verified Range — ahead of the slot's
+  release, so the run log and the operator read why the peer lost its slot.
+- **No read is longer than three blocks.** The content store refuses a read longer
+  than `3 × EMBLOCKSIZE` before it allocates a byte, whoever asks; the check above
+  means the serve state never asks one. A shared file's AICH tree (ADR-0038) is built
+  from the file one block at a time, so a build holds one block however large the
+  file is.
+
+**A served block crosses in packets of about 10 KiB, as aMule cuts it.**
+
+- A stock aMule downloader restarts its 100 s download timeout only when a whole
+  part packet lands (`DownloadClient.cpp:848`, `DOWNLOADTIMEOUT` in
+  `Constants.h:64`) and sends `OP_CANCELTRANSFER` when none has
+  (`DownloadClient.cpp:1189-1193`). A block of 184,320 bytes framed as one packet
+  needs more than 1.8 KiB/s to cross inside that window, so a slower link can
+  never finish one. The session therefore writes each `SendBlock` as aMule's
+  uploader does.
+- **Packet size.** A payload of `n` bytes larger than 10,240 is cut into packets of
+  `n / (n / 10240)` bytes, integer division, and the last packet takes whatever is
+  left once less than two packets' worth remains; a payload of at most 10,240 bytes
+  goes whole (`UploadClient.cpp:290-299`, `:349-358`). A full 184,320-byte block is
+  eighteen packets of 10,240 bytes, and a payload of more than 10,240 bytes never
+  yields a packet under 10,240 or of 20,480 and over.
+- **Plain.** Each packet is an `OP_SENDINGPART` naming its own range; the ranges
+  tile the block in order. Each packet picks its offset width on its own offsets
+  (`UploadClient.cpp:307`).
+- **Which blocks may be compressed.** Every block but an archive's: core marks a
+  block plain when the name its file is offered under falls in the Archive eD2k File
+  Class, as aMule never compresses an archive (`UploadClient.cpp:252`; aMule 3.1.0
+  keeps the rule, `UploadDiskIOThread.cpp:252`). rmule skips nothing more. A video or
+  a picture rarely shrinks, but those classes hold uncompressed formats too (`wav`,
+  `bmp`, `tiff`), and the first pass below makes a block that does not shrink cheap.
+  eMule AI skips a fixed list instead (`zip`, `rar`, `7z`, `cbz`, `cbr`, `ace`, `ogm`;
+  `srchybrid/UploadDiskIOThread.cpp:452-460`).
+- **The level.** Any zlib stream inflates the same, so the level is not on the wire;
+  it trades CPU for bytes. The session deflates a block at level 1 first: a block that
+  does not shrink goes plain, and one that does is deflated again at level 6 and the
+  smaller stream is sent. aMule 2.3.3 deflates at level 9 (`UploadClient.cpp:337`);
+  aMule 3.1.0 and eMule 0.70b moved to level 1 for speed (aMule 3.1.0
+  `UploadDiskIOThread.cpp:523-525`, eMule AI
+  `srchybrid/UploadDiskIOThread.cpp:518-523`). rmule departs from both on its own
+  deflate (`flate2` 1.1.9 over `miniz_oxide`), measured on 184,320-byte blocks on an
+  Apple M1 Pro: level 9 takes 1.4 to 1.6 times level 6's time for a stream at most
+  0.4 % smaller; level 1 takes a fifth to a quarter of it, but its stream is 18 % to
+  41 % longer on executables and source text; on random bytes every level from 2 up
+  spends about 3.1 ms a block shrinking nothing, and level 1 0.6 ms. Most shared
+  content is already compressed, so the first pass cuts the CPU an upload slot spends
+  on such a block to a fifth of one pass at level 6, and a block that does shrink costs
+  about a quarter more than level 6 alone, for level 6's bytes.
+- **Compressed.** The block is deflated whole and sent compressed only when that is
+  smaller (above). The one zlib stream is cut by the same rule into a run of
+  `OP_COMPRESSEDPART`, every one carrying the block's start and the stream's total
+  length, its offset width picked on the block's offsets
+  (`UploadClient.cpp:361-370`).
+- **What meters it.** rmule paces no upload bytes: TCP back-pressure on the
+  connection writer is the only brake. The slot budget counts slots, and the credit
+  and upload counters count the block's uncompressed bytes at `SendBlock`, in core,
+  before the session cuts it (ADR-0077). The cut happens after every one of those
+  decisions, so it changes neither slot fairness nor the budget. One block's packets
+  are queued back to back; nothing else of that connection lands between them.
+- **Receiving.** rmule's requester already reads a block in several packets of
+  either kind: each `OP_SENDINGPART` is its own range, merged into the part
+  (ADR-0029), and `OP_COMPRESSEDPART` chunks for one start are buffered until the
+  declared total arrives, then inflated as one block.
+- Each packet is framed straight from its slice of the one block buffer (or the
+  one compressed buffer); no packet copies the block.
+
 **The listener is in `rmule-net`; core holds one connection registry.**
 
 - `PeerListener` in `rmule-net` binds the advertised TCP port and yields accepted
@@ -84,7 +175,10 @@ scheduling is (ADR-0026).
 - The registry lives in the typed store (ADR-0083): one record per shared file, keyed
   by its file hash, with its part hashes beside it, written in one transaction.
 - Shares arrive from the shared directories and the download directory (ADR-0101)
-  and from completed downloads; `ServeCommand::UnshareFile` withdraws one.
+  and from completed downloads; `ServeCommand::UnshareFile` withdraws one. Beside the
+  registry, the serve side answers for every running download larger than one part and
+  offers it from its first verified part (ADR-0113); that offer is the download's, never
+  a row.
 - The serve side answers probes and hash-set requests from it and announces it with
   `OP_OFFERFILES` (`Ed2kCommand::OfferFiles`) to the live server session and each one
   connected after it (ADR-0095).

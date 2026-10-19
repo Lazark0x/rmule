@@ -33,6 +33,11 @@ pub(crate) fn render_to_lines(width: u16, height: u16, draw: impl FnOnce(&mut Fr
 /// `UPDATE_GOLDENS=1` is set.
 pub(crate) fn assert_golden(name: &str, width: u16, height: u16, draw: impl FnOnce(&mut Frame)) {
     let actual = render_to_lines(width, height, draw);
+    // Goldens are written with `/` separators. A fixture path joined on
+    // Windows mixes them (`/srv/rmule\Temp`) while the layout under test is
+    // the same, so a golden never holds a literal backslash.
+    #[cfg(windows)]
+    let actual = actual.replace('\\', "/");
     let raw = raw_forms(&actual);
     assert!(
         raw.is_empty(),

@@ -10,8 +10,8 @@
 use std::net::Ipv4Addr;
 
 use rmule_primitives::{
-    ClientId, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, PeerSource, SourceCryptOptions,
-    SourceSighting, UserHash, WireReader, WireTruncated,
+    ClientId, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, PeerSource, SourceClaim,
+    SourceCryptOptions, UserHash, WireReader, WireTruncated,
 };
 
 /// Per-source strides by source-exchange version, pinned from aMule
@@ -119,7 +119,7 @@ impl SourceExchangeVersion {
 /// crypt support — rather than fabricating data the source never carried.
 pub(super) fn encode_source_entry(
     out: &mut Vec<u8>,
-    source: SourceSighting,
+    source: SourceClaim,
     version: SourceExchangeVersion,
 ) {
     // A hybrid-id version writes a High ID big-endian; a Low ID rides as-is.
@@ -153,7 +153,7 @@ pub(super) fn encode_source_entry(
     }
 }
 
-/// One decoded source-answer entry, pairing the [`SourceSighting`]
+/// One decoded source-answer entry, pairing the [`SourceClaim`]
 /// provenance (ADR-0046) with the server it declares itself registered on
 /// (ADR-0055). Every version's wire entry carries `[srvIP4][srvPort2]` right
 /// after `[id][port]`, and both [`AnswerSources`](super::AnswerSources)
@@ -162,17 +162,17 @@ pub(super) fn encode_source_entry(
 /// (`sanitize_and_route`) reads it without a second, divergent parse.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SourceExchangeEntry {
-    source: SourceSighting,
+    source: SourceClaim,
     server: Option<Ipv4Endpoint>,
 }
 
 impl SourceExchangeEntry {
     /// Pair a source with the server it declared itself registered on. An
     /// ExtSX record's IPv6 half rides inside the source
-    /// ([`SourceSighting::with_ipv6_half`]); a classic entry has no address
+    /// ([`SourceClaim::with_ipv6_half`]); a classic entry has no address
     /// block, so its source never carries one.
     #[must_use]
-    pub const fn new(source: SourceSighting, server: Option<Ipv4Endpoint>) -> Self {
+    pub const fn new(source: SourceClaim, server: Option<Ipv4Endpoint>) -> Self {
         Self { source, server }
     }
 
@@ -183,7 +183,7 @@ impl SourceExchangeEntry {
     /// Present alongside a High ID for a dual-stack source, alongside a Low ID
     /// for a firewalled one that is nevertheless dialable over IPv6, and
     /// *inside* [`PeerSource::Ipv6`] when the record named no usable IPv4 at
-    /// all — see [`SourceSighting::ipv6`].
+    /// all — see [`SourceClaim::ipv6`].
     #[must_use]
     pub const fn ipv6(self) -> Option<Ipv6Endpoint> {
         self.source.ipv6()
@@ -192,13 +192,15 @@ impl SourceExchangeEntry {
     /// An entry with no declared server — the shape every served entry takes,
     /// since the serve path writes the server fields as zero.
     #[must_use]
-    pub const fn plain(source: SourceSighting) -> Self {
+    pub const fn plain(source: SourceClaim) -> Self {
         Self::new(source, None)
     }
 
     /// The provenance half alone, for a caller with no use for the server.
+    /// It names nobody: the session that read the entry knows the peer that
+    /// sent it, and states it as that peer's word (ADR-0085).
     #[must_use]
-    pub const fn source(self) -> SourceSighting {
+    pub const fn source(self) -> SourceClaim {
         self.source
     }
 
@@ -211,8 +213,8 @@ impl SourceExchangeEntry {
         self.server
     }
 
-    // Delegators so an entry reads like the `SourceSighting` it wraps
-    // (mirroring `SourceSighting`'s own delegation onto `PeerSource`).
+    // Delegators so an entry reads like the `SourceClaim` it wraps
+    // (mirroring `SourceClaim`'s own delegation onto `PeerSource`).
     /// The source's own id on the IPv4 network, or `None` for an IPv6 source.
     #[must_use]
     pub const fn client_id(self) -> Option<ClientId> {
@@ -307,7 +309,7 @@ fn decode_source_entry(
         None
     };
     Ok(SourceExchangeEntry::new(
-        SourceSighting::new(source, user_hash, crypt_options),
+        SourceClaim::new(source, user_hash, crypt_options),
         server,
     ))
 }

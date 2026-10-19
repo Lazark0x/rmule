@@ -8,9 +8,9 @@
 //!
 //! Two things live here: [`select_sources`] (the pool filters + 500-entry cap)
 //! and [`SourceExchangeThrottle`] (the 40/160-minute per-peer reask gate).
-//! `ServeState` supplies the candidate pool from the state it owns (the
-//! upload-engaged clients of a complete shared file) and echoes the result out
-//! as an `OP_ANSWERSOURCES` the peer session frames.
+//! `ServeState` supplies the candidate pool — the upload-engaged clients of a
+//! complete shared file, or a Partial Share's download's own sources — and
+//! echoes the result out as an `OP_ANSWERSOURCES` the peer session frames.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -44,15 +44,10 @@ pub(crate) enum ServedFileKind {
     /// status we do not know is **included**.
     Complete,
     /// A file still downloading (`CPartFile::CreateSrcInfoPacket` @4e8f2b3c):
-    /// the pool is the download's own source list, and a candidate whose part
-    /// status we do not know is **excluded** — the include/exclude asymmetry is
-    /// aMule's own.
-    ///
-    /// Modelled and tested here (the ADR-0055 two-pool asymmetry is the whole
-    /// reason the kinds differ), but not yet wired: rmule shares only complete
-    /// files today, so [`ServeState`](super::state::ServeState) never builds an
-    /// in-progress pool. It flips live with partial-file sharing.
-    #[allow(dead_code)]
+    /// the pool is the download's own source list — a **Partial Share**'s, as
+    /// its run publishes it (ADR-0113) — and a candidate whose part status we
+    /// do not know is **excluded**: the include/exclude asymmetry is aMule's
+    /// own.
     InProgress,
 }
 
@@ -62,7 +57,8 @@ pub(crate) struct SxCandidate {
     /// The source as it goes on the wire (client id + port + any provenance).
     pub(crate) source: SourceSighting,
     /// The parts the candidate holds — for an upload-engaged client, the
-    /// status its own last name ask or UDP reask wrote, through [`held_parts`]
+    /// status its own last name ask or UDP reask wrote, through
+    /// [`PartBitmap::advertised_parts`]
     /// — or `None` when we do not know them: the unknown-status branch of the
     /// needed-chunk filter.
     pub(crate) part_status: Option<PartBitmap>,
@@ -79,41 +75,6 @@ impl SxCandidate {
     }
 }
 
-/// The parts a peer's `<u16 count><bitmap>` says it holds of a file we share,
-/// read against the file's `file_size` (ADR-0055 §Serving). One
-/// reader for both writers — the name ask (`0x58`) and the UDP reask (`0x90`)
-/// — as aMule's `ProcessExtendedInfo` is for both (stock 2.3.3 `4e8f2b3c`
-/// `UploadClient.cpp:397`; the UDP caller is `ClientUDPSocket.cpp:202-203`).
-/// `None` when the status cannot be read against this file: aMule's uploader
-/// clears a status whose count is not the file's ED2K part count
-/// (`UploadClient.cpp:418-421`), and so does this.
-///
-/// The result has aMule's *reader* geometry — the file's real parts only
-/// (`m_upPartStatus.setsize(GetPartCount())`, `UploadClient.cpp:424`) — so the
-/// phantom last part a writer counts for an exact multiple (`size / PARTSIZE +
-/// 1`, [`PartBitmap::downloader`]) is dropped and never reads as a part held
-/// or lacked: aMule's answer loops compare `GetPartCount()` parts
-/// (`KnownFile.cpp:985`, `:1013`).
-///
-/// A count of **zero** is a complete file: the writer's own meaning
-/// (`OP_FILESTATUS` and the UDP reask write `WriteUInt16(0)` for a file that
-/// is not a part file, kno `ab483654` `ClientTCPSocket.cpp:480-484`,
-/// `DownloadClient.cpp:1387-1391`). aMule's reader sizes it to all-zero
-/// instead (`UploadClient.cpp:415-416`), which would drop a complete source
-/// from every answer; rmule reads the writer's meaning.
-pub(crate) fn held_parts(file_size: u64, wire: &PartBitmap) -> Option<PartBitmap> {
-    let real = rmule_primitives::part_count(file_size);
-    if wire.part_count() == 0 {
-        return Some(PartBitmap::all_present(real));
-    }
-    if wire.part_count() != PartBitmap::downloader_empty(file_size).part_count() {
-        return None;
-    }
-    // The wire count is `real` or `real + 1`, so its bytes cover every real
-    // part; `decode` zeroes the phantom bit past `real`.
-    PartBitmap::decode(real, &wire.encode()[..(real as usize).div_ceil(8)]).ok()
-}
-
 /// The requester's context for the needed-chunk filter and the self-skip.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SxRequester {
@@ -124,7 +85,7 @@ pub(crate) struct SxRequester {
     /// never served back.
     pub(crate) endpoint: Option<PeerEndpoint>,
     /// The requester's part status (its last name ask's or UDP reask's, through
-    /// [`held_parts`]), or `None` when unknown — no ask carried one (an
+    /// [`PartBitmap::advertised_parts`]), or `None` when unknown — no ask carried one (an
     /// extended-requests-v0 claimant) or its count did not fit the file. An
     /// unknown requester is sent only sources holding at least one part, plus
     /// the unknowns — the rule aMule wrote for it and left unreachable
@@ -175,7 +136,7 @@ pub(crate) fn select_sources(
 ///   pools (`KnownFile.cpp:1000-1019`, `PartFile.cpp:2621-2632`).
 /// - **Geometry mismatch** → drop, as aMule skips a source whose count is not
 ///   the file's (`KnownFile.cpp:981-984`); unreachable when every status is
-///   read through [`held_parts`] for the one file.
+///   read through [`PartBitmap::advertised_parts`] for the one file.
 fn is_worth_serving(
     kind: ServedFileKind,
     requester: &SxRequester,

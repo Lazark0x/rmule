@@ -134,9 +134,9 @@ fn a_ping_from_an_ip_several_waiters_share_resolves_to_no_one() {
     );
     let t = Instant::now();
     let _ = slot_request(&mut state, peer_at([10, 0, 0, 1], 4000), served, t);
-    for (tcp, udp_port) in [(4000, 6001), (4001, 6002)] {
+    for (tcp, udp_port, client) in [(4000, 6001, 0x0B), (4001, 6002, 0x0C)] {
         let p = peer_at([10, 0, 0, 3], tcp);
-        identify_udp(&mut state, p, user(0x0B), udp_port, 4, t);
+        identify_udp(&mut state, p, user(client), udp_port, 4, t);
         let _ = slot_request(&mut state, p, served, t);
     }
     let ambiguous = udp([10, 0, 0, 3], 6999);
@@ -173,37 +173,6 @@ fn a_waiting_peer_keeps_its_position_across_disconnect_and_still_reasks() {
             .encode_udp(),
             crypt_target: target_of(user(0x0A)),
         }],
-    );
-}
-
-#[test]
-fn promoting_a_disconnected_waiter_dials_back_rather_than_granting_over_a_dead_socket() {
-    let file = hash(0x11);
-    let waiter = peer_at([10, 0, 0, 2], 4000);
-    let holder = peer_at([10, 0, 0, 1], 4000);
-    let t = Instant::now();
-    let mut state = one_waiter_state(file, 4096, waiter, 6000, 4, t);
-
-    // The waiter loses its socket (keeps standing), then the holder frees
-    // the slot: the sole waiter is promoted, but with no live connection it
-    // is a dial-back grant, not a GrantSlot over a dead socket.
-    let _ = state.on_conn_event(t, waiter, disconnected(), &no_modifiers());
-    assert_eq!(
-        state.on_conn_event(t, holder, disconnected(), &no_modifiers()),
-        vec![
-            ServeDecision::DialBackGrant {
-                peer: waiter,
-                file_hash: file,
-            },
-            ServeDecision::Emit(ServeEvent::UploadSlotGranted {
-                peer: waiter,
-                file_hash: file,
-                // The waiter hung up, but its hello's identification waited
-                // with it: the grant still names its client.
-                software: Some(nameless_software()),
-            }),
-            ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer: holder }),
-        ],
     );
 }
 

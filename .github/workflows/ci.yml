@@ -110,6 +110,31 @@ jobs:
       # No toolchain needed.
       - run: bash scripts/guards.sh
 
+  # Every constant declared under an eMule symbol name carries eMule's value
+  # (ADR-0082). The Reference Source is no part of the repository: the job
+  # fetches the one commit its sidecar pins, kept apart from guards.sh so a
+  # local run needs no network; guards.sh runs the same audit when the tree is
+  # present.
+  reference-constants:
+    name: reference-constants
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Fetch the Reference Source at its pinned commit
+        run: |
+          meta=docs/reference/emule-source/eMule.meta.toml
+          field() { sed -n "s/^$1 = \"\(.*\)\"\$/\1/p" "$meta"; }
+          url="$(field source_url)"
+          commit="$(field commit)"
+          dir="$(field local_path)"
+          git init -q "$dir"
+          git -C "$dir" fetch -q --depth 1 "$url" "$commit"
+          git -C "$dir" checkout -q FETCH_HEAD
+      - run: python3 scripts/audit-reference-constants.py
+
   # Licence, advisory, ban and source policy from deny.toml, for the root
   # workspace and for tools/ed2ksrv-differ, which is a workspace of its own and
   # has its own Cargo.lock. Both read the same deny.toml. The action bundles

@@ -143,13 +143,14 @@ fn request_for<S, P>(
             60,
         ),
         verified_part_indexes: Vec::new(),
-        peer_concurrency: 1,
+        order: crate::scheduler::PartOrder::Rarest,
         discovery: DiscoveryLiveness {
             global_servers: std::sync::Arc::default(),
             reach: runner.rt.reach.clone(),
             session: runner.rt.diagnostics.clone(),
         },
         remembered: Vec::new(),
+        recovered: None,
     }
 }
 

@@ -8,15 +8,15 @@
 use rmule_primitives::{Ed2kText, Tag, TagName, TagValue};
 
 /// `ST_PING` — the last measured round trip, in milliseconds.
-const TAG_PING: u8 = 0x0C;
+const ST_PING: u8 = 0x0C;
 /// `ST_SOFTFILES` — the server's soft file limit.
-const TAG_SOFTFILES: u8 = 0x88;
+const ST_SOFTFILES: u8 = 0x88;
 /// `ST_HARDFILES` — the server's hard file limit.
-const TAG_HARDFILES: u8 = 0x89;
+const ST_HARDFILES: u8 = 0x89;
 /// `ST_LASTPING` — when the server last answered, Unix seconds.
-const TAG_LASTPING: u8 = 0x90;
+const ST_LASTPING: u8 = 0x90;
 /// `ST_VERSION` — the server's version, a string or a packed `hi16.lo16`.
-const TAG_VERSION: u8 = 0x91;
+const ST_VERSION: u8 = 0x91;
 
 /// The figures one server.met row carried. Every field is `None` when its tag
 /// was absent; a zero is kept as the zero the file wrote, and the caller
@@ -60,11 +60,11 @@ impl ServerMetFigures {
     pub(super) fn read(&mut self, tag: &Tag) {
         let value = tag.value();
         match (tag.name().id(), tag.name().text_value()) {
-            (Some(TAG_PING), _) => self.ping_ms = integer(value),
-            (Some(TAG_SOFTFILES), _) => self.soft_files = integer(value),
-            (Some(TAG_HARDFILES), _) => self.hard_files = integer(value),
-            (Some(TAG_LASTPING), _) => self.last_ping = integer(value),
-            (Some(TAG_VERSION), _) => match value {
+            (Some(ST_PING), _) => self.ping_ms = integer(value),
+            (Some(ST_SOFTFILES), _) => self.soft_files = integer(value),
+            (Some(ST_HARDFILES), _) => self.hard_files = integer(value),
+            (Some(ST_LASTPING), _) => self.last_ping = integer(value),
+            (Some(ST_VERSION), _) => match value {
                 TagValue::String(text) if self.version.is_none() => {
                     self.version = Some(text.to_display_string());
                 }
@@ -99,13 +99,13 @@ impl ServerMetFigures {
         [
             named("users", self.users),
             named("files", self.files),
-            id(TAG_PING, self.ping_ms),
-            id(TAG_LASTPING, self.last_ping),
-            id(TAG_SOFTFILES, self.soft_files),
-            id(TAG_HARDFILES, self.hard_files),
+            id(ST_PING, self.ping_ms),
+            id(ST_LASTPING, self.last_ping),
+            id(ST_SOFTFILES, self.soft_files),
+            id(ST_HARDFILES, self.hard_files),
             self.version.as_ref().map(|version| {
                 Tag::new(
-                    TagName::compact_id(TAG_VERSION),
+                    TagName::compact_id(ST_VERSION),
                     TagValue::String(Ed2kText::from_utf8(version)),
                 )
             }),

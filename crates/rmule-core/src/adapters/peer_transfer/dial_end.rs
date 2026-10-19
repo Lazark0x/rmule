@@ -1,6 +1,6 @@
-//! Why a download dial ended before the peer's hello, read off what ended it:
-//! the outbound crypt rule's refusal, the connect's error, or the session's
-//! close before the peer identified.
+//! Why a dial — a download's, or the serve side's dial-back — ended before the
+//! peer's hello, read off what ended it: the outbound crypt rule's refusal,
+//! the connect's error, or the session's close before the peer identified.
 
 use rmule_net::driver::DriverError;
 use rmule_net::peer::PeerNetError;
@@ -11,7 +11,7 @@ use crate::service::DialEnd;
 
 /// Which side of aMule's outbound rule (`PeerCrypt::outbound`, ADR-0049)
 /// refused a dial before any socket, given the peer's crypt side and `ours`.
-pub(super) fn crypt_refusal(peer: PeerCrypt, ours: CryptStance) -> DialEnd {
+pub(in crate::adapters) fn crypt_refusal(peer: PeerCrypt, ours: CryptStance) -> DialEnd {
     let theirs = peer.stance();
     if theirs.requires() && !ours.supports() {
         DialEnd::CryptRequiredByPeer
@@ -25,13 +25,14 @@ pub(super) fn crypt_refusal(peer: PeerCrypt, ours: CryptStance) -> DialEnd {
 }
 
 /// Why `connect` failed, for every error but the crypt refusal.
-pub(super) fn connect_failure(error: &PeerNetError) -> DialEnd {
+pub(in crate::adapters) fn connect_failure(error: &PeerNetError) -> DialEnd {
     match error {
         PeerNetError::Connect { source } => io_kind(source.kind()),
         PeerNetError::Driver(DriverError::ConnectTimeout) => DialEnd::TimedOut,
         PeerNetError::Driver(DriverError::Io(source)) => io_kind(source.kind()),
         PeerNetError::HandshakeIncomplete(reason) => closed_before_hello(*reason),
         PeerNetError::CryptIncompatible => DialEnd::CryptKeyUnknown,
+        PeerNetError::CryptUnanswered => DialEnd::CryptUnanswered,
         // `PeerNetError` is non-exhaustive, and the rest end a dial only as
         // a link gone before the hello.
         _ => DialEnd::ClosedBeforeHello,
@@ -39,7 +40,7 @@ pub(super) fn connect_failure(error: &PeerNetError) -> DialEnd {
 }
 
 /// Why the session closed before the peer's hello.
-pub(super) fn closed_before_hello(reason: PeerCloseReason) -> DialEnd {
+pub(in crate::adapters) fn closed_before_hello(reason: PeerCloseReason) -> DialEnd {
     match reason {
         PeerCloseReason::Local => DialEnd::ClosedLocally,
         PeerCloseReason::ProtocolViolation => DialEnd::ProtocolViolation,
@@ -102,5 +103,16 @@ mod tests {
             assert_eq!(peer.outbound(ours), OutboundCrypt::Incompatible);
             assert_eq!(crypt_refusal(peer, ours), cause);
         }
+    }
+
+    /// A peer that took the connection and never answered the crypt
+    /// handshake is named for that, not read as one that hung up before its
+    /// hello: aMule's socket timed out on it (`ClientTCPSocket.cpp:201-222`).
+    #[test]
+    fn a_crypt_handshake_never_answered_is_named_apart_from_a_hang_up() {
+        assert_eq!(
+            connect_failure(&PeerNetError::CryptUnanswered),
+            DialEnd::CryptUnanswered
+        );
     }
 }

@@ -4,31 +4,37 @@
 //! ADR-0095) — the whole socket concern behind one seam so core owns policy
 //! and stays socket-free.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddrV4;
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
 use rmule_ed2k::OfferedFile;
 use rmule_net::family::FamilySelection;
 use rmule_net::peer::{PeerListener, PeerNetError};
+use rmule_primitives::PeerEndpoint;
 use tokio::sync::mpsc;
 
 use crate::CoreError;
 use crate::ban_store::SharedBanStore;
 use crate::buddy_link::SharedBuddySlot;
 use crate::ip_filter::SharedIpFilter;
-use crate::server_session::SharedServerSession;
+use crate::server_session::{HelloSource, SharedServerSession};
 use crate::service::{LoginStep, PortTestEnd, SharesWithheld};
 
 mod accept;
 mod connection;
+mod dial_back;
 mod follower;
 mod test_connection;
 
 pub use connection::{ServeConnection, ServeInput, ServeOutput};
+pub use dial_back::{DialBack, DialBackCallOff, DialBackOutcome};
 
-use accept::spawn_accept_pump;
+use accept::{AcceptGates, spawn_accept_pump};
 pub(crate) use accept::{AdmittedPeer, SharedTunnelAdmit};
+use dial_back::{DialBackRoad, DialClaim};
 use follower::SessionFollower;
 
 use super::HelloAdverts;
@@ -121,6 +127,32 @@ pub trait ServeRuntimeService: Send + 'static {
     /// orphan. Default no-op: a fake that gates on nothing need not track it.
     fn set_kad_presence(&mut self, _kad_presence: KadPresenceView) {}
 
+    /// Dial back a waiter the serve side promoted while no link of it was up
+    /// (ADR-0057), on a task of its own: returns at once, and how the dial
+    /// ended arrives on `outcomes` — the link's serve connection with the
+    /// hello it read, or why it ended first. A link or dial already filed
+    /// under the waiter's names is not dialed around, and says nothing.
+    ///
+    /// Default: dials nothing and says nothing, the truth for an adapter that
+    /// dials nothing — the held grant waits for the waiter's next
+    /// connection, and the purge reclaims one that never comes.
+    fn dial_back(&mut self, _dial: DialBack, _outcomes: mpsc::Sender<DialBackOutcome>) {}
+
+    /// Call off the dial-back to `waiter`, the client having come back on a
+    /// link of its own (ADR-0057, "Two hellos of one client race"), and say
+    /// what that found. A dial whose hello has not gone out stops and says
+    /// nothing, its socket closed unheard and its Dial in Flight unfiled, so a
+    /// download waiting on it looks again and finds the link the client came
+    /// back on: [`DialBackCallOff::Stopped`], as for no dial at all. A dial
+    /// whose hello is out goes on, the far side keeping it:
+    /// [`DialBackCallOff::PastHello`]; one that has ended since, before the
+    /// client's hello on it, keeps nothing: [`DialBackCallOff::Ended`].
+    ///
+    /// Default: nothing dialed, so no hello went out.
+    fn call_off_dial_back(&mut self, _waiter: PeerEndpoint) -> DialBackCallOff {
+        DialBackCallOff::Stopped
+    }
+
     /// Adopt the builder's one set of `AdapterCells`
     /// (ADR-0048 "Identity ownership"):
     /// `Core::builder` weaves its own runtime through this, and
@@ -169,7 +201,9 @@ pub struct RuntimeServeRuntimeService {
     /// cancelling that future mid-peek silently drops (FINs) the peer — the
     /// interop bench observed a stock aMule's source dial die exactly that way
     /// whenever another serve-loop branch woke first. An
-    /// `mpsc::Receiver::recv` is cancel-safe, so the race is now harmless.
+    /// `mpsc::Receiver::recv` is cancel-safe, and every connection on the
+    /// channel has already passed the **Accept Gates**, so the race is
+    /// harmless.
     accept_rx: Option<mpsc::Receiver<AdmittedPeer>>,
     /// The pump task itself, held only so [`release`](ServeRuntimeService::release)
     /// can *await* its end: dropping `accept_rx` tells it to stop, and joining
@@ -187,10 +221,10 @@ pub struct RuntimeServeRuntimeService {
     awaited_inbound: AwaitedInbound,
     slot_wait_timeout: Duration,
     dialed_serve_sink: SharedDialedServeSink,
-    /// The core-owned `BanStore` (ADR-0064). Default/empty on the
-    /// non-`Core::new` constructors (nothing is ever banned); `Core::builder`
-    /// shares one instance across this adapter, `RuntimePeerTransferService`,
-    /// and the Kad event fold.
+    /// The core-owned `BanStore` (ADR-0064), the second **Accept Gate**.
+    /// Default/empty on the non-`Core::new` constructors (nothing is ever
+    /// banned); `Core::builder` shares one instance across this adapter,
+    /// `RuntimePeerTransferService`, and the Kad event fold.
     ban_store: SharedBanStore,
     /// The ed2k→Kad handoff sink (ADR-0067): each accepted peer that carries a
     /// Kad node hint is brokered to the running node through it. Default/empty on
@@ -227,8 +261,8 @@ pub struct RuntimeServeRuntimeService {
     /// `Core::builder` shares the one instance with the Kad factory and the
     /// client-UDP front.
     buddy_slot: SharedBuddySlot,
-    /// The core-owned IP filter. Default/empty on the
-    /// non-`Core::new` constructors (nothing is ever filtered);
+    /// The core-owned IP filter, the first **Accept Gate**. Default/empty on
+    /// the non-`Core::new` constructors (nothing is ever filtered);
     /// `Core::builder` shares one instance across this adapter, both peer
     /// adapters, and the runner's ingest gates.
     ip_filter: SharedIpFilter,
@@ -244,6 +278,10 @@ pub struct RuntimeServeRuntimeService {
     tunnel_admit: SharedTunnelAdmit,
     /// Where an accepted peer's refused hello is reported (ADR-0050).
     hello_refusals: crate::hello_refusals::SharedHelloRefusals,
+    /// Where a link this adapter drives binds its verified identity
+    /// (ADR-0041). Default (never installed) off `Core::builder`: nothing is
+    /// bound.
+    secured_identities: crate::secured_identity::SharedSecuredIdentities,
     /// **Kad Presence**: a served link's `0x99` is read against
     /// the running node's own Kad ID. Default on the non-`Core::builder`
     /// constructors — a view of no node, so every `0x99` drops `KadDown`;
@@ -254,6 +292,17 @@ pub struct RuntimeServeRuntimeService {
     /// `Core::builder` shares the one instance the actor's serve and download
     /// arms keep current.
     file_known: crate::known_files::SharedFileKnown,
+    /// Where each served link is filed for a download of its peer to ride
+    /// (ADR-0107). Default/unshared off `Core::builder`: no download joins.
+    peer_links: super::SharedPeerLinks,
+    /// The hello the last `start` answers and dials under, read live at each
+    /// connection; `None` before the first start and after a release, when
+    /// nothing is dialed back.
+    hello: Option<HelloSource>,
+    /// Each dial-back's claim, by the waiter it dials for, which its hello
+    /// and a call-off race for (ADR-0057, "Two hellos of one client race"):
+    /// held from the dial while its road runs.
+    dial_backs: HashMap<PeerEndpoint, Arc<DialClaim>>,
 }
 
 impl RuntimeServeRuntimeService {
@@ -266,9 +315,9 @@ impl RuntimeServeRuntimeService {
     }
 
     /// Share the core-owned `BanStore` (ADR-0064): every accepted
-    /// connection is checked against it before it ever reaches the accept
-    /// router. `Core::builder` wires the one production instance in; the
-    /// default (unset) store bans nothing.
+    /// connection is checked against it before it reaches the accept channel.
+    /// `Core::builder` wires the one production instance in; the default
+    /// (unset) store bans nothing.
     #[cfg(test)]
     #[must_use]
     pub(crate) fn with_ban_store(mut self, ban_store: SharedBanStore) -> Self {
@@ -291,7 +340,7 @@ impl RuntimeServeRuntimeService {
     }
 
     /// Share the core-owned IP filter: every accepted connection
-    /// is checked against it before the ban gate and the accept router.
+    /// is checked against it before the ban gate and the accept channel.
     /// `Core::builder` wires the
     /// one production instance in; the default (empty) filter blocks nothing.
     #[cfg(test)]
@@ -325,6 +374,37 @@ impl RuntimeServeRuntimeService {
         self.awaited_inbound = awaited_inbound;
         self
     }
+
+    /// Share the **Served Links** a dial adapter joins (ADR-0107);
+    /// `Core::builder` shares the one instance through `adopt_cells`.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_peer_links(mut self, peer_links: super::SharedPeerLinks) -> Self {
+        self.peer_links = peer_links;
+        self
+    }
+
+    /// The node-wide services a link this adapter drives reaches — an
+    /// accepted one or one it dialed back — read from its cells now.
+    fn inbound_deps(&self) -> InboundPeerDeps {
+        InboundPeerDeps {
+            slot_wait_timeout: self.slot_wait_timeout,
+            dialed_serve_sink: self.dialed_serve_sink.clone(),
+            kad_bootstrap: self.kad_bootstrap.clone(),
+            kad_pump: self.kad_pump.clone(),
+            buddy_slot: self.buddy_slot.clone(),
+            // The one Address Learning store, reached the way every other
+            // feeder reaches it (ADR-0084).
+            addresses: self.session.own_identity().addresses().clone(),
+            peer_roster: self.peer_roster.clone(),
+            kad_presence: self.kad_presence.clone(),
+            file_known: self.file_known.clone(),
+            tunnel_admit: self.tunnel_admit.clone(),
+            hello_refusals: self.hello_refusals.clone(),
+            peer_links: self.peer_links.clone(),
+            secured_identities: self.secured_identities.clone(),
+        }
+    }
 }
 
 /// The portable summary of a failed listener bind. `PeerListener`'s bind paths
@@ -335,22 +415,6 @@ fn bind_error_kind(error: &PeerNetError) -> std::io::ErrorKind {
         PeerNetError::Bind { source } => source.kind(),
         _ => std::io::ErrorKind::Other,
     }
-}
-
-/// Close a refused peer's connection **off** the accept path.
-///
-/// `accept()` is one arm of the serve runner's `select!`, and the accept
-/// channel is the only cushion between it and every producer feeding it — the
-/// TCP accept pump, the NAT-T adopter, the callback dial-back. A refused
-/// peer's `shutdown()` is the one await in that arm that is not the pump
-/// itself: a burst of filtered or banned peers would otherwise be closed one
-/// FIN round trip at a time while admissible peers queued behind them. Nothing
-/// downstream waits on this close — the peer is refused either way — so it is
-/// exactly the work that belongs in a task of its own.
-fn shutdown_refused(conn: rmule_net::peer::Connection) {
-    tokio::spawn(async move {
-        let _ = conn.shutdown().await;
-    });
 }
 
 impl ServeRuntimeService for RuntimeServeRuntimeService {
@@ -436,13 +500,20 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
                 crate::natt::front::SharedNattFront::default(),
             )
         });
-        let hello = crate::server_session::HelloSource::live(identity, reach);
+        let hello = HelloSource::live(identity, reach);
+        self.hello = Some(hello.clone());
+        let gates = AcceptGates::new(
+            self.ip_filter.clone(),
+            self.ban_store.clone(),
+            self.kad_pump.clone(),
+        );
         let pump = spawn_accept_pump(
             listener,
             hello,
             self.adverts.clone(),
             &self.tunnel_admit,
             self.session.own_identity().awaited_testers().clone(),
+            gates,
         );
         self.accept_rx = Some(pump.accepted);
         self.accept_pump = Some(pump.task);
@@ -455,121 +526,82 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
     }
 
     async fn accept(&mut self) -> Option<ServeConnection> {
-        loop {
-            // `recv` is cancel-safe, so the serve runner may race this future
-            // in its `select!` freely; the listener itself lives in the pump
-            // task precisely so that race can never drop a mid-handshake
-            // socket. `None` means the pump ended — a fatal
-            // listener error or serve shutdown — and winds the activity down.
-            // A connection the pump accepted before the serve loop began (the
-            // server's High-ID port-check among them) waits in the channel,
-            // already answered by its own driver.
-            let AdmittedPeer {
-                conn,
-                dialed_toward,
-                test_connection,
-                awaited_server,
-            } = self.accept_rx.as_mut()?.recv().await?;
-            let peer = conn.peer_endpoint();
-            // The IP filter, aMule `CClientTCPSocket::InitNetworkData`: an
-            // accepted connection from an IP-filtered address is refused
-            // before any hello — and before the ban gate, aMule's own check
-            // order. The verdict is bound first so the read guard never
-            // crosses the shutdown await.
-            let ip_filtered = self
-                .ip_filter
-                .read()
-                .expect("ip filter lock")
-                .is_filtered_peer(peer);
-            if ip_filtered {
-                tracing::debug!(
-                    %peer,
-                    "refusing an accepted connection from an IP-filtered address"
-                );
-                shutdown_refused(conn);
-                if let Some(server) = awaited_server {
-                    let end = PortTestEnd::IpFiltered;
-                    server.report(LoginStep::PortTestEnded { end }).await;
-                }
-                continue;
+        // The receive is this future's only await, and `recv` is cancel-safe,
+        // so the serve runner may race it in its `select!` freely: a cancel
+        // before it resolves leaves the connection on the channel for the next
+        // call, and nothing after it awaits. That holds because the producers
+        // run the **Accept Gates** — the IP filter, the ban, the Test
+        // Connection carve-out — before the channel, never here: the ban
+        // check's lock and a refused port test's report would each be an await
+        // a cancel could drop a taken connection at. The listener lives in the
+        // pump task for the same reason, so the race never drops a
+        // mid-handshake socket either. `None` means the pump ended — a fatal
+        // listener error or serve shutdown — and winds the activity down. A
+        // connection the pump accepted before the serve loop began (the
+        // server's High-ID port-check among them) waits in the channel,
+        // already answered by its own driver.
+        let AdmittedPeer {
+            conn,
+            dialed_toward,
+            awaited_server,
+        } = self.accept_rx.as_mut()?.recv().await?;
+        let peer = conn.peer_endpoint();
+        let (command_tx, command_rx) = mpsc::channel(16);
+        let (event_tx, event_rx) = mpsc::channel(16);
+        // Triage, don't bridge eagerly (ADR-0039): the per-connection task drains
+        // the inbound hello and, on a pending-callback match, adopts the raw
+        // connection as a download worker instead of serving it.
+        let triage = triage_inbound_connection(
+            conn,
+            dialed_toward,
+            command_rx,
+            event_tx,
+            self.awaited_inbound.clone(),
+            self.inbound_deps(),
+        );
+        // A connection from the awaited server admitted as an ordinary
+        // peer: its test's one knowable end is its peer connection's, and
+        // who closed it. One adopted as a download worker has not ended.
+        tokio::spawn(async move {
+            let InboundEnd::Closed(closed_by) = triage.await else {
+                return;
+            };
+            if let Some(server) = awaited_server {
+                let end = PortTestEnd::PeerConnectionEnded { closed_by };
+                server.report(LoginStep::PortTestEnded { end }).await;
             }
-            // ADR-0064, peer-TCP enforcement: a flood-offender IP the core
-            // `BanStore` still holds is refused here, post-accept — the same
-            // point aMule's own client-list ban decides at. Refusing loops
-            // back for the next comer instead of returning `None` (which
-            // would read as "listener closed" to the caller). Kad's own
-            // datagram path never consults this store (no Kad ban gate).
-            if self
-                .ban_store
-                .lock()
-                .await
-                .is_banned(peer.ip(), Instant::now())
-            {
-                tracing::debug!(%peer, "refusing an accepted connection from a banned IP");
-                shutdown_refused(conn);
-                if let Some(server) = awaited_server {
-                    let end = PortTestEnd::Banned;
-                    server.report(LoginStep::PortTestEnded { end }).await;
-                }
-                continue;
-            }
-            // ADR-0046 "Test Connections": past the gates, a test is answered
-            // on its own and is never a serve connection.
-            if test_connection {
-                let kad_pump = self.kad_pump.clone();
-                tokio::spawn(async move {
-                    let end = test_connection::answer_test_connection(conn, kad_pump).await;
-                    if let Some(server) = awaited_server {
-                        server.report(LoginStep::PortTestEnded { end }).await;
-                    }
-                });
-                continue;
-            }
-            let (command_tx, command_rx) = mpsc::channel(16);
-            let (event_tx, event_rx) = mpsc::channel(16);
-            // Triage, don't bridge eagerly (ADR-0039): the per-connection task drains
-            // the inbound hello and, on a pending-callback match, adopts the raw
-            // connection as a download worker instead of serving it.
-            let triage = triage_inbound_connection(
-                conn,
-                dialed_toward,
-                command_rx,
-                event_tx,
-                self.awaited_inbound.clone(),
-                InboundPeerDeps {
-                    slot_wait_timeout: self.slot_wait_timeout,
-                    dialed_serve_sink: self.dialed_serve_sink.clone(),
-                    kad_bootstrap: self.kad_bootstrap.clone(),
-                    kad_pump: self.kad_pump.clone(),
-                    buddy_slot: self.buddy_slot.clone(),
-                    // The one Address Learning store, reached the way every
-                    // other feeder reaches it (ADR-0084).
-                    addresses: self.session.own_identity().addresses().clone(),
-                    peer_roster: self.peer_roster.clone(),
-                    kad_presence: self.kad_presence.clone(),
-                    file_known: self.file_known.clone(),
-                    tunnel_admit: self.tunnel_admit.clone(),
-                    hello_refusals: self.hello_refusals.clone(),
-                },
-            );
-            // A connection from the awaited server admitted as an ordinary
-            // peer: its test's one knowable end is its peer connection's, and
-            // who closed it. One adopted as a download worker has not ended.
-            tokio::spawn(async move {
-                let InboundEnd::Closed(closed_by) = triage.await else {
-                    return;
-                };
-                if let Some(server) = awaited_server {
-                    let end = PortTestEnd::PeerConnectionEnded { closed_by };
-                    server.report(LoginStep::PortTestEnded { end }).await;
-                }
-            });
-            return Some(ServeConnection::new(peer, command_tx, event_rx));
-        }
+        });
+        Some(ServeConnection::new(peer, command_tx, event_rx))
     }
 
     fn accept_backlog(&self) -> Option<usize> {
         self.accept_rx.as_ref().map(mpsc::Receiver::len)
+    }
+
+    fn dial_back(&mut self, dial: DialBack, outcomes: mpsc::Sender<DialBackOutcome>) {
+        // Released or never started: no serve task waits on the outcome.
+        let Some(hello) = self.hello.clone() else {
+            return;
+        };
+        // An ended road holds its claim no more.
+        self.dial_backs
+            .retain(|_, claim| Arc::strong_count(claim) > 1);
+        let claim = Arc::new(DialClaim::default());
+        self.dial_backs.insert(dial.waiter, claim.clone());
+        let road = DialBackRoad {
+            hello,
+            adverts: self.adverts.clone(),
+            ip_filter: self.ip_filter.clone(),
+            ban_store: self.ban_store.clone(),
+            deps: self.inbound_deps(),
+        };
+        tokio::spawn(road.run(dial, claim, outcomes));
+    }
+
+    fn call_off_dial_back(&mut self, waiter: PeerEndpoint) -> DialBackCallOff {
+        self.dial_backs
+            .get(&waiter)
+            .map_or(DialBackCallOff::Stopped, |claim| claim.call_off())
     }
 
     /// Refused before `start` and after a release: there is no listener to
@@ -594,6 +626,9 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
         // Stop following: a session the operator makes after this is not told
         // about files this node no longer serves.
         self.follower = None;
+        self.hello = None;
+        // No serve task waits on a dial-back any more: none is called off.
+        self.dial_backs.clear();
         // Dropping the receiver is the pump's stop signal (`accept_tx.closed()`);
         // joining it is what makes the listener — and its port — gone rather
         // than merely told to go.
@@ -622,7 +657,9 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
         self.address_families = cells.address_families;
         self.tunnel_admit = cells.tunnel_admit.clone();
         self.hello_refusals = cells.hello_refusals.clone();
+        self.secured_identities = cells.secured_identities.clone();
         self.file_known = cells.file_known.clone();
+        self.peer_links = cells.peer_links.clone();
     }
 }
 

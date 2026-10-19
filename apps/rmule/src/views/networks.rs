@@ -32,6 +32,7 @@ use rmule_core::diagnostics::ServerDiagnostics;
 use rmule_primitives::ServerEndpoint;
 
 use crate::action::Action;
+use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
 use crate::table_sort::{RowCursor, RowMove, TableSort};
 use crate::theme::Theme;
@@ -90,28 +91,23 @@ pub struct NetworksView {
     /// The selected server's position in the current order — `cursor`
     /// re-placed before every key and draw.
     server_sel: usize,
-    /// First listed row rendered — the table scrolls by *entry*, because a
-    /// wrapped row must not be split across the pane edge.
-    server_offset: usize,
+    /// What part of the server table is on screen. It scrolls by *entry*,
+    /// because a wrapped row must not be split across the pane edge.
+    viewport: Viewport,
     /// The server rows as last drawn: the map a row click needs once rows
     /// can be more than one line tall.
     server_rows: DrawnRows,
     /// The header as last drawn, and its column widths: a click there sorts.
     header_area: Rect,
     header_cols: Vec<usize>,
-    /// Display lines scrolled up from the newest; `0` pins the log to the
-    /// bottom. Counted in *wrapped* lines, not entries.
-    log_offset: usize,
-    /// Inner log height from the last draw, for input-time scroll clamping.
-    log_rows: usize,
+    /// What part of the log is on screen, in *wrapped* lines, not entries:
+    /// it opens on the newest line and keeps it in view until scrolled back.
+    log_viewport: Viewport,
     /// Wall clock stamped by the app each frame (`None` in goldens/tests → a
     /// fixed fallback, keeping renders deterministic). Log lines carry only
     /// injected `Instant`s; the wall stamp is derived at draw time as
     /// `wall_now − age`, so state stays clock-free.
     pub(crate) wall_now: Option<chrono::DateTime<chrono::FixedOffset>>,
-    /// Wrapped display-line count from the last draw; `0` before the first
-    /// one, where the entry count is the honest estimate.
-    log_lines: usize,
     menu: Option<Menu>,
     confirm: Option<Confirm>,
     form: Option<ServerForm>,
@@ -127,13 +123,11 @@ impl Default for NetworksView {
             sort: TableSort::default(),
             cursor: RowCursor::default(),
             server_sel: 0,
-            server_offset: 0,
+            viewport: Viewport::default(),
             server_rows: DrawnRows::default(),
             header_area: Rect::default(),
             header_cols: Vec::new(),
-            log_offset: 0,
-            log_rows: 4,
-            log_lines: 0,
+            log_viewport: Viewport::at_end(),
             wall_now: None,
             menu: None,
             confirm: None,
@@ -178,9 +172,6 @@ impl NetworksView {
     fn clamp_selection(&mut self, state: &UiState) {
         let ids = self.server_ids(state);
         self.server_sel = self.cursor.place(&ids).unwrap_or(0);
-        if self.server_offset > self.server_sel {
-            self.server_offset = self.server_sel;
-        }
     }
 
     /// The operator put the cursor on display row `index` (clamped).
@@ -272,23 +263,13 @@ impl NetworksView {
                     ViewOutcome::Redraw
                 }
             }
-            // The log scrolls rather than selects: down is toward newer, which
-            // is a smaller offset, and the ends are the newest and oldest line.
+            // The log scrolls rather than selects: down is toward newer, and
+            // the ends are the oldest and the newest line.
             Pane::Log => {
-                let max = self.max_log_offset(state);
-                let next = match movement {
-                    RowMove::Step(delta) => self
-                        .log_offset
-                        .saturating_add_signed(delta.saturating_neg())
-                        .min(max),
-                    RowMove::First => max,
-                    RowMove::Last => 0,
-                };
-                if next == self.log_offset {
-                    ViewOutcome::Ignored
-                } else {
-                    self.log_offset = next;
+                if self.log_viewport.scroll(movement) {
                     ViewOutcome::Redraw
+                } else {
+                    ViewOutcome::Ignored
                 }
             }
         }

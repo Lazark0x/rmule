@@ -249,3 +249,27 @@ fn clicks_select_rows_in_either_pane() {
     assert_eq!(view.focus, Pane::Peers);
     assert_eq!(view.peers_selected, 0);
 }
+
+#[test]
+fn golden_shared_unshare_confirm_scrolls_in_a_short_frame() {
+    let state = served_files();
+    let mut view = SharedView::default();
+    view.handle_key(press(KeyCode::Char('m')), &state);
+    view.handle_key(press(KeyCode::Enter), &state);
+    let area = ratatui::layout::Rect::new(0, 0, 50, 5);
+    let shown = |view: &mut SharedView| {
+        crate::golden::render_to_lines(area.width, area.height, |frame| {
+            view.draw(frame, area, &state, &theme(), Instant::now());
+        })
+    };
+    assert_golden(
+        "shared_unshare_confirm_short",
+        area.width,
+        area.height,
+        |frame| {
+            view.draw(frame, area, &state, &theme(), Instant::now());
+        },
+    );
+    view.handle_key(press(KeyCode::Char('G')), &state);
+    assert!(shown(&mut view).contains("Esc cancel"));
+}

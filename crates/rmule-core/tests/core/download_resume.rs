@@ -15,7 +15,8 @@ use rmule_core::{
     open_durable_store,
 };
 use rmule_primitives::{
-    ClientId, ED2K_PART_SIZE, PeerSource, ServerEndpoint, SourceLookupTarget, SourceSighting,
+    ClientId, ED2K_PART_SIZE, Informant, PeerSource, ServerEndpoint, SourceLookupTarget,
+    SourceSighting,
 };
 use rmule_testkit::{
     PendingPeerTransfer, PlanAssertingPeerTransfer, StaticPeerTransfer, file_link,
@@ -40,6 +41,7 @@ async fn resume_skips_verified_parts() {
             &link,
             Some(&ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
             &paths,
+            None,
         )
         .unwrap();
     repo.record_verified_part(
@@ -142,6 +144,7 @@ async fn completes_to_final_path() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("download.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -200,6 +203,7 @@ async fn restart_resume_completes_from_verified_parts() {
             source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
             name: rmule_testkit::file_name("restart.bin"),
             if_taken: rmule_core::NameTaken::Refuse,
+            kad_aich_root: None,
         }))
         .await
         .unwrap();
@@ -332,10 +336,10 @@ impl SourceLookupService for RecordingSourceLookup {
         self.calls.lock().unwrap().push(target);
         Ok(SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
-            sources: vec![SourceSighting::plain(PeerSource::new(
-                ClientId::from_u32(0x0100_007F),
-                4663,
-            ))],
+            sources: vec![SourceSighting::plain(
+                PeerSource::new(ClientId::from_u32(0x0100_007F), 4663),
+                Informant::Own,
+            )],
         })
     }
 }

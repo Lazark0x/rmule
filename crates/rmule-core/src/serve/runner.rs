@@ -14,14 +14,17 @@ use rmule_primitives::PeerEndpoint;
 use tokio::sync::{mpsc, watch};
 
 use crate::adapters::{
-    AnnounceOutcome, ServeConnection, ServeInput, ServeOutput, ServeRuntimeService,
+    AnnounceOutcome, DialBackOutcome, LinkServeHalf, ServeConnection, ServeInput, ServeOutput,
+    ServeRuntimeService,
 };
 use crate::client_udp::{ClientUdpDatagram, ClientUdpSend};
-use crate::content::ContentFileStore;
-use crate::credit::{KeyBinding, SharedCreditStore};
+use crate::content::{CheckedReadError, ContentFileStore};
+use crate::credit::SharedCreditStore;
+use crate::held_places::{RECIPROCITY_FACTOR, SharedHeldPlaces};
 use crate::peer_roster::{PeerRelation, RelationLease};
 use crate::registry::{SharedFileEntry, SharedFileRegistry};
 use crate::serve::state::{ServeDecision, ServeSelfPosition, ServeState};
+use crate::served_downloads::ServedDownloads;
 use crate::service::{CoreEvent, ServeEvent, ServeStopReason};
 use crate::store::registry::DurableSharedFileRegistry;
 use crate::upload_queue::UploadSlotQueue;
@@ -41,10 +44,16 @@ pub(crate) struct ServeTask<L> {
     /// Serve halves of connections rmule *dialed* (to download) that the peer
     /// also pulls from, on the same socket (ADR-0031). `None` when no
     /// dialed source is wired. Registered exactly like accepted connections.
-    pub(crate) dialed_serve_rx: Option<mpsc::Receiver<ServeConnection>>,
+    pub(crate) dialed_serve_rx: Option<mpsc::Receiver<LinkServeHalf>>,
     /// The shared, `UserHash`-keyed credit ledger. The serve task records
     /// served bytes here and reads each waiter's modifier to rank the queue.
     pub(crate) credit: SharedCreditStore,
+    /// The node's **Held Places** (ADR-0116): a waiter at whose queue one of
+    /// our downloads stands ranks by the Reciprocity Factor too.
+    pub(crate) held_places: SharedHeldPlaces,
+    /// The node's peer bans (ADR-0064): where the address of a second link
+    /// naming an identified client's User Hash goes (ADR-0107).
+    pub(crate) bans: crate::ban_store::SharedBanStore,
     /// How often idle waiters are re-ranked by live credit.
     pub(crate) rerank_interval: Duration,
     /// Inbound `OP_REASKFILEPING` datagrams from the shared client-UDP front
@@ -84,6 +93,10 @@ pub(crate) struct ServeTask<L> {
     /// Where a failed read of a shared file goes: the **Registry Check**.
     /// `None` for a serve task woven without one.
     pub(crate) read_failed_tx: Option<std::sync::mpsc::Sender<crate::registry_check::CheckInput>>,
+    /// The **Served Downloads** (ADR-0113): read afresh before every peer
+    /// input, reask ping and share trigger, and where a running download's
+    /// askers are handed to its run.
+    pub(crate) served: ServedDownloads,
 }
 
 /// Project the session's self-facts into the brain's [`ServeSelfPosition`].
@@ -143,6 +156,8 @@ where
             mut share_changed_rx,
             mut dialed_serve_rx,
             credit,
+            held_places,
+            bans,
             rerank_interval,
             mut reask_rx,
             client_udp_tx,
@@ -153,6 +168,7 @@ where
             peer_roster,
             withheld,
             read_failed_tx,
+            served,
         } = self;
         // Every Upload relation this activity marks ends with it (ADR-0093 invariant 1):
         // a stop, a listener death or a panic
@@ -166,20 +182,29 @@ where
         // identities, and the AICH cache, and turns each input into an ordered
         // `Vec<ServeDecision>` this task enacts.
         let mut state = ServeState::new(queue);
+        // The cell's version the brain's copy was last read at.
+        let mut served_seen = 0;
         // Every connection's events funnel into one stream the task selects on
         // (cf. the download runner's `fact_rx`).
         let (fact_tx, mut fact_rx) = mpsc::channel::<(PeerEndpoint, ServeInput)>(64);
         // What each session made after an announce was told of the set.
         let mut session_told_rx = serve_runtime.take_session_told();
+        // How each dial-back the serve adapter makes ended (ADR-0057). The
+        // loop holds a sender, so the receiver never closes under it.
+        let (dial_back_tx, mut dial_back_rx) = mpsc::channel::<DialBackOutcome>(16);
 
         // The write-through handles every enactment shares, bound once.
         let sinks = ServeSinks {
             credit: &credit,
+            held_places: &held_places,
+            bans: &bans,
             evt_tx: &evt_tx,
             client_udp_tx: &client_udp_tx,
             diagnostics: &diagnostics,
             peer_roster: &peer_roster,
             read_failed_tx: read_failed_tx.as_ref(),
+            served: &served,
+            dial_backs: &dial_back_tx,
         };
 
         // Announce the share set as of serve start — once the Registry
@@ -189,6 +214,7 @@ where
             // A trigger sent before this read signals a change the read
             // already holds: announcing again for it would say nothing new.
             while share_changed_rx.try_recv().is_ok() {}
+            refresh_served(&served, &mut served_seen, &mut state);
             let mut decisions: VecDeque<ServeDecision> = state
                 .on_share_set(
                     read_share_set(&registry, &withheld),
@@ -241,7 +267,8 @@ where
                     if changed.is_none() {
                         break;
                     }
-                    let modifiers = current_modifiers(&credit, state.identities()).await;
+                    let modifiers = current_modifiers(&credit, &held_places, state.identities()).await;
+                    refresh_served(&served, &mut served_seen, &mut state);
                     let mut decisions: VecDeque<ServeDecision> = state
                         .on_share_set(read_share_set(&registry, &withheld), Instant::now(), &modifiers)
                         .into();
@@ -275,15 +302,51 @@ where
                         }
                     }
                 }
+                outcome = dial_back_rx.recv() => {
+                    let Some(outcome) = outcome else { continue };
+                    let modifiers = current_modifiers(&credit, &held_places, state.identities()).await;
+                    state.on_self_position(self_position(own_identity.as_ref()));
+                    refresh_served(&served, &mut served_seen, &mut state);
+                    let now = Instant::now();
+                    let mut decisions: VecDeque<ServeDecision> = match outcome {
+                        // The link is registered before its hello is folded,
+                        // so the grant the fold decides finds it.
+                        DialBackOutcome::Linked { waiter, conn, identity, far_end } => {
+                            let link = conn.peer();
+                            register_serve_connection(conn, &mut conns, &fact_tx);
+                            state.on_dial_back_linked(now, waiter, link, *identity, far_end, &modifiers)
+                        }
+                        DialBackOutcome::Failed { waiter, cause } => {
+                            state.on_dial_back_failed(now, waiter, cause, &modifiers)
+                        }
+                    }
+                    .into();
+                    enact(
+                        &mut decisions,
+                        &mut state,
+                        &conns,
+                        &mut serve_runtime,
+                        sinks,
+                    )
+                    .await;
+                }
                 told = recv_session_told(&mut session_told_rx) => match told {
                     Some(told) => say_told(&evt_tx, told).await,
                     None => session_told_rx = None,
                 },
                 dialed = recv_dialed(&mut dialed_serve_rx) => {
                     match dialed {
-                        // A connection rmule dialed is also serving the peer:
-                        // admit it to the same queue as an accepted one.
-                        Some(conn) => register_serve_connection(conn, &mut conns, &fact_tx),
+                        // A connection a download holds also serves the
+                        // peer: admit it to the same queue as an accepted
+                        // one. An adopted callback comes this way too, a
+                        // link the peer opened, so only a link rmule dialed
+                        // is marked so.
+                        Some(LinkServeHalf { conn, dialed }) => {
+                            if let Some(far_end) = dialed {
+                                state.on_link_dialed(conn.peer(), far_end);
+                            }
+                            register_serve_connection(conn, &mut conns, &fact_tx);
+                        }
                         // The dialed source closed (core shutdown); stop polling
                         // it but keep serving accepted connections.
                         None => dialed_serve_rx = None,
@@ -292,13 +355,16 @@ where
                 fact = fact_rx.recv() => {
                     let Some((peer, event)) = fact else { continue };
                     let closing = event.is_disconnect() || event == ServeInput::Readopted;
-                    let modifiers = current_modifiers(&credit, state.identities()).await;
+                    let modifiers = current_modifiers(&credit, &held_places, state.identities()).await;
                     // Our own position, read fresh from the session's
                     // self-facts. A synchronous cell read, not a round
                     // trip: it must be current at the decision, because a
                     // login that just made us High-ID must stop the guard
                     // refusing on the very next ask.
                     state.on_self_position(self_position(own_identity.as_ref()));
+                    // The downloads' Verified Ranges likewise: a part a run
+                    // just verified is answered for on this very input.
+                    refresh_served(&served, &mut served_seen, &mut state);
                     let mut decisions: VecDeque<ServeDecision> = state
                         .on_conn_event(Instant::now(), peer, event, &modifiers)
                         .into();
@@ -315,7 +381,7 @@ where
                     }
                 }
                 _ = rerank_tick.tick() => {
-                    let modifiers = current_modifiers(&credit, state.identities()).await;
+                    let modifiers = current_modifiers(&credit, &held_places, state.identities()).await;
                     let mut decisions: VecDeque<ServeDecision> =
                         state.on_rerank_tick(Instant::now(), &modifiers).into();
                     enact(
@@ -330,7 +396,7 @@ where
                 _ = purge_tick.tick() => {
                     // Reap waiters silent past the reask deadline or whose file
                     // stopped being shared (ADR-0057 disconnected standing).
-                    let modifiers = current_modifiers(&credit, state.identities()).await;
+                    let modifiers = current_modifiers(&credit, &held_places, state.identities()).await;
                     let mut decisions: VecDeque<ServeDecision> = state
                         .on_purge(Instant::now(), purge_after, &modifiers)
                         .into();
@@ -347,6 +413,7 @@ where
                     // One inbound OP_REASKFILEPING from the client-UDP front:
                     // answer the reply matrix, refresh the waiter's standing.
                     Some((udp_src, datagram)) => {
+                        refresh_served(&served, &mut served_seen, &mut state);
                         let mut decisions: VecDeque<ServeDecision> = state
                             .on_reask_ping(Instant::now(), udp_src, &datagram)
                             .into();
@@ -385,6 +452,10 @@ where
 struct ServeSinks<'a> {
     /// The shared, `UserHash`-keyed credit ledger.
     credit: &'a SharedCreditStore,
+    /// The node's **Held Places**, read with the credit at every rank.
+    held_places: &'a SharedHeldPlaces,
+    /// The node's peer bans, where a hash thief's address goes.
+    bans: &'a crate::ban_store::SharedBanStore,
     evt_tx: &'a mpsc::Sender<CoreEvent>,
     /// The client-UDP send half reask replies ride out on; `None` until the
     /// live front binds.
@@ -397,12 +468,16 @@ struct ServeSinks<'a> {
     peer_roster: &'a crate::peer_roster::SharedPeerRoster,
     /// The **Registry Check**'s inputs, where a failed read goes.
     read_failed_tx: Option<&'a std::sync::mpsc::Sender<crate::registry_check::CheckInput>>,
+    /// The **Served Downloads**, whose runs take their askers.
+    served: &'a ServedDownloads,
+    /// Where the serve adapter says how each dial-back ended.
+    dial_backs: &'a mpsc::Sender<DialBackOutcome>,
 }
 
 /// Carry out one `Vec<ServeDecision>` against the live runtime — the only
 /// async surface in the serve loop. Decisions drain in order; a `ReadRange`
-/// feeds its follow-up decisions back onto the queue (the read round trip),
-/// so the loop stays flat — no recursion.
+/// or a `BuildAichTree` feeds its follow-up decisions back onto the queue
+/// (the read round trip), so the loop stays flat — no recursion.
 ///
 /// This is also where upload byte accounting happens (ADR-0077): the sinks'
 /// `diagnostics` learns a peer's slot lifetime from the emitted grant/release
@@ -417,11 +492,15 @@ async fn enact<L: ServeRuntimeService>(
 ) {
     let ServeSinks {
         credit,
+        held_places,
+        bans,
         evt_tx,
         client_udp_tx,
         diagnostics,
         peer_roster,
         read_failed_tx,
+        served,
+        dial_backs,
     } = sinks;
     while let Some(decision) = decisions.pop_front() {
         match decision {
@@ -468,12 +547,25 @@ async fn enact<L: ServeRuntimeService>(
                             peer_roster.forget(PeerRelation::Upload, v4);
                         }
                     }
-                    ServeEvent::WaiterLeft { peer, .. } => {
-                        // A waiter that left never held a slot, so there is
-                        // no upload to close — only the roster mark
-                        // `PeerQueued` set.
+                    ServeEvent::WaiterLeft { peer, .. }
+                    | ServeEvent::UploadDialBackFailed { peer, .. } => {
+                        // A waiter that left — or whose dial-back ended
+                        // unsent — never had an upload open, so there is
+                        // nothing to close: only the roster mark `PeerQueued`
+                        // set.
                         if let Some(v4) = peer.as_v4() {
                             peer_roster.forget(PeerRelation::Upload, v4);
+                        }
+                    }
+                    ServeEvent::WaiterRelinked { from, to } => {
+                        // A slot's upload row rides on with it.
+                        diagnostics.move_upload(from, to);
+                        // The mark `PeerQueued` set moves with the place.
+                        if let Some(v4) = from.as_v4() {
+                            peer_roster.forget(PeerRelation::Upload, v4);
+                        }
+                        if let Some(v4) = to.as_v4() {
+                            peer_roster.mark_known(PeerRelation::Upload, v4);
                         }
                     }
                     ServeEvent::UploadAddressCapReached { .. } => {
@@ -495,40 +587,92 @@ async fn enact<L: ServeRuntimeService>(
             ServeDecision::RecordCredit { user_hash, bytes } => {
                 let _ = credit.record_upload(user_hash, bytes);
             }
-            ServeDecision::BindIdentity {
-                user_hash,
-                public_key,
-            } => {
-                // Bind the proven key as the peer's Secured Identity (ADR-0041).
-                // Mismatch = eMule IS_IDFAILED: deny, keep the stored key, report
-                // the theft; unsecured accrual continues untouched. Mirrors the
-                // download runner's Decision::BindIdentity enactment.
-                let binding = credit.bind_public_key(user_hash, &public_key);
-                if matches!(binding, Ok(KeyBinding::Mismatch)) {
-                    let _ = evt_tx
-                        .send(CoreEvent::SecuredIdentityMismatch { user_hash })
-                        .await;
-                }
+            ServeDecision::Ban { peer } => {
+                tracing::info!(
+                    %peer,
+                    "a second link named an identified client's user hash; its address is banned"
+                );
+                bans.lock().await.ban(peer.ip(), std::time::Instant::now());
             }
             ServeDecision::ReadRange {
                 peer,
                 path,
-                offset,
-                len,
-                purpose,
-            } => match ContentFileStore::read_range(&path, offset, len).await {
-                Ok(bytes) => decisions.extend(state.on_read_result(peer, purpose, bytes)),
+                block,
+                check: None,
+            } => match ContentFileStore::read_range(&path, block.start, block.end - block.start)
+                .await
+            {
+                Ok(bytes) => decisions.extend(state.on_read_result(peer, block, bytes)),
                 Err(error) => {
-                    tracing::warn!(%error, ?purpose, path = %path.display(), "serve read failed; the file is no longer offered");
-                    let modifiers = current_modifiers(credit, state.identities()).await;
+                    tracing::warn!(%error, ?block, path = %path.display(), "serve read failed; the file is no longer offered");
+                    let modifiers =
+                        current_modifiers(credit, held_places, state.identities()).await;
                     decisions.extend(state.on_read_failed(
                         Instant::now(),
                         peer,
-                        purpose,
+                        block.file_hash,
                         &modifiers,
                     ));
                 }
             },
+            // A Served Download's bytes: read only through a handle proven to
+            // be the file its range was read from (ADR-0113).
+            ServeDecision::ReadRange {
+                peer,
+                path,
+                block,
+                check: Some(check),
+            } => match ContentFileStore::read_checked(
+                &path,
+                &check,
+                block.start,
+                block.end - block.start,
+            )
+            .await
+            {
+                Ok(bytes) => decisions.extend(state.on_read_result(peer, block, bytes)),
+                Err(refused) => {
+                    let modifiers =
+                        current_modifiers(credit, held_places, state.identities()).await;
+                    let file_hash = block.file_hash;
+                    decisions.extend(match refused {
+                        CheckedReadError::Changed => {
+                            tracing::warn!(?block, path = %path.display(), "a download's part file changed; its parts are no longer offered");
+                            state.on_part_file_changed(Instant::now(), peer, file_hash, &modifiers)
+                        }
+                        CheckedReadError::Unreadable(error) => {
+                            tracing::warn!(%error, ?block, path = %path.display(), "a download's part file could not be read; its parts are no longer offered");
+                            state.on_part_file_unreadable(Instant::now(), peer, file_hash, &modifiers)
+                        }
+                    });
+                }
+            },
+            ServeDecision::BuildAichTree {
+                peer,
+                path,
+                file_size,
+                ask,
+            } => match ContentFileStore::aich_tree(&path, file_size).await {
+                Ok(tree) => decisions.extend(state.on_aich_tree(peer, ask, tree)),
+                Err(error) => {
+                    tracing::warn!(%error, ?ask, path = %path.display(), "serve read failed; the file is no longer offered");
+                    let modifiers =
+                        current_modifiers(credit, held_places, state.identities()).await;
+                    decisions.extend(state.on_read_failed(
+                        Instant::now(),
+                        peer,
+                        ask.file_hash(),
+                        &modifiers,
+                    ));
+                }
+            },
+            ServeDecision::EmptyRange {
+                file_hash,
+                checked,
+                cause,
+            } => {
+                served.empty_range(file_hash, checked, cause);
+            }
             ServeDecision::ReadFailed(file_hash) => {
                 if let Some(tx) = read_failed_tx {
                     let _ = tx.send(crate::registry_check::CheckInput::ReadFailed(file_hash));
@@ -565,16 +709,28 @@ async fn enact<L: ServeRuntimeService>(
                     );
                 }
             },
-            ServeDecision::DialBackGrant { peer, file_hash } => {
-                // Seam (ADR-0057): promotion of a disconnected waiter dials its
-                // TCP endpoint and grants on connect — a serve-side outbound
-                // dial riding the ADR-0031 dialed-serve seam. The outbound
-                // serve-dial machinery lands with the live front.
-                tracing::debug!(
-                    ?peer,
-                    ?file_hash,
-                    "dial-back grant to a disconnected waiter; serve-dial seam"
-                );
+            // A run that is gone, or whose inbox is full, takes nothing:
+            // the asker was answered all the same.
+            ServeDecision::KeepAsker {
+                file_hash,
+                sighting,
+            } => {
+                served.sight(file_hash, sighting);
+            }
+            // The adapter dials on a task of its own and says how it ended on
+            // the loop's dial-back inbox (ADR-0057).
+            ServeDecision::DialBack(dial) => serve_runtime.dial_back(dial, dial_backs.clone()),
+            // What the call-off found settles which link takes the grant, and
+            // that goes out before anything decided after the call-off.
+            ServeDecision::CallOffDialBack { waiter, link } => {
+                let found = serve_runtime.call_off_dial_back(waiter);
+                for settled in state
+                    .on_dial_back_call_off(waiter, link, found)
+                    .into_iter()
+                    .rev()
+                {
+                    decisions.push_front(settled);
+                }
             }
         }
     }
@@ -588,6 +744,16 @@ fn read_share_set(
     withheld: &crate::registry_check::WithheldRows,
 ) -> Vec<SharedFileEntry> {
     withheld.offered(registry.list().unwrap_or_default())
+}
+
+/// Refresh the brain's copy of the **Served Downloads** when the cell moved
+/// since the read at `seen` (ADR-0113 rule 5): a level, read before every
+/// decision that answers for a download.
+fn refresh_served(served: &ServedDownloads, seen: &mut u64, state: &mut ServeState) {
+    if let Some(read) = served.read_since(*seen) {
+        *seen = read.version;
+        state.on_served(read.entries);
+    }
 }
 
 /// Register one identified serve connection (accepted *or* dialed): record its
@@ -626,9 +792,6 @@ fn register_serve_connection(
     });
 }
 
-/// Await the next dialed serve connection, or park forever when no dialed
-/// source is wired (download-only / fake adapters), so the select arm never
-/// busy-loops.
 /// The next outcome the follower said of a later session; pending with none.
 async fn recv_session_told(
     rx: &mut Option<mpsc::UnboundedReceiver<AnnounceOutcome>>,
@@ -639,7 +802,10 @@ async fn recv_session_told(
     }
 }
 
-async fn recv_dialed(rx: &mut Option<mpsc::Receiver<ServeConnection>>) -> Option<ServeConnection> {
+/// Await the next dialed serve connection, or park forever when no dialed
+/// source is wired (download-only / fake adapters), so the select arm never
+/// busy-loops.
+async fn recv_dialed(rx: &mut Option<mpsc::Receiver<LinkServeHalf>>) -> Option<LinkServeHalf> {
     match rx {
         Some(rx) => rx.recv().await,
         None => std::future::pending().await,
@@ -689,20 +855,27 @@ async fn send_serve_event(evt_tx: &mpsc::Sender<CoreEvent>, event: ServeEvent) {
     let _ = evt_tx.send(CoreEvent::Serve(event)).await;
 }
 
-/// Read the current credit modifier for every peer rmule has identified, so the
-/// brain can rank its queue by `wait * modifier`. One store read per
-/// peer; the map covers a superset of the waiting set, which is all the queue
-/// needs.
+/// Read the current score modifier for every peer rmule has identified, so the
+/// brain can rank its queue by `wait * modifier`: its credit (ADR-0041), times
+/// the **Reciprocity Factor** when its link's address and its User Hash name
+/// one of the node's **Held Places** (ADR-0116). One store read per peer; the
+/// map covers a superset of the waiting set, which is all the queue needs.
 async fn current_modifiers(
     credit: &SharedCreditStore,
+    held_places: &SharedHeldPlaces,
     identities: &HashMap<PeerEndpoint, PeerIdentity>,
 ) -> HashMap<PeerEndpoint, f64> {
     let store = &**credit;
     identities
         .iter()
         .map(|(peer, identity)| {
-            let modifier = store.modifier(identity.user_hash()).unwrap_or(1.0);
-            (*peer, modifier)
+            let credit = store.modifier(identity.user_hash()).unwrap_or(1.0);
+            let place = if held_places.holds(identity.user_hash(), peer.ip()) {
+                RECIPROCITY_FACTOR
+            } else {
+                1.0
+            };
+            (*peer, credit * place)
         })
         .collect()
 }

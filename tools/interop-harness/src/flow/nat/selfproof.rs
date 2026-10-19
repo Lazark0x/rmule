@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::artifacts::RunLayout;
 use crate::bench_doctor::{
-    BenchDoctor, CAP_BR_NETFILTER, CAP_CONNTRACK, CAP_CONNTRACK_UDP_TIMEOUT, CAP_NFTABLES,
+    CAP_BR_NETFILTER, CAP_CONNTRACK, CAP_CONNTRACK_UDP_TIMEOUT, CAP_NFTABLES,
     CONNTRACK_UDP_TIMEOUT_SECS, DoctorReport, SkipReason,
 };
 use crate::docker::{InternalNetwork, RunContainer};
@@ -161,31 +161,14 @@ pub fn run_natgw_selfproof(options: NatGatewaySelfProofOptions<'_>) -> Result<()
 }
 
 fn drive(bench: &mut Bench, options: &NatGatewaySelfProofOptions<'_>) -> Result<()> {
-    if options.build_images {
-        bench.build_image(
-            "capture",
-            options.capture_image,
-            options.capture_build_context,
-        )?;
-    }
-    // Always rebuilt, like `rmule-tools`: each is a 30 s Debian layer plus two
-    // `COPY`s, so an edited `entrypoint.sh` or `natgw-proof.sh` reaches the
-    // bench without `--build-images`.
-    bench.build_image("natgw", options.natgw_image, options.natgw_build_context)?;
-    bench.build_image(
-        "natprobe",
-        options.natprobe_image,
-        options.natprobe_build_context,
-    )?;
-    // Always rebuilt: it carries the probe subcommand, which is workspace code.
-    bench.build_rmule_tools_image(
-        options.rmule_tools_image,
-        options.rmule_tools_dockerfile,
-        options.rmule_tools_build_context,
-    )?;
-
+    // The doctor decides before anything but its own image is built.
     let suffix = names(options.layout)?;
-    let doctor = BenchDoctor::new(&bench.docker, options.natgw_image, &suffix).examine()?;
+    let doctor = bench.examine_doctor(
+        "natgw",
+        options.natgw_image,
+        options.natgw_build_context,
+        &suffix,
+    )?;
     if let Err(skip) = doctor.require(
         &[
             CAP_NFTABLES,
@@ -197,6 +180,27 @@ fn drive(bench: &mut Bench, options: &NatGatewaySelfProofOptions<'_>) -> Result<
     ) {
         return write_skip(options.layout, &doctor, &skip);
     }
+
+    if options.build_images {
+        bench.build_image(
+            "capture",
+            options.capture_image,
+            options.capture_build_context,
+        )?;
+    }
+    // Always rebuilt, like `natgw`: a 30 s Debian layer plus two `COPY`s, so an
+    // edited `entrypoint.sh` reaches the bench without `--build-images`.
+    bench.build_image(
+        "natprobe",
+        options.natprobe_image,
+        options.natprobe_build_context,
+    )?;
+    // Always rebuilt: it carries the probe subcommand, which is workspace code.
+    bench.build_rmule_tools_image(
+        options.rmule_tools_image,
+        options.rmule_tools_dockerfile,
+        options.rmule_tools_build_context,
+    )?;
 
     let wan_subnet = subnet_cidr(0)?;
     let addresses = Addresses {

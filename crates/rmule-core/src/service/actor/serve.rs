@@ -173,6 +173,9 @@ where
             share_changed_rx,
             dialed_serve_rx: Some(dialed_serve_rx),
             credit: Arc::clone(&self.wiring.credit),
+            // The Held Places every download run publishes (ADR-0116).
+            held_places: self.download_runtime.shared.held_places.clone(),
+            bans: self.wiring.kad_cells.adapters.ban_store.clone(),
             rerank_interval: self.wiring.config.queue_rerank_interval,
             // The live client-UDP front (ADR-0057): the demuxed
             // `0x90` reask stream feeds the serve reply matrix, and
@@ -196,6 +199,7 @@ where
             peer_roster,
             withheld: self.registry_check.withheld.clone(),
             read_failed_tx: Some(self.registry_check.inputs()),
+            served: self.wiring.served_downloads.clone(),
         };
         let serve_span = tracing::info_span!("serve", %bound);
         // The bump rides *outside* the activity's own future: it must be the last thing that

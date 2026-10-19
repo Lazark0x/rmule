@@ -210,3 +210,34 @@ fn golden_settings_remove_confirm_names_the_count() {
         );
     });
 }
+
+#[test]
+fn golden_settings_remove_confirm_scrolls_in_a_short_frame() {
+    let state = listed();
+    let mut view = SettingsView::new();
+    focus(
+        &mut view,
+        &state,
+        &Slot::Dir {
+            dir: PathBuf::from("/srv/media"),
+            role: DirectoryRole::Added,
+        },
+    );
+    view.handle_key(press(KeyCode::Char('x')), &state);
+    let area = ratatui::layout::Rect::new(0, 0, 60, 6);
+    let shown = |view: &mut SettingsView| {
+        crate::golden::render_to_lines(area.width, area.height, |frame| {
+            view.draw(frame, area, &state, &Theme::default_dark(), Instant::now());
+        })
+    };
+    assert_golden(
+        "settings_remove_shared_directory_short",
+        area.width,
+        area.height,
+        |frame| {
+            view.draw(frame, area, &state, &Theme::default_dark(), Instant::now());
+        },
+    );
+    view.handle_key(press(KeyCode::Char('G')), &state);
+    assert!(shown(&mut view).contains("keep it"), "{}", shown(&mut view));
+}

@@ -41,6 +41,8 @@ pub(super) enum RegistryMessage {
     RowsWanted(std::sync::mpsc::Sender<Vec<SharedFileEntry>>),
     /// A ruling of the Registry Check.
     Check(CheckReport),
+    /// An **Offer Check**'s walk of a download's parts (ADR-0113).
+    OfferChecked(super::offer_check::OfferChecked),
 }
 
 /// The sender both workers report on; the actor holds one for its whole
@@ -77,6 +79,12 @@ impl RegistryCheckHandle {
         match tokio::time::timeout(grace, joined).await {
             Ok(Ok(Err(_))) => tracing::error!("the registry check ended in a panic"),
             Ok(Ok(Ok(()))) => {}
+            // The runtime ended before the join ran: the worker was told to
+            // stop and ends alone, which is what a front end that skips Quit
+            // looks like, not a failure of the check.
+            Ok(Err(error)) if error.is_cancelled() => {
+                tracing::warn!("the runtime ended before the registry check was joined")
+            }
             Ok(Err(error)) => tracing::error!(%error, "the registry check's join failed"),
             Err(_) => tracing::warn!("the registry check did not end within its grace"),
         }
@@ -180,6 +188,7 @@ where
                 Err(error) => tracing::warn!(%error, "registry unreadable for a worker"),
             },
             RegistryMessage::Check(report) => self.on_check_report(report).await,
+            RegistryMessage::OfferChecked(report) => self.on_offer_checked(report).await,
         }
     }
 
@@ -205,6 +214,9 @@ where
                     self.wiring.file_known.share(row.file_hash);
                 }
                 self.share_set_changed();
+                // The downloads a restart found queued or paused are offered
+                // once their parts are read again, behind the start look.
+                self.start_offer_checks();
             }
             CheckReport::WatchUnavailable(_) => {
                 send_event(&self.evt_tx, ServeEvent::SharesUnwatched.into()).await;
@@ -279,12 +291,20 @@ where
         send_event(&self.evt_tx, ServeEvent::FileOffered { file_hash }.into()).await;
     }
 
-    /// A finished download's file joins the registry if it completed
-    /// (ADR-0031): offered, or withheld as refused when it lies under an
-    /// entry the guards refuse (ADR-0101) — a share-set change either way.
-    pub(super) async fn share_completed(&mut self, download_id: DownloadId) {
+    /// A completing download's file in place at `path` joins the registry
+    /// (ADR-0031, ADR-0115): offered, or withheld as refused when it lies
+    /// under an entry the guards refuse (ADR-0101). `true` when the row was
+    /// written — a share-set change either way, whose trigger is the
+    /// caller's to fire once its download's Served Download has ended too
+    /// (ADR-0113).
+    pub(super) async fn share_completion(
+        &mut self,
+        download_id: DownloadId,
+        path: &std::path::Path,
+    ) -> bool {
         let shared = auto_share_completed_download(
             download_id,
+            path,
             &*self.wiring.store,
             &*self.wiring.registry,
             |path| self.directories.refuses(path),
@@ -293,23 +313,28 @@ where
         )
         .await;
         match shared {
-            Some(AutoShared::Offered(file_hash)) => self.row_shared(file_hash),
+            Some(AutoShared::Offered(file_hash)) => self.row_written(file_hash),
             Some(AutoShared::Refused(file_hash)) => {
                 // Whatever row it replaced is no longer offered either.
                 self.wiring.file_known.unshare(file_hash);
-                self.share_set_changed();
                 self.registry_check.tell(CheckInput::RowsChanged);
             }
             None => {}
         }
+        shared.is_some()
     }
 
     /// A row was written for `file_hash`: its content is on disk now and
     /// offered, whatever held it before.
     pub(super) fn row_shared(&self, file_hash: FileHash) {
+        self.row_written(file_hash);
+        self.share_set_changed();
+    }
+
+    /// [`Self::row_shared`] less the trigger.
+    fn row_written(&self, file_hash: FileHash) {
         self.registry_check.withheld.lift(file_hash);
         self.wiring.file_known.share(file_hash);
-        self.share_set_changed();
         self.registry_check.tell(CheckInput::RowsChanged);
     }
 

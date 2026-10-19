@@ -1,0 +1,579 @@
+//! The **Peer Links** (ADR-0107, "One peer, one link"): every live,
+//! identified link to a peer — accepted, dialed or adopted — filed under each
+//! name it proves, and the downloads that ride it one at a time.
+//!
+//! aMule holds one client per peer, found by address and port, then by
+//! `(low_id, server)`, then by user hash (`FindMatchingClient`,
+//! `ClientList.cpp:253-347`), and asks it for every file over the socket it
+//! holds (`BaseClient.cpp:1489-1496`): one requested file at a time, the
+//! others waiting on its A4AF list (`DownloadClient.cpp:496-507`). A second
+//! socket from the same address and port makes it drop the first
+//! (`ClientList.cpp:400-403`), and whatever the first carried ends. So a
+//! download looks the peer up under every name its source has before it
+//! dials or asks for a callback, and rides — or waits on — the link it finds.
+//!
+//! A dial is filed before its socket, as a **Dial in Flight**, in the same
+//! step as the look-up that found nothing: aMule's client is one object from
+//! the moment it starts connecting (`DownloadQueue.cpp:610-704`), so a second
+//! download of the peer waits on the dial rather than racing it. A dial that
+//! fails before the hello is a dead source for every download waiting on it
+//! (`BaseClient.cpp:1340-1346`, `:419`, `DownloadQueue.cpp:763-786`). A
+//! download's dial whose hello has not gone out yields to the peer's own link
+//! filed under one of its names, and its downloads move onto that link
+//! (ADR-0107 invariant 7); a name a link gives up goes back to the newest live
+//! link that proves it.
+
+use std::collections::HashMap;
+use std::net::Ipv4Addr;
+use std::sync::{Arc, Mutex};
+
+use rmule_peer::{ConnectionCommand, PeerCommand, PeerEvent, PeerIdentity};
+use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint, UserHash};
+use tokio::sync::{mpsc, oneshot};
+
+use super::peer_transfer::{PeerWorkerCommand, PeerWorkerEvent};
+use crate::server_list::SharedServerListStore;
+use crate::service::{DialEnd, LinkTurn};
+
+mod awaited_grants;
+mod far_end;
+mod overtaking;
+mod riders;
+mod serve_hold;
+
+pub(crate) use awaited_grants::{AwaitedGrant, GrantSender, LinkOffer};
+pub use far_end::FarEnd;
+pub(super) use far_end::LinkConnection;
+pub(super) use overtaking::Moving;
+pub(super) use riders::Riders;
+pub(super) use serve_hold::ServeHold;
+
+/// One name a Peer Link is filed under: an **Ask Name** the link proves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum LinkName {
+    /// Where a dial would reach the peer: the link's own address with the
+    /// hello's listen port.
+    Endpoint(PeerEndpoint),
+    /// A Low ID and the server that assigned it, where a callback reaches
+    /// the peer.
+    Callback {
+        /// The server the peer is logged in to.
+        server: Ipv4Endpoint,
+        /// The id that server gave it.
+        low_id: ClientId,
+    },
+    /// The User Hash the peer's hello named.
+    User(UserHash),
+}
+
+impl LinkName {
+    /// Every name the link from `remote` proves for the peer `identity`
+    /// reads: its dial endpoint, its User Hash, and — for a Low ID with a
+    /// server — its callback. An IPv4 claim on an IPv6 link is not one: the
+    /// peer is a source at its socket's address (ADR-0107 invariant 10).
+    pub(crate) fn of(remote: PeerEndpoint, identity: &PeerIdentity) -> Vec<Self> {
+        let mut names = vec![
+            Self::Endpoint(remote.with_port(identity.tcp_port())),
+            Self::User(identity.user_hash()),
+        ];
+        let low_id = identity.client_id();
+        if low_id.is_low_id()
+            && low_id.as_u32() != 0
+            && let Some(server) = identity.connected_server()
+        {
+            names.push(Self::Callback { server, low_id });
+        }
+        names
+    }
+
+    /// The names a link from `remote` proves once its hello is `identity`
+    /// ([`of`](Self::of)), and — for a link rmule dialed — where it dialed,
+    /// which reaches the peer whatever listen port its hello names.
+    pub(crate) fn proven(
+        remote: PeerEndpoint,
+        identity: &PeerIdentity,
+        dialed_at: Option<PeerEndpoint>,
+    ) -> Vec<Self> {
+        let mut names = Self::of(remote, identity);
+        if let Some(dialed_at) = dialed_at
+            && !names.contains(&Self::Endpoint(dialed_at))
+        {
+            names.push(Self::Endpoint(dialed_at));
+        }
+        names
+    }
+}
+
+/// The Peer Links, each under every name it proves. One cell shared by the
+/// accept road and every dial (ADR-0048 "Identity ownership"), with the
+/// server list a Low ID's server is checked against before it becomes a name.
+#[derive(Clone, Default)]
+pub(crate) struct SharedPeerLinks {
+    book: Arc<Mutex<Book>>,
+    servers: Option<SharedServerListStore>,
+}
+
+#[derive(Default)]
+struct Book {
+    filed: u64,
+    links: HashMap<LinkName, Filed>,
+    /// Every live filing and the names it proves, whether it holds them or a
+    /// link filed later does: where a name goes back to.
+    live: HashMap<u64, Proven>,
+    /// The download dials whose hello has not gone out, told when the peer's
+    /// own link takes one of their names (ADR-0107 invariant 7).
+    yielding: HashMap<u64, oneshot::Sender<FoundLink>>,
+    awaited: HashMap<LinkName, Vec<awaited_grants::Awaiting>>,
+}
+
+/// One live filing: the link and every name it proves.
+struct Proven {
+    filed: Filed,
+    names: Vec<LinkName>,
+}
+
+#[derive(Clone)]
+struct Filed {
+    filing: u64,
+    remote: PeerEndpoint,
+    join_tx: mpsc::Sender<LinkJoin>,
+}
+
+/// A download's ask to ride a link: seated at once when nobody rides it,
+/// told it waits otherwise, and answered at its turn — or with the cause of
+/// the dial it waited on, when that dial failed before the hello.
+pub(super) struct LinkJoin {
+    half: DownloadHalf,
+    waiting: oneshot::Sender<()>,
+    seated: oneshot::Sender<Seat>,
+}
+
+/// What a waiting download is answered.
+enum Seat {
+    /// Its turn: the peer as the link knows it.
+    Riding(Box<PeerIdentity>),
+    /// The Dial in Flight it waited on failed before the hello, for this
+    /// cause.
+    DialEnded(DialEnd),
+}
+
+/// A download's half of a link: where the link's events reach it and where
+/// its commands come from.
+pub(super) struct DownloadHalf {
+    /// The link's requester events and its close, to the worker.
+    pub(super) requester_tx: mpsc::Sender<PeerEvent>,
+    /// The identity revisions and source asks the download keeps.
+    pub(super) worker_evt_tx: mpsc::Sender<PeerWorkerEvent>,
+    /// The worker's commands, framed onto the link; closed when it is done.
+    pub(super) peer_cmd_rx: mpsc::Receiver<PeerCommand>,
+}
+
+/// A link a download found under one of its source's names, not yet joined.
+pub(crate) struct FoundLink {
+    /// The link's remote end.
+    pub(crate) remote: PeerEndpoint,
+    join_tx: mpsc::Sender<LinkJoin>,
+}
+
+/// A link a download took its turn on: the peer as the link knows it, and
+/// the download's two ends of the link.
+pub(crate) struct JoinedLink {
+    pub(crate) identity: PeerIdentity,
+    pub(crate) peer_cmd_tx: mpsc::Sender<PeerCommand>,
+    pub(crate) requester_rx: mpsc::Receiver<PeerEvent>,
+}
+
+/// How a download's ask to ride a link ended.
+pub(crate) enum Turn {
+    /// The download rides the link now.
+    Seated(Box<JoinedLink>),
+    /// The link ended before the download's turn, and before it was told it
+    /// waits: it looks the peer up again.
+    LinkEnded,
+    /// The link the download waited on ended before its turn: it is handed
+    /// back to its download, whose source stands on the peer's queue and is
+    /// asked at the reask, never dialed then (ADR-0107 invariant 9).
+    HandedBack,
+    /// The Dial in Flight it waited on failed before the hello: the source is
+    /// gone for this download too, for the dial's cause.
+    DialEnded(DialEnd),
+    /// The download's run let the worker go while it waited.
+    Stopped,
+}
+
+/// What a download about to dial finds under its source's names.
+pub(super) enum Reach {
+    /// A link — live, or a Dial in Flight — to ride or wait on.
+    Found(FoundLink),
+    /// Nothing: the download dials, its dial filed already.
+    Dial(DialInFlight),
+}
+
+/// A download's dial, filed under the names it was looked up by from before
+/// its socket until the hello refiles it (ADR-0107 invariant 11). Dropped
+/// without [`failed`](Self::failed), the downloads waiting on it dial as
+/// before.
+pub(crate) struct DialInFlight {
+    filing: Filing,
+    joins: mpsc::Receiver<LinkJoin>,
+    /// Where a download's dial hears that the peer's own link took one of its
+    /// names before its hello went out; `None` for the serve side's
+    /// dial-back, which the serve side calls off itself.
+    overtaken: Option<oneshot::Receiver<FoundLink>>,
+}
+
+impl DialInFlight {
+    /// The socket is up and the hello goes out with it: the dial no longer
+    /// yields, and the link's router takes the filing and the joins.
+    pub(super) fn into_parts(self) -> (Filing, mpsc::Receiver<LinkJoin>) {
+        let Self { filing, joins, .. } = self;
+        filing.hello_out();
+        (filing, joins)
+    }
+
+    /// The dial failed before any link: unfile it, and retire every download
+    /// waiting on it with `cause`.
+    pub(super) fn failed(self, cause: DialEnd) {
+        let Self {
+            filing, mut joins, ..
+        } = self;
+        drop(filing);
+        joins.close();
+        while let Ok(join) = joins.try_recv() {
+            let _ = join.seated.send(Seat::DialEnded(cause));
+        }
+    }
+}
+
+impl SharedPeerLinks {
+    /// Peer Links that check a changed Low ID's server against `servers`.
+    pub(crate) fn knowing(servers: SharedServerListStore) -> Self {
+        Self {
+            book: Arc::default(),
+            servers: Some(servers),
+        }
+    }
+
+    /// What a link answers an `OP_CHANGE_CLIENT_ID` offer of `client_id` on
+    /// `server`: aMule takes a Low ID only for a server in its list, at the
+    /// port it lists, and a High ID with the server when it knows it
+    /// (`ClientTCPSocket.cpp:773-787`). `None` leaves the peer as it was.
+    pub(crate) fn take_client_id(
+        &self,
+        client_id: ClientId,
+        server: Ipv4Addr,
+    ) -> Option<ConnectionCommand> {
+        let known = self.known_server(server);
+        (client_id.is_high_id() || known.is_some()).then_some(ConnectionCommand::TakeClientId {
+            client_id,
+            server: known,
+        })
+    }
+
+    /// The server the list holds at `ip`, with the port it lists. A
+    /// DNS-named row is no address a peer can name.
+    fn known_server(&self, ip: Ipv4Addr) -> Option<Ipv4Endpoint> {
+        let servers = self.servers.as_ref()?.servers().ok()?;
+        servers.into_iter().find_map(|server| {
+            let at = server.endpoint.host().parse::<Ipv4Addr>().ok()?;
+            (at == ip).then(|| Ipv4Endpoint::new(at, server.endpoint.port()))
+        })
+    }
+
+    /// File an accepted link from `remote` under `names` for as long as the
+    /// returned filing lives. A link filed later under one of the names takes
+    /// that name: aMule keeps a client on its newest socket. A download's
+    /// dial whose hello has not gone out yields to it, and the downloads
+    /// moving over from such dials arrive on the returned [`Moving`].
+    pub(super) fn file(
+        &self,
+        remote: PeerEndpoint,
+        names: Vec<LinkName>,
+    ) -> (Filing, mpsc::Receiver<LinkJoin>, Moving) {
+        let mut book = self.book.lock().expect("peer links lock");
+        self.file_in(&mut book, remote, names)
+    }
+
+    /// The link filed under the first of `names` that names one, or — when
+    /// none does — a download's dial at `dial_at`, filed under `names` in the
+    /// same step so a download looking the peer up next finds it. Until its
+    /// hello goes out the dial yields to the peer's own link
+    /// ([`DialInFlight::overtaken`]).
+    pub(super) fn reach(&self, dial_at: PeerEndpoint, names: &[LinkName]) -> Reach {
+        self.reach_with(dial_at, names, true)
+    }
+
+    /// [`reach`](Self::reach) for the serve side's dial-back to grant a slot
+    /// on (ADR-0057): its dial never yields here, as the serve side calls it
+    /// off itself when the waiter comes back on a link of its own.
+    pub(super) fn reach_for_grant(&self, dial_at: PeerEndpoint, names: &[LinkName]) -> Reach {
+        self.reach_with(dial_at, names, false)
+    }
+
+    fn reach_with(&self, dial_at: PeerEndpoint, names: &[LinkName], yields: bool) -> Reach {
+        let mut book = self.book.lock().expect("peer links lock");
+        if let Some(found) = Self::found_in(&book, names) {
+            return Reach::Found(found);
+        }
+        let (filing, joins, _) = self.file_in(&mut book, dial_at, names.to_vec());
+        let overtaken = yields.then(|| {
+            let (tell, told) = oneshot::channel();
+            book.yielding.insert(filing.filing, tell);
+            told
+        });
+        Reach::Dial(DialInFlight {
+            filing,
+            joins,
+            overtaken,
+        })
+    }
+
+    fn file_in(
+        &self,
+        book: &mut Book,
+        remote: PeerEndpoint,
+        names: Vec<LinkName>,
+    ) -> (Filing, mpsc::Receiver<LinkJoin>, Moving) {
+        let (join_tx, join_rx) = mpsc::channel(4);
+        book.filed += 1;
+        let filing = book.filed;
+        let filed = Filed {
+            filing,
+            remote,
+            join_tx,
+        };
+        let mut took_from = Vec::new();
+        for name in &names {
+            if let Some(held) = book.links.insert(*name, filed.clone()) {
+                took_from.push(held.filing);
+            }
+        }
+        let moving = book.overtake(&took_from, &filed);
+        book.live.insert(filing, Proven { filed, names });
+        let filing = Filing {
+            links: self.clone(),
+            filing,
+        };
+        (filing, join_rx, moving)
+    }
+
+    /// The link filed under the first of `names` that names one.
+    pub(crate) fn find(&self, names: &[LinkName]) -> Option<FoundLink> {
+        let book = self.book.lock().expect("peer links lock");
+        Self::found_in(&book, names)
+    }
+
+    fn found_in(book: &Book, names: &[LinkName]) -> Option<FoundLink> {
+        names.iter().find_map(|name| {
+            book.links.get(name).map(|filed| FoundLink {
+                remote: filed.remote,
+                join_tx: filed.join_tx.clone(),
+            })
+        })
+    }
+}
+
+impl FoundLink {
+    /// Ask to ride the link, reporting to `worker_evt_tx`, and wait for the
+    /// turn: at once when nobody rides it, after the downloads ahead of it
+    /// otherwise. While it waits it says so once, and a `Shutdown` — or the
+    /// run dropping the worker — on `commands` gives the place up.
+    pub(crate) async fn take_turn(
+        self,
+        worker_evt_tx: &mpsc::Sender<PeerWorkerEvent>,
+        commands: &mut mpsc::Receiver<PeerWorkerCommand>,
+    ) -> Turn {
+        self.take_turn_ahead_of(None, worker_evt_tx, commands).await
+    }
+
+    /// [`take_turn`](Self::take_turn) for a download whose dial yielded to
+    /// this link (ADR-0107 invariant 7): the downloads that waited on the dial,
+    /// `behind`, follow it onto the link in their order.
+    pub(super) async fn take_turn_ahead_of(
+        self,
+        behind: Option<mpsc::Receiver<LinkJoin>>,
+        worker_evt_tx: &mpsc::Sender<PeerWorkerEvent>,
+        commands: &mut mpsc::Receiver<PeerWorkerCommand>,
+    ) -> Turn {
+        let (peer_cmd_tx, peer_cmd_rx) = mpsc::channel(16);
+        let (requester_tx, requester_rx) = mpsc::channel(64);
+        let (waiting, told_waiting) = oneshot::channel();
+        let (seated, turn) = oneshot::channel();
+        let half = DownloadHalf {
+            requester_tx,
+            worker_evt_tx: worker_evt_tx.clone(),
+            peer_cmd_rx,
+        };
+        let join = LinkJoin {
+            half,
+            waiting,
+            seated,
+        };
+        let Self { join_tx, .. } = self;
+        if join_tx.send(join).await.is_err() {
+            return Turn::LinkEnded;
+        }
+        // A waiter the link ended under before it joined looks the peer up
+        // again; the last of a dial's movers lets the link's hold on an
+        // unasked grant go.
+        if let Some(mut behind) = behind {
+            while let Ok(waiter) = behind.try_recv() {
+                if join_tx.send(waiter).await.is_err() {
+                    break;
+                }
+            }
+        }
+        drop(join_tx);
+        let mut told_waiting = Some(told_waiting);
+        let mut waited = false;
+        let mut turn = turn;
+        loop {
+            tokio::select! {
+                seat = &mut turn => {
+                    let identity = match seat {
+                        Ok(Seat::Riding(identity)) => *identity,
+                        Ok(Seat::DialEnded(cause)) => return Turn::DialEnded(cause),
+                        // Told it waits, though the word may still sit
+                        // unread beside the link's end.
+                        Err(_) if waited || told_waiting.as_mut().is_some_and(|told| told.try_recv().is_ok()) => {
+                            return Turn::HandedBack;
+                        }
+                        Err(_) => return Turn::LinkEnded,
+                    };
+                    let _ = worker_evt_tx
+                        .send(PeerWorkerEvent::LinkShared { turn: LinkTurn::Riding })
+                        .await;
+                    return Turn::Seated(Box::new(JoinedLink {
+                        identity,
+                        peer_cmd_tx,
+                        requester_rx,
+                    }));
+                }
+                told = recv_once(&mut told_waiting) => {
+                    if told.is_ok() {
+                        waited = true;
+                        let _ = worker_evt_tx
+                            .send(PeerWorkerEvent::LinkShared { turn: LinkTurn::Waiting })
+                            .await;
+                    }
+                }
+                command = commands.recv() => match command {
+                    None | Some(PeerWorkerCommand::Shutdown { .. }) => return Turn::Stopped,
+                    // Nothing else is asked of a worker that has not
+                    // connected: the brain waits for its `Connected`.
+                    Some(_) => {}
+                },
+            }
+        }
+    }
+}
+
+/// The next join a filed link takes; never resolves once the link holds no
+/// name any more.
+pub(super) async fn recv_join(joins: &mut Option<mpsc::Receiver<LinkJoin>>) -> Option<LinkJoin> {
+    match joins {
+        Some(joins) => joins.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+async fn recv_once(rx: &mut Option<oneshot::Receiver<()>>) -> Result<(), ()> {
+    match rx.as_mut() {
+        Some(inner) => {
+            let told = inner.await.map_err(|_| ());
+            *rx = None;
+            told
+        }
+        None => std::future::pending().await,
+    }
+}
+
+/// One link's place in the book, given up when the link ends — name by name,
+/// unless a newer link took the name since.
+pub(super) struct Filing {
+    links: SharedPeerLinks,
+    filing: u64,
+}
+
+impl Filing {
+    /// File the link under `names` instead of what it was filed under: a
+    /// dial's hello proved them, or the peer's identity moved (a Low ID it
+    /// changed to). A name a link filed later holds stays with it: aMule
+    /// attaches a socket to a client it knows only at the hello of a socket
+    /// the peer opened (`ClientTCPSocket.cpp:391`), replacing the one it was
+    /// connecting (`ClientList.cpp:400-403`), so a dial's hello takes back
+    /// nothing the peer's own link took during the dial (ADR-0107
+    /// invariant 7).
+    pub(super) fn refile(&mut self, names: Vec<LinkName>) {
+        let Ok(mut book) = self.links.book.lock() else {
+            return;
+        };
+        let Some(proven) = book.live.get_mut(&self.filing) else {
+            return;
+        };
+        if proven.names == names {
+            return;
+        }
+        let filed = proven.filed.clone();
+        let given_up: Vec<LinkName> = std::mem::replace(&mut proven.names, names.clone())
+            .into_iter()
+            .filter(|name| !names.contains(name))
+            .collect();
+        release(&mut book, self.filing, &given_up);
+        for name in &names {
+            let later = book
+                .links
+                .get(name)
+                .is_some_and(|held| held.filing > self.filing);
+            if !later {
+                book.links.insert(*name, filed.clone());
+            }
+        }
+    }
+
+    /// The dial's hello went out with its socket: it no longer yields.
+    fn hello_out(&self) {
+        if let Ok(mut book) = self.links.book.lock() {
+            book.yielding.remove(&self.filing);
+        }
+    }
+}
+
+impl Drop for Filing {
+    fn drop(&mut self) {
+        if let Ok(mut book) = self.links.book.lock() {
+            book.yielding.remove(&self.filing);
+            if let Some(proven) = book.live.remove(&self.filing) {
+                release(&mut book, self.filing, &proven.names);
+            }
+        }
+    }
+}
+
+/// Give up `names` where `filing` holds them: each goes back to the newest
+/// other live link that proves it, so a link whose names a later link took is
+/// filed again when that link ends.
+fn release(book: &mut Book, filing: u64, names: &[LinkName]) {
+    for name in names {
+        if book
+            .links
+            .get(name)
+            .is_none_or(|held| held.filing != filing)
+        {
+            continue;
+        }
+        let next = book
+            .live
+            .iter()
+            .filter(|(other, proven)| **other != filing && proven.names.contains(name))
+            .max_by_key(|(other, _)| **other)
+            .map(|(_, proven)| proven.filed.clone());
+        match next {
+            Some(next) => book.links.insert(*name, next),
+            None => book.links.remove(name),
+        };
+    }
+}
+
+#[cfg(test)]
+mod tests;

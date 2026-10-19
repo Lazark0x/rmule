@@ -10,7 +10,7 @@ members = [
     "crates/rmule-primitives",
     "crates/rmule-store",
     "crates/rmule-testkit",
-    "crates/rmule-winsock",
+    "crates/rmule-os",
     "crates/rmule-words",
     "tools/interop-harness",
     "tools/rmule-tools",
@@ -50,23 +50,42 @@ crab-nat = { package = "crab_nat", version = "0.8", default-features = false }
 crypto-bigint = "0.5"
 # Confined to rmule-core's `directory_scan/fs.rs`: `statfs` names the filesystem a
 # file lies on, so the Download Directory Scan carries a hash across a rename only
-# where file identities are stable (ADR-0104, "What the scan remembers").
-# Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT, already in the graph
-# through `tempfile`, `fs` only: no crate added.
-rustix = { version = "1", default-features = false, features = ["fs", "std"] }
+# where file identities are stable (ADR-0104, "What the scan remembers"). Also
+# `rmule-os`'s Linux punch, a safe `fallocate(PUNCH_HOLE | KEEP_SIZE)`
+# (ADR-0111), and its exclusive rename on Linux and macOS, a safe
+# `renameat_with(NOREPLACE)` (ADR-0115). Apache-2.0 WITH LLVM-exception OR
+# Apache-2.0 OR MIT, already in the graph through `tempfile`, `fs` only: no
+# crate added.
+rustix = { version = "1", default-features = false, features = ["fs", "process", "std"] }
 # Windows only, confined to rmule-core's `file_key.rs`: the volume serial number
 # and file index `GetFileInformationByHandle` reports, which stable std does not
 # expose, behind a safe call the `unsafe` ban allows. Unlicense OR MIT, already
 # in the Windows graph through `notify` -> `walkdir` -> `same-file`: no crate
 # added.
 winapi-util = "0.1.11"
-# Windows only, confined to `rmule-winsock`: `WSAIoctl` with
-# `SIO_UDP_CONNRESET` / `SIO_UDP_NETRESET`, which neither std nor socket2
-# exposes. MIT OR Apache-2.0, already in the Windows graph through socket2 and
-# mio with both features on: no crate added.
-windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock", "Win32_System_IO"] }
+# Windows only, confined to `rmule-os`: `WSAIoctl` with `SIO_UDP_CONNRESET` /
+# `SIO_UDP_NETRESET`, which neither std nor socket2 exposes, and the part file's
+# sparse flag, punch and allocated size (`DeviceIoControl` with
+# `FSCTL_SET_SPARSE` / `FSCTL_SET_ZERO_DATA`, `GetFileInformationByHandleEx`,
+# ADR-0111), the completion move's exclusive rename (`MoveFileExW`, ADR-0115),
+# and Preview's Default App, `AssocQueryStringW` (`Win32_UI_Shell`,
+# ADR-0114). MIT OR Apache-2.0, already in the Windows graph through socket2 and
+# mio: no crate added.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinSock",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_UI_Shell",
+] }
 data-encoding = "2"
 ed2k = "1"
+# Confined to rmule (the app): the Player Command splits into words by POSIX
+# rules, so Preview hands its player arguments and never a shell line
+# (ADR-0114). MIT OR Apache-2.0, already in the graph through `cc`: no crate
+# added.
+shlex = "1.3"
 flate2 = "1"
 getrandom = "0.4"
 # Confined to rmule (the app) and rmule-primitives: the accent fold in a Table Sort's
@@ -84,6 +103,24 @@ icu_normalizer = { version = "2.2", default-features = false, features = ["compi
 # blocking client is used instead, on `spawn_blocking`, which is also emule-qt's
 # own shape (blocking SOAP isolated on a worker thread).
 igd-next = "0.17"
+# Confined to rmule-net's UPnP backend: the `GetSpecificPortMappingEntry` check
+# a release asks before `DeletePortMapping` (ADR-0086, "A release takes down
+# only rmule's own mapping"), which `igd-next` does not issue. The same blocking
+# HTTP client and XML reader `igd-next` speaks every other action through, at
+# its versions and features: MPL-2.0 (reviewed above) and MIT, already in the
+# graph through `igd-next`: no crate added.
+attohttpc = { version = "0.30", default-features = false }
+xmltree = "0.10"
+# macOS only, confined to `rmule-os`: `fcntl(F_PUNCHHOLE)` and `fpunchhole_t`,
+# the part file's punch on APFS (ADR-0111), which neither std nor `rustix`
+# exposes. MIT OR Apache-2.0, already in the graph through tokio and mio: no
+# crate added.
+libc = "0.2"
+# macOS only, confined to `rmule-os`: the Core Foundation strings, URL path and
+# release around Preview's Default App lookup through LaunchServices
+# (ADR-0114). MIT OR Apache-2.0, already in the graph through chrono ->
+# iana-time-zone: no crate added.
+core-foundation-sys = "0.8.7"
 # Confined to rmule-net: the uTP (BEP-29) engine behind ADR-0091's NAT-T
 # Tunnel. **Apache-2.0** (read from the crate manifest's `license` field, not
 # assumed — it is Apache-2.0-*only*, no MIT half), which GPL-3.0-or-later
@@ -135,12 +172,12 @@ quinn-proto = { version = "0.11", default-features = false, features = ["rustls-
 # **MIT OR Apache-2.0** (manifest). The 2048-bit key itself comes from the `rsa`
 # crate already in the tree — ring cannot generate RSA keys, only sign with one
 # — so rcgen adds a certificate writer and not a second crypto stack.
-rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 # Confined to rmule-net: the QUIC handshake's TLS 1.3 parameters and the
 # accept-anything verifier ADR-0091 pins. **Apache-2.0 OR ISC OR MIT**
 # (manifest). Reached through `quinn`, but named directly because rmule writes
 # its own `ServerCertVerifier` and cipher/group order.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 percent-encoding = "2"
 postcard = { version = "1", default-features = false, features = ["alloc"] }
 predicates = "3"

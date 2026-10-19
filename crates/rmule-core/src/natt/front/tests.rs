@@ -25,6 +25,7 @@ use crate::natt::RendezvousOffer;
 use crate::natt::acting::ACTING_MIN_INTERVAL;
 use crate::natt::requester::HINT_TIMEOUT;
 
+mod admission;
 mod held;
 mod introduction_and_attempts;
 mod lifecycle;
@@ -220,6 +221,7 @@ impl Harness {
                 admit: crate::adapters::SharedTunnelAdmit::default(),
                 claims: claims.clone(),
                 peer_pin: crate::adapters::SharedPeerPin::default(),
+                roster: crate::peer_roster::SharedPeerRoster::default(),
                 diagnostics: diagnostics.clone(),
                 events: None,
                 prediction: None,
@@ -288,6 +290,7 @@ impl Harness {
         let callback = crate::adapters::CallbackKey {
             server: None,
             low_id,
+            kad_port: None,
         };
         let (retire_tx, retire_rx) = mpsc::channel(4);
         let claim = self

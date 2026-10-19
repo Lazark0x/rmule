@@ -2,8 +2,8 @@
 //!
 //! Reads `RMULE_LIVE_TRANSFER_PEER` (ipv4:port) and
 //! `RMULE_LIVE_TRANSFER_FILE` (ed2k file link) from the environment,
-//! opens a `rmule_net::peer::Connection`, issues `RequestParts` for
-//! part 0, accumulates bytes, verifies the `Md4` (`ed2k::Ed2kBlue`)
+//! opens a `rmule_net::peer::Connection`, asks the hash set and issues
+//! `RequestParts` for part 0, accumulates bytes, verifies the `Md4` (`ed2k::Ed2kBlue`)
 //! part hash against `HashSetReceived.part_hashes[0]`, writes the
 //! verified bytes to a tempfile, and prints a summary.
 //!
@@ -70,6 +70,12 @@ async fn main() -> Result<()> {
     while let Some(event) = conn.next_event().await {
         match event {
             PeerEvent::Connection(ConnectionEvent::Identified { .. }) => {
+                // The session asks a hash set only when told (ADR-0025).
+                conn.send(PeerCommand::Requester(RequesterCommand::RequestHashSet {
+                    file_hash: file.file_hash,
+                }))
+                .await
+                .ok();
                 conn.send(PeerCommand::Requester(RequesterCommand::RequestParts {
                     file_hash: file.file_hash,
                     file_size: file.size,

@@ -96,3 +96,25 @@ fn empty_bitmap_for_zero_parts() {
     assert_eq!(bitmap.iter_present().count(), 0);
     assert_eq!(bitmap.encode(), Vec::<u8>::new());
 }
+
+/// Every status is read against the file's real parts: an exact multiple's
+/// phantom bit never reads as a part held or lacked, a count the file has not
+/// got is no status at all, and a zero count holds every part.
+#[test]
+fn advertised_parts_reads_a_status_against_the_files_real_parts() {
+    use rmule_primitives::ED2K_PART_SIZE;
+
+    let bitmap = |parts: u32, present: &[u8]| {
+        let byte = present.iter().fold(0u8, |byte, &i| byte | 1 << i);
+        PartBitmap::decode(parts, &[byte]).unwrap()
+    };
+    let size = 2 * ED2K_PART_SIZE;
+    for wire in [bitmap(3, &[0, 2]), bitmap(3, &[0])] {
+        assert_eq!(wire.advertised_parts(size), Some(bitmap(2, &[0])));
+    }
+    assert_eq!(bitmap(2, &[0, 1]).advertised_parts(size), None);
+    assert_eq!(
+        PartBitmap::complete_source_sentinel().advertised_parts(size),
+        Some(bitmap(2, &[0, 1])),
+    );
+}

@@ -19,7 +19,11 @@
 //!    user with a persisted list is not a cold start, so the fetch is skipped.
 //!    A *failed* fetch does not abort or retry (amuled is one-shot: a failed
 //!    cold-start fetch waits for the user) — the joins still proceed, the eD2k
-//!    side simply idle with an empty list.
+//!    side simply idle with an empty list. Then, iff its switch is on, the
+//!    **server.met auto-update walk** (ADR-0065): every configured URL in
+//!    order over the list as loaded, one failure not stopping it, installed
+//!    once, and each URL's outcome reported — aMule's `CServerList::Init`
+//!    running `AutoUpdate` after its load (`ServerList.cpp:77-78`).
 //! 3. **Kad seed resolution** ([`acquire_kad_seeds`]) — the same shape on the
 //!    Kad side, gated only on the Kad switch: read the persisted routing table
 //!    (`nodes.dat`, the file the running node writes), and only if *nothing*
@@ -77,7 +81,10 @@ use rmule_primitives::ServerEndpoint;
 
 use crate::adapters::KadEnableConfig;
 use crate::error::CoreError;
-use crate::server_list::{ServerListStore, acquire_server_met, install_server_met_plan};
+use crate::server_list::{
+    AutoUpdateFetch, ServerListStore, acquire_server_met, acquire_server_met_walk,
+    install_server_met_plan,
+};
 use crate::service::{Core, CoreCommand, ServerListCommand};
 
 pub use kad_seeds::{KadSeedOutcome, SeedReadFault, acquire_kad_seeds};
@@ -122,6 +129,20 @@ pub enum FirstRunFetch {
     Failed(ServerMetPipelineError),
 }
 
+/// What the server.met auto-update walk did (ADR-0065) — the second half of
+/// step 2.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AutoUpdateOutcome {
+    /// Its switch is off (the default, as aMule's `AutoServerlist`).
+    Skipped,
+    /// It walked every configured URL in order: each with what it gave. An
+    /// empty list means no URL is configured.
+    Walked {
+        /// Each URL walked, with what it gave.
+        fetched: Vec<(String, AutoUpdateFetch)>,
+    },
+}
+
 /// The observable outcome of the Join Sequence — what a caller logs and a test
 /// asserts on. The dispatched join *commands* are proven separately (against a
 /// recording sink); this is the resolved state after the sequence ran.
@@ -129,9 +150,11 @@ pub enum FirstRunFetch {
 pub struct JoinOutcome {
     /// What the first-run server.met fetch did (step 2).
     pub first_run: FirstRunFetch,
-    /// The managed server list after the first-run hook — the exact rows the
-    /// eD2k join handed core (empty when a fetch was skipped or failed on a
-    /// cold start).
+    /// What the server.met auto-update walk did (step 2's second half).
+    pub auto_update: AutoUpdateOutcome,
+    /// The managed server list after the first-run hook and the walk — the
+    /// exact rows the eD2k join handed core (empty when a fetch was skipped
+    /// or failed on a cold start).
     pub servers: Vec<ServerEndpoint>,
     /// Where the Kad join's seeds came from (step 3).
     pub kad_seed: KadSeedOutcome,
@@ -222,6 +245,26 @@ where
         FirstRunFetch::Skipped
     };
 
+    // 2b. The auto-update walk, behind its own switch (off by default), over
+    //     the list as the first run left it. A URL that fails is reported and
+    //     the walk goes on; nothing here stops the joins.
+    let auto_update = if bootstrap.auto_update_enabled {
+        let walk = acquire_server_met_walk(
+            fetcher,
+            &bootstrap.auto_update_urls,
+            bootstrap.max_server_met_bytes,
+            &listed,
+        )
+        .await;
+        install_server_met_plan(store, &walk.plan)?;
+        listed = store.servers()?;
+        AutoUpdateOutcome::Walked {
+            fetched: walk.fetched,
+        }
+    } else {
+        AutoUpdateOutcome::Skipped
+    };
+
     let servers: Vec<ServerEndpoint> = listed
         .iter()
         .map(|server| server.endpoint.clone())
@@ -256,6 +299,7 @@ where
 
     Ok(JoinOutcome {
         first_run,
+        auto_update,
         servers,
         kad_seed,
     })

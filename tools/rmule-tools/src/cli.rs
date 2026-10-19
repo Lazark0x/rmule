@@ -9,7 +9,8 @@ use rmule_primitives::{Ed2kFileClass, UserHash};
 
 use crate::bootstrap_fetch::BootstrapFetchArgs;
 use crate::download::{
-    DownloadPauseArgs, DownloadResumeArgs, DownloadStartArgs, DownloadStatusArgs,
+    DownloadPauseArgs, DownloadReopenArgs, DownloadResumeArgs, DownloadStartArgs,
+    DownloadStatusArgs,
 };
 use crate::ed2k::{
     LiveCaptureArgs, SearchWireArgs, SentinelStimulusArgs, ServerProbeArgs, SliceCaptureArgs,
@@ -277,14 +278,20 @@ pub(crate) enum PeerTransferCommand {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum DownloadCommand {
-    /// Start a diagnostic durable download.
-    Start(DownloadStartArgs),
+    /// Start a diagnostic durable download. Boxed: its arguments dwarf the
+    /// other variants' (past `clippy::large_enum_variant` where paths are
+    /// wide, as on Windows).
+    Start(Box<DownloadStartArgs>),
     /// Resume a diagnostic durable download.
     Resume(DownloadResumeArgs),
     /// Mark a diagnostic durable download paused.
     Pause(DownloadPauseArgs),
     /// List resumable diagnostic durable downloads.
     Status(DownloadStatusArgs),
+    /// Open a past run's Durable Store as a restarted node does and serve
+    /// what it holds, resuming nothing: each queued or paused download is
+    /// offered once its Offer Check has read its parts again (ADR-0113).
+    Reopen(DownloadReopenArgs),
 }
 
 #[derive(Debug, Subcommand)]

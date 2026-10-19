@@ -6,6 +6,7 @@
 //! The fixture below is the shared vocabulary; each leg owns one behaviour.
 
 mod departure;
+mod ends;
 mod family;
 mod lease;
 mod race;

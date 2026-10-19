@@ -13,7 +13,7 @@
 use std::time::{Duration, Instant};
 
 use rmule_net::peer::Connection as PeerConnection;
-use rmule_peer::{ConnectionEvent, PeerCommand, PeerEvent, PeerIdentity, SideEvent};
+use rmule_peer::{ConnectionEvent, PeerIdentity, SideEvent};
 use rmule_primitives::{PeerEndpoint, UserHash};
 use tokio::sync::mpsc;
 
@@ -23,15 +23,17 @@ use crate::service::PortTestClosedBy;
 use super::awaited_inbound::{
     AdoptionBrief, AwaitedInbound, CallbackKey, InboundArrival, InboundVerdict,
 };
-use super::dialed_serve::SharedDialedServeSink;
+use super::dialed_serve::{LinkOrigin, SharedDialedServeSink};
 use super::hello_wait::{Opening, await_hello};
 use super::kad_runtime::{
     SharedKadBootstrap, SharedKadPump, broker_peer_kad_handoff, report_kad_firewall_ack,
     report_kad_udp_firewall_request,
 };
+use super::peer_link::SharedPeerLinks;
 use super::peer_transfer::PeerWorker;
 use super::peer_transfer::worker::drive_peer_worker;
 use super::serve_runtime::{ServeInput, ServeOutput};
+use super::served_link::drive_served_link;
 
 /// The runtime handles the inbound accept path threads as **one value** —
 /// accept → triage → adopt/serve — instead of a positional parade. Grouped so
@@ -70,6 +72,12 @@ pub(crate) struct InboundPeerDeps {
     pub(crate) tunnel_admit: super::SharedTunnelAdmit,
     /// Where an accepted peer's refused hello is reported (ADR-0050).
     pub(crate) hello_refusals: crate::hello_refusals::SharedHelloRefusals,
+    /// The **Served Links** (ADR-0107): where a served link is filed, and
+    /// where a download about to dial its peer joins it instead.
+    pub(crate) peer_links: SharedPeerLinks,
+    /// Where the link binds the Secure User Identification its session
+    /// verified, once, whichever halves hold it (ADR-0041).
+    pub(crate) secured_identities: crate::secured_identity::SharedSecuredIdentities,
 }
 
 /// How an accepted connection left [`triage_inbound_connection`].
@@ -181,6 +189,7 @@ pub(crate) async fn triage_inbound_connection(
     let reported = CallbackKey {
         server: identity.connected_server(),
         low_id: identity.client_id(),
+        kad_port: None,
     };
     match awaited.triage(arrival, identity.user_hash(), reported) {
         InboundVerdict::Adopt(adoption) => {
@@ -213,13 +222,13 @@ pub(crate) async fn triage_inbound_connection(
         InboundVerdict::Unclaimed => {}
     }
     // Hand the serve side the identification the hello wait consumed, then
-    // serve.
+    // serve — over a link a download of this peer can ride (ADR-0107).
     let _ = event_tx
         .send(ServeInput::Connection(ConnectionEvent::Identified {
-            identity,
+            identity: identity.clone(),
         }))
         .await;
-    InboundEnd::Closed(serve_bridge_loop(conn, command_rx, event_tx, deps).await)
+    InboundEnd::Closed(drive_served_link(conn, identity, command_rx, event_tx, deps, None).await)
 }
 
 /// A Kad firewall-check frame that arrived before the hello: a dial-back can
@@ -273,7 +282,7 @@ fn adopt_inbound_worker(
             file,
             own_status,
             want_sources,
-            Some(identity),
+            LinkOrigin::Adopted(identity),
             command_rx,
             event_tx,
             // The adopted peer already identified during accept, where the
@@ -289,86 +298,6 @@ fn adopt_inbound_worker(
         deps.buddy_slot.on_link_closed(peer);
     });
     PeerWorker::new(peer, command_tx, event_rx)
-}
-
-/// Bridge one accepted peer `Connection` to the serve task: its `Server`
-/// requests and `Connection` facts go up as they are, its side-channel frames
-/// go to the node-wide services, and the serve task's `Server` commands go
-/// down to the session. Runs until the connection closes or core drops the
-/// command channel. Entered post-identify by [`triage_inbound_connection`] for a
-/// connection that was not adopted as a download worker.
-///
-/// Three buddy legs live here (socket unification, ADR-0061): an inbound
-/// `OP_BUDDYPING` routes to the buddy slot — which pongs back **on this same
-/// held link** iff this connection is the attached buddy link — an inbound
-/// `OP_CALLBACK` is consumed on *any* served link (see [`served_callback`]),
-/// and the connection's close detaches the held link,
-/// freeing the buddy slot at once (aMule frees `m_pBuddy` when the buddy's
-/// socket dies).
-///
-/// Returns who closed the connection: the peer session's own close reason
-/// when it ended there, rmule when core let the connection go.
-async fn serve_bridge_loop(
-    mut conn: PeerConnection,
-    mut command_rx: mpsc::Receiver<ServeOutput>,
-    event_tx: mpsc::Sender<ServeInput>,
-    deps: InboundPeerDeps,
-) -> PortTestClosedBy {
-    let remote = conn.peer_endpoint();
-    let closed_by = loop {
-        tokio::select! {
-            command = command_rx.recv() => {
-                let command = match command {
-                    None | Some(ServeOutput::Disconnect) => break PortTestClosedBy::Us,
-                    Some(ServeOutput::Server(command)) => PeerCommand::Server(command),
-                };
-                if conn.send(command).await.is_err() {
-                    // The driver stopped first; its paired `Disconnected`
-                    // is queued behind whatever it said before.
-                    break close_reason(&mut conn).await;
-                }
-            }
-            event = conn.next_event() => {
-                let input = match event {
-                    None => {
-                        let _ = event_tx.send(ServeInput::closed_here()).await;
-                        break PortTestClosedBy::DriverEnded;
-                    }
-                    Some(PeerEvent::Server(request)) => ServeInput::Server(request),
-                    Some(PeerEvent::Connection(fact)) => ServeInput::Connection(fact),
-                    Some(PeerEvent::Side(side)) => {
-                        serve_side(&deps, remote, side);
-                        continue;
-                    }
-                    // A served link's own pull and its notices concern no
-                    // serve decision.
-                    Some(PeerEvent::Requester(_) | PeerEvent::Notice(_)) => continue,
-                };
-                let closed = match &input {
-                    ServeInput::Connection(ConnectionEvent::Disconnected { reason }) => {
-                        Some(PortTestClosedBy::from(reason))
-                    }
-                    _ => None,
-                };
-                if event_tx.send(input).await.is_err() {
-                    break closed.unwrap_or(PortTestClosedBy::Us);
-                }
-                if let Some(closed_by) = closed {
-                    break closed_by;
-                }
-            }
-        }
-    };
-    let _ = conn.shutdown().await;
-    // When this connection was the held buddy link, its close frees the
-    // buddy slot at once so a fresh recruit can take it.
-    if deps.buddy_slot.on_link_closed(remote) {
-        tracing::debug!(
-            peer = ?remote,
-            "held buddy link closed; buddy slot released"
-        );
-    }
-    closed_by
 }
 
 /// Carry one side-channel frame a served link read to the node-wide service
@@ -417,17 +346,6 @@ pub(super) fn serve_side(deps: &InboundPeerDeps, remote: PeerEndpoint, side: Sid
         | SideEvent::PublicIpAnswered
         | SideEvent::PublicIpRequestUnanswerable => {}
     }
-}
-
-/// Drain a connection whose driver has stopped to its paired `Disconnected`
-/// and say who closed it.
-async fn close_reason(conn: &mut PeerConnection) -> PortTestClosedBy {
-    while let Some(event) = conn.next_event().await {
-        if let PeerEvent::Connection(ConnectionEvent::Disconnected { reason }) = event {
-            return (&reason).into();
-        }
-    }
-    PortTestClosedBy::DriverEnded
 }
 
 mod served_callback;

@@ -22,11 +22,12 @@ use rmule_primitives::FileHash;
 
 use super::rate_cell;
 use super::{Pane, SharedView, pane_border, render_empty, table_widths};
+use crate::row_selection::viewport;
 use crate::row_selection::{gutter, mark_row};
 use crate::state::{UiState, UploadPeer, UploadState};
 use crate::table_sort::{SortedTable, TableSort, arrow_floors, header_label, header_widths};
 use crate::theme::Theme;
-use crate::views::{DrawnRows, say_gave_way, scroll_to_show, software_label};
+use crate::views::{DrawnRows, say_gave_way, software_label};
 use crate::words::units::short_hash;
 use crate::wrap::{Column, TableColumns, clamp_u16, column_lines, gave_way, wrapped_lines};
 
@@ -75,13 +76,19 @@ fn peers_header(
     column_lines(&labels, widths, 1, &Span::styled("  ", style))
 }
 
-/// The file a peer is served or waits for, by its shared name; the short
-/// hash until the registry's name is read.
+/// The file a peer is served or waits for, by its shared name — a Partial
+/// Share's by its download's; the short hash until a name is read.
 fn file_label(state: &UiState, file: FileHash) -> (String, bool) {
     state
         .shared
         .get(&file)
         .and_then(crate::state::SharedRow::name)
+        .or_else(|| {
+            state
+                .partial_download(file)
+                .and_then(|download| download.metadata.as_ref())
+                .map(|metadata| metadata.name.to_display_string())
+        })
         .map_or_else(|| (short_hash(file), false), |name| (name, true))
 }
 
@@ -111,8 +118,9 @@ fn peers_row(
 fn peer_columns(peer: &UploadPeer, state: &UiState, bps: f64, theme: &Theme) -> Vec<Column> {
     let addr = crate::words::units::address(peer.peer);
     let (state_text, file) = match peer.state {
-        UploadState::Uploading { file } => ("Uploading".to_string(), file),
-        UploadState::Queued { rank, file } => (format!("Queued #{rank}"), file),
+        UploadState::Uploading { file } => (crate::words::serve::UPLOADING.to_string(), file),
+        UploadState::DialingBack { file } => (crate::words::serve::DIALING_BACK.to_string(), file),
+        UploadState::Queued { rank, file } => (crate::words::serve::queued_words(rank), file),
     };
     let (file_text, named) = file_label(state, file);
     let dim = theme.dim_text();
@@ -188,7 +196,8 @@ impl SharedView {
         let visible = self.ordered_peers(state);
         // Filtered-out peers are counted, never silently truncated (spec §3.5).
         let hidden = state.upload_peers.len() - visible.len();
-        let footer = (hidden > 0).then(|| format!("  {hidden} hidden queued"));
+        let footer =
+            (hidden > 0).then(|| format!("  {}", crate::words::serve::hidden_queued(hidden)));
 
         let (body, footer_area) = match &footer {
             Some(_) if inner.height >= 2 => {
@@ -222,94 +231,101 @@ impl SharedView {
         }
         let floors = arrow_floors(&self.peer_sort, &PEER_COLS, PEER_FLEX);
         let headers = header_widths(&self.peer_sort);
-        let widths = table_widths(
-            body,
-            &TableColumns {
-                floors: &floors,
-                headers: &headers,
-                flex: PEER_FLEX,
-                wants: &wants,
-                give_way: &PEER_GIVE_WAY,
-            },
-        );
-        say_gave_way(
-            frame,
-            area,
-            &gave_way(PeersTable::COLUMNS.iter().map(|c| c.label), &widths),
-            theme,
-        );
+        let widths_at = |bar: bool| {
+            table_widths(
+                body,
+                bar,
+                &TableColumns {
+                    floors: &floors,
+                    headers: &headers,
+                    flex: PEER_FLEX,
+                    wants: &wants,
+                    give_way: &PEER_GIVE_WAY,
+                },
+            )
+        };
         // The selected peer's values in the columns that gave way.
-        let off_screen = visible
-            .get(self.peers_selected)
-            .map_or_else(Vec::new, |peer| {
-                let bps = state
-                    .rates
-                    .upload_bps
-                    .get(&peer.peer)
-                    .copied()
-                    .unwrap_or(0.0);
-                let values: Vec<String> = peer_columns(peer, state, bps, theme)
-                    .into_iter()
-                    .map(|column| column.text)
-                    .collect();
-                crate::views::off_screen::hidden(
-                    PeersTable::COLUMNS.iter().map(|c| c.label),
-                    &values,
-                    &widths,
-                )
-            });
-        let body = crate::views::off_screen::draw(frame, body, &off_screen, theme);
+        let off_screen_at = |widths: &[usize]| {
+            visible
+                .get(self.peers_selected)
+                .map_or_else(Vec::new, |peer| {
+                    let values: Vec<String> = peer_columns(peer, state, bps_of(peer), theme)
+                        .into_iter()
+                        .map(|column| column.text)
+                        .collect();
+                    crate::views::off_screen::hidden(
+                        PeersTable::COLUMNS.iter().map(|c| c.label),
+                        &values,
+                        widths,
+                    )
+                })
+        };
+        // Join the folded peer row with the tick's synthesized rate by
+        // endpoint — the same key core's upload counters use.
+        let rows_at = |widths: &[usize]| -> Vec<Vec<Line<'static>>> {
+            visible
+                .iter()
+                .enumerate()
+                .map(|(idx, peer)| {
+                    let selected = idx == self.peers_selected;
+                    peers_row(peer, state, bps_of(peer), widths, selected, focused, theme)
+                })
+                .collect()
+        };
+        let bar = viewport::needs_bar(visible.len(), body.height.saturating_sub(1), || {
+            let widths = widths_at(false);
+            let room = body
+                .height
+                .saturating_sub(crate::views::off_screen::height(
+                    body,
+                    &off_screen_at(&widths),
+                ))
+                .saturating_sub(clamp_u16(
+                    peers_header(&widths, &self.peer_sort, theme).len(),
+                ));
+            rows_at(&widths).iter().map(Vec::len).sum::<usize>() > usize::from(room)
+        });
+        let widths = widths_at(bar);
+        let rows = rows_at(&widths);
+        let body = crate::views::off_screen::draw(frame, body, &off_screen_at(&widths), theme);
+        let (list, bar) = viewport::split(body, bar);
         let mut lines = peers_header(&widths, &self.peer_sort, theme);
-        let header_h = clamp_u16(lines.len()).min(body.height);
+        let header_h = clamp_u16(lines.len()).min(list.height);
         self.peer_header_area = Rect::new(
-            body.x.saturating_add(clamp_u16(super::GUTTER_W)),
-            body.y,
-            body.width.saturating_sub(clamp_u16(super::GUTTER_W)),
+            list.x.saturating_add(clamp_u16(super::GUTTER_W)),
+            list.y,
+            list.width.saturating_sub(clamp_u16(super::GUTTER_W)),
             header_h,
         );
         self.peer_header_cols.clone_from(&widths);
-        let mut heights = Vec::with_capacity(visible.len());
+        let heights: Vec<u16> = rows.iter().map(|row| clamp_u16(row.len())).collect();
+        let room = list.height - header_h;
+        let first = self
+            .peers_viewport
+            .follow(self.peers_selected, heights.len(), room, |index| {
+                heights[index]
+            });
         if visible.is_empty() {
             lines.push(Line::from(Span::styled(
                 "  no active uploads",
                 theme.dim_text(),
             )));
         } else {
-            let rows: Vec<Vec<Line<'static>>> = visible
-                .iter()
-                .enumerate()
-                .map(|(idx, peer)| {
-                    // Join the folded peer row with the tick's synthesized
-                    // rate by endpoint — the same key core's upload counters
-                    // use.
-                    let bps = state
-                        .rates
-                        .upload_bps
-                        .get(&peer.peer)
-                        .copied()
-                        .unwrap_or(0.0);
-                    let selected = idx == self.peers_selected;
-                    peers_row(peer, state, bps, &widths, selected, focused, theme)
-                })
-                .collect();
-            heights = rows.iter().map(|row| clamp_u16(row.len())).collect();
-            let room = body.height - header_h;
-            self.peers_offset =
-                scroll_to_show(self.peers_offset, self.peers_selected, &heights, room);
-            lines.extend(rows.into_iter().skip(self.peers_offset).flatten());
+            lines.extend(rows.into_iter().skip(first).flatten());
         }
-        let first = self.peers_offset.min(heights.len());
         self.peer_rows = DrawnRows::new(
-            Rect::new(
-                body.x,
-                body.y + header_h,
-                body.width,
-                body.height - header_h,
-            ),
+            Rect::new(list.x, list.y + header_h, list.width, room),
             first,
             heights[first..].to_vec(),
         );
-        frame.render_widget(Paragraph::new(lines), body);
+        frame.render_widget(Paragraph::new(lines), list);
+        let foot = self.peers_viewport.draw(frame, area, bar, theme);
+        say_gave_way(
+            frame,
+            foot,
+            &gave_way(PeersTable::COLUMNS.iter().map(|c| c.label), &widths),
+            theme,
+        );
         if let (Some(area), Some(text)) = (footer_area, footer) {
             frame.render_widget(
                 Paragraph::new(Text::from(wrapped_lines(
@@ -369,7 +385,12 @@ mod tests {
             let drawn = render_to_lines(GOLDEN_W, GOLDEN_H, |frame| {
                 view.draw(frame, frame.area(), &state, &theme(), Instant::now());
             });
-            let expected = format!("Queued #{} ", view.peers_selected + 1);
+            let expected = format!(
+                "{} ",
+                crate::words::serve::queued_words(
+                    u16::try_from(view.peers_selected + 1).expect("a small rank")
+                )
+            );
             assert!(
                 drawn.lines().any(|line| line.contains('▸')
                     && line.contains(&expected)

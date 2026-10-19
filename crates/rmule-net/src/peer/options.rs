@@ -1,15 +1,23 @@
-//! The knobs a caller sets before dialing or accepting a peer: the four
+//! The knobs a caller sets before dialing or accepting a peer: the five
 //! timeouts the runtime distinguishes, the capture destination and how much of
 //! the stream it keeps, and the Secure User Identification and obfuscation
 //! material the session negotiates with.
 
+use std::net::Ipv6Addr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use rmule_peer::{SecureIdentConfig, ServingBuddyAdvert, UdpPortsAdvert};
 use rmule_primitives::PeerCrypt;
 
 use crate::peer::obfuscation::ObfuscationConfig;
+
+/// How long an obfuscated peer dial waits for the crypt handshake's answer:
+/// aMule's `CONNECTION_TIMEOUT` (40 s, `protocol/ed2k/Constants.h:34`), the
+/// socket timeout that covers a socket from its connect through the handshake
+/// (`ClientTCPSocket.cpp:201-222`).
+pub const PEER_CRYPT_TIMEOUT: Duration = Duration::from_secs(40);
 
 /// Tunables for [`Connection::connect`](crate::peer::Connection::connect).
 ///
@@ -24,6 +32,11 @@ use crate::peer::obfuscation::ObfuscationConfig;
 pub struct ConnectOptions {
     /// Cap on the TCP handshake alone — not on anything the peer says after.
     pub connect_timeout: Duration,
+    /// Cap on an obfuscated dial's crypt handshake once TCP is up: aMule's
+    /// socket timeout covers a socket from its connect through the handshake
+    /// ([`PEER_CRYPT_TIMEOUT`]), so a peer that takes the connection and never
+    /// answers ends the dial as [`PeerNetError::CryptUnanswered`](crate::peer::PeerNetError::CryptUnanswered).
+    pub crypt_timeout: Duration,
     /// Cap on the peer identifying itself once TCP is up; armed as the
     /// driver's one startup deadline and disarmed by the hello.
     pub hello_timeout: Duration,
@@ -97,6 +110,28 @@ pub struct ConnectOptions {
     /// we accept an `OP_DIRECTCALLBACKREQ` (`0x95`). Core sets it from its
     /// Self Reach per connection.
     pub direct_udp_callback: bool,
+    /// How this link follows our Advertised IPv6 after its hello, or `None`
+    /// for a link that never announces a move. Each wake hands the session
+    /// the address read then, as `AnnounceIpv6Change`; the session decides
+    /// whether the peer is owed an `OP_CHANGE_CLIENT_IP` (ADR-0087).
+    pub ipv6_follow: Option<Ipv6Follow>,
+}
+
+/// What a live link follows our Advertised IPv6 by: a wake on every move of
+/// what [`Self::read`] can answer, and the read itself. The link holds only a
+/// receiver, so following ends with the link and keeps nothing alive.
+#[derive(Clone)]
+pub struct Ipv6Follow {
+    /// Changes whenever the address [`Self::read`] answers may have moved.
+    pub changed: tokio::sync::watch::Receiver<u64>,
+    /// The address to name now, or `None` while there is none to name.
+    pub read: Arc<dyn Fn() -> Option<Ipv6Addr> + Send + Sync>,
+}
+
+impl std::fmt::Debug for Ipv6Follow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Ipv6Follow").finish_non_exhaustive()
+    }
 }
 
 /// Per ADR-0024 `ProtocolOnly` is the default to keep captures small
@@ -115,6 +150,7 @@ impl Default for ConnectOptions {
     fn default() -> Self {
         Self {
             connect_timeout: Duration::from_secs(10),
+            crypt_timeout: PEER_CRYPT_TIMEOUT,
             hello_timeout: Duration::from_secs(15),
             slot_stale_timeout: Duration::from_secs(60),
             idle_close_timeout: Duration::from_secs(300),
@@ -129,6 +165,7 @@ impl Default for ConnectOptions {
             ipv6: None,
             serving_buddy: None,
             direct_udp_callback: false,
+            ipv6_follow: None,
         }
     }
 }

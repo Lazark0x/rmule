@@ -211,6 +211,14 @@ pub(crate) struct PeerUdpReaskEmitArgs {
     /// marked are printed as `obfuscation_flips`.
     #[arg(long, value_parser = rmule_interop_harness::rmule::crypt_flip_arg)]
     pub(crate) peer_crypt_flip: Vec<String>,
+    /// Draw the Queue Standing's hand-over instead of sitting the reask
+    /// window (needs `--two-downloads`): once rmule is queued, stop one
+    /// slot-holder so the sharer promotes rmule, raise the sharer's upload cap
+    /// to this many KiB/s at the grant, and wait up to `--reask-window-secs`
+    /// for each download. Keep both files together under aMule's 10 MiB
+    /// session (`--file-size 4194304`).
+    #[arg(long, requires = "two_downloads", conflicts_with = "known_sources")]
+    pub(crate) hand_over_upload_kib: Option<u64>,
     /// Test hook for the ED2K hash command.
     #[arg(long, hide = true)]
     pub(crate) ed2k_hash_command: Option<PathBuf>,
@@ -360,6 +368,7 @@ pub(crate) fn peer_udp_reask_emit(args: PeerUdpReaskEmitArgs) -> Result<()> {
         known_sources: args.known_sources,
         peer_crypt: args.peer_crypt.as_deref(),
         peer_crypt_flip: &args.peer_crypt_flip,
+        hand_over_upload_kib: args.hand_over_upload_kib,
     })
 }
 

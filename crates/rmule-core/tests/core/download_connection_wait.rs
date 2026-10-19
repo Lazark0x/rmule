@@ -29,6 +29,7 @@ async fn a_restored_download_with_no_connection_waits_then_starts_when_one_comes
             &link,
             Some(&ServerEndpoint::new("127.0.0.1", dead_port().await).unwrap()),
             &DownloadPaths::from_final_path(dir.path().join("waiting.bin")),
+            None,
         )
         .unwrap();
     repo.set_lifecycle(record.id(), DownloadLifecycle::Active)
@@ -135,6 +136,7 @@ async fn a_late_finish_notice_never_retires_the_run_a_resume_started() {
             &link,
             Some(&ServerEndpoint::new("127.0.0.1", dead_port().await).unwrap()),
             &DownloadPaths::from_final_path(dir.path().join("resumed.bin")),
+            None,
         )
         .unwrap()
         .id();
@@ -241,6 +243,7 @@ async fn a_waiting_downloads_reason_follows_the_session_and_kad() {
         source_hint: Some(server.endpoint()),
         name: rmule_testkit::file_name("reason.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

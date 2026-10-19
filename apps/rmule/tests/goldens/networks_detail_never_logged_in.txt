@@ -1,26 +1,26 @@
 ┌ Servers (4) · 10.0.0.1:4661 HighID ─── c connect · a add · U update · m menu ┐
-│   Name ▲   Address          Port Desc   Ping Users Files Age Prio Fail Static│
-│ ● eDonkey  10.0.0.1         4661 Main   42ms    1M   24M 12s Norm    0 no    │
-│   Prime                          hub,                                        │
-│                                  no                                          │
-│                                  fakes                                       │
-│   Flaky    172.16.9.9       5000 —         —     —     —   — Low  dead no    │
+│   Name ▲  Address          Port Desc   Ping Users Files  Age Prio Fail Static│
+│ ● eDonkey 10.0.0.1         4661 Main   42ms    1M   24M  12s Norm    0 no    │
+│   Prime                         hub,                                         │
+│                                 no                                           │
+│                                 fakes                                        │
+│   Flaky   172.16.9.9       5000 —      lost  lost  lost lost Low  dead no    │
 │   Mirror                                                                     │
-│   Static   10.0.0.2         4242 Opera  1.2s  9812  431k  2h High    0 yes   │
-│   Pin                            tor                                         │
-│                                  pinne                                       │
-│                                  d                                           │
-│▸  —        192.168.4.4      4661 —         —     —     —   — Norm    0 no    │
+│   Static  10.0.0.2         4242 Opera  1.2s  9812  431k   2h High    0 yes   │
+│   Pin                           tor                                          │
+│                                 pinne                                        │
+│                                 d                                            │
+│▸  —       192.168.4.4      4661 —      soon  soon  soon soon Norm    0 no    │
 │                                                                              │
 │                                                                              │
 │                                                                              │
 │                                                                              │
 │                                                                              │
 │Grants: never logged in, so it has not said what it grants                    │
-│UDP: no status answer yet                                                     │
+│UDP: no status answer yet — the status ping has not asked it this run         │
 │Health: not reached yet — no answer and no failed try so far                  │
 │Shares: announced at its next login, as to every server                       │
-└──────────────────────────────────────────────────────────────────────────────┘
+└─────────────────────────────────────────────────────────────────────── 4 / 4 ┘
 ┌ Log (0) ─────────────────────────────┐┌ Kad ──────────────────────── K start ┐
 │no core events yet                    ││● Kad: off                            │
 │                                      ││Joined    — (node not started)        │

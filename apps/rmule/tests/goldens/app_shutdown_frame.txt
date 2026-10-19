@@ -1,6 +1,6 @@
 ┌ 1 Networks │ 2 │ 3 │ 4 │ 5 │ 6 ─────────────────────────────────────── rmule ┐
 │┌ Servers (0) · not connected ──────────────────── a add · U update · m menu ┐│
-││   Name ▲   Address        Port Desc   Ping Users Files Age Prio Fail Static││
+││   Name ▲  Address        Port Desc    Ping Users Files Age Prio Fail Static││
 ││no servers — press a to add one, or U to update the list from a URL         ││
 ││                                                                            ││
 ││                                                                            ││

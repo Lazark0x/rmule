@@ -40,13 +40,15 @@ impl PeerTransferService for HelloRecorder {
         &mut self,
         peer: PeerEndpoint,
         ctx: PeerHandshakeContext,
-        _file: Ed2kFileLink,
+        file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
+        let advertised = rmule_testkit::every_part(file.size);
         let _ = self.hellos.send((peer, ctx.identity.tcp_port()));
         let (command_tx, mut command_rx) = mpsc::channel(8);
         let (event_tx, event_rx) = mpsc::channel(8);
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
+            let _ = event_tx.send(advertised).await;
             while command_rx.recv().await.is_some() {}
         });
         Ok(PeerWorker::new(peer, command_tx, event_rx))
@@ -67,6 +69,7 @@ fn start(file: Ed2kFileLink) -> CoreCommand {
         source_hint: Some(stub_server("127.0.0.1")),
         name: rmule_testkit::file_name("port.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     })
 }
 

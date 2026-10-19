@@ -245,6 +245,7 @@ async fn serve_grants_within_budget_then_queues_and_promotes_on_disconnect() {
             peer: peer(1),
             file_hash,
             software: None,
+            road: rmule_core::GrantRoad::Linked,
         }
     );
 
@@ -284,6 +285,7 @@ async fn serve_grants_within_budget_then_queues_and_promotes_on_disconnect() {
             peer: peer(2),
             file_hash,
             software: None,
+            road: rmule_core::GrantRoad::Linked,
         }
     );
     assert_eq!(
@@ -370,6 +372,7 @@ async fn serve_transfer_cancel_frees_the_slot_keeps_the_connection_and_promotes_
             peer: peer(31),
             file_hash,
             software: None,
+            road: rmule_core::GrantRoad::Linked,
         }
     );
     evt_b
@@ -408,6 +411,7 @@ async fn serve_transfer_cancel_frees_the_slot_keeps_the_connection_and_promotes_
             peer: peer(32),
             file_hash,
             software: None,
+            road: rmule_core::GrantRoad::Linked,
         }
     );
     assert_eq!(
@@ -548,6 +552,7 @@ async fn serve_skips_ranges_already_sent_on_a_granted_slot() {
             peer: peer(10),
             file_hash,
             software: None,
+            road: rmule_core::GrantRoad::Linked,
         }
     );
 
@@ -588,6 +593,7 @@ async fn assert_send_block(
         start: actual_start,
         end: actual_end,
         bytes,
+        ..
     }) = command
     else {
         panic!("expected SendBlock, got {command:?}");
@@ -657,6 +663,7 @@ async fn builder_mixed_override_over_default_registry_and_credit_serves() {
             peer: peer(7),
             file_hash,
             software: None,
+            road: rmule_core::GrantRoad::Linked,
         }
     );
 }

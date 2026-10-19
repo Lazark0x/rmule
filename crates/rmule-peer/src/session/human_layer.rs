@@ -7,7 +7,7 @@
 use rmule_primitives::{ClientId, Packet, PacketProtocol};
 
 use super::{PeerEvent, PeerSession};
-use crate::{IdentityChange, NoticeEvent, RequesterEvent, SideEvent};
+use crate::{ConnectionEvent, IdentityChange, NoticeEvent, RequesterEvent, SideEvent};
 
 impl PeerSession {
     /// Respond-by-parity: `OP_ASKSHAREDFILES`/`OP_ASKSHAREDDIRS`/
@@ -77,35 +77,52 @@ impl PeerSession {
             }));
     }
 
-    /// `OP_CHANGE_CLIENT_ID` (`0x4D`): the peer's Client ID changed. Wire-silent;
-    /// the identity takes the new ID, so what this session offers other peers
-    /// as the peer's source coordinate is where it now is.
+    /// `OP_CHANGE_CLIENT_ID` (`0x4D`): the peer's Client ID changed.
+    /// Wire-silent. aMule (`ClientTCPSocket.cpp:773-787`) takes a Low ID only
+    /// for a server it knows, and a High ID only when it is the address the
+    /// connection came from; anything else leaves the client as it was. The
+    /// session holds no server list, so it offers the change to core, which
+    /// answers with [`ConnectionCommand::TakeClientId`] when it knows the
+    /// server; a High ID that is not the peer's own IPv4 is ignored here.
+    /// A Low ID's server is now where a callback reaches the peer, and so a
+    /// name a download finds its link under (ADR-0107): a stranger's word
+    /// moves no name.
     ///
-    /// aMule (`ClientTCPSocket.cpp:751-776`) takes a Low ID only for a server it
-    /// knows, and a High ID only when it is the address the connection came
-    /// from; anything else leaves the client as it was. The session has no
-    /// server list, so it takes every Low ID (a Low-ID source is never offered
-    /// on, so this moves nothing a stranger could use) and holds the High-ID
-    /// rule exactly: a High ID that is not the peer's own IPv4 is ignored.
-    /// The server named beside the ID is kept on the identity, so the "on our
-    /// server" claim follows the peer to it. Whether that server is one the
-    /// node knows is the consumer's judgement, as only it knows its server:
-    /// the abuse guard matches the named address against the connected server
-    /// and nothing else.
+    /// [`ConnectionCommand::TakeClientId`]: crate::ConnectionCommand::TakeClientId
     pub(super) fn on_change_client_id(&mut self, change: crate::human_layer::ChangeClientId) {
-        let new_id = change.new_id;
-        if new_id.is_high_id() {
-            let own = self
-                .peer
-                .as_v4()
-                .map(|peer| ClientId::from_u32(u32::from_le_bytes(peer.ip.octets())));
-            if own != Some(new_id) {
-                return;
-            }
+        if self.is_foreign_high_id(change.new_id) {
+            return;
+        }
+        self.core
+            .push_event(PeerEvent::Connection(ConnectionEvent::ClientIdOffered {
+                client_id: change.new_id,
+                server: change.new_server_ip,
+            }));
+    }
+
+    /// Take the Client ID core accepted, on the known `server` it named
+    /// (ADR-0107); the rule the offer passed is held again here.
+    pub(super) fn take_client_id(
+        &mut self,
+        client_id: ClientId,
+        server: Option<rmule_primitives::Ipv4Endpoint>,
+    ) {
+        if self.is_foreign_high_id(client_id) || (client_id.is_low_id() && server.is_none()) {
+            return;
         }
         self.revise_identity(IdentityChange::ClientId, |identity| {
-            identity.revise_client_id(new_id, change.new_server_ip)
+            identity.revise_client_id(client_id, server)
         });
+    }
+
+    /// Whether `id` is a High ID other than the address the link came from.
+    fn is_foreign_high_id(&self, id: ClientId) -> bool {
+        id.is_high_id()
+            && self
+                .peer
+                .as_v4()
+                .map(|peer| ClientId::from_u32(u32::from_le_bytes(peer.ip.octets())))
+                != Some(id)
     }
 
     /// Drop-with-counter: an inbound chat-captcha challenge or answer.

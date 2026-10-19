@@ -92,10 +92,11 @@ mod buddy_hash_spelling {
             },
             Some(UserHash::from_bytes([0xAB; UserHash::BYTE_LEN])),
             Some(SourceCryptOptions::from_byte(0x00)),
+            rmule_primitives::Informant::Own,
         )
     }
 
-    fn file() -> Ed2kFileLink {
+    pub(super) fn file() -> Ed2kFileLink {
         Ed2kFileLink {
             name: Ed2kText::from_utf8("issue-433"),
             size: 1_000,
@@ -109,7 +110,7 @@ mod buddy_hash_spelling {
 
     /// A one-part, callback-capable download state — the brain half of the
     /// harness, matching `download::state::tests::callback_state`.
-    fn download_state() -> DownloadState {
+    pub(super) fn download_state() -> DownloadState {
         let mut state = DownloadState::new(
             DownloadId::from_u64(1),
             ContentFacts {
@@ -120,8 +121,9 @@ mod buddy_hash_spelling {
                     authority: VerificationAuthority::FileHashOnly,
                     hashes: Vec::new(),
                 },
-                trusted_aich_root: None,
+                aich_root: crate::download::state::AichRootAuthority::Rootless,
                 verified_parts: Vec::new(),
+                order: crate::scheduler::PartOrder::Rarest,
             },
             StartingFacts {
                 distrusted: std::collections::HashSet::new(),
@@ -134,7 +136,7 @@ mod buddy_hash_spelling {
                 client_udp: false,
             },
             Duration::from_secs(30),
-            1,
+            crate::download::connection_budget::BudgetSeat::ceiling(1),
         );
         let _ = state.start(std::time::Instant::now());
         state
@@ -158,7 +160,7 @@ mod buddy_hash_spelling {
     /// A `RunnerContext` wired just enough for
     /// `RequestBuddyCallback`/`RequestFallbackBuddyCallback`/
     /// the brain's ticks to enact: no real store, network or worker fleet.
-    fn runner_context(
+    pub(super) fn runner_context(
         diagnostics: crate::diagnostics::DiagnosticsState,
     ) -> (
         RunnerContext<NeverLooksUp, NeverTransfers>,
@@ -279,6 +281,40 @@ mod buddy_hash_spelling {
         );
     }
 
+    /// A store that cannot keep a newly distrusted peer fails the run through
+    /// the one whole-fleet terminal: a run that went on would hold a distrust
+    /// no resumed run could read back.
+    #[tokio::test(start_paused = true)]
+    async fn a_store_error_on_a_distrusted_peer_shuts_the_fleet_down() {
+        let diagnostics = crate::diagnostics::DiagnosticsState::default();
+        let (runner, _download_reach_rx) = runner_context(diagnostics);
+        let file = file();
+        let mut ctx = loop_ctx(&runner, &file, download_state());
+        let peer = Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 31), 4662);
+        let (worker_tx, mut worker_rx) = mpsc::channel(4);
+        ctx.command_channels.register(
+            PeerEndpoint::V4(peer),
+            crate::diagnostics::WorkerSlot::from_usize(0),
+            worker_tx,
+        );
+
+        // No record for this download exists, so the store refuses the write.
+        let mut queue = VecDeque::from([Decision::DistrustPeer {
+            user_hash: rmule_primitives::UserHash::from_bytes([0x5B; 16]),
+        }]);
+        assert_eq!(
+            enact_drain(&mut queue, &mut ctx).await,
+            Err(DownloadFailure::StoreFailed)
+        );
+        assert!(
+            matches!(
+                worker_rx.try_recv(),
+                Ok(PeerWorkerCommand::Shutdown { cancel: false })
+            ),
+            "the live worker is told to shut down"
+        );
+    }
+
     #[tokio::test]
     async fn a_silent_primary_buddy_callback_earns_one_fallback_spelling_send() {
         let diagnostics = crate::diagnostics::DiagnosticsState::default();
@@ -362,6 +398,63 @@ mod buddy_hash_spelling {
     }
 }
 
+/// A server's relay that never left ends its road in the drain that tried
+/// it: the brain hears it at once and hands the candidate to its next road,
+/// rather than holding the slot for a callback nobody carried.
+mod server_callback_never_left {
+    use rmule_primitives::{ClientId, PeerSource, SourceSighting};
+
+    use super::buddy_hash_spelling::{download_state, file, runner_context};
+    use super::*;
+    use crate::callback::{CallbackSilence, DownloadAsk};
+    use crate::download::runner::test_context::loop_ctx;
+    use crate::download::source_book::Gate;
+    use crate::download::state::Channel;
+    use crate::ip_filter::IpFilter;
+
+    #[tokio::test]
+    async fn with_no_live_session_the_candidate_takes_its_next_road_in_the_same_drain() {
+        let (runner, mut download_reach_rx) =
+            runner_context(crate::diagnostics::DiagnosticsState::default());
+        let file = file();
+        let mut ctx = loop_ctx(&runner, &file, download_state());
+        let filter = IpFilter::default();
+        let gate = Gate {
+            filter: &filter,
+            dial: crate::dialable::DialPosition::default(),
+        };
+        let row = SourceSighting::plain(
+            PeerSource::new(ClientId::from_u32(7), 4662),
+            rmule_primitives::Informant::Own,
+        );
+        let opened = ctx
+            .state
+            .on_sightings(std::time::Instant::now(), Channel::Server, vec![row], &gate)
+            .decisions;
+        assert!(
+            opened
+                .iter()
+                .any(|d| matches!(d, Decision::RequestCallback { .. })),
+            "{opened:?}"
+        );
+
+        let mut queue = VecDeque::from(opened);
+        enact_drain(&mut queue, &mut ctx)
+            .await
+            .expect("the ask enacts cleanly");
+        let next = download_reach_rx
+            .try_recv()
+            .expect("the next road is asked in the same drain");
+        assert!(
+            matches!(
+                next.pending.road,
+                DownloadAsk::Traversal(CallbackSilence::NoCallbackPossible)
+            ),
+            "the punch, with no callback to wait out"
+        );
+    }
+}
+
 /// The Peer Roster's `Queued` leg (ADR-0059 "Roster relations") follows the
 /// Source Book's RemoteQueued stage, however a record leaves it — here by a
 /// merge, where the wire proves a queued source the same peer as a live
@@ -422,8 +515,9 @@ mod queued_roster {
                     authority: VerificationAuthority::FileHashOnly,
                     hashes: Vec::new(),
                 },
-                trusted_aich_root: None,
+                aich_root: crate::download::state::AichRootAuthority::Rootless,
                 verified_parts: Vec::new(),
+                order: crate::scheduler::PartOrder::Rarest,
             },
             StartingFacts {
                 distrusted: std::collections::HashSet::new(),
@@ -436,7 +530,7 @@ mod queued_roster {
                 client_udp: false,
             },
             Duration::from_secs(30),
-            1,
+            crate::download::connection_budget::BudgetSeat::ceiling(1),
         );
         let _ = state.start(std::time::Instant::now());
         state
@@ -474,7 +568,10 @@ mod queued_roster {
         // the RemoteQueued stage, and the relation is held.
         sighted(
             &mut ctx.state,
-            vec![SourceSighting::plain(PeerSource::HighId(QUEUED))],
+            vec![SourceSighting::plain(
+                PeerSource::HighId(QUEUED),
+                rmule_primitives::Informant::Own,
+            )],
         );
         connected(&mut ctx.state, queued);
         let now = std::time::Instant::now();
@@ -496,13 +593,17 @@ mod queued_roster {
         // halves: the queued record gives way to the live one.
         sighted(
             &mut ctx.state,
-            vec![SourceSighting::plain(PeerSource::Ipv6(live_half()))],
+            vec![SourceSighting::plain(
+                PeerSource::Ipv6(live_half()),
+                rmule_primitives::Informant::Own,
+            )],
         );
         connected(&mut ctx.state, live);
         sighted(
             &mut ctx.state,
             vec![
-                SourceSighting::plain(PeerSource::HighId(QUEUED)).with_ipv6_half(Some(live_half())),
+                SourceSighting::plain(PeerSource::HighId(QUEUED), rmule_primitives::Informant::Own)
+                    .with_ipv6_half(Some(live_half())),
             ],
         );
         enact_drain(&mut VecDeque::new(), &mut ctx)
@@ -513,6 +614,67 @@ mod queued_roster {
         assert!(
             !runner.rt.peer_roster.knows(QUEUED.ip),
             "the merged standing's endpoint is no longer queued"
+        );
+    }
+
+    /// A source that queues us and hangs up is awaited in the Peer Links
+    /// (ADR-0057): a link at its endpoint that reads an unasked grant finds
+    /// this run, and once its worker opens on the grant it is awaited no
+    /// more.
+    #[tokio::test]
+    async fn a_source_waiting_in_the_queue_is_awaited_until_its_grant_opens_its_worker() {
+        use crate::adapters::LinkName;
+
+        let diagnostics = crate::diagnostics::DiagnosticsState::default();
+        let (runner, _held) = crate::download::runner::test_context::runner_context(
+            NeverLooksUp,
+            NeverTransfers,
+            diagnostics,
+        );
+        let file = file();
+        let mut ctx = loop_ctx(&runner, &file, download_state());
+        let queued = PeerEndpoint::V4(QUEUED);
+        let names = [LinkName::Endpoint(queued)];
+        sighted(
+            &mut ctx.state,
+            vec![SourceSighting::plain(
+                PeerSource::HighId(QUEUED),
+                rmule_primitives::Informant::Own,
+            )],
+        );
+        connected(&mut ctx.state, queued);
+        let now = std::time::Instant::now();
+        let _ = ctx
+            .state
+            .on_worker_event(now, queued, PeerWorkerEvent::Queued { rank: 3 });
+        let _ = ctx
+            .state
+            .on_worker_event(now, queued, PeerWorkerEvent::Disconnected);
+        enact_drain(&mut VecDeque::new(), &mut ctx)
+            .await
+            .expect("nothing to enact");
+        assert!(
+            runner.rt.peer_links.offer_grant(&names),
+            "the run awaits the queued source's grant"
+        );
+        assert_eq!(
+            ctx.awaited_grants.next().await,
+            Some(crate::adapters::LinkOffer::Grant(queued))
+        );
+
+        let mut opened: VecDeque<Decision> = ctx.state.on_slot_offered(now, queued).into();
+        assert!(
+            opened
+                .iter()
+                .any(|d| matches!(d, Decision::Spawn { peer, .. } if *peer == queued))
+        );
+        opened.retain(|d| !matches!(d, Decision::Spawn { .. }));
+        enact_drain(&mut opened, &mut ctx)
+            .await
+            .expect("the grant's events");
+        assert!(
+            !runner.rt.peer_links.offer_grant(&names),
+            "a source whose worker opened awaits no grant"
         );
     }
 }

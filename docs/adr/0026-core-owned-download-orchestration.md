@@ -47,36 +47,69 @@ is `DownloadScheduler`.
   names the earliest instant anything falls due, so the runner sleeps until then. The
   brain reads no clock and holds no timer, so receiving time keeps it sans-I/O.
 
-- `CoreConfig::peer_concurrency_per_download` (default 2; `0` reads as 1) caps a
-  download's workers — active, connecting, and waiting on a callback together.
-- A worker holds at most one part at a time and keeps its connection across
-  assignments. A fresh assignment takes the lowest-indexed pending part; there is
-  no availability voting.
-- **Bounded racing.** When no pending part remains, a backup peer — one that has not
-  yet delivered a verified part in this download — joins an in-flight part, so
-  several peers can sit queued on the same scarce part. The first verified copy
-  wins and the losing racers are cleared; a loser's later failure is a no-op. A
-  peer that has already delivered a part idles instead of racing a healthy peer, so
-  racing engages only on few-part files.
-- Racers share the part's bytes: every assignment starts at the part's assembled
-  prefix, block by block (ADR-0029).
+- A download has no worker cap: asking is paced by the node's **Connection Budget**
+  and every grant transfers (ADR-0116).
+- **The slot ask.** A worker whose Advertised Parts hold a part we lack asks its
+  uploader for a slot (`OP_STARTUPLOADREQ`) at its probe answer, whether or not a part
+  is free, as aMule sends it to every source whose status names a needed part (stock
+  2.3.3 `DownloadClient.cpp:466-483`). Its part is chosen at the grant, never at the
+  ask, as aMule chooses blocks only on a granted slot (`ClientTCPSocket.cpp:640-643`):
+  a queued worker holds no block, so no part waits behind an uploader's queue, and a
+  freed or refetched block goes to the next worker with room.
+- **A worker is handed blocks, not a part** (ADR-0117). It keeps its connection and
+  its granted slot across handouts; each handout fills the room its Request Depth
+  reports from the first-ranked parts the peer advertised that still hold an unclaimed
+  block (ADR-0112), so several workers share a part. A granted worker whose pipeline
+  has drained with nothing left for it gives the slot back (ADR-0056).
+- **The End Game.** A granted worker with room and no unclaimed block in a part it
+  advertised is handed a **Duplicate Set** instead of giving its slot back: at most
+  three blocks a slower worker is fetching, latest expected first (ADR-0117). It
+  replaces racing whole parts and the Tail Race.
+  - A **Delivery Rate** is what core measures of each worker from its block arrivals
+    at the instants it is handed: bytes over windows of at least one second, smoothed
+    by a quarter per window, kept for the worker's life. It is scheduling input only,
+    never a published figure (ADR-0077).
+  - The first byte to arrive at an offset wins; a later copy, and a block that arrives
+    for a part already assembled or verified, is dropped without opening a buffer.
+- **One hash-set ask at a time, with a deadline.** While the download holds no whole
+  part hash set — no link `p=`, no proven peer set yet, a file of more than one hash —
+  one transferring worker at a time asks for it (`OP_HASHSETREQUEST`): the first that
+  keeps a granted slot, its first blocks handed, and whose parts name a part we lack, at its
+  grant (ADR-0116 invariant 3). No slot ask waits on it: every worker asks its slot at
+  its probe answer. aMule's downloader asks the set first and its slot after the answer
+  (`DS_REQHASHSET`, `DownloadClient.cpp:467-483`, `:571-586`); rmule departs, because a
+  worker the uploader ranks hangs up at once, or at aMule 2 holds its link only to the grant or
+  the uploader's close (ADR-0116), and a `0x51` left unanswered on
+  a link the uploader then ranks costs that link at aMule's 40 s silent-link close
+  (`ClientTCPSocket.cpp:201-229`). The ask leaves at once, while a part streams too, and
+  its answer is read while parts stream. It passes to the next transferring worker whose
+  parts name a part we lack — with none, to the next grant — when its worker ends before
+  an answer or answers with a set that is not the file's (aMule `SetHashSetNeeded(true)`,
+  `BaseClient.cpp:1305-1306`, `DownloadClient.cpp:583`), and at the **Hash-Set
+  Deadline**, 20 s after the ask, so an uploader that never answers holds the one ask no
+  longer than half aMule's 40 s idle close (`CONNECTION_TIMEOUT`, `Constants.h:34`). A
+  worker the deadline passed is not asked again while it lives. A held set asks nothing.
 - The candidate pool grows during the download and backfills retired workers
   (ADR-0030, ADR-0055).
-- A disconnect, slot refusal or transfer failure releases the worker's part for
-  reassignment. A failed part verification retires its contributors (ADR-0029)
+- A disconnect, slot refusal or transfer failure frees the blocks the worker was
+  asked for the next worker with room; every byte that arrived stays. A failed part verification retires its contributors (ADR-0029)
   unless AICH recovery can name the bad blocks (ADR-0038).
 - `CoreConfig::slot_wait_timeout` (default 180 s) bounds how long a worker waits for
-  a slot grant. The timer is the runtime's; the session stays clock-free. Queue
-  state reaches the operator as `DownloadEvent::PeerQueued { rank }`,
-  `PeerSlotGranted` and `PeerSlotTimeout`. The downloader sends no keep-alive: the
-  eD2k peer protocol defines none, so staying connected and racing across peers is
-  how a download survives a busy uploader's queue.
+  the answer to its slot ask: from its probe answer, or from its flow's return to the
+  queue, with no part streaming. A rank answers it, and a worker that is not granted
+  hangs up at its rank, its record keeping the standing (ADR-0116, the **Queued
+  Hang-Up**); at an uploader that misses our close it holds its link to the grant or that
+  uploader's close instead, the timer still bounding it. The timer is the runtime's; the session stays clock-free. Queue state
+  reaches the operator as `DownloadEvent::PeerQueued { rank }`, `PeerSlotGranted` and
+  `PeerSlotTimeout`. The downloader sends no keep-alive: the eD2k peer protocol defines
+  none, so a download holds its place in a busy uploader's queue by the reask
+  (ADR-0057), not by a connection.
 
 **Verification.** Trust is download-wide, ranked by `VerificationAuthority`:
 
 - `LinkPartHashSet` — the link's `p=` hash set — is final when present.
-- Otherwise the first peer hash set becomes `PeerHashSet`, persisted with the
-  download as the provisional authority; parts verify against it and the whole-file
+- Otherwise the first peer hash set — asked of one link at a time, above — becomes
+  `PeerHashSet`, persisted with the download as the provisional authority; parts verify against it and the whole-file
   hash at finalize confirms it.
 - A peer hash set whose MD4 is not the file hash is refused, and its sender is
   retired and distrusted. A proven peer set that disagrees with the link's set
@@ -95,12 +128,14 @@ is `DownloadScheduler`.
 
 - Transport stays one-conversation-per-connection; the conversation graph, trust
   and disk policy live in one place that sees every peer.
-- Scheduler behaviour — assignment, racing, release, retirement, backfill,
-  persistence, pause, cancel, source exhaustion, the reask cadence and every callback
-  deadline — is asserted on `DownloadState`'s decisions without sockets, driven by the
+- Scheduler behaviour — the slot ask, the hash-set ask and its deadline, block
+  handouts, the End Game, release, retirement, backfill, persistence, pause, cancel, source exhaustion,
+  the reask cadence and every callback deadline — is asserted on `DownloadState`'s decisions without sockets, driven by the
   instants a test hands in.
-- Racing spends some redundant bandwidth on scarce parts in exchange for a live
-  backup when a busy peer stalls.
+- The End Game spends at most three blocks per Duplicate Set to stop the slowest
+  granted source from setting the download's end, and keeps a fast granted slot
+  working instead of handing it back to a stock uploader that would queue us again
+  (ADR-0117).
 
 ## Considered options
 
@@ -112,5 +147,13 @@ is `DownloadScheduler`.
 - **A separate `rmule-transfer` crate or a `rmule-core-net` split.** Rejected: the
   orchestrator is one crate over the shared runtime (ADR-0081); a second split adds
   a boundary with no second consumer.
-- **Strictly one peer per part.** Rejected: on few-part files it leaves backup peers
-  idle until busy uploaders drop them.
+- **Strictly one peer per part.** Rejected: on few-part files it leaves granted peers
+  idle until busy uploaders drop them; a part's blocks are shared instead (ADR-0117).
+- **A finished peer gives its slot back.** Rejected: the download's last parts then
+  ride on its slowest sources while its fastest hand back slots they waited a queue
+  for. aMule 2.3.3 swaps a slower source out only behind the default-off
+  `DropSlowSources` (`DownloadClient.cpp:645-675`); amule-kno takes the same
+  steal at the end game, four parts or fewer left (amule-kno `DownloadClient.cpp:666-674`).
+- **Cancelling the slower source instead of duplicating its blocks** (aMule's swap).
+  Rejected: it throws away the slower source's slot for a guess at speed; a Duplicate
+  Set keeps it and lets the first copy to arrive decide.

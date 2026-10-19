@@ -8,6 +8,8 @@
 //! fields a link carried that no client reads are said in the status feed
 //! once the download is asked for.
 
+use std::cell::Cell;
+
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
@@ -19,10 +21,11 @@ use rmule_primitives::{Ed2kFileLink, Ed2kLink, PrimitiveError, SafeFileName};
 use super::TransfersView;
 use crate::action::Action;
 use crate::form::{Field, Form, FormKey};
+use crate::row_selection::viewport::Viewport;
 use crate::state::{KnownFileMark, KnownFileMarks, UiState};
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
-use crate::views::modal::Modal;
+use crate::views::modal::{Modal, release_form, scroll_form};
 use crate::words::download::{self as words, LinkRefusal};
 use crate::wrap::clamp_u16;
 
@@ -32,6 +35,8 @@ const FORM_W: u16 = 64;
 /// The form's one field and its last refusal.
 pub(super) struct AddLink {
     form: Form,
+    /// What part of the form is on screen, in a frame too short for it.
+    viewport: Cell<Viewport>,
 }
 
 impl AddLink {
@@ -40,6 +45,7 @@ impl AddLink {
             form: Form::new(vec![
                 Field::text("Link", "").with_placeholder("ed2k://|file|name|size|hash|/"),
             ]),
+            viewport: Cell::default(),
         }
     }
 }
@@ -105,6 +111,7 @@ fn start(
         file,
         source_hint: state.active_server(),
         if_taken: NameTaken::Refuse,
+        kad_aich_root: None,
     }));
     Ok(ViewOutcome::Emit(
         match words::link_fields_skipped(skipped) {
@@ -127,6 +134,10 @@ impl TransfersView {
         let Some(entry) = self.add_link.as_mut() else {
             return ViewOutcome::Ignored;
         };
+        if scroll_form(&mut entry.viewport, key.code) {
+            return ViewOutcome::Redraw;
+        }
+        release_form(&mut entry.viewport);
         match entry.form.handle_key(key) {
             FormKey::Cancel => {
                 self.add_link = None;
@@ -141,7 +152,7 @@ impl TransfersView {
                         outcome
                     }
                     Err(refusal) => {
-                        entry.form.error = Some(words::link_refused(&refusal).to_string());
+                        entry.form.error = Some(words::link_refused(&refusal));
                         ViewOutcome::Redraw
                     }
                 }
@@ -158,16 +169,23 @@ impl TransfersView {
         let width = clamp_u16(entry.form.natural_width() + 2)
             .max(FORM_W)
             .min(area.width);
-        let inner_w = usize::from(width).saturating_sub(2).max(1);
-        let mut lines = entry.form.render(inner_w, theme, true).lines;
-        lines.push(Line::raw(""));
-        lines.push(Line::from(vec![
-            Span::styled(" Enter", Style::new().fg(theme.accent)),
-            Span::styled(" add    ", Style::new().fg(theme.fg)),
-            Span::styled("Esc", Style::new().fg(theme.accent)),
-            Span::styled(" cancel", Style::new().fg(theme.fg)),
-        ]));
-        Modal::new(" Add eD2k link ", theme).draw(frame, area, width, theme, lines);
+        Modal::new(" Add eD2k link ", theme).draw_form(
+            frame,
+            area,
+            width,
+            theme,
+            &entry.viewport,
+            |width| {
+                let inner_w = usize::from(width).saturating_sub(2).max(1);
+                let legend = Line::from(vec![
+                    Span::styled(" Enter", Style::new().fg(theme.accent)),
+                    Span::styled(" add    ", Style::new().fg(theme.fg)),
+                    Span::styled("Esc", Style::new().fg(theme.accent)),
+                    Span::styled(" cancel", Style::new().fg(theme.fg)),
+                ]);
+                entry.form.render_modal(inner_w, theme, vec![legend])
+            },
+        );
     }
 }
 

@@ -184,6 +184,19 @@ impl Expectations {
         }
     }
 
+    /// Whether anything still in its window is expected from `ip` — the
+    /// question the Tunnel Registry asks before an opening packet from there
+    /// may open a slot (ADR-0091, security rule 10). Any side counts: the
+    /// Responder's peer dials us, and the Dialer's answers our dial with a
+    /// simultaneous open.
+    pub(super) fn expects(&self, ip: Ipv4Addr, now: Instant) -> bool {
+        self.by_ip.get(&ip).is_some_and(|entry| {
+            entry
+                .iter()
+                .any(|held| now.saturating_duration_since(held.since) < EXPECTATION_TTL)
+        })
+    }
+
     /// Who a tunnel accepted from `observed` belongs to.
     pub(super) fn attribute(&self, observed: Ipv4Endpoint) -> Attribution {
         let Some(entry) = self.by_ip.get(&observed.ip) else {

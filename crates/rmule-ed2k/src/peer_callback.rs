@@ -187,6 +187,10 @@ impl PeerCallback {
 /// oracle has produced — the dial-back to a v6 requester is plaintext until
 /// something on the wire says otherwise.
 ///
+/// Any sixteen bytes decode. The address gate is not the codec's: core judges
+/// the requester of either opcode by the Reserved Range check with the server
+/// as its Informant (ADR-0085), which only the session knows.
+///
 /// **Evidence: `single-oracle`, and un-captured.** Only eNode-go is known to
 /// emit this opcode; the other server implementing the dialect never mentions
 /// it, so a firewalled IPv6 peer on that server may have no callback path at

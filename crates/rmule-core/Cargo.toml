@@ -25,6 +25,9 @@ rmule-ed2k = { path = "../rmule-ed2k" }
 rmule-bootstrap = { path = "../rmule-bootstrap", default-features = false }
 rmule-kad = { path = "../rmule-kad" }
 rmule-net = { path = "../rmule-net" }
+# The part file's sparse flag, punch and allocated size (ADR-0111), under
+# `content/held.rs` and `content/sparse.rs`.
+rmule-os = { path = "../rmule-os" }
 rmule-peer = { path = "../rmule-peer" }
 rmule-primitives = { path = "../rmule-primitives", features = ["serde"] }
 rmule-store = { path = "../rmule-store" }

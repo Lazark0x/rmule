@@ -28,8 +28,8 @@ use anyhow::{Context, Result, bail};
 
 use crate::artifacts::RunLayout;
 use crate::bench_doctor::{
-    BenchDoctor, CAP_BR_NETFILTER, CAP_CONNTRACK, CAP_CONNTRACK_UDP_TIMEOUT, CAP_DAEMON_IPV6,
-    CAP_IP6TABLES, CAP_NFTABLES, CONNTRACK_UDP_TIMEOUT_SECS, DoctorReport, SkipReason,
+    CAP_BR_NETFILTER, CAP_CONNTRACK, CAP_CONNTRACK_UDP_TIMEOUT, CAP_DAEMON_IPV6, CAP_IP6TABLES,
+    CAP_NFTABLES, CONNTRACK_UDP_TIMEOUT_SECS, DoctorReport, SkipReason,
 };
 use crate::docker::{InternalNetwork, RunContainer};
 use crate::fake_public::{fake_public_address, subnet_cidr};
@@ -39,6 +39,7 @@ use crate::flow::gate::wait_for_container_log;
 use crate::flow::nat::portmap::gateway::{GatewayRecord, GatewayWatch, PROOF_MOUNT};
 use crate::flow::nat::portmap::helper::{self, KadHelper};
 use crate::flow::nat::portmap::link_local::{self, PcpSources};
+use crate::flow::nat::portmap::moved;
 use crate::flow::nat::portmap::row::DriverRow;
 use crate::flow::nat::portmap::verdict::{self, Claim, PortMapVerdict};
 use crate::flow::nat::portmap::{
@@ -145,12 +146,32 @@ pub(crate) fn run(options: PortMapOptions<'_>) -> Result<()> {
 #[allow(clippy::too_many_lines)]
 fn drive(bench: &mut Bench, options: &PortMapOptions<'_>) -> Result<()> {
     let flow = options.flow;
+    // The doctor decides before anything but its own image is built.
+    let suffix = names(options.layout)?;
+    let doctor = bench.examine_doctor(
+        "miniupnpd",
+        options.miniupnpd_image,
+        options.miniupnpd_build_context,
+        &suffix,
+    )?;
+    let mut required = vec![
+        CAP_NFTABLES,
+        CAP_CONNTRACK,
+        CAP_CONNTRACK_UDP_TIMEOUT,
+        CAP_BR_NETFILTER,
+    ];
+    if flow.pinhole() {
+        required.push(CAP_DAEMON_IPV6);
+        required.push(CAP_IP6TABLES);
+    }
+    if let Err(skip) = doctor.require(
+        &required,
+        "a port-mapping grant against a real miniupnpd gateway",
+    ) {
+        return write_skip(options.layout, flow, &doctor, &skip);
+    }
+
     if options.build_images {
-        bench.build_image(
-            "miniupnpd",
-            options.miniupnpd_image,
-            options.miniupnpd_build_context,
-        )?;
         if flow.kad_helpers() > 0 {
             bench.build_image("aMule", options.amule_image, options.amule_build_context)?;
         }
@@ -174,25 +195,6 @@ fn drive(bench: &mut Bench, options: &PortMapOptions<'_>) -> Result<()> {
         options.rmule_tools_dockerfile,
         options.rmule_tools_build_context,
     )?;
-
-    let suffix = names(options.layout)?;
-    let doctor = BenchDoctor::new(&bench.docker, options.miniupnpd_image, &suffix).examine()?;
-    let mut required = vec![
-        CAP_NFTABLES,
-        CAP_CONNTRACK,
-        CAP_CONNTRACK_UDP_TIMEOUT,
-        CAP_BR_NETFILTER,
-    ];
-    if flow.pinhole() {
-        required.push(CAP_DAEMON_IPV6);
-        required.push(CAP_IP6TABLES);
-    }
-    if let Err(skip) = doctor.require(
-        &required,
-        "a port-mapping grant against a real miniupnpd gateway",
-    ) {
-        return write_skip(options.layout, flow, &doctor, &skip);
-    }
 
     let leg_dir = options.layout.nat_dir().join(flow.name());
     fs::create_dir_all(&leg_dir).with_context(|| format!("create {}", leg_dir.display()))?;
@@ -272,7 +274,11 @@ fn drive(bench: &mut Bench, options: &PortMapOptions<'_>) -> Result<()> {
             .volume(&leg_dir, PROOF_MOUNT)
             .env("MINIUPNPD_LAN_ADDR", NAT_LAN_GATEWAY)
             .env("NAT_WAN_ADDR", &gateway_wan)
-            .env("MINIUPNPD_LAN_CIDR", NAT_LAN_SUBNET),
+            .env("MINIUPNPD_LAN_CIDR", NAT_LAN_SUBNET)
+            .env(
+                "MINIUPNPD_SECURE_MODE",
+                if flow.takes_the_port() { "no" } else { "yes" },
+            ),
         "run miniupnpd port-mapping gateway",
     )?;
     run_checked(
@@ -372,8 +378,16 @@ fn drive(bench: &mut Bench, options: &PortMapOptions<'_>) -> Result<()> {
     let mut watch = GatewayWatch::new();
     let driver_deadline =
         Instant::now() + Duration::from_secs(flow.window_secs() + options.timeout_secs);
+    let mut port_taken = false;
     loop {
         watch.poll(&bench.docker, &gateway)?;
+        if flow.takes_the_port()
+            && !port_taken
+            && watch.has_seen_exact(DRIVER_LAN_ADDRESS, PEER_TCP_PORT)
+        {
+            moved::take_the_port(bench, options.miniupnpd_image, &lan_network)?;
+            port_taken = true;
+        }
         if !is_running(bench, &driver)? {
             break;
         }
@@ -450,6 +464,7 @@ fn drive(bench: &mut Bench, options: &PortMapOptions<'_>) -> Result<()> {
 
     let proof = nat_type_proof(&leg_dir)?;
     let rmule = DriverRow::read(&leg_dir.join("portmap-row.toml"))?;
+    let driver_log = fs::read_to_string(leg_dir.join("driver.log")).context("read driver.log")?;
     let (label, detail, claims) = verdict::judge(
         flow,
         &proof,
@@ -457,6 +472,7 @@ fn drive(bench: &mut Bench, options: &PortMapOptions<'_>) -> Result<()> {
         &rmule,
         kad_wire.as_ref(),
         pcp_sources.as_ref(),
+        &driver_log,
     );
     verdict::write(
         options.layout,

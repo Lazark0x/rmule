@@ -2,7 +2,6 @@
 //! These drive the real [`rmule_core::Core`] and print each [`CoreEvent`] via
 //! its co-located `Display` projection.
 
-use rmule_core::DownloadRepository;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -10,11 +9,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Args;
 use rmule_core::KadEnableConfig;
-use rmule_core::run_log::Level;
 use rmule_core::{
-    CoreCommand, CoreConfig, CoreEvent, DownloadCommand as CoreDownloadCommand, DownloadEvent,
-    DownloadId, DownloadLifecycle, DurableDownloadRepository, ServeCommand as CoreServeCommand,
-    open_durable_store,
+    CoreCommand, CoreConfig, CoreEvent, ServeCommand as CoreServeCommand, open_durable_store,
 };
 use rmule_kad::KadId;
 use rmule_primitives::{Ed2kLink, ServerEndpoint};
@@ -24,8 +20,30 @@ use crate::operand::{parse_hex16, parse_seeded_kad_contacts};
 use crate::serve::PeerCryptPolicyArg;
 use crate::serve::crypt_flip;
 use endings::{Endings, Noted};
+use served::{Gate, GateArgs, Gates, ServedArgs};
 
 mod endings;
+mod reopen;
+mod served;
+mod stored;
+
+/// Hold `config`'s Connection Ceiling under the process's open-descriptor
+/// limit, raised once here, at the start of a download command (ADR-0116); a
+/// Ceiling the limit lowered is printed once, in the operator's words.
+fn hold_to_descriptors(config: &mut CoreConfig) {
+    let (peer_connections, lowered) = config
+        .peer_connections
+        .within_descriptors(rmule_os::descriptors::raise_descriptor_limit());
+    config.peer_connections = peer_connections;
+    if let Some(lowered) = lowered {
+        println!("{}", rmule_words::download::ceiling_lowered(lowered));
+    }
+}
+
+pub(crate) use reopen::{DownloadReopenArgs, reopen};
+pub(crate) use stored::{
+    DownloadPauseArgs, DownloadResumeArgs, DownloadStatusArgs, pause, resume, status,
+};
 
 #[derive(Debug, Args)]
 pub(crate) struct DownloadStartArgs {
@@ -43,13 +61,33 @@ pub(crate) struct DownloadStartArgs {
     /// Output path for verified bytes, one per `--file`, in the same order.
     #[arg(long, required = true)]
     out: Vec<PathBuf>,
-    /// Maximum concurrent High ID peer workers per download.
+    /// The **Dial Window** (ADR-0116): roads the downloads open per 5 s
+    /// (`CoreConfig::peer_connections.dials_per_window`, default 20).
     #[arg(long)]
-    peer_concurrency: Option<usize>,
+    dials_per_window: Option<u32>,
+    /// The **Connection Ceiling** (ADR-0116): connections the downloads hold
+    /// at once, asking and transferring
+    /// (`CoreConfig::peer_connections.max_connections`, default 500), never
+    /// more than the process's open-descriptor limit leaves room for.
+    #[arg(long)]
+    max_connections: Option<usize>,
+    /// The **Streaming Window**'s width `N` in parts
+    /// (`CoreConfig::streaming_window_parts`, ADR-0112); `0` for none.
+    #[arg(long)]
+    streaming_window: Option<u32>,
+    /// Every this many milliseconds, print each download's positional part
+    /// map (ADR-0079) off the diagnostics snapshot, one
+    /// `download parts_tick id=… at_unix_ms=… parts=…` line with one letter
+    /// per part: `V` verified, `I` in flight, `M` missing, and a
+    /// `download sources_tick id=… at_unix_ms=… known=… asking=… queued=…
+    /// transferring=…` line of its sources (ADR-0116). Unset prints none.
+    #[arg(long)]
+    report_parts_every_ms: Option<u64>,
     /// Also bind the inbound peer listener on `0.0.0.0:<tcp-port>` while
     /// downloading. This makes rmule reachable (High ID) and callback-capable
     /// (ADR-0039), so a discovered Low-ID source can be called back and adopted.
-    /// No files are shared; the bound listener is the point.
+    /// Peers it accepts are answered for each download from its verified parts
+    /// (ADR-0113); `--share` adds whole files beside them.
     #[arg(long)]
     serve: bool,
     /// Optional overall deadline in seconds for a *bounded* run. When set and the
@@ -96,45 +134,11 @@ pub(crate) struct DownloadStartArgs {
     #[arg(long, value_parser = crypt_flip::parse)]
     peer_crypt_flip: Vec<crypt_flip::CryptFlip>,
     #[command(flatten)]
-    identity: DownloadIdentityArgs,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct DownloadResumeArgs {
-    /// Data directory holding the Durable Store (`rmule.redb`), created when
-    /// absent.
-    #[arg(long)]
-    data_dir: PathBuf,
-    /// Durable download id to resume.
-    #[arg(long)]
-    download_id: u64,
-    /// Optional eD2k server endpoint override as `host:port`.
-    #[arg(long)]
-    server: Option<String>,
-    /// Maximum concurrent High ID peer workers per download.
-    #[arg(long)]
-    peer_concurrency: Option<usize>,
+    served: ServedArgs,
+    #[command(flatten)]
+    gates: GateArgs,
     #[command(flatten)]
     identity: DownloadIdentityArgs,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct DownloadPauseArgs {
-    /// Data directory holding the Durable Store (`rmule.redb`), created when
-    /// absent.
-    #[arg(long)]
-    data_dir: PathBuf,
-    /// Durable download id to mark paused.
-    #[arg(long)]
-    download_id: u64,
-}
-
-#[derive(Debug, Args)]
-pub(crate) struct DownloadStatusArgs {
-    /// Data directory holding the Durable Store (`rmule.redb`), created when
-    /// absent.
-    #[arg(long)]
-    data_dir: PathBuf,
 }
 
 /// The Kad half of a Kad-sourced download: seeded, never bootstrapped, so the
@@ -168,21 +172,30 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
         }
     }
     let store = open_store(&args.data_dir)?;
-    let mut config = CoreConfig::default();
-    if let Some(concurrency) = args.peer_concurrency {
-        config.peer_concurrency_per_download = concurrency;
+    let mut config = args.served.config(CoreConfig::default());
+    if let Some(dials) = args.dials_per_window {
+        config.peer_connections.dials_per_window = dials;
     }
-    let settings = args.identity.settings(rmule_core::CoreSettings {
-        udp_port: args.udp_port,
-        obfuscation: args.peer_crypt.map(rmule_core::ObfuscationPolicy::from),
-        download_dir: Some(crate::output::download_dir(&args.out)?),
-        ..rmule_core::CoreSettings::default()
-    });
+    if let Some(connections) = args.max_connections {
+        config.peer_connections.max_connections = connections;
+    }
+    hold_to_descriptors(&mut config);
+    if let Some(parts) = args.streaming_window {
+        config.streaming_window_parts = parts;
+    }
+    let settings = args
+        .served
+        .settings(args.identity.settings(rmule_core::CoreSettings {
+            udp_port: args.udp_port,
+            obfuscation: args.peer_crypt.map(rmule_core::ObfuscationPolicy::from),
+            download_dir: Some(crate::output::download_dir(&args.out)?),
+            ..rmule_core::CoreSettings::default()
+        }));
     // One production core either way: with `--serve` it also
     // binds the inbound listener (earning High ID + Callback Capability,
     // ADR-0039) and shares the one Low-ID callback table so the accept-router
-    // can adopt a called-back source. No files are shared — only the bound
-    // listener matters. Without it the same wiring simply never serves.
+    // can adopt a called-back source. Without it the same wiring simply never
+    // serves.
     let builder = args.identity.core_builder(config, settings, store)?;
     // A pinned `--kad-id-hex` places the node; otherwise its store mints one.
     let mut core = match args.kad_id_hex.as_deref() {
@@ -206,7 +219,7 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
             let Some(event) = core.next_event().await else {
                 anyhow::bail!("serve event stream ended before ServingStarted");
             };
-            println!("{}", event.record().render(Level::Full));
+            args.served.take(&core, &event).await?;
             match event {
                 CoreEvent::Serve(rmule_core::ServeEvent::ServingStarted { .. }) => break,
                 CoreEvent::Serve(rmule_core::ServeEvent::ServingFailed { reason }) => {
@@ -223,6 +236,9 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
         core.send(CoreCommand::EnableKad(kad_enable_config(&args)?))
             .await?;
     }
+    let mut shared = args.served.share_at_start(&mut core).await?;
+    let mut gates = Gates::new(&args.gates);
+    let mut lingering = false;
 
     // The operator's word, given on the command line (ADR-0095): the one
     // login, which binds the listener if `--serve` has not, then the download
@@ -240,6 +256,11 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
         .map(|secs| tokio::time::Instant::now() + Duration::from_secs(secs));
     // Each download ends on its own; the run ends when every one has.
     let mut endings = Endings::new(args.out.len());
+    let mut parts_tick = args.report_parts_every_ms.map(|ms| {
+        let mut ticker = tokio::time::interval(Duration::from_millis(ms.max(1)));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        ticker
+    });
     let result = loop {
         // Bounded-run mode: the Low-ID callback compatibility flow
         // can never byte-complete against the Lugdunum eserver (it never surfaces
@@ -258,6 +279,8 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
         enum Step {
             Deadline,
             Flip,
+            PartsTick,
+            Gates,
             Event(Option<CoreEvent>),
         }
         let step = tokio::select! {
@@ -274,6 +297,13 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
                     None => std::future::pending().await,
                 }
             } => Step::Flip,
+            () = async {
+                match parts_tick.as_mut() {
+                    Some(ticker) => { ticker.tick().await; }
+                    None => std::future::pending().await,
+                }
+            } => Step::PartsTick,
+            () = gates.tick() => Step::Gates,
             event = core.next_event() => Step::Event(event),
         };
         let event = match step {
@@ -288,6 +318,33 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
                 crypt_flips.fire(&core)?;
                 continue;
             }
+            Step::PartsTick => {
+                print_parts_tick(&core);
+                continue;
+            }
+            Step::Gates => match gates.look() {
+                Gate::Shut => continue,
+                Gate::Pause => {
+                    let ids: Vec<u64> = endings.queued().collect();
+                    served::pause_then_share(
+                        &mut core,
+                        &args.served,
+                        &ids,
+                        &args.gates.share_after_pause,
+                        &mut shared,
+                    )
+                    .await?;
+                    continue;
+                }
+                Gate::Stop => {
+                    println!(
+                        "download stop_gate id={} at_unix_ms={}",
+                        endings.first().map_or(0, |id| id.as_u64()),
+                        served::unix_ms()
+                    );
+                    break endings.verdict();
+                }
+            },
             Step::Event(event) => event,
         };
         let Some(event) = event else {
@@ -296,7 +353,7 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
                 endings.queued().collect::<Vec<_>>()
             ));
         };
-        println!("{}", event.record().render(Level::Full));
+        args.served.take(&core, &event).await?;
         let CoreEvent::Download(event) = event else {
             continue;
         };
@@ -310,7 +367,14 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
                     .map_or_else(|| "-".to_owned(), |path| path.display().to_string())
             ),
         }
-        if endings.all_ended() {
+        if endings.all_ended() && !lingering {
+            // A peer mid-upload when the last download ended is served on,
+            // from the final path, until the deadline.
+            if args.served.linger && deadline.is_some() {
+                lingering = true;
+                println!("download all_ended lingering=yes");
+                continue;
+            }
             if args.serve {
                 core.send(CoreCommand::Serve(CoreServeCommand::StopServing))
                     .await?;
@@ -342,60 +406,40 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
     result
 }
 
-pub(crate) async fn resume(args: DownloadResumeArgs) -> Result<()> {
-    let server_override = args
-        .server
-        .as_deref()
-        .map(ServerEndpoint::parse_host_port)
-        .transpose()
-        .with_context(|| format!("parse server override {:?}", args.server))?;
-    let store = open_store(&args.data_dir)?;
-    let download_id = DownloadId::from_u64(args.download_id);
-    // The server this run connects to: the override, or the one the download
-    // was recorded against as its source hint.
-    let server = match &server_override {
-        Some(server) => server.clone(),
-        None => DurableDownloadRepository::new(std::sync::Arc::clone(&store))
-            .load_download(download_id)
-            .with_context(|| format!("load download {}", args.download_id))?
-            .source_hint()
-            .cloned()
-            .context("the download records no server; name one with --server")?,
-    };
-    let mut config = CoreConfig::default();
-    if let Some(concurrency) = args.peer_concurrency {
-        config.peer_concurrency_per_download = concurrency;
+/// One `download parts_tick` line per download row: the positional part map
+/// (ADR-0079) as letters, stamped with the wall clock so a bench can lay it
+/// beside a capture taken on the same host; and one `download sources_tick`
+/// line beside it: the sources the run knows and its **Source Activity**
+/// (ADR-0116).
+fn print_parts_tick(core: &rmule_core::Core) {
+    use rmule_core::diagnostics::PartState;
+    let at_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis());
+    for (id, row) in &core.diagnostics_snapshot().downloads {
+        let parts: String = row
+            .parts
+            .iter()
+            .map(|part| match part {
+                PartState::Verified => 'V',
+                PartState::InFlight => 'I',
+                PartState::Missing => 'M',
+            })
+            .collect();
+        println!(
+            "download parts_tick id={} at_unix_ms={at_unix_ms} parts={parts}",
+            id.as_u64()
+        );
+        let activity = row.source_activity;
+        println!(
+            "download sources_tick id={} at_unix_ms={at_unix_ms} known={} asking={} queued={} transferring={}",
+            id.as_u64(),
+            row.known_sources,
+            activity.asking,
+            activity.queued,
+            activity.transferring,
+        );
     }
-    let mut core = args
-        .identity
-        .core_builder(
-            config,
-            args.identity.settings(rmule_core::CoreSettings::default()),
-            store,
-        )?
-        .build();
-    // The operator's word, given on the command line (ADR-0095).
-    crate::node::connect(&core, &server).await?;
-    core.send(CoreCommand::Download(CoreDownloadCommand::ResumeDownload {
-        download_id,
-    }))
-    .await?;
-
-    while let Some(event) = core.next_event().await {
-        println!("{}", event.record().render(Level::Full));
-        match event {
-            CoreEvent::Download(DownloadEvent::DownloadCompleted { .. }) => return Ok(()),
-            CoreEvent::Download(DownloadEvent::DownloadCancelled { .. }) => {
-                anyhow::bail!("download cancelled")
-            }
-            CoreEvent::Download(DownloadEvent::DownloadFailed { reason, .. }) => {
-                anyhow::bail!("download failed: {reason}")
-            }
-            _ => {}
-        }
-    }
-
-    anyhow::bail!("download event stream ended before resume completion")
 }
 
 /// The Durable Store under `data_dir`, named in the error when it will not
@@ -403,39 +447,4 @@ pub(crate) async fn resume(args: DownloadResumeArgs) -> Result<()> {
 fn open_store(data_dir: &std::path::Path) -> Result<std::sync::Arc<rmule_core::DurableStore>> {
     open_durable_store(data_dir)
         .with_context(|| format!("open the Durable Store in {}", data_dir.display()))
-}
-
-pub(crate) fn pause(args: DownloadPauseArgs) -> Result<()> {
-    let store = open_store(&args.data_dir)?;
-    let repo = DurableDownloadRepository::new(store);
-    let download_id = DownloadId::from_u64(args.download_id);
-    repo.set_lifecycle(download_id, DownloadLifecycle::Paused)?;
-    println!("download paused id={}", download_id.as_u64());
-    Ok(())
-}
-
-pub(crate) fn status(args: DownloadStatusArgs) -> Result<()> {
-    let store = open_store(&args.data_dir)?;
-    let repo = DurableDownloadRepository::new(store);
-    let records = repo.list_resumable()?;
-    println!("# resumable downloads in {}", args.data_dir.display());
-    if records.is_empty() {
-        println!("# no resumable downloads");
-        return Ok(());
-    }
-    for record in records {
-        let parts = repo.verified_parts(record.id())?;
-        let verified_bytes: u64 = parts.iter().map(|part| part.len).sum();
-        println!(
-            "download id={} state={:?} file_hash={} size={} verified_parts={} verified_bytes={} final_path={}",
-            record.id().as_u64(),
-            record.lifecycle(),
-            record.file_hash().to_hex_upper(),
-            record.file_size(),
-            parts.len(),
-            verified_bytes,
-            record.paths().final_path().display()
-        );
-    }
-    Ok(())
 }

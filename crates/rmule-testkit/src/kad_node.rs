@@ -12,8 +12,8 @@ use rmule_primitives::{
 
 use rmule_kad::{
     Kad2Message, Kad2NodeInfo, KadCommand, KadEvent, KadId, KadInstant, KadNode, KadNodeConfig,
-    KadNodeDiagnostic, KadNodeEndpoint, KadNodeStart, KadObfuscation, KadOutput, KadSelfCheck,
-    udp_verify_key,
+    KadNodeDiagnostic, KadNodeEndpoint, KadNodeStart, KadObfuscation, KadOutput, KadProtocol,
+    KadSelfCheck, udp_verify_key,
 };
 use rmule_primitives::session::drain;
 
@@ -29,10 +29,23 @@ pub fn id(byte: u8) -> KadId {
     KadId::from_bytes([byte; KadId::BYTE_LEN])
 }
 
-/// A counterparty endpoint in the `203.0.113.0/24` documentation range, so a
-/// leg that leaks a real send can never reach a live host.
-pub fn endpoint(host: u8, port: u16) -> KadNodeEndpoint {
-    KadNodeEndpoint::new(Ipv4Addr::new(203, 0, 113, host), port)
+/// Counterparty `host`'s address, `45.55.<host>.1`: fake-public, and alone in
+/// its /24.
+///
+/// Fake-public because the publish-tolerance gates and the flood limiter wave
+/// a LAN address through. Alone in its /24 because the routing table admits
+/// at most two contacts per /24 in a bucket and ten across the table
+/// (ADR-0064): counterparties sharing one /24 would be refused as soon as a
+/// third landed in one bucket. The address space is the fake-public plan's
+/// (the interop harness's `45.55` slot); every Kad leg is sans-I/O, so no
+/// datagram to it leaves the process.
+pub const fn host_ip(host: u8) -> Ipv4Addr {
+    Ipv4Addr::new(45, 55, host, 1)
+}
+
+/// Counterparty `host`'s endpoint at `port` (its address is [`host_ip`]).
+pub const fn endpoint(host: u8, port: u16) -> KadNodeEndpoint {
+    KadNodeEndpoint::new(host_ip(host), port)
 }
 
 /// The default config of the node under test: ID `0xAA…`, the default eD2k/Kad
@@ -207,6 +220,12 @@ pub fn crypt_start() -> KadNodeStart {
 /// recipient `peer` would — under its Kad ID (the NodeID family a stored
 /// contact's `HELLO_RES` rides), under the verify key it handed us (`handed`,
 /// the family a handler reply rides), or as plaintext.
+///
+/// # Panics
+/// On an obfuscated datagram neither key opens: `peer` would drop it, so a
+/// mis-keyed send fails the leg instead of being read as if it were plain. A
+/// datagram led by a Kad protocol byte is plaintext; an obfuscated one never
+/// starts with one.
 pub fn opened_messages(
     outputs: &[KadOutput],
     peer: KadId,
@@ -222,8 +241,20 @@ pub fn opened_messages(
         .map(|output| match output {
             KadOutput::Datagram { to, bytes } => KadOutput::Datagram {
                 to: *to,
-                bytes: decrypt_datagram_client(bytes, &keys)
-                    .map_or_else(|| bytes.clone(), |opened| opened.payload),
+                bytes: if bytes
+                    .first()
+                    .copied()
+                    .and_then(KadProtocol::from_byte)
+                    .is_some()
+                {
+                    bytes.clone()
+                } else {
+                    decrypt_datagram_client(bytes, &keys)
+                        .unwrap_or_else(|| {
+                            panic!("no key {peer:?} holds opens the obfuscated datagram to {to:?}")
+                        })
+                        .payload
+                },
             },
             KadOutput::Event(_) => output.clone(),
         })
@@ -317,10 +348,16 @@ pub fn solicit_hello_res(node: &mut KadNode, responder: KadNodeEndpoint, respond
 /// introduces itself with, and the cheapest way to seat a contact as
 /// responded without driving a probe round trip.
 pub fn hello_req_from(id: KadId, endpoint: KadNodeEndpoint) -> Vec<u8> {
+    hello_req_at_version(id, endpoint, 8)
+}
+
+/// [`hello_req_from`] from a peer at Kad `version` — a storer whose answers
+/// a searcher reads by its version (`TAG_KADAICHHASHRESULT` from v9 on).
+pub fn hello_req_at_version(id: KadId, endpoint: KadNodeEndpoint, version: u8) -> Vec<u8> {
     Kad2Message::HelloReq(Kad2NodeInfo {
         id,
         tcp_port: 4662,
-        version: 8,
+        version,
         udp_port_tag: Some(endpoint.udp_port()),
         misc_options: 0,
     })

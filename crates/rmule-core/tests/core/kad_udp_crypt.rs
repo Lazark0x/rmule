@@ -228,6 +228,7 @@ async fn a_crypt_armed_core_walks_on_a_lookup_reply_keyed_on_its_own_verify_key(
         source_hint: Some(ServerEndpoint::new("127.0.0.1", dead_port().await).unwrap()),
         name: rmule_testkit::file_name("kad-crypt.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();
@@ -345,6 +346,7 @@ async fn a_live_policy_change_re_arms_the_running_kad_node_both_ways() {
         source_hint: Some(ServerEndpoint::new("127.0.0.1", dead_port().await).unwrap()),
         name: rmule_testkit::file_name("kad-live-crypt.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
+        kad_aich_root: None,
     }))
     .await
     .unwrap();

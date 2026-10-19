@@ -174,9 +174,9 @@ pub struct CapsFrame {
 /// Why a CAPS body could not be read.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum CapsDecodeError {
-    /// Not the fixed 54 bytes. There is no length field, so a short body
+    /// Short of the fixed 54 bytes. There is no length field, so a short body
     /// cannot be parsed as far as it goes without inventing field boundaries.
-    #[error("CAPS body is {actual} bytes, not the fixed {CAPS_FRAME_LEN}")]
+    #[error("CAPS body is {actual} bytes, short of the fixed {CAPS_FRAME_LEN}")]
     BodyWidth {
         /// Bytes present.
         actual: usize,
@@ -203,7 +203,9 @@ impl CapsFrame {
     /// # Errors
     /// [`CapsDecodeError`] on the wrong width, magic or version — each a drop.
     pub fn decode(body: &[u8]) -> Result<Self, CapsDecodeError> {
-        if body.len() != CAPS_FRAME_LEN {
+        // eMuleAI checks only the floor (`ClientUDPSocket.cpp:690`): a longer
+        // body is read by its fixed prefix.
+        if body.len() < CAPS_FRAME_LEN {
             return Err(CapsDecodeError::BodyWidth { actual: body.len() });
         }
         let mut reader = WireReader::new(body);
@@ -297,11 +299,12 @@ mod tests {
 
     /// No length field means no partial parse: a body one byte short is not a
     /// CAPS frame with a missing tail, it is bytes whose field boundaries are
-    /// unknown.
+    /// unknown. A longer one is eMuleAI's to extend, and its fixed prefix is
+    /// read as eMuleAI reads it.
     #[test]
-    fn a_body_of_any_other_width_is_dropped_rather_than_parsed_as_far_as_it_goes() {
+    fn a_short_body_is_dropped_and_a_long_one_is_read_by_its_prefix() {
         let full = a_frame().encode();
-        for len in [0usize, 53, 55] {
+        for len in [0usize, 53] {
             let mut body = full.to_vec();
             body.resize(len, 0);
             assert_eq!(
@@ -309,6 +312,9 @@ mod tests {
                 Err(CapsDecodeError::BodyWidth { actual: len })
             );
         }
+        let mut longer = full.to_vec();
+        longer.extend([0xEE; 4]);
+        assert_eq!(CapsFrame::decode(&longer), Ok(a_frame()));
     }
 
     /// Magic and version are both hard gates — eMuleAI rejects either

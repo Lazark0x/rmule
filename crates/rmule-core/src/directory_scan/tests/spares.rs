@@ -22,7 +22,7 @@ fn pass_knowing(dir: &Scripted, known: &Known) -> (PassEnd, Vec<ScanReport>) {
     let end = run_pass(
         dir,
         Path::new(ROOT),
-        known,
+        &mut || Some(known.clone()),
         Consent::Given,
         &AtomicBool::new(false),
         &progress,

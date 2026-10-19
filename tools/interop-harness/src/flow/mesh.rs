@@ -60,12 +60,73 @@ pub(crate) const KAD_SETTLE_WINDOW_ENV: &str = "RMULE_KAD_SETTLE_WINDOW_SECS";
 /// stimulus `KADEMLIA2_REQ` fired earlier draws an empty `KADEMLIA2_RES`.
 pub(crate) const KAD_DEFAULT_SETTLE_WINDOW_SECS: u64 = 240;
 
-// The requester's Kad source search is fired by `Cancel` + re-`Add` (a bare `Add`
-// of an already-present file is gated by the per-file `m_LastSearchTimeKad`). We
-// repeat it so at least one fresh `0x34` lands after routing settles and after
-// the publish has reached the storer.
-pub(crate) const KAD_SEARCH_RETRY_ATTEMPTS: u32 = 4;
-pub(crate) const KAD_SEARCH_RETRY_INTERVAL_SECS: u64 = 25;
+/// Overrides the pause between a `Cancel` and its re-`Add` (seconds).
+pub(crate) const KAD_SEARCH_CANCEL_GAP_ENV: &str = "RMULE_KAD_SEARCH_CANCEL_GAP_SECS";
+/// Overrides the interval between two source searches (seconds).
+pub(crate) const KAD_SEARCH_RETRY_INTERVAL_ENV: &str = "RMULE_KAD_SEARCH_RETRY_INTERVAL_SECS";
+
+/// The requester's Kad source search is fired by `Cancel` + re-`Add` (a bare `Add`
+/// of an already-present file is gated by the per-file `m_LastSearchTimeKad`). We
+/// repeat it so at least one fresh `0x34` lands after routing settles and after
+/// the publish has reached the storer.
+///
+/// The schedule is a bounded window like the settle window: it is resolved once
+/// from the defaults and the env knobs, then clamped so its total wait never
+/// exceeds the run's `--timeout`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct KadSearchSchedule {
+    pub(crate) attempts: u32,
+    /// Pause between the `Cancel` and the re-`Add` of one attempt.
+    pub(crate) cancel_gap: Duration,
+    /// Pause between two attempts.
+    pub(crate) interval: Duration,
+}
+
+impl KadSearchSchedule {
+    pub(crate) const DEFAULT_ATTEMPTS: u32 = 4;
+    pub(crate) const DEFAULT_CANCEL_GAP_SECS: u64 = 2;
+    pub(crate) const DEFAULT_INTERVAL_SECS: u64 = 25;
+
+    /// Defaults, overridden by the env knobs, clamped to `timeout_secs`.
+    pub(crate) fn resolve(timeout_secs: u64) -> Self {
+        let secs = |key: &str, default: u64| {
+            std::env::var(key)
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(default)
+        };
+        Self::bounded(
+            Self::DEFAULT_ATTEMPTS,
+            secs(KAD_SEARCH_CANCEL_GAP_ENV, Self::DEFAULT_CANCEL_GAP_SECS),
+            secs(KAD_SEARCH_RETRY_INTERVAL_ENV, Self::DEFAULT_INTERVAL_SECS),
+            timeout_secs,
+        )
+    }
+
+    /// Shrink the interval, then the gap, until the total wait fits `timeout_secs`.
+    fn bounded(attempts: u32, gap_secs: u64, interval_secs: u64, timeout_secs: u64) -> Self {
+        let attempts_n = u64::from(attempts);
+        let gaps = attempts_n.saturating_sub(1);
+        let gap_total = gap_secs.saturating_mul(attempts_n);
+        let interval_budget = timeout_secs.saturating_sub(gap_total);
+        let interval_secs = if gaps == 0 {
+            interval_secs
+        } else {
+            interval_secs.min(interval_budget / gaps)
+        };
+        let gap_secs = if gap_total + interval_secs.saturating_mul(gaps) > timeout_secs {
+            gap_secs.min(timeout_secs / attempts_n.max(1))
+        } else {
+            gap_secs
+        };
+        Self {
+            attempts,
+            cancel_gap: Duration::from_secs(gap_secs),
+            interval: Duration::from_secs(interval_secs),
+        }
+    }
+}
+
 // Best-effort grace for the entrypoint's (weak) search-active signal; the pcap is
 // the real evidence, so a miss here only warns.
 pub(crate) const KAD_SEARCH_SIGNAL_GRACE_SECS: u64 = 10;
@@ -354,8 +415,14 @@ pub(crate) fn wait_kad_settle_window(timeout_secs: u64) {
 /// least one search land after the requester's routing table holds the storer and
 /// after the publisher's source publish has reached it. `Cancel` is best-effort
 /// (the file is absent on the first pass); a failed `Add` warns, never aborts.
-pub(crate) fn trigger_source_search(docker: &Docker, requester: &str, link: &str, hash_hex: &str) {
-    for attempt in 0..KAD_SEARCH_RETRY_ATTEMPTS {
+pub(crate) fn trigger_source_search(
+    docker: &Docker,
+    requester: &str,
+    link: &str,
+    hash_hex: &str,
+    schedule: KadSearchSchedule,
+) {
+    for attempt in 0..schedule.attempts {
         let _ = run_checked(
             docker.exec(
                 requester.to_owned(),
@@ -363,7 +430,7 @@ pub(crate) fn trigger_source_search(docker: &Docker, requester: &str, link: &str
             ),
             "cancel requester download to reset kad search timer",
         );
-        thread::sleep(Duration::from_secs(2));
+        thread::sleep(schedule.cancel_gap);
         if let Err(error) = run_checked(
             docker.exec(
                 requester.to_owned(),
@@ -373,8 +440,8 @@ pub(crate) fn trigger_source_search(docker: &Docker, requester: &str, link: &str
         ) {
             eprintln!("warning: requester Add failed: {error:#}");
         }
-        if attempt + 1 < KAD_SEARCH_RETRY_ATTEMPTS {
-            thread::sleep(Duration::from_secs(KAD_SEARCH_RETRY_INTERVAL_SECS));
+        if attempt + 1 < schedule.attempts {
+            thread::sleep(schedule.interval);
         }
     }
 }
@@ -481,3 +548,29 @@ pub(crate) fn write_kad_candidate_summary(
 pub(crate) const KAD_RMULE_IP: [u8; 4] = [172, 30, 0, 9];
 pub(crate) const KAD_RMULE_UDP_PORT: u16 = 4679;
 pub(crate) const KAD_RMULE_KAD_ID: [u8; 16] = [0x5E; 16];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn total(schedule: KadSearchSchedule) -> Duration {
+        schedule.cancel_gap * schedule.attempts + schedule.interval * (schedule.attempts - 1)
+    }
+
+    #[test]
+    fn default_schedule_fits_the_default_timeout_unchanged() {
+        let schedule = KadSearchSchedule::bounded(4, 2, 25, 300);
+        assert_eq!(total(schedule), Duration::from_secs(83));
+    }
+
+    #[test]
+    fn schedule_never_exceeds_a_short_timeout() {
+        for timeout in [0, 1, 5, 8, 20, 60] {
+            let schedule = KadSearchSchedule::bounded(4, 2, 25, timeout);
+            assert!(
+                total(schedule) <= Duration::from_secs(timeout),
+                "timeout {timeout}: {schedule:?}"
+            );
+        }
+    }
+}

@@ -44,18 +44,22 @@ pub(in crate::views::shared_files) struct PeerLine {
     file: Option<String>,
 }
 
-/// A slot-holder first, then the queue by its rank: the State column's rank.
+/// A slot-holder first, then a waiter dialled back to its held slot, then
+/// the queue by its rank: the State column's rank.
 fn state_rank(state: UploadState) -> u64 {
     match state {
         UploadState::Uploading { .. } => 0,
-        UploadState::Queued { rank, .. } => 1 + u64::from(rank),
+        UploadState::DialingBack { .. } => 1,
+        UploadState::Queued { rank, .. } => 2 + u64::from(rank),
     }
 }
 
 impl PeerLine {
     fn new(peer: &UploadPeer, state: &UiState, ranks: &SoftwareRanks) -> Self {
         let file = match peer.state {
-            UploadState::Uploading { file } | UploadState::Queued { file, .. } => file,
+            UploadState::Uploading { file }
+            | UploadState::DialingBack { file }
+            | UploadState::Queued { file, .. } => file,
         };
         let (name, named) = file_label(state, file);
         let bps = state
