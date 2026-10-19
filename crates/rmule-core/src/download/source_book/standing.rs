@@ -184,6 +184,11 @@ impl Standing {
             .map(|target| PeerCrypt::new(target.stance, Some(target.user_hash)))
     }
 
+    /// Whether the uploader ranked the record.
+    pub(super) const fn ranked(&self) -> bool {
+        self.rank.is_some()
+    }
+
     /// Whether the record may need a part of the peer.
     pub(super) const fn needs_parts(&self) -> bool {
         !self.no_needed_parts

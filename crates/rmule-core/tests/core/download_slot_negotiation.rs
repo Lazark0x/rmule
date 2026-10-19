@@ -1,7 +1,9 @@
-//! What the uploader's slot costs a download, over the loopback peers: a peer
-//! that ranks us is hung up on while the download completes elsewhere, one
-//! that ranks us forever keeps our standing in the Remote-Queued Pool, not a
-//! failure (ADR-0057, ADR-0116), one that grants and then delivers nothing
+//! What the uploader's slot costs a download, over the loopback peers, each
+//! of which says it is aMule 2.3.3 — an uploader that keeps a link we close
+//! connected to its idle close, so a rank holds our link (ADR-0116 invariant
+//! 3): a peer that ranks us does not keep the download from completing
+//! elsewhere, one that ranks us forever keeps our standing in the
+//! Remote-Queued Pool, not a failure (ADR-0057), one that grants and then delivers nothing
 //! (the slot-wait budget covers the wait for bytes), and the
 //! `OP_CANCELTRANSFER` a cancel owes the peer whose slot we hold (ADR-0056).
 
@@ -15,9 +17,9 @@ use tokio::time::timeout;
 #[tokio::test]
 async fn core_download_completes_through_queue_ranking() {
     // A busy peer answers OP_STARTUPLOADREQ with OP_QUEUERANKING: core
-    // surfaces the place, hangs the worker up keeping the standing (the
-    // Queued Hang-Up, ADR-0116), and the download completes from a peer
-    // that grants — a queued source holds no connection.
+    // surfaces the place and, the peer being aMule 2.3.3, holds the link for
+    // the grant it may write there (ADR-0116 invariant 3), while the download
+    // completes from a peer that grants.
     let bytes = b"queued loopback download".to_vec();
     let file = file_link("loopback.bin", &bytes);
     let file_hash = file.file_hash;
@@ -80,7 +82,7 @@ async fn core_download_completes_through_queue_ranking() {
         saw_queued,
         "core must surface PeerQueued while the peer holds us in its upload queue"
     );
-    assert!(saw_hang_up, "the rank hangs the busy peer's worker up");
+    assert!(!saw_hang_up, "the rank holds the busy peer's link");
 
     core.shutdown().await;
     let _ = busy_task.await;
@@ -90,10 +92,11 @@ async fn core_download_completes_through_queue_ranking() {
 #[tokio::test]
 async fn core_keeps_remote_queue_standing_when_a_slot_is_never_granted() {
     // ADR-0057 disconnect-and-reask: a peer that ranks us forever but never
-    // grants a slot must NOT fail the download. Its first rank hangs the
-    // worker up (the Queued Hang-Up, ADR-0116), and the earned queue standing
-    // is kept — the source enters the Remote-Queued Pool (SourceRemoteQueued),
-    // to be kept alive on the reask heartbeat instead of failing the download.
+    // grants a slot must NOT fail the download. Its rank holds the link for a
+    // grant (ADR-0116 invariant 3) until the slot-wait budget ends the wait,
+    // and the earned queue standing is kept — the source enters the
+    // Remote-Queued Pool (SourceRemoteQueued), to be kept alive on the reask
+    // heartbeat instead of failing the download.
     let bytes = b"never granted loopback download".to_vec();
     let file = file_link("loopback.bin", &bytes);
     let file_hash = file.file_hash;
@@ -102,7 +105,7 @@ async fn core_keeps_remote_queue_standing_when_a_slot_is_never_granted() {
     let peer = FakePeer::bind().await;
     server.set_sources(vec![peer.source()]).await;
     // Rank the requester but never grant; the connection stays open, so
-    // only the rank can end the worker, never a peer close.
+    // only the slot-wait budget can end the worker, never a peer close.
     let peer_task = peer.spawn(PeerScript {
         slot: SlotPolicy::QueueThenSilence(vec![5, 4]),
         serve: ServePolicy::Nothing,
@@ -114,6 +117,7 @@ async fn core_keeps_remote_queue_standing_when_a_slot_is_never_granted() {
             max_connections: 1,
             ..rmule_core::PeerConnections::default()
         },
+        slot_wait_timeout: Duration::from_millis(300),
         ..CoreConfig::default()
     };
     let out = tempfile::tempdir().unwrap();
@@ -133,21 +137,18 @@ async fn core_keeps_remote_queue_standing_when_a_slot_is_never_granted() {
     .await
     .unwrap();
 
-    // The worker hangs up at the rank (PeerRetired, queued) and the source's
+    // The held wait ends at the budget (PeerSlotTimeout) and the source's
     // standing is kept (SourceRemoteQueued) — both must arrive, and neither a
     // failure nor a completion may.
-    let mut saw_hang_up = false;
+    let mut saw_wait_end = false;
     let mut saw_remote_queued = false;
-    while !(saw_hang_up && saw_remote_queued) {
+    while !(saw_wait_end && saw_remote_queued) {
         let event = timeout(Duration::from_secs(3), core.next_event())
             .await
             .expect("core emitted event")
             .expect("core event stream stayed open");
         match event {
-            CoreEvent::Download(DownloadEvent::PeerRetired {
-                reason: rmule_core::PeerRetirementReason::Queued,
-                ..
-            }) => saw_hang_up = true,
+            CoreEvent::Download(DownloadEvent::PeerSlotTimeout { .. }) => saw_wait_end = true,
             CoreEvent::Download(DownloadEvent::SourceRemoteQueued { rank, .. }) => {
                 assert!(
                     rank.is_some_and(|rank| rank > 0),
@@ -165,8 +166,8 @@ async fn core_keeps_remote_queue_standing_when_a_slot_is_never_granted() {
         }
     }
 
-    // The worker hung up at its rank, so its loopback connection closed; the
-    // source's standing now rides socketless in the Remote-Queued Pool.
+    // The held wait ended, so its loopback connection closed; the source's
+    // standing now rides socketless in the Remote-Queued Pool.
     core.shutdown().await;
     let _ = peer_task.await;
 }

@@ -15,7 +15,11 @@ use super::*;
 fn a_source_put_back_on_queue_stays_queued_at_its_new_rank() {
     let mut state = started(&[peer(1)], live_posture());
     let _ = connect(&mut state, t0(), peer(1));
-    let identity = reaskable(SOURCE).identity();
+    let identity = HelloFacts {
+        software: rmule_testkit::emule_qt(),
+        ..reaskable(SOURCE)
+    }
+    .identity();
     let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Identity(identity));
     let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotAsked);
     let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Queued { rank: 5 });

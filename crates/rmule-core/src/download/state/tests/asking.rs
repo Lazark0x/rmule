@@ -39,9 +39,15 @@ fn seated(budget: &SharedConnectionBudget, id: u64, pool: &[PeerEndpoint]) -> Do
     state
 }
 
-/// `peer`'s slot ask, answered with `rank`: the decisions of the answer.
+/// `peer`'s slot ask, answered with `rank` by an eMule, which notices our
+/// hang-up: the decisions of the answer.
 fn ranked(state: &mut DownloadState, peer: PeerEndpoint, rank: u16) -> Vec<Decision> {
     let _ = probed(state, t0(), peer);
+    let PeerEndpoint::V4(at) = peer else {
+        unreachable!("the pool is IPv4")
+    };
+    let hash = UserHash::from_bytes([at.ip.octets()[3]; UserHash::BYTE_LEN]);
+    let _ = state.on_worker_event(t0(), peer, emule_hello(hash));
     state.on_worker_event(t0(), peer, PeerWorkerEvent::Queued { rank })
 }
 
@@ -204,5 +210,87 @@ fn the_source_activity_counts_each_source_once_by_its_activity() {
             queued: 1,
             transferring: 1,
         }
+    );
+}
+
+/// `peer`'s slot ask, answered with `rank` by aMule 2.3.3, whose Asio socket
+/// layer keeps a link we close connected to its 40 s idle close.
+fn ranked_by_amule_2(state: &mut DownloadState, peer: PeerEndpoint, rank: u16) -> Vec<Decision> {
+    let _ = probed(state, t0(), peer);
+    let identity = HelloFacts {
+        software: rmule_testkit::amule_233(),
+        ..HelloFacts::of(UserHash::from_bytes([0xA2; UserHash::BYTE_LEN]))
+    }
+    .identity();
+    let _ = state.on_worker_event(t0(), peer, PeerWorkerEvent::Identity(identity));
+    state.on_worker_event(t0(), peer, PeerWorkerEvent::Queued { rank })
+}
+
+/// A promotion aMule 2 writes on a link we closed is lost — it drops the
+/// upload at our reset, the waiting place already spent (ADR-0116 invariant
+/// 3) — so its rank holds the worker on the link, queued and holding its
+/// connection, and the grant it writes there later transfers.
+#[test]
+fn a_rank_from_amule_2_holds_the_link_and_the_grant_written_there_transfers() {
+    let shared = budget(u32::MAX, 1);
+    let mut state = seated(&shared, 1, &[peer(1), peer(2)]);
+    assert_eq!(spawned(&state.start(t0())), vec![peer(1)]);
+
+    let ranked = ranked_by_amule_2(&mut state, peer(1), 1);
+    assert!(
+        !ranked.iter().any(|d| matches!(
+            d,
+            Decision::EndWorker { .. } | Decision::Emit(DownloadEvent::PeerRetired { .. })
+        )),
+        "the worker keeps its link: {ranked:?}"
+    );
+    assert!(
+        spawned(&ranked).is_empty(),
+        "the held link holds its connection"
+    );
+    assert_eq!(state.source_activity().queued, 1);
+    assert_eq!(state.source_activity().asking, 0);
+
+    let granted = state.on_worker_event(
+        t0() + Duration::from_secs(20),
+        peer(1),
+        PeerWorkerEvent::SlotGranted,
+    );
+    assert!(
+        granted.iter().any(|d| matches!(
+            d,
+            Decision::Emit(DownloadEvent::PartAssigned { peer: p, .. }) if *p == peer(1)
+        )),
+        "{granted:?}"
+    );
+}
+
+/// aMule 2 closing a held link at its idle close ends the worker as a
+/// hang-up would: the source stays queued at its rank, unspent, and the
+/// promotion that follows comes by dial-back.
+#[test]
+fn amule_2_closing_a_held_link_leaves_the_source_queued_at_its_rank() {
+    let shared = budget(u32::MAX, 1);
+    let mut state = seated(&shared, 1, &[peer(1), peer(2)]);
+    let _ = state.start(t0());
+    let _ = ranked_by_amule_2(&mut state, peer(1), 3);
+
+    let closed = state.on_worker_event(
+        t0() + Duration::from_secs(41),
+        peer(1),
+        PeerWorkerEvent::Disconnected,
+    );
+    assert!(
+        closed.iter().any(|d| matches!(
+            d,
+            Decision::Emit(DownloadEvent::SourceRemoteQueued { peer: p, rank: Some(3), .. })
+                if *p == peer(1)
+        )),
+        "{closed:?}"
+    );
+    assert_eq!(
+        spawned(&closed),
+        vec![peer(2)],
+        "the connection is free again"
     );
 }

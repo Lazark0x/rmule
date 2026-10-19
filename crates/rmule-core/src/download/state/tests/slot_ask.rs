@@ -92,6 +92,7 @@ fn the_set_is_asked_at_the_first_grant_never_at_a_probe_answer() {
         let answered = probed(&mut state, t0(), peer(n));
         assert!(asks_slot(&answered, peer(n)), "{answered:?}");
         assert!(!asks_any_hash_set(&answered), "{answered:?}");
+        let _ = state.on_worker_event(t0(), peer(n), emule_hello(UserHash::from_bytes([n; 16])));
         let ranked = state.on_worker_event(t0(), peer(n), PeerWorkerEvent::Queued { rank: 4 });
         assert!(!asks_any_hash_set(&ranked), "{ranked:?}");
     }
@@ -227,6 +228,7 @@ fn a_queued_link_is_not_passed_the_set() {
 
     let ended = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
     assert!(!asks_any_hash_set(&ended), "{ended:?}");
+    let _ = state.on_worker_event(t0(), peer(2), emule_hello(UserHash::from_bytes([2; 16])));
     let ranked = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Queued { rank: 4 });
     assert!(
         ranked.iter().any(|d| matches!(

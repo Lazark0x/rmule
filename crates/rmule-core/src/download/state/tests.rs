@@ -43,6 +43,19 @@ fn identified(user_hash: UserHash) -> PeerWorkerEvent {
     PeerWorkerEvent::Identity(HelloFacts::of(user_hash).identity())
 }
 
+/// What a worker reports when its peer is an eMule naming `user_hash`: an
+/// uploader that notices our close at once, so a rank from it hangs the
+/// worker up (ADR-0116 invariant 3).
+fn emule_hello(user_hash: UserHash) -> PeerWorkerEvent {
+    PeerWorkerEvent::Identity(
+        HelloFacts {
+            software: rmule_testkit::emule_qt(),
+            ..HelloFacts::of(user_hash)
+        }
+        .identity(),
+    )
+}
+
 /// [`identified`] with the hello's crypt stance spelled out.
 fn identified_with(user_hash: UserHash, crypt: rmule_primitives::CryptStance) -> PeerWorkerEvent {
     PeerWorkerEvent::Identity(

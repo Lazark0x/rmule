@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
+use rmule_peer::{ClientFamily, ClientSoftware};
 use rmule_primitives::{PartHashSet, PeerEndpoint};
 
 use crate::adapters::{PeerWorkerCommand, WorkerOpening};
@@ -224,9 +225,12 @@ impl DownloadState {
     }
 
     /// An `OP_QUEUERANKING` placed `peer` at `rank`: a worker without a grant
-    /// has its answer, and hangs up — the **Queued Hang-Up** (ADR-0116). Its
-    /// record keeps the standing the rank earned and waits in the RemoteQueued
-    /// stage; the reask keeps its place (ADR-0057). A granted worker's rank
+    /// has its answer, and its record holds the standing the rank earned. At
+    /// an uploader that notices our close it hangs up — the **Queued
+    /// Hang-Up** (ADR-0116) — and its record waits in the RemoteQueued stage,
+    /// the reask keeping its place (ADR-0057). Elsewhere it holds the link,
+    /// queued, until the uploader grants on it or closes it: a promotion
+    /// written on a link we closed is lost there. A granted worker's rank
     /// changes nothing.
     pub(super) fn ranked(
         &mut self,
@@ -239,7 +243,13 @@ impl DownloadState {
             return;
         }
         self.phase(peer, WorkerPhase::WaitingForSlot { rank: Some(rank) }, out);
-        self.retire(now, peer, PeerRetirementReason::Queued, out);
+        let notices_close = self
+            .sources
+            .identity(peer)
+            .is_some_and(|identity| notices_close(identity.software()));
+        if notices_close {
+            self.retire(now, peer, PeerRetirementReason::Queued, out);
+        }
     }
 
     /// `peer`'s uploader granted it a slot: hand it its first blocks, or give
@@ -292,5 +302,22 @@ impl DownloadState {
         if let Some(&slot) = self.worker_slots.get(&peer) {
             out.push(Decision::Phase { slot, phase });
         }
+    }
+}
+
+/// Whether an uploader running `software` notices our close at once, so a
+/// promotion it makes after our hang-up comes by dial-back (ADR-0116
+/// invariant 3): eMule closes its side on the socket's close event (eMuleAI
+/// `ListenSocket.cpp:711-720`), aMule 3 turns its socket layer's lost event
+/// into a close (3.1.0 `EMSocket.h:124`), and rmule reads the end of the
+/// stream. aMule 2's Boost.Asio build ignores that event (`LibSocket.h:124`)
+/// and keeps the client connected to its 40 s idle close, writing a promotion
+/// on the closed link; a client whose close handling is unread is held to
+/// the same.
+fn notices_close(software: &ClientSoftware) -> bool {
+    match software.family() {
+        ClientFamily::Emule | ClientFamily::Rmule => true,
+        ClientFamily::Amule => software.version().is_some_and(|version| version.major >= 3),
+        _ => false,
     }
 }
