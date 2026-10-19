@@ -24,7 +24,8 @@ pub use self::command::{
     ScanCommand, SearchCommand, ServeCommand, ServerListCommand,
 };
 pub use self::config::{
-    CoreConfig, DEFAULT_SLOT_WAIT_TIMEOUT, NattConfig, PeerConnections, VerificationAuthority,
+    CeilingLowered, CoreConfig, DEFAULT_SLOT_WAIT_TIMEOUT, NattConfig, PeerConnections,
+    VerificationAuthority, descriptor_ceiling,
 };
 pub use self::event::LinkTurn;
 pub use self::event::{

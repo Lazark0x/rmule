@@ -27,6 +27,19 @@ mod reopen;
 mod served;
 mod stored;
 
+/// Hold `config`'s Connection Ceiling under the process's open-descriptor
+/// limit, raised once here, at the start of a download command (ADR-0116); a
+/// Ceiling the limit lowered is printed once, in the operator's words.
+fn hold_to_descriptors(config: &mut CoreConfig) {
+    let (peer_connections, lowered) = config
+        .peer_connections
+        .within_descriptors(rmule_os::descriptors::raise_descriptor_limit());
+    config.peer_connections = peer_connections;
+    if let Some(lowered) = lowered {
+        println!("{}", rmule_words::download::ceiling_lowered(lowered));
+    }
+}
+
 pub(crate) use reopen::{DownloadReopenArgs, reopen};
 pub(crate) use stored::{
     DownloadPauseArgs, DownloadResumeArgs, DownloadStatusArgs, pause, resume, status,
@@ -54,7 +67,8 @@ pub(crate) struct DownloadStartArgs {
     dials_per_window: Option<u32>,
     /// The **Connection Ceiling** (ADR-0116): connections the downloads hold
     /// at once, asking and transferring
-    /// (`CoreConfig::peer_connections.max_connections`, default 500).
+    /// (`CoreConfig::peer_connections.max_connections`, default 500), never
+    /// more than the process's open-descriptor limit leaves room for.
     #[arg(long)]
     max_connections: Option<usize>,
     /// The **Streaming Window**'s width `N` in parts
@@ -165,6 +179,7 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
     if let Some(connections) = args.max_connections {
         config.peer_connections.max_connections = connections;
     }
+    hold_to_descriptors(&mut config);
     if let Some(parts) = args.streaming_window {
         config.streaming_window_parts = parts;
     }

@@ -14,6 +14,28 @@ use rmule_primitives::PeerEndpoint;
 use super::super::Sentence;
 use super::super::units::{address, count};
 
+/// The Connection Ceiling a binary lowered at its start because the
+/// process's open-file limit left no room for the configured one (ADR-0116):
+/// the limit, and the Ceiling in force against the one configured.
+#[must_use]
+pub fn ceiling_lowered(lowered: rmule_core::CeilingLowered) -> Sentence {
+    let rmule_core::CeilingLowered {
+        descriptors,
+        configured,
+        ceiling,
+    } = lowered;
+    let held = count(ceiling as u64, "peer connection", "peer connections");
+    Sentence::owned(match descriptors {
+        Some(limit) => format!(
+            "this process may hold {} open at once, so downloads hold at most {held}, not {configured}",
+            count(limit, "file", "files"),
+        ),
+        None => {
+            format!("downloads hold at most {held}, not {configured}: the most aMule recommends")
+        }
+    })
+}
+
 /// A running download's sources as the operator reads them (ADR-0116): how
 /// many it knows, and of those how many are asking for a queue place, waiting
 /// in one with no connection, and transferring on a granted slot.

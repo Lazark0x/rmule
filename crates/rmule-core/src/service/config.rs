@@ -5,10 +5,13 @@
 //! session behaves like a stock aMule — but for the streaming window, which
 //! aMule does not have (ADR-0112).
 
+mod descriptors;
+
 use std::time::Duration;
 
 use rmule_net::family::FamilySelection;
 
+pub use self::descriptors::{CeilingLowered, descriptor_ceiling};
 use crate::address_learning::ExternalAddressOverride;
 use crate::port_mapping::PortMappingConfig;
 use serde::{Deserialize, Serialize};

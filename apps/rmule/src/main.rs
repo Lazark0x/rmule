@@ -143,6 +143,7 @@ async fn run(run_args: RunArgs) -> std::io::Result<()> {
             mut preferences,
             kad,
             at_start,
+            ceiling_lowered,
         }) => {
             // `--log-level` holds for this run and is never stored; the
             // Settings tab shows the level in force.
@@ -158,6 +159,10 @@ async fn run(run_args: RunArgs) -> std::io::Result<()> {
                     ..BridgeConfig::default()
                 },
             );
+            if let Some(lowered) = ceiling_lowered {
+                let words = rmule::words::download::ceiling_lowered(lowered);
+                let _ = actions_tx.send(Action::Note(words)).await;
+            }
             // The operator's connect, given ahead of time — or nothing
             // (ADR-0095): no other road in the app dials a server.
             match at_start {

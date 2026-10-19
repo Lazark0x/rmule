@@ -75,10 +75,9 @@ pub(crate) async fn reopen(args: DownloadReopenArgs) -> Result<()> {
         held.values().sum::<u64>(),
         unix_ms()
     );
-    let mut core = args
-        .identity
-        .core_builder(args.served.config(CoreConfig::default()), settings, store)?
-        .build();
+    let mut config = args.served.config(CoreConfig::default());
+    super::hold_to_descriptors(&mut config);
+    let mut core = args.identity.core_builder(config, settings, store)?.build();
     let listen = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, args.identity.tcp_port);
     core.send(CoreCommand::Serve(ServeCommand::StartServing {
         listen_addr: listen,

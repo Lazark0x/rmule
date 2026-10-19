@@ -106,6 +106,9 @@ pub struct Attachment<F> {
     /// What the start does about connecting (ADR-0095): nothing unless the
     /// operator turned connect at start on.
     pub at_start: AtStart,
+    /// The Connection Ceiling the open-descriptor limit lowered at attach,
+    /// for the operator to read why (ADR-0116).
+    pub ceiling_lowered: Option<rmule_core::CeilingLowered>,
 }
 
 /// Everything the Kad join needs once the app arms it. Assembled during
@@ -211,7 +214,16 @@ pub async fn attach<D: Deployment>(
     // every seam method is `&self`, so nothing locks). The operator's Core
     // Settings — the UDP port, the obfuscation policy, `Remember peers`, the
     // port-mapping switch — come off that handle too (ADR-0069).
-    let core = Core::builder(CoreConfig::default(), durable)
+    // The Connection Ceiling under the open-descriptor limit, raised once
+    // here, at start (ADR-0116).
+    let (peer_connections, ceiling_lowered) = CoreConfig::default()
+        .peer_connections
+        .within_descriptors(rmule_os::descriptors::raise_descriptor_limit());
+    let config = CoreConfig {
+        peer_connections,
+        ..CoreConfig::default()
+    };
+    let core = Core::builder(config, durable)
         .server_list_fetcher(fetcher.clone())
         // Credit-ring continuity: seed from and flush to clients.met beside
         // the other data files (ADR-0066).
@@ -277,6 +289,7 @@ pub async fn attach<D: Deployment>(
         preferences,
         kad,
         at_start,
+        ceiling_lowered,
     })
 }
 

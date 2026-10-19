@@ -10,6 +10,8 @@
 //!   with, which never replaces one standing at its target.
 //! - `default_app`, on macOS and Windows: which app the system opens a
 //!   file-name extension with, for the TUI's Preview.
+//! - [`descriptors`]: the process's open-descriptor limit, raised once at a
+//!   binary's start and read back for the Connection Ceiling.
 //!
 //! The crate's lint table relaxes the workspace's `unsafe_code` ban to `deny`.
 //! Only the functions `scripts/guards.sh` pins waive it, each for one `unsafe`
@@ -21,6 +23,7 @@
 
 #[cfg(any(target_os = "macos", windows))]
 pub mod default_app;
+pub mod descriptors;
 pub mod fs;
 pub mod sparse;
 pub mod winsock;

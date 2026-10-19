@@ -553,7 +553,19 @@ fn add_core(
     RuntimeServeRuntimeService,
     RuntimeKadFactory,
 > {
-    Core::builder(CoreConfig::default(), durable)
+    // The Connection Ceiling under the open-descriptor limit, raised once
+    // here, at start (ADR-0116); a lowered Ceiling is said once.
+    let (peer_connections, lowered) = CoreConfig::default()
+        .peer_connections
+        .within_descriptors(rmule_os::descriptors::raise_descriptor_limit());
+    if let Some(lowered) = lowered {
+        eprintln!("{}", rmule_words::download::ceiling_lowered(lowered));
+    }
+    let config = CoreConfig {
+        peer_connections,
+        ..CoreConfig::default()
+    };
+    Core::builder(config, durable)
         // Credit-ring continuity: seed from and flush to
         // clients.met beside the other data files.
         .persist_credit_in(data_dir.to_path_buf())

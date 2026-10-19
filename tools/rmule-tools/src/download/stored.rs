@@ -34,7 +34,8 @@ pub(crate) struct DownloadResumeArgs {
     dials_per_window: Option<u32>,
     /// The **Connection Ceiling** (ADR-0116): connections the downloads hold
     /// at once, asking and transferring
-    /// (`CoreConfig::peer_connections.max_connections`, default 500).
+    /// (`CoreConfig::peer_connections.max_connections`, default 500), never
+    /// more than the process's open-descriptor limit leaves room for.
     #[arg(long)]
     max_connections: Option<usize>,
     /// The **Streaming Window**'s width `N` in parts
@@ -91,6 +92,7 @@ pub(crate) async fn resume(args: DownloadResumeArgs) -> Result<()> {
     if let Some(connections) = args.max_connections {
         config.peer_connections.max_connections = connections;
     }
+    super::hold_to_descriptors(&mut config);
     if let Some(parts) = args.streaming_window {
         config.streaming_window_parts = parts;
     }

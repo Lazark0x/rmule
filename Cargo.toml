@@ -56,7 +56,7 @@ crypto-bigint = "0.5"
 # `renameat_with(NOREPLACE)` (ADR-0115). Apache-2.0 WITH LLVM-exception OR
 # Apache-2.0 OR MIT, already in the graph through `tempfile`, `fs` only: no
 # crate added.
-rustix = { version = "1", default-features = false, features = ["fs", "std"] }
+rustix = { version = "1", default-features = false, features = ["fs", "process", "std"] }
 # Windows only, confined to rmule-core's `file_key.rs`: the volume serial number
 # and file index `GetFileInformationByHandle` reports, which stable std does not
 # expose, behind a safe call the `unsafe` ban allows. Unlicense OR MIT, already
