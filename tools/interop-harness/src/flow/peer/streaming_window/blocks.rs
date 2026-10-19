@@ -223,7 +223,7 @@ fn off_grid(start: u64, end: u64, size: u64) -> bool {
     let part_start = u64::from(part_of(start)) * ED2K_PART_SIZE;
     let part_end = (part_start + ED2K_PART_SIZE).min(size);
     let block_end = (start + EMBLOCKSIZE).min(part_end);
-    (start - part_start) % EMBLOCKSIZE != 0 || end != block_end
+    !(start - part_start).is_multiple_of(EMBLOCKSIZE) || end != block_end
 }
 
 /// The file bytes one link delivered.
