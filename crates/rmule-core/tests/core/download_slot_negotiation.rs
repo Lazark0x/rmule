@@ -172,12 +172,14 @@ async fn core_keeps_remote_queue_standing_when_a_slot_is_never_granted() {
 }
 
 #[tokio::test]
-async fn core_times_out_when_peer_stalls_after_granting_a_slot() {
-    // A peer that grants the slot but then delivers no bytes must not hang
-    // the download forever. The slot-wait budget covers the wait for data,
+async fn core_gives_back_a_slot_whose_peer_stalls_after_granting_it() {
+    // A peer that grants the slot but then delivers no bytes must not hold
+    // the worker forever. The slot-wait budget covers the wait for data,
     // not only the wait for the grant: when no part bytes arrive within
-    // `slot_wait_timeout` the worker gives up (PeerSlotTimeout) and, with
-    // no other source, the download fails instead of parking silently.
+    // `slot_wait_timeout` the worker gives up (PeerSlotTimeout), gives the
+    // slot back with one `OP_CANCELTRANSFER`, and the source stands queued,
+    // as aMule's `DOWNLOADTIMEOUT` cancels and keeps the client `DS_ONQUEUE`
+    // (`DownloadClient.cpp:1188-1196`, ADR-0056 item 4, ADR-0090).
     let bytes = b"granted then silent loopback download".to_vec();
     let file = file_link("loopback.bin", &bytes);
     let file_hash = file.file_hash;
@@ -228,7 +230,14 @@ async fn core_times_out_when_peer_stalls_after_granting_a_slot() {
         match event {
             CoreEvent::Download(DownloadEvent::PeerSlotGranted { .. }) => saw_slot_granted = true,
             CoreEvent::Download(DownloadEvent::PeerSlotTimeout { .. }) => saw_slot_timeout = true,
-            CoreEvent::Download(DownloadEvent::DownloadFailed { .. }) => break,
+            CoreEvent::Download(DownloadEvent::SourceRemoteQueued { rank: None, .. })
+                if saw_slot_timeout =>
+            {
+                break;
+            }
+            CoreEvent::Download(DownloadEvent::DownloadFailed { reason, .. }) => {
+                panic!("the stalled source still stands: {reason:?}")
+            }
             CoreEvent::Download(DownloadEvent::DownloadCompleted { .. }) => {
                 panic!("download must not complete: no bytes were delivered")
             }
@@ -237,18 +246,18 @@ async fn core_times_out_when_peer_stalls_after_granting_a_slot() {
     }
 
     assert!(saw_slot_granted, "the peer did grant a slot");
-    assert!(
-        saw_slot_timeout,
-        "a peer that grants then stalls must time out, not hang the download"
-    );
 
-    // Serving keeps the dialed link open for uploads (ADR-0031);
-
-    // the peer script ends when the core does.
-
+    // Serving keeps the dialed link open for uploads (ADR-0031); the peer
+    // script ends when the core does.
     core.shutdown().await;
-
-    let _ = peer_task.await;
+    let stats = timeout(Duration::from_secs(3), peer_task)
+        .await
+        .expect("the peer script finished once the core shut down")
+        .expect("peer task");
+    assert_eq!(
+        stats.cancel_transfer_count, 1,
+        "the stalled slot goes back with one OP_CANCELTRANSFER"
+    );
 }
 
 #[tokio::test]
