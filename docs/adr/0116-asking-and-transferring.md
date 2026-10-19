@@ -177,9 +177,14 @@ The factor stays inside the rules a stock downloader waiting at rmule relies on:
   10 descriptors the arms leave.
 - A Low-ID rmule asks each queued peer about 44% more often (1300 / 900), each ask still 310 s clear
   of the aggressive-request floor, and once per cycle however many downloads queue there.
-- Not yet measured against stock peers: the throughput and connections of the split, the slot wait at
-  the Low-ID cadence, and the Reciprocity Factor's effect on our rank at a credit-honouring uploader.
-  The bench legs are written (`peer-queue-fanout`, `peer-reciprocity`) and wait for a bench window.
+- Measured against stock aMule 2.3.3 (2026-10-19). In a six-sharer fan-out with four sharers
+  queueing us, throughput went from 217.2 to 219.4 KiB/s with the split, because the queued sharers
+  granted by dial-back in both builds. A Low-ID rmule's TCP ask came 900.0 s after its rank, and its
+  first part 901 s after the uploader freed a slot, against 1300 s before. Once rmule had given a
+  credit-honouring uploader 32 MiB, that uploader promoted rmule ahead of two clients that had
+  queued before it.
+- Not yet measured: the connections that closing a link at the Queued Hang-Up saves, and the
+  Reciprocity Factor's choice at rmule's own upload slots.
 
 ## Considered options
 
