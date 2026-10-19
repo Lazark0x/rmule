@@ -931,11 +931,12 @@ its record knows from the moment the dial is decided — in the same step as the
 nothing — until the hello refiles it under every name it proves that no link filed since holds. Another download of the peer that
 finds it waits on it as a **Link Rider** and takes its turn after the hello; a dial that fails
 retires every waiter with the dial's cause, as aMule's one connecting client is a dead source for
-every file (ADR-0107 invariant 11). A download's dial whose hello has not gone out — its socket not
-up yet — yields to the peer's own link filed under one of its names: it closes, retiring nobody, and
-the dialing download and its waiters ride or wait on that link, as aMule deletes the socket it was
-connecting when the client's own arrives; once its hello is out the far side keeps it, and so does
-rmule (ADR-0107 invariant 7). A dial the IP filter, a ban or the crypt rule refuses opens no
+every file (ADR-0107 invariant 11). A download's dial whose hello has not gone out — its hello
+not yet claimed under the Peer Links' lock — yields to the peer's own link filed under one of its
+names: it closes unheard, retiring nobody, and the dialing download and its waiters ride or wait on
+that link, as aMule deletes the socket it was connecting when the client's own arrives; once its
+hello is out the far side keeps it, and so does rmule (ADR-0107 invariant 7). A **Dial-Back
+Grant**'s dial meets the same rule through its call-off. A dial the IP filter, a ban or the crypt rule refuses opens no
 socket and is never one.
 _Avoid_: pending connection, half-open link
 

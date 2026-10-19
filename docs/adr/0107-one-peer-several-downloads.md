@@ -145,8 +145,9 @@ Invariants every transition keeps:
    socket to rmule, connecting or connected (`ClientTCPSocket.cpp:391`, `ClientList.cpp:400-403`),
    and the hello goes out the moment the socket is up (`ClientTCPSocket.cpp:1877`). Which of two
    crossed links lives is so decided by whether the dial's hello went out:
-   - Before its socket is up — the connect, or the crypt handshake (ADR-0042), still running, no
-     byte of the hello sent — a download's Dial in Flight yields: the moment an accepted link of
+   - Before its hello goes out — the connect or the crypt handshake (ADR-0042) still running, or
+     the socket up and the hello not yet claimed, which the dial does under the Peer Links' lock
+     before a byte of it is sent — a download's Dial in Flight yields: the moment an accepted link of
      the peer (an inbound link's hello, or an adopted callback) is filed under one of its names, the
      dial is dropped, unfiled, and its socket closed. The far side never reads its hello, keeps its
      own link and sees one socket of rmule's. The dial retires nobody: the dialing download takes
@@ -155,8 +156,8 @@ Invariants every transition keeps:
      opened, its `ConnectionEstablished` sending the file request there (`BaseClient.cpp:1692-1698`).
      Nothing was asked on the dial, so no block is in flight on it: the rider asks afresh, the file
      request and, on its answer, the slot ask.
-   - Once its socket is up its hello is on the wire, and the far side will attach that socket and
-     drop its own: the dial is not overtaken. Its download keeps riding it, with every block it
+   - Once it has claimed its hello, the hello is on the wire, and the far side will attach that
+     socket and drop its own: the dial is not overtaken. Its download keeps riding it, with every block it
      asked; the peer's link, filed later, holds the names until the far side drops it, and they come
      back to the dial then. Closing the dial here would leave the far side holding a socket rmule
      closed and rmule riding one the far side dropped: neither link would live.
