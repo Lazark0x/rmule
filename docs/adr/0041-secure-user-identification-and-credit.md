@@ -56,6 +56,15 @@ weak key rather than strengthening it.
   a different key is denied the secured credit and never overwrites it (eMule's
   `IS_IDFAILED`). Peers without SUI still accrue unsecured credit and are never gated out;
   unsecured credit is first-come and spoofable by design, which is the reason SUI exists.
+- **One verification per link, bound once.** The exchange runs once per link, whoever
+  dialed it: an accepted link, one a download dialed, one the serve side dialed back, or an
+  adopted callback. aMule keeps one identification state per client, which its upload and
+  download sides both read (`BaseClient.cpp:2576-2578`). The link hands the verification to
+  one half, which binds it and reports a mismatch once: its serve side while that serves the
+  link, since the serve side keys the identified client on it — the slot ask that drops an
+  unidentified duplicate waiter and answers an unidentified asker nothing
+  (`UploadQueue.cpp:432-458`) and the hash-thief ban (`ClientList.cpp:384-392`) — and
+  otherwise the download riding it, which keys nothing else on it.
 - **Credit ranks the queue.** The upload queue's score is wait time weighted by the
   credit modifier, aMule's `GetScoreRatio` (ADR-0031), so a verified peer with upload
   history earns real priority. Per-file upload priority is fixed.

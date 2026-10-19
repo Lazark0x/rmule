@@ -89,9 +89,10 @@ An upload slot the **Upload Slot Queue** holds for a waiter it promoted while no
 waiter was up (ADR-0057), aMule's client in `US_CONNECTING`. The serve side dials the waiter where
 its hello says a dial reaches it — a High ID at its link's address, or an IPv6 — under the outbound
 crypt rule, filed as a **Dial in Flight**, outside the **Connection Budget**; the grant goes on the
-first link whose hello names the waiter, the dialed one or one it came back on; a link it came
-back on calls the dial off, or takes the slot from the dialed link when the dial's hello came
-first, as aMule keeps a client on the newer socket the peer opened. A dial that fails,
+first link whose hello names the waiter, the dialed one or one it came back on. A link it came
+back on calls the dial off and takes the grant while the dial's hello has not gone out; once it
+has, the dial keeps the grant, as the peer keeps the socket it read rmule's hello on and closes
+its own, and the link the peer opened is let go. A dial that fails,
 or reaches another client, ends the grant and the waiter's place, and the slot promotes the next
 waiter. The Run Log tells it from an ordinary grant by its road.
 _Avoid_: callback dial-back (that answers a Low ID's callback request), Awaited Grant (the download side's)
