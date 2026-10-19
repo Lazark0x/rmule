@@ -190,7 +190,7 @@ fn release_claim(gateway: &GatewayRecord) -> Claim {
     const NAME: &str = "release-on-exit-empties-the-gateway-table";
     let note = format!(
         "after the driver exited the gateway's tables read v4={} v6={}, and it logged {} \
-         DeletePortMapping / {} PCP removals",
+         DeletePortMapping / {} PCP or NAT-PMP removals",
         after_table(gateway.table_v4_after.as_ref()),
         after_table(gateway.table_v6_after.as_ref()),
         gateway.delete_port_mapping,

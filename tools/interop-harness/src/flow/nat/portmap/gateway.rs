@@ -92,8 +92,8 @@ pub(crate) struct GatewayRecord {
     pub(crate) pcp_added: u64,
     /// `… mapping removed` lines, PCP's and NAT-PMP's.
     pub(crate) pcp_removed: u64,
-    /// `NAT-PMP port mapping request : …` lines: every NAT-PMP MAP, a
-    /// renewal and a zero-lifetime release included.
+    /// `NAT-PMP port mapping request : …` lines with a lifetime: every
+    /// NAT-PMP MAP and renewal, the zero-lifetime releases left out.
     pub(crate) natpmp_requests: u64,
     /// Lines naming a conflict the gateway refused.
     pub(crate) conflicts: u64,
@@ -244,7 +244,8 @@ impl GatewayWatch {
             delete_port_mapping: count("#DeletePortMapping"),
             pcp_added: count("PCP MAP: added mapping"),
             pcp_removed: count("mapping removed"),
-            natpmp_requests: count("NAT-PMP port mapping request"),
+            natpmp_requests: count("NAT-PMP port mapping request")
+                .saturating_sub(count(" lifetime=0s")),
             conflicts: count("ConflictInMappingEntry") + count("conflict"),
             build: text
                 .lines()
