@@ -275,7 +275,7 @@ fn link_switch(
             } else {
                 return None;
             };
-            (frame.at >= ask.at).then(|| (kind, (frame.at - ask.at) * 1000.0))
+            (frame.at >= ask.at).then_some((kind, (frame.at - ask.at) * 1000.0))
         })
     });
     Some(Switch {

@@ -322,7 +322,7 @@ pub(crate) fn replay(events: &[LogEvent], topology: &Topology<'_>) -> Replay {
                         vec![parts.completed.contains(peer)]
                     };
                     for delivered in completed {
-                        for pick in picks(&parts, *peer, held, total, delivered, &rank) {
+                        for pick in picks(&parts, *peer, held, total, delivered, rank) {
                             if pick == actual && class.is_none() {
                                 class = Some(frequency[*part as usize] <= bound);
                             }
