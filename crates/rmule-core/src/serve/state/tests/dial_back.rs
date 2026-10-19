@@ -245,3 +245,38 @@ fn a_low_id_waiter_is_passed_over_and_granted_when_it_next_connects() {
     let [grant, said] = granted(back, file, GrantRoad::NextConnection);
     assert_eq!(slot_request(&mut state, back, file, t1), [grant, said]);
 }
+
+#[test]
+fn a_slot_nobody_could_be_reached_for_goes_to_a_waiter_asking_from_a_link() {
+    // aMule's `Process` fills a free slot with the best waiter it can reach
+    // (`UploadQueue.cpp:255-258`); rmule has no such loop, so the ask does.
+    let file = hash(0x47);
+    let t = Instant::now();
+    let (holder, low) = (peer_at([10, 0, 0, 1], 51000), peer_at([10, 0, 0, 2], 51318));
+    let mut state = serving_state(1, vec![entry(file, 4096, "served.bin")]);
+    let _ = slot_request(&mut state, holder, file, t);
+    let low_id = || {
+        HelloFacts {
+            client_id: ClientId::from_u32(5),
+            ..hello_facts(user(0x0A), 0, 0, 2)
+        }
+        .identified()
+    };
+    let _ = state.on_conn_event(t, low, low_id(), &no_modifiers());
+    let _ = slot_request(&mut state, low, file, t);
+    let _ = state.on_conn_event(t, low, disconnected(), &no_modifiers());
+    assert_eq!(
+        state.on_conn_event(t, holder, disconnected(), &no_modifiers()),
+        [ServeDecision::Emit(ServeEvent::UploadSlotReleased {
+            peer: holder
+        })],
+        "nobody the queue can reach waits: the slot stays free"
+    );
+
+    // Back on a new link, a sort reads it reachable before it asks.
+    let back = peer_at([10, 0, 0, 2], 50288);
+    let _ = state.on_conn_event(t, back, low_id(), &no_modifiers());
+    let _ = state.on_rerank_tick(t, &no_modifiers());
+    let [grant, said] = granted(back, file, GrantRoad::Linked);
+    assert_eq!(slot_request(&mut state, back, file, t), [grant, said]);
+}

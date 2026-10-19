@@ -420,9 +420,13 @@ impl UploadSlotQueue {
         if let Some(index) = self.waiting.iter().position(|q| q.peer == peer) {
             // A marked waiter's ask on the link it came back on takes its
             // slot, one over the budget when the last slot went to a waiter
-            // the queue could reach (`UploadQueue.cpp:410-425`).
-            let room = self.budget + usize::from(self.extra_slot_open);
-            if self.waiting[index].next_connection && self.granted.len() < room {
+            // the queue could reach (`UploadQueue.cpp:410-425`). A slot left
+            // free because nobody ahead could be reached goes to any waiter
+            // asking from a link, as aMule's `Process` fills it with the best
+            // one it can reach (`UploadQueue.cpp:255-258`).
+            let marked = self.waiting[index].next_connection;
+            let room = self.budget + usize::from(marked && self.extra_slot_open);
+            if self.granted.len() < room {
                 let entry = self.waiting.remove(index);
                 self.granted.push(GrantedSlot {
                     peer,
@@ -430,7 +434,7 @@ impl UploadSlotQueue {
                     dial_back_since: None,
                     udp_version: entry.udp_version,
                 });
-                self.extra_slot_open = false;
+                self.extra_slot_open = !marked;
                 return Admission::Granted;
             }
             // Refreshing its heartbeat (a reconnect re-asks over TCP).
