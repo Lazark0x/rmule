@@ -73,7 +73,7 @@ struct Verdict<'a> {
 }
 
 /// A stamped record of rmule's run log: its name, download id and time.
-fn stamped<'a>(line: &'a str) -> Option<(&'a str, u32, f64)> {
+fn stamped(line: &str) -> Option<(&str, u32, f64)> {
     let mut words = line.split_whitespace();
     let mut name = words.next()?;
     let mut fields: Vec<&str> = words.collect();
@@ -93,20 +93,18 @@ fn after_close(log: &str, closed: f64) -> (u32, bool, [i64; 4]) {
     let rider = log
         .lines()
         .filter_map(stamped)
-        .filter(|&(name, _, at)| name == "download.part_assigned" && at <= closed)
-        .last()
+        .rfind(|&(name, _, at)| name == "download.part_assigned" && at <= closed)
         .map_or(0, |(_, id, _)| id);
     let failed = log
         .lines()
-        .filter_map(|line| stamped(line).map(|record| (line, record)))
-        .any(|(_, (name, id, _))| name == "download.failed" && id == rider);
+        .filter_map(stamped)
+        .any(|(name, id, _)| name == "download.failed" && id == rider);
     let tick = log
         .lines()
-        .filter(|line| {
+        .rfind(|line| {
             stamped(line)
                 .is_some_and(|(name, id, at)| name == "sources_tick" && id == rider && at > closed)
         })
-        .last()
         .map_or([-1; 4], |line| {
             ["known=", "asking=", "queued=", "transferring="].map(|key| {
                 line.split_whitespace()
