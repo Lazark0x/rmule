@@ -182,10 +182,10 @@ pub enum KadNodeDiagnostic {
     /// A contact the routing table refused because storing it would break an
     /// admission cap (ADR-0064): one contact per IP and ten per /24
     /// table-wide, two per /24 in a bucket. A newcomer is never stored; a known
-    /// contact claiming a new IP keeps its old entry. A lookup-answer row
-    /// meets the two table-wide caps, counted with the rows of its answer
-    /// already let through (aMule `IsAcceptableContact`,
-    /// `RoutingZone.cpp:897-916`), and is never walked or dialed.
+    /// contact claiming a new IP keeps its old entry. A lookup-answer row is
+    /// diagnosed only when the table neither stored it nor would accept it
+    /// under the two table-wide caps (aMule `IsAcceptableContact`,
+    /// `RoutingZone.cpp:897-916`); such a row is never walked or dialed.
     ContactOverAdmissionCap {
         /// The endpoint the contact arrived at.
         endpoint: KadNodeEndpoint,

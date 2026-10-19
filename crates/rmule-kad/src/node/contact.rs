@@ -326,7 +326,22 @@ impl KadNode {
             });
             return false;
         }
-        match self.routing.upsert(now, contact) {
+        let update = self.routing.upsert(now, contact);
+        // One IP or one /24 never occupies more of the table than aMule
+        // lets it (ADR-0064).
+        if let KadRoutingUpdate::RejectedAdmissionCap { cap } = update {
+            self.emit_diagnostic(KadNodeDiagnostic::ContactOverAdmissionCap {
+                endpoint: contact.endpoint(),
+                cap,
+            });
+        }
+        self.announce(contact, update)
+    }
+
+    /// Emit the add/evict events a routing update of `contact` carries.
+    /// Returns whether the contact is now stored.
+    pub(super) fn announce(&mut self, contact: KadContact, update: KadRoutingUpdate) -> bool {
+        match update {
             KadRoutingUpdate::Added => {
                 self.emit_event(KadEvent::ContactAdded {
                     id: contact.id(),
@@ -346,22 +361,14 @@ impl KadNode {
             // A bucket full of live contacts keeps them (Kademlia's
             // longevity bias — also the flood-resistance property); the own
             // ID is never stored; a verified contact is never displaced to a
-            // new endpoint by an unproven claimant (anti-hijack, ADR-0064); and
-            // a keyed entry is never updated by a claimant that cannot present
-            // its key.
+            // new endpoint by an unproven claimant (anti-hijack, ADR-0064); a
+            // keyed entry is never updated by a claimant that cannot present
+            // its key; and the admission caps hold.
             KadRoutingUpdate::RejectedBucketFull
             | KadRoutingUpdate::RejectedSelf
             | KadRoutingUpdate::RejectedHijack { .. }
-            | KadRoutingUpdate::RejectedKeyMismatch { .. } => false,
-            // One IP or one /24 never occupies more of the table than aMule
-            // lets it (ADR-0064).
-            KadRoutingUpdate::RejectedAdmissionCap { cap } => {
-                self.emit_diagnostic(KadNodeDiagnostic::ContactOverAdmissionCap {
-                    endpoint: contact.endpoint(),
-                    cap,
-                });
-                false
-            }
+            | KadRoutingUpdate::RejectedKeyMismatch { .. }
+            | KadRoutingUpdate::RejectedAdmissionCap { .. } => false,
         }
     }
 

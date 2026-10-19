@@ -207,27 +207,33 @@ fn the_node_answers_a_capped_hello_but_never_stores_the_sender() {
     );
 }
 
-/// A node walking a source lookup from one seed at `45.55.100.1`, with the
-/// walk's first query sent: the walk target, an ID at XOR distance `d` from
-/// it, and the node.
-fn walking_node() -> (KadId, impl Fn(u8) -> KadId, KadNode) {
+/// `id` with its `bit`-th distance bit flipped, counted from the top under
+/// the capture-proven word order: bytes 0..4 are the most significant word,
+/// read little-endian, and so on per word.
+fn with_bit(id: KadId, bit: usize) -> KadId {
+    let mut bytes = *id.as_bytes();
+    bytes[bit / 32 * 4 + 3 - bit % 32 / 8] ^= 0x80 >> (bit % 8);
+    KadId::from_bytes(bytes)
+}
+
+/// A node walking a source lookup toward its own ID from one seed, `id(0x55)`
+/// at `45.55.100.1`, the farthest ID there is, with the walk's first query
+/// sent. A row `with_bit(target, b)` then sits in bucket `b`, and the larger
+/// `b`, the closer it lies to the target.
+fn walking_node() -> (KadId, KadNode) {
     let request = KadSourceLookupRequest::new(SourceLookupTarget::new(
-        FileHash::from_bytes([0x5C; 16]),
+        FileHash::from_bytes([0xAA; 16]),
         65_536,
     ));
     let target = request.kad_target();
-    let near = move |d: u8| {
-        let mut bytes = *target.as_bytes();
-        bytes[12] ^= d;
-        KadId::from_bytes(bytes)
-    };
     let mut node = node();
+    assert_eq!(target, id(0xAA), "the walk runs toward the node's own ID");
     deliver(
         &mut node,
         T0,
         seed(),
         &Kad2Message::HelloReq(Kad2NodeInfo {
-            id: near(200),
+            id: id(0x55),
             tcp_port: 4662,
             version: 8,
             udp_port_tag: Some(seed().udp_port()),
@@ -236,7 +242,7 @@ fn walking_node() -> (KadId, impl Fn(u8) -> KadId, KadNode) {
     );
     node.handle_command(T0, KadCommand::SearchSources { request });
     let _ = drain(|| node.poll_output());
-    (target, near, node)
+    (target, node)
 }
 
 fn seed() -> KadNodeEndpoint {
@@ -252,16 +258,18 @@ fn lookups_sent(outputs: &[rmule_kad::KadOutput]) -> Vec<KadNodeEndpoint> {
         .collect()
 }
 
-/// aMule hands its search only the answer rows its routing zone stored or
-/// would accept (`ProcessKademlia2Response` → `IsAcceptableContact`,
-/// `KademliaUDPListener.cpp:741-750`, `RoutingZone.cpp:897-916`), and the rows
-/// it stores count against the next. Of eleven rows from one /24 the walk may
-/// dial ten: never the eleventh, though it lies closest to the target.
+/// aMule stores each answer row its routing zone takes, unverified, and hands
+/// its search the rows it stored or would accept (`ProcessKademlia2Response`,
+/// `KademliaUDPListener.cpp:742-750`; `IsAcceptableContact`,
+/// `RoutingZone.cpp:897-916`). Of eleven rows from one /24, one per bucket,
+/// ten are stored unverified and unqueried, so none is served, and the walk
+/// dials from them. The eleventh is neither stored nor dialed, though it lies
+/// closest to the target.
 #[test]
-fn a_lookup_answer_hands_a_walk_no_more_of_one_slash24_than_the_table_would_hold() {
-    let (target, near, mut node) = walking_node();
-    let rows: Vec<KadContact> = (1..=11u8)
-        .map(|n| contact(near(12 - n), public(n)))
+fn a_lookup_answer_stores_its_rows_unverified_up_to_the_slash24_cap() {
+    let (target, mut node) = walking_node();
+    let rows: Vec<KadContact> = (0..=10u8)
+        .map(|bucket| contact(with_bit(target, usize::from(bucket)), public(bucket + 1)))
         .collect();
     deliver(
         &mut node,
@@ -269,7 +277,7 @@ fn a_lookup_answer_hands_a_walk_no_more_of_one_slash24_than_the_table_would_hold
         seed(),
         &Kad2Message::LookupRes {
             target,
-            contacts: rows,
+            contacts: rows.clone(),
         },
     );
     let outputs = drain(|| node.poll_output());
@@ -285,35 +293,55 @@ fn a_lookup_answer_hands_a_walk_no_more_of_one_slash24_than_the_table_would_hold
     assert_eq!(
         lookups_sent(&outputs),
         [10, 9, 8].map(|host| KadNodeEndpoint::new(public(host), 4672)),
-        "the walk dials the three closest rows the table would take"
+        "the walk dials the three closest rows the table took"
+    );
+    let table = node.routing_table();
+    for row in &rows[..10] {
+        let stored = table.get(row.id()).expect("an accepted row is stored");
+        assert!(!stored.verified(), "stored unverified: {stored:?}");
+        assert_eq!(stored.state(), KadContactState::Unqueried);
+    }
+    assert!(table.get(rows[10].id()).is_none(), "a refused row is not");
+    assert_eq!(
+        table
+            .select_closest_servable(target, 50)
+            .iter()
+            .map(|contact| contact.id())
+            .collect::<Vec<_>>(),
+        vec![id(0x55)],
+        "nothing the answer named is served or seeds a walk"
     );
 }
 
-/// A row naming a contact the table holds verified, at another IP, is never
-/// dialed: a lookup answer cannot re-home a proven ID
-/// (`IsAcceptableContact`, `RoutingZone.cpp:905-913`).
+/// A row naming a contact the table holds verified, at another IP, leaves the
+/// entry as it is and is never dialed: a lookup answer cannot re-home a proven
+/// ID (`AddUnfiltered` with `update` false, then `IsAcceptableContact`,
+/// `RoutingZone.cpp:905-913`). The honest row beside it is stored and dialed.
 #[test]
 fn a_lookup_answer_cannot_re_home_a_verified_contact() {
-    let (target, near, mut node) = walking_node();
+    let (target, mut node) = walking_node();
+    let proven = contact(with_bit(target, 127), public(1)).into_verified();
     node.handle_command(
         T0,
         KadCommand::MergeContacts {
-            contacts: vec![contact(near(1), public(1)).into_verified()],
+            contacts: vec![proven],
         },
     );
     let _ = drain(|| node.poll_output());
     let elsewhere = KadNodeEndpoint::new(Ipv4Addr::new(203, 0, 113, 9), 4672);
-    let honest = KadNodeEndpoint::new(Ipv4Addr::new(203, 0, 113, 10), 4672);
+    let honest = KadContact::new(
+        with_bit(target, 126),
+        KadNodeEndpoint::new(Ipv4Addr::new(203, 0, 113, 10), 4672),
+        4662,
+        8,
+    );
     deliver(
         &mut node,
         T0,
         seed(),
         &Kad2Message::LookupRes {
             target,
-            contacts: vec![
-                KadContact::new(near(1), elsewhere, 4662, 8),
-                KadContact::new(near(2), honest, 4662, 8),
-            ],
+            contacts: vec![KadContact::new(proven.id(), elsewhere, 4662, 8), honest],
         },
     );
     let outputs = drain(|| node.poll_output());
@@ -324,5 +352,10 @@ fn a_lookup_answer_cannot_re_home_a_verified_contact() {
             endpoint: elsewhere
         }]
     );
-    assert_eq!(lookups_sent(&outputs), vec![honest]);
+    assert_eq!(lookups_sent(&outputs), vec![honest.endpoint()]);
+    let table = node.routing_table();
+    let kept = table.get(proven.id()).expect("the proven entry stays");
+    assert_eq!(kept.endpoint(), proven.endpoint());
+    assert!(kept.verified());
+    assert!(table.get(honest.id()).is_some_and(|row| !row.verified()));
 }

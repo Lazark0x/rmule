@@ -24,7 +24,7 @@ mod answer;
 mod caps;
 
 use aging::ContactAging;
-pub(crate) use answer::{KadAnswerRefusal, KadAnswerTally};
+pub(crate) use answer::KadAnswerRefusal;
 use caps::AdmissionTally;
 pub use caps::KadAdmissionCap;
 

@@ -287,7 +287,17 @@ fn walk_queries_closer_contacts_learned_from_responses() {
         )],
         "one slot freed, one launch: the closest unqueried candidate"
     );
-    assert_eq!(events, vec![]);
+    // Both rows enter the table unverified (ADR-0064).
+    assert_eq!(
+        events,
+        closer
+            .iter()
+            .map(|row| KadEvent::ContactAdded {
+                id: row.id(),
+                endpoint: row.endpoint(),
+            })
+            .collect::<Vec<_>>()
+    );
 
     // The next answer frees the next slot for the remaining learned contact.
     node.handle_datagram(now, endpoint_for(110), &lookup_res_bytes(target(), &[]));

@@ -1,21 +1,13 @@
-//! The routing table's judgement of a lookup answer's rows (ADR-0064): a walk
-//! dials a row only when the table would take it. aMule passes a returned
-//! contact to its search only when the routing zone stored it or would accept
-//! it (`ProcessKademlia2Response`, `KademliaUDPListener.cpp:741-750`, through
-//! `CRoutingZone::IsAcceptableContact`, `RoutingZone.cpp:897-916`). rmule's
-//! walk stores no answer row, so the rows an answer has already let through
-//! count against the next as if stored: one answer cannot hand a walk more
-//! rows of one address or one /24 than the table would hold.
+//! The routing table's judgement of a lookup-answer row it did not store
+//! (ADR-0064). aMule stores each row its routing zone takes, unverified, and
+//! hands its search the rows it stored or would accept
+//! (`ProcessKademlia2Response`, `KademliaUDPListener.cpp:742-750`, through
+//! `CRoutingZone::IsAcceptableContact`, `RoutingZone.cpp:897-916`). This is the
+//! "would accept" half; the node stores a row before it asks.
 
-use super::caps::AdmissionTally;
 use super::{KadAdmissionCap, KadContact, KadRoutingTable};
 
-/// The rows of one lookup answer let through so far, counted by address and
-/// by /24 as stored contacts are. One per answer, judged in row order.
-#[derive(Debug, Default)]
-pub(crate) struct KadAnswerTally(AdmissionTally);
-
-/// Why the table would not take a lookup-answer row.
+/// Why the table would not accept a lookup-answer row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum KadAnswerRefusal {
     /// The row speaks Kad version 1 or older.
@@ -31,13 +23,8 @@ impl KadRoutingTable {
     /// Judge one lookup-answer row as aMule's `IsAcceptableContact` does: a
     /// Kad1 row never; a row naming a stored ID only at that contact's UDP
     /// port, and at its IP once it is verified; any other row only within the
-    /// one-per-address and ten-per-/24 caps, counting the table and `passed`.
-    /// A row let through by the caps is added to `passed`.
-    pub(crate) fn judge_answer_row(
-        &self,
-        passed: &mut KadAnswerTally,
-        row: &KadContact,
-    ) -> Result<(), KadAnswerRefusal> {
+    /// one-per-address and ten-per-/24 caps the table holds now.
+    pub(crate) fn accepts_answer_row(&self, row: &KadContact) -> Result<(), KadAnswerRefusal> {
         if row.version() <= 1 {
             return Err(KadAnswerRefusal::Kad1);
         }
@@ -49,10 +36,9 @@ impl KadRoutingTable {
             }
             return Ok(());
         }
-        if let Some(cap) = self.admission.answer_refusal(&passed.0, endpoint.ip()) {
-            return Err(KadAnswerRefusal::Cap(cap));
+        match self.admission.table_refusal(endpoint.ip()) {
+            Some(cap) => Err(KadAnswerRefusal::Cap(cap)),
+            None => Ok(()),
         }
-        passed.0.count(endpoint.ip());
-        Ok(())
     }
 }

@@ -9,7 +9,8 @@
 //! count is read off the bucket itself. They cap how much of the table one
 //! address or one /24 can occupy, which raises the price of an eclipse: an
 //! attacker needs many addresses, not many IDs. The two table-wide caps also
-//! judge the rows of a lookup answer before a walk may dial them (`answer`).
+//! judge a lookup-answer row the table did not store, before a walk may dial
+//! it (`answer`).
 
 use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
@@ -85,20 +86,13 @@ impl AdmissionTally {
         None
     }
 
-    /// The table-wide cap a lookup-answer row at `ip` would break, counting
-    /// `passed`, the rows of the same answer already let through, as if they
-    /// were stored: aMule's `CheckGlobalIPLimits` (`RoutingBin.cpp:366-390`),
-    /// the half of the caps `IsAcceptableContact` applies. The bucket cap
-    /// never refuses a row, because aMule takes a row its bin refused when
-    /// the global limits allow it.
-    pub(super) fn answer_refusal(&self, passed: &Self, ip: Ipv4Addr) -> Option<KadAdmissionCap> {
+    /// The table-wide cap a contact at `ip` would break, the bucket aside:
+    /// aMule's `CheckGlobalIPLimits` (`RoutingBin.cpp:366-390`), the half of
+    /// the caps `IsAcceptableContact` applies to a lookup-answer row the table
+    /// did not store.
+    pub(super) fn table_refusal(&self, ip: Ipv4Addr) -> Option<KadAdmissionCap> {
         let (at_ip, in_net) = self.held(ip);
-        let (passed_at_ip, passed_in_net) = passed.held(ip);
-        global_refusal(
-            ip,
-            at_ip.saturating_add(passed_at_ip),
-            in_net.saturating_add(passed_in_net),
-        )
+        global_refusal(ip, at_ip, in_net)
     }
 
     /// How many counted contacts sit at `ip`, and in its /24.

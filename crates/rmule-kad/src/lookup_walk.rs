@@ -303,6 +303,12 @@ impl KadLookupWalk {
         self.in_flight.iter().map(|query| query.deadline).min()
     }
 
+    /// Whether a query to `from` is in flight: a `KADEMLIA2_RES` from it is
+    /// this walk's to consume.
+    pub(crate) fn awaits(&self, from: KadNodeEndpoint) -> bool {
+        self.in_flight.iter().any(|query| query.endpoint == from)
+    }
+
     /// Consume a `KADEMLIA2_RES` (already target-matched by the node), or
     /// return `None` when `from` has no query in flight — late, duplicate,
     /// and never-queried endpoints all stay unsolicited hearsay.
