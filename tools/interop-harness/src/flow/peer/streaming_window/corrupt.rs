@@ -1,10 +1,10 @@
 //! A seed that serves bad bytes for one part (ADR-0117 §1, ADR-0029): a
 //! stock aMule shares the stream file, hashes it, and only then has one
 //! part's bytes overwritten in its own copy, the modification date put back.
-//! aMule keeps the hash set it computed (it rehashes a shared file only when
-//! its date or size changed, `SharedFileList.cpp`) and reads every block it
-//! serves from disk, so its answers for that part carry bytes the part hash
-//! refuses. The link carries no AICH root and three seeds cannot vote one in
+//! aMule keeps the hash set it computed (a shared file is known again by its
+//! name, date and size, `SharedFileList.cpp:455`, `KnownFileList.cpp:181`)
+//! and reads every block it serves from disk (`UploadClient.cpp:245`), so its
+//! answers for that part carry bytes the part hash refuses. The link carries no AICH root and three seeds cannot vote one in
 //! (ADR-0038 asks ten), so the failed part takes the rootless path.
 //!
 //! The claims: the corrupt seed's part frames of that part carry bytes the
