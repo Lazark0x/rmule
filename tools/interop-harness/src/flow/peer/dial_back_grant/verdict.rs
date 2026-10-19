@@ -2,8 +2,11 @@
 //!
 //! The tap in rmule's namespace carries the sharer's dial to rmule's
 //! listener and every frame on that link: the sharer's `OP_ACCEPTUPLOADREQ`
-//! and its part frames are counterparty bytes, rmule's slot ask on the link
-//! is rmule's own (ADR-0045). The copy against the staged file says whether
+//! and its part frames are counterparty bytes, rmule's answer on the link is
+//! rmule's own (ADR-0045). aMule's own downloader answers a dial-back grant
+//! with block requests and no slot ask (`BaseClient.cpp:1692-1706`,
+//! `ClientTCPSocket.cpp:635-644`), and a slot ask there adds 3 to aMule's
+//! score (`UploadClient.cpp:795-825`); rmule does the same. The copy against the staged file says whether
 //! the grant became the download; rmule's run log says it was queued and
 //! hung up before the grant came.
 
@@ -33,6 +36,10 @@ const ADDRESSES: &str = "addresses.toml";
 const OP_STARTUPLOADREQ: u8 = 0x54;
 /// `OP_ACCEPTUPLOADREQ`.
 const OP_ACCEPTUPLOADREQ: u8 = 0x55;
+/// The block requests: `OP_REQUESTPARTS` (eD2k) and `OP_REQUESTPARTS_I64`
+/// (eMule).
+const OP_REQUESTPARTS: u8 = 0x47;
+const OP_REQUESTPARTS_I64: u8 = 0xA3;
 /// `OP_SENDINGPART`.
 const OP_SENDINGPART: u8 = 0x46;
 /// The eMule-extension part frames: `OP_COMPRESSEDPART`,
@@ -48,7 +55,7 @@ pub(crate) const DIALED_BACK: &str = "the-sharer-dialed-rmule-back";
 /// The claim on the sharer's grant over that link.
 pub(crate) const GRANTED: &str = "the-sharer-granted-on-the-dial-back-link";
 /// The claim on rmule taking the grant into the download.
-pub(crate) const TAKEN: &str = "rmule-asked-for-its-file-on-the-dial-back-link";
+pub(crate) const TAKEN: &str = "rmule-answered-the-grant-with-block-requests-and-no-slot-ask";
 /// The claim on bytes riding that link.
 pub(crate) const BYTES: &str = "the-sharer-sent-parts-on-the-dial-back-link";
 /// The claim on the copy.
@@ -81,6 +88,8 @@ pub(crate) struct Rows {
     pub(crate) grants_on_dial_back: usize,
     /// `OP_STARTUPLOADREQ` frames rmule sent on those links.
     pub(crate) asks_on_dial_back: usize,
+    /// Block requests rmule sent on those links.
+    pub(crate) block_requests_on_dial_back: usize,
     /// Part frames of rmule's file the sharer sent on those links.
     pub(crate) part_frames_on_dial_back: usize,
     /// The copy's length, `-1` when never written.
@@ -241,6 +250,10 @@ fn claims(at: &Addresses, seen: &Observed) -> (Vec<Claim>, Rows) {
         (frame.protocol, frame.opcode) == (OP_EDONKEYPROT, OP_STARTUPLOADREQ)
     });
     let parts = count(&from_sharer, |frame| part_of(frame) == Some(seen.hash));
+    let requests = count(&from_rmule, |frame| {
+        (frame.protocol, frame.opcode) == (OP_EDONKEYPROT, OP_REQUESTPARTS)
+            || (frame.protocol, frame.opcode) == (OP_EMULEPROT, OP_REQUESTPARTS_I64)
+    });
 
     let mut claims = vec![
         Claim::about(
@@ -273,9 +286,12 @@ fn claims(at: &Addresses, seen: &Observed) -> (Vec<Claim>, Rows) {
         ));
         claims.push(Claim::about(
             TAKEN,
-            asks > 0,
+            requests > 0 && asks == 0,
             Evidence::RmuleOnly,
-            format!("OP_STARTUPLOADREQ frames from rmule on a dial-back link: {asks}"),
+            format!(
+                "from rmule on a dial-back link: {requests} block requests, {asks} \
+                 OP_STARTUPLOADREQ"
+            ),
         ));
         claims.push(Claim::about(
             BYTES,
@@ -295,6 +311,7 @@ fn claims(at: &Addresses, seen: &Observed) -> (Vec<Claim>, Rows) {
         dial_backs: dial_backs.len(),
         grants_on_dial_back: grants,
         asks_on_dial_back: asks,
+        block_requests_on_dial_back: requests,
         part_frames_on_dial_back: parts,
         copy_bytes: len,
     };
