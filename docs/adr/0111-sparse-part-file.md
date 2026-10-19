@@ -159,10 +159,14 @@ before completion, and the finished file is never pre-sized either.
   to start it on is the TUI's (ADR-0114). Module `fs` holds `rename_exclusive(from, to)`, the
   completion move's rename that refuses with `AlreadyExists` when a file stands at `to`, and
   answers `Unsupported` where the filesystem refuses the flag (ADR-0115, step 3); what to do then
-  is core's.
+  is core's. Module `descriptors` holds `raise_descriptor_limit()`, which raises the process's
+  soft open-descriptor limit toward its hard limit (no higher than `OPEN_MAX` on macOS) and answers
+  the limit in force, none on Windows; the Connection Ceiling the binaries derive from it is
+  ADR-0116's.
 - **Safe where a safe call exists:** the Linux punch goes through `rustix`, the Unix reading through
   std, and the exclusive rename on Linux and macOS through `rustix`'s `renameat_with` with
-  `RenameFlags::NOREPLACE` (`renameat2(RENAME_NOREPLACE)`, `renameatx_np(RENAME_EXCL)`). The
+  `RenameFlags::NOREPLACE` (`renameat2(RENAME_NOREPLACE)`, `renameatx_np(RENAME_EXCL)`), and the
+  descriptor limit through `rustix`'s `getrlimit` and `setrlimit`. The
   waived functions are the macOS punch (`libc`'s `F_PUNCHHOLE` and `fpunchhole_t`), the
   three Windows calls (`DeviceIoControl` with `FSCTL_SET_SPARSE` and with `FSCTL_SET_ZERO_DATA`,
   `GetFileInformationByHandleEx` with `FileStandardInfo`), the Windows exclusive rename

@@ -68,6 +68,26 @@ The operator reads the asking, queued and transferring counts of every running d
 
 `CoreConfig::peer_connections` carries the first two; the Source Limit is aMule's default and no knob.
 
+**The Ceiling under the descriptor limit.** Each binary, once at its start, raises the process's soft
+open-descriptor limit toward its hard limit and reads the limit then in force (`rmule-os`, ADR-0111).
+On macOS the soft limit goes no higher than `OPEN_MAX` (10240), above which the kernel refuses it; a
+refused raise keeps the limit as it was. Windows states no such limit. The Ceiling the binary hands the
+core is the lower of the configured one (the operator's, else 500) and what the limit leaves room for,
+by the four arms of aMule's `GetRecommendedMaxConnections` (`Preferences.cpp:1493-1509`):
+
+| The limit | The Ceiling it leaves |
+|---|---|
+| unknown, or above 520 | 500 |
+| under 20 | the limit |
+| 20 to 256 | the limit less 10 |
+| 257 to 520 | the limit less 20 |
+
+A Ceiling lowered so is said to the operator once, with the limit that lowered it. aMule raises its
+soft limit to the hard one the same way at start (`UnlimitResource`, `amule.cpp:126-134`, `:144`,
+`:210`) but reads a limit only on Windows, where it is the TCP connection count
+(`PlatformSpecific.h:52-56`, `PlatformSpecific.cpp:118-148`); rmule applies the same arms to the
+descriptor limit, the one that bounds its sockets.
+
 Invariants every transition keeps:
 
 1. **A grant is never admitted.** A grant on a live worker, an Awaited Grant on a link nobody rides, and
@@ -141,9 +161,11 @@ The factor stays inside the rules a stock downloader waiting at rmule relies on:
   holding only what has arrived (ADR-0029).
 - The Sources pane's slot rows grow with the sources asking and transferring at once; a freed row
   number is reused first, so the rows stay as many as the most held at once.
-- A process held at 256 descriptors — the macOS shell default — meets its descriptor limit before a
-  Ceiling of 500; aMule lowers its default to the limit less 10 there. The Dial Window keeps the asks
-  in flight near 100 at worst. Reading the limit is an operating-system call (ADR-0111) not taken here.
+- A process started at 256 descriptors — the macOS shell default — raises them to 10240 and keeps the
+  Ceiling at 500; one whose raise is refused at 256 holds a Ceiling of 246, and the operator is told.
+  The Dial Window keeps the asks in flight near 100 at worst. The Ceiling counts only
+  the downloads' connections, so the serve side's and the server session's sockets ride in the 20 or
+  10 descriptors the arms leave.
 - A Low-ID rmule asks each queued peer about 44% more often (1300 / 900), each ask still 310 s clear
   of the aggressive-request floor, and once per cycle however many downloads queue there.
 - Not yet measured against stock peers: the throughput and connections of the split, the slot wait at

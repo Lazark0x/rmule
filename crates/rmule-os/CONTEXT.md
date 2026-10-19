@@ -20,6 +20,10 @@ _Avoid_: trim, deallocate, hole punching
 Which app the system opens a file-name extension with: on macOS the LaunchServices default for the extension's type, for any role, as the bundle's path; on Windows the executable of the extension's `open` verb, with the Unknown type ignored so a type with no app answers none. The extension is the caller's to read from a name; what to start the app on is the TUI's (ADR-0114). Linux has no such call: the freedesktop files are read by the TUI.
 _Avoid_: file association, open-with, handler
 
+**Descriptor limit**:
+The process's soft `RLIMIT_NOFILE`: how many files and sockets it may hold open at once. A binary raises it once, at its start, toward the hard limit — on macOS no higher than `OPEN_MAX` (10240), above which the kernel refuses a soft limit — and reads back the limit in force; a refused raise keeps the limit as it was. Windows states none, and neither does an unlimited soft limit. The Connection Ceiling the binary derives from it is core's (ADR-0116).
+_Avoid_: ulimit, fd limit, max files
+
 **The waived functions**:
 The functions `scripts/guards.sh` (check `unsafe`) pins by file and name. This crate's lint table relaxes `unsafe_code` to `deny`; each pinned function waives it once and holds one `unsafe` block under a `// SAFETY:` comment, and may declare the foreign function it calls, when no crate in the graph does, in one `unsafe extern` block under its own `// SAFETY:` comment. A safe call is used wherever one exists — the Linux punch through `rustix`, the Unix allocated size through std — and nothing else here, or outside this crate, holds `unsafe` code or a waiver.
 _Avoid_: unsafe module, FFI layer
