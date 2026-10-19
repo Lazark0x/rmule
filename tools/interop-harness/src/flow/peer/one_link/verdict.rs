@@ -5,8 +5,12 @@
 //! the stream they ride says whether one link carried both files. The two
 //! copies against the staged files say whether both downloads finished, and
 //! rmule's run log whether the second waited on the link before it rode it.
-//! rmule's own dials and log are scored `rmule-only`; the sharer's part frames
-//! and the copies are counterparty bytes (ADR-0045).
+//! The **file switch** is read off the link too: how the first download let
+//! its slot go (`OP_CANCELTRANSFER` or silently), how the sharer answered the
+//! second's `OP_STARTUPLOADREQ`, and what it sent after (ADR-0107's table,
+//! `UploadQueue.cpp:486-493`). rmule's own dials and log are scored
+//! `rmule-only`; the sharer's frames and the copies are counterparty bytes
+//! (ADR-0045).
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -41,6 +45,19 @@ const OP_SENDINGPART: u8 = 0x46;
 const EMULE_PART_FRAMES: [u8; 3] = [0x40, 0xA2, 0xA1];
 /// The eD2k frame header ahead of a payload: protocol, length, opcode.
 const FRAME_HEADER_LEN: usize = 6;
+/// The eD2k slot frames: `OP_STARTUPLOADREQ`, `OP_ACCEPTUPLOADREQ`,
+/// `OP_CANCELTRANSFER`, `OP_QUEUERANK`.
+const OP_STARTUPLOADREQ: u8 = 0x54;
+const OP_ACCEPTUPLOADREQ: u8 = 0x55;
+const OP_CANCELTRANSFER: u8 = 0x56;
+const OP_QUEUERANK: u8 = 0x5C;
+/// `OP_QUEUERANKING`, the eMule-extension rank.
+const OP_QUEUERANKING: u8 = 0x60;
+/// The file requests whose payload opens with the file they ask for:
+/// `OP_REQUESTFILENAME`, `OP_SETREQFILEID` (eD2k) and `OP_MULTIPACKET`,
+/// `OP_MULTIPACKET_EXT` (eMule).
+const EDONKEY_FILE_REQUESTS: [u8; 2] = [0x58, 0x4F];
+const EMULE_FILE_REQUESTS: [u8; 2] = [0x92, 0xA4];
 
 /// The claim on rmule's dials to the sharer.
 pub(crate) const ONE_DIAL: &str = "rmule-dialed-the-sharer-once";
@@ -50,6 +67,8 @@ pub(crate) const ONE_LINK: &str = "the-sharer-served-both-files-over-one-link";
 pub(crate) const BYTE_EQUAL: &str = "both-downloads-completed-byte-equal";
 /// The claim on the second download's turn.
 pub(crate) const WAITED: &str = "the-second-download-waited-on-the-link-then-rode-it";
+/// The claim on the sharer's answer to the file switch.
+pub(crate) const SWITCH_GRANTED: &str = "the-sharer-granted-the-file-switch-at-once";
 
 /// The bodies' addresses, written by the flow and read back by the scorer.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -81,6 +100,29 @@ pub(crate) struct Rows {
     /// The copies' lengths, `-1` when never written.
     pub(crate) first_copy_bytes: i64,
     pub(crate) second_copy_bytes: i64,
+    /// How the first download let its slot go before the switch: `cancel`,
+    /// `silent`, or `none` when no switch crossed the link.
+    pub(crate) switch_release: &'static str,
+    /// The sharer's answer to the second download's ask: `accept`, `rank` or
+    /// `none`.
+    pub(crate) switch_answer: &'static str,
+    /// Milliseconds from that ask to the answer, `-1` without one.
+    pub(crate) switch_answer_ms: f64,
+    /// The second file's part frames the sharer sent after the switch.
+    pub(crate) second_file_parts_after_switch: usize,
+}
+
+/// The file switch one link carried.
+#[derive(Debug, PartialEq)]
+struct Switch {
+    /// `cancel` when rmule sent `OP_CANCELTRANSFER` between the first file's
+    /// last part frame and the second file's request, else `silent`.
+    release: &'static str,
+    /// `accept`, `rank` or `none`, and how long after the ask it came.
+    answer: &'static str,
+    answer_ms: Option<f64>,
+    /// The second file's part frames after the switch.
+    parts_after: usize,
 }
 
 /// The verdict file.
@@ -187,6 +229,80 @@ fn part_of(frame: &Ed2kFrame) -> Option<[u8; 16]> {
     part.then(|| hash.try_into().ok()).flatten()
 }
 
+/// The file a file request names: the 16 bytes its payload opens with.
+fn requested(frame: &Ed2kFrame) -> Option<[u8; 16]> {
+    let request = (frame.protocol == OP_EDONKEYPROT
+        && EDONKEY_FILE_REQUESTS.contains(&frame.opcode))
+        || (frame.protocol == OP_EMULEPROT && EMULE_FILE_REQUESTS.contains(&frame.opcode));
+    let hash = frame.bytes.get(FRAME_HEADER_LEN..FRAME_HEADER_LEN + 16)?;
+    request.then(|| hash.try_into().ok()).flatten()
+}
+
+/// The switch on one link from the first file to the second, read from the
+/// frames rmule `sent` and the frames it `heard`; `None` when rmule named the
+/// second file only before the first file's last part, or never.
+fn link_switch(sent: &[Ed2kFrame], heard: &[Ed2kFrame], hashes: [[u8; 16]; 2]) -> Option<Switch> {
+    let is = |frame: &Ed2kFrame, protocol: u8, opcode: u8| {
+        (frame.protocol, frame.opcode) == (protocol, opcode)
+    };
+    let last_first_part = heard
+        .iter()
+        .filter(|frame| part_of(frame) == Some(hashes[0]))
+        .map(|frame| frame.at)
+        .reduce(f64::max)?;
+    let request = sent
+        .iter()
+        .find(|frame| frame.at >= last_first_part && requested(frame) == Some(hashes[1]))?;
+    let cancelled = sent.iter().any(|frame| {
+        (last_first_part..=request.at).contains(&frame.at)
+            && is(frame, OP_EDONKEYPROT, OP_CANCELTRANSFER)
+    });
+    let ask = sent
+        .iter()
+        .find(|frame| frame.at >= request.at && is(frame, OP_EDONKEYPROT, OP_STARTUPLOADREQ));
+    let answer = ask.and_then(|ask| {
+        heard.iter().find_map(|frame| {
+            let kind = if is(frame, OP_EDONKEYPROT, OP_ACCEPTUPLOADREQ) {
+                "accept"
+            } else if is(frame, OP_EDONKEYPROT, OP_QUEUERANK)
+                || is(frame, OP_EMULEPROT, OP_QUEUERANKING)
+            {
+                "rank"
+            } else {
+                return None;
+            };
+            (frame.at >= ask.at).then(|| (kind, (frame.at - ask.at) * 1000.0))
+        })
+    });
+    Some(Switch {
+        release: if cancelled { "cancel" } else { "silent" },
+        answer: answer.map_or("none", |(kind, _)| kind),
+        answer_ms: answer.map(|(_, ms)| ms),
+        parts_after: heard
+            .iter()
+            .filter(|frame| frame.at >= request.at && part_of(frame) == Some(hashes[1]))
+            .count(),
+    })
+}
+
+/// The file switch on the first link to the sharer that carried one.
+fn file_switch(at: &Addresses, capture: &TcpCapture, hashes: [[u8; 16]; 2]) -> Option<Switch> {
+    capture
+        .streams
+        .iter()
+        .filter(|stream| {
+            is_v4(stream.source, at.rmule)
+                && is_v4(stream.destination, at.sharer)
+                && stream.destination.port() == SHARER_PORT
+        })
+        .find_map(|to_sharer| {
+            let back = capture.streams.iter().find(|stream| {
+                stream.source == to_sharer.destination && stream.destination == to_sharer.source
+            })?;
+            link_switch(&to_sharer.ed2k_frames(), &back.ed2k_frames(), hashes)
+        })
+}
+
 /// The `download.link_shared` turns rmule's log names, in order.
 fn turns(log: &str) -> Vec<String> {
     log.lines()
@@ -283,12 +399,47 @@ fn claims(at: &Addresses, seen: &Observed) -> (Vec<Claim>, Rows) {
         Evidence::RmuleOnly,
         format!("download.link_shared turns in rmule's log: {turns:?}"),
     ));
+    let switch = file_switch(at, &seen.capture, seen.hashes);
+    claims.push(match &switch {
+        _ if unreadable => Claim::blocked(
+            SWITCH_GRANTED,
+            "a link from the sharer did not open as plain eD2k, so its frames cannot be read",
+        ),
+        None => Claim::about(
+            SWITCH_GRANTED,
+            false,
+            Evidence::Captured,
+            "no link named the second file after the first file's last part frame",
+        ),
+        Some(switch) => Claim::about(
+            SWITCH_GRANTED,
+            switch.answer == "accept",
+            Evidence::Captured,
+            format!(
+                "release {}; the second download's OP_STARTUPLOADREQ answered {} after {} ms; \
+                 the second file's part frames after the switch: {}",
+                switch.release,
+                switch.answer,
+                switch
+                    .answer_ms
+                    .map_or_else(|| "-".to_owned(), |ms| format!("{ms:.1}")),
+                switch.parts_after
+            ),
+        ),
+    });
     let rows = Rows {
         dials_rmule_tap: dials.len(),
         links_with_first_file: first.len(),
         links_with_second_file: second.len(),
         first_copy_bytes: first_len,
         second_copy_bytes: second_len,
+        switch_release: switch.as_ref().map_or("none", |switch| switch.release),
+        switch_answer: switch.as_ref().map_or("none", |switch| switch.answer),
+        switch_answer_ms: switch
+            .as_ref()
+            .and_then(|switch| switch.answer_ms)
+            .unwrap_or(-1.0),
+        second_file_parts_after_switch: switch.as_ref().map_or(0, |switch| switch.parts_after),
     };
     (claims, rows)
 }
@@ -320,5 +471,49 @@ mod tests {
         assert_eq!(part_of(&frame(OP_EDONKEYPROT, OP_SENDINGPART)), Some(hash));
         assert_eq!(part_of(&frame(OP_EMULEPROT, 0xA2)), Some(hash));
         assert_eq!(part_of(&frame(OP_EDONKEYPROT, 0x58)), None);
+    }
+
+    /// A frame at `at` opening with `hash` (zeros past it).
+    fn framed(at: f64, protocol: u8, opcode: u8, hash: [u8; 16]) -> Ed2kFrame {
+        Ed2kFrame {
+            at,
+            source: "172.18.0.5:40000".parse().unwrap(),
+            destination: "172.18.0.6:4662".parse().unwrap(),
+            protocol,
+            opcode,
+            bytes: [&[protocol, 0, 0, 0, 0, opcode][..], &hash, &[0; 8]].concat(),
+        }
+    }
+
+    #[test]
+    fn the_switch_reads_the_release_and_the_answer_to_the_next_ask() {
+        let (a, b) = ([0xA1; 16], [0xB2; 16]);
+        let heard = [
+            framed(1.0, OP_EDONKEYPROT, OP_SENDINGPART, a),
+            framed(2.0, OP_EDONKEYPROT, OP_SENDINGPART, a),
+            framed(3.03, OP_EDONKEYPROT, OP_ACCEPTUPLOADREQ, [0; 16]),
+        ];
+        let silent = [
+            framed(0.5, OP_EMULEPROT, 0xA4, b),
+            framed(3.0, OP_EMULEPROT, 0xA4, b),
+            framed(3.01, OP_EDONKEYPROT, OP_STARTUPLOADREQ, b),
+        ];
+        let switch = link_switch(&silent, &heard, [a, b]).unwrap();
+        assert_eq!(
+            (switch.release, switch.answer, switch.parts_after),
+            ("silent", "accept", 0)
+        );
+        assert!((switch.answer_ms.unwrap() - 20.0).abs() < 1e-6);
+
+        let cancelled = [
+            framed(2.5, OP_EDONKEYPROT, OP_CANCELTRANSFER, [0; 16]),
+            framed(3.0, OP_EDONKEYPROT, 0x58, b),
+            framed(3.01, OP_EDONKEYPROT, OP_STARTUPLOADREQ, b),
+        ];
+        assert_eq!(
+            link_switch(&cancelled, &heard, [a, b]).unwrap().release,
+            "cancel"
+        );
+        assert_eq!(link_switch(&silent[..1], &heard, [a, b]), None);
     }
 }
