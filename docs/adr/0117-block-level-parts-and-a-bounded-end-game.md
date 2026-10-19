@@ -282,3 +282,13 @@ slower worker is fetching. The first byte to arrive at an offset is kept. Nothin
   allocation is page-grained, absent on a `HoleLess` disk, and blind to off-grid blocks.
 - **A worker bound to its part**, as aMule does. Not taken: the deterministic rank keeps a worker
   on its part anyway, and binding it would delay a Streaming Window part freed behind it.
+- **Retire every writer of a part that fails with no root** (ADR-0029's earlier rule). Rejected
+  (§1): with blocks shared, one bad sender costs up to six honest workers their slots.
+- **aMule's black box as it is**: per-IP ranges, banned past 32 % corrupt. Not taken alone:
+  without AICH it marks no range bad, and on an MD4 pass it credits every old range as good
+  (`PartFile.cpp:3075`), so a poisoner sharing parts with honest sources is never banned. The
+  Failed Cells keep its per-sender evidence and judge it by the refetch instead.
+- **Refetch a failed part from one worker.** Rejected: its MD4 would name the writer at once, but
+  on a one-part file every other worker would give its slot back.
+- **Keep every failed attempt of a part.** Not taken: the latest is enough to name a single bad
+  sender, and one attempt bounds the evidence at 53 hashes per part.
