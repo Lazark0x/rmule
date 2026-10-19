@@ -94,7 +94,9 @@ pub use self::peer::{
     PeerDialBackGrantOptions, run_peer_dial_back_grant, score_peer_dial_back_grant,
     stage_dial_back_files,
 };
-pub use self::peer::{PeerOneLinkOptions, run_peer_one_link, score_peer_one_link};
+pub use self::peer::{
+    PeerOneLinkOptions, run_peer_one_link, score_peer_one_link, score_peer_one_link_severed,
+};
 pub use self::peer::{
     PeerReciprocityOptions, ReciprocityLeg, ReciprocityShape, run_peer_reciprocity,
     score_peer_reciprocity, stage_reciprocity_files,

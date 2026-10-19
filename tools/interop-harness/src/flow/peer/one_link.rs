@@ -28,8 +28,10 @@ use crate::flow::gate::{wait_for_amule_ready, wait_for_container_log};
 use crate::flow::logs::{collect_amule_logs, collect_rmule_logs, collect_server_logs};
 use crate::rmule::{DownloadCrypt, RmuleClientContainer, release_held_download};
 
+mod severed;
 pub(crate) mod verdict;
 
+pub use self::severed::score_run_dir as score_severed_run_dir;
 pub use self::verdict::score_run_dir;
 
 /// The sharer's upload-rate cap (KiB/s): slow enough that the first file is
@@ -67,6 +69,10 @@ pub struct PeerOneLinkOptions<'a> {
     pub rmule_client_container: &'a RmuleClientContainer,
     /// Extra environment for the sharer (`KEY=VALUE`).
     pub amule_env: &'a [String],
+    /// Stop the sharer this many seconds after rmule's first part assignment,
+    /// so its link ends mid-transfer, and watch rmule keep the source instead
+    /// of waiting for the downloads (the severed leg).
+    pub sever_after_secs: Option<u64>,
 }
 
 /// Run the flow: the eserver, a High-ID aMule sharer of the two staged files
@@ -158,19 +164,37 @@ pub fn run_peer_one_link(options: PeerOneLinkOptions<'_>) -> Result<()> {
             "prebuild rmule-tools for the download container",
         )?;
         let link_refs: Vec<&str> = links.iter().map(String::as_str).collect();
-        let download = options
-            .rmule_client_container
-            .download_start_detached_command(
-                bench.staging(options.layout),
-                &rmule_name,
-                &bench.names.server_endpoint(),
-                &link_refs,
-                true,
-                DownloadCrypt {
-                    peer_crypt: None,
-                    peer_crypt_flip: &[],
-                },
-            )?;
+        let download = if options.sever_after_secs.is_some() {
+            // The severed verdict reads stamped records and per-download ticks.
+            options
+                .rmule_client_container
+                .download_start_detached_with_args(
+                    bench.staging(options.layout),
+                    &rmule_name,
+                    &bench.names.server_endpoint(),
+                    &link_refs,
+                    true,
+                    &[
+                        "--report-parts-every-ms".to_owned(),
+                        "1000".to_owned(),
+                        "--stamp-events".to_owned(),
+                    ],
+                )?
+        } else {
+            options
+                .rmule_client_container
+                .download_start_detached_command(
+                    bench.staging(options.layout),
+                    &rmule_name,
+                    &bench.names.server_endpoint(),
+                    &link_refs,
+                    true,
+                    DownloadCrypt {
+                        peer_crypt: None,
+                        peer_crypt_flip: &[],
+                    },
+                )?
+        };
         bench.start_rmule_container(download, "run rmule download container")?;
         let tap = CaptureSidecar {
             image: options.capture_image,
@@ -194,13 +218,29 @@ pub fn run_peer_one_link(options: PeerOneLinkOptions<'_>) -> Result<()> {
         }
         .write(&capture_dir)?;
 
-        for id in 1..=links.len() {
+        if let Some(secs) = options.sever_after_secs {
             wait_for_container_log(
                 &bench.docker,
                 &rmule_name,
-                &format!("download.completed id={id}"),
+                "download.part_assigned",
                 timeout,
             )?;
+            std::thread::sleep(Duration::from_secs(secs));
+            run_checked(
+                bench.docker.stop_container(sharer.clone(), 0),
+                "stop the sharer mid-transfer",
+            )?;
+            println!("peer_one_link severed sharer_stopped_after_secs={secs}");
+            std::thread::sleep(Duration::from_secs(severed::WATCH_SECS));
+        } else {
+            for id in 1..=links.len() {
+                wait_for_container_log(
+                    &bench.docker,
+                    &rmule_name,
+                    &format!("download.completed id={id}"),
+                    timeout,
+                )?;
+            }
         }
         collect_rmule_logs(&bench.docker, options.layout, &rmule_name)?;
         collect_amule_logs(&bench.docker, options.layout, &sharer)?;
@@ -225,6 +265,11 @@ pub fn run_peer_one_link(options: PeerOneLinkOptions<'_>) -> Result<()> {
     }
     bench.cleanup_best_effort();
     result?;
+    if options.sever_after_secs.is_some() {
+        let verdict = severed::score_run_dir(options.layout.root())?;
+        println!("peer_one_link severed_verdict={verdict}");
+        return Ok(());
+    }
     let verdict = score_run_dir(options.layout.root())?;
     println!("peer_one_link verdict={verdict}");
     Ok(())

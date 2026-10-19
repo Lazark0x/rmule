@@ -222,7 +222,7 @@ fn is_v4(address: SocketAddr, ip: Ipv4Addr) -> bool {
 }
 
 /// The file a part frame carries: the 16 bytes its payload opens with.
-fn part_of(frame: &Ed2kFrame) -> Option<[u8; 16]> {
+pub(crate) fn part_of(frame: &Ed2kFrame) -> Option<[u8; 16]> {
     let part = (frame.protocol, frame.opcode) == (OP_EDONKEYPROT, OP_SENDINGPART)
         || (frame.protocol == OP_EMULEPROT && EMULE_PART_FRAMES.contains(&frame.opcode));
     let hash = frame.bytes.get(FRAME_HEADER_LEN..FRAME_HEADER_LEN + 16)?;

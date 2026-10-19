@@ -8,7 +8,8 @@ use anyhow::Result;
 use clap::Args;
 use rmule_interop_harness::artifacts::Ed2kHashCommand;
 use rmule_interop_harness::flow::{
-    PeerOneLinkOptions, run_peer_one_link, score_peer_one_link, stage_reask_emit_files,
+    PeerOneLinkOptions, run_peer_one_link, score_peer_one_link, score_peer_one_link_severed,
+    stage_reask_emit_files,
 };
 use rmule_interop_harness::rmule::RmuleClientContainer;
 use serde::Serialize;
@@ -19,6 +20,8 @@ use crate::cli::bench::{
 use crate::cli::write_resolved_config;
 
 const FLOW: &str = "peer-one-link";
+/// The verdict a severed run writes; its presence picks the severed re-score.
+const SEVERED_VERDICT: &str = "peer-one-link-severed-verdict.toml";
 
 /// Each file's size: at the sharer's 64 KiB/s cap the first takes about a
 /// minute, so the second download asks for the sharer while it still rides.
@@ -45,6 +48,12 @@ pub(crate) struct PeerOneLinkArgs {
     /// Per-step budget in seconds; each download's completion waits under it.
     #[arg(long, default_value_t = 900)]
     pub(crate) timeout: u64,
+    /// The severed leg: stop the sharer this many seconds after rmule's first
+    /// part assignment, so its link ends mid-transfer, then watch rmule keep
+    /// the source queued (verdict `peer-one-link-severed-verdict.toml`)
+    /// instead of waiting for the downloads.
+    #[arg(long)]
+    pub(crate) sever_after_secs: Option<u64>,
     /// Test hook for the ED2K hash command.
     #[arg(long, hide = true)]
     pub(crate) ed2k_hash_command: Option<PathBuf>,
@@ -62,6 +71,7 @@ struct ResolvedConfig {
     container_runtime: String,
     file_size: u64,
     timeout_secs: u64,
+    sever_after_secs: Option<u64>,
 }
 
 pub(crate) fn peer_one_link(args: PeerOneLinkArgs) -> Result<()> {
@@ -84,6 +94,7 @@ pub(crate) fn peer_one_link(args: PeerOneLinkArgs) -> Result<()> {
             container_runtime: args.bench.container_runtime.clone(),
             file_size: args.file_size,
             timeout_secs: args.timeout,
+            sever_after_secs: args.sever_after_secs,
         },
     )?;
     let hash_command = args
@@ -109,6 +120,7 @@ pub(crate) fn peer_one_link(args: PeerOneLinkArgs) -> Result<()> {
         server_host_port: args.eserver.server_host_port,
         rmule_client_container: &rmule_client_container,
         amule_env: &args.amule.amule_env,
+        sever_after_secs: args.sever_after_secs,
     })
 }
 
@@ -122,7 +134,11 @@ pub(crate) struct PeerOneLinkScoreArgs {
 }
 
 pub(crate) fn peer_one_link_score(args: PeerOneLinkScoreArgs) -> Result<()> {
-    let verdict = score_peer_one_link(&args.run_dir)?;
+    let verdict = if args.run_dir.join(SEVERED_VERDICT).exists() {
+        score_peer_one_link_severed(&args.run_dir)?
+    } else {
+        score_peer_one_link(&args.run_dir)?
+    };
     println!("run_dir={}", args.run_dir.display());
     println!("verdict={verdict}");
     Ok(())
