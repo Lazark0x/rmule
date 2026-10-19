@@ -20,8 +20,8 @@
 //! neither finishes a 9.28 MB part inside it, so neither is a source rmule
 //! can take a part from.
 
-use std::ffi::OsString;
 use std::fs;
+use std::net::Ipv4Addr;
 use std::path::Path;
 use std::time::Duration;
 
@@ -37,6 +37,7 @@ use crate::flow::identity::{ed2k_link_with_source, parse_ed2k_file_hash};
 use crate::flow::logs::{
     collect_amule_logfile, collect_amule_logs, collect_rmule_logs, collect_server_logs,
 };
+use crate::flow::pcap::udp4_datagrams;
 use crate::rmule::{DownloadCrypt, RmuleClientContainer, release_held_download};
 
 mod hand_over;
@@ -449,43 +450,29 @@ pub fn run_peer_udp_reask_emit(options: PeerUdpReaskEmitOptions<'_>) -> Result<(
 
         // Harvest, source/dest swapped from consume: rmule → sharer is the 0x90
         // reask evidence; sharer → rmule is the 0x91/0x92/0x93 answer evidence.
-        // Zero on the first ⇒ no peer-UDP reask left rmule.
-        let reask_out = run_checked(
-            bench.docker.exec(
-                capture.clone(),
-                [
-                    OsString::from("sh"),
-                    OsString::from("-c"),
-                    // Count only `OP_REASKFILEPING` datagrams — client-UDP
-                    // eD2k protocol byte `0xC5` + opcode `0x90` at the payload
-                    // head — so a non-zero count proves a reask, not just any
-                    // UDP toward the sharer.
-                    OsString::from(format!(
-                        "tcpdump -nr {} 'udp and src host {} and dst host {} and udp[8] = 0xc5 and udp[9] = 0x90' 2>/dev/null | wc -l",
-                        tap.pcap_path(),
-                        rmule_ip.trim(),
-                        sharer_ip.trim()
-                    )),
-                ],
-            ),
-            "count rmule 0x90 reasks toward sharer",
-        )?;
-        let reask_answers = run_checked(
-            bench.docker.exec(
-                capture.clone(),
-                [
-                    OsString::from("sh"),
-                    OsString::from("-c"),
-                    OsString::from(format!(
-                        "tcpdump -nr {} 'udp and src host {} and dst host {}' 2>/dev/null | wc -l",
-                        tap.pcap_path(),
-                        sharer_ip.trim(),
-                        rmule_ip.trim()
-                    )),
-                ],
-            ),
-            "count sharer udp toward rmule",
-        )?;
+        // Zero on the first ⇒ no peer-UDP reask left rmule. Counted on the
+        // host from the retained tap: the sidecar shares rmule's namespace and
+        // stops with it, which a run whose downloads finish reaches first.
+        let rmule_addr: Ipv4Addr = rmule_ip.trim().parse().context("rmule address")?;
+        let sharer_addr: Ipv4Addr = sharer_ip.trim().parse().context("sharer address")?;
+        let datagrams = udp4_datagrams(&capture_dir.join("emit-reask.pcap"))?;
+        // Only `OP_REASKFILEPING` datagrams — client-UDP eD2k protocol byte
+        // `0xC5` + opcode `0x90` at the payload head — so a non-zero count
+        // proves a reask, not just any UDP toward the sharer.
+        let reask_out = datagrams
+            .iter()
+            .filter(|datagram| {
+                *datagram.source.ip() == rmule_addr
+                    && *datagram.destination.ip() == sharer_addr
+                    && datagram.payload.starts_with(&[0xC5, 0x90])
+            })
+            .count();
+        let reask_answers = datagrams
+            .iter()
+            .filter(|datagram| {
+                *datagram.source.ip() == sharer_addr && *datagram.destination.ip() == rmule_addr
+            })
+            .count();
 
         // rmule's own queue-standing evidence (rmule events): the pool entry
         // and, on a reply, the acked rank.
@@ -509,8 +496,7 @@ pub fn run_peer_udp_reask_emit(options: PeerUdpReaskEmitOptions<'_>) -> Result<(
              source_remote_queued={remote_queued} source_reask_acked={reask_acked} \
              (reask_udp_datagrams counts 0xC5/0x90 only: 0 ⇒ no OP_REASKFILEPING left rmule, \
              >0 ⇒ a genuine reask did)",
-            reask_out.trim(),
-            reask_answers.trim()
+            reask_out, reask_answers
         );
 
         // Persist the counterparties' own logs before teardown: the sharer's
