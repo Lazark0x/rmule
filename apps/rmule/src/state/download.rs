@@ -390,6 +390,7 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
         | E::LinkShared { .. }
         | E::PartReleased { .. }
         | E::EndGameBlocks { .. }
+        | E::PartCorrupt { .. }
         | E::PeerRetired { .. } => false,
     }
 }

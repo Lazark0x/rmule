@@ -308,6 +308,23 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
             },
             address(*peer)
         ),
+        D::PartCorrupt {
+            part_index,
+            writers,
+            named,
+            ..
+        } => format!(
+            "part {part_index} failed its check; {}; fetching it again",
+            match (*named, *writers) {
+                (0, writers) => format!(
+                    "which of its {} sent bad data is not known yet",
+                    count(u64::from(writers), "source", "sources")
+                ),
+                (1, 1) => "its only source sent bad data".to_string(),
+                (1, writers) => format!("1 of its {writers} sources is held to blame"),
+                (named, writers) => format!("{named} of its {writers} sources are held to blame"),
+            }
+        ),
         D::PartReleased {
             part_index, reason, ..
         } => format!("part {part_index} released: {}", release_words(*reason)),

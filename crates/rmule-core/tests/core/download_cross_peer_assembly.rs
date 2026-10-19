@@ -1,7 +1,8 @@
 //! Block assembly across peers (ADR-0029, ADR-0117): a peer that drops
 //! mid-part leaves its arrived bytes, and the next peer is handed only what is
-//! missing; a part assembled from several contributors that fails its MD4 hash
-//! retires every contributor and is handed again from a cleared buffer.
+//! missing; a part shared by several workers that fails its MD4 hash with no
+//! AICH root keeps every worker, and its verified refetch names the sender of
+//! the cell that changed.
 
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent, DownloadFailure,
@@ -89,37 +90,23 @@ async fn a_dropped_workers_bytes_stay_and_the_next_is_handed_only_the_rest() {
 }
 
 #[tokio::test]
-async fn core_retires_all_contributors_when_assembled_part_fails_verification() {
+async fn a_shared_part_failing_with_no_root_is_refetched_and_its_changed_cell_names_the_sender() {
     let out_dir = tempfile::tempdir().unwrap();
-    // ADR-0029: when a part assembled from blocks contributed by several peers
-    // fails its MD4 part hash, core cannot attribute the bad block (no AICH),
-    // so it retires every contributor and hands the part again from offset 0.
-    // peer A contributes [0, k) correctly and B contributes [k, len) corrupted;
-    // both must be retired as PartVerificationFailed, the buffer cleared, and a
-    // surviving peer C must finish the part from a fresh prefix (offset 0).
-    // A file of exactly one part size — one data part, so two peers race it,
-    // and a two-hash set (the part plus aMule's trailing empty hash) — carries
-    // no link `p=` hash set, so a peer supplies the file's own set, making the
-    // per-part (PeerHashSet) verification — and thus retire-all — reachable. A
-    // file below one part carries no set at all (aMule `KnownFile.cpp:425-427`),
-    // and a set that is not the file's own is refused.
+    // ADR-0117 §1: two workers share the one part, and peer B corrupts the
+    // first block it is handed, once. The part fails its MD4 hash with no AICH
+    // root to name the bad cell, so neither worker is retired and the part is
+    // fetched again. The refetch verifies, and the cell whose bytes changed
+    // was B's alone: B is retired, A never is, and the download completes. A
+    // file of exactly one part size carries no link `p=` hash set, so a peer
+    // supplies the file's own set, making the per-part verification reachable.
     let correct: Vec<u8> = (0..ED2K_PART_SIZE).map(|i| (i % 251) as u8).collect();
     let part_hashes = FileHashSummary::digest_bytes(&correct)
         .part_hash_set()
         .expect("a one-part-size file has a set")
         .hashes()
         .to_vec();
-    let drop_at = 30usize;
-    let mut corrupt_tail = correct[drop_at..].to_vec();
-    corrupt_tail[0] ^= 0xFF; // poison the assembled part so its hash mismatches
-
     let peer_a = loopback_peer(1);
     let peer_b = loopback_peer(2);
-    let peer_c = loopback_peer(3);
-    let a_done = Arc::new(tokio::sync::Notify::new());
-    let first_handed = Arc::new(StdMutex::new(HashMap::new()));
-
-    // Two workers race the part and the third source backfills.
     let mut core = Core::builder(
         CoreConfig {
             peer_connections: rmule_core::PeerConnections {
@@ -140,25 +127,19 @@ async fn core_retires_all_contributors_when_assembled_part_fails_verification() 
             sources: plain_sources(vec![
                 PeerSource::new(ClientId::from_u32(0x0100_007F), 4663),
                 PeerSource::new(ClientId::from_u32(0x0200_007F), 4664),
-                PeerSource::new(ClientId::from_u32(0x0300_007F), 4665),
             ]),
         },
     })
-    .peer_transfer(CrossPeerVerifyFailTransfer {
-        partial_peer: peer_a,
+    .peer_transfer(CorruptOnceTransfer {
         corrupting_peer: peer_b,
-        drop_at,
         correct: correct.clone(),
-        corrupt_tail,
         part_hashes,
-        a_done: Arc::clone(&a_done),
-        first_handed: Arc::clone(&first_handed),
     })
     .build();
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file: file_link_without_part_hash_set("example.bin", &correct),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
-        name: rmule_testkit::file_name("retire-all-contributors.bin"),
+        name: rmule_testkit::file_name("corrupt-once.bin"),
         if_taken: rmule_core::NameTaken::Refuse,
     }))
     .await
@@ -191,20 +172,26 @@ async fn core_retires_all_contributors_when_assembled_part_fails_verification() 
             )
         })
     };
-    assert!(retired(peer_a), "the first contributor must be retired");
-    assert!(retired(peer_b), "the second contributor must be retired");
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            CoreEvent::Download(DownloadEvent::PartCorrupt {
+                part_index: 0,
+                writers: 2,
+                named: 0,
+                ..
+            })
+        )),
+        "the failure names neither sharer: {events:?}"
+    );
+    assert!(retired(peer_b), "the changed cell's sender is retired");
+    assert!(!retired(peer_a), "the honest sharer keeps its slot");
     assert!(
         events.iter().any(|event| matches!(
             event,
             CoreEvent::Download(DownloadEvent::DownloadCompleted { .. })
         )),
-        "a surviving peer must finish the part after the contributors are retired"
-    );
-    assert_eq!(
-        first_handed.lock().unwrap().get(&peer_c),
-        Some(&0),
-        "the surviving peer must be handed offset 0 (buffer cleared), got {:?}",
-        first_handed.lock().unwrap().get(&peer_c),
+        "the refetched part completes the download"
     );
 }
 
@@ -274,18 +261,15 @@ impl PeerTransferService for ResumeAfterDropTransfer {
     }
 }
 
-struct CrossPeerVerifyFailTransfer {
-    partial_peer: PeerEndpoint,
+/// Every worker serves the blocks it is handed from the file's true bytes;
+/// `corrupting_peer` flips a byte of the first block it is handed, once.
+struct CorruptOnceTransfer {
     corrupting_peer: PeerEndpoint,
-    drop_at: usize,
     correct: Vec<u8>,
-    corrupt_tail: Vec<u8>,
     part_hashes: Vec<PartHash>,
-    a_done: Arc<tokio::sync::Notify>,
-    first_handed: Arc<StdMutex<HashMap<PeerEndpoint, u64>>>,
 }
 
-impl PeerTransferService for CrossPeerVerifyFailTransfer {
+impl PeerTransferService for CorruptOnceTransfer {
     async fn start_peer_worker(
         &mut self,
         peer: PeerEndpoint,
@@ -295,14 +279,9 @@ impl PeerTransferService for CrossPeerVerifyFailTransfer {
         let advertised = rmule_testkit::every_part(file.size);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
-        let partial_peer = self.partial_peer;
-        let corrupting_peer = self.corrupting_peer;
-        let drop_at = self.drop_at;
+        let mut corrupt_next = peer == self.corrupting_peer;
         let correct = self.correct.clone();
-        let corrupt_tail = self.corrupt_tail.clone();
         let part_hashes = self.part_hashes.clone();
-        let a_done = Arc::clone(&self.a_done);
-        let first_handed = Arc::clone(&self.first_handed);
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
             let _ = event_tx.send(advertised).await;
@@ -321,51 +300,16 @@ impl PeerTransferService for CrossPeerVerifyFailTransfer {
                             .await;
                     }
                     PeerWorkerCommand::RequestBlocks { blocks, handout } => {
-                        first_handed
-                            .lock()
-                            .unwrap()
-                            .entry(peer)
-                            .or_insert(blocks[0].start);
-                        if peer == partial_peer {
-                            // Establish the single part's hash as the
-                            // PeerHashSet authority, contribute the correct
-                            // first half, then stay connected (no completion
-                            // claim, no drop).
-                            let _ = event_tx
-                                .send(PeerWorkerEvent::HashSetReceived {
-                                    part_hashes: part_hashes.clone(),
-                                })
-                                .await;
-                            let _ = event_tx
-                                .send(PeerWorkerEvent::BlockReceived {
-                                    part_index: 0,
-                                    offset: 0,
-                                    bytes: correct[..drop_at].to_vec(),
-                                })
-                                .await;
-                            a_done.notify_one();
-                        } else if peer == corrupting_peer {
-                            // Finish the part with a corrupted tail once the
-                            // prefix is in, so the assembled hash mismatches.
-                            a_done.notified().await;
-                            let _ = event_tx
-                                .send(PeerWorkerEvent::BlockReceived {
-                                    part_index: 0,
-                                    offset: drop_at as u64,
-                                    bytes: corrupt_tail.clone(),
-                                })
-                                .await;
-                        } else {
-                            // Survivor: serve the correct bytes of the blocks
-                            // core hands it (from 0 again after retire-all).
-                            let part = rmule_core::DownloadedPart {
-                                part_index: 0,
-                                offset: 0,
-                                bytes: correct.clone(),
-                            };
-                            emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks, handout)
-                                .await;
+                        let mut bytes = correct.clone();
+                        if std::mem::take(&mut corrupt_next) {
+                            bytes[blocks[0].start as usize] ^= 0xFF;
                         }
+                        let part = rmule_core::DownloadedPart {
+                            part_index: 0,
+                            offset: 0,
+                            bytes,
+                        };
+                        emit_blocks(&event_tx, std::slice::from_ref(&part), &blocks, handout).await;
                     }
                     PeerWorkerCommand::RequestAich { .. } => {}
                     PeerWorkerCommand::RequestAichFileHash => {}

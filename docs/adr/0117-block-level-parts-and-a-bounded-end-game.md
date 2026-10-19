@@ -230,10 +230,10 @@ slower worker is fetching. The first byte to arrive at an offset is kept. Nothin
 - **`EndGameBlocks { peer, part_index, blocks, bytes }`** is said when a Duplicate Set is handed.
   Its sentence is written in `rmule-words`, and the run log writes it as
   `download.end_game_blocks`.
-- **`PartCorrupt { part_index, writers, retired }`** is said when a part fails its check with no
+- **`PartCorrupt { part_index, writers, named }`** is said when a part fails its check with no
   root to name its corrupt cells (§1): how many sources wrote it, and how many of them the failure
-  named and retired. Its sentence is written in `rmule-words`, and the run log writes it as
-  `download.part_corrupt`. Each retirement is also said as `PeerRetired`.
+  named. Its sentence is written in `rmule-words`, and the run log writes it as
+  `download.part_corrupt`. Each named writer still working is retired, said as `PeerRetired`.
 
 ## Consequences
 

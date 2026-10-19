@@ -253,7 +253,8 @@ impl DownloadState {
     /// verification failure it contributed to), or a slot it cannot work.
     /// Returns its in-flight part to the pool when it was the sole holder
     /// (ADR-0026), frees its diagnostics slot, hands the released part to a
-    /// granted worker with none, passes a hash-set ask it held, and backfills
+    /// granted worker with none, passes a hash-set ask it held, leaves a part
+    /// whose recovery ask it held to its refetch (ADR-0038), and backfills
     /// a replacement from the candidate pool (ADR-0030). When the pool is
     /// exhausted and no worker remains, the download fails.
     pub(super) fn release(
@@ -357,6 +358,8 @@ impl DownloadState {
         }
         self.retired_peers = self.retired_peers.saturating_add(1);
         self.forget_slot_ask(now, peer, out);
+        // A recovery ask the worker held will not be answered (ADR-0038).
+        self.recovery_unanswered(now, peer, out);
         // The freed blocks go to a granted worker with room; a queued one is
         // handed its blocks at its grant (ADR-0026).
         self.reassign_workers(now, out);

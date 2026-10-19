@@ -2,12 +2,15 @@
 //! its `EMBLOCKSIZE` grid, as aMule's `GetNextEmptyBlockInPart` cuts them
 //! (stock 2.3.3 `PartFile.cpp:1246-1311`), so a block leaves the grid exactly
 //! where the gap it fills does; and the fresh handout that takes them from the
-//! first-ranked part on.
+//! first-ranked part on, a refetched part's cells asked of someone else first.
+
+use std::collections::HashMap;
 
 use rmule_primitives::{EMBLOCKSIZE, PeerEndpoint};
 
 use super::rank::{RankInputs, rank};
 use super::{DownloadScheduler, Progress};
+use crate::assembly::Attempt;
 use crate::planning::{BlockPlan, part_plan};
 
 /// One block asked of one worker and not yet wholly arrived.
@@ -46,10 +49,12 @@ impl Claim {
 }
 
 impl DownloadScheduler {
-    /// Up to `room` unclaimed blocks of the parts `held` names, the
-    /// first-ranked part first and each part's blocks in order.
+    /// Up to `room` unclaimed blocks of the parts `held` names for `peer`,
+    /// the first-ranked part first and each part's blocks in order — a
+    /// refetched part's in `refetch_order`.
     pub(super) fn fresh_blocks(
         &self,
+        peer: PeerEndpoint,
         room: usize,
         held: &impl Fn(u32) -> bool,
         inputs: &RankInputs<'_>,
@@ -68,13 +73,40 @@ impl DownloadScheduler {
                 break;
             }
             let wanted = room - blocks.len();
-            blocks.extend(
-                self.unclaimed_blocks(part, progress)
-                    .into_iter()
-                    .take(wanted),
-            );
+            let unclaimed = self.unclaimed_blocks(part, progress);
+            let ordered = match progress.failed_cells(part) {
+                Some(failed) => self.refetch_order(peer, unclaimed, failed),
+                None => unclaimed,
+            };
+            blocks.extend(ordered.into_iter().take(wanted));
         }
         blocks
+    }
+
+    /// The blocks of a part kept as `failed` Failed Cells, in the order `peer`
+    /// asks them (ADR-0117 §1): cells it did not write first, so a refetched
+    /// cell's new bytes come from someone else, and each old writer's cells in
+    /// turn, so they come from several workers. Each group keeps its order.
+    fn refetch_order(
+        &self,
+        peer: PeerEndpoint,
+        blocks: Vec<BlockPlan>,
+        failed: &Attempt,
+    ) -> Vec<BlockPlan> {
+        let mut turns: HashMap<&[PeerEndpoint], usize> = HashMap::new();
+        let mut keyed: Vec<((bool, usize), BlockPlan)> = blocks
+            .into_iter()
+            .map(|block| {
+                let offset = part_plan(self.file_size, block.part_index).offset;
+                let writers = failed.writers_of((block.start - offset) / EMBLOCKSIZE);
+                let turn = turns.entry(writers).or_default();
+                let key = (writers.contains(&peer), *turn);
+                *turn += 1;
+                (key, block)
+            })
+            .collect();
+        keyed.sort_by_key(|&(key, _)| key);
+        keyed.into_iter().map(|(_, block)| block).collect()
     }
 
     /// The unarrived, unclaimed blocks of `part_index`, in order.

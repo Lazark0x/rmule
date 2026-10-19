@@ -20,6 +20,7 @@ use rmule_primitives::PeerEndpoint;
 
 use self::claims::Claim;
 use self::rank::{RankInputs, preview_band, very_rare_bound};
+use crate::assembly::Attempt;
 use crate::byte_ranges::ByteRanges;
 use crate::diagnostics::PartState;
 use crate::planning::{BlockPlan, PartPlan, part_plan};
@@ -76,13 +77,19 @@ impl PartOrder {
 
 /// What the scheduler reads of the download beside its own bookkeeping: each
 /// part's **Arrived Ranges** and each worker's **Delivery Rate**, the End
-/// Game's input (ADR-0117). `()` shows nothing arrived and measures nobody.
+/// Game's input, and a refetched part's **Failed Cells** (ADR-0117). `()`
+/// shows nothing arrived and measures nobody.
 pub(crate) trait Progress {
     /// `peer`'s Delivery Rate in bytes per second, `None` until measured.
     fn rate(&self, peer: PeerEndpoint) -> Option<u64>;
     /// The Arrived Ranges of `part_index`, relative to the part's start;
     /// `None` when nothing of it arrived.
     fn arrived(&self, part_index: u32) -> Option<&ByteRanges>;
+    /// The Failed Cells `part_index` keeps from an attempt that failed with
+    /// no root; `None` for a part that has not failed so.
+    fn failed_cells(&self, _part_index: u32) -> Option<&Attempt> {
+        None
+    }
 }
 
 impl Progress for () {
@@ -186,7 +193,7 @@ impl DownloadScheduler {
             window: self.window(),
         };
         let held = |part: u32| parts.has(PartIndex::new(part));
-        let fresh = self.fresh_blocks(room, &held, &inputs, progress);
+        let fresh = self.fresh_blocks(peer, room, &held, &inputs, progress);
         let (blocks, duplicate) = if fresh.is_empty() {
             (
                 self.duplicate_set(peer, room, &held, &inputs, progress),

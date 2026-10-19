@@ -13,7 +13,7 @@
 //! the state emits [`Decision::PersistPart`] and resumes on
 //! [`DownloadState::on_persist_result`].
 //!
-//! This split is what makes the handout / mid-part-resume / retire-all /
+//! This split is what makes the handout / mid-part-resume / corrupt-part /
 //! backfill behaviours assertable as plain `Vec<Decision>` values instead of
 //! only through a live Tokio actor with `timeout`-polled events.
 //!
@@ -24,6 +24,7 @@ mod aich;
 mod candidate;
 mod candidates;
 mod capability;
+mod corruption;
 mod direct_ipv6;
 mod handout;
 mod remote_queued;
@@ -53,7 +54,7 @@ pub(crate) use sightings::{Channel, Taken, Tally};
 
 use crate::DownloadFailure;
 use crate::adapters::{CallbackKey, PeerWorkerCommand, WorkerOpening};
-use crate::assembly::PartAssembly;
+use crate::assembly::{Attempt, PartAssembly};
 use crate::callback::CallbackSilence;
 use crate::delivery_rate::DeliveryRate;
 use crate::diagnostics::{PartState, WorkerPhase, WorkerSlot};
@@ -443,12 +444,18 @@ pub(crate) struct DownloadState {
     delivered: HashMap<PeerEndpoint, (u32, u64)>,
     /// Assemblies removed from `assembly` when their `PersistPart` was
     /// emitted, held until `on_persist_result` so a verification failure can
-    /// retire every contributor (ADR-0029's retire-all).
+    /// attribute its cells (ADR-0117 §1).
     pending_persist: HashMap<u32, PartAssembly>,
     /// Completed-but-MD4-failed assemblies awaiting an AICH recovery answer
-    /// (ADR-0038). Held here (with their per-block provenance) between the
-    /// `OP_AICHREQUEST` and `on_aich_answer`, where the corruption is localized.
-    awaiting_recovery: HashMap<u32, PartAssembly>,
+    /// (ADR-0038), with the worker asked. Held here (with their per-block
+    /// provenance) between the `OP_AICHREQUEST` and `on_aich_answer`, where the
+    /// corruption is localized; the part stays verifying meanwhile, and the
+    /// asked worker's end stands for an empty answer.
+    awaiting_recovery: HashMap<u32, (PeerEndpoint, PartAssembly)>,
+    /// The **Failed Cells** of each part refetched after failing its check
+    /// with no root (ADR-0117 §1): its latest failed attempt, until it
+    /// verifies.
+    failed_cells: HashMap<u32, Attempt>,
     /// Peer → the diagnostics slot its worker occupies. The live command
     /// channel for each peer stays in the runner, whether it has completed its
     /// handshake in the **Source Book**; the brain owns only the slot number.
@@ -468,8 +475,8 @@ pub(crate) struct DownloadState {
     /// The trusted AICH master root for this download (ADR-0038). Set up front
     /// from the link `h=`, or committed by the trusted-set vote
     /// (`aich_root_votes`) when the link carried none. Its presence enables
-    /// block-level recovery on an MD4 failure; `None` keeps the failure path at
-    /// ADR-0029's retire-all.
+    /// block-level recovery on an MD4 failure; `None` leaves a failed part to
+    /// its refetch (ADR-0117 §1).
     trusted_aich_root: Option<AichRootHash>,
     /// Trusted-set tally for a rootless download: each proposed AICH master root
     /// → the set of distinct masked peer IPs that proposed it (ADR-0038, eMule
@@ -587,6 +594,7 @@ impl DownloadState {
             delivered: HashMap::new(),
             pending_persist: HashMap::new(),
             awaiting_recovery: HashMap::new(),
+            failed_cells: HashMap::new(),
             worker_slots: HashMap::new(),
             delivery: HashMap::new(),
             slot_asks: slot_ask::SlotAsks::default(),

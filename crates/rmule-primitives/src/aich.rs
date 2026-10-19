@@ -31,8 +31,8 @@ const HASHSIZE: usize = 20;
 pub const EMBLOCKSIZE: u64 = 184_320;
 
 /// Why reading a peer's AICH recovery data failed. All variants are
-/// non-terminal at the session level (the part falls back to MD4 retire-all and
-/// the peer connection stays open, ADR-0038).
+/// non-terminal at the session level (the part takes the path of a part with no
+/// trusted root and the peer connection stays open, ADR-0038).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum AichRecoveryError {
     /// The recovery data was truncated, carried an out-of-range part, or a hash
@@ -53,6 +53,15 @@ impl From<WireTruncated> for AichRecoveryError {
     fn from(_: WireTruncated) -> Self {
         Self::Malformed
     }
+}
+
+/// The AICH hash of one block of at most [`EMBLOCKSIZE`] bytes: a leaf of the
+/// tree, the SHA-1 a part's recovery data names that block by. A part that
+/// failed with no trusted root compares its cells' hashes across the refetch
+/// (ADR-0117).
+#[must_use]
+pub fn aich_block_hash(block: &[u8]) -> [u8; HASHSIZE] {
+    sha1_bytes(block)
 }
 
 /// SHA-1 of a byte run — one AICH leaf hash.
@@ -433,8 +442,8 @@ impl AichHashSet {
     /// `part_bytes` do not match their AICH block hash — the corrupt blocks
     /// (aMule `CAICHHashSet::ReadRecoveryData` + block comparison). An empty
     /// result means the whole part is intact. `part_bytes` must be the complete
-    /// assembled part. Errors are non-terminal (ADR-0038): the caller falls back
-    /// to MD4 retire-all.
+    /// assembled part. Errors are non-terminal (ADR-0038): the caller takes the
+    /// path of a part with no trusted root.
     pub fn verify_part(
         file_size: u64,
         part_start_pos: u64,

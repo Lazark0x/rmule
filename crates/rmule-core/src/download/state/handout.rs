@@ -10,7 +10,7 @@ use rmule_primitives::PeerEndpoint;
 
 use crate::BlockPlan;
 use crate::adapters::PeerWorkerCommand;
-use crate::assembly::PartAssembly;
+use crate::assembly::{Attempt, PartAssembly};
 use crate::byte_ranges::ByteRanges;
 use crate::delivery_rate::DeliveryRate;
 use crate::diagnostics::WorkerPhase;
@@ -115,6 +115,7 @@ impl DownloadState {
         let progress = Measured {
             delivery: &self.delivery,
             assembly: &self.assembly,
+            failed_cells: &self.failed_cells,
         };
         let handout = self.scheduler.hand(
             peer,
@@ -188,10 +189,12 @@ impl DownloadState {
 }
 
 /// What the scheduler reads of this download (ADR-0117): each worker's
-/// Delivery Rate and each in-flight part's Arrived Ranges.
+/// Delivery Rate, each in-flight part's Arrived Ranges, and the Failed Cells
+/// of each part refetched after failing with no root.
 struct Measured<'a> {
     delivery: &'a HashMap<PeerEndpoint, DeliveryRate>,
     assembly: &'a HashMap<u32, PartAssembly>,
+    failed_cells: &'a HashMap<u32, Attempt>,
 }
 
 impl Progress for Measured<'_> {
@@ -201,6 +204,10 @@ impl Progress for Measured<'_> {
 
     fn arrived(&self, part_index: u32) -> Option<&ByteRanges> {
         self.assembly.get(&part_index).map(PartAssembly::arrived)
+    }
+
+    fn failed_cells(&self, part_index: u32) -> Option<&Attempt> {
+        self.failed_cells.get(&part_index)
     }
 }
 

@@ -537,6 +537,14 @@ impl SourceBook {
     /// none leaves nothing to key it by.
     pub(crate) fn distrust(&mut self, endpoint: PeerEndpoint) -> Option<UserHash> {
         let hash = self.identity(endpoint)?.user_hash();
-        self.blocks.distrust(hash).then_some(hash)
+        self.distrust_hash(hash).then_some(hash)
+    }
+
+    /// A writer whose hello named `user_hash` is proven to have served this
+    /// file bad data, whether or not its worker is still live (ADR-0117 §1):
+    /// distrust that hash. `true` when the distrust is new, for the brain to
+    /// persist.
+    pub(crate) fn distrust_hash(&mut self, user_hash: UserHash) -> bool {
+        self.blocks.distrust(user_hash)
     }
 }

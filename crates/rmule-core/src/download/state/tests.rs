@@ -1,5 +1,5 @@
 //! The sans-I/O brain asserted as plain `Vec<Decision>` values: racing peers
-//! on one part, mid-part resume, retire-all, candidate backfill, the callback
+//! on one part, mid-part resume, a corrupt part, candidate backfill, the callback
 //! leg, AICH trust and recovery, and what a stop does to the fleet.
 
 mod aich;
@@ -10,6 +10,7 @@ mod buddy_hash_fallback;
 mod callback_walk;
 mod callbacks;
 mod capability;
+mod corruption;
 mod direct_ipv6;
 mod dual_stack;
 mod end_game;

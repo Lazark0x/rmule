@@ -6,16 +6,14 @@
 use std::time::Instant;
 
 use rmule_peer::PeerIdentity;
-use rmule_primitives::{PartHash, PeerEndpoint};
+use rmule_primitives::{PartHash, PeerEndpoint, UserHash};
 
 use crate::DownloadFailure;
 use crate::adapters::{PeerWorkerCommand, PeerWorkerEvent};
 use crate::assembly::PartAssembly;
 use crate::diagnostics::WorkerPhase;
 use crate::hashing::{hash_set_proves_file, resolve_hash_set_authority};
-use crate::service::{
-    DownloadEvent, PartReleaseReason, PeerRetirementReason, VerificationAuthority,
-};
+use crate::service::{DownloadEvent, PeerRetirementReason, VerificationAuthority};
 
 use super::{Decision, DownloadState};
 
@@ -270,6 +268,9 @@ impl DownloadState {
         match result {
             Ok(()) => {
                 self.scheduler.complete_verified(part_index);
+                if let Some(assembled) = &assembled {
+                    self.judge_failed_cells(now, part_index, assembled, &mut out);
+                }
                 // The verifier and the racers it beat hold no part now: each
                 // granted one is handed its next or gives its slot back, and
                 // a worker left holding nothing we need goes (ADR-0112 §6).
@@ -286,17 +287,15 @@ impl DownloadState {
                 let Some(assembled) = assembled else {
                     return out;
                 };
-                // The part is fetched again: whatever its blocks come to
-                // below, it is missing and nobody holds a block of it.
-                self.scheduler.failed(part_index);
                 // With a trusted AICH root and the completing peer still
                 // connected, recover at block granularity (ADR-0038): ask that
                 // peer for the part's recovery data and hold the corrupt buffer
-                // (with its provenance) until `on_aich_answer`. Without a root,
-                // fall back to ADR-0029's retire-all.
+                // (with its provenance) until `on_aich_answer`, the part still
+                // verifying so none of its blocks is handed meanwhile. Without
+                // a root, its refetch attributes it (ADR-0117 §1).
                 match self.trusted_aich_root {
                     Some(root) if self.worker_slots.contains_key(&peer) => {
-                        self.awaiting_recovery.insert(part_index, assembled);
+                        self.awaiting_recovery.insert(part_index, (peer, assembled));
                         out.push(Decision::Send {
                             peer,
                             command: PeerWorkerCommand::RequestAich {
@@ -305,58 +304,11 @@ impl DownloadState {
                             },
                         });
                     }
-                    _ => {
-                        // Its bytes are dropped: the part goes back for any
-                        // worker to take, from its first byte.
-                        out.push(Decision::Emit(DownloadEvent::PartReleased {
-                            download_id: self.download_id,
-                            peer,
-                            part_index,
-                            reason: PartReleaseReason::PeerRetired(
-                                PeerRetirementReason::PartVerificationFailed,
-                            ),
-                        }));
-                        self.retire_all_contributors(now, &assembled, &mut out);
-                        self.reassign_workers(now, &mut out);
-                    }
+                    _ => self.refetch_rootless(now, part_index, &assembled, &mut out),
                 }
             }
         }
         out
-    }
-    /// ADR-0029 retire-all: retire every peer that contributed to the failed
-    /// part attempt and let `release` return the part for a fresh refetch. Used
-    /// when no trusted AICH root is available and as the AICH fallback. Sorted
-    /// by slot so the decisions are deterministic.
-    pub(super) fn retire_all_contributors(
-        &mut self,
-        now: Instant,
-        assembled: &PartAssembly,
-        out: &mut Vec<Decision>,
-    ) {
-        let mut contributors: Vec<(usize, PeerEndpoint)> = assembled
-            .contributors()
-            .iter()
-            .filter_map(|c| self.worker_slots.get(c).map(|slot| (slot.as_usize(), *c)))
-            .collect();
-        contributors.sort_unstable_by_key(|&(slot, _)| slot);
-        // A sole contributor is the proven sender of the bad bytes.
-        if let [(_, sole)] = contributors[..] {
-            self.distrust(sole, out);
-        }
-        for (_, contributor) in contributors {
-            out.push(Decision::Emit(DownloadEvent::PeerRetired {
-                download_id: self.download_id,
-                peer: contributor,
-                reason: PeerRetirementReason::PartVerificationFailed,
-            }));
-            self.release(
-                now,
-                contributor,
-                PeerRetirementReason::PartVerificationFailed,
-                out,
-            );
-        }
     }
     /// Merge a delivered block into its part's Arrived Ranges and settle the
     /// claims they now cover; when they cover the part, hand the assembled
@@ -373,7 +325,8 @@ impl DownloadState {
     ) {
         // Bytes flowing end the standing: the source is live, not queued.
         self.sources.end_standing(peer);
-        if let Some(user_hash) = self.sources.identity(peer).map(PeerIdentity::user_hash) {
+        let user_hash = self.sources.identity(peer).map(PeerIdentity::user_hash);
+        if let Some(user_hash) = user_hash {
             out.push(Decision::RecordCredit {
                 user_hash,
                 bytes: bytes.len() as u64,
@@ -406,7 +359,7 @@ impl DownloadState {
             .assembly
             .entry(part_index)
             .or_insert_with(|| PartAssembly::new(part.len));
-        assembled.merge(peer, offset.saturating_sub(part.offset), bytes);
+        assembled.merge(peer, user_hash, offset.saturating_sub(part.offset), bytes);
         let complete = assembled.is_complete();
         self.scheduler.settle(part_index, assembled.arrived());
         if let Some(slot) = self.worker_slots.get(&peer).copied() {
@@ -423,7 +376,7 @@ impl DownloadState {
         }
         // The part is whole: hand the assembled bytes to the runner to verify
         // and persist. Hold the buffer (with its writers) until the result
-        // comes back, so a failure can repair or retire-all (ADR-0029).
+        // comes back, so a failure can repair or attribute it (ADR-0117 §1).
         let assembled = self
             .assembly
             .remove(&part_index)
@@ -513,13 +466,31 @@ impl DownloadState {
     /// invariant 4): the **Source Book** distrusts the User Hash its hello
     /// named, and a new distrust is persisted by the runner. *Proven* is the
     /// rule's whole weight — the AICH recovery pins corrupt blocks on their
-    /// senders, a part's sole contributor has nobody else to blame, a hash set
-    /// that is not the file's own convicts its sender — and a peer whose hello
-    /// named no hash leaves nothing to key the distrust by.
+    /// senders, a part's refetch proves a cell's sender (ADR-0117 §1), a hash
+    /// set that is not the file's own convicts its sender — and a peer whose
+    /// hello named no hash leaves nothing to key the distrust by.
     pub(super) fn distrust(&mut self, peer: PeerEndpoint, out: &mut Vec<Decision>) {
         if let Some(user_hash) = self.sources.distrust(peer) {
-            tracing::info!(%peer, "a peer that served bad data is distrusted for this download");
-            out.push(Decision::DistrustPeer { user_hash });
+            Self::distrusted(peer, user_hash, out);
         }
+    }
+
+    /// [`Self::distrust`] by the User Hash `peer`'s hello named when it wrote,
+    /// whether or not its worker is still live.
+    pub(super) fn distrust_hash(
+        &mut self,
+        peer: PeerEndpoint,
+        user_hash: UserHash,
+        out: &mut Vec<Decision>,
+    ) {
+        if self.sources.distrust_hash(user_hash) {
+            Self::distrusted(peer, user_hash, out);
+        }
+    }
+
+    /// Say a new distrust of `peer` and hand it to the runner to persist.
+    fn distrusted(peer: PeerEndpoint, user_hash: UserHash, out: &mut Vec<Decision>) {
+        tracing::info!(%peer, "a peer that served bad data is distrusted for this download");
+        out.push(Decision::DistrustPeer { user_hash });
     }
 }

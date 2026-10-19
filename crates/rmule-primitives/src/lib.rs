@@ -36,7 +36,7 @@ mod text;
 mod wire_reader;
 
 pub use address::{Informant, is_reserved_address, is_reserved_ipv4, is_reserved_ipv6};
-pub use aich::{AichHashSet, EMBLOCKSIZE};
+pub use aich::{AichHashSet, EMBLOCKSIZE, aich_block_hash};
 pub use capabilities::{Capabilities, CryptStance};
 pub use datagram_obfuscation::{
     ClientDecryptKeys, ClientEncryptKey, DatagramKeyFamily, DatagramNonce, DatagramSenderAddress,

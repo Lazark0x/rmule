@@ -300,6 +300,16 @@ impl DownloadEvent {
                 .count("part_index", *part_index)
                 .count("blocks", *blocks)
                 .count("bytes", *bytes),
+            D::PartCorrupt {
+                download_id,
+                part_index,
+                writers,
+                named,
+            } => Record::new("download.part_corrupt")
+                .count("id", download_id.as_u64())
+                .count("part_index", *part_index)
+                .count("writers", *writers)
+                .count("named", *named),
             D::PartReleased {
                 download_id,
                 peer,

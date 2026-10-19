@@ -19,8 +19,9 @@
 //! **Distrusted peers** — a peer proven to have served this file bad data
 //! (invariant 4). *Proven* is the rule's whole weight: the AICH recovery pins
 //! corrupt blocks on their senders, a part with one contributor has nobody
-//! else to blame, a hash set that is not the file's own convicts its sender;
-//! a retire-all across several contributors blames none. Keyed by User Hash,
+//! else to blame, a hash set that is not the file's own convicts its sender,
+//! and a refetch proves a cell's old copy or a writer's two copies of one cell
+//! (ADR-0117 §1); a writer named only by elimination is not. Keyed by User Hash,
 //! so the distrust follows the peer to a new address, and held for the
 //! download's life, seeded from its durable record.
 

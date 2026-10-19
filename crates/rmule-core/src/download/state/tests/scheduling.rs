@@ -405,53 +405,6 @@ fn an_armed_download_waits_instead_of_failing_when_its_pool_exhausts() {
     );
 }
 
-#[test]
-fn a_verification_failure_retires_every_contributor() {
-    let mut state = shared_part_state();
-
-    // Two peers assemble the part: peer 1 the head, peer 2 the completing
-    // tail.
-    let part = crate::planning::part_plan(FIVE_BLOCKS, 0);
-    let _ = state.on_worker_event(
-        t0(),
-        peer(1),
-        PeerWorkerEvent::BlockReceived {
-            part_index: 0,
-            offset: part.offset,
-            bytes: vec![0u8; 400],
-        },
-    );
-    let _ = state.on_worker_event(
-        t0(),
-        peer(2),
-        PeerWorkerEvent::BlockReceived {
-            part_index: 0,
-            offset: part.offset + 400,
-            bytes: vec![0u8; (part.len - 400) as usize],
-        },
-    );
-
-    // The assembled part fails verification: with no per-block attribution
-    // (no AICH), every contributor is retired (ADR-0029).
-    let failed = state.on_persist_result(
-        t0(),
-        0,
-        peer(2),
-        Err(DownloadFailure::PartVerificationFailed),
-    );
-    for contributor in [peer(1), peer(2)] {
-        assert!(
-            failed.iter().any(|d| matches!(
-                d,
-                Decision::Emit(DownloadEvent::PeerRetired { peer: p, reason: PeerRetirementReason::PartVerificationFailed, .. })
-                    if *p == contributor
-            )),
-            "contributor {contributor:?} is retired on verification failure: {failed:?}"
-        );
-        assert!(!state.is_working(contributor));
-    }
-}
-
 /// Every retirement ends its worker, one path: a peer retired for bad
 /// data would otherwise sit connected until the peer hung up, and a peer that
 /// hung up on its own gets the same `EndWorker` — harmless on a gone worker.

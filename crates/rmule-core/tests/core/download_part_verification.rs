@@ -25,9 +25,9 @@ use rmule_testkit::{
 
 /// A file below one part has no part hash set: its one part is the whole file,
 /// so the file hash checks it on arrival (aMule `CPartFile::HashSinglePart`,
-/// `src/PartFile.cpp:2338-2343`) — corrupt bytes retire their sender and
-/// release the part for another source, as a bad part of a larger file does,
-/// instead of failing the whole download at finalize.
+/// `src/PartFile.cpp:2338-2343`) — corrupt bytes retire their sole sender and
+/// the part is fetched again, as a bad part of a larger file is, instead of
+/// failing the whole download at finalize.
 #[tokio::test]
 async fn small_file_without_part_hash_set_rejects_corrupt_bytes_on_arrival() {
     let expected = b"hello world".to_vec();
@@ -58,7 +58,12 @@ async fn small_file_without_part_hash_set_rejects_corrupt_bytes_on_arrival() {
     )));
     assert!(events.iter().any(|event| matches!(
         event,
-        CoreEvent::Download(DownloadEvent::PartReleased { part_index: 0, .. })
+        CoreEvent::Download(DownloadEvent::PartCorrupt {
+            part_index: 0,
+            writers: 1,
+            named: 1,
+            ..
+        })
     )));
     assert!(!events.iter().any(|event| matches!(
         event,

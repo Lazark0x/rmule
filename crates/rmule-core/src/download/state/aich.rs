@@ -70,7 +70,7 @@ impl DownloadState {
     /// block's sole writer), and hand the dropped blocks to workers with room
     /// (ADR-0117). Malformed/untrusted
     /// recovery data — or a clean part whose MD4 still failed (root/file
-    /// mismatch) — falls back to ADR-0029 retire-all.
+    /// mismatch) — leaves the part to its refetch (ADR-0117 §1).
     pub(super) fn on_aich_answer(
         &mut self,
         now: Instant,
@@ -78,11 +78,11 @@ impl DownloadState {
         recovery_data: &[u8],
         out: &mut Vec<Decision>,
     ) {
-        let Some(mut assembled) = self.awaiting_recovery.remove(&part_index) else {
+        let Some((_, mut assembled)) = self.awaiting_recovery.remove(&part_index) else {
             return; // stale or duplicate answer
         };
         let Some(root) = self.trusted_aich_root else {
-            self.retire_all_contributors(now, &assembled, out);
+            self.refetch_rootless(now, part_index, &assembled, out);
             return;
         };
         let part = crate::planning::part_plan(self.file_size, part_index);
@@ -95,7 +95,7 @@ impl DownloadState {
         ) {
             Ok(blocks) if !blocks.is_empty() => blocks,
             _ => {
-                self.retire_all_contributors(now, &assembled, out);
+                self.refetch_rootless(now, part_index, &assembled, out);
                 return;
             }
         };

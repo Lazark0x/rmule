@@ -390,6 +390,21 @@ pub enum DownloadEvent {
         /// Their bytes, at most three `EMBLOCKSIZE`.
         bytes: u64,
     },
+    /// A part failed its check with no Trusted AICH Root to name its corrupt
+    /// cells (ADR-0117 §1): its bytes are dropped and it is fetched again.
+    /// The failure names a writer only when the evidence points to it, and
+    /// each one retired is also said as `PeerRetired`.
+    PartCorrupt {
+        /// The download the part belongs to.
+        download_id: DownloadId,
+        /// The zero-based part index within the file.
+        part_index: u32,
+        /// How many sources wrote the failed attempt.
+        writers: u32,
+        /// How many of them the failure named: each still working is
+        /// retired.
+        named: u32,
+    },
     /// A part went back to the unassigned pool for another worker to take.
     PartReleased {
         /// The download the part belongs to.
