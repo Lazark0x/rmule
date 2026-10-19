@@ -136,7 +136,7 @@ pub(crate) fn judge(
 ) -> (&'static str, String, Vec<Claim>) {
     let mut claims = vec![gateway_claim(proof)];
     claims.extend(match flow {
-        PortMapFlow::HighId => high_id_claims(gateway, rmule, kad_wire),
+        PortMapFlow::HighId | PortMapFlow::NatPmp => high_id_claims(flow, gateway, rmule, kad_wire),
         PortMapFlow::Mismatch => mismatch_claims(gateway, rmule),
         PortMapFlow::Ipv6Pinhole | PortMapFlow::Ipv6PinholeLinkLocal => {
             pinhole_claims(gateway, rmule)
@@ -266,11 +266,19 @@ fn gateway_claim(proof: &NatTypeProof) -> Claim {
 
 /// `portmap-highid`: ADR-0092's four assertions, one claim each.
 fn high_id_claims(
+    flow: PortMapFlow,
     gateway: &GatewayRecord,
     rmule: &DriverRow,
     kad_wire: Option<&KadHelperWire>,
 ) -> Vec<Claim> {
     let tcp_exact = gateway.holds_exact(DRIVER_LAN_ADDRESS, PEER_TCP_PORT);
+    // The gateway's log of each MAP, renewals included: SOAP actions for
+    // UPnP, request lines for NAT-PMP.
+    let (requests, action) = if flow == PortMapFlow::NatPmp {
+        (gateway.natpmp_requests, "NAT-PMP mapping requests")
+    } else {
+        (gateway.add_port_mapping, "AddPortMapping actions")
+    };
     let tcp_line = gateway
         .leases
         .iter()
@@ -326,12 +334,11 @@ fn high_id_claims(
         ),
         Claim::about(
             "one-renewal-in-the-gateways-own-record",
-            gateway.max_renewals() >= 1 && gateway.add_port_mapping > gateway.leases.len() as u64,
+            gateway.max_renewals() >= 1 && requests > gateway.leases.len() as u64,
             format!(
-                "the gateway's table advanced an expiry {}x and it logged {} AddPortMapping \
-                 actions for {} mappings; rmule counted {} renewals",
+                "the gateway's table advanced an expiry {}x and it logged {requests} {action} \
+                 for {} mappings; rmule counted {} renewals",
                 gateway.max_renewals(),
-                gateway.add_port_mapping,
                 gateway.leases.len(),
                 rmule.total_renewals,
             ),

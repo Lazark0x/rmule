@@ -289,8 +289,8 @@ enum HarnessCommand {
 
     /// Port mapping (ADR-0092): drive rmule's **Port Mapper** (ADR-0086) against a
     /// real `miniupnpd` gateway and judge the GATEWAY's own lease table and log.
-    /// `portmap-highid` asks for the exact port and watches it be renewed,
-    /// `portmap-mismatch` has a second LAN host claim the ports first so the
+    /// `portmap-highid` asks for the exact port and watches it be renewed
+    /// (`portmap-natpmp` the same over NAT-PMP), `portmap-mismatch` has a second LAN host claim the ports first so the
     /// grant comes back shifted, and `portmap-ipv6-pinhole` asks for a PCP MAP
     /// on the `3fff` address; `portmap-ipv6-pinhole-link-local` asks for it
     /// through the gateway's `fe80::` next hop and judges each request's

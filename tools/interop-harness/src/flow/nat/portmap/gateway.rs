@@ -90,8 +90,11 @@ pub(crate) struct GatewayRecord {
     pub(crate) delete_port_mapping: u64,
     /// `PCP MAP: added mapping …` lines.
     pub(crate) pcp_added: u64,
-    /// `PCP: … mapping removed` lines.
+    /// `… mapping removed` lines, PCP's and NAT-PMP's.
     pub(crate) pcp_removed: u64,
+    /// `NAT-PMP port mapping request : …` lines: every NAT-PMP MAP, a
+    /// renewal and a zero-lifetime release included.
+    pub(crate) natpmp_requests: u64,
     /// Lines naming a conflict the gateway refused.
     pub(crate) conflicts: u64,
     /// The daemon's own version banner, kept verbatim: it is what says this
@@ -241,6 +244,7 @@ impl GatewayWatch {
             delete_port_mapping: count("#DeletePortMapping"),
             pcp_added: count("PCP MAP: added mapping"),
             pcp_removed: count("mapping removed"),
+            natpmp_requests: count("NAT-PMP port mapping request"),
             conflicts: count("ConflictInMappingEntry") + count("conflict"),
             build: text
                 .lines()
