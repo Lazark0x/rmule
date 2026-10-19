@@ -152,7 +152,9 @@ references carve them out (aMule `EncryptedStreamSocket.cpp:377-397`), and so do
   sent a `KADEMLIA_FIREWALLED(2)_REQ`, for 180 s (strict `<`), dropped when a recheck
   starts or Kad stops.
 - A plain dial from one of them is admitted as a **Test Connection**. It meets the IP
-  filter and ban gate, its hello is answered, an `OP_KAD_FWTCPCHECK_ACK` on it is counted,
+  filter and ban gate in the accept pump, the last of the **Accept Gates** (ADR-0064), which
+  answers it there and never queues it for the serve loop. Its hello is answered, an
+  `OP_KAD_FWTCPCHECK_ACK` on it is counted,
   and it ends on its first request to be served (a file, hash set, slot, parts, sources,
   AICH) or after 30 s. Being identified, Secure User Identification and other statements
   ask for nothing and do not end it. It never reaches inbound triage: no upload queue,

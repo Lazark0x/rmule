@@ -49,6 +49,14 @@ lazy expiry) records it for `CLIENTBANTIME` = 2 hours, checked then evicted as a
 ([ClientList.cpp#L739](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/ClientList.cpp#L739)).
 Enforcement is on the peer-TCP surface: inbound connections from a banned IP are refused
 and banned source candidates are not dialed. Kad and server traffic are not ban-gated.
+The inbound refusal is the second of the **Accept Gates** — the IP filter, the ban, then the
+Test Connection carve-out (ADR-0046), in that order and in one place. They run where a
+connection enters the serve accept channel and before it does: in the accept pump for a TCP
+accept, in the admit seam for a Tunnel or a callback dial-back. The channel holds only peers
+the serve loop will triage, and the loop's accept is a bare receive, so the `select!` that
+races it can cancel it without losing a connection it already took — as aMule accepts a socket
+and filters it in one step (`ListenSocket.cpp:102-112`). The ban check awaits the store's lock
+on the producer's task, never on the serve loop's.
 
 **Solicitation tracking.** rmule's in-flight probe and walk correlation is the mechanism,
 equivalent to aMule's out-track list (both drop unmatched responses), with aMule's
