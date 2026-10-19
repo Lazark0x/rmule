@@ -40,6 +40,7 @@ use crate::flow::logs::{
 use crate::rmule::{DownloadCrypt, RmuleClientContainer, release_held_download};
 
 mod known_sources;
+mod standing;
 mod verdict;
 
 pub use self::verdict::score_run_dir;
@@ -546,6 +547,18 @@ pub fn run_peer_udp_reask_emit(options: PeerUdpReaskEmitOptions<'_>) -> Result<(
                 flips: super::udp_reask::tap::Flip::read_run_dir(options.layout.root()),
             },
         )?;
+        // Two downloads queued at one sharer: the peer is asked once a cycle,
+        // not once per download (ADR-0107, "One peer, one queue standing").
+        if options.two_downloads {
+            standing::write(
+                options.layout.root(),
+                &standing::StandingRun {
+                    pcap: &capture_dir.join("emit-reask.pcap"),
+                    rmule: rmule_ip.trim().parse().context("rmule address")?,
+                    sharer: sharer_ip.trim().parse().context("sharer address")?,
+                },
+            )?;
+        }
         Ok(())
     })();
 

@@ -391,7 +391,8 @@ pub(crate) fn write(root: &Path, run: &EmitRun<'_>) -> Result<&'static str> {
     Ok(verdict)
 }
 
-/// Score the run dir a finished emit flow (or an archive) left behind.
+/// Score the run dir a finished emit flow (or an archive) left behind; a
+/// two-download run's standing verdict is re-taken beside it.
 ///
 /// # Errors
 /// If an artifact cannot be read or the verdict cannot be written.
@@ -406,10 +407,21 @@ pub fn score_run_dir(
     let file_size = fs::metadata(root.join("synthetic/shared.bin"))
         .context("stat synthetic/shared.bin")?
         .len();
+    let pcap = root.join("emit-reask-capture/emit-reask.pcap");
+    if root.join("synthetic").join(super::SECOND_LINK).exists() {
+        super::standing::write(
+            root,
+            &super::standing::StandingRun {
+                pcap: &pcap,
+                rmule,
+                sharer,
+            },
+        )?;
+    }
     write(
         root,
         &EmitRun {
-            pcap: &root.join("emit-reask-capture/emit-reask.pcap"),
+            pcap: &pcap,
             rmule,
             sharer,
             file_hash: parse_ed2k_file_hash(link.trim())?,
