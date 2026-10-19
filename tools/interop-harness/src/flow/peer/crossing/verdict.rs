@@ -41,6 +41,9 @@ pub(crate) struct Marks {
     pub(crate) returned_at: Option<f64>,
     /// When each hold was lifted, in lifting order.
     pub(crate) lifted_at: Vec<f64>,
+    /// When the watch after the last lift ended: the teardown that follows
+    /// closes every link, so a link still up at this instant stayed up.
+    pub(crate) watch_ended_at: Option<f64>,
 }
 
 /// The wall clock now, unix seconds, as the tap and rmule's stamps read it.
@@ -173,7 +176,7 @@ struct Rows {
     links: Vec<Link>,
     /// The Run Log records the leg turns on, as they were logged.
     records: Vec<String>,
-    /// Links opened after the race began and never closed in the capture.
+    /// Links opened after the race began and still up when the watch ended.
     left_open: usize,
     copy_equal: bool,
 }
@@ -231,12 +234,16 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         .holder_stopped_at
         .or(at.marks.returned_at)
         .unwrap_or(0.0);
+    let watch_ended = at.marks.watch_ended_at.unwrap_or(f64::MAX);
     let raced: Vec<&Link> = links
         .iter()
         .filter(|link| link.opened_at >= race_began)
         .collect();
     let rows = Rows {
-        left_open: raced.iter().filter(|link| link.closed_at < 0.0).count(),
+        left_open: raced
+            .iter()
+            .filter(|link| link.closed_at < 0.0 || link.closed_at > watch_ended)
+            .count(),
         records: records_about(&log, at.peer),
         links: links.clone(),
         copy_equal,
@@ -258,7 +265,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         rows.left_open <= 1,
         Evidence::Captured,
         format!(
-            "links opened after the race began and open at the capture's end: {} of {}",
+            "links opened after the race began and still up when the watch ended: {} of {}",
             rows.left_open,
             raced.len()
         ),

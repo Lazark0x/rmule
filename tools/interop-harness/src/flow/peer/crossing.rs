@@ -510,6 +510,7 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                 marks.lifted_at.push(holds.lift(&bench, index)?);
             }
             std::thread::sleep(Duration::from_secs(shape.watch_secs));
+            marks.watch_ended_at = Some(verdict::unix_now());
             waiter_ip
         } else {
             if shape.leg == CrossingLeg::DownloadYield {
@@ -556,6 +557,7 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
             .is_ok();
             println!("peer_crossing download_completed={completed}");
             std::thread::sleep(Duration::from_secs(shape.watch_secs));
+            marks.watch_ended_at = Some(verdict::unix_now());
             seed_ip
         };
         verdict::Topology {
