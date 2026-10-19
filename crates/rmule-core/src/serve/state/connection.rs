@@ -19,7 +19,7 @@ use crate::upload_queue::{Admission, LowIdAbuseFacts, WaiterContact, refuses_as_
 
 use super::relink::Relink;
 use super::transfer::answer_aich_recovery;
-use super::{ReadPurpose, ServeDecision, ServeState};
+use super::{AichAsk, ServeDecision, ServeState};
 
 impl ServeState {
     /// Answer a standalone name ask (`OP_REQUESTFILENAME`) as aMule's
@@ -220,13 +220,11 @@ impl ServeState {
                     root: tree.master_root(),
                 },
             }],
-            None => vec![ServeDecision::ReadRange {
+            None => vec![ServeDecision::BuildAichTree {
                 peer,
                 path: entry.path.clone(),
-                offset: 0,
-                len: entry.file_size,
-                purpose: ReadPurpose::AichMasterRoot { file_hash },
-                check: None,
+                file_size: entry.file_size,
+                ask: AichAsk::MasterRoot { file_hash },
             }],
         }
     }
@@ -419,18 +417,16 @@ impl ServeState {
                     return Vec::new();
                 };
                 // A cache hit answers pure; the first request round-trips one
-                // whole-file read to build the tree (ADR-0038). We answer with
+                // tree build, read a block at a time (ADR-0038). We answer with
                 // our own root + recovery data; the requester verifies it
                 // against the root it trusts.
                 match self.aich_cache.get(&file_hash) {
                     Some(tree) => answer_aich_recovery(peer, file_hash, part, tree),
-                    None => vec![ServeDecision::ReadRange {
+                    None => vec![ServeDecision::BuildAichTree {
                         peer,
                         path: entry.path.clone(),
-                        offset: 0,
-                        len: entry.file_size,
-                        purpose: ReadPurpose::AichRecovery { file_hash, part },
-                        check: None,
+                        file_size: entry.file_size,
+                        ask: AichAsk::Recovery { file_hash, part },
                     }],
                 }
             }

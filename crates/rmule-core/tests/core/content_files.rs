@@ -40,6 +40,23 @@ async fn read_range_reads_a_completed_file_at_its_final_path() {
     assert_eq!(slice, b"3456");
 }
 
+#[tokio::test]
+async fn read_range_refuses_a_length_over_three_blocks_before_reading() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shared.bin");
+    let cap = rmule_peer::MAX_REQUESTED_RANGE;
+    fs::File::create(&path).unwrap().set_len(2 * cap).unwrap();
+
+    let read = ContentFileStore::read_range(&path, 0, cap).await.unwrap();
+    assert_eq!(read.len() as u64, cap, "three blocks are read");
+    assert!(
+        ContentFileStore::read_range(&path, 0, cap + 1)
+            .await
+            .is_err(),
+        "a byte more is refused, though the file holds it"
+    );
+}
+
 #[test]
 fn repository_rejects_foreign_part_path_owner() {
     let dir = tempfile::tempdir().unwrap();

@@ -476,8 +476,8 @@ struct ServeSinks<'a> {
 
 /// Carry out one `Vec<ServeDecision>` against the live runtime — the only
 /// async surface in the serve loop. Decisions drain in order; a `ReadRange`
-/// feeds its follow-up decisions back onto the queue (the read round trip),
-/// so the loop stays flat — no recursion.
+/// or a `BuildAichTree` feeds its follow-up decisions back onto the queue
+/// (the read round trip), so the loop stays flat — no recursion.
 ///
 /// This is also where upload byte accounting happens (ADR-0077): the sinks'
 /// `diagnostics` learns a peer's slot lifetime from the emitted grant/release
@@ -615,20 +615,20 @@ async fn enact<L: ServeRuntimeService>(
             ServeDecision::ReadRange {
                 peer,
                 path,
-                offset,
-                len,
-                purpose,
+                block,
                 check: None,
-            } => match ContentFileStore::read_range(&path, offset, len).await {
-                Ok(bytes) => decisions.extend(state.on_read_result(peer, purpose, bytes)),
+            } => match ContentFileStore::read_range(&path, block.start, block.end - block.start)
+                .await
+            {
+                Ok(bytes) => decisions.extend(state.on_read_result(peer, block, bytes)),
                 Err(error) => {
-                    tracing::warn!(%error, ?purpose, path = %path.display(), "serve read failed; the file is no longer offered");
+                    tracing::warn!(%error, ?block, path = %path.display(), "serve read failed; the file is no longer offered");
                     let modifiers =
                         current_modifiers(credit, held_places, state.identities()).await;
                     decisions.extend(state.on_read_failed(
                         Instant::now(),
                         peer,
-                        purpose,
+                        block.file_hash,
                         &modifiers,
                     ));
                 }
@@ -638,25 +638,50 @@ async fn enact<L: ServeRuntimeService>(
             ServeDecision::ReadRange {
                 peer,
                 path,
-                offset,
-                len,
-                purpose,
+                block,
                 check: Some(check),
-            } => match ContentFileStore::read_checked(&path, &check, offset, len).await {
-                Ok(bytes) => decisions.extend(state.on_read_result(peer, purpose, bytes)),
+            } => match ContentFileStore::read_checked(
+                &path,
+                &check,
+                block.start,
+                block.end - block.start,
+            )
+            .await
+            {
+                Ok(bytes) => decisions.extend(state.on_read_result(peer, block, bytes)),
                 Err(refused) => {
                     let modifiers =
                         current_modifiers(credit, held_places, state.identities()).await;
+                    let file_hash = block.file_hash;
                     decisions.extend(match refused {
                         CheckedReadError::Changed => {
-                            tracing::warn!(?purpose, path = %path.display(), "a download's part file changed; its parts are no longer offered");
-                            state.on_part_file_changed(Instant::now(), peer, purpose, &modifiers)
+                            tracing::warn!(?block, path = %path.display(), "a download's part file changed; its parts are no longer offered");
+                            state.on_part_file_changed(Instant::now(), peer, file_hash, &modifiers)
                         }
                         CheckedReadError::Unreadable(error) => {
-                            tracing::warn!(%error, ?purpose, path = %path.display(), "a download's part file could not be read; its parts are no longer offered");
-                            state.on_part_file_unreadable(Instant::now(), peer, purpose, &modifiers)
+                            tracing::warn!(%error, ?block, path = %path.display(), "a download's part file could not be read; its parts are no longer offered");
+                            state.on_part_file_unreadable(Instant::now(), peer, file_hash, &modifiers)
                         }
                     });
+                }
+            },
+            ServeDecision::BuildAichTree {
+                peer,
+                path,
+                file_size,
+                ask,
+            } => match ContentFileStore::aich_tree(&path, file_size).await {
+                Ok(tree) => decisions.extend(state.on_aich_tree(peer, ask, tree)),
+                Err(error) => {
+                    tracing::warn!(%error, ?ask, path = %path.display(), "serve read failed; the file is no longer offered");
+                    let modifiers =
+                        current_modifiers(credit, held_places, state.identities()).await;
+                    decisions.extend(state.on_read_failed(
+                        Instant::now(),
+                        peer,
+                        ask.file_hash(),
+                        &modifiers,
+                    ));
                 }
             },
             ServeDecision::EmptyRange {

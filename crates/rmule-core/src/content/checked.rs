@@ -29,16 +29,15 @@ impl ContentFileStore {
     /// Read exactly `len` bytes at `offset` from the file at `path` — or,
     /// when nothing is there, at `check.other` — once its handle is proven
     /// to be the file `check.identity` names. An entry holding no identity
-    /// reads nothing.
+    /// reads nothing, and a `len` over three blocks is refused before
+    /// anything is opened or allocated (ADR-0031).
     pub(crate) async fn read_checked(
         path: &Path,
         check: &ReadCheck,
         offset: u64,
         len: u64,
     ) -> Result<Vec<u8>, CheckedReadError> {
-        let len = usize::try_from(len).map_err(|_| {
-            CheckedReadError::Unreadable(io::Error::other("read range length exceeds usize"))
-        })?;
+        let len = super::read_len(len).map_err(CheckedReadError::Unreadable)?;
         let (path, check) = (path.to_path_buf(), check.clone());
         on_pool(move || read_checked_blocking(&path, &check, offset, len)).await
     }
@@ -108,6 +107,23 @@ mod tests {
 
         let read = ContentFileStore::read_checked(&part, &check, 9, 5).await;
         assert_eq!(read.unwrap(), b"bytes");
+    }
+
+    #[tokio::test]
+    async fn a_read_over_three_blocks_is_refused_though_the_file_holds_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (part, done) = (dir.path().join("a.part"), dir.path().join("a.bin"));
+        let cap = rmule_peer::MAX_REQUESTED_RANGE;
+        File::create(&part).unwrap().set_len(2 * cap).unwrap();
+        let check = check(identity_of(&part, true), &done);
+
+        let read = ContentFileStore::read_checked(&part, &check, 0, cap).await;
+        assert_eq!(read.unwrap().len() as u64, cap);
+        let read = ContentFileStore::read_checked(&part, &check, 0, cap + 1).await;
+        assert!(matches!(
+            read,
+            Err(CheckedReadError::Unreadable(error)) if error.kind() == ErrorKind::InvalidInput
+        ));
     }
 
     #[tokio::test]

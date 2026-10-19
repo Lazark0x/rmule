@@ -11,7 +11,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 
-use rmule_primitives::FileHash;
+use rmule_peer::MAX_REQUESTED_RANGE;
+use rmule_primitives::{AichHashSet, FileHash};
 
 use crate::file_key::FileKey;
 use crate::hashing::{file_hash_streamed, part_hash_of};
@@ -96,11 +97,22 @@ impl ContentFileStore {
 
     /// Read exactly `len` bytes from `path` starting at `offset`. A short file
     /// is an error, not a short read — the caller asked for a range it believed
-    /// was there.
+    /// was there. A `len` over three blocks (`rmule_peer::MAX_REQUESTED_RANGE`)
+    /// is refused before a byte is allocated, whoever asks (ADR-0031).
     pub async fn read_range(path: &Path, offset: u64, len: u64) -> Result<Vec<u8>, CoreError> {
-        let len = usize::try_from(len)
-            .map_err(|_| CoreError::Repository("read range length exceeds usize".into()))?;
+        let len = read_len(len).map_err(io_error)?;
         read_exact_at(path, offset, len).await.map_err(io_error)
+    }
+
+    /// The AICH tree of the first `file_size` bytes of the file at `path`
+    /// (ADR-0038), read one block at a time on the blocking pool: however
+    /// large the file, the build holds one block of it (ADR-0031). A file
+    /// that cannot be read, or holds fewer bytes, is an error.
+    pub(crate) async fn aich_tree(path: &Path, file_size: u64) -> Result<AichHashSet, CoreError> {
+        let path = path.to_path_buf();
+        on_pool(move || AichHashSet::from_reader(std::fs::File::open(path)?, file_size))
+            .await
+            .map_err(io_error)
     }
 
     /// The eD2k file hash of the first `file_size` bytes of the file at
@@ -334,6 +346,20 @@ fn walk(
         },
         damaged,
     })
+}
+
+/// `len` as the length of a read's buffer: refused, before anything is
+/// allocated, past the longest range a peer's block request may name
+/// (ADR-0031). The serve state never asks a longer read; this holds for
+/// whoever does.
+pub(crate) fn read_len(len: u64) -> std::io::Result<usize> {
+    if len > MAX_REQUESTED_RANGE {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("a read of {len} bytes is longer than the {MAX_REQUESTED_RANGE}-byte cap"),
+        ));
+    }
+    usize::try_from(len).map_err(std::io::Error::other)
 }
 
 async fn read_exact_at(path: &Path, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {

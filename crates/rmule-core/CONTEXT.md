@@ -713,7 +713,7 @@ Where a download's bytes lie now: its `.part` until it completes, the finished f
 _Avoid_: part path (half of it), download location
 
 **Content Store**:
-The byte I/O abstraction. Download writes verified parts into a `.part` file and promotes it to `final_path`; serve reads ranges (`read_range`) from shared files, and from a download's part file inside its **Verified Range** through a handle checked against its **Part File Identity** (`read_checked`). One abstraction, both directions.
+The byte I/O abstraction. Download writes verified parts into a `.part` file and promotes it to `final_path`; serve reads ranges (`read_range`) from shared files, and from a download's part file inside its **Verified Range** through a handle checked against its **Part File Identity** (`read_checked`), never one longer than three blocks, and builds a shared file's AICH tree one block at a time (`aich_tree`). One abstraction, both directions.
 _Avoid_: storage backend, file manager
 
 **Held Part File**:
@@ -825,7 +825,7 @@ The sans-I/O serving brain, the serve-side mirror of **Download State**: it owns
 clock-free serve decision — probe/status/hash-set answers from a **Shared File
 Registry** snapshot and its copy of the **Served Downloads** (a registry row wins), slot
 admission via the **Upload Slot Queue** it contains, AICH
-tree building from round-tripped byte reads, credit recording, and **Secured
+tree building round-tripped through the enactor, credit recording, and **Secured
 Identity** binding — and returns an ordered `Vec<ServeDecision>` that the `ServeTask`
 enacts (sockets, registry snapshot refreshes, ledger lock, `ContentFileStore` reads).
 Byte reads are fallible effects that round-trip through `on_read_result`, the

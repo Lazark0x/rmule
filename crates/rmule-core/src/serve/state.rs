@@ -5,8 +5,8 @@
 //! decision — probe/status/hash-set answers from a **Shared File Registry**
 //! snapshot and its copy of the **Served Downloads** (ADR-0113), slot
 //! admission via the **Upload Slot Queue** it contains, block
-//! sends with served-range subtraction, AICH tree building from round-tripped
-//! byte reads, credit recording, and **Secured Identity** binding — and
+//! sends with served-range subtraction, AICH tree building round-tripped
+//! through the enactor's block-at-a-time read, credit recording, and **Secured Identity** binding — and
 //! returns an ordered `Vec<`[`ServeDecision`]`>` that the `ServeTask` enacts.
 //! It never touches a socket, a clock, the registry, the content store, or an
 //! `mpsc` channel; byte reads are fallible effects that round-trip through
@@ -78,9 +78,10 @@ pub(super) enum ServeDecision {
     /// client still linked from elsewhere (ADR-0107; aMule bans it,
     /// "Userhash invalid", `ClientList.cpp:384-392`).
     Ban { peer: PeerEndpoint },
-    /// Read `len` bytes at `offset` from the shared file at `path`. A
-    /// fallible effect: the enactor feeds the outcome back through
-    /// [`ServeState::on_read_result`] with this same `purpose`. A Served
+    /// Read `block` of the shared file at `path`, never longer than three
+    /// blocks (ADR-0031). A fallible effect: the enactor feeds the bytes back
+    /// through [`ServeState::on_read_result`] with this same `block`, and a
+    /// failed read through [`ServeState::on_read_failed`]. A Served
     /// Download's read carries its `check`: the handle the enactor opens must
     /// be the file its **Part File Identity** names before a byte is read,
     /// and a path that names nothing gives way to the other once (ADR-0113
@@ -88,10 +89,19 @@ pub(super) enum ServeDecision {
     ReadRange {
         peer: PeerEndpoint,
         path: PathBuf,
-        offset: u64,
-        len: u64,
-        purpose: ReadPurpose,
+        block: BlockRead,
         check: Option<ReadCheck>,
+    },
+    /// Build the AICH tree of the `file_size`-byte shared file at `path`,
+    /// read one block at a time (ADR-0038, ADR-0031). A fallible effect: the
+    /// enactor feeds the tree back through [`ServeState::on_aich_tree`] with
+    /// this same `ask`, and a failed read through
+    /// [`ServeState::on_read_failed`].
+    BuildAichTree {
+        peer: PeerEndpoint,
+        path: PathBuf,
+        file_size: u64,
+        ask: AichAsk,
     },
     /// A read of `file_hash`'s Served Download, checked against `checked`,
     /// found its file changed or unreadable: its **Verified Range** empties
@@ -150,30 +160,31 @@ pub(super) enum ServeDecision {
     },
 }
 
-/// Why a [`ServeDecision::ReadRange`] was issued — the resumption context
-/// [`ServeState::on_read_result`] needs to turn the bytes into an answer.
+/// The block a [`ServeDecision::ReadRange`] reads for a granted flow: the
+/// range `start..end` of `file_hash`, which [`ServeState::on_read_result`]
+/// sends as a `SendBlock`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ReadPurpose {
-    /// Serve the bytes to a granted slot as a `SendBlock` for this range.
-    Block {
-        file_hash: FileHash,
-        start: u64,
-        end: u64,
-    },
-    /// Build + cache the file's AICH tree (a whole-file read, ADR-0038),
-    /// then answer the requested part's recovery data.
-    AichRecovery { file_hash: FileHash, part: u16 },
-    /// Build + cache the file's AICH tree, then answer the master root.
-    AichMasterRoot { file_hash: FileHash },
+pub(super) struct BlockRead {
+    pub(super) file_hash: FileHash,
+    pub(super) start: u64,
+    pub(super) end: u64,
 }
 
-impl ReadPurpose {
-    /// The file the read is of.
+/// The ask a [`ServeDecision::BuildAichTree`] answers once the tree is built
+/// and cached (ADR-0038).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum AichAsk {
+    /// Answer the requested part's recovery data.
+    Recovery { file_hash: FileHash, part: u16 },
+    /// Answer the master root.
+    MasterRoot { file_hash: FileHash },
+}
+
+impl AichAsk {
+    /// The file whose tree answers it.
     pub(super) const fn file_hash(self) -> FileHash {
         match self {
-            Self::Block { file_hash, .. }
-            | Self::AichRecovery { file_hash, .. }
-            | Self::AichMasterRoot { file_hash } => file_hash,
+            Self::Recovery { file_hash, .. } | Self::MasterRoot { file_hash } => file_hash,
         }
     }
 }
@@ -238,10 +249,10 @@ pub(super) struct ServeState {
     /// Ranges already decided for a granted flow, so a re-request serves only
     /// the missing subranges.
     served_ranges: HashMap<(PeerEndpoint, FileHash), Vec<(u64, u64)>>,
-    /// Lazily-built AICH trees per shared file (ADR-0038), built from the
-    /// first round-tripped whole-file read and reused after — a cache hit
-    /// answers with no [`ServeDecision::ReadRange`]. Durable persistence
-    /// (known2.met) is deferred.
+    /// Lazily-built AICH trees per shared file (ADR-0038), built by the
+    /// first round-tripped [`ServeDecision::BuildAichTree`] and reused after —
+    /// a cache hit answers with no build. Durable persistence (known2.met) is
+    /// deferred.
     aich_cache: HashMap<FileHash, AichHashSet>,
     /// The parts each peer holds of a file we share, from the part status its
     /// last name ask or UDP reask wrote (read through

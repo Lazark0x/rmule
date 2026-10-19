@@ -103,7 +103,8 @@ fn a_range_of_exactly_three_blocks_is_read_and_one_byte_more_ends_the_slot() {
     assert!(
         matches!(
             decisions.as_slice(),
-            [ServeDecision::ReadRange { offset, len, .. }] if *offset == GIB && *len == THREE_BLOCKS
+            [ServeDecision::ReadRange { block, .. }]
+                if block.start == GIB && block.end - block.start == THREE_BLOCKS
         ),
         "three blocks are read: {decisions:?}"
     );

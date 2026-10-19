@@ -218,9 +218,7 @@ fn transfer_cancelled_wipes_served_ranges_so_a_fresh_ask_re_reads() {
     let read = ServeDecision::ReadRange {
         peer: p,
         path: "/shared/served.bin".into(),
-        offset: 0,
-        len: 100,
-        purpose: ReadPurpose::Block {
+        block: BlockRead {
             file_hash,
             start: 0,
             end: 100,

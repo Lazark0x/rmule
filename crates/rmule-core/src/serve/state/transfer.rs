@@ -3,10 +3,9 @@
 //! three blocks, or outside a Partial Share's **Verified Range**, which ends
 //! the slot (ADR-0031, ADR-0113 §"Reading a part file") — what a completed
 //! block read becomes for the flow
-//! that asked, the AICH recovery answer built from the cached hash tree
-//! (ADR-0038) — the one read purpose whose result is a hash set, not a block —
-//! and what a failed or refused read does: the file stops being offered at
-//! once.
+//! that asked, the AICH answers from the hash tree the enactor builds and this
+//! state caches (ADR-0038), and what a failed or refused read does: the file
+//! stops being offered at once.
 
 use rmule_peer::{MAX_REQUESTED_RANGE, PartRanges, ServerCommand};
 use rmule_primitives::{AichHashSet, ED2K_PART_SIZE, FileHash, PeerEndpoint};
@@ -16,7 +15,7 @@ use std::time::Instant;
 
 use super::connection::{record_served_range, subtract_served_ranges};
 use super::served::Found;
-use super::{ReadPurpose, ServeDecision, ServeState, rank_updates};
+use super::{AichAsk, BlockRead, ServeDecision, ServeState, rank_updates};
 use crate::served_downloads::PartialEnd;
 use crate::service::{BlockAskFault, ServeEvent};
 use crate::upload_queue::WaiterLeaveCause;
@@ -97,9 +96,7 @@ impl ServeState {
             .map(|(start, end)| ServeDecision::ReadRange {
                 peer,
                 path: path.clone(),
-                offset: start,
-                len: end - start,
-                purpose: ReadPurpose::Block {
+                block: BlockRead {
                     file_hash,
                     start,
                     end,
@@ -141,64 +138,64 @@ impl ServeState {
     /// the read-side twin of `DownloadState::on_persist_result`.
     ///
     /// A read lands after the state it was asked under may have moved on: a
-    /// file no longer offered answers nothing and caches nothing, and a block
-    /// goes only to a peer still holding a slot, as aMule drops a block ask
-    /// from a client it is not uploading to (`UploadClient.cpp:497-500`).
+    /// file no longer offered sends nothing, and a block goes only to a peer
+    /// still holding a slot, as aMule drops a block ask from a client it is
+    /// not uploading to (`UploadClient.cpp:497-500`).
     pub(crate) fn on_read_result(
         &mut self,
         peer: PeerEndpoint,
-        purpose: ReadPurpose,
+        block: BlockRead,
         bytes: Vec<u8>,
     ) -> Vec<ServeDecision> {
-        let file_hash = purpose.file_hash();
-        if !self.in_share_set(file_hash) {
+        let BlockRead {
+            file_hash,
+            start,
+            end,
+        } = block;
+        if !self.in_share_set(file_hash) || !self.queue.is_granted(peer) {
             return Vec::new();
         }
-        match purpose {
-            ReadPurpose::Block {
+        let mut decisions = Vec::new();
+        if let Some(identity) = self.identities.get(&peer) {
+            decisions.push(ServeDecision::RecordCredit {
+                user_hash: identity.user_hash(),
+                bytes: bytes.len() as u64,
+            });
+        }
+        decisions.push(ServeDecision::Send {
+            peer,
+            command: ServerCommand::SendBlock {
                 file_hash,
                 start,
                 end,
-            } => {
-                if !self.queue.is_granted(peer) {
-                    return Vec::new();
-                }
-                let mut decisions = Vec::new();
-                if let Some(identity) = self.identities.get(&peer) {
-                    decisions.push(ServeDecision::RecordCredit {
-                        user_hash: identity.user_hash(),
-                        bytes: bytes.len() as u64,
-                    });
-                }
-                decisions.push(ServeDecision::Send {
-                    peer,
-                    command: ServerCommand::SendBlock {
-                        file_hash,
-                        start,
-                        end,
-                        bytes,
-                    },
-                });
-                decisions
-            }
-            ReadPurpose::AichRecovery { file_hash, part } => {
-                let tree = self
-                    .aich_cache
-                    .entry(file_hash)
-                    .or_insert_with(|| AichHashSet::from_bytes(&bytes));
-                answer_aich_recovery(peer, file_hash, part, tree)
-            }
-            ReadPurpose::AichMasterRoot { file_hash } => {
-                let root = self
-                    .aich_cache
-                    .entry(file_hash)
-                    .or_insert_with(|| AichHashSet::from_bytes(&bytes))
-                    .master_root();
-                vec![ServeDecision::Send {
-                    peer,
-                    command: ServerCommand::AnswerAichFileHash { root },
-                }]
-            }
+                bytes,
+            },
+        });
+        decisions
+    }
+
+    /// Resume a [`ServeDecision::BuildAichTree`] round trip that built the
+    /// file's tree: it is cached and `ask` answered from it. A file no longer
+    /// offered answers nothing and caches nothing.
+    pub(crate) fn on_aich_tree(
+        &mut self,
+        peer: PeerEndpoint,
+        ask: AichAsk,
+        tree: AichHashSet,
+    ) -> Vec<ServeDecision> {
+        let file_hash = ask.file_hash();
+        if !self.in_share_set(file_hash) {
+            return Vec::new();
+        }
+        let tree = self.aich_cache.entry(file_hash).or_insert(tree);
+        match ask {
+            AichAsk::Recovery { part, .. } => answer_aich_recovery(peer, file_hash, part, tree),
+            AichAsk::MasterRoot { .. } => vec![ServeDecision::Send {
+                peer,
+                command: ServerCommand::AnswerAichFileHash {
+                    root: tree.master_root(),
+                },
+            }],
         }
     }
 
@@ -211,10 +208,9 @@ impl ServeState {
         &mut self,
         now: Instant,
         peer: PeerEndpoint,
-        purpose: ReadPurpose,
+        file_hash: FileHash,
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
-        let file_hash = purpose.file_hash();
         let mut decisions = self.stop_and_tell(now, peer, file_hash, modifiers);
         decisions.push(ServeDecision::ReadFailed(file_hash));
         decisions
@@ -227,16 +223,10 @@ impl ServeState {
         &mut self,
         now: Instant,
         peer: PeerEndpoint,
-        purpose: ReadPurpose,
+        file_hash: FileHash,
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
-        self.withdraw_partial(
-            now,
-            peer,
-            purpose.file_hash(),
-            PartialEnd::Unreadable,
-            modifiers,
-        )
+        self.withdraw_partial(now, peer, file_hash, PartialEnd::Unreadable, modifiers)
     }
 
     /// A checked read of a Partial Share found the file not the one its
@@ -247,16 +237,10 @@ impl ServeState {
         &mut self,
         now: Instant,
         peer: PeerEndpoint,
-        purpose: ReadPurpose,
+        file_hash: FileHash,
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
-        self.withdraw_partial(
-            now,
-            peer,
-            purpose.file_hash(),
-            PartialEnd::Changed,
-            modifiers,
-        )
+        self.withdraw_partial(now, peer, file_hash, PartialEnd::Changed, modifiers)
     }
 
     /// Stop serving the Partial Share of `file_hash`, telling the peer whose

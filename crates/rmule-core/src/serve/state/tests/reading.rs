@@ -16,7 +16,7 @@ type Refusal = fn(
     &mut ServeState,
     Instant,
     PeerEndpoint,
-    ReadPurpose,
+    FileHash,
     &HashMap<PeerEndpoint, f64>,
 ) -> Vec<ServeDecision>;
 
@@ -41,8 +41,8 @@ fn parts(ranges: [(u64, u64); 3], file_hash: FileHash) -> ServeInput {
     })
 }
 
-fn block(file_hash: FileHash, start: u64, end: u64) -> ReadPurpose {
-    ReadPurpose::Block {
+fn block(file_hash: FileHash, start: u64, end: u64) -> BlockRead {
+    BlockRead {
         file_hash,
         start,
         end,
@@ -53,9 +53,7 @@ fn read(p: PeerEndpoint, file_hash: FileHash, start: u64, end: u64) -> ServeDeci
     ServeDecision::ReadRange {
         peer: p,
         path: "/temp/download.bin.part".into(),
-        offset: start,
-        len: end - start,
-        purpose: block(file_hash, start, end),
+        block: block(file_hash, start, end),
         check: Some(ReadCheck {
             identity: Some(identity()),
             other: "/downloads/download.bin".into(),
@@ -185,7 +183,7 @@ fn a_part_file_found_changed_or_gone_stops_serving_and_empties_the_range_without
             &no_modifiers(),
         );
 
-        let decisions = refused(&mut state, t, holder, block(file, 0, 100), &no_modifiers());
+        let decisions = refused(&mut state, t, holder, file, &no_modifiers());
         for told in [holder, waiter] {
             assert!(decisions.contains(&send(
                 told,
