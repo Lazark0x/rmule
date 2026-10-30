@@ -2,7 +2,6 @@
 
 use rmule_primitives::Ed2kLink;
 
-use super::verdict::SeedRow;
 use super::with_sources;
 
 /// The sources ride aMule's `|/|sources,ip:port,…|/` tail, which rmule's own
@@ -10,14 +9,10 @@ use super::with_sources;
 #[test]
 fn the_seeds_ride_the_link_as_sources_rmule_reads() {
     let link = "ed2k://|file|stream.mkv|116736000|266E88A5A30B60E640839EFC74622B52|/";
-    let seed = |ip: &str| SeedRow {
-        role: "a".to_owned(),
-        ip: ip.parse().unwrap(),
-        holding: "complete".to_owned(),
-        container: String::new(),
-        max_upload_kib: 0,
-    };
-    let sourced = with_sources(link, &[seed("172.18.0.3"), seed("172.18.0.4")]);
+    let sourced = with_sources(
+        link,
+        &["172.18.0.3".parse().unwrap(), "172.18.0.4".parse().unwrap()],
+    );
     let Ed2kLink::File(file) = Ed2kLink::parse(&sourced).unwrap() else {
         panic!("not a file link: {sourced}");
     };
