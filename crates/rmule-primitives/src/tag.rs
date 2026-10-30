@@ -278,12 +278,10 @@ impl Tag {
     /// name id and a one-byte value (`UINT8`, `BOOL`, an empty `BSOB`, `STR1`).
     pub const MIN_WIRE_LEN: usize = 3;
 
-    /// Serialize the tag, reproducing the name spelling it carries.
-    ///
-    /// # Panics
-    /// If a text name or string value exceeds 65535 bytes. [`TagName::text`]
-    /// rejects over-long names at construction, so only a value built past
-    /// that bound can reach it.
+    /// Serialize the tag, reproducing the name spelling it carries. A string
+    /// past 65535 bytes is cut at that length (aMule `SafeFile.cpp:361-372`):
+    /// text a counterparty sent can outgrow the sixteen-bit length once it is
+    /// rendered as UTF-8, so the length is a wire limit, never an invariant.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let tag_type = self.value.tag_type();
@@ -303,13 +301,13 @@ impl Tag {
             },
             TagNameKind::Text(name) => {
                 encoded.push(tag_type);
-                write_len_prefixed_bytes(&mut encoded, name.as_bytes(), "tag name");
+                write_len_prefixed_bytes(&mut encoded, name.as_bytes());
             }
         }
 
         match &self.value {
             TagValue::String(value) => {
-                write_len_prefixed_bytes(&mut encoded, value.as_bytes(), "string tag value");
+                write_len_prefixed_bytes(&mut encoded, value.as_bytes());
             }
             TagValue::U64(value) => encoded.extend_from_slice(&value.to_le_bytes()),
             TagValue::U32(value) => encoded.extend_from_slice(&value.to_le_bytes()),
@@ -413,9 +411,7 @@ impl TagName {
 
     /// Construct a length-prefixed text tag name. Rejects names longer
     /// than `u16::MAX` bytes — the wire `name_length` is a `u16`, so
-    /// anything longer would silently truncate on encode (the previous
-    /// implementation `unwrap`-ped at the encode boundary, panicking
-    /// inside `write_len_prefixed_bytes`).
+    /// anything longer would silently truncate on encode.
     ///
     /// # Errors
     /// [`PrimitiveError::InvalidTag`] if the name exceeds 65535 bytes.
@@ -495,8 +491,9 @@ fn decode_utf8(bytes: &[u8], reason: &'static str) -> Result<String> {
         .map_err(|_| PrimitiveError::InvalidTag { reason })
 }
 
-fn write_len_prefixed_bytes(encoded: &mut Vec<u8>, bytes: &[u8], field: &'static str) {
-    let len = u16::try_from(bytes.len()).unwrap_or_else(|_| panic!("{field} is too long"));
+fn write_len_prefixed_bytes(encoded: &mut Vec<u8>, bytes: &[u8]) {
+    let bytes = &bytes[..bytes.len().min(usize::from(u16::MAX))];
+    let len = u16::try_from(bytes.len()).unwrap_or(u16::MAX);
     encoded.extend_from_slice(&len.to_le_bytes());
     encoded.extend_from_slice(bytes);
 }

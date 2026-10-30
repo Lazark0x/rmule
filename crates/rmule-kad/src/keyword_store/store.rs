@@ -18,7 +18,7 @@ use super::result::KeywordResultRow;
 use super::{
     KEYWORD_DUPLICATE_GUARD_THRESHOLD, KEYWORD_GLOBAL_CAP, KEYWORD_PER_KEYWORD_CAP,
     KEYWORD_PUBLISH_BATCH_CAP, KEYWORD_RESULT_BUDGET, KEYWORD_SWEEP_INTERVAL,
-    TRUST_WORTHY_THRESHOLD,
+    KEYWORD_VERBATIM_TAG_CAP, TRUST_WORTHY_THRESHOLD,
 };
 
 /// The bounded keyword index a **Kad Storer** serves (see the module docs for
@@ -105,6 +105,8 @@ impl KeywordStore {
         let Some(size) = file.size.filter(|&size| size != 0) else {
             return KeywordFileOutcome::RejectedInvalidEntry;
         };
+        let mut file_tags = file.tags;
+        file_tags.truncate(KEYWORD_VERBATIM_TAG_CAP);
 
         let Self {
             keywords,
@@ -117,7 +119,7 @@ impl KeywordStore {
         if rows.is_empty() {
             rows.push((
                 file.file_id,
-                KeywordEntry::new(now, size, filename, file.tags, from, subnet_publishers),
+                KeywordEntry::new(now, size, filename, file_tags, from, subnet_publishers),
             ));
             *total_rows += 1;
             return KeywordFileOutcome::Stored { load: 1 };
@@ -137,13 +139,13 @@ impl KeywordStore {
             if index_total > KEYWORD_DUPLICATE_GUARD_THRESHOLD {
                 return KeywordFileOutcome::RejectedRefreshThrottled;
             }
-            entry.refresh(now, size, filename, file.tags, from, subnet_publishers);
+            entry.refresh(now, size, filename, file_tags, from, subnet_publishers);
             return KeywordFileOutcome::Stored { load };
         }
 
         rows.push((
             file.file_id,
-            KeywordEntry::new(now, size, filename, file.tags, from, subnet_publishers),
+            KeywordEntry::new(now, size, filename, file_tags, from, subnet_publishers),
         ));
         *total_rows += 1;
         KeywordFileOutcome::Stored { load }

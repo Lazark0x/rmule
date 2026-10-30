@@ -167,6 +167,14 @@ pub const KEYWORD_MAX_TRACKED_PUBLISHERS: usize = 100;
 /// outright rather than partially processed.
 pub const KEYWORD_PUBLISH_BATCH_CAP: usize = 50;
 
+/// Most verbatim tags a keyword entry keeps: a served row's one-byte tag count
+/// also carries FILENAME, FILESIZE and `TAG_PUBLISHINFO`, and a publish's own
+/// count leaves room for 253 beside the first two. Tags past this are dropped
+/// from the tail. **Divergence (documented):** aMule stores them all ("TODO:
+/// Filter tags", `KademliaUDPListener.cpp:1051`) and its count wraps past 255
+/// (`Entry.cpp:146-147`, a debug-only assert), serving a row no reader can walk.
+pub const KEYWORD_VERBATIM_TAG_CAP: usize = 252;
+
 /// Rows per `0x3B` datagram when serving a keyword search (same batching as
 /// source search results).
 pub const KEYWORD_RESULT_ROWS_PER_DATAGRAM: usize = 50;

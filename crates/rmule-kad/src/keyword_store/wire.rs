@@ -218,6 +218,9 @@ pub fn decode_search_key_req(
 /// rows per datagram (same opcode and batching as source search results;
 /// `SendValidKeywordResult`). Zero rows encode to zero envelopes. A row's AICH
 /// roots go last, as one `TAG_KADAICHHASHRESULT`, as eMule's storer writes them.
+/// The tag count is one byte: a row past it loses its last tags, never the
+/// count (the store's [`KEYWORD_VERBATIM_TAG_CAP`](super::KEYWORD_VERBATIM_TAG_CAP)
+/// keeps a served row inside it).
 #[must_use]
 pub fn encode_search_key_res(
     sender: KadId,
@@ -238,11 +241,12 @@ pub fn encode_search_key_res(
                 payload.extend_from_slice(row.file_id.as_bytes());
                 let aich_tag =
                     (!row.aich_roots.is_empty()).then(|| aich::encode_tag(&row.aich_roots));
+                let room = usize::from(u8::MAX) - usize::from(aich_tag.is_some());
+                let tags = &row.tags[..row.tags.len().min(room)];
                 payload.push(
-                    u8::try_from(row.tags.len() + usize::from(aich_tag.is_some()))
-                        .expect("a served row never exceeds 255 tags"),
+                    u8::try_from(tags.len() + usize::from(aich_tag.is_some())).unwrap_or(u8::MAX),
                 );
-                for tag in &row.tags {
+                for tag in tags {
                     payload.extend_from_slice(&tag.encode());
                 }
                 if let Some(aich_tag) = aich_tag {
