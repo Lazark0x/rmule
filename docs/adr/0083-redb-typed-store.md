@@ -49,10 +49,9 @@ in filesystem files, not in the store.
   to rank a peer or count a block (ADR-0031): one read costs 0.8 µs (release build, Apple
   silicon, 10,000 rows), so ranking 5,000 identified peers took 4.2 ms for every input the
   loop saw, and an accrual queued behind any immediate commit's device flush. What moved
-  reaches the store as one `Durability::None` transaction at the next
-  `CreditStore::checkpoint`, immediately flushed: the actor calls it once a minute on the
-  blocking pool, and on shutdown beside the `clients.met` save. A crash between
-  checkpoints loses at most that window of accrual.
+  reaches the store as one immediate transaction at the next `CreditStore::checkpoint`:
+  the actor calls it once a minute on the blocking pool, and on shutdown beside the
+  `clients.met` save. A crash between checkpoints loses at most that window of accrual.
 - **Schema evolution: a store-wide version and a linear ladder.** A meta table holds
   `STORE_VERSION`. Each upgrade step opens the old table under the old `Record` type,
   rewrites it into the new one and drops the old, in one write transaction. A record
@@ -73,7 +72,8 @@ in filesystem files, not in the store.
   fails, so `open` creates every table in one write.
 - A second process cannot open the store while rmule runs.
 - If a measured hot path ever needs batching, `Durability::None` per transaction is the
-  lever; on the prototype a 64-commit batch cost 90 µs per block.
+  lever, added with the caller that needs it; on the prototype a 64-commit batch cost
+  90 µs per block.
 - Cold open is slower than an SQL engine's (about 5–20 ms against 90 µs, because redb
   flushes on open), paid once per process.
 

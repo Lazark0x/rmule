@@ -2,9 +2,8 @@
 //! against a schema and a version ladder. `open` runs the ladder first, then
 //! creates every registered table in one write, so no read can find a table
 //! missing and no table is touched under the wrong version. A write commits
-//! with immediate durability, set explicitly, unless the caller asked for
-//! [`Store::begin_write_deferred`]. A store is `Send + Sync`; seams share one
-//! behind an `Arc` and take `&self`.
+//! with immediate durability, set explicitly. A store is `Send + Sync`; seams
+//! share one behind an `Arc` and take `&self`.
 
 use std::path::Path;
 
@@ -124,39 +123,10 @@ impl Store {
         &self,
         act: impl FnOnce(&WriteTransaction) -> Result<R, E>,
     ) -> Result<R, E> {
-        Self::run(self.begin_write()?, act)
-    }
-
-    /// [`Store::write`] without the device flush — see
-    /// [`Store::begin_write_deferred`] for what that costs and
-    /// [`Store::flush`] for what settles it.
-    ///
-    /// # Errors
-    /// As [`Store::write`].
-    pub fn write_deferred<R, E: From<StoreError>>(
-        &self,
-        act: impl FnOnce(&WriteTransaction) -> Result<R, E>,
-    ) -> Result<R, E> {
-        Self::run(self.begin_write_deferred()?, act)
-    }
-
-    fn run<R, E: From<StoreError>>(
-        txn: WriteTransaction,
-        act: impl FnOnce(&WriteTransaction) -> Result<R, E>,
-    ) -> Result<R, E> {
+        let txn = self.begin_write()?;
         let outcome = act(&txn)?;
         txn.commit().map_err(StoreError::from)?;
         Ok(outcome)
-    }
-
-    /// Make every [`write_deferred`](Self::write_deferred) commit so far
-    /// durable: an empty immediate commit, which the engine settles every
-    /// deferred commit before it with.
-    ///
-    /// # Errors
-    /// An engine error.
-    pub fn flush(&self) -> Result<(), StoreError> {
-        self.write(|_| Ok(()))
     }
 
     /// A snapshot read; any number may be live at once.
@@ -175,22 +145,6 @@ impl Store {
     pub fn begin_write(&self) -> Result<WriteTransaction, StoreError> {
         let mut txn = self.db.begin_write()?;
         txn.set_durability(Durability::Immediate)?;
-        Ok(txn)
-    }
-
-    /// A write that commits without a device flush: the writes land in the
-    /// store and every later read sees them, but they reach the disk only
-    /// when some transaction — this seam's or any other's — next commits
-    /// through [`begin_write`](Self::begin_write). A crash before that loses
-    /// them, so this is for a hot counter whose last few seconds are worth
-    /// less than a flush per write, never for a fact a caller was told was
-    /// durable.
-    ///
-    /// # Errors
-    /// An engine error.
-    pub fn begin_write_deferred(&self) -> Result<WriteTransaction, StoreError> {
-        let mut txn = self.db.begin_write()?;
-        txn.set_durability(Durability::None)?;
         Ok(txn)
     }
 

@@ -240,7 +240,17 @@ scheduling is (ADR-0026).
   checked against, which the entry may have moved on from.
 - **A Link Outbox** holds 64 entries. The Send-Ahead keeps blocks to ten of them, so a
   full one is a peer asking faster than it reads, whose link ends at once: its slot goes
-  to the next waiter and nothing has to wait. The link's task parks on neither its
+  to the next waiter and nothing has to wait. aMule's queues have no bound
+  (`EMSocket.cpp:330-358`), and 64 is safe against its clients because of how they ask,
+  not because of how much they hold. A client asks for one file at a time (`m_reqfile`)
+  and waits for each answer, so one file costs at most six entries (name, status, hash
+  set, AICH root, sources, rank), and the next file waits on the socket until the
+  transfer ends. A peer holding a slot adds no entries to it: its `OP_REQUESTPARTS` go
+  to its flow, and a rank goes only to a waiter, which has no blocks ahead of it.
+  Fifty-four entries behind the Send-Ahead is nine whole files asked with no answer read,
+  which only a peer that stops reading does. Ending that link is the design, so the
+  number stays; a bench run of a stock client on a throttled link would disprove it. The
+  link's task parks on neither its
   outbox nor its connection alone, so what the peer says still reaches the loop while
   a command waits to go down. A link whose connection ended under a command says so,
   as every link does when it ends, or its slot would never be released.

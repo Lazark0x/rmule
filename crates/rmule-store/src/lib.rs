@@ -7,8 +7,7 @@
 //! index cannot rot. A [`Store`] is one file — or the engine's in-memory
 //! backend — opened against a [`Schema`] and a [`Ladder`]: every registered
 //! table exists once the open returns, a write commits with immediate
-//! durability unless the caller asked for [`Store::begin_write_deferred`],
-//! and the version ladder runs before any table is touched.
+//! durability, and the version ladder runs before any table is touched.
 #![warn(missing_docs)]
 
 mod children;
